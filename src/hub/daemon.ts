@@ -1,3 +1,4 @@
+import { NativeHookLaunches } from "./native-hook-launch.ts";
 import { readReleaseHostAdmission, type ReleaseHostAdmission } from "./release-admission.ts";
 import { ContainerRunner, type RunnerOptions, type RunReceipt } from "./check-runner.ts";
 import { fetchSpec, specAvailable, specRefs } from "./spec-read.ts";
@@ -24,11 +25,11 @@ import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc, readSpecEdit, sdlcGh } from "./sdlc.ts";
 import { claudeStateFile, ownTerminalRow, pathEvidence, transcriptPersisted } from "./claude-state.ts";
 import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
-import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
+import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
 import { RecoveryDeferredHubError } from "./deferred-hub.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS, QUOTA_HANDOFF_PLATFORMS, NATIVE_CONFIG_BLOCKS, nativeConfigurationDefaults, mergeNativeConfiguration, retainNativeRouting, DAEMON_PORTS, definitionOf } from "../adapters/registry.ts";
-import { definitionOf as instanceDefinitionOf, KNOWN_PEERS as BASE_KNOWN_PEERS, SUPPORTED_PEERS as BASE_SUPPORTED_PEERS, STARTABLE_PEERS as BASE_STARTABLE_PEERS } from "../adapters/registry.ts";
+import { isSupportedPeer as registrySupportedPeer, definitionOf as instanceDefinitionOf, KNOWN_PEERS as BASE_KNOWN_PEERS, SUPPORTED_PEERS as BASE_SUPPORTED_PEERS, STARTABLE_PEERS as BASE_STARTABLE_PEERS } from "../adapters/registry.ts";
 import { effectiveInstanceRoles, instancePeerIds, validateInstances, type InstancesConfig } from "./instances.ts";
 import { INSTANCE_CONFIG_FILES, readInstanceConfig, readInstanceConfigLayers, readInstanceRoleConfig } from "./instance-config.ts";
 import { instanceBudgetHooks, projectBudgetHeadroom } from "./instance-budget.ts";
@@ -96,7 +97,7 @@ import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts"
 import { DeliveryJournal } from "./delivery-journal.ts";
 import { startDashboard, type DashboardSession } from "./ui.ts";
 import { DAEMON_FEATURES, PROTOCOL, stateDirFor } from "./control-client.ts";
-import { newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
+import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
 import { MemoryClient, workerUrl } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
@@ -256,16 +257,26 @@ export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<st
 const CONFIG_BLOCKS = ["memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal"];
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
-export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]): { roles: Record<string, string[]>; conductor: HubConfig["conductor"]; planner?: string } {
+export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]): { roles: Record<string, string[]>; conductor: HubConfig["conductor"]; planner?: string; notices?: string[] } {
   const roles: Record<string, string[]> = { ...DEFAULT_ROLES };
   const conductor = { ...DEFAULT_CONFIG.conductor };
+  const notices: string[] = [];
   let planner: string | undefined;
   for (const name of CONFIG_FILES) {
     let file: Record<string, unknown>;
     if (layers && !layers.some(layer => layer.name === name)) continue;
     try { file = layers ? structuredClone(layers.find(layer => layer.name === name)!.raw) : JSON.parse(readFileSync(join(cwd, ".agenthub", name), "utf8")); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
-    if (file.roles !== undefined) { conductorPeer(file.roles); Object.assign(roles, file.roles); }
+    if (file.roles !== undefined) {
+      if (!file.roles || typeof file.roles !== "object" || Array.isArray(file.roles)) throw new Error("roles must be an object of peer role lists");
+      for (const [peer, assigned] of Object.entries(file.roles)) {
+        conductorPeer({ [peer]: assigned });
+        const ceiling = definitionOf(peer)?.routing?.allowedRoles;
+        const declared = assigned as string[];
+        roles[peer] = ceiling ? declared.filter(role => ceiling.includes(role)) : declared;
+        if (roles[peer]!.length !== declared.length) notices.push(`roles.${peer}: ignored roles outside the adapter ceiling`);
+      }
+    }
     if (file.planner !== undefined) {
       if (!(PLANNER_PEERS as readonly unknown[]).includes(file.planner)) throw new Error(`planner must be one of ${PLANNER_PEERS.join(", ")}`);
       planner = file.planner as string;
@@ -284,7 +295,7 @@ export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]
     }
   }
   conductorPeer(roles);
-  return { roles, conductor, ...(planner ? { planner } : {}) };
+  return { roles, conductor, ...(planner ? { planner } : {}), ...(notices.length ? { notices } : {}) };
 }
 
 /** `memory.short_ttl_days`: a whole number of days from 1 to 3650; anything else would make every short-term deadline invalid. */
@@ -365,6 +376,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[]): HubCon
   }
   const mlx = { ...(file.mlx?.provider === "legacy" ? { enabled: true, provider: "legacy" as const, maxInputTokens: 16_000, maxTokens: 2048 } : DEFAULT_CONFIG.mlx), ...file.mlx };
   const conductorPolicy = loadConductorPolicy(cwd, captured);
+  retired.push(...conductorPolicy.notices ?? []);
   const extraRoles = Object.fromEntries(Object.keys(instances ?? {}).map(id => [id, effectiveInstanceRoles(id, instances, conductorPolicy.roles)]));
   const instancePermissions: Record<string, PermissionMode> = {};
   const instanceModes: PeerStartConfig = {};
@@ -507,8 +519,18 @@ class WsPeer extends BasePeer {
   steer: PeerAdapter["steer"] = undefined;
   lastInboxAt: number | undefined;
   private claimedPullOnly = false;
+  private readonly attachmentWaiters: { generation: string; resolve: (attached: boolean) => void }[] = [];
+  private settleAttachmentWaiters(attached: boolean): void {
+    for (const waiter of this.attachmentWaiters.splice(0)) waiter.resolve(attached && waiter.generation === this.claimGeneration);
+  }
+  /** Bounded native-hook observations wait for this exact claim, never a later socket. */
+  waitForAttach(generation: string): Promise<boolean> {
+    if (generation !== this.claimGeneration || !this.claiming || this.attachmentWaiters.length >= 64) return Promise.resolve(false);
+    return new Promise(resolve => { this.attachmentWaiters.push({ generation, resolve }); });
+  }
   /** Called at hello, before the async preface: the newest hello wins even if an older one's recall finishes last. */
   claim(sock: Sock, pullOnly = false): void {
+    this.settleAttachmentWaiters(false);
     this.claimGeneration = crypto.randomUUID();
     this.claimed = sock;
     this.claimedPullOnly = pullOnly;
@@ -540,9 +562,10 @@ class WsPeer extends BasePeer {
     };
     this.lastInboxAt = undefined;
     this.setState("idle");
+    this.settleAttachmentWaiters(true);
   }
   detach(sock: Sock): void {
-    if (this.claimed === sock) this.claimed = undefined;
+    if (this.claimed === sock) { this.claimed = undefined; this.settleAttachmentWaiters(false); }
     if (this.sock !== sock) return;
     this.sock = undefined;
     this.steer = undefined;
@@ -551,6 +574,7 @@ class WsPeer extends BasePeer {
     this.setState("offline");
   }
   detachForRoster(): void {
+    this.settleAttachmentWaiters(false);
     this.claimed?.close(4000, "peer is off roster; retry when a person adds it");
     this.sock?.close(4000, "peer is off roster; retry when a person adds it");
     this.claimed = undefined;
@@ -592,6 +616,7 @@ class WsPeer extends BasePeer {
   ownsDelivery(sock: Sock, generation: unknown, id: string): boolean { return this.owns(sock) && generation === this.generation && this.delivered.has(id); }
   async start(): Promise<void> {}
   async stop(): Promise<void> {
+    this.settleAttachmentWaiters(false);
     this.sock?.close();
   }
 
@@ -643,7 +668,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const KNOWN_PEERS: readonly string[] = [...BASE_KNOWN_PEERS, ...extraIds];
   const SUPPORTED_PEERS: readonly string[] = [...BASE_SUPPORTED_PEERS, ...extraIds];
   const STARTABLE_PEERS: readonly string[] = [...BASE_STARTABLE_PEERS, ...extraIds.filter(id => !channelExtras.includes(id))];
-  const isSupportedPeer = (peer: unknown): peer is string => typeof peer === "string" && definitionOf(peer) !== undefined;
+  const isSupportedPeer = (peer: unknown): peer is string => registrySupportedPeer(peer, declarations);
   const isStartablePeer = (peer: unknown): peer is string => typeof peer === "string" && !channelExtras.includes(peer) && definitionOf(peer)?.start.conductorStartable === true;
   const RESERVED_IDS = new Set([...BASE_RESERVED_IDS, ...extraIds.filter(id => !channelExtras.includes(id))]);
   // #223 R2: a declared instance whose effective roles are exactly reviewer gets review requests and its own task notices only.
@@ -683,6 +708,28 @@ export async function startDaemon(opts: DaemonOptions) {
   let configRevision = 0;
   let reloadConfirmation: { token: string; fingerprint: string; revision: number; keys: string[] } | undefined;
   let pendingRestart: { key: string; reason: string }[] = [];
+  let retainedConfig: { key: string; reason: string }[] = [];
+  function retainedConfigAfterReload(sources: ConfigSources, fileConfig: HubConfig, rejected: readonly { key: string; reason: string }[], scope?: string): { key: string; reason: string }[] {
+    const rows = new Map<string, string>();
+    if (scope) for (const row of retainedConfig) {
+      if (row.key === scope) continue;
+      const route = row.key.startsWith("routing."), path = (route ? row.key.slice(8) : row.key).split(".");
+      const current = valueAt(route ? sources.routing : fileConfig, path), accepted = valueAt(route ? desiredRouting : desiredConfig, path);
+      if (JSON.stringify(current) !== JSON.stringify(accepted)) rows.set(row.key, row.reason);
+    }
+    for (const row of rejected) rows.set(sanitize(row.key).slice(0, 160), sanitize(row.reason).slice(0, 1200));
+    return [...rows].map(([key, reason]) => ({ key, reason })).sort((left, right) => left.key.localeCompare(right.key));
+  }
+  function retainedLaunchConfig(peer: string): Record<string, unknown> | undefined {
+    const keys = definitionOf(peer)?.cli.launchConfigKeys ?? [];
+    const pending = retainedConfig.filter(row => keys.some(key => row.key === key || row.key.startsWith(`${key}.`)));
+    if (!pending.length) return;
+    return Object.fromEntries(pending.map(row => [row.key, valueAt(config, row.key.split("."))]));
+  }
+  const includeRetainedLaunchConfig = (peer: string, result: Record<string, unknown>): Record<string, unknown> => {
+    const values = retainedLaunchConfig(peer);
+    return values ? { ...result, retainedLaunchConfig: values } : result;
+  };
   let lastReloadFailure: string | undefined;
   let reloadDebounce: ReturnType<typeof setTimeout> | undefined;
   let configWatchPending = false;
@@ -788,6 +835,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // Any local web page can open a WebSocket to a loopback port, so the control link needs a secret.
   // The file is written only after the port is bound: a second daemon that loses the bind must not clobber it.
   const token = randomBytes(24).toString("hex");
+  const nativeHookLaunches = new NativeHookLaunches();
 
   const server = listenWithoutPortCollision(() => Bun.serve<Client>({
     hostname: "127.0.0.1",
@@ -815,6 +863,7 @@ export async function startDaemon(opts: DaemonOptions) {
         }
       },
       close(sock) {
+        nativeHookLaunches.endOwner(sock);
         consoles.delete(sock);
         sock.data.tail?.();
         sock.data.watch?.();
@@ -2643,6 +2692,8 @@ export async function startDaemon(opts: DaemonOptions) {
     version: VERSION,
     pluginBundle: SERVER_JS,
     pendingRestart,
+    retainedConfig,
+    startModes: Object.fromEntries(START_MODE_PEERS.map(peer => [peer, startModeOf(config.peers, peer, declarations)])),
     memoryProfile: memoryProfileStatus(includeAttentionItems),
     lifecycleStages: [...lifecycleConfig.stages],
     // ponytail: off keeps the #257 phase schema until RETIRED_WORKFLOW_FROM, when the alias and this flag go together.
@@ -4110,7 +4161,7 @@ export async function startDaemon(opts: DaemonOptions) {
       instanceId,
       attention: attentionStatus.attentionInput,
       pet,
-      status: { peers: peerView, pendingRestart, taskWip: attentionStatus.taskWip, roleInfo: attentionStatus.roleInfo },
+      status: { peers: peerView, pendingRestart, retainedConfig, taskWip: attentionStatus.taskWip, roleInfo: attentionStatus.roleInfo },
       boardCapabilities: { backlog: true },
       planningCapabilities: { enabled: true, wipPull: true, split: true },
       releases: tasks.releaseList(USER),
@@ -4360,6 +4411,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (priorDesired !== JSON.stringify([desiredConfig, desiredRouting, acceptedSources.trustLayers])) configRevision++;
       pendingRestart = configChanges({ ...config, roles: policyRoles }, candidate).filter(change => change.applies === "restart").map(change => ({ key: change.key, reason: change.reason! }));
       pendingRestart.push(...routingChanges.filter(key => configApply(key).applies === "restart").map(key => ({ key, reason: configApply(key).reason! })));
+      retainedConfig = retainedConfigAfterReload(sources, prepared.fileConfig, prepared.rejected, scope);
       storedConfigCache = undefined;
       if (beforeConductor && (beforeConductor !== conductorPeer(config.roles) || config.conductor.feed === "off")) {
         bus.revokeSupervision(beforeConductor); supervision.resetPending(beforeConductor); budgetFeedSeen.clear();
@@ -4368,7 +4420,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (prepared.guarded.length) reloadConfirmation = { token: randomUUID(), fingerprint, revision: configRevision, keys: prepared.guarded };
       const refusal = prepared.rejected.map(item => `${item.key}: ${item.reason}`).join("; ");
       const failure = refusal ? `${fingerprint}:${refusal}` : undefined;
-      if (failure && lastReloadFailure !== failure) { try { notify(`configuration keys retained: ${sanitize(refusal).slice(0, 1200)}`); } catch { log("configuration keys retained; notice unavailable"); } }
+      if (failure && lastReloadFailure !== failure) { try { notify(`config retained: ${retainedConfig.map(item => item.key).join(", ")}; run ahub settings reload`); } catch { log("configuration retained notice unavailable"); } }
       lastReloadFailure = failure;
       writeStatus();
       const applied = [...changes.filter(change => change.applies !== "restart").map(change => change.key), ...routingChanges.filter(key => configApply(key).applies !== "restart")];
@@ -4404,7 +4456,7 @@ export async function startDaemon(opts: DaemonOptions) {
     try { return { settings: { ...settingsView(), ...(session?.settings ? { sessionUntil: session.settingsUntil } : {}) } }; }
     catch { return {}; }
   }
-  function settingsView(): { rows: SettingRow[]; undo?: string; pendingRestart: { key: string; reason: string }[] } {
+  function settingsView(): { rows: SettingRow[]; undo?: string; pendingRestart: { key: string; reason: string }[]; retainedConfig: { key: string; reason: string }[] } {
     const stored = storedConfig();
     // What the loader would say about the files as they are: an overlay that does not parse, or one that no longer
     // merges (it names a route routing.toml dropped), leaves the last good policy in force, and the rows say why.
@@ -4423,7 +4475,7 @@ export async function startDaemon(opts: DaemonOptions) {
     });
     const undo = pendingUndo(opts.stateDir);
     const planner = `In force: ${plannerPeers().join(", ") || "nobody"} (${plannerSource}). Setting it makes that peer the only planner; agents cannot change it.`;
-    return { pendingRestart, rows: rows.map(row => row.key === "planner" ? { ...row, hint: planner } : row), ...(undo ? { undo } : {}) };
+    return { pendingRestart, retainedConfig, rows: rows.map(row => row.key === "planner" ? { ...row, hint: planner } : row), ...(undo ? { undo } : {}) };
   }
   /** The same announcement whatever surface made the change: events.jsonl, hub.log and every open console. */
   const recordSetting = (key: string, from: SettingValue, to: SettingValue, source: "dashboard" | "terminal", undo = false, reason?: string) => {
@@ -5031,6 +5083,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
       } else {
         c.peer = String(msg.peer ?? "claude");
+        if (definitionOf(c.peer)?.transport === "ws-pull" && msg.channel !== false) return sock.close(4403, "this native peer supports pull-only attachment; use hub_inbox");
         const kimiPull = !!definitionOf(c.peer)?.attach?.admission && (kimiSessionMode ?? startMode(c.peer)) === "tui" && msg.channel === false;
         if (!PEER_ID.test(c.peer) || (RESERVED_IDS.has(c.peer) && !kimiPull)) return sock.close(4403, definitionOf(c.peer)?.attach?.admission?.reservedRefusal ?? "peer id is reserved or malformed");
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
@@ -5057,7 +5110,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: PROTOCOL, features: DAEMON_FEATURES });
     }
-    if (stopping && msg.t !== "status" && msg.t !== "kill") return void reply({ ok: false, error: "hub is stopping" });
+    if (stopping && msg.t !== "status" && msg.t !== "kill" && !(c.role === "console" && msg.t === "native_hook_launch" && msg.op === "end")) return void reply({ ok: false, error: "hub is stopping" });
     if (c.role !== "console" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: `${c.peer} is off roster` });
     switch (msg.t) {
       case "permission_default": {
@@ -5174,16 +5227,87 @@ export async function startDaemon(opts: DaemonOptions) {
         const heldBack = hushed.length > 0 && hushed.length === bus.audience(env).length;
         const refused = c.peer && !heldBack ? admit(admittedEnv, inReplyTo?.id) : undefined;
         if (refused) return void reply({ t: "sent", ok: false, error: refused });
-        const targets = bus.publish(env);
+        const { targets, dropped } = bus.publishResult(env);
         if (c.peer && inReplyTo) bus.completeReply(c.peer, inReplyTo.id); // the delivery it answers was handled all the same
+        if (dropped === "hop") return void reply({ t: "sent", ok: true, targets, dropped, recorded: priority === "fyi",
+          notice: `not delivered: reply chain reached the hop cap (${MAX_HOP}); send a new message without reply_to` });
         if (hushed.length && !targets.length) return void reply({ t: "sent", ok: false, error: `not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}` });
         return void reply({ t: "sent", ok: true, targets, recorded: priority === "fyi", ...(offRoster.length ? { offRoster } : {}), ...(hushed.length ? { hushed: hushed.map((h) => h.peer) } : {}), ...((offRoster.length || hushed.length) ? { notice: [offRoster.length ? `retained off roster for ${offRoster.join(", ")}` : "", hushed.length ? `not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}` : ""].filter(Boolean).join("; ") } : {}) });
+      }
+      case "native_hook_launch": {
+        if (c.role !== "console" || typeof msg.peer !== "string" || !definitionOf(msg.peer)?.hooks?.factsHook) return void reply({ ok: false, error: "managed native launch requires the person and a supported hook adapter" });
+        if (msg.op === "end") return void reply({ ok: nativeHookLaunches.end(msg.peer, msg.launchId) });
+        if (recoveryActive() || stopping) return void reply({ ok: false, error: "recovery or shutdown is holding native launches" });
+        if (!membershipAllowed(msg.peer)) return void reply({ ok: false, error: "peer is off roster" });
+        if (msg.op !== "begin") return void reply({ ok: false, error: "unknown native launch operation" });
+        const owner = bus.peers.get(msg.peer);
+        if (owner && owner.state !== "offline") return void reply({ ok: false, error: "native peer is already attached; end it in its terminal first" });
+        try { return void reply({ ok: true, launchId: nativeHookLaunches.begin(msg.peer, sock).id, instanceId }); }
+        catch (error) { return void reply({ ok: false, error: (error as Error).message }); }
+      }
+      case "native_facts": {
+        const peer = c.peer, port = peer ? definitionOf(peer)?.hooks?.factsHook : undefined;
+        if (!peer || c.role !== "tools" || !port || msg.nativeInstanceId !== instanceId) return void reply({ ok: false });
+        const launch = nativeHookLaunches.get(peer, msg.nativeLaunchId);
+        const native = typeof msg.event === "string" ? port.decode(msg.event, msg.payload) : undefined;
+        if (!launch || !native || !native.workspacePaths.every(root => { try { return realPath(root) === realPath(opts.cwd); } catch { return false; } })) return void reply({ ok: false });
+        if (launch.session && launch.session !== native.sessionId) return void reply({ ok: false });
+        launch.session = native.sessionId;
+        const owner = bus.peers.get(peer);
+        if (!(owner instanceof WsPeer) || owner.state === "offline" && !owner.claiming) return void reply({ ok: false });
+        if (launch.generation && launch.generation !== owner.sessionGeneration) return void reply({ ok: false });
+        launch.generation = owner.sessionGeneration;
+        const current = () => !stopping && nativeHookLaunches.get(peer, msg.nativeLaunchId) === launch && bus.peers.get(peer) === owner && owner.sessionGeneration === launch.generation && owner.state !== "offline";
+        // Preserve the start baseline at observation, even if native output is flushed before recall allows attach.
+        const readback = port.read(native.sessionId, native.transcriptPath);
+        const apply = () => {
+          if (!current()) return void reply({ ok: false });
+          if (factsOn()) { factSession(peer, native.sessionId); for (const id of readback.factIds) acked(peer, id, "native-hook"); }
+          if (native.event === "PreInvocation" || native.event === "PreToolUse") {
+            if (!launch.active || native.event === "PreInvocation" && native.invocation === 0) { launch.active = true; launch.turn = crypto.randomUUID(); launch.baseline = readback.completion?.index ?? -1; }
+            activeAt.set(peer, Date.now()); owner.nativeStarted(native.sessionId);
+          }
+          if (native.event === "Stop") {
+            if (!launch.active || !native.fullyIdle || native.terminationReason !== "NO_TOOL_CALL") return void reply({ ok: false });
+            // Native output can be flushed after its Stop command returns. Acknowledge observation, then wait for
+            // a fresh completion row while the same launcher/session/socket generation still owns the turn.
+            const turn = launch.turn, baseline = launch.baseline ?? -1;
+            reply({ ok: true, pending: true });
+            void (async () => {
+              const deadline = Date.now() + 2000;
+              let delay = 5;
+              // ponytail: an unverified Stop may re-read up to 4 MiB per poll within this 2 s wait.
+              // Upgrade: cache unchanged transcript evidence within the wait.
+              while (current() && launch.active && launch.turn === turn) {
+                const completion = port.read(native.sessionId, native.transcriptPath).completion;
+                if (completion && completion.index > baseline && completion.id !== launch.completed) {
+                  launch.completed = completion.id; launch.active = false;
+                  turnEnded.set(peer, Date.now()); nativeCompletedAt.set(peer, Date.now()); tasks.cohorts.turnEnded(peer);
+                  event({ type: "native_turn_end", peer, id: completion.id }); owner.nativeStopped(native.sessionId); return;
+                }
+                if (Date.now() >= deadline) { notify(`${peer}: native completion could not be verified; it stays busy until a verified turn end or detach`); return; }
+                await Bun.sleep(delay); delay = Math.min(50, delay * 2);
+              }
+            })().catch(() => log("managed native completion unavailable"));
+            return;
+          }
+          const offered = factsOn() && (native.event === "PreInvocation" || native.event === "SessionStart") ? offerFor(peer, native.toolUseId ?? `${native.sessionId}:invocation`) : undefined;
+          return void reply({ ok: true, ...(offered ? { text: offered.text } : {}) });
+        };
+        if (owner.claiming) {
+          void owner.waitForAttach(launch.generation).then(attached => {
+            if (attached) apply(); else reply({ ok: false });
+          }).catch(() => { log("managed native observation unavailable"); reply({ ok: false }); });
+          return;
+        }
+        return apply();
       }
       case "facts": {
         // Turn-free facts (issue #108) for Claude's hooks: `pre` before a tool runs (the fact rides back as additional
         // context), `post` after it (its effect, and the readback of what went in before), `stop` when its turn ends.
         // The hook never shows an error: on any failure the answer is just empty.
         if (!c.peer || c.role === "console") return void reply({ t: "facts", ok: false, error: "facts are for a peer" });
+        if (definitionOf(c.peer)?.hooks?.factsHook) return void reply({ t: "facts", ok: false, error: "managed native hooks require native_facts" });
         const phase: "session" | "start" | "pre" | "post" | "stop" = ["session", "start", "post", "stop"].includes(msg.phase) ? msg.phase : "pre";
         const tool = typeof msg.tool === "string" ? msg.tool.slice(0, 64) : "";
         const input = msg.input && typeof msg.input === "object" && !Array.isArray(msg.input) ? msg.input : {};
@@ -5458,7 +5582,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "peer_start":
         // #269: a start the hub makes in the peer's start mode, for a console child with no terminal of its own.
         if (c.role !== "console") return void reply({ ok: false, error: "peer_start is a console command; use hub_peer_start with the conductor role" });
-        void hubStart(msg.peer, "the console").then(reply, (error) => { log(`peer_start ${String(msg.peer)} failed: ${(error as Error).message}`); reply({ ok: false, error: "peer start failed; inspect ahub status and hub.log" }); });
+        void hubStart(msg.peer, "the console").then(result => reply(includeRetainedLaunchConfig(String(msg.peer), result)), (error) => { log(`peer_start ${String(msg.peer)} failed: ${(error as Error).message}`); reply({ ok: false, error: "peer start failed; inspect ahub status and hub.log" }); });
         return;
       case "peer_stop":
         if (c.role !== "console") return void reply({ ok: false, error: "peer_stop is a console command; the person runs ahub stop in a terminal" });
@@ -5472,7 +5596,7 @@ export async function startDaemon(opts: DaemonOptions) {
           .catch((e: Error) => ({ ok: false, error: e.message }))
           .then((r) => {
             if (!r.ok) log(`start ${msg.peer} failed: ${r.error}`);
-            reply({ t: "started", ...r });
+            reply({ t: "started", ...includeRetainedLaunchConfig(String(msg.peer), r) });
           });
         return;
       case "task":

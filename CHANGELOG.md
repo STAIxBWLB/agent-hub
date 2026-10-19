@@ -2,6 +2,17 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## 0.12.38
+
+Antigravity (`agy`) joins as an optional peer started from your own terminal (#485), Kimi can review in a fresh session like Claude and Codex (#533), and a reply past the hop cap now says so instead of claiming no peer is attached (#542).
+
+- Add Antigravity as an optional, off-roster implementer and verifier peer: `ahub agy` opens its TUI in your terminal, writes and removes only the three files it owns under `.agents/plugins/agent-hub/`, and attaches the session pull-only. Its native hooks report turn starts and verified turn ends to the hub, bound to one daemon, launch, session and project; a turn ends only on a fresh completion row in agy's transcript. Conductor starts, headless starts and hub permission mappings are refused, and personal Gemini settings are never written (#485, #543).
+- Kimi reviews in a fresh session when its declared reviewer instance sets `review_mode: "fresh"`: a private managed-provider home, a clean working directory and exactly two hub tools (`hub_review`, `hub_task_show`) bound to the task, head and review revision. A replaced review can no longer be read or approved by the old child (#533, #539).
+- A reply past the hop cap reports `not delivered: reply chain reached the hop cap (3); send a new message without reply_to` in the MCP tool and the CLI, instead of "no other peers attached" (#542, #546).
+- Guarded config changes that wait for a reload stay visible in status, the console and Settings until they are confirmed or reverted, and starting an affected peer prints `config retained: <keys>; run ahub settings reload` (#542, #544).
+- A fresh Codex review refused for an unusable credential root names its path class, such as `~/.docker` or `$DOCKER_CONFIG`, without the expanded path or contents (#519, #545).
+- After a recovery hold that deferred hub notices is released, later notices are no longer deferred by mistake (#479, #541).
+
 ## 0.12.37
 
 Hub memory follows agent-mem 0.4.0 onto per-project shards (#534, #537), reviews rotate across fresh Claude and Codex sessions (#519), and `ahub jcode` starts again on current jcode releases (#529). Before running `amem migrate --shards`, upgrade every hub that shares the memory home to 0.12.37 or stop it.

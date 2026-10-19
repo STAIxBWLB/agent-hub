@@ -36,15 +36,15 @@ test("fresh reviewer declarations refuse worktrees and permission overrides; ord
 
 test("default pool includes Kimi native-policy backend and excludes agy implementer metadata", () => {
   expect((registry as unknown as { DEFAULT_REVIEW_POOL: readonly string[] }).DEFAULT_REVIEW_POOL).toEqual(["claude", "codex", "kimi"]);
-  expect(registry.definitionOf("agy")).toMatchObject({ optional: true, defaultOnRoster: false, routing: { reviewOnly: true } });
-  expect(registry.definitionOf("agy")?.reviewer?.defaultPool).toBe(false);
-  expect(registry.OPTIONAL_PEERS).not.toContain("agy");
-  expect(registry.isSupportedPeer("agy")).toBe(false);
-  expect(registry.isStartablePeer("agy")).toBe(false);
-  expect(registry.ADAPTERS.some(definition => definition.kind === "agy")).toBe(false);
+  expect(registry.definitionOf("agy")).toMatchObject({ optional: true, defaultOnRoster: false, transport: "ws-pull", roles: ["implementer", "verifier"] });
+  expect(registry.definitionOf("agy")?.reviewerVariant?.reviewer?.defaultPool).toBe(false);
+  expect(registry.OPTIONAL_PEERS).toContain("agy");
+  expect(registry.isSupportedPeer("agy")).toBe(true);
+  expect(registry.isStartablePeer("agy")).toBe(false); // person-only launcher; no conductor start
+  expect(registry.ADAPTERS.some(definition => definition.kind === "agy")).toBe(true);
 });
 
-test("agy stays unavailable metadata without a reviewer factory or launch argv", () => {
+test("agy reviewer declarations stay unavailable without a reviewer factory or launch argv", () => {
   for (const id of ["agy-review"]) {
     const definition = registry.definitionOf(id, declarations)!;
     expect(definition.reviewer?.unavailable).toBe("agy is an implementer peer (#485)");
@@ -59,7 +59,7 @@ test("agy stays unavailable metadata without a reviewer factory or launch argv",
 test("agy and all declared reviewer variants cannot own any task class", () => {
   const instances = validateInstances(declarations), roles = Object.fromEntries(Object.keys(declarations).map(id => [id, ["reviewer"]]));
   const routing = parseRouting('[local]\nfixed_model="fixture"\n');
-  for (const id of ["agy", ...Object.keys(declarations)]) for (const taskClass of ["implement", "summarize", "review"] as const) {
+  for (const id of ["agy-review", ...Object.keys(declarations)]) for (const taskClass of ["implement", "summarize", "review"] as const) {
     const result = assign({ class: taskClass, signals: [] }, { [id]: "idle" }, routing, { instances, roles, candidates: [id], namedOwner: id });
     expect(result.owner).toBeUndefined();
   }

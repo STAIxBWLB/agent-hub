@@ -1126,19 +1126,27 @@ function configFiles(cwd, env) {
 }
 function hostCredentialRoots(env, cwd) {
   const home = resolve3(cwd, env.HOME || homedir());
-  const homes = [...new Set([home, credentialCanonicalPath(home)])];
-  const roots = homes.flatMap((base) => HOST_CREDENTIAL_PATHS.map((entry) => join3(base, entry)));
-  const configured = HOST_CREDENTIAL_ENV.flatMap((key) => env[key] ? [env[key]] : []);
+  const homes = [...new Set([home, canonicalLabelled(home, "HOME")])];
+  const roots = homes.flatMap((base) => HOST_CREDENTIAL_PATHS.map((entry) => ({ path: join3(base, entry), label: `~/${entry}` })));
+  const configured = HOST_CREDENTIAL_ENV.flatMap((key) => env[key] ? [{ path: env[key], label: `$${key}` }] : []);
   if (env.KUBECONFIG)
-    configured.push(...env.KUBECONFIG.split(delimiter).filter(Boolean));
+    configured.push(...env.KUBECONFIG.split(delimiter).filter(Boolean).map((path) => ({ path, label: "$KUBECONFIG" })));
   if (configured.length > 64)
     throw new Error("credential root bound exceeded");
-  for (const entry of configured) {
+  for (const { path: entry, label } of configured) {
     if (Buffer.byteLength(entry) > 4096 || /\p{Cc}/u.test(entry))
-      throw new Error("invalid credential root");
-    roots.push(entry.startsWith("~/") ? resolve3(home, entry.slice(2)) : resolve3(cwd, entry));
+      throw new CredentialRootError(label, "unsupported");
+    roots.push({ path: entry.startsWith("~/") ? resolve3(home, entry.slice(2)) : resolve3(cwd, entry), label });
   }
-  return [...new Set(roots)];
+  const seen = new Set;
+  return roots.filter((root) => !seen.has(root.path) && seen.add(root.path));
+}
+function canonicalLabelled(lexical, label) {
+  try {
+    return credentialCanonicalPath(lexical);
+  } catch (error) {
+    throw new CredentialRootError(label, error.code === "ENOENT" ? "dangling" : "unreadable");
+  }
 }
 function credentialCanonicalPath(lexical) {
   let ancestor = lexical;
@@ -1155,15 +1163,13 @@ function credentialCanonicalPath(lexical) {
   return join3(realPath(ancestor), relative(ancestor, lexical));
 }
 function denyCredentialRoots(filesystem, roots, cwd) {
-  for (const lexical of roots) {
+  for (const { path: lexical, label } of roots) {
     if (/[?*\[\]{}]/.test(lexical))
-      throw new Error("unverified credential root syntax");
-    const targets = new Set([lexical, credentialCanonicalPath(lexical)]);
+      throw new CredentialRootError(label, "unsupported");
+    const targets = new Set([lexical, canonicalLabelled(lexical, label)]);
     for (const target of targets) {
-      if (/[?*\[\]{}]/.test(target))
-        throw new Error("unverified credential root syntax");
-      if (inside(cwd, target))
-        throw new Error("credential root overlaps checkout");
+      if (/[?*\[\]{}]/.test(target) || inside(cwd, target))
+        throw new CredentialRootError(label, "unsupported");
       filesystem[target] = "deny";
       filesystem[`${target.replace(/\/$/, "")}/**`] = "deny";
     }
@@ -1416,11 +1422,15 @@ AHUB_CODEX_HOST_ALIAS_DENIED` || existsSync2(writeFile))
         evidence: ["model-free-mcp-inventory-disabled-ambient", "hub-tools-exact-allowlist", "plugins-and-hooks-disabled", "apps-disabled-effective-feature-readback", "web-search-disabled", "project-untrusted", "native-public-read-private-deny-write-deny", "native-glob-and-symlink-private-deny", "portable-core-name-and-state-deny", "standard-host-credential-roots-denied", "binary-config-stable", "binary-hash-once-metadata-fence", "session-ephemeral"]
       }
     };
-  } catch {
+  } catch (error) {
     if (root) {
       try {
         rmSync(root, { recursive: true, force: true });
       } catch {}
+    }
+    if (error instanceof CredentialRootError) {
+      const why = { dangling: "a dangling link", unreadable: "an unreadable path", unsupported: "unsupported syntax or overlapping the checkout" }[error.kind];
+      return { unavailable: `Codex reviewer isolation receipt unavailable (credential root ${error.label} is ${why}; remove or repair it)` };
     }
     return { unavailable: "Codex reviewer isolation receipt unavailable (version, MCP inventory, sandbox, configuration or process proof)" };
   }
@@ -1432,7 +1442,7 @@ var VERSION = "0.146.0", TOOLS, CAP, MAX_SERVERS = 64, digest = (value) => creat
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("invalid metadata");
   return value;
-}, HOST_CREDENTIAL_PATHS, HOST_CREDENTIAL_ENV, codexReviewerBackend;
+}, HOST_CREDENTIAL_PATHS, HOST_CREDENTIAL_ENV, CredentialRootError, codexReviewerBackend;
 var init_codex_review_isolation = __esm(() => {
   init_platform();
   init_child_process();
@@ -1441,6 +1451,15 @@ var init_codex_review_isolation = __esm(() => {
   CAP = 128 * 1024;
   HOST_CREDENTIAL_PATHS = [".config", ".ssh", ".aws", ".azure", ".kube", ".docker", ".gnupg", ".codex", ".claude", ".kimi", ".kimi-code", ".gemini", ".git-credentials", ".vault-token", "Library/Keychains", ".local/share/keyrings", ".password-store"];
   HOST_CREDENTIAL_ENV = ["XDG_CONFIG_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "KIMI_CODE_HOME", "KIMI_HOME", "GEMINI_CLI_HOME", "GNUPGHOME", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AZURE_CONFIG_DIR", "DOCKER_CONFIG", "GOOGLE_APPLICATION_CREDENTIALS"];
+  CredentialRootError = class CredentialRootError extends Error {
+    label;
+    kind;
+    constructor(label, kind) {
+      super("credential root refused");
+      this.label = label;
+      this.kind = kind;
+    }
+  };
   codexReviewerBackend = {
     id: "codex",
     prepare,
@@ -8218,7 +8237,7 @@ function reviewerVariant(kind, displayName, reviewer, display) {
     display
   };
 }
-var codexVariant, CODEX_REVIEWER_VARIANT, KIMI_REVIEWER_VARIANT, AGY_DEFINITION;
+var codexVariant, CODEX_REVIEWER_VARIANT, KIMI_REVIEWER_VARIANT, AGY_REVIEWER_VARIANT;
 var init_reviewer_variants = __esm(() => {
   init_claude_print();
   init_codex_review_isolation();
@@ -8228,11 +8247,737 @@ var init_reviewer_variants = __esm(() => {
   codexVariant = reviewerVariant("codex", "Codex reviewer", { backend: codexReviewerBackend, defaultPool: true, declaration: "explicit" }, CODEX_DISPLAY);
   CODEX_REVIEWER_VARIANT = { ...codexVariant, start: { ...codexVariant.start, create: createCodexReviewer } };
   KIMI_REVIEWER_VARIANT = reviewerVariant("kimi", "Kimi reviewer", { backend: kimiReviewerBackend, defaultPool: true, declaration: "explicit" }, KIMI_DISPLAY);
-  AGY_DEFINITION = {
+  AGY_REVIEWER_VARIANT = {
     ...reviewerVariant("agy", "agy reviewer", { defaultPool: false, declaration: "automatic", unavailable: "agy is an implementer peer (#485)" }, { palette: { fg: "#6558a6", bg: "#f1effa" } }),
     optional: true
   };
 });
+
+// src/adapters/agy/hooks.ts
+import { closeSync as closeSync3, constants as constants3, fstatSync as fstatSync2, lstatSync as lstatSync8, openSync as openSync3, readSync as readSync2 } from "fs";
+import { homedir as homedir4 } from "os";
+import { isAbsolute as isAbsolute5, join as join13, relative as relative5 } from "path";
+import { createHash as createHash6 } from "crypto";
+function decodeAgyHook(event, value) {
+  if (!EVENTS.includes(event) || !record3(value) || typeof value.conversationId !== "string" || !UUID.test(value.conversationId) || typeof value.transcriptPath !== "string" || !isAbsolute5(value.transcriptPath) || value.transcriptPath.length > 4096 || !Array.isArray(value.workspacePaths) || !value.workspacePaths.length || value.workspacePaths.length > 32 || !value.workspacePaths.every((path) => typeof path === "string" && path.length <= 4096 && isAbsolute5(path)))
+    return;
+  if (event === "Stop" && typeof value.fullyIdle !== "boolean")
+    return;
+  const call = record3(value.toolCall) ? value.toolCall : undefined;
+  if ((event === "PreToolUse" || event === "PostToolUse") && (!call || typeof call.name !== "string" || call.name.length > 128 || !record3(call.args)))
+    return;
+  const native = call?.args;
+  const observedRead = call?.name === "view_file" && typeof native?.AbsolutePath === "string";
+  const phase = { SessionStart: "session", PreInvocation: "start", PostInvocation: "post", PreToolUse: "pre", PostToolUse: "post", Stop: "stop" }[event];
+  return {
+    event,
+    phase,
+    sessionId: value.conversationId,
+    transcriptPath: value.transcriptPath,
+    workspacePaths: value.workspacePaths,
+    tool: observedRead ? "Read" : typeof call?.name === "string" ? call.name : "",
+    input: observedRead ? { file_path: native.AbsolutePath } : native ?? {},
+    ...Number.isSafeInteger(value.stepIdx) && value.stepIdx >= 0 ? { toolUseId: `${value.conversationId}:${value.stepIdx}` } : {},
+    ...Number.isSafeInteger(value.invocationNum) && value.invocationNum >= 0 ? { invocation: value.invocationNum } : {},
+    ...event === "Stop" ? { fullyIdle: value.fullyIdle, terminationReason: typeof value.terminationReason === "string" ? value.terminationReason : "" } : {}
+  };
+}
+function encodeAgyHook(event, text) {
+  if (text && (event === "SessionStart" || event === "PreInvocation"))
+    return { injectSteps: [{ ephemeralMessage: text }] };
+  return;
+}
+function readAgyTranscript(session, transcript) {
+  const empty = { factIds: [] };
+  if (!UUID.test(session))
+    return empty;
+  const home = process.env.HOME ?? homedir4();
+  const candidates = ["antigravity-cli", "antigravity", "antigravity-ide"].map((surface) => join13(home, ".gemini", surface, "brain", session, ".system_generated/logs/transcript_full.jsonl"));
+  if (!candidates.includes(transcript))
+    return empty;
+  let fd;
+  try {
+    let cursor = home;
+    for (const name of relative5(home, transcript).split("/")) {
+      cursor = join13(cursor, name);
+      if (lstatSync8(cursor).isSymbolicLink())
+        return empty;
+    }
+    fd = openSync3(transcript, constants3.O_RDONLY | constants3.O_NOFOLLOW);
+    const stat = fstatSync2(fd);
+    if (!stat.isFile() || stat.nlink !== 1)
+      return empty;
+    const cap = 4 * 1024 * 1024;
+    for (let window = 64 * 1024;; window = Math.min(cap, window * 2)) {
+      const start = Math.max(0, stat.size - window), from = start > 0 ? start - 1 : 0;
+      const buffer = Buffer.alloc(stat.size - from);
+      let bytes = 0;
+      while (bytes < buffer.length) {
+        const count = readSync2(fd, buffer, bytes, buffer.length - bytes, from + bytes);
+        if (!count)
+          break;
+        bytes += count;
+      }
+      const lines = buffer.subarray(0, bytes).toString("utf8").split(`
+`);
+      if (start)
+        lines.shift();
+      const out = { factIds: [] };
+      for (const line of lines) {
+        let row;
+        try {
+          row = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (!record3(row) || row.status !== "DONE")
+          continue;
+        if (row.source === "SYSTEM_SDK" && row.type === "EPHEMERAL_MESSAGE" && typeof row.content === "string") {
+          for (const match of row.content.matchAll(/agent-hub facts \[([a-zA-Z0-9-]{1,128})\]/g))
+            out.factIds.push(match[1]);
+        }
+        if (row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index) && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0))
+          out.completion = { id: createHash6("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index };
+      }
+      if (out.completion || start === 0 || window === cap)
+        return out;
+    }
+  } catch {
+    return empty;
+  } finally {
+    if (fd !== undefined)
+      closeSync3(fd);
+  }
+}
+var EVENTS, UUID, record3 = (value) => !!value && typeof value === "object" && !Array.isArray(value), AGY_FACTS_HOOK;
+var init_hooks = __esm(() => {
+  EVENTS = ["SessionStart", "PreInvocation", "PostInvocation", "PreToolUse", "PostToolUse", "Stop"];
+  UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  AGY_FACTS_HOOK = { decode: decodeAgyHook, encode: encodeAgyHook, read: readAgyTranscript };
+});
+
+// src/adapters/agy/definition.ts
+function agyLaunch(ctx) {
+  const argv = ["agy", ...ctx.userArgs], command = argv.map(shellQuote).join(" ");
+  const metadata = { packageEntrypoint: ctx.entrypoint, command, argv, env: {}, kind: "agy", peer: ctx.instance };
+  return { cmd: "agy", args: ctx.userArgs, metadata };
+}
+var DISPLAY, shellQuote = (value) => `'${value.replace(/'/g, `'\\''`)}'`, AGY_DEFINITION;
+var init_definition = __esm(() => {
+  init_reviewer_variants();
+  init_hooks();
+  DISPLAY = { palette: { fg: "#6558a6", bg: "#f1effa" } };
+  AGY_DEFINITION = {
+    api: 1,
+    kind: "agy",
+    displayName: "Antigravity",
+    family: "agy",
+    transport: "ws-pull",
+    roles: ["implementer", "verifier"],
+    optional: true,
+    defaultOnRoster: false,
+    trust: { onPrem: false, hubSandboxed: false },
+    start: {
+      forms: ["tui"],
+      defaultForm: "tui",
+      ownsTerminal: (form) => form === "tui",
+      launch: agyLaunch,
+      conductorStartable: false,
+      hubSwitches: [],
+      ownedFlags: ["--new", "--continue", "--conversation", "--resume"],
+      conductorStartArgs: (args) => args.length ? new Error("conductor starts accept no launch overrides; use ahub agy") : {}
+    },
+    identity: { mcp: "channel-plugin" },
+    attach: {
+      pullOnlyForms: ["tui"],
+      recoveryLaunch: (instance) => ({ kind: "agy", peer: instance }),
+      pullOnlyNotice: "pull-only: messages wait for hub_inbox; permission modes and session recovery are not managed"
+    },
+    permission: {
+      modes: {},
+      unmanaged: "Antigravity selects its own permission mode in its TUI; no hub permission mode",
+      unmanagedForms: ["tui"],
+      unmanagedNote: "Antigravity approves tools in its own TUI; no hub permission mode",
+      unmanagedStatusNote: "unmanaged native permission policy"
+    },
+    session: {
+      idField: "sessionId",
+      currentId: () => {
+        return;
+      },
+      freshOnRestore: true,
+      recoveryRefusal: () => "Antigravity session continuity and resume are unavailable until native behavior is verified"
+    },
+    turnEnd: "native-hook",
+    cli: { command: "agy", authority: "person", startWords: () => ["agy"] },
+    display: DISPLAY,
+    routing: { allowedRoles: ["implementer", "verifier"] },
+    reviewer: { defaultPool: false, declaration: "automatic", unavailable: "agy is an implementer peer (#485)" },
+    reviewerVariant: AGY_REVIEWER_VARIANT,
+    hooks: { factsHook: AGY_FACTS_HOOK }
+  };
+});
+
+// src/adapters/definitions/native-cli-preview-common.ts
+function publicArg(arg) {
+  const flags = new Set(["--settings", "--model", "--mcp-config", "--session-id", "--session-file", "--resume", "--continue", "--print", "--safe", "--new"]);
+  const key = arg.split("=", 1)[0];
+  return flags.has(key) ? arg.includes("=") ? key + "=" + REDACTED : key : REDACTED;
+}
+function nativeCommand(command, trusted) {
+  return command.map((value, i) => value === trusted[i] ? value : REDACTED);
+}
+function previewState(args, baseEnvNames) {
+  const unresolved = [];
+  const envNames = [...baseEnvNames];
+  const value = (flag) => {
+    const at = args.indexOf(flag);
+    if (at < 0)
+      return;
+    const next = args[at + 1];
+    if (!next || next.startsWith("--"))
+      throw new Error("missing option value");
+    return next;
+  };
+  return { unresolved, envNames, value };
+}
+function finishPreview(ctx, launch, envNames, unresolved, metadata, settings) {
+  return { tool: ctx.tool, ...metadata ?? {}, cmd: launch.cmd, args: launch.args, settings, envNames: [...new Set(envNames)].sort(), ...launch.warning ? { warning: launch.warning } : {}, unresolved, redaction: "Arbitrary user arguments, settings, commands and configured executable overrides are redacted. Environment values are never displayed.", needs: ["Native executable, accounts and runtime readiness are not checked."] };
+}
+var REDACTED = "[redacted]", UNRESOLVED = "[unresolved]";
+
+// src/hub/status-roster.ts
+function rosterInStatus(status, peer) {
+  const rows = status?.roster;
+  if (!Array.isArray(rows))
+    return;
+  const row = rows.find((r) => !!r && typeof r === "object" && r.peer === peer);
+  return typeof row?.on === "boolean" ? row.on : undefined;
+}
+function bundleInStatus(status) {
+  const value = status?.pluginBundle;
+  return typeof value === "string" && value.startsWith("/") && /[\\/]plugins[\\/]agent-hub[\\/]server\.js$/.test(value) ? value : undefined;
+}
+
+// src/cli/agy-mcp.ts
+import { randomUUID as randomUUID5 } from "crypto";
+import { closeSync as closeSync4, fstatSync as fstatSync3, lstatSync as lstatSync9, mkdirSync as mkdirSync6, openSync as openSync4, readFileSync as readFileSync6, renameSync, rmdirSync, unlinkSync, writeFileSync as writeFileSync4 } from "fs";
+import { isAbsolute as isAbsolute6, join as join14, resolve as resolve10 } from "path";
+import { isDeepStrictEqual } from "util";
+function object4(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function jsonFile(value, name) {
+  if (!object4(value))
+    throw new Error(`${name} must be a JSON object`);
+  return value;
+}
+function parseJson(bytes, name) {
+  try {
+    return jsonFile(JSON.parse(bytes.toString("utf8")), name);
+  } catch (error) {
+    if (error instanceof SyntaxError)
+      throw new Error(`${name} is invalid JSON`);
+    throw error;
+  }
+}
+function shellQuote2(value) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+function shellUnquote(value) {
+  if (!value.startsWith("'") || !value.endsWith("'"))
+    return;
+  let out = "";
+  for (let index = 1;index < value.length - 1; ) {
+    if (value.startsWith("'\\''", index)) {
+      out += "'";
+      index += 4;
+    } else if (value[index] === "'")
+      return;
+    else
+      out += value[index++];
+  }
+  return out;
+}
+function validateOptions(options) {
+  const peer = options.peer ?? "agy";
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(peer))
+    throw new Error("agy peer id is invalid");
+  for (const [name, value] of Object.entries({ projectRoot: options.projectRoot, stateDir: options.stateDir, serverJs: options.serverJs, hookScript: options.hookScript })) {
+    if (typeof value !== "string" || !isAbsolute6(value) || value.length > 4096 || /[\u0000-\u001f\u007f]/.test(value))
+      throw new Error(`${name} must be an absolute control-free path`);
+  }
+  for (const [name, value] of Object.entries({ instanceId: options.instanceId, launchId: options.launchId })) {
+    if (typeof value !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(value))
+      throw new Error(`${name} is invalid`);
+  }
+  const root = resolve10(options.projectRoot);
+  return { root, peer };
+}
+function safeDirectory(path) {
+  const stat = lstatSync9(path, { throwIfNoEntry: false });
+  if (stat && (!stat.isDirectory() || stat.isSymbolicLink()))
+    throw new Error(`${path} must be a project directory, not a link`);
+  return stat;
+}
+function safeFile(path) {
+  const stat = lstatSync9(path, { throwIfNoEntry: false });
+  if (!stat)
+    return;
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > MAX_CONFIG_BYTES)
+    throw new Error(`${path} must be a bounded regular file, not a link`);
+  const bytes = readFileSync6(path);
+  if (bytes.length > MAX_CONFIG_BYTES)
+    throw new Error(`${path} exceeds the configuration size limit`);
+  return { stat, bytes };
+}
+function pluginDirectories(root) {
+  const directories = [];
+  for (const relative of [".", ".agents", ".agents/plugins", PLUGIN_DIR]) {
+    const path = relative === "." ? root : join14(root, relative);
+    const stat = safeDirectory(path);
+    if (!stat)
+      throw new Error(`${path} must be an existing project directory`);
+    directories.push({ path, stat });
+  }
+  return directories;
+}
+function verifyPluginDirectory(plan, target) {
+  if (!plan.canonicalPluginDir || !plan.directories)
+    throw new Error("managed agy plugin directory identity is unavailable");
+  if (realPath(plan.root) !== plan.canonicalRoot || realPath(plan.pluginDir) !== plan.canonicalPluginDir || plan.canonicalPluginDir !== join14(plan.canonicalRoot, PLUGIN_DIR)) {
+    throw new Error("managed agy plugin path changed; inspect it before writing");
+  }
+  for (const expected of plan.directories) {
+    const current = safeDirectory(expected.path);
+    if (!current || current.dev !== expected.stat.dev || current.ino !== expected.stat.ino)
+      throw new Error("managed agy plugin directory changed; inspect it before writing");
+  }
+  if (!FILES.some((file) => join14(plan.root, file) === target)) {
+    throw new Error("atomic write target is outside the managed agy plugin files");
+  }
+}
+function hookCommand(phase, options, peer) {
+  return `AGENTHUB_HOOK_EVENT='${phase}' AGENTHUB_INSTANCE_ID='${options.instanceId}' AGENTHUB_LAUNCH_ID='${options.launchId}' AGENTHUB_HOOK_PURPOSE='facts' AGENTHUB_PEER_ID=${shellQuote2(peer)} AGENTHUB_STATE_DIR=${shellQuote2(options.stateDir)} AGENTHUB_PROJECT_DIR=${shellQuote2(resolve10(options.projectRoot))} bun ${shellQuote2(options.hookScript)}`;
+}
+function desired(options, root, peer) {
+  const events = {};
+  for (const phase of EVENTS2) {
+    if (phase === "PostInvocation") {
+      events[phase] = [];
+      continue;
+    }
+    const command = { type: "command", command: hookCommand(phase, options, peer), timeout: 5 };
+    events[phase] = phase === "PreToolUse" || phase === "PostToolUse" ? [{ matcher: ".*", hooks: [command] }] : [command];
+  }
+  return {
+    [MANIFEST_FILE]: { name: PLUGIN_KEY, description: MANAGED_DESCRIPTION },
+    [MCP_FILE]: { mcpServers: { [PLUGIN_KEY]: { command: "bun", args: ["run", options.serverJs], env: { AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: options.stateDir, AGENTHUB_PROJECT_DIR: root } } } },
+    [HOOKS_FILE]: { [PLUGIN_KEY]: events }
+  };
+}
+function parseManagedHookCommand(command, phase, options, peer) {
+  if (typeof command !== "string")
+    return;
+  const prefix = `AGENTHUB_HOOK_EVENT='${phase}' AGENTHUB_INSTANCE_ID='`;
+  const middle = `' AGENTHUB_LAUNCH_ID='`;
+  const suffix = `' AGENTHUB_HOOK_PURPOSE='facts' AGENTHUB_PEER_ID=${shellQuote2(peer)} AGENTHUB_STATE_DIR=${shellQuote2(options.stateDir)} AGENTHUB_PROJECT_DIR=${shellQuote2(resolve10(options.projectRoot))} bun `;
+  if (!command.startsWith(prefix))
+    return;
+  const rest = command.slice(prefix.length);
+  const launchSplit = rest.indexOf(middle);
+  if (launchSplit < 1)
+    return;
+  const instanceId = rest.slice(0, launchSplit);
+  const afterInstance = rest.slice(launchSplit + middle.length);
+  const pathSplit = afterInstance.indexOf(suffix);
+  if (pathSplit < 1)
+    return;
+  const launchId = afterInstance.slice(0, pathSplit);
+  const hookScript = shellUnquote(afterInstance.slice(pathSplit + suffix.length));
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(instanceId) || !/^[A-Za-z0-9._:-]{1,128}$/.test(launchId) || !hookScript || !isAbsolute6(hookScript) || !hookScript.endsWith("/src/cli/facts-hook.ts"))
+    return;
+  return { instanceId, launchId };
+}
+function managedHookLaunch(value, options, peer) {
+  if (Object.keys(value).length !== 1 || !Object.hasOwn(value, PLUGIN_KEY))
+    return;
+  const events = value[PLUGIN_KEY];
+  if (!object4(events) || Object.keys(events).length !== EVENTS2.length || EVENTS2.some((phase) => !Object.hasOwn(events, phase)))
+    return;
+  let identity;
+  for (const phase of EVENTS2) {
+    const rows = events[phase];
+    if (phase === "PostInvocation") {
+      if (!Array.isArray(rows) || rows.length !== 0)
+        return;
+      continue;
+    }
+    if (!Array.isArray(rows) || rows.length !== 1 || !object4(rows[0]))
+      return;
+    let command;
+    if (phase === "PreToolUse" || phase === "PostToolUse") {
+      const row = rows[0];
+      if (Object.keys(row).sort().join(",") !== "hooks,matcher" || row.matcher !== ".*" || !Array.isArray(row.hooks) || row.hooks.length !== 1 || !object4(row.hooks[0]))
+        return;
+      command = row.hooks[0];
+    } else
+      command = rows[0];
+    if (!object4(command) || Object.keys(command).sort().join(",") !== "command,timeout,type" || command.type !== "command" || command.timeout !== 5)
+      return;
+    const found = parseManagedHookCommand(command.command, phase, options, peer);
+    if (!found || identity && (identity.instanceId !== found.instanceId || identity.launchId !== found.launchId))
+      return;
+    identity = found;
+  }
+  return identity;
+}
+function nextDocuments(current, wanted) {
+  const nextMcp = current[MCP_FILE] ? { ...current[MCP_FILE] } : {};
+  const currentServers = nextMcp.mcpServers;
+  const servers = currentServers === undefined ? {} : currentServers;
+  if (!object4(servers))
+    throw new Error(`${MCP_FILE} mcpServers must be an object`);
+  nextMcp.mcpServers = { ...servers, [PLUGIN_KEY]: wanted[MCP_FILE].mcpServers[PLUGIN_KEY] };
+  return { [MANIFEST_FILE]: wanted[MANIFEST_FILE], [MCP_FILE]: nextMcp, [HOOKS_FILE]: wanted[HOOKS_FILE] };
+}
+function internalPlan(options) {
+  const { root, peer } = validateOptions(options);
+  const rootStat = safeDirectory(root);
+  if (!rootStat)
+    throw new Error("project root must be an existing directory");
+  const canonicalRoot = realPath(root);
+  const pluginDir = join14(root, PLUGIN_DIR);
+  let parentsPresent = true;
+  for (const relative of [".agents", ".agents/plugins", PLUGIN_DIR]) {
+    if (!parentsPresent)
+      break;
+    parentsPresent = !!safeDirectory(join14(root, relative));
+  }
+  let directories;
+  let canonicalPluginDir;
+  if (parentsPresent) {
+    directories = pluginDirectories(root);
+    canonicalPluginDir = realPath(pluginDir);
+    if (canonicalPluginDir !== join14(canonicalRoot, PLUGIN_DIR))
+      throw new Error("managed agy plugin path traverses a symlink");
+  }
+  const snapshots = Object.fromEntries(FILES.map((relative) => {
+    const path = join14(root, relative);
+    const found = parentsPresent ? safeFile(path) : undefined;
+    return [relative, found];
+  }));
+  const current = {};
+  for (const relative of FILES) {
+    const found = snapshots[relative];
+    current[relative] = found ? parseJson(found.bytes, relative) : undefined;
+  }
+  const manifest = current[MANIFEST_FILE];
+  if (manifest && (Object.keys(manifest).sort().join(",") !== "description,name" || manifest.name !== PLUGIN_KEY || manifest.description !== MANAGED_DESCRIPTION)) {
+    throw new Error(`${MANIFEST_FILE} is a foreign agent-hub plugin manifest; it was not changed`);
+  }
+  const mcp = current[MCP_FILE];
+  if (mcp) {
+    if (Object.hasOwn(mcp, "mcpServers") && !object4(mcp.mcpServers))
+      throw new Error(`${MCP_FILE} mcpServers must be an object`);
+    const entry = mcp.mcpServers?.[PLUGIN_KEY];
+    if (entry !== undefined && (!object4(entry) || Object.keys(entry).sort().join(",") !== "args,command,env" || entry.command !== "bun" || !Array.isArray(entry.args) || entry.args.length !== 2 || entry.args[0] !== "run" || typeof entry.args[1] !== "string" || !isAbsolute6(entry.args[1]) || !object4(entry.env) || Object.keys(entry.env).sort().join(",") !== "AGENTHUB_PEER_ID,AGENTHUB_PROJECT_DIR,AGENTHUB_STATE_DIR" || entry.env.AGENTHUB_PEER_ID !== peer || entry.env.AGENTHUB_PROJECT_DIR !== root || entry.env.AGENTHUB_STATE_DIR !== options.stateDir)) {
+      throw new Error(`${MCP_FILE} agent-hub is a foreign MCP entry; it was not changed`);
+    }
+  }
+  const hooks = current[HOOKS_FILE];
+  const oldLaunch = hooks ? managedHookLaunch(hooks, options, peer) : undefined;
+  if (hooks && !oldLaunch)
+    throw new Error(`${HOOKS_FILE} agent-hub is a foreign hooks entry; it was not changed`);
+  const wanted = desired(options, root, peer);
+  const docs = nextDocuments(current, wanted);
+  const targets = FILES.map((relative) => {
+    const old = snapshots[relative];
+    const next = Buffer.from(`${JSON.stringify(docs[relative], null, 2)}
+`);
+    return { path: join14(root, relative), relative, ...old ? { current: old.bytes, stat: old.stat } : {}, next, changed: !old || !isDeepStrictEqual(current[relative], docs[relative]) };
+  });
+  const git = memoryGitSync(["ls-files", "--", ...FILES], { cwd: root, encoding: "utf8", timeout: 3000 });
+  const tracked = git.status === 0 && !!git.stdout.trim();
+  const changed = targets.some((target) => target.changed);
+  return { file: pluginDir, tracked, changed, action: changed ? "create or update the managed agent-hub plugin" : "keep the managed agent-hub plugin", root, pluginDir, canonicalRoot, ...canonicalPluginDir ? { canonicalPluginDir } : {}, ...directories ? { directories } : {}, targets };
+}
+function identityMatches(path, before) {
+  const now = lstatSync9(path, { throwIfNoEntry: false });
+  return before ? !!now && now.dev === before.dev && now.ino === before.ino : !now;
+}
+function atomicWrite(path, bytes, expected, plan) {
+  const temporary = `${path}.${randomUUID5()}.tmp`;
+  let fd;
+  let tempIdentity;
+  try {
+    verifyPluginDirectory(plan, path);
+    fd = openSync4(temporary, "wx", 384);
+    const tempStat = fstatSync3(fd);
+    tempIdentity = { dev: tempStat.dev, ino: tempStat.ino };
+    writeFileSync4(fd, bytes);
+    closeSync4(fd);
+    fd = undefined;
+    verifyPluginDirectory(plan, path);
+    if (!identityMatches(path, expected))
+      throw new Error(`${path} changed while the managed plugin was being written`);
+    renameSync(temporary, path);
+    const stat = lstatSync9(path);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)
+      throw new Error(`${path} changed while the managed plugin was written`);
+    return { dev: stat.dev, ino: stat.ino };
+  } finally {
+    if (fd !== undefined)
+      closeSync4(fd);
+    try {
+      const current = lstatSync9(temporary, { throwIfNoEntry: false });
+      if (current && tempIdentity && current.dev === tempIdentity.dev && current.ino === tempIdentity.ino)
+        unlinkSync(temporary);
+    } catch {}
+  }
+}
+function rollback(plan, written, createdDirs) {
+  for (const { target, own } of written.reverse()) {
+    try {
+      const now = lstatSync9(target.path, { throwIfNoEntry: false });
+      if (!now || now.dev !== own.dev || now.ino !== own.ino)
+        continue;
+      if (target.current)
+        atomicWrite(target.path, target.current, now, plan);
+      else
+        unlinkSync(target.path);
+    } catch {}
+  }
+  for (const { path, dev, ino } of createdDirs.reverse()) {
+    try {
+      const now = lstatSync9(path);
+      if (now.isDirectory() && !now.isSymbolicLink() && now.dev === dev && now.ino === ino)
+        rmdirSync(path);
+    } catch {}
+  }
+}
+function ensureAgyMcp(options) {
+  const plan = internalPlan(options);
+  if (!plan.changed)
+    return { changed: false, tracked: plan.tracked };
+  const createdDirs = [];
+  const written = [];
+  try {
+    for (const relative of [".agents", ".agents/plugins", PLUGIN_DIR]) {
+      const path = join14(plan.root, relative);
+      const prior = safeDirectory(path);
+      if (prior)
+        continue;
+      mkdirSync6(path, { mode: 448 });
+      const stat = safeDirectory(path);
+      createdDirs.push({ path, dev: stat.dev, ino: stat.ino });
+    }
+    plan.directories = pluginDirectories(plan.root);
+    plan.canonicalPluginDir = realPath(plan.pluginDir);
+    if (plan.canonicalRoot !== realPath(plan.root) || plan.canonicalPluginDir !== join14(plan.canonicalRoot, PLUGIN_DIR))
+      throw new Error("managed agy plugin path changed; inspect it before writing");
+    for (const target of plan.targets) {
+      if (!target.changed)
+        continue;
+      if (!identityMatches(target.path, target.stat))
+        throw new Error(`${target.path} changed while the managed plugin was being prepared`);
+      const own = atomicWrite(target.path, target.next, target.stat, plan);
+      written.push({ target, own });
+    }
+  } catch (error) {
+    rollback(plan, written, createdDirs);
+    throw error;
+  }
+  return { changed: true, tracked: plan.tracked };
+}
+function cleanupAgyMcp(options) {
+  const plan = internalPlan(options);
+  const present = plan.targets.filter((target) => target.current !== undefined);
+  if (!present.length)
+    return;
+  if (present.length !== FILES.length)
+    throw new Error("managed agy plugin is incomplete; inspect it before cleanup");
+  const currentHooks = parseJson(readFileSync6(join14(plan.root, HOOKS_FILE)), HOOKS_FILE);
+  const launch = managedHookLaunch(currentHooks, options, options.peer ?? "agy");
+  if (!launch || launch.instanceId !== options.instanceId || launch.launchId !== options.launchId)
+    return;
+  if (plan.changed)
+    return;
+  const deleted = [];
+  try {
+    for (const target of plan.targets) {
+      const stat = lstatSync9(target.path);
+      if (!target.stat || stat.dev !== target.stat.dev || stat.ino !== target.stat.ino)
+        throw new Error(`${target.path} changed before agy plugin cleanup`);
+    }
+    for (const target of plan.targets) {
+      if (!identityMatches(target.path, target.stat))
+        throw new Error(`${target.path} changed before agy plugin cleanup`);
+      if (target.relative === MCP_FILE) {
+        const currentMcp = parseJson(target.current, MCP_FILE);
+        const servers = { ...currentMcp.mcpServers };
+        delete servers[PLUGIN_KEY];
+        const nextMcp = { ...currentMcp, mcpServers: servers };
+        const retain = Object.keys(servers).length > 0 || Object.keys(currentMcp).some((key) => key !== "mcpServers");
+        if (retain) {
+          const own = atomicWrite(target.path, Buffer.from(`${JSON.stringify(nextMcp, null, 2)}
+`), target.stat, plan);
+          deleted.push({ path: target.path, bytes: target.current, own });
+        } else {
+          unlinkSync(target.path);
+          deleted.push({ path: target.path, bytes: target.current });
+        }
+      } else {
+        unlinkSync(target.path);
+        deleted.push({ path: target.path, bytes: target.current });
+      }
+    }
+  } catch (error) {
+    for (const item of deleted.reverse()) {
+      try {
+        const current = lstatSync9(item.path, { throwIfNoEntry: false });
+        if (item.own) {
+          if (current?.dev === item.own.dev && current.ino === item.own.ino)
+            atomicWrite(item.path, item.bytes, current, plan);
+        } else if (!current)
+          atomicWrite(item.path, item.bytes, undefined, plan);
+      } catch {}
+    }
+    throw error;
+  }
+}
+var PLUGIN_DIR = ".agents/plugins/agent-hub", PLUGIN_KEY = "agent-hub", MANIFEST_FILE, MCP_FILE, HOOKS_FILE, FILES, EVENTS2, MANAGED_DESCRIPTION = "Managed by ahub agy launcher.", MAX_CONFIG_BYTES;
+var init_agy_mcp = __esm(() => {
+  init_git();
+  init_project();
+  MANIFEST_FILE = `${PLUGIN_DIR}/plugin.json`;
+  MCP_FILE = `${PLUGIN_DIR}/mcp_config.json`;
+  HOOKS_FILE = `${PLUGIN_DIR}/hooks.json`;
+  FILES = [MANIFEST_FILE, MCP_FILE, HOOKS_FILE];
+  EVENTS2 = ["SessionStart", "PreInvocation", "PostInvocation", "PreToolUse", "PostToolUse", "Stop"];
+  MAX_CONFIG_BYTES = 256 * 1024;
+});
+
+// src/adapters/agy/entry.ts
+import { spawn as spawn9, spawnSync as spawnSync4 } from "child_process";
+import { resolve as resolve11 } from "path";
+function agyTuiSpawnOptions(cwd, env) {
+  return { cwd, env, stdio: "inherit" };
+}
+function runAgyTui(argv, cwd, env) {
+  const child = spawn9("agy", argv, agyTuiSpawnOptions(cwd, env));
+  return new Promise((resolveExit, reject) => {
+    const forward = (signal) => {
+      if (child.exitCode !== null || child.signalCode !== null)
+        return;
+      try {
+        child.kill(signal);
+      } catch {}
+    };
+    const onInterrupt = () => forward("SIGINT");
+    const onTerminate = () => forward("SIGTERM");
+    const onHangup = () => forward("SIGHUP");
+    const cleanup = () => {
+      process.off("SIGINT", onInterrupt);
+      process.off("SIGTERM", onTerminate);
+      process.off("SIGHUP", onHangup);
+    };
+    process.on("SIGINT", onInterrupt);
+    process.on("SIGTERM", onTerminate);
+    process.on("SIGHUP", onHangup);
+    child.once("error", (error) => {
+      cleanup();
+      reject(error);
+    });
+    child.once("close", (code) => {
+      cleanup();
+      resolveExit(code ?? 1);
+    });
+  });
+}
+async function runAgyEntry(ctx) {
+  const { args, cwd, stateDir, cliDir, connect, fail } = ctx;
+  if (ctx.instance)
+    fail("extra Antigravity TUI instances are not verified in P1");
+  const preview = args.includes("--print-command") || args.includes("--dry-run");
+  const unattended = ctx.unattendedEnv || args.includes("--unattended");
+  const nativeArgs = args.filter((arg) => !["--print-command", "--dry-run", "--unattended"].includes(arg));
+  if (nativeArgs.some((arg) => ["--print", "-p", "--prompt", "--input-format", "--output-format", "--conversation", "--continue", "-c", "--new", "--mode", "--dangerously-skip-permissions"].some((flag) => arg === flag || arg.startsWith(`${flag}=`))))
+    fail("agy P1 supports a fresh TUI only; headless, resume and permission flags need a verified mapping");
+  if (unattended)
+    fail("agy P1 native permissions are unmanaged; unattended mode has no verified prompt mapping");
+  const argv = nativeArgs;
+  if (preview) {
+    console.log(JSON.stringify({ command: "agy", args: argv.map(publicArg), mode: "tui", permission: "unmanaged", mcp: ".agents/plugins/agent-hub/", writes: false }));
+    return;
+  }
+  const version = spawnSync4("agy", ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: peerChildEnv("agy") });
+  if (version.status !== 0 || version.stdout.trim() !== "1.4.2")
+    fail("agy P1 requires the verified Antigravity CLI 1.4.2");
+  const hub = await connect();
+  let options;
+  let pluginWritten = false;
+  try {
+    if (!hub.features.includes("native_hook_launch"))
+      fail("running hub lacks the verified native hook launcher; upgrade or restart it before launching agy");
+    const status = (await hub.request({ t: "status" })).status;
+    if (rosterInStatus(status, "agy") !== true)
+      fail("agy is off roster; add it with ahub roster add agy");
+    const admitted = await hub.request({ t: "native_hook_launch", op: "begin", peer: "agy" });
+    if (!admitted.ok || typeof admitted.launchId !== "string" || typeof admitted.instanceId !== "string")
+      fail(admitted.error ?? "native hook launch was not admitted");
+    options = {
+      projectRoot: cwd,
+      stateDir,
+      serverJs: bundleInStatus(status) ?? resolve11(cliDir, "../../plugins/agent-hub/server.js"),
+      hookScript: resolve11(cliDir, "facts-hook.ts"),
+      peer: "agy",
+      launchId: admitted.launchId,
+      instanceId: admitted.instanceId
+    };
+    const written = ensureAgyMcp(options);
+    pluginWritten = written.changed;
+    if (written.tracked)
+      console.error("The managed agy plugin is tracked; review its local machine paths before committing");
+    console.error("Antigravity: pull-only TUI; native permissions unmanaged, no hub sandbox");
+    const env = { ...ctx.helpers.nativeLaunchEnv("agy", ctx.helpers.childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
+    delete env.AGENTHUB_CHANNEL;
+    const code = await runAgyTui(argv, cwd, env);
+    if (code !== 0)
+      process.exitCode = code;
+  } finally {
+    if (options) {
+      await hub.request({ t: "native_hook_launch", op: "end", peer: "agy", launchId: options.launchId }).catch(() => {});
+      if (pluginWritten)
+        try {
+          cleanupAgyMcp(options);
+        } catch {
+          console.error("Managed agy plugin cleanup refused: files changed or ownership could not be verified");
+        }
+    }
+    hub.close();
+  }
+}
+var init_entry = __esm(() => {
+  init_agy_mcp();
+  init_child_process();
+});
+
+// src/adapters/definitions/native-cli-retained.ts
+function retainedLaunchWarning(status, peer, definition) {
+  const keys = definition.cli.launchConfigKeys;
+  const retained = status?.retainedConfig;
+  if (!keys?.length || !Array.isArray(retained))
+    return;
+  const pending = retained.flatMap((row) => {
+    if (!row || typeof row !== "object")
+      return [];
+    const key = row.key;
+    return typeof key === "string" && keys.some((candidate) => key === candidate || key.startsWith(`${candidate}.`)) ? [key] : [];
+  });
+  const unique = [...new Set(pending)];
+  return unique.length ? `ahub: config retained: ${unique.join(", ")}; starting ${peer} with the running value; run ahub settings reload to apply the file's value` : undefined;
+}
 
 // src/hub/claude-state.ts
 function claudeStateFile(base, peer) {
@@ -8244,9 +8989,9 @@ var init_claude_state = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-entry-claude.ts
-import { readFileSync as readFileSync6 } from "fs";
-import { join as join13 } from "path";
-import { randomUUID as randomUUID5 } from "crypto";
+import { readFileSync as readFileSync7 } from "fs";
+import { join as join15 } from "path";
+import { randomUUID as randomUUID6 } from "crypto";
 async function runClaudeEntry(ctx) {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, fail } = ctx;
   const peer = ctx.instance ?? "claude";
@@ -8255,6 +9000,10 @@ async function runClaudeEntry(ctx) {
       return console.log(JSON.stringify({ peer, start: "hub", note: "a headless reviewer the hub runs per review" }, null, 2));
     const hub = await ctx.connect();
     try {
+      const snapshot = (await hub.request({ t: "status" })).status;
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+      if (warning)
+        console.error(warning);
       const res = await hub.request({ t: "start", peer, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
       if (res.ok !== true)
         fail(String(res.error ?? `${peer} was not started`));
@@ -8276,20 +9025,20 @@ async function runClaudeEntry(ctx) {
     process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
     const terminal = await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: cwd } : undefined);
     if (!terminal)
-      process.env.AGENTHUB_LAUNCH_ID = randomUUID5();
+      process.env.AGENTHUB_LAUNCH_ID = randomUUID6();
   }
   let original;
-  for (const file of [join13(cwd, ".claude", "settings.local.json"), join13(cwd, ".claude", "settings.json"), join13(process.env.HOME ?? "", ".claude", "settings.json")]) {
+  for (const file of [join15(cwd, ".claude", "settings.local.json"), join15(cwd, ".claude", "settings.json"), join15(process.env.HOME ?? "", ".claude", "settings.json")]) {
     try {
-      original ??= JSON.parse(readFileSync6(file, "utf8")).statusLine;
+      original ??= JSON.parse(readFileSync7(file, "utf8")).statusLine;
     } catch {}
   }
-  const facts = claudeObservationHooks(projectConfig(), { script: join13(cliDir, "facts-hook.ts"), stateDir });
+  const facts = claudeObservationHooks(projectConfig(), { script: join15(cliDir, "facts-hook.ts"), stateDir });
   let previousLaunch;
   try {
-    previousLaunch = JSON.parse(readFileSync6(join13(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
+    previousLaunch = JSON.parse(readFileSync7(join15(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
   } catch {}
-  const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join13(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
+  const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join15(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
   let result;
   try {
     let launchRecord;
@@ -8333,6 +9082,10 @@ async function runCodexEntry(ctx) {
   if (recovering && !ctx.instance && before?.instanceId)
     await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
+  const snapshot = (await hub.request({ t: "status" })).status;
+  const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+  if (warning)
+    console.error(warning);
   const res = await hub.request({ t: "start", peer, args: { unattended: launch0.unattended === true }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
   hub.close();
   if (!res.ok)
@@ -8345,27 +9098,16 @@ async function runCodexEntry(ctx) {
   const control = readControl(stateDir);
   if ((!recovering || ctx.instance) && control?.instanceId)
     await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: ctx.executionCwd } : undefined);
-  const launch = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl: res.proxyUrl, codexBin: projectConfig().codex_bin });
+  const runningCodexBin = res.retainedLaunchConfig?.codex_bin;
+  const launch = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl: res.proxyUrl, codexBin: typeof runningCodexBin === "string" ? runningCodexBin : projectConfig().codex_bin });
   if (launch0.warning)
     console.error(launch0.warning);
   exec(launch.cmd, launch.args, "codex");
 }
-
-// src/hub/status-roster.ts
-function rosterInStatus(status, peer) {
-  const rows = status?.roster;
-  if (!Array.isArray(rows))
-    return;
-  const row = rows.find((r) => !!r && typeof r === "object" && r.peer === peer);
-  return typeof row?.on === "boolean" ? row.on : undefined;
-}
-function bundleInStatus(status) {
-  const value = status?.pluginBundle;
-  return typeof value === "string" && value.startsWith("/") && /[\\/]plugins[\\/]agent-hub[\\/]server\.js$/.test(value) ? value : undefined;
-}
+var init_native_cli_entry_codex = () => {};
 
 // src/adapters/definitions/native-cli-entry-jcode.ts
-import { resolve as resolve10 } from "path";
+import { resolve as resolve12 } from "path";
 async function runJcodeEntry(ctx) {
   const { args, cwd, stateDir, cliDir, unattendedEnv, connect, fail, takeFlags } = ctx;
   const { launcherPreview, qwenSessionId, configureJcodeMcp } = ctx.helpers;
@@ -8389,7 +9131,10 @@ async function runJcodeEntry(ctx) {
       fail("cannot read jcode's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
     if (!rostered)
       fail("jcode is off roster; add it with ahub roster add jcode");
-    const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve10(cliDir, "../../plugins/agent-hub/server.js"));
+    const warning = retainedLaunchWarning(snapshot, "jcode", ctx.definition);
+    if (warning)
+      console.error(warning);
+    const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve12(cliDir, "../../plugins/agent-hub/server.js"));
     if (written.tracked)
       console.error(".jcode/mcp.json is tracked; review this local machine-path change before committing it");
     const reply = await hub.request({ t: "start", peer: "jcode", args: { mode: "headless", model: one["--model"], providerProfile: one["--provider-profile"], sessionId: one["--session-id"] }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 65000);
@@ -8422,6 +9167,10 @@ async function runQwenEntry(ctx) {
     fail("Qwen TUI is not offered before verification; usage: ahub qwen [--mode headless] [--model <alias>] [--session-id <id>]");
   const hub = await connect();
   try {
+    const snapshot = (await hub.request({ t: "status" })).status;
+    const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+    if (warning)
+      console.error(warning);
     const reply = await hub.request({ t: "start", peer, args: { mode: "headless", ...one["--model"] ? { model: one["--model"] } : {}, ...one["--session-id"] ? { sessionId: one["--session-id"] } : {} }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35000);
     if (!reply.ok)
       fail(reply.error);
@@ -8430,14 +9179,15 @@ async function runQwenEntry(ctx) {
     hub.close();
   }
 }
+var init_native_cli_entry_qwen = () => {};
 
 // src/adapters/definitions/native-cli-entry-kimi.ts
-import { resolve as resolve11 } from "path";
-import { spawnSync as spawnSync4 } from "child_process";
+import { resolve as resolve13 } from "path";
+import { spawnSync as spawnSync5 } from "child_process";
 async function runKimiEntry(ctx) {
   const peer = ctx.instance ?? "kimi";
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, connect, fail, takeFlags } = ctx;
-  const { launcherPreview, startModeOf, buildKimiTuiLaunch, configureKimiMcp, nativeLaunchEnv, childEnv } = ctx.helpers;
+  const { launcherPreview, readControl, startModeOf, buildKimiTuiLaunch, configureKimiMcp, nativeLaunchEnv, childEnv } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
     try {
       return console.log(JSON.stringify(launcherPreview("kimi", args, cwd, stateDir, unattendedEnv), null, 2));
@@ -8446,7 +9196,8 @@ async function runKimiEntry(ctx) {
     }
   }
   const { one, rest } = takeFlags(args, ["--mode", "--model"], []);
-  const mode = one["--mode"] ?? (ctx.instance ? "headless" : startModeOf(projectConfig().peers, "kimi")), model = one["--model"];
+  const acceptedMode = readControl(stateDir)?.startModes?.[peer];
+  const mode = one["--mode"] ?? (ctx.instance ? "headless" : acceptedMode ?? startModeOf(projectConfig().peers, "kimi")), model = one["--model"];
   if (ctx.instance && mode !== "headless")
     fail("extra Kimi instances require headless mode");
   if (rest.length || !["tui", "headless"].includes(mode))
@@ -8456,6 +9207,10 @@ async function runKimiEntry(ctx) {
       fail("Kimi's TUI needs a terminal for these options; run in a terminal or add --mode headless");
     const hub = await connect();
     try {
+      const snapshot = (await hub.request({ t: "status" })).status;
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+      if (warning)
+        console.error(warning);
       const reply = await hub.request({ t: "peer_start", peer }, 35000);
       if (!reply.ok)
         fail(reply.error);
@@ -8467,25 +9222,29 @@ async function runKimiEntry(ctx) {
   const hub = await connect();
   try {
     if (mode === "tui") {
-      const launch = buildKimiTuiLaunch(projectConfig().kimi_cmd, model);
       const snapshot = (await hub.request({ t: "status" })).status;
       const rostered = rosterInStatus(snapshot, peer);
       if (rostered === undefined)
         fail("cannot read kimi's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
       if (!rostered)
         fail("kimi is off roster; add it with ahub roster add kimi");
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+      if (warning)
+        console.error(warning);
       const owner = snapshot?.peers?.[peer];
       if (owner && !["offline"].includes(owner.state) && !owner.pullOnly)
         fail("Kimi is running headless; run ahub stop kimi before starting its TUI");
       const admission = await hub.request({ t: "start", peer, args: { mode: "tui" }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
       if (!admission.ok)
         fail(admission.error);
+      const runningCommand = admission.retainedLaunchConfig?.kimi_cmd;
+      const launch = buildKimiTuiLaunch(Array.isArray(runningCommand) && runningCommand.every((arg) => typeof arg === "string") ? runningCommand : projectConfig().kimi_cmd, model);
       let result;
       try {
-        const written = configureKimiMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve11(cliDir, "../../plugins/agent-hub/server.js"), "tui");
+        const written = configureKimiMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve13(cliDir, "../../plugins/agent-hub/server.js"), "tui");
         if (written.tracked)
           console.error(".kimi-code/mcp.json is tracked; the agent-hub entry contains machine paths. Review this local change before committing it.");
-        result = spawnSync4(launch.cmd, launch.args, { cwd, stdio: "inherit", env: { ...nativeLaunchEnv("kimi", childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
+        result = spawnSync5(launch.cmd, launch.args, { cwd, stdio: "inherit", env: { ...nativeLaunchEnv("kimi", childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
       } finally {
         if (admission.admissionId)
           await hub.request({ t: "kimi_launch_end", admissionId: admission.admissionId }).catch(() => {});
@@ -8494,11 +9253,15 @@ async function runKimiEntry(ctx) {
         fail(`cannot run ${launch.cmd}: ${result.error.message}`);
       process.exit(result.status ?? 1);
     }
-    const owner = (await hub.request({ t: "status" })).status?.peers?.[peer];
+    const snapshot = (await hub.request({ t: "status" })).status;
+    const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+    if (warning)
+      console.error(warning);
+    const owner = snapshot?.peers?.[peer];
     if (owner?.pullOnly && owner.state !== "offline")
       fail("Kimi runs in a terminal; end it there before starting a headless one");
     if (!ctx.instance)
-      configureKimiMcp(cwd, stateDir, resolve11(cliDir, "../../plugins/agent-hub/server.js"), "headless");
+      configureKimiMcp(cwd, stateDir, resolve13(cliDir, "../../plugins/agent-hub/server.js"), "headless");
     const res = await hub.request({ t: "start", peer, args: { mode: "headless", model }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
     if (!res.ok)
       fail(res.error);
@@ -8565,7 +9328,8 @@ async function runPiEntry(ctx) {
     }
   }
   const flags = parsePiFlags(args, fail);
-  const options = { ...flags, mode: flags.mode ?? (ctx.instance ? "headless" : startModeOf(projectConfig().peers, "pi")) };
+  const acceptedMode = ctx.helpers.readControl(stateDir)?.startModes?.[peer];
+  const options = { ...flags, mode: flags.mode ?? (ctx.instance ? "headless" : acceptedMode ?? startModeOf(projectConfig().peers, "pi")) };
   if (ctx.instance && options.mode !== "headless")
     fail("extra Pi instances require headless mode");
   if (flags.mode === undefined && options.mode === "tui" && !(process.stdin.isTTY && process.stdout.isTTY)) {
@@ -8573,6 +9337,10 @@ async function runPiEntry(ctx) {
       fail("Pi's TUI needs a terminal, and these options are not passed to one the hub opens: run this in a terminal, or add --mode headless");
     const hub = await connect();
     try {
+      const snapshot = (await hub.request({ t: "status" })).status;
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+      if (warning)
+        console.error(warning);
       const reply = await hub.request({ t: "peer_start", peer }, 35000);
       if (reply.ok !== true) {
         const error = String(reply.error ?? "pi start refused");
@@ -8588,6 +9356,10 @@ async function runPiEntry(ctx) {
   if (recovering && before?.instanceId)
     await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
+  const snapshot = (await hub.request({ t: "status" })).status;
+  const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+  if (warning)
+    console.error(warning);
   const res = await hub.request({ t: "start", peer, args: options, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
   hub.close();
   if (!res.ok)
@@ -8621,21 +9393,31 @@ async function runLocalEntry(ctx) {
   if (args.some((a, i) => i % 2 === 0 && !["--route", "--model"].includes(a)))
     fail("usage: ahub local [--route <id> | --model <id>]");
   const hub = await connect();
+  const snapshot = (await hub.request({ t: "status" })).status;
+  const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+  if (warning)
+    console.error(warning);
   const res = await hub.request({ t: "start", peer, args: { route: opt("--route"), model: opt("--model") }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
   hub.close();
   if (!res.ok)
     fail(res.error);
   console.log(res.already ? `${peer} is already attached` : `${peer} attached on ${res.model}. Give it work with: ahub say @${peer} "..."`);
 }
+var init_native_cli_entry_local = () => {};
 
 // src/adapters/definitions/native-cli-entry.ts
 var builtinCliEntries;
 var init_native_cli_entry = __esm(() => {
+  init_entry();
   init_native_cli_entry_claude();
+  init_native_cli_entry_codex();
   init_native_cli_entry_jcode();
+  init_native_cli_entry_qwen();
   init_native_cli_entry_kimi();
   init_native_cli_entry_pi();
+  init_native_cli_entry_local();
   builtinCliEntries = Object.freeze([
+    { command: "agy", lifecycleAdmission: true, execute: runAgyEntry },
     { command: "claude", lifecycleAdmission: true, execute: runClaudeEntry },
     { command: "codex", lifecycleAdmission: true, execute: runCodexEntry },
     { command: "jcode", lifecycleAdmission: true, execute: runJcodeEntry },
@@ -8646,37 +9428,9 @@ var init_native_cli_entry = __esm(() => {
   ]);
 });
 
-// src/adapters/definitions/native-cli-preview-common.ts
-function publicArg(arg) {
-  const flags = new Set(["--settings", "--model", "--mcp-config", "--session-id", "--session-file", "--resume", "--continue", "--print", "--safe", "--new"]);
-  const key = arg.split("=", 1)[0];
-  return flags.has(key) ? arg.includes("=") ? key + "=" + REDACTED : key : REDACTED;
-}
-function nativeCommand(command, trusted) {
-  return command.map((value, i) => value === trusted[i] ? value : REDACTED);
-}
-function previewState(args, baseEnvNames) {
-  const unresolved = [];
-  const envNames = [...baseEnvNames];
-  const value = (flag) => {
-    const at = args.indexOf(flag);
-    if (at < 0)
-      return;
-    const next = args[at + 1];
-    if (!next || next.startsWith("--"))
-      throw new Error("missing option value");
-    return next;
-  };
-  return { unresolved, envNames, value };
-}
-function finishPreview(ctx, launch, envNames, unresolved, metadata, settings) {
-  return { tool: ctx.tool, ...metadata ?? {}, cmd: launch.cmd, args: launch.args, settings, envNames: [...new Set(envNames)].sort(), ...launch.warning ? { warning: launch.warning } : {}, unresolved, redaction: "Arbitrary user arguments, settings, commands and configured executable overrides are redacted. Environment values are never displayed.", needs: ["Native executable, accounts and runtime readiness are not checked."] };
-}
-var REDACTED = "[redacted]", UNRESOLVED = "[unresolved]";
-
 // src/adapters/definitions/native-cli-preview-claude.ts
-import { readFileSync as readFileSync7 } from "fs";
-import { join as join14 } from "path";
+import { readFileSync as readFileSync8 } from "fs";
+import { join as join16 } from "path";
 function previewClaude(ctx) {
   const { args, cwd, stateDir, cliDir, unattended, config } = ctx;
   const { buildLaunch, claudeObservationHooks } = ctx.helpers;
@@ -8684,13 +9438,13 @@ function previewClaude(ctx) {
   let envNames = state.envNames;
   let launch;
   let original;
-  for (const file of [join14(cwd, ".claude/settings.local.json"), join14(cwd, ".claude/settings.json"), join14(process.env.HOME ?? "", ".claude/settings.json")]) {
+  for (const file of [join16(cwd, ".claude/settings.local.json"), join16(cwd, ".claude/settings.json"), join16(process.env.HOME ?? "", ".claude/settings.json")]) {
     try {
-      original ??= JSON.parse(readFileSync7(file, "utf8")).statusLine;
+      original ??= JSON.parse(readFileSync8(file, "utf8")).statusLine;
     } catch {}
   }
-  const facts = claudeObservationHooks(config, { script: join14(cliDir, "facts-hook.ts"), stateDir });
-  launch = buildLaunch("claude", args, { preview: true, unattended, statusLine: { script: join14(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {} }, ...facts ? { facts } : {} });
+  const facts = claudeObservationHooks(config, { script: join16(cliDir, "facts-hook.ts"), stateDir });
+  launch = buildLaunch("claude", args, { preview: true, unattended, statusLine: { script: join16(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {} }, ...facts ? { facts } : {} });
   const safeArgs = args.map((arg, i) => {
     if (args[i - 1] === "--settings")
       return "{}";
@@ -8701,7 +9455,7 @@ function previewClaude(ctx) {
     return publicArg(arg);
   });
   const publicLaunch = buildLaunch("claude", safeArgs, { preview: true, unattended, statusLine: {
-    script: join14(cliDir, "statusline-tee.ts"),
+    script: join16(cliDir, "statusline-tee.ts"),
     stateDir,
     ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {}
   }, facts });
@@ -8734,7 +9488,7 @@ function previewCodex(ctx) {
 var init_native_cli_preview_codex = () => {};
 
 // src/adapters/definitions/native-cli-preview-kimi.ts
-import { join as join15 } from "path";
+import { join as join17 } from "path";
 function previewKimi(ctx) {
   const { args, cwd, stateDir, cliDir, config } = ctx;
   const { childEnv, startModeOf, buildKimiLaunch, buildKimiTuiLaunch, nativeLaunchEnv, kimiMcpPlan } = ctx.helpers;
@@ -8757,14 +9511,14 @@ function previewKimi(ctx) {
     launch = { ...native, cmd: native.cmd === "kimi" ? "kimi" : REDACTED, args: native.args.map((arg) => arg === "--model" || arg === REDACTED ? arg : REDACTED) };
     envNames = Object.keys(nativeLaunchEnv("kimi", childEnv())).concat(["AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR"]);
   }
-  const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join15(cliDir, "../../plugins/agent-hub/server.js"), mode);
+  const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join17(cliDir, "../../plugins/agent-hub/server.js"), mode);
   kimiMetadata = { mode, mcp: { file, action, changed, tracked } };
   return finishPreview(ctx, launch, envNames, unresolved, kimiMetadata);
 }
 var init_native_cli_preview_kimi = () => {};
 
 // src/adapters/definitions/native-cli-preview-pi.ts
-import { join as join16, resolve as resolve12 } from "path";
+import { join as join18, resolve as resolve14 } from "path";
 function previewPi(ctx) {
   const { args, stateDir, cliDir, config } = ctx;
   const { relayModelIds, buildPiLaunch, startModeOf } = ctx.helpers;
@@ -8799,7 +9553,7 @@ function previewPi(ctx) {
     tools: [],
     preamble: REDACTED,
     maxSteps: config.pi.max_steps
-  }, {}, resolve12(join16(cliDir, "../pi/extension.ts")), UNRESOLVED, UNRESOLVED);
+  }, {}, resolve14(join18(cliDir, "../pi/extension.ts")), UNRESOLVED, UNRESOLVED);
   launch = pi;
   envNames = Object.keys(pi.env).concat(["PATH", "HOME", "USER", "SHELL", "TMPDIR", "TERM", "TERM_PROGRAM", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "CODEX_HOME"].filter((key) => process.env[key] !== undefined));
   if (mode === "tui")
@@ -8812,7 +9566,7 @@ function previewPi(ctx) {
 var init_native_cli_preview_pi = () => {};
 
 // src/adapters/definitions/native-cli-preview-qwen.ts
-import { join as join17 } from "path";
+import { join as join19 } from "path";
 function previewQwen(ctx) {
   const { tool, args, cwd, stateDir, cliDir, config } = ctx;
   const state = previewState(args, ctx.baseEnvNames), { unresolved, value } = state;
@@ -8835,7 +9589,7 @@ function previewQwen(ctx) {
     form: "headless",
     projectRoot: cwd,
     stateDir,
-    entrypoint: join17(cliDir, "main.js"),
+    entrypoint: join19(cliDir, "main.js"),
     userArgs: [],
     unattended: false,
     env: {},
@@ -8943,8 +9697,8 @@ var init_native_config_policy = __esm(() => {
 });
 
 // src/adapters/definitions/native-policy-aux.ts
-import { closeSync as closeSync3, constants as constants3, fstatSync as fstatSync2, openSync as openSync3, readdirSync as readdirSync3, readFileSync as readFileSync8 } from "fs";
-import { isAbsolute as isAbsolute5, join as join18, normalize } from "path";
+import { closeSync as closeSync5, constants as constants4, fstatSync as fstatSync4, openSync as openSync5, readdirSync as readdirSync3, readFileSync as readFileSync9 } from "fs";
+import { isAbsolute as isAbsolute7, join as join20, normalize } from "path";
 function claudeCrashPlan(_meta) {
   return { how: "claude: the Claude Code plugin reconnects by itself while that session is still open" };
 }
@@ -8989,13 +9743,13 @@ function localCrashPlan(meta) {
 }
 function claudePlugins(root, cwd) {
   const enabled = new Map;
-  for (const file of [join18(root, "settings.json"), ...cwd ? [join18(cwd, ".claude", "settings.json"), join18(cwd, ".claude", "settings.local.json")] : []]) {
+  for (const file of [join20(root, "settings.json"), ...cwd ? [join20(cwd, ".claude", "settings.json"), join20(cwd, ".claude", "settings.local.json")] : []]) {
     const map = json(file)?.enabledPlugins;
     if (map && typeof map === "object")
       for (const [key, on] of Object.entries(map))
         enabled.set(key, on === true);
   }
-  const installed = json(join18(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
+  const installed = json(join20(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
   const out = [];
   for (const [key, on] of enabled) {
     if (!on)
@@ -9009,7 +9763,7 @@ function claudePlugins(root, cwd) {
   return out;
 }
 function codexPlugins(root) {
-  const config = text(join18(root, "config.toml"));
+  const config = text(join20(root, "config.toml"));
   if (config === undefined)
     return [];
   const found = new Map, disabled = new Set;
@@ -9028,7 +9782,7 @@ function codexPlugins(root) {
       continue;
     let versions = [];
     try {
-      versions = readdirSync3(join18(root, "plugins", "cache", market, plugin));
+      versions = readdirSync3(join20(root, "plugins", "cache", market, plugin));
     } catch {}
     out.push({ name, version: versions.length === 1 ? version2(versions[0]) : null });
   }
@@ -9043,21 +9797,21 @@ function parsePiContinuity(value) {
   return { sessionId: value.sessionId, ...value.sessionFile === undefined ? {} : { sessionFile: value.sessionFile }, ...value.backend === undefined ? {} : { backend: value.backend }, ...value.model === undefined ? {} : { model: value.model } };
 }
 function absoluteContinuityPath(value) {
-  return typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\x00-\x1f\x7f]/.test(value) && isAbsolute5(value) && normalize(value) === value;
+  return typeof value === "string" && value.length > 0 && value.length <= 4096 && !/[\x00-\x1f\x7f]/.test(value) && isAbsolute7(value) && normalize(value) === value;
 }
 var str3 = (value) => typeof value === "string" && value ? value : undefined, PLUGINS, CLAUDE_ONLY, text = (file) => {
   let fd;
   try {
-    fd = openSync3(file, constants3.O_RDONLY | constants3.O_NONBLOCK);
-    const st = fstatSync2(fd);
+    fd = openSync5(file, constants4.O_RDONLY | constants4.O_NONBLOCK);
+    const st = fstatSync4(fd);
     if (!st.isFile() || st.size > 1024 * 1024)
       return;
-    return readFileSync8(fd, "utf8");
+    return readFileSync9(fd, "utf8");
   } catch {
     return;
   } finally {
     if (fd !== undefined)
-      closeSync3(fd);
+      closeSync5(fd);
   }
 }, json = (file) => {
   try {
@@ -9066,7 +9820,7 @@ var str3 = (value) => typeof value === "string" && value ? value : undefined, PL
   } catch {
     return;
   }
-}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join18(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join18(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
+}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join20(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join20(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
 var init_native_policy_aux = __esm(() => {
   PLUGINS = new Map([["claude-mem", "claude-mem"], ["ponytail", "ponytail"], ["open-code-review", "open-code-review"]]);
   CLAUDE_ONLY = new Map([["codex@openai-codex", "codex-plugin"]]);
@@ -9112,7 +9866,7 @@ var init_launch2 = __esm(() => {
 });
 
 // src/cli/shell-quote.ts
-function shellQuote(value) {
+function shellQuote3(value) {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
@@ -9127,26 +9881,26 @@ function nativeLaunchArguments(tool, ctx, policy) {
 }
 function nativeLaunchPlan(launch, ctx) {
   const argv = [launch.cmd, ...launch.args];
-  return { ...launch, metadata: { packageEntrypoint: ctx.entrypoint, argv, env: {}, command: argv.map(shellQuote).join(" ") } };
+  return { ...launch, metadata: { packageEntrypoint: ctx.entrypoint, argv, env: {}, command: argv.map(shellQuote3).join(" ") } };
 }
 var init_native_cli_launch_common = __esm(() => {
   init_launch2();
 });
 
 // src/adapters/definitions/native-cli-claude-launch.ts
-import { mkdirSync as mkdirSync6, writeFileSync as writeFileSync4, renameSync, unlinkSync, readFileSync as readFileSync9 } from "fs";
-import { randomUUID as randomUUID6 } from "crypto";
-import { resolve as resolve13, join as join19 } from "path";
+import { mkdirSync as mkdirSync7, writeFileSync as writeFileSync5, renameSync as renameSync2, unlinkSync as unlinkSync2, readFileSync as readFileSync10 } from "fs";
+import { randomUUID as randomUUID7 } from "crypto";
+import { resolve as resolve15, join as join21 } from "path";
 function claudeChannel(userArgs) {
-  const bundle = resolve13(import.meta.dir, "../../../plugins/agent-hub/server.js");
+  const bundle = resolve15(import.meta.dir, "../../../plugins/agent-hub/server.js");
   for (let i = 0;i < userArgs.length; i++) {
     const arg = userArgs[i];
     const path = arg === "--mcp-config" ? userArgs[i + 1] : arg.startsWith("--mcp-config=") ? arg.slice("--mcp-config=".length) : undefined;
     if (!path)
       continue;
     try {
-      const server = JSON.parse(readFileSync9(resolve13(path), "utf8")).mcpServers?.["agent-hub"];
-      if (server?.command === "bun" && Array.isArray(server.args) && server.args.some((value) => typeof value === "string" && resolve13(value) === bundle))
+      const server = JSON.parse(readFileSync10(resolve15(path), "utf8")).mcpServers?.["agent-hub"];
+      if (server?.command === "bun" && Array.isArray(server.args) && server.args.some((value) => typeof value === "string" && resolve15(value) === bundle))
         return "server:agent-hub";
     } catch {}
   }
@@ -9169,7 +9923,7 @@ function claudeNativeLaunch(ctx) {
         throw new Error("--settings requires a JSON object or readable file so the hub permission hook can be installed");
       let caller;
       try {
-        caller = JSON.parse(value.trim().startsWith("{") ? value : readFileSync9(resolve13(value), "utf8"));
+        caller = JSON.parse(value.trim().startsWith("{") ? value : readFileSync10(resolve15(value), "utf8"));
         if (!caller || typeof caller !== "object" || Array.isArray(caller))
           throw new Error("not an object");
       } catch {
@@ -9198,14 +9952,14 @@ function claudeNativeLaunch(ctx) {
       const stateDir = ctx.facts?.stateDir ?? ctx.statusLine?.stateDir;
       if (!stateDir)
         throw new Error("Claude session settings require the hub state directory");
-      const file = join19(stateDir, `claude-settings-${randomUUID6()}.json`);
+      const file = join21(stateDir, `claude-settings-${randomUUID7()}.json`);
       try {
-        mkdirSync6(stateDir, { recursive: true, mode: 448 });
-        writeFileSync4(`${file}.tmp`, settingsArgs[1], { mode: 384, flag: "wx" });
-        renameSync(`${file}.tmp`, file);
+        mkdirSync7(stateDir, { recursive: true, mode: 448 });
+        writeFileSync5(`${file}.tmp`, settingsArgs[1], { mode: 384, flag: "wx" });
+        renameSync2(`${file}.tmp`, file);
       } catch {
         try {
-          unlinkSync(`${file}.tmp`);
+          unlinkSync2(`${file}.tmp`);
         } catch {}
         throw new Error("cannot write private Claude session settings in the hub state directory");
       }
@@ -9255,11 +10009,11 @@ var init_native_cli_codex_launch = __esm(() => {
 });
 
 // src/hub/events.ts
-import { appendFileSync, closeSync as closeSync4, existsSync as existsSync7, fstatSync as fstatSync3, openSync as openSync4, readFileSync as readFileSync10, readSync as readSync2 } from "fs";
+import { appendFileSync, closeSync as closeSync6, existsSync as existsSync7, fstatSync as fstatSync5, openSync as openSync6, readFileSync as readFileSync11, readSync as readSync3 } from "fs";
 function readEvents(file, since = 0) {
   if (!existsSync7(file))
     return [];
-  return readFileSync10(file, "utf8").split(`
+  return readFileSync11(file, "utf8").split(`
 `).flatMap((line) => {
     if (!line.trim())
       return [];
@@ -9276,14 +10030,14 @@ var init_events = () => {};
 
 // src/cli/recovery-session-file.ts
 import { statSync as statSync4 } from "fs";
-import { homedir as homedir4 } from "os";
-import { join as join20 } from "path";
+import { homedir as homedir5 } from "os";
+import { join as join22 } from "path";
 function checkedSessionPath(binding, kind) {
   if (kind === "rollout")
-    return join20(binding.launch.env.CODEX_HOME ?? join20(homedir4(), ".codex"), "sessions");
-  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join20(homedir4(), ".claude");
+    return join22(binding.launch.env.CODEX_HOME ?? join22(homedir5(), ".codex"), "sessions");
+  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join22(homedir5(), ".claude");
   const slug = binding.projectRoot.replace(/[^a-zA-Z0-9]/g, "-");
-  return join20(config, "projects", slug, `${binding.sessionId}.jsonl`);
+  return join22(config, "projects", slug, `${binding.sessionId}.jsonl`);
 }
 function recordedFileState(file) {
   try {
@@ -9296,7 +10050,7 @@ var init_recovery_session_file = () => {};
 
 // src/adapters/definitions/native-recovery.ts
 import { readdirSync as readdirSync4 } from "fs";
-import { basename as basename5, join as join21 } from "path";
+import { basename as basename5, join as join23 } from "path";
 var rolloutState = (binding) => {
   try {
     return readdirSync4(checkedSessionPath(binding, "rollout"), { recursive: true }).some((name) => String(name).endsWith(".jsonl") && basename5(String(name)).includes(binding.sessionId));
@@ -9306,7 +10060,7 @@ var rolloutState = (binding) => {
 }, transcriptState = (binding) => {
   const state = recordedFileState(checkedSessionPath(binding, "transcript"));
   return state === "unknown" ? "unknown" : state === "found";
-}, startupArgs = (peer) => Object.fromEntries(["mode", "backend", "model", "route"].flatMap((key) => typeof peer.args?.[key] === "string" ? [[key, peer.args[key]]] : [])), text2 = (value) => typeof value === "string" && value.length > 0, object4 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : {}, CODEX_RECOVERY_SESSION, CLAUDE_RECOVERY_SESSION, PI_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION, QWEN_RECOVERY_SESSION;
+}, startupArgs = (peer) => Object.fromEntries(["mode", "backend", "model", "route"].flatMap((key) => typeof peer.args?.[key] === "string" ? [[key, peer.args[key]]] : [])), text2 = (value) => typeof value === "string" && value.length > 0, object5 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : {}, CODEX_RECOVERY_SESSION, CLAUDE_RECOVERY_SESSION, PI_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION, QWEN_RECOVERY_SESSION;
 var init_native_recovery = __esm(() => {
   init_events();
   init_recovery_session_file();
@@ -9320,7 +10074,7 @@ var init_native_recovery = __esm(() => {
       if (phase !== "plan")
         return false;
       let current, started = false, turned = false;
-      for (const e of readEvents(join21(stateDir, "events.jsonl"))) {
+      for (const e of readEvents(join23(stateDir, "events.jsonl"))) {
         if (e.type === "native_thread" && e.peer === binding.peer) {
           current = e.thread;
           if (e.thread === binding.sessionId && e.fresh)
@@ -9361,7 +10115,7 @@ var init_native_recovery = __esm(() => {
       return args;
     },
     crashIdentity: (row) => {
-      const value = object4(row), args = object4(value.args), session = object4(value.session);
+      const value = object5(row), args = object5(value.args), session = object5(value.session);
       const sessionId = [value.sessionId, value.agentSessionId, value.resumeSessionId, session.id, session.sessionId].find(text2);
       const sessionFile = [value.sessionFile, value.sessionPath, args.sessionFile, session.file, session.path].find(text2);
       return { ...sessionId ? { sessionId } : {}, ...sessionFile ? { sessionFile } : {} };
@@ -9435,12 +10189,12 @@ function compatibilityLaunch(kind, ctx) {
     ...ctx.env.CODEX_HOME !== undefined ? { CODEX_HOME: ctx.env.CODEX_HOME } : {},
     ...ctx.env.CLAUDE_CONFIG_DIR !== undefined ? { CLAUDE_CONFIG_DIR: ctx.env.CLAUDE_CONFIG_DIR } : {}
   };
-  const prefix = Object.entries(env).map(([name, value]) => `${name}=${shellQuote(value)}`);
+  const prefix = Object.entries(env).map(([name, value]) => `${name}=${shellQuote3(value)}`);
   return {
     cmd: process.execPath,
     args,
     ...unattended.length ? { unattended: true } : {},
-    metadata: { packageEntrypoint: ctx.entrypoint, argv, env, command: [...prefix, ...argv.map(shellQuote)].join(" ") }
+    metadata: { packageEntrypoint: ctx.entrypoint, argv, env, command: [...prefix, ...argv.map(shellQuote3)].join(" ") }
   };
 }
 function sessionId(field) {
@@ -9564,7 +10318,7 @@ var init_builtin_metadata = __esm(() => {
       session: { nativeRevert: true, idField: "threadId", currentId: sessionId("threadId"), configDirEnv: "CODEX_HOME", zeroTurnFresh: true, launchKind: "codex", launchRecord: true, ...CODEX_RECOVERY_SESSION, crashPlan: codexCrashPlan, unrecordedTerminal: "always" },
       turnEnd: "adapter",
       budget: { account: "codex", checkpoint: true, reader: { source: "codex rateLimits", read: codexWindows }, context: { source: "codex_token_usage", read: codexContext } },
-      cli: { command: "codex", retainedTerminalNotice: codexRetainedTerminalNotice, rosterReturnNotice: codexRosterReturnNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["codex"] },
+      cli: { command: "codex", launchConfigKeys: ["codex_bin"], retainedTerminalNotice: codexRetainedTerminalNotice, rosterReturnNotice: codexRosterReturnNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["codex"] },
       display: CODEX_DISPLAY,
       hooks: { recallPlatform: "codex", recallSource: "codex", recallInjected: true, pluginInventory: codexPluginInventory, classifyTool: codexToolSemantic }
     },
@@ -9599,7 +10353,7 @@ var init_builtin_metadata = __esm(() => {
       capabilities: { watch: true },
       init: { mcpFile: ".kimi-code/mcp.json" },
       hooks: { recallPlatform: "kimi", recallSource: "kimi" },
-      cli: { command: "kimi", stopNotice: (form) => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: (form) => ["kimi", "--mode", form] },
+      cli: { command: "kimi", launchConfigKeys: ["kimi_cmd", "peers.kimi.start_mode"], stopNotice: (form) => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: (form) => ["kimi", "--mode", form] },
       display: KIMI_DISPLAY
     },
     {
@@ -9621,7 +10375,7 @@ var init_builtin_metadata = __esm(() => {
       reporting: { tokensNotReported: true },
       configuration: { schema: piConfigSchema, routingSchema: piRoutingSchema, settings: PI_SETTINGS, restartReasons: PI_RESTART_REASONS, validateEffective: piEffectiveConfig },
       routing: { localAllowedRefusal: "local_allowed = false also excludes pi for this class", longContext: "backend-limit", preferredTier: true, handoffPriority: 0, trace: "backend", backendLabel: "pi" },
-      cli: { command: "pi", previewArgs: ["--mode", "tui"], retainedTerminalNotice: piRetainedTerminalNotice, personOnlyFlags: ["--replace-session"], startWords: (form) => ["pi", "--mode", form] },
+      cli: { command: "pi", launchConfigKeys: ["pi.cmd", "pi.backend", "pi.dgx_coding", "pi.dgx_fast", "pi.max_steps", "routing.pi", "peers.pi.start_mode"], previewArgs: ["--mode", "tui"], retainedTerminalNotice: piRetainedTerminalNotice, personOnlyFlags: ["--replace-session"], startWords: (form) => ["pi", "--mode", form] },
       display: PI_DISPLAY
     },
     {
@@ -9641,7 +10395,7 @@ var init_builtin_metadata = __esm(() => {
       budget: { account: "local", quotaExempt: true, instrumented: true },
       configuration: { schema: localConfigSchema, routingSchema: localRoutingSchema, restartReasons: LOCAL_RESTART_REASONS },
       routing: { localAllowedRefusal: "local_allowed = false for this class", longContext: "skip-owner", preferredTier: true, handoffPriority: 1, trace: "route" },
-      cli: { command: "local", startWords: () => ["local"] },
+      cli: { command: "local", launchConfigKeys: ["local.deny", "local.bash_network", "local.network_allow", "local.max_steps", "local.read_allow", "routing.local"], startWords: () => ["local"] },
       display: LOCAL_DISPLAY
     },
     {
@@ -9664,7 +10418,7 @@ var init_builtin_metadata = __esm(() => {
       session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "jcode", ...JCODE_RECOVERY_SESSION, crashPlan: jcodeCrashPlan },
       turnEnd: "adapter",
       budget: { account: "jcode" },
-      cli: { command: "jcode", authority: "person", startWords: () => ["jcode"] },
+      cli: { command: "jcode", authority: "person", launchConfigKeys: ["jcode_cmd", "jcode_home", "jcode_provider_profile"], startWords: () => ["jcode"] },
       display: JCODE_DISPLAY,
       hooks: { recallPlatform: "jcode" }
     }
@@ -9855,7 +10609,7 @@ var init_qwen = __esm(() => {
           throw new Error("Qwen TUI is not offered before its native verification; use ahub qwen --mode headless");
         const launch = buildQwenLaunch(context.nativeCommand ?? ["qwen", "--acp"], context.model);
         const argv = [launch.cmd, ...launch.args];
-        return { ...launch, metadata: { packageEntrypoint: context.entrypoint, argv, command: argv.map(shellQuote).join(" "), env: {} } };
+        return { ...launch, metadata: { packageEntrypoint: context.entrypoint, argv, command: argv.map(shellQuote3).join(" "), env: {} } };
       },
       create: (context) => {
         if (!("acp" in context.daemon))
@@ -9896,7 +10650,7 @@ var init_qwen = __esm(() => {
     turnEnd: "adapter",
     budget: { account: "qwen" },
     capabilities: { watch: true },
-    cli: { command: "qwen", startWords: () => ["qwen"] },
+    cli: { command: "qwen", launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
     display: QWEN_DISPLAY,
     hooks: { agentIdentity: (init) => {
       qwenNativeIdentity("qwen", true, init);
@@ -9985,7 +10739,8 @@ function assertNativeCapabilityScope(definition) {
     ["start.daemonPort pi-rpc", definition.start.daemonPort === "pi-rpc"],
     ["routing", definition.routing !== undefined],
     ["reviewerVariant", definition.reviewerVariant !== undefined],
-    ["reviewer", definition.reviewer !== undefined]
+    ["reviewer", definition.reviewer !== undefined],
+    ["hooks.factsHook", declared(definition.hooks, "factsHook")]
   ];
   const field = restricted.find(([, present]) => present)?.[0];
   if (field)
@@ -9993,6 +10748,7 @@ function assertNativeCapabilityScope(definition) {
 }
 var ADAPTER_API = 1, KNOWN_PEERS, OPTIONAL_PEERS, SUPPORTED_PEERS, fixedBuiltinDefinitions, ADAPTERS, declarationOnlyDefinitions, definitions, REVIEW_POOL_KINDS, DEFAULT_REVIEW_POOL, QUOTA_HANDOFF_PLATFORMS, ROLE_ORDER, CONDUCTOR_START_PRIORITY, CONDUCTOR_START_PEERS, ADAPTER_DISPLAY, BUILTIN_CLI_ENTRIES;
 var init_registry = __esm(() => {
+  init_definition();
   init_reviewer_variants();
   init_native_cli_entry();
   init_native_cli_preview();
@@ -10003,18 +10759,19 @@ var init_registry = __esm(() => {
   init_native_cli_doctor();
   init_native_display();
   KNOWN_PEERS = ["claude", "codex", "kimi", "pi", "local"];
-  OPTIONAL_PEERS = ["qwen", "jcode"];
+  OPTIONAL_PEERS = ["qwen", "jcode", "agy"];
   SUPPORTED_PEERS = [...KNOWN_PEERS, ...OPTIONAL_PEERS];
-  fixedBuiltinDefinitions = new Set([...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, QWEN_DEFINITION, AGY_DEFINITION]);
+  fixedBuiltinDefinitions = new Set([...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, QWEN_DEFINITION, AGY_DEFINITION, AGY_REVIEWER_VARIANT]);
   for (const definition of [...fixedBuiltinDefinitions])
     if (definition.reviewerVariant)
       fixedBuiltinDefinitions.add(definition.reviewerVariant);
   ADAPTERS = immutable([
     ...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN.filter((definition) => definition.kind !== "jcode"),
     QWEN_DEFINITION,
-    ...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN.filter((definition) => definition.kind === "jcode")
+    ...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN.filter((definition) => definition.kind === "jcode"),
+    AGY_DEFINITION
   ]);
-  declarationOnlyDefinitions = immutable([AGY_DEFINITION]);
+  declarationOnlyDefinitions = immutable([]);
   definitions = new Map;
   for (const definition of [...ADAPTERS, ...declarationOnlyDefinitions]) {
     assertDaemonEngine(definition);
@@ -10030,7 +10787,7 @@ var init_registry = __esm(() => {
   REVIEW_POOL_KINDS = Object.freeze([...definitions.values()].filter((definition) => !!(definition.reviewerVariant ?? definition).reviewer).map((definition) => definition.kind));
   DEFAULT_REVIEW_POOL = Object.freeze(ADAPTERS.filter((definition) => (definition.reviewerVariant ?? definition).reviewer?.defaultPool === true).map((definition) => definition.kind));
   QUOTA_HANDOFF_PLATFORMS = Object.freeze(Object.fromEntries(ADAPTERS.flatMap((adapter) => adapter.hooks?.recallPlatform ? [[adapter.kind, adapter.hooks.recallPlatform]] : [])));
-  ROLE_ORDER = ["claude", "codex", "kimi", "local", "pi", "qwen", "jcode"];
+  ROLE_ORDER = ["claude", "codex", "kimi", "local", "pi", "qwen", "jcode", "agy"];
   CONDUCTOR_START_PRIORITY = ["local", "kimi", "pi"];
   CONDUCTOR_START_PEERS = [
     ...CONDUCTOR_START_PRIORITY,
@@ -17214,8 +17971,8 @@ var require_dist = __commonJS(function(exports, module) {
 
 // src/hub/instance-config.ts
 init_registry();
-import { readFileSync as readFileSync11 } from "fs";
-import { join as join24 } from "path";
+import { readFileSync as readFileSync12 } from "fs";
+import { join as join26 } from "path";
 
 // src/hub/conductor.ts
 init_registry();
@@ -17236,7 +17993,7 @@ var STDOUT_LIMIT = 512 * 1024;
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
-  version: "0.12.37",
+  version: "0.12.38",
   description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
   license: "MIT",
   type: "module",
@@ -17377,7 +18134,7 @@ var USER2 = Symbol("shared-user-shard");
 // node_modules/@staix/agent-mem/src/mcp.ts
 var string = (maxLength, minLength = 1) => ({ type: "string", minLength, maxLength });
 var limit = { type: "integer", minimum: 1, maximum: 100 };
-var object5 = (properties, required = []) => ({ type: "object", properties, required, additionalProperties: false });
+var object6 = (properties, required = []) => ({ type: "object", properties, required, additionalProperties: false });
 var tool2 = (name, description, inputSchema, readOnlyHint = true) => ({
   name,
   description,
@@ -17385,20 +18142,20 @@ var tool2 = (name, description, inputSchema, readOnlyHint = true) => ({
   annotations: { readOnlyHint, destructiveHint: false, openWorldHint: false }
 });
 var MCP_TOOLS = [
-  tool2("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object5({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" } }, ["query"])),
-  tool2("amem_show", "Show a screened memory entry in this project by its exact id or unique prefix.", object5({ id: string(80) }, ["id"])),
-  tool2("amem_timeline", "Read screened memory near an entry or time in this project.", object5({ id: string(80), since: string(40), limit })),
-  tool2("amem_graph", "Read the screened curated-memory neighbourhood. Capture is never graph evidence.", object5({ start: string(500), hops: { type: "integer", minimum: 1, maximum: 2 }, limit }, ["start"])),
-  tool2("amem_work_state_read", "Read project work lists; closed lists/items can be included explicitly.", object5({ list: string(200), includeClosed: { type: "boolean" } })),
-  tool2("amem_work_state_write", "Append scalar project work-list fields; null clears, task selects an item, list status done closes.", object5({ list: string(200), fields: {
+  tool2("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object6({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" } }, ["query"])),
+  tool2("amem_show", "Show a screened memory entry in this project by its exact id or unique prefix.", object6({ id: string(80) }, ["id"])),
+  tool2("amem_timeline", "Read screened memory near an entry or time in this project.", object6({ id: string(80), since: string(40), limit })),
+  tool2("amem_graph", "Read the screened curated-memory neighbourhood. Capture is never graph evidence.", object6({ start: string(500), hops: { type: "integer", minimum: 1, maximum: 2 }, limit }, ["start"])),
+  tool2("amem_work_state_read", "Read project work lists; closed lists/items can be included explicitly.", object6({ list: string(200), includeClosed: { type: "boolean" } })),
+  tool2("amem_work_state_write", "Append scalar project work-list fields; null clears, task selects an item, list status done closes.", object6({ list: string(200), fields: {
     type: "object",
     minProperties: 1,
     maxProperties: 64,
     additionalProperties: { type: ["string", "number", "boolean", "null"], maxLength: 4000 }
   } }, ["list", "fields"]), false),
-  tool2("amem_remember", "Propose a general memory candidate for person acceptance. Never writes directly to curated notes.", object5({ text: string(3000), title: string(200), kind: { type: "string", enum: ["decision", "finding", "contract", "fail"] } }, ["text"]), false),
-  tool2("amem_vault_candidates", "List screened durable curated notes eligible for a person to move to the vault. Read only.", object5({ limit })),
-  tool2("amem_capacity", "Read this machine's bounded capture capacity proposal; applying it is person-only.", object5({}))
+  tool2("amem_remember", "Propose a general memory candidate for person acceptance. Never writes directly to curated notes.", object6({ text: string(3000), title: string(200), kind: { type: "string", enum: ["decision", "finding", "contract", "fail"] } }, ["text"]), false),
+  tool2("amem_vault_candidates", "List screened durable curated notes eligible for a person to move to the vault. Read only.", object6({ limit })),
+  tool2("amem_capacity", "Read this machine's bounded capture capacity proposal; applying it is person-only.", object6({}))
 ];
 // node_modules/@staix/agent-mem/src/mcp-memory.ts
 init_capture();
@@ -17425,14 +18182,14 @@ init_generation();
 // src/hub/routing.ts
 init_registry();
 init_board();
-import { join as join22, resolve as resolve14 } from "path";
+import { join as join24, resolve as resolve16 } from "path";
 
 // src/models/route/config.ts
 var TYPES = new Set(["stage", "plan_execute", "advisor", "escalation"]);
 
 // src/hub/routing.ts
 init_stage();
-var TEMPLATE = join22(import.meta.dir, "..", "..", "templates", "routing.toml");
+var TEMPLATE = join24(import.meta.dir, "..", "..", "templates", "routing.toml");
 var cache = new Map;
 
 // src/hub/memory-policy.ts
@@ -17459,8 +18216,8 @@ var OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassign
 // src/hub/config-trust.ts
 init_child_process();
 init_git();
-import { lstatSync as lstatSync8, statSync as statSync5 } from "fs";
-import { dirname as dirname10, join as join23 } from "path";
+import { lstatSync as lstatSync10, statSync as statSync5 } from "fs";
+import { dirname as dirname10, join as join25 } from "path";
 var MACHINE_LOCAL = [
   "kimi_cmd",
   "permission_modes",
@@ -17492,7 +18249,7 @@ function configTracked(cwd, name) {
     return;
   let opened;
   try {
-    opened = statSync5(join23(cwd, ".agenthub", name));
+    opened = statSync5(join25(cwd, ".agenthub", name));
   } catch {}
   return r.stdout.split("\x00").filter(Boolean).some((row) => {
     const path = row.slice(row.indexOf("\t") + 1);
@@ -17501,7 +18258,7 @@ function configTracked(cwd, name) {
     if (!opened)
       return path === `.agenthub/${name}`;
     try {
-      const s = statSync5(join23(cwd, path));
+      const s = statSync5(join25(cwd, path));
       return !!opened && s.dev === opened.dev && s.ino === opened.ino;
     } catch {
       return false;
@@ -17634,7 +18391,7 @@ var INSTANCE_CONFIG_FILES = ["config.json", "config.local.json"];
 function readInstanceConfigLayers(cwd) {
   return INSTANCE_CONFIG_FILES.flatMap((name) => {
     try {
-      return [{ name, raw: JSON.parse(readFileSync11(join24(cwd, ".agenthub", name), "utf8")) }];
+      return [{ name, raw: JSON.parse(readFileSync12(join26(cwd, ".agenthub", name), "utf8")) }];
     } catch (error) {
       if (error.code === "ENOENT")
         return [];
@@ -17664,8 +18421,8 @@ function readInstanceConfig(cwd, layers = readInstanceConfigLayers(cwd)) {
 
 // src/hub/control-client.ts
 init_project();
-import { readFileSync as readFileSync12 } from "fs";
-import { join as join25 } from "path";
+import { readFileSync as readFileSync13 } from "fs";
+import { join as join27 } from "path";
 function stateDirFor(cwd) {
   return projectContext(cwd).stateDir;
 }
@@ -17673,10 +18430,11 @@ var PROTOCOL = 16;
 var RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, PROTOCOL];
 function readControl(stateDir) {
   try {
-    const status = JSON.parse(readFileSync12(join25(stateDir, "status.json"), "utf8"));
-    const token = readFileSync12(join25(stateDir, "control-token"), "utf8").trim();
+    const status = JSON.parse(readFileSync13(join27(stateDir, "status.json"), "utf8"));
+    const token = readFileSync13(join27(stateDir, "control-token"), "utf8").trim();
     if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token)
       return;
+    const startModes = status.startModes && typeof status.startModes === "object" && !Array.isArray(status.startModes) ? Object.fromEntries(Object.entries(status.startModes).filter((entry) => entry[1] === "tui" || entry[1] === "headless")) : undefined;
     return {
       url: `ws://127.0.0.1:${status.controlPort}`,
       token,
@@ -17686,6 +18444,7 @@ function readControl(stateDir) {
       protocol: status.protocol,
       pid: status.pid,
       features: Array.isArray(status.features) ? status.features.filter((feature) => typeof feature === "string") : [],
+      ...startModes ? { startModes } : {},
       ...typeof status.pidSignature === "string" && status.pidSignature ? { pidSignature: status.pidSignature } : {}
     };
   } catch {
@@ -23472,7 +24231,7 @@ var ZodObject = /* @__PURE__ */ $constructor("ZodObject", (inst, def) => {
     return required(ZodNonOptional, this, args[0]);
   }
 });
-function object7(shape, params) {
+function object8(shape, params) {
   const def = {
     type: "object",
     shape: shape ?? {},
@@ -23533,7 +24292,7 @@ var ZodRecord = /* @__PURE__ */ $constructor("ZodRecord", (inst, def) => {
   inst.keyType = def.keyType;
   inst.valueType = def.valueType;
 });
-function record3(keyType, valueType, params) {
+function record4(keyType, valueType, params) {
   if (!valueType || !valueType._zod) {
     return new ZodRecord({
       type: "record",
@@ -23817,31 +24576,31 @@ var TaskCreationParamsSchema = looseObject({
   ttl: number2().optional(),
   pollInterval: number2().optional()
 });
-var TaskMetadataSchema = object7({
+var TaskMetadataSchema = object8({
   ttl: number2().optional()
 });
-var RelatedTaskMetadataSchema = object7({
+var RelatedTaskMetadataSchema = object8({
   taskId: string3()
 });
 var RequestMetaSchema = looseObject({
   progressToken: ProgressTokenSchema.optional(),
   [RELATED_TASK_META_KEY]: RelatedTaskMetadataSchema.optional()
 });
-var BaseRequestParamsSchema = object7({
+var BaseRequestParamsSchema = object8({
   _meta: RequestMetaSchema.optional()
 });
 var TaskAugmentedRequestParamsSchema = BaseRequestParamsSchema.extend({
   task: TaskMetadataSchema.optional()
 });
 var isTaskAugmentedRequestParams = (value) => TaskAugmentedRequestParamsSchema.safeParse(value).success;
-var RequestSchema = object7({
+var RequestSchema = object8({
   method: string3(),
   params: BaseRequestParamsSchema.loose().optional()
 });
-var NotificationsParamsSchema = object7({
+var NotificationsParamsSchema = object8({
   _meta: RequestMetaSchema.optional()
 });
-var NotificationSchema = object7({
+var NotificationSchema = object8({
   method: string3(),
   params: NotificationsParamsSchema.loose().optional()
 });
@@ -23849,18 +24608,18 @@ var ResultSchema = looseObject({
   _meta: RequestMetaSchema.optional()
 });
 var RequestIdSchema = union([string3(), number2().int()]);
-var JSONRPCRequestSchema = object7({
+var JSONRPCRequestSchema = object8({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema,
   ...RequestSchema.shape
 }).strict();
 var isJSONRPCRequest = (value) => JSONRPCRequestSchema.safeParse(value).success;
-var JSONRPCNotificationSchema = object7({
+var JSONRPCNotificationSchema = object8({
   jsonrpc: literal(JSONRPC_VERSION),
   ...NotificationSchema.shape
 }).strict();
 var isJSONRPCNotification = (value) => JSONRPCNotificationSchema.safeParse(value).success;
-var JSONRPCResultResponseSchema = object7({
+var JSONRPCResultResponseSchema = object8({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema,
   result: ResultSchema
@@ -23877,10 +24636,10 @@ var ErrorCode;
   ErrorCode[ErrorCode["InternalError"] = -32603] = "InternalError";
   ErrorCode[ErrorCode["UrlElicitationRequired"] = -32042] = "UrlElicitationRequired";
 })(ErrorCode || (ErrorCode = {}));
-var JSONRPCErrorResponseSchema = object7({
+var JSONRPCErrorResponseSchema = object8({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema.optional(),
-  error: object7({
+  error: object8({
     code: number2().int(),
     message: string3(),
     data: unknown().optional()
@@ -23903,16 +24662,16 @@ var CancelledNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/cancelled"),
   params: CancelledNotificationParamsSchema
 });
-var IconSchema = object7({
+var IconSchema = object8({
   src: string3(),
   mimeType: string3().optional(),
   sizes: array(string3()).optional(),
   theme: _enum(["light", "dark"]).optional()
 });
-var IconsSchema = object7({
+var IconsSchema = object8({
   icons: array(IconSchema).optional()
 });
-var BaseMetadataSchema = object7({
+var BaseMetadataSchema = object8({
   name: string3(),
   title: string3().optional()
 });
@@ -23923,9 +24682,9 @@ var ImplementationSchema = BaseMetadataSchema.extend({
   websiteUrl: string3().optional(),
   description: string3().optional()
 });
-var FormElicitationCapabilitySchema = intersection(object7({
+var FormElicitationCapabilitySchema = intersection(object8({
   applyDefaults: boolean2().optional()
-}), record3(string3(), unknown()));
+}), record4(string3(), unknown()));
 var ElicitationCapabilitySchema = preprocess((value) => {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     if (Object.keys(value).length === 0) {
@@ -23933,10 +24692,10 @@ var ElicitationCapabilitySchema = preprocess((value) => {
     }
   }
   return value;
-}, intersection(object7({
+}, intersection(object8({
   form: FormElicitationCapabilitySchema.optional(),
   url: AssertObjectSchema.optional()
-}), record3(string3(), unknown()).optional()));
+}), record4(string3(), unknown()).optional()));
 var ClientTasksCapabilitySchema = looseObject({
   list: AssertObjectSchema.optional(),
   cancel: AssertObjectSchema.optional(),
@@ -23958,18 +24717,18 @@ var ServerTasksCapabilitySchema = looseObject({
     }).optional()
   }).optional()
 });
-var ClientCapabilitiesSchema = object7({
-  experimental: record3(string3(), AssertObjectSchema).optional(),
-  sampling: object7({
+var ClientCapabilitiesSchema = object8({
+  experimental: record4(string3(), AssertObjectSchema).optional(),
+  sampling: object8({
     context: AssertObjectSchema.optional(),
     tools: AssertObjectSchema.optional()
   }).optional(),
   elicitation: ElicitationCapabilitySchema.optional(),
-  roots: object7({
+  roots: object8({
     listChanged: boolean2().optional()
   }).optional(),
   tasks: ClientTasksCapabilitySchema.optional(),
-  extensions: record3(string3(), AssertObjectSchema).optional()
+  extensions: record4(string3(), AssertObjectSchema).optional()
 });
 var InitializeRequestParamsSchema = BaseRequestParamsSchema.extend({
   protocolVersion: string3(),
@@ -23980,22 +24739,22 @@ var InitializeRequestSchema = RequestSchema.extend({
   method: literal("initialize"),
   params: InitializeRequestParamsSchema
 });
-var ServerCapabilitiesSchema = object7({
-  experimental: record3(string3(), AssertObjectSchema).optional(),
+var ServerCapabilitiesSchema = object8({
+  experimental: record4(string3(), AssertObjectSchema).optional(),
   logging: AssertObjectSchema.optional(),
   completions: AssertObjectSchema.optional(),
-  prompts: object7({
+  prompts: object8({
     listChanged: boolean2().optional()
   }).optional(),
-  resources: object7({
+  resources: object8({
     subscribe: boolean2().optional(),
     listChanged: boolean2().optional()
   }).optional(),
-  tools: object7({
+  tools: object8({
     listChanged: boolean2().optional()
   }).optional(),
   tasks: ServerTasksCapabilitySchema.optional(),
-  extensions: record3(string3(), AssertObjectSchema).optional()
+  extensions: record4(string3(), AssertObjectSchema).optional()
 });
 var InitializeResultSchema = ResultSchema.extend({
   protocolVersion: string3(),
@@ -24011,12 +24770,12 @@ var PingRequestSchema = RequestSchema.extend({
   method: literal("ping"),
   params: BaseRequestParamsSchema.optional()
 });
-var ProgressSchema = object7({
+var ProgressSchema = object8({
   progress: number2(),
   total: optional(number2()),
   message: optional(string3())
 });
-var ProgressNotificationParamsSchema = object7({
+var ProgressNotificationParamsSchema = object8({
   ...NotificationsParamsSchema.shape,
   ...ProgressSchema.shape,
   progressToken: ProgressTokenSchema
@@ -24035,7 +24794,7 @@ var PaginatedResultSchema = ResultSchema.extend({
   nextCursor: CursorSchema.optional()
 });
 var TaskStatusSchema = _enum(["working", "input_required", "completed", "failed", "cancelled"]);
-var TaskSchema = object7({
+var TaskSchema = object8({
   taskId: string3(),
   status: TaskStatusSchema,
   ttl: union([number2(), _null3()]),
@@ -24079,10 +24838,10 @@ var CancelTaskRequestSchema = RequestSchema.extend({
   })
 });
 var CancelTaskResultSchema = ResultSchema.merge(TaskSchema);
-var ResourceContentsSchema = object7({
+var ResourceContentsSchema = object8({
   uri: string3(),
   mimeType: optional(string3()),
-  _meta: record3(string3(), unknown()).optional()
+  _meta: record4(string3(), unknown()).optional()
 });
 var TextResourceContentsSchema = ResourceContentsSchema.extend({
   text: string3()
@@ -24099,12 +24858,12 @@ var BlobResourceContentsSchema = ResourceContentsSchema.extend({
   blob: Base64Schema
 });
 var RoleSchema = _enum(["user", "assistant"]);
-var AnnotationsSchema = object7({
+var AnnotationsSchema = object8({
   audience: array(RoleSchema).optional(),
   priority: number2().min(0).max(1).optional(),
   lastModified: datetime2({ offset: true }).optional()
 });
-var ResourceSchema = object7({
+var ResourceSchema = object8({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   uri: string3(),
@@ -24114,7 +24873,7 @@ var ResourceSchema = object7({
   annotations: AnnotationsSchema.optional(),
   _meta: optional(looseObject({}))
 });
-var ResourceTemplateSchema = object7({
+var ResourceTemplateSchema = object8({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   uriTemplate: string3(),
@@ -24167,12 +24926,12 @@ var ResourceUpdatedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/resources/updated"),
   params: ResourceUpdatedNotificationParamsSchema
 });
-var PromptArgumentSchema = object7({
+var PromptArgumentSchema = object8({
   name: string3(),
   description: optional(string3()),
   required: optional(boolean2())
 });
-var PromptSchema = object7({
+var PromptSchema = object8({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   description: optional(string3()),
@@ -24187,44 +24946,44 @@ var ListPromptsResultSchema = PaginatedResultSchema.extend({
 });
 var GetPromptRequestParamsSchema = BaseRequestParamsSchema.extend({
   name: string3(),
-  arguments: record3(string3(), string3()).optional()
+  arguments: record4(string3(), string3()).optional()
 });
 var GetPromptRequestSchema = RequestSchema.extend({
   method: literal("prompts/get"),
   params: GetPromptRequestParamsSchema
 });
-var TextContentSchema = object7({
+var TextContentSchema = object8({
   type: literal("text"),
   text: string3(),
   annotations: AnnotationsSchema.optional(),
-  _meta: record3(string3(), unknown()).optional()
+  _meta: record4(string3(), unknown()).optional()
 });
-var ImageContentSchema = object7({
+var ImageContentSchema = object8({
   type: literal("image"),
   data: Base64Schema,
   mimeType: string3(),
   annotations: AnnotationsSchema.optional(),
-  _meta: record3(string3(), unknown()).optional()
+  _meta: record4(string3(), unknown()).optional()
 });
-var AudioContentSchema = object7({
+var AudioContentSchema = object8({
   type: literal("audio"),
   data: Base64Schema,
   mimeType: string3(),
   annotations: AnnotationsSchema.optional(),
-  _meta: record3(string3(), unknown()).optional()
+  _meta: record4(string3(), unknown()).optional()
 });
-var ToolUseContentSchema = object7({
+var ToolUseContentSchema = object8({
   type: literal("tool_use"),
   name: string3(),
   id: string3(),
-  input: record3(string3(), unknown()),
-  _meta: record3(string3(), unknown()).optional()
+  input: record4(string3(), unknown()),
+  _meta: record4(string3(), unknown()).optional()
 });
-var EmbeddedResourceSchema = object7({
+var EmbeddedResourceSchema = object8({
   type: literal("resource"),
   resource: union([TextResourceContentsSchema, BlobResourceContentsSchema]),
   annotations: AnnotationsSchema.optional(),
-  _meta: record3(string3(), unknown()).optional()
+  _meta: record4(string3(), unknown()).optional()
 });
 var ResourceLinkSchema = ResourceSchema.extend({
   type: literal("resource_link")
@@ -24236,7 +24995,7 @@ var ContentBlockSchema = union([
   ResourceLinkSchema,
   EmbeddedResourceSchema
 ]);
-var PromptMessageSchema = object7({
+var PromptMessageSchema = object8({
   role: RoleSchema,
   content: ContentBlockSchema
 });
@@ -24248,33 +25007,33 @@ var PromptListChangedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/prompts/list_changed"),
   params: NotificationsParamsSchema.optional()
 });
-var ToolAnnotationsSchema = object7({
+var ToolAnnotationsSchema = object8({
   title: string3().optional(),
   readOnlyHint: boolean2().optional(),
   destructiveHint: boolean2().optional(),
   idempotentHint: boolean2().optional(),
   openWorldHint: boolean2().optional()
 });
-var ToolExecutionSchema = object7({
+var ToolExecutionSchema = object8({
   taskSupport: _enum(["required", "optional", "forbidden"]).optional()
 });
-var ToolSchema = object7({
+var ToolSchema = object8({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   description: string3().optional(),
-  inputSchema: object7({
+  inputSchema: object8({
     type: literal("object"),
-    properties: record3(string3(), AssertObjectSchema).optional(),
+    properties: record4(string3(), AssertObjectSchema).optional(),
     required: array(string3()).optional()
   }).catchall(unknown()),
-  outputSchema: object7({
+  outputSchema: object8({
     type: literal("object"),
-    properties: record3(string3(), AssertObjectSchema).optional(),
+    properties: record4(string3(), AssertObjectSchema).optional(),
     required: array(string3()).optional()
   }).catchall(unknown()).optional(),
   annotations: ToolAnnotationsSchema.optional(),
   execution: ToolExecutionSchema.optional(),
-  _meta: record3(string3(), unknown()).optional()
+  _meta: record4(string3(), unknown()).optional()
 });
 var ListToolsRequestSchema = PaginatedRequestSchema.extend({
   method: literal("tools/list")
@@ -24284,7 +25043,7 @@ var ListToolsResultSchema = PaginatedResultSchema.extend({
 });
 var CallToolResultSchema = ResultSchema.extend({
   content: array(ContentBlockSchema).default([]),
-  structuredContent: record3(string3(), unknown()).optional(),
+  structuredContent: record4(string3(), unknown()).optional(),
   isError: boolean2().optional()
 });
 var CompatibilityCallToolResultSchema = CallToolResultSchema.or(ResultSchema.extend({
@@ -24292,7 +25051,7 @@ var CompatibilityCallToolResultSchema = CallToolResultSchema.or(ResultSchema.ext
 }));
 var CallToolRequestParamsSchema = TaskAugmentedRequestParamsSchema.extend({
   name: string3(),
-  arguments: record3(string3(), unknown()).optional()
+  arguments: record4(string3(), unknown()).optional()
 });
 var CallToolRequestSchema = RequestSchema.extend({
   method: literal("tools/call"),
@@ -24302,7 +25061,7 @@ var ToolListChangedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/tools/list_changed"),
   params: NotificationsParamsSchema.optional()
 });
-var ListChangedOptionsBaseSchema = object7({
+var ListChangedOptionsBaseSchema = object8({
   autoRefresh: boolean2().default(true),
   debounceMs: number2().int().nonnegative().default(300)
 });
@@ -24323,25 +25082,25 @@ var LoggingMessageNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/message"),
   params: LoggingMessageNotificationParamsSchema
 });
-var ModelHintSchema = object7({
+var ModelHintSchema = object8({
   name: string3().optional()
 });
-var ModelPreferencesSchema = object7({
+var ModelPreferencesSchema = object8({
   hints: array(ModelHintSchema).optional(),
   costPriority: number2().min(0).max(1).optional(),
   speedPriority: number2().min(0).max(1).optional(),
   intelligencePriority: number2().min(0).max(1).optional()
 });
-var ToolChoiceSchema = object7({
+var ToolChoiceSchema = object8({
   mode: _enum(["auto", "required", "none"]).optional()
 });
-var ToolResultContentSchema = object7({
+var ToolResultContentSchema = object8({
   type: literal("tool_result"),
   toolUseId: string3().describe("The unique identifier for the corresponding tool call."),
   content: array(ContentBlockSchema).default([]),
-  structuredContent: object7({}).loose().optional(),
+  structuredContent: object8({}).loose().optional(),
   isError: boolean2().optional(),
-  _meta: record3(string3(), unknown()).optional()
+  _meta: record4(string3(), unknown()).optional()
 });
 var SamplingContentSchema = discriminatedUnion("type", [TextContentSchema, ImageContentSchema, AudioContentSchema]);
 var SamplingMessageContentBlockSchema = discriminatedUnion("type", [
@@ -24351,10 +25110,10 @@ var SamplingMessageContentBlockSchema = discriminatedUnion("type", [
   ToolUseContentSchema,
   ToolResultContentSchema
 ]);
-var SamplingMessageSchema = object7({
+var SamplingMessageSchema = object8({
   role: RoleSchema,
   content: union([SamplingMessageContentBlockSchema, array(SamplingMessageContentBlockSchema)]),
-  _meta: record3(string3(), unknown()).optional()
+  _meta: record4(string3(), unknown()).optional()
 });
 var CreateMessageRequestParamsSchema = TaskAugmentedRequestParamsSchema.extend({
   messages: array(SamplingMessageSchema),
@@ -24384,13 +25143,13 @@ var CreateMessageResultWithToolsSchema = ResultSchema.extend({
   role: RoleSchema,
   content: union([SamplingMessageContentBlockSchema, array(SamplingMessageContentBlockSchema)])
 });
-var BooleanSchemaSchema = object7({
+var BooleanSchemaSchema = object8({
   type: literal("boolean"),
   title: string3().optional(),
   description: string3().optional(),
   default: boolean2().optional()
 });
-var StringSchemaSchema = object7({
+var StringSchemaSchema = object8({
   type: literal("string"),
   title: string3().optional(),
   description: string3().optional(),
@@ -24399,7 +25158,7 @@ var StringSchemaSchema = object7({
   format: _enum(["email", "uri", "date", "date-time"]).optional(),
   default: string3().optional()
 });
-var NumberSchemaSchema = object7({
+var NumberSchemaSchema = object8({
   type: _enum(["number", "integer"]),
   title: string3().optional(),
   description: string3().optional(),
@@ -24407,24 +25166,24 @@ var NumberSchemaSchema = object7({
   maximum: number2().optional(),
   default: number2().optional()
 });
-var UntitledSingleSelectEnumSchemaSchema = object7({
+var UntitledSingleSelectEnumSchemaSchema = object8({
   type: literal("string"),
   title: string3().optional(),
   description: string3().optional(),
   enum: array(string3()),
   default: string3().optional()
 });
-var TitledSingleSelectEnumSchemaSchema = object7({
+var TitledSingleSelectEnumSchemaSchema = object8({
   type: literal("string"),
   title: string3().optional(),
   description: string3().optional(),
-  oneOf: array(object7({
+  oneOf: array(object8({
     const: string3(),
     title: string3()
   })),
   default: string3().optional()
 });
-var LegacyTitledEnumSchemaSchema = object7({
+var LegacyTitledEnumSchemaSchema = object8({
   type: literal("string"),
   title: string3().optional(),
   description: string3().optional(),
@@ -24433,26 +25192,26 @@ var LegacyTitledEnumSchemaSchema = object7({
   default: string3().optional()
 });
 var SingleSelectEnumSchemaSchema = union([UntitledSingleSelectEnumSchemaSchema, TitledSingleSelectEnumSchemaSchema]);
-var UntitledMultiSelectEnumSchemaSchema = object7({
+var UntitledMultiSelectEnumSchemaSchema = object8({
   type: literal("array"),
   title: string3().optional(),
   description: string3().optional(),
   minItems: number2().optional(),
   maxItems: number2().optional(),
-  items: object7({
+  items: object8({
     type: literal("string"),
     enum: array(string3())
   }),
   default: array(string3()).optional()
 });
-var TitledMultiSelectEnumSchemaSchema = object7({
+var TitledMultiSelectEnumSchemaSchema = object8({
   type: literal("array"),
   title: string3().optional(),
   description: string3().optional(),
   minItems: number2().optional(),
   maxItems: number2().optional(),
-  items: object7({
-    anyOf: array(object7({
+  items: object8({
+    anyOf: array(object8({
       const: string3(),
       title: string3()
     }))
@@ -24465,9 +25224,9 @@ var PrimitiveSchemaDefinitionSchema = union([EnumSchemaSchema, BooleanSchemaSche
 var ElicitRequestFormParamsSchema = TaskAugmentedRequestParamsSchema.extend({
   mode: literal("form").optional(),
   message: string3(),
-  requestedSchema: object7({
+  requestedSchema: object8({
     type: literal("object"),
-    properties: record3(string3(), PrimitiveSchemaDefinitionSchema),
+    properties: record4(string3(), PrimitiveSchemaDefinitionSchema),
     required: array(string3()).optional()
   })
 });
@@ -24491,24 +25250,24 @@ var ElicitationCompleteNotificationSchema = NotificationSchema.extend({
 });
 var ElicitResultSchema = ResultSchema.extend({
   action: _enum(["accept", "decline", "cancel"]),
-  content: preprocess((val) => val === null ? undefined : val, record3(string3(), union([string3(), number2(), boolean2(), array(string3())])).optional())
+  content: preprocess((val) => val === null ? undefined : val, record4(string3(), union([string3(), number2(), boolean2(), array(string3())])).optional())
 });
-var ResourceTemplateReferenceSchema = object7({
+var ResourceTemplateReferenceSchema = object8({
   type: literal("ref/resource"),
   uri: string3()
 });
-var PromptReferenceSchema = object7({
+var PromptReferenceSchema = object8({
   type: literal("ref/prompt"),
   name: string3()
 });
 var CompleteRequestParamsSchema = BaseRequestParamsSchema.extend({
   ref: union([PromptReferenceSchema, ResourceTemplateReferenceSchema]),
-  argument: object7({
+  argument: object8({
     name: string3(),
     value: string3()
   }),
-  context: object7({
-    arguments: record3(string3(), string3()).optional()
+  context: object8({
+    arguments: record4(string3(), string3()).optional()
   }).optional()
 });
 var CompleteRequestSchema = RequestSchema.extend({
@@ -24522,10 +25281,10 @@ var CompleteResultSchema = ResultSchema.extend({
     hasMore: optional(boolean2())
   })
 });
-var RootSchema = object7({
+var RootSchema = object8({
   uri: string3().startsWith("file://"),
   name: string3().optional(),
-  _meta: record3(string3(), unknown()).optional()
+  _meta: record4(string3(), unknown()).optional()
 });
 var ListRootsRequestSchema = RequestSchema.extend({
   method: literal("roots/list"),
@@ -26095,8 +26854,8 @@ class StdioServerTransport {
 }
 
 // src/adapters/claude-channel.ts
-import { readFileSync as readFileSync13 } from "fs";
-import { join as join26 } from "path";
+import { readFileSync as readFileSync14 } from "fs";
+import { join as join28 } from "path";
 init_hub_tools();
 init_envelope();
 
@@ -26135,7 +26894,7 @@ var channel = !toolsMode && process.env.AGENTHUB_CHANNEL === "1";
 function roles2() {
   const read = (name) => {
     try {
-      return JSON.parse(readFileSync13(join26(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
+      return JSON.parse(readFileSync14(join28(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
     } catch {
       return {};
     }
@@ -26154,7 +26913,7 @@ function sessionProfile() {
     for (const name of ["config.json", "config.local.json"]) {
       let data;
       try {
-        data = JSON.parse(readFileSync13(join26(projectRoot2, ".agenthub", name), "utf8"));
+        data = JSON.parse(readFileSync14(join28(projectRoot2, ".agenthub", name), "utf8"));
       } catch (error) {
         if (error.code === "ENOENT")
           continue;
@@ -26181,7 +26940,7 @@ function sessionRoles() {
     const read = (name) => {
       let raw;
       try {
-        raw = JSON.parse(readFileSync13(join26(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
+        raw = JSON.parse(readFileSync14(join28(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
       } catch {
         return {};
       }
@@ -26210,7 +26969,7 @@ var HELD = `another session is attached to the hub as "${peerId}"; this one is s
 var INBOX_CAP = 200;
 function peerHeld() {
   try {
-    const status = JSON.parse(readFileSync13(join26(stateDir, "status.json"), "utf8"));
+    const status = JSON.parse(readFileSync14(join28(stateDir, "status.json"), "utf8"));
     const peer = status.peers?.[peerId];
     if (channel && peer?.toolsOnly && !peer.claiming)
       return false;
@@ -26485,6 +27244,8 @@ async function callTool(req) {
       return text4(`not sent: ${res.error}`);
     if (res.recorded)
       return text4("recorded only ([FYI]): it is on the hub console and log, and no peer spent a turn on it");
+    if (res.dropped === "hop")
+      return text4(res.notice);
     const sent = `sent to: ${res.targets.join(", ") || "(no other peers attached)"}`;
     return text4(typeof res.notice === "string" ? `${sent}; ${res.notice}` : sent);
   }

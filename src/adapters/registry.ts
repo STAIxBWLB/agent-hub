@@ -1,4 +1,5 @@
-import { AGY_DEFINITION } from "./definitions/reviewer-variants.ts";
+import { AGY_DEFINITION } from "./agy/definition.ts";
+import { AGY_REVIEWER_VARIANT } from "./definitions/reviewer-variants.ts";
 import { builtinCliEntries } from "./definitions/native-cli-entry.ts";
 import { builtinPreview } from "./definitions/native-cli-preview.ts";
 import { DAEMON_PORTS } from "./definitions/native-factories.ts";
@@ -13,7 +14,7 @@ export const ADAPTER_API = 1;
 
 /** Ordered compatibility projections stay typed independently of definition implementation inference. */
 export const KNOWN_PEERS = ["claude", "codex", "kimi", "pi", "local"] as const;
-export const OPTIONAL_PEERS = ["qwen", "jcode"] as const;
+export const OPTIONAL_PEERS = ["qwen", "jcode", "agy"] as const;
 export const SUPPORTED_PEERS = [...KNOWN_PEERS, ...OPTIONAL_PEERS] as const;
 export const START_MODE_PEERS = ["pi", "codex", "kimi"] as const;
 export const OFFICE_PEER_ORDER: readonly string[] = KNOWN_PEERS;
@@ -26,7 +27,7 @@ function immutable<T>(value: T, seen = new WeakSet<object>()): T {
   return Object.freeze(value);
 }
 
-const fixedBuiltinDefinitions = new Set<AdapterDefinition>([...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, QWEN_DEFINITION, AGY_DEFINITION]);
+const fixedBuiltinDefinitions = new Set<AdapterDefinition>([...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, QWEN_DEFINITION, AGY_DEFINITION, AGY_REVIEWER_VARIANT]);
 for (const definition of [...fixedBuiltinDefinitions]) if (definition.reviewerVariant) fixedBuiltinDefinitions.add(definition.reviewerVariant);
 
 /** Keep the native catalog's order, independently of the legacy default-role object order. */
@@ -34,9 +35,10 @@ export const ADAPTERS: readonly AdapterDefinition[] = immutable([
   ...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN.filter(definition => definition.kind !== "jcode"),
   QWEN_DEFINITION,
   ...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN.filter(definition => definition.kind === "jcode"),
+  AGY_DEFINITION,
 ]);
 // Unavailable declarations are metadata, not supported native peers or launchers.
-const declarationOnlyDefinitions: readonly AdapterDefinition[] = immutable([AGY_DEFINITION]);
+const declarationOnlyDefinitions: readonly AdapterDefinition[] = immutable([]);
 const definitions = new Map<string, AdapterDefinition>();
 for (const definition of [...ADAPTERS, ...declarationOnlyDefinitions]) {
   assertDaemonEngine(definition);
@@ -95,7 +97,7 @@ export function familyOf(id: string, instances?: KindMap): string | undefined {
 }
 
 /** Compatibility projection order is observable in default role maps and planner selection. */
-const ROLE_ORDER = ["claude", "codex", "kimi", "local", "pi", "qwen", "jcode"] as const;
+const ROLE_ORDER = ["claude", "codex", "kimi", "local", "pi", "qwen", "jcode", "agy"] as const;
 export const PLANNER_PEERS = ["claude", "codex", "kimi", "qwen", "jcode"] as const;
 
 /** Callers own their role arrays, independent of immutable native policy. */
@@ -137,6 +139,7 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
     ["routing", definition.routing !== undefined],
     ["reviewerVariant", definition.reviewerVariant !== undefined],
     ["reviewer", definition.reviewer !== undefined],
+    ["hooks.factsHook", declared(definition.hooks, "factsHook")],
   ];
   const field = restricted.find(([, present]) => present)?.[0];
   if (field) throw new Error(`${field} is restricted to fixed builtin adapter definitions`);
@@ -145,7 +148,13 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
 /** Ordered catalog projections consumed by generic core hosts. */
 export const STARTABLE_PEERS = SUPPORTED_PEERS;
 export type SupportedPeer = typeof SUPPORTED_PEERS[number];
-export function isSupportedPeer(peer: unknown): peer is SupportedPeer { return typeof peer === "string" && ADAPTERS.some(definition => definition.kind === peer); }
+export function isSupportedPeer(peer: unknown, instances?: KindMap): peer is string {
+  if (typeof peer !== "string") return false;
+  if (ADAPTERS.some(definition => definition.kind === peer)) return true;
+  const kind = declaredKind(peer, instances);
+  const runtime = ADAPTERS.find(definition => definition.kind === kind), resolved = definitionOf(peer, instances);
+  return runtime !== undefined && resolved !== undefined && (resolved === runtime || resolved.reviewer?.unavailable === undefined);
+}
 export function isStartablePeer(peer: unknown): peer is SupportedPeer { return isSupportedPeer(peer) && definitionOf(peer)?.start.conductorStartable === true; }
 
 /** Body-free browser metadata, derived from the same native participation and managed-tool contracts. */

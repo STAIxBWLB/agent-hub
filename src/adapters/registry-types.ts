@@ -117,12 +117,36 @@ export interface CapabilityManifest {
   }[];
 }
 
+export interface NativeFactsInput {
+  event: "SessionStart" | "PreInvocation" | "PostInvocation" | "PreToolUse" | "PostToolUse" | "Stop";
+  phase: "session" | "start" | "pre" | "post" | "stop";
+  sessionId: string;
+  transcriptPath: string;
+  workspacePaths: string[];
+  tool: string;
+  input: Record<string, unknown>;
+  toolUseId?: string;
+  invocation?: number;
+  fullyIdle?: boolean;
+  terminationReason?: string;
+}
+export interface NativeFactsTranscript {
+  completion?: { id: string; index: number };
+  factIds: string[];
+}
+/** Fixed native codec and bounded readback, never supplied by project configuration. */
+export interface NativeFactsPort {
+  decode(event: string, input: unknown): NativeFactsInput | undefined;
+  encode(event: string, text?: string): Record<string, unknown> | undefined;
+  read(session: string, transcript: string): NativeFactsTranscript;
+}
+
 /** Only the frozen native seams are extensible; a definition cannot add an arbitrary daemon callback. */
 export interface NativeHooks {
   agentIdentity(init: unknown): void;
   onAttach(instance: string): void;
   onDetach(instance: string): void;
-  factsHook: (msg: unknown) => unknown;
+  factsHook: NativeFactsPort;
   conversationRevert(turnId: string): Promise<void>;
   replaceSession(req: StartRequest): Promise<unknown>;
   pluginInventory(ctx: { home: string; cwd?: string; env: Readonly<Record<string, string | undefined>> }): Addon[];
@@ -229,6 +253,8 @@ export interface AdapterDefinition {
   routing?: {
     /** Takes reviews only: never chosen or nominated as a task owner, for any class. */
     reviewOnly?: true;
+    /** Fixed role ceiling; project roles cannot turn an unmanaged implementer into a planner/reviewer. */
+    allowedRoles?: readonly string[];
     localAllowedRefusal?: string;
     longContext?: "backend-limit" | "skip-owner";
     preferredTier?: boolean;
@@ -253,6 +279,8 @@ export interface AdapterDefinition {
   };
   cli: {
     command: string;
+    /** Configuration leaves that select this peer's next native launch command or provider profile. */
+    launchConfigKeys?: readonly string[];
     /** Restrictions only; core identity remains authoritative. */
     authority?: "person" | "conductor";
     personOnlyFlags?: readonly string[];

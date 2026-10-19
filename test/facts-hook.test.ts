@@ -134,3 +134,30 @@ test("expensive scoped file policy is evaluated only for a usable PreToolUse wri
   expect(evaluated).toBe(4);
   expect(scopedWriteBlocked("pre", "ask-when-needed", "Write", () => true)).toBe(false);
 });
+
+test("native envelope size cap preserves existing large Claude permission, facts and post-effect hooks", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-large-claude-hook-"));
+  writeFileSync(join(dir, "file.ts"), "fixture");
+  const requests: any[] = [];
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { return server.upgrade(req) ? undefined : new Response("no", { status: 400 }); }, websocket: {
+    message(ws, raw) {
+      const msg = JSON.parse(String(raw));
+      if (msg.t === "hello") { expect(msg.token).toBe("fixture-token"); ws.send(JSON.stringify({ t: "welcome", rid: msg.rid })); }
+      else { requests.push(msg); ws.send(JSON.stringify({ ok: true, permission: "ask-when-needed", projectRoot: dir, text: "fixture fact", rid: msg.rid })); }
+    },
+  } });
+  writeFileSync(join(dir, "status.json"), JSON.stringify({ controlPort: server.port, protocol: PROTOCOL }));
+  writeFileSync(join(dir, "control-token"), "fixture-token");
+  try {
+    const input = { file_path: join(dir, "file.ts"), content: "x".repeat(1024 * 1024 + 1) };
+    const pre = await factsHook(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: input }), dir, "claude");
+    expect(pre).toBeDefined();
+    expect(JSON.parse(pre!).hookSpecificOutput).toMatchObject({ permissionDecision: "allow", additionalContext: "fixture fact" });
+    expect(requests.at(-1)).toMatchObject({ t: "facts", phase: "pre", tool: "Write" });
+    expect(requests.at(-1).input.content).toBe(input.content);
+    expect(await factsHook(JSON.stringify({ hook_event_name: "PostToolUse", tool_name: "Write", tool_input: input }), dir, "claude")).toBeUndefined();
+    expect(requests).toHaveLength(2);
+    expect(requests.at(-1)).toMatchObject({ t: "facts", phase: "post", tool: "Write" });
+    expect(requests.at(-1).input.content).toBe(input.content);
+  } finally { server.stop(true); rmSync(dir, { recursive: true, force: true }); }
+});

@@ -368,6 +368,9 @@ export function assign(
   const refusals = new Map<string, RoutingRefusal>();
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
     const deny = (code: RoutingRefusalCode, reason: string): string => { refusals.set(`${role}:${peer}`, { peer, role, code, reason }); return reason; };
+    const ceiling = definitionOf(peer, opts.instances)?.routing?.allowedRoles;
+    const requiredRole = role === "reviewer" || task.class === "review" ? "reviewer" : task.class === "plan" ? "planner" : "implementer";
+    if (ceiling && !ceiling.includes(requiredRole)) return deny("policy", "adapter role ceiling excludes this assignment");
     const unavailable = role === "reviewer" ? definitionOf(peer, opts.instances)?.reviewer?.unavailable : undefined;
     if (unavailable) return deny("policy", unavailable);
     if (role === "owner" && opts.capabilities && !pii) {

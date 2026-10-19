@@ -9,6 +9,7 @@ import { formatReport, formatTaskReport, type Report, type TaskReport } from "..
 export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | "Memory"; level: "ok" | "warn" | "fail" | "unknown"; name: string; detail: string }
 export interface StatusOutput {
   pendingRestart?: readonly { key: string; reason: string }[];
+  retainedConfig?: readonly { key: string; reason: string }[];
   taskStalls?: readonly { task: number; cause: { kind: string; peer?: string; dependency?: number; code: string } }[];
   pendingTaskOffers?: readonly { task: number; peer: string }[];
   isolatedChecks?: { pending?: number; orphans?: string[]; unknownReceipts?: readonly string[]; maintenanceUnavailable?: boolean };
@@ -191,6 +192,10 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   const out = lines(`agent-hub${data.version ? ` ${data.version}` : ""}  pid ${data.pid ?? "unknown"}  control 127.0.0.1:${data.controlPort ?? "unknown"}`, columns, "info");
   if (data.cwd) out.push(...lines(data.cwd, columns));
   for (const pending of data.pendingRestart ?? []) out.push(...detail("pending restart", `${pending.key}: ${pending.reason}`, columns, "attention"));
+  if (data.retainedConfig?.length) {
+    out.push(...detail("config retained", `${data.retainedConfig.map(row => row.key).join(", ")}; run ahub settings reload`, columns, "attention"));
+    for (const pending of data.retainedConfig) out.push(...detail("retained reason", `${pending.key}: ${pending.reason}`, columns, "attention"));
+  }
   for (const stall of data.taskStalls ?? []) out.push(...detail(`task #${stall.task} stalled`, `${stall.cause.kind}${stall.cause.peer ? ` ${stall.cause.peer}` : ""}${stall.cause.dependency ? ` #${stall.cause.dependency}` : ""}: ${stall.cause.code}; configure the peer, ahub task assign ${stall.task} <peer>, or ahub task cancel ${stall.task} --reason <text>`, columns, "attention"));
   for (const offer of data.pendingTaskOffers ?? []) out.push(...detail("task offer", `open ${offer.peer}: task #${offer.task} is waiting for it`, columns, "attention"));
   if (data.memoryProfile) {

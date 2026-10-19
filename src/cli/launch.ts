@@ -12,6 +12,8 @@ import type { InstancesConfig } from "../hub/instances.ts";
 import { kimiAcpCommand } from "../adapters/definitions/native-daemon-kimi.ts";
 export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
 
+export { retainedLaunchWarning } from "../adapters/definitions/native-cli-retained.ts";
+
 /** Consume only ahub's selector, never native arguments after the passthrough delimiter. */
 export function instanceLaunchArguments(command: string, raw: readonly string[], instances?: InstancesConfig): { instance?: string; args: string[]; hubStarted?: true } {
   if (!definitionOf(command)) return { args: [...raw] };
@@ -52,7 +54,7 @@ export function nativeLaunchEnv(tool: string, source: NodeJS.ProcessEnv, instanc
   delete env.AGENTHUB_UNATTENDED;
   // Channel evidence for the plugin (issue #205): set beside the development-channel flag `buildLaunch` always passes.
   const definition = definitionOf(tool, instances);
-  if (definition?.identity.mcp === "channel-plugin") env.AGENTHUB_CHANNEL = "1";
+  if (definition?.identity.mcp === "channel-plugin" && !definition.attach?.pullOnlyForms?.includes("tui")) env.AGENTHUB_CHANNEL = "1";
   if (definition?.attach?.pullOnlyForms?.includes("tui")) delete env.AGENTHUB_MODE; // its MCP child must attach pull-only, never as a tools socket
   return env;
 }

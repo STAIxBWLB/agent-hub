@@ -1,11 +1,11 @@
 # agent-hub
 
 A hub on one developer's machine where coding agents work as a team: Claude Code,
-Codex, Kimi Code, Pi and a hub-owned local worker (Qwen Code and Jcode optional)
-share a message bus and a task board per project and one memory on the machine,
-each attached through its own native interface.
+Codex, Kimi Code, Pi and a hub-owned local worker (Qwen Code, Jcode and Antigravity
+optional) share a message bus and a task board per project and one memory on the
+machine, each attached through its own native interface.
 
-Status: 0.12.37, control protocol 16. Bun + TypeScript, one loopback daemon per
+Status: 0.12.38, control protocol 16. Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## What it does today
@@ -85,11 +85,13 @@ Cancellation needs a daemon advertising `task_cancel`; controlled downgrades
 refuse while cancelled rows exist. For local/Pi implementation, opt in to an
 available `checks.runner = "container"`; issue-backed owners also need authenticated
 spec access. PII work and designated reviewers retain their separate exemptions.
-See [release verification](docs/verification/2026-10-19-0.12.37.md) for the live legs
+See [release verification](docs/verification/2026-10-20-0.12.38.md) for the live legs
 still open, including #418 AC8, #438 AC7, the native console settings leg (#439 AC5),
 real upgrades with reattach (#463) and with a managed terminal and cancelled tasks
 (#478), a live headless Claude review (#223), a Claude session over 32 MiB (#517), a
-live fresh Codex review (#519) and a live split of a real memory home (#536).
+live fresh Codex review (#519), a live split of a real memory home (#536), the live
+agy TUI/account leg (#485, hub task #251) and Kimi's interactive-TUI coexistence and
+usage checks (#533).
 
 Before migrating a memory home with `amem`, upgrade every hub using that home to
 0.12.30 or later, check `ahub memory profile-check`, then quiesce and close all memory
