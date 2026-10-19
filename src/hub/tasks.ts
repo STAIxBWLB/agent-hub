@@ -1056,7 +1056,7 @@ export class Tasks {
       if (input.cut !== undefined && (!Number.isSafeInteger(input.cut) || input.cut <= 0 || input.cut > 8_640_000_000_000_000)) throw new PreEffectToolRefusal("release cut must be a positive safe UTC timestamp");
       const dates = [release.plannedStart, input.cut ?? release.cut, release.ship].filter((date): date is number => date !== null);
       if (dates.some((date, index) => index > 0 && dates[index - 1]! > date)) throw new PreEffectToolRefusal("invalid release planned dates");
-      if (input.state === "active" && this.d.board.releases().some(row => row.id !== input.id && ["active", "frozen"].includes(row.state))) throw new PreEffectToolRefusal("one open release train at a time");
+      if ((input.state ?? release.state) === "active" && this.d.board.releases().some(row => row.id !== input.id && ["active", "frozen"].includes(row.state))) throw new PreEffectToolRefusal("one open release train at a time");
       return release;
     };
     const release = validate();
