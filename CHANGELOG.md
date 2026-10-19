@@ -2,6 +2,14 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## 0.12.39
+
+`ahub jcode` now opens jcode's own TUI on the hub-driven session (#464), and an ACP peer that is running a long tool call is no longer stopped as silent (#542).
+
+- `ahub jcode` with no flag opens jcode's native TUI in your terminal, attached to the session the hub drives over ACP; ACP stays the hub's only control channel. If jcode has not saved that session yet, the launcher prints `jcode's TUI opens after its first hub turn; send it work, or Ctrl-C` and opens the TUI as soon as the session is saved; Ctrl-C ends only the wait. A console or conductor start opens it through the terminal provider, never without a terminal. `ahub jcode --mode headless`, or `peers.jcode.start_mode: headless`, keeps the previous behaviour. TUI input during a hub turn joins that turn (no single-writer lock), and jcode's own tool policy applies (#464, #557).
+- An ACP tool call that was announced and has not completed or failed counts as running work: it keeps the turn alive up to a 30 min tool ceiling (never below `watchdog_ms`) before the inactivity cancel runs, with a log line naming the open tool (#542, #547).
+- Tests: the MLX fixtures take a free loopback port instead of fixed ports that collided on hosted Linux (#548, #552).
+
 ## 0.12.38
 
 Antigravity (`agy`) joins as an optional peer started from your own terminal (#485), Kimi can review in a fresh session like Claude and Codex (#533), and a reply past the hop cap now says so instead of claiming no peer is attached (#542).
