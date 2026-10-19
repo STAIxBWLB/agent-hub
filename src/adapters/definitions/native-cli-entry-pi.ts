@@ -12,8 +12,9 @@ export async function runPiEntry(ctx: NativeCliEntryContext): Promise<void> {
     catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
   }
   const flags = parsePiFlags(args, fail);
+  const acceptedMode = ctx.helpers.readControl(stateDir)?.startModes?.[peer];
   // #269: with no flag, Pi's start mode decides, and that is its TUI unless a person set headless.
-  const options = { ...flags, mode: flags.mode ?? (ctx.instance ? "headless" : startModeOf(projectConfig().peers, "pi")) };
+  const options = { ...flags, mode: flags.mode ?? (ctx.instance ? "headless" : acceptedMode ?? startModeOf(projectConfig().peers, "pi")) };
   if (ctx.instance && options.mode !== "headless") fail("extra Pi instances require headless mode");
   if (flags.mode === undefined && options.mode === "tui" && !(process.stdin.isTTY && process.stdout.isTTY)) {
     // The default asked for the TUI and there is no terminal here (the console's command line, a script): the hub

@@ -32,6 +32,8 @@ export interface ControlDescriptor {
   protocol?: number;
   pid?: number;
   features?: readonly string[];
+  /** The daemon's accepted native start modes, used by launchers when the file value is retained. */
+  startModes?: Readonly<Record<string, "tui" | "headless">>;
   /** #226: the daemon's processSignature, written into status.json only (not the status reply); absent before 0.12.21. */
   pidSignature?: string;
 }
@@ -42,8 +44,12 @@ export function readControl(stateDir: string): ControlDescriptor | undefined {
     const status = JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8"));
     const token = readFileSync(join(stateDir, "control-token"), "utf8").trim();
     if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token) return undefined;
+    const startModes = status.startModes && typeof status.startModes === "object" && !Array.isArray(status.startModes)
+      ? Object.fromEntries(Object.entries(status.startModes).filter((entry): entry is [string, "tui" | "headless"] => entry[1] === "tui" || entry[1] === "headless"))
+      : undefined;
     return { url: `ws://127.0.0.1:${status.controlPort}`, token, projectId: status.projectId,
       instanceId: status.instanceId, cwd: status.cwd, protocol: status.protocol, pid: status.pid, features: Array.isArray(status.features) ? status.features.filter((feature: unknown): feature is string => typeof feature === "string") : [],
+      ...(startModes ? { startModes } : {}),
       ...(typeof status.pidSignature === "string" && status.pidSignature ? { pidSignature: status.pidSignature } : {}) };
   } catch {
     return undefined;

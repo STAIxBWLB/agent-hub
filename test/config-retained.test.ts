@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startDaemon } from "../src/hub/daemon.ts";
-import { ControlClient } from "../src/hub/control-client.ts";
+import { startModeOf } from "../src/hub/start-mode.ts";
+import { ControlClient, readControl } from "../src/hub/control-client.ts";
 import { realPath } from "../src/hub/project.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { definitionOf } from "../src/adapters/registry.ts";
@@ -11,6 +12,8 @@ import { retainedLaunchWarning } from "../src/cli/launch.ts";
 import { renderStatus } from "../src/cli/output.ts";
 import { initialConsoleState, renderConsoleLines } from "../src/cli/console-state.ts";
 import { runClaudeEntry } from "../src/adapters/definitions/native-cli-entry-claude.ts";
+import { runKimiEntry } from "../src/adapters/definitions/native-cli-entry-kimi.ts";
+import { runPiEntry } from "../src/adapters/definitions/native-cli-entry-pi.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -57,6 +60,8 @@ test("#542 retained launch settings warn by adapter metadata and status renders 
   expect(warning).toContain("starting jcode with the running value");
   expect(warning).toContain("run ahub settings reload");
   expect(retainedLaunchWarning(status, "qwen", definitionOf("qwen")!)).toBeUndefined();
+  expect(retainedLaunchWarning({ retainedConfig: [{ key: "peers.kimi.start_mode", reason: "guarded change" }] }, "kimi", definitionOf("kimi")!)).toContain("config retained: peers.kimi.start_mode");
+  expect(retainedLaunchWarning({ retainedConfig: [{ key: "peers.pi.start_mode", reason: "guarded change" }] }, "pi", definitionOf("pi")!)).toContain("config retained: peers.pi.start_mode");
   const lines = renderStatus({ peers: {}, ...status }).flat().map(row => row.text);
   expect(lines.some(line => line.includes("config retained") && line.includes("jcode_cmd") && line.includes("run ahub settings reload"))).toBe(true);
   const consoleState = initialConsoleState(); consoleState.retainedConfig = status.retainedConfig;
@@ -77,7 +82,7 @@ test("#542 ahub jcode warns about a retained command and starts with the accepte
   writeFileSync(configFile("config.json"), JSON.stringify({
     batch_ms: 0, roster: { claude: false, codex: false, kimi: false, qwen: false, jcode: true, pi: false, local: false },
     memory: { enabled: false, native: false }, inference: { enabled: false }, mlx: { enabled: false },
-    pi: { enabled: false, auto_start: false }, approvals: { notify: false }, snapshots: { enabled: false },
+    pi: { enabled: false, auto_start: false }, approvals: { notify: true }, snapshots: { enabled: false },
   }));
   writeFileSync(configFile("routing.toml"), readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8").replace(/^pi_backend = "mlx"$/gm, 'pi_backend = "dgx"'));
   writeFileSync(configFile("config.local.json"), JSON.stringify({ jcode_cmd: oldCommand, jcode_home: home }));
@@ -90,10 +95,13 @@ test("#542 ahub jcode warns about a retained command and starts with the accepte
   const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0 });
   cleanup.push(() => daemon.stop());
   const client = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => client.close());
+  expect(readControl(stateDir)?.startModes).toMatchObject({ kimi: "tui", pi: "tui" });
 
   writeFileSync(configFile("config.local.json"), JSON.stringify({ jcode_cmd: pendingCommand, jcode_home: home }));
   const reload = await client.request({ t: "settings_reload" });
   expect(reload.confirmation?.keys).toContain("jcode_cmd");
+  expect((await client.request({ t: "status" })).status.retainedConfig).toContainEqual(expect.objectContaining({ key: "jcode_cmd" }));
+  expect((await client.request({ t: "settings_set", key: "approvals.notify", value: false, reason: "scoped reload retention regression" })).ok).toBe(true);
   expect((await client.request({ t: "status" })).status.retainedConfig).toContainEqual(expect.objectContaining({ key: "jcode_cmd" }));
 
   const env: NodeJS.ProcessEnv = {
@@ -132,4 +140,47 @@ test("#542 Claude's ordinary launcher does not require a hub connection", async 
   } as any;
   await expect(runClaudeEntry(context)).rejects.toThrow("native launcher boundary reached");
   expect(connections).toBe(0);
+});
+
+function modeEntryContext(peer: "kimi" | "pi", args: string[] = []) {
+  const requests: Record<string, unknown>[] = [];
+  const snapshot = { retainedConfig: [{ key: `peers.${peer}.start_mode`, reason: "guarded start mode change" }], startModes: { [peer]: "tui" }, roster: [{ peer, on: true }], peers: {} };
+  const context = {
+    args, cwd: "/project", stateDir: "/state", cliDir: "/package/src/cli", unattendedEnv: false,
+    definition: definitionOf(peer), projectConfig: () => ({ peers: { [peer]: { start_mode: "headless" } }, pi: { backend: "auto" } }),
+    connect: async () => ({ request: async (message: Record<string, unknown>) => {
+      requests.push(message);
+      return message.t === "status" ? { status: snapshot } : message.t === "peer_start" ? { ok: true, opened: "fixture", command: `ahub ${peer}` } : { ok: true };
+    }, close() {} }),
+    fail: (message: string): never => { throw new Error(message); },
+    takeFlags: (argv: string[]) => ({ one: Object.fromEntries(argv.reduce<string[][]>((pairs, value, index) => index % 2 ? pairs : [...pairs, [value, argv[index + 1]!]], [])), rest: [], many: {} }),
+    helpers: {
+      launcherPreview: () => ({}), retainedLaunchWarning,
+      startModeOf: (peers: unknown, kind: string) => startModeOf(peers as any, kind),
+      buildKimiTuiLaunch: () => ({ cmd: "fake-kimi", args: [] }), configureKimiMcp: () => ({ tracked: false }),
+      nativeLaunchEnv: () => ({}), childEnv: () => ({}),
+      recoveryLock: () => undefined, readControl: () => ({ startModes: { [peer]: "tui" } }), recordTerminalLaunch: async () => undefined,
+    },
+  } as any;
+  return { context, requests, snapshot };
+}
+
+test("#542 unflagged Kimi and Pi follow retained daemon start modes; explicit mode flags still win", async () => {
+  for (const [peer, run] of [["kimi", runKimiEntry], ["pi", runPiEntry]] as const) {
+    const pending = modeEntryContext(peer);
+    await run(pending.context);
+    expect(pending.requests.map(request => request.t)).toEqual(["status", "peer_start"]);
+
+    const explicit = modeEntryContext(peer, ["--mode", "headless"]);
+    if (peer === "kimi") explicit.context.helpers.configureKimiMcp = () => ({ tracked: false });
+    await run(explicit.context);
+    expect(explicit.requests.find(request => request.t === "start")).toMatchObject({ args: { mode: "headless" } });
+
+    const legacy = modeEntryContext(peer);
+    legacy.context.helpers.readControl = () => undefined;
+    delete (legacy.snapshot as { startModes?: unknown }).startModes;
+    legacy.snapshot.retainedConfig = [];
+    await run(legacy.context);
+    expect(legacy.requests.find(request => request.t === "start")).toMatchObject({ args: { mode: "headless" } });
+  }
 });

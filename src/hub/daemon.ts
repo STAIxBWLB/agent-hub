@@ -24,7 +24,7 @@ import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc, readSpecEdit, sdlcGh } from "./sdlc.ts";
 import { claudeStateFile, ownTerminalRow, pathEvidence, transcriptPersisted } from "./claude-state.ts";
 import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
-import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
+import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
 import { RecoveryDeferredHubError } from "./deferred-hub.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS, QUOTA_HANDOFF_PLATFORMS, NATIVE_CONFIG_BLOCKS, nativeConfigurationDefaults, mergeNativeConfiguration, retainNativeRouting, DAEMON_PORTS, definitionOf } from "../adapters/registry.ts";
@@ -684,6 +684,17 @@ export async function startDaemon(opts: DaemonOptions) {
   let reloadConfirmation: { token: string; fingerprint: string; revision: number; keys: string[] } | undefined;
   let pendingRestart: { key: string; reason: string }[] = [];
   let retainedConfig: { key: string; reason: string }[] = [];
+  function retainedConfigAfterReload(sources: ConfigSources, fileConfig: HubConfig, rejected: readonly { key: string; reason: string }[], scope?: string): { key: string; reason: string }[] {
+    const rows = new Map<string, string>();
+    if (scope) for (const row of retainedConfig) {
+      if (row.key === scope) continue;
+      const route = row.key.startsWith("routing."), path = (route ? row.key.slice(8) : row.key).split(".");
+      const current = valueAt(route ? sources.routing : fileConfig, path), accepted = valueAt(route ? desiredRouting : desiredConfig, path);
+      if (JSON.stringify(current) !== JSON.stringify(accepted)) rows.set(row.key, row.reason);
+    }
+    for (const row of rejected) rows.set(sanitize(row.key).slice(0, 160), sanitize(row.reason).slice(0, 1200));
+    return [...rows].map(([key, reason]) => ({ key, reason })).sort((left, right) => left.key.localeCompare(right.key));
+  }
   function retainedLaunchConfig(peer: string): Record<string, unknown> | undefined {
     const keys = definitionOf(peer)?.cli.launchConfigKeys ?? [];
     const pending = retainedConfig.filter(row => keys.some(key => row.key === key || row.key.startsWith(`${key}.`)));
@@ -2655,6 +2666,7 @@ export async function startDaemon(opts: DaemonOptions) {
     pluginBundle: SERVER_JS,
     pendingRestart,
     retainedConfig,
+    startModes: Object.fromEntries(START_MODE_PEERS.map(peer => [peer, startModeOf(config.peers, peer, declarations)])),
     memoryProfile: memoryProfileStatus(includeAttentionItems),
     lifecycleStages: [...lifecycleConfig.stages],
     // ponytail: off keeps the #257 phase schema until RETIRED_WORKFLOW_FROM, when the alias and this flag go together.
@@ -4372,7 +4384,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (priorDesired !== JSON.stringify([desiredConfig, desiredRouting, acceptedSources.trustLayers])) configRevision++;
       pendingRestart = configChanges({ ...config, roles: policyRoles }, candidate).filter(change => change.applies === "restart").map(change => ({ key: change.key, reason: change.reason! }));
       pendingRestart.push(...routingChanges.filter(key => configApply(key).applies === "restart").map(key => ({ key, reason: configApply(key).reason! })));
-      retainedConfig = prepared.rejected.map(({ key, reason }) => ({ key: sanitize(key).slice(0, 160), reason: sanitize(reason).slice(0, 1200) }));
+      retainedConfig = retainedConfigAfterReload(sources, prepared.fileConfig, prepared.rejected, scope);
       storedConfigCache = undefined;
       if (beforeConductor && (beforeConductor !== conductorPeer(config.roles) || config.conductor.feed === "off")) {
         bus.revokeSupervision(beforeConductor); supervision.resetPending(beforeConductor); budgetFeedSeen.clear();

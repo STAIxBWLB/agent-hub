@@ -8453,7 +8453,7 @@ import { spawnSync as spawnSync4 } from "child_process";
 async function runKimiEntry(ctx) {
   const peer = ctx.instance ?? "kimi";
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, connect, fail, takeFlags } = ctx;
-  const { launcherPreview, startModeOf, buildKimiTuiLaunch, configureKimiMcp, nativeLaunchEnv, childEnv } = ctx.helpers;
+  const { launcherPreview, readControl, startModeOf, buildKimiTuiLaunch, configureKimiMcp, nativeLaunchEnv, childEnv } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
     try {
       return console.log(JSON.stringify(launcherPreview("kimi", args, cwd, stateDir, unattendedEnv), null, 2));
@@ -8462,7 +8462,8 @@ async function runKimiEntry(ctx) {
     }
   }
   const { one, rest } = takeFlags(args, ["--mode", "--model"], []);
-  const mode = one["--mode"] ?? (ctx.instance ? "headless" : startModeOf(projectConfig().peers, "kimi")), model = one["--model"];
+  const acceptedMode = readControl(stateDir)?.startModes?.[peer];
+  const mode = one["--mode"] ?? (ctx.instance ? "headless" : acceptedMode ?? startModeOf(projectConfig().peers, "kimi")), model = one["--model"];
   if (ctx.instance && mode !== "headless")
     fail("extra Kimi instances require headless mode");
   if (rest.length || !["tui", "headless"].includes(mode))
@@ -8593,7 +8594,8 @@ async function runPiEntry(ctx) {
     }
   }
   const flags = parsePiFlags(args, fail);
-  const options = { ...flags, mode: flags.mode ?? (ctx.instance ? "headless" : startModeOf(projectConfig().peers, "pi")) };
+  const acceptedMode = ctx.helpers.readControl(stateDir)?.startModes?.[peer];
+  const options = { ...flags, mode: flags.mode ?? (ctx.instance ? "headless" : acceptedMode ?? startModeOf(projectConfig().peers, "pi")) };
   if (ctx.instance && options.mode !== "headless")
     fail("extra Pi instances require headless mode");
   if (flags.mode === undefined && options.mode === "tui" && !(process.stdin.isTTY && process.stdout.isTTY)) {
@@ -9639,7 +9641,7 @@ var init_builtin_metadata = __esm(() => {
       capabilities: { watch: true },
       init: { mcpFile: ".kimi-code/mcp.json" },
       hooks: { recallPlatform: "kimi", recallSource: "kimi" },
-      cli: { command: "kimi", launchConfigKeys: ["kimi_cmd"], stopNotice: (form) => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: (form) => ["kimi", "--mode", form] },
+      cli: { command: "kimi", launchConfigKeys: ["kimi_cmd", "peers.kimi.start_mode"], stopNotice: (form) => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: (form) => ["kimi", "--mode", form] },
       display: KIMI_DISPLAY
     },
     {
@@ -9661,7 +9663,7 @@ var init_builtin_metadata = __esm(() => {
       reporting: { tokensNotReported: true },
       configuration: { schema: piConfigSchema, routingSchema: piRoutingSchema, settings: PI_SETTINGS, restartReasons: PI_RESTART_REASONS, validateEffective: piEffectiveConfig },
       routing: { localAllowedRefusal: "local_allowed = false also excludes pi for this class", longContext: "backend-limit", preferredTier: true, handoffPriority: 0, trace: "backend", backendLabel: "pi" },
-      cli: { command: "pi", launchConfigKeys: ["pi.cmd", "pi.backend", "pi.dgx_coding", "pi.dgx_fast", "pi.max_steps", "routing.pi"], previewArgs: ["--mode", "tui"], retainedTerminalNotice: piRetainedTerminalNotice, personOnlyFlags: ["--replace-session"], startWords: (form) => ["pi", "--mode", form] },
+      cli: { command: "pi", launchConfigKeys: ["pi.cmd", "pi.backend", "pi.dgx_coding", "pi.dgx_fast", "pi.max_steps", "routing.pi", "peers.pi.start_mode"], previewArgs: ["--mode", "tui"], retainedTerminalNotice: piRetainedTerminalNotice, personOnlyFlags: ["--replace-session"], startWords: (form) => ["pi", "--mode", form] },
       display: PI_DISPLAY
     },
     {
@@ -17717,6 +17719,7 @@ function readControl(stateDir) {
     const token = readFileSync12(join25(stateDir, "control-token"), "utf8").trim();
     if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token)
       return;
+    const startModes = status.startModes && typeof status.startModes === "object" && !Array.isArray(status.startModes) ? Object.fromEntries(Object.entries(status.startModes).filter((entry) => entry[1] === "tui" || entry[1] === "headless")) : undefined;
     return {
       url: `ws://127.0.0.1:${status.controlPort}`,
       token,
@@ -17726,6 +17729,7 @@ function readControl(stateDir) {
       protocol: status.protocol,
       pid: status.pid,
       features: Array.isArray(status.features) ? status.features.filter((feature) => typeof feature === "string") : [],
+      ...startModes ? { startModes } : {},
       ...typeof status.pidSignature === "string" && status.pidSignature ? { pidSignature: status.pidSignature } : {}
     };
   } catch {

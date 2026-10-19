@@ -6,13 +6,14 @@ import { bundleInStatus, rosterInStatus } from "../../hub/status-roster.ts";
 export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
   const peer = ctx.instance ?? "kimi";
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, connect, fail, takeFlags } = ctx;
-  const { launcherPreview, startModeOf, buildKimiTuiLaunch, configureKimiMcp, nativeLaunchEnv, childEnv } = ctx.helpers;
+  const { launcherPreview, readControl, startModeOf, buildKimiTuiLaunch, configureKimiMcp, nativeLaunchEnv, childEnv } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
     try { return console.log(JSON.stringify(launcherPreview("kimi", args, cwd, stateDir, unattendedEnv), null, 2)); }
     catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
   }
   const { one, rest } = takeFlags(args, ["--mode", "--model"], []);
-  const mode = one["--mode"] ?? (ctx.instance ? "headless" : startModeOf(projectConfig().peers, "kimi")), model = one["--model"];
+  const acceptedMode = readControl(stateDir)?.startModes?.[peer];
+  const mode = one["--mode"] ?? (ctx.instance ? "headless" : acceptedMode ?? startModeOf(projectConfig().peers, "kimi")), model = one["--model"];
   if (ctx.instance && mode !== "headless") fail("extra Kimi instances require headless mode");
   if (rest.length || !["tui", "headless"].includes(mode)) fail("usage: ahub kimi [--mode tui|headless] [--model <alias>]");
   if (mode === "tui" && one["--mode"] === undefined && !(process.stdin.isTTY && process.stdout.isTTY)) {
