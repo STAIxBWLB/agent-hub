@@ -294,6 +294,7 @@ export class Bus {
     // Persist each deferred -> queued transition while deliveries are still fenced. A failed checkpoint
     // leaves the hold and the original pending head intact; a crash after it resumes from the journal.
     this.flushDeferredHub();
+    this.deferHub = false;
     this.recoveryHeld = false;
     this.onQueues?.();
     for (const id of this.peers.keys()) void this.drain(id);
