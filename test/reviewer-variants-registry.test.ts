@@ -34,8 +34,8 @@ test("fresh reviewer declarations refuse worktrees and permission overrides; ord
   expect(validateInstances({ "codex-build": { kind: "codex", roles: ["implementer"], start_mode: "headless", worktree: ".worktrees/build" } })["codex-build"]?.worktree).toBe(".worktrees/build");
 });
 
-test("default pool includes verified-capable fixed backends and excludes unavailable Kimi and agy", () => {
-  expect((registry as unknown as { DEFAULT_REVIEW_POOL: readonly string[] }).DEFAULT_REVIEW_POOL).toEqual(["claude", "codex"]);
+test("default pool includes Kimi native-policy backend and excludes agy implementer metadata", () => {
+  expect((registry as unknown as { DEFAULT_REVIEW_POOL: readonly string[] }).DEFAULT_REVIEW_POOL).toEqual(["claude", "codex", "kimi"]);
   expect(registry.definitionOf("agy")).toMatchObject({ optional: true, defaultOnRoster: false, routing: { reviewOnly: true } });
   expect(registry.definitionOf("agy")?.reviewer?.defaultPool).toBe(false);
   expect(registry.OPTIONAL_PEERS).not.toContain("agy");
@@ -44,10 +44,10 @@ test("default pool includes verified-capable fixed backends and excludes unavail
   expect(registry.ADAPTERS.some(definition => definition.kind === "agy")).toBe(false);
 });
 
-test("Kimi and agy are unavailable declaration metadata with no model factory or launch argv", () => {
-  for (const id of ["kimi-review", "agy-review"]) {
+test("agy stays unavailable metadata without a reviewer factory or launch argv", () => {
+  for (const id of ["agy-review"]) {
     const definition = registry.definitionOf(id, declarations)!;
-    expect(definition.reviewer?.unavailable).toContain("#533");
+    expect(definition.reviewer?.unavailable).toBe("agy is an implementer peer (#485)");
     expect(definition.reviewer?.backend).toBeUndefined();
     expect(definition.start.create).toBeUndefined();
     expect(definition.start.daemonPort).toBeUndefined();
@@ -94,4 +94,14 @@ test("fresh review mode is literal, explicit and restricted to reviewer-only hea
   }
   expect(() => validateInstances({ "pi-review": { kind: "pi", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } })).toThrow("review_mode");
   expect(registry.definitionOf("claude-review", validateInstances({ "claude-review": declarations["claude-review"] }))?.reviewer?.declaration).toBe("automatic");
+});
+
+
+test("Kimi fresh reviewer resolves only the task-MCP native-policy backend", () => {
+  const variant = registry.definitionOf("kimi-review", declarations)!;
+  expect(variant.reviewer?.unavailable).toBeUndefined();
+  expect(variant.reviewer?.backend).toMatchObject({ id: "kimi", taskMcp: true, nativePolicy: true });
+  expect(variant.start.create).toBeFunction();
+  expect(variant.start.daemonPort).toBe("reviewer-print");
+  expect(variant.budget.account).toBe("kimi");
 });

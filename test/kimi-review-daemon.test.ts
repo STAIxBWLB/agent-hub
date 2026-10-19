@@ -24,7 +24,7 @@ test("daemon Kimi fresh reviews use task capabilities and separate clean homes o
  cleanups.push(() => { process.env.PATH = originalPath; if (originalHome === undefined) delete process.env.KIMI_CODE_HOME; else process.env.KIMI_CODE_HOME = originalHome; });
  const daemon = await startDaemon({ cwd: project, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
   config: { ...DEFAULT_CONFIG, instances: { "kimi-review": { kind: "kimi", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } }, roles: { ...DEFAULT_CONFIG.roles, builder: ["implementer"] },
-   tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: { builder: 3 } }, review: { ...DEFAULT_CONFIG.review, pool: ["kimi"] }, batch_ms: 0,
+   budget: { ...DEFAULT_CONFIG.budget, checkpoint_timeout_s: 1 }, tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: { builder: 3 } }, review: { ...DEFAULT_CONFIG.review, pool: ["kimi"] }, batch_ms: 0,
    snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
    mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false } } });
  cleanups.push(() => daemon.stop());
@@ -48,4 +48,12 @@ test("daemon Kimi fresh reviews use task capabilities and separate clean homes o
   expect(row.cwd).not.toBe(project); expect(existsSync(row.home)).toBe(false);
   expect(row.agent).not.toContain("BUILDER NARRATIVE"); expect(JSON.stringify(row.show)).not.toContain("BUILDER NARRATIVE");
  }
+ expect(await console_.request({ t: "budget", set: { peer: "kimi-review", used: 0.99, resetsInMs: 60_000 } })).toMatchObject({ ok: true });
+ await until(() => daemon.bus.stateOf("kimi-review") === "paused");
+ const shared = (await console_.request({ t: "budget" })).budget;
+ expect(shared.kimi.paused).toBeDefined();
+ expect(shared["kimi-review"]).toBeUndefined();
+ expect(await console_.request({ t: "budget", resume: "kimi" })).toMatchObject({ ok: true });
+ await until(() => daemon.bus.stateOf("kimi-review") === "idle");
+
 });
