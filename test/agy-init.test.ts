@@ -18,9 +18,9 @@ test("init ignores only an existing untracked agy plugin and remains idempotent"
 test("init preserves a tracked agy plugin instead of adding a directory ignore", () => {
   const root = mkdtempSync(join(tmpdir(), "ahub-agy-init-tracked-")), entry = ".agents/plugins/agent-hub/";
   try {
-    expect(hubGitSync(["init", "-q"], { cwd: root }).status).toBe(0);
+    expect(hubGitSync(["init", "-q"], { cwd: root, encoding: "utf8" }).status).toBe(0);
     mkdirSync(join(root, entry), { recursive: true }); writeFileSync(join(root, entry, "plugin.json"), '{}\n');
-    expect(hubGitSync(["add", "-f", "--", entry], { cwd: root }).status).toBe(0);
+    expect(hubGitSync(["add", "-f", "--", entry], { cwd: root, encoding: "utf8" }).status).toBe(0);
     init(root); expect(readFileSync(join(root, ".gitignore"), "utf8")).not.toContain(entry);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
