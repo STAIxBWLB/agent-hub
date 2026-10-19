@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "9a4869c56dab869f4dfed57884a4a3dd06027825",
+      "verifiedAgainst": "adf2d5fd2fc2e9f5ce5b5e9daf594269de227238",
       "paths": [
         "package.json",
         "src/",
@@ -11,14 +11,14 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "9a4869c56dab869f4dfed57884a4a3dd06027825",
+      "verifiedAgainst": "adf2d5fd2fc2e9f5ce5b5e9daf594269de227238",
       "paths": [
         "src/",
         "templates/"
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "9a4869c56dab869f4dfed57884a4a3dd06027825",
+      "verifiedAgainst": "adf2d5fd2fc2e9f5ce5b5e9daf594269de227238",
       "paths": [
         "package.json",
         "src/",
@@ -35,7 +35,7 @@
       ]
     },
     "docs/quickstart.md": {
-      "verifiedAgainst": "9a4869c56dab869f4dfed57884a4a3dd06027825",
+      "verifiedAgainst": "adf2d5fd2fc2e9f5ce5b5e9daf594269de227238",
       "paths": [
         "package.json",
         "src/",
@@ -43,7 +43,7 @@
       ]
     },
     "docs/agent-notes/adapters.md": {
-      "verifiedAgainst": "9a4869c56dab869f4dfed57884a4a3dd06027825",
+      "verifiedAgainst": "adf2d5fd2fc2e9f5ce5b5e9daf594269de227238",
       "paths": [
         "src/adapters/",
         "src/pi/",
@@ -60,11 +60,16 @@
         "src/hub/start-mode.ts",
         "src/hub/terminal-open.ts",
         "test/registry-guard.test.ts",
-        "test/registry-guard.baseline.json"
+        "test/registry-guard.baseline.json",
+        "src/hub/native-hook-launch.ts",
+        "src/hub/peer-catalog.ts",
+        "src/cli/agy-mcp.ts",
+        "src/cli/kimi-mcp.ts",
+        "src/cli/jcode-mcp.ts"
       ]
     },
     "docs/agent-notes/benchmarks.md": {
-      "verifiedAgainst": "9a4869c56dab869f4dfed57884a4a3dd06027825",
+      "verifiedAgainst": "adf2d5fd2fc2e9f5ce5b5e9daf594269de227238",
       "paths": [
         "scripts/benchmarks/",
         "test/benchmarks/",
@@ -76,7 +81,7 @@
       ]
     },
     "docs/agent-notes/budget.md": {
-      "verifiedAgainst": "9a4869c56dab869f4dfed57884a4a3dd06027825",
+      "verifiedAgainst": "adf2d5fd2fc2e9f5ce5b5e9daf594269de227238",
       "paths": [
         "src/hub/budget.ts",
         "src/cli/statusline-tee.ts",
@@ -93,7 +98,7 @@
       ]
     },
     "docs/agent-notes/bus.md": {
-      "verifiedAgainst": "9a4869c56dab869f4dfed57884a4a3dd06027825",
+      "verifiedAgainst": "adf2d5fd2fc2e9f5ce5b5e9daf594269de227238",
       "paths": [
         "src/hub/bus.ts",
         "src/hub/envelope.ts",
@@ -107,7 +112,7 @@
       ]
     },
     "docs/agent-notes/daemon.md": {
-      "verifiedAgainst": "9a4869c56dab869f4dfed57884a4a3dd06027825",
+      "verifiedAgainst": "adf2d5fd2fc2e9f5ce5b5e9daf594269de227238",
       "paths": [
         "src/hub/daemon.ts",
         "src/hub/control-client.ts",
@@ -155,7 +160,10 @@
         "src/hub/instance-execution.ts",
         "src/hub/usage.ts",
         "src/hub/claude-state.ts",
-        "src/hub/memory-profile.ts"
+        "src/hub/memory-profile.ts",
+        "src/hub/native-hook-launch.ts",
+        "src/cli/output.ts",
+        "src/ui/index.html"
       ]
     },
     "docs/agent-notes/local-worker.md": {
@@ -180,7 +188,7 @@
       ]
     },
     "docs/agent-notes/tasks.md": {
-      "verifiedAgainst": "9a4869c56dab869f4dfed57884a4a3dd06027825",
+      "verifiedAgainst": "adf2d5fd2fc2e9f5ce5b5e9daf594269de227238",
       "paths": [
         "src/hub/tasks.ts",
         "src/hub/board.ts",
@@ -204,7 +212,7 @@
       ]
     },
     "docs/agent-notes/tests.md": {
-      "verifiedAgainst": "9a4869c56dab869f4dfed57884a4a3dd06027825",
+      "verifiedAgainst": "adf2d5fd2fc2e9f5ce5b5e9daf594269de227238",
       "paths": [
         "test/",
         "scripts/check.sh",
@@ -223,7 +231,7 @@
       ]
     },
     "docs/agent-notes/README.md": {
-      "verifiedAgainst": "9a4869c56dab869f4dfed57884a4a3dd06027825",
+      "verifiedAgainst": "adf2d5fd2fc2e9f5ce5b5e9daf594269de227238",
       "paths": [
         "src/cli/console-state.ts",
         "src/cli/attention.ts",
