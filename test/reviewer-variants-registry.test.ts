@@ -103,5 +103,5 @@ test("Kimi fresh reviewer resolves only the task-MCP native-policy backend", () 
   expect(variant.reviewer?.backend).toMatchObject({ id: "kimi", taskMcp: true, nativePolicy: true });
   expect(variant.start.create).toBeFunction();
   expect(variant.start.daemonPort).toBe("reviewer-print");
-  expect(variant.budget.account).toBe("kimi");
+  expect(variant.budget?.account).toBe("kimi");
 });
