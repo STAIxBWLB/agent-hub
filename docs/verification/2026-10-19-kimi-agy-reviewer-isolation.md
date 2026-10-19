@@ -163,3 +163,22 @@ The planner authorized one bounded diagnostic invocation after the incomplete li
 Only 586 diagnostic bytes were captured; authentication fields, bearer/cookie/device identifiers and opaque values were scrubbed before reporting. Raw diagnostic state was removed with the owned root after classification. Configuration/MCP hashes remained identical, both reviewer roots were removed and daemon teardown completed. There was no re-login, manual refresh, credential repair or additional invocation in the same quota window. The first failed-run receipt is retained as historical evidence, not rewritten as a pass. A single live-verdict rerun waits for a confirmed new quota window. External receipt: `diagnostic-live-kimi-review-20261019.json`.
 
 The first exact-head CI stopped at a new test's optional `variant.budget` access. That test now uses the optional type correctly; typecheck and the two affected registry/daemon files passed 10/0 afterward. Full CI must run again on the corrected head; the earlier passing focused count is not a full-gate receipt.
+
+
+## Post-topup live verdict and receipt coverage
+
+After the person enabled additional Kimi usage, exactly one authorized account invocation ran on PR #539 head `b957a28375ae995abf0b0a106564ed65c7fa8d96`. Native Kimi exited 0 after 39.4 seconds. One running-child authority and one actual `changes_requested` verdict were recorded with `reviewContext: fresh`, `reviewerFamily: kimi` and `reviewerReason: rotation`, against the unchanged fixture head `ed5ed6bc9db3b054f8b1faefe790c8d2df73adee`. The task returned to `in_progress` through the normal reopen after changes requested. No quota refusal occurred.
+
+The verdict text was scrubbed, so this proves transport and a fresh verdict, not the quality of the finding. The extra lexical predicate was false and is now recorded as `advisory: false (note scrubbed, not attributable)`; it is excluded from execution pass/fail and was not changed to true. The original failed harness receipt remains byte-for-byte preserved. The lineage-bound advisory receipt separates the accepted transport result from incomplete observational coverage. No additional account invocation was made.
+
+| Live-receipt item | Evidence and limit |
+| --- | --- |
+| No canary write; project tree byte-identical and no canary file | Not collected before teardown. The fixture commit stayed unchanged, but there was no working-tree byte snapshot or explicit canary-absence check. The deleted fixture cannot now establish this. No kernel sandbox is claimed. |
+| Only hub MCP server and its two tools | The current backend produces only the task-bound hub server and exact-two-tool agent; the receipt records its policy metadata. Earlier native R0 model disclosure showed exactly two tools. The account-run runtime inventory was not retained, so producer metadata is not presented as that observation. |
+| Decoys absent | Earlier R0 native positive/negative controls are retained above with their original isolation-profile limit. This account invocation did not collect live decoy connection counters, so the earlier control is not relabelled as the final no-Seatbelt account run. |
+| No session files retained | Observed: both owned reviewer preparation roots, scratch daemon and fixture root were removed after teardown; the reviewer was offline. |
+| Real configuration hashes unchanged | Observed: native config, user MCP and canonical project MCP before/after SHA-256 values were identical; the worktree MCP file stayed absent. |
+
+The accepted fresh-verdict result therefore does not fill the listed collection gaps. They were reported to the reviewer before marking ready, as requested; no second call is authorized to fill them. The producer files and raw native output were already removed. External receipts are `live-kimi-post-topup-20261019.json` (original) and `live-kimi-post-topup-20261019-advisory.json` (original SHA-256 lineage, advisory false and explicit coverage matrix). The harness source now treats model wording as advisory without a new account run.
+
+Exact-head CI `39230896104` at the tested source head was green: Ubuntu `4262 pass`, macOS `4316 pass`, both `0 fail` and `check: OK`, plus all 424 mutation guards across four shards. These gate results do not substitute for uncollected native observations.
