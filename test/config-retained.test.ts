@@ -11,7 +11,6 @@ import { retainedLaunchWarning } from "../src/cli/launch.ts";
 import { renderStatus } from "../src/cli/output.ts";
 import { initialConsoleState, renderConsoleLines } from "../src/cli/console-state.ts";
 import { runClaudeEntry } from "../src/adapters/definitions/native-cli-entry-claude.ts";
-import { definitionOf } from "../src/adapters/registry.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });

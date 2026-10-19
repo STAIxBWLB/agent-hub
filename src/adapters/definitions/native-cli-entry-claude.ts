@@ -27,9 +27,6 @@ export async function runClaudeEntry(ctx: NativeCliEntryContext): Promise<void> 
     catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
   }
   const control = readControl(stateDir);
-  const statusHub = await ctx.connect();
-  try { const snapshot = (await statusHub.request({ t: "status" })).status; const warning = ctx.helpers.retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning); }
-  finally { statusHub.close(); }
   if (control?.instanceId) {
     process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
     const terminal = await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: cwd } : undefined);
