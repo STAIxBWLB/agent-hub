@@ -10,7 +10,7 @@ async function registry(): Promise<any> {
 test("adapter registry keeps the existing native order, defaults and permissions without starting an owner", async () => {
   const r = await registry();
   expect(r.ADAPTER_API).toBe(1);
-  expect(r.ADAPTERS.map((definition: any) => definition.kind)).toEqual(["claude", "codex", "kimi", "pi", "local", "qwen", "jcode"]);
+  expect(r.ADAPTERS.map((definition: any) => definition.kind)).toEqual(["claude", "codex", "kimi", "pi", "local", "qwen", "jcode", "agy"]);
   for (const definition of r.ADAPTERS) {
     expect(definition.api).toBe(1);
     expect(definition.family).toBe(definition.kind);
@@ -25,6 +25,10 @@ test("adapter registry keeps the existing native order, defaults and permissions
   expect(r.definitionOf("qwen").start.ownsTerminal("headless")).toBe(false);
   expect(r.definitionOf("qwen").permission.modes).toEqual({ ask: { kind: "acp-mode", modeId: "default" }, "ask-when-needed": { kind: "acp-mode", modeId: "auto-edit" }, "never-ask": { kind: "acp-mode", modeId: "yolo" } });
   expect(r.definitionOf("qwen").permission.readOnly).toBeUndefined();
+  expect(r.definitionOf("agy")).toMatchObject({ optional: true, defaultOnRoster: false, transport: "ws-pull", roles: ["implementer", "verifier"], identity: { mcp: "channel-plugin" }, permission: { modes: {}, unmanagedForms: ["tui"] }, turnEnd: "native-hook" });
+  expect(r.definitionOf("agy").start.forms).toEqual(["tui"]);
+  expect(r.definitionOf("agy").session.recoveryRefusal()).toContain("continuity and resume are unavailable");
+  expect(r.definitionOf("agy").reviewerVariant.reviewer.unavailable).toBe("agy is an implementer peer (#485)");
 });
 
 test("adapter lookup never guesses undeclared instance suffixes or reserved core ids", async () => {

@@ -14,7 +14,7 @@ export interface InventorySite {
   text: string;
 }
 export interface BaselineEntry { file: string; symbol: string; count: number }
-const VENDORS = new Set(["claude", "codex", "kimi", "pi", "local", "qwen", "jcode"]);
+const VENDORS = new Set(["claude", "codex", "kimi", "pi", "local", "qwen", "jcode", "agy"]);
 const CLOSED_EXPORTS = new Set([
   "KNOWN_PEERS", "OPTIONAL_PEERS", "SUPPORTED_PEERS", "PLANNER_PEERS", "KnownPeer", "isKnownPeer", "isSupportedPeer",
   "START_MODE_PEERS", "STARTABLE_PEERS", "StartablePeer", "isStartablePeer", "KIMI_MODE_IDS", "QWEN_MODE_IDS",
@@ -262,7 +262,7 @@ export function compareRegistryBaseline(actual: readonly BaselineEntry[], baseli
 /** Released coordinators read these exact top-level literal exports before any effects. */
 export const REGISTRY_COMPATIBILITY_PROBES = [
   { file: "src/hub/peer-catalog.ts", symbol: "KNOWN_PEERS", count: 5, reason: "cross-release source probe" },
-  { file: "src/hub/peer-catalog.ts", symbol: "OPTIONAL_PEERS", count: 2, reason: "cross-release source probe" },
+  { file: "src/hub/peer-catalog.ts", symbol: "OPTIONAL_PEERS", count: 3, reason: "cross-release source probe" },
   { file: "src/hub/start-mode.ts", symbol: "START_MODE_PEERS", count: 3, reason: "cross-release source probe" },
 ] as const;
 

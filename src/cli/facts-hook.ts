@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { definitionOf } from "../adapters/registry.ts";
 // Managed Claude hook transport for turn-free facts, native observations and runtime permissions.
 // PreToolUse preserves facts additionalContext and adds permission decisions; other phases observe only.
 // A failed or timed-out hub decides nothing, leaving Claude's native permission rules in effect.
@@ -57,7 +58,19 @@ export function scopedWriteBlocked(phase: string, permission: unknown, tool: unk
 }
 
 /** The hook's stdout for one Claude Code hook input, or undefined for none. */
-export async function factsHook(stdin: string, stateDir: string, peer: string, timeoutMs = 2000): Promise<string | undefined> {
+export async function factsHook(stdin: string, stateDir: string, peer: string, timeoutMs = 2000, nativeEvent?: string): Promise<string | undefined> {
+  if (nativeEvent !== undefined) {
+    if (Buffer.byteLength(stdin, "utf8") > 1024 * 1024) return undefined;
+    const port = definitionOf(peer)?.hooks?.factsHook;
+    const payload: unknown = JSON.parse(stdin);
+    if (!port?.decode(nativeEvent, payload)) return undefined;
+    const hub = await ControlClient.connect(stateDir, { role: "tools", peer }, timeoutMs);
+    try {
+      const reply = await hub.request({ t: "native_facts", event: nativeEvent, payload, ...nativeHookIdentity(stateDir, peer) }, timeoutMs);
+      const output = reply.ok ? port.encode(nativeEvent, typeof reply.text === "string" ? reply.text : undefined) : undefined;
+      return output ? JSON.stringify(output) : undefined;
+    } finally { hub.close(); }
+  }
   const input = JSON.parse(stdin) as { hook_event_name?: unknown; tool_name?: unknown; tool_input?: unknown; tool_use_id?: unknown; session_id?: unknown; transcript_path?: unknown };
   const phase = ({ SessionStart: "session", UserPromptSubmit: "start", PostToolUse: "post", Stop: "stop" } as Record<string, string>)[String(input.hook_event_name)] ?? "pre";
   const hub = await ControlClient.connect(stateDir, { role: "tools", peer }, timeoutMs);
@@ -88,7 +101,7 @@ export async function factsHook(stdin: string, stateDir: string, peer: string, t
 if (import.meta.main) {
   try {
     const stateDir = process.env.AGENTHUB_STATE_DIR;
-    const out = stateDir ? await factsHook(await Bun.stdin.text(), stateDir, process.env.AGENTHUB_PEER_ID ?? "claude") : undefined;
+    const out = stateDir ? await factsHook(await Bun.stdin.text(), stateDir, process.env.AGENTHUB_PEER_ID ?? "claude", 2000, process.env.AGENTHUB_HOOK_EVENT) : undefined;
     if (out) console.log(out);
   } catch {
     // a hook that fails must not get in the way of the tool call

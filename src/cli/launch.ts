@@ -54,7 +54,7 @@ export function nativeLaunchEnv(tool: string, source: NodeJS.ProcessEnv, instanc
   delete env.AGENTHUB_UNATTENDED;
   // Channel evidence for the plugin (issue #205): set beside the development-channel flag `buildLaunch` always passes.
   const definition = definitionOf(tool, instances);
-  if (definition?.identity.mcp === "channel-plugin") env.AGENTHUB_CHANNEL = "1";
+  if (definition?.identity.mcp === "channel-plugin" && !definition.attach?.pullOnlyForms?.includes("tui")) env.AGENTHUB_CHANNEL = "1";
   if (definition?.attach?.pullOnlyForms?.includes("tui")) delete env.AGENTHUB_MODE; // its MCP child must attach pull-only, never as a tools socket
   return env;
 }

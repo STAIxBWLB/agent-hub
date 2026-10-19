@@ -7,8 +7,8 @@ import { peerRosterConfig, rosterAllows } from "../src/hub/roster.ts";
 
 test("A2 catalog projections retain exact legacy orders and source-probe compatibility", () => {
   expect(REGISTRY_KNOWN).toEqual(["claude", "codex", "kimi", "pi", "local"]);
-  expect(REGISTRY_OPTIONAL).toEqual(["qwen", "jcode"]);
-  expect(REGISTRY_SUPPORTED).toEqual(["claude", "codex", "kimi", "pi", "local", "qwen", "jcode"]);
+  expect(REGISTRY_OPTIONAL).toEqual(["qwen", "jcode", "agy"]);
+  expect(REGISTRY_SUPPORTED).toEqual(["claude", "codex", "kimi", "pi", "local", "qwen", "jcode", "agy"]);
   expect(KNOWN_PEERS).toEqual(REGISTRY_KNOWN); expect(OPTIONAL_PEERS).toEqual(REGISTRY_OPTIONAL);
   expect(SUPPORTED_PEERS).toEqual(REGISTRY_SUPPORTED); expect(STARTABLE_PEERS).toEqual(REGISTRY_SUPPORTED);
   expect(ADAPTERS.map(definition => definition.kind)).toEqual([...REGISTRY_SUPPORTED]);
@@ -26,7 +26,7 @@ test("A2 catalog projections retain exact legacy orders and source-probe compati
 test("A2 default-role projection preserves key order and caller-owned copies", () => {
   const basic = defaultPeerRoles(), all = defaultPeerRoles(true);
   expect(Object.keys(basic)).toEqual(["claude", "codex", "kimi", "local", "pi"]);
-  expect(Object.keys(all)).toEqual(["claude", "codex", "kimi", "local", "pi", "qwen", "jcode"]);
+  expect(Object.keys(all)).toEqual(["claude", "codex", "kimi", "local", "pi", "qwen", "jcode", "agy"]);
   for (const [peer, roles] of Object.entries(all)) expect(roles).toEqual([...definitionOf(peer)!.roles]);
   all.claude!.push("local-only"); basic.pi!.push("local-only");
   expect(defaultPeerRoles(true).claude).toEqual(["planner", "reviewer"]);
@@ -53,6 +53,9 @@ test("A2 start and roster projections preserve unknown ids and legacy defaults",
     expect(isSupportedPeer(peer)).toBe(true); expect(isKnownPeer(peer)).toBe(!(OPTIONAL_PEERS as readonly string[]).includes(peer));
     expect(startModeOf(undefined, peer)).toBe(["qwen", "jcode", "local"].includes(peer) ? "headless" : "tui");
   }
+  expect(isSupportedPeer("agy-build", { "agy-build": { kind: "agy", roles: ["implementer"] } })).toBe(true);
+  expect(isSupportedPeer("agy-guess")).toBe(false);
+  expect(isSupportedPeer("external-build", { "external-build": { kind: "external" } })).toBe(false);
   for (const peer of START_MODE_PEERS) expect(startModeOf({ [peer]: { start_mode: "headless" } }, peer)).toBe("headless");
   expect(startModeOf({ claude: { start_mode: "headless" } }, "claude")).toBe("tui");
   expect(() => peerStartConfig({ qwen: { start_mode: "headless" } })).toThrow("peers.qwen: only pi and codex and kimi have a start mode");

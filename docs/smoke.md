@@ -1963,3 +1963,11 @@ Kimi 2.2.0 is available when runtime preparation passes; a failed or unsupported
 
 
 Kimi usage ceiling: 2.2.0 print stream-json exposes no token counts. Keep unobserved usage unknown; native account quota/manual pauses still apply to the shared account. The fake OAuth race and authenticated verdict do not prove token metering or a new soft-token reading. Actual interactive-TUI coexistence and usage-source coverage remain separate from the completed fresh invocation and host MCP receipts.
+
+## Antigravity P1 (#485)
+
+- Pin agy 1.4.2; verify its executable/version and keep the actual TUI/IDE leg separate from the account-free [T0 transport receipt](verification/2026-10-19-agy-p1-t0.md).
+- With a reviewed compatible daemon running and agy explicitly on roster, the person runs `ahub agy` in a terminal. Confirm peer `agy` is pull-only, native permissions unmanaged and no hub sandbox/budget source is claimed.
+- In the native TUI call `hub_inbox`, `hub_send`, and a permitted board read/proposal within a non-PII task. Confirm the tool audience and actor remain `agy`, the native model consumes the tool results, and no unsolicited push or PII task text reaches it.
+- End the TUI normally. Confirm its group/socket detaches and only its matching managed three-file plugin is cleaned up; unrelated project/global settings remain unchanged.
+- This live project/account leg is pending until actually run. An older daemon's missing `native_hook_launch` refusal is not a successful TUI launch or grounds for an automatic restart of other active peers.
