@@ -1,3 +1,4 @@
+import { runAgyEntry } from "../agy/entry.ts";
 import type { BuiltinCliEntry } from "./native-cli-entry-types.ts";
 import { runClaudeEntry } from "./native-cli-entry-claude.ts";
 import { runCodexEntry } from "./native-cli-entry-codex.ts";
@@ -9,6 +10,7 @@ import { runLocalEntry } from "./native-cli-entry-local.ts";
 
 // Fixed trusted builtins only. No project configuration, caller payload or external module can register an entry.
 export const builtinCliEntries: readonly BuiltinCliEntry[] = Object.freeze([
+  { command: "agy", lifecycleAdmission: true, execute: runAgyEntry },
   { command: "claude", lifecycleAdmission: true, execute: runClaudeEntry },
   { command: "codex", lifecycleAdmission: true, execute: runCodexEntry },
   { command: "jcode", lifecycleAdmission: true, execute: runJcodeEntry },

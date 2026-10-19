@@ -1,3 +1,4 @@
+import { NativeHookLaunches } from "./native-hook-launch.ts";
 import { readReleaseHostAdmission, type ReleaseHostAdmission } from "./release-admission.ts";
 import { ContainerRunner, type RunnerOptions, type RunReceipt } from "./check-runner.ts";
 import { fetchSpec, specAvailable, specRefs } from "./spec-read.ts";
@@ -28,7 +29,7 @@ import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, isSupporte
 import { RecoveryDeferredHubError } from "./deferred-hub.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS, QUOTA_HANDOFF_PLATFORMS, NATIVE_CONFIG_BLOCKS, nativeConfigurationDefaults, mergeNativeConfiguration, retainNativeRouting, DAEMON_PORTS, definitionOf } from "../adapters/registry.ts";
-import { definitionOf as instanceDefinitionOf, KNOWN_PEERS as BASE_KNOWN_PEERS, SUPPORTED_PEERS as BASE_SUPPORTED_PEERS, STARTABLE_PEERS as BASE_STARTABLE_PEERS } from "../adapters/registry.ts";
+import { isSupportedPeer as registrySupportedPeer, definitionOf as instanceDefinitionOf, KNOWN_PEERS as BASE_KNOWN_PEERS, SUPPORTED_PEERS as BASE_SUPPORTED_PEERS, STARTABLE_PEERS as BASE_STARTABLE_PEERS } from "../adapters/registry.ts";
 import { effectiveInstanceRoles, instancePeerIds, validateInstances, type InstancesConfig } from "./instances.ts";
 import { INSTANCE_CONFIG_FILES, readInstanceConfig, readInstanceConfigLayers, readInstanceRoleConfig } from "./instance-config.ts";
 import { instanceBudgetHooks, projectBudgetHeadroom } from "./instance-budget.ts";
@@ -282,6 +283,10 @@ export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]
         conductor.approval_wait_s = block.approval_wait_s;
       }
     }
+  }
+  for (const [peer, assigned] of Object.entries(roles)) {
+    const ceiling = definitionOf(peer)?.routing?.allowedRoles;
+    if (ceiling && assigned.some(role => !ceiling.includes(role))) throw new Error(`roles.${peer} exceeds the adapter role ceiling`);
   }
   conductorPeer(roles);
   return { roles, conductor, ...(planner ? { planner } : {}) };
@@ -643,7 +648,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const KNOWN_PEERS: readonly string[] = [...BASE_KNOWN_PEERS, ...extraIds];
   const SUPPORTED_PEERS: readonly string[] = [...BASE_SUPPORTED_PEERS, ...extraIds];
   const STARTABLE_PEERS: readonly string[] = [...BASE_STARTABLE_PEERS, ...extraIds.filter(id => !channelExtras.includes(id))];
-  const isSupportedPeer = (peer: unknown): peer is string => typeof peer === "string" && definitionOf(peer) !== undefined;
+  const isSupportedPeer = (peer: unknown): peer is string => registrySupportedPeer(peer, declarations);
   const isStartablePeer = (peer: unknown): peer is string => typeof peer === "string" && !channelExtras.includes(peer) && definitionOf(peer)?.start.conductorStartable === true;
   const RESERVED_IDS = new Set([...BASE_RESERVED_IDS, ...extraIds.filter(id => !channelExtras.includes(id))]);
   // #223 R2: a declared instance whose effective roles are exactly reviewer gets review requests and its own task notices only.
@@ -1651,6 +1656,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const activeAt = new Map<PeerId, number>();
   interface NativeTurnStart { at: number; baseline?: string; generation: string; session: string; launch: string }
   const nativeTurnStart = new Map<PeerId, NativeTurnStart>();
+  const nativeHookLaunches = new NativeHookLaunches();
   const stopUnconfirmedNoticed = new WeakSet<NativeTurnStart>();
   const nativeStopWaits = new Map<PeerId, { start: NativeTurnStart; wait: ReturnType<typeof waitForClaudeCompletion> }>();
   /** Every Claude hook call's own start-up and the hub's time for it, summed per turn (issue #108): reported at Stop. */
@@ -5057,7 +5063,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       return void reply({ t: "welcome", projectId, instanceId, cwd: opts.cwd, protocol: PROTOCOL, features: DAEMON_FEATURES });
     }
-    if (stopping && msg.t !== "status" && msg.t !== "kill") return void reply({ ok: false, error: "hub is stopping" });
+    if (stopping && msg.t !== "status" && msg.t !== "kill" && !(c.role === "console" && msg.t === "native_hook_launch" && msg.op === "end")) return void reply({ ok: false, error: "hub is stopping" });
     if (c.role !== "console" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: `${c.peer} is off roster` });
     switch (msg.t) {
       case "permission_default": {
@@ -5178,6 +5184,61 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.peer && inReplyTo) bus.completeReply(c.peer, inReplyTo.id); // the delivery it answers was handled all the same
         if (hushed.length && !targets.length) return void reply({ t: "sent", ok: false, error: `not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}` });
         return void reply({ t: "sent", ok: true, targets, recorded: priority === "fyi", ...(offRoster.length ? { offRoster } : {}), ...(hushed.length ? { hushed: hushed.map((h) => h.peer) } : {}), ...((offRoster.length || hushed.length) ? { notice: [offRoster.length ? `retained off roster for ${offRoster.join(", ")}` : "", hushed.length ? `not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}` : ""].filter(Boolean).join("; ") } : {}) });
+      }
+      case "native_hook_launch": {
+        if (c.role !== "console" || typeof msg.peer !== "string" || !definitionOf(msg.peer)?.hooks?.factsHook) return void reply({ ok: false, error: "managed native launch requires the person and a supported hook adapter" });
+        if (msg.op === "end") return void reply({ ok: nativeHookLaunches.end(msg.peer, msg.launchId) });
+        if (recoveryActive() || stopping) return void reply({ ok: false, error: "recovery or shutdown is holding native launches" });
+        if (!membershipAllowed(msg.peer)) return void reply({ ok: false, error: "peer is off roster" });
+        if (msg.op !== "begin") return void reply({ ok: false, error: "unknown native launch operation" });
+        const owner = bus.peers.get(msg.peer);
+        if (owner && owner.state !== "offline") return void reply({ ok: false, error: "native peer is already attached; end it in its terminal first" });
+        try { return void reply({ ok: true, launchId: nativeHookLaunches.begin(msg.peer).id, instanceId }); }
+        catch (error) { return void reply({ ok: false, error: (error as Error).message }); }
+      }
+      case "native_facts": {
+        const peer = c.peer, port = peer ? definitionOf(peer)?.hooks?.factsHook : undefined;
+        if (!peer || c.role !== "tools" || !port || msg.nativeInstanceId !== instanceId) return void reply({ ok: false });
+        const launch = nativeHookLaunches.get(peer, msg.nativeLaunchId);
+        const native = typeof msg.event === "string" ? port.decode(msg.event, msg.payload) : undefined;
+        if (!launch || !native || !native.workspacePaths.some(root => { try { return realPath(root) === realPath(opts.cwd); } catch { return false; } })) return void reply({ ok: false });
+        if (launch.session && launch.session !== native.sessionId) return void reply({ ok: false });
+        launch.session = native.sessionId;
+        const owner = bus.peers.get(peer);
+        if (!(owner instanceof WsPeer) || owner.state === "offline" || owner.claiming) return void reply({ ok: native.event === "SessionStart" });
+        if (launch.generation && launch.generation !== owner.sessionGeneration) return void reply({ ok: false });
+        launch.generation = owner.sessionGeneration;
+        const current = () => !stopping && nativeHookLaunches.get(peer, msg.nativeLaunchId) === launch && bus.peers.get(peer) === owner && owner.sessionGeneration === launch.generation && owner.state !== "offline";
+        const readback = port.read(native.sessionId, native.transcriptPath);
+        if (factsOn()) { factSession(peer, native.sessionId); for (const id of readback.factIds) acked(peer, id, "native-hook"); }
+        if (native.event === "PreInvocation" || native.event === "PreToolUse") {
+          if (!launch.active || native.event === "PreInvocation" && native.invocation === 0) { launch.active = true; launch.turn = crypto.randomUUID(); launch.baseline = readback.completion?.index ?? -1; }
+          activeAt.set(peer, Date.now()); owner.nativeStarted(native.sessionId);
+        }
+        if (native.event === "Stop") {
+          if (!launch.active || !native.fullyIdle || native.terminationReason !== "NO_TOOL_CALL") return void reply({ ok: false });
+          // Native output can be flushed after its Stop command returns. Acknowledge observation, then wait for
+          // a fresh completion row while the same launcher/session/socket generation still owns the turn.
+          const turn = launch.turn, baseline = launch.baseline ?? -1;
+          reply({ ok: true, pending: true });
+          void (async () => {
+            const deadline = Date.now() + 2000;
+            let delay = 5;
+            while (current() && launch.active && launch.turn === turn) {
+              const completion = port.read(native.sessionId, native.transcriptPath).completion;
+              if (completion && completion.index > baseline && completion.id !== launch.completed) {
+                launch.completed = completion.id; launch.active = false;
+                turnEnded.set(peer, Date.now()); nativeCompletedAt.set(peer, Date.now()); tasks.cohorts.turnEnded(peer);
+                event({ type: "native_turn_end", peer, id: completion.id }); owner.nativeStopped(native.sessionId); return;
+              }
+              if (Date.now() >= deadline) { notify(`${peer}: native completion could not be verified; it stays busy until a verified turn end or detach`); return; }
+              await Bun.sleep(delay); delay = Math.min(50, delay * 2);
+            }
+          })().catch(() => log("managed native completion unavailable"));
+          return;
+        }
+        const offered = factsOn() && (native.event === "PreInvocation" || native.event === "SessionStart") ? offerFor(peer, native.toolUseId ?? `${native.sessionId}:invocation`) : undefined;
+        return void reply({ ok: true, ...(offered ? { text: offered.text } : {}) });
       }
       case "facts": {
         // Turn-free facts (issue #108) for Claude's hooks: `pre` before a tool runs (the fact rides back as additional

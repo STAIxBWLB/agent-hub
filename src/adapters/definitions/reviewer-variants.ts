@@ -27,7 +27,7 @@ const codexVariant = reviewerVariant("codex", "Codex reviewer", { backend: codex
 export const CODEX_REVIEWER_VARIANT: AdapterDefinition = { ...codexVariant, start: { ...codexVariant.start, create: createCodexReviewer } };
 export const KIMI_REVIEWER_VARIANT = reviewerVariant("kimi", "Kimi reviewer", { backend: kimiReviewerBackend, defaultPool: true, declaration: "explicit" }, KIMI_DISPLAY);
 /** Data-only declared placeholder for route explanations; no factory, backend or native argv. */
-export const AGY_DEFINITION: AdapterDefinition = {
+export const AGY_REVIEWER_VARIANT: AdapterDefinition = {
   ...reviewerVariant("agy", "agy reviewer", { defaultPool: false, declaration: "automatic", unavailable: "agy is an implementer peer (#485)" }, { palette: { fg: "#6558a6", bg: "#f1effa" } }),
   optional: true,
 };

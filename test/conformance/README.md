@@ -12,3 +12,5 @@
 - Explicit watchdog expiry follows observed native acceptance. Ordered transport barriers consume late ACP/Codex results before checking their generation fences. The local fake returns despite cancellation and the real parser consumes that response before the stale-answer assertion. Pi's authenticated bridge rejects stale generation completion and retains the current turn.
 
 The broader existing native-hook, permission, Pi extension, crash/recovery and teardown regression suites remain required. This kit does not replace them or claim to simulate provider accounts.
+
+Antigravity is the eighth optional builtin. Its actual pull-channel round trip and launcher/session/generation-fenced native hooks are covered by `test/agy-peer.test.ts`. `agy.test.ts` explicitly marks the driven headless delivery, permission-acknowledgement, quota and resume legs unsupported. They are not synthetic successes; agy P1 has no headless driver or budget source and its native permission policy stays unmanaged. The pinned native plugin/hook transport receipt is separate from these fixtures and from actual interactive TUI/IDE verification.

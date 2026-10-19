@@ -21,6 +21,7 @@ test("agy is a real optional implementer, with no cloud PII or reviewer admissio
   try {
     const routed = assign({ class: "implement", signals: ["pii"], reserved: "agy" }, { agy: "idle" }, loadRouting(root), { namedOwner: "agy", candidates: ["agy"], roles: { agy: ["implementer", "verifier"] } });
     expect(routed.owner).toBeUndefined();
+    for (const className of ["plan", "review"] as const) expect(assign({ class: className, signals: [], reserved: "agy" }, { agy: "idle" }, loadRouting(root), { namedOwner: "agy", namedReviewer: "agy", candidates: ["agy"], roles: { agy: ["planner", "reviewer"] } }).owner).toBeUndefined();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -30,6 +31,7 @@ test("agy pull attach and native hooks are bound to person launch, daemon, sessi
   const session = "ee5ab2ab-7319-4a81-82ca-bf2fc84678d0";
   const logs = join(root, ".gemini/antigravity-cli/brain", session, ".system_generated/logs"), transcript = join(logs, "transcript_full.jsonl");
   mkdirSync(logs, { recursive: true }); writeFileSync(transcript, "");
+  mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ roster: { agy: true }, memory: { enabled: false, native: false }, snapshots: { enabled: false }, pi: { enabled: false, auto_start: false }, inference: { enabled: false, triage: false }, mlx: { enabled: false } }));
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: {
     ...DEFAULT_CONFIG, roster: { agy: true }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
     inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false },
@@ -54,6 +56,8 @@ test("agy pull attach and native hooks are bound to person launch, daemon, sessi
     writeFileSync(transcript, JSON.stringify({ step_index: 2, source: "MODEL", type: "PLANNER_RESPONSE", status: "DONE", content: "complete" }) + "\n");
     expect((await facts("Stop", { fullyIdle: true, terminationReason: "NO_TOOL_CALL" })).ok).toBe(true);
     await until(() => daemon.bus.peers.get("agy")?.state === "idle");
+    const removed = await person.request({ t: "settings_set", key: "roster.agy", value: false, confirm: "agy" });
+    expect(removed).toMatchObject({ ok: true });
     expect((await person.request({ t: "native_hook_launch", op: "end", peer: "agy", launchId: admission.launchId })).ok).toBe(true);
     expect((await facts("PreInvocation")).ok).toBe(false);
   } finally {
