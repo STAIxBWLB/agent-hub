@@ -1030,17 +1030,17 @@ export class Tasks {
       this.plannerWriteAuthority(by);
       const task = this.d.board.get(input.id);
       if (!task || (task.planningRevision ?? 0) !== input.revision) throw new PreEffectToolRefusal("release assignment changed");
-      if (this.isPii(task) || by !== USER && task.pinned) throw new PreEffectToolRefusal("private or pinned release scope requires the person");
+      if (by !== USER && (this.isPii(task) || task.pinned)) throw new PreEffectToolRefusal("private or pinned release scope requires the person");
       for (const id of new Set([task.release, input.release])) if (id != null) {
         const release = this.d.board.release(id);
         if (!release || ["frozen", "shipped", "dropped"].includes(release.state)) throw new PreEffectToolRefusal("release scope is frozen or final");
       }
       return task;
     };
-    const before = validate(), signature = JSON.stringify(before);
-    if (!this.nameable(input.reason) || this.screenOn() && (await this.screenCall(input.reason)).label !== "clear") throw new PreEffectToolRefusal("release reason was not cleared for public planning");
+    const before = validate(), signature = JSON.stringify(before), privateScope = this.isPii(before);
+    if (!privateScope && (!this.nameable(input.reason) || this.screenOn() && (await this.screenCall(input.reason)).label !== "clear")) throw new PreEffectToolRefusal("release reason was not cleared for public planning");
     if (JSON.stringify(validate()) !== signature) throw new PreEffectToolRefusal("release assignment changed during screening");
-    const result = this.d.board.plan(input.id, by, { release: input.release }, input.revision, input.reason.trim());
+    const result = this.d.board.plan(input.id, by, { release: input.release }, input.revision, input.reason.trim(), privateScope);
     this.planningRecorded({ by, task: input.id, fields: ["release"], revision: result.planningRevision! });
     return result;
   }
