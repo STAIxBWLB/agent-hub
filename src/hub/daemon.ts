@@ -121,10 +121,10 @@ import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type Contex
 import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
 import { detectTooling } from "./tooling.ts";
 import { looksSecret, DEFAULT_LEASE_MS, extractNodes, memoryHome, SUGGESTED, taskKey, type CandidateStore, type MemoryStore, type GoalView, type Suggested, type View as MemoryView } from "@staix/agent-mem";
-import { AGENT_MEM_VERSION, MEMORY_SPLIT_INCOMPLETE, openProfileMemory, openProfileCandidates, type MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
+import { memoryProjectKey } from "@staix/agent-mem";
+import { AGENT_MEM_VERSION, MEMORY_SPLIT_INCOMPLETE, memoryProjectFor, openProfileMemory, openProfileCandidates, type MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
 import { syncMemory } from "@staix/agent-mem";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead } from "./read-tools.ts";
-import { memoryProjectKey } from "@staix/agent-mem";
 import { nativeRecall } from "../memory/recall.ts";
 import { promotionScreen, withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
 
@@ -984,7 +984,9 @@ export async function startDaemon(opts: DaemonOptions) {
   const recalled = new Set<PeerId>(); // once per peer per hub run, however often the peer's session restarts
   // #258: the hub's own store, machine-wide in ~/.agenthub/memory. Entries are filed under the project's memory key (its
   // normalized origin remote, the same on every machine; without one, its path). Fail-open: without it the hub works as before.
-  const memoryProject = memoryProjectKey(opts.cwd);
+  // Daemon start never depends on the memory home: an unresolvable home falls back to the raw key.
+  const memoryProjectRaw = memoryProjectKey(opts.cwd);
+  const memoryProject = (() => { try { return memoryProjectFor(opts.cwd); } catch { return memoryProjectRaw; } })();
   let memoryStore: MemoryStore | undefined;
   let memoryBinding: MemoryProfileBinding | undefined;
   let memoryProblem: string | undefined;
@@ -996,7 +998,7 @@ export async function startDaemon(opts: DaemonOptions) {
     memoryNotice(`hub native memory disabled: ${reason}`);
   };
   if (config.memory.native) {
-    try { const opened = openProfileMemory({ project: memoryProject, ttlMs: (config.memory.short_ttl_days ?? 14) * 24 * 3600_000, log, screen: promotionScreen(memoryProject, opts.cwd, () => activeRouting(), () => config.pii?.paths ?? [], (key) => {
+    try { const opened = openProfileMemory({ project: memoryProject, projectKey: memoryProjectRaw, ttlMs: (config.memory.short_ttl_days ?? 14) * 24 * 3600_000, log, screen: promotionScreen(memoryProject, opts.cwd, () => activeRouting(), () => config.pii?.paths ?? [], (key) => {
       const m = /#(\d+)@(\d+)$/.exec(key), t = m ? board.get(Number(m[1])) : undefined;
       return t && String(t.created) === m![2] ? [...(t.refs.paths ?? []), ...(t.plan?.paths ?? [])] : [];
     }) }, memoryUnavailable); memoryStore = opened.store; memoryBinding = opened.binding; startupCleanup.push(() => opened.store.close()); }

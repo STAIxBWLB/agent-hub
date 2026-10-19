@@ -1,7 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
-  CandidateStore, MemoryStore, realPath, memoryHome, openShardStore, readShardedSelection, resolveProfile, resolveShardProfile,
+  CandidateStore, MemoryStore, realPath, memoryHome, memoryProjectKey, openShardStore, readShardedSelection, resolveAlias, resolveProfile, resolveShardProfile,
   type BoundProfile, type ProfileInput, type StoreOptions,
 } from "@staix/agent-mem";
 import packageJson from "../../package.json";
@@ -42,7 +42,11 @@ const UNAVAILABLE = MEMORY_PROFILE_UNAVAILABLE;
 /** agent-mem#15 T2: a split marker that is not active (captured, malformed) is never read as an empty or legacy store. */
 export const MEMORY_SPLIT_INCOMPLETE = "memory home has a curated split that is not active; finish it with amem migrate --shards --resume, then restart the hub";
 /** Hub memory options: the project key selects this project's shard once the home is split. */
-export type ProfileMemoryOptions = StoreOptions & { project?: string };
+/**
+ * Hub memory options. `project` is the bound (alias-resolved) key; `projectKey`, when given, is the raw key it came
+ * from, and the entry fence latches the binding unavailable once the alias log maps it elsewhere.
+ */
+export type ProfileMemoryOptions = Omit<StoreOptions, "memoryDir"> & { project?: string; projectKey?: string };
 
 /** No handle was opened; distinct from an unavailable, still-bound handle. */
 export interface UnboundMemoryProfileReceipt {
@@ -77,7 +81,8 @@ function sameProfile(a: BoundProfile, b: BoundProfile): boolean {
     && a.generation === b.generation && a.selectorRevision === b.selectorRevision
     && !!a.sharded === !!b.sharded && a.shardKey === b.shardKey && !!a.shardUser === !!b.shardUser;
 }
-const splitMarked = (home: string) => existsSync(join(home, "shards.json"));
+// lstat, not exists: a dangling or unreadable marker is still a marker and must fail closed.
+const splitMarked = (home: string) => lstatSync(join(home, "shards.json"), { throwIfNoEntry: false }) !== undefined;
 /** Refuse an inactive split before any shard read, so the remedy names resume rather than the generic profile check. */
 function assertActiveSplit(home: string): void {
   try { readShardedSelection(home); } catch { throw new Error(MEMORY_SPLIT_INCOMPLETE); }
@@ -104,6 +109,14 @@ function receipt(profile: BoundProfile, state: MemoryProfileReceipt["state"], sk
   };
 }
 
+/**
+ * The project key agent-mem's own CLI binds: memoryProjectKey(cwd) through the person-reviewed alias log of the
+ * canonical memory home. The daemon and `ahub memory`/`ahub goal` use it so both open the same shard and rows.
+ */
+export function memoryProjectFor(cwd: string, opts: Pick<StoreOptions, "home"> = {}): string {
+  return resolveAlias(homeFor(opts), memoryProjectKey(cwd));
+}
+
 /** Inspect selection without constructing a store, index, or candidate sidecar. */
 export function selectedMemoryProfile(opts: StoreOptions = {}): MemoryProfileReceipt {
   assertLoadedAgentMem();
@@ -118,6 +131,8 @@ export class MemoryProfileBinding {
   private readonly directMemoryDir: string | undefined;
   /** The shard key on a split home; unused on an unsplit one. */
   private readonly project: string | undefined;
+  /** The raw key `project` was resolved from; an alias added later must not leave writes on the old key. */
+  private readonly projectKey: string | undefined;
   private unavailable = false;
 
   constructor(opts: ProfileMemoryOptions = {}, private readonly onUnavailable?: (neutralReason: string) => void, directMemoryDir?: string) {
@@ -125,6 +140,7 @@ export class MemoryProfileBinding {
     this.options = { home: opts.home };
     this.directMemoryDir = directMemoryDir;
     this.project = opts.project;
+    this.projectKey = opts.projectKey;
     this.home = directMemoryDir === undefined ? homeFor(this.options) : canonicalHome(directMemoryDir);
     this.profile = Object.freeze({ ...currentProfile(this.home, this.project) });
     this.explicitProfile = this.profile.kind === "shared-v1" ? "shared-v1" : Object.freeze({ generation: this.profile.generation! });
@@ -136,6 +152,7 @@ export class MemoryProfileBinding {
       const currentHome = this.directMemoryDir === undefined ? homeFor(this.options) : canonicalHome(this.directMemoryDir);
       const current = currentProfile(currentHome, this.project);
       if (currentHome !== this.home || !sameProfile(current, this.profile)) throw new Error(UNAVAILABLE);
+      if (this.projectKey !== undefined && resolveAlias(currentHome, this.projectKey) !== this.project) throw new Error(UNAVAILABLE);
     } catch {
       this.invalidate();
       throw new Error(UNAVAILABLE);

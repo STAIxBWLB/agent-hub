@@ -3,11 +3,10 @@ import { createStalenessProbe } from "../hub/memory-staleness.ts";
 import { looksSecret, type MemoryStore } from "@staix/agent-mem";
 import type { SyncOptions } from "@staix/agent-mem";
 import { MEMORY_USAGE as CORE_MEMORY_USAGE, rawMemoryCommand, rawGoalCommand } from "@staix/agent-mem";
-import { memoryProjectKey } from "@staix/agent-mem";
 import { mentionsPrivatePath, promotionScreen, withoutPii } from "../hub/memory-policy.ts";
 import { currentRouting, detectSignals } from "../hub/routing.ts";
 import { loadConfig } from "../hub/daemon.ts";
-import { bindProfileMemory, openProfileMemory, MEMORY_PROFILE_UNAVAILABLE, MEMORY_SPLIT_INCOMPLETE, type MemoryProfileReceipt, type ProfileMemoryOptions } from "../hub/memory-profile.ts";
+import { bindProfileMemory, memoryProjectFor, openProfileMemory, MEMORY_PROFILE_UNAVAILABLE, MEMORY_SPLIT_INCOMPLETE, type MemoryProfileReceipt, type ProfileMemoryOptions } from "../hub/memory-profile.ts";
 
 export { GOAL_USAGE } from "@staix/agent-mem";
 export const MEMORY_USAGE = `${CORE_MEMORY_USAGE} | decay [--days N] [--json] | profile-check [--json]`;
@@ -44,7 +43,7 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
     const cutoffMs = (opts.now ?? Date.now)() - days * 24 * 3600_000;
     if (!Number.isSafeInteger(days) || !Number.isFinite(cutoffMs) || Math.abs(cutoffMs) > 8_640_000_000_000_000) fail("--days is outside the supported date range");
     const cutoff = new Date(cutoffMs).toISOString();
-    const project = memoryProjectKey(cwd), routing = currentRouting(cwd), paths = privatePaths();
+    const project = memoryProjectFor(cwd), routing = currentRouting(cwd), paths = privatePaths();
     // Review must not promote a held source while reading it: only explicit person actions may append rows.
     const context = commandStores(opts.store, { project, deferPromotions: true, now: opts.now });
     const store = context.store;
@@ -68,11 +67,12 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
     } finally { if (context.owned) store.close(); }
   }
   let showStale = false;
-  const context = commandStores(opts.store, { project: memoryProjectKey(cwd), ttlMs: (loadConfigSafe(cwd)?.memory.short_ttl_days ?? 14) * 24 * 3600_000,
-    screen: promotionScreen(memoryProjectKey(cwd), cwd, () => currentRouting(cwd), privatePaths) });
+  const project = memoryProjectFor(cwd);
+  const context = commandStores(opts.store, { project, ttlMs: (loadConfigSafe(cwd)?.memory.short_ttl_days ?? 14) * 24 * 3600_000,
+    screen: promotionScreen(project, cwd, () => currentRouting(cwd), privatePaths) });
   try {
     context.binding.assertCurrent();
-    const text = await rawMemoryCommand(args, cwd, { ...opts, store: context.store, open: () => context.store,
+    const text = await rawMemoryCommand(args, cwd, { ...opts, project, store: context.store, open: () => context.store,
       readable: notes => {
       const paths = privatePaths(), visible = withoutPii(notes, currentRouting(cwd), cwd, paths);
       if (args[0] !== "show" || args.includes("--json")) return visible;
@@ -92,10 +92,11 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
 export async function goalCommand(args: string[], cwd: string, opts: { store?: MemoryStore; link?: (goal: string, task: string) => Promise<string>; person?: boolean } = {}): Promise<string> {
   const person = opts.person ?? detectCliIdentity(process.env).role === "console";
   const policy = (): string[] => { try { return loadConfig(cwd).pii?.paths ?? []; } catch (e) { return fail(`the project's config does not load (${(e as Error).message}); fix it before using long-term tasks`); } };
-  const context = commandStores(opts.store, { project: memoryProjectKey(cwd) });
+  const project = memoryProjectFor(cwd);
+  const context = commandStores(opts.store, { project });
   try {
     context.binding.assertCurrent();
-    const text = await rawGoalCommand(args, cwd, { ...opts, store: context.store, open: () => context.store,
+    const text = await rawGoalCommand(args, cwd, { ...opts, project, store: context.store, open: () => context.store,
       clean: (title, milestones, project) => !looksSecret(`${title}\n${milestones.join("\n")}`) && withoutPii([{ title, text: milestones.join("\n"), project }], currentRouting(cwd), cwd, policy()).length > 0,
     });
     return profileOutput(text, args.includes("--json"), context.binding.status(context.store), person);
