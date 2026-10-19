@@ -26485,6 +26485,8 @@ async function callTool(req) {
       return text4(`not sent: ${res.error}`);
     if (res.recorded)
       return text4("recorded only ([FYI]): it is on the hub console and log, and no peer spent a turn on it");
+    if (res.dropped === "hop")
+      return text4(res.notice);
     const sent = `sent to: ${res.targets.join(", ") || "(no other peers attached)"}`;
     return text4(typeof res.notice === "string" ? `${sent}; ${res.notice}` : sent);
   }
