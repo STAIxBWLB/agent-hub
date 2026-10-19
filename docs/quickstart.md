@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.38
+bun add -g github:STAIxBWLB/agent-hub#v0.12.39
 ahub setup
 ```
 
@@ -30,9 +30,15 @@ and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
 
-## Upgrading to 0.12.38
+## Upgrading to 0.12.39
 
-Restart Claude sessions after upgrading: each keeps the plugin server it started with, and the 0.12.38 plugin reports a reply stopped by the hop cap as not delivered instead of as sent (#546).
+Restart Claude sessions after upgrading: each keeps the plugin server it started with until restarted, so a restart loads the 0.12.39 plugin.
+
+`ahub jcode` now opens Jcode's native TUI on the hub-owned ACP session by default (#464). The TUI opens after Jcode's first hub turn saves the session; until then the launcher prints one waiting line, and Ctrl-C ends only the wait. Hub-made starts (the dashboard's Start control, the conductor's `hub_peer_start`) follow the start mode too, so they open a terminal for Jcode through a terminal provider. To keep the old headless default, run `ahub settings set peers.jcode.start_mode headless`, or pass `--mode headless`. See [Jcode operations](operations.md#optional-jcode-peer).
+
+Upgrading from 0.12.37 or earlier, the 0.12.38 notes below also apply.
+
+The 0.12.38 plugin reports a reply stopped by the hop cap as not delivered instead of as sent (#546); the restart above loads it.
 
 Antigravity (`agy`) can join as an optional pull-only implementer (#485). It is off roster by default: install the Antigravity CLI 1.4.2, run `ahub roster add agy`, then run `ahub agy` in a terminal. Its native permissions are unmanaged and it has no hub sandbox. See [Antigravity operations](operations.md#optional-antigravity-agy-peer).
 

@@ -73,11 +73,11 @@ export abstract class BasePeer implements PeerAdapter {
   }
 
   /** Any sign of life from a busy peer re-arms the watchdog (it measures inactivity, not duration). */
-  protected touch(): void {
+  protected touch(ms = this.watchdogMs): void {
     this.clearWatchdog();
     this.timer = setTimeout(() => {
       if (this._state === "busy") this.onWatchdog();
-    }, this.watchdogMs);
+    }, ms);
     this.timer.unref?.();
   }
 

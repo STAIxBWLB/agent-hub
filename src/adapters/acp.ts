@@ -79,6 +79,8 @@ export interface AcpOptions {
   /** Optional launch environment; recovery authority is always removed before spawn. */
   env?: NodeJS.ProcessEnv;
   watchdogMs?: number;
+  /** #542 D4: how long an open tool call keeps a silent turn alive; defaults to 30 minutes, never below the watchdog. */
+  toolCeilingMs?: number;
   /** Bound for a journal-less watchdog cancellation to report its prompt; defaults to the 30 s ACP handshake cap. */
   cancelWaitMs?: number;
   /** ACP stdio MCP servers for the session (the hub's task tools). */
@@ -108,6 +110,7 @@ export interface AcpOptions {
 const HANDSHAKE_MS = 30_000;
 /** Tool calls whose arguments are remembered until their permission request arrives. */
 const TOOL_INPUT_CAP = 64;
+const TOOL_CEILING_MS = 30 * 60_000;
 
 /**
  * The canonical tool binding (#138): an announced `<tool> (<server> MCP Server)` title resolves to
@@ -148,6 +151,8 @@ export class AcpPeer extends BasePeer {
   private readonly toolInputs = new Map<string, unknown>();
   private readonly toolText = new Map<string, string>(); // streamed argument text, per call, until it finishes
   private readonly toolTitles = new Map<string, string>(); // the title a call was announced with, per call id (#138)
+  private readonly openTools = new Map<string, string>(); // this turn's started, unfinished tool calls (#542 D4)
+  private lastSignAt = 0;
   private primed = false;
   private turn = 0; // generation: a prompt cancelled by the watchdog must not touch the turn that followed it
   private stopping = false;
@@ -339,6 +344,7 @@ export class AcpPeer extends BasePeer {
     this.deliveryAccepted = false;
     this.promptActivity = false;
     this.chunks = [];
+    this.openTools.clear();
     this.activityOpen = true;
     this.activityPrivate = envs.some(env => env.private === true);
     try { this.activityPrivate ||= this.opts.isPrivateTurn?.() === true; } catch { this.activityPrivate = true; }
@@ -415,6 +421,16 @@ export class AcpPeer extends BasePeer {
   protected override onWatchdog(): void {
     if (this.state !== "busy") return;
     if (this.cancelWait) { this.clearWatchdog(); return; }
+    // #542 D4: a tool call that started and has not finished is running, not silent, up to its own ceiling.
+    if (this.openTools.size) {
+      const ceiling = Math.max(this.watchdogMs, this.opts.toolCeilingMs ?? TOOL_CEILING_MS);
+      const remaining = ceiling - (Date.now() - this.lastSignAt);
+      if (remaining > 0) { this.touch(Math.min(this.watchdogMs, remaining)); return; }
+      // Privacy latches for the turn and fails closed, as in emitActivity; the title is agent-written, so one quoted line.
+      try { this.activityPrivate ||= this.opts.isPrivateTurn?.() === true; } catch { this.activityPrivate = true; }
+      const tools = this.activityPrivate ? "a tool call" : [...new Set(this.openTools.values())].map(title => JSON.stringify(activityText(title).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").slice(0, 80))).join(", ");
+      this.opts.log?.(`[${this.id}] open tool call (${tools}) silent past the ${Math.round(ceiling / 60_000)} min tool ceiling; cancelling the turn`);
+    }
     this.endActivity("watchdog cancelled", true);
     const cancelledTurn = this.turn;
     this.cancelPermissions();
@@ -482,7 +498,7 @@ export class AcpPeer extends BasePeer {
     } catch {
       return; // not protocol output
     }
-    if (this.state === "busy" && !this.cancelWait) this.touch();
+    if (this.state === "busy" && !this.cancelWait) { this.lastSignAt = Date.now(); this.touch(); }
 
     if (msg.method === "session/update") {
       if (msg.params?.sessionId && msg.params.sessionId !== this.sessionId) return;
@@ -517,7 +533,9 @@ export class AcpPeer extends BasePeer {
         if (u.sessionUpdate === "tool_call" && typeof u.title === "string") this.toolTitles.set(u.toolCallId, u.title);
         const text = Array.isArray(u.content) ? u.content.map((c: any) => (c?.type === "content" && c.content?.type === "text" ? String(c.content.text) : "")).join("") : "";
         if (text) this.toolText.set(u.toolCallId, text);
-        if (u.status === "completed" || u.status === "failed") (this.toolInputs.delete(u.toolCallId), this.toolText.delete(u.toolCallId), this.toolTitles.delete(u.toolCallId));
+        if (u.status === "completed" || u.status === "failed") (this.toolInputs.delete(u.toolCallId), this.toolText.delete(u.toolCallId), this.toolTitles.delete(u.toolCallId), this.openTools.delete(u.toolCallId));
+        else if (u.sessionUpdate === "tool_call" || this.openTools.has(u.toolCallId)) this.openTools.set(u.toolCallId, this.toolTitles.get(u.toolCallId) ?? "tool");
+        while (this.openTools.size > TOOL_INPUT_CAP) this.openTools.delete(this.openTools.keys().next().value as string);
         for (const map of [this.toolInputs, this.toolText, this.toolTitles]) while (map.size > TOOL_INPUT_CAP) map.delete(map.keys().next().value as string);
       }
       else if (u?.sessionUpdate === "usage_update") this.observeUsage(u, "usage_update");
