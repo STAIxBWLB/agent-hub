@@ -2,22 +2,35 @@ import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { acquireGeneration, ensureMlx, inspectMlx, stopMlx } from "../src/models/mlx.ts";
 
 const cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 
+// A free loopback port for a fixture: bind 0 on 127.0.0.1, read it, close (#548). A literal port collides with whatever else holds it on a shared runner.
+async function testFreePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => resolve()); });
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  if (!port) throw new Error("no free loopback port");
+  return port;
+}
+
 test("MLX supervisor records an owned process, enforces one generation, and cleans up only its owner", async () => {
   const runtimeDir = mkdtempSync(join(tmpdir(), "agenthub-mlx-"));
+  const port = await testFreePort();
   let killed = false;
   const child = { pid: 43210, kill: () => { killed = true; return true; } } as any;
   const processInfo = () => ({ command: "/venv/bin/mlx_lm.server --model /models/qwen3", start: "start-1" });
-  const handle = await ensureMlx({ runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", port: 47771,
+  const handle = await ensureMlx({ runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", port,
     spawn: (() => child) as any, processInfo, health: async () => true });
   cleanup.push(async () => { await handle.close(); rmSync(runtimeDir, { recursive: true, force: true }); });
-  const second = await ensureMlx({ runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", port: 47771, processInfo, health: async () => true });
-  expect(handle.url).toBe("http://127.0.0.1:47771/v1");
+  const second = await ensureMlx({ runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", port, processInfo, health: async () => true });
+  expect(handle.url).toBe(`http://127.0.0.1:${port}/v1`);
   expect(JSON.parse(readFileSync(join(runtimeDir, "owner.json"), "utf8"))).toMatchObject({ pid: 43210, modelPath: "/models/qwen3" });
   const release = await handle.acquire();
   const cancelled = new AbortController();
@@ -31,7 +44,8 @@ test("MLX supervisor records an owned process, enforces one generation, and clea
 
 test("MLX stop refuses a PID whose start signature changed", async () => {
   const runtimeDir = mkdtempSync(join(tmpdir(), "agenthub-mlx-owner-"));
-  writeFileSync(join(runtimeDir, "owner.json"), JSON.stringify({ schema: 1, token: "t", pid: 43210, bin: "/venv/bin/mlx_lm.server", modelPath: "/models/qwen3", host: "127.0.0.1", port: 47771, startedAt: Date.now(), processStart: "old-start" }));
+  const port = await testFreePort();
+  writeFileSync(join(runtimeDir, "owner.json"), JSON.stringify({ schema: 1, token: "t", pid: 43210, bin: "/venv/bin/mlx_lm.server", modelPath: "/models/qwen3", host: "127.0.0.1", port, startedAt: Date.now(), processStart: "old-start" }));
   await expect(stopMlx({ runtimeDir, processInfo: () => ({ command: "/venv/bin/mlx_lm.server --model /models/qwen3", start: "new-start" }) })).rejects.toThrow("refusing to kill");
   rmSync(runtimeDir, { recursive: true, force: true });
 });
@@ -45,6 +59,7 @@ test("MLX refuses malformed owner state instead of starting a duplicate", async 
 
 test("generation slots reclaim a dead or reused PID, then preserve an active claimant", async () => {
   const runtimeDir = mkdtempSync(join(tmpdir(), "agenthub-mlx-generation-reclaim-"));
+  const port = await testFreePort();
   const deadPid = 2_000_000_000;
   const reusedPid = deadPid + 1;
   const db = new Database(join(runtimeDir, "generation-slots.db"), { create: true });
@@ -59,7 +74,7 @@ test("generation slots reclaim a dead or reused PID, then preserve an active cla
       : pid === process.pid
         ? { command: "bun test", start: "self-start" }
         : undefined;
-  const handle = await ensureMlx({ runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", port: 47772,
+  const handle = await ensureMlx({ runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", port,
     spawn: (() => child) as any, processInfo, health: async () => true });
   cleanup.push(async () => { await handle.close(); rmSync(runtimeDir, { recursive: true, force: true }); });
 
@@ -69,7 +84,7 @@ test("generation slots reclaim a dead or reused PID, then preserve an active cla
   reused.query("INSERT OR REPLACE INTO generation_slots (slot, token, pid, process_start) VALUES (?, ?, ?, ?)").run(0, "reused-owner", reusedPid, "old-start");
   reused.close();
   const release = await handle.acquire();
-  const secondHandle = await ensureMlx({ runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", port: 47772, processInfo, health: async () => true });
+  const secondHandle = await ensureMlx({ runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", port, processInfo, health: async () => true });
   let secondFinished = false;
   const waiting = secondHandle.acquire().then((releaseSecond) => { secondFinished = true; return releaseSecond; });
   await Bun.sleep(70);
@@ -82,6 +97,7 @@ test("generation slots reclaim a dead or reused PID, then preserve an active cla
 
 test("generation slots fail closed for malformed owner rows", async () => {
   const runtimeDir = mkdtempSync(join(tmpdir(), "agenthub-mlx-generation-malformed-"));
+  const port = await testFreePort();
   const db = new Database(join(runtimeDir, "generation-slots.db"), { create: true });
   db.run(`CREATE TABLE generation_slots (slot INTEGER PRIMARY KEY, token TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL)`);
   db.query("INSERT INTO generation_slots (slot, token, pid, process_start) VALUES (?, ?, ?, ?)").run(0, "", 2_000_000_000, "old-start");
@@ -90,7 +106,7 @@ test("generation slots fail closed for malformed owner rows", async () => {
   const processInfo = (pid: number) => pid === child.pid
     ? { command: "/venv/bin/mlx_lm.server --model /models/qwen3", start: "child-start" }
     : pid === process.pid ? { command: "bun test", start: "self-start" } : undefined;
-  const handle = await ensureMlx({ runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", port: 47773,
+  const handle = await ensureMlx({ runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", port,
     spawn: (() => child) as any, processInfo, health: async () => true });
   await expect(handle.acquire()).rejects.toThrow("generation owner is malformed");
   rmSync(runtimeDir, { recursive: true, force: true });
@@ -98,6 +114,7 @@ test("generation slots fail closed for malformed owner rows", async () => {
 
 test("generation slots fail closed when a live owner cannot be authenticated", async () => {
   const runtimeDir = mkdtempSync(join(tmpdir(), "agenthub-mlx-generation-unknown-"));
+  const port = await testFreePort();
   const db = new Database(join(runtimeDir, "generation-slots.db"), { create: true });
   db.run(`CREATE TABLE generation_slots (slot INTEGER PRIMARY KEY, token TEXT NOT NULL, pid INTEGER NOT NULL, process_start TEXT NOT NULL)`);
   db.query("INSERT INTO generation_slots (slot, token, pid, process_start) VALUES (?, ?, ?, ?)").run(0, "unknown-owner", process.ppid, "old-start");
@@ -106,7 +123,7 @@ test("generation slots fail closed when a live owner cannot be authenticated", a
   const processInfo = (pid: number) => pid === child.pid
     ? { command: "/venv/bin/mlx_lm.server --model /models/qwen3", start: "child-start" }
     : pid === process.pid ? { command: "bun test", start: "self-start" } : undefined;
-  const handle = await ensureMlx({ runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", port: 47774,
+  const handle = await ensureMlx({ runtimeDir, modelPath: "/models/qwen3", bin: "/venv/bin/mlx_lm.server", port,
     spawn: (() => child) as any, processInfo, health: async () => true });
   await expect(handle.acquire()).rejects.toThrow("owner cannot be authenticated");
   rmSync(runtimeDir, { recursive: true, force: true });
