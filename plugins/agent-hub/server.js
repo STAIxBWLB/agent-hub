@@ -1126,19 +1126,27 @@ function configFiles(cwd, env) {
 }
 function hostCredentialRoots(env, cwd) {
   const home = resolve3(cwd, env.HOME || homedir());
-  const homes = [...new Set([home, credentialCanonicalPath(home)])];
-  const roots = homes.flatMap((base) => HOST_CREDENTIAL_PATHS.map((entry) => join3(base, entry)));
-  const configured = HOST_CREDENTIAL_ENV.flatMap((key) => env[key] ? [env[key]] : []);
+  const homes = [...new Set([home, canonicalLabelled(home, "HOME")])];
+  const roots = homes.flatMap((base) => HOST_CREDENTIAL_PATHS.map((entry) => ({ path: join3(base, entry), label: `~/${entry}` })));
+  const configured = HOST_CREDENTIAL_ENV.flatMap((key) => env[key] ? [{ path: env[key], label: `$${key}` }] : []);
   if (env.KUBECONFIG)
-    configured.push(...env.KUBECONFIG.split(delimiter).filter(Boolean));
+    configured.push(...env.KUBECONFIG.split(delimiter).filter(Boolean).map((path) => ({ path, label: "$KUBECONFIG" })));
   if (configured.length > 64)
     throw new Error("credential root bound exceeded");
-  for (const entry of configured) {
+  for (const { path: entry, label } of configured) {
     if (Buffer.byteLength(entry) > 4096 || /\p{Cc}/u.test(entry))
-      throw new Error("invalid credential root");
-    roots.push(entry.startsWith("~/") ? resolve3(home, entry.slice(2)) : resolve3(cwd, entry));
+      throw new CredentialRootError(label, "unsupported");
+    roots.push({ path: entry.startsWith("~/") ? resolve3(home, entry.slice(2)) : resolve3(cwd, entry), label });
   }
-  return [...new Set(roots)];
+  const seen = new Set;
+  return roots.filter((root) => !seen.has(root.path) && seen.add(root.path));
+}
+function canonicalLabelled(lexical, label) {
+  try {
+    return credentialCanonicalPath(lexical);
+  } catch (error) {
+    throw new CredentialRootError(label, error.code === "ENOENT" ? "dangling" : "unreadable");
+  }
 }
 function credentialCanonicalPath(lexical) {
   let ancestor = lexical;
@@ -1155,15 +1163,13 @@ function credentialCanonicalPath(lexical) {
   return join3(realPath(ancestor), relative(ancestor, lexical));
 }
 function denyCredentialRoots(filesystem, roots, cwd) {
-  for (const lexical of roots) {
+  for (const { path: lexical, label } of roots) {
     if (/[?*\[\]{}]/.test(lexical))
-      throw new Error("unverified credential root syntax");
-    const targets = new Set([lexical, credentialCanonicalPath(lexical)]);
+      throw new CredentialRootError(label, "unsupported");
+    const targets = new Set([lexical, canonicalLabelled(lexical, label)]);
     for (const target of targets) {
-      if (/[?*\[\]{}]/.test(target))
-        throw new Error("unverified credential root syntax");
-      if (inside(cwd, target))
-        throw new Error("credential root overlaps checkout");
+      if (/[?*\[\]{}]/.test(target) || inside(cwd, target))
+        throw new CredentialRootError(label, "unsupported");
       filesystem[target] = "deny";
       filesystem[`${target.replace(/\/$/, "")}/**`] = "deny";
     }
@@ -1416,11 +1422,15 @@ AHUB_CODEX_HOST_ALIAS_DENIED` || existsSync2(writeFile))
         evidence: ["model-free-mcp-inventory-disabled-ambient", "hub-tools-exact-allowlist", "plugins-and-hooks-disabled", "apps-disabled-effective-feature-readback", "web-search-disabled", "project-untrusted", "native-public-read-private-deny-write-deny", "native-glob-and-symlink-private-deny", "portable-core-name-and-state-deny", "standard-host-credential-roots-denied", "binary-config-stable", "binary-hash-once-metadata-fence", "session-ephemeral"]
       }
     };
-  } catch {
+  } catch (error) {
     if (root) {
       try {
         rmSync(root, { recursive: true, force: true });
       } catch {}
+    }
+    if (error instanceof CredentialRootError) {
+      const why = { dangling: "a dangling link", unreadable: "an unreadable path", unsupported: "unsupported syntax or overlapping the checkout" }[error.kind];
+      return { unavailable: `Codex reviewer isolation receipt unavailable (credential root ${error.label} is ${why}; remove or repair it)` };
     }
     return { unavailable: "Codex reviewer isolation receipt unavailable (version, MCP inventory, sandbox, configuration or process proof)" };
   }
@@ -1432,7 +1442,7 @@ var VERSION = "0.146.0", TOOLS, CAP, MAX_SERVERS = 64, digest = (value) => creat
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("invalid metadata");
   return value;
-}, HOST_CREDENTIAL_PATHS, HOST_CREDENTIAL_ENV, codexReviewerBackend;
+}, HOST_CREDENTIAL_PATHS, HOST_CREDENTIAL_ENV, CredentialRootError, codexReviewerBackend;
 var init_codex_review_isolation = __esm(() => {
   init_platform();
   init_child_process();
@@ -1441,6 +1451,15 @@ var init_codex_review_isolation = __esm(() => {
   CAP = 128 * 1024;
   HOST_CREDENTIAL_PATHS = [".config", ".ssh", ".aws", ".azure", ".kube", ".docker", ".gnupg", ".codex", ".claude", ".kimi", ".kimi-code", ".gemini", ".git-credentials", ".vault-token", "Library/Keychains", ".local/share/keyrings", ".password-store"];
   HOST_CREDENTIAL_ENV = ["XDG_CONFIG_HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "KIMI_CODE_HOME", "KIMI_HOME", "GEMINI_CLI_HOME", "GNUPGHOME", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AZURE_CONFIG_DIR", "DOCKER_CONFIG", "GOOGLE_APPLICATION_CREDENTIALS"];
+  CredentialRootError = class CredentialRootError extends Error {
+    label;
+    kind;
+    constructor(label, kind) {
+      super("credential root refused");
+      this.label = label;
+      this.kind = kind;
+    }
+  };
   codexReviewerBackend = {
     id: "codex",
     prepare,
