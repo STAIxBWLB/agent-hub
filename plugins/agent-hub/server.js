@@ -1995,7 +1995,8 @@ var init_acp = __esm(() => {
           clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
         });
         this.kimiAgent = init?.agentInfo?.name === "Kimi Code CLI";
-        if (this.opts.expectedAgent && (init?.agentInfo?.name !== this.opts.expectedAgent.name || init?.agentInfo?.version !== this.opts.expectedAgent.version))
+        const expected = this.opts.expectedAgent, version = init?.agentInfo?.version;
+        if (expected && (init?.agentInfo?.name !== expected.name || !(typeof expected.version === "function" ? expected.version(version) : version === expected.version)))
           throw new Error("native ACP identity is not verified for this production adapter");
         this.qwenAgent = qwenNativeIdentity(this.id, this.opts.qwen025, init, this.opts.kind);
         const resume = this.opts.resumeSessionId;
@@ -2431,10 +2432,15 @@ function jcodeCommand(command, kind, socket, cwd, model, profile) {
     ...kind === "serve" ? ["--temporary-server", "--owner-pid", String(process.pid), "--server-name", "agent-hub-jcode"] : ["--mcp-tools", "eager"]
   ];
 }
-var JcodePeer;
+function jcodeVersionSupported(version) {
+  const v = typeof version === "string" ? release(version) : undefined;
+  return !!v && compare(v, release(JCODE_MIN_VERSION)) >= 0 && compare(v, release(JCODE_BREAKING_VERSION)) < 0;
+}
+var JCODE_OWNED_ENV, JCODE_MIN_VERSION = "0.98.0", JCODE_BREAKING_VERSION = "1.0.0", release = (version) => /^(\d+)\.(\d+)\.(\d+)$/.exec(version)?.slice(1).map(Number), compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2], JcodePeer;
 var init_jcode = __esm(() => {
   init_acp();
   init_child_process();
+  JCODE_OWNED_ENV = { JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" };
   JcodePeer = class JcodePeer extends AcpPeer {
     jcode;
     root;
@@ -2447,9 +2453,9 @@ var init_jcode = __esm(() => {
       if (!isAbsolute(jcode.home))
         throw new Error("jcode_home must be an absolute native data path");
       jcodeCommand(jcode.command, "acp", "preview", jcode.cwd);
-      const root = mkdtempSync(join6(tmpdir(), "ahub-jcode-")), socket = join6(root, "s");
+      const root = mkdtempSync(join6(tmpdir(), "ahub-jcode-")), socket = join6(root, "j.sock");
       const cmd = jcodeCommand(jcode.command, "acp", socket, jcode.cwd, jcode.launchModel, jcode.providerProfile);
-      super("jcode", { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, JCODE_DISABLE_CLAUDE_MCP: "1" }, mcpServers: [], requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: "0.94.0" } });
+      super("jcode", { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, ...JCODE_OWNED_ENV }, mcpServers: [], requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
       this.jcode = jcode;
       this.root = root;
       this.socket = socket;
@@ -2463,7 +2469,7 @@ var init_jcode = __esm(() => {
       }
       this.ending = false;
       const [bin, ...args] = jcodeCommand(this.jcode.command, "serve", this.socket, this.jcode.cwd, this.jcode.launchModel, this.jcode.providerProfile);
-      const server = spawn3(bin, args, { cwd: this.jcode.cwd, detached: true, env: { ...peerChildEnv("jcode"), JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, JCODE_READY_FD: "3", JCODE_DISABLE_CLAUDE_MCP: "1" }, stdio: ["ignore", "ignore", "ignore", "pipe"] });
+      const server = spawn3(bin, args, { cwd: this.jcode.cwd, detached: true, env: { ...peerChildEnv("jcode"), JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, JCODE_READY_FD: "3", ...JCODE_OWNED_ENV }, stdio: ["ignore", "ignore", "ignore", "pipe"] });
       this.server = server;
       trackGroup(server);
       try {
@@ -7932,7 +7938,7 @@ function codexCrashPlan(meta) {
   return { how: `codex: its app-server died with the hub; run ahub codex again${str3(meta.threadId) ? ` (its conversation was thread ${meta.threadId})` : ""}` };
 }
 function jcodeCrashPlan(_meta) {
-  return { how: "jcode: native 0.94.0 load does not prove the restored id; reopen the original conversation with its native client, no automatic fresh replacement" };
+  return { how: "jcode: native ACP load (verified on 0.94.0 and 0.98.1) does not prove the restored id; reopen the original conversation with its native client, no automatic fresh replacement" };
 }
 function kimiCrashPlan(meta) {
   const launch = meta.launch && typeof meta.launch === "object" ? meta.launch : {};

@@ -68,7 +68,7 @@ export interface AcpOptions {
   /** Production Qwen only; legacy benchmark adapters retain their own native policy. */
   qwen025?: boolean;
   /** A production adapter's source-pinned identity; no table is inferred from it. */
-  expectedAgent?: { name: string; version: string };
+  expectedAgent?: { name: string; version: string | ((version: unknown) => boolean) };
   /** Vendors with uncertain load semantics must explicitly echo the restored identity. */
   requireLoadSessionEcho?: boolean;
   /** Bound for native mode acknowledgement; defaults to the handshake deadline. */
@@ -242,7 +242,8 @@ export class AcpPeer extends BasePeer {
       // The configured peer id and command are labels, not an agent-specific mode contract.
       // Installed Kimi Code CLI's ACP initialize advertises this exact name.
       this.kimiAgent = init?.agentInfo?.name === "Kimi Code CLI";
-      if (this.opts.expectedAgent && (init?.agentInfo?.name !== this.opts.expectedAgent.name || init?.agentInfo?.version !== this.opts.expectedAgent.version)) throw new Error("native ACP identity is not verified for this production adapter");
+      const expected = this.opts.expectedAgent, version = init?.agentInfo?.version;
+      if (expected && (init?.agentInfo?.name !== expected.name || !(typeof expected.version === "function" ? expected.version(version) : version === expected.version))) throw new Error("native ACP identity is not verified for this production adapter");
       this.qwenAgent = qwenNativeIdentity(this.id, this.opts.qwen025, init, this.opts.kind);
       const resume = this.opts.resumeSessionId;
       if (!resume) return this.request("session/new", { cwd: this.opts.cwd, mcpServers: this.opts.mcpServers ?? [] });
