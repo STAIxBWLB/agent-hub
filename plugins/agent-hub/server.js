@@ -8307,30 +8307,41 @@ function readAgyTranscript(session, transcript) {
     const stat = fstatSync2(fd);
     if (!stat.isFile() || stat.nlink !== 1)
       return empty;
-    const start = Math.max(0, stat.size - 64 * 1024), buffer = Buffer.alloc(stat.size - start);
-    const bytes = readSync2(fd, buffer, 0, buffer.length, start);
-    const lines = buffer.subarray(0, bytes).toString("utf8").split(`
+    const cap = 4 * 1024 * 1024;
+    for (let window = 64 * 1024;; window = Math.min(cap, window * 2)) {
+      const start = Math.max(0, stat.size - window), from = start > 0 ? start - 1 : 0;
+      const buffer = Buffer.alloc(stat.size - from);
+      let bytes = 0;
+      while (bytes < buffer.length) {
+        const count = readSync2(fd, buffer, bytes, buffer.length - bytes, from + bytes);
+        if (!count)
+          break;
+        bytes += count;
+      }
+      const lines = buffer.subarray(0, bytes).toString("utf8").split(`
 `);
-    if (start)
-      lines.shift();
-    const out = { factIds: [] };
-    for (const line of lines) {
-      let row;
-      try {
-        row = JSON.parse(line);
-      } catch {
-        continue;
+      if (start)
+        lines.shift();
+      const out = { factIds: [] };
+      for (const line of lines) {
+        let row;
+        try {
+          row = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (!record3(row) || row.status !== "DONE")
+          continue;
+        if (row.source === "SYSTEM_SDK" && row.type === "EPHEMERAL_MESSAGE" && typeof row.content === "string") {
+          for (const match of row.content.matchAll(/agent-hub facts \[([a-zA-Z0-9-]{1,128})\]/g))
+            out.factIds.push(match[1]);
+        }
+        if (row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index) && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0))
+          out.completion = { id: createHash6("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index };
       }
-      if (!record3(row) || row.status !== "DONE")
-        continue;
-      if (row.source === "SYSTEM_SDK" && row.type === "EPHEMERAL_MESSAGE" && typeof row.content === "string") {
-        for (const match of row.content.matchAll(/agent-hub facts \[([a-zA-Z0-9-]{1,128})\]/g))
-          out.factIds.push(match[1]);
-      }
-      if (row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index) && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0))
-        out.completion = { id: createHash6("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index };
+      if (out.completion || start === 0 || window === cap)
+        return out;
     }
-    return out;
   } catch {
     return empty;
   } finally {

@@ -519,8 +519,18 @@ class WsPeer extends BasePeer {
   steer: PeerAdapter["steer"] = undefined;
   lastInboxAt: number | undefined;
   private claimedPullOnly = false;
+  private readonly attachmentWaiters: { generation: string; resolve: (attached: boolean) => void }[] = [];
+  private settleAttachmentWaiters(attached: boolean): void {
+    for (const waiter of this.attachmentWaiters.splice(0)) waiter.resolve(attached && waiter.generation === this.claimGeneration);
+  }
+  /** Bounded native-hook observations wait for this exact claim, never a later socket. */
+  waitForAttach(generation: string): Promise<boolean> {
+    if (generation !== this.claimGeneration || !this.claiming || this.attachmentWaiters.length >= 64) return Promise.resolve(false);
+    return new Promise(resolve => { this.attachmentWaiters.push({ generation, resolve }); });
+  }
   /** Called at hello, before the async preface: the newest hello wins even if an older one's recall finishes last. */
   claim(sock: Sock, pullOnly = false): void {
+    this.settleAttachmentWaiters(false);
     this.claimGeneration = crypto.randomUUID();
     this.claimed = sock;
     this.claimedPullOnly = pullOnly;
@@ -552,9 +562,10 @@ class WsPeer extends BasePeer {
     };
     this.lastInboxAt = undefined;
     this.setState("idle");
+    this.settleAttachmentWaiters(true);
   }
   detach(sock: Sock): void {
-    if (this.claimed === sock) this.claimed = undefined;
+    if (this.claimed === sock) { this.claimed = undefined; this.settleAttachmentWaiters(false); }
     if (this.sock !== sock) return;
     this.sock = undefined;
     this.steer = undefined;
@@ -563,6 +574,7 @@ class WsPeer extends BasePeer {
     this.setState("offline");
   }
   detachForRoster(): void {
+    this.settleAttachmentWaiters(false);
     this.claimed?.close(4000, "peer is off roster; retry when a person adds it");
     this.sock?.close(4000, "peer is off roster; retry when a person adds it");
     this.claimed = undefined;
@@ -604,6 +616,7 @@ class WsPeer extends BasePeer {
   ownsDelivery(sock: Sock, generation: unknown, id: string): boolean { return this.owns(sock) && generation === this.generation && this.delivered.has(id); }
   async start(): Promise<void> {}
   async stop(): Promise<void> {
+    this.settleAttachmentWaiters(false);
     this.sock?.close();
   }
 
@@ -5241,40 +5254,51 @@ export async function startDaemon(opts: DaemonOptions) {
         if (launch.session && launch.session !== native.sessionId) return void reply({ ok: false });
         launch.session = native.sessionId;
         const owner = bus.peers.get(peer);
-        if (!(owner instanceof WsPeer) || owner.state === "offline" || owner.claiming) return void reply({ ok: native.event === "SessionStart" });
+        if (!(owner instanceof WsPeer) || owner.state === "offline" && !owner.claiming) return void reply({ ok: false });
         if (launch.generation && launch.generation !== owner.sessionGeneration) return void reply({ ok: false });
         launch.generation = owner.sessionGeneration;
         const current = () => !stopping && nativeHookLaunches.get(peer, msg.nativeLaunchId) === launch && bus.peers.get(peer) === owner && owner.sessionGeneration === launch.generation && owner.state !== "offline";
+        // Preserve the start baseline at observation, even if native output is flushed before recall allows attach.
         const readback = port.read(native.sessionId, native.transcriptPath);
-        if (factsOn()) { factSession(peer, native.sessionId); for (const id of readback.factIds) acked(peer, id, "native-hook"); }
-        if (native.event === "PreInvocation" || native.event === "PreToolUse") {
-          if (!launch.active || native.event === "PreInvocation" && native.invocation === 0) { launch.active = true; launch.turn = crypto.randomUUID(); launch.baseline = readback.completion?.index ?? -1; }
-          activeAt.set(peer, Date.now()); owner.nativeStarted(native.sessionId);
-        }
-        if (native.event === "Stop") {
-          if (!launch.active || !native.fullyIdle || native.terminationReason !== "NO_TOOL_CALL") return void reply({ ok: false });
-          // Native output can be flushed after its Stop command returns. Acknowledge observation, then wait for
-          // a fresh completion row while the same launcher/session/socket generation still owns the turn.
-          const turn = launch.turn, baseline = launch.baseline ?? -1;
-          reply({ ok: true, pending: true });
-          void (async () => {
-            const deadline = Date.now() + 2000;
-            let delay = 5;
-            while (current() && launch.active && launch.turn === turn) {
-              const completion = port.read(native.sessionId, native.transcriptPath).completion;
-              if (completion && completion.index > baseline && completion.id !== launch.completed) {
-                launch.completed = completion.id; launch.active = false;
-                turnEnded.set(peer, Date.now()); nativeCompletedAt.set(peer, Date.now()); tasks.cohorts.turnEnded(peer);
-                event({ type: "native_turn_end", peer, id: completion.id }); owner.nativeStopped(native.sessionId); return;
+        const apply = () => {
+          if (!current()) return void reply({ ok: false });
+          if (factsOn()) { factSession(peer, native.sessionId); for (const id of readback.factIds) acked(peer, id, "native-hook"); }
+          if (native.event === "PreInvocation" || native.event === "PreToolUse") {
+            if (!launch.active || native.event === "PreInvocation" && native.invocation === 0) { launch.active = true; launch.turn = crypto.randomUUID(); launch.baseline = readback.completion?.index ?? -1; }
+            activeAt.set(peer, Date.now()); owner.nativeStarted(native.sessionId);
+          }
+          if (native.event === "Stop") {
+            if (!launch.active || !native.fullyIdle || native.terminationReason !== "NO_TOOL_CALL") return void reply({ ok: false });
+            // Native output can be flushed after its Stop command returns. Acknowledge observation, then wait for
+            // a fresh completion row while the same launcher/session/socket generation still owns the turn.
+            const turn = launch.turn, baseline = launch.baseline ?? -1;
+            reply({ ok: true, pending: true });
+            void (async () => {
+              const deadline = Date.now() + 2000;
+              let delay = 5;
+              while (current() && launch.active && launch.turn === turn) {
+                const completion = port.read(native.sessionId, native.transcriptPath).completion;
+                if (completion && completion.index > baseline && completion.id !== launch.completed) {
+                  launch.completed = completion.id; launch.active = false;
+                  turnEnded.set(peer, Date.now()); nativeCompletedAt.set(peer, Date.now()); tasks.cohorts.turnEnded(peer);
+                  event({ type: "native_turn_end", peer, id: completion.id }); owner.nativeStopped(native.sessionId); return;
+                }
+                if (Date.now() >= deadline) { notify(`${peer}: native completion could not be verified; it stays busy until a verified turn end or detach`); return; }
+                await Bun.sleep(delay); delay = Math.min(50, delay * 2);
               }
-              if (Date.now() >= deadline) { notify(`${peer}: native completion could not be verified; it stays busy until a verified turn end or detach`); return; }
-              await Bun.sleep(delay); delay = Math.min(50, delay * 2);
-            }
-          })().catch(() => log("managed native completion unavailable"));
+            })().catch(() => log("managed native completion unavailable"));
+            return;
+          }
+          const offered = factsOn() && (native.event === "PreInvocation" || native.event === "SessionStart") ? offerFor(peer, native.toolUseId ?? `${native.sessionId}:invocation`) : undefined;
+          return void reply({ ok: true, ...(offered ? { text: offered.text } : {}) });
+        };
+        if (owner.claiming) {
+          void owner.waitForAttach(launch.generation).then(attached => {
+            if (attached) apply(); else reply({ ok: false });
+          }).catch(() => { log("managed native observation unavailable"); reply({ ok: false }); });
           return;
         }
-        const offered = factsOn() && (native.event === "PreInvocation" || native.event === "SessionStart") ? offerFor(peer, native.toolUseId ?? `${native.sessionId}:invocation`) : undefined;
-        return void reply({ ok: true, ...(offered ? { text: offered.text } : {}) });
+        return apply();
       }
       case "facts": {
         // Turn-free facts (issue #108) for Claude's hooks: `pre` before a tool runs (the fact rides back as additional

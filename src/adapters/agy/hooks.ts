@@ -48,21 +48,33 @@ export function readAgyTranscript(session: string, transcript: string): NativeFa
     fd = openSync(transcript, constants.O_RDONLY | constants.O_NOFOLLOW);
     const stat = fstatSync(fd);
     if (!stat.isFile() || stat.nlink !== 1) return empty;
-    const start = Math.max(0, stat.size - 64 * 1024), buffer = Buffer.alloc(stat.size - start);
-    const bytes = readSync(fd, buffer, 0, buffer.length, start);
-    const lines = buffer.subarray(0, bytes).toString("utf8").split("\n");
-    if (start) lines.shift();
-    const out: NativeFactsTranscript = { factIds: [] };
-    for (const line of lines) {
-      let row: unknown; try { row = JSON.parse(line); } catch { continue; }
-      if (!record(row) || row.status !== "DONE") continue;
-      if (row.source === "SYSTEM_SDK" && row.type === "EPHEMERAL_MESSAGE" && typeof row.content === "string") {
-        for (const match of row.content.matchAll(/agent-hub facts \[([a-zA-Z0-9-]{1,128})\]/g)) out.factIds.push(match[1]!);
+    // ponytail: completion lookback is capped at 4 MiB (as for Claude). A larger final row is unverified;
+    // upgrade to a native completion cursor if that ceiling becomes insufficient.
+    const cap = 4 * 1024 * 1024;
+    for (let window = 64 * 1024; ; window = Math.min(cap, window * 2)) {
+      const start = Math.max(0, stat.size - window), from = start > 0 ? start - 1 : 0;
+      const buffer = Buffer.alloc(stat.size - from);
+      let bytes = 0;
+      while (bytes < buffer.length) {
+        const count = readSync(fd, buffer, bytes, buffer.length - bytes, from + bytes);
+        if (!count) break;
+        bytes += count;
       }
-      if (row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index)
-        && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0)) out.completion = { id: createHash("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index as number };
+      const lines = buffer.subarray(0, bytes).toString("utf8").split("\n");
+      // The preceding byte distinguishes a cut inside a row from a row beginning exactly at the window.
+      if (start) lines.shift();
+      const out: NativeFactsTranscript = { factIds: [] };
+      for (const line of lines) {
+        let row: unknown; try { row = JSON.parse(line); } catch { continue; }
+        if (!record(row) || row.status !== "DONE") continue;
+        if (row.source === "SYSTEM_SDK" && row.type === "EPHEMERAL_MESSAGE" && typeof row.content === "string") {
+          for (const match of row.content.matchAll(/agent-hub facts \[([a-zA-Z0-9-]{1,128})\]/g)) out.factIds.push(match[1]!);
+        }
+        if (row.source === "MODEL" && row.type === "PLANNER_RESPONSE" && Number.isSafeInteger(row.step_index)
+          && typeof row.content === "string" && row.content.trim().length > 0 && (!Array.isArray(row.tool_calls) || row.tool_calls.length === 0)) out.completion = { id: createHash("sha256").update(`${session}:${row.step_index}:${line}`).digest("hex"), index: row.step_index as number };
+      }
+      if (out.completion || start === 0 || window === cap) return out;
     }
-    return out;
   } catch { return empty; } finally { if (fd !== undefined) closeSync(fd); }
 }
 
