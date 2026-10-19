@@ -424,8 +424,11 @@ export class AcpPeer extends BasePeer {
     // #542 D4: a tool call that started and has not finished is running, not silent, up to its own ceiling.
     if (this.openTools.size) {
       const ceiling = Math.max(this.watchdogMs, this.opts.toolCeilingMs ?? TOOL_CEILING_MS);
-      if (Date.now() - this.lastSignAt < ceiling) { this.touch(); return; }
-      const tools = this.activityPrivate ? "a tool call" : [...new Set(this.openTools.values())].map(title => activityText(title).slice(0, 80)).join(", ");
+      const remaining = ceiling - (Date.now() - this.lastSignAt);
+      if (remaining > 0) { this.touch(Math.min(this.watchdogMs, remaining)); return; }
+      // Privacy latches for the turn and fails closed, as in emitActivity; the title is agent-written, so one quoted line.
+      try { this.activityPrivate ||= this.opts.isPrivateTurn?.() === true; } catch { this.activityPrivate = true; }
+      const tools = this.activityPrivate ? "a tool call" : [...new Set(this.openTools.values())].map(title => JSON.stringify(activityText(title).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ").slice(0, 80))).join(", ");
       this.opts.log?.(`[${this.id}] open tool call (${tools}) silent past the ${Math.round(ceiling / 60_000)} min tool ceiling; cancelling the turn`);
     }
     this.endActivity("watchdog cancelled", true);
