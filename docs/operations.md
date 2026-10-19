@@ -1471,6 +1471,8 @@ ahub settings reload               # validate and apply the complete four-file c
 ahub ui --settings                 # dashboard with a 15-minute settings session
 ```
 
+A guarded file edit that the daemon keeps at its accepted value remains visible as `config retained: <keys>; run ahub settings reload` in status, the console and Settings. The entry clears when the file value is confirmed through the terminal reload or reverted. Starting a peer whose launch keys are retained first explains that it uses the running value; the pending file value is not applied merely by restarting that peer. Public status and notices show key names and reasons, never the retained setting values.
+
 | Group | Keys | Stored in | Applies |
 | --- | --- | --- | --- |
 | Permissions | `permission.<peer>` (the mode now) | the running hub only | at once |
