@@ -1064,9 +1064,9 @@ export class Tasks {
     try { train = releaseTrainData({ ...(release.train ?? { history: [] }), ...(input.hotfix === undefined ? {} : { hotfix: input.hotfix }) }); }
     catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
     if (train.hotfix && (!this.nameable(train.hotfix.reason) || this.screenOn() && (await this.screenCall(train.hotfix.reason)).label !== "clear")) throw new PreEffectToolRefusal("hotfix reason was not cleared");
-    const current = validate();
-    if (JSON.stringify(current) !== JSON.stringify(release)) throw new PreEffectToolRefusal("release changed during screening");
-    if (release.train && JSON.stringify(train) === JSON.stringify(release.train) && (input.state ?? release.state) === release.state && (input.cut ?? release.cut) === release.cut) return current;
+    const validatedRelease = validate();
+    if (JSON.stringify(validatedRelease) !== JSON.stringify(release)) throw new PreEffectToolRefusal("release changed during screening");
+    if (release.train && JSON.stringify(train) === JSON.stringify(release.train) && (input.state ?? release.state) === release.state && (input.cut ?? release.cut) === release.cut) return validatedRelease;
     if (train.history.length >= RELEASE_TRAIN_HISTORY_LIMIT - 2) throw new PreEffectToolRefusal("release train history full; keep the remaining slots for cut and ship");
     train.history.push({ at: Date.now(), by, event: "configured" });
     const updated = this.d.board.updateRelease(input.id, { train: releaseTrainData(train), ...(input.state ? { state: input.state } : {}), ...(input.cut === undefined ? {} : { cut: input.cut }) }, input.revision);
