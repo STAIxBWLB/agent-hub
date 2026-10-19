@@ -119,7 +119,7 @@ import { ContextWindows, DEFAULT_CONTEXT, acpContext, claudeContext, type Contex
 import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
 import { detectTooling } from "./tooling.ts";
 import { looksSecret, DEFAULT_LEASE_MS, extractNodes, memoryHome, SUGGESTED, taskKey, type CandidateStore, type MemoryStore, type GoalView, type Suggested, type View as MemoryView } from "@staix/agent-mem";
-import { AGENT_MEM_VERSION, openProfileMemory, openProfileCandidates, type MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
+import { AGENT_MEM_VERSION, MEMORY_SPLIT_INCOMPLETE, openProfileMemory, openProfileCandidates, type MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
 import { syncMemory } from "@staix/agent-mem";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead } from "./read-tools.ts";
 import { memoryProjectKey } from "@staix/agent-mem";
@@ -992,11 +992,11 @@ export async function startDaemon(opts: DaemonOptions) {
     memoryNotice(`hub native memory disabled: ${reason}`);
   };
   if (config.memory.native) {
-    try { const opened = openProfileMemory({ ttlMs: (config.memory.short_ttl_days ?? 14) * 24 * 3600_000, log, screen: promotionScreen(memoryProject, opts.cwd, () => activeRouting(), () => config.pii?.paths ?? [], (key) => {
+    try { const opened = openProfileMemory({ project: memoryProject, ttlMs: (config.memory.short_ttl_days ?? 14) * 24 * 3600_000, log, screen: promotionScreen(memoryProject, opts.cwd, () => activeRouting(), () => config.pii?.paths ?? [], (key) => {
       const m = /#(\d+)@(\d+)$/.exec(key), t = m ? board.get(Number(m[1])) : undefined;
       return t && String(t.created) === m![2] ? [...(t.refs.paths ?? []), ...(t.plan?.paths ?? [])] : [];
     }) }, memoryUnavailable); memoryStore = opened.store; memoryBinding = opened.binding; startupCleanup.push(() => opened.store.close()); }
-    catch { if (!memoryProblem) memoryUnavailable("memory profile unavailable; inspect the selector and generation, then restart the hub"); }
+    catch (error) { if (!memoryProblem) memoryUnavailable(error instanceof Error && error.message === MEMORY_SPLIT_INCOMPLETE ? error.message : "memory profile unavailable; inspect the selector and generation, then restart the hub"); }
   }
   const memoryProfileStatus = (person = false) => {
     const value = memoryBinding?.status(memoryStore) ?? ({
