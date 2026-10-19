@@ -40,7 +40,7 @@ test("default pool includes Kimi native-policy backend and excludes agy implemen
   expect(registry.definitionOf("agy")?.reviewerVariant?.reviewer?.defaultPool).toBe(false);
   expect(registry.OPTIONAL_PEERS).toContain("agy");
   expect(registry.isSupportedPeer("agy")).toBe(true);
-  expect(registry.isStartablePeer("agy")).toBe(true);
+  expect(registry.isStartablePeer("agy")).toBe(false); // person-only launcher; no conductor start
   expect(registry.ADAPTERS.some(definition => definition.kind === "agy")).toBe(true);
 });
 

@@ -48,7 +48,20 @@ test("agy pull attach and native hooks are bound to person launch, daemon, sessi
     catch { pushRefused = true; }
     finally { pushClient?.close(); }
     expect(pushRefused).toBe(true);
-    const admission = await person.request({ t: "native_hook_launch", op: "begin", peer: "agy" }); expect(admission.ok).toBe(true);
+    const launcher = await ControlClient.connect(stateDir, { role: "console" });
+    const abandoned = await launcher.request({ t: "native_hook_launch", op: "begin", peer: "agy" });
+    expect(abandoned.ok).toBe(true);
+    expect((await person.request({ t: "native_hook_launch", op: "begin", peer: "agy" })).ok).toBe(false);
+    launcher.close();
+    let admission: any;
+    const reconnectDeadline = Date.now() + 3000;
+    do {
+      admission = await person.request({ t: "native_hook_launch", op: "begin", peer: "agy" });
+      if (admission.ok) break;
+      await Bun.sleep(10);
+    } while (Date.now() < reconnectDeadline);
+    expect(admission.ok).toBe(true);
+    expect(admission.launchId).not.toBe(abandoned.launchId);
     peer = await ControlClient.connect(stateDir, { role: "peer", peer: "agy", channel: false });
     await until(() => daemon.bus.peers.get("agy")?.state === "idle");
     daemon.bus.publish(newEnvelope("user", "pull-only fixture", { to: ["agy"] }));

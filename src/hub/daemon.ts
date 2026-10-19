@@ -257,16 +257,26 @@ export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<st
 const CONFIG_BLOCKS = ["memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal"];
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
-export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]): { roles: Record<string, string[]>; conductor: HubConfig["conductor"]; planner?: string } {
+export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]): { roles: Record<string, string[]>; conductor: HubConfig["conductor"]; planner?: string; notices?: string[] } {
   const roles: Record<string, string[]> = { ...DEFAULT_ROLES };
   const conductor = { ...DEFAULT_CONFIG.conductor };
+  const notices: string[] = [];
   let planner: string | undefined;
   for (const name of CONFIG_FILES) {
     let file: Record<string, unknown>;
     if (layers && !layers.some(layer => layer.name === name)) continue;
     try { file = layers ? structuredClone(layers.find(layer => layer.name === name)!.raw) : JSON.parse(readFileSync(join(cwd, ".agenthub", name), "utf8")); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; throw error; }
-    if (file.roles !== undefined) { conductorPeer(file.roles); Object.assign(roles, file.roles); }
+    if (file.roles !== undefined) {
+      if (!file.roles || typeof file.roles !== "object" || Array.isArray(file.roles)) throw new Error("roles must be an object of peer role lists");
+      for (const [peer, assigned] of Object.entries(file.roles)) {
+        conductorPeer({ [peer]: assigned });
+        const ceiling = definitionOf(peer)?.routing?.allowedRoles;
+        const declared = assigned as string[];
+        roles[peer] = ceiling ? declared.filter(role => ceiling.includes(role)) : declared;
+        if (roles[peer]!.length !== declared.length) notices.push(`roles.${peer}: ignored roles outside the adapter ceiling`);
+      }
+    }
     if (file.planner !== undefined) {
       if (!(PLANNER_PEERS as readonly unknown[]).includes(file.planner)) throw new Error(`planner must be one of ${PLANNER_PEERS.join(", ")}`);
       planner = file.planner as string;
@@ -284,12 +294,8 @@ export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]
       }
     }
   }
-  for (const [peer, assigned] of Object.entries(roles)) {
-    const ceiling = definitionOf(peer)?.routing?.allowedRoles;
-    if (ceiling && assigned.some(role => !ceiling.includes(role))) throw new Error(`roles.${peer} exceeds the adapter role ceiling`);
-  }
   conductorPeer(roles);
-  return { roles, conductor, ...(planner ? { planner } : {}) };
+  return { roles, conductor, ...(planner ? { planner } : {}), ...(notices.length ? { notices } : {}) };
 }
 
 /** `memory.short_ttl_days`: a whole number of days from 1 to 3650; anything else would make every short-term deadline invalid. */
@@ -370,6 +376,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[]): HubCon
   }
   const mlx = { ...(file.mlx?.provider === "legacy" ? { enabled: true, provider: "legacy" as const, maxInputTokens: 16_000, maxTokens: 2048 } : DEFAULT_CONFIG.mlx), ...file.mlx };
   const conductorPolicy = loadConductorPolicy(cwd, captured);
+  retired.push(...conductorPolicy.notices ?? []);
   const extraRoles = Object.fromEntries(Object.keys(instances ?? {}).map(id => [id, effectiveInstanceRoles(id, instances, conductorPolicy.roles)]));
   const instancePermissions: Record<string, PermissionMode> = {};
   const instanceModes: PeerStartConfig = {};
@@ -793,6 +800,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // Any local web page can open a WebSocket to a loopback port, so the control link needs a secret.
   // The file is written only after the port is bound: a second daemon that loses the bind must not clobber it.
   const token = randomBytes(24).toString("hex");
+  const nativeHookLaunches = new NativeHookLaunches();
 
   const server = listenWithoutPortCollision(() => Bun.serve<Client>({
     hostname: "127.0.0.1",
@@ -820,6 +828,7 @@ export async function startDaemon(opts: DaemonOptions) {
         }
       },
       close(sock) {
+        nativeHookLaunches.endOwner(sock);
         consoles.delete(sock);
         sock.data.tail?.();
         sock.data.watch?.();
@@ -1656,7 +1665,6 @@ export async function startDaemon(opts: DaemonOptions) {
   const activeAt = new Map<PeerId, number>();
   interface NativeTurnStart { at: number; baseline?: string; generation: string; session: string; launch: string }
   const nativeTurnStart = new Map<PeerId, NativeTurnStart>();
-  const nativeHookLaunches = new NativeHookLaunches();
   const stopUnconfirmedNoticed = new WeakSet<NativeTurnStart>();
   const nativeStopWaits = new Map<PeerId, { start: NativeTurnStart; wait: ReturnType<typeof waitForClaudeCompletion> }>();
   /** Every Claude hook call's own start-up and the hub's time for it, summed per turn (issue #108): reported at Stop. */
@@ -5194,7 +5202,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (msg.op !== "begin") return void reply({ ok: false, error: "unknown native launch operation" });
         const owner = bus.peers.get(msg.peer);
         if (owner && owner.state !== "offline") return void reply({ ok: false, error: "native peer is already attached; end it in its terminal first" });
-        try { return void reply({ ok: true, launchId: nativeHookLaunches.begin(msg.peer).id, instanceId }); }
+        try { return void reply({ ok: true, launchId: nativeHookLaunches.begin(msg.peer, sock).id, instanceId }); }
         catch (error) { return void reply({ ok: false, error: (error as Error).message }); }
       }
       case "native_facts": {

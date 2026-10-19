@@ -52,6 +52,20 @@ test("recognized managed entries update for a new launch and stale cleanup prese
   expect(paths(root).some(existsSync)).toBe(false);
 });
 
+test("cleanup accepts formatting-only changes to managed JSON", () => {
+  const root = project(), opts = options(root);
+  ensureAgyMcp(opts);
+  for (const file of paths(root)) {
+    const value = JSON.parse(readFileSync(file, "utf8"));
+    const reordered = Object.fromEntries(Object.entries(value).reverse());
+    writeFileSync(file, `${JSON.stringify(reordered, null, 4)}\n`);
+  }
+  expect(agyMcpReady(opts)).toBe(true);
+  expect(ensureAgyMcp(opts)).toEqual({ changed: false, tracked: false });
+  cleanupAgyMcp(opts);
+  expect(paths(root).some(existsSync)).toBe(false);
+});
+
 test("cleanup removes only the managed MCP server and preserves unrelated server entries", () => {
   const root = project(), opts = options(root), dir = plugin(root);
   mkdirSync(dir, { recursive: true });

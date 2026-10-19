@@ -4,7 +4,34 @@ import { resolve } from "node:path";
 import type { NativeCliEntryContext } from "../definitions/native-cli-entry-types.ts";
 import { bundleInStatus, rosterInStatus } from "../../hub/status-roster.ts";
 import { ensureAgyMcp, cleanupAgyMcp, type AgyMcpOptions } from "../../cli/agy-mcp.ts";
-import { peerChildEnv, stopOwnedProcess, trackGroup } from "../../hub/child-process.ts";
+import { peerChildEnv } from "../../hub/child-process.ts";
+
+export function agyTuiSpawnOptions(cwd: string, env: NodeJS.ProcessEnv) {
+  return { cwd, env, stdio: "inherit" as const };
+}
+
+function runAgyTui(argv: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<number> {
+  const child = spawn("agy", argv, agyTuiSpawnOptions(cwd, env));
+  return new Promise((resolveExit, reject) => {
+    const forward = (signal: NodeJS.Signals) => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      try { child.kill(signal); } catch { /* The native child may exit as the signal arrives. */ }
+    };
+    const onInterrupt = () => forward("SIGINT");
+    const onTerminate = () => forward("SIGTERM");
+    const onHangup = () => forward("SIGHUP");
+    const cleanup = () => {
+      process.off("SIGINT", onInterrupt);
+      process.off("SIGTERM", onTerminate);
+      process.off("SIGHUP", onHangup);
+    };
+    process.on("SIGINT", onInterrupt);
+    process.on("SIGTERM", onTerminate);
+    process.on("SIGHUP", onHangup);
+    child.once("error", error => { cleanup(); reject(error); });
+    child.once("close", code => { cleanup(); resolveExit(code ?? 1); });
+  });
+}
 
 export async function runAgyEntry(ctx: NativeCliEntryContext): Promise<void> {
   const { args, cwd, stateDir, cliDir, connect, fail } = ctx;
@@ -21,6 +48,7 @@ export async function runAgyEntry(ctx: NativeCliEntryContext): Promise<void> {
   if (version.status !== 0 || version.stdout.trim() !== "1.4.2") fail("agy P1 requires the verified Antigravity CLI 1.4.2");
   const hub = await connect();
   let options: AgyMcpOptions | undefined;
+  let pluginWritten = false;
   try {
     if (!hub.features.includes("native_hook_launch")) fail("running hub lacks the verified native hook launcher; upgrade or restart it before launching agy");
     const status = (await hub.request({ t: "status" })).status;
@@ -30,27 +58,18 @@ export async function runAgyEntry(ctx: NativeCliEntryContext): Promise<void> {
     options = { projectRoot: cwd, stateDir, serverJs: bundleInStatus(status) ?? resolve(cliDir, "../../plugins/agent-hub/server.js"),
       hookScript: resolve(cliDir, "facts-hook.ts"), peer: "agy", launchId: admitted.launchId, instanceId: admitted.instanceId };
     const written = ensureAgyMcp(options);
+    pluginWritten = written.changed;
     if (written.tracked) console.error("The managed agy plugin is tracked; review its local machine paths before committing");
     console.error("Antigravity: pull-only TUI; native permissions unmanaged, no hub sandbox");
     const env: NodeJS.ProcessEnv = { ...ctx.helpers.nativeLaunchEnv("agy", ctx.helpers.childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
     delete env.AGENTHUB_CHANNEL;
-    const code = await new Promise<number>((resolveExit, reject) => {
-      const child = spawn("agy", argv, { cwd, env, stdio: "inherit", detached: true });
-      child.once("spawn", () => trackGroup(child));
-      const interrupt = () => { void stopOwnedProcess(child, { group: true }).catch(reject); };
-      process.on("SIGINT", interrupt); process.on("SIGTERM", interrupt); process.on("SIGHUP", interrupt);
-      child.once("error", error => { process.off("SIGINT", interrupt); process.off("SIGTERM", interrupt); process.off("SIGHUP", interrupt); reject(error); });
-      child.once("close", code => {
-        process.off("SIGINT", interrupt); process.off("SIGTERM", interrupt); process.off("SIGHUP", interrupt);
-        void stopOwnedProcess(child, { group: true }).then(() => resolveExit(code ?? 1), reject);
-      });
-    });
-    if (code) process.exitCode = code;
+    const code = await runAgyTui(argv, cwd, env);
+    if (code !== 0) process.exitCode = code;
   } finally {
     if (options) {
       // Revoke launcher authority before cleanup; stale cleanup never removes a newer managed launch.
       await hub.request({ t: "native_hook_launch", op: "end", peer: "agy", launchId: options.launchId }).catch(() => {});
-      try { cleanupAgyMcp(options); } catch { console.error("Managed agy plugin cleanup refused: files changed or ownership could not be verified"); }
+      if (pluginWritten) try { cleanupAgyMcp(options); } catch { console.error("Managed agy plugin cleanup refused: files changed or ownership could not be verified"); }
     }
     hub.close();
   }

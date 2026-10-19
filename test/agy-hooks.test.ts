@@ -4,9 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { decodeAgyHook, encodeAgyHook, readAgyTranscript } from "../src/adapters/agy/hooks.ts";
 import { NativeHookLaunches } from "../src/hub/native-hook-launch.ts";
+import { factsHook } from "../src/cli/facts-hook.ts";
 
 const session = "ee5ab2ab-7319-4a81-82ca-bf2fc84678d0";
 const payload = { conversationId: session, transcriptPath: "/tmp/transcript_full.jsonl", workspacePaths: ["/tmp/work"], invocationNum: 0 };
+
+test("native facts refuse hook input over one MiB before connecting or forwarding unknown fields", async () => {
+  const input = JSON.stringify({ ...payload, extra: "한".repeat(400_000) });
+  await expect(factsHook(input, "/missing-state", "agy", 100, "PreInvocation")).resolves.toBeUndefined();
+});
 
 test("agy hook codec requires a known explicit event and pinned native envelope", () => {
   expect(decodeAgyHook("unknown", payload)).toBeUndefined();
@@ -48,11 +54,15 @@ test("agy readback requires session-bound native rows and rejects links and arbi
 });
 
 test("native hook launch authority refuses duplicate admission and stale cleanup", () => {
-  const launches = new NativeHookLaunches(), first = launches.begin("agy");
-  expect(() => launches.begin("agy")).toThrow("already active");
+  const launches = new NativeHookLaunches(), owner = {}, replacementOwner = {}, first = launches.begin("agy", owner);
+  expect(() => launches.begin("agy", replacementOwner)).toThrow("already active");
   expect(launches.end("agy", "stale")).toBe(false);
   expect(launches.end("agy", first.id)).toBe(true);
-  const replacement = launches.begin("agy");
+  const replacement = launches.begin("agy", replacementOwner);
   expect(launches.get("agy", first.id)).toBeUndefined(); expect(launches.end("agy", first.id)).toBe(false);
   expect(launches.get("agy", replacement.id)).toBe(replacement);
+  launches.endOwner(owner);
+  expect(launches.get("agy", replacement.id)).toBe(replacement);
+  launches.endOwner(replacementOwner);
+  expect(launches.get("agy", replacement.id)).toBeUndefined();
 });

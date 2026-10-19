@@ -8352,7 +8352,7 @@ var init_definition = __esm(() => {
       defaultForm: "tui",
       ownsTerminal: (form) => form === "tui",
       launch: agyLaunch,
-      conductorStartable: true,
+      conductorStartable: false,
       hubSwitches: [],
       ownedFlags: ["--new", "--continue", "--conversation", "--resume"],
       conductorStartArgs: (args) => args.length ? new Error("conductor starts accept no launch overrides; use ahub agy") : {}
@@ -8433,6 +8433,7 @@ function bundleInStatus(status) {
 import { randomUUID as randomUUID5 } from "crypto";
 import { closeSync as closeSync4, fstatSync as fstatSync3, lstatSync as lstatSync9, mkdirSync as mkdirSync6, openSync as openSync4, readFileSync as readFileSync6, renameSync, rmdirSync, unlinkSync, writeFileSync as writeFileSync4 } from "fs";
 import { isAbsolute as isAbsolute6, join as join14, resolve as resolve10 } from "path";
+import { isDeepStrictEqual } from "util";
 function object4(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -8499,6 +8500,32 @@ function safeFile(path) {
   if (bytes.length > MAX_CONFIG_BYTES)
     throw new Error(`${path} exceeds the configuration size limit`);
   return { stat, bytes };
+}
+function pluginDirectories(root) {
+  const directories = [];
+  for (const relative of [".", ".agents", ".agents/plugins", PLUGIN_DIR]) {
+    const path = relative === "." ? root : join14(root, relative);
+    const stat = safeDirectory(path);
+    if (!stat)
+      throw new Error(`${path} must be an existing project directory`);
+    directories.push({ path, stat });
+  }
+  return directories;
+}
+function verifyPluginDirectory(plan, target) {
+  if (!plan.canonicalPluginDir || !plan.directories)
+    throw new Error("managed agy plugin directory identity is unavailable");
+  if (realPath(plan.root) !== plan.canonicalRoot || realPath(plan.pluginDir) !== plan.canonicalPluginDir || plan.canonicalPluginDir !== join14(plan.canonicalRoot, PLUGIN_DIR)) {
+    throw new Error("managed agy plugin path changed; inspect it before writing");
+  }
+  for (const expected of plan.directories) {
+    const current = safeDirectory(expected.path);
+    if (!current || current.dev !== expected.stat.dev || current.ino !== expected.stat.ino)
+      throw new Error("managed agy plugin directory changed; inspect it before writing");
+  }
+  if (!FILES.some((file) => join14(plan.root, file) === target)) {
+    throw new Error("atomic write target is outside the managed agy plugin files");
+  }
 }
 function hookCommand(phase, options, peer) {
   return `AGENTHUB_HOOK_EVENT='${phase}' AGENTHUB_INSTANCE_ID='${options.instanceId}' AGENTHUB_LAUNCH_ID='${options.launchId}' AGENTHUB_HOOK_PURPOSE='facts' AGENTHUB_PEER_ID=${shellQuote2(peer)} AGENTHUB_STATE_DIR=${shellQuote2(options.stateDir)} AGENTHUB_PROJECT_DIR=${shellQuote2(resolve10(options.projectRoot))} bun ${shellQuote2(options.hookScript)}`;
@@ -8589,12 +8616,21 @@ function internalPlan(options) {
   const rootStat = safeDirectory(root);
   if (!rootStat)
     throw new Error("project root must be an existing directory");
+  const canonicalRoot = realPath(root);
   const pluginDir = join14(root, PLUGIN_DIR);
   let parentsPresent = true;
   for (const relative of [".agents", ".agents/plugins", PLUGIN_DIR]) {
     if (!parentsPresent)
       break;
     parentsPresent = !!safeDirectory(join14(root, relative));
+  }
+  let directories;
+  let canonicalPluginDir;
+  if (parentsPresent) {
+    directories = pluginDirectories(root);
+    canonicalPluginDir = realPath(pluginDir);
+    if (canonicalPluginDir !== join14(canonicalRoot, PLUGIN_DIR))
+      throw new Error("managed agy plugin path traverses a symlink");
   }
   const snapshots = Object.fromEntries(FILES.map((relative) => {
     const path = join14(root, relative);
@@ -8629,28 +8665,30 @@ function internalPlan(options) {
     const old = snapshots[relative];
     const next = Buffer.from(`${JSON.stringify(docs[relative], null, 2)}
 `);
-    return { path: join14(root, relative), relative, ...old ? { current: old.bytes, stat: old.stat } : {}, next, changed: !old || !old.bytes.equals(next) };
+    return { path: join14(root, relative), relative, ...old ? { current: old.bytes, stat: old.stat } : {}, next, changed: !old || !isDeepStrictEqual(current[relative], docs[relative]) };
   });
   const git = memoryGitSync(["ls-files", "--", ...FILES], { cwd: root, encoding: "utf8", timeout: 3000 });
   const tracked = git.status === 0 && !!git.stdout.trim();
   const changed = targets.some((target) => target.changed);
-  return { file: pluginDir, tracked, changed, action: changed ? "create or update the managed agent-hub plugin" : "keep the managed agent-hub plugin", root, pluginDir, targets };
+  return { file: pluginDir, tracked, changed, action: changed ? "create or update the managed agent-hub plugin" : "keep the managed agent-hub plugin", root, pluginDir, canonicalRoot, ...canonicalPluginDir ? { canonicalPluginDir } : {}, ...directories ? { directories } : {}, targets };
 }
 function identityMatches(path, before) {
   const now = lstatSync9(path, { throwIfNoEntry: false });
   return before ? !!now && now.dev === before.dev && now.ino === before.ino : !now;
 }
-function atomicWrite(path, bytes, expected) {
+function atomicWrite(path, bytes, expected, plan) {
   const temporary = `${path}.${randomUUID5()}.tmp`;
   let fd;
   let tempIdentity;
   try {
+    verifyPluginDirectory(plan, path);
     fd = openSync4(temporary, "wx", 384);
     const tempStat = fstatSync3(fd);
     tempIdentity = { dev: tempStat.dev, ino: tempStat.ino };
     writeFileSync4(fd, bytes);
     closeSync4(fd);
     fd = undefined;
+    verifyPluginDirectory(plan, path);
     if (!identityMatches(path, expected))
       throw new Error(`${path} changed while the managed plugin was being written`);
     renameSync(temporary, path);
@@ -8668,14 +8706,14 @@ function atomicWrite(path, bytes, expected) {
     } catch {}
   }
 }
-function rollback(written, createdDirs) {
+function rollback(plan, written, createdDirs) {
   for (const { target, own } of written.reverse()) {
     try {
       const now = lstatSync9(target.path, { throwIfNoEntry: false });
       if (!now || now.dev !== own.dev || now.ino !== own.ino)
         continue;
       if (target.current)
-        atomicWrite(target.path, target.current, now);
+        atomicWrite(target.path, target.current, now, plan);
       else
         unlinkSync(target.path);
     } catch {}
@@ -8704,16 +8742,20 @@ function ensureAgyMcp(options) {
       const stat = safeDirectory(path);
       createdDirs.push({ path, dev: stat.dev, ino: stat.ino });
     }
+    plan.directories = pluginDirectories(plan.root);
+    plan.canonicalPluginDir = realPath(plan.pluginDir);
+    if (plan.canonicalRoot !== realPath(plan.root) || plan.canonicalPluginDir !== join14(plan.canonicalRoot, PLUGIN_DIR))
+      throw new Error("managed agy plugin path changed; inspect it before writing");
     for (const target of plan.targets) {
       if (!target.changed)
         continue;
       if (!identityMatches(target.path, target.stat))
         throw new Error(`${target.path} changed while the managed plugin was being prepared`);
-      const own = atomicWrite(target.path, target.next, target.stat);
+      const own = atomicWrite(target.path, target.next, target.stat, plan);
       written.push({ target, own });
     }
   } catch (error) {
-    rollback(written, createdDirs);
+    rollback(plan, written, createdDirs);
     throw error;
   }
   return { changed: true, tracked: plan.tracked };
@@ -8749,7 +8791,7 @@ function cleanupAgyMcp(options) {
         const retain = Object.keys(servers).length > 0 || Object.keys(currentMcp).some((key) => key !== "mcpServers");
         if (retain) {
           const own = atomicWrite(target.path, Buffer.from(`${JSON.stringify(nextMcp, null, 2)}
-`), target.stat);
+`), target.stat, plan);
           deleted.push({ path: target.path, bytes: target.current, own });
         } else {
           unlinkSync(target.path);
@@ -8766,9 +8808,9 @@ function cleanupAgyMcp(options) {
         const current = lstatSync9(item.path, { throwIfNoEntry: false });
         if (item.own) {
           if (current?.dev === item.own.dev && current.ino === item.own.ino)
-            atomicWrite(item.path, item.bytes, current);
+            atomicWrite(item.path, item.bytes, current, plan);
         } else if (!current)
-          atomicWrite(item.path, item.bytes);
+          atomicWrite(item.path, item.bytes, undefined, plan);
       } catch {}
     }
     throw error;
@@ -8777,6 +8819,7 @@ function cleanupAgyMcp(options) {
 var PLUGIN_DIR = ".agents/plugins/agent-hub", PLUGIN_KEY = "agent-hub", MANIFEST_FILE, MCP_FILE, HOOKS_FILE, FILES, EVENTS2, MANAGED_DESCRIPTION = "Managed by ahub agy launcher.", MAX_CONFIG_BYTES;
 var init_agy_mcp = __esm(() => {
   init_git();
+  init_project();
   MANIFEST_FILE = `${PLUGIN_DIR}/plugin.json`;
   MCP_FILE = `${PLUGIN_DIR}/mcp_config.json`;
   HOOKS_FILE = `${PLUGIN_DIR}/hooks.json`;
@@ -8788,6 +8831,40 @@ var init_agy_mcp = __esm(() => {
 // src/adapters/agy/entry.ts
 import { spawn as spawn9, spawnSync as spawnSync4 } from "child_process";
 import { resolve as resolve11 } from "path";
+function agyTuiSpawnOptions(cwd, env) {
+  return { cwd, env, stdio: "inherit" };
+}
+function runAgyTui(argv, cwd, env) {
+  const child = spawn9("agy", argv, agyTuiSpawnOptions(cwd, env));
+  return new Promise((resolveExit, reject) => {
+    const forward = (signal) => {
+      if (child.exitCode !== null || child.signalCode !== null)
+        return;
+      try {
+        child.kill(signal);
+      } catch {}
+    };
+    const onInterrupt = () => forward("SIGINT");
+    const onTerminate = () => forward("SIGTERM");
+    const onHangup = () => forward("SIGHUP");
+    const cleanup = () => {
+      process.off("SIGINT", onInterrupt);
+      process.off("SIGTERM", onTerminate);
+      process.off("SIGHUP", onHangup);
+    };
+    process.on("SIGINT", onInterrupt);
+    process.on("SIGTERM", onTerminate);
+    process.on("SIGHUP", onHangup);
+    child.once("error", (error) => {
+      cleanup();
+      reject(error);
+    });
+    child.once("close", (code) => {
+      cleanup();
+      resolveExit(code ?? 1);
+    });
+  });
+}
 async function runAgyEntry(ctx) {
   const { args, cwd, stateDir, cliDir, connect, fail } = ctx;
   if (ctx.instance)
@@ -8809,6 +8886,7 @@ async function runAgyEntry(ctx) {
     fail("agy P1 requires the verified Antigravity CLI 1.4.2");
   const hub = await connect();
   let options;
+  let pluginWritten = false;
   try {
     if (!hub.features.includes("native_hook_launch"))
       fail("running hub lacks the verified native hook launcher; upgrade or restart it before launching agy");
@@ -8828,43 +8906,24 @@ async function runAgyEntry(ctx) {
       instanceId: admitted.instanceId
     };
     const written = ensureAgyMcp(options);
+    pluginWritten = written.changed;
     if (written.tracked)
       console.error("The managed agy plugin is tracked; review its local machine paths before committing");
     console.error("Antigravity: pull-only TUI; native permissions unmanaged, no hub sandbox");
     const env = { ...ctx.helpers.nativeLaunchEnv("agy", ctx.helpers.childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
     delete env.AGENTHUB_CHANNEL;
-    const code = await new Promise((resolveExit, reject) => {
-      const child = spawn9("agy", argv, { cwd, env, stdio: "inherit", detached: true });
-      child.once("spawn", () => trackGroup(child));
-      const interrupt = () => {
-        stopOwnedProcess(child, { group: true }).catch(reject);
-      };
-      process.on("SIGINT", interrupt);
-      process.on("SIGTERM", interrupt);
-      process.on("SIGHUP", interrupt);
-      child.once("error", (error) => {
-        process.off("SIGINT", interrupt);
-        process.off("SIGTERM", interrupt);
-        process.off("SIGHUP", interrupt);
-        reject(error);
-      });
-      child.once("close", (code) => {
-        process.off("SIGINT", interrupt);
-        process.off("SIGTERM", interrupt);
-        process.off("SIGHUP", interrupt);
-        stopOwnedProcess(child, { group: true }).then(() => resolveExit(code ?? 1), reject);
-      });
-    });
-    if (code)
+    const code = await runAgyTui(argv, cwd, env);
+    if (code !== 0)
       process.exitCode = code;
   } finally {
     if (options) {
       await hub.request({ t: "native_hook_launch", op: "end", peer: "agy", launchId: options.launchId }).catch(() => {});
-      try {
-        cleanupAgyMcp(options);
-      } catch {
-        console.error("Managed agy plugin cleanup refused: files changed or ownership could not be verified");
-      }
+      if (pluginWritten)
+        try {
+          cleanupAgyMcp(options);
+        } catch {
+          console.error("Managed agy plugin cleanup refused: files changed or ownership could not be verified");
+        }
     }
     hub.close();
   }

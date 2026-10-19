@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runAgyEntry } from "../src/adapters/agy/entry.ts";
+import { agyTuiSpawnOptions, runAgyEntry } from "../src/adapters/agy/entry.ts";
 import type { NativeCliEntryContext } from "../src/adapters/definitions/native-cli-entry-types.ts";
 import { nativeLaunchEnv } from "../src/cli/launch.ts";
 
@@ -18,6 +18,12 @@ function context(root: string, args: string[], features = ["native_hook_launch"]
     helpers: { nativeLaunchEnv, childEnv: () => ({ ...process.env }) } } as unknown as NativeCliEntryContext;
   return { ctx, requests };
 }
+
+test("agy TUI launch stays in the foreground process group", () => {
+  const options = agyTuiSpawnOptions("/project", { AGENTHUB_PEER_ID: "agy" });
+  expect(options).toEqual({ cwd: "/project", env: { AGENTHUB_PEER_ID: "agy" }, stdio: "inherit" });
+  expect(options).not.toHaveProperty("detached");
+});
 
 test("agy preview has no file or connection effects and refuses unverified modes", async () => {
   const root = mkdtempSync(join(tmpdir(), "ahub-agy-preview-"));

@@ -27,7 +27,7 @@ export const AGY_DEFINITION: AdapterDefinition = {
     defaultForm: "tui",
     ownsTerminal: form => form === "tui",
     launch: agyLaunch,
-    conductorStartable: true,
+    conductorStartable: false,
     hubSwitches: [],
     ownedFlags: ["--new", "--continue", "--conversation", "--resume"],
     conductorStartArgs: args => args.length ? new Error("conductor starts accept no launch overrides; use ahub agy") : {},

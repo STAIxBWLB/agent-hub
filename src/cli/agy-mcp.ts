@@ -2,7 +2,9 @@ import type { Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { hubGitSync } from "../hub/git.ts";
+import { realPath } from "../hub/project.ts";
 
 export interface AgyMcpOptions {
   projectRoot: string;
@@ -25,7 +27,8 @@ const MANAGED_DESCRIPTION = "Managed by ahub agy launcher.";
 const MAX_CONFIG_BYTES = 256 * 1024;
 type JsonObject = Record<string, any>;
 type Target = { path: string; relative: typeof FILES[number]; current?: Buffer; stat?: Stats; next: Buffer; changed: boolean };
-type Plan = { file: string; tracked: boolean; changed: boolean; action: string; root: string; pluginDir: string; targets: Target[] };
+type DirectoryIdentity = { path: string; stat: Stats };
+type Plan = { file: string; tracked: boolean; changed: boolean; action: string; root: string; pluginDir: string; canonicalRoot: string; canonicalPluginDir?: string; directories?: DirectoryIdentity[]; targets: Target[] };
 
 function object(value: unknown): value is JsonObject { return !!value && typeof value === "object" && !Array.isArray(value); }
 function jsonFile(value: unknown, name: string): JsonObject {
@@ -74,6 +77,31 @@ function safeFile(path: string): { stat: Stats; bytes: Buffer } | undefined {
   const bytes = readFileSync(path);
   if (bytes.length > MAX_CONFIG_BYTES) throw new Error(`${path} exceeds the configuration size limit`);
   return { stat, bytes };
+}
+
+function pluginDirectories(root: string): DirectoryIdentity[] {
+  const directories: DirectoryIdentity[] = [];
+  for (const relative of [".", ".agents", ".agents/plugins", PLUGIN_DIR]) {
+    const path = relative === "." ? root : join(root, relative);
+    const stat = safeDirectory(path);
+    if (!stat) throw new Error(`${path} must be an existing project directory`);
+    directories.push({ path, stat });
+  }
+  return directories;
+}
+
+function verifyPluginDirectory(plan: Pick<Plan, "root" | "pluginDir" | "canonicalRoot" | "canonicalPluginDir" | "directories">, target: string): void {
+  if (!plan.canonicalPluginDir || !plan.directories) throw new Error("managed agy plugin directory identity is unavailable");
+  if (realPath(plan.root) !== plan.canonicalRoot || realPath(plan.pluginDir) !== plan.canonicalPluginDir || plan.canonicalPluginDir !== join(plan.canonicalRoot, PLUGIN_DIR)) {
+    throw new Error("managed agy plugin path changed; inspect it before writing");
+  }
+  for (const expected of plan.directories) {
+    const current = safeDirectory(expected.path);
+    if (!current || current.dev !== expected.stat.dev || current.ino !== expected.stat.ino) throw new Error("managed agy plugin directory changed; inspect it before writing");
+  }
+  if (!FILES.some(file => join(plan.root, file) === target)) {
+    throw new Error("atomic write target is outside the managed agy plugin files");
+  }
 }
 
 function hookCommand(phase: typeof EVENTS[number], options: AgyMcpOptions, peer: string): string {
@@ -151,11 +179,19 @@ function internalPlan(options: AgyMcpOptions): Plan {
   const { root, peer } = validateOptions(options);
   const rootStat = safeDirectory(root);
   if (!rootStat) throw new Error("project root must be an existing directory");
+  const canonicalRoot = realPath(root);
   const pluginDir = join(root, PLUGIN_DIR);
   let parentsPresent = true;
   for (const relative of [".agents", ".agents/plugins", PLUGIN_DIR]) {
     if (!parentsPresent) break;
     parentsPresent = !!safeDirectory(join(root, relative));
+  }
+  let directories: DirectoryIdentity[] | undefined;
+  let canonicalPluginDir: string | undefined;
+  if (parentsPresent) {
+    directories = pluginDirectories(root);
+    canonicalPluginDir = realPath(pluginDir);
+    if (canonicalPluginDir !== join(canonicalRoot, PLUGIN_DIR)) throw new Error("managed agy plugin path traverses a symlink");
   }
   const snapshots = Object.fromEntries(FILES.map(relative => {
     const path = join(root, relative);
@@ -189,12 +225,12 @@ function internalPlan(options: AgyMcpOptions): Plan {
   const targets = FILES.map(relative => {
     const old = snapshots[relative];
     const next = Buffer.from(`${JSON.stringify(docs[relative], null, 2)}\n`);
-    return { path: join(root, relative), relative, ...(old ? { current: old.bytes, stat: old.stat } : {}), next, changed: !old || !old.bytes.equals(next) };
+    return { path: join(root, relative), relative, ...(old ? { current: old.bytes, stat: old.stat } : {}), next, changed: !old || !isDeepStrictEqual(current[relative], docs[relative]) };
   });
   const git = hubGitSync(["ls-files", "--", ...FILES], { cwd: root, encoding: "utf8", timeout: 3000 });
   const tracked = git.status === 0 && !!git.stdout.trim();
   const changed = targets.some(target => target.changed);
-  return { file: pluginDir, tracked, changed, action: changed ? "create or update the managed agent-hub plugin" : "keep the managed agent-hub plugin", root, pluginDir, targets };
+  return { file: pluginDir, tracked, changed, action: changed ? "create or update the managed agent-hub plugin" : "keep the managed agent-hub plugin", root, pluginDir, canonicalRoot, ...(canonicalPluginDir ? { canonicalPluginDir } : {}), ...(directories ? { directories } : {}), targets };
 }
 
 /** Preview the native plugin's three project-scoped files without writing or exposing foreign contents. */
@@ -208,16 +244,18 @@ function identityMatches(path: string, before?: Stats): boolean {
   return before ? !!now && now.dev === before.dev && now.ino === before.ino : !now;
 }
 
-function atomicWrite(path: string, bytes: Buffer, expected?: Stats): { dev: number; ino: number } {
+function atomicWrite(path: string, bytes: Buffer, expected: Stats | undefined, plan: Plan): { dev: number; ino: number } {
   const temporary = `${path}.${randomUUID()}.tmp`;
   let fd: number | undefined;
   let tempIdentity: { dev: number; ino: number } | undefined;
   try {
+    verifyPluginDirectory(plan, path);
     fd = openSync(temporary, "wx", 0o600);
     const tempStat = fstatSync(fd);
     tempIdentity = { dev: tempStat.dev, ino: tempStat.ino };
     writeFileSync(fd, bytes);
     closeSync(fd); fd = undefined;
+    verifyPluginDirectory(plan, path);
     if (!identityMatches(path, expected)) throw new Error(`${path} changed while the managed plugin was being written`);
     renameSync(temporary, path);
     const stat = lstatSync(path);
@@ -232,12 +270,12 @@ function atomicWrite(path: string, bytes: Buffer, expected?: Stats): { dev: numb
   }
 }
 
-function rollback(written: { target: Target; own: { dev: number; ino: number } }[], createdDirs: { path: string; dev: number; ino: number }[]): void {
+function rollback(plan: Plan, written: { target: Target; own: { dev: number; ino: number } }[], createdDirs: { path: string; dev: number; ino: number }[]): void {
   for (const { target, own } of written.reverse()) {
     try {
       const now = lstatSync(target.path, { throwIfNoEntry: false });
       if (!now || now.dev !== own.dev || now.ino !== own.ino) continue;
-      if (target.current) atomicWrite(target.path, target.current, now);
+      if (target.current) atomicWrite(target.path, target.current, now, plan);
       else unlinkSync(target.path);
     } catch { /* Never replace a path whose ownership changed during rollback. */ }
   }
@@ -261,14 +299,17 @@ export function ensureAgyMcp(options: AgyMcpOptions): { changed: boolean; tracke
       const stat = safeDirectory(path)!;
       createdDirs.push({ path, dev: stat.dev, ino: stat.ino });
     }
+    plan.directories = pluginDirectories(plan.root);
+    plan.canonicalPluginDir = realPath(plan.pluginDir);
+    if (plan.canonicalRoot !== realPath(plan.root) || plan.canonicalPluginDir !== join(plan.canonicalRoot, PLUGIN_DIR)) throw new Error("managed agy plugin path changed; inspect it before writing");
     for (const target of plan.targets) {
       if (!target.changed) continue;
       if (!identityMatches(target.path, target.stat)) throw new Error(`${target.path} changed while the managed plugin was being prepared`);
-      const own = atomicWrite(target.path, target.next, target.stat);
+      const own = atomicWrite(target.path, target.next, target.stat, plan);
       written.push({ target, own });
     }
   } catch (error) {
-    rollback(written, createdDirs);
+    rollback(plan, written, createdDirs);
     throw error;
   }
   return { changed: true, tracked: plan.tracked };
@@ -303,7 +344,7 @@ export function cleanupAgyMcp(options: AgyMcpOptions): void {
         const nextMcp = { ...currentMcp, mcpServers: servers };
         const retain = Object.keys(servers).length > 0 || Object.keys(currentMcp).some(key => key !== "mcpServers");
         if (retain) {
-          const own = atomicWrite(target.path, Buffer.from(`${JSON.stringify(nextMcp, null, 2)}\n`), target.stat);
+          const own = atomicWrite(target.path, Buffer.from(`${JSON.stringify(nextMcp, null, 2)}\n`), target.stat, plan);
           deleted.push({ path: target.path, bytes: target.current!, own });
         } else {
           unlinkSync(target.path);
@@ -319,8 +360,8 @@ export function cleanupAgyMcp(options: AgyMcpOptions): void {
       try {
         const current = lstatSync(item.path, { throwIfNoEntry: false });
         if (item.own) {
-          if (current?.dev === item.own.dev && current.ino === item.own.ino) atomicWrite(item.path, item.bytes, current);
-        } else if (!current) atomicWrite(item.path, item.bytes);
+          if (current?.dev === item.own.dev && current.ino === item.own.ino) atomicWrite(item.path, item.bytes, current, plan);
+        } else if (!current) atomicWrite(item.path, item.bytes, undefined, plan);
       } catch { /* Restore only a path still owned by this cleanup or a path that remains missing. */ }
     }
     throw error;

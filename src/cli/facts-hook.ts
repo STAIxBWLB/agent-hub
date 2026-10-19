@@ -59,6 +59,7 @@ export function scopedWriteBlocked(phase: string, permission: unknown, tool: unk
 
 /** The hook's stdout for one Claude Code hook input, or undefined for none. */
 export async function factsHook(stdin: string, stateDir: string, peer: string, timeoutMs = 2000, nativeEvent?: string): Promise<string | undefined> {
+  if (Buffer.byteLength(stdin, "utf8") > 1024 * 1024) return undefined;
   if (nativeEvent !== undefined) {
     const port = definitionOf(peer)?.hooks?.factsHook;
     const payload: unknown = JSON.parse(stdin);
