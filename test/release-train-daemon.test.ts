@@ -56,23 +56,17 @@ test("daemon release tools preserve planner identity and defer unknown peer quot
     expect((await person.request({ t: "status" })).status.recovery?.operationId).toBeUndefined();
     expect(await person.request({ ...operation, op: "prepare" })).toMatchObject({ ok: true });
     expect(await person.request({ ...oldTarget, op: "commit" })).toMatchObject({ ok: false, error: expect.stringContaining("target lacks release_trains") });
-    hostAllowed = false;
-    expect(await person.request({ ...operation, op: "commit" })).toMatchObject({ ok: false, error: expect.stringContaining("host slot held") });
-    expect((await person.request({ t: "status" })).status.stopping).toBe(false);
-    hostAllowed = true; closeFails = true;
-    duringAdmission = async () => { expect(await person!.request({ ...operation, op: "abort" })).toMatchObject({ ok: true }); };
-    expect(await person.request({ ...operation, op: "commit" })).toMatchObject({ ok: false, error: expect.stringContaining("window changed") });
-    expect((await person.request({ t: "status" })).status.stopping).toBe(false);
-    duringAdmission = undefined; closeFails = false;
-    expect(await person.request({ ...operation, op: "prepare" })).toMatchObject({ ok: true });
-    duringAdmission = async () => { daemon!.bus.add({ ...idlePeer("local"), state: "busy" }); };
-    expect(await person.request({ ...operation, op: "commit" })).toMatchObject({ ok: false, error: expect.stringContaining("window changed") });
+    daemon.bus.add({ ...idlePeer("local"), state: "busy" });
+    expect(await person.request({ ...operation, op: "commit" })).toMatchObject({ ok: false, error: expect.stringContaining("recovery is not ready") });
     expect((await person.request({ t: "status" })).status.stopping).toBe(false);
     daemon.bus.add(idlePeer("local"));
     expect(await person.request({ ...operation, op: "abort" })).toMatchObject({ ok: true });
-    duringAdmission = undefined; closeFails = true;
+    expect(await person.request({ ...operation, op: "commit" })).toMatchObject({ ok: false, error: expect.stringContaining("operation does not match") });
     expect(await person.request({ ...operation, op: "prepare" })).toMatchObject({ ok: true });
+    hostAllowed = false; closeFails = true;
+    duringAdmission = async () => { throw new Error("upgrade must not request release admission"); };
     expect(await person.request({ ...operation, op: "commit" })).toMatchObject({ ok: true, committed: true });
+    expect(closed).toBe(2);
     await daemon.stopped;
 
   } finally { board?.close(); peer?.close(); person?.close(); await daemon?.stop(); rmSync(root, { recursive: true, force: true }); }

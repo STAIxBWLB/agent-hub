@@ -4796,18 +4796,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (msg.op === "commit") {
       if ((recoveryPhase !== "prepared" && recoveryPhase !== "preparing") || !recoveryReady()) return recoveryError("recovery is not ready; inspect until peers are idle, approvals are complete and completion checks have finished");
-      let releaseAdmission: ReleaseHostAdmission | undefined;
-      if (lifecycleConfig.mode !== "off" && board.releases().some(release => release.train && ["active", "frozen"].includes(release.state))) {
-        releaseAdmission = await (opts.releaseHostAdmission ?? readReleaseHostAdmission)(opts.cwd);
-        // The existing person-selected operation is the confirmation. Admission never creates one.
-        const quota = releaseQuotaSnapshot(), targetError = incompatibleRecoveryTarget();
-        if (targetError || recoveryOperationId !== op || recoveryCommitted || stopping || (recoveryPhase !== "prepared" && recoveryPhase !== "preparing") || !recoveryReady() || !quota.idle || !quota.quota || !releaseAdmission.admitted || releaseAdmission.current?.() === false) {
-          try { await releaseAdmission.close?.(); }
-          catch { log("release upgrade admission cleanup incomplete"); }
-          return recoveryError(`release upgrade deferred: ${targetError ?? releaseAdmission.reason ?? (quota.reasons.join("; ") || "operation or idle window changed")}; person exits: ahub recovery abort ${op}, then stop a headless paused peer with ahub stop <peer> (end TUI peers in their terminal), ahub resume <peer>, ahub budget resume <peer> or ahub budget set <peer> <0..1> as appropriate; ahub release drop <name> <revision> or explicitly set mode="off" in .agenthub/sdlc.toml and restart to leave train governance; verify the installed dotfiles dot and run recovery outside an existing same-repository dot admit lease`);
-        }
-      }
-      try {
+      // Person ruling 2026-10-19: upgrade is excluded from release resource gates; original readiness still binds.
       recoveryPhase = "prepared";
       bus.setRecoveryHold(true, Array.isArray(msg.targetFeatures) && msg.targetFeatures.includes("recovery_deferred_hub"));
       recoveryPeerSnapshot ??= Object.values(recoveryPeers());
@@ -4835,10 +4824,6 @@ export async function startDaemon(opts: DaemonOptions) {
       recoveryCommitted = true;
       clearTimeout(recoveryLeaseTimer);
       writeStatus();
-      } finally {
-        try { await releaseAdmission?.close?.(); }
-        catch { log("release upgrade admission cleanup incomplete"); }
-      }
       // Keep phase prepared in status until the replacement daemon reports restored.
       setTimeout(() => void stop().catch((error) => log(`recovery shutdown incomplete: ${(error as Error).message}`)), 0);
       return { t: "recovery", ok: true, committed: true, recovery: { ...recoveryView(), phase: "prepared" } };

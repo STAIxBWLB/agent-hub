@@ -6,14 +6,14 @@ import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { Board } from "../src/hub/board.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 
-test("empty attached-peer set admits release cut and recovery but retains host and reattachment fences", async () => {
+test("empty attached-peer set admits release cut and recovery but retains cut host and recovery busy fences", async () => {
   const root = mkdtempSync(join(tmpdir(), "ahub-train-empty-")), stateDir = join(root, "state");
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined, person: ControlClient | undefined, board: Board | undefined;
-  let hostAllowed = false, duringAdmission: (() => void) | undefined;
+  let hostAllowed = false;
   try {
     mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/sdlc.toml"), 'mode = "advise"\n');
     daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
-      releaseHostAdmission: async () => { duringAdmission?.(); return { admitted: hostAllowed, ...(hostAllowed ? {} : { reason: "host slot held" }), current: () => true, close: async () => {} }; },
+      releaseHostAdmission: async () => { return { admitted: hostAllowed, ...(hostAllowed ? {} : { reason: "host slot held" }), current: () => true, close: async () => {} }; },
       config: { ...DEFAULT_CONFIG, batch_ms: 0,
         roster: { claude: false, codex: false, kimi: false, qwen: false, jcode: false, pi: false, local: false },
         memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { enabled: false, keep: 1 },
@@ -36,17 +36,14 @@ test("empty attached-peer set admits release cut and recovery but retains host a
     const operation = { t: "recovery", operationId: "empty-upgrade", expectedInstanceId: status.instanceId, targetFeatures: status.features };
     expect(await person.request({ ...operation, op: "prepare" })).toMatchObject({ ok: true });
     hostAllowed = false;
-    expect(await person.request({ ...operation, op: "commit" })).toMatchObject({ ok: false, error: expect.stringContaining("host slot held") });
-    expect((await person.request({ t: "status" })).status.stopping).toBe(false);
-    hostAllowed = true;
-    duringAdmission = () => { daemon!.bus.add({ id: "external-worker", state: "busy", start: async () => {}, stop: async () => {}, deliver: async () => {} }); };
-    expect(await person.request({ ...operation, op: "commit" })).toMatchObject({ ok: false, error: expect.stringContaining("quota window unknown") });
+    daemon.bus.add({ id: "external-worker", state: "busy", start: async () => {}, stop: async () => {}, deliver: async () => {} });
+    expect(await person.request({ ...operation, op: "commit" })).toMatchObject({ ok: false, error: expect.stringContaining("recovery is not ready") });
     expect((await person.request({ t: "status" })).status.stopping).toBe(false);
     daemon.bus.peers.delete("external-worker");
-    duringAdmission = () => { daemon!.bus.add({ id: "local", state: "busy", start: async () => {}, stop: async () => {}, deliver: async () => {} }); };
-    expect(await person.request({ ...operation, op: "commit" })).toMatchObject({ ok: false, error: expect.stringContaining("window changed") });
+    daemon.bus.add({ id: "local", state: "busy", start: async () => {}, stop: async () => {}, deliver: async () => {} });
+    expect(await person.request({ ...operation, op: "commit" })).toMatchObject({ ok: false, error: expect.stringContaining("recovery is not ready") });
     expect((await person.request({ t: "status" })).status.stopping).toBe(false);
-    duringAdmission = undefined; daemon.bus.peers.delete("local");
+    daemon.bus.peers.delete("local");
     expect(await person.request({ ...operation, op: "commit" })).toMatchObject({ ok: true, committed: true });
     await daemon.stopped;
   } finally { board?.close(); person?.close(); await daemon?.stop(); rmSync(root, { recursive: true, force: true }); }
