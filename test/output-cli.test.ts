@@ -61,7 +61,7 @@ function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean } =
   cleanup.push(() => gateway.stop(true));
   writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify({ mlx: { enabled: false }, omniroute: { urls: [`http://127.0.0.1:${gateway.port}/v1`], access_hosts: [] }, local: { sandbox: "allow-default" } }));
   const bin = join(root, "bin"); mkdirSync(bin);
-  for (const name of ["bun", "claude", "codex", "kimi", "switchyard-server", "dot"]) {
+  for (const name of ["bun", "claude", "codex", "kimi", "dot"]) {
     writeFileSync(join(bin, name), `#!/bin/sh\ncase "$1" in\n  --version) echo 'fixture 1.0';;\n  plugin) echo '[]';;\n  ai) echo '✓ codex ready';;\nesac\n`, { mode: 0o755 });
   }
   const wrapper = join(root, "run.ts");

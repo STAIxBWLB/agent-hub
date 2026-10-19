@@ -1,4 +1,4 @@
-/** Hub-owned model policy. Deliberately separate from Switchyard sidecar tables. */
+/** In-process hub model-route policy. */
 export interface HubRoute {
   type: "stage" | "plan_execute" | "advisor" | "escalation";
   efficient?: string;

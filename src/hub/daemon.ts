@@ -308,7 +308,13 @@ function syncMinutes(v: unknown): number {
   return v;
 }
 
-export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routingRetired: readonly string[] = loadRouting(cwd).retired ?? []): HubConfig {
+/** Routing diagnostics must not make independent config reads depend on valid routing. */
+function retiredRoutingSettings(cwd: string): readonly string[] {
+  try { return loadRouting(cwd).retired ?? []; }
+  catch { return []; } // Routing admission and reload report parse errors using their own last-good state.
+}
+
+export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routingRetired: readonly string[] = retiredRoutingSettings(cwd)): HubConfig {
   const captured = layers ?? readInstanceConfigLayers(cwd);
   const instanceConfig = readInstanceConfig(cwd, captured);
   const instances = instanceConfig.instances;
@@ -3826,7 +3832,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const routing = activeRouting();
       // `--model` pins a gateway alias; `--route` selects an in-process policy or a legacy fixed fallback.
       const route = args.model ? undefined : (args.route ?? routing.local.route);
-      if (route && !route.startsWith("sy/") && !routing.hub_routes?.[route]) return { ok: false, ...(existing && existing.state !== "offline" ? { already: true } : {}), error: `routing.toml has no route "${route}"` };
+      if (route && route.startsWith("hub/") && !routing.hub_routes?.[route]) return { ok: false, ...(existing && existing.state !== "offline" ? { already: true } : {}), error: `routing.toml has no route "${route}"` };
       const fixedModel = args.model ?? routing.local.fixed_model;
       // A manually paused recovery roster must be reconstructible while its gateway is unavailable.
       // It stays held; holdPeer validates the restored choice before an operator can resume it.
@@ -3956,7 +3962,7 @@ export async function startDaemon(opts: DaemonOptions) {
 
   async function validateLocalChoice(route: string | undefined, fixedModel: string): Promise<void> {
     const routing = activeRouting();
-    if (route && !route.startsWith("sy/") && !routing.hub_routes?.[route]) throw new Error(`routing.toml has no route "${route}"`);
+    if (route && route.startsWith("hub/") && !routing.hub_routes?.[route]) throw new Error(`routing.toml has no route "${route}"`);
     const models = await omni.models();
     const required = new Set([fixedModel]);
     if (route?.startsWith("hub/")) {

@@ -14,7 +14,7 @@ import { DEFAULT_STAY_SWITCH, type StaySwitchMode } from "../models/route/stage.
 export interface ClassPolicy {
   /** preference order among attached, unpaused peers */
   peers: PeerId[];
-  /** In-process hub route, or a retired sy/ selection that uses fixed_model. */
+  /** In-process hub route, or a retired non-hub selection that uses fixed_model. */
   route?: string;
   fixed_model?: string;
   /** on `tasks.escalate_after` consecutive changes_requested (default 3) */
@@ -201,7 +201,7 @@ export function parseRouting(text: string, overlay?: RoutingOverlay): Routing {
     if (checked.stay_switch) { (raw as Record<string, unknown>).stay_switch = checked.stay_switch; sources.stay_switch = OVERLAY_FILE; }
     const known = new Set(Object.keys(raw.hub_routes ?? {}));
     for (const [name, entry] of Object.entries(checked.classes ?? {})) {
-      if (entry.route && !entry.route.startsWith("sy/") && !known.has(entry.route)) throw new Error(`${OVERLAY_FILE}: [classes.${name}] route ${entry.route} names no route in routing.toml`);
+      if (entry.route && entry.route.startsWith("hub/") && !known.has(entry.route)) throw new Error(`${OVERLAY_FILE}: [classes.${name}] route ${entry.route} names no route in routing.toml`);
       const classes = (raw.classes ??= {}) as Record<string, ClassPolicy>;
       // A class the shared file does not have starts from an empty peer list: the overlay may add its own.
       classes[name] = { ...(classes[name] ?? { peers: [] }), ...entry };
@@ -213,6 +213,9 @@ export function parseRouting(text: string, overlay?: RoutingOverlay): Routing {
   for (const p of signals.pii_patterns) new RegExp(p); // a bad pattern fails here, at load, not in the middle of an assignment
   if (signals.pii_screen !== "off" && signals.pii_screen !== "local") throw new Error('routing.toml: [signals] pii_screen must be "off" or "local"');
   const classes = raw.classes ?? {};
+  if ([raw.local.route, ...Object.values(classes).map(policy => policy?.route)].some(route => route && !route.startsWith("hub/"))) {
+    retired.push('non-hub route selections are retired and ignored; using fixed_model (replace the selection with a hub/ route to enable in-process routing)');
+  }
   for (const [name, policy] of Object.entries(classes)) {
     if (policy?.pi_backend !== undefined && policy.pi_backend !== "dgx" && policy.pi_backend !== "mlx") throw new Error(`routing.toml: [classes.${name}] pi_backend must be "dgx" or "mlx"`);
   }
@@ -305,7 +308,7 @@ export interface Assignment {
   refusals?: RoutingRefusal[];
   owner?: PeerId;
   reviewer?: PeerId;
-  /** What local should ask for on this task: a hub route or retired sy/ selection, with its fixed fallback. */
+  /** What local should ask for on this task: a hub route or retired non-hub selection, with its fixed fallback. */
   route?: string;
   fixedModel?: string;
   piBackend?: "dgx" | "mlx";

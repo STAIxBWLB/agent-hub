@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
+import { newEnvelope } from "../src/hub/envelope.ts";
 import { realPath } from "../src/hub/project.ts";
 import { startFakeModelServer } from "./fakes/model-server.ts";
 
@@ -45,11 +46,17 @@ target = "old"
 }
 
 test("#553 a task class without route or fixed_model keeps the person's explicit local hub route", async () => {
-  const { person, model } = await fixture();
+  const { daemon, person, model } = await fixture();
   expect((await person.request({ t: "start", peer: "local", args: { route: "hub/cli" } })).ok).toBe(true);
   expect((await person.request({ t: "task", op: "hub_task_propose", args: { title: "route-choice task fixture", class: "implement", owner: "local" } })).ok).toBe(true);
+  // Deliver a correlated task envelope directly, so this routing test does not depend on
+  // the separate proposal/acceptance delivery lifecycle or on a scheduled digest.
+  const peer = daemon.bus.peers.get("local")!;
+  for (let i = 0; i < 100 && peer.state === "busy"; i++) await Bun.sleep(10);
+  expect(peer.state).toBe("idle");
+  await peer.deliver([newEnvelope("user", "route-choice task fixture", { refs: { task: "1" }, to: ["local"] })]);
   const taskCalls = () => model.requests.filter(request => JSON.stringify(request.body.messages).includes("route-choice task fixture"));
-  for (let i = 0; i < 400 && taskCalls().length === 0; i++) await Bun.sleep(10);
+  for (let i = 0; i < 100 && taskCalls().length === 0; i++) await Bun.sleep(10);
   expect(taskCalls().length).toBeGreaterThan(0);
   expect(taskCalls().every(request => request.body.model === "vllm/routed")).toBe(true);
 });

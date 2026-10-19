@@ -81,7 +81,8 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
   The old unshipped classifier escalation uses the existing hub escalation route.
 - Existing `[targets]` and `[routes]` tables load as retired settings, are ignored
   and produce startup/doctor diagnostics naming their hub-route replacements.
-  Existing `sy/` selections use their fixed-model fallback with one warning, not a
+  Every selection without the `hub/` prefix, including legacy named routes and
+  `sy/` selections, uses its fixed-model fallback with one warning, not a
   process start. Never rewrite an operator's routing files during load or reload.
 - The shipped template uses `[hub_routes]`, local/implement `hub/stage` and direct
   `fast` fixed models for former `sy/fast` classes. A class with a `fixed_model`
@@ -365,11 +366,12 @@ transport, budget admission and complete-turn history ownership; algorithms make
 from normalized chat input and bounded session state. See
 [the source-port contract](2026-10-04-switchyard-source-port-design.md) for upstream
 provenance, intentional fail-open escalation and REDO history differences. These tables
-run without a sidecar. Legacy `sy/` selections use only their fixed-model fallback. The Pi `hub/auto` alias uses the same stage signals with session-scoped
+run without a sidecar. Legacy selections without the `hub/` prefix use only their fixed-model fallback. The Pi `hub/auto` alias uses the same stage signals with session-scoped
 hold and context admission; peer progress observations suggest but never execute reassignment.
 
 Legacy L2 compatibility (#553): `[targets]` and `[routes]` are retired, ignored
-settings. A `sy/` selection falls back directly to its fixed model with one warning.
+settings. Every selection without the `hub/` prefix falls back directly to its
+fixed model with one warning, including legacy route ids without a prefix.
 No binary, generated model-router config or model-router listener remains. The
 migration mapping is in the retirement amendment above; historical native binary
 observations remain in `docs/smoke.md`.
@@ -514,7 +516,7 @@ inside a peer.
   bus.
 - `ahub ask` (added after 0.1.0). Retrieval first, model second, read-only. Evidence is gathered from the task
   board, claude-mem (index search plus the timeline around the top hit) and this run's hub log, capped at 6000
-  characters; the hub's model (`sy/fast`) answers from that list only and has to cite its ids, and an answer that
+  characters; the hub's configured fixed model (default `fast`) answers from that list only and has to cite its ids, and an answer that
   cites nothing from the list is dropped. No evidence means no model call; no model means the evidence is the result.
   Every row is capped and rows that match the question lead, so one long row cannot empty the list. Every cited id
   has to be in the list: one invented id drops the answer. PII task text is evidence only when an on-campus model is
@@ -549,7 +551,7 @@ inside a peer.
 - `.agenthub/state/` gitignored: `status.json` (with the daemon's pid and process signature, #226; daemons up to 0.12.20 also wrote `hub.pid`), `control-token` (0600, per run),
   `hub.db` (tasks, messages, budget; from M4), `hub.log`, `checkpoint.md`.
 - Env: `AGENTHUB_STATE_DIR`, `AGENTHUB_OMNIROUTE_URL`, `OMNIROUTE_API_KEY`,
-  `AGENTHUB_SWITCHYARD_BIN`, `AGENTHUB_UNATTENDED`.
+  `AGENTHUB_UNATTENDED`.
 
 ### Testing
 
@@ -592,7 +594,7 @@ AGENTS.md, REVIEW.md
 5. `ahub local` completes a `bulk_edit` task; OmniRoute log shows the request with the
    per-peer token and `x-omniroute-provider: vllm`; `ahub route explain` shows the
    chosen route.
-6. All model routes run in process; retired `sy/` selections use `fixed_model`.
+6. All model routes run in process; retired selections without the `hub/` prefix use `fixed_model`.
 7. A PII-flagged task never leaves the `local` peer (test with a fake pattern).
 8. Mocked Codex quota at 0.95 pauses Codex, checkpoints, reassigns its open
    `implement` task to `local`, and resumes Codex after the mocked reset.
@@ -657,7 +659,7 @@ M5 budget relay
 - [ ] Live: a real pause driven by Codex's own numbers with a TUI attached; the natural near-limit prerequisite remains blocked by issue #1
 
 M6 internal inference, packaging
-- [x] Status digests and triage through `sy/fast` (amended: optional and fail-open with a backoff. Only plain status
+- [x] Status digests and triage through the configured fixed model (default `fast`; amended: optional and fail-open with a backoff. Only plain status
       chatter over a threshold is condensed, into one item from `digest` that keeps every sender, envelope id and the
       highest hop; important, task, review, budget, preface and private items are never touched. A task proposed
       without a class is labelled from the closed class list, a PII task only when the gateway is on campus. The

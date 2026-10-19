@@ -2612,16 +2612,22 @@ and no `route` also calls that alias directly, even when `[local]` names a route
 The Switchyard sidecar is retired (#553). No binary or generated model-router
 config is used, and its reserved port offset remains unused. Existing `[targets]`
 and `[routes]` tables are ignored and listed as retired settings in startup logs
-and doctor; existing `sy/` selections use the fixed alias with one warning. Loading
-or reloading never rewrites the operator's routing files.
+and doctor. Every route without the `hub/` prefix, including named legacy routes
+and `sy/` selections, uses the fixed alias with one warning. Loading or reloading
+never rewrites the operator's routing files.
 
-To migrate, replace `stage_router` with `type = "stage"` under `[hub_routes]`, map
-`efficient_target` and `capable_target` to model aliases in `efficient` and
-`capable`, and retain `confidence_threshold`. Replace a passthrough class route
-with its target alias in `fixed_model` and remove that class's `route`. The former
-unshipped classifier escalation uses the existing hub `escalation` policy. Remove
-retired tables yourself after migrating their selections. Doctor inventories all
-local/class fixed aliases and effective efficient/capable/judge aliases, reporting
+Migrate the retired settings as follows:
+
+| Retired setting or route | In-process replacement |
+| --- | --- |
+| `stage_router` | `[hub_routes."hub/<id>"]` with `type = "stage"`; select it with `route = "hub/<id>"` |
+| `efficient_target` / `capable_target` | Put the targets' model aliases in `efficient` / `capable` |
+| `confidence_threshold` | Keep the same value on the hub stage route |
+| Passthrough class route | Put its target model alias in the class's `fixed_model` and remove the class's `route` |
+| Former unshipped classifier escalation | Use the existing hub `escalation` policy |
+| `[targets]` / `[routes]` | Remove these retired tables after migrating their selections |
+
+Doctor inventories all local/class fixed aliases and effective efficient/capable/judge aliases, reporting
 each missing alias once or aggregate success when all are served. Hub summaries
 and triage use their fixed model directly.
 

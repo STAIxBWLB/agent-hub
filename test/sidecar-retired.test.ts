@@ -9,6 +9,8 @@ import { SWITCHYARD, STRIDE } from "../src/hub/ports.ts";
 import { DEFAULT_INFERENCE, Inference } from "../src/hub/inference.ts";
 import { OmniRoute } from "../src/omniroute/client.ts";
 import { startFakeModelServer } from "./fakes/model-server.ts";
+import { init } from "../src/cli/init.ts";
+import { loadRouting } from "../src/hub/routing.ts";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanups.splice(0).reverse()) await close(); });
@@ -27,16 +29,14 @@ for (const withConfig of [false, true]) test(`#553 legacy tables are retired wit
   expect(readFileSync(file, "utf8")).toBe(text);
 });
 
-test("#553 optional hub inference ignores the former sidecar endpoint and calls its current fixed alias", async () => {
+test("#553 optional hub inference calls its current fixed alias", async () => {
   const prior = process.env.OMNIROUTE_API_KEY; process.env.OMNIROUTE_API_KEY = "k";
   cleanups.push(() => { if (prior === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = prior; });
   const model = startFakeModelServer({ key: "k", script: () => ({ content: "fixed answer" }) }); cleanups.push(model.stop);
-  let endpoints = 0;
-  const deps = { omni: new OmniRoute({ urls: [model.url], access_hosts: [] }), fixedModel: () => "fast", log: () => {},
-    route: "sy/fast", sidecar: () => ({ endpoint: async () => { endpoints++; return undefined; } }) };
-  const inference = new Inference(DEFAULT_INFERENCE, deps as any);
+  const inference = new Inference(DEFAULT_INFERENCE, {
+    omni: new OmniRoute({ urls: [model.url], access_hosts: [] }), fixedModel: () => "fast", log: () => {},
+  });
   expect(await inference.complete("bounded system", "untrusted input", 8)).toBe("fixed answer");
-  expect(endpoints).toBe(0);
   expect(model.requests.map(request => request.body.model)).toEqual(["fast"]);
 });
 
@@ -57,9 +57,41 @@ test("#553 retired tables reload without activation, config rewrites or status s
   expect(result.ok).toBe(true);
   expect((await person.request({ t: "status" })).status).not.toHaveProperty("switchyard");
   expect(readFileSync(file, "utf8")).toBe(legacy);
-  expect(loadConfig(root).retired?.join("\n")).toContain("[targets]");
+  const retired = loadConfig(root).retired ?? [];
+  expect(retired).toHaveLength(2);
+  const logged = () => readFileSync(join(root, "state/hub.log"), "utf8").split("\n").filter(line => retired.some(notice => line.endsWith(`config: ${notice}`)));
+  expect(logged()).toHaveLength(2);
+  for (const notice of retired) expect(logged().some(line => line.endsWith(`config: ${notice}`))).toBe(true);
+  // An unchanged reload must retain the running metadata, rather than logging both notices again.
+  expect((await person.request({ t: "settings_reload" })).ok).toBe(true);
+  expect(logged()).toHaveLength(2);
   writeFileSync(file, initial);
   expect((await person.request({ t: "settings_reload" })).ok).toBe(true);
   expect(loadConfig(root).retired ?? []).toEqual([]);
+  // Removal clears the daemon's running metadata: reintroducing the tables emits both notices again.
+  writeFileSync(file, legacy);
+  expect((await person.request({ t: "settings_reload" })).ok).toBe(true);
+  expect(logged()).toHaveLength(4);
   expect(SWITCHYARD).toBe(3); expect(STRIDE).toBe(10);
+});
+
+
+test("#553 init writes hub routes and direct class aliases without retired tables", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-routing-init-"));
+  cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  const file = join(root, ".agenthub/routing.toml");
+  expect(init(root)).toContain(file);
+  const written = readFileSync(file, "utf8");
+  expect(written).toBe(readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8"));
+  const routing = loadRouting(root);
+  expect(routing.local).toEqual({ route: "hub/stage", fixed_model: "coding" });
+  expect(routing.hub_routes?.["hub/stage"]?.type).toBe("stage");
+  expect(routing.classes.implement?.route).toBe("hub/stage");
+  for (const kind of ["bulk_edit", "test", "summarize", "triage"] as const) {
+    expect(routing.classes[kind]?.fixed_model).toBe("fast");
+    expect(routing.classes[kind]?.route).toBeUndefined();
+  }
+  expect(routing.retired ?? []).toEqual([]);
+  expect(written).not.toMatch(/^\[(?:targets|routes)(?:\.|\])/m);
+  expect(init(root)).not.toContain(file);
 });

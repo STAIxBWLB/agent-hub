@@ -37,7 +37,7 @@ related: 261004-review-agent-hub-switchyard-comparison.md, 261004-plan-agent-hub
   - 2단계: local worker 연결.
   - 3단계: Pi relay 연결.
   - 4단계: peer 진행 신호와 정체 판정(연구용).
-  - 5단계: sidecar 존치 결정.
+  - 5단계: sidecar 제거 결정 (#553, 2026-10-20 승인).
 - **연구와의 관계**
   - 4단계의 peer 진행 신호는 연구 계획 v2의 NC3(실행 신호로 조정 방식 전환) 자료.
   - Advisor gate 이식은 #42 AC2 감독자 regime과 NC2 commit gate의 시제품 기반.
@@ -148,7 +148,7 @@ related: 261004-review-agent-hub-switchyard-comparison.md, 261004-plan-agent-hub
 - **E5 설정**
   - `routing.toml`에 `[hub_routes."<id>"]` 표를 새로 둠. 유형은 `stage`, `plan_execute`, `advisor`, `escalation`, tier는 OmniRoute 모델 id나 relay 별칭.
   - `[hub_routes]`만 실행. #553 이후 기존 `[targets]`·`[routes]`는 retired settings로 무시.
-  - local worker의 `hub/` route는 hub 안에서 처리, legacy `sy/`는 `fixed_model` 직접 호출로 폴백.
+  - local worker의 `hub/` route는 hub 안에서 처리, `hub/` 접두사가 없는 legacy route는 `fixed_model` 직접 호출로 폴백.
 - **E6 실패 처리**
   - 라우팅 판단이나 판정기 호출이 실패하면 기존 경로(`fixed_model`)로 폴백. turn과 전달을 늦추지 않음.
   - 판정기 호출에 deadline을 둠(inference와 같은 원칙).
@@ -245,7 +245,7 @@ related: 261004-review-agent-hub-switchyard-comparison.md, 261004-plan-agent-hub
 - Switchyard 외부 프로세스·설정 생성·환경 변수·상태 행 제거. 모든 model route는 in-process 처리.
 - `SWITCHYARD = 3` port offset은 예약 상태 유지, 사용하지 않음. 나머지 offset 변경 금지.
 - `stage_router`는 hub `stage`의 `efficient`·`capable`·`confidence_threshold`로 대응. passthrough는 route 없이 class `fixed_model`로 대응.
-- 기존 `[targets]`·`[routes]`는 retired settings로 읽고 무시, startup·doctor에서 대체 경로 안내. `sy/`는 `fixed_model`로 폴백하고 1회 기록. operator 파일 자동 수정 없음.
+- 기존 `[targets]`·`[routes]`는 retired settings로 읽고 무시, startup·doctor에서 대체 경로 안내. `hub/` 접두사가 없는 route는 `fixed_model`로 폴백하고 1회 기록. operator 파일 자동 수정 없음.
 - template은 hub routes 사용. 내부 inference는 fixed model만 사용. doctor는 local·class fixed alias와 hub route의 모든 tier·judge alias를 inventory와 대조.
 - PII campus admission·`onCampusOnly`, `src/models/route/` 라이선스 고지 및 upstream 점검 스크립트 보존. 미이식 알고리즘 추가는 이번 범위 밖.
 - 구독 에이전트 측정 프록시(비교 보고서의 D4)는 이 계획 밖. 별도 결정.
@@ -308,7 +308,7 @@ related: 261004-review-agent-hub-switchyard-comparison.md, 261004-plan-agent-hub
 - REDO feedback stays in the completed local turn history. Failed turns never leave unmatched tool calls.
 - PII bypasses optional judges unless the exact on-campus gateway is positively confirmed; progress tracking is disabled while PII work is open.
 - Optional Pi advisor SSE replay and Rust differential build are deferred. No automatic peer reassignment.
-- Phase 5 decision (#553, approved 2026-10-20): the sidecar is retired. All routes run in process; legacy tables remain readable only as retired diagnostics and `sy/` selects fixed fallback. Keep port offset 3 reserved and unused.
+- Phase 5 decision (#553, approved 2026-10-20): the sidecar is retired. All routes run in process; legacy tables remain readable only as retired diagnostics and every route without the `hub/` prefix selects fixed fallback. Keep port offset 3 reserved and unused.
 - Each required phase is a separate reviewable commit and PR. No release or production configuration changes are implied.
 
 ## Amendment: session-aware stay/switch (#197, 2026-10-09)

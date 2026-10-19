@@ -33,7 +33,7 @@ test("#553 a retired sy route in an existing local overlay still loads without i
   const routing = parseRouting(shared, overlay);
   expect(routing.classes.implement?.route).toBe("sy/previously-declared");
   expect(routing.sources?.["classes.implement.route"]).toBe("routing.local.toml");
-  expect((routing as { retired?: string[] }).retired ?? []).toEqual([]);
+  expect(routing.retired?.join("\n")).toContain("non-hub route");
   const assignment = assign({ class: "implement", signals: [] }, { local: "idle" }, routing);
   expect(assignment).toMatchObject({ owner: "local", fixedModel: "coding" });
 });
