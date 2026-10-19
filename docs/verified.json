@@ -183,8 +183,7 @@
       "paths": [
         "src/models/",
         "src/hub/inference.ts",
-        "src/omniroute/",
-        "src/switchyard/"
+        "src/omniroute/"
       ]
     },
     "docs/agent-notes/tasks.md": {
@@ -224,7 +223,6 @@
         ".github/workflows/check.yml",
         ".github/workflows/release.yml",
         "src/hub/child-process.ts",
-        "src/switchyard/sidecar.ts",
         "src/local/sandbox.ts",
         "src/models/mlx.ts",
         "src/cli/upgrade-interactive.ts"

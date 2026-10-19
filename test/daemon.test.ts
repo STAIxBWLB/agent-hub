@@ -822,7 +822,7 @@ test("ahub local: a fourth peer on the hub-owned model path; writes wait for ahu
 
   const started = await console_.request({ t: "start", peer: "local", args: { model: "vllm/pinned" } });
   expect(started).toMatchObject({ ok: true, model: "vllm/pinned" });
-  expect((await console_.request({ t: "start", peer: "local", args: { route: "sy/nope" } })).already).toBe(true);
+  expect((await console_.request({ t: "start", peer: "local", args: { route: "hub/nope" } })).already).toBe(true);
 
   await console_.request({ t: "send", body: "write the file", to: ["local"] });
   await until(() => events.some((e) => e.t === "envelope" && e.env.from === "local"), "local answer");

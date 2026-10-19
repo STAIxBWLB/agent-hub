@@ -33,7 +33,7 @@ function setup(script?: Script, opts: { onCampus?: boolean; memory?: boolean } =
     model = startFakeModelServer({ key: "k", script });
     cleanup.push(model.stop);
     process.env.OMNIROUTE_API_KEY = "k";
-    inference = new Inference(DEFAULT_INFERENCE, { omni: new OmniRoute({ urls: [model.url], access_hosts: [] }), sidecar: () => undefined, route: "sy/fast", fixedModel: () => "vllm/fast", log: () => {} });
+    inference = new Inference(DEFAULT_INFERENCE, { omni: new OmniRoute({ urls: [model.url], access_hosts: [] }), fixedModel: () => "vllm/fast", log: () => {} });
   }
   const deps: AskDeps = {
     board,

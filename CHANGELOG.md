@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- Retire the Switchyard sidecar. Model routes run in process, old tables load as retired settings with direct fallback, and doctor checks every configured routing model alias (#553).
+
 ## 0.12.38
 
 Antigravity (`agy`) joins as an optional peer started from your own terminal (#485), Kimi can review in a fresh session like Claude and Codex (#533), and a reply past the hop cap now says so instead of claiming no peer is attached (#542).

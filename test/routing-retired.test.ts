@@ -77,3 +77,11 @@ test("#553 the shipped template uses hub routes and direct fast aliases without 
   }
   expect((routing as { retired?: string[] }).retired ?? []).toEqual([]);
 });
+
+
+test("#553 retired table extensions are not interpreted as active routing options", () => {
+  const routing = parseRouting(base + '[targets.old.extension]\nstay_switch="retired-vendor-option"\n[routes."sy/old".extension]\nmax_switch_prefill_tokens=-1\n');
+  expect(routing.stay_switch).toBe("shadow");
+  expect(routing.max_switch_prefill_tokens).toBeGreaterThan(0);
+  expect(routing.retired).toHaveLength(2);
+});

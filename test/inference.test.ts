@@ -17,7 +17,7 @@ function setup(script: Script, cfg = DEFAULT_INFERENCE, timeoutMs?: number) {
   cleanup.push(model.stop);
   process.env.OMNIROUTE_API_KEY = "k";
   const lines: string[] = [];
-  const inference = new Inference(cfg, { omni: new OmniRoute({ urls: [model.url], access_hosts: [] }), sidecar: () => undefined, route: "sy/fast", fixedModel: () => "vllm/fast", log: (l) => lines.push(l), ...(timeoutMs ? { timeoutMs } : {}) });
+  const inference = new Inference(cfg, { omni: new OmniRoute({ urls: [model.url], access_hosts: [] }), fixedModel: () => "vllm/fast", log: (l) => lines.push(l), ...(timeoutMs ? { timeoutMs } : {}) });
   return { model, inference, lines };
 }
 const chatter = (n: number, from = "codex") => Array.from({ length: n }, (_, i) => newEnvelope(i % 2 ? "kimi" : from, `status ${i}: touched src/file${i}.ts`));
@@ -100,7 +100,7 @@ test("text that tries to steer the summarizer can only ever produce capped, fram
 test("an unreachable gateway backs off too, and the clock covers the probe, not only the model call", async () => {
   process.env.OMNIROUTE_API_KEY = "k";
   const lines: string[] = [];
-  const dead = new Inference(DEFAULT_INFERENCE, { omni: new OmniRoute({ urls: ["http://127.0.0.1:9/v1"], access_hosts: [] }), sidecar: () => undefined, route: "sy/fast", fixedModel: () => "m", log: (l) => lines.push(l) });
+  const dead = new Inference(DEFAULT_INFERENCE, { omni: new OmniRoute({ urls: ["http://127.0.0.1:9/v1"], access_hosts: [] }), fixedModel: () => "m", log: (l) => lines.push(l) });
   const envs = chatter(7);
   expect(await dead.condense(envs)).toBe(envs);
   const t0 = Date.now();
@@ -109,7 +109,7 @@ test("an unreachable gateway backs off too, and the clock covers the probe, not 
   expect(lines).toHaveLength(1);
 
   const hanging = { base: () => new Promise<string>(() => {}), chat: async () => ({ message: { role: "assistant", content: "x" } }) } as unknown as OmniRoute;
-  const stuck = new Inference(DEFAULT_INFERENCE, { omni: hanging, sidecar: () => undefined, route: "sy/fast", fixedModel: () => "m", log: () => {}, timeoutMs: 60 });
+  const stuck = new Inference(DEFAULT_INFERENCE, { omni: hanging, fixedModel: () => "m", log: () => {}, timeoutMs: 60 });
   const t1 = Date.now();
   expect(await stuck.condense(envs)).toBe(envs);
   expect(Date.now() - t1).toBeLessThan(400);

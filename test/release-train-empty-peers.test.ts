@@ -12,7 +12,7 @@ test("empty attached-peer set admits release cut and recovery but retains cut ho
   let hostAllowed = false;
   try {
     mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/sdlc.toml"), 'mode = "advise"\n');
-    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
+    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
       releaseHostAdmission: async () => { return { admitted: hostAllowed, ...(hostAllowed ? {} : { reason: "host slot held" }), current: () => true, close: async () => {} }; },
       config: { ...DEFAULT_CONFIG, batch_ms: 0,
         roster: { claude: false, codex: false, kimi: false, qwen: false, jcode: false, pi: false, local: false },

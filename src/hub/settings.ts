@@ -430,7 +430,7 @@ export function settingRows(input: {
   const raw = (name: string): unknown => { try { return JSON.parse(readFileSync(join(input.cwd, ".agenthub", name), "utf8")); } catch { return undefined; } };
   const local = raw(CONFIG_LOCAL), shared = raw("config.json");
   const projectRouting = existsSync(join(input.cwd, ".agenthub", "routing.toml"));
-  const routes = [...Object.keys(input.routing.routes), ...Object.keys(input.routing.hub_routes ?? {})];
+  const routes = Object.keys(input.routing.hub_routes ?? {});
   const scalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" || typeof value === "number" ? value : Array.isArray(value) ? value.map(String) : null;
   return projectSettings(input.instances).map((def): SettingRow => {
     const base = { key: def.key, group: def.group, label: def.label, type: def.type, ...(["integer", "number"].includes(def.type) ? { min: def.min, max: def.max } : {}), applies: def.applies, ...(def.restartReason ? { restartReason: def.restartReason } : {}), risk: def.risk, ...(def.floor === undefined ? {} : { floor: def.floor }),

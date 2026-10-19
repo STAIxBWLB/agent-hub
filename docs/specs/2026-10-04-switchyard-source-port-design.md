@@ -147,8 +147,8 @@ related: 261004-review-agent-hub-switchyard-comparison.md, 261004-plan-agent-hub
   - peer 관측용 어댑터: Codex `commandExecution`(명령, exit code, 출력)과 `fileChange`, Claude hook 도구 호출을 같은 신호 구조로 변환.
 - **E5 설정**
   - `routing.toml`에 `[hub_routes."<id>"]` 표를 새로 둠. 유형은 `stage`, `plan_execute`, `advisor`, `escalation`, tier는 OmniRoute 모델 id나 relay 별칭.
-  - Switchyard sidecar용 `[routes.*]`와 분리해 sidecar 설정 생성기가 옮기지 않게 함.
-  - local worker의 route가 `hub/` 접두면 hub 안에서, `sy/` 접두면 sidecar(있을 때)로 감.
+  - `[hub_routes]`만 실행. #553 이후 기존 `[targets]`·`[routes]`는 retired settings로 무시.
+  - local worker의 `hub/` route는 hub 안에서 처리, legacy `sy/`는 `fixed_model` 직접 호출로 폴백.
 - **E6 실패 처리**
   - 라우팅 판단이나 판정기 호출이 실패하면 기존 경로(`fixed_model`)로 폴백. turn과 전달을 늦추지 않음.
   - 판정기 호출에 deadline을 둠(inference와 같은 원칙).
@@ -240,9 +240,14 @@ related: 261004-review-agent-hub-switchyard-comparison.md, 261004-plan-agent-hub
 - **연구 쪽**: 벤치마크 ledger에 진행 신호 시계열을 넣어 NC3 분석 자료로 씀(관측 범위가 peer마다 다르다는 점을 함께 기록).
 - 완료 기준: Codex 각본 테스트, PII 제외 테스트, 판정기 장애 시 fail-open.
 
-### 5단계: sidecar 존치 결정
+### 5단계: sidecar 제거 결정 (#553, 2026-10-20 승인)
 
-- 2·3단계 뒤 hub 자체 트래픽이 in-process 라우팅으로 충분하면, Switchyard sidecar를 선택 기능으로 낮춤. 이식하지 않은 알고리즘(composite 분류기, sub-agent)이 필요할 때만 사용.
+- Switchyard 외부 프로세스·설정 생성·환경 변수·상태 행 제거. 모든 model route는 in-process 처리.
+- `SWITCHYARD = 3` port offset은 예약 상태 유지, 사용하지 않음. 나머지 offset 변경 금지.
+- `stage_router`는 hub `stage`의 `efficient`·`capable`·`confidence_threshold`로 대응. passthrough는 route 없이 class `fixed_model`로 대응.
+- 기존 `[targets]`·`[routes]`는 retired settings로 읽고 무시, startup·doctor에서 대체 경로 안내. `sy/`는 `fixed_model`로 폴백하고 1회 기록. operator 파일 자동 수정 없음.
+- template은 hub routes 사용. 내부 inference는 fixed model만 사용. doctor는 local·class fixed alias와 hub route의 모든 tier·judge alias를 inventory와 대조.
+- PII campus admission·`onCampusOnly`, `src/models/route/` 라이선스 고지 및 upstream 점검 스크립트 보존. 미이식 알고리즘 추가는 이번 범위 밖.
 - 구독 에이전트 측정 프록시(비교 보고서의 D4)는 이 계획 밖. 별도 결정.
 
 ## 규모와 일정 (추정)
@@ -281,7 +286,7 @@ related: 261004-review-agent-hub-switchyard-comparison.md, 261004-plan-agent-hub
 - REDO 피드백을 local worker 이력에 남기는 정책.
 - 4단계의 자동 재배정 여부(권고: 하지 않음, 측정 뒤 결정).
 - 1단계의 차등 검증(Rust 빌드 필요) 실행 여부.
-- Switchyard sidecar의 장래(5단계).
+- Switchyard sidecar의 장래는 #553에서 제거로 결정(5단계).
 - 착수 시점(ICSE Tool Demo 마감 10-23 이후 권고).
 
 ## 근거
@@ -303,7 +308,7 @@ related: 261004-review-agent-hub-switchyard-comparison.md, 261004-plan-agent-hub
 - REDO feedback stays in the completed local turn history. Failed turns never leave unmatched tool calls.
 - PII bypasses optional judges unless the exact on-campus gateway is positively confirmed; progress tracking is disabled while PII work is open.
 - Optional Pi advisor SSE replay and Rust differential build are deferred. No automatic peer reassignment.
-- Existing sidecar routes remain optional and backward compatible; `[hub_routes]` never enters generated sidecar TOML. The sidecar retirement decision remains evidence-driven.
+- Phase 5 decision (#553, approved 2026-10-20): the sidecar is retired. All routes run in process; legacy tables remain readable only as retired diagnostics and `sy/` selects fixed fallback. Keep port offset 3 reserved and unused.
 - Each required phase is a separate reviewable commit and PR. No release or production configuration changes are implied.
 
 ## Amendment: session-aware stay/switch (#197, 2026-10-09)

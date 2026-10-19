@@ -37,16 +37,11 @@ export interface ChatResult {
   servedModel?: string;
   /** `x-omniroute-provider` (direct path) */
   provider?: string;
-  /** `x-model-router-selected-model` (through Switchyard) */
-  selectedModel?: string;
 }
 export interface ChatOptions {
   /** Refuse a changed/off-campus gateway immediately before transport. */
   onCampusOnly?: boolean;
   signal?: AbortSignal;
-  /** Switchyard base (`http://127.0.0.1:<port>/v1`). The sidecar holds the key, so none is sent. */
-  via?: string;
-  sessionId?: string;
 }
 
 const readSecret = (file?: string) => {
@@ -159,17 +154,13 @@ export class OmniRoute {
   }
 
   async chat(body: { model: string; messages: ChatMessage[]; tools?: unknown[]; max_tokens?: number; temperature?: number; reasoning_effort?: string }, opts: ChatOptions = {}): Promise<ChatResult> {
-    const base = opts.via ?? (await this.base());
+    const base = await this.base();
     if (!base) throw new Error("no model gateway is configured or reachable (omniroute.urls in .agenthub/config.json; see ahub doctor)");
-    if (opts.onCampusOnly && (opts.via || this.isAccessHost(base))) throw new Error("PII model calls require the confirmed campus gateway");
+    if (opts.onCampusOnly && this.isAccessHost(base)) throw new Error("PII model calls require the confirmed campus gateway");
     const headers: Record<string, string> = { "content-type": "application/json" };
-    if (opts.via) {
-      if (opts.sessionId) headers["x-switchyard-session-id"] = opts.sessionId;
-    } else {
-      const key = this.apiKey();
-      if (!key) throw new Error("no OmniRoute API key (set OMNIROUTE_API_KEY or omniroute.api_key_file)");
-      Object.assign(headers, { authorization: `Bearer ${key}` }, this.accessHeaders(base));
-    }
+    const key = this.apiKey();
+    if (!key) throw new Error("no OmniRoute API key (set OMNIROUTE_API_KEY or omniroute.api_key_file)");
+    Object.assign(headers, { authorization: `Bearer ${key}` }, this.accessHeaders(base));
     let res: Response;
     try {
       res = await fetch(`${base}/chat/completions`, {
@@ -179,7 +170,7 @@ export class OmniRoute {
         ...(opts.signal ? { signal: opts.signal } : {}),
       });
     } catch (e) {
-      if (!opts.via) this.live = undefined; // probe again next time: the VPN may have dropped
+      this.live = undefined; // probe again next time: the VPN may have dropped
       throw e;
     }
     if (!res.ok) throw new Error(`model call failed: HTTP ${res.status} ${(await res.text()).slice(0, 300)}`);
@@ -187,17 +178,14 @@ export class OmniRoute {
     const message = json.choices?.[0]?.message;
     if (!message) throw new Error("model call returned no message");
     const provider = res.headers.get("x-omniroute-provider") ?? undefined;
-    const selectedModel = res.headers.get("x-model-router-selected-model") ?? undefined;
-    const servedModel = safeModelLabel(json.model) ?? safeModelLabel(selectedModel);
+    const servedModel = safeModelLabel(json.model);
     const safeProvider = safeModelLabel(provider);
-    const safeSelectedModel = safeModelLabel(selectedModel);
     const usage = normalizeUsage(json.usage);
     // reasoning_content and other extras are dropped here: only role, content and tool_calls travel on.
     return {
       message: { role: "assistant", content: message.content ?? null, ...(message.tool_calls?.length ? { tool_calls: message.tool_calls } : {}) },
       ...(usage ? { usage } : {}),
       ...(safeProvider ? { provider: safeProvider } : {}),
-      ...(safeSelectedModel ? { selectedModel: safeSelectedModel } : {}),
       ...(servedModel ? { servedModel } : {}),
     };
   }

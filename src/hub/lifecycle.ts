@@ -8,7 +8,7 @@ import { ControlClient, PROTOCOL, readControl } from "./control-client.ts";
 import { startDaemon } from "./daemon.ts";
 import { terminalOpener } from "./terminal-open.ts";
 import { Registry, type Project } from "./registry.ts";
-import { CODEX_APP, CODEX_PROXY, CONTROL, SWITCHYARD } from "./ports.ts";
+import { CODEX_APP, CODEX_PROXY, CONTROL } from "./ports.ts";
 import { assertLifecycleAvailable, recoveryLock } from "./recovery-store.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 
@@ -64,7 +64,7 @@ export async function inspectProject(project: Project, timeoutMs = 3000): Promis
 async function available(base: number): Promise<boolean> {
   const servers: Server[] = [];
   try {
-    for (const offset of [CONTROL, CODEX_APP, CODEX_PROXY, SWITCHYARD]) {
+    for (const offset of [CONTROL, CODEX_APP, CODEX_PROXY]) {
       const server = createServer();
       servers.push(server);
       await new Promise<void>((resolve, reject) => {
@@ -116,7 +116,7 @@ export async function runProjectDaemon(project: Project, unattended = false): Pr
         try {
           daemon = await startDaemon({ cwd: project.root, stateDir: project.stateDir, projectId: project.id, instanceId,
             controlPort: base + CONTROL, codexAppPort: base + CODEX_APP, codexProxyPort: base + CODEX_PROXY,
-            switchyardPort: base + SWITCHYARD, unattended, onShutdownStart,
+            unattended, onShutdownStart,
             // #269: the real terminal providers belong to the running product; a daemon built without them opens nothing.
             terminal: (template) => terminalOpener({ template, cwd: project.root, stateDir: project.stateDir }) });
           break;

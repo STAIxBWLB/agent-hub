@@ -40,7 +40,7 @@ test("ahub reset removes each Claude instance's session pointers with the builti
 test("the daemon admits a declared Claude instance as a channel peer, with its declared roles, and never starts it", async () => {
   const root = mkdtempSync(join(tmpdir(), "ahub-claude-instance-")), stateDir = join(root, "state");
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
-  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, instances: { ...instances, "codex-b": { kind: "codex", roles: ["reviewer"] } }, batch_ms: 0, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
       pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false } } });

@@ -15,9 +15,9 @@ export function nativeDoctorCheck(ok: boolean | undefined, name: string, detail:
   const section: DoctorCheck["section"] = name === "bun" || nativeTool ? "Tools"
     : name === "config" || name === "retired setting" ? "Config"
     : name.startsWith("memory") ? "Memory"
-    : ["omniroute", "omniroute key", "local fixed_model", "switchyard", "pi mlx"].includes(name) ? "Models" : "Hub";
-  const optional = nativeTool || ["ahub daemon", "switchyard", "pi mlx"].includes(name) || section === "Memory";
-  const level: DoctorCheck["level"] = ok === undefined ? (["switchyard", "omniroute"].includes(name) ? "warn" : "unknown") : ok ? "ok" : optional ? "warn" : "fail";
+    : ["omniroute", "omniroute key", "routing model", "routing models", "pi mlx"].includes(name) ? "Models" : "Hub";
+  const optional = nativeTool || ["ahub daemon", "pi mlx"].includes(name) || section === "Memory";
+  const level: DoctorCheck["level"] = ok === undefined ? (name === "omniroute" ? "warn" : "unknown") : ok ? "ok" : optional ? "warn" : "fail";
   return { section, level, name, detail };
 }
 

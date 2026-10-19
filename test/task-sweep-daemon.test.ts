@@ -19,7 +19,7 @@ test("advisory production daemon: Claude task sweep requires native Stop, not de
   writeFileSync(join(dir, ".agenthub/routing.toml"), '[local]\nfixed_model = "candidate"\n[classes.implement]\npeers = ["worker", "claude"]\nlocal_allowed = false\n[classes.review]\npeers = ["claude", "worker"]\nlocal_allowed = false\n');
   let clock = Date.now(), ticks = 0;
   const daemon = await startDaemon({
-    cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
+    cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: { claude: 2 } }, coordination: "advisory", memory: { ...DEFAULT_CONFIG.memory, enabled: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: true, interval_s: 1, unaccepted_min: 1, idle_min: 1, review_min: 1 } },
     taskSweepNow: () => { ticks++; return clock; },
   });

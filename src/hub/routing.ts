@@ -11,12 +11,10 @@ import type { PeerId, PeerState } from "./envelope.ts";
 import { parseHubRoutes, type HubRoute } from "../models/route/config.ts";
 import { DEFAULT_STAY_SWITCH, type StaySwitchMode } from "../models/route/stage.ts";
 
-type Table = Record<string, unknown>;
-
 export interface ClassPolicy {
   /** preference order among attached, unpaused peers */
   peers: PeerId[];
-  /** Switchyard route the local worker asks for on a task of this class */
+  /** In-process hub route, or a retired sy/ selection that uses fixed_model. */
   route?: string;
   fixed_model?: string;
   /** on `tasks.escalate_after` consecutive changes_requested (default 3) */
@@ -29,8 +27,8 @@ export interface ClassPolicy {
 
 export interface Routing {
   local: { route?: string; fixed_model: string };
-  targets: Record<string, Table & { id: string }>;
-  routes: Record<string, Table & { type: string }>;
+  /** Loader-owned diagnostics for ignored legacy routing tables. */
+  retired?: string[];
   hub_routes?: Record<string, HubRoute>;
   /** Session-aware stay/switch for `hub/auto` and hub stage routes (#197). */
   stay_switch: StaySwitchMode;
@@ -45,9 +43,14 @@ export interface Routing {
   sources?: Record<string, "routing.local.toml">;
 }
 
+/** A class fixed_model without its own route explicitly selects the gateway alias directly. */
+export function effectiveLocalRoute(defaultRoute: string | undefined, classRoute?: string, classFixedModel?: string): string | undefined {
+  return classRoute ?? (classFixedModel === undefined ? defaultRoute : undefined);
+}
+
 /**
  * What `.agenthub/routing.local.toml` may hold (#269): a person's machine-local override of these keys and nothing
- * else, so a settings write can never reach targets, routes, signals or the PII constraint.
+ * else, so a settings write can never reach hub routes, signals or the PII constraint.
  */
 export interface RoutingOverlay {
   stay_switch?: StaySwitchMode;
@@ -186,21 +189,26 @@ export function routingText(cwd: string): string {
 
 /** The policy of a routing.toml text with an overlay merged over it: what `loadRouting` reads, without the disk. */
 export function parseRouting(text: string, overlay?: RoutingOverlay): Routing {
-  const raw = Bun.TOML.parse(text) as Partial<Routing>;
+  const raw = Bun.TOML.parse(text) as Partial<Routing> & { targets?: unknown; routes?: unknown };
+  const retired: string[] = [];
+  if (Object.hasOwn(raw, "targets")) retired.push('[targets] is retired and ignored: name gateway aliases directly in hub_routes efficient/capable/judge or fixed_model');
+  if (Object.hasOwn(raw, "routes")) retired.push('[routes] is retired and ignored: replace stage_router with hub_routes type="stage" (efficient_target -> efficient, capable_target -> capable, same confidence_threshold), passthrough with fixed_model and no route, and llm_classifier escalation with hub_routes type="escalation"');
+  delete raw.targets;
+  delete raw.routes;
   const sources: NonNullable<Routing["sources"]> = {};
   if (overlay) {
     const checked = checkOverlay(overlay);
     if (checked.stay_switch) { (raw as Record<string, unknown>).stay_switch = checked.stay_switch; sources.stay_switch = OVERLAY_FILE; }
-    const known = new Set([...Object.keys(raw.routes ?? {}), ...Object.keys(raw.hub_routes ?? {})]);
+    const known = new Set(Object.keys(raw.hub_routes ?? {}));
     for (const [name, entry] of Object.entries(checked.classes ?? {})) {
-      if (entry.route && !known.has(entry.route)) throw new Error(`${OVERLAY_FILE}: [classes.${name}] route ${entry.route} names no route in routing.toml`);
+      if (entry.route && !entry.route.startsWith("sy/") && !known.has(entry.route)) throw new Error(`${OVERLAY_FILE}: [classes.${name}] route ${entry.route} names no route in routing.toml`);
       const classes = (raw.classes ??= {}) as Record<string, ClassPolicy>;
       // A class the shared file does not have starts from an empty peer list: the overlay may add its own.
       classes[name] = { ...(classes[name] ?? { peers: [] }), ...entry };
       for (const field of Object.keys(entry)) sources[`classes.${name}.${field}`] = OVERLAY_FILE;
     }
   }
-  if (!raw.local?.fixed_model) throw new Error("routing.toml: [local] fixed_model is required (the path that works without Switchyard)");
+  if (!raw.local?.fixed_model) throw new Error("routing.toml: [local] fixed_model is required (the direct gateway fallback)");
   const signals = { pii_patterns: [], long_context_tokens: 120_000, pii_screen: "off" as const, ...raw.signals };
   for (const p of signals.pii_patterns) new RegExp(p); // a bad pattern fails here, at load, not in the middle of an assignment
   if (signals.pii_screen !== "off" && signals.pii_screen !== "local") throw new Error('routing.toml: [signals] pii_screen must be "off" or "local"');
@@ -222,8 +230,7 @@ export function parseRouting(text: string, overlay?: RoutingOverlay): Routing {
   if (!(Number.isSafeInteger(max_switch_prefill_tokens) && max_switch_prefill_tokens > 0)) throw new Error("routing.toml: max_switch_prefill_tokens must be a positive integer");
   return {
     local: raw.local,
-    targets: raw.targets ?? {},
-    routes: raw.routes ?? {},
+    ...(retired.length ? { retired } : {}),
     hub_routes: parseHubRoutes(raw.hub_routes),
     stay_switch,
     max_switch_prefill_tokens,
@@ -298,7 +305,7 @@ export interface Assignment {
   refusals?: RoutingRefusal[];
   owner?: PeerId;
   reviewer?: PeerId;
-  /** what `local` should ask for on this task: a Switchyard route id and the model to fall back to */
+  /** What local should ask for on this task: a hub route or retired sy/ selection, with its fixed fallback. */
   route?: string;
   fixedModel?: string;
   piBackend?: "dgx" | "mlx";
@@ -542,7 +549,7 @@ export function assign(
       if (reviewerHold) trace.push(`  hold: ${reviewer}'s queue is held: ${reviewerHold} (it receives the review once the hold is resolved)`);
     }
   }
-  const route = policy?.route ?? routing.local.route;
+  const route = effectiveLocalRoute(routing.local.route, policy?.route, policy?.fixed_model);
   const fixedModel = policy?.fixed_model ?? routing.local.fixed_model;
   const piBackend = policy?.pi_backend;
   if (owner && definitionOf(owner, opts.instances)?.routing?.trace === "route") trace.push(`route: ${route ?? "(none)"}, fixed_model ${fixedModel}`);

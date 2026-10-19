@@ -36,7 +36,7 @@ function peerFields(id: string, peers: Record<string, PeerRow>): Record<string, 
 test("status rows name the requested or last served backend and move pause explanations to details", () => {
   expect(peerFields("pi", { pi: { state: "idle", queued: 0, requestedModel: "dgx/coding" } }).MODEL).toBe("dgx/coding");
   expect(peerFields("kimi", { kimi: { state: "idle", queued: 0 } })).toEqual({ PEER: "kimi", STATE: "idle", LINK: "attached", CONTEXT: "unknown" });
-  expect(peerFields("local", { local: { state: "idle", servedBy: "switchyard sy/coding -> glm53" } }).MODEL).toBe("switchyard sy/coding -> glm53");
+  expect(peerFields("local", { local: { state: "idle", servedBy: "omniroute glm53 (provider fixture)" } }).MODEL).toBe("omniroute glm53 (provider fixture)");
   expect(text({ pi: { state: "idle", requestedModel: "dgx/coding", servedBy: "dgx/backend" } })).toContain("requested model  dgx/coding");
   expect(peerFields("codex", { codex: { state: "paused", queued: 2, paused: "budget" } })).toMatchObject({ STATE: "paused", Q: "2", PAUSE: "budget" });
   expect(text({ codex: { state: "paused", queued: 2, paused: "budget" } })).toContain("paused  budget");

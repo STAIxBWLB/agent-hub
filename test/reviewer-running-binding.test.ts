@@ -41,7 +41,7 @@ for (const change of ["head", "revision", "lifecycle"] as const) test(`running r
   const priorPath = process.env.PATH, priorHome = process.env.KIMI_CODE_HOME;
   process.env.PATH = `${bin}:${priorPath ?? "/usr/bin:/bin"}`; process.env.KIMI_CODE_HOME = native;
   cleanup.push(() => { if (priorPath === undefined) delete process.env.PATH; else process.env.PATH = priorPath; if (priorHome === undefined) delete process.env.KIMI_CODE_HOME; else process.env.KIMI_CODE_HOME = priorHome; });
-  const daemon = await startDaemon({ cwd: project, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
+  const daemon = await startDaemon({ cwd: project, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, watchdog_ms: 10000,
       instances: { "kimi-review": { kind: "kimi", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } },
       roles: { builder: ["implementer"] }, review: { ...DEFAULT_CONFIG.review, pool: ["kimi"] },

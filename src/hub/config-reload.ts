@@ -35,7 +35,7 @@ export function configSourceTexts(cwd: string): ConfigSourceTexts {
 
 export const configFingerprint = (texts: ConfigSourceTexts): string => createHash("sha256").update(JSON.stringify(texts)).digest("hex");
 
-/** Validate only the hub-owned routing schema; Switchyard target/route fields remain extensible. */
+/** Validate active routing; bounded legacy tables are ignored as retired settings. */
 function validateRoutingRaw(value: unknown): void {
   const bad = (key: string): never => { throw new Error(`.agenthub/routing.toml: ${key} is invalid or unknown`); };
   const table = (v: unknown, key: string): Record<string, unknown> => {
@@ -62,12 +62,6 @@ function validateRoutingRaw(value: unknown): void {
     else if (Array.isArray(v)) { if (v.length > 1024) bad(key); for (const item of v) openValue(item, key, depth + 1); }
     else for (const item of Object.values(table(v, key))) openValue(item, key, depth + 1);
   };
-  const switchyard = (v: unknown, key: string, required: "id" | "type") => {
-    for (const [name, item] of Object.entries(table(v, key))) {
-      if (!name || name.length > 128 || ["__proto__", "constructor", "prototype"].includes(name)) bad(key);
-      const entry = table(item, `${key}.${name}`); text(entry[required], `${key}.${name}.${required}`); openValue(entry, `${key}.${name}`);
-    }
-  };
   const nativeValidators = { bool, text, strings, argv: strings,
     number: (min = 1, max = Number.MAX_SAFE_INTEGER, _integer = true) => (v: unknown, k: string) => numeric(v, k, min, max),
     words: (values: readonly string[]) => (v: unknown, k: string) => choice(v, k, values),
@@ -75,7 +69,7 @@ function validateRoutingRaw(value: unknown): void {
   };
   closed(value, "routing", {
     ...Object.assign({}, ...ADAPTERS.map(adapter => adapter.configuration?.routingSchema?.(nativeValidators) ?? {})),
-    targets: (v, k) => switchyard(v, k, "id"), routes: (v, k) => switchyard(v, k, "type"),
+    targets: openValue, routes: openValue,
     // parseRouting delegates these tables to the existing parseHubRoutes validator.
     hub_routes: (v, k) => { table(v, k); },
     stay_switch: (v, k) => choice(v, k, ["off", "shadow", "enforce"]), max_switch_prefill_tokens: numeric,

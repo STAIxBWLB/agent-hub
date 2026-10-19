@@ -71,7 +71,6 @@ import { reviewerPoolConfig } from "./reviewer-pool-config.ts";
 import { reviewDiff } from "../adapters/claude-print.ts";
 import { Capture, skipTools } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
-import { Sidecar } from "../switchyard/sidecar.ts";
 import { Briefs } from "../memory/brief.ts";
 import { Board, isClosedTaskState, taskProposalAt, taskHasStarted, CLASSES, type Task, type TaskClass } from "./board.ts";
 import { Budget, claudeWindows, codexWindows, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
@@ -90,7 +89,7 @@ import { launcherPreview } from "../cli/preview.ts";
 import { AssignmentUndeliveredError, ESCALATE_AFTER, Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig } from "./inference.ts";
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
-import { currentRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
+import { currentRouting, loadRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
 import { projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
@@ -309,7 +308,7 @@ function syncMinutes(v: unknown): number {
   return v;
 }
 
-export function loadConfig(cwd: string, layers?: readonly ConfigLayer[]): HubConfig {
+export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routingRetired: readonly string[] = loadRouting(cwd).retired ?? []): HubConfig {
   const captured = layers ?? readInstanceConfigLayers(cwd);
   const instanceConfig = readInstanceConfig(cwd, captured);
   const instances = instanceConfig.instances;
@@ -350,7 +349,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[]): HubCon
     for (const [peer, mode] of Object.entries(permissionDefaults(file.permission_modes, instances))) appliedPermissionSources[peer] = { mode, source: `.agenthub/${name}` };
     return [file];
   });
-  if (!files.length) return DEFAULT_CONFIG;
+  if (!files.length) return routingRetired.length ? { ...DEFAULT_CONFIG, retired: [...routingRetired] } : DEFAULT_CONFIG;
   const file = files.reduce((a, b) => ({ ...a, ...b, ...Object.fromEntries(CONFIG_BLOCKS.filter((k) => a[k] !== undefined && b[k] !== undefined).map((k) => [k, { ...a[k], ...b[k] }])) }));
   const wipLayers = files.filter(layer => layer.tasks?.wip_limits !== undefined);
   if (wipLayers.length) file.tasks = { ...file.tasks, wip_limits: wipLayers.reduce((prior, layer) => ({ ...prior, ...planningWipLimits(layer.tasks.wip_limits) }), {} as Record<string, number>) };
@@ -361,7 +360,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[]): HubCon
   delete file.retired;
   // Escape hatches with a stated end (issue #83). A removed one is ignored, never an error: an old config.local.json
   // must not stop a hub from starting.
-  const retired: string[] = [];
+  const retired: string[] = [...routingRetired];
   if (file.local?.sandbox !== undefined) {
     if (file.local.sandbox === "allow-default") retired.push('local.sandbox "allow-default" was removed in 0.12.0: the deny-default sandbox applies (local.read_allow adds paths)');
     file.local = { ...file.local };
@@ -463,9 +462,6 @@ export interface DaemonOptions {
   controlPort: number;
   codexAppPort: number;
   codexProxyPort: number;
-  /** 0 disables the Switchyard sidecar. */
-  switchyardPort?: number;
-  switchyardBin?: string;
   config?: HubConfig;
   /** #269: the terminal providers for a TUI start the hub makes itself, built from `terminal.open`. Absent: none, and such a start is refused. */
   terminal?: (template: string[]) => TerminalOpener;
@@ -1199,14 +1195,9 @@ export async function startDaemon(opts: DaemonOptions) {
     } finally { for (const listener of held) listener.stop(true); }
   };
   const piCallsInFlight = () => [...piReceiptLedgers.values()].reduce((n, ledger) => n + ledger.inFlight, 0);
-  /**
-   * PII decisions need a positive answer about the path a hub-owned model call will really take: a gateway that
-   * answered and is not behind Access, and no sidecar that was generated against the off-campus URL. Unknown is no.
-   */
-  const onCampus = async (): Promise<boolean> => (await omni.onCampus()) && !(sidecar?.upstream && omni.isAccessHost(sidecar.upstream));
-  let sidecar: Sidecar | undefined; // L2, started by the first hub-owned model call, stopped with the hub
-  let sidecarRouting = "";
-  inference = new Inference(config.inference, { omni, sidecar: () => sidecar, route: "sy/fast", fixedModel: () => activeRouting().local.fixed_model, log });
+  /** PII needs a positively confirmed campus gateway; unknown never counts as on campus. */
+  const onCampus = (): Promise<boolean> => omni.onCampus();
+  inference = new Inference(config.inference, { omni, fixedModel: () => activeRouting().local.fixed_model, log });
 
   let dashboard: ReturnType<typeof startDashboard> | undefined;
   const uiEvents: { seq: number; event: BusEvent }[] = [];
@@ -2718,7 +2709,6 @@ export async function startDaemon(opts: DaemonOptions) {
     roleInfo: Object.fromEntries(peerIds.map(id => [id, { flowRoles: config.roles[id] ?? [], catalogRoles: roleState(id), ...(config.roles[id]?.includes("planner") ? { planner: plannerSource } : {}) }])),
     planner: { peers: plannerPeers(), source: plannerSource },
     ...(pendingPermissionDefaults.size ? { permissionDefaults: [...pendingPermissionDefaults].map(([peer, source]) => ({ peer, mode: "never-ask", source })) } : {}),
-    ...(sidecar ? { switchyard: sidecar.status } : {}),
     ...(modelRelay ? { models: modelRelay.status() } : {}),
     isolatedChecks: { pending: checkPending.size, orphans: orphanChecks, unknownReceipts: checkRunner.unknownReceipts ?? [], maintenanceUnavailable: checkRunner.maintenanceUnavailable === true },
     taskCapabilities: peerCapabilities(),
@@ -3834,9 +3824,9 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (adapter?.start.daemonPort === "local-worker") {
       const routing = activeRouting();
-      // `--model` pins a model on OmniRoute and skips L2; `--route` picks another Switchyard route.
+      // `--model` pins a gateway alias; `--route` selects an in-process policy or a legacy fixed fallback.
       const route = args.model ? undefined : (args.route ?? routing.local.route);
-      if (route && !(route.startsWith("hub/") ? routing.hub_routes?.[route] : routing.routes[route])) return { ok: false, ...(existing && existing.state !== "offline" ? { already: true } : {}), error: `routing.toml has no route "${route}"` };
+      if (route && !route.startsWith("sy/") && !routing.hub_routes?.[route]) return { ok: false, ...(existing && existing.state !== "offline" ? { already: true } : {}), error: `routing.toml has no route "${route}"` };
       const fixedModel = args.model ?? routing.local.fixed_model;
       // A manually paused recovery roster must be reconstructible while its gateway is unavailable.
       // It stays held; holdPeer validates the restored choice before an operator can resume it.
@@ -3845,16 +3835,6 @@ export async function startDaemon(opts: DaemonOptions) {
       // Validation can await network: a queued delivery may have started meanwhile.
       if (existing?.state === "busy") return { ok: false, error: "local is busy; retry when it is idle" };
       if (existing) { mute(existing); await existing.stop(); }
-      // The sidecar serves the routes it was generated from: a changed routing.toml needs a new one.
-      const routingKey = JSON.stringify([routing.targets, routing.routes]);
-      if (sidecar && routingKey !== sidecarRouting) {
-        await sidecar.stop();
-        sidecar = undefined;
-      }
-      if (route && !route.startsWith("hub/") && opts.switchyardPort) {
-        sidecarRouting = routingKey;
-        sidecar ??= new Sidecar({ routing, omni, stateDir: opts.stateDir, port: opts.switchyardPort, log, ...(opts.switchyardBin ? { bin: opts.switchyardBin } : {}) });
-      }
       const capture = config.memory.enabled
         ? new Capture(memory, { project: chain.at(-1)!, cwd: executionCwd, skip: skipTools(), deny: config.local.deny })
         : undefined;
@@ -3879,7 +3859,6 @@ export async function startDaemon(opts: DaemonOptions) {
         onUsage: record => event({ type: "usage", peer, source: "omniroute", id: record.id, ...record.usage, ...taskAttribution(peer, record.task), requestedModel: record.requestedModel, ...(record.servedModel ? { servedModel: record.servedModel } : {}), ...(record.provider ? { provider: record.provider } : {}), measuredAt: record.at }),
         admitBudget: async (envs, unit) => tasks.admitExecutionEnvelopes(envs, peer, unit),
         ...(route ? { route } : {}),
-        ...(sidecar && route && !route.startsWith("hub/") ? { sidecar } : {}),
         hubRoutes: () => activeRouting().hub_routes ?? {},
         staySwitch: () => activeRouting(),
         onRoute: record => event({ type: "route", peer, ...record }),
@@ -3977,19 +3956,14 @@ export async function startDaemon(opts: DaemonOptions) {
 
   async function validateLocalChoice(route: string | undefined, fixedModel: string): Promise<void> {
     const routing = activeRouting();
-    if (route && !(route.startsWith("hub/") ? routing.hub_routes?.[route] : routing.routes[route])) throw new Error(`routing.toml has no route "${route}"`);
+    if (route && !route.startsWith("sy/") && !routing.hub_routes?.[route]) throw new Error(`routing.toml has no route "${route}"`);
     const models = await omni.models();
     const required = new Set([fixedModel]);
-    const visit = (value: unknown): void => {
-      if (typeof value === "string" && routing.targets[value]) required.add(routing.targets[value]!.id);
-      else if (Array.isArray(value)) value.forEach(visit);
-      else if (value && typeof value === "object") Object.values(value).forEach(visit);
-    };
     if (route?.startsWith("hub/")) {
       const policy = routing.hub_routes![route]!;
       required.add(policy.efficient ?? "fast"); required.add(policy.capable ?? "coding");
       if (policy.judge) required.add(policy.judge);
-    } else if (route) visit(routing.routes[route]);
+    }
     for (const model of required) await omni.checkModel(model, models);
   }
 
@@ -4217,8 +4191,9 @@ export async function startDaemon(opts: DaemonOptions) {
     return JSON.stringify(before) === JSON.stringify(after) ? [] : [prefix];
   }
   function declaredPaths(value: unknown, prefix = ""): string[] {
-    // Switchyard dictionaries have opaque keys (including dots); publish each dictionary as one value.
-    if (["routing.targets", "routing.routes", "routing.hub_routes"].includes(prefix)) return [prefix];
+    // Retired dictionaries never enter active publication; hub ids remain opaque keys.
+    if (prefix === "routing.targets" || prefix === "routing.routes") return [];
+    if (prefix === "routing.hub_routes") return [prefix];
     if (value && typeof value === "object" && !Array.isArray(value)) return Object.entries(value).flatMap(([key, child]) => declaredPaths(child, prefix ? `${prefix}.${key}` : key));
     return prefix ? [prefix] : [];
   }
@@ -4230,7 +4205,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return { planners: settled.planners, conductors: Object.keys(candidate.roles).filter(peer => candidate.roles[peer]!.includes("conductor")).sort() };
   }
   function prepareConfiguration(sources: ConfigSources, authority: SettingAuthority, scope?: string, confirmed: readonly string[] = []) {
-    const fileConfig = loadConfig(opts.cwd, sources.layers);
+    const fileConfig = loadConfig(opts.cwd, sources.layers, sources.routing.retired ?? []);
     validateEffectiveConfig(fileConfig);
     const candidate = structuredClone(desiredConfig), routing = structuredClone(desiredRouting);
     const accepted: string[] = [], rejected: { key: string; reason: string }[] = [], guarded: string[] = [];
@@ -4320,9 +4295,12 @@ export async function startDaemon(opts: DaemonOptions) {
       for (const item of rejected) if (guarded.includes(item.key)) item.reason += "; combined confirmation preview exceeds its 128 KiB bound; split this edit";
       guarded.length = 0; previews.length = 0;
     }
+    candidate.retired = fileConfig.retired;
+    routing.retired = sources.routing.retired;
     const changes = configChanges({ ...config, roles: policyRoles }, candidate);
     const running = structuredClone({ ...config, roles: policyRoles });
     for (const change of changes) if (change.applies !== "restart") putConfig(running, change.key, change.after);
+    running.retired = fileConfig.retired;
     validateEffectiveConfig(running);
     conductorPeer(running.roles);
     for (const peer of Object.keys(running.catalog_roles ?? {})) selectedRoles(peer, running.roles, { ...resolvedProfile.catalog_roles, ...catalogAssignments(running.catalog_roles) }, catalog);
@@ -4383,7 +4361,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (confirm !== undefined && prepared.rejected.some(item => reloadConfirmation!.keys.includes(item.key))) return { ok: false, error: "configuration trust changed; run ahub settings reload again" };
       if (scope && prepared.rejected.some(item => item.key === scope)) return { ok: false, error: prepared.rejected.find(item => item.key === scope)!.reason };
       const { changes, candidate } = prepared;
-      const routingChanges = changedRawPaths({ ...runningRouting, sources: undefined }, { ...prepared.routing, sources: undefined }, "routing");
+      const routingChanges = changedRawPaths({ ...runningRouting, sources: undefined, retired: undefined }, { ...prepared.routing, sources: undefined, retired: undefined }, "routing");
       if (prepared.running.snapshots.enabled && repo && !turnLog) turnLog = new Turns(join(opts.stateDir, "hub.db"));
       const priorDesired = JSON.stringify([desiredConfig, desiredRouting, acceptedSources.trustLayers]);
       const rolesChanged = changes.some(change => change.key === "roles" || change.key.startsWith("roles.") || change.key === "planner");
@@ -4397,6 +4375,9 @@ export async function startDaemon(opts: DaemonOptions) {
       for (const change of changes.filter(change => change.key === "permission_modes" || change.key.startsWith("permission_modes."))) {
         for (const peer of change.key === "permission_modes" ? SUPPORTED_PEERS : [change.key.split(".")[1]!]) changedPermissionDefaults.add(peer);
       }
+      const priorRetired = new Set(config.retired ?? []);
+      config.retired = prepared.running.retired;
+      for (const line of config.retired ?? []) if (!priorRetired.has(line)) log(`config: ${line}`);
       config.permission_default_sources = candidate.permission_default_sources;
       for (const peer of changedPermissionDefaults) applyPendingPermissionDefault(peer);
       if (changes.some(change => change.key === "task_sweep" || change.key.startsWith("task_sweep."))) rescheduleSweep();
@@ -4572,7 +4553,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const def = settingDef(key);
     if (typeof def === "string") return { error: def };
     const routing = activeRouting();
-    try { return { def, value: checkSettingValue(def, raw, def.type === "roles" ? compatibleRoles(def.path[1]!) : [...Object.keys(routing.routes), ...Object.keys(routing.hub_routes ?? {})]) }; }
+    try { return { def, value: checkSettingValue(def, raw, def.type === "roles" ? compatibleRoles(def.path[1]!) : Object.keys(routing.hub_routes ?? {})) }; }
     catch (error) { return { error: (error as Error).message }; }
   }
   const settingReason = (reason: unknown): string | undefined => {
@@ -5741,7 +5722,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // A fingerprint still being detected belongs in the research records written below; its peer must still be
       // attached when it settles, so this comes before the peers stop (each detection is bounded by its probe deadline).
       await Promise.allSettled([...detecting]);
-      const exits = await Promise.allSettled([...bus.peers.values()].map((p) => p.stop()).concat(sidecar ? [sidecar.stop()] : []));
+      const exits = await Promise.allSettled([...bus.peers.values()].map((p) => p.stop()));
       // A peer whose stop rejects must not strand the daemon (issue #56): its failure is
       // logged and shutdown finishes anyway, or the process ignores SIGTERM forever.
       for (const exit of exits) if (exit.status === "rejected") log(`peer stop failed during shutdown: ${(exit.reason as Error)?.message ?? exit.reason}`);

@@ -11,7 +11,7 @@ test("person upgrade bypasses release resource gates with an active train and qu
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined, person: ControlClient | undefined, board: Board | undefined, hostCalls = 0;
   try {
     mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/sdlc.toml"), 'mode = "enforce"\n');
-    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
+    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
       releaseHostAdmission: async () => { hostCalls++; return { admitted: false, reason: "host resource controller unavailable" }; },
       config: { ...DEFAULT_CONFIG, batch_ms: 0,
         roster: { claude: false, codex: true, kimi: false, qwen: false, jcode: false, pi: false, local: false },

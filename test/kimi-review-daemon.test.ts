@@ -22,7 +22,7 @@ test("daemon Kimi fresh reviews use task capabilities and separate clean homes o
  const originalPath = process.env.PATH, originalHome = process.env.KIMI_CODE_HOME;
  process.env.PATH = `${bin}:${originalPath}`; process.env.KIMI_CODE_HOME = native;
  cleanups.push(() => { process.env.PATH = originalPath; if (originalHome === undefined) delete process.env.KIMI_CODE_HOME; else process.env.KIMI_CODE_HOME = originalHome; });
- const daemon = await startDaemon({ cwd: project, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
+ const daemon = await startDaemon({ cwd: project, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
   config: { ...DEFAULT_CONFIG, instances: { "kimi-review": { kind: "kimi", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } }, roles: { ...DEFAULT_CONFIG.roles, builder: ["implementer"] },
    budget: { ...DEFAULT_CONFIG.budget, checkpoint_timeout_s: 1 }, tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: { builder: 3 } }, review: { ...DEFAULT_CONFIG.review, pool: ["kimi"] }, batch_ms: 0,
    snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },

@@ -10,7 +10,6 @@ import type { RouteLabelEvent } from "../src/models/route/labels.ts";
 import type { HubRoute } from "../src/models/route/config.ts";
 import { parseHubRoutes } from "../src/models/route/config.ts";
 import { loadRouting } from "../src/hub/routing.ts";
-import { switchyardToml } from "../src/switchyard/config.ts";
 import { startFakeModelServer, toolCall, type Script } from "./fakes/model-server.ts";
 
 const cleanup: (() => unknown)[] = [];
@@ -86,13 +85,14 @@ test("PII turn is refused before any executor or advisor when campus is unconfir
   await f.run(); expect(f.model.requests).toHaveLength(0); expect(f.answers[0]).toContain("PII");
 });
 
-test("hub route parser is closed and sidecar serialization excludes its tables", () => {
+test("hub route parser is closed and the template contains only executable hub routes", () => {
   expect(() => parseHubRoutes({ "sy/wrong": { type: "stage" } })).toThrow();
   expect(() => parseHubRoutes({ "hub/wrong": { type: "arbitrary" } })).toThrow();
   expect(() => parseHubRoutes({ "hub/wrong": { type: "stage", confidence_threshold: NaN } })).toThrow();
   const routing = loadRouting(mkdtempSync(join(tmpdir(), "ahub-route-config-")));
   expect(routing.hub_routes?.["hub/stage"]?.type).toBe("stage");
-  expect(switchyardToml(routing, { baseUrl: "http://localhost/v1", extraHeaders: {} })).not.toContain("hub_routes");
+  expect(routing).not.toHaveProperty("targets");
+  expect(routing).not.toHaveProperty("routes");
 });
 
 test("local failed edits and exit-only shell failures carry route metadata but never unsupported wire fields", async () => {

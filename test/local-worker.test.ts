@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LocalPeer, type LocalOptions } from "../src/adapters/local-worker.ts";
@@ -14,12 +14,9 @@ import { loadRouting } from "../src/hub/routing.ts";
 import { Capture } from "../src/memory/capture.ts";
 import { MemoryClient } from "../src/memory/client.ts";
 import { OmniRoute } from "../src/omniroute/client.ts";
-import { switchyardToml } from "../src/switchyard/config.ts";
-import { Sidecar } from "../src/switchyard/sidecar.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 import { startFakeModelServer, toolCall, type Script } from "./fakes/model-server.ts";
 
-const FAKE_SWITCHYARD = join(import.meta.dir, "fakes/switchyard.ts");
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => {
   for (const fn of cleanup.splice(0).reverse()) await fn();
@@ -346,143 +343,6 @@ test("unreachable gateway: the envelope is retried and then reported undeliverab
   expect(peer.state).toBe("idle");
 });
 
-test("switchyard config: gateway client added, key by env name only, route ids and nested tables kept", () => {
-  const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
-  Bun.spawnSync(["mkdir", "-p", join(dir, ".agenthub")]);
-  writeFileSync(
-    join(dir, ".agenthub", "routing.toml"),
-    [
-      '[local]\nroute = "sy/coding"\nfixed_model = "vllm/dsv4f"',
-      '[targets.glm]\nid = "vllm/glm"\n[targets.dsv4f]\nid = "vllm/dsv4f"\n[targets."glm-5.3"]\nid = "vllm/glm-5.3"',
-      '[routes."sy/coding"]\ntype = "stage_router"\nefficient_target = "glm"\ncapable_target = "dsv4f"\npicker = "efficient_first"\nconfidence_threshold = 0.5',
-      '[routes."sy/review"]\ntype = "llm_classifier"\nmode = "escalation"\nclassifier_target = "glm"\nweak_target = "glm"\nstrong_target = "dsv4f"\n[routes."sy/review".escalation]\nconfirmations = 2',
-      '[routes."sy/fast"]\ntype = "passthrough"\ntarget = "glm"',
-    ].join("\n\n"),
-  );
-  const toml = switchyardToml(loadRouting(dir), { baseUrl: "https://gateway.example.edu/v1", extraHeaders: { "CF-Access-Client-Id": "id", "CF-Access-Client-Secret": "sec" } });
-  const parsed = Bun.TOML.parse(toml) as any;
-  expect(parsed.schema_version).toBe(1);
-  expect(parsed.llm_clients.gateway).toMatchObject({ format: "openai_chat", base_url: "https://gateway.example.edu/v1", api_key_env: "OMNIROUTE_API_KEY" });
-  expect(parsed.llm_clients.gateway.extra_headers["CF-Access-Client-Secret"]).toBe("sec");
-  expect(parsed.targets.glm).toEqual({ id: "vllm/glm", llm_client: "gateway" });
-  expect(parsed.targets["glm-5.3"]).toEqual({ id: "vllm/glm-5.3", llm_client: "gateway" }); // a dotted name stays one table
-  const routes = Object.values(parsed.routes) as any[];
-  expect(routes.map((r) => r.id)).toEqual(["sy/coding", "sy/review", "sy/fast"]);
-  expect(routes[0]).toMatchObject({ type: "stage_router", picker: "efficient_first", confidence_threshold: 0.5 });
-  expect(routes[1].escalation).toEqual({ confirmations: 2 });
-  expect(parsed.local).toBeUndefined();
-});
-
-test("sidecar: calls go through the route, the selected model is recorded, the config file is 0600 and gone after stop", async () => {
-  const stateDir = mkdtempSync(join(tmpdir(), "agenthub-state-"));
-  const routing = loadRouting(mkdtempSync(join(tmpdir(), "agenthub-")));
-  let sidecar!: Sidecar;
-  const ctx = await setup(bulkEdit);
-  sidecar = new Sidecar({ routing, omni: ctx.omni, stateDir, port: 47000 + (process.pid % 900), bin: FAKE_SWITCHYARD, log: ctx.log });
-  cleanup.push(() => sidecar.stop());
-  const peer = new LocalPeer("local", { cwd: ctx.cwd, omni: ctx.omni, sidecar, route: "sy/coding", fixedModel: "vllm/fixed", tools: { deny: [], permit: async () => true } });
-  const bus = new Bus({ batchMs: 0 });
-  const said: Envelope[] = [];
-  bus.tap((e) => e.t === "envelope" && e.env.from === "local" && said.push(e.env));
-  bus.add(peer);
-  await peer.start();
-  cleanup.push(() => peer.stop());
-
-  bus.publish(newEnvelope("user", "go", { priority: "important" }));
-  await until(() => said.length === 1, "answer through the sidecar");
-  expect(peer.lastServedBy).toBe("switchyard sy/coding -> vllm/deepseek-ai/DeepSeek-V4-Flash-0731");
-  expect(ctx.model.requests.at(-1)!.body.model).toBe("vllm/deepseek-ai/DeepSeek-V4-Flash-0731"); // the route id was mapped to the target
-  expect(readFileSync(join(ctx.cwd, "a.txt"), "utf8")).toBe("one\n2\n"); // tool calls survive the hop
-  const file = join(stateDir, "switchyard.toml");
-  expect(statSync(file).mode & 0o777).toBe(0o600);
-  expect(readFileSync(file, "utf8")).not.toContain("sk-fake-secret");
-  sidecar.stop();
-  expect(() => readFileSync(file)).toThrow();
-});
-
-for (const [mode, why] of [["missing-binary", "not runnable"], ["reject-config", "config rejected"], ["fail-calls", "HTTP 502"], ["die-after-start", "exited"]] as const) {
-  test(`fallback to fixed_model when switchyard is ${mode}, said once`, async () => {
-    const ctx = await setup((b) => ({ content: `model=${b.model}` }));
-    // The sidecar gets a scrubbed environment, so the fake's failure mode travels in a wrapper script instead.
-    const wrapper = join(mkdtempSync(join(tmpdir(), "agenthub-bin-")), "switchyard-server");
-    writeFileSync(wrapper, `#!/bin/sh\nFAKE_SWITCHYARD=${mode} exec bun ${FAKE_SWITCHYARD} "$@"\n`, { mode: 0o755 });
-    const sidecar = new Sidecar({
-      routing: loadRouting(mkdtempSync(join(tmpdir(), "agenthub-"))),
-      omni: ctx.omni,
-      stateDir: mkdtempSync(join(tmpdir(), "agenthub-state-")),
-      port: 48000 + (process.pid % 900),
-      bin: mode === "missing-binary" ? "/nonexistent/switchyard-server" : wrapper,
-      log: ctx.log,
-    });
-    cleanup.push(() => sidecar.stop());
-    const peer = new LocalPeer("local", { cwd: ctx.cwd, omni: ctx.omni, sidecar, route: "sy/coding", fixedModel: "vllm/fixed", tools: { deny: [], permit: async () => true }, log: ctx.log });
-    const bus = new Bus({ batchMs: 0 });
-    const said: Envelope[] = [];
-    bus.tap((e) => e.t === "envelope" && e.env.from === "local" && said.push(e.env));
-    bus.add(peer);
-    await peer.start();
-    cleanup.push(() => peer.stop());
-
-    if (mode === "die-after-start") {
-      await sidecar.endpoint();
-      await Bun.sleep(500); // it starts healthy, then dies mid-session
-    }
-    bus.publish(newEnvelope("user", "one", { priority: "important" }));
-    await until(() => said.length === 1, "first answer");
-    bus.publish(newEnvelope("user", "two", { priority: "important" }));
-    await until(() => said.length === 2, "second answer");
-    expect(said.map((e) => e.body)).toEqual(["model=vllm/fixed", "model=vllm/fixed"]);
-    const notices = ctx.lines.filter((l) => l.includes("falling back to fixed_model"));
-    expect(notices).toHaveLength(1);
-    expect(notices[0]).toContain(why);
-    expect(sidecar.status).toStartWith("off (");
-  });
-}
-
-test("model-call budget admits a sidecar attempt and gates its fixed-model fallback separately", async () => {
-  const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-local-budget-fallback-")));
-  const model = startFakeModelServer({ key: "sk-fake-secret", script: (body) => ({ content: `model=${body.model}` }) });
-  process.env.OMNIROUTE_API_KEY = "sk-fake-secret";
-  const lines: string[] = [], omni = new OmniRoute({ urls: [model.url], access_hosts: [] }, (line) => lines.push(line));
-  const wrapper = join(mkdtempSync(join(tmpdir(), "agenthub-bin-")), "switchyard-server");
-  writeFileSync(wrapper, `#!/bin/sh\nFAKE_SWITCHYARD=fail-calls exec bun ${FAKE_SWITCHYARD} "$@"\n`, { mode: 0o755 });
-  const sidecar = new Sidecar({ routing: loadRouting(mkdtempSync(join(tmpdir(), "agenthub-routing-"))), omni, stateDir: mkdtempSync(join(tmpdir(), "agenthub-state-")), port: 48000 + (process.pid % 900), bin: wrapper, log: (line) => lines.push(line) });
-  const admissions: string[] = [], bus = new Bus({ batchMs: 0 });
-  const said: Envelope[] = [];
-  bus.tap((e) => e.t === "envelope" && e.env.from === "local" && said.push(e.env));
-  const peer = new LocalPeer("local", { cwd, omni, sidecar, route: "sy/coding", fixedModel: "vllm/fixed", tools: { deny: [], permit: async () => true }, admitBudget: async (_envs, unit) => {
-    admissions.push(unit);
-    return admissions.filter((entry) => entry === "model_calls").length === 1
-      ? [{ allowed: true, scope: "run:fallback", unit, used: 1, limit: 1, remaining: 0 }]
-      : [{ allowed: false, scope: "run:fallback", unit, used: 1, limit: 1, remaining: 0, reason: "exhausted" }];
-  } });
-  bus.add(peer); await peer.start();
-  cleanup.push(model.stop, () => sidecar.stop(), () => peer.stop());
-  bus.publish(newEnvelope("user", "use routed model", { priority: "important" }));
-  await until(() => said.length === 1, "fallback budget report");
-  expect(admissions).toEqual(["model_calls", "model_calls"]);
-  expect(said[0]!.body).toContain("execution budget stopped before any tool side effects");
-  expect(model.requests).toHaveLength(0); // fallback is stopped before reaching the fixed-model endpoint
-});
-
-test("a gateway that is down when the sidecar would start does not turn L2 off: the next call starts it", async () => {
-  const ctx = await setup((b) => ({ content: `model=${b.model}` }));
-  const sidecar = new Sidecar({
-    routing: loadRouting(mkdtempSync(join(tmpdir(), "agenthub-"))),
-    omni: ctx.omni,
-    stateDir: mkdtempSync(join(tmpdir(), "agenthub-state-")),
-    port: 49000 + (process.pid % 900),
-    bin: FAKE_SWITCHYARD,
-    log: ctx.log,
-  });
-  cleanup.push(() => sidecar.stop());
-  ctx.model.state.healthy = false;
-  expect(await sidecar.endpoint()).toBeUndefined();
-  expect(sidecar.status).toBe("not started");
-  ctx.model.state.healthy = true;
-  expect(await sidecar.endpoint()).toStartWith("http://127.0.0.1:");
-});
-
 test("claude-mem capture: init, one observation per tool call, summarize, session-end; skip list and denylisted paths stay out; a down worker blocks nothing", async () => {
   const mem = startFakeMemWorker();
   cleanup.push(mem.stop);
@@ -579,7 +439,7 @@ test("daemon local board lists expose PII rows only in a PII turn, never ordinar
   process.env.OMNIROUTE_API_KEY = "k";
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-board-private-")));
   const stateDir = join(cwd, "state");
-  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
+  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, omniroute: { urls: [model.url], access_hosts: [] }, memory: { enabled: true, worker_url: mem.url, inject_tokens: 40, brief_items: 8 } } });
   cleanup.push(() => daemon.stop());
   const client = await ControlClient.connect(stateDir, { role: "console" });

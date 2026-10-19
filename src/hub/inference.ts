@@ -1,6 +1,5 @@
 import type { MlxHandle } from "../models/mlx.ts";
 import type { ChatMessage, OmniRoute } from "../omniroute/client.ts";
-import type { Sidecar } from "../switchyard/sidecar.ts";
 import { CLASSES, type TaskClass } from "./board.ts";
 import { DIGEST, newEnvelope, type Envelope } from "./envelope.ts";
 import { buildEscalationJudgeRequest, parseEscalationVerdict, type EscalationVerdict } from "../models/route/escalation.ts";
@@ -25,15 +24,13 @@ const SUMMARY_CAP = 1500;
 
 export interface InferenceDeps {
   omni: OmniRoute;
-  sidecar: () => Sidecar | undefined;
-  route: string;
   fixedModel: () => string;
   log: (line: string) => void;
   timeoutMs?: number;
 }
 
 /**
- * The hub's own small model calls (route `sy/fast`, the usual fallback to a fixed model). Everything here is optional
+ * The hub's own small fixed-model calls. Everything here is optional
  * and fail-open: no gateway, a slow model or a useless answer means "no result", never a delayed or lost delivery.
  * The model reads text written by agents, so its input is data and its output is only ever used as capped text or as
  * a value checked against a closed list: never as a route, a peer id, a tool call or an instruction.
@@ -56,7 +53,7 @@ export class Inference {
     const limit = opts.timeoutMs ?? this.d.timeoutMs ?? TIMEOUT_MS;
     const quiet = !!opts.interactive;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    // One clock over everything, the gateway probe and the sidecar start included, not only the model call.
+    // One clock over everything, the gateway probe included, not only the model call.
     const timeout = new Promise<"timeout">((resolve) => (timer = setTimeout(() => (abort.abort(), resolve("timeout")), limit)));
     const result = await Promise.race([this.run(system, user, maxTokens, abort.signal, quiet), timeout]);
     clearTimeout(timer);
@@ -77,9 +74,8 @@ export class Inference {
       // probe every time, so both back off.
       if (!(await this.d.omni.base())) return this.backOff("no gateway configured or reachable", quiet);
       const messages = [{ role: "system" as const, content: system }, { role: "user" as const, content: user }];
-      const via = await this.d.sidecar()?.endpoint();
-      const body = via ? { model: this.d.route, messages, max_tokens: maxTokens } : { model: this.d.fixedModel(), messages, max_tokens: maxTokens };
-      const res = await this.d.omni.chat(body, { signal, ...(via ? { via } : {}) });
+      const body = { model: this.d.fixedModel(), messages, max_tokens: maxTokens };
+      const res = await this.d.omni.chat(body, { signal });
       return res.message.content?.trim() || undefined;
     } catch (e) {
       return signal.aborted ? undefined : this.backOff((e as Error).message, quiet);

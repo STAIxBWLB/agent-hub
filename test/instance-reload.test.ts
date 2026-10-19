@@ -25,7 +25,7 @@ async function fixture() {
     memory: { enabled: false, native: false }, snapshots: { enabled: false }, mlx: { enabled: false }, pi: { enabled: false, auto_start: false }, approvals: { notify: false }, batch_ms: 0 };
   const write = (value: unknown) => writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify(value));
   write(initial);
-  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0 }); cleanup.push(() => daemon.stop());
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0 }); cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console", projectRoot: root }); cleanup.push(() => console_.close());
   const owner = new Owner("codex-a"); await owner.start(); daemon.bus.add(owner);
   const status = async () => (await console_.request({ t: "status" })).status;

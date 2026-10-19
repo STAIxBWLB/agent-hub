@@ -34,7 +34,7 @@ async function hub(config: Partial<HubConfig> = {}, files: { routing?: boolean; 
   const p = project();
   if (files.git) expect(hubGitSync(["init", "-q"], { cwd: p.cwd, encoding: "utf8", timeout: 1000 }).status).toBe(0);
   if (files.routing === false) rmSync(p.file("routing.toml")); // a project that runs on the shipped routing template
-  const daemon = await startDaemon({ cwd: p.cwd, stateDir: p.stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
+  const daemon = await startDaemon({ cwd: p.cwd, stateDir: p.stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...loadConfig(p.cwd), peers: { kimi: { start_mode: "headless" } }, batch_ms: 0, kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts")], ...config } });
   cleanup.push(() => daemon.stop());
   const client = await ControlClient.connect(p.stateDir, { role: "console" }); cleanup.push(() => client.close());
@@ -152,7 +152,7 @@ test("AC2: a candidate the loader refuses, a broken machine-local file, a hand e
   expect(() => writeConfigSetting(p.cwd, p.stateDir, def("pi.auto_start"), false, load)).toThrow("pi is not an object");
 
   // The overlay goes through the real routing parser: a route the project does not define never reaches the disk.
-  expect(() => writeRoutingSetting(p.cwd, p.stateDir, def("routing.classes.implement.route"), "sy/missing")).toThrow("names no route");
+  expect(() => writeRoutingSetting(p.cwd, p.stateDir, def("routing.classes.implement.route"), "hub/missing")).toThrow("names no route");
   expect(text(p.file(OVERLAY_FILE))).toBeNull();
 
   // Undo refuses once the file changed by hand since the write it would undo.
@@ -190,7 +190,7 @@ test("AC3: routing.local.toml merges over routing.toml key by key, assign and ro
   expect(merged.classes.test).toEqual(shared.classes.test);
   expect(merged.sources).toEqual({ stay_switch: OVERLAY_FILE, "classes.implement.peers": OVERLAY_FILE, "classes.implement.pi_backend": OVERLAY_FILE, "classes.review.escalate_to": OVERLAY_FILE });
   // Everything outside the overlay's keys is the shared file's, untouched.
-  for (const key of ["local", "routes", "signals", "constraints", "pi"] as const) expect(merged[key]).toEqual(shared[key]);
+  for (const key of ["local", "hub_routes", "signals", "constraints", "pi"] as const) expect(merged[key]).toEqual(shared[key]);
 
   const states = { kimi: "idle", codex: "idle", pi: "idle" } as const;
   const a = assign({ class: "implement", signals: [] }, states, merged);

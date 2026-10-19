@@ -626,9 +626,9 @@ In the project directory, one terminal each:
 
 Needs a model gateway in `omniroute.urls` (for the owner: the campus gateway over VPN, or the Access-protected public URL with its two header files) and a key: `OMNIROUTE_API_KEY`, or `omniroute.api_key_file` in `.agenthub/config.json`.
 
-1. `ahub doctor`: `omniroute` healthy, `omniroute key` present, `switchyard` installed or not.
+1. `ahub doctor`: `omniroute` healthy, `omniroute key` present, every routing model alias served; no Switchyard row.
 2. In a scratch git repo: `ahub up`, `ahub local`, `ahub tail`, then `ahub say @local "fix the typos in <file>, run git diff --stat and report"`. `ahub tail` shows a permission request for the edit; `ahub permit <id> allow`. The file changes, the answer is a short conclusion, `ahub status` shows the served model in the local row's `MODEL` column and `vllm` in the backend table's `PROVIDER` column.
-3. Same with `AGENTHUB_SWITCHYARD_BIN` (or `switchyard-server` on PATH) set before `ahub up`: `ahub status` shows the served model in `MODEL`, `switchyard` in the backend's `PROVIDER` column, and a `switchyard` detail with `127.0.0.1:<port>`; `lsof -nP -iTCP -sTCP:LISTEN | grep switchy` shows loopback only; `.agenthub/state/switchyard.toml` is mode 600 and holds no key; after `ahub kill` the file and the process are gone.
+3. In an isolated scratch project, use `[local] route = "hub/stage"` with served `fast` and `coding` aliases. Confirm the in-process route event and gateway provider. Try a legacy `sy/` selection: it uses `fixed_model` with one warning, starts no sidecar, and leaves the routing file unchanged. The older Switchyard receipts below describe the retired integration.
 4. claude-mem: `sqlite3 -readonly ~/.claude-mem/claude-mem.db "select agent_id, agent_type, project, title from observations order by id desc limit 3"` shows `local | local-worker` rows a minute or two later (claude-mem's observer runs asynchronously).
 
 ## M4: task board
