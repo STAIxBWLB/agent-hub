@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "adf2d5fd2fc2e9f5ce5b5e9daf594269de227238",
+      "verifiedAgainst": "932818fbc92df82b05835dae6e5b05fd8ac22e2c",
       "paths": [
         "package.json",
         "src/",
@@ -11,14 +11,14 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "adf2d5fd2fc2e9f5ce5b5e9daf594269de227238",
+      "verifiedAgainst": "932818fbc92df82b05835dae6e5b05fd8ac22e2c",
       "paths": [
         "src/",
         "templates/"
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "adf2d5fd2fc2e9f5ce5b5e9daf594269de227238",
+      "verifiedAgainst": "932818fbc92df82b05835dae6e5b05fd8ac22e2c",
       "paths": [
         "package.json",
         "src/",
@@ -179,7 +179,7 @@
       ]
     },
     "docs/agent-notes/models.md": {
-      "verifiedAgainst": "b91d2cacb80b58ec85fa4cf538cdb1f3ed6079cc",
+      "verifiedAgainst": "932818fbc92df82b05835dae6e5b05fd8ac22e2c",
       "paths": [
         "src/models/",
         "src/hub/inference.ts",
@@ -211,7 +211,7 @@
       ]
     },
     "docs/agent-notes/tests.md": {
-      "verifiedAgainst": "adf2d5fd2fc2e9f5ce5b5e9daf594269de227238",
+      "verifiedAgainst": "932818fbc92df82b05835dae6e5b05fd8ac22e2c",
       "paths": [
         "test/",
         "scripts/check.sh",
