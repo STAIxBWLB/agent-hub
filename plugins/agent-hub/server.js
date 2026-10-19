@@ -18213,7 +18213,7 @@ var STDOUT_LIMIT = 512 * 1024;
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
-  version: "0.12.38",
+  version: "0.12.39",
   description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
   license: "MIT",
   type: "module",
