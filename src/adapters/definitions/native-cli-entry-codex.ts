@@ -1,3 +1,4 @@
+import { retainedLaunchWarning } from "./native-cli-retained.ts";
 import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
 
 export async function runCodexEntry(ctx: NativeCliEntryContext): Promise<void> {
@@ -19,6 +20,8 @@ export async function runCodexEntry(ctx: NativeCliEntryContext): Promise<void> {
   // only when a future recovery receipt supplies independently verified exact-instance execution-root evidence.
   if (recovering && !ctx.instance && before?.instanceId) await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
+  const snapshot = (await hub.request({ t: "status" })).status;
+  const warning = retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
   const res = await hub.request({ t: "start", peer, args: { unattended: launch0.unattended === true }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
   hub.close();
   if (!res.ok) fail(res.error);
@@ -28,7 +31,8 @@ export async function runCodexEntry(ctx: NativeCliEntryContext): Promise<void> {
   }
   const control = readControl(stateDir);
   if ((!recovering || ctx.instance) && control?.instanceId) await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: ctx.executionCwd } : undefined);
-  const launch = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl: res.proxyUrl, codexBin: projectConfig().codex_bin });
+  const runningCodexBin = res.retainedLaunchConfig?.codex_bin;
+  const launch = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl: res.proxyUrl, codexBin: typeof runningCodexBin === "string" ? runningCodexBin : projectConfig().codex_bin });
   if (launch0.warning) console.error(launch0.warning);
   exec(launch.cmd, launch.args, "codex");
 }

@@ -8253,6 +8253,22 @@ var init_reviewer_variants = __esm(() => {
   };
 });
 
+// src/adapters/definitions/native-cli-retained.ts
+function retainedLaunchWarning(status, peer, definition) {
+  const keys = definition.cli.launchConfigKeys;
+  const retained = status?.retainedConfig;
+  if (!keys?.length || !Array.isArray(retained))
+    return;
+  const pending = retained.flatMap((row) => {
+    if (!row || typeof row !== "object")
+      return [];
+    const key = row.key;
+    return typeof key === "string" && keys.some((candidate) => key === candidate || key.startsWith(`${candidate}.`)) ? [key] : [];
+  });
+  const unique = [...new Set(pending)];
+  return unique.length ? `ahub: config retained: ${unique.join(", ")}; starting ${peer} with the running value; run ahub settings reload to apply the file's value` : undefined;
+}
+
 // src/hub/claude-state.ts
 function claudeStateFile(base, peer) {
   return peer.includes("-") && PEER2.test(peer) ? `${base}.${peer}.json` : `${base}.json`;
@@ -8274,6 +8290,10 @@ async function runClaudeEntry(ctx) {
       return console.log(JSON.stringify({ peer, start: "hub", note: "a headless reviewer the hub runs per review" }, null, 2));
     const hub = await ctx.connect();
     try {
+      const snapshot = (await hub.request({ t: "status" })).status;
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+      if (warning)
+        console.error(warning);
       const res = await hub.request({ t: "start", peer, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
       if (res.ok !== true)
         fail(String(res.error ?? `${peer} was not started`));
@@ -8352,6 +8372,10 @@ async function runCodexEntry(ctx) {
   if (recovering && !ctx.instance && before?.instanceId)
     await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
+  const snapshot = (await hub.request({ t: "status" })).status;
+  const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+  if (warning)
+    console.error(warning);
   const res = await hub.request({ t: "start", peer, args: { unattended: launch0.unattended === true }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
   hub.close();
   if (!res.ok)
@@ -8364,11 +8388,13 @@ async function runCodexEntry(ctx) {
   const control = readControl(stateDir);
   if ((!recovering || ctx.instance) && control?.instanceId)
     await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: ctx.executionCwd } : undefined);
-  const launch = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl: res.proxyUrl, codexBin: projectConfig().codex_bin });
+  const runningCodexBin = res.retainedLaunchConfig?.codex_bin;
+  const launch = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl: res.proxyUrl, codexBin: typeof runningCodexBin === "string" ? runningCodexBin : projectConfig().codex_bin });
   if (launch0.warning)
     console.error(launch0.warning);
   exec(launch.cmd, launch.args, "codex");
 }
+var init_native_cli_entry_codex = () => {};
 
 // src/hub/status-roster.ts
 function rosterInStatus(status, peer) {
@@ -8408,6 +8434,9 @@ async function runJcodeEntry(ctx) {
       fail("cannot read jcode's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
     if (!rostered)
       fail("jcode is off roster; add it with ahub roster add jcode");
+    const warning = retainedLaunchWarning(snapshot, "jcode", ctx.definition);
+    if (warning)
+      console.error(warning);
     const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve10(cliDir, "../../plugins/agent-hub/server.js"));
     if (written.tracked)
       console.error(".jcode/mcp.json is tracked; review this local machine-path change before committing it");
@@ -8441,6 +8470,10 @@ async function runQwenEntry(ctx) {
     fail("Qwen TUI is not offered before verification; usage: ahub qwen [--mode headless] [--model <alias>] [--session-id <id>]");
   const hub = await connect();
   try {
+    const snapshot = (await hub.request({ t: "status" })).status;
+    const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+    if (warning)
+      console.error(warning);
     const reply = await hub.request({ t: "start", peer, args: { mode: "headless", ...one["--model"] ? { model: one["--model"] } : {}, ...one["--session-id"] ? { sessionId: one["--session-id"] } : {} }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35000);
     if (!reply.ok)
       fail(reply.error);
@@ -8449,6 +8482,7 @@ async function runQwenEntry(ctx) {
     hub.close();
   }
 }
+var init_native_cli_entry_qwen = () => {};
 
 // src/adapters/definitions/native-cli-entry-kimi.ts
 import { resolve as resolve11 } from "path";
@@ -8456,7 +8490,7 @@ import { spawnSync as spawnSync4 } from "child_process";
 async function runKimiEntry(ctx) {
   const peer = ctx.instance ?? "kimi";
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, connect, fail, takeFlags } = ctx;
-  const { launcherPreview, startModeOf, buildKimiTuiLaunch, configureKimiMcp, nativeLaunchEnv, childEnv } = ctx.helpers;
+  const { launcherPreview, readControl, startModeOf, buildKimiTuiLaunch, configureKimiMcp, nativeLaunchEnv, childEnv } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
     try {
       return console.log(JSON.stringify(launcherPreview("kimi", args, cwd, stateDir, unattendedEnv), null, 2));
@@ -8465,7 +8499,8 @@ async function runKimiEntry(ctx) {
     }
   }
   const { one, rest } = takeFlags(args, ["--mode", "--model"], []);
-  const mode = one["--mode"] ?? (ctx.instance ? "headless" : startModeOf(projectConfig().peers, "kimi")), model = one["--model"];
+  const acceptedMode = readControl(stateDir)?.startModes?.[peer];
+  const mode = one["--mode"] ?? (ctx.instance ? "headless" : acceptedMode ?? startModeOf(projectConfig().peers, "kimi")), model = one["--model"];
   if (ctx.instance && mode !== "headless")
     fail("extra Kimi instances require headless mode");
   if (rest.length || !["tui", "headless"].includes(mode))
@@ -8475,6 +8510,10 @@ async function runKimiEntry(ctx) {
       fail("Kimi's TUI needs a terminal for these options; run in a terminal or add --mode headless");
     const hub = await connect();
     try {
+      const snapshot = (await hub.request({ t: "status" })).status;
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+      if (warning)
+        console.error(warning);
       const reply = await hub.request({ t: "peer_start", peer }, 35000);
       if (!reply.ok)
         fail(reply.error);
@@ -8486,19 +8525,23 @@ async function runKimiEntry(ctx) {
   const hub = await connect();
   try {
     if (mode === "tui") {
-      const launch = buildKimiTuiLaunch(projectConfig().kimi_cmd, model);
       const snapshot = (await hub.request({ t: "status" })).status;
       const rostered = rosterInStatus(snapshot, peer);
       if (rostered === undefined)
         fail("cannot read kimi's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
       if (!rostered)
         fail("kimi is off roster; add it with ahub roster add kimi");
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+      if (warning)
+        console.error(warning);
       const owner = snapshot?.peers?.[peer];
       if (owner && !["offline"].includes(owner.state) && !owner.pullOnly)
         fail("Kimi is running headless; run ahub stop kimi before starting its TUI");
       const admission = await hub.request({ t: "start", peer, args: { mode: "tui" }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
       if (!admission.ok)
         fail(admission.error);
+      const runningCommand = admission.retainedLaunchConfig?.kimi_cmd;
+      const launch = buildKimiTuiLaunch(Array.isArray(runningCommand) && runningCommand.every((arg) => typeof arg === "string") ? runningCommand : projectConfig().kimi_cmd, model);
       let result;
       try {
         const written = configureKimiMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve11(cliDir, "../../plugins/agent-hub/server.js"), "tui");
@@ -8513,7 +8556,11 @@ async function runKimiEntry(ctx) {
         fail(`cannot run ${launch.cmd}: ${result.error.message}`);
       process.exit(result.status ?? 1);
     }
-    const owner = (await hub.request({ t: "status" })).status?.peers?.[peer];
+    const snapshot = (await hub.request({ t: "status" })).status;
+    const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+    if (warning)
+      console.error(warning);
+    const owner = snapshot?.peers?.[peer];
     if (owner?.pullOnly && owner.state !== "offline")
       fail("Kimi runs in a terminal; end it there before starting a headless one");
     if (!ctx.instance)
@@ -8584,7 +8631,8 @@ async function runPiEntry(ctx) {
     }
   }
   const flags = parsePiFlags(args, fail);
-  const options = { ...flags, mode: flags.mode ?? (ctx.instance ? "headless" : startModeOf(projectConfig().peers, "pi")) };
+  const acceptedMode = ctx.helpers.readControl(stateDir)?.startModes?.[peer];
+  const options = { ...flags, mode: flags.mode ?? (ctx.instance ? "headless" : acceptedMode ?? startModeOf(projectConfig().peers, "pi")) };
   if (ctx.instance && options.mode !== "headless")
     fail("extra Pi instances require headless mode");
   if (flags.mode === undefined && options.mode === "tui" && !(process.stdin.isTTY && process.stdout.isTTY)) {
@@ -8592,6 +8640,10 @@ async function runPiEntry(ctx) {
       fail("Pi's TUI needs a terminal, and these options are not passed to one the hub opens: run this in a terminal, or add --mode headless");
     const hub = await connect();
     try {
+      const snapshot = (await hub.request({ t: "status" })).status;
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+      if (warning)
+        console.error(warning);
       const reply = await hub.request({ t: "peer_start", peer }, 35000);
       if (reply.ok !== true) {
         const error = String(reply.error ?? "pi start refused");
@@ -8607,6 +8659,10 @@ async function runPiEntry(ctx) {
   if (recovering && before?.instanceId)
     await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
+  const snapshot = (await hub.request({ t: "status" })).status;
+  const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+  if (warning)
+    console.error(warning);
   const res = await hub.request({ t: "start", peer, args: options, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
   hub.close();
   if (!res.ok)
@@ -8640,20 +8696,28 @@ async function runLocalEntry(ctx) {
   if (args.some((a, i) => i % 2 === 0 && !["--route", "--model"].includes(a)))
     fail("usage: ahub local [--route <id> | --model <id>]");
   const hub = await connect();
+  const snapshot = (await hub.request({ t: "status" })).status;
+  const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+  if (warning)
+    console.error(warning);
   const res = await hub.request({ t: "start", peer, args: { route: opt("--route"), model: opt("--model") }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
   hub.close();
   if (!res.ok)
     fail(res.error);
   console.log(res.already ? `${peer} is already attached` : `${peer} attached on ${res.model}. Give it work with: ahub say @${peer} "..."`);
 }
+var init_native_cli_entry_local = () => {};
 
 // src/adapters/definitions/native-cli-entry.ts
 var builtinCliEntries;
 var init_native_cli_entry = __esm(() => {
   init_native_cli_entry_claude();
+  init_native_cli_entry_codex();
   init_native_cli_entry_jcode();
+  init_native_cli_entry_qwen();
   init_native_cli_entry_kimi();
   init_native_cli_entry_pi();
+  init_native_cli_entry_local();
   builtinCliEntries = Object.freeze([
     { command: "claude", lifecycleAdmission: true, execute: runClaudeEntry },
     { command: "codex", lifecycleAdmission: true, execute: runCodexEntry },
@@ -9583,7 +9647,7 @@ var init_builtin_metadata = __esm(() => {
       session: { nativeRevert: true, idField: "threadId", currentId: sessionId("threadId"), configDirEnv: "CODEX_HOME", zeroTurnFresh: true, launchKind: "codex", launchRecord: true, ...CODEX_RECOVERY_SESSION, crashPlan: codexCrashPlan, unrecordedTerminal: "always" },
       turnEnd: "adapter",
       budget: { account: "codex", checkpoint: true, reader: { source: "codex rateLimits", read: codexWindows }, context: { source: "codex_token_usage", read: codexContext } },
-      cli: { command: "codex", retainedTerminalNotice: codexRetainedTerminalNotice, rosterReturnNotice: codexRosterReturnNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["codex"] },
+      cli: { command: "codex", launchConfigKeys: ["codex_bin"], retainedTerminalNotice: codexRetainedTerminalNotice, rosterReturnNotice: codexRosterReturnNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["codex"] },
       display: CODEX_DISPLAY,
       hooks: { recallPlatform: "codex", recallSource: "codex", recallInjected: true, pluginInventory: codexPluginInventory, classifyTool: codexToolSemantic }
     },
@@ -9618,7 +9682,7 @@ var init_builtin_metadata = __esm(() => {
       capabilities: { watch: true },
       init: { mcpFile: ".kimi-code/mcp.json" },
       hooks: { recallPlatform: "kimi", recallSource: "kimi" },
-      cli: { command: "kimi", stopNotice: (form) => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: (form) => ["kimi", "--mode", form] },
+      cli: { command: "kimi", launchConfigKeys: ["kimi_cmd", "peers.kimi.start_mode"], stopNotice: (form) => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: (form) => ["kimi", "--mode", form] },
       display: KIMI_DISPLAY
     },
     {
@@ -9640,7 +9704,7 @@ var init_builtin_metadata = __esm(() => {
       reporting: { tokensNotReported: true },
       configuration: { schema: piConfigSchema, routingSchema: piRoutingSchema, settings: PI_SETTINGS, restartReasons: PI_RESTART_REASONS, validateEffective: piEffectiveConfig },
       routing: { localAllowedRefusal: "local_allowed = false also excludes pi for this class", longContext: "backend-limit", preferredTier: true, handoffPriority: 0, trace: "backend", backendLabel: "pi" },
-      cli: { command: "pi", previewArgs: ["--mode", "tui"], retainedTerminalNotice: piRetainedTerminalNotice, personOnlyFlags: ["--replace-session"], startWords: (form) => ["pi", "--mode", form] },
+      cli: { command: "pi", launchConfigKeys: ["pi.cmd", "pi.backend", "pi.dgx_coding", "pi.dgx_fast", "pi.max_steps", "routing.pi", "peers.pi.start_mode"], previewArgs: ["--mode", "tui"], retainedTerminalNotice: piRetainedTerminalNotice, personOnlyFlags: ["--replace-session"], startWords: (form) => ["pi", "--mode", form] },
       display: PI_DISPLAY
     },
     {
@@ -9660,7 +9724,7 @@ var init_builtin_metadata = __esm(() => {
       budget: { account: "local", quotaExempt: true, instrumented: true },
       configuration: { schema: localConfigSchema, routingSchema: localRoutingSchema, restartReasons: LOCAL_RESTART_REASONS },
       routing: { localAllowedRefusal: "local_allowed = false for this class", longContext: "skip-owner", preferredTier: true, handoffPriority: 1, trace: "route" },
-      cli: { command: "local", startWords: () => ["local"] },
+      cli: { command: "local", launchConfigKeys: ["local.deny", "local.bash_network", "local.network_allow", "local.max_steps", "local.read_allow", "routing.local"], startWords: () => ["local"] },
       display: LOCAL_DISPLAY
     },
     {
@@ -9683,7 +9747,7 @@ var init_builtin_metadata = __esm(() => {
       session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "jcode", ...JCODE_RECOVERY_SESSION, crashPlan: jcodeCrashPlan },
       turnEnd: "adapter",
       budget: { account: "jcode" },
-      cli: { command: "jcode", authority: "person", startWords: () => ["jcode"] },
+      cli: { command: "jcode", authority: "person", launchConfigKeys: ["jcode_cmd", "jcode_home", "jcode_provider_profile"], startWords: () => ["jcode"] },
       display: JCODE_DISPLAY,
       hooks: { recallPlatform: "jcode" }
     }
@@ -9915,7 +9979,7 @@ var init_qwen = __esm(() => {
     turnEnd: "adapter",
     budget: { account: "qwen" },
     capabilities: { watch: true },
-    cli: { command: "qwen", startWords: () => ["qwen"] },
+    cli: { command: "qwen", launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
     display: QWEN_DISPLAY,
     hooks: { agentIdentity: (init) => {
       qwenNativeIdentity("qwen", true, init);
@@ -17696,6 +17760,7 @@ function readControl(stateDir) {
     const token = readFileSync12(join25(stateDir, "control-token"), "utf8").trim();
     if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token)
       return;
+    const startModes = status.startModes && typeof status.startModes === "object" && !Array.isArray(status.startModes) ? Object.fromEntries(Object.entries(status.startModes).filter((entry) => entry[1] === "tui" || entry[1] === "headless")) : undefined;
     return {
       url: `ws://127.0.0.1:${status.controlPort}`,
       token,
@@ -17705,6 +17770,7 @@ function readControl(stateDir) {
       protocol: status.protocol,
       pid: status.pid,
       features: Array.isArray(status.features) ? status.features.filter((feature) => typeof feature === "string") : [],
+      ...startModes ? { startModes } : {},
       ...typeof status.pidSignature === "string" && status.pidSignature ? { pidSignature: status.pidSignature } : {}
     };
   } catch {

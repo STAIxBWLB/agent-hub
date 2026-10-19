@@ -12,6 +12,8 @@ import type { InstancesConfig } from "../hub/instances.ts";
 import { kimiAcpCommand } from "../adapters/definitions/native-daemon-kimi.ts";
 export const CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub";
 
+export { retainedLaunchWarning } from "../adapters/definitions/native-cli-retained.ts";
+
 /** Consume only ahub's selector, never native arguments after the passthrough delimiter. */
 export function instanceLaunchArguments(command: string, raw: readonly string[], instances?: InstancesConfig): { instance?: string; args: string[]; hubStarted?: true } {
   if (!definitionOf(command)) return { args: [...raw] };

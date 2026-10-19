@@ -196,6 +196,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       captureConsoleSelection(state);
       if (status.status?.tasks && status.ok !== false) state.taskCounts = status.status.tasks;
       if (status.status && status.ok !== false) state.pendingRestart = Array.isArray(status.status.pendingRestart) ? status.status.pendingRestart : [];
+      if (status.status && status.ok !== false) state.retainedConfig = Array.isArray(status.status.retainedConfig) ? status.status.retainedConfig : [];
       if (status.status) state.features = Array.isArray(status.status.features) ? status.status.features : [];
       if (status.status?.peers) state.peers = Object.fromEntries(Object.entries(status.status.peers).map(([peer, value]) => [peer, { ...(value as object), ...status.status.roleInfo?.[peer] }]));
       if (status.status && status.ok !== false) {
@@ -216,6 +217,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
           state.settingsRows = settings.rows; state.settingsKnown = true; state.settingsProblem = undefined;
           state.settingsUndo = typeof settings.undo === "string" ? settings.undo : undefined;
           state.pendingRestart = Array.isArray(settings.pendingRestart) ? settings.pendingRestart : [];
+          state.retainedConfig = Array.isArray(settings.retainedConfig) ? settings.retainedConfig : [];
         } else state.settingsProblem = String(settings.error ?? "settings are unavailable");
       }
       reconcileDetail();
