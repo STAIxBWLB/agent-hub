@@ -39,7 +39,7 @@ The isolated native leg switched both HOME and KIMI_CODE_HOME, used a clean cwd,
 
 ## Agy ambient-source positive control
 
-A synthetic ambient HOME and project held distinct user/project MCP entries, hooks and skills. A local synthetic plugin contained its own MCP entry, hook and skill and was installed with native `agy plugin install` inside the same synthetic HOME and sandbox. The install completed with one MCP server, one hook and one skill processed. The ambient native run initialized and listed tools from all three MCP sources, and all three hook markers appeared. The isolated native leg switched to a fresh HOME and clean cwd, did not reuse imported plugin/config/cache state, disabled slash commands, and denied reads of the synthetic project's `.agents` tree. No decoy connection or hook marker appeared. Native skill-disclosure evidence is recorded separately below; installation output alone is not proof of model disclosure.
+A synthetic ambient HOME and project held distinct user/project MCP entries, hooks and skills. A local synthetic plugin contained its own MCP entry, hook and skill and was installed with native `agy plugin install` inside the same synthetic HOME and sandbox. The install completed with one MCP server, one hook and one skill processed. The ambient native run initialized and listed tools from all three MCP sources, and all three hook markers appeared. The isolated native leg switched to a fresh HOME and clean cwd, did not reuse imported plugin/config/cache state, disabled slash commands, and denied reads of the synthetic project's `.agents` tree. No decoy connection or hook marker appeared. A follow-up captured `systemInstruction`: the ambient model requests contained all three skill-description nonces, while the isolated leg contained none. Installation output alone was not counted as proof of model disclosure.
 
 ## Auth and listener evidence boundary
 
@@ -58,7 +58,7 @@ A whole-process sandbox cannot give an ordinary MCP child access to the full hub
 ## Remaining R0 evidence
 
 - Final broker inventory/self-check, including refused unknown MCP tools and malformed arguments.
-- Final-profile ambient-source exclusion; agy skill-description disclosure positive control remains unverified (the first receipt omitted `systemInstruction`; its follow-up was deferred before execution).
+- Final-profile ambient-source exclusion and immutable host-owned broker/config files (R0 ambient-source controls passed for both installed tools).
 - Final production-profile target read and mutation refusals, preexisting alias checks, private/credential denial and model-only network.
 - Exact auth source and safe refresh behavior, without whole-home access.
 - Session/home cleanup after success, failure and timeout; real config hashes unchanged.
@@ -68,4 +68,4 @@ No runtime availability claim is made until these receipts pass.
 
 ## Gate state
 
-This is an R0 evidence report, not a feature-completion or availability receipt. No launcher, registry, daemon, spec contract or default pool was changed. Full tests, typecheck, mutation seeds and exact-head CI have not run for an implementation. The next agy skill-disclosure probe was refused before execution by resource admission (exit 75, another heavyweight process); that refusal is not counted as a test result. Auth-scope and native-listener questions were sent to the planner before production work.
+This is an R0 evidence report, not a feature-completion or availability receipt. No launcher, registry, daemon, spec contract or default pool was changed. Full tests, typecheck, mutation seeds and exact-head CI have not run for an implementation. One agy skill-disclosure probe was refused before execution by resource admission (exit 75, another heavyweight process). After a fresh process read confirmed that process had exited, one admitted follow-up completed and established the three skill-description positive/negative controls. The deferral itself is not counted as a test result. Auth-scope and native-listener questions were sent to the planner before production work.
