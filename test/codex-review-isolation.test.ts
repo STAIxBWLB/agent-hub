@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { realPath } from "../src/hub/project.ts";
@@ -226,6 +226,60 @@ test("Codex denies absent credential descendants through a symlinked HOME and co
     await result.cleanup?.();
   } finally {
     for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
+    f.close();
+  }
+});
+
+
+// #239: admission refuses a credential root it cannot resolve, names only its path class, and runs no model.
+for (const standard of [".kube", ".docker"]) test(`Codex refuses a dangling ${standard} credential link and names only the root class`, async () => {
+  const f = fixture(), home = join(f.root, "home"), previous = process.env.HOME;
+  try {
+    mkdirSync(home); symlinkSync(join(f.root, "removed-volume"), join(home, standard));
+    process.env.HOME = home;
+    const result = await codexReviewerBackend.prepare(f.ctx);
+    expect(result).toHaveProperty("unavailable");
+    const reason = (result as { unavailable: string }).unavailable;
+    expect(reason).toContain(`~/${standard}`);
+    expect(reason).toContain("dangling");
+    expect(reason).not.toContain(f.root);
+    expect(readFileSync(f.calls, "utf8")).not.toContain('["exec"');
+  } finally {
+    if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous;
+    f.close();
+  }
+});
+
+// Root bypasses directory mode bits; report this permission fixture as a skip there.
+test.skipIf(process.getuid?.() === 0)("Codex refuses an unreadable ancestor of a credential root and names only the root class", async () => {
+  const f = fixture(), home = join(f.root, "home"), locked = join(home, ".local"), previous = process.env.HOME;
+  try {
+    mkdirSync(join(locked, "share"), { recursive: true });
+    chmodSync(locked, 0o000);
+    process.env.HOME = home;
+    const result = await codexReviewerBackend.prepare(f.ctx);
+    expect(result).toHaveProperty("unavailable");
+    const reason = (result as { unavailable: string }).unavailable;
+    expect(reason).toContain("~/.local/share/keyrings");
+    expect(reason).toContain("unreadable");
+    expect(reason).not.toContain(f.root);
+    expect(readFileSync(f.calls, "utf8")).not.toContain('["exec"');
+  } finally {
+    chmodSync(locked, 0o755);
+    if (previous === undefined) delete process.env.HOME; else process.env.HOME = previous;
+    f.close();
+  }
+});
+
+test("Codex names a configured credential root by its variable, not its value", async () => {
+  const f = fixture(), previous = process.env.DOCKER_CONFIG;
+  try {
+    process.env.DOCKER_CONFIG = join(f.root, "docker[unsupported]");
+    const reason = ((await codexReviewerBackend.prepare(f.ctx)) as { unavailable: string }).unavailable;
+    expect(reason).toContain("$DOCKER_CONFIG");
+    expect(reason).not.toContain(f.root);
+  } finally {
+    if (previous === undefined) delete process.env.DOCKER_CONFIG; else process.env.DOCKER_CONFIG = previous;
     f.close();
   }
 });
