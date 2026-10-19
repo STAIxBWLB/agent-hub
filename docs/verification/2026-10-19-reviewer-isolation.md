@@ -110,3 +110,10 @@ Local verification after this correction used pinned Bun 1.4.2 and the unmodifie
 
 
 The corrected source then passed the remote Linux focused gate: 447 tests in 29 files (3,176 assertions), TypeScript and pinned Bun 1.4.2 bundle freshness. All 421 existing seed anchors remain unique. Final-head CI is required separately; the local default-TMPDIR result is the developer-Mac regression evidence, not inferred from CI.
+
+
+## Main rebase after shard-store merge
+
+The reviewer-pool branch was rebased onto main `29719a78` after #534 merged, retaining the memory-open changes and exact agent-mem 0.4.0 pin. The only rebase conflict was the generated plugin bundle; it was regenerated with pinned Bun 1.4.2 and the installed 0.4.0 dependency. Reviewer source/tests, including the canonical credential fix and same-family reason, are byte-identical to the locally verified pre-rebase versions. The imported platform helper file is also byte-identical between published 0.3.1 source and installed 0.4.0 (SHA-256 `2ab3908eb317833e000616760ad04c1dffe7befadea542535d8d9dba330411eb`).
+
+I separately ran the exact merged main's memory tests: 220 pass, 1 environment skip, 0 fail in 25 files (1,584 assertions), plus TypeScript. Further local integration/native reruns after rebase were deferred by host resource admission; no bypass was used. The new final-head CI must establish the combined tree's full gate. No new native-account/model result is claimed.
