@@ -1,12 +1,12 @@
 import { createServer, createConnection } from "node:net";
-import { dirname } from "node:path";
+import { basename, dirname } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JcodePeer, jcodeCommand, verifiedJcodeCommand } from "../src/adapters/jcode.ts";
+import { JCODE_BREAKING_VERSION, JCODE_MIN_VERSION, JcodePeer, jcodeCommand, jcodeVersionSupported, verifiedJcodeCommand } from "../src/adapters/jcode.ts";
 import { configureJcodeMcp, jcodeMcpReady, JCODE_MCP_FILE, JCODE_MCP_NAME } from "../src/cli/jcode-mcp.ts";
 import { launcherPreview } from "../src/cli/preview.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
@@ -64,14 +64,37 @@ test("owned Jcode daemon and ACP client deliver, resume the exact id and stop wi
   expect(rows.find(row => row.method === "session/load").params.sessionId).toBe("saved-jcode");
   expect(rows.filter(row => row.kind === "rpc").every(row => row.home === home)).toBe(true);
   const server = rows.find(row => row.kind === "serve"); expect(existsSync(server.socket)).toBe(true);
+  // Every owned jcode process opts out of native telemetry (#529).
+  expect(rows.filter(row => row.kind === "rpc" || row.kind === "serve").every(row => row.telemetry === "1")).toBe(true);
   await peer.stop(); expect(existsSync(server.socket)).toBe(false);
   expect(() => process.kill(server.pid, 0)).toThrow();
 });
 
-test("Jcode source identity drift refuses the peer and cleans its owned daemon (#332)", async () => {
+test("Jcode native identity outside the supported range refuses the peer and cleans its owned daemon (#332, #529)", async () => {
+  for (const version of ["0.94.0", "0.97.9", "1.0.0", "0.99.0-rc.1"]) {
+    const dir = root(), home = join(dir, "home"); mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");
+    const peer = new JcodePeer({ command: [...fake, "--version-id", version], cwd: dir, home }); cleanups.push(() => peer.stop());
+    await expect(peer.start()).rejects.toThrow("native ACP identity"); expect(peer.state).toBe("offline");
+  }
+});
+
+test("Jcode accepts any native release from the verified minimum up to the breaking version, the minor unpinned (#529)", async () => {
+  expect([JCODE_MIN_VERSION, JCODE_BREAKING_VERSION]).toEqual(["0.98.0", "1.0.0"]);
+  for (const version of ["0.98.0", "0.98.1", "0.99.0", "0.120.3"]) expect(jcodeVersionSupported(version)).toBe(true);
+  for (const version of ["0.94.0", "0.97.9", "1.0.0", "2.1.0", "0.99.0-rc.1", "0.98", "v0.98.1", "", undefined, 98]) expect(jcodeVersionSupported(version)).toBe(false);
   const dir = root(), home = join(dir, "home"); mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");
-  const peer = new JcodePeer({ command: [...fake, "--version-id", "0.95.0"], cwd: dir, home }); cleanups.push(() => peer.stop());
-  await expect(peer.start()).rejects.toThrow("native ACP identity"); expect(peer.state).toBe("offline");
+  const peer = new JcodePeer({ command: [...fake, "--version-id", "0.98.1"], cwd: dir, home }); cleanups.push(() => peer.stop());
+  await peer.start(); expect(peer.state).toBe("idle");
+  for (const [semver, ok] of [["0.98.0", true], ["0.98.1", true], ["0.97.9", false], ["0.94.0", false], ["1.0.0", false]] as const) expect(verifiedJcodeCommand([...fake, "--semver", semver], dir)).toBe(ok);
+});
+
+test("the owned Jcode socket name keeps the native debug socket apart from the main one (#529)", () => {
+  const dir = root(), home = join(dir, "home"); mkdirSync(home);
+  const peer = new JcodePeer({ command: fake, cwd: dir, home }); cleanups.push(() => peer.stop());
+  const socket = (peer as unknown as { socket: string }).socket;
+  // jcode derives its debug socket by replacing ".sock" in the file name; without it both binds are one path.
+  expect(socket.endsWith(".sock")).toBe(true);
+  expect(join(dirname(socket), basename(socket).replace(".sock", "-debug.sock"))).not.toBe(socket);
 });
 
 test("daemon verifies Jcode MCP read-only and preserves human-only policy and stop boundaries (#332)", async () => {
@@ -143,7 +166,7 @@ test("Jcode doctor probes the full configured wrapper argv with the native JSON 
   const dir = root(), record = join(dir, "version");
   expect(verifiedJcodeCommand([...fake, "--record", record], dir)).toBe(true);
   const row = JSON.parse(readFileSync(record, "utf8").trim());
-  expect(row.args.slice(-3)).toEqual(["--quiet", "version", "--json"]);
+  expect(row.args.slice(-3)).toEqual(["--quiet", "version", "--json"]); expect(row.telemetry).toBe("1");
   expect(row.args).toContain(record);
 });
 
