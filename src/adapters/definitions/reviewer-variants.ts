@@ -1,6 +1,7 @@
 import type { AdapterDefinition } from "../registry-types.ts";
 import { claudeReviewerBackend } from "../claude-print.ts";
 import { codexReviewerBackend } from "../codex-review-isolation.ts";
+import { kimiReviewerBackend } from "../kimi-review.ts";
 import { createReviewer, createCodexReviewer } from "./native-factories.ts";
 import { CODEX_DISPLAY, KIMI_DISPLAY } from "./native-display.ts";
 
@@ -24,9 +25,9 @@ function reviewerVariant(kind: string, displayName: string, reviewer: NonNullabl
 }
 const codexVariant = reviewerVariant("codex", "Codex reviewer", { backend: codexReviewerBackend, defaultPool: true, declaration: "explicit" }, CODEX_DISPLAY);
 export const CODEX_REVIEWER_VARIANT: AdapterDefinition = { ...codexVariant, start: { ...codexVariant.start, create: createCodexReviewer } };
-export const KIMI_REVIEWER_VARIANT = reviewerVariant("kimi", "Kimi reviewer", { defaultPool: false, declaration: "explicit", unavailable: "Kimi reviewer unavailable: runtime and isolation verification deferred to #533" }, KIMI_DISPLAY);
+export const KIMI_REVIEWER_VARIANT = reviewerVariant("kimi", "Kimi reviewer", { backend: kimiReviewerBackend, defaultPool: true, declaration: "explicit" }, KIMI_DISPLAY);
 /** Data-only declared placeholder for route explanations; no factory, backend or native argv. */
 export const AGY_DEFINITION: AdapterDefinition = {
-  ...reviewerVariant("agy", "agy reviewer", { defaultPool: false, declaration: "automatic", unavailable: "agy reviewer unavailable: native adapter and isolation verification deferred to #533" }, { palette: { fg: "#6558a6", bg: "#f1effa" } }),
+  ...reviewerVariant("agy", "agy reviewer", { defaultPool: false, declaration: "automatic", unavailable: "agy is an implementer peer (#485)" }, { palette: { fg: "#6558a6", bg: "#f1effa" } }),
   optional: true,
 };

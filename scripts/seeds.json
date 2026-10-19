@@ -3368,6 +3368,30 @@
       "replacement": "DESK_W - 1.6, 0.9)),",
       "testFile": "test/office-model.test.ts",
       "testName": "desk trays keep all three readable cards inside the desk with padding and six pixel gaps"
+    },
+    {
+      "id": "kimi-review-write-tool-excluded",
+      "file": "src/adapters/kimi-review.ts",
+      "search": "tools:\\n  - mcp__agent-hub__hub_review\\n  - mcp__agent-hub__hub_task_show\\nsubagents: []",
+      "replacement": "tools:\\n  - Write\\n  - mcp__agent-hub__hub_review\\n  - mcp__agent-hub__hub_task_show\\nsubagents: []",
+      "testFile": "test/kimi-review.test.ts",
+      "testName": "Kimi reviewer shares auth directories but isolates config, prompt and native cwd"
+    },
+    {
+      "id": "reviewer-task-mcp-tool-fence",
+      "file": "src/adapters/reviewer-mcp.ts",
+      "search": "if (name !== \"hub_review\" && name !== \"hub_task_show\") return error(\"tool unavailable\");",
+      "replacement": "if (false) return error(\"tool unavailable\");",
+      "testFile": "test/reviewer-mcp.test.ts",
+      "testName": "reviewer MCP bounds and normalizes string arguments while enforcing the task and tool"
+    },
+    {
+      "id": "reviewer-task-mcp-task-fence",
+      "file": "src/adapters/reviewer-mcp.ts",
+      "search": "args.id !== options.task || !Number.isSafeInteger(args.id)",
+      "replacement": "!Number.isSafeInteger(args.id)",
+      "testFile": "test/reviewer-mcp.test.ts",
+      "testName": "reviewer MCP bounds and normalizes string arguments while enforcing the task and tool"
     }
   ]
 }

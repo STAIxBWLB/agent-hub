@@ -16,3 +16,9 @@ test("effective config accepts pool policy but rejects unknown kinds before use"
   expect(() => validateRawConfig({ review: { pool: ["unregistered"] } })).toThrow("review.pool");
   for (const kind of ["local", "pi"]) expect(() => validateRawConfig({ review: { pool: [kind] } })).toThrow("review.pool");
 });
+
+test("default reviewer pool includes receipt-checked Kimi and excludes the agy implementer slot", async () => {
+  const { DEFAULT_REVIEW_POOL, definitionOf } = await import("../src/adapters/registry.ts");
+  expect(DEFAULT_REVIEW_POOL).toEqual(["claude", "codex", "kimi"]);
+  expect(definitionOf("agy")?.reviewer).toMatchObject({ defaultPool: false, unavailable: "agy is an implementer peer (#485)" });
+});

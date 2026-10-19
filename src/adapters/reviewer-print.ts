@@ -4,6 +4,7 @@ import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process
 import { HUB, frame } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
 import type { Envelope } from "../hub/envelope.ts";
+import type { ReviewerMcpSession } from "./reviewer-mcp.ts";
 
 export interface ReviewerPrintUsage { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
 export interface ReviewerIsolationReceipt {
@@ -12,8 +13,11 @@ export interface ReviewerIsolationReceipt {
   binary: string;
   profile: string;
   readOnly: true;
-  strictMcp: true;
-  ephemeral: true;
+  strictMcp: boolean;
+  ephemeral: boolean;
+  enforcement?: "kernel" | "native-policy";
+  freshSession?: true;
+  hubToolsOnly?: true;
   evidence: readonly string[];
 }
 export interface ReviewerPrepareContext {
@@ -25,6 +29,9 @@ export interface ReviewerPrepareContext {
   privatePaths: readonly string[];
   command?: readonly string[];
   signal: AbortSignal;
+  /** Host-framed public review evidence, never configuration-selected argv. */
+  input?: string;
+  task?: number;
 }
 export interface ReviewerLaunch {
   command: readonly string[];
@@ -34,9 +41,16 @@ export interface ReviewerLaunch {
   current?: () => boolean;
   env?: NodeJS.ProcessEnv;
   cleanup?: () => void | Promise<void>;
+  cwd?: string;
+  envMode?: "replace";
+  stop?: (child: ChildProcess) => Promise<void>;
+  /** Latch a change in native policy for the running review, not just at spawn. */
+  watchCurrent?: true;
 }
 export interface ReviewerBackend {
   id: string;
+  taskMcp?: true;
+  nativePolicy?: true;
   prepare(context: ReviewerPrepareContext): Promise<ReviewerLaunch | { unavailable: string }>;
   usage?(event: unknown): ReviewerPrintUsage | undefined;
   failure?(event: unknown): "quota" | undefined;
@@ -61,6 +75,9 @@ export interface ReviewerPrintOptions {
   onUsage?(usage: ReviewerPrintUsage, task: number): void;
   onUnavailable?(failure: ReviewerFailure, current: () => boolean): void | Promise<void>;
   log?(line: string): void;
+  taskMcp?(task: number, current: () => boolean): ReviewerMcpSession;
+  /** Synchronous host task/privacy/policy fence, checked again after awaited preparation. */
+  admit?(env: Envelope): boolean;
 }
 
 // ponytail: 256 KiB per NDJSON frame and 4 MiB stdout per review child. Raise only with measured native receipts.
@@ -86,6 +103,9 @@ export class ReviewerPrintPeer extends BasePeer {
   readonly hubNative = true;
   private generation = 0;
   private child: ChildProcess | undefined;
+  private childStop: ((child: ChildProcess) => Promise<void>) | undefined;
+  private childCleanup: (() => Promise<void>) | undefined;
+  private childCurrent: (() => boolean) | undefined;
   private activeDeliveryId: string | undefined;
   private batch: ReviewBatch | undefined;
   private preparation: { abort: AbortController; done: Promise<ReviewerLaunch> } | undefined;
@@ -95,7 +115,12 @@ export class ReviewerPrintPeer extends BasePeer {
   reviewing: number | undefined;
   private reviewSeq = 0;
   /** Identifies the running child's authority over `task`; a replacement child for the same task gets a new token. */
-  reviewToken(task: number): number | undefined { return this.reviewing === task ? this.reviewSeq : undefined; }
+  reviewToken(task: number): number | undefined {
+    if (this.reviewing !== task) return undefined;
+    try { if (this.childCurrent?.() === false) { this.abortReview("review policy changed"); return undefined; } }
+    catch { this.abortReview("review policy changed"); return undefined; }
+    return this.reviewSeq;
+  }
 
   constructor(id: string, private readonly opts: ReviewerPrintOptions) { super(id, opts.watchdogMs); }
 
@@ -131,7 +156,7 @@ export class ReviewerPrintPeer extends BasePeer {
 
   protected override onWatchdog(): void { this.abortReview("review watchdog timeout"); }
 
-  private abortReview(reason: "review watchdog timeout" | "review output limit exceeded"): void {
+  private abortReview(reason: "review watchdog timeout" | "review output limit exceeded" | "review policy changed"): void {
     const generation = ++this.generation, batch = this.batch, preparation = this.preparation;
     this.reviewing = undefined;
     this.receipt = undefined;
@@ -230,14 +255,20 @@ export class ReviewerPrintPeer extends BasePeer {
     }
   }
 
-  private prepare(sessionId: string): Promise<ReviewerLaunch> {
+  private prepare(sessionId: string, input?: string, task?: number, mcpConfig?: string): Promise<ReviewerLaunch> {
     const abort = new AbortController();
     const done = (async () => {
-      const launch = await this.opts.backend.prepare({ peer: this.id, cwd: this.opts.cwd, sessionId, mcpConfig: this.opts.mcpConfig,
-        systemPrompt: this.opts.systemPrompt, privatePaths: this.opts.privatePaths ?? [], command: this.opts.command, signal: abort.signal });
+      if (this.opts.backend.taskMcp && !this.opts.taskMcp) throw new Error("task-bound reviewer MCP is unavailable");
+      const launch = await this.opts.backend.prepare({ peer: this.id, cwd: this.opts.cwd, sessionId,
+        mcpConfig: this.opts.backend.taskMcp ? (mcpConfig ?? '{"mcpServers":{}}') : this.opts.mcpConfig,
+        systemPrompt: this.opts.systemPrompt, privatePaths: this.opts.privatePaths ?? [], command: this.opts.command, signal: abort.signal,
+        ...(input === undefined ? {} : { input }), ...(task === undefined ? {} : { task }) });
       if ("unavailable" in launch) throw new Error(launch.unavailable);
       const proof = launch.isolation;
-      if (abort.signal.aborted || !proof || proof.backend !== this.opts.backend.id || proof.readOnly !== true || proof.strictMcp !== true || proof.ephemeral !== true || !proof.binary || !proof.version || !proof.profile || !proof.evidence.length || !launch.command.length) {
+      const policy = this.opts.backend.nativePolicy
+        ? proof?.enforcement === "native-policy" && proof.freshSession === true && proof.hubToolsOnly === true
+        : proof?.strictMcp === true && proof.ephemeral === true;
+      if (abort.signal.aborted || !proof || proof.backend !== this.opts.backend.id || proof.readOnly !== true || !policy || !proof.binary || !proof.version || !proof.profile || !proof.evidence.length || !launch.command.length) {
         await launch.cleanup?.();
         throw new Error("reviewer isolation is unavailable or preparation was cancelled");
       }
@@ -250,25 +281,38 @@ export class ReviewerPrintPeer extends BasePeer {
   }
 
   private async review(env: Envelope, task: number, generation: number): Promise<{ code: number | null; quota: boolean }> {
-    const launch = await this.prepare(randomUUID());
+    if (this.opts.admit?.(env) === false) throw new Error("review admission changed");
+    let facts: string | undefined;
+    try { facts = this.opts.facts?.(env); } catch (error) { this.opts.log?.(`[${this.id}] review facts for task #${task} failed: ${(error as Error).message}`); }
+    const input = `${frame(env)}${facts ? `\n\n${facts}` : ""}`;
+    let launch: ReviewerLaunch | undefined;
+    const mcp = this.opts.backend.taskMcp ? this.opts.taskMcp?.(task, () => generation === this.generation && this.reviewToken(task) !== undefined) : undefined;
+    let ownedChild: ChildProcess | undefined, releasing: Promise<void> | undefined;
+    let policyTimer: ReturnType<typeof setInterval> | undefined;
+    const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
     try {
-    if (generation !== this.generation || launch.current?.() === false) throw new Error("reviewer isolation changed before child spawn");
+    launch = await this.prepare(randomUUID(), input, task, mcp?.config);
+    if (generation !== this.generation || this.opts.admit?.(env) === false || launch.current?.() === false) throw new Error("reviewer isolation or admission changed before child spawn");
     this.receipt = launch.isolation;
     const [cmd, ...prefix] = launch.command;
     let quota = false;
     return await new Promise<{ code: number | null; quota: boolean }>((resolve, reject) => {
-      const child = spawn(cmd!, [...prefix, ...launch.args], { cwd: this.opts.cwd, detached: true, env: peerChildEnv(this.id, { ...process.env, ...launch.env }), stdio: ["pipe", "pipe", "ignore"] });
+      const child = spawn(cmd!, [...prefix, ...launch!.args], { cwd: launch!.cwd ?? this.opts.cwd, detached: true,
+        env: peerChildEnv(this.id, launch!.envMode === "replace" ? launch!.env : { ...process.env, ...launch!.env }), stdio: ["pipe", "pipe", "ignore"] });
       // Owned before any await, so a stop that lands before "spawn" still finds and kills it.
       this.child = child;
-      child.once("error", error => { if (this.child === child) this.child = undefined; reject(error); });
+      ownedChild = child;
+      this.childStop = launch!.stop;
+      this.childCleanup = release;
+      this.childCurrent = launch!.watchCurrent ? launch!.current : undefined;
+      child.once("error", error => { if (this.child === child) { this.child = undefined; this.childStop = undefined; } reject(error); });
       child.stdin!.on("error", () => { /* the child exited before reading its prompt; its exit settles the review */ });
       child.once("spawn", () => {
         trackGroup(child);
         if (generation !== this.generation) { child.stdin!.destroy(); return; } // stopped meanwhile: no prompt
         this.reviewing = task; this.reviewSeq++;
-        let facts: string | undefined;
-        try { facts = this.opts.facts?.(env); } catch (error) { this.opts.log?.(`[${this.id}] review facts for task #${task} failed: ${(error as Error).message}`); }
-        child.stdin!.end(`${frame(env)}${facts ? `\n\n${facts}` : ""}`);
+        if (this.childCurrent) policyTimer = setInterval(() => { this.reviewToken(task); }, 100);
+        child.stdin!.end(input);
       });
       let buffer = "", outputBytes = 0;
       child.stdout!.on("data", (chunk: Buffer) => {
@@ -292,12 +336,14 @@ export class ReviewerPrintPeer extends BasePeer {
       child.once("exit", code => {
         if (this.child === child) this.reviewing = undefined; // the verdict authority ends with the leader
         // The review ends when its whole process group is gone (an MCP server or other descendant may outlive the leader).
-        stopOwnedProcess(child, { group: true }).then(() => { if (this.child === child) this.child = undefined; resolve({ code, quota }); },
+        (launch!.stop ? launch!.stop(child) : stopOwnedProcess(child, { group: true })).then(() => { if (this.child === child) { this.child = undefined; this.childStop = undefined; } resolve({ code, quota }); },
           (error: Error) => reject(new GroupCleanupError(error.message)));
       });
     });
     } finally {
-      try { await launch.cleanup?.(); }
+      mcp?.close();
+      if (policyTimer) clearInterval(policyTimer);
+      try { if (!ownedChild || this.child !== ownedChild) { await release(); if (this.childCleanup === release) this.childCleanup = undefined; } }
       catch { this.opts.log?.(`[${this.id}] reviewer isolation cleanup incomplete`); }
     }
   }
@@ -313,7 +359,7 @@ export class ReviewerPrintPeer extends BasePeer {
     this.reviewing = undefined;
     const child = this.child;
     if (!child) return;
-    await stopOwnedProcess(child, { group: true });
-    if (this.child === child) this.child = undefined;
+    await (this.childStop ? this.childStop(child) : stopOwnedProcess(child, { group: true }));
+    if (this.child === child) { await this.childCleanup?.(); this.child = undefined; this.childStop = undefined; this.childCleanup = undefined; this.childCurrent = undefined; }
   }
 }

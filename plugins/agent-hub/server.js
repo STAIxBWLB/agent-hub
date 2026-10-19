@@ -505,6 +505,9 @@ var init_reviewer_print = __esm(() => {
     hubNative = true;
     generation = 0;
     child;
+    childStop;
+    childCleanup;
+    childCurrent;
     activeDeliveryId;
     batch;
     preparation;
@@ -515,7 +518,18 @@ var init_reviewer_print = __esm(() => {
     reviewing;
     reviewSeq = 0;
     reviewToken(task) {
-      return this.reviewing === task ? this.reviewSeq : undefined;
+      if (this.reviewing !== task)
+        return;
+      try {
+        if (this.childCurrent?.() === false) {
+          this.abortReview("review policy changed");
+          return;
+        }
+      } catch {
+        this.abortReview("review policy changed");
+        return;
+      }
+      return this.reviewSeq;
     }
     constructor(id, opts) {
       super(id, opts.watchdogMs);
@@ -694,23 +708,28 @@ var init_reviewer_print = __esm(() => {
         }
       }
     }
-    prepare(sessionId) {
+    prepare(sessionId, input, task, mcpConfig) {
       const abort = new AbortController;
       const done = (async () => {
+        if (this.opts.backend.taskMcp && !this.opts.taskMcp)
+          throw new Error("task-bound reviewer MCP is unavailable");
         const launch = await this.opts.backend.prepare({
           peer: this.id,
           cwd: this.opts.cwd,
           sessionId,
-          mcpConfig: this.opts.mcpConfig,
+          mcpConfig: this.opts.backend.taskMcp ? mcpConfig ?? '{"mcpServers":{}}' : this.opts.mcpConfig,
           systemPrompt: this.opts.systemPrompt,
           privatePaths: this.opts.privatePaths ?? [],
           command: this.opts.command,
-          signal: abort.signal
+          signal: abort.signal,
+          ...input === undefined ? {} : { input },
+          ...task === undefined ? {} : { task }
         });
         if ("unavailable" in launch)
           throw new Error(launch.unavailable);
         const proof = launch.isolation;
-        if (abort.signal.aborted || !proof || proof.backend !== this.opts.backend.id || proof.readOnly !== true || proof.strictMcp !== true || proof.ephemeral !== true || !proof.binary || !proof.version || !proof.profile || !proof.evidence.length || !launch.command.length) {
+        const policy = this.opts.backend.nativePolicy ? proof?.enforcement === "native-policy" && proof.freshSession === true && proof.hubToolsOnly === true : proof?.strictMcp === true && proof.ephemeral === true;
+        if (abort.signal.aborted || !proof || proof.backend !== this.opts.backend.id || proof.readOnly !== true || !policy || !proof.binary || !proof.version || !proof.profile || !proof.evidence.length || !launch.command.length) {
           await launch.cleanup?.();
           throw new Error("reviewer isolation is unavailable or preparation was cancelled");
         }
@@ -725,19 +744,46 @@ var init_reviewer_print = __esm(() => {
       return done;
     }
     async review(env, task, generation) {
-      const launch = await this.prepare(randomUUID());
+      if (this.opts.admit?.(env) === false)
+        throw new Error("review admission changed");
+      let facts;
       try {
-        if (generation !== this.generation || launch.current?.() === false)
-          throw new Error("reviewer isolation changed before child spawn");
+        facts = this.opts.facts?.(env);
+      } catch (error) {
+        this.opts.log?.(`[${this.id}] review facts for task #${task} failed: ${error.message}`);
+      }
+      const input = `${frame(env)}${facts ? `
+
+${facts}` : ""}`;
+      let launch;
+      const mcp = this.opts.backend.taskMcp ? this.opts.taskMcp?.(task, () => generation === this.generation && this.reviewToken(task) !== undefined) : undefined;
+      let ownedChild, releasing;
+      let policyTimer;
+      const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
+      try {
+        launch = await this.prepare(randomUUID(), input, task, mcp?.config);
+        if (generation !== this.generation || this.opts.admit?.(env) === false || launch.current?.() === false)
+          throw new Error("reviewer isolation or admission changed before child spawn");
         this.receipt = launch.isolation;
         const [cmd, ...prefix] = launch.command;
         let quota = false;
         return await new Promise((resolve, reject) => {
-          const child = spawn(cmd, [...prefix, ...launch.args], { cwd: this.opts.cwd, detached: true, env: peerChildEnv(this.id, { ...process.env, ...launch.env }), stdio: ["pipe", "pipe", "ignore"] });
+          const child = spawn(cmd, [...prefix, ...launch.args], {
+            cwd: launch.cwd ?? this.opts.cwd,
+            detached: true,
+            env: peerChildEnv(this.id, launch.envMode === "replace" ? launch.env : { ...process.env, ...launch.env }),
+            stdio: ["pipe", "pipe", "ignore"]
+          });
           this.child = child;
+          ownedChild = child;
+          this.childStop = launch.stop;
+          this.childCleanup = release;
+          this.childCurrent = launch.watchCurrent ? launch.current : undefined;
           child.once("error", (error) => {
-            if (this.child === child)
+            if (this.child === child) {
               this.child = undefined;
+              this.childStop = undefined;
+            }
             reject(error);
           });
           child.stdin.on("error", () => {});
@@ -749,15 +795,11 @@ var init_reviewer_print = __esm(() => {
             }
             this.reviewing = task;
             this.reviewSeq++;
-            let facts;
-            try {
-              facts = this.opts.facts?.(env);
-            } catch (error) {
-              this.opts.log?.(`[${this.id}] review facts for task #${task} failed: ${error.message}`);
-            }
-            child.stdin.end(`${frame(env)}${facts ? `
-
-${facts}` : ""}`);
+            if (this.childCurrent)
+              policyTimer = setInterval(() => {
+                this.reviewToken(task);
+              }, 100);
+            child.stdin.end(input);
           });
           let buffer = "", outputBytes = 0;
           child.stdout.on("data", (chunk) => {
@@ -795,16 +837,25 @@ ${facts}` : ""}`);
           child.once("exit", (code) => {
             if (this.child === child)
               this.reviewing = undefined;
-            stopOwnedProcess(child, { group: true }).then(() => {
-              if (this.child === child)
+            (launch.stop ? launch.stop(child) : stopOwnedProcess(child, { group: true })).then(() => {
+              if (this.child === child) {
                 this.child = undefined;
+                this.childStop = undefined;
+              }
               resolve({ code, quota });
             }, (error) => reject(new GroupCleanupError(error.message)));
           });
         });
       } finally {
+        mcp?.close();
+        if (policyTimer)
+          clearInterval(policyTimer);
         try {
-          await launch.cleanup?.();
+          if (!ownedChild || this.child !== ownedChild) {
+            await release();
+            if (this.childCleanup === release)
+              this.childCleanup = undefined;
+          }
         } catch {
           this.opts.log?.(`[${this.id}] reviewer isolation cleanup incomplete`);
         }
@@ -821,9 +872,14 @@ ${facts}` : ""}`);
       const child = this.child;
       if (!child)
         return;
-      await stopOwnedProcess(child, { group: true });
-      if (this.child === child)
+      await (this.childStop ? this.childStop(child) : stopOwnedProcess(child, { group: true }));
+      if (this.child === child) {
+        await this.childCleanup?.();
         this.child = undefined;
+        this.childStop = undefined;
+        this.childCleanup = undefined;
+        this.childCurrent = undefined;
+      }
     }
   };
 });
@@ -1372,10 +1428,248 @@ var init_codex_review_isolation = __esm(() => {
   };
 });
 
+// src/adapters/kimi-review.ts
+import { spawn as spawn3 } from "child_process";
+import { createHash as createHash3 } from "crypto";
+import { existsSync as existsSync3, lstatSync as lstatSync3, mkdirSync as mkdirSync2, mkdtempSync as mkdtempSync2, readFileSync as readFileSync3, rmSync as rmSync2, symlinkSync as symlinkSync2, writeFileSync as writeFileSync2 } from "fs";
+import { homedir as homedir2, tmpdir as tmpdir2 } from "os";
+import { basename as basename3, join as join4, resolve as resolve4 } from "path";
+function managedConfig(raw) {
+  const config = Bun.TOML.parse(raw);
+  if (!object2(config.providers) || !object2(config.models) || typeof config.default_model !== "string")
+    throw new Error("managed Kimi configuration required");
+  const provider = config.providers[MANAGED], model = config.models[config.default_model];
+  if (!object2(provider) || provider.type !== "kimi" || provider.api_key && provider.api_key !== "" || !object2(provider.oauth) || provider.oauth.storage !== "file" || !object2(model) || model.provider !== MANAGED)
+    throw new Error("managed file-backed Kimi OAuth required");
+  const oauth = provider.oauth;
+  const key = oauth.key;
+  const lock = !key || key === "kimi-code" || key === "oauth/kimi-code" ? "kimi-code" : typeof key === "string" && key.startsWith("oauth/") ? key.slice(6) : key;
+  if (typeof lock !== "string" || !lock || basename3(lock) !== lock || lock.startsWith("."))
+    throw new Error("unsupported OAuth slot");
+  if (typeof provider.base_url !== "string")
+    throw new Error("managed Kimi endpoint required");
+  const endpoint = new URL(provider.base_url);
+  if (endpoint.protocol !== "https:" || !["api.kimi.ai", "api.kimi.com"].includes(endpoint.hostname) || endpoint.username || endpoint.password)
+    throw new Error("unsupported managed Kimi endpoint");
+  if (oauth.oauth_host !== undefined) {
+    const auth = new URL(String(oauth.oauth_host));
+    if (auth.protocol !== "https:" || !["auth.kimi.ai", "auth.kimi.com"].includes(auth.hostname) || auth.username || auth.password)
+      throw new Error("unsupported OAuth endpoint");
+  }
+  const lines = [
+    "telemetry = false",
+    "hooks = []",
+    `default_model = ${scalar(config.default_model)}`,
+    ...config.thinking === undefined ? [] : [`thinking = ${scalar(config.thinking)}`],
+    `[providers.${scalar(MANAGED)}]`,
+    'type = "kimi"',
+    `base_url = ${scalar(provider.base_url)}`,
+    `[providers.${scalar(MANAGED)}.oauth]`
+  ];
+  for (const name of ["storage", "key", "oauth_host"])
+    if (oauth[name] !== undefined)
+      lines.push(`${name} = ${scalar(oauth[name])}`);
+  lines.push(`[models.${scalar(config.default_model)}]`);
+  const modelFields = ["provider", "model", "protocol", "max_context_size", "max_input_size", "capabilities", "display_name", "support_efforts", "default_effort", "beta_api", "adaptive_thinking", "overrides"];
+  if (Object.keys(model).some((name) => !modelFields.includes(name)))
+    throw new Error("unsupported managed model setting");
+  if (model.overrides !== undefined && (!object2(model.overrides) || Object.keys(model.overrides).some((name) => !modelFields.includes(name) || ["provider", "overrides"].includes(name))))
+    throw new Error("unsupported managed model override");
+  for (const name of modelFields)
+    if (model[name] !== undefined)
+      lines.push(`${name} = ${scalar(model[name])}`);
+  return { config: lines.join(`
+`) + `
+`, lock };
+}
+function mcpConfig(context) {
+  const config = JSON.parse(context.mcpConfig);
+  if (!object2(config) || !object2(config.mcpServers))
+    throw new Error("review MCP unavailable");
+  if (context.task === undefined && Object.keys(config.mcpServers).length === 0)
+    return context.mcpConfig;
+  if (Object.keys(config.mcpServers).join() !== "agent-hub")
+    throw new Error("ambient MCP refused");
+  const server = config.mcpServers["agent-hub"];
+  if (!object2(server) || Object.keys(server).some((k) => !["transport", "url", "headers"].includes(k)) || server.transport !== "http" || typeof server.url !== "string" || !object2(server.headers) || Object.keys(server.headers).join() !== "Authorization" || typeof server.headers.Authorization !== "string" || !server.headers.Authorization.startsWith("Bearer "))
+    throw new Error("task-bound HTTP MCP required");
+  const url = new URL(server.url);
+  if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port || url.pathname !== "/mcp" || url.username || url.password || url.search || url.hash)
+    throw new Error("local review MCP required");
+  return context.mcpConfig;
+}
+async function version(command, cwd, env, signal) {
+  return await new Promise((accept, reject) => {
+    const child = spawn3(command[0], [...command.slice(1), "--version"], { cwd, env, detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    let text = "", done = false;
+    const finish = async (code) => {
+      if (done)
+        return;
+      done = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      try {
+        await stopOwnedProcess(child, { group: true });
+      } catch {
+        reject(new Error("version probe cleanup failed"));
+        return;
+      }
+      if (code !== 0 || signal.aborted)
+        reject(new Error("version probe failed"));
+      else
+        accept(text.trim());
+    };
+    const abort = () => {
+      finish(null);
+    };
+    const timer = setTimeout(abort, 5000);
+    signal.addEventListener("abort", abort, { once: true });
+    child.once("spawn", () => trackGroup(child));
+    child.stdout.on("data", (bytes) => {
+      text += bytes.toString();
+      if (text.length > 4096)
+        abort();
+    });
+    child.once("error", () => {
+      finish(null);
+    });
+    child.once("close", (code) => {
+      finish(code);
+    });
+    if (signal.aborted)
+      abort();
+  });
+}
+async function stopKimiReview(child, locks, graceMs = 1e4) {
+  const locked = () => locks.some((file) => existsSync3(file));
+  if (child.exitCode === null && child.signalCode === null && locked()) {
+    child.kill("SIGTERM");
+    const end = Date.now() + graceMs;
+    while (child.exitCode === null && child.signalCode === null && locked() && Date.now() < end)
+      await Bun.sleep(50);
+    if (child.exitCode === null && child.signalCode === null && locked())
+      throw new Error("Kimi OAuth refresh still locked; graceful stop incomplete");
+  }
+  await stopOwnedProcess(child, { group: true });
+}
+var VERSION2 = "2.2.0", MANAGED = "managed:kimi-code", object2 = (v) => !!v && typeof v === "object" && !Array.isArray(v), hash = (text) => createHash3("sha256").update(text).digest("hex"), read = (file, limit = 262144) => {
+  const stat = lstatSync3(file);
+  if (!stat.isFile() || stat.size > limit)
+    throw new Error("unsupported reviewer file");
+  return readFileSync3(file, "utf8");
+}, scalar = (value, depth = 0) => {
+  if (depth > 4)
+    throw new Error("managed model setting too deeply nested");
+  if (typeof value === "string" || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value))
+    return JSON.stringify(value);
+  if (Array.isArray(value) && value.every((v) => typeof v === "string"))
+    return JSON.stringify(value);
+  if (object2(value) && Object.keys(value).length <= 32)
+    return `{ ${Object.entries(value).map(([key, item]) => `${JSON.stringify(key)} = ${scalar(item, depth + 1)}`).join(", ")} }`;
+  throw new Error("unsupported managed model setting");
+}, kimiReviewerBackend;
+var init_kimi_review = __esm(() => {
+  init_child_process();
+  init_project();
+  kimiReviewerBackend = {
+    id: "kimi",
+    taskMcp: true,
+    nativePolicy: true,
+    async prepare(context) {
+      let own;
+      try {
+        if (context.signal.aborted)
+          throw new Error("cancelled");
+        const sourcePath = process.env.KIMI_CODE_HOME ?? join4(process.env.HOME ?? homedir2(), ".kimi-code"), source = realPath(sourcePath);
+        const sourceConfig = join4(source, "config.toml"), original = read(sourceConfig), selected = managedConfig(original);
+        const sources = ["credentials", "oauth", "device_id"].map((name) => realPath(join4(source, name)));
+        if (!sources.every((file, index) => index < 2 ? lstatSync3(file).isDirectory() : lstatSync3(file).isFile()))
+          throw new Error("native OAuth directories and device identity required");
+        const mcp = mcpConfig(context);
+        if (Buffer.byteLength(context.input ?? "") > 1048576)
+          throw new Error("review facts exceed limit");
+        own = realPath(mkdtempSync2(join4(tmpdir2(), "ahub-kimi-review-")));
+        const root = own, home = join4(root, "home"), tool = join4(root, "tool"), cwd = join4(root, "workspace"), skills = join4(root, "empty-skills"), temporary = join4(root, "tmp");
+        for (const dir of [home, tool, cwd, skills, temporary])
+          mkdirSync2(dir, { mode: 448 });
+        ["credentials", "oauth", "device_id"].forEach((name, index) => symlinkSync2(sources[index], join4(tool, name), index < 2 ? "dir" : "file"));
+        const agentFile = join4(cwd, "reviewer.md"), configFile = join4(tool, "config.toml"), mcpFile = join4(tool, "mcp.json");
+        writeFileSync2(configFile, selected.config, { mode: 384 });
+        writeFileSync2(mcpFile, mcp, { mode: 384 });
+        writeFileSync2(agentFile, `---
+name: hub-reviewer
+description: Fresh agent-hub reviewer
+tools:
+  - mcp__agent-hub__hub_review
+  - mcp__agent-hub__hub_task_show
+subagents: []
+---
+
+${context.systemPrompt}
+
+Use only the supplied public facts and hub_task_show. Never claim to have read evidence that was not supplied.
+
+${context.input ?? "No review is active; startup self-check only."}
+`, { mode: 384 });
+        const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, KIMI_CODE_HOME: tool, TMPDIR: `${temporary}/`, XDG_CONFIG_HOME: join4(home, ".config"), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...process.env.USER ? { USER: process.env.USER } : {} };
+        const native = context.command ?? [Bun.which("kimi", { PATH: process.env.PATH }) ?? "kimi"];
+        const executable = realPath(Bun.which(native[0], { PATH: process.env.PATH }) ?? resolve4(native[0]));
+        const command = [executable, ...native.slice(1)];
+        const executableStat = lstatSync3(executable);
+        if (await version(command, cwd, env, context.signal) !== VERSION2)
+          throw new Error("unsupported Kimi version; receipt covers 2.2.0");
+        const fingerprints = [configFile, mcpFile, agentFile].map((file) => hash(read(file, 2097152)));
+        let cleaned = false;
+        const cleanup = () => {
+          if (cleaned)
+            return;
+          rmSync2(root, { recursive: true, force: true });
+          cleaned = true;
+        };
+        return {
+          command,
+          args: ["-p", "Review the supplied task facts and record the evidence-based verdict with hub_review.", "--output-format", "stream-json", "--agent-file", agentFile, "--skills-dir", skills],
+          cwd,
+          env,
+          envMode: "replace",
+          cleanup,
+          watchCurrent: true,
+          stop: (child) => stopKimiReview(child, [join4(sources[1], "kimi-code.lock"), join4(sources[1], `${selected.lock}.lock`)]),
+          current: () => {
+            try {
+              const now = lstatSync3(executable);
+              return !cleaned && !context.signal.aborted && realPath(sourcePath) === source && now.dev === executableStat.dev && now.ino === executableStat.ino && now.size === executableStat.size && now.mtimeMs === executableStat.mtimeMs && now.ctimeMs === executableStat.ctimeMs && hash(read(sourceConfig)) === hash(original) && [configFile, mcpFile, agentFile].every((file, index) => hash(read(file, 2097152)) === fingerprints[index]) && ["credentials", "oauth", "device_id"].every((name, index) => realPath(join4(source, name)) === sources[index] && realPath(join4(tool, name)) === sources[index]);
+            } catch {
+              return false;
+            }
+          },
+          isolation: {
+            backend: "kimi",
+            version: VERSION2,
+            binary: executable,
+            profile: "private-config-exact-two-tools-shared-native-oauth",
+            readOnly: true,
+            strictMcp: true,
+            ephemeral: true,
+            enforcement: "native-policy",
+            freshSession: true,
+            hubToolsOnly: true,
+            evidence: ["#533 person ruling2026-10-19: native execution-time exact tool allowlist, no kernel sandbox", "private config/cwd/empty skills; shared OAuth directory symlinks and native lock/atomic rename", "task-bound in-process hub MCP; no full control token", "residual: interruption mid-refresh may require native re-login"]
+          }
+        };
+      } catch (error) {
+        if (own)
+          rmSync2(own, { recursive: true, force: true });
+        return { unavailable: `Kimi reviewer unavailable: ${error.message}` };
+      }
+    }
+  };
+});
+
 // src/adapters/definitions/native-context.ts
 function claudeContext(value, sessionId, measuredAt) {
-  const c = object2(value);
-  const current = object2(c.current_usage);
+  const c = object3(value);
+  const current = object3(c.current_usage);
   const parts = [current.input_tokens, current.cache_creation_input_tokens, current.cache_read_input_tokens];
   const window = positive(c.context_window_size) ? c.context_window_size : null;
   const sum = c.current_usage != null && parts.every(nonnegative) ? parts.reduce((sum, n) => sum + n, 0) : null;
@@ -1384,7 +1678,7 @@ function claudeContext(value, sessionId, measuredAt) {
   return { source: "claude_statusline", sessionId, measuredAt, tokens, window, used };
 }
 function codexContext(value, sessionId, measuredAt) {
-  const c = object2(value), last = object2(c.last);
+  const c = object3(value), last = object3(c.last);
   const window = positive(c.modelContextWindow) ? c.modelContextWindow : null;
   const tokens = nonnegative(last.totalTokens) ? last.totalTokens : null;
   return { source: "codex_token_usage", sessionId, measuredAt, tokens, window, used: tokens !== null && window !== null ? Math.min(1, tokens / window) : null };
@@ -1395,16 +1689,16 @@ function acpContext(usage, sessionId, measuredAt) {
   return { source: "acp_usage_update", sessionId, measuredAt, tokens, window, used: tokens !== null && window !== null ? Math.min(1, tokens / window) : null };
 }
 function acpContextValue(value, sessionId, measuredAt) {
-  const raw = object2(value);
+  const raw = object3(value);
   return acpContext({ used: raw.used, size: raw.size }, sessionId, measuredAt);
 }
-var nonnegative = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0, positive = (n) => nonnegative(n) && n > 0, record = (v) => v !== null && typeof v === "object" && !Array.isArray(v), object2 = (v) => record(v) ? v : {};
+var nonnegative = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0, positive = (n) => nonnegative(n) && n > 0, record = (v) => v !== null && typeof v === "object" && !Array.isArray(v), object3 = (v) => record(v) ? v : {};
 
 // src/hub/context-window.ts
 var init_context_window = () => {};
 
 // src/adapters/codex-appserver.ts
-import { spawn as spawn3 } from "child_process";
+import { spawn as spawn4 } from "child_process";
 function parse(raw) {
   try {
     return JSON.parse(raw);
@@ -1752,7 +2046,7 @@ ${renderDigest(envs, false)}`;
       }
       let gone = "";
       const env = peerChildEnv(this.id, { ...process.env, ...this.opts.env ?? {} });
-      this.proc = spawn3(this.opts.bin ?? "codex", ["app-server", "--listen", `ws://127.0.0.1:${port}`, ...this.opts.extraArgs ?? []], {
+      this.proc = spawn4(this.opts.bin ?? "codex", ["app-server", "--listen", `ws://127.0.0.1:${port}`, ...this.opts.extraArgs ?? []], {
         cwd: this.opts.cwd,
         env,
         stdio: ["ignore", "ignore", "pipe"],
@@ -2152,7 +2446,7 @@ var init_qwen_native = __esm(() => {
 });
 
 // src/adapters/acp.ts
-import { spawn as spawn4 } from "child_process";
+import { spawn as spawn5 } from "child_process";
 import { createInterface } from "readline";
 function normalizeACPUsage(value, source = "usage_update") {
   const unknown = { source, availability: "unsupported", shape: "none" };
@@ -2314,7 +2608,7 @@ var init_acp = __esm(() => {
     async start() {
       this.stopping = false;
       const [bin, ...args] = this.opts.cmd;
-      const proc = spawn4(bin, args, { cwd: this.opts.cwd, env: peerChildEnv(this.id, { ...process.env, ...this.opts.env ?? {} }), stdio: ["pipe", "pipe", "pipe"], detached: true });
+      const proc = spawn5(bin, args, { cwd: this.opts.cwd, env: peerChildEnv(this.id, { ...process.env, ...this.opts.env ?? {} }), stdio: ["pipe", "pipe", "pipe"], detached: true });
       this.proc = proc;
       trackGroup(proc);
       proc.on("error", (e) => this.down(`spawn failed: ${e.message}`));
@@ -2744,10 +3038,10 @@ ${renderDigest(envs, false)}` }] });
 });
 
 // src/adapters/jcode.ts
-import { spawn as spawn5, spawnSync as spawnSync2 } from "child_process";
-import { existsSync as existsSync3, lstatSync as lstatSync3, mkdtempSync as mkdtempSync2, rmSync as rmSync2 } from "fs";
-import { tmpdir as tmpdir2 } from "os";
-import { isAbsolute as isAbsolute3, join as join4 } from "path";
+import { spawn as spawn6, spawnSync as spawnSync2 } from "child_process";
+import { existsSync as existsSync4, lstatSync as lstatSync4, mkdtempSync as mkdtempSync3, rmSync as rmSync3 } from "fs";
+import { tmpdir as tmpdir3 } from "os";
+import { isAbsolute as isAbsolute3, join as join5 } from "path";
 function jcodeCommand(command, kind, socket, cwd, model, profile) {
   if (!command.length || command.some((word) => typeof word !== "string" || !word))
     throw new Error("jcode_cmd must name an executable argv");
@@ -2786,7 +3080,7 @@ var init_jcode = __esm(() => {
       if (!isAbsolute3(jcode.home))
         throw new Error("jcode_home must be an absolute native data path");
       jcodeCommand(jcode.command, "acp", "preview", jcode.cwd);
-      const root = mkdtempSync2(join4(tmpdir2(), "ahub-jcode-")), socket = join4(root, "j.sock");
+      const root = mkdtempSync3(join5(tmpdir3(), "ahub-jcode-")), socket = join5(root, "j.sock");
       const cmd = jcodeCommand(jcode.command, "acp", socket, jcode.cwd, jcode.launchModel, jcode.providerProfile);
       super("jcode", { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, ...JCODE_OWNED_ENV }, mcpServers: [], requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
       this.jcode = jcode;
@@ -2794,15 +3088,15 @@ var init_jcode = __esm(() => {
       this.socket = socket;
     }
     async start() {
-      if (!existsSync3(join4(this.jcode.home, "mcp.json")))
+      if (!existsSync4(join5(this.jcode.home, "mcp.json")))
         throw new Error("initialize Jcode's global MCP store with its native client before enabling this peer; the hub never initializes or copies it");
-      if (existsSync3(this.socket)) {
+      if (existsSync4(this.socket)) {
         this.preserveRoot = true;
         throw new Error("Jcode private socket is occupied; no daemon was adopted or removed");
       }
       this.ending = false;
       const [bin, ...args] = jcodeCommand(this.jcode.command, "serve", this.socket, this.jcode.cwd, this.jcode.launchModel, this.jcode.providerProfile);
-      const server = spawn5(bin, args, { cwd: this.jcode.cwd, detached: true, env: { ...peerChildEnv("jcode"), JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, JCODE_READY_FD: "3", ...JCODE_OWNED_ENV }, stdio: ["ignore", "ignore", "ignore", "pipe"] });
+      const server = spawn6(bin, args, { cwd: this.jcode.cwd, detached: true, env: { ...peerChildEnv("jcode"), JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, JCODE_READY_FD: "3", ...JCODE_OWNED_ENV }, stdio: ["ignore", "ignore", "ignore", "pipe"] });
       this.server = server;
       trackGroup(server);
       try {
@@ -2818,7 +3112,7 @@ var init_jcode = __esm(() => {
           ready.once("data", () => {
             clearTimeout(timer);
             server.off("exit", fail);
-            if (lstatSync3(this.socket, { throwIfNoEntry: false })?.isSocket())
+            if (lstatSync4(this.socket, { throwIfNoEntry: false })?.isSocket())
               resolve();
             else
               reject(new Error("Jcode readiness has no private socket"));
@@ -2887,7 +3181,7 @@ var init_jcode = __esm(() => {
       }
       if (!failure && !this.server) {
         if (!this.preserveRoot)
-          rmSync2(this.root, { recursive: true, force: true });
+          rmSync3(this.root, { recursive: true, force: true });
         super.setState("offline");
       }
       if (failure)
@@ -2900,11 +3194,11 @@ var init_jcode = __esm(() => {
 });
 
 // src/pi/launch.ts
-import { join as join5 } from "path";
+import { join as join6 } from "path";
 function buildPiLaunch(opts, inherited, extension, bridgePort, bridgeToken) {
   const adapter = ADAPTERS.find((adapter) => adapter.start.daemonPort === "pi-rpc");
-  const env = { ...peerChildEnv(opts.instance ?? adapter.kind, inherited), ...opts.hubStateDir !== undefined ? { AGENTHUB_STATE_DIR: opts.hubStateDir } : {}, PI_CODING_AGENT_DIR: join5(opts.stateDir, "pi"), AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`, AGENTHUB_PI_BRIDGE_TOKEN: bridgeToken, AGENTHUB_PI_OWNER_TOKEN: bridgeToken, AGENTHUB_PI_RELAY_URL: opts.relay.url, AGENTHUB_PI_RELAY_TOKEN: opts.relay.token, AGENTHUB_PI_MODELS: JSON.stringify(opts.relay.models), AGENTHUB_PI_TOOLS: JSON.stringify(opts.tools), AGENTHUB_PI_MAX_STEPS: String(opts.maxSteps ?? 30) };
-  const args = [...opts.mode === "headless" ? ["--mode", "rpc"] : [], "--provider", "agent-hub-local", "--model", opts.model ?? modelFor(opts.backend, opts.relay.models), "--models", opts.relay.models.map((model) => `agent-hub-local/${model.id}`).join(","), "--no-builtin-tools", "--no-skills", "--no-prompt-templates", "--no-extensions", "--extension", extension, ...opts.preamble ? ["--append-system-prompt", opts.preamble] : [], "--session-dir", join5(opts.stateDir, "pi-sessions")];
+  const env = { ...peerChildEnv(opts.instance ?? adapter.kind, inherited), ...opts.hubStateDir !== undefined ? { AGENTHUB_STATE_DIR: opts.hubStateDir } : {}, PI_CODING_AGENT_DIR: join6(opts.stateDir, "pi"), AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`, AGENTHUB_PI_BRIDGE_TOKEN: bridgeToken, AGENTHUB_PI_OWNER_TOKEN: bridgeToken, AGENTHUB_PI_RELAY_URL: opts.relay.url, AGENTHUB_PI_RELAY_TOKEN: opts.relay.token, AGENTHUB_PI_MODELS: JSON.stringify(opts.relay.models), AGENTHUB_PI_TOOLS: JSON.stringify(opts.tools), AGENTHUB_PI_MAX_STEPS: String(opts.maxSteps ?? 30) };
+  const args = [...opts.mode === "headless" ? ["--mode", "rpc"] : [], "--provider", "agent-hub-local", "--model", opts.model ?? modelFor(opts.backend, opts.relay.models), "--models", opts.relay.models.map((model) => `agent-hub-local/${model.id}`).join(","), "--no-builtin-tools", "--no-skills", "--no-prompt-templates", "--no-extensions", "--extension", extension, ...opts.preamble ? ["--append-system-prompt", opts.preamble] : [], "--session-dir", join6(opts.stateDir, "pi-sessions")];
   if (opts.sessionFile)
     args.push("--session", opts.sessionFile);
   else if (opts.sessionId)
@@ -2940,8 +3234,8 @@ var init_recovery_store = __esm(() => {
 });
 
 // src/pi/session.ts
-import { readFileSync as readFileSync3, openSync, closeSync, fsyncSync, mkdirSync as mkdirSync2 } from "fs";
-import { join as join6, relative as relative2, resolve as resolve4, dirname as dirname4 } from "path";
+import { readFileSync as readFileSync4, openSync, closeSync, fsyncSync, mkdirSync as mkdirSync3 } from "fs";
+import { join as join7, relative as relative2, resolve as resolve5, dirname as dirname4 } from "path";
 function sessionReadFailure(error) {
   if (error.code === "ENOENT")
     throw new PiSessionUnresumable("missing", error.message, { cause: error });
@@ -2951,16 +3245,16 @@ function validatePiSession(stateDir, cwd, sessionFile, sessionId) {
   let file, sessions;
   try {
     file = realPath(sessionFile);
-    sessions = realPath(join6(stateDir, "pi-sessions"));
+    sessions = realPath(join7(stateDir, "pi-sessions"));
   } catch (error) {
     return sessionReadFailure(error);
   }
   const rel = relative2(sessions, file);
-  if (!rel || rel.startsWith("..") || resolve4(sessions, rel) !== file)
+  if (!rel || rel.startsWith("..") || resolve5(sessions, rel) !== file)
     throw new PiSessionUnresumable("outside_managed", "Pi session file is outside the managed project session directory");
   let first;
   try {
-    first = readFileSync3(file, "utf8").split(`
+    first = readFileSync4(file, "utf8").split(`
 `, 1)[0];
   } catch (error) {
     return sessionReadFailure(error);
@@ -3009,11 +3303,11 @@ var init_permission_mode = __esm(() => {
 });
 
 // src/hub/path-policy.ts
-import { accessSync, constants, lstatSync as lstatSync4, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
-import { dirname as dirname5, isAbsolute as isAbsolute4, join as join7, relative as relative3, resolve as resolve5, sep as sep2 } from "path";
+import { accessSync, constants, lstatSync as lstatSync5, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
+import { dirname as dirname5, isAbsolute as isAbsolute4, join as join8, relative as relative3, resolve as resolve6, sep as sep2 } from "path";
 function existing(path) {
   try {
-    lstatSync4(path);
+    lstatSync5(path);
     return true;
   } catch (error) {
     if (error.code === "ENOENT")
@@ -3029,12 +3323,12 @@ function policyRealPath(path) {
       throw new Error("path cannot be resolved");
     ancestor = parent;
   }
-  return join7(realPath(ancestor), relative3(ancestor, path));
+  return join8(realPath(ancestor), relative3(ancestor, path));
 }
 function policyTargets(cwd, paths) {
   const root = realPath(cwd);
   return [...new Set(paths.flatMap((path) => {
-    const lexical = resolve5(root, path);
+    const lexical = resolve6(root, path);
     return [lexical, policyRealPath(lexical)];
   }))];
 }
@@ -3057,9 +3351,9 @@ function directAliasTarget(path) {
         return;
       ancestor = parent;
     }
-    if (!lstatSync4(ancestor).isSymbolicLink())
+    if (!lstatSync5(ancestor).isSymbolicLink())
       return;
-    target = resolve5(dirname5(ancestor), readlinkSync(ancestor), relative3(ancestor, target));
+    target = resolve6(dirname5(ancestor), readlinkSync(ancestor), relative3(ancestor, target));
   }
   return;
 }
@@ -3076,7 +3370,7 @@ function aliasScope(dir, lexical, actual, includeParents, budget) {
       budget.entries++;
       if (!entry.isSymbolicLink())
         continue;
-      const target = directAliasTarget(join7(dir, entry.name));
+      const target = directAliasTarget(join8(dir, entry.name));
       if (target !== undefined && (beneath(lexical, target) || beneath(actual, target) || includeParents && (beneath(target, lexical) || beneath(target, actual))))
         matched = true;
     }
@@ -3172,7 +3466,7 @@ function globScope(root, lexical, actual, path, includeParents, budget, roots, a
         if (++budget.entries > 4096)
           throw new Error("policy glob discovery unavailable");
         const next = advance(pattern, states, entry.name);
-        if (next.size && visit(join7(dir, entry.name), next, depth + 1, chain))
+        if (next.size && visit(join8(dir, entry.name), next, depth + 1, chain))
           return true;
       }
     } finally {
@@ -3188,7 +3482,7 @@ function matchesPolicy(cwd, path, paths, includeParents = false) {
   try {
     if (path.length > 4096)
       return true;
-    const root = realPath(cwd), lexical = resolve5(root, path), actual = policyRealPath(lexical);
+    const root = realPath(cwd), lexical = resolve6(root, path), actual = policyRealPath(lexical);
     includeParents &&= !existing(lexical) || statSync2(lexical).isDirectory();
     const budget = { entries: 0 }, roots = new Set, exact = [];
     if (paths.some((entry) => {
@@ -3223,7 +3517,7 @@ var init_path_policy = __esm(() => {
 });
 
 // src/local/deny.ts
-import { basename as basename3, dirname as dirname6 } from "path";
+import { basename as basename4, dirname as dirname6 } from "path";
 function hubWriteRegexes(root, gitDirs = [], moduleGit) {
   const git = hfsFoldedName(".git");
   const re = (s) => `(regex ${sbplString(s)})`;
@@ -3235,7 +3529,7 @@ function hubWriteRegexes(root, gitDirs = [], moduleGit) {
   const modules = moduleGit ? [
     `(require-all ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?(refs|logs)/`)}))`,
     `(require-all ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?(refs|logs)/`)}))`,
-    ...moduleGit.entries.map((d) => re(`^${sbplEscape(dirname6(d))}/${hfsFoldedName(basename3(d))}$`))
+    ...moduleGit.entries.map((d) => re(`^${sbplEscape(dirname6(d))}/${hfsFoldedName(basename4(d))}$`))
   ] : [];
   return [
     `(require-all (subpath ${sbplString(root)}) ${re(`^.*/${hfsFoldedName(".agenthub")}(/|$)`)})`,
@@ -3267,10 +3561,10 @@ var init_deny = __esm(() => {
 });
 
 // src/local/sandbox.ts
-import { spawn as spawn6, spawnSync as spawnSync3 } from "child_process";
-import { existsSync as existsSync4, mkdtempSync as mkdtempSync3, readdirSync, rmSync as rmSync3 } from "fs";
-import { homedir as homedir2, tmpdir as tmpdir3 } from "os";
-import { dirname as dirname7, join as join8, resolve as resolve6 } from "path";
+import { spawn as spawn7, spawnSync as spawnSync3 } from "child_process";
+import { existsSync as existsSync5, mkdtempSync as mkdtempSync4, readdirSync, rmSync as rmSync4 } from "fs";
+import { homedir as homedir3, tmpdir as tmpdir4 } from "os";
+import { dirname as dirname7, join as join9, resolve as resolve7 } from "path";
 function developerDir() {
   const out = spawnSync3("xcode-select", ["-p"], { encoding: "utf8" });
   let dir = out.status === 0 ? out.stdout.trim() : "";
@@ -3284,14 +3578,14 @@ function externalGitDirs(root) {
   if (out.status !== 0)
     return [];
   const dirs = out.stdout.trim().split(`
-`).map((d) => resolve6(root, d));
+`).map((d) => resolve7(root, d));
   return [...new Set(dirs)].filter((d) => !d.startsWith(`${root}/`));
 }
 function moduleGitDirs(root) {
   const out = memoryGitSync(["-C", root, "rev-parse", "--git-common-dir"], { encoding: "utf8" });
   if (out.status !== 0)
     return;
-  const modulesRoot = join8(resolve6(root, out.stdout.trim()), "modules");
+  const modulesRoot = join9(resolve7(root, out.stdout.trim()), "modules");
   const dirs = [];
   const walk = (dir, depth) => {
     if (depth > 8)
@@ -3305,14 +3599,14 @@ function moduleGitDirs(root) {
     const names = new Set(entries.map((e) => e.name));
     if (names.has("HEAD") && names.has("config")) {
       dirs.push(dir);
-      const nested = join8(dir, "modules");
+      const nested = join9(dir, "modules");
       if (names.has("modules"))
         walk(nested, depth + 1);
       return;
     }
     for (const e of entries)
       if (e.isDirectory())
-        walk(join8(dir, e.name), depth + 1);
+        walk(join9(dir, e.name), depth + 1);
   };
   walk(modulesRoot, 0);
   const entries = new Set([modulesRoot]);
@@ -3322,14 +3616,14 @@ function moduleGitDirs(root) {
   return { root: modulesRoot, entries: [...entries] };
 }
 function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
-  const home = homedir2();
-  const inHome = (p) => p.startsWith("~/") ? join8(home, p.slice(2)) : p;
+  const home = homedir3();
+  const inHome = (p) => p.startsWith("~/") ? join9(home, p.slice(2)) : p;
   const root = realPath(cwd);
   const gitDirs = externalGitDirs(root);
   const moduleGit = moduleGitDirs(root);
   const creds = [".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube", ".docker", ".netrc", ".npmrc", ".omniroute", ".claude", ".codex", ".kimi-code", "Library/Keychains"];
   const dev = developerDir();
-  const readable = [root, ...HOME_READABLE.map((p) => join8(home, p)), ...readAllow.map(inHome), ...gitDirs, ...dev ? [dev] : []];
+  const readable = [root, ...HOME_READABLE.map((p) => join9(home, p)), ...readAllow.map(inHome), ...gitDirs, ...dev ? [dev] : []];
   const subpaths = (paths) => paths.map((p) => `(subpath ${q(p)})`).join(" ");
   const globals = (names) => names.map((n) => `(global-name ${q(n)})`).join(" ");
   const proxy = typeof network === "object" ? `(allow network-outbound (remote ip ${q(`localhost:${network.proxyPort}`)}))` : undefined;
@@ -3347,14 +3641,14 @@ function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
     '(allow file-ioctl (regex #"^/dev/"))',
     ...proxy ? [proxy] : network ? ["(allow network*)"] : []
   ];
-  const places = `${creds.map((c) => `(subpath ${q(join8(home, c))})`).join(" ")} ${denyRegexes(root, deny, false).join(" ")}`;
+  const places = `${creds.map((c) => `(subpath ${q(join9(home, c))})`).join(" ")} ${denyRegexes(root, deny, false).join(" ")}`;
   return [
     "(version 1)",
     ...start,
     "(deny file-write*)",
     ...readOnly.length ? ['(allow file-write* (literal "/dev/null"))'] : [`(allow file-write* (subpath ${q(root)}) (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`],
     `(deny file-write* ${hubWriteRegexes(root, gitDirs, moduleGit).join(" ")})`,
-    `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join8(home, c))})`).join(" ")})`,
+    `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join9(home, c))})`).join(" ")})`,
     `(deny file-read* file-write* ${denyRegexes(root, deny).join(" ")})`,
     ...network ? [`(allow file-read* ${CA_BUNDLES.map((p) => `(literal ${q(p)})`).join(" ")} (regex ${q("/certifi/cacert\\.pem$")}))`, `(deny file-read* file-write* ${places})`] : []
   ].join(`
@@ -3368,11 +3662,11 @@ function sandboxedExec(argv, opts) {
   if (opts.signal?.aborted)
     return Promise.resolve({ code: null, output: "error: command cancelled before execution" });
   return new Promise((resolve) => {
-    const own = realPath(mkdtempSync3(join8(tmpdir3(), "ahub-cmd-")));
+    const own = realPath(mkdtempSync4(join9(tmpdir4(), "ahub-cmd-")));
     const sandbox = `${opts.profile}
 (allow file-read* ${opts.readOnlyData ? "" : "file-write* "}process-exec (subpath ${q(own)}))`;
-    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir2(), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...opts.env, TMPDIR: `${own}/` };
-    const child = spawn6(SANDBOX_EXEC, ["-p", sandbox, ...argv], { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir3(), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...opts.env, TMPDIR: `${own}/` };
+    const child = spawn7(SANDBOX_EXEC, ["-p", sandbox, ...argv], { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let output = "";
     const take = (d) => {
       if (output.length < OUTPUT_CAP)
@@ -3391,11 +3685,11 @@ function sandboxedExec(argv, opts) {
     opts.signal?.addEventListener("abort", abort, { once: true });
     const dropOwn = () => {
       try {
-        rmSync3(own, { recursive: true, force: true });
+        rmSync4(own, { recursive: true, force: true });
       } catch {
         try {
           spawnSync3("chflags", ["-R", "nouchg", own]);
-          rmSync3(own, { recursive: true, force: true });
+          rmSync4(own, { recursive: true, force: true });
         } catch {}
       }
     };
@@ -3424,7 +3718,7 @@ function proxyEnv(network) {
   const url = `http://127.0.0.1:${network.proxyPort}`;
   return { HTTPS_PROXY: url, https_proxy: url, HTTP_PROXY: url, http_proxy: url, ALL_PROXY: url, all_proxy: url, NO_PROXY: "", no_proxy: "" };
 }
-var SANDBOX_EXEC = "/usr/bin/sandbox-exec", OUTPUT_CAP = 20000, sandboxAvailable = () => process.platform === "darwin" && existsSync4(SANDBOX_EXEC), q, HOME_READABLE, CA_BUNDLES, SYSTEM_READABLE, MACH_SERVICES, NETWORK_MACH_SERVICES, PROXY_MACH_SERVICES;
+var SANDBOX_EXEC = "/usr/bin/sandbox-exec", OUTPUT_CAP = 20000, sandboxAvailable = () => process.platform === "darwin" && existsSync5(SANDBOX_EXEC), q, HOME_READABLE, CA_BUNDLES, SYSTEM_READABLE, MACH_SERVICES, NETWORK_MACH_SERVICES, PROXY_MACH_SERVICES;
 var init_sandbox = __esm(() => {
   init_project();
   init_git();
@@ -3439,11 +3733,11 @@ var init_sandbox = __esm(() => {
 });
 
 // src/local/tools.ts
-import { lstatSync as lstatSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync4, statSync as statSync3, writeFileSync as writeFileSync2 } from "fs";
-import { dirname as dirname8, join as join9, relative as relative4, resolve as resolve7 } from "path";
+import { lstatSync as lstatSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync5, statSync as statSync3, writeFileSync as writeFileSync3 } from "fs";
+import { dirname as dirname8, join as join10, relative as relative4, resolve as resolve8 } from "path";
 function guardPath(ctx, path, mode) {
   const root = realPath(ctx.cwd);
-  const abs = resolve7(root, path);
+  const abs = resolve8(root, path);
   let existing = abs;
   while (!lexists(existing))
     existing = dirname8(existing);
@@ -3453,15 +3747,15 @@ function guardPath(ctx, path, mode) {
   } catch {
     throw new Error(`${path} goes through a dangling symlink`);
   }
-  const real = join9(realExisting, relative4(existing, abs));
+  const real = join10(realExisting, relative4(existing, abs));
   const rel = relative4(root, real);
-  if (rel.startsWith("..") || resolve7(root, rel) !== real)
+  if (rel.startsWith("..") || resolve8(root, rel) !== real)
     throw new Error(`${path} is outside the project directory`);
   if (isDenied(rel, ctx.deny))
     throw new Error(`${path} is on the secrets denylist`);
   if (mode === "write" && isHubWritePath(rel))
     throw new Error(`${path} is not writable by the local worker`);
-  if (mode === "write" && ctx.readOnly?.length && (lstatSync5(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
+  if (mode === "write" && ctx.readOnly?.length && (lstatSync6(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
     throw new Error("hardlinked write target cannot be verified with data.readonly");
   if (mode === "write" && matchesPolicy(root, path, ctx.readOnly ?? []))
     throw new Error("target is protected by data.readonly");
@@ -3511,7 +3805,7 @@ async function runTool(name, rawArgs, ctx) {
         const file = guardPath(ctx, String(a.path), "read");
         if (statSync3(file).size > 5000000)
           return "error: file is larger than 5 MB; use bash (head, grep, sed -n) to look at parts of it";
-        const lines = readFileSync4(file, "utf8").split(`
+        const lines = readFileSync5(file, "utf8").split(`
 `);
         const from = Math.max(1, Number(a.offset) || 1);
         const out = lines.slice(from - 1, from - 1 + (Number(a.limit) || 2000)).map((l, i) => `${from + i}	${l}`).join(`
@@ -3532,14 +3826,14 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path)), "er
         file = guardPath(ctx, String(a.path), "write");
         if (file !== approvedTarget)
           return "error: path target changed during approval; inspect before retrying";
-        mkdirSync3(dirname8(file), { recursive: true });
-        writeFileSync2(file, content);
+        mkdirSync4(dirname8(file), { recursive: true });
+        writeFileSync3(file, content);
         return `wrote ${a.path}`;
       }
       case "edit": {
         let file = guardPath(ctx, String(a.path), "write");
         const approvedTarget = file;
-        let text = readFileSync4(file, "utf8");
+        let text = readFileSync5(file, "utf8");
         let count = text.split(String(a.old)).length - 1;
         if (!a.old || count !== 1)
           return `error: \`old\` must match exactly once, it matched ${count} times`;
@@ -3553,11 +3847,11 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path)), "er
         file = guardPath(ctx, String(a.path), "write");
         if (file !== approvedTarget)
           return "error: path target changed during approval; inspect before retrying";
-        text = readFileSync4(file, "utf8");
+        text = readFileSync5(file, "utf8");
         count = text.split(String(a.old)).length - 1;
         if (count !== 1)
           return `error: file changed during approval; \`old\` must match exactly once, it matched ${count} times`;
-        writeFileSync2(file, text.replace(String(a.old), () => String(a.new ?? "")));
+        writeFileSync3(file, text.replace(String(a.old), () => String(a.new ?? "")));
         return `edited ${a.path}`;
       }
       case "bash": {
@@ -3607,7 +3901,7 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path)), "er
 }
 var APPROVAL_EXPIRED_TEXT = "error: approval expired: no person answered; do not retry this call; hand the task off or stop", ApprovalWaitStop, approvalError = (picked, denied) => picked === true ? undefined : picked === "expired" ? APPROVAL_EXPIRED_TEXT : picked === "aborted" ? "error: approval withdrawn because the turn ended; no operation was executed" : denied, lexists = (p) => {
   try {
-    lstatSync5(p);
+    lstatSync6(p);
     return true;
   } catch {
     return false;
@@ -3661,9 +3955,9 @@ var PI_CEILING_KIND = "tool-step-ceiling", PI_CEILING_UNIT = "tool-step";
 
 // src/adapters/pi.ts
 import { randomUUID as randomUUID2 } from "crypto";
-import { existsSync as existsSync5, mkdirSync as mkdirSync4 } from "fs";
-import { join as join10, resolve as resolve8 } from "path";
-import { spawn as spawn7 } from "child_process";
+import { existsSync as existsSync6, mkdirSync as mkdirSync5 } from "fs";
+import { join as join11, resolve as resolve9 } from "path";
+import { spawn as spawn8 } from "child_process";
 function ownerStillAlive(pid, signature) {
   const current = processSignature(pid);
   if (current !== undefined)
@@ -3779,7 +4073,7 @@ var init_pi = __esm(() => {
     get recoveryReady() {
       if (this.state === "busy" || this.starting || this.activeTools)
         return false;
-      if (this.sessionFile && !existsSync5(this.sessionFile) && (this.activityObserved || this.persistedOnce))
+      if (this.sessionFile && !existsSync6(this.sessionFile) && (this.activityObserved || this.persistedOnce))
         return false;
       if (this.opts.mode === "headless")
         return this.state === "idle" || !this.proc || this.proc.exitCode !== null || this.proc.signalCode !== null;
@@ -3798,7 +4092,7 @@ var init_pi = __esm(() => {
       return this.ownerClaimed && this.ownerPid && this.ownerSignature ? `${this.ownerPid}:${this.ownerSignature}:${this.sessionId ?? ""}` : undefined;
     }
     recoveryMetadata() {
-      const exists = !!this.sessionFile && existsSync5(this.sessionFile);
+      const exists = !!this.sessionFile && existsSync6(this.sessionFile);
       if (exists) {
         this.persistedOnce = true;
         this.verifiedEmptyResume = undefined;
@@ -3811,14 +4105,14 @@ var init_pi = __esm(() => {
       if (this.state === "offline") {
         if (this.canReuseVerifiedEmptyResume())
           return this.recoveryMetadata();
-        if (this.recoveryReady && this.sessionFile && existsSync5(this.sessionFile))
+        if (this.recoveryReady && this.sessionFile && existsSync6(this.sessionFile))
           return this.recoveryMetadata();
         throw new Error("Pi source session is offline and has no verified persisted resume state; inspect preserved history, then a person may run ahub pi --replace-session --session-file <managed-file>");
       }
       this.emptyResumeVerified = false;
       if (this.state !== "idle" || this.stopping || this.activeTools)
         throw new Error("Pi must settle before session capture");
-      if (this.sessionFile && existsSync5(this.sessionFile))
+      if (this.sessionFile && existsSync6(this.sessionFile))
         return this.recoveryMetadata();
       const snapshot = this.opts.mode === "headless" ? (await this.waitRpc("get_state", 15000)).data : await this.sendTui({ type: "get_session_state" });
       if (this.state !== "idle" || this.activeTools || snapshot?.sessionId !== this.sessionId || snapshot?.sessionFile !== this.sessionFile)
@@ -3833,7 +4127,7 @@ var init_pi = __esm(() => {
       return captured;
     }
     canReuseVerifiedEmptyResume() {
-      return !!this.verifiedEmptyResume && this.recoveryReady && !this.activityObserved && !this.persistedOnce && this.sessionId === this.verifiedEmptyResume.sessionId && (!this.sessionFile || !existsSync5(this.sessionFile));
+      return !!this.verifiedEmptyResume && this.recoveryReady && !this.activityObserved && !this.persistedOnce && this.sessionId === this.verifiedEmptyResume.sessionId && (!this.sessionFile || !existsSync6(this.sessionFile));
     }
     noteActivity() {
       this.activityObserved = true;
@@ -4025,9 +4319,9 @@ var init_pi = __esm(() => {
       this.approvalAnswerEpoch = undefined;
       this.approvalStopReason = "";
       this.approvalAbortSent = false;
-      mkdirSync4(this.opts.stateDir, { recursive: true });
-      const sessions = join10(this.opts.stateDir, "pi-sessions");
-      mkdirSync4(sessions, { recursive: true, mode: 448 });
+      mkdirSync5(this.opts.stateDir, { recursive: true });
+      const sessions = join11(this.opts.stateDir, "pi-sessions");
+      mkdirSync5(sessions, { recursive: true, mode: 448 });
       if (this.opts.sessionFile) {
         try {
           validatePiSession(this.opts.stateDir, this.opts.cwd, this.opts.sessionFile, this.opts.sessionId);
@@ -4084,7 +4378,7 @@ var init_pi = __esm(() => {
         return new Response("not found", { status: 404 });
       } });
       this.server = bridge;
-      const extension = resolve8(join10(import.meta.dir, "../pi/extension.ts"));
+      const extension = resolve9(join11(import.meta.dir, "../pi/extension.ts"));
       const inherited = {};
       for (const key of ["PATH", "HOME", "USER", "SHELL", "TMPDIR", "TERM", "TERM_PROGRAM", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "CODEX_HOME"])
         if (process.env[key])
@@ -4094,7 +4388,7 @@ var init_pi = __esm(() => {
       if (this.opts.mode === "tui") {
         return;
       }
-      this.proc = spawn7(bin, args, { cwd: this.opts.cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
+      this.proc = spawn8(bin, args, { cwd: this.opts.cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
       trackGroup(this.proc);
       this.proc.stdout.on("data", (chunk) => this.onOutput(String(chunk)));
       this.proc.stderr.on("data", (chunk) => this.opts.log?.(`[${this.id}] ${String(chunk).trimEnd()}`));
@@ -4126,7 +4420,7 @@ var init_pi = __esm(() => {
         this.ownerToken = String(this._tuiLaunch?.env.AGENTHUB_PI_OWNER_TOKEN ?? "");
         this.ownerClaimed = true;
       }
-      this.persistedOnce = existsSync5(this.sessionFile);
+      this.persistedOnce = existsSync6(this.sessionFile);
       if (this.opts.sessionId && this.sessionId !== this.opts.sessionId || this.opts.sessionFile && this.sessionFile !== this.opts.sessionFile)
         throw new Error("Pi startup session identity mismatch");
       this.started = true;
@@ -5865,7 +6159,7 @@ var init_signals = __esm(() => {
 });
 
 // src/models/route/labels.ts
-import { createHash as createHash3, randomUUID as randomUUID3 } from "crypto";
+import { createHash as createHash4, randomUUID as randomUUID3 } from "crypto";
 
 class RouteLabelTracker {
   sink;
@@ -6015,7 +6309,7 @@ function safeJson(value) {
     return "";
   }
 }
-var discreteSeverity = (value) => value >= 1 ? 1 : value >= 0.7 ? 0.7 : value >= 0.3 ? 0.3 : 0, sha256 = (value) => createHash3("sha256").update(value).digest("hex");
+var discreteSeverity = (value) => value >= 1 ? 1 : value >= 0.7 ? 0.7 : value >= 0.3 ? 0.3 : 0, sha256 = (value) => createHash4("sha256").update(value).digest("hex");
 var init_labels = __esm(() => {
   init_signals();
 });
@@ -6883,9 +7177,9 @@ var init_shipped_roles = __esm(() => {
 });
 
 // src/hub/roles.ts
-import { createHash as createHash4 } from "crypto";
-import { constants as constants2, closeSync as closeSync2, fstatSync, lstatSync as lstatSync6, openSync as openSync2, readSync, readdirSync as readdirSync2 } from "fs";
-import { join as join11 } from "path";
+import { createHash as createHash5 } from "crypto";
+import { constants as constants2, closeSync as closeSync2, fstatSync, lstatSync as lstatSync7, openSync as openSync2, readSync, readdirSync as readdirSync2 } from "fs";
+import { join as join12 } from "path";
 function parseRole(text, stem, layer) {
   if (Buffer.byteLength(text) > 8192 || text.includes("\r") || !ID.test(stem))
     throw new Error("invalid role size, encoding or file id");
@@ -6929,7 +7223,7 @@ function parseRole(text, stem, layer) {
   }
   const reviewStart = sections[4].index + sections[4][0].length;
   const review = body.slice(reviewStart, sections[5].index).trim();
-  return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES2), classes: list("classes", CLASSES2), body, review, layer, hash: createHash4("sha256").update(text).digest("hex") };
+  return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES2), classes: list("classes", CLASSES2), body, review, layer, hash: createHash5("sha256").update(text).digest("hex") };
 }
 function projectRole(file) {
   const fd = openSync2(file, constants2.O_RDONLY | constants2.O_NOFOLLOW | constants2.O_NONBLOCK);
@@ -6964,9 +7258,9 @@ function loadRoleCatalog(cwd) {
   if (!cwd)
     return { roles, errors };
   try {
-    const config = join11(cwd, ".agenthub"), dir = join11(config, "roles");
+    const config = join12(cwd, ".agenthub"), dir = join12(config, "roles");
     for (const path of [config, dir]) {
-      const stat = lstatSync6(path);
+      const stat = lstatSync7(path);
       if (!stat.isDirectory() || stat.isSymbolicLink())
         throw new Error("unsafe role directory");
     }
@@ -6976,7 +7270,7 @@ function loadRoleCatalog(cwd) {
     for (const file of files) {
       const id = file.slice(0, -3);
       try {
-        roles.set(id, parseRole(projectRole(join11(dir, file)), id, "project"));
+        roles.set(id, parseRole(projectRole(join12(dir, file)), id, "project"));
       } catch {
         errors.push({ id: ID.test(id) ? id : "invalid-file-id", reason: "invalid or unsafe project role" });
       }
@@ -7882,13 +8176,14 @@ var codexVariant, CODEX_REVIEWER_VARIANT, KIMI_REVIEWER_VARIANT, AGY_DEFINITION;
 var init_reviewer_variants = __esm(() => {
   init_claude_print();
   init_codex_review_isolation();
+  init_kimi_review();
   init_native_factories();
   init_native_display();
   codexVariant = reviewerVariant("codex", "Codex reviewer", { backend: codexReviewerBackend, defaultPool: true, declaration: "explicit" }, CODEX_DISPLAY);
   CODEX_REVIEWER_VARIANT = { ...codexVariant, start: { ...codexVariant.start, create: createCodexReviewer } };
-  KIMI_REVIEWER_VARIANT = reviewerVariant("kimi", "Kimi reviewer", { defaultPool: false, declaration: "explicit", unavailable: "Kimi reviewer unavailable: runtime and isolation verification deferred to #533" }, KIMI_DISPLAY);
+  KIMI_REVIEWER_VARIANT = reviewerVariant("kimi", "Kimi reviewer", { backend: kimiReviewerBackend, defaultPool: true, declaration: "explicit" }, KIMI_DISPLAY);
   AGY_DEFINITION = {
-    ...reviewerVariant("agy", "agy reviewer", { defaultPool: false, declaration: "automatic", unavailable: "agy reviewer unavailable: native adapter and isolation verification deferred to #533" }, { palette: { fg: "#6558a6", bg: "#f1effa" } }),
+    ...reviewerVariant("agy", "agy reviewer", { defaultPool: false, declaration: "automatic", unavailable: "agy is an implementer peer (#485)" }, { palette: { fg: "#6558a6", bg: "#f1effa" } }),
     optional: true
   };
 });
@@ -7903,8 +8198,8 @@ var init_claude_state = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-entry-claude.ts
-import { readFileSync as readFileSync5 } from "fs";
-import { join as join12 } from "path";
+import { readFileSync as readFileSync6 } from "fs";
+import { join as join13 } from "path";
 import { randomUUID as randomUUID5 } from "crypto";
 async function runClaudeEntry(ctx) {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, fail } = ctx;
@@ -7938,17 +8233,17 @@ async function runClaudeEntry(ctx) {
       process.env.AGENTHUB_LAUNCH_ID = randomUUID5();
   }
   let original;
-  for (const file of [join12(cwd, ".claude", "settings.local.json"), join12(cwd, ".claude", "settings.json"), join12(process.env.HOME ?? "", ".claude", "settings.json")]) {
+  for (const file of [join13(cwd, ".claude", "settings.local.json"), join13(cwd, ".claude", "settings.json"), join13(process.env.HOME ?? "", ".claude", "settings.json")]) {
     try {
-      original ??= JSON.parse(readFileSync5(file, "utf8")).statusLine;
+      original ??= JSON.parse(readFileSync6(file, "utf8")).statusLine;
     } catch {}
   }
-  const facts = claudeObservationHooks(projectConfig(), { script: join12(cliDir, "facts-hook.ts"), stateDir });
+  const facts = claudeObservationHooks(projectConfig(), { script: join13(cliDir, "facts-hook.ts"), stateDir });
   let previousLaunch;
   try {
-    previousLaunch = JSON.parse(readFileSync5(join12(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
+    previousLaunch = JSON.parse(readFileSync6(join13(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
   } catch {}
-  const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join12(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
+  const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join13(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
   let result;
   try {
     let launchRecord;
@@ -8024,7 +8319,7 @@ function bundleInStatus(status) {
 }
 
 // src/adapters/definitions/native-cli-entry-jcode.ts
-import { resolve as resolve9 } from "path";
+import { resolve as resolve10 } from "path";
 async function runJcodeEntry(ctx) {
   const { args, cwd, stateDir, cliDir, unattendedEnv, connect, fail, takeFlags } = ctx;
   const { launcherPreview, qwenSessionId, configureJcodeMcp } = ctx.helpers;
@@ -8048,7 +8343,7 @@ async function runJcodeEntry(ctx) {
       fail("cannot read jcode's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
     if (!rostered)
       fail("jcode is off roster; add it with ahub roster add jcode");
-    const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve9(cliDir, "../../plugins/agent-hub/server.js"));
+    const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve10(cliDir, "../../plugins/agent-hub/server.js"));
     if (written.tracked)
       console.error(".jcode/mcp.json is tracked; review this local machine-path change before committing it");
     const reply = await hub.request({ t: "start", peer: "jcode", args: { mode: "headless", model: one["--model"], providerProfile: one["--provider-profile"], sessionId: one["--session-id"] }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 65000);
@@ -8091,7 +8386,7 @@ async function runQwenEntry(ctx) {
 }
 
 // src/adapters/definitions/native-cli-entry-kimi.ts
-import { resolve as resolve10 } from "path";
+import { resolve as resolve11 } from "path";
 import { spawnSync as spawnSync4 } from "child_process";
 async function runKimiEntry(ctx) {
   const peer = ctx.instance ?? "kimi";
@@ -8141,7 +8436,7 @@ async function runKimiEntry(ctx) {
         fail(admission.error);
       let result;
       try {
-        const written = configureKimiMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve10(cliDir, "../../plugins/agent-hub/server.js"), "tui");
+        const written = configureKimiMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve11(cliDir, "../../plugins/agent-hub/server.js"), "tui");
         if (written.tracked)
           console.error(".kimi-code/mcp.json is tracked; the agent-hub entry contains machine paths. Review this local change before committing it.");
         result = spawnSync4(launch.cmd, launch.args, { cwd, stdio: "inherit", env: { ...nativeLaunchEnv("kimi", childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
@@ -8157,7 +8452,7 @@ async function runKimiEntry(ctx) {
     if (owner?.pullOnly && owner.state !== "offline")
       fail("Kimi runs in a terminal; end it there before starting a headless one");
     if (!ctx.instance)
-      configureKimiMcp(cwd, stateDir, resolve10(cliDir, "../../plugins/agent-hub/server.js"), "headless");
+      configureKimiMcp(cwd, stateDir, resolve11(cliDir, "../../plugins/agent-hub/server.js"), "headless");
     const res = await hub.request({ t: "start", peer, args: { mode: "headless", model }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
     if (!res.ok)
       fail(res.error);
@@ -8334,8 +8629,8 @@ function finishPreview(ctx, launch, envNames, unresolved, metadata, settings) {
 var REDACTED = "[redacted]", UNRESOLVED = "[unresolved]";
 
 // src/adapters/definitions/native-cli-preview-claude.ts
-import { readFileSync as readFileSync6 } from "fs";
-import { join as join13 } from "path";
+import { readFileSync as readFileSync7 } from "fs";
+import { join as join14 } from "path";
 function previewClaude(ctx) {
   const { args, cwd, stateDir, cliDir, unattended, config } = ctx;
   const { buildLaunch, claudeObservationHooks } = ctx.helpers;
@@ -8343,13 +8638,13 @@ function previewClaude(ctx) {
   let envNames = state.envNames;
   let launch;
   let original;
-  for (const file of [join13(cwd, ".claude/settings.local.json"), join13(cwd, ".claude/settings.json"), join13(process.env.HOME ?? "", ".claude/settings.json")]) {
+  for (const file of [join14(cwd, ".claude/settings.local.json"), join14(cwd, ".claude/settings.json"), join14(process.env.HOME ?? "", ".claude/settings.json")]) {
     try {
-      original ??= JSON.parse(readFileSync6(file, "utf8")).statusLine;
+      original ??= JSON.parse(readFileSync7(file, "utf8")).statusLine;
     } catch {}
   }
-  const facts = claudeObservationHooks(config, { script: join13(cliDir, "facts-hook.ts"), stateDir });
-  launch = buildLaunch("claude", args, { preview: true, unattended, statusLine: { script: join13(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {} }, ...facts ? { facts } : {} });
+  const facts = claudeObservationHooks(config, { script: join14(cliDir, "facts-hook.ts"), stateDir });
+  launch = buildLaunch("claude", args, { preview: true, unattended, statusLine: { script: join14(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {} }, ...facts ? { facts } : {} });
   const safeArgs = args.map((arg, i) => {
     if (args[i - 1] === "--settings")
       return "{}";
@@ -8360,7 +8655,7 @@ function previewClaude(ctx) {
     return publicArg(arg);
   });
   const publicLaunch = buildLaunch("claude", safeArgs, { preview: true, unattended, statusLine: {
-    script: join13(cliDir, "statusline-tee.ts"),
+    script: join14(cliDir, "statusline-tee.ts"),
     stateDir,
     ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {}
   }, facts });
@@ -8393,7 +8688,7 @@ function previewCodex(ctx) {
 var init_native_cli_preview_codex = () => {};
 
 // src/adapters/definitions/native-cli-preview-kimi.ts
-import { join as join14 } from "path";
+import { join as join15 } from "path";
 function previewKimi(ctx) {
   const { args, cwd, stateDir, cliDir, config } = ctx;
   const { childEnv, startModeOf, buildKimiLaunch, buildKimiTuiLaunch, nativeLaunchEnv, kimiMcpPlan } = ctx.helpers;
@@ -8416,14 +8711,14 @@ function previewKimi(ctx) {
     launch = { ...native, cmd: native.cmd === "kimi" ? "kimi" : REDACTED, args: native.args.map((arg) => arg === "--model" || arg === REDACTED ? arg : REDACTED) };
     envNames = Object.keys(nativeLaunchEnv("kimi", childEnv())).concat(["AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR"]);
   }
-  const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join14(cliDir, "../../plugins/agent-hub/server.js"), mode);
+  const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join15(cliDir, "../../plugins/agent-hub/server.js"), mode);
   kimiMetadata = { mode, mcp: { file, action, changed, tracked } };
   return finishPreview(ctx, launch, envNames, unresolved, kimiMetadata);
 }
 var init_native_cli_preview_kimi = () => {};
 
 // src/adapters/definitions/native-cli-preview-pi.ts
-import { join as join15, resolve as resolve11 } from "path";
+import { join as join16, resolve as resolve12 } from "path";
 function previewPi(ctx) {
   const { args, stateDir, cliDir, config } = ctx;
   const { relayModelIds, buildPiLaunch, startModeOf } = ctx.helpers;
@@ -8458,7 +8753,7 @@ function previewPi(ctx) {
     tools: [],
     preamble: REDACTED,
     maxSteps: config.pi.max_steps
-  }, {}, resolve11(join15(cliDir, "../pi/extension.ts")), UNRESOLVED, UNRESOLVED);
+  }, {}, resolve12(join16(cliDir, "../pi/extension.ts")), UNRESOLVED, UNRESOLVED);
   launch = pi;
   envNames = Object.keys(pi.env).concat(["PATH", "HOME", "USER", "SHELL", "TMPDIR", "TERM", "TERM_PROGRAM", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "CODEX_HOME"].filter((key) => process.env[key] !== undefined));
   if (mode === "tui")
@@ -8471,7 +8766,7 @@ function previewPi(ctx) {
 var init_native_cli_preview_pi = () => {};
 
 // src/adapters/definitions/native-cli-preview-qwen.ts
-import { join as join16 } from "path";
+import { join as join17 } from "path";
 function previewQwen(ctx) {
   const { tool, args, cwd, stateDir, cliDir, config } = ctx;
   const state = previewState(args, ctx.baseEnvNames), { unresolved, value } = state;
@@ -8494,7 +8789,7 @@ function previewQwen(ctx) {
     form: "headless",
     projectRoot: cwd,
     stateDir,
-    entrypoint: join16(cliDir, "main.js"),
+    entrypoint: join17(cliDir, "main.js"),
     userArgs: [],
     unattended: false,
     env: {},
@@ -8602,8 +8897,8 @@ var init_native_config_policy = __esm(() => {
 });
 
 // src/adapters/definitions/native-policy-aux.ts
-import { closeSync as closeSync3, constants as constants3, fstatSync as fstatSync2, openSync as openSync3, readdirSync as readdirSync3, readFileSync as readFileSync7 } from "fs";
-import { isAbsolute as isAbsolute5, join as join17, normalize } from "path";
+import { closeSync as closeSync3, constants as constants3, fstatSync as fstatSync2, openSync as openSync3, readdirSync as readdirSync3, readFileSync as readFileSync8 } from "fs";
+import { isAbsolute as isAbsolute5, join as join18, normalize } from "path";
 function claudeCrashPlan(_meta) {
   return { how: "claude: the Claude Code plugin reconnects by itself while that session is still open" };
 }
@@ -8648,13 +8943,13 @@ function localCrashPlan(meta) {
 }
 function claudePlugins(root, cwd) {
   const enabled = new Map;
-  for (const file of [join17(root, "settings.json"), ...cwd ? [join17(cwd, ".claude", "settings.json"), join17(cwd, ".claude", "settings.local.json")] : []]) {
+  for (const file of [join18(root, "settings.json"), ...cwd ? [join18(cwd, ".claude", "settings.json"), join18(cwd, ".claude", "settings.local.json")] : []]) {
     const map = json(file)?.enabledPlugins;
     if (map && typeof map === "object")
       for (const [key, on] of Object.entries(map))
         enabled.set(key, on === true);
   }
-  const installed = json(join17(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
+  const installed = json(join18(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
   const out = [];
   for (const [key, on] of enabled) {
     if (!on)
@@ -8663,12 +8958,12 @@ function claudePlugins(root, cwd) {
     const entries = Array.isArray(installed[key]) ? installed[key] : [];
     const entry = entries.find((e) => e?.scope === "user") ?? entries.find((e) => e?.projectPath === cwd);
     if (name && entry)
-      out.push({ name, version: version(entry.version) });
+      out.push({ name, version: version2(entry.version) });
   }
   return out;
 }
 function codexPlugins(root) {
-  const config = text(join17(root, "config.toml"));
+  const config = text(join18(root, "config.toml"));
   if (config === undefined)
     return [];
   const found = new Map, disabled = new Set;
@@ -8687,9 +8982,9 @@ function codexPlugins(root) {
       continue;
     let versions = [];
     try {
-      versions = readdirSync3(join17(root, "plugins", "cache", market, plugin));
+      versions = readdirSync3(join18(root, "plugins", "cache", market, plugin));
     } catch {}
-    out.push({ name, version: versions.length === 1 ? version(versions[0]) : null });
+    out.push({ name, version: versions.length === 1 ? version2(versions[0]) : null });
   }
   return out;
 }
@@ -8711,7 +9006,7 @@ var str3 = (value) => typeof value === "string" && value ? value : undefined, PL
     const st = fstatSync2(fd);
     if (!st.isFile() || st.size > 1024 * 1024)
       return;
-    return readFileSync7(fd, "utf8");
+    return readFileSync8(fd, "utf8");
   } catch {
     return;
   } finally {
@@ -8725,7 +9020,7 @@ var str3 = (value) => typeof value === "string" && value ? value : undefined, PL
   } catch {
     return;
   }
-}, version = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join17(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join17(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
+}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join18(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join18(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
 var init_native_policy_aux = __esm(() => {
   PLUGINS = new Map([["claude-mem", "claude-mem"], ["ponytail", "ponytail"], ["open-code-review", "open-code-review"]]);
   CLAUDE_ONLY = new Map([["codex@openai-codex", "codex-plugin"]]);
@@ -8793,19 +9088,19 @@ var init_native_cli_launch_common = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-claude-launch.ts
-import { mkdirSync as mkdirSync5, writeFileSync as writeFileSync3, renameSync, unlinkSync, readFileSync as readFileSync8 } from "fs";
+import { mkdirSync as mkdirSync6, writeFileSync as writeFileSync4, renameSync, unlinkSync, readFileSync as readFileSync9 } from "fs";
 import { randomUUID as randomUUID6 } from "crypto";
-import { resolve as resolve12, join as join18 } from "path";
+import { resolve as resolve13, join as join19 } from "path";
 function claudeChannel(userArgs) {
-  const bundle = resolve12(import.meta.dir, "../../../plugins/agent-hub/server.js");
+  const bundle = resolve13(import.meta.dir, "../../../plugins/agent-hub/server.js");
   for (let i = 0;i < userArgs.length; i++) {
     const arg = userArgs[i];
     const path = arg === "--mcp-config" ? userArgs[i + 1] : arg.startsWith("--mcp-config=") ? arg.slice("--mcp-config=".length) : undefined;
     if (!path)
       continue;
     try {
-      const server = JSON.parse(readFileSync8(resolve12(path), "utf8")).mcpServers?.["agent-hub"];
-      if (server?.command === "bun" && Array.isArray(server.args) && server.args.some((value) => typeof value === "string" && resolve12(value) === bundle))
+      const server = JSON.parse(readFileSync9(resolve13(path), "utf8")).mcpServers?.["agent-hub"];
+      if (server?.command === "bun" && Array.isArray(server.args) && server.args.some((value) => typeof value === "string" && resolve13(value) === bundle))
         return "server:agent-hub";
     } catch {}
   }
@@ -8828,7 +9123,7 @@ function claudeNativeLaunch(ctx) {
         throw new Error("--settings requires a JSON object or readable file so the hub permission hook can be installed");
       let caller;
       try {
-        caller = JSON.parse(value.trim().startsWith("{") ? value : readFileSync8(resolve12(value), "utf8"));
+        caller = JSON.parse(value.trim().startsWith("{") ? value : readFileSync9(resolve13(value), "utf8"));
         if (!caller || typeof caller !== "object" || Array.isArray(caller))
           throw new Error("not an object");
       } catch {
@@ -8857,10 +9152,10 @@ function claudeNativeLaunch(ctx) {
       const stateDir = ctx.facts?.stateDir ?? ctx.statusLine?.stateDir;
       if (!stateDir)
         throw new Error("Claude session settings require the hub state directory");
-      const file = join18(stateDir, `claude-settings-${randomUUID6()}.json`);
+      const file = join19(stateDir, `claude-settings-${randomUUID6()}.json`);
       try {
-        mkdirSync5(stateDir, { recursive: true, mode: 448 });
-        writeFileSync3(`${file}.tmp`, settingsArgs[1], { mode: 384, flag: "wx" });
+        mkdirSync6(stateDir, { recursive: true, mode: 448 });
+        writeFileSync4(`${file}.tmp`, settingsArgs[1], { mode: 384, flag: "wx" });
         renameSync(`${file}.tmp`, file);
       } catch {
         try {
@@ -8914,11 +9209,11 @@ var init_native_cli_codex_launch = __esm(() => {
 });
 
 // src/hub/events.ts
-import { appendFileSync, closeSync as closeSync4, existsSync as existsSync6, fstatSync as fstatSync3, openSync as openSync4, readFileSync as readFileSync9, readSync as readSync2 } from "fs";
+import { appendFileSync, closeSync as closeSync4, existsSync as existsSync7, fstatSync as fstatSync3, openSync as openSync4, readFileSync as readFileSync10, readSync as readSync2 } from "fs";
 function readEvents(file, since = 0) {
-  if (!existsSync6(file))
+  if (!existsSync7(file))
     return [];
-  return readFileSync9(file, "utf8").split(`
+  return readFileSync10(file, "utf8").split(`
 `).flatMap((line) => {
     if (!line.trim())
       return [];
@@ -8935,14 +9230,14 @@ var init_events = () => {};
 
 // src/cli/recovery-session-file.ts
 import { statSync as statSync4 } from "fs";
-import { homedir as homedir3 } from "os";
-import { join as join19 } from "path";
+import { homedir as homedir4 } from "os";
+import { join as join20 } from "path";
 function checkedSessionPath(binding, kind) {
   if (kind === "rollout")
-    return join19(binding.launch.env.CODEX_HOME ?? join19(homedir3(), ".codex"), "sessions");
-  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join19(homedir3(), ".claude");
+    return join20(binding.launch.env.CODEX_HOME ?? join20(homedir4(), ".codex"), "sessions");
+  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join20(homedir4(), ".claude");
   const slug = binding.projectRoot.replace(/[^a-zA-Z0-9]/g, "-");
-  return join19(config, "projects", slug, `${binding.sessionId}.jsonl`);
+  return join20(config, "projects", slug, `${binding.sessionId}.jsonl`);
 }
 function recordedFileState(file) {
   try {
@@ -8955,17 +9250,17 @@ var init_recovery_session_file = () => {};
 
 // src/adapters/definitions/native-recovery.ts
 import { readdirSync as readdirSync4 } from "fs";
-import { basename as basename4, join as join20 } from "path";
+import { basename as basename5, join as join21 } from "path";
 var rolloutState = (binding) => {
   try {
-    return readdirSync4(checkedSessionPath(binding, "rollout"), { recursive: true }).some((name) => String(name).endsWith(".jsonl") && basename4(String(name)).includes(binding.sessionId));
+    return readdirSync4(checkedSessionPath(binding, "rollout"), { recursive: true }).some((name) => String(name).endsWith(".jsonl") && basename5(String(name)).includes(binding.sessionId));
   } catch (error) {
     return error.code === "ENOENT" ? false : "unknown";
   }
 }, transcriptState = (binding) => {
   const state = recordedFileState(checkedSessionPath(binding, "transcript"));
   return state === "unknown" ? "unknown" : state === "found";
-}, startupArgs = (peer) => Object.fromEntries(["mode", "backend", "model", "route"].flatMap((key) => typeof peer.args?.[key] === "string" ? [[key, peer.args[key]]] : [])), text2 = (value) => typeof value === "string" && value.length > 0, object3 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : {}, CODEX_RECOVERY_SESSION, CLAUDE_RECOVERY_SESSION, PI_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION, QWEN_RECOVERY_SESSION;
+}, startupArgs = (peer) => Object.fromEntries(["mode", "backend", "model", "route"].flatMap((key) => typeof peer.args?.[key] === "string" ? [[key, peer.args[key]]] : [])), text2 = (value) => typeof value === "string" && value.length > 0, object4 = (value) => value !== null && typeof value === "object" && !Array.isArray(value) ? value : {}, CODEX_RECOVERY_SESSION, CLAUDE_RECOVERY_SESSION, PI_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION, QWEN_RECOVERY_SESSION;
 var init_native_recovery = __esm(() => {
   init_events();
   init_recovery_session_file();
@@ -8979,7 +9274,7 @@ var init_native_recovery = __esm(() => {
       if (phase !== "plan")
         return false;
       let current, started = false, turned = false;
-      for (const e of readEvents(join20(stateDir, "events.jsonl"))) {
+      for (const e of readEvents(join21(stateDir, "events.jsonl"))) {
         if (e.type === "native_thread" && e.peer === binding.peer) {
           current = e.thread;
           if (e.thread === binding.sessionId && e.fresh)
@@ -9020,7 +9315,7 @@ var init_native_recovery = __esm(() => {
       return args;
     },
     crashIdentity: (row) => {
-      const value = object3(row), args = object3(value.args), session = object3(value.session);
+      const value = object4(row), args = object4(value.args), session = object4(value.session);
       const sessionId = [value.sessionId, value.agentSessionId, value.resumeSessionId, session.id, session.sessionId].find(text2);
       const sessionFile = [value.sessionFile, value.sessionPath, args.sessionFile, session.file, session.path].find(text2);
       return { ...sessionId ? { sessionId } : {}, ...sessionFile ? { sessionFile } : {} };
@@ -16873,8 +17168,8 @@ var require_dist = __commonJS(function(exports, module) {
 
 // src/hub/instance-config.ts
 init_registry();
-import { readFileSync as readFileSync10 } from "fs";
-import { join as join23 } from "path";
+import { readFileSync as readFileSync11 } from "fs";
+import { join as join24 } from "path";
 
 // src/hub/conductor.ts
 init_registry();
@@ -16945,7 +17240,7 @@ var package_default = {
 };
 
 // src/version.ts
-var VERSION2 = package_default.version;
+var VERSION3 = package_default.version;
 
 // src/hub/github-import.ts
 init_sdlc();
@@ -17036,7 +17331,7 @@ var USER2 = Symbol("shared-user-shard");
 // node_modules/@staix/agent-mem/src/mcp.ts
 var string = (maxLength, minLength = 1) => ({ type: "string", minLength, maxLength });
 var limit = { type: "integer", minimum: 1, maximum: 100 };
-var object4 = (properties, required = []) => ({ type: "object", properties, required, additionalProperties: false });
+var object5 = (properties, required = []) => ({ type: "object", properties, required, additionalProperties: false });
 var tool2 = (name, description, inputSchema, readOnlyHint = true) => ({
   name,
   description,
@@ -17044,20 +17339,20 @@ var tool2 = (name, description, inputSchema, readOnlyHint = true) => ({
   annotations: { readOnlyHint, destructiveHint: false, openWorldHint: false }
 });
 var MCP_TOOLS = [
-  tool2("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object4({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" } }, ["query"])),
-  tool2("amem_show", "Show a screened memory entry in this project by its exact id or unique prefix.", object4({ id: string(80) }, ["id"])),
-  tool2("amem_timeline", "Read screened memory near an entry or time in this project.", object4({ id: string(80), since: string(40), limit })),
-  tool2("amem_graph", "Read the screened curated-memory neighbourhood. Capture is never graph evidence.", object4({ start: string(500), hops: { type: "integer", minimum: 1, maximum: 2 }, limit }, ["start"])),
-  tool2("amem_work_state_read", "Read project work lists; closed lists/items can be included explicitly.", object4({ list: string(200), includeClosed: { type: "boolean" } })),
-  tool2("amem_work_state_write", "Append scalar project work-list fields; null clears, task selects an item, list status done closes.", object4({ list: string(200), fields: {
+  tool2("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object5({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" } }, ["query"])),
+  tool2("amem_show", "Show a screened memory entry in this project by its exact id or unique prefix.", object5({ id: string(80) }, ["id"])),
+  tool2("amem_timeline", "Read screened memory near an entry or time in this project.", object5({ id: string(80), since: string(40), limit })),
+  tool2("amem_graph", "Read the screened curated-memory neighbourhood. Capture is never graph evidence.", object5({ start: string(500), hops: { type: "integer", minimum: 1, maximum: 2 }, limit }, ["start"])),
+  tool2("amem_work_state_read", "Read project work lists; closed lists/items can be included explicitly.", object5({ list: string(200), includeClosed: { type: "boolean" } })),
+  tool2("amem_work_state_write", "Append scalar project work-list fields; null clears, task selects an item, list status done closes.", object5({ list: string(200), fields: {
     type: "object",
     minProperties: 1,
     maxProperties: 64,
     additionalProperties: { type: ["string", "number", "boolean", "null"], maxLength: 4000 }
   } }, ["list", "fields"]), false),
-  tool2("amem_remember", "Propose a general memory candidate for person acceptance. Never writes directly to curated notes.", object4({ text: string(3000), title: string(200), kind: { type: "string", enum: ["decision", "finding", "contract", "fail"] } }, ["text"]), false),
-  tool2("amem_vault_candidates", "List screened durable curated notes eligible for a person to move to the vault. Read only.", object4({ limit })),
-  tool2("amem_capacity", "Read this machine's bounded capture capacity proposal; applying it is person-only.", object4({}))
+  tool2("amem_remember", "Propose a general memory candidate for person acceptance. Never writes directly to curated notes.", object5({ text: string(3000), title: string(200), kind: { type: "string", enum: ["decision", "finding", "contract", "fail"] } }, ["text"]), false),
+  tool2("amem_vault_candidates", "List screened durable curated notes eligible for a person to move to the vault. Read only.", object5({ limit })),
+  tool2("amem_capacity", "Read this machine's bounded capture capacity proposal; applying it is person-only.", object5({}))
 ];
 // node_modules/@staix/agent-mem/src/mcp-memory.ts
 init_capture();
@@ -17084,14 +17379,14 @@ init_generation();
 // src/hub/routing.ts
 init_registry();
 init_board();
-import { join as join21, resolve as resolve13 } from "path";
+import { join as join22, resolve as resolve14 } from "path";
 
 // src/models/route/config.ts
 var TYPES = new Set(["stage", "plan_execute", "advisor", "escalation"]);
 
 // src/hub/routing.ts
 init_stage();
-var TEMPLATE = join21(import.meta.dir, "..", "..", "templates", "routing.toml");
+var TEMPLATE = join22(import.meta.dir, "..", "..", "templates", "routing.toml");
 var cache = new Map;
 
 // src/hub/memory-policy.ts
@@ -17118,8 +17413,8 @@ var OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassign
 // src/hub/config-trust.ts
 init_child_process();
 init_git();
-import { lstatSync as lstatSync7, statSync as statSync5 } from "fs";
-import { dirname as dirname9, join as join22 } from "path";
+import { lstatSync as lstatSync8, statSync as statSync5 } from "fs";
+import { dirname as dirname9, join as join23 } from "path";
 var MACHINE_LOCAL = [
   "kimi_cmd",
   "permission_modes",
@@ -17151,7 +17446,7 @@ function configTracked(cwd, name) {
     return;
   let opened;
   try {
-    opened = statSync5(join22(cwd, ".agenthub", name));
+    opened = statSync5(join23(cwd, ".agenthub", name));
   } catch {}
   return r.stdout.split("\x00").filter(Boolean).some((row) => {
     const path = row.slice(row.indexOf("\t") + 1);
@@ -17160,7 +17455,7 @@ function configTracked(cwd, name) {
     if (!opened)
       return path === `.agenthub/${name}`;
     try {
-      const s = statSync5(join22(cwd, path));
+      const s = statSync5(join23(cwd, path));
       return !!opened && s.dev === opened.dev && s.ino === opened.ino;
     } catch {
       return false;
@@ -17293,7 +17588,7 @@ var INSTANCE_CONFIG_FILES = ["config.json", "config.local.json"];
 function readInstanceConfigLayers(cwd) {
   return INSTANCE_CONFIG_FILES.flatMap((name) => {
     try {
-      return [{ name, raw: JSON.parse(readFileSync10(join23(cwd, ".agenthub", name), "utf8")) }];
+      return [{ name, raw: JSON.parse(readFileSync11(join24(cwd, ".agenthub", name), "utf8")) }];
     } catch (error) {
       if (error.code === "ENOENT")
         return [];
@@ -17323,8 +17618,8 @@ function readInstanceConfig(cwd, layers = readInstanceConfigLayers(cwd)) {
 
 // src/hub/control-client.ts
 init_project();
-import { readFileSync as readFileSync11 } from "fs";
-import { join as join24 } from "path";
+import { readFileSync as readFileSync12 } from "fs";
+import { join as join25 } from "path";
 function stateDirFor(cwd) {
   return projectContext(cwd).stateDir;
 }
@@ -17332,8 +17627,8 @@ var PROTOCOL = 16;
 var RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, PROTOCOL];
 function readControl(stateDir) {
   try {
-    const status = JSON.parse(readFileSync11(join24(stateDir, "status.json"), "utf8"));
-    const token = readFileSync11(join24(stateDir, "control-token"), "utf8").trim();
+    const status = JSON.parse(readFileSync12(join25(stateDir, "status.json"), "utf8"));
+    const token = readFileSync12(join25(stateDir, "control-token"), "utf8").trim();
     if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token)
       return;
     return {
@@ -18811,7 +19106,7 @@ ${content.join(`
 }
 
 // node_modules/zod/v4/core/versions.js
-var version2 = {
+var version3 = {
   major: 4,
   minor: 6,
   patch: 5
@@ -18823,7 +19118,7 @@ var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
   inst ?? (inst = {});
   inst._zod.def = def;
   inst._zod.bag = inst._zod.bag || {};
-  inst._zod.version = version2;
+  inst._zod.version = version3;
   const defChecks = inst._zod.def.checks;
   const checks = inst._zod.traits.has("$ZodCheck") ? [inst, ...defChecks ?? []] : defChecks?.length ? [...defChecks] : [];
   for (const ch of checks) {
@@ -23131,7 +23426,7 @@ var ZodObject = /* @__PURE__ */ $constructor("ZodObject", (inst, def) => {
     return required(ZodNonOptional, this, args[0]);
   }
 });
-function object6(shape, params) {
+function object7(shape, params) {
   const def = {
     type: "object",
     shape: shape ?? {},
@@ -23476,31 +23771,31 @@ var TaskCreationParamsSchema = looseObject({
   ttl: number2().optional(),
   pollInterval: number2().optional()
 });
-var TaskMetadataSchema = object6({
+var TaskMetadataSchema = object7({
   ttl: number2().optional()
 });
-var RelatedTaskMetadataSchema = object6({
+var RelatedTaskMetadataSchema = object7({
   taskId: string3()
 });
 var RequestMetaSchema = looseObject({
   progressToken: ProgressTokenSchema.optional(),
   [RELATED_TASK_META_KEY]: RelatedTaskMetadataSchema.optional()
 });
-var BaseRequestParamsSchema = object6({
+var BaseRequestParamsSchema = object7({
   _meta: RequestMetaSchema.optional()
 });
 var TaskAugmentedRequestParamsSchema = BaseRequestParamsSchema.extend({
   task: TaskMetadataSchema.optional()
 });
 var isTaskAugmentedRequestParams = (value) => TaskAugmentedRequestParamsSchema.safeParse(value).success;
-var RequestSchema = object6({
+var RequestSchema = object7({
   method: string3(),
   params: BaseRequestParamsSchema.loose().optional()
 });
-var NotificationsParamsSchema = object6({
+var NotificationsParamsSchema = object7({
   _meta: RequestMetaSchema.optional()
 });
-var NotificationSchema = object6({
+var NotificationSchema = object7({
   method: string3(),
   params: NotificationsParamsSchema.loose().optional()
 });
@@ -23508,18 +23803,18 @@ var ResultSchema = looseObject({
   _meta: RequestMetaSchema.optional()
 });
 var RequestIdSchema = union([string3(), number2().int()]);
-var JSONRPCRequestSchema = object6({
+var JSONRPCRequestSchema = object7({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema,
   ...RequestSchema.shape
 }).strict();
 var isJSONRPCRequest = (value) => JSONRPCRequestSchema.safeParse(value).success;
-var JSONRPCNotificationSchema = object6({
+var JSONRPCNotificationSchema = object7({
   jsonrpc: literal(JSONRPC_VERSION),
   ...NotificationSchema.shape
 }).strict();
 var isJSONRPCNotification = (value) => JSONRPCNotificationSchema.safeParse(value).success;
-var JSONRPCResultResponseSchema = object6({
+var JSONRPCResultResponseSchema = object7({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema,
   result: ResultSchema
@@ -23536,10 +23831,10 @@ var ErrorCode;
   ErrorCode[ErrorCode["InternalError"] = -32603] = "InternalError";
   ErrorCode[ErrorCode["UrlElicitationRequired"] = -32042] = "UrlElicitationRequired";
 })(ErrorCode || (ErrorCode = {}));
-var JSONRPCErrorResponseSchema = object6({
+var JSONRPCErrorResponseSchema = object7({
   jsonrpc: literal(JSONRPC_VERSION),
   id: RequestIdSchema.optional(),
-  error: object6({
+  error: object7({
     code: number2().int(),
     message: string3(),
     data: unknown().optional()
@@ -23562,16 +23857,16 @@ var CancelledNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/cancelled"),
   params: CancelledNotificationParamsSchema
 });
-var IconSchema = object6({
+var IconSchema = object7({
   src: string3(),
   mimeType: string3().optional(),
   sizes: array(string3()).optional(),
   theme: _enum(["light", "dark"]).optional()
 });
-var IconsSchema = object6({
+var IconsSchema = object7({
   icons: array(IconSchema).optional()
 });
-var BaseMetadataSchema = object6({
+var BaseMetadataSchema = object7({
   name: string3(),
   title: string3().optional()
 });
@@ -23582,7 +23877,7 @@ var ImplementationSchema = BaseMetadataSchema.extend({
   websiteUrl: string3().optional(),
   description: string3().optional()
 });
-var FormElicitationCapabilitySchema = intersection(object6({
+var FormElicitationCapabilitySchema = intersection(object7({
   applyDefaults: boolean2().optional()
 }), record3(string3(), unknown()));
 var ElicitationCapabilitySchema = preprocess((value) => {
@@ -23592,7 +23887,7 @@ var ElicitationCapabilitySchema = preprocess((value) => {
     }
   }
   return value;
-}, intersection(object6({
+}, intersection(object7({
   form: FormElicitationCapabilitySchema.optional(),
   url: AssertObjectSchema.optional()
 }), record3(string3(), unknown()).optional()));
@@ -23617,14 +23912,14 @@ var ServerTasksCapabilitySchema = looseObject({
     }).optional()
   }).optional()
 });
-var ClientCapabilitiesSchema = object6({
+var ClientCapabilitiesSchema = object7({
   experimental: record3(string3(), AssertObjectSchema).optional(),
-  sampling: object6({
+  sampling: object7({
     context: AssertObjectSchema.optional(),
     tools: AssertObjectSchema.optional()
   }).optional(),
   elicitation: ElicitationCapabilitySchema.optional(),
-  roots: object6({
+  roots: object7({
     listChanged: boolean2().optional()
   }).optional(),
   tasks: ClientTasksCapabilitySchema.optional(),
@@ -23639,18 +23934,18 @@ var InitializeRequestSchema = RequestSchema.extend({
   method: literal("initialize"),
   params: InitializeRequestParamsSchema
 });
-var ServerCapabilitiesSchema = object6({
+var ServerCapabilitiesSchema = object7({
   experimental: record3(string3(), AssertObjectSchema).optional(),
   logging: AssertObjectSchema.optional(),
   completions: AssertObjectSchema.optional(),
-  prompts: object6({
+  prompts: object7({
     listChanged: boolean2().optional()
   }).optional(),
-  resources: object6({
+  resources: object7({
     subscribe: boolean2().optional(),
     listChanged: boolean2().optional()
   }).optional(),
-  tools: object6({
+  tools: object7({
     listChanged: boolean2().optional()
   }).optional(),
   tasks: ServerTasksCapabilitySchema.optional(),
@@ -23670,12 +23965,12 @@ var PingRequestSchema = RequestSchema.extend({
   method: literal("ping"),
   params: BaseRequestParamsSchema.optional()
 });
-var ProgressSchema = object6({
+var ProgressSchema = object7({
   progress: number2(),
   total: optional(number2()),
   message: optional(string3())
 });
-var ProgressNotificationParamsSchema = object6({
+var ProgressNotificationParamsSchema = object7({
   ...NotificationsParamsSchema.shape,
   ...ProgressSchema.shape,
   progressToken: ProgressTokenSchema
@@ -23694,7 +23989,7 @@ var PaginatedResultSchema = ResultSchema.extend({
   nextCursor: CursorSchema.optional()
 });
 var TaskStatusSchema = _enum(["working", "input_required", "completed", "failed", "cancelled"]);
-var TaskSchema = object6({
+var TaskSchema = object7({
   taskId: string3(),
   status: TaskStatusSchema,
   ttl: union([number2(), _null3()]),
@@ -23738,7 +24033,7 @@ var CancelTaskRequestSchema = RequestSchema.extend({
   })
 });
 var CancelTaskResultSchema = ResultSchema.merge(TaskSchema);
-var ResourceContentsSchema = object6({
+var ResourceContentsSchema = object7({
   uri: string3(),
   mimeType: optional(string3()),
   _meta: record3(string3(), unknown()).optional()
@@ -23758,12 +24053,12 @@ var BlobResourceContentsSchema = ResourceContentsSchema.extend({
   blob: Base64Schema
 });
 var RoleSchema = _enum(["user", "assistant"]);
-var AnnotationsSchema = object6({
+var AnnotationsSchema = object7({
   audience: array(RoleSchema).optional(),
   priority: number2().min(0).max(1).optional(),
   lastModified: datetime2({ offset: true }).optional()
 });
-var ResourceSchema = object6({
+var ResourceSchema = object7({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   uri: string3(),
@@ -23773,7 +24068,7 @@ var ResourceSchema = object6({
   annotations: AnnotationsSchema.optional(),
   _meta: optional(looseObject({}))
 });
-var ResourceTemplateSchema = object6({
+var ResourceTemplateSchema = object7({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   uriTemplate: string3(),
@@ -23826,12 +24121,12 @@ var ResourceUpdatedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/resources/updated"),
   params: ResourceUpdatedNotificationParamsSchema
 });
-var PromptArgumentSchema = object6({
+var PromptArgumentSchema = object7({
   name: string3(),
   description: optional(string3()),
   required: optional(boolean2())
 });
-var PromptSchema = object6({
+var PromptSchema = object7({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   description: optional(string3()),
@@ -23852,34 +24147,34 @@ var GetPromptRequestSchema = RequestSchema.extend({
   method: literal("prompts/get"),
   params: GetPromptRequestParamsSchema
 });
-var TextContentSchema = object6({
+var TextContentSchema = object7({
   type: literal("text"),
   text: string3(),
   annotations: AnnotationsSchema.optional(),
   _meta: record3(string3(), unknown()).optional()
 });
-var ImageContentSchema = object6({
+var ImageContentSchema = object7({
   type: literal("image"),
   data: Base64Schema,
   mimeType: string3(),
   annotations: AnnotationsSchema.optional(),
   _meta: record3(string3(), unknown()).optional()
 });
-var AudioContentSchema = object6({
+var AudioContentSchema = object7({
   type: literal("audio"),
   data: Base64Schema,
   mimeType: string3(),
   annotations: AnnotationsSchema.optional(),
   _meta: record3(string3(), unknown()).optional()
 });
-var ToolUseContentSchema = object6({
+var ToolUseContentSchema = object7({
   type: literal("tool_use"),
   name: string3(),
   id: string3(),
   input: record3(string3(), unknown()),
   _meta: record3(string3(), unknown()).optional()
 });
-var EmbeddedResourceSchema = object6({
+var EmbeddedResourceSchema = object7({
   type: literal("resource"),
   resource: union([TextResourceContentsSchema, BlobResourceContentsSchema]),
   annotations: AnnotationsSchema.optional(),
@@ -23895,7 +24190,7 @@ var ContentBlockSchema = union([
   ResourceLinkSchema,
   EmbeddedResourceSchema
 ]);
-var PromptMessageSchema = object6({
+var PromptMessageSchema = object7({
   role: RoleSchema,
   content: ContentBlockSchema
 });
@@ -23907,26 +24202,26 @@ var PromptListChangedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/prompts/list_changed"),
   params: NotificationsParamsSchema.optional()
 });
-var ToolAnnotationsSchema = object6({
+var ToolAnnotationsSchema = object7({
   title: string3().optional(),
   readOnlyHint: boolean2().optional(),
   destructiveHint: boolean2().optional(),
   idempotentHint: boolean2().optional(),
   openWorldHint: boolean2().optional()
 });
-var ToolExecutionSchema = object6({
+var ToolExecutionSchema = object7({
   taskSupport: _enum(["required", "optional", "forbidden"]).optional()
 });
-var ToolSchema = object6({
+var ToolSchema = object7({
   ...BaseMetadataSchema.shape,
   ...IconsSchema.shape,
   description: string3().optional(),
-  inputSchema: object6({
+  inputSchema: object7({
     type: literal("object"),
     properties: record3(string3(), AssertObjectSchema).optional(),
     required: array(string3()).optional()
   }).catchall(unknown()),
-  outputSchema: object6({
+  outputSchema: object7({
     type: literal("object"),
     properties: record3(string3(), AssertObjectSchema).optional(),
     required: array(string3()).optional()
@@ -23961,7 +24256,7 @@ var ToolListChangedNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/tools/list_changed"),
   params: NotificationsParamsSchema.optional()
 });
-var ListChangedOptionsBaseSchema = object6({
+var ListChangedOptionsBaseSchema = object7({
   autoRefresh: boolean2().default(true),
   debounceMs: number2().int().nonnegative().default(300)
 });
@@ -23982,23 +24277,23 @@ var LoggingMessageNotificationSchema = NotificationSchema.extend({
   method: literal("notifications/message"),
   params: LoggingMessageNotificationParamsSchema
 });
-var ModelHintSchema = object6({
+var ModelHintSchema = object7({
   name: string3().optional()
 });
-var ModelPreferencesSchema = object6({
+var ModelPreferencesSchema = object7({
   hints: array(ModelHintSchema).optional(),
   costPriority: number2().min(0).max(1).optional(),
   speedPriority: number2().min(0).max(1).optional(),
   intelligencePriority: number2().min(0).max(1).optional()
 });
-var ToolChoiceSchema = object6({
+var ToolChoiceSchema = object7({
   mode: _enum(["auto", "required", "none"]).optional()
 });
-var ToolResultContentSchema = object6({
+var ToolResultContentSchema = object7({
   type: literal("tool_result"),
   toolUseId: string3().describe("The unique identifier for the corresponding tool call."),
   content: array(ContentBlockSchema).default([]),
-  structuredContent: object6({}).loose().optional(),
+  structuredContent: object7({}).loose().optional(),
   isError: boolean2().optional(),
   _meta: record3(string3(), unknown()).optional()
 });
@@ -24010,7 +24305,7 @@ var SamplingMessageContentBlockSchema = discriminatedUnion("type", [
   ToolUseContentSchema,
   ToolResultContentSchema
 ]);
-var SamplingMessageSchema = object6({
+var SamplingMessageSchema = object7({
   role: RoleSchema,
   content: union([SamplingMessageContentBlockSchema, array(SamplingMessageContentBlockSchema)]),
   _meta: record3(string3(), unknown()).optional()
@@ -24043,13 +24338,13 @@ var CreateMessageResultWithToolsSchema = ResultSchema.extend({
   role: RoleSchema,
   content: union([SamplingMessageContentBlockSchema, array(SamplingMessageContentBlockSchema)])
 });
-var BooleanSchemaSchema = object6({
+var BooleanSchemaSchema = object7({
   type: literal("boolean"),
   title: string3().optional(),
   description: string3().optional(),
   default: boolean2().optional()
 });
-var StringSchemaSchema = object6({
+var StringSchemaSchema = object7({
   type: literal("string"),
   title: string3().optional(),
   description: string3().optional(),
@@ -24058,7 +24353,7 @@ var StringSchemaSchema = object6({
   format: _enum(["email", "uri", "date", "date-time"]).optional(),
   default: string3().optional()
 });
-var NumberSchemaSchema = object6({
+var NumberSchemaSchema = object7({
   type: _enum(["number", "integer"]),
   title: string3().optional(),
   description: string3().optional(),
@@ -24066,24 +24361,24 @@ var NumberSchemaSchema = object6({
   maximum: number2().optional(),
   default: number2().optional()
 });
-var UntitledSingleSelectEnumSchemaSchema = object6({
+var UntitledSingleSelectEnumSchemaSchema = object7({
   type: literal("string"),
   title: string3().optional(),
   description: string3().optional(),
   enum: array(string3()),
   default: string3().optional()
 });
-var TitledSingleSelectEnumSchemaSchema = object6({
+var TitledSingleSelectEnumSchemaSchema = object7({
   type: literal("string"),
   title: string3().optional(),
   description: string3().optional(),
-  oneOf: array(object6({
+  oneOf: array(object7({
     const: string3(),
     title: string3()
   })),
   default: string3().optional()
 });
-var LegacyTitledEnumSchemaSchema = object6({
+var LegacyTitledEnumSchemaSchema = object7({
   type: literal("string"),
   title: string3().optional(),
   description: string3().optional(),
@@ -24092,26 +24387,26 @@ var LegacyTitledEnumSchemaSchema = object6({
   default: string3().optional()
 });
 var SingleSelectEnumSchemaSchema = union([UntitledSingleSelectEnumSchemaSchema, TitledSingleSelectEnumSchemaSchema]);
-var UntitledMultiSelectEnumSchemaSchema = object6({
+var UntitledMultiSelectEnumSchemaSchema = object7({
   type: literal("array"),
   title: string3().optional(),
   description: string3().optional(),
   minItems: number2().optional(),
   maxItems: number2().optional(),
-  items: object6({
+  items: object7({
     type: literal("string"),
     enum: array(string3())
   }),
   default: array(string3()).optional()
 });
-var TitledMultiSelectEnumSchemaSchema = object6({
+var TitledMultiSelectEnumSchemaSchema = object7({
   type: literal("array"),
   title: string3().optional(),
   description: string3().optional(),
   minItems: number2().optional(),
   maxItems: number2().optional(),
-  items: object6({
-    anyOf: array(object6({
+  items: object7({
+    anyOf: array(object7({
       const: string3(),
       title: string3()
     }))
@@ -24124,7 +24419,7 @@ var PrimitiveSchemaDefinitionSchema = union([EnumSchemaSchema, BooleanSchemaSche
 var ElicitRequestFormParamsSchema = TaskAugmentedRequestParamsSchema.extend({
   mode: literal("form").optional(),
   message: string3(),
-  requestedSchema: object6({
+  requestedSchema: object7({
     type: literal("object"),
     properties: record3(string3(), PrimitiveSchemaDefinitionSchema),
     required: array(string3()).optional()
@@ -24152,21 +24447,21 @@ var ElicitResultSchema = ResultSchema.extend({
   action: _enum(["accept", "decline", "cancel"]),
   content: preprocess((val) => val === null ? undefined : val, record3(string3(), union([string3(), number2(), boolean2(), array(string3())])).optional())
 });
-var ResourceTemplateReferenceSchema = object6({
+var ResourceTemplateReferenceSchema = object7({
   type: literal("ref/resource"),
   uri: string3()
 });
-var PromptReferenceSchema = object6({
+var PromptReferenceSchema = object7({
   type: literal("ref/prompt"),
   name: string3()
 });
 var CompleteRequestParamsSchema = BaseRequestParamsSchema.extend({
   ref: union([PromptReferenceSchema, ResourceTemplateReferenceSchema]),
-  argument: object6({
+  argument: object7({
     name: string3(),
     value: string3()
   }),
-  context: object6({
+  context: object7({
     arguments: record3(string3(), string3()).optional()
   }).optional()
 });
@@ -24181,7 +24476,7 @@ var CompleteResultSchema = ResultSchema.extend({
     hasMore: optional(boolean2())
   })
 });
-var RootSchema = object6({
+var RootSchema = object7({
   uri: string3().startsWith("file://"),
   name: string3().optional(),
   _meta: record3(string3(), unknown()).optional()
@@ -25754,8 +26049,8 @@ class StdioServerTransport {
 }
 
 // src/adapters/claude-channel.ts
-import { readFileSync as readFileSync12 } from "fs";
-import { join as join25 } from "path";
+import { readFileSync as readFileSync13 } from "fs";
+import { join as join26 } from "path";
 init_hub_tools();
 init_envelope();
 
@@ -25794,7 +26089,7 @@ var channel = !toolsMode && process.env.AGENTHUB_CHANNEL === "1";
 function roles2() {
   const read = (name) => {
     try {
-      return JSON.parse(readFileSync12(join25(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
+      return JSON.parse(readFileSync13(join26(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
     } catch {
       return {};
     }
@@ -25813,7 +26108,7 @@ function sessionProfile() {
     for (const name of ["config.json", "config.local.json"]) {
       let data;
       try {
-        data = JSON.parse(readFileSync12(join25(projectRoot2, ".agenthub", name), "utf8"));
+        data = JSON.parse(readFileSync13(join26(projectRoot2, ".agenthub", name), "utf8"));
       } catch (error) {
         if (error.code === "ENOENT")
           continue;
@@ -25840,7 +26135,7 @@ function sessionRoles() {
     const read = (name) => {
       let raw;
       try {
-        raw = JSON.parse(readFileSync12(join25(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
+        raw = JSON.parse(readFileSync13(join26(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
       } catch {
         return {};
       }
@@ -25869,7 +26164,7 @@ var HELD = `another session is attached to the hub as "${peerId}"; this one is s
 var INBOX_CAP = 200;
 function peerHeld() {
   try {
-    const status = JSON.parse(readFileSync12(join25(stateDir, "status.json"), "utf8"));
+    const status = JSON.parse(readFileSync13(join26(stateDir, "status.json"), "utf8"));
     const peer = status.peers?.[peerId];
     if (channel && peer?.toolsOnly && !peer.claiming)
       return false;
@@ -25904,7 +26199,7 @@ var TOOLS_INSTRUCTIONS = ["agent-hub task tools for this project. Messages from 
 `);
 var log = (line) => console.error(`[agent-hub] ${line}`);
 var text4 = (s) => ({ content: [{ type: "text", text: s }] });
-var server = new Server({ name: "agent-hub", version: VERSION2 }, toolsMode ? { capabilities: { tools: {} }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: channel ? { experimental: { "claude/channel": {} }, tools: {} } : { tools: {} }, instructions: INSTRUCTIONS });
+var server = new Server({ name: "agent-hub", version: VERSION3 }, toolsMode ? { capabilities: { tools: {} }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: channel ? { experimental: { "claude/channel": {} }, tools: {} } : { tools: {} }, instructions: INSTRUCTIONS });
 var inbox = [];
 var hub;
 var detached;

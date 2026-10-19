@@ -65,6 +65,7 @@ import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../lo
 import { runTool, toolResultFailed, TOOL_SCHEMAS, type ToolApproval, type ApprovalObserver, type ToolContext } from "../local/tools.ts";
 import { LocalPeer } from "../adapters/local-worker.ts";
 import { ReviewerPrintPeer } from "../adapters/reviewer-print.ts";
+import { createReviewerMcpSession } from "../adapters/reviewer-mcp.ts";
 import { reviewerPoolConfig } from "./reviewer-pool-config.ts";
 import { reviewDiff } from "../adapters/claude-print.ts";
 import { Capture, skipTools } from "../memory/capture.ts";
@@ -3860,12 +3861,25 @@ export async function startDaemon(opts: DaemonOptions) {
       // #519: each backend proves isolation before admission, then starts one fresh child per review.
       if (existing?.state === "busy") return { ok: false, error: `${peer} is reviewing; retry when it is idle` };
       if (existing) { mute(existing); await existing.stop(); }
+      const reviewPolicies = new Map<string, string>();
       const reviewer = adapter.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["reviewer-print"]({
         backend, cwd: executionCwd,
         mcpConfig: JSON.stringify({ mcpServers: { "agent-hub": { command: process.execPath, args: ["run", SERVER_JS], env: toolEnv(peer, true) } } }),
         systemPrompt: sessionRoleContract(peer),
         watchdogMs: config.watchdog_ms,
         privatePaths: [opts.stateDir, ...(config.pii?.paths ?? []), ...config.local.deny],
+        taskMcp: (task, current) => createReviewerMcpSession({ task, current, tools: [...TASK_TOOLS, ...CONDUCTOR_TOOLS],
+          call: (name, args) => taskOp(peer, name, args, true, contextPii(peer)) }),
+        admit: env => {
+          if (env.private || contextPii(peer) || !reviewOnlyPeer(peer) || !tasks.reviewBindingCurrent(peer, Number(env.refs?.task),
+            { head: env.refs?.commit, flowRevision: Number(env.refs?.reviewRevision) })) return false;
+          const policy = JSON.stringify([config.local.deny, config.pii, config.data, config.roles[peer]]);
+          const before = reviewPolicies.get(env.id);
+          if (before !== undefined) return before === policy;
+          if (reviewPolicies.size >= 64) reviewPolicies.delete(reviewPolicies.keys().next().value!);
+          reviewPolicies.set(env.id, policy);
+          return true;
+        },
         facts: env => env.private ? undefined : reviewDiff(executionCwd, env.refs?.commit, { privatePath: path => isDenied(path, config.local.deny) || matchesPolicy(executionCwd, path, config.pii?.paths ?? [], true), nameable: tasks.nameable }),
         verdictSince: (task, since) => board.get(task)?.history.some(h => h.by === peer && h.at >= since && (h.event === "approved" || h.event === "changes_requested")) === true,
         onUsage: usage => void addTokens(peer, (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)),
@@ -3878,9 +3892,10 @@ export async function startDaemon(opts: DaemonOptions) {
         log,
       }) }) as ReviewerPrintPeer;
       try { await reviewer.start(); }
-      catch {
+      catch (error) {
         await reviewer.stop().catch(() => {});
-        const reason = "reviewer isolation unavailable; inspect the verified CLI version and isolation requirements";
+        const reason = backend.nativePolicy && error instanceof Error ? sanitize(error.message).slice(0, 1000)
+          : "reviewer isolation unavailable; inspect the verified CLI version and isolation requirements";
         reviewerUnavailable.set(peer, reason);
         return { ok: false, error: reason };
       }
