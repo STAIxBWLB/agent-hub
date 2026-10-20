@@ -145,7 +145,7 @@ const text = (s: string) => ({ content: [{ type: "text" as const, text: s }] });
 
 const server = new Server(
   { name: "agent-hub", version: VERSION },
-  toolsMode ? { capabilities: { tools: {} }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: channel ? { experimental: { "claude/channel": {} }, tools: {} } : { tools: {} }, instructions: INSTRUCTIONS },
+  toolsMode ? { capabilities: { tools: { listChanged: true } }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: channel ? { experimental: { "claude/channel": {} }, tools: { listChanged: true } } : { tools: { listChanged: true } }, instructions: INSTRUCTIONS },
 );
 
 const inbox: string[] = []; // pushes that failed; drained by hub_inbox
@@ -270,6 +270,9 @@ async function connectLoop(): Promise<void> {
       standingBy = false;
       detached = undefined;
       log(`connected to hub as "${peerId}"`);
+      // The tool list depends on the connected hub (its lifecycle): when it differs from what the host last listed,
+      // ask the host to list it again (#490).
+      if (listedTools !== undefined) void buildToolList().then(list => { if (toolNames(list) !== listedTools) return server.sendToolListChanged(); }).catch(() => {});
       code = await new Promise<number>((r) => { client.onClose = (value, reason) => { closeReason = reason; r(value); }; });
       hub = undefined;
       log("hub connection lost");
@@ -293,7 +296,11 @@ async function connectLoop(): Promise<void> {
   }
 }
 
-server.setRequestHandler(ListToolsRequestSchema, async () => {
+/** Tool names the host was last given; a reconnect that changes them asks the host to list again (#490). */
+let listedTools: string | undefined;
+const toolNames = (list: { tools: { name: string }[] }) => list.tools.map(tool => tool.name).sort().join(",");
+
+async function buildToolList() {
   const lifecycle = await activeLifecycle(stateDir, peerId, projectRoot, hub);
   return {
   tools: [
@@ -336,6 +343,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     ...CONDUCTOR_TOOLS,
   ],
   };
+}
+
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  const list = await buildToolList();
+  listedTools = toolNames(list);
+  return list;
 });
 
 async function callTool(req: { params: { name: string; arguments?: Record<string, unknown> } }) {
