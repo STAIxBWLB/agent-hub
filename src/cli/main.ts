@@ -17,7 +17,7 @@ import { profileName, projectProfile, resolveProfile } from "../hub/profiles.ts"
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 import { attachWatch } from "./watch.ts";
 import { verifiedJcodeCommand } from "../adapters/jcode.ts";
-import { configureJcodeMcp } from "./jcode-mcp.ts";
+import { configureJcodeMcp, jcodeExtraMcpServers } from "./jcode-mcp.ts";
 import { qwenSessionId } from "../hub/crash.ts";
 import { isPermissionMode } from "../hub/permission-mode.ts";
 import { parseSettingText, settingDef, settingText, type SettingRow } from "../hub/settings.ts";
@@ -1934,7 +1934,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       for (const error of routingErrors) row(false, "routing", error);
       for (const probe of nativeDoctorOptionalProbes(config)) {
         if (probe.kind === "source-identity") row(verifiedJcodeCommand(probe.command, cwd), probe.name, probe.detail);
-        else {
+        else if (probe.kind === "jcode-mcp") {
+          const { servers, unreadable } = jcodeExtraMcpServers(cwd, probe.home);
+          row(servers.length || unreadable.length ? false : true, probe.name,
+            [servers.length ? `${servers.length} besides the hub's own would load in the hub-owned jcode (${servers.join(", ")}); jcode has no switch to choose them, so remove them from its config or use another JCODE_HOME` : "",
+              unreadable.length ? `unreadable or unsafe, not listed: ${unreadable.join(", ")}` : ""].filter(Boolean).join("; ") || "none besides the hub's own");
+        } else {
           const v = version(probe.command[0]!);
           row(v === probe.expected, probe.name, v === probe.expected ? probe.confirmed : probe.unconfirmed);
         }

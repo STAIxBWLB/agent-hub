@@ -245,7 +245,7 @@ interface Envelope {
 - One queue rule per peer (amended in M2): the whole queue goes out as one delivery, a single
   envelope or a digest of up to 10, when the peer is idle and the queue holds an `important`
   envelope, or `batch_max` (3) envelopes, or its oldest one has waited `batch_ms` (15 s).
-  `important` to a busy Codex is steered instead. `fyi` is never delivered to a peer: console
+  `important` to a busy Codex or a busy owned Jcode is steered instead: Jcode takes it as a soft interrupt through its own private server socket, injected at its next tool boundary, and the turn answers its sender too (#572). The hub never cancels a turn to deliver; a peer with no steer (headless Kimi, Qwen) keeps it queued, and status reports how long it has waited once that passes `budget.stale_min`. `fyi` is never delivered to a peer: console
   and log now, the task board from M4. A digest is one prompt (Codex, Kimi) or one channel
   notification (`meta.source = hub-digest`, senders in `meta.sources`); its reply answers the
   highest-hop item, so neither a digest nor a steer can reset the hop cap. Important items lead
@@ -275,7 +275,7 @@ interface Envelope {
 | State | Enter | Delivery rule |
 | --- | --- | --- |
 | idle | turn completed / prompt returned | inject now |
-| busy | turn started / prompt in flight | Claude: push (Claude Code queues); Codex: steer if important else queue; Kimi/local: queue |
+| busy | turn started / prompt in flight | Claude: push (Claude Code queues); Codex, Jcode: steer if important else queue; Kimi/local: queue |
 | paused | budget gate (M5) or user `ahub pause` / `ahub resume`; a bus-level flag over the adapter state | queue, never steer; reassign open tasks (M5) |
 | offline | adapter disconnected | queue |
 
