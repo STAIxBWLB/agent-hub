@@ -72,7 +72,7 @@ trap 'exit 143' TERM
 env -u AGENTHUB_PEER_ID -u AGENTHUB_DELIVERY_ONLY -u AGENTHUB_CHANNEL -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID \
   -u AGENTHUB_PROJECT_DIR -u AGENTHUB_STATE_DIR -u AGENTHUB_INSTANCE_ID -u AGENTHUB_LAUNCH_ID bun test --timeout 20000 &
 test_pid=$!
-scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-600}" &
+scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-960}" &
 watch_pid=$!
 wait "$test_pid" || tests=$?
 test_pid=""

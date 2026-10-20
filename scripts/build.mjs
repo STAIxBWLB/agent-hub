@@ -2,6 +2,18 @@
 // package version into the plugin manifest. `--check` fails when the committed bundle or manifest is stale.
 import { readFileSync, writeFileSync } from "node:fs";
 
+// Bun.build output differs between Bun versions, and CI builds with .bun-version: re-run once under that Bun (#591).
+const pinned = readFileSync(".bun-version", "utf8").trim();
+if (Bun.version !== pinned) {
+  if (process.env.AHUB_BUILD_PINNED_BUN) {
+    console.error(`build: bun x bun@${pinned} ran Bun ${Bun.version}; the bundle must be built with Bun ${pinned} (.bun-version)`);
+    process.exit(1);
+  }
+  const run = Bun.spawnSync([process.execPath, "x", `bun@${pinned}`, "scripts/build.mjs", ...process.argv.slice(2)],
+    { stdio: ["inherit", "inherit", "inherit"], env: { ...process.env, AHUB_BUILD_PINNED_BUN: "1" } });
+  process.exit(run.exitCode ?? 1);
+}
+
 const out = "plugins/agent-hub/server.js";
 const manifest = "plugins/agent-hub/.claude-plugin/plugin.json";
 const roleNotice = readFileSync("templates/roles/NOTICE.md", "utf8");
