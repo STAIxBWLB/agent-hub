@@ -1,10 +1,25 @@
 import type { Envelope } from "./envelope.ts";
 import type { Task } from "./board.ts";
 
+type DeliveryTask = Pick<Task, "id" | "state" | "owner" | "reviewer" | "cancelled"> & Partial<Pick<Task, "history">>;
+
+/** No task text or timestamps: only this recipient's own acceptance in its current ownership span. */
+function recipientAccepted(task: DeliveryTask, recipient: string): boolean {
+  const history = task.history;
+  if (!history) return false;
+  // ponytail: inspect at most 4096 recent entries. Older/unknown acceptance keeps the brief held; a persisted owner epoch can extend it.
+  for (let index = history.length - 1, first = Math.max(0, history.length - 4096); index >= first; index--) {
+    const entry = history[index]!;
+    if (entry.owner !== undefined || ["assigned", "reassigned", "escalated", "unassigned", "backlog returned untouched"].includes(entry.event)) return false;
+    if (entry.event === "accepted" && entry.by === recipient) return true;
+  }
+  return false;
+}
+
 /** Evidence only, never task text: a mixed/unknown/live row requires a person's decision. */
 export function supersededDeliveryReason(
   originals: readonly Envelope[],
-  board: { get(id: number): Pick<Task, "id" | "state" | "owner" | "reviewer" | "cancelled"> | undefined },
+  board: { get(id: number): DeliveryTask | undefined },
   recipient: string,
 ): string | undefined {
   if (!originals.length) return undefined;
@@ -23,7 +38,7 @@ export function supersededDeliveryReason(
       reasons.add(`task #${task.id} cancelled`);
     } else if (task.state === "approved") reasons.add(`task #${task.id} approved`);
     else if (env.kind === "task" && env.refs.taskRecipient === "owner" && Number.isSafeInteger(env.refs.taskOffer) && env.refs.taskOffer! >= 1 &&
-      task.owner === recipient && ["in_progress", "in_review", "changes_requested"].includes(task.state)) reasons.add(`task #${task.id} accepted`);
+      task.owner === recipient && ["in_progress", "in_review", "changes_requested"].includes(task.state) && recipientAccepted(task, recipient)) reasons.add(`task #${task.id} accepted`);
     else if ((env.kind === "review" || env.refs.taskRecipient === "reviewer") && (task.state !== "in_review" || task.reviewer !== recipient)) reasons.add(`task #${task.id} review moved`);
     else if (env.kind === "task" && env.refs.taskRecipient === "owner" && task.owner !== recipient) reasons.add(`task #${task.id} owner moved`);
     else return undefined; // Untagged legacy task notices and planner coordination carry no proof of supersession.
@@ -35,7 +50,7 @@ export function supersededDeliveryReason(
 /** Informational context for every referenced task, including peer/user and mixed rows. Never authorizes settlement. */
 export function deliveryTaskContext(
   originals: readonly Envelope[],
-  board: { get(id: number): Pick<Task, "id" | "state" | "owner" | "reviewer" | "cancelled"> | undefined },
+  board: { get(id: number): DeliveryTask | undefined },
   recipient: string,
 ): string | undefined {
   const context = new Set<string>();
