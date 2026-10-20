@@ -2684,7 +2684,7 @@
     {
       "id": "github-import-source-screen",
       "file": "src/hub/tasks.ts",
-      "search": "const screenDetail = [text.detail, external?.repo, external?.url].filter(value => value !== undefined && value !== \"\").join(\"\\n\");",
+      "search": "const screenDetail = [text.detail, text.refs.repo, external?.repo, external?.url].filter(value => value !== undefined && value !== \"\").join(\"\\n\");",
       "replacement": "const screenDetail = text.detail;",
       "testFile": "test/github-import-tasks.test.ts",
       "testName": "GitHub intake screens canonical source identity before exposing external URLs"
