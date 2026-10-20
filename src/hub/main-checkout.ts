@@ -27,8 +27,8 @@ export function mainCheckoutBranch(cwd: string): { branch: string; defaultBranch
  * whole public-text screen (`Tasks.publicMetadataText`: the configured PII patterns, secret shapes and private paths). A name it refuses, or any text
  * that is not a plain ref name, is replaced by a generic sentence that carries no part of it (#572 review I2).
  */
-export function mainCheckoutWarning(cwd: string, nameable: (text: string) => boolean = () => false): string | undefined {
-  const found = mainCheckoutBranch(cwd);
+export function mainCheckoutWarning(cwd: string, nameable: (text: string) => boolean = () => false, read: typeof mainCheckoutBranch = mainCheckoutBranch): string | undefined {
+  const found = read(cwd);
   if (!found) return undefined;
   const plain = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,99}$/.test(found.branch) && nameable(found.branch);
   return plain ? `the main checkout is on \`${found.branch}\`; move the work to a worktree under .worktrees/`

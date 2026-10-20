@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, type Stats } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { childEnv } from "./child-process.ts";
@@ -12,17 +13,28 @@ import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
  * Per-turn workspace snapshots (issue #33): git tree objects written through a copy of the index, so the user's index
  * and HEAD never change. They hold tracked and unignored files as `git add -A` sees them, shell-made changes included.
  * ponytail: snapshots run synchronously on the turn boundary (before the agent sees its prompt); a very large tree
- * costs that much latency per turn, `snapshots.enabled` is the switch and `turn_end.snapshotMs` the measurement.
+ * costs that much latency per turn for unbudgeted CLI calls. The daemon shares a bounded burst deadline;
+ * exhausted boundaries are unknown. `snapshots.enabled` is the switch and `turn_end.snapshotMs` the measurement.
+ * ponytail: the deadline caps Git child waits, not synchronous metadata/index-copy syscalls. If those become
+ * measured blockers, move capture to an isolated worker with native-boundary admission fencing.
  * ponytail: the trees are unreferenced, so `git gc` may prune them after gc.pruneExpire (two weeks by default); undo
  * of an older turn says so. Refs under refs/agenthub/ would keep them, at the cost of showing up in the user's repo.
  */
-const git = (top: string | Repo, args: string[], env: Record<string, string> = {}) =>
-  hubGitSync(repoGitArgs(top, args), {
-    encoding: "utf8",
-    env: { ...repoGitEnv(top), ...env },
-    // These run inside the bus's state change: a hung git (a huge new directory, a stuck filter) must not freeze the hub.
-    timeout: SNAPSHOT_TIMEOUT_MS,
+export interface SnapshotBudget { deadline: number; }
+export class SnapshotBudgetExceeded extends Error {
+  constructor() { super("snapshot burst budget exhausted; boundary evidence is unknown"); }
+}
+const git = (top: string | Repo, args: string[], env: Record<string, string> = {}, budget?: SnapshotBudget) => {
+  const argv = repoGitArgs(top, args);
+  const remaining = budget ? budget.deadline - performance.now() : SNAPSHOT_TIMEOUT_MS;
+  if (remaining <= 0) throw new SnapshotBudgetExceeded();
+  const result = hubGitSync(argv, {
+    encoding: "utf8", env: { ...repoGitEnv(top), ...env },
+    timeout: Math.max(1, Math.min(SNAPSHOT_TIMEOUT_MS, Math.floor(remaining))),
   });
+  if (budget && (performance.now() >= budget.deadline || (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT")) throw new SnapshotBudgetExceeded();
+  return result;
+};
 const SNAPSHOT_TIMEOUT_MS = 10_000;
 
 /** A repository and where the project sits in it: `prefix` is "" at the top level, else "sub/dir/". */
@@ -64,8 +76,8 @@ export function repoGitEnv(repo: string | Repo, env = process.env): NodeJS.Proce
 }
 
 /** The repository holding `root`, or undefined when it is not inside a work tree. */
-export function repoOf(root: string): Repo | undefined {
-  const r = git(root, ["rev-parse", "--show-toplevel", "--absolute-git-dir", "--show-prefix"]);
+export function repoOf(root: string, budget?: SnapshotBudget): Repo | undefined {
+  const r = git(root, ["rev-parse", "--show-toplevel", "--absolute-git-dir", "--show-prefix"], {}, budget);
   if (r.status === 0) {
     const [top, dir, prefix = ""] = r.stdout.replace(/\n$/, "").split("\n");
     if (top && dir) return { top, dir, prefix };
@@ -82,7 +94,7 @@ export function repoOf(root: string): Repo | undefined {
   if (ignore && (!ignore.isFile() || ignore.isSymbolicLink() || ignore.nlink !== 1)) return undefined;
   if (!shadowStorageSafe(dir)) return undefined;
   const repo: Repo = { top, dir: realPath(dir), prefix: "", shadow: true };
-  const probe = git(repo, ["rev-parse", "--absolute-git-dir"]);
+  const probe = git(repo, ["rev-parse", "--absolute-git-dir"], {}, budget);
   return probe.status === 0 && realPath(probe.stdout.trim()) === repo.dir ? repo : undefined;
 }
 /** Opt-in creation only; a real repository is never replaced or modified. */
@@ -107,8 +119,228 @@ const literal = (path: string) => `:(literal)${path}`;
 /** Only the project's own files: a hub in a subdirectory of a larger repository snapshots that subdirectory. */
 const scope = (repo: Repo) => (repo.prefix ? literal(repo.prefix) : ".");
 
+/** Committed HEAD tree, null for an unborn HEAD, undefined when evidence cannot be read. */
+export function headTree(repo: Repo, budget?: SnapshotBudget): string | null | undefined {
+  const result = git(repo, ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"], {}, budget);
+  return result.status === 0 ? result.stdout.trim() : result.status === 1 ? null : undefined;
+}
+
+/** One probe binds the committed HEAD id and tree; an unborn HEAD needs positive missing-ref proof. */
+export function headState(repo: Repo, budget?: SnapshotBudget): { head: string | null; tree: string | null } | undefined {
+  const result = git(repo, ["rev-parse", "--quiet", "HEAD", "HEAD^{tree}"], {}, budget);
+  const values = result.status === 0 ? result.stdout.trim().split("\n") : [];
+  if (values.length === 2 && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(values[0]!) &&
+      /^[0-9a-f]+$/.test(values[1]!) && values[0]!.length === values[1]!.length) return { head: values[0]!, tree: values[1]! };
+  if (result.status === 0) return undefined;
+  const symbolic = git(repo, ["symbolic-ref", "--quiet", "HEAD"], {}, budget);
+  const ref = symbolic.status === 0 ? symbolic.stdout.trim() : "";
+  if (!ref.startsWith("refs/heads/")) return undefined;
+  const missing = git(repo, ["show-ref", "--verify", "--quiet", ref], {}, budget);
+  if (missing.status !== 1) return undefined;
+  const current = git(repo, ["rev-parse", "--verify", "--quiet", "HEAD"], {}, budget);
+  return current.status === 1 ? { head: null, tree: null } : undefined;
+}
+
+/** A bounded append cursor; raw reflog identities and messages never leave the reader. */
+export interface HeadMoveCursor {
+  readonly head: string | null;
+  readonly tree: string | null;
+  readonly unbornRefHash?: string;
+  readonly dev: number;
+  readonly ino: number;
+  readonly size: number;
+  readonly anchorOffset: number;
+  readonly anchor: string;
+}
+const HEAD_LOG_TAIL_BYTES = 4096;
+const HEAD_LOG_MAX_APPEND_BYTES = 128 * 1024;
+const HEAD_LOG_MAX_MOVES = 64;
+const checkSnapshotBudget = (budget?: SnapshotBudget) => { if (budget && performance.now() >= budget.deadline) throw new SnapshotBudgetExceeded(); };
+const sameLogFile = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino;
+function readHeadLog<T>(repo: Repo, budget: SnapshotBudget | undefined, read: (fd: number, stat: Stats) => T | undefined): T | undefined {
+  let fd: number | undefined;
+  try {
+    checkSnapshotBudget(budget);
+    const logs = join(repo.dir, "logs"), file = join(logs, "HEAD");
+    const directory = lstatSync(logs);
+    if (!directory.isDirectory() || directory.isSymbolicLink()) return undefined;
+    const named = lstatSync(file);
+    if (!named.isFile() || named.isSymbolicLink() || named.nlink !== 1) return undefined;
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = fstatSync(fd);
+    if (!before.isFile() || before.nlink !== 1 || !sameLogFile(named, before) || before.size !== named.size) return undefined;
+    const result = read(fd, before);
+    const after = fstatSync(fd), current = lstatSync(file), parent = lstatSync(logs);
+    checkSnapshotBudget(budget);
+    if (!sameLogFile(before, after) || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs ||
+        !current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || !sameLogFile(after, current) || after.size !== current.size || after.mtimeMs !== current.mtimeMs || after.ctimeMs !== current.ctimeMs ||
+        !parent.isDirectory() || parent.isSymbolicLink() || !sameLogFile(directory, parent)) return undefined;
+    return result;
+  } catch (error) { if (error instanceof SnapshotBudgetExceeded) throw error; return undefined; }
+  finally { if (fd !== undefined) closeSync(fd); }
+}
+function headLogBytes(fd: number, offset: number, length: number, budget?: SnapshotBudget): Buffer | undefined {
+  const data = Buffer.alloc(length);
+  let used = 0;
+  while (used < length) {
+    checkSnapshotBudget(budget);
+    const count = readSync(fd, data, used, length - used, offset + used);
+    if (!count) return undefined;
+    used += count;
+  }
+  return data;
+}
+const headLogHash = (data: Buffer) => createHash("sha256").update(data).digest("hex");
+function headLogRow(line: string): { old: string; next: string; action: string } | undefined {
+  const row = /^([0-9a-f]{40}|[0-9a-f]{64}) ([0-9a-f]{40}|[0-9a-f]{64}) [^\r\n\t]+ [0-9]+ [+-][0-9]{4}\t([^\r\n]*)$/.exec(line);
+  return row && row[1]!.length === row[2]!.length ? { old: row[1]!, next: row[2]!, action: row[3]! } : undefined;
+}
+function missingHeadLog(repo: Repo): boolean {
+  try {
+    const parent = lstatSync(join(repo.dir, "logs"));
+    if (!parent.isDirectory() || parent.isSymbolicLink()) return false;
+  } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+  try { lstatSync(join(repo.dir, "logs", "HEAD")); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+}
+/** Read only a bounded, stable symbolic HEAD when the caller already proved it unborn. */
+function symbolicHeadRef(repo: Repo, budget?: SnapshotBudget): string | undefined {
+  let fd: number | undefined;
+  try {
+    checkSnapshotBudget(budget);
+    const file = join(repo.dir, "HEAD"), named = lstatSync(file);
+    if (!named.isFile() || named.isSymbolicLink() || named.nlink !== 1 || named.size > 4096) return undefined;
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = fstatSync(fd);
+    if (!before.isFile() || before.nlink !== 1 || !sameLogFile(named, before) || named.size !== before.size) return undefined;
+    const bytes = headLogBytes(fd, 0, before.size, budget);
+    const after = fstatSync(fd), current = lstatSync(file);
+    checkSnapshotBudget(budget);
+    if (!bytes || !sameLogFile(before, after) || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs ||
+        !current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || !sameLogFile(after, current) || after.size !== current.size ||
+        after.mtimeMs !== current.mtimeMs || after.ctimeMs !== current.ctimeMs) return undefined;
+    return /^ref: (refs\/heads\/[^\r\n]+)\n?$/.exec(bytes.toString("utf8"))?.[1];
+  } catch (error) { if (error instanceof SnapshotBudgetExceeded) throw error; return undefined; }
+  finally { if (fd !== undefined) closeSync(fd); }
+}
+/** provenHead is host-only, paired with expectedTree from the very same headState probe. */
+export function headMoveCursor(repo: Repo, expectedTree: string | null, budget?: SnapshotBudget, provenHead?: string | null): HeadMoveCursor | undefined {
+  if (provenHead !== undefined && (provenHead === null) !== (expectedTree === null)) return undefined;
+  if (expectedTree === null) {
+    let ref: string | undefined;
+    if (provenHead === null) ref = symbolicHeadRef(repo, budget);
+    else {
+      const symbolic = git(repo, ["symbolic-ref", "--quiet", "HEAD"], {}, budget);
+      ref = symbolic.status === 0 ? symbolic.stdout.trim() : undefined;
+      if (!ref?.startsWith("refs/heads/")) return undefined;
+      const missing = git(repo, ["show-ref", "--verify", "--quiet", ref], {}, budget);
+      if (missing.status !== 1) return undefined;
+      const current = git(repo, ["rev-parse", "--verify", "--quiet", "HEAD"], {}, budget);
+      if (current.status !== 1) return undefined;
+    }
+    if (!ref || !missingHeadLog(repo)) return undefined;
+    checkSnapshotBudget(budget);
+    return { head: null, tree: null, unbornRefHash: createHash("sha256").update(ref).digest("hex"), dev: 0, ino: 0, size: 0, anchorOffset: 0, anchor: headLogHash(Buffer.alloc(0)) };
+  }
+  const cursor = readHeadLog(repo, budget, (fd, stat): HeadMoveCursor | undefined => {
+    if (stat.size <= 0 || !Number.isSafeInteger(stat.size)) return undefined;
+    const anchorOffset = Math.max(0, stat.size - HEAD_LOG_TAIL_BYTES);
+    const tail = headLogBytes(fd, anchorOffset, stat.size - anchorOffset, budget);
+    if (!tail || tail[tail.length - 1] !== 10) return undefined;
+    const text = tail.toString("utf8"), start = text.lastIndexOf("\n", text.length - 2) + 1;
+    if (anchorOffset > 0 && start === 0) return undefined;
+    const last = headLogRow(text.slice(start, -1));
+    if (!last) return undefined;
+    return { head: last.next, tree: expectedTree, dev: stat.dev, ino: stat.ino, size: stat.size, anchorOffset, anchor: headLogHash(tail) };
+  });
+  if (!cursor) return undefined;
+  if (provenHead !== undefined) return cursor.head === provenHead ? cursor : undefined;
+  // Bind the observed log tip and its immutable tree to current HEAD in one bounded probe.
+  const current = git(repo, ["rev-parse", "--quiet", "HEAD", `${cursor.head}^{tree}`], {}, budget);
+  const values = current.status === 0 ? current.stdout.trim().split("\n") : [];
+  return values.length === 2 && values[0] === cursor.head && values[1] === expectedTree ? cursor : undefined;
+}
+export function incomingHeadPaths(repo: Repo, start: HeadMoveCursor, end: HeadMoveCursor, budget?: SnapshotBudget): string[] | undefined {
+  const validCursor = (cursor: HeadMoveCursor) => Number.isSafeInteger(cursor.size) && cursor.size >= 0 &&
+    (cursor.size > 0 ? !!cursor.head && !!cursor.tree : cursor.head === null && cursor.tree === null && /^[0-9a-f]{64}$/.test(cursor.unbornRefHash ?? "")) &&
+    cursor.anchorOffset === Math.max(0, cursor.size - HEAD_LOG_TAIL_BYTES) && /^[0-9a-f]{64}$/.test(cursor.anchor);
+  if (!validCursor(start) || !validCursor(end) || (start.size > 0 && (start.dev !== end.dev || start.ino !== end.ino)) ||
+      end.size < start.size || end.size - start.size > HEAD_LOG_MAX_APPEND_BYTES) return undefined;
+  if (!end.size) {
+    checkSnapshotBudget(budget);
+    const unchanged = start.unbornRefHash === end.unbornRefHash && missingHeadLog(repo);
+    checkSnapshotBudget(budget);
+    return unchanged ? [] : undefined;
+  }
+  const appended = readHeadLog(repo, budget, (fd, stat) => {
+    if (stat.dev !== end.dev || stat.ino !== end.ino || stat.size < end.size) return undefined;
+    for (const cursor of [start, end]) {
+      const anchor = headLogBytes(fd, cursor.anchorOffset, cursor.size - cursor.anchorOffset, budget);
+      if (!anchor || headLogHash(anchor) !== cursor.anchor) return undefined;
+    }
+    return headLogBytes(fd, start.size, end.size - start.size, budget);
+  });
+  if (!appended) return undefined;
+  if (!appended.length) return start.head === end.head && start.tree === end.tree ? [] : undefined;
+  if (appended[appended.length - 1] !== 10) return undefined;
+  const lines = appended.toString("utf8").slice(0, -1).split("\n");
+  if (lines.length > HEAD_LOG_MAX_MOVES) return undefined;
+  const own = new Set<string>(), incoming = new Set<string>();
+  let previous = start.head;
+  for (const line of lines) {
+    checkSnapshotBudget(budget);
+    const row = headLogRow(line);
+    if (!row || (previous === null ? !/^0+$/.test(row.old) : row.old !== previous)) return undefined;
+    // Git preserves the invoking command in sequencer actions (for example pull -q --rebase (pick)).
+    // Classify the native phase before considering ordinary command-shaped incoming actions.
+    const separator = row.action.indexOf(": ");
+    const action = separator < 0 ? "" : row.action.slice(0, separator);
+    const detail = separator < 0 ? "" : row.action.slice(separator + 2);
+    const sequencerOwn = /^.+ \((?:pick|reword|edit|squash|fixup|continue|finish)\)$/.test(action);
+    const ownMove = sequencerOwn || /^(?:commit(?: \(amend\)| \(initial\))?|cherry-pick)$/.test(action);
+    const incomingStart = /^(?:rebase|pull(?: [^(]*)?) \(start\)$/.test(action) && /^checkout .+/.test(detail);
+    const incomingCommand = !action.includes("(") && /^(?:merge|pull)(?: [^:]+)?$/.test(action) && !!detail;
+    let incomingMove = !ownMove && (incomingStart || incomingCommand || action === "checkout" && /^moving from .+ to .+$/.test(detail));
+    if (action === "reset" && /^moving to .+/.test(detail)) {
+      // Policy: a positively fast-forward reset is incoming, even when its target contains the peer's own
+      // descendant commit; reflog ancestry alone cannot distinguish that intent. Rewinds/unknown resets refuse.
+      const ancestor = git(repo, ["merge-base", "--is-ancestor", row.old, row.next], {}, budget);
+      if (ancestor.status !== 0) return undefined;
+      incomingMove = true;
+    }
+    if (!ownMove && !incomingMove) return undefined;
+    let paths: string[] | undefined;
+    if (/^0+$/.test(row.old)) {
+      const root = git(repo, ["diff-tree", "--root", "--no-commit-id", "-r", "--no-renames", "--name-only", "-z", row.next, "--", scope(repo)], {}, budget);
+      paths = root.status === 0 ? root.stdout.split("\0").filter(Boolean) : undefined;
+    } else paths = knownChangedPaths(repo, row.old, row.next, budget);
+    if (!paths) return undefined;
+    for (const path of paths) { checkSnapshotBudget(budget); (ownMove ? own : incoming).add(path); }
+    previous = row.next;
+  }
+  if (previous !== end.head) return undefined;
+  // A path touched by both kinds cannot be separated at file-level undo granularity.
+  const hasAncestor = (paths: Set<string>, path: string) => {
+    for (let at = path.lastIndexOf("/"); at > 0; at = path.lastIndexOf("/", at - 1)) {
+      checkSnapshotBudget(budget);
+      if (paths.has(path.slice(0, at))) return true;
+    }
+    return false;
+  };
+  for (const path of own) {
+    checkSnapshotBudget(budget);
+    if (incoming.has(path) || hasAncestor(incoming, path)) return undefined;
+  }
+  for (const path of incoming) {
+    checkSnapshotBudget(budget);
+    if (hasAncestor(own, path)) return undefined;
+  }
+  checkSnapshotBudget(budget);
+  return [...incoming];
+}
+
 /** A tree id for the project's files as they are now, leaving out the hub's own state. */
-export function snapshot(repo: Repo): string | undefined {
+export function snapshot(repo: Repo, budget?: SnapshotBudget): string | undefined {
   const tmp = mkdtempSync(join(tmpdir(), "ahub-snap-"));
   try {
     const env = { GIT_INDEX_FILE: join(tmp, "index") };
@@ -122,12 +354,12 @@ export function snapshot(repo: Repo): string | undefined {
       utimesSync(env.GIT_INDEX_FILE, atime, mtime);
     }
     // `ahub reset --all` archives hub.db (task text, PII included) under .agenthub/archive: never copy it either.
-    if (git(repo, ["add", "-A", "--", scope(repo), ":(exclude,glob)**/.agenthub/state/**", ":(exclude,glob)**/.agenthub/archive/**", ...(repo.shadow ? [":(exclude,glob)**/.agenthub/shadow.git/**"] : [])], env).status !== 0) return undefined;
+    if (git(repo, ["add", "-A", "--", scope(repo), ":(exclude,glob)**/.agenthub/state/**", ":(exclude,glob)**/.agenthub/archive/**", ...(repo.shadow ? [":(exclude,glob)**/.agenthub/shadow.git/**"] : [])], env, budget).status !== 0) return undefined;
     // The copy starts from the user's index: hub state somebody tracked or staged is still in it, and the exclude above
     // only keeps `add` from touching it. Take it out explicitly; -f because staged state the hub has rewritten since
     // matches neither HEAD nor the file, which `rm --cached` otherwise refuses. Only the copy changes.
-    if (git(repo, ["rm", "-r", "-f", "--cached", "--quiet", "--ignore-unmatch", "--", ":(glob)**/.agenthub/state/**", ":(glob)**/.agenthub/archive/**", ...(repo.shadow ? [":(glob)**/.agenthub/shadow.git/**"] : [])], env).status !== 0) return undefined;
-    const r = git(repo, ["write-tree"], env);
+    if (git(repo, ["rm", "-r", "-f", "--cached", "--quiet", "--ignore-unmatch", "--", ":(glob)**/.agenthub/state/**", ":(glob)**/.agenthub/archive/**", ...(repo.shadow ? [":(glob)**/.agenthub/shadow.git/**"] : [])], env, budget).status !== 0) return undefined;
+    const r = git(repo, ["write-tree"], env, budget);
     return r.status === 0 ? r.stdout.trim() : undefined;
   } finally {
     rmSync(tmp, { recursive: true, force: true });
@@ -135,9 +367,12 @@ export function snapshot(repo: Repo): string | undefined {
 }
 
 /** Project paths (relative to the top level) that differ between two trees. */
+export function knownChangedPaths(repo: Repo, from: string, to: string, budget?: SnapshotBudget): string[] | undefined {
+  const r = git(repo, ["diff-tree", "-r", "--no-renames", "--name-only", "-z", from, to, "--", scope(repo)], {}, budget);
+  return r.status === 0 ? r.stdout.split("\0").filter(Boolean) : undefined;
+}
 export function changedPaths(repo: Repo, from: string, to: string): string[] {
-  const r = git(repo, ["diff-tree", "-r", "--no-renames", "--name-only", "-z", from, to, "--", scope(repo)]);
-  return r.status === 0 ? r.stdout.split("\0").filter(Boolean) : [];
+  return knownChangedPaths(repo, from, to) ?? [];
 }
 
 const inTree = (top: string | Repo, tree: string, path: string) => git(top, ["rev-parse", "--verify", "--quiet", `${tree}:${path}`]).status === 0;

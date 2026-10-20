@@ -4300,7 +4300,7 @@ function ownerStillAlive(pid, signature) {
     return false;
   }
 }
-var PiToolSettlementFailure, PiPromptNotStarted, PiPromptUncertain, PiPeer;
+var PiToolSettlementFailure, PiPromptNotStarted, PiPromptUncertain, TERMINAL_OWNER_MAX_AGE_MS = 1000, PiPeer;
 var init_pi = __esm(() => {
   init_launch();
   init_envelope();
@@ -4381,6 +4381,7 @@ var init_pi = __esm(() => {
     ownerPid;
     ownerSignature;
     ownerMonitor;
+    terminalOwnerObservation;
     tuiExit;
     resolveTuiExit;
     tuiCommands = new Map;
@@ -4409,7 +4410,7 @@ var init_pi = __esm(() => {
       if (this.opts.mode === "headless")
         return this.state === "idle" || !this.proc || this.proc.exitCode !== null || this.proc.signalCode !== null;
       if (this.state === "idle")
-        return this.ownerClaimed && !!this.ownerPid && processSignature(this.ownerPid) === this.ownerSignature;
+        return this.ownerClaimed && !!this.ownerPid && this.readOwnerSignature(this.ownerPid) === this.ownerSignature;
       return this.stopping && !this.ownerClaimed && (!this.ownerPid || !ownerStillAlive(this.ownerPid, this.ownerSignature));
     }
     get replacementReady() {
@@ -4633,6 +4634,7 @@ var init_pi = __esm(() => {
       return Response.json({ decisions, ...reservation ? { reservation } : {} });
     }
     async startImpl() {
+      this.terminalOwnerObservation = undefined;
       this.stopping = false;
       this.rosterDetached = false;
       this.rosterUnownedRun = false;
@@ -4687,7 +4689,7 @@ var init_pi = __esm(() => {
             return Response.json({ ok: false, error: "Pi session identity is missing" }, { status: 400 });
           if (body.type === "session_start" && this.ownerClaimed && (body.ownerToken !== this.ownerToken || body.pid !== this.ownerPid || body.signature !== this.ownerSignature || this.sessionId && body.sessionId !== this.sessionId || this.sessionFile && body.sessionFile !== this.sessionFile))
             return Response.json({ ok: false, error: "Pi session owner or identity already claimed" }, { status: 409 });
-          if (body.type === "session_start" && (!Number.isInteger(body.pid) || !body.signature || processSignature(body.pid) !== body.signature))
+          if (body.type === "session_start" && (!Number.isInteger(body.pid) || !body.signature || this.readOwnerSignature(body.pid) !== body.signature))
             return Response.json({ ok: false, error: "Pi process identity is not verified" }, { status: 409 });
           this.handleBridgeEvent(body);
           return Response.json({ ok: true });
@@ -4743,7 +4745,7 @@ var init_pi = __esm(() => {
       this.sessionId = state.data.sessionId;
       this.sessionFile = state.data.sessionFile;
       if (!this.ownerClaimed) {
-        const pid = this.proc?.pid, signature = pid ? processSignature(pid) : undefined;
+        const pid = this.proc?.pid, signature = pid ? this.readOwnerSignature(pid) : undefined;
         if (!pid || !signature)
           throw new Error("Pi headless owner process identity is not verified");
         this.ownerPid = pid;
@@ -4757,11 +4759,27 @@ var init_pi = __esm(() => {
       this.started = true;
       this.setState("idle");
     }
+    readOwnerSignature(pid) {
+      return (this.opts.signature ?? processSignature)(pid);
+    }
     verifiedOwner() {
-      return this.ownerClaimed && !!this.ownerPid && !!this.ownerSignature && processSignature(this.ownerPid) === this.ownerSignature;
+      return this.ownerClaimed && !!this.ownerPid && !!this.ownerSignature && this.readOwnerSignature(this.ownerPid) === this.ownerSignature;
+    }
+    rememberTerminalOwner() {
+      if (!this.ownerClaimed || !this.ownerPid || !this.ownerSignature)
+        return;
+      this.terminalOwnerObservation = {
+        pid: this.ownerPid,
+        signature: this.ownerSignature,
+        sessionId: this.sessionId,
+        sessionFile: this.sessionFile,
+        ownerToken: this.ownerToken,
+        checkedAt: performance.now()
+      };
     }
     terminalOwner(_launchId) {
-      if (this.opts.mode !== "tui" || !this.started || this.stopping || this.rosterDetached || !this.verifiedOwner() || !this.sessionId || !this.sessionFile || this.opts.sessionId && this.opts.sessionId !== this.sessionId || this.opts.sessionFile && this.opts.sessionFile !== this.sessionFile)
+      const observed = this.terminalOwnerObservation;
+      if (this.opts.mode !== "tui" || !this.started || this.stopping || this.rosterDetached || this.state === "offline" || !this.ownerClaimed || !observed || performance.now() - observed.checkedAt > TERMINAL_OWNER_MAX_AGE_MS || observed.pid !== this.ownerPid || observed.signature !== this.ownerSignature || observed.sessionId !== this.sessionId || observed.sessionFile !== this.sessionFile || observed.ownerToken !== this.ownerToken || !this.sessionId || !this.sessionFile || this.opts.sessionId && this.opts.sessionId !== this.sessionId || this.opts.sessionFile && this.opts.sessionFile !== this.sessionFile)
         return;
       const generation = this.sessionGeneration;
       return generation && this.ownerPid ? { generation, nativePid: this.ownerPid } : undefined;
@@ -4780,6 +4798,7 @@ var init_pi = __esm(() => {
     async detachForRoster() {
       if (this.opts.mode !== "tui")
         throw new Error("Pi roster detach requires a personal TUI");
+      this.terminalOwnerObservation = undefined;
       this.rosterDetached = true;
       this.rosterEpoch++;
       this.setState("offline");
@@ -4841,6 +4860,7 @@ var init_pi = __esm(() => {
       if (reason !== undefined)
         this.requestedStopReason = reason;
       this.rosterEpoch++;
+      this.terminalOwnerObservation = undefined;
       this.stopping = true;
       for (const id of this.activeDeliveryIds)
         this.delivery({ id, state: "needs_review", reason: reason ?? "Pi session stopped before settlement" });
@@ -5159,6 +5179,7 @@ var init_pi = __esm(() => {
           this.opts.log?.(`[${this.id}] Pi session identity mismatch`);
           return;
         }
+        this.rememberTerminalOwner();
         this.startOwnerMonitor();
         if (this.opts.mode === "tui") {
           this.started = true;
@@ -5177,7 +5198,7 @@ var init_pi = __esm(() => {
         if (this.opts.mode === "tui")
           this.reportExit(exit);
       }
-      if (event.type === "tool_abort" && this.agentRunning && this.ownerClaimed && this.ownerPid && this.ownerSignature && processSignature(this.ownerPid) === this.ownerSignature && event.sessionId === this.sessionId && event.generation === this.budgetGeneration && typeof event.toolCallId === "string" && event.toolCallId.length > 0 && event.toolCallId.length <= 512) {
+      if (event.type === "tool_abort" && this.agentRunning && this.ownerClaimed && this.ownerPid && this.ownerSignature && this.readOwnerSignature(this.ownerPid) === this.ownerSignature && event.sessionId === this.sessionId && event.generation === this.budgetGeneration && typeof event.toolCallId === "string" && event.toolCallId.length > 0 && event.toolCallId.length <= 512) {
         const pending = this.pendingToolGenerations.get(event.toolCallId);
         if (pending && pending.generation === event.generation)
           pending.abort.abort();
@@ -5416,6 +5437,7 @@ var init_pi = __esm(() => {
       } catch {}
     }
     fail(error) {
+      this.terminalOwnerObservation = undefined;
       const approvalStopReason = this.approvalStopReason;
       this.abortTools();
       this.agentRunning = false;
@@ -5445,23 +5467,38 @@ var init_pi = __esm(() => {
       this.clearOwnerMonitor();
       if (this.opts.mode !== "tui" || !this.ownerPid || !this.ownerSignature)
         return;
-      this.ownerMonitor = setInterval(() => {
-        if (!this.ownerPid || ownerStillAlive(this.ownerPid, this.ownerSignature))
-          return;
-        const exit = this.exitMetadata("owner_lost");
-        this.stopping = true;
-        this.ownerClaimed = false;
-        this.clearOwnerMonitor();
-        this.resolveTuiExit?.();
-        this.resolveTuiExit = undefined;
-        for (const pending of this.tuiCommands.values())
-          pending.reject(new Error("Pi owner exited"));
-        this.tuiCommands.clear();
-        this.tuiQueue = [];
-        this.fail(new Error("Pi owner process exited without session_shutdown"));
-        this.reportExit(exit);
-      }, 500);
+      this.ownerMonitor = setInterval(() => this.checkOwner(), 500);
       this.ownerMonitor.unref?.();
+    }
+    checkOwner() {
+      if (!this.ownerPid) {
+        this.terminalOwnerObservation = undefined;
+        return;
+      }
+      const current = this.readOwnerSignature(this.ownerPid);
+      if (current !== undefined && current === this.ownerSignature) {
+        this.rememberTerminalOwner();
+        return;
+      }
+      this.terminalOwnerObservation = undefined;
+      if (current === undefined) {
+        try {
+          process.kill(this.ownerPid, 0);
+          return;
+        } catch {}
+      }
+      const exit = this.exitMetadata("owner_lost");
+      this.stopping = true;
+      this.ownerClaimed = false;
+      this.clearOwnerMonitor();
+      this.resolveTuiExit?.();
+      this.resolveTuiExit = undefined;
+      for (const pending of this.tuiCommands.values())
+        pending.reject(new Error("Pi owner exited"));
+      this.tuiCommands.clear();
+      this.tuiQueue = [];
+      this.fail(new Error("Pi owner process exited without session_shutdown"));
+      this.reportExit(exit);
     }
     clearOwnerMonitor() {
       if (this.ownerMonitor)
