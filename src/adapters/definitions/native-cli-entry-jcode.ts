@@ -14,6 +14,7 @@ export async function waitForJcodeTui(hub: ControlClient, fail: NativeCliEntryCo
     if (!current) {
       const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", binding, args: options });
       if (signal.aborted) return;
+      if (!reply.ok && typeof reply.option === "string" && ["--session-id", "--model", "--provider-profile"].includes(reply.option)) fail(`Jcode is already running with a different ${reply.option}; run ahub jcode without it, or stop jcode first`);
       if (!reply.ok || !reply.binding || !["waiting", "ready"].includes(reply.state)) fail("Jcode launch changed or its native saved session is unavailable; retry from a terminal");
       current = reply as JcodeTuiState;
     }
@@ -94,6 +95,10 @@ export async function runJcodeEntry(ctx: NativeCliEntryContext): Promise<void> {
     const confirmed = await hub.request({ t: "native_tui_launch", peer: "jcode", binding: ready.binding, args: options });
     if (interruptedWait()) return;
     if (!confirmed.ok || confirmed.state !== "ready") fail("Jcode launch changed before its terminal opened");
+    // ponytail: jcode 0.98.1's top-level TUI spawns a shared server (no --temporary-server or --owner-pid) when nothing
+    // answers on the dialed socket at startup, and on its reload-handoff reconnect. A hub stop or an owned-server crash
+    // between the confirm reply above and that check can leave an unowned jcode server on the private socket under the
+    // person's JCODE_HOME. No native flag prevents it; revisit if upstream adds an owner flag (#559 N2).
     ctx.execWithEnv(confirmed.launch.cmd, confirmed.launch.args, { ...ctx.helpers.childEnv(), ...confirmed.launch.env });
   } finally { process.removeListener("SIGINT", interrupt); hub.onClose = oldClose; hub.close(); }
 }

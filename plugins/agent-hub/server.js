@@ -3219,10 +3219,17 @@ function jcodeVersionSupported(version) {
   const v = typeof version === "string" ? release(version) : undefined;
   return !!v && compare(v, release(JCODE_MIN_VERSION)) >= 0 && compare(v, release(JCODE_BREAKING_VERSION)) < 0;
 }
-var JCODE_OWNED_ENV, JCODE_MIN_VERSION = "0.98.0", JCODE_BREAKING_VERSION = "1.0.0", release = (version) => /^(\d+)\.(\d+)\.(\d+)$/.exec(version)?.slice(1).map(Number), compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2], JcodePeer;
+var JcodeOptionMismatch, JCODE_OWNED_ENV, JCODE_MIN_VERSION = "0.98.0", JCODE_BREAKING_VERSION = "1.0.0", release = (version) => /^(\d+)\.(\d+)\.(\d+)$/.exec(version)?.slice(1).map(Number), compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2], JcodePeer;
 var init_jcode = __esm(() => {
   init_acp();
   init_child_process();
+  JcodeOptionMismatch = class JcodeOptionMismatch extends Error {
+    option;
+    constructor(option) {
+      super("Jcode launch options differ from its running session");
+      this.option = option;
+    }
+  };
   JCODE_OWNED_ENV = { JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" };
   JcodePeer = class JcodePeer extends AcpPeer {
     jcode;
@@ -3355,8 +3362,9 @@ var init_jcode = __esm(() => {
       const binding = { launchId: this.launchId, sessionId };
       if (expected && (expected.launchId !== binding.launchId || expected.sessionId !== binding.sessionId))
         throw new Error("Jcode launch changed");
-      if (options.sessionId !== undefined && options.sessionId !== sessionId || options.model !== undefined && options.model !== this.jcode.launchModel || options.providerProfile !== undefined && options.providerProfile !== this.jcode.providerProfile)
-        throw new Error("Jcode launch options differ from its running session");
+      const differs = options.sessionId !== undefined && options.sessionId !== sessionId ? "--session-id" : options.model !== undefined && options.model !== this.jcode.launchModel ? "--model" : options.providerProfile !== undefined && options.providerProfile !== this.jcode.providerProfile ? "--provider-profile" : undefined;
+      if (differs)
+        throw new JcodeOptionMismatch(differs);
       if (!savedSession(this.jcode.home, sessionId))
         return { state: "waiting", binding };
       const [cmd, ...args] = jcodeTuiCommand(this.jcode.command, this.socket, sessionId, this.jcode.launchModel, this.jcode.providerProfile);
@@ -9246,6 +9254,8 @@ async function waitForJcodeTui(hub, fail, signal, options, first) {
       const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", binding, args: options });
       if (signal.aborted)
         return;
+      if (!reply.ok && typeof reply.option === "string" && ["--session-id", "--model", "--provider-profile"].includes(reply.option))
+        fail(`Jcode is already running with a different ${reply.option}; run ahub jcode without it, or stop jcode first`);
       if (!reply.ok || !reply.binding || !["waiting", "ready"].includes(reply.state))
         fail("Jcode launch changed or its native saved session is unavailable; retry from a terminal");
       current = reply;

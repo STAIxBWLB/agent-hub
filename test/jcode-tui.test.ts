@@ -158,3 +158,36 @@ test("Jcode headless print-command stays a pure offline preview for a person (#4
     expect(lines).toHaveLength(1); expect(JSON.parse((lines[0] as string[])[0]!)).toMatchObject({ mode: "headless" });
   } finally { console.log = log; }
 });
+
+test("the running hub's accepted headless start mode beats a tui file or default in the launcher (#559 N4)", async () => {
+  const fixture = entry();
+  fixture.context.helpers.readControl = () => ({ startModes: { jcode: "headless" } } as never);
+  fixture.context.projectConfig = () => ({ peers: { jcode: { start_mode: "tui" } } }) as never;
+  const logs: unknown[][] = [], log = console.log; console.log = (...row: unknown[]) => { logs.push(row); };
+  try { await runJcodeEntry(fixture.context); } finally { console.log = log; }
+  expect(fixture.requests.find(row => row.t === "start")).toMatchObject({ peer: "jcode", args: { mode: "headless" } });
+  expect(fixture.requests.some(row => row.t === "peer_start" || row.t === "native_tui_launch")).toBe(false);
+  expect(fixture.configured()).toBe(1); expect(fixture.executed()).toBe(0);
+  expect(String(logs[0]?.[0])).toContain("headless");
+});
+
+test("a mismatched model or provider profile is named in the refusal (#559)", async () => {
+  const before = { input: Object.getOwnPropertyDescriptor(process.stdin, "isTTY"), output: Object.getOwnPropertyDescriptor(process.stdout, "isTTY") };
+  try {
+    Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+    for (const [flag, option] of [["--model", "--model"], ["--provider-profile", "--provider-profile"]] as const) {
+      const fixture = entry([flag, "other"]);
+      fixture.context.connect = async () => ({ features: ["native_tui_launch"], close() {}, request: async (message: Record<string, unknown>) => {
+        fixture.requests.push(message);
+        return message.t === "status" ? { status: { instanceId: "i", roster: [{ peer: "jcode", on: true }] } }
+          : message.t === "native_tui_launch" ? { ok: false, option, error: "differs" } : { ok: true };
+      } }) as never;
+      await expect(runJcodeEntry(fixture.context)).rejects.toThrow(option);
+      expect(fixture.executed()).toBe(0);
+    }
+  } finally {
+    if (before.input) Object.defineProperty(process.stdin, "isTTY", before.input); else delete (process.stdin as { isTTY?: boolean }).isTTY;
+    if (before.output) Object.defineProperty(process.stdout, "isTTY", before.output); else delete (process.stdout as { isTTY?: boolean }).isTTY;
+  }
+});
