@@ -1,9 +1,10 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { createConnection } from "node:net";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join } from "node:path";
 import type { Readable } from "node:stream";
-import type { PeerState } from "../hub/envelope.ts";
+import { renderDigest, type Envelope, type PeerState } from "../hub/envelope.ts";
 import { AcpPeer, type AcpOptions } from "./acp.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 
@@ -11,6 +12,8 @@ export interface JcodeOptions extends Omit<AcpOptions, "cmd" | "qwen025" | "expe
   command: string[];
   home: string;
   providerProfile?: string;
+  /** How long a native steer may take to be acknowledged (#572); default 5 s. */
+  steerTimeoutMs?: number;
 }
 export function jcodeCommand(command: string[], kind: "serve" | "acp", socket: string, cwd: string, model?: string, profile?: string): string[] {
   if (!command.length || command.some(word => typeof word !== "string" || !word)) throw new Error("jcode_cmd must name an executable argv");
@@ -68,6 +71,56 @@ const compare = (a: number[], b: number[]) => a[0]! - b[0]! || a[1]! - b[1]! || 
 export function jcodeVersionSupported(version: unknown): boolean {
   const v = typeof version === "string" ? release(version) : undefined;
   return !!v && compare(v, release(JCODE_MIN_VERSION)!) >= 0 && compare(v, release(JCODE_BREAKING_VERSION)!) < 0;
+}
+
+/** A native steer the server did not take, with nothing sent: the message may safely stay queued. */
+class SteerRefused extends Error {}
+/** A native steer that was sent but not acknowledged: it may have gone in, so it is never requeued as if it had not. */
+class SteerUncertain extends Error {}
+const STEER_TIMEOUT_MS = 5000;
+
+/**
+ * #572 AC1: a second client on the hub's own private server socket queues a soft interrupt into the running session
+ * (jcode injects it at the next tool boundary, or when a text-only turn ends). Established on 0.99.0 under an isolated
+ * home: ping lists `soft_interrupt_ids`, subscribe with `target_session_id` joins the same session without a new one,
+ * `state` says whether a turn runs, and the injection survives this client's disconnect. Nothing here cancels the turn.
+ */
+function nativeSteer(socket: string, cwd: string, sessionId: string, text: string, clientId: string, timeoutMs = STEER_TIMEOUT_MS): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const conn = createConnection(socket);
+    let phase: "ping" | "subscribe" | "state" | "sent" = "ping", buffer = "", finished = false;
+    const finish = (error?: Error) => {
+      if (finished) return;
+      finished = true; clearTimeout(timer); conn.destroy();
+      if (error) reject(error); else resolve();
+    };
+    const fail = (why: string) => finish(phase === "sent" ? new SteerUncertain(`Jcode steering outcome is uncertain: ${why}`) : new SteerRefused(`Jcode owned server cannot take a steer: ${why}`));
+    const timer = setTimeout(() => fail(`no answer in the ${phase} step`), timeoutMs);
+    const send = (value: Record<string, unknown>) => conn.write(`${JSON.stringify(value)}\n`);
+    conn.once("error", () => fail("connection failed"));
+    conn.once("close", () => fail("connection closed"));
+    conn.once("connect", () => send({ type: "ping", id: 1 }));
+    conn.on("data", chunk => {
+      buffer += chunk.toString();
+      if (buffer.length > 1024 * 1024) return fail("oversized reply");
+      const lines = buffer.split("\n"); buffer = lines.pop()!;
+      for (const line of lines) {
+        let msg: { type?: unknown; id?: unknown; capabilities?: unknown; session_id?: unknown; is_processing?: unknown };
+        try { msg = JSON.parse(line); } catch { continue; }
+        if (msg.type === "error" && typeof msg.id === "number" && msg.id >= 1) return fail("the server refused a request");
+        if (phase === "ping" && msg.type === "pong" && msg.id === 1) {
+          if (!Array.isArray(msg.capabilities) || !msg.capabilities.includes("soft_interrupt_ids")) return fail("no soft interrupt support");
+          phase = "subscribe"; send({ type: "subscribe", id: 2, working_dir: cwd, target_session_id: sessionId, continue_on_disconnect: true });
+        } else if (phase === "subscribe" && msg.type === "session") {
+          if (msg.session_id !== sessionId) return fail("the server answered for another session");
+          phase = "state"; send({ type: "state", id: 3 });
+        } else if (phase === "state" && msg.type === "state" && msg.id === 3) {
+          if (msg.session_id !== sessionId || msg.is_processing !== true) return fail("the session has no running turn");
+          phase = "sent"; send({ type: "soft_interrupt", id: 4, content: text, urgent: false, client_id: clientId });
+        } else if (phase === "sent" && msg.type === "ack" && msg.id === 4) finish();
+      }
+    });
+  });
 }
 
 /** The wrapper contract preserves every configured prefix argument before the native probe. */
@@ -161,6 +214,34 @@ export class JcodePeer extends AcpPeer {
       super.setState("offline");
     }
     if (failure) throw failure;
+  }
+  /**
+   * #572 AC1: an `important` message to a busy Jcode goes into its running turn through its own server (a soft
+   * interrupt), with the receipt contract of Codex's steer: `failed_safe` when nothing was sent, `needs_review` when it
+   * may have gone in, `accepted` once the server acknowledged it, and `completed` when the turn ends normally.
+   * The hub never cancels the turn to deliver.
+   */
+  async steer(envs: Envelope[], deliveryId?: string): Promise<void> {
+    const refuse = (reason: string): never => {
+      if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason });
+      throw new Error(reason);
+    };
+    const sessionId = super.recoveryMetadata().sessionId;
+    const socket = lstatSync(this.socket, { throwIfNoEntry: false });
+    if (this.state !== "busy") refuse(`jcode is ${this.state}`);
+    if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null ||
+      !socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino || typeof sessionId !== "string") refuse("owned Jcode server is unavailable");
+    try { await nativeSteer(this.socket, this.jcode.cwd, sessionId as string, renderDigest(envs, true), deliveryId ?? crypto.randomUUID(), this.jcode.steerTimeoutMs); }
+    catch (error) {
+      if (error instanceof SteerUncertain) {
+        if (deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: "steering outcome is uncertain" });
+        throw error;
+      }
+      return refuse(error instanceof Error ? error.message : "Jcode steer failed");
+    }
+    // The turn may have ended while the server answered: it then also took the message, so it is never refused as unsent.
+    try { this.adoptIntoTurn(envs, deliveryId); }
+    catch { if (deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: "steered turn ended before its receipt" }); throw new SteerUncertain("Jcode steering outcome is uncertain: its turn ended first"); }
   }
   tuiLaunch(expected?: JcodeTuiBinding, options: { model?: string; providerProfile?: string; sessionId?: string } = {}): JcodeTuiState {
     const sessionId = super.recoveryMetadata().sessionId;

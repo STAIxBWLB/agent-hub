@@ -16,6 +16,7 @@ import { rosterAllows } from "../src/hub/roster.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
+import { realPath } from "../src/hub/project.ts";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -283,4 +284,84 @@ await import(${JSON.stringify(main)});
   expect(tui.args).toContain("--resume"); expect(tui.args).not.toContain("acp");
   expect(tui.socket).toBe(rows().find(row => row.kind === "serve").socket);
   expect(peer.state).toBe("idle"); expect(existsSync(tui.socket)).toBe(true);
+});
+
+// #572 AC1: jcode's server accepts a message into a running session (a soft interrupt, injected at the next tool
+// boundary). Verified on 0.99.0 under an isolated home; the fake models only what the hub's steer uses.
+function steerRig(extra: string[] = []) {
+  const dir = realPath(root()), home = join(dir, "home"), record = join(dir, "record"), gate = join(dir, "gate");
+  mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");
+  const peer = new JcodePeer({ command: [...fake, "--record", record, "--steer-file", gate, ...extra], cwd: dir, home, steerTimeoutMs: 600 }); cleanups.push(() => peer.stop());
+  const receipts: { id: string; state: string; reason?: string }[] = [], replies: { body: string; opts?: any }[] = [];
+  peer.onDelivery = receipt => { receipts.push(receipt); };
+  peer.onMessage = (body, opts) => { replies.push({ body, opts }); };
+  const rows = () => existsSync(record) ? readFileSync(record, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [];
+  return { dir, peer, receipts, replies, rows, gate };
+}
+
+test("a busy Jcode takes an important message into its running turn and answers its sender too (#572 AC1)", async () => {
+  const rig = steerRig();
+  await rig.peer.start();
+  const first = newEnvelope("user", "start the long job", { to: ["jcode"] });
+  await rig.peer.deliver([first], "d-first");
+  await until(() => rig.peer.state === "busy" && existsSync(`${rig.gate}.busy`));
+  const important = newEnvelope("claude", "put the main checkout back on main", { to: ["jcode"], priority: "important" });
+  await rig.peer.steer!([important], "d-steer");
+  const steered = rig.rows().find(row => row.kind === "soft_interrupt");
+  expect(steered.content).toContain("put the main checkout back on main"); expect(steered.content).toContain('from "claude"');
+  expect(typeof steered.client_id).toBe("string"); expect(steered.urgent).toBe(false);
+  await until(() => rig.receipts.some(r => r.id === "d-steer" && r.state === "completed"));
+  expect(rig.receipts.filter(r => r.id === "d-steer").map(r => r.state)).toEqual(["accepted", "completed"]);
+  expect(rig.receipts.filter(r => r.id === "d-first").map(r => r.state)).toEqual(["accepted", "completed"]);
+  expect(rig.replies).toHaveLength(1);
+  expect(rig.replies[0]!.opts.to).toEqual(["user", "claude"]);
+  expect(rig.replies[0]!.opts.inReplyTo.id).toBe(important.id);
+  await until(() => rig.peer.state === "idle");
+});
+
+test("a steer that the owned server cannot take is refused before anything is sent, so the message stays queued (#572 AC1)", async () => {
+  for (const [flag, why] of [["--no-soft-interrupt", "soft interrupt"], ["--wrong-session", "session"]] as const) {
+    const rig = steerRig([flag]);
+    await rig.peer.start();
+    await rig.peer.deliver([newEnvelope("user", "work", { to: ["jcode"] })], "d-first");
+    await until(() => existsSync(`${rig.gate}.busy`));
+    await expect(rig.peer.steer!([newEnvelope("claude", "urgent", { to: ["jcode"], priority: "important" })], "d-steer")).rejects.toThrow(why);
+    expect(rig.rows().some(row => row.kind === "soft_interrupt")).toBe(false);
+    expect(rig.receipts.find(r => r.id === "d-steer")).toMatchObject({ state: "failed_safe" });
+    writeFileSync(rig.gate, "release"); await until(() => rig.peer.state === "idle");
+  }
+  const idle = steerRig();
+  await idle.peer.start();
+  await expect(idle.peer.steer!([newEnvelope("claude", "urgent", { to: ["jcode"], priority: "important" })], "d-idle")).rejects.toThrow("idle");
+  expect(idle.rows().some(row => row.kind === "soft_interrupt")).toBe(false);
+  expect(idle.receipts.find(r => r.id === "d-idle")).toMatchObject({ state: "failed_safe" });
+});
+
+test("a steer sent but never acknowledged is held for review, never requeued as if it had not gone in (#572 AC1)", async () => {
+  const rig = steerRig(["--no-ack"]);
+  await rig.peer.start();
+  await rig.peer.deliver([newEnvelope("user", "work", { to: ["jcode"] })], "d-first");
+  await until(() => existsSync(`${rig.gate}.busy`));
+  await expect(rig.peer.steer!([newEnvelope("claude", "urgent", { to: ["jcode"], priority: "important" })], "d-steer")).rejects.toThrow("uncertain");
+  expect(rig.rows().some(row => row.kind === "soft_interrupt")).toBe(true);
+  expect(rig.receipts.find(r => r.id === "d-steer")).toMatchObject({ state: "needs_review" });
+  writeFileSync(rig.gate, "release"); await until(() => rig.peer.state === "idle");
+});
+
+test("the bus steers an important message into a busy Jcode through the owned socket (#572 AC1)", async () => {
+  const dir = realPath(root()), stateDir = join(dir, "state"), home = join(dir, "home"), record = join(dir, "record"), gate = join(dir, "gate");
+  mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");
+  configureJcodeMcp(dir, stateDir, join(import.meta.dir, "../plugins/agent-hub/server.js"));
+  const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, jcode_cmd: [...fake, "--record", record, "--steer-file", gate], jcode_home: home, roster: { jcode: true }, batch_ms: 0,
+      memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
+  cleanups.push(() => daemon.stop());
+  const consoleClient = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => consoleClient.close());
+  expect((await consoleClient.request({ t: "start", peer: "jcode", args: { mode: "headless" } })).ok).toBe(true);
+  daemon.bus.publish(newEnvelope("user", "long job", { to: ["jcode"] }));
+  await until(() => existsSync(`${gate}.busy`));
+  daemon.bus.publish(newEnvelope("user", "STEER-ME-NOW", { to: ["jcode"], priority: "important" }));
+  await until(() => existsSync(record) && readFileSync(record, "utf8").includes("STEER-ME-NOW"));
+  await until(() => daemon.bus.queued("jcode") === 0 && daemon.bus.peers.get("jcode")!.state === "idle");
+  expect(readFileSync(record, "utf8").match(/"kind":"soft_interrupt"/g)).toHaveLength(1);
 });
