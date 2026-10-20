@@ -237,3 +237,55 @@ test("#576 a blocked Git child is cut off by the shared snapshot deadline", asyn
     if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
   }
 });
+
+for (const move of ["checkout-m", "merge-autostash"] as const) test(`#576 ${move} never excludes a carried uncommitted peer edit`, async () => {
+  const f = await fixture();
+  const base = Array.from({ length: 20 }, (_, i) => `line ${i}\n`);
+  writeFileSync(join(f.root, "shared.txt"), base.join(""));
+  f.git("commit", "-qam", "prepare separate lines");
+  const start = f.git("rev-parse", "HEAD");
+  f.git("switch", "-qc", "upstream");
+  const incoming = [...base]; incoming[1] = "upstream line\n";
+  writeFileSync(join(f.root, "shared.txt"), incoming.join(""));
+  writeFileSync(join(f.root, "upstream.txt"), "upstream-only\n");
+  f.git("add", "shared.txt", "upstream.txt"); f.git("commit", "-qm", "upstream changes");
+  expect(f.git("ls-files", "--", ".agenthub/state")).toBe("");
+  f.git("switch", "-qc", "before", start);
+  f.peers[0]!.begin();
+  const own = [...base]; own[18] = "own dirty line\n";
+  writeFileSync(join(f.root, "shared.txt"), own.join(""));
+  if (move === "checkout-m") f.git("checkout", "-m", "upstream");
+  else f.git("merge", "--ff-only", "--autostash", "upstream");
+  await new Promise<void>(resolve => setImmediate(resolve));
+  f.peers[0]!.finish();
+  const turns = new Turns(join(f.root, ".agenthub/state/hub.db"), true);
+  try {
+    expect(turns.list("kimi")[0]).toMatchObject({ changed: ["shared.txt"] });
+    expect(turns.list("kimi")[0]?.end_tree).not.toBeNull();
+    expect(turns.touchesFor([1]).map(touch => touch.path)).toContain("shared.txt");
+  } finally { turns.close(); }
+  expect(f.events().filter(e => e.type === "turn_end").map(e => e.files)).toEqual([1]);
+});
+
+for (const autostash of [false, true]) test(`#576 pull --rebase${autostash ? " --autostash" : ""} never attributes the advanced upstream or drops a dirty peer edit`, async () => {
+  const f = await fixture();
+  const start = f.git("rev-parse", "HEAD");
+  f.git("switch", "-qc", "upstream");
+  writeFileSync(join(f.root, "upstream.txt"), "incoming-only\n");
+  f.git("add", "upstream.txt"); f.git("commit", "-qm", "upstream");
+  f.git("switch", "-qc", "before", start);
+  writeFileSync(join(f.root, "own.txt"), "pre-turn own commit\n");
+  f.git("add", "own.txt"); f.git("commit", "-qm", "own commit before turn");
+  f.peers[0]!.begin();
+  if (autostash) writeFileSync(join(f.root, "own.txt"), "own edit during turn\n");
+  f.git("pull", "-q", "--rebase", ...(autostash ? ["--autostash"] : []), ".", "upstream");
+  await new Promise<void>(resolve => setImmediate(resolve));
+  f.peers[0]!.finish();
+  const turns = new Turns(join(f.root, ".agenthub/state/hub.db"), true);
+  try {
+    const turn = turns.list("kimi")[0]!;
+    expect(turn.changed).not.toContain("upstream.txt");
+    if (turn.end_tree === null) expect(turn.changed).toEqual([]);
+    else if (autostash) expect(turn.changed).toContain("own.txt");
+  } finally { turns.close(); }
+});

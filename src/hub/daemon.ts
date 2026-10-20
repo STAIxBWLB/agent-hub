@@ -3185,8 +3185,30 @@ export async function startDaemon(opts: DaemonOptions) {
               if (open.head !== end.head || open.reflog || end.reflog) {
                 const paths = open.reflog && end.reflog ? incomingHeadPaths(turnRepo, open.reflog, end.reflog, end.budget) : undefined;
                 if (!paths) throw new Error("HEAD move evidence is ambiguous or unavailable");
-                const incoming = new Set(paths);
-                changed = changed.filter(path => !incoming.has(path));
+                if (paths.length) {
+                  if (!end.head) throw new Error("end HEAD evidence is unavailable");
+                  const dirtyPaths = knownChangedPaths(turnRepo, end.head, end.tree, end.budget);
+                  if (!dirtyPaths) throw new Error("end worktree diff evidence is unavailable");
+                  const checkBudget = () => { if (end.budget && performance.now() >= end.budget.deadline) throw new SnapshotBudgetExceeded(); };
+                  const dirty = new Set(dirtyPaths), dirtyScope = new Set(dirtyPaths), incoming = new Set(paths);
+                  for (const path of dirtyPaths) {
+                    checkBudget();
+                    for (let at = path.lastIndexOf("/"); at > 0; at = path.lastIndexOf("/", at - 1)) {
+                      checkBudget(); dirtyScope.add(path.slice(0, at));
+                    }
+                  }
+                  // Autostash and checkout -m can carry uncommitted edits across an incoming move.
+                  // Preserve every still-dirty path (including file/directory overlaps), never subtract it.
+                  changed = changed.filter(path => {
+                    checkBudget();
+                    if (!incoming.has(path) || dirtyScope.has(path)) return true;
+                    for (let at = path.lastIndexOf("/"); at > 0; at = path.lastIndexOf("/", at - 1)) {
+                      checkBudget(); if (dirty.has(path.slice(0, at))) return true;
+                    }
+                    return false;
+                  });
+                  checkBudget();
+                }
               }
             } catch (error) {
               end.tree = undefined; end.head = undefined; changed = [];

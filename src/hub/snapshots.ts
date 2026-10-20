@@ -291,10 +291,19 @@ export function incomingHeadPaths(repo: Repo, start: HeadMoveCursor, end: HeadMo
     checkSnapshotBudget(budget);
     const row = headLogRow(line);
     if (!row || (previous === null ? !/^0+$/.test(row.old) : row.old !== previous)) return undefined;
-    const ownMove = /^(?:commit(?: \(amend\)| \(initial\))?|cherry-pick|rebase \((?:start|pick|reword|edit|squash|fixup|finish|continue)\)): /.test(row.action);
-    let incomingMove = /^(?:checkout: moving from .+ to .+|(?:merge|pull)(?: [^:]+)?: .+)$/.test(row.action);
-    if (/^reset: moving to .+/.test(row.action)) {
-      // A reset is incoming only on positive ancestry proof; rewinds/unknown resets cannot be attributed safely.
+    // Git preserves the invoking command in sequencer actions (for example pull -q --rebase (pick)).
+    // Classify the native phase before considering ordinary command-shaped incoming actions.
+    const separator = row.action.indexOf(": ");
+    const action = separator < 0 ? "" : row.action.slice(0, separator);
+    const detail = separator < 0 ? "" : row.action.slice(separator + 2);
+    const sequencerOwn = /^.+ \((?:pick|reword|edit|squash|fixup|continue|finish)\)$/.test(action);
+    const ownMove = sequencerOwn || /^(?:commit(?: \(amend\)| \(initial\))?|cherry-pick)$/.test(action);
+    const incomingStart = /^(?:rebase|pull(?: [^(]*)?) \(start\)$/.test(action) && /^checkout .+/.test(detail);
+    const incomingCommand = !action.includes("(") && /^(?:merge|pull)(?: [^:]+)?$/.test(action) && !!detail;
+    let incomingMove = !ownMove && (incomingStart || incomingCommand || action === "checkout" && /^moving from .+ to .+$/.test(detail));
+    if (action === "reset" && /^moving to .+/.test(detail)) {
+      // Policy: a positively fast-forward reset is incoming, even when its target contains the peer's own
+      // descendant commit; reflog ancestry alone cannot distinguish that intent. Rewinds/unknown resets refuse.
       const ancestor = git(repo, ["merge-base", "--is-ancestor", row.old, row.next], {}, budget);
       if (ancestor.status !== 0) return undefined;
       incomingMove = true;
