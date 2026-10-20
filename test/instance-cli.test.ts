@@ -53,7 +53,7 @@ function entryContext(kind: string, args: string[] = []) {
       startModeOf: () => { throw new Error("extra native mode must not use base peer mode"); },
       recoveryLock: () => undefined,
       readControl: () => undefined,
-      buildLaunch: (_kind: string, _args: string[], options: { proxyUrl: string }) => ({ cmd: "codex", args: [options.proxyUrl] }),
+      buildLaunch: (_kind: string, _args: string[], options: { proxyUrl: string; launchTokenEnv?: string }) => ({ cmd: "codex", args: [options.proxyUrl, ...(options.launchTokenEnv ? [options.launchTokenEnv] : [])] }),
     },
   } as unknown as NativeCliEntryContext;
   return { context, requests, peer };
@@ -125,9 +125,9 @@ function terminalEntryFixture(kind: "codex" | "pi" | "claude", directory: string
   Object.assign(context.helpers, helpers);
   context.exec = (_bin, argv): never => {
     order.push("foreground-exec");
-    const remote = new URL(argv[0]!);
-    expect(remote.searchParams.get("launchId")).toBe(candidate.launchId);
-    expect(remote.searchParams.get("retained")).toBe("1");
+    // #586: codex --remote takes no query of ours; the launch id rides the bearer env var.
+    expect(argv).toEqual(["ws://127.0.0.1:5555/?retained=1", "AGENTHUB_LAUNCH_ID"]);
+    expect(process.env.AGENTHUB_LAUNCH_ID).toBe(candidate.launchId);
     throw new Error("foreground native boundary");
   };
   context.execWithEnv = (bin, argv, env): never => {
