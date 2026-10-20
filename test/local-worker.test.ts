@@ -638,7 +638,7 @@ test("local hub_send reports a hop-capped implicit reply instead of sent (#550)"
   ctx.bus.publish({ ...newEnvelope("claude", "reply to this", { to: ["local"] }), hop: MAX_HOP });
   await until(() => ctx.model.requests.length >= 2 && ctx.peer.state === "idle", "tool result after capped reply");
   expect(dropped).toEqual(["hop"]);
-  expect(ctx.model.requests[1]!.body.messages.find(message => message.role === "tool")?.content)
+  expect(ctx.model.requests[1]!.body.messages.find((message: { role: string; content?: string }) => message.role === "tool")?.content)
     .toBe(`not delivered: reply chain reached the hop cap (${MAX_HOP}); send a new message without reply_to`);
 });
 
@@ -649,6 +649,6 @@ test("local hub_send preserves FYI recording and a genuine empty audience (#550)
       : { tool_calls: [toolCall("hub_send", { text })] });
     ctx.bus.publish(newEnvelope("claude", "reply to this", { to: ["local"] }));
     await until(() => ctx.model.requests.length >= 2 && ctx.peer.state === "idle", "ordinary send result");
-    expect(ctx.model.requests[1]!.body.messages.find(message => message.role === "tool")?.content).toBe("sent");
+    expect(ctx.model.requests[1]!.body.messages.find((message: { role: string; content?: string }) => message.role === "tool")?.content).toBe("sent");
   }
 });

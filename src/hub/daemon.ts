@@ -80,7 +80,7 @@ import { closeSync, constants as fsConstants, openSync, lstatSync, readSync, sta
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { realPath, hubHome } from "./project.ts";
-import type { BusEvent } from "./bus.ts";
+import type { BusEvent, PublishResult } from "./bus.ts";
 import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, profileTaskTools } from "./hub-tools.ts";
 import { Conductor, ConductorHolds, conductorPeer, conductorProgressSink, publicConductorTask, publicPeerBudget, type ConductEvent } from "./conductor.ts";
 import { SupervisionFeed } from "./supervision.ts";
@@ -3729,8 +3729,10 @@ export async function startDaemon(opts: DaemonOptions) {
         permit: async () => false, // Pi's calls ask through piPermit in executeTool, which knows the tool's name
         send: (text, to) => {
           if (to?.some((id) => !bus.peers.has(id) && id !== USER)) return "error: unknown peer";
-          const refused = pi.onMessage?.(text, { inReplyTo: piReply, ...(to?.length ? { to } : {}) });
-          return typeof refused === "string" ? `not sent: ${refused}` : "sent";
+          const result = pi.onMessage?.(text, { inReplyTo: piReply, ...(to?.length ? { to } : {}) }) as PublishResult | string | undefined;
+          if (typeof result === "string") return `not sent: ${result}`;
+          if (result?.dropped === "hop") return `not delivered: reply chain reached the hop cap (${MAX_HOP}); send a new message without reply_to`;
+          return "sent";
         },
       };
       const routing = activeRouting();
