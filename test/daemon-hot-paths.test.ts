@@ -93,14 +93,22 @@ for (const move of ["fast-forward", "checkout", "worktree-merge"] as const) test
 
 test("#576 real concurrent edits publish linearly in tasks, not one notice per task pair", async () => {
   const f = await fixture(6);
-  for (const peer of f.peers) peer.begin();
+  // #617: this tests notice fan-out, not the cumulative snapshot budget. Keep both turns open, but let each
+  // capture use a new I/O turn's budget; four slower captures in one burst can correctly leave evidence unknown.
+  for (const peer of f.peers) { peer.begin(); await new Promise<void>(resolve => setImmediate(resolve)); }
+  const turns = f.events().filter(e => e.type === "turn_start").map(e => e.turn);
+  expect(turns).toHaveLength(2);
   writeFileSync(join(f.root, "shared.txt"), "a real working-tree edit\n");
-  for (const peer of f.peers) peer.finish();
+  for (const peer of f.peers) { peer.finish(); await new Promise<void>(resolve => setImmediate(resolve)); }
+  const published = () => f.events().some(e => e.type === "conflict" && e.concurrent && e.paths.includes("shared.txt") && turns.every(id => e.turns?.includes(id)))
+    && f.notices.some(body => body.includes("shared.txt") && turns.every(id => body.includes(id)));
+  for (let attempt = 0; attempt < 100 && !published(); attempt++) await Bun.sleep(20);
+  expect(published()).toBe(true); // Assert after the final attempt too; unrelated history cannot satisfy this wait.
   expect(f.events().filter(e => e.type === "conflict").length).toBeGreaterThan(0);
   expect(f.notices.length).toBeLessThanOrEqual(12);
   expect(f.notices.length).toBeGreaterThan(0);
   expect(f.notices.join("\n")).toContain("shared.txt");
-});
+}, 20_000);
 
 test("#576 status answers within its timeout while a longer slow-snapshot burst is still running", async () => {
   const f = await fixture(8, true);
