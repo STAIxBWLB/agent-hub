@@ -13,7 +13,7 @@ export const DOCTOR_PLUGIN_PROBE = Object.freeze({ command: "claude", argv: Obje
 export function nativeDoctorCheck(ok: boolean | undefined, name: string, detail: string): DoctorCheck {
   const nativeTool = nativeTools.some(tool => tool.id === name);
   const section: DoctorCheck["section"] = name === "bun" || nativeTool ? "Tools"
-    : name === "config" || name === "retired setting" ? "Config"
+    : name === "config" || name === "retired setting" || name === "routing" ? "Config"
     : name.startsWith("memory") ? "Memory"
     : ["omniroute", "omniroute key", "routing model", "routing models", "pi mlx"].includes(name) ? "Models" : "Hub";
   const optional = nativeTool || ["ahub daemon", "pi mlx"].includes(name) || section === "Memory";

@@ -22,7 +22,7 @@ import { qwenSessionId } from "../hub/crash.ts";
 import { isPermissionMode } from "../hub/permission-mode.ts";
 import { parseSettingText, settingDef, settingText, type SettingRow } from "../hub/settings.ts";
 import { startModeOf } from "../hub/start-mode.ts";
-import { currentRouting } from "../hub/routing.ts";
+import { OVERLAY_FILE, parseOverlay, parseRouting, routingText, type Routing, type RoutingOverlay } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -1887,6 +1887,8 @@ const commands: Record<string, () => Promise<void> | void> = {
       const config = loadConfig(cwd);
       row(!config.ignored, "config", config.ignored ? `${config.ignored.join("; ")} (move them to .agenthub/config.local.json)` : "no machine-local field ignored");
       for (const line of config.retired ?? []) row(false, "retired setting", line);
+      const { routing, errors: routingErrors } = inspectDoctorRouting(cwd);
+      for (const error of routingErrors) row(false, "routing", error);
       for (const probe of nativeDoctorOptionalProbes(config)) {
         if (probe.kind === "source-identity") row(verifiedJcodeCommand(probe.command, cwd), probe.name, probe.detail);
         else {
@@ -1898,9 +1900,10 @@ const commands: Record<string, () => Promise<void> | void> = {
       const gateway = await omni.base();
       row(gateway ? true : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? false : undefined, "omniroute", gateway ? `${new URL(gateway).host} healthy` : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? "no candidate reachable (VPN off?); ahub local cannot run" : "not configured: set omniroute.urls in .agenthub/config.local.json (any OpenAI-compatible gateway); ahub local cannot run");
       row(!!omni.apiKey(), "omniroute key", omni.apiKey() ? "present" : "missing: set OMNIROUTE_API_KEY or omniroute.api_key_file in .agenthub/config.local.json");
-      if (gateway && omni.apiKey()) {
+      if (!routing) {
+        row(undefined, "routing models", "routing could not be read");
+      } else if (gateway && omni.apiKey()) {
         try {
-          const routing = currentRouting(cwd);
           const aliases = new Set([routing.local.fixed_model, ...Object.values(routing.classes).flatMap(policy => policy.fixed_model ? [policy.fixed_model] : []),
             ...Object.values(routing.hub_routes ?? {}).flatMap(route => [route.efficient ?? "fast", route.capable ?? "coding", ...(route.judge ? [route.judge] : [])])]);
           const served = new Set(await omni.models());
@@ -1932,6 +1935,60 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
   },
 };
+
+function sanitizeRoutingParseError(file: "routing.toml" | "routing.local.toml", error: unknown): string {
+  const raw = ((error as Error)?.message || "invalid TOML").split("\n")[0]!.trim();
+  const cleaned = raw
+    .replace(/^(TOML Parse error: Strings must be quoted): ".*"$/, "$1")
+    .replace(/^(TOML Parse error: Cannot redefine (?:key|table)) '.*'$/, "$1")
+    .replace(/^Invalid regular expression: \/.*\/[a-z]*: /, "Invalid regular expression: ");
+  return cleaned.startsWith(`${file}:`) ? `.agenthub/${cleaned}`
+    : cleaned.startsWith(`.agenthub/${file}:`) ? cleaned
+    : `.agenthub/${file}: ${cleaned}`;
+}
+
+function inspectDoctorRouting(cwd: string): { routing?: Routing; errors: string[] } {
+  const errors: string[] = [];
+  let baseText: string | undefined;
+  try {
+    baseText = readFileSync(join(cwd, ".agenthub", "routing.toml"), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") baseText = routingText(cwd);
+    else errors.push(sanitizeRoutingParseError("routing.toml", error));
+  }
+  let baseRouting: Routing | undefined;
+  if (baseText !== undefined) {
+    try {
+      baseRouting = parseRouting(baseText);
+    } catch (error) {
+      errors.push(sanitizeRoutingParseError("routing.toml", error));
+    }
+  }
+  let overlayText: string | undefined;
+  try {
+    overlayText = readFileSync(join(cwd, ".agenthub", OVERLAY_FILE), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      errors.push(sanitizeRoutingParseError("routing.local.toml", error));
+    }
+  }
+  let overlay: RoutingOverlay | undefined;
+  if (overlayText !== undefined) {
+    try {
+      overlay = parseOverlay(overlayText);
+    } catch (error) {
+      errors.push(sanitizeRoutingParseError("routing.local.toml", error));
+    }
+  }
+  if (errors.length || !baseText) return { errors };
+  if (overlay === undefined) return { routing: baseRouting, errors };
+  try {
+    return { routing: parseRouting(baseText, overlay), errors };
+  } catch (error) {
+    errors.push(sanitizeRoutingParseError("routing.local.toml", error));
+    return { errors };
+  }
+}
 
 async function runConductorCommand(): Promise<void> {
   let op: string;
