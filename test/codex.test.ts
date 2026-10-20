@@ -47,6 +47,49 @@ test("offline until the TUI starts a thread, then idle", async () => {
   expect(seen.find((m) => m.id === 2).result.thread.id).toBe("th1"); // proxy is transparent
 });
 
+test("#482 terminal ownership needs an adopted thread on the matching launch link and survives a refused second TUI", async () => {
+  const fake = startFakeAppServer();
+  const peer = new CodexPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: fake.url, cwd: process.cwd() });
+  cleanup.push(fake.stop, () => peer.stop());
+  await peer.start();
+  const owner = peer as CodexPeer & { terminalOwner?: (launchId: string) => { generation: string; nativePid?: number } | undefined };
+  const nonceA = "c221bdce-3895-42bc-98e0-e6fa236a7dc0";
+  const nonceB = "d221bdce-3895-42bc-98e0-e6fa236a7dc0";
+  const url = (nonce: string) => { const target = new URL(peer.proxyUrl); target.searchParams.set("launchId", nonce); return target.toString(); };
+  const seen: any[] = [];
+  const tui = new WebSocket(url(nonceA));
+  cleanup.push(() => tui.close());
+  tui.onmessage = ev => seen.push(JSON.parse(String(ev.data)));
+  await new Promise(resolve => { tui.onopen = resolve; });
+  expect(owner.terminalOwner?.(nonceA)).toBeUndefined(); // URL and accepted socket alone prove no native session.
+  tui.send(JSON.stringify({ id: 1, method: "initialize", params: { clientInfo: { name: "terminal-owner-fixture" } } }));
+  await until(() => seen.some(message => message.id === 1));
+  expect(owner.terminalOwner?.(nonceA)).toBeUndefined(); // Upstream initialize still has no adopted thread.
+  expect(owner.terminalOwner?.(nonceB)).toBeUndefined();
+
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => seen.some(message => message.id === 2));
+  const firstProof = owner.terminalOwner?.(nonceA);
+  expect(firstProof).toBeDefined();
+  expect(typeof firstProof?.generation).toBe("string");
+  expect(firstProof?.generation.length).toBeGreaterThan(0);
+  expect(owner.terminalOwner?.(nonceB)).toBeUndefined();
+
+  let refusedCode: number | undefined;
+  const second = new WebSocket(url(nonceB));
+  cleanup.push(() => second.close());
+  second.onclose = event => { refusedCode = event.code; };
+  await until(() => refusedCode !== undefined);
+  expect(refusedCode).toBe(1013);
+  expect(owner.terminalOwner?.(nonceA)).toEqual(firstProof);
+  expect(owner.terminalOwner?.(nonceB)).toBeUndefined();
+
+  tui.close();
+  await until(() => peer.state === "offline");
+  expect(owner.terminalOwner?.(nonceA)).toBeUndefined();
+  expect(owner.terminalOwner?.(nonceB)).toBeUndefined();
+});
+
 test("idle injection uses turn/start with a negative id; only the final answer is shared", async () => {
   const { bus, peer, said, tui, seen } = await setup();
   tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
