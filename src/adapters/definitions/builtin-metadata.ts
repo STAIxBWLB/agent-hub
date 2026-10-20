@@ -158,6 +158,8 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
 /**
  * ponytail: retain the released A1 metadata export for source/library compatibility until A4 retires it.
  * Core runtime consumers use NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN through the registry exclusively.
+ * The frozen jcode entry stays byte-identical: its headless `launch` emits `jcode` without `--mode`, which the CLI now
+ * resolves to the TUI (#464, #559). Callers of this export must pass `--mode headless` themselves.
  */
 const palette = (fg: string) => ({ palette: { fg, bg: "transparent" } });
 export const BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition[] = Object.freeze([

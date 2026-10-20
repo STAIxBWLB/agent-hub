@@ -20,7 +20,7 @@ import { buildReviewBrief } from "./review-brief.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
 import { ActivityRing } from "./activity.ts";
-import { JcodePeer } from "../adapters/jcode.ts";
+import { JcodeOptionMismatch, JcodePeer } from "../adapters/jcode.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc, readSpecEdit, sdlcGh } from "./sdlc.ts";
 import { claudeStateFile, ownTerminalRow, pathEvidence, transcriptPersisted } from "./claude-state.ts";
@@ -3326,7 +3326,9 @@ export async function startDaemon(opts: DaemonOptions) {
       if (owner instanceof PiPeer && owner.state !== "offline" && owner.mode === "tui") return { ok: false, error: "Pi runs in a terminal; end it there before starting a headless one", command: "ahub pi --headless" };
       return startPeer(peer, definitionOf(peer)?.start.explicitHeadlessMode ? { mode: "headless", ...(resume ?? {}) } : {});
     }
-    if (owner && owner.state !== "offline" && definitionOf(peer)?.start.daemonPort !== "owned-acp") return { ok: true, already: true, mode };
+    // #559 N1: only the console's own start reopens a frontend on an attached owned-ACP peer. The conductor and the
+    // dashboard answer `already`, so a repeated call never adds another TUI writer to the live session.
+    if (owner && owner.state !== "offline" && !(definitionOf(peer)?.start.daemonPort === "owned-acp" && by === "the console")) return { ok: true, already: true, mode };
     const words = [...startWords(peer, mode)];
     if (resume) words.push(...(resume.sessionFile ? ["--session-file", resume.sessionFile] : ["--session-id", resume.sessionId]), ...(resume.backend ? ["--backend", resume.backend] : []), ...(resume.model ? ["--model", resume.model] : []));
     const command = `ahub ${resume ? words.map(shellQuote).join(" ") : words.join(" ")}`;
@@ -5599,7 +5601,10 @@ export async function startDaemon(opts: DaemonOptions) {
           const options = msg.args ?? {};
           for (const key of ["model", "providerProfile", "sessionId"]) if (options[key] !== undefined && typeof options[key] !== "string") throw new Error("invalid option");
           return void reply({ ok: true, ...owner.tuiLaunch(msg.binding, options) });
-        } catch { return void reply({ ok: false, error: "owned Jcode launch or saved session could not be verified; details withheld" }); }
+        } catch (error) {
+          if (error instanceof JcodeOptionMismatch) return void reply({ ok: false, option: error.option, error: `owned Jcode launch differs from its running session in ${error.option}; start without it or stop jcode first` });
+          return void reply({ ok: false, error: "owned Jcode launch or saved session could not be verified; details withheld" });
+        }
       }
       case "peer_start":
         // #269: a start the hub makes in the peer's start mode, for a console child with no terminal of its own.
