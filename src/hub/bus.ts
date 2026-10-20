@@ -231,7 +231,7 @@ export class Bus {
         return refused;
       }
       const published = this.publishResult(env);
-      if (offRoster.length) this.note(peer.id, noteLine(HUB, "decision", `your message is retained off roster for ${offRoster.join(", ")}; delivered to the other recipients`));
+      if (offRoster.length && published.dropped !== "hop") this.note(peer.id, noteLine(HUB, "decision", `your message is retained off roster for ${offRoster.join(", ")}; delivered to the other recipients`));
       // The sender's result (issue #107): a turn answer has no caller, so it hears it on its next delivery. It counts as
       // not sent only when nobody got it.
       if (hushed.length) this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}`));

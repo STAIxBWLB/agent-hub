@@ -1139,3 +1139,18 @@ test("peer callback exposes a hop drop while retaining legacy success and FYI re
   expect(peer.onMessage!("genuine empty audience")).toBeUndefined();
   await peer.stop();
 });
+
+test("#550 a hop drop never claims mixed roster recipients were retained or delivered", async () => {
+  const { MAX_HOP } = await import("../src/hub/envelope.ts");
+  const bus = new Bus({ batchMs: 0, rostered: peer => peer !== "kimi" });
+  const sender = new NativeFakePeer("local"), allowed = new FakePeer("claude"), blocked = new FakePeer("kimi");
+  for (const peer of [sender, allowed, blocked]) { bus.add(peer); await peer.start(); }
+  try {
+    const parent = { ...newEnvelope("user", "reply to this"), hop: MAX_HOP };
+    expect(sender.onMessage!("reply past cap", { inReplyTo: parent, to: ["claude", "kimi"] })).toEqual({ targets: [], dropped: "hop" });
+    await rosterTurnSettled();
+    expect(allowed.got).toEqual([]); expect(blocked.got).toEqual([]);
+    expect(bus.queueList("kimi")).toEqual([]);
+    expect(bus.snapshot().prefaces.local?.body ?? "").not.toContain("retained off roster");
+  } finally { bus.closeJournal(); await Promise.all([sender.stop(), allowed.stop(), blocked.stop()]); }
+});
