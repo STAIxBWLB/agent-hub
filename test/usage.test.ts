@@ -162,6 +162,32 @@ test("#528 a near-EOF completion in a sparse 200 MiB transcript costs only a tai
     expect(readClaudeTranscriptCompletion("s", file)?.completedTurn).toBe(true);
     expect(reads.mock.calls.length).toBeGreaterThan(0);
     const requested = reads.mock.calls.reduce((sum, args) => sum + Number((args as unknown[])[3]), 0);
-    expect(requested).toBeLessThanOrEqual(COMPLETION_TAIL_BYTES + 1);
+    expect(requested).toBeLessThanOrEqual(4 * 1024 * 1024 + 1);
   } finally { reads.mockRestore(); }
+}));
+
+
+test("#528 the extra boundary byte cannot certify a row starting outside the lookback", () => completionFixture(file => {
+  const row = completionRow("outside-by-one");
+  writeFileSync(file, row);
+  expect(readClaudeTranscriptCompletion("s", file, Buffer.byteLength(row) - 1)).toBeUndefined();
+}));
+
+
+test("#528 total read bytes stay capped even with a huge requested lookback", () => completionFixture(file => {
+  writeFileSync(file, completionRow("past-cap") + "\n");
+  const hardCap = 64 * 1024 * 1024;
+  truncateSync(file, hardCap + 8 * 1024 * 1024);
+  const reads = spyOn(fs, "readSync");
+  try {
+    expect(readClaudeTranscriptCompletion("s", file, Number.MAX_SAFE_INTEGER)).toBeUndefined();
+    const requested = reads.mock.calls.reduce((sum, args) => sum + Number((args as unknown[])[3]), 0);
+    expect(requested).toBe(hardCap + 1);
+    expect(reads.mock.calls.every(args => Number((args as unknown[])[3]) <= 4 * 1024 * 1024)).toBe(true);
+  } finally { reads.mockRestore(); }
+}));
+
+test("#528 invalid lookback budgets certify no completion", () => completionFixture(file => {
+  writeFileSync(file, completionRow("valid"));
+  for (const budget of [0, -1, NaN, Infinity, 1.5]) expect(readClaudeTranscriptCompletion("s", file, budget)).toBeUndefined();
 }));

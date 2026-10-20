@@ -71,32 +71,58 @@ export function readClaudeTranscriptUsage(sessionId: string, transcriptPath: str
   }
 }
 
-/**
- * The tail read for turn completion: the newest end_turn row is always near the end.
- * ponytail: a fixed 4 MiB window; a completion written more than 4 MiB before EOF stays invisible (Claude appends the final
- * row last, so this needs >4 MiB written after the turn ended). Upgrade: scan backwards in chunks until an assistant row.
- */
+/** Fixed backwards I/O chunk: a normal near-EOF completion costs only this tail read. */
 export const COMPLETION_TAIL_BYTES = 4 * 1024 * 1024;
+/**
+ * ponytail: completion lookup reads at most 64 MiB plus one line-boundary byte. A row beyond that bound, or one
+ * whose start is outside it, stays unavailable. Upgrade: a session-bound completion index instead of rescanning.
+ */
+export const COMPLETION_SCAN_BYTES = 64 * 1024 * 1024;
 
 /**
- * The newest completed assistant turn (stop_reason end_turn) in a transcript of any size, from its last
- * COMPLETION_TAIL_BYTES only (#517: a whole-file cap made every Stop unverifiable on a long session). The first,
- * possibly partial, line of a cut tail is dropped. Undefined when there is none or the file cannot be read.
+ * The newest completed assistant turn, scanning complete JSONL rows backwards in fixed chunks. Reassemble bytes
+ * before decoding UTF-8; a cut row is never parsed as a valid suffix. The optional lookback budget remains bounded
+ * by COMPLETION_SCAN_BYTES, plus one byte to certify a row starting exactly at its boundary.
  */
-export function readClaudeTranscriptCompletion(sessionId: string, transcriptPath: string, tailBytes = COMPLETION_TAIL_BYTES): UsageRecord | undefined {
+export function readClaudeTranscriptCompletion(sessionId: string, transcriptPath: string, maxBytes = COMPLETION_SCAN_BYTES): UsageRecord | undefined {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) return undefined;
   let fd: number | undefined;
   try {
     fd = openSync(transcriptPath, "r");
-    const size = fstatSync(fd).size, start = Math.max(0, size - tailBytes);
-    // One byte before the window shows whether the cut falls on a line boundary.
-    const from = start > 0 ? start - 1 : 0, buffer = Buffer.alloc(size - from);
-    let read = 0;
-    while (read < buffer.length) { const n = readSync(fd, buffer, read, buffer.length - read, from + read); if (n <= 0) break; read += n; }
-    let text = buffer.subarray(0, read).toString("utf8");
-    // A cut inside a line drops up to the first newline, or all of it when it holds none; a cut right after a newline
-    // keeps the complete row that starts the window.
-    if (start > 0) { const nl = text.indexOf("\n"); text = nl < 0 ? "" : text.slice(nl + 1); }
-    return transcriptRecords(sessionId, text).filter(record => record.completedTurn).at(-1);
+    const size = fstatSync(fd).size, start = Math.max(0, size - Math.min(maxBytes, COMPLETION_SCAN_BYTES));
+    const limit = Math.max(0, start - 1);
+    let position = size;
+    let parts: Buffer[] = [];
+    const seen = new Set<string>();
+    const completedRow = (): UsageRecord | undefined => {
+      const text = Buffer.concat(parts.reverse()).toString("utf8");
+      parts = [];
+      const record = transcriptRecords(sessionId, text)[0];
+      if (!record || seen.has(record.id)) return undefined;
+      seen.add(record.id); // A later non-end_turn row supersedes an older completion for the same message.
+      return record.completedTurn ? record : undefined;
+    };
+    while (position > limit) {
+      const from = Math.max(limit, position - COMPLETION_TAIL_BYTES), buffer = Buffer.alloc(position - from);
+      let read = 0;
+      while (read < buffer.length) {
+        const n = readSync(fd, buffer, read, buffer.length - read, from + read);
+        if (n <= 0) return undefined; // A shrinking transcript cannot certify a contiguous row.
+        read += n;
+      }
+      let end = read;
+      while (end > 0) {
+        const newline = buffer.lastIndexOf(10, end - 1);
+        if (newline < 0) break;
+        parts.push(buffer.subarray(newline + 1, end));
+        const record = completedRow();
+        if (record) return record;
+        end = newline;
+      }
+      if (end > 0) parts.push(buffer.subarray(0, end));
+      position = from;
+    }
+    return position === 0 && start === 0 ? completedRow() : undefined;
   } catch {
     return undefined;
   } finally {

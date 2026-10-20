@@ -1719,9 +1719,11 @@ distinct from the completed-message baseline recorded at that start. Later tool
 activity does not move this turn-start boundary. Missing start evidence or a
 start from another session, launch or channel claim leaves completion unknown.
 Accepted completion consumes that start before the peer becomes idle, so another
-message cannot reuse it. The completion and the baseline are read from the last
-4 MiB of the transcript, whatever its size (#517): the 32 MiB cap applies only to
-usage accounting, so a long session still ends its turns. A Stop refused because
+message cannot reuse it. Completion and baseline lookup scans backwards in fixed
+4 MiB chunks, up to 64 MiB plus one boundary byte (#528). Complete UTF-8 JSONL rows
+are reconstructed across chunks; a row starting outside the bound stays unknown.
+A near-EOF completion costs one chunk even in a 200 MiB transcript. The separate
+32 MiB cap applies only to usage accounting (#517). A Stop refused because
 no completion is found tells the console once per turn start that the peer stays
 busy and its messages wait in its queue. A valid bound Stop request receives one prompt
 acknowledgement with pending=true, within the existing two-second hook deadline.
