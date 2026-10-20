@@ -10,6 +10,8 @@ export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | 
 export interface StatusOutput {
   pendingRestart?: readonly { key: string; reason: string }[];
   retainedConfig?: readonly { key: string; reason: string }[];
+  /** #572 AC3: advisory, present while the project root checkout is on a branch other than the default. */
+  mainCheckout?: string;
   taskStalls?: readonly { task: number; cause: { kind: string; peer?: string; dependency?: number; code: string } }[];
   pendingTaskOffers?: readonly { task: number; peer: string }[];
   isolatedChecks?: { pending?: number; orphans?: string[]; unknownReceipts?: readonly string[]; maintenanceUnavailable?: boolean };
@@ -192,6 +194,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   const out = lines(`agent-hub${data.version ? ` ${data.version}` : ""}  pid ${data.pid ?? "unknown"}  control 127.0.0.1:${data.controlPort ?? "unknown"}`, columns, "info");
   if (data.cwd) out.push(...lines(data.cwd, columns));
   for (const pending of data.pendingRestart ?? []) out.push(...detail("pending restart", `${pending.key}: ${pending.reason}`, columns, "attention"));
+  if (data.mainCheckout) out.push(...detail("main checkout", data.mainCheckout, columns, "attention"));
   if (data.retainedConfig?.length) {
     out.push(...detail("config retained", `${data.retainedConfig.map(row => row.key).join(", ")}; run ahub settings reload`, columns, "attention"));
     for (const pending of data.retainedConfig) out.push(...detail("retained reason", `${pending.key}: ${pending.reason}`, columns, "attention"));

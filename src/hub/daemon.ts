@@ -80,6 +80,7 @@ import { closeSync, constants as fsConstants, openSync, lstatSync, readSync, sta
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { realPath, hubHome } from "./project.ts";
+import { mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent } from "./bus.ts";
 import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, profileTaskTools } from "./hub-tools.ts";
 import { Conductor, ConductorHolds, conductorPeer, conductorProgressSink, publicConductorTask, publicPeerBudget, type ConductEvent } from "./conductor.ts";
@@ -2306,7 +2307,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // A silent cohort (issue #107): the member that integrates is asked to check its work first; no done yet.
         const last = t.history.at(-1);
         if (last?.event === "integration requested" && last.by === HUB) return last.note ?? "";
-        const extra = tasks.takeDoneNote(t.id); // the notices a silence held, when no integration step ran
+        const extra = [tasks.takeDoneNote(t.id), tasks.checkoutNote()].filter(Boolean).join("\n"); // held silence notices, then the #572 checkout advisory
         const result = tasks.isChecking(t.id) ? `${line(t)}; its check is queued or running, and the result comes as a task message` : line(t);
         return extra ? `${result}\n${extra}` : result;
       }
@@ -2698,6 +2699,7 @@ export async function startDaemon(opts: DaemonOptions) {
     pluginBundle: SERVER_JS,
     pendingRestart,
     retainedConfig,
+    ...(() => { const warning = mainCheckoutWarning(opts.cwd); return warning ? { mainCheckout: warning } : {}; })(),
     startModes: Object.fromEntries(START_MODE_PEERS.map(peer => [peer, startModeOf(config.peers, peer, declarations)])),
     memoryProfile: memoryProfileStatus(includeAttentionItems),
     lifecycleStages: [...lifecycleConfig.stages],
