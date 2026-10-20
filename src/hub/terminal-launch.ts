@@ -68,10 +68,12 @@ export class TerminalLaunches {
     owner(row: RecordedTerminalLaunch): TerminalOwnerProof | undefined;
     publish(row: RecordedTerminalLaunch, current: () => boolean): Promise<boolean>;
     log?(message: string): void;
+    signature?: typeof processSignature;
+    now?(): number;
   }) {}
 
   register(row: RecordedTerminalLaunch): void {
-    if (this.stopped || processLiveness(row.launcherPid, row.launcherSignature, processSignature) !== "live") throw new Error("terminal launcher identity unavailable");
+    if (this.stopped || processLiveness(row.launcherPid, row.launcherSignature, (this.opts.signature ?? processSignature)) !== "live") throw new Error("terminal launcher identity unavailable");
     const previous = this.candidates.get(row.launchId);
     if (previous) {
       if (JSON.stringify(previous.row) !== JSON.stringify(row)) throw new Error("terminal launch identity changed");
@@ -81,7 +83,7 @@ export class TerminalLaunches {
       const states = new Map<string, ReturnType<typeof processLiveness>>();
       for (const [id, candidate] of this.candidates) {
         const key = `${candidate.row.launcherPid}:${candidate.row.launcherSignature}`;
-        const state = states.get(key) ?? processLiveness(candidate.row.launcherPid, candidate.row.launcherSignature, processSignature);
+        const state = states.get(key) ?? processLiveness(candidate.row.launcherPid, candidate.row.launcherSignature, (this.opts.signature ?? processSignature));
         states.set(key, state);
         if (state === "gone") this.candidates.delete(id);
       }
@@ -97,7 +99,7 @@ export class TerminalLaunches {
     try {
       for (const [id, candidate] of this.candidates) {
         const { row } = candidate;
-        const liveness = processLiveness(row.launcherPid, row.launcherSignature, processSignature);
+        const liveness = processLiveness(row.launcherPid, row.launcherSignature, (this.opts.signature ?? processSignature));
         if (liveness === "gone") { this.candidates.delete(id); continue; }
         if (liveness !== "live") continue;
         const proof = this.opts.owner(row);
@@ -107,7 +109,7 @@ export class TerminalLaunches {
           if (!table || !descendantsOf(table, row.launcherPid).some(child => child.pid === proof.nativePid)) continue;
         }
         const current = () => !this.stopped && this.candidates.get(id) === candidate && proof.isCurrent() &&
-          processLiveness(row.launcherPid, row.launcherSignature, processSignature) === "live";
+          processLiveness(row.launcherPid, row.launcherSignature, (this.opts.signature ?? processSignature)) === "live";
         try {
           if (current() && await this.opts.publish(row, current)) candidate.published = proof.generation;
         } catch { if (!this.stopped) this.opts.log?.("terminal owner publication unavailable; inspect recovery terminal evidence"); }

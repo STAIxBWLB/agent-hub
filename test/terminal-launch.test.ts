@@ -128,3 +128,52 @@ test("#482 the 64 live-candidate cap fails closed and a reused identity is refus
   launches.clear();
   expect(() => launches.register(f.row("after-clear"))).toThrow("terminal launcher identity unavailable");
 }, 20_000);
+
+
+test("#482 published unchanged ownership never probes the launcher on ordinary ticks", async () => {
+  const f = fixture(), row = f.row("published-count");
+  let probes = 0, now = 0, generation = "first", publications = 0;
+  const launches = new TerminalLaunches({
+    signature: () => { probes++; return row.launcherSignature; },
+    now: () => now,
+    owner: () => ({ generation, isCurrent: () => true }),
+    publish: async (_row, current) => { publications++; return current(); },
+  });
+  launches.register(row);
+  await launches.reconcile();
+  expect(publications).toBe(1);
+  const baseline = probes;
+  expect(baseline).toBeGreaterThan(0);
+  for (now = 1000; now < 30_000; now += 1000) await launches.reconcile();
+  expect(probes).toBe(baseline);
+  expect(publications).toBe(1);
+  await launches.reconcile(); // Slow collection at 30 s still checks whether the launcher is gone.
+  expect(probes).toBe(baseline + 1);
+  generation = "second";
+  await launches.reconcile();
+  expect(publications).toBe(2);
+  expect(probes).toBeGreaterThan(baseline + 1); // A new publication still fences liveness.
+  launches.clear();
+});
+
+test("#482 unattached candidates are collected slowly and never promoted after launcher exit", async () => {
+  const f = fixture(), row = f.row("gone-before-owner");
+  let probes = 0, now = 0, live = true, attached = false, publications = 0;
+  const launches = new TerminalLaunches({
+    signature: () => { probes++; return live ? row.launcherSignature : "reused-launcher"; },
+    now: () => now,
+    owner: () => attached ? { generation: "late", isCurrent: () => true } : undefined,
+    publish: async () => { publications++; return true; },
+  });
+  launches.register(row);
+  const baseline = probes;
+  live = false;
+  for (now = 1000; now < 30_000; now += 1000) await launches.reconcile();
+  expect(probes).toBe(baseline);
+  await launches.reconcile();
+  expect(probes).toBe(baseline + 1);
+  attached = true;
+  await launches.reconcile();
+  expect(publications).toBe(0);
+  launches.clear();
+});
