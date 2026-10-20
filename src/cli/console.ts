@@ -86,7 +86,8 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   const { client } = options; const terminal = options.terminal ?? nativeTerminal();
   const color = options.color ?? resolveColor(undefined, { isTTY: terminal.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR }) === true;
   let state = initialConsoleState(!!options.panels); state.project = basename(options.cwd);
-  const pet = loadPetConfig(options.cwd);
+  let pet = loadPetConfig(options.cwd);
+  let petSignature = JSON.stringify([pet.enabled, pet.character, pet.size, pet.glyphs, pet.blink, pet.bell]);
   state.petEnabled = pet.enabled && !options.noPet; state.petBlink = pet.blink;
   state.petChoices = CHARACTER_IDS; state.petCharacter = pet.character ?? "stai";
   state.petSize = pet.size; state.petGlyphs = petGlyphs(pet.glyphs);
@@ -194,6 +195,15 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (!active) return;
       const [status, budget, tasks, queue, ready, settings] = replies;
       captureConsoleSelection(state);
+      try {
+        const latestPet = loadPetConfig(options.cwd);
+        const nextSignature = JSON.stringify([latestPet.enabled, latestPet.character, latestPet.size, latestPet.glyphs, latestPet.blink, latestPet.bell]);
+        if (nextSignature !== petSignature) {
+          pet = latestPet; petSignature = nextSignature;
+          state.petEnabled = pet.enabled && !options.noPet; state.petBlink = pet.blink;
+          state.petCharacter = pet.character ?? "stai"; state.petSize = pet.size; state.petGlyphs = petGlyphs(pet.glyphs);
+        }
+      } catch { /* retain running console presentation while a config file is unreadable */ }
       if (status.status?.tasks && status.ok !== false) state.taskCounts = status.status.tasks;
       if (status.status && status.ok !== false) state.pendingRestart = Array.isArray(status.status.pendingRestart) ? status.status.pendingRestart : [];
       if (status.status && status.ok !== false) state.retainedConfig = Array.isArray(status.status.retainedConfig) ? status.status.retainedConfig : [];

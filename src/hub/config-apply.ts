@@ -11,6 +11,8 @@ import { taskSweepConfig } from "./task-sweep.ts";
 import { projectionConfig } from "./text-projection.ts";
 import { validateInstances, type InstancesConfig } from "./instances.ts";
 import { peerRosterConfig } from "./roster.ts";
+import { CHARACTER_IDS } from "../pet/characters.ts";
+import { petPalette } from "../pet/config.ts";
 
 export type ApplyClass = "live" | "next use" | "restart";
 export interface ApplyRule { applies: ApplyClass; reason?: string }
@@ -63,6 +65,7 @@ export function authorizeConfigLeaf(input: ConfigAuthorizationInput): ConfigAuth
   if (["inference.enabled", "inference.triage", "review.adaptive"].includes(key) && before === true && after === false) tightening = true;
   if (key === "review.min_reviews" && numeric(before) && numeric(after) && after >= before) tightening = true;
   if (tightening && !input.settledHolderChange) return result(true, false, "semantic tightening");
+  if (input.source === "config" && (key === "pet" || key.startsWith("pet."))) return result(true, false, "console-local presentation");
   if (guard?.risk === "safe" && !machine) return result(true, false, "safe registered setting");
   if (input.acceptedFallback && !machine) {
     const person = input.authority === "terminal" || input.authority === "settings" && !!guard;
@@ -106,12 +109,26 @@ const block = (schema: Record<string, Check>): Check => {
 };
 const peerMap = (check: Check) => map(check, SUPPORTED_PEERS);
 const timerSeconds = number(1, 2_147_483_647 / 1000), timerMinutes = number(1, 2_147_483_647 / 60_000);
+const petFields: Record<string, Check> = {
+  character: words(CHARACTER_IDS),
+  size: words(["line", "mini", "full"]),
+  glyphs: words(["auto", "ascii", "blocks"]),
+  blink: bool,
+  bell: bool,
+  palette: (v, k) => { if (!petPalette(v)) fail(k, "unknown choice"); },
+  window: bool,
+};
+export const validatePetConfig: Check = (v, k) => {
+  if (v === false) return;
+  block(petFields)(v, k);
+};
+shapes.set(validatePetConfig, { fields: petFields });
 const nativeValidators = { bool, text, strings, argv, number, words, block };
 const schema: Record<string, Check> = {
   ...Object.assign({}, ...ADAPTERS.map(adapter => adapter.configuration?.schema?.(nativeValidators) ?? {})),
   watchdog_ms: number(1, 2_147_483_647), kimi_cmd: argv, qwen_cmd: argv, jcode_cmd: argv, codex_bin: text, jcode_home: text, jcode_provider_profile: text,
   permission_modes: v => { permissionDefaults(v); }, protect_instruction_files: bool,
-  instances: v => { validateInstances(v); },
+  instances: v => { validateInstances(v); }, pet: validatePetConfig,
   batch_max: number(1, 100_000, true), batch_ms: number(0, 2_147_483_647), queue_cap: number(1, 1_000_000, true),
   memory: block({ enabled: bool, worker_url: text, inject_tokens: number(0, 1_000_000, true), brief_items: number(0, 10_000, true), native: bool,
     short_ttl_days: number(1, 3650, true), sync_interval_min: number(0, 1440, true), suggest_edges: bool }),
@@ -142,6 +159,7 @@ const schema: Record<string, Check> = {
   review: block({ adaptive: bool, min_reviews: number(1, Number.MAX_SAFE_INTEGER, true), pool: v => { reviewerPoolConfig({ pool: v }, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS); }, rerotate: bool }), recovery: block({ auto_resume_after_crash: bool }),
   capabilities: map(strings), coordination: words(["advisory", "turn-free"]), experiments: block({ stale_notices: words(["drop", "deliver"]) }),
 };
+export const SCHEMA_KEYS: readonly string[] = Object.freeze(Object.keys(schema));
 export function validateRawConfig(raw: unknown, declarations?: InstancesConfig): asserts raw is Record<string, unknown> {
   const value = object(raw, "config");
   const instances = validateInstances(value.instances ?? declarations);
@@ -169,7 +187,7 @@ const restart: Record<string, string> = {
   profile: "Session tool schemas and profile contracts are bound at startup", profile_overrides: "Session tool schemas and profile contracts are bound at startup",
   text_projection: "Converter and cache ownership are bound at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", bench: "Benchmark execution environment is selected before work starts",
 };
-const live = new Set(["permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "research", "snapshots", "tasks.wip_limits", "tasks.escalate_after", "approvals.notify"]);
+const live = new Set(["permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "research", "snapshots", "tasks.wip_limits", "tasks.escalate_after", "approvals.notify", "pet"]);
 const nextMemory = new Set(["memory.inject_tokens", "memory.brief_items", "memory.suggest_edges"]);
 /** Closed top-level schema; leaf overrides retain the existing session/runtime boundaries. */
 export function configApply(key: string): ApplyRule {

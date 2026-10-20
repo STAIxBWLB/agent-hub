@@ -32,6 +32,17 @@ function project() {
   return root;
 }
 
+test("#410 delegated operational audit negotiation preserves off-roster caller authority", async () => {
+  const root = project(), stateDir = join(root, ".agenthub/state");
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, roster: { ...DEFAULT_CONFIG.roster, codex: false }, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
+  try {
+    const result = await cli(root, ["--live-test", "permission", "pi", "ask"], { AGENTHUB_PEER_ID: "codex" });
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe("pi: ask\n");
+  } finally { await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
+
 test("explicit live-test delegation reaches console commands and retains the initiating peer in daemon evidence", async () => {
   const root = project(), stateDir = join(root, ".agenthub/state");
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,

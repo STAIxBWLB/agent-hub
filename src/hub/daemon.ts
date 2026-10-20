@@ -20,7 +20,7 @@ import { buildReviewBrief } from "./review-brief.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
 import { ActivityRing } from "./activity.ts";
-import { JcodePeer } from "../adapters/jcode.ts";
+import { JcodeOptionMismatch, JcodePeer } from "../adapters/jcode.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc, readSpecEdit, sdlcGh } from "./sdlc.ts";
 import { claudeStateFile, ownTerminalRow, pathEvidence, transcriptPersisted } from "./claude-state.ts";
@@ -45,7 +45,7 @@ import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
 import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
-import { authorizeConfigLeaf, configApply, configChanges, validateEffectiveConfig } from "./config-apply.ts";
+import { authorizeConfigLeaf, configApply, configChanges, validateEffectiveConfig, validatePetConfig } from "./config-apply.ts";
 import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSources } from "./config-reload.ts";
 import { eventLog, readEvents, tokenDeltas, type RoleIdentity } from "./events.ts";
@@ -201,6 +201,8 @@ export interface HubConfig {
   coordination: "advisory" | "turn-free";
   /** Switches for controlled ablations only (issue #110): `stale_notices: "deliver"` turns #106's dropping off. */
   experiments?: { stale_notices?: "drop" | "deliver" };
+  /** Console-local character and window presentation (#280, #483); grants no authority. */
+  pet?: false | Record<string, unknown>;
   /** Machine-local fields a config file set but git could not vouch for, and why (issue #17). */
   ignored?: string[];
   /** Settings that were removed or are about to be (issue #83): what each does now, for `hub.log` and `ahub doctor`. */
@@ -254,7 +256,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = INSTANCE_CONFIG_FILES;
 export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<string, any> }
-const CONFIG_BLOCKS = ["memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal"];
+const CONFIG_BLOCKS = ["memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "pet"];
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
 export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]): { roles: Record<string, string[]>; conductor: HubConfig["conductor"]; planner?: string; notices?: string[] } {
@@ -350,6 +352,8 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     peerStartConfig(file.peers, instances);
     if (file.terminal != null && (typeof file.terminal !== "object" || Array.isArray(file.terminal))) throw new Error("terminal must be an object");
     terminalTemplate(file.terminal?.open);
+    if (file.pet !== undefined) validatePetConfig(file.pet, "config.pet");
+    if (file.pet && typeof file.pet === "object" && !Object.keys(file.pet).length) delete file.pet;
     delete file.permission_default_sources; // provenance is loader-owned, never a file claim
     const why = stripUntrusted(file, DEFAULT_CONFIG, cwd, name);
     if (why) ignored.push(why);
@@ -1967,6 +1971,24 @@ export async function startDaemon(opts: DaemonOptions) {
   let claudeUsageSeen = 0;
   const claudeContextSeen = new Map<string, string>();
   const contextTailSeen = new Map<PeerId, string>();
+  const retainedCliAudits = new Set<string>();
+  function drainCliAuditsNow(): void {
+    for (const audit of drainCliAudits(opts.stateDir)) {
+      const delegated = audit.outcome === "delegated";
+      const refused = audit.outcome !== "run" && !delegated;
+      if (!event({ type: "agent_cli", peer: audit.peer, command: audit.command, refused, ...(delegated ? { delegated: true } : {}) })) {
+        throw new Error("CLI audit event was not retained");
+      }
+      retainedCliAudits.add(audit.id); // Only after the event append succeeded.
+      // ponytail: 4096 live-instance acknowledgements; eviction or restart fails closed. Durable keyed receipts can extend this window.
+      if (retainedCliAudits.size > 4096) retainedCliAudits.delete(retainedCliAudits.values().next().value!);
+      try {
+        notify(refused ? `${audit.peer} refused ahub ${audit.command}` : delegated
+          ? `${audit.peer} ran ahub ${audit.command} with delegated live-test console authority`
+          : `${audit.peer} ran ahub ${audit.command} as ${audit.peer}`);
+      } catch { /* The audit event is retained even if its advisory notice cannot be delivered. */ }
+    }
+  }
   const intervals = [
     setInterval(() => {
       void refreshRunner().catch(() => {});
@@ -1977,14 +1999,7 @@ export async function startDaemon(opts: DaemonOptions) {
       feedBudgetPauses();
       supervision.checkRound();
       try {
-        for (const audit of drainCliAudits(opts.stateDir)) {
-          const delegated = audit.outcome === "delegated";
-          const refused = audit.outcome !== "run" && !delegated;
-          event({ type: "agent_cli", peer: audit.peer, command: audit.command, refused, ...(delegated ? { delegated: true } : {}) });
-          notify(refused ? `${audit.peer} refused ahub ${audit.command}` : delegated
-            ? `${audit.peer} ran ahub ${audit.command} with delegated live-test console authority`
-            : `${audit.peer} ran ahub ${audit.command} as ${audit.peer}`);
-        }
+        drainCliAuditsNow();
       } catch { log("CLI audit outbox unavailable; inspect state before retrying an agent command"); }
       for (const peer of bus.knownPeers()) {
         contexts.retry(peer, contextSession(peer));
@@ -3346,7 +3361,9 @@ export async function startDaemon(opts: DaemonOptions) {
       if (owner instanceof PiPeer && owner.state !== "offline" && owner.mode === "tui") return { ok: false, error: "Pi runs in a terminal; end it there before starting a headless one", command: "ahub pi --headless" };
       return startPeer(peer, definitionOf(peer)?.start.explicitHeadlessMode ? { mode: "headless", ...(resume ?? {}) } : {});
     }
-    if (owner && owner.state !== "offline" && definitionOf(peer)?.start.daemonPort !== "owned-acp") return { ok: true, already: true, mode };
+    // #559 N1: only the console's own start reopens a frontend on an attached owned-ACP peer. The conductor and the
+    // dashboard answer `already`, so a repeated call never adds another TUI writer to the live session.
+    if (owner && owner.state !== "offline" && !(definitionOf(peer)?.start.daemonPort === "owned-acp" && by === "the console")) return { ok: true, already: true, mode };
     const words = [...startWords(peer, mode)];
     if (resume) words.push(...(resume.sessionFile ? ["--session-file", resume.sessionFile] : ["--session-id", resume.sessionId]), ...(resume.backend ? ["--backend", resume.backend] : []), ...(resume.model ? ["--model", resume.model] : []));
     const command = `ahub ${resume ? words.map(shellQuote).join(" ") : words.join(" ")}`;
@@ -4209,12 +4226,18 @@ export async function startDaemon(opts: DaemonOptions) {
     const parts = key.split(".");
     if (parts.some(part => ["__proto__", "constructor", "prototype"].includes(part))) throw new Error("unsafe configuration path");
     let node = target as Record<string, unknown>;
+    const trail: [Record<string, unknown>, string][] = [];
     for (const part of parts.slice(0, -1)) {
       if (!Object.hasOwn(node, part) || !node[part] || typeof node[part] !== "object" || Array.isArray(node[part])) node[part] = {};
+      trail.push([node, part]);
       node = node[part] as Record<string, unknown>;
     }
-    if (value === undefined) delete node[parts.at(-1)!];
-    else node[parts.at(-1)!] = structuredClone(value);
+    if (value === undefined) {
+      delete node[parts.at(-1)!];
+      for (const [parent, part] of trail.reverse()) {
+        if (!Object.hasOwn(DEFAULT_CONFIG, part) && !Object.keys(parent[part] as object).length) delete parent[part];
+      }
+    } else node[parts.at(-1)!] = structuredClone(value);
   }
   function changedRawPaths(before: unknown, after: unknown, prefix = ""): string[] {
     const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
@@ -5567,6 +5590,13 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "status":
         return void reply({ t: "status", status: status(c.role === "console") });
+      case "cli_audit_ack": {
+        if (c.role !== "console") return void reply({ ok: false, error: "cli_audit_ack is a console command" });
+        if (typeof msg.auditId !== "string" || !/^[a-f0-9-]{36}$/.test(msg.auditId)) return void reply({ ok: false, error: "invalid audit id" });
+        try { drainCliAuditsNow(); }
+        catch { return void reply({ ok: false, error: "CLI audit was not retained" }); }
+        return void reply({ ok: retainedCliAudits.has(msg.auditId), auditId: msg.auditId, instanceId });
+      }
       case "ui_snapshot":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_snapshot is a console command" });
         if (!Number.isSafeInteger(msg.after ?? 0) || (msg.after ?? 0) < 0) return void reply({ ok: false, error: "invalid cursor" });
@@ -5622,7 +5652,10 @@ export async function startDaemon(opts: DaemonOptions) {
           const options = msg.args ?? {};
           for (const key of ["model", "providerProfile", "sessionId"]) if (options[key] !== undefined && typeof options[key] !== "string") throw new Error("invalid option");
           return void reply({ ok: true, ...owner.tuiLaunch(msg.binding, options) });
-        } catch { return void reply({ ok: false, error: "owned Jcode launch or saved session could not be verified; details withheld" }); }
+        } catch (error) {
+          if (error instanceof JcodeOptionMismatch) return void reply({ ok: false, option: error.option, error: `owned Jcode launch differs from its running session in ${error.option}; start without it or stop jcode first` });
+          return void reply({ ok: false, error: "owned Jcode launch or saved session could not be verified; details withheld" });
+        }
       }
       case "peer_start":
         // #269: a start the hub makes in the peer's start mode, for a console child with no terminal of its own.

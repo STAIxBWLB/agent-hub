@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,23 @@ import { formatReport, summarize } from "../src/hub/report.ts";
 // issue #40: the report is computed from events.jsonl alone.
 const at = (s: number) => new Date(Date.UTC(2026, 9, 1, 0, 0, s)).toISOString();
 const ev = (s: number, e: object) => ({ v: 1, at: at(s), ...e }) as StampedEvent;
+
+test("#410 an append after a partial failure starts a readable event row before acknowledging success", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-partial-audit-")), file = join(dir, "events.jsonl");
+  const append = fs.appendFileSync, log = eventLog(file);
+  let failure: ReturnType<typeof spyOn> | undefined;
+  try {
+    expect(log({ type: "agent_cli", peer: "codex", command: "status", refused: false })).toBe(true);
+    failure = spyOn(fs, "appendFileSync").mockImplementationOnce((target, data, options) => {
+      append(target, String(data).slice(0, 11), options);
+      throw new Error("partial append failure");
+    });
+    expect(log({ type: "agent_cli", peer: "codex", command: "kill", refused: false })).toBe(false);
+    failure.mockRestore(); failure = undefined;
+    expect(log({ type: "agent_cli", peer: "codex", command: "permission", refused: false, delegated: true })).toBe(true);
+    expect(readEvents(file).filter(row => row.type === "agent_cli").map(row => row.command)).toEqual(["status", "permission"]);
+  } finally { failure?.mockRestore(); rmSync(dir, { recursive: true, force: true }); }
+});
 
 test("summarize counts turns, tokens, messages, overlaps, task events and quota readings", () => {
   const r = summarize([

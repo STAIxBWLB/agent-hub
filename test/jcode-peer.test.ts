@@ -16,6 +16,7 @@ import { rosterAllows } from "../src/hub/roster.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
+import { realPath } from "../src/hub/project.ts";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -248,7 +249,8 @@ test("only a console can resolve the same owned Jcode launch, and a new session 
 
 
 test("the actual person CLI waits for native persistence and executes the TUI with Jcode identity while ACP stays alive (#464)", async () => {
-  const dir = root(), stateDir = join(dir, ".agenthub", "state"), home = join(dir, "home"), record = join(dir, "record");
+  // The CLI resolves --project to the real path; macOS's default TMPDIR is a symlink (#559 N6).
+  const dir = realPath(root()), stateDir = join(dir, ".agenthub", "state"), home = join(dir, "home"), record = join(dir, "record");
   mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}"); mkdirSync(join(dir, ".agenthub"));
   expect(Bun.spawnSync(["git", "init", "--quiet", dir], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).exitCode).toBe(0);
   const command = [...fake, "--save-native-session", "--record", record];
@@ -283,4 +285,28 @@ await import(${JSON.stringify(main)});
   expect(tui.args).toContain("--resume"); expect(tui.args).not.toContain("acp");
   expect(tui.socket).toBe(rows().find(row => row.kind === "serve").socket);
   expect(peer.state).toBe("idle"); expect(existsSync(tui.socket)).toBe(true);
+});
+
+test("a conductor start of an attached Jcode answers already and opens no terminal; the console's start still reopens one (#559 N1)", async () => {
+  const dir = realPath(root()), stateDir = join(dir, "state"), home = join(dir, "home"), opened: string[][] = [];
+  mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}"); mkdirSync(join(dir, ".agenthub"));
+  configureJcodeMcp(dir, stateDir, join(import.meta.dir, "../plugins/agent-hub/server.js"));
+  const terminal = () => ({ available: () => ({ ok: true as const, via: "fixture" }), open: async (_title: string, argv: readonly string[]) => { opened.push([...argv]); return { ok: true as const, via: "fixture" }; } });
+  const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, terminal,
+    config: { ...DEFAULT_CONFIG, jcode_cmd: [...fake, "--save-native-session"], jcode_home: home, roster: { jcode: true }, roles: { ...DEFAULT_CONFIG.roles, claude: ["conductor"] },
+      memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
+  cleanups.push(() => daemon.stop());
+  const consoleClient = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => consoleClient.close());
+  const lead = await ControlClient.connect(stateDir, { role: "tools", peer: "claude" }); cleanups.push(() => lead.close());
+  expect((await consoleClient.request({ t: "start", peer: "jcode", args: { mode: "headless" } })).ok).toBe(true);
+  expect(daemon.bus.peers.get("jcode")?.state).not.toBe("offline");
+  for (let i = 0; i < 2; i++) {
+    const reply = await lead.request({ t: "task", op: "hub_peer_start", args: { peer: "jcode" } });
+    expect(reply.ok).toBe(true);
+    expect(JSON.parse(reply.text)).toMatchObject({ peer: "jcode", mode: "tui", already: true });
+  }
+  expect(opened).toEqual([]);
+  const person = await consoleClient.request({ t: "peer_start", peer: "jcode" });
+  expect(person.ok).toBe(true); expect(person.opened).toBe("fixture"); expect(person.already).toBeUndefined();
+  expect(opened).toHaveLength(1);
 });

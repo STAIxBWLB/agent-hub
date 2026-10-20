@@ -22,7 +22,7 @@ const splitLabel = (label: string): [string, string[]] => { const [command = "un
  * the checked 256-file / 64 KiB ceiling by at most one bounded row per concurrent writer.
  * Unpublished temp files count against the ceiling, so a crashed writer cannot grow the spool forever.
  */
-export function recordCliAudit(stateDir: string, peer: string, command: string, outcome: CliAudit["outcome"]): void {
+function reserveCliAudit(stateDir: string, peer: string, command: string, outcome: CliAudit["outcome"]) {
   const row: CliAudit = { v: 1, id: crypto.randomUUID(), at: Date.now(), peer, command, outcome };
   if (!valid(row)) throw new Error("invalid CLI audit identifiers");
   const dir = join(stateDir, "cli-audit");
@@ -36,13 +36,39 @@ export function recordCliAudit(stateDir: string, peer: string, command: string, 
   const text = JSON.stringify(row) + "\n";
   if (Buffer.byteLength(text) > MAX_ROW_BYTES || files.length >= MAX_FILES || bytes + Buffer.byteLength(text) > MAX_BYTES) throw new Error("CLI audit outbox is full");
   const pending = join(dir, `${row.id}.tmp`);
+  try { writeFileSync(pending, text, { mode: 0o600, flag: "wx" }); }
+  catch (error) { try { unlinkSync(pending); } catch { /* only this writer's unpublished file */ } throw error; }
+  return {
+    id: row.id,
+    commit(outcome: CliAudit["outcome"]) {
+      if (!valid({ ...row, outcome })) throw new Error("invalid CLI audit identifiers");
+      writeFileSync(pending, JSON.stringify({ ...row, outcome }) + "\n", { mode: 0o600 });
+      renameSync(pending, join(dir, `${row.id}.json`));
+    },
+    close() { try { unlinkSync(pending); } catch { /* only this writer's unpublished file */ } },
+  };
+}
+
+export function recordCliAudit(stateDir: string, peer: string, command: string, outcome: CliAudit["outcome"]): void {
+  const pending = reserveCliAudit(stateDir, peer, command, outcome);
+  try { pending.commit(outcome); }
+  finally { pending.close(); }
+}
+
+/** Reserve the bounded audit before connecting; old drains never see an unsupported ready row. */
+export async function recordDelegatedCliAudit(stateDir: string, peer: string, command: string, features: () => Promise<readonly string[]>): Promise<string> {
+  let pending: ReturnType<typeof reserveCliAudit>;
+  try { pending = reserveCliAudit(stateDir, peer, command, "delegated"); }
+  catch { throw new Error("live-test delegation audit unavailable; nothing was executed"); }
   try {
-    writeFileSync(pending, text, { mode: 0o600, flag: "wx" });
-    renameSync(pending, join(dir, `${row.id}.json`));
-  } catch (error) {
-    try { unlinkSync(pending); } catch { /* only this writer's unpublished file */ }
-    throw error;
-  }
+    let supported = false;
+    try { supported = (await features()).includes("cli_audit_delegated"); }
+    catch { /* unavailable authentication is not proof of an audit consumer */ }
+    try { pending.commit(supported ? "delegated" : "refused"); }
+    catch { throw new Error("live-test delegation audit unavailable; nothing was executed"); }
+    if (!supported) throw new Error("running hub cannot retain delegated CLI audits; upgrade it from a person's terminal, or use the audited upgrade/recovery path; nothing was executed");
+    return pending.id;
+  } finally { pending.close(); }
 }
 
 /** Consume ready files only; rebuild fixed fields so titles or other injected text cannot be rendered. */

@@ -3224,10 +3224,17 @@ function jcodeVersionSupported(version) {
   const v = typeof version === "string" ? release(version) : undefined;
   return !!v && compare(v, release(JCODE_MIN_VERSION)) >= 0 && compare(v, release(JCODE_BREAKING_VERSION)) < 0;
 }
-var JCODE_OWNED_ENV, JCODE_MIN_VERSION = "0.98.0", JCODE_BREAKING_VERSION = "1.0.0", release = (version) => /^(\d+)\.(\d+)\.(\d+)$/.exec(version)?.slice(1).map(Number), compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2], JcodePeer;
+var JcodeOptionMismatch, JCODE_OWNED_ENV, JCODE_MIN_VERSION = "0.98.0", JCODE_BREAKING_VERSION = "1.0.0", release = (version) => /^(\d+)\.(\d+)\.(\d+)$/.exec(version)?.slice(1).map(Number), compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2], JcodePeer;
 var init_jcode = __esm(() => {
   init_acp();
   init_child_process();
+  JcodeOptionMismatch = class JcodeOptionMismatch extends Error {
+    option;
+    constructor(option) {
+      super("Jcode launch options differ from its running session");
+      this.option = option;
+    }
+  };
   JCODE_OWNED_ENV = { JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" };
   JcodePeer = class JcodePeer extends AcpPeer {
     jcode;
@@ -3360,8 +3367,9 @@ var init_jcode = __esm(() => {
       const binding = { launchId: this.launchId, sessionId };
       if (expected && (expected.launchId !== binding.launchId || expected.sessionId !== binding.sessionId))
         throw new Error("Jcode launch changed");
-      if (options.sessionId !== undefined && options.sessionId !== sessionId || options.model !== undefined && options.model !== this.jcode.launchModel || options.providerProfile !== undefined && options.providerProfile !== this.jcode.providerProfile)
-        throw new Error("Jcode launch options differ from its running session");
+      const differs = options.sessionId !== undefined && options.sessionId !== sessionId ? "--session-id" : options.model !== undefined && options.model !== this.jcode.launchModel ? "--model" : options.providerProfile !== undefined && options.providerProfile !== this.jcode.providerProfile ? "--provider-profile" : undefined;
+      if (differs)
+        throw new JcodeOptionMismatch(differs);
       if (!savedSession(this.jcode.home, sessionId))
         return { state: "waiting", binding };
       const [cmd, ...args] = jcodeTuiCommand(this.jcode.command, this.socket, sessionId, this.jcode.launchModel, this.jcode.providerProfile);
@@ -9267,6 +9275,10 @@ var init_native_cli_entry_codex = () => {};
 
 // src/adapters/definitions/native-cli-entry-jcode.ts
 import { resolve as resolve13 } from "path";
+function refuseNamedOption(reply, fail) {
+  if (!reply.ok && typeof reply.option === "string" && ["--session-id", "--model", "--provider-profile"].includes(reply.option))
+    fail(`Jcode is already running with a different ${reply.option}; run ahub jcode without it, or stop jcode first`);
+}
 async function waitForJcodeTui(hub, fail, signal, options, first) {
   let binding = first?.binding, announced = false, current = first;
   while (!signal.aborted) {
@@ -9274,6 +9286,7 @@ async function waitForJcodeTui(hub, fail, signal, options, first) {
       const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", binding, args: options });
       if (signal.aborted)
         return;
+      refuseNamedOption(reply, fail);
       if (!reply.ok || !reply.binding || !["waiting", "ready"].includes(reply.state))
         fail("Jcode launch changed or its native saved session is unavailable; retry from a terminal");
       current = reply;
@@ -9365,6 +9378,7 @@ async function runJcodeEntry(ctx) {
       if (!hub.features.includes("native_tui_launch") || mode !== "tui")
         return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2));
       const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", args: options });
+      refuseNamedOption(reply, fail);
       if (!reply.ok || reply.state !== "ready")
         fail("Jcode's selected native session is not saved and ready; run ahub jcode to wait for its first hub turn");
       return console.log(JSON.stringify(reply.launch, null, 2));
@@ -18686,7 +18700,7 @@ function readInstanceConfig(cwd, layers = readInstanceConfigLayers(cwd)) {
 // src/hub/control-client.ts
 init_project();
 import { readFileSync as readFileSync13 } from "fs";
-import { join as join27 } from "path";
+import { join as join27, resolve as resolve17 } from "path";
 function stateDirFor(cwd) {
   return projectContext(cwd).stateDir;
 }
@@ -18715,10 +18729,18 @@ function readControl(stateDir) {
     return;
   }
 }
+var instancePins = new Map;
 
 class ControlClient {
   ws;
   features = [];
+  welcomeInstanceId;
+  get instanceId() {
+    return this.welcomeInstanceId;
+  }
+  get isOpen() {
+    return this.ws.readyState === WebSocket.OPEN;
+  }
   nextRid = 1;
   pending = new Map;
   onPush = () => {};
@@ -18726,12 +18748,26 @@ class ControlClient {
   constructor(ws) {
     this.ws = ws;
   }
+  static pinInstance(stateDir, instanceId) {
+    const key = resolve17(stateDir), pin = { instanceId };
+    if (!instanceId || instancePins.has(key))
+      throw new Error("control instance is already pinned or unavailable");
+    instancePins.set(key, pin);
+    return () => {
+      if (instancePins.get(key) === pin)
+        instancePins.delete(key);
+    };
+  }
   static connect(stateDir, hello, timeoutMs = 3000, protocol = PROTOCOL) {
     if (!RECOVERY_SOURCE_PROTOCOLS.includes(protocol))
       return Promise.reject(new Error(`unsupported recovery source protocol ${protocol}`));
     const control = readControl(stateDir);
     if (!control)
       return Promise.reject(new Error(`no hub running for ${stateDir} (run: ahub up)`));
+    const pin = instancePins.get(resolve17(stateDir));
+    if (pin && (control.instanceId !== pin.instanceId || hello.instanceId !== undefined && hello.instanceId !== pin.instanceId)) {
+      return Promise.reject(new Error("delegated audit consumer changed; refusing a connection to its replacement"));
+    }
     if (control.protocol !== undefined && control.protocol !== protocol) {
       return Promise.reject(Object.assign(new Error(`wire version mismatch: hub speaks ${control.protocol}, CLI speaks ${protocol}; stop it with its matching CLI, then upgrade and restart`), { code: 4426 }));
     }
@@ -18740,7 +18776,7 @@ class ControlClient {
     }
     const expected = {
       projectId: hello.projectId ?? control.projectId,
-      instanceId: hello.instanceId ?? control.instanceId,
+      instanceId: pin?.instanceId ?? hello.instanceId ?? control.instanceId,
       projectRoot: hello.projectRoot ?? control.cwd
     };
     return new Promise((resolve, reject) => {
@@ -18783,6 +18819,7 @@ class ControlClient {
           return refuse(Object.assign(new Error("connected hub has a different project or instance"), { code: 4404 }));
         }
         client.features = Object.freeze(Array.isArray(reply.features) ? reply.features.filter((feature) => typeof feature === "string") : []);
+        client.welcomeInstanceId = typeof reply.instanceId === "string" && reply.instanceId ? reply.instanceId : undefined;
         clearTimeout(timer);
         resolve(client);
       });
@@ -27269,7 +27306,7 @@ var TOOLS_INSTRUCTIONS = ["agent-hub task tools for this project. Messages from 
 `);
 var log = (line) => console.error(`[agent-hub] ${line}`);
 var text4 = (s) => ({ content: [{ type: "text", text: s }] });
-var server = new Server({ name: "agent-hub", version: VERSION3 }, toolsMode ? { capabilities: { tools: {} }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: channel ? { experimental: { "claude/channel": {} }, tools: {} } : { tools: {} }, instructions: INSTRUCTIONS });
+var server = new Server({ name: "agent-hub", version: VERSION3 }, toolsMode ? { capabilities: { tools: { listChanged: true } }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: channel ? { experimental: { "claude/channel": {} }, tools: { listChanged: true } } : { tools: { listChanged: true } }, instructions: INSTRUCTIONS });
 var inbox = [];
 var hub;
 var detached;
@@ -27401,6 +27438,8 @@ async function connectLoop() {
       standingBy = false;
       detached = undefined;
       log(`connected to hub as "${peerId}"`);
+      if (listedTools !== undefined)
+        reannounce(client).catch(() => {});
       code = await new Promise((r) => {
         client.onClose = (value, reason) => {
           closeReason = reason;
@@ -27429,8 +27468,26 @@ async function connectLoop() {
     await new Promise((r) => setTimeout(r, Math.min(1000 * 2 ** Math.max(attempt, 0), MAX_RECONNECT_DELAY_MS)));
   }
 }
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const lifecycle = await activeLifecycle(stateDir, peerId, projectRoot2, hub);
+var listedTools;
+var toolKey = (list) => JSON.stringify(list.tools);
+async function reannounce(client) {
+  for (let tries = 0;; tries++) {
+    if (hub !== client)
+      return;
+    const lifecycle = await activeLifecycle(stateDir, peerId, projectRoot2, client);
+    if (lifecycle === undefined && tries < 2) {
+      await new Promise((r) => setTimeout(r, 1000));
+      continue;
+    }
+    if (lifecycle === undefined || toolKey(toolListFor(lifecycle)) !== listedTools)
+      await server.sendToolListChanged();
+    return;
+  }
+}
+async function buildToolList() {
+  return toolListFor(await activeLifecycle(stateDir, peerId, projectRoot2, hub));
+}
+function toolListFor(lifecycle) {
   return {
     tools: [
       {
@@ -27465,6 +27522,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       ...CONDUCTOR_TOOLS
     ]
   };
+}
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  const list = await buildToolList();
+  listedTools = toolKey(list);
+  return list;
 });
 async function callTool(req) {
   const { name, arguments: args } = req.params;
