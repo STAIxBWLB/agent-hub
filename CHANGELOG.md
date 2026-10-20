@@ -2,6 +2,15 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## 0.12.42
+
+`ahub agy` starts again after the Antigravity CLI updated itself (#589); the rest is contributor tooling (#591, #593, #595).
+
+- `ahub agy` accepts the Antigravity CLI 1.4.x line instead of exactly 1.4.2: 1.4.2, the T0-verified version, launches as before, another 1.4.x patch launches with one stderr warning naming its version, and any other version is still refused before a hub connection or plugin write. agy updates itself, and 0.12.41 refused 1.4.3 (#589).
+- `scripts/build.mjs` builds the plugin bundle with the Bun named in `.bun-version`: when the running Bun differs it re-runs itself once through `bun x bun@<pinned>`. A self-updated local Bun made the bundle check call a clean `main` stale and its remedy rebuild with the wrong Bun (#591).
+- The test gate's whole-suite watchdog cut off passing runs: hosted macOS now gets 1260 s inside a 25-minute job, and the local default is 960 s; Linux (780 s) and the 20 s per-test timeout are unchanged (#593).
+- `test/terminal-recovery.test.ts` no longer records an ambient `CLAUDE_CONFIG_DIR` from the shell running the tests (#595).
+
 ## 0.12.41
 
 A one-fix release for a 0.12.40 regression.
