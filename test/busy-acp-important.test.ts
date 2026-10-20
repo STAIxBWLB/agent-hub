@@ -33,11 +33,12 @@ test("an important message waiting on a busy ACP peer past budget.stale_min is r
   f.daemon.bus.publish(newEnvelope("user", "SLOW work", { to: ["kimi"] }));
   await until(() => f.daemon.bus.peers.get("kimi")?.state === "busy");
   const important = newEnvelope("claude", "please move the checkout", { to: ["kimi"], priority: "important" });
-  f.daemon.bus.publish({ ...important, ts: Date.now() - 5 * 60_000 }); // it has waited 5 min
+  const now = Date.now();
+  f.daemon.bus.publish({ ...important, ts: now - 5 * 60_000 }); // it has waited 5 min
   await until(() => f.daemon.bus.queuedImportant("kimi") === 1);
   const row = (await f.status()).peers.kimi;
   expect(row.queuedImportant).toBe(1);
-  expect(row.importantWaitingSince).toBe(important.ts - 5 * 60_000);
+  expect(row.importantWaitingSince).toBe(now - 5 * 60_000);
   expect(row.importantWaitingNote).toMatch(/^1 important message waiting on a busy ACP peer for 5 min/);
   expect(f.daemon.bus.peers.get("kimi")!.state).toBe("busy"); // nothing was cancelled
   const text = renderStatus({ peers: { kimi: row } } as never, 120).map(line => line.map(span => span.text).join("")).join("\n");
