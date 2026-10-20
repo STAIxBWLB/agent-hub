@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- Refuse Claude channel plugins from an obsolete recorded launch, stop their reconnect loop, and check live socket ownership before a standing-by session reclaims the peer (#551).
+
 ## 0.12.39
 
 `ahub jcode` now opens jcode's own TUI on the hub-driven session (#464), and an ACP peer that is running a long tool call is no longer stopped as silent (#542).

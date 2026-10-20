@@ -1794,6 +1794,21 @@ but cannot show pushes, so it attaches tools-only (protocol 16, issue #205):
   started while an `ahub claude` session holds the peer stands by and attaches
   only after that session leaves.
 
+### Replaced or ended Claude sessions (#551)
+
+A replaced session says it is standing by. Its reconnect requests cannot reclaim
+an attached or claiming peer, even if its status-file read missed that holder. A
+channel-capable session may still replace a pull-only holder once its claim has
+finished. Starting a new session intentionally keeps the newest-hello behavior.
+
+A plugin carrying an older launch id than this daemon's current per-peer Claude
+launch is refused with close 4430. It stops reconnecting, and hub tools report that
+the launch ended. Start a new session with `ahub claude`, or use a plain session
+with the tools and `hub_inbox`. A session with no launch id, or a hub with no
+current launch record, keeps the existing behavior. The marker alone cannot
+prove that a nested host loaded this specific MCP server as a channel; the
+bridge currently receives no positive per-server activation signal.
+
 ### Claude channel sessions while busy (#493)
 
 A Claude session started with `ahub claude` receives pushes when it is idle. While it is busy:

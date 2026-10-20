@@ -27182,6 +27182,7 @@ var TERMINAL_CLOSES = {
   4404: "the hub belongs to a different project or instance; restart this session from the intended project",
   4403: `the hub refused the peer id "${peerId}" (reserved or malformed)`,
   4409: `the peer id "${peerId}" is taken by a hub-managed adapter`,
+  4430: "this Claude launch ended; start a new session with ahub claude, or use a plain session with hub_inbox",
   4426: "wire version mismatch with the running hub: update the agent-hub plugin (ahub setup) and restart this session"
 };
 var HELD_CLOSE = 4000;
@@ -27326,6 +27327,8 @@ async function connectLoop() {
         role: toolsMode ? "tools" : "peer",
         peer: peerId,
         ...toolsMode ? {} : { channel },
+        ...!toolsMode && process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {},
+        ...!toolsMode && standingBy ? { standby: true } : {},
         ...process.env.AGENTHUB_PROJECT_DIR ? { projectRoot: projectRoot2 } : {}
       });
       client.onPush = (msg) => {
