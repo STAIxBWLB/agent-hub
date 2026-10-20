@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agyTuiSpawnOptions, runAgyEntry } from "../src/adapters/agy/entry.ts";
+import { agyTuiSpawnOptions, agyVersionGate, runAgyEntry } from "../src/adapters/agy/entry.ts";
 import type { NativeCliEntryContext } from "../src/adapters/definitions/native-cli-entry-types.ts";
 import { nativeLaunchEnv } from "../src/cli/launch.ts";
 
@@ -51,4 +51,23 @@ test("person launcher fences old daemons, scrubs channel identity, and cleans it
     for (const [key, value] of Object.entries(saved)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("agy version gate accepts the 1.4.x line, warns off the verified 1.4.2 and refuses the rest (#589)", () => {
+  expect(agyVersionGate("1.4.2\n")).toEqual({ ok: true });
+  const patch = agyVersionGate("1.4.3\n");
+  expect(patch.ok).toBe(true); expect(patch.message).toContain("agy 1.4.3");
+  for (const out of ["1.5.0", "2.0.0", "1.4", "1.4.3-beta", "agy 1.4.2", ""]) expect(agyVersionGate(out).ok).toBe(false);
+});
+
+test("an off-line agy version is refused before any hub request or plugin write (#589)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-agy-version-")), bin = join(root, "bin");
+  mkdirSync(bin); const fake = join(bin, "agy");
+  writeFileSync(fake, '#!/bin/sh\nprintf "1.5.0\\n"\n'); chmodSync(fake, 0o700);
+  const savedPath = process.env.PATH; process.env.PATH = `${bin}:${savedPath}`;
+  try {
+    const { ctx, requests } = context(root, []);
+    await expect(runAgyEntry(ctx)).rejects.toThrow("1.4.x line");
+    expect(requests).toEqual([]); expect(existsSync(join(root, ".agents"))).toBe(false);
+  } finally { process.env.PATH = savedPath; rmSync(root, { recursive: true, force: true }); }
 });
