@@ -108,7 +108,8 @@ jobs:
           # run 39304959773 (#542). Give it 780 s; keep per-test bounds at 20 s.
           # By 2026-10-20 macOS jobs ran 892-1009 s and run 39419130424 was cut at 960 s twice while
           # still passing tests (#593): macOS gets 1260 s, and the job ceiling rose to 25 minutes with it.
-          AHUB_CHECK_HANG_S: ${{ runner.os == 'macOS' && '1260' || '780' }}
+          # Linux then hit 780 s one second after a passing test (run 39441258200): Linux gets 1080 s.
+          AHUB_CHECK_HANG_S: ${{ runner.os == 'macOS' && '1260' || '1080' }}
           AHUB_RESTART_DIAGNOSTICS_DIR: ${{ runner.temp }}/ahub-restart-diagnostics
         run: scripts/check.sh
       - name: Capture macOS fsmonitor readback diagnostics after a failed gate
