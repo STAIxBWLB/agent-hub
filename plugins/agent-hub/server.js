@@ -27369,10 +27369,7 @@ async function connectLoop() {
       detached = undefined;
       log(`connected to hub as "${peerId}"`);
       if (listedTools !== undefined)
-        buildToolList().then((list) => {
-          if (toolNames(list) !== listedTools)
-            return server.sendToolListChanged();
-        }).catch(() => {});
+        reannounce(client).catch(() => {});
       code = await new Promise((r) => {
         client.onClose = (value, reason) => {
           closeReason = reason;
@@ -27402,9 +27399,25 @@ async function connectLoop() {
   }
 }
 var listedTools;
-var toolNames = (list) => list.tools.map((tool) => tool.name).sort().join(",");
+var toolKey = (list) => JSON.stringify(list.tools);
+async function reannounce(client) {
+  for (let tries = 0;; tries++) {
+    if (hub !== client)
+      return;
+    const lifecycle = await activeLifecycle(stateDir, peerId, projectRoot2, client);
+    if (lifecycle === undefined && tries < 2) {
+      await new Promise((r) => setTimeout(r, 1000));
+      continue;
+    }
+    if (lifecycle === undefined || toolKey(toolListFor(lifecycle)) !== listedTools)
+      await server.sendToolListChanged();
+    return;
+  }
+}
 async function buildToolList() {
-  const lifecycle = await activeLifecycle(stateDir, peerId, projectRoot2, hub);
+  return toolListFor(await activeLifecycle(stateDir, peerId, projectRoot2, hub));
+}
+function toolListFor(lifecycle) {
   return {
     tools: [
       {
@@ -27442,7 +27455,7 @@ async function buildToolList() {
 }
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const list = await buildToolList();
-  listedTools = toolNames(list);
+  listedTools = toolKey(list);
   return list;
 });
 async function callTool(req) {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -13,9 +13,7 @@ async function until(check: () => boolean, tries = 400) {
   expect(check()).toBe(true);
 }
 
-test("a Claude channel session lists the same hub tools after a hub restart as before it (#490)", async () => {
-  const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-channel-restart-")));
-  let daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
+async function channelSession(dir: string) {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined && !k.startsWith("AGENTHUB_") && k !== "CLAUDECODE" && k !== "CLAUDE_CODE_SESSION_ID") env[k] = v;
   Object.assign(env, { HOME: dir, AGENTHUB_HOME: join(dir, "hub-home"), AMEM_HOME: join(dir, "memory-home"), CLAUDE_CONFIG_DIR: join(dir, "claude-home"),
@@ -24,6 +22,13 @@ test("a Claude channel session lists the same hub tools after a hub restart as b
   const changes: string[] = [];
   client.setNotificationHandler((await import("@modelcontextprotocol/sdk/types.js")).ToolListChangedNotificationSchema, async () => { changes.push("list_changed"); });
   await client.connect(new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../src/adapters/claude-channel.ts")], env, cwd: dir, stderr: "ignore" }));
+  return { client, changes };
+}
+
+test("a Claude channel session lists the same hub tools after a hub restart as before it (#490)", async () => {
+  const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-channel-restart-")));
+  let daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
+  const { client, changes } = await channelSession(dir);
   try {
     await until(() => daemon.bus.peers.get("claude")?.state === "idle");
     const names = async () => (await client.listTools()).tools.map(tool => tool.name).sort();
@@ -39,5 +44,24 @@ test("a Claude channel session lists the same hub tools after a hub restart as b
     expect(during).not.toContain("hub_sdlc_record");
     expect(before.filter(name => !during.includes(name))).toEqual(["hub_sdlc_record"]);
     await until(() => changes.length > 0, 300);
+  } finally { await client.close(); await daemon.stop(); rmSync(dir, { recursive: true, force: true }); }
+}, 60_000);
+
+test("a restart that changes only tool schemas, not names, re-announces the tool list (#490)", async () => {
+  const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-channel-schema-")));
+  let daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
+  const { client, changes } = await channelSession(dir);
+  try {
+    await until(() => daemon.bus.peers.get("claude")?.state === "idle");
+    const before = (await client.listTools()).tools;
+    await daemon.stop();
+    mkdirSync(join(dir, ".agenthub"), { recursive: true });
+    writeFileSync(join(dir, ".agenthub/sdlc.toml"), 'mode = "advise"\nstages = ["question", "draft", "approve", "publish"]\n[definitions.question]\nbase = "plan"\n[definitions.draft]\nbase = "implement"\n[definitions.approve]\nbase = "review"\n[definitions.publish]\nbase = "merge"\n');
+    daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
+    await until(() => daemon.bus.peers.get("claude")?.state === "idle", 3000);
+    await until(() => changes.length > 0, 300);
+    const after = (await client.listTools()).tools;
+    expect(after.map(tool => tool.name).sort()).toEqual(before.map(tool => tool.name).sort());
+    expect(JSON.stringify(after)).not.toBe(JSON.stringify(before));
   } finally { await client.close(); await daemon.stop(); rmSync(dir, { recursive: true, force: true }); }
 }, 60_000);

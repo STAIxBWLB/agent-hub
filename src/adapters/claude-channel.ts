@@ -272,7 +272,7 @@ async function connectLoop(): Promise<void> {
       log(`connected to hub as "${peerId}"`);
       // The tool list depends on the connected hub (its lifecycle): when it differs from what the host last listed,
       // ask the host to list it again (#490).
-      if (listedTools !== undefined) void buildToolList().then(list => { if (toolNames(list) !== listedTools) return server.sendToolListChanged(); }).catch(() => {});
+      if (listedTools !== undefined) void reannounce(client).catch(() => {});
       code = await new Promise<number>((r) => { client.onClose = (value, reason) => { closeReason = reason; r(value); }; });
       hub = undefined;
       log("hub connection lost");
@@ -296,12 +296,27 @@ async function connectLoop(): Promise<void> {
   }
 }
 
-/** Tool names the host was last given; a reconnect that changes them asks the host to list again (#490). */
+/** The tool definitions the host was last given; a reconnect that changes any of them asks the host to list again (#490).
+ * Whole definitions, not names: a lifecycle change alters schemas (stage enums, required fields) under the same names. */
 let listedTools: string | undefined;
-const toolNames = (list: { tools: { name: string }[] }) => list.tools.map(tool => tool.name).sort().join(",");
+const toolKey = (list: { tools: unknown[] }) => JSON.stringify(list.tools);
 
-async function buildToolList() {
-  const lifecycle = await activeLifecycle(stateDir, peerId, projectRoot, hub);
+/** After a reconnect, re-announce the tools when they differ from what the host listed. The status probe can time out
+ * right after a restart; retry it, and when it stays unavailable announce anyway: a needless re-list costs less than a
+ * session that keeps a short list until the next disconnect (#490). */
+async function reannounce(client: ControlClient) {
+  for (let tries = 0; ; tries++) {
+    if (hub !== client) return;
+    const lifecycle = await activeLifecycle(stateDir, peerId, projectRoot, client);
+    if (lifecycle === undefined && tries < 2) { await new Promise(r => setTimeout(r, 1000)); continue; }
+    if (lifecycle === undefined || toolKey(toolListFor(lifecycle)) !== listedTools) await server.sendToolListChanged();
+    return;
+  }
+}
+
+async function buildToolList() { return toolListFor(await activeLifecycle(stateDir, peerId, projectRoot, hub)); }
+
+function toolListFor(lifecycle: Awaited<ReturnType<typeof activeLifecycle>>) {
   return {
   tools: [
     {
@@ -347,7 +362,7 @@ async function buildToolList() {
 
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   const list = await buildToolList();
-  listedTools = toolNames(list);
+  listedTools = toolKey(list);
   return list;
 });
 
