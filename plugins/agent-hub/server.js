@@ -27236,7 +27236,7 @@ var TOOLS_INSTRUCTIONS = ["agent-hub task tools for this project. Messages from 
 `);
 var log = (line) => console.error(`[agent-hub] ${line}`);
 var text4 = (s) => ({ content: [{ type: "text", text: s }] });
-var server = new Server({ name: "agent-hub", version: VERSION3 }, toolsMode ? { capabilities: { tools: {} }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: channel ? { experimental: { "claude/channel": {} }, tools: {} } : { tools: {} }, instructions: INSTRUCTIONS });
+var server = new Server({ name: "agent-hub", version: VERSION3 }, toolsMode ? { capabilities: { tools: { listChanged: true } }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: channel ? { experimental: { "claude/channel": {} }, tools: { listChanged: true } } : { tools: { listChanged: true } }, instructions: INSTRUCTIONS });
 var inbox = [];
 var hub;
 var detached;
@@ -27368,6 +27368,11 @@ async function connectLoop() {
       standingBy = false;
       detached = undefined;
       log(`connected to hub as "${peerId}"`);
+      if (listedTools !== undefined)
+        buildToolList().then((list) => {
+          if (toolNames(list) !== listedTools)
+            return server.sendToolListChanged();
+        }).catch(() => {});
       code = await new Promise((r) => {
         client.onClose = (value, reason) => {
           closeReason = reason;
@@ -27396,7 +27401,9 @@ async function connectLoop() {
     await new Promise((r) => setTimeout(r, Math.min(1000 * 2 ** Math.max(attempt, 0), MAX_RECONNECT_DELAY_MS)));
   }
 }
-server.setRequestHandler(ListToolsRequestSchema, async () => {
+var listedTools;
+var toolNames = (list) => list.tools.map((tool) => tool.name).sort().join(",");
+async function buildToolList() {
   const lifecycle = await activeLifecycle(stateDir, peerId, projectRoot2, hub);
   return {
     tools: [
@@ -27432,6 +27439,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       ...CONDUCTOR_TOOLS
     ]
   };
+}
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  const list = await buildToolList();
+  listedTools = toolNames(list);
+  return list;
 });
 async function callTool(req) {
   const { name, arguments: args } = req.params;
