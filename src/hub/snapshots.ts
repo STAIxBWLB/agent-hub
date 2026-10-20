@@ -12,17 +12,28 @@ import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
  * Per-turn workspace snapshots (issue #33): git tree objects written through a copy of the index, so the user's index
  * and HEAD never change. They hold tracked and unignored files as `git add -A` sees them, shell-made changes included.
  * ponytail: snapshots run synchronously on the turn boundary (before the agent sees its prompt); a very large tree
- * costs that much latency per turn, `snapshots.enabled` is the switch and `turn_end.snapshotMs` the measurement.
+ * costs that much latency per turn for unbudgeted CLI calls. The daemon shares a bounded burst deadline;
+ * exhausted boundaries are unknown. `snapshots.enabled` is the switch and `turn_end.snapshotMs` the measurement.
+ * ponytail: the deadline caps Git child waits, not synchronous metadata/index-copy syscalls. If those become
+ * measured blockers, move capture to an isolated worker with native-boundary admission fencing.
  * ponytail: the trees are unreferenced, so `git gc` may prune them after gc.pruneExpire (two weeks by default); undo
  * of an older turn says so. Refs under refs/agenthub/ would keep them, at the cost of showing up in the user's repo.
  */
-const git = (top: string | Repo, args: string[], env: Record<string, string> = {}) =>
-  hubGitSync(repoGitArgs(top, args), {
-    encoding: "utf8",
-    env: { ...repoGitEnv(top), ...env },
-    // These run inside the bus's state change: a hung git (a huge new directory, a stuck filter) must not freeze the hub.
-    timeout: SNAPSHOT_TIMEOUT_MS,
+export interface SnapshotBudget { deadline: number; }
+export class SnapshotBudgetExceeded extends Error {
+  constructor() { super("snapshot burst budget exhausted; boundary evidence is unknown"); }
+}
+const git = (top: string | Repo, args: string[], env: Record<string, string> = {}, budget?: SnapshotBudget) => {
+  const argv = repoGitArgs(top, args);
+  const remaining = budget ? budget.deadline - performance.now() : SNAPSHOT_TIMEOUT_MS;
+  if (remaining <= 0) throw new SnapshotBudgetExceeded();
+  const result = hubGitSync(argv, {
+    encoding: "utf8", env: { ...repoGitEnv(top), ...env },
+    timeout: Math.max(1, Math.min(SNAPSHOT_TIMEOUT_MS, Math.floor(remaining))),
   });
+  if (budget && (performance.now() >= budget.deadline || (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT")) throw new SnapshotBudgetExceeded();
+  return result;
+};
 const SNAPSHOT_TIMEOUT_MS = 10_000;
 
 /** A repository and where the project sits in it: `prefix` is "" at the top level, else "sub/dir/". */
@@ -64,8 +75,8 @@ export function repoGitEnv(repo: string | Repo, env = process.env): NodeJS.Proce
 }
 
 /** The repository holding `root`, or undefined when it is not inside a work tree. */
-export function repoOf(root: string): Repo | undefined {
-  const r = git(root, ["rev-parse", "--show-toplevel", "--absolute-git-dir", "--show-prefix"]);
+export function repoOf(root: string, budget?: SnapshotBudget): Repo | undefined {
+  const r = git(root, ["rev-parse", "--show-toplevel", "--absolute-git-dir", "--show-prefix"], {}, budget);
   if (r.status === 0) {
     const [top, dir, prefix = ""] = r.stdout.replace(/\n$/, "").split("\n");
     if (top && dir) return { top, dir, prefix };
@@ -82,7 +93,7 @@ export function repoOf(root: string): Repo | undefined {
   if (ignore && (!ignore.isFile() || ignore.isSymbolicLink() || ignore.nlink !== 1)) return undefined;
   if (!shadowStorageSafe(dir)) return undefined;
   const repo: Repo = { top, dir: realPath(dir), prefix: "", shadow: true };
-  const probe = git(repo, ["rev-parse", "--absolute-git-dir"]);
+  const probe = git(repo, ["rev-parse", "--absolute-git-dir"], {}, budget);
   return probe.status === 0 && realPath(probe.stdout.trim()) === repo.dir ? repo : undefined;
 }
 /** Opt-in creation only; a real repository is never replaced or modified. */
@@ -107,8 +118,14 @@ const literal = (path: string) => `:(literal)${path}`;
 /** Only the project's own files: a hub in a subdirectory of a larger repository snapshots that subdirectory. */
 const scope = (repo: Repo) => (repo.prefix ? literal(repo.prefix) : ".");
 
+/** Committed HEAD tree, null for an unborn HEAD, undefined when evidence cannot be read. */
+export function headTree(repo: Repo, budget?: SnapshotBudget): string | null | undefined {
+  const result = git(repo, ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"], {}, budget);
+  return result.status === 0 ? result.stdout.trim() : result.status === 1 ? null : undefined;
+}
+
 /** A tree id for the project's files as they are now, leaving out the hub's own state. */
-export function snapshot(repo: Repo): string | undefined {
+export function snapshot(repo: Repo, budget?: SnapshotBudget): string | undefined {
   const tmp = mkdtempSync(join(tmpdir(), "ahub-snap-"));
   try {
     const env = { GIT_INDEX_FILE: join(tmp, "index") };
@@ -122,12 +139,12 @@ export function snapshot(repo: Repo): string | undefined {
       utimesSync(env.GIT_INDEX_FILE, atime, mtime);
     }
     // `ahub reset --all` archives hub.db (task text, PII included) under .agenthub/archive: never copy it either.
-    if (git(repo, ["add", "-A", "--", scope(repo), ":(exclude,glob)**/.agenthub/state/**", ":(exclude,glob)**/.agenthub/archive/**", ...(repo.shadow ? [":(exclude,glob)**/.agenthub/shadow.git/**"] : [])], env).status !== 0) return undefined;
+    if (git(repo, ["add", "-A", "--", scope(repo), ":(exclude,glob)**/.agenthub/state/**", ":(exclude,glob)**/.agenthub/archive/**", ...(repo.shadow ? [":(exclude,glob)**/.agenthub/shadow.git/**"] : [])], env, budget).status !== 0) return undefined;
     // The copy starts from the user's index: hub state somebody tracked or staged is still in it, and the exclude above
     // only keeps `add` from touching it. Take it out explicitly; -f because staged state the hub has rewritten since
     // matches neither HEAD nor the file, which `rm --cached` otherwise refuses. Only the copy changes.
-    if (git(repo, ["rm", "-r", "-f", "--cached", "--quiet", "--ignore-unmatch", "--", ":(glob)**/.agenthub/state/**", ":(glob)**/.agenthub/archive/**", ...(repo.shadow ? [":(glob)**/.agenthub/shadow.git/**"] : [])], env).status !== 0) return undefined;
-    const r = git(repo, ["write-tree"], env);
+    if (git(repo, ["rm", "-r", "-f", "--cached", "--quiet", "--ignore-unmatch", "--", ":(glob)**/.agenthub/state/**", ":(glob)**/.agenthub/archive/**", ...(repo.shadow ? [":(glob)**/.agenthub/shadow.git/**"] : [])], env, budget).status !== 0) return undefined;
+    const r = git(repo, ["write-tree"], env, budget);
     return r.status === 0 ? r.stdout.trim() : undefined;
   } finally {
     rmSync(tmp, { recursive: true, force: true });
@@ -135,9 +152,12 @@ export function snapshot(repo: Repo): string | undefined {
 }
 
 /** Project paths (relative to the top level) that differ between two trees. */
+export function knownChangedPaths(repo: Repo, from: string, to: string, budget?: SnapshotBudget): string[] | undefined {
+  const r = git(repo, ["diff-tree", "-r", "--no-renames", "--name-only", "-z", from, to, "--", scope(repo)], {}, budget);
+  return r.status === 0 ? r.stdout.split("\0").filter(Boolean) : undefined;
+}
 export function changedPaths(repo: Repo, from: string, to: string): string[] {
-  const r = git(repo, ["diff-tree", "-r", "--no-renames", "--name-only", "-z", from, to, "--", scope(repo)]);
-  return r.status === 0 ? r.stdout.split("\0").filter(Boolean) : [];
+  return knownChangedPaths(repo, from, to) ?? [];
 }
 
 const inTree = (top: string | Repo, tree: string, path: string) => git(top, ["rev-parse", "--verify", "--quiet", `${tree}:${path}`]).status === 0;

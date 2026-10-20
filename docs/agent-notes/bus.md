@@ -35,3 +35,5 @@ Scope: delivery, digests and condensation, reply addressing, priority and limits
 
 - `relevant` may return a string: the envelope is dropped with that string as its journal discard reason. Read relevance only through `irrelevance()`.
 - A review-only instance (a declared extra whose roles are exactly `reviewer`) receives only person messages, hub `review` items and hub `task` items addressed to it. Keep `reviewOnlyItem` in both `silence` (at send) and `relevant` (at delivery) (#223).
+
+- Concurrent-edit fan-out is linear in affected tasks: retain each notice's own-task stale/owner fence, but never persist the same change-set notice once for every task pair. Preserve per-task-pair research evidence separately (#576).

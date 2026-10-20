@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- HEAD moves during open turns no longer produce false concurrent-edit warnings or attributed undo paths. Real concurrent change sets publish at most one notice per affected task; snapshot Git work shares a 250 ms burst budget and records unknown boundaries on exhaustion. Status reuses a checkout-branch probe only within the current synchronous burst. Pi terminal reconciliation uses the bounded existing owner monitor instead of spawning `ps` on every read; effect admission and teardown still verify fresh process identity (#576).
+
 ## 0.12.42
 
 `ahub agy` starts again after the Antigravity CLI updated itself (#589); the rest is contributor tooling (#591, #593, #595).

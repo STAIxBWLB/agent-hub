@@ -80,7 +80,7 @@ import { closeSync, constants as fsConstants, openSync, lstatSync, readSync, sta
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { realPath, hubHome } from "./project.ts";
-import { mainCheckoutWarning } from "./main-checkout.ts";
+import { mainCheckoutBranch, mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent, PublishResult } from "./bus.ts";
 import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, profileTaskTools } from "./hub-tools.ts";
 import { Conductor, ConductorHolds, conductorPeer, conductorProgressSink, publicConductorTask, publicPeerBudget, type ConductEvent } from "./conductor.ts";
@@ -110,7 +110,7 @@ import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
 import { crashPlan, lossNotice, readSessions, removeSessions, writeSessions, type SessionsFile } from "./crash.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
-import { changedPaths, hasTree, repoOf, snapshot, Turns, type TurnRecord } from "./snapshots.ts";
+import { changedPaths, knownChangedPaths, hasTree, headTree, repoOf, snapshot, SnapshotBudgetExceeded, Turns, type SnapshotBudget, type Repo, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContinuity } from "./recovery-continuity.ts";
 import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate } from "../cli/terminal-recovery.ts";
@@ -465,6 +465,10 @@ function mlxPinProblem(routing: Routing, project: boolean): string | undefined {
 }
 
 export interface DaemonOptions {
+  /** Host-only snapshot/probe seams; never read from project config or tool arguments. */
+  snapshot?: typeof snapshot;
+  snapshotBurstMs?: number;
+  checkoutBranch?: typeof mainCheckoutBranch;
   /** Host-only admission transport; never selected by project config or tools. */
   releaseHostAdmission?: (cwd: string) => Promise<ReleaseHostAdmission>;
   projectId?: string;
@@ -954,7 +958,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // silence without facts would leave overlapping owners blind. Facts and silence ask the same question, so both switch
   // together. Cached until the board changes: it is asked per recipient of every message.
   let turnFreeNow: boolean | undefined;
-  const turns = new Map<PeerId, { capture?: boolean; id: string; start: number; tokens: number; tree?: string; snapshotMs?: number; private?: boolean; deliveryTask?: number; attribution: TaskAttribution; preparedRoles: RoleIdentity[] | null }>();
+  const turns = new Map<PeerId, { capture?: boolean; id: string; start: number; tokens: number; tree?: string; head?: string | null; snapshotMs?: number; private?: boolean; deliveryTask?: number; attribution: TaskAttribution; preparedRoles: RoleIdentity[] | null }>();
   const turnFree = (): boolean => (config.coordination === "turn-free" || tasks.cohorts.list().some(cohort => cohort.silent)) && ![...turns.values()].some(turn => turn.private) && (turnFreeNow ??= !board.list().some((t) => !isClosedTaskState(t.state) && tasks.isPii(t)));
   /**
    * Why `to` does not get an agent's message (issue #107): sender and recipient are in one silent cohort, and the sender
@@ -1551,7 +1555,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const worktreeFacts = new Map<string, Facts>();
   const worktreeProjections = new Map<string, TextProjections>();
   const executionRoot = (peer: string) => executionRoots.get(peer) ?? opts.cwd;
-  const repoFor = (peer: string) => executionRoot(peer) === opts.cwd ? factsRepo : repoOf(executionRoot(peer));
+  const repoFor = (peer: string, budget?: SnapshotBudget) => executionRoot(peer) === opts.cwd ? factsRepo : repoOf(executionRoot(peer), budget);
   const projectionsFor = (peer: string): TextProjections => {
     const root = executionRoot(peer);
     if (root === opts.cwd) return projections;
@@ -1904,23 +1908,40 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!tasks.nameable(text) || looksSecret(text) || !screenMemory([{ title: null, text }]).length) return;
     memoryObservations?.cite(peer, text, id, envs);
   };
-  /**
-   * A snapshot that fails costs the undo record of that turn and nothing else. The peer's prompt waits for it (it
-   * runs inside the state change): three git calls at a turn's start and four at its end, each with the 10 s timeout
-   * in snapshots.ts.
-   */
-  const snap = (what: string, capture = config.snapshots.enabled, peer?: string): { tree?: string; ms: number } => {
-    const repo = peer ? repoFor(peer) : factsRepo;
+  // Preserve real synchronous native boundaries, but never spend an unbounded sequence of Git waits
+  // inside a single callback burst. Failed/slow captures are explicitly unknown, never stale baselines.
+  let snapshotBudget: SnapshotBudget | undefined, snapshotBudgetNoticed = false;
+  const reserveSnapshotBudget = (): SnapshotBudget => {
+    if (!snapshotBudget) {
+      const requested = opts.snapshotBurstMs ?? 250;
+      const ms = Number.isFinite(requested) ? Math.max(1, Math.min(250, requested)) : 250;
+      snapshotBudget = { deadline: performance.now() + ms };
+      setImmediate(() => { snapshotBudget = undefined; snapshotBudgetNoticed = false; });
+    }
+    return snapshotBudget;
+  };
+  const snapshotFailure = (what: string, error: unknown) => {
+    if (error instanceof SnapshotBudgetExceeded) {
+      if (!snapshotBudgetNoticed) log(`snapshot unavailable: ${error.message}`);
+      snapshotBudgetNoticed = true;
+    } else log(`snapshot failed at ${what}: ${(error as Error).message}`);
+  };
+  const snap = (what: string, capture = config.snapshots.enabled, peer?: string): { tree?: string; head?: string | null; ms: number; budget?: SnapshotBudget; repo?: Repo } => {
     if (!capture) return { ms: 0 };
-    const t0 = performance.now();
-    let tree: string | undefined;
+    const t0 = performance.now(), budget = reserveSnapshotBudget();
+    let tree: string | undefined, head: string | null | undefined, repo: Repo | undefined;
     try {
-      tree = repo && snapshot(repo);
+      repo = peer ? repoFor(peer, budget) : factsRepo;
+      const before = repo && headTree(repo, budget);
+      tree = repo && (opts.snapshot ?? snapshot)(repo, budget);
+      head = repo && headTree(repo, budget);
+      if (before === undefined || head === undefined || before !== head) tree = undefined;
       if (repo && !tree) log(`snapshot failed at ${what}`);
     } catch (error) {
-      log(`snapshot failed at ${what}: ${(error as Error).message}`);
+      tree = undefined; head = undefined;
+      snapshotFailure(what, error);
     }
-    return { tree, ms: Math.round(performance.now() - t0) };
+    return { tree, head, budget, repo, ms: Math.round(performance.now() - t0) };
   };
   function privateSnapshotWindow(): boolean {
     return [...turns.values()].some(turn => turn.private) || board.list().some(task => !isClosedTaskState(task.state) && tasks.isPii(task));
@@ -2733,6 +2754,14 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const task of open) for (const peer of [task.owner, task.reviewer]) if (peer && !membershipAllowed(peer)) ids.add(peer);
     return [...ids].filter(peer => membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));
   };
+  let checkoutInTick: { branch: ReturnType<typeof mainCheckoutBranch> } | undefined;
+  const checkoutBranch = () => {
+    if (!checkoutInTick) {
+      checkoutInTick = { branch: (opts.checkoutBranch ?? mainCheckoutBranch)(opts.cwd) };
+      queueMicrotask(() => { checkoutInTick = undefined; });
+    }
+    return checkoutInTick.branch;
+  };
   const status = (includeAttentionItems = false, includeAttentionInput = false) => {
     const taskNeeds = board.statusTasks();
     const taskStalls = tasks.stalled();
@@ -2746,7 +2775,7 @@ export async function startDaemon(opts: DaemonOptions) {
     pluginBundle: SERVER_JS,
     pendingRestart,
     retainedConfig,
-    ...(() => { const warning = mainCheckoutWarning(opts.cwd, tasks.publicMetadataText); return warning ? { mainCheckout: warning } : {}; })(),
+    ...(() => { const warning = mainCheckoutWarning(opts.cwd, tasks.publicMetadataText, checkoutBranch); return warning ? { mainCheckout: warning } : {}; })(),
     startModes: Object.fromEntries(START_MODE_PEERS.map(peer => [peer, startModeOf(config.peers, peer, declarations)])),
     memoryProfile: memoryProfileStatus(includeAttentionItems),
     lifecycleStages: [...lifecycleConfig.stages],
@@ -2912,27 +2941,49 @@ export async function startDaemon(opts: DaemonOptions) {
   /** Work a conflict notice is about: open tasks and tasks in review (#91); a notice for anything else is dropped (#106). */
   const CONFLICT_STATES: Task["state"][] = ["proposed", "in_progress", "changes_requested", "in_review"];
   const detectConcurrentConflicts = (record: TurnRecord, mine: Task[]) => {
+    const hits: { ours: Task; theirs: Task; paths: string[]; turn: TurnRecord }[] = [];
     for (const otherTurn of turnLog!.concurrentWith(record)) {
-      const otherTasks = (turnTasks.get(otherTurn.id) ?? []).flatMap((id) => { const task = board.get(id); return task ? [task] : []; });
+      const otherTasks = (turnTasks.get(otherTurn.id) ?? []).flatMap((id) => { const task = board.get(id); return task && task.owner === otherTurn.peer && CONFLICT_STATES.includes(task.state) ? [task] : []; });
       if (otherTasks.some(tasks.isPii)) continue;
-      const shared = record.changed.filter((p) => otherTurn.changed.includes(p));
-      const pairs = mine.flatMap((ours) => otherTasks.map((theirs) => ({ ours, theirs })));
-      for (const { ours, theirs } of pairs) {
+      const theirs = new Set(otherTurn.changed);
+      const shared = record.changed.filter(path => theirs.has(path));
+      for (const ours of mine) for (const theirs of otherTasks) {
         if (ours.id === theirs.id) continue;
         const pair = [ours.id, theirs.id].sort((a, b) => a - b).join(":");
-        const paths = shared.filter((p) => !conflictSeen.has(`concurrent:${pair}:${p}`));
+        const paths = shared.filter(path => !conflictSeen.has(`concurrent:${pair}:${path}`));
         if (!paths.length) continue;
         for (const path of paths) conflictSeen.add(`concurrent:${pair}:${path}`);
-        const named = paths.filter(tasks.nameable);
-        const files = [...named, ...(paths.length > named.length ? [`${paths.length - named.length} file(s) whose names are withheld (they match a PII pattern)`] : [])].join(", ");
-        const together = tasks.silentFor(ours.id) && tasks.silentFor(theirs.id) ? "Check the working tree before continuing; do not message the other owner (you are in one turn-free cohort: the hub shows you its changes)." : "Check the working tree together before continuing.";
-        const text = `Concurrent edit: ${record.id} (task #${ours.id}) and ${otherTurn.id} (task #${theirs.id}) both include changes to ${files}. These snapshots do not attribute the changes to either peer. ${together}`;
-        notify(`conflict: ${text}`);
-        event({ type: "conflict", peer: record.peer, task: ours.id, other: theirs.id, owner: otherTurn.peer, paths: named, concurrent: true, turns: [record.id, otherTurn.id] });
-        recordConflictLink(ours.id, theirs.id, [record.peer, otherTurn.peer]);
-        // Each owner hears it while its own task is open; once that task is closed the notice is dropped (issue #106).
-        for (const [owner, task] of [[record.peer, ours.id], [otherTurn.peer, theirs.id]] as const) if (owner !== USER && owner !== HUB) tasks.whileOpen(owner, task, text, CONFLICT_STATES);
+        hits.push({ ours, theirs, paths, turn: otherTurn });
       }
+    }
+    if (!hits.length) return;
+    const paths = [...new Set(hits.flatMap(hit => hit.paths))];
+    const named = paths.filter(tasks.nameable), visible = new Set(named);
+    const files = [...named, ...(paths.length > named.length ? [`${paths.length - named.length} file(s) whose names are withheld (they match a PII pattern)`] : [])].join(", ");
+    const affected = new Map<string, Map<number, Task>>();
+    const add = (owner: string, task: Task) => {
+      if (!affected.has(owner)) affected.set(owner, new Map());
+      affected.get(owner)!.set(task.id, task);
+    };
+    for (const hit of hits) { add(record.peer, hit.ours); add(hit.turn.peer, hit.theirs); }
+    const labels = (rows: Task[]) => `${rows.length === 1 ? "task" : "tasks"} ${rows.map(task => `#${task.id}`).join(", ")}`;
+    const descriptions = [`${record.id} (${labels([...affected.get(record.peer)!.values()])})`];
+    for (const [peer, rows] of affected) if (peer !== record.peer) {
+      const ids = [...new Set(hits.filter(hit => hit.turn.peer === peer).map(hit => hit.turn.id))];
+      descriptions.push(`${ids.join(", ")} (${labels([...rows.values()])})`);
+    }
+    const rows = [...affected.values()].flatMap(group => [...group.values()]);
+    const together = rows.every(task => tasks.silentFor(task.id)) ? "Check the working tree before continuing; do not message the other owner (you are in one turn-free cohort: the hub shows you its changes)." : rows.some(task => tasks.silentFor(task.id)) ? "Check the working tree before continuing. Do not message another owner for tasks in the same turn-free cohort; the hub shows their changes. Check other work together." : "Check the working tree together before continuing.";
+    const text = `Concurrent edit: ${descriptions.join(" and ")} both include changes to ${files}. These snapshots do not attribute the changes to either peer. ${together}`;
+    notify(`conflict: ${text}`);
+    // Research retains task-pair evidence. Durable notices are computed once across all overlapping turns,
+    // and each affected task gets only one owner-fenced notice for this change set.
+    for (const hit of hits) {
+      event({ type: "conflict", peer: record.peer, task: hit.ours.id, other: hit.theirs.id, owner: hit.turn.peer, paths: hit.paths.filter(path => visible.has(path)), concurrent: true, turns: [record.id, hit.turn.id] });
+      recordConflictLink(hit.ours.id, hit.theirs.id, [record.peer, hit.turn.peer]);
+    }
+    for (const [owner, group] of affected) {
+      if (owner !== USER && owner !== HUB) for (const task of group.values()) tasks.whileOpen(owner, task.id, text, CONFLICT_STATES);
     }
   };
   const detectConflicts = (peer: PeerId, turnId: string, since: number, changed: string[]) => {
@@ -3102,7 +3153,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const start = capture && !pii ? snap(`the start of ${id}`, config.snapshots.enabled, e.peer) : undefined; // before the peer is handed anything: the tap runs inside setState
         try { if (capture) turnLog?.begin(id, e.peer, start?.tree, declarations[e.peer] ? executionRoot(e.peer) : undefined); } catch (error) { log(`turn record ${id}: ${(error as Error).message}`); }
         const preparedRoles = preparedSessionRoleIdentities.get(e.peer)?.map(role => ({ ...role })) ?? null;
-        turns.set(e.peer, { id, capture, start: Date.now(), tokens: 0, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
+        turns.set(e.peer, { id, capture, start: Date.now(), tokens: 0, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, head: start.head, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
         event({ type: "turn_start", peer: e.peer, turn: id });
       } else if (!busy && open) {
         turns.delete(e.peer);
@@ -3113,7 +3164,26 @@ export async function startDaemon(opts: DaemonOptions) {
           try { turnLog.end(open.id, undefined, [], Math.max(1, Number(config.snapshots.keep) || 20)); } catch (error) { log(`turn record ${open.id}: ${(error as Error).message}`); }
         } else if (open.capture && turnLog) {
           const end = snap(`the end of ${open.id}`, true, e.peer);
-          const changed = open.tree && end.tree ? changedPaths(repoFor(e.peer)!, open.tree, end.tree) : [];
+          const turnRepo = end.repo!;
+          let changed: string[] = [];
+          if (open.tree && end.tree) {
+            try {
+              const observed = knownChangedPaths(turnRepo, open.tree, end.tree, end.budget);
+              if (!observed) throw new Error("turn diff evidence is unavailable");
+              changed = observed;
+              // A checkout's committed paths are not peer edits. Failure to read that delta is unknown,
+              // never an empty successful diff that could make committed changes eligible for undo.
+              if (open.head !== end.head) {
+                const committed = open.head && end.head ? knownChangedPaths(turnRepo, open.head, end.head, end.budget) : undefined;
+                if (!committed) throw new Error("committed HEAD diff evidence is unavailable");
+                const incoming = new Set(committed);
+                changed = changed.filter(path => !incoming.has(path));
+              }
+            } catch (error) {
+              end.tree = undefined; end.head = undefined; changed = [];
+              snapshotFailure(`the diff of ${open.id}`, error);
+            }
+          }
           if (open.tree && end.tree) files = changed.length; // unknown, not zero, when a snapshot failed
           snapshotMs = (snapshotMs ?? 0) + end.ms;
           try { turnLog.end(open.id, end.tree, changed, Math.max(1, Number(config.snapshots.keep) || 20)); } catch (error) { log(`turn record ${open.id}: ${(error as Error).message}`); }
