@@ -34,7 +34,10 @@ and task/planning content writes. Use native peer tools for agent-authored work.
 
 Use a CLI/coordinator containing this feature throughout the experiment. Ordinary
 delegation requires `cli_audit_delegated` in the authenticated running daemon's
-welcome, rather than its protocol number or disk status. Missing or unavailable
+welcome, rather than its protocol number or disk status. Execution reuses that
+connection; all helper connections are pinned to its authenticated instance, and
+local commands check that instance before dispatch. A replacement refuses further
+actions. Missing or unavailable
 support refuses before command effects with an upgrade remedy; its refused audit
 uses an outcome older consumers retain. The private pending audit is reserved
 before connecting, so an unavailable outbox still refuses before any connection.

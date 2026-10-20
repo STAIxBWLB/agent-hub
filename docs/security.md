@@ -97,7 +97,9 @@ scratch project: the agent must stay within the authorized commands and targets.
 Malformed or conflicting caller markers still refuse. The original peer and
 closed command label are audited before execution. Ordinary delegation requires
 the authenticated welcome feature `cli_audit_delegated` before publishing that
-outcome; an older or unavailable consumer gets a compatible `refused` row and the
+outcome. The negotiated connection is reused, helper connections are pinned to
+its authenticated instance, and local dispatch checks that instance; a replacement
+refuses further actions. An older or unavailable consumer gets a compatible `refused` row and the
 command refuses with an upgrade remedy. An unwritable audit refuses before the
 connection. Upgrade/recovery instead records compatible `run` spool rows and
 keeps authoritative ids-only `delegatedAudits` in its operation receipt before

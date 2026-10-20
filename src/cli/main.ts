@@ -180,16 +180,24 @@ if (identity.role === "tools" && commandAccess === "console") { audit("refused")
 // With no daemon manifest, local bootstrap commands have no consumer to negotiate with; use the compatible outcome.
 const recoveryAudit = ["upgrade", "restart", "recovery", "recovery-run"].includes(cmd);
 const noAuditConsumer = !existsSync(join(stateDir, "status.json")) && !existsSync(join(stateDir, "hub.pid"));
+let delegatedAuditHub: ControlClient | undefined;
+let delegatedConnectionTaken = false;
+let releaseAuditInstance: (() => void) | undefined;
 if (delegatedPeer && !recoveryAudit && !noAuditConsumer) {
   try {
     await recordDelegatedCliAudit(stateDir, delegatedPeer, commandLabel, async () => {
       // The validated invocation already has operational console authority; a tools hello would add a roster gate.
-      const hub = await ControlClient.connect(stateDir, { role: "console", projectRoot: cwd });
-      try { return hub.features; }
-      finally { hub.close(); }
+      delegatedAuditHub = await ControlClient.connect(stateDir, { role: "console", projectRoot: cwd });
+      return delegatedAuditHub.instanceId ? delegatedAuditHub.features : [];
     });
-  } catch (error) { fail((error as Error).message); }
+    releaseAuditInstance = ControlClient.pinInstance(stateDir, delegatedAuditHub!.instanceId!);
+  } catch (error) { delegatedAuditHub?.close(); fail((error as Error).message); }
 } else if (identity.role === "tools" || delegatedPeer) audit("run");
+function assertDelegatedAuditConsumer(): void {
+  if (delegatedAuditHub && ((!delegatedConnectionTaken && !delegatedAuditHub.isOpen) || readControl(stateDir)?.instanceId !== delegatedAuditHub.instanceId)) {
+    throw new Error("delegated audit consumer changed; refusing further actions; inspect the result before retrying");
+  }
+}
 // Forward only to ahub's own continuation commands, never to native agent argv or an environment flag.
 const liveTestArgs = liveTest ? ["--live-test"] : [];
 const invokedFrom = process.cwd(); // relative paths a person types (a bench suite) are theirs, not the project's
@@ -212,7 +220,12 @@ function printOutput(lines: Span[][], color: boolean): void {
 }
 const unattendedEnv = process.env.AGENTHUB_UNATTENDED === "1";
 const lifecycle = { inspectProject, startProject, stopProject };
-const connect = () => ControlClient.connect(stateDir, identity.role === "tools" ? { role: "tools", peer: identity.peer, projectRoot: cwd } : { role: "console", projectRoot: cwd });
+const connect = async () => {
+  assertDelegatedAuditConsumer();
+  if (delegatedAuditHub && !delegatedConnectionTaken) { delegatedConnectionTaken = true; return delegatedAuditHub; }
+  return ControlClient.connect(stateDir, identity.role === "tools" ? { role: "tools", peer: identity.peer, projectRoot: cwd }
+    : { role: "console", projectRoot: cwd, ...(delegatedAuditHub ? { instanceId: delegatedAuditHub.instanceId } : {}) });
+};
 
 function registeredProject(): Project {
   const registry = new Registry();
@@ -1976,8 +1989,9 @@ async function runConductorCommand(): Promise<void> {
 }
 const run = identity.role === "tools" && commandAccess === "conductor" ? runConductorCommand : (Object.hasOwn(commands, cmd) ? commands[cmd] : undefined) ?? (() => fail(`unknown command "${cmd}"; run ahub help`));
 try {
+  assertDelegatedAuditConsumer(); // Local command paths must not begin after the authenticated consumer was replaced either.
   await run();
 } catch (e) {
   audit("refused");
   fail((e as Error).message);
-}
+} finally { releaseAuditInstance?.(); delegatedAuditHub?.close(); }

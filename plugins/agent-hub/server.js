@@ -18653,7 +18653,7 @@ function readInstanceConfig(cwd, layers = readInstanceConfigLayers(cwd)) {
 // src/hub/control-client.ts
 init_project();
 import { readFileSync as readFileSync13 } from "fs";
-import { join as join27 } from "path";
+import { join as join27, resolve as resolve17 } from "path";
 function stateDirFor(cwd) {
   return projectContext(cwd).stateDir;
 }
@@ -18682,10 +18682,18 @@ function readControl(stateDir) {
     return;
   }
 }
+var instancePins = new Map;
 
 class ControlClient {
   ws;
   features = [];
+  welcomeInstanceId;
+  get instanceId() {
+    return this.welcomeInstanceId;
+  }
+  get isOpen() {
+    return this.ws.readyState === WebSocket.OPEN;
+  }
   nextRid = 1;
   pending = new Map;
   onPush = () => {};
@@ -18693,12 +18701,26 @@ class ControlClient {
   constructor(ws) {
     this.ws = ws;
   }
+  static pinInstance(stateDir, instanceId) {
+    const key = resolve17(stateDir), pin = { instanceId };
+    if (!instanceId || instancePins.has(key))
+      throw new Error("control instance is already pinned or unavailable");
+    instancePins.set(key, pin);
+    return () => {
+      if (instancePins.get(key) === pin)
+        instancePins.delete(key);
+    };
+  }
   static connect(stateDir, hello, timeoutMs = 3000, protocol = PROTOCOL) {
     if (!RECOVERY_SOURCE_PROTOCOLS.includes(protocol))
       return Promise.reject(new Error(`unsupported recovery source protocol ${protocol}`));
     const control = readControl(stateDir);
     if (!control)
       return Promise.reject(new Error(`no hub running for ${stateDir} (run: ahub up)`));
+    const pin = instancePins.get(resolve17(stateDir));
+    if (pin && (control.instanceId !== pin.instanceId || hello.instanceId !== undefined && hello.instanceId !== pin.instanceId)) {
+      return Promise.reject(new Error("delegated audit consumer changed; refusing a connection to its replacement"));
+    }
     if (control.protocol !== undefined && control.protocol !== protocol) {
       return Promise.reject(Object.assign(new Error(`wire version mismatch: hub speaks ${control.protocol}, CLI speaks ${protocol}; stop it with its matching CLI, then upgrade and restart`), { code: 4426 }));
     }
@@ -18707,7 +18729,7 @@ class ControlClient {
     }
     const expected = {
       projectId: hello.projectId ?? control.projectId,
-      instanceId: hello.instanceId ?? control.instanceId,
+      instanceId: pin?.instanceId ?? hello.instanceId ?? control.instanceId,
       projectRoot: hello.projectRoot ?? control.cwd
     };
     return new Promise((resolve, reject) => {
@@ -18750,6 +18772,7 @@ class ControlClient {
           return refuse(Object.assign(new Error("connected hub has a different project or instance"), { code: 4404 }));
         }
         client.features = Object.freeze(Array.isArray(reply.features) ? reply.features.filter((feature) => typeof feature === "string") : []);
+        client.welcomeInstanceId = typeof reply.instanceId === "string" && reply.instanceId ? reply.instanceId : undefined;
         clearTimeout(timer);
         resolve(client);
       });

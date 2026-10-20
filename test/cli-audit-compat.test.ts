@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realPath } from "../src/hub/project.ts";
-import { PROTOCOL } from "../src/hub/control-client.ts";
+import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { drainCliAudits, recordCliAudit } from "../src/cli/identity-audit.ts";
 import { drainCliAudits as legacyDrain } from "./fakes/legacy-cli-audit.ts";
 import { createOperation, planFingerprint, type UpgradePlan } from "../src/cli/upgrade.ts";
@@ -16,6 +16,28 @@ test("#410 real legacy consumer deletes an unknown delegated outcome", () => {
     expect(legacyDrain(dir)).toEqual([]);
     expect(readdirSync(join(dir, "cli-audit"))).toEqual([]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("#410 helper-module connections cannot bypass an invocation's authenticated instance pin", async () => {
+  const state = mkdtempSync(join(tmpdir(), "ahub-instance-pin-"));
+  let instanceId = "original";
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(req, server) { if (server.upgrade(req)) return; return new Response("no"); },
+    websocket: { message(ws, raw) { const msg = JSON.parse(String(raw)); ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", instanceId })); } },
+  });
+  const manifest = () => writeFileSync(join(state, "status.json"), JSON.stringify({ controlPort: server.port, protocol: PROTOCOL, instanceId }));
+  manifest(); writeFileSync(join(state, "control-token"), "fixture-token");
+  const original = await ControlClient.connect(state, { role: "console" });
+  const release = ControlClient.pinInstance(state, original.instanceId!);
+  try {
+    instanceId = "replacement"; manifest();
+    await expect(ControlClient.connect(state, { role: "console" })).rejects.toThrow("audit consumer changed");
+    await expect(ControlClient.connect(state, { role: "console", instanceId: "replacement" })).rejects.toThrow("audit consumer changed");
+    release();
+    const replacement = await ControlClient.connect(state, { role: "console" });
+    expect(replacement.instanceId).toBe("replacement");
+    replacement.close();
+  } finally { release(); original.close(); server.stop(true); rmSync(state, { recursive: true, force: true }); }
 });
 
 for (const supported of [false, true]) test(`#410 authenticated welcome ${supported ? "supports" : "refuses"} delegated audit before effects`, async () => {
@@ -32,7 +54,7 @@ for (const supported of [false, true]) test(`#410 authenticated welcome ${suppor
       if (msg.t === "hello") {
         if (msg.token !== "fixture-token") return ws.close(4401, "bad token");
         hellos.push(msg.role);
-        ws.send(JSON.stringify({ t: "welcome", rid: msg.rid, cwd: root, features: supported ? ["cli_audit_delegated"] : [] }));
+        ws.send(JSON.stringify({ t: "welcome", rid: msg.rid, cwd: root, instanceId: "fixture-instance", features: supported ? ["cli_audit_delegated"] : [] }));
       } else if (msg.t === "permission") {
         effects++;
         ws.send(JSON.stringify({ rid: msg.rid, ok: true }));
@@ -40,7 +62,7 @@ for (const supported of [false, true]) test(`#410 authenticated welcome ${suppor
     } },
   });
   // Disk advertisement is deliberately misleading; only authenticated welcome counts.
-  writeFileSync(join(state, "status.json"), JSON.stringify({ controlPort: server.port, protocol: PROTOCOL, cwd: root, features: ["cli_audit_delegated"] }));
+  writeFileSync(join(state, "status.json"), JSON.stringify({ controlPort: server.port, protocol: PROTOCOL, cwd: root, instanceId: "fixture-instance", features: ["cli_audit_delegated"] }));
   writeFileSync(join(state, "control-token"), "fixture-token");
   const cli = join(import.meta.dir, "../src/cli/main.ts");
   const wrapper = join(root, "invoke.ts");
@@ -52,7 +74,7 @@ for (const supported of [false, true]) test(`#410 authenticated welcome ${suppor
     if (supported) {
       expect(code, stderr).toBe(0);
       expect(effects).toBe(1);
-      expect(hellos).toEqual(["console", "console"]);
+      expect(hellos).toEqual(["console"]);
       expect(drainCliAudits(state)).toMatchObject([{ peer: "codex", command: "permission", outcome: "delegated" }]);
     } else {
       expect(code, stderr).toBe(1);
@@ -61,6 +83,38 @@ for (const supported of [false, true]) test(`#410 authenticated welcome ${suppor
       expect(hellos).toEqual(["console"]);
       expect(legacyDrain(state)).toMatchObject([{ peer: "codex", command: "permission", outcome: "refused" }]);
     }
+  } finally { clearTimeout(timer); child.kill(); server.stop(true); rmSync(root, { recursive: true, force: true }); }
+}, 15_000);
+
+test("#410 a replacement after the audit handshake cannot receive delegated effects", async () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-audit-replace-"))), state = join(root, ".agenthub/state");
+  mkdirSync(state, { recursive: true });
+  writeFileSync(join(root, ".agenthub/config.json"), "{}");
+  let current = "audit-capable", effects = 0;
+  const descriptor = () => ({ controlPort: server.port, protocol: PROTOCOL, cwd: root, instanceId: current });
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(req, server) { if (server.upgrade(req)) return; return new Response("no"); },
+    websocket: { message(ws, raw) {
+      const msg = JSON.parse(String(raw));
+      if (msg.t === "hello") {
+        ws.send(JSON.stringify({ t: "welcome", rid: msg.rid, cwd: root, instanceId: current, features: current === "audit-capable" ? ["cli_audit_delegated"] : [] }));
+        current = "legacy-replacement";
+        writeFileSync(join(state, "status.json"), JSON.stringify(descriptor()));
+      } else if (msg.t === "permission") { effects++; ws.send(JSON.stringify({ rid: msg.rid, ok: true })); }
+    } },
+  });
+  writeFileSync(join(state, "status.json"), JSON.stringify(descriptor()));
+  writeFileSync(join(state, "control-token"), "fixture-token");
+  const cli = join(import.meta.dir, "../src/cli/main.ts"), wrapper = join(root, "invoke.ts");
+  writeFileSync(wrapper, `for(const key of ["CLAUDECODE","CLAUDE_CODE_SESSION_ID","CODEX_THREAD_ID","AGENTHUB_PROJECT_DIR","AGENTHUB_STATE_DIR","AGENTHUB_INSTANCE_ID","AGENTHUB_RECOVERY_OPERATION"])delete process.env[key]; Object.assign(process.env,{AGENTHUB_PEER_ID:"codex",AGENTHUB_HOME:${JSON.stringify(join(root, "home"))}}); process.argv=[process.execPath,${JSON.stringify(cli)},"--project",${JSON.stringify(root)},"--live-test","permission","pi","ask"]; await import(${JSON.stringify(cli)});`);
+  const child = Bun.spawn([process.execPath, wrapper], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const timer = setTimeout(() => child.kill("SIGKILL"), 8000);
+  try {
+    const [code, , stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    expect(code, stderr).toBe(1);
+    expect(effects).toBe(0);
+    expect(stderr).toContain("changed");
+    expect(legacyDrain(state)).toMatchObject([{ peer: "codex", command: "permission", outcome: "refused" }]);
   } finally { clearTimeout(timer); child.kill(); server.stop(true); rmSync(root, { recursive: true, force: true }); }
 }, 15_000);
 
