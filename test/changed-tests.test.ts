@@ -13,7 +13,7 @@ test("#610 changed-files selection: importing tests, changed tests, docs only, g
     return run.stdout.toString().trim();
   };
   try {
-    for (const dir of ["src/hub", "test", "docs"]) mkdirSync(join(repo, dir), { recursive: true });
+    for (const dir of ["src/hub", "test", "docs", "scripts"]) mkdirSync(join(repo, dir), { recursive: true });
     writeFileSync(join(repo, "src/hub/a.ts"), "export const a = 1;\n");
     writeFileSync(join(repo, "src/hub/lonely.ts"), "export const b = 1;\n");
     writeFileSync(join(repo, "test/a.test.ts"), 'import { a } from "../src/hub/a.ts";\n');
@@ -26,11 +26,20 @@ test("#610 changed-files selection: importing tests, changed tests, docs only, g
     expect(selectTests(["test/b.test.ts", "src/hub/a.ts"], repo)).toEqual(["test/a.test.ts", "test/b.test.ts"]);
     expect(selectTests(["docs/x.md"], repo)).toEqual([]);
     expect(selectTests(["src/hub/lonely.ts"], repo)).toBe("ALL"); // code no test imports is unknown, not nothing
+    // review of #611: nested suites count, and code outside src/ maps the same way or runs everything
+    mkdirSync(join(repo, "test/conformance"), { recursive: true });
+    writeFileSync(join(repo, "test/conformance/a.test.ts"), 'import { a } from "../../src/hub/a.ts";\n');
+    writeFileSync(join(repo, "scripts/gate.mjs"), "export const g = 1;\n");
+    writeFileSync(join(repo, "test/gate.test.ts"), 'import { g } from "../scripts/gate.mjs";\n');
+    expect(selectTests(["src/hub/a.ts"], repo)).toEqual(["test/a.test.ts", "test/conformance/a.test.ts"]);
+    expect(selectTests(["scripts/gate.mjs"], repo)).toEqual(["test/gate.test.ts"]);
+    expect(selectTests(["scripts/unused.mjs"], repo)).toBe("ALL");
+    expect(selectTests(["src/hub/a.ts", "src/hub/lonely.ts"], repo)).toBe("ALL"); // one unmapped file is enough
     for (const gate of ["bunfig.toml", "package.json", "scripts/check.sh", "test/hub-home.ts"]) expect(selectTests([gate, "docs/x.md"], repo)).toBe("ALL");
 
     writeFileSync(join(repo, "src/hub/a.ts"), "export const a = 2;\n"); // unstaged
     writeFileSync(join(repo, "test/c.test.ts"), "// new, untracked\n");
-    expect(changedFiles(base, repo).sort()).toEqual(["src/hub/a.ts", "test/c.test.ts"]);
+    expect(changedFiles(base, repo).sort()).toEqual(["scripts/gate.mjs", "src/hub/a.ts", "test/c.test.ts", "test/conformance/a.test.ts", "test/gate.test.ts"]);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

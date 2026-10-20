@@ -2,7 +2,7 @@
 // #610: the tests a change touches, for `scripts/check.sh --changed [<base>]`. Prints `ALL` (run the full suite), or
 // one test file per line (possibly none: a docs-only change runs no tests). The full suite stays CI's gate.
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const git = (cwd, ...args) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -18,20 +18,38 @@ export function changedFiles(base, root = ".") {
 const FULL = [/^scripts\/(check\.sh|changed-tests\.mjs|record-test-process\.mjs|hang-watch\.sh|check-owned-processes\.mjs)$/,
   /^(package\.json|bun\.lock|bunfig\.toml|tsconfig\.json|\.bun-version)$/, /^test\/(?!.*\.test\.ts$)/];
 
-/** `ALL`, or the test files to run: changed tests plus tests that import a changed src module directly. */
-// ponytail: direct imports only; a change reached through another module runs in CI's full gate, or add a
+const DOCS = /(^docs\/|\.md$|^LICENSE)/;
+
+/** Every `*.test.ts` under test/, nested suites included. */
+function allTests(root) {
+  const out = [];
+  const walk = dir => {
+    for (const entry of readdirSync(join(root, dir), { withFileTypes: true })) {
+      const rel = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) walk(rel);
+      else if (entry.name.endsWith(".test.ts")) out.push(rel);
+    }
+  };
+  walk("test");
+  return out;
+}
+
+/**
+ * `ALL`, or the test files to run: changed tests plus every test that names a changed file directly (an import or a
+ * path it reads). Docs need no test; any other changed file that no test names is unknown, so everything runs.
+ */
+// ponytail: direct references only; a change reached through another module runs in CI's full gate, or add a
 // transitive import walk if the selection misses too often.
 export function selectTests(changed, root = ".") {
   if (changed.some(file => FULL.some(pattern => pattern.test(file)))) return "ALL";
-  const tests = readdirSync(join(root, "test")).filter(name => name.endsWith(".test.ts")).map(name => `test/${name}`);
+  const tests = allTests(root).map(test => ({ test, text: readFileSync(join(root, test), "utf8") }));
   const picked = new Set(changed.filter(file => /^test\/.*\.test\.ts$/.test(file) && existsSync(join(root, file))));
-  const modules = changed.filter(file => /^src\/.*\.(ts|js)$/.test(file));
-  for (const test of tests) {
-    const text = readFileSync(join(root, test), "utf8");
-    if (modules.some(module => text.includes(`/${module}"`) || text.includes(`/${module}'`))) picked.add(test);
+  for (const file of changed) {
+    if (DOCS.test(file) || /^test\/.*\.test\.ts$/.test(file)) continue;
+    const users = tests.filter(({ text }) => text.includes(`/${file}"`) || text.includes(`/${file}'`) || text.includes(`/${file}\``));
+    if (!users.length) return "ALL";
+    for (const { test } of users) picked.add(test);
   }
-  // A code change that maps to no test is unknown, not "nothing to run".
-  if (!picked.size && changed.some(file => /^(src|test)\//.test(file) && (!existsSync(join(root, file)) || statSync(join(root, file)).isFile()))) return "ALL";
   return [...picked].sort();
 }
 
