@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.41
+bun add -g github:STAIxBWLB/agent-hub#v0.12.42
 ahub setup
 ```
 
@@ -30,13 +30,17 @@ and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
 
+## Upgrading to 0.12.42
+
+0.12.42 lets `ahub agy` start again after the Antigravity CLI updated itself to 1.4.3: the launcher accepts the 1.4.x line, launching 1.4.2 (the verified version) silently and another 1.4.x patch with a warning (#589). The rest of the release is contributor tooling (#591, #593, #595). Coming from 0.12.40 or older, the notes below apply too.
+
 ## Upgrading to 0.12.41
 
 0.12.41 fixes one 0.12.40 regression: `ahub codex` in a recorded Orca terminal stopped at `invalid remote address`, because the launcher put the terminal launch id into the `--remote` URL, which Codex accepts only as `ws://host:port`. The id now travels as the upgrade's bearer token (#586). Coming from 0.12.39 or older, the 0.12.40 notes below apply too.
 
 ## Upgrading to 0.12.40
 
-Restart Claude sessions after upgrading: each keeps the plugin server it started with until restarted, so a restart loads the 0.12.41 plugin. That plugin asks Claude Code to list the hub tools again when a hub reconnect changes them (#490), and one from an older `ahub claude` launch is refused and stops reconnecting instead of reclaiming the peer (#551).
+Restart Claude sessions after upgrading: each keeps the plugin server it started with until restarted, so a restart loads the 0.12.42 plugin. That plugin asks Claude Code to list the hub tools again when a hub reconnect changes them (#490), and one from an older `ahub claude` launch is refused and stops reconnecting instead of reclaiming the peer (#551).
 
 `ahub jcode` opens its TUI again; on 0.12.39 it stopped after the first hub turn (#564). A busy Jcode now takes an `important` message into its running turn (#572), and `ahub doctor` lists the extra MCP servers the hub-owned Jcode loads from its config files. See [Jcode operations](operations.md#optional-jcode-peer).
 
