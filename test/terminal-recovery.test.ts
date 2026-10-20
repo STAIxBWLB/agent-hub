@@ -44,6 +44,27 @@ function fake(commands: (argv: readonly string[]) => CommandResult | Promise<Com
   return { calls, runner };
 }
 
+test("#482 an orphaned but connected terminal asks the person to reattach, never to finish a turn", async () => {
+  const handle = "term ' with space";
+  const shown = terminal({ handle, orphaned: true, connected: true });
+  const probe = fake(argv => argv[1] === "list" ? { result: { terminals: [shown] } } : { result: { terminal: shown } });
+  const result = await inspectTerminals(root, { codex: session }, probe.runner);
+  expect(result.manualRequired).toBe(true);
+  expect(result.bindings).toEqual([]);
+  expect(result.blockers[0]?.nextAction).toContain(`orca terminal switch --terminal ${shellQuote(handle)}`);
+  expect(result.blockers[0]?.nextAction).toContain("refresh");
+  expect(result.blockers[0]?.nextAction).not.toMatch(/finish|cancel/);
+  expect(probe.calls.every(argv => ["list", "show"].includes(argv[1]!))).toBe(true);
+});
+
+test("#482 disconnected terminals retain their existing turn guidance", async () => {
+  const shown = terminal({ orphaned: true, connected: false });
+  const probe = fake(argv => argv[1] === "list" ? { result: { terminals: [shown] } } : { result: { terminal: shown } });
+  const result = await inspectTerminals(root, { codex: session }, probe.runner);
+  expect(result.blockers[0]?.nextAction).toContain("finish or cancel");
+  expect(result.blockers[0]?.nextAction).not.toContain("terminal switch");
+});
+
 test("inspect binds exact session metadata even when list omits agentIdentity", async () => {
   const { calls, runner } = fake((argv) => {
     if (argv[1] === "list") return { result: { terminals: [terminal({ agentIdentity: undefined })] } };
