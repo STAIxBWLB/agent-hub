@@ -20,18 +20,18 @@ export async function runCodexEntry(ctx: NativeCliEntryContext): Promise<void> {
     ctx.executionCwd = res.executionCwd;
   }
   const control = readControl(stateDir);
-  let proxyUrl = res.proxyUrl;
+  let launchTokenEnv: string | undefined;
   try {
     if (control?.instanceId) {
       const terminal = await prepareTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: ctx.executionCwd } : undefined);
       if (terminal) {
         await registerTerminalLaunch(hub, terminal, process.env.AGENTHUB_RECOVERY_OPERATION);
-        const url = new URL(proxyUrl); url.searchParams.set("launchId", terminal.launchId); proxyUrl = url.toString();
+        launchTokenEnv = "AGENTHUB_LAUNCH_ID"; // codex --remote takes only ws://host:port, so the id rides the bearer header (#586)
       }
     }
   } finally { hub.close(); }
   const runningCodexBin = res.retainedLaunchConfig?.codex_bin;
-  const launch = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl, codexBin: typeof runningCodexBin === "string" ? runningCodexBin : projectConfig().codex_bin });
+  const launch = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl: res.proxyUrl, launchTokenEnv, codexBin: typeof runningCodexBin === "string" ? runningCodexBin : projectConfig().codex_bin });
   if (launch0.warning) console.error(launch0.warning);
   exec(launch.cmd, launch.args, "codex");
 }
