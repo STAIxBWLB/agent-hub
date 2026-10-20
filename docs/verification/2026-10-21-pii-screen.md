@@ -9,6 +9,6 @@
 - Unknown rate: 0.0%
 - Hard negatives held as PII (pii or unknown): 0.0%
 - Category agreement on true positives: 100.0%
-- Latency: p50 48 ms, p95 116 ms, max 203 ms
+- Latency: p50 246 ms, p95 301 ms, max 869 ms
 - Missed positives: none
 - Negatives not cleared: none

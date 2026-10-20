@@ -56,16 +56,16 @@ if (import.meta.main) {
   const arg = (name: string) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
   const project = arg("--project") ?? process.cwd();
   const config = loadConfig(project);
-  const gateway = new OmniRoute(config.omniroute);
+  const omni = new OmniRoute(config.omniroute);
   // The alias (`fixedModel`) can be remapped later; record the model the gateway reports serving (review of #613).
+  // Wrap chat on the same instance, so the campus probe that onCampus() caches is the one the measured calls reuse.
   const served = new Set<string>();
-  const omni = Object.assign(Object.create(gateway) as OmniRoute, {
-    chat: async (...call: Parameters<OmniRoute["chat"]>) => {
-      const res = await gateway.chat(...call);
-      if (res && typeof res === "object" && "servedModel" in res && typeof res.servedModel === "string") served.add(res.servedModel);
-      return res;
-    },
-  });
+  const chat = omni.chat.bind(omni);
+  omni.chat = (async (...call: Parameters<OmniRoute["chat"]>) => {
+    const res = await chat(...call);
+    if (res && typeof res === "object" && "servedModel" in res && typeof res.servedModel === "string") served.add(res.servedModel);
+    return res;
+  }) as OmniRoute["chat"];
   const fixedModel = currentRouting(project).local.fixed_model;
   const device = config.mlx.enabled === false ? undefined : () => ensureMlx(config.mlx);
   const deps = { ...(device ? { device } : {}), omni, onCampus: () => omni.onCampus(), fixedModel: () => fixedModel };
