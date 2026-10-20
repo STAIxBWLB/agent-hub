@@ -110,7 +110,7 @@ import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
 import { crashPlan, lossNotice, readSessions, removeSessions, writeSessions, type SessionsFile } from "./crash.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
-import { changedPaths, knownChangedPaths, hasTree, headTree, repoOf, snapshot, SnapshotBudgetExceeded, Turns, type SnapshotBudget, type Repo, type TurnRecord } from "./snapshots.ts";
+import { changedPaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContinuity } from "./recovery-continuity.ts";
 import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate } from "../cli/terminal-recovery.ts";
@@ -958,7 +958,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // silence without facts would leave overlapping owners blind. Facts and silence ask the same question, so both switch
   // together. Cached until the board changes: it is asked per recipient of every message.
   let turnFreeNow: boolean | undefined;
-  const turns = new Map<PeerId, { capture?: boolean; id: string; start: number; tokens: number; tree?: string; head?: string | null; snapshotMs?: number; private?: boolean; deliveryTask?: number; attribution: TaskAttribution; preparedRoles: RoleIdentity[] | null }>();
+  const turns = new Map<PeerId, { capture?: boolean; id: string; start: number; tokens: number; tree?: string; head?: string | null; reflog?: HeadMoveCursor; snapshotMs?: number; private?: boolean; deliveryTask?: number; attribution: TaskAttribution; preparedRoles: RoleIdentity[] | null }>();
   const turnFree = (): boolean => (config.coordination === "turn-free" || tasks.cohorts.list().some(cohort => cohort.silent)) && ![...turns.values()].some(turn => turn.private) && (turnFreeNow ??= !board.list().some((t) => !isClosedTaskState(t.state) && tasks.isPii(t)));
   /**
    * Why `to` does not get an agent's message (issue #107): sender and recipient are in one silent cohort, and the sender
@@ -1926,22 +1926,24 @@ export async function startDaemon(opts: DaemonOptions) {
       snapshotBudgetNoticed = true;
     } else log(`snapshot failed at ${what}: ${(error as Error).message}`);
   };
-  const snap = (what: string, capture = config.snapshots.enabled, peer?: string): { tree?: string; head?: string | null; ms: number; budget?: SnapshotBudget; repo?: Repo } => {
+  const snap = (what: string, capture = config.snapshots.enabled, peer?: string): { tree?: string; head?: string | null; reflog?: HeadMoveCursor; ms: number; budget?: SnapshotBudget; repo?: Repo } => {
     if (!capture) return { ms: 0 };
     const t0 = performance.now(), budget = reserveSnapshotBudget();
-    let tree: string | undefined, head: string | null | undefined, repo: Repo | undefined;
+    let tree: string | undefined, head: string | null | undefined, repo: Repo | undefined, reflog: HeadMoveCursor | undefined;
     try {
       repo = peer ? repoFor(peer, budget) : factsRepo;
-      const before = repo && headTree(repo, budget);
+      const before = repo && headState(repo, budget);
       tree = repo && (opts.snapshot ?? snapshot)(repo, budget);
-      head = repo && headTree(repo, budget);
-      if (before === undefined || head === undefined || before !== head) tree = undefined;
+      const after = repo && headState(repo, budget);
+      head = after?.tree;
+      if (!before || !after || before.tree !== after.tree) tree = undefined;
+      if (tree && repo && head !== undefined && after) reflog = headMoveCursor(repo, head, budget, after.head);
       if (repo && !tree) log(`snapshot failed at ${what}`);
     } catch (error) {
-      tree = undefined; head = undefined;
+      tree = undefined; head = undefined; reflog = undefined;
       snapshotFailure(what, error);
     }
-    return { tree, head, budget, repo, ms: Math.round(performance.now() - t0) };
+    return { tree, head, reflog, budget, repo, ms: Math.round(performance.now() - t0) };
   };
   function privateSnapshotWindow(): boolean {
     return [...turns.values()].some(turn => turn.private) || board.list().some(task => !isClosedTaskState(task.state) && tasks.isPii(task));
@@ -2943,7 +2945,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const detectConcurrentConflicts = (record: TurnRecord, mine: Task[]) => {
     const hits: { ours: Task; theirs: Task; paths: string[]; turn: TurnRecord }[] = [];
     for (const otherTurn of turnLog!.concurrentWith(record)) {
-      const otherTasks = (turnTasks.get(otherTurn.id) ?? []).flatMap((id) => { const task = board.get(id); return task && task.owner === otherTurn.peer && CONFLICT_STATES.includes(task.state) ? [task] : []; });
+      const otherTasks = (turnTasks.get(otherTurn.id) ?? []).flatMap((id) => { const task = board.get(id); return task ? [task] : []; });
       if (otherTasks.some(tasks.isPii)) continue;
       const theirs = new Set(otherTurn.changed);
       const shared = record.changed.filter(path => theirs.has(path));
@@ -2959,7 +2961,10 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!hits.length) return;
     const paths = [...new Set(hits.flatMap(hit => hit.paths))];
     const named = paths.filter(tasks.nameable), visible = new Set(named);
-    const files = [...named, ...(paths.length > named.length ? [`${paths.length - named.length} file(s) whose names are withheld (they match a PII pattern)`] : [])].join(", ");
+    const files = (shared: string[]) => {
+      const shown = shared.filter(path => visible.has(path));
+      return [...shown, ...(shared.length > shown.length ? [`${shared.length - shown.length} file(s) whose names are withheld (they match a PII pattern)`] : [])].join(", ");
+    };
     const affected = new Map<string, Map<number, Task>>();
     const add = (owner: string, task: Task) => {
       if (!affected.has(owner)) affected.set(owner, new Map());
@@ -2967,14 +2972,18 @@ export async function startDaemon(opts: DaemonOptions) {
     };
     for (const hit of hits) { add(record.peer, hit.ours); add(hit.turn.peer, hit.theirs); }
     const labels = (rows: Task[]) => `${rows.length === 1 ? "task" : "tasks"} ${rows.map(task => `#${task.id}`).join(", ")}`;
-    const descriptions = [`${record.id} (${labels([...affected.get(record.peer)!.values()])})`];
-    for (const [peer, rows] of affected) if (peer !== record.peer) {
-      const ids = [...new Set(hits.filter(hit => hit.turn.peer === peer).map(hit => hit.turn.id))];
-      descriptions.push(`${ids.join(", ")} (${labels([...rows.values()])})`);
+    const descriptions = [`${record.id} (${labels([...affected.get(record.peer)!.values()])}): ${files(paths)}`];
+    const byTurn = new Map<string, { tasks: Map<number, Task>; paths: Set<string> }>();
+    for (const hit of hits) {
+      if (!byTurn.has(hit.turn.id)) byTurn.set(hit.turn.id, { tasks: new Map(), paths: new Set() });
+      const group = byTurn.get(hit.turn.id)!;
+      group.tasks.set(hit.theirs.id, hit.theirs);
+      for (const path of hit.paths) group.paths.add(path);
     }
+    for (const [id, group] of byTurn) descriptions.push(`${id} (${labels([...group.tasks.values()])}): ${files([...group.paths])}`);
     const rows = [...affected.values()].flatMap(group => [...group.values()]);
     const together = rows.every(task => tasks.silentFor(task.id)) ? "Check the working tree before continuing; do not message the other owner (you are in one turn-free cohort: the hub shows you its changes)." : rows.some(task => tasks.silentFor(task.id)) ? "Check the working tree before continuing. Do not message another owner for tasks in the same turn-free cohort; the hub shows their changes. Check other work together." : "Check the working tree together before continuing.";
-    const text = `Concurrent edit: ${descriptions.join(" and ")} both include changes to ${files}. These snapshots do not attribute the changes to either peer. ${together}`;
+    const text = `Concurrent edit: shared changes by turn: ${descriptions.join("; ")}. These snapshots do not attribute the changes to any peer. ${together}`;
     notify(`conflict: ${text}`);
     // Research retains task-pair evidence. Durable notices are computed once across all overlapping turns,
     // and each affected task gets only one owner-fenced notice for this change set.
@@ -3153,7 +3162,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const start = capture && !pii ? snap(`the start of ${id}`, config.snapshots.enabled, e.peer) : undefined; // before the peer is handed anything: the tap runs inside setState
         try { if (capture) turnLog?.begin(id, e.peer, start?.tree, declarations[e.peer] ? executionRoot(e.peer) : undefined); } catch (error) { log(`turn record ${id}: ${(error as Error).message}`); }
         const preparedRoles = preparedSessionRoleIdentities.get(e.peer)?.map(role => ({ ...role })) ?? null;
-        turns.set(e.peer, { id, capture, start: Date.now(), tokens: 0, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, head: start.head, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
+        turns.set(e.peer, { id, capture, start: Date.now(), tokens: 0, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, head: start.head, reflog: start.reflog, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
         event({ type: "turn_start", peer: e.peer, turn: id });
       } else if (!busy && open) {
         turns.delete(e.peer);
@@ -3164,19 +3173,19 @@ export async function startDaemon(opts: DaemonOptions) {
           try { turnLog.end(open.id, undefined, [], Math.max(1, Number(config.snapshots.keep) || 20)); } catch (error) { log(`turn record ${open.id}: ${(error as Error).message}`); }
         } else if (open.capture && turnLog) {
           const end = snap(`the end of ${open.id}`, true, e.peer);
-          const turnRepo = end.repo!;
           let changed: string[] = [];
           if (open.tree && end.tree) {
+            const turnRepo = end.repo!;
             try {
               const observed = knownChangedPaths(turnRepo, open.tree, end.tree, end.budget);
               if (!observed) throw new Error("turn diff evidence is unavailable");
               changed = observed;
-              // A checkout's committed paths are not peer edits. Failure to read that delta is unknown,
-              // never an empty successful diff that could make committed changes eligible for undo.
-              if (open.head !== end.head) {
-                const committed = open.head && end.head ? knownChangedPaths(turnRepo, open.head, end.head, end.budget) : undefined;
-                if (!committed) throw new Error("committed HEAD diff evidence is unavailable");
-                const incoming = new Set(committed);
+              // HEAD movement alone does not identify incoming work: commits/amends/rebases/cherry-picks
+              // are normal peer edits. Only a bounded, append-fenced reflog classifies an incoming move.
+              if (open.head !== end.head || open.reflog || end.reflog) {
+                const paths = open.reflog && end.reflog ? incomingHeadPaths(turnRepo, open.reflog, end.reflog, end.budget) : undefined;
+                if (!paths) throw new Error("HEAD move evidence is ambiguous or unavailable");
+                const incoming = new Set(paths);
                 changed = changed.filter(path => !incoming.has(path));
               }
             } catch (error) {

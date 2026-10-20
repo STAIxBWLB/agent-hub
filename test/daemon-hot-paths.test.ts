@@ -149,11 +149,32 @@ test("#576 status Git advisory probes are bounded once per synchronous burst", a
   expect(f.probes()).toBeGreaterThan(first); // no stale advisory cache across control turns
 });
 
+for (const linked of [false, true]) for (const amend of [false, true]) test(`#576 a peer's own ${amend ? "amend" : "commit"} stays attributed${linked ? " in a linked worktree" : ""}`, async () => {
+  const f = await fixture(1, false, linked);
+  f.peers[0]!.begin();
+  writeFileSync(join(f.root, "own.txt"), "peer edit to commit\n");
+  f.git("add", "own.txt");
+  if (amend) f.git("commit", "--amend", "-qm", "peer amend");
+  else f.git("commit", "-qm", "peer commit");
+  await new Promise<void>(resolve => setImmediate(resolve));
+  f.peers[0]!.finish();
+  expect(f.events().filter(e => e.type === "turn_end").map(e => e.files)).toEqual([1]);
+  const turns = new Turns(join(f.root, ".agenthub/state/hub.db"), true);
+  try {
+    expect(turns.list("kimi")[0]?.changed).toEqual(["own.txt"]);
+    expect(turns.touchesFor([1]).map(touch => touch.path)).toContain("own.txt");
+  } finally { turns.close(); }
+});
+
 test("#576 HEAD movement keeps independent working-tree edits attributable", async () => {
   const f = await fixture();
+  const base = f.git("rev-parse", "HEAD");
+  f.git("switch", "-qc", "incoming");
+  writeFileSync(join(f.root, "shared.txt"), "committed elsewhere\n");
+  f.git("commit", "-qam", "incoming change");
+  f.git("switch", "-qc", "before", base);
   f.peers[0]!.begin();
-  writeFileSync(join(f.root, "shared.txt"), "committed\n");
-  f.git("commit", "-qam", "external commit");
+  f.git("merge", "--ff-only", "incoming");
   writeFileSync(join(f.root, "own.txt"), "peer-only\n");
   await new Promise<void>(resolve => setImmediate(resolve));
   f.peers[0]!.finish();
@@ -164,10 +185,14 @@ test("#576 HEAD movement keeps independent working-tree edits attributable", asy
 test("#576 an unavailable committed HEAD delta leaves attribution and undo unknown", async () => {
   const f = await fixture();
   const oldHead = f.git("rev-parse", "HEAD^{tree}");
+  const base = f.git("rev-parse", "HEAD");
+  f.git("switch", "-qc", "incoming");
+  writeFileSync(join(f.root, "shared.txt"), "committed elsewhere\n");
+  f.git("commit", "-qam", "incoming change");
+  f.git("switch", "-qc", "before", base);
   writeFileSync(join(f.root, "untracked.txt"), "keeps the turn snapshot distinct from HEAD\n");
   f.peers[0]!.begin();
-  writeFileSync(join(f.root, "shared.txt"), "external commit\n");
-  f.git("commit", "-qam", "external");
+  f.git("merge", "--ff-only", "incoming");
   // Only this fixture's old committed root tree is unavailable; the two workspace snapshots still exist.
   rmSync(join(f.git("rev-parse", "--absolute-git-dir"), "objects", oldHead.slice(0, 2), oldHead.slice(2)));
   f.peers[0]!.finish();

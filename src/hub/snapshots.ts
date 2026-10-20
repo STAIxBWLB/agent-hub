@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
-import { copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, constants, copyFileSync, existsSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync, type Stats } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { childEnv } from "./child-process.ts";
@@ -122,6 +123,211 @@ const scope = (repo: Repo) => (repo.prefix ? literal(repo.prefix) : ".");
 export function headTree(repo: Repo, budget?: SnapshotBudget): string | null | undefined {
   const result = git(repo, ["rev-parse", "--verify", "--quiet", "HEAD^{tree}"], {}, budget);
   return result.status === 0 ? result.stdout.trim() : result.status === 1 ? null : undefined;
+}
+
+/** One probe binds the committed HEAD id and tree; an unborn HEAD needs positive missing-ref proof. */
+export function headState(repo: Repo, budget?: SnapshotBudget): { head: string | null; tree: string | null } | undefined {
+  const result = git(repo, ["rev-parse", "--quiet", "HEAD", "HEAD^{tree}"], {}, budget);
+  const values = result.status === 0 ? result.stdout.trim().split("\n") : [];
+  if (values.length === 2 && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(values[0]!) &&
+      /^[0-9a-f]+$/.test(values[1]!) && values[0]!.length === values[1]!.length) return { head: values[0]!, tree: values[1]! };
+  if (result.status === 0) return undefined;
+  const symbolic = git(repo, ["symbolic-ref", "--quiet", "HEAD"], {}, budget);
+  const ref = symbolic.status === 0 ? symbolic.stdout.trim() : "";
+  if (!ref.startsWith("refs/heads/")) return undefined;
+  const missing = git(repo, ["show-ref", "--verify", "--quiet", ref], {}, budget);
+  if (missing.status !== 1) return undefined;
+  const current = git(repo, ["rev-parse", "--verify", "--quiet", "HEAD"], {}, budget);
+  return current.status === 1 ? { head: null, tree: null } : undefined;
+}
+
+/** A bounded append cursor; raw reflog identities and messages never leave the reader. */
+export interface HeadMoveCursor {
+  readonly head: string | null;
+  readonly tree: string | null;
+  readonly unbornRefHash?: string;
+  readonly dev: number;
+  readonly ino: number;
+  readonly size: number;
+  readonly anchorOffset: number;
+  readonly anchor: string;
+}
+const HEAD_LOG_TAIL_BYTES = 4096;
+const HEAD_LOG_MAX_APPEND_BYTES = 128 * 1024;
+const HEAD_LOG_MAX_MOVES = 64;
+const checkSnapshotBudget = (budget?: SnapshotBudget) => { if (budget && performance.now() >= budget.deadline) throw new SnapshotBudgetExceeded(); };
+const sameLogFile = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino;
+function readHeadLog<T>(repo: Repo, budget: SnapshotBudget | undefined, read: (fd: number, stat: Stats) => T | undefined): T | undefined {
+  let fd: number | undefined;
+  try {
+    checkSnapshotBudget(budget);
+    const logs = join(repo.dir, "logs"), file = join(logs, "HEAD");
+    const directory = lstatSync(logs);
+    if (!directory.isDirectory() || directory.isSymbolicLink()) return undefined;
+    const named = lstatSync(file);
+    if (!named.isFile() || named.isSymbolicLink() || named.nlink !== 1) return undefined;
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = fstatSync(fd);
+    if (!before.isFile() || before.nlink !== 1 || !sameLogFile(named, before) || before.size !== named.size) return undefined;
+    const result = read(fd, before);
+    const after = fstatSync(fd), current = lstatSync(file), parent = lstatSync(logs);
+    checkSnapshotBudget(budget);
+    if (!sameLogFile(before, after) || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs ||
+        !current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || !sameLogFile(after, current) || after.size !== current.size || after.mtimeMs !== current.mtimeMs || after.ctimeMs !== current.ctimeMs ||
+        !parent.isDirectory() || parent.isSymbolicLink() || !sameLogFile(directory, parent)) return undefined;
+    return result;
+  } catch (error) { if (error instanceof SnapshotBudgetExceeded) throw error; return undefined; }
+  finally { if (fd !== undefined) closeSync(fd); }
+}
+function headLogBytes(fd: number, offset: number, length: number, budget?: SnapshotBudget): Buffer | undefined {
+  const data = Buffer.alloc(length);
+  let used = 0;
+  while (used < length) {
+    checkSnapshotBudget(budget);
+    const count = readSync(fd, data, used, length - used, offset + used);
+    if (!count) return undefined;
+    used += count;
+  }
+  return data;
+}
+const headLogHash = (data: Buffer) => createHash("sha256").update(data).digest("hex");
+function headLogRow(line: string): { old: string; next: string; action: string } | undefined {
+  const row = /^([0-9a-f]{40}|[0-9a-f]{64}) ([0-9a-f]{40}|[0-9a-f]{64}) [^\r\n\t]+ [0-9]+ [+-][0-9]{4}\t([^\r\n]*)$/.exec(line);
+  return row && row[1]!.length === row[2]!.length ? { old: row[1]!, next: row[2]!, action: row[3]! } : undefined;
+}
+function missingHeadLog(repo: Repo): boolean {
+  try {
+    const parent = lstatSync(join(repo.dir, "logs"));
+    if (!parent.isDirectory() || parent.isSymbolicLink()) return false;
+  } catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+  try { lstatSync(join(repo.dir, "logs", "HEAD")); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
+}
+/** Read only a bounded, stable symbolic HEAD when the caller already proved it unborn. */
+function symbolicHeadRef(repo: Repo, budget?: SnapshotBudget): string | undefined {
+  let fd: number | undefined;
+  try {
+    checkSnapshotBudget(budget);
+    const file = join(repo.dir, "HEAD"), named = lstatSync(file);
+    if (!named.isFile() || named.isSymbolicLink() || named.nlink !== 1 || named.size > 4096) return undefined;
+    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = fstatSync(fd);
+    if (!before.isFile() || before.nlink !== 1 || !sameLogFile(named, before) || named.size !== before.size) return undefined;
+    const bytes = headLogBytes(fd, 0, before.size, budget);
+    const after = fstatSync(fd), current = lstatSync(file);
+    checkSnapshotBudget(budget);
+    if (!bytes || !sameLogFile(before, after) || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs ||
+        !current.isFile() || current.isSymbolicLink() || current.nlink !== 1 || !sameLogFile(after, current) || after.size !== current.size ||
+        after.mtimeMs !== current.mtimeMs || after.ctimeMs !== current.ctimeMs) return undefined;
+    return /^ref: (refs\/heads\/[^\r\n]+)\n?$/.exec(bytes.toString("utf8"))?.[1];
+  } catch (error) { if (error instanceof SnapshotBudgetExceeded) throw error; return undefined; }
+  finally { if (fd !== undefined) closeSync(fd); }
+}
+/** provenHead is host-only, paired with expectedTree from the very same headState probe. */
+export function headMoveCursor(repo: Repo, expectedTree: string | null, budget?: SnapshotBudget, provenHead?: string | null): HeadMoveCursor | undefined {
+  if (provenHead !== undefined && (provenHead === null) !== (expectedTree === null)) return undefined;
+  if (expectedTree === null) {
+    let ref: string | undefined;
+    if (provenHead === null) ref = symbolicHeadRef(repo, budget);
+    else {
+      const symbolic = git(repo, ["symbolic-ref", "--quiet", "HEAD"], {}, budget);
+      ref = symbolic.status === 0 ? symbolic.stdout.trim() : undefined;
+      if (!ref?.startsWith("refs/heads/")) return undefined;
+      const missing = git(repo, ["show-ref", "--verify", "--quiet", ref], {}, budget);
+      if (missing.status !== 1) return undefined;
+      const current = git(repo, ["rev-parse", "--verify", "--quiet", "HEAD"], {}, budget);
+      if (current.status !== 1) return undefined;
+    }
+    if (!ref || !missingHeadLog(repo)) return undefined;
+    checkSnapshotBudget(budget);
+    return { head: null, tree: null, unbornRefHash: createHash("sha256").update(ref).digest("hex"), dev: 0, ino: 0, size: 0, anchorOffset: 0, anchor: headLogHash(Buffer.alloc(0)) };
+  }
+  const cursor = readHeadLog(repo, budget, (fd, stat): HeadMoveCursor | undefined => {
+    if (stat.size <= 0 || !Number.isSafeInteger(stat.size)) return undefined;
+    const anchorOffset = Math.max(0, stat.size - HEAD_LOG_TAIL_BYTES);
+    const tail = headLogBytes(fd, anchorOffset, stat.size - anchorOffset, budget);
+    if (!tail || tail[tail.length - 1] !== 10) return undefined;
+    const text = tail.toString("utf8"), start = text.lastIndexOf("\n", text.length - 2) + 1;
+    if (anchorOffset > 0 && start === 0) return undefined;
+    const last = headLogRow(text.slice(start, -1));
+    if (!last) return undefined;
+    return { head: last.next, tree: expectedTree, dev: stat.dev, ino: stat.ino, size: stat.size, anchorOffset, anchor: headLogHash(tail) };
+  });
+  if (!cursor) return undefined;
+  if (provenHead !== undefined) return cursor.head === provenHead ? cursor : undefined;
+  // Bind the observed log tip and its immutable tree to current HEAD in one bounded probe.
+  const current = git(repo, ["rev-parse", "--quiet", "HEAD", `${cursor.head}^{tree}`], {}, budget);
+  const values = current.status === 0 ? current.stdout.trim().split("\n") : [];
+  return values.length === 2 && values[0] === cursor.head && values[1] === expectedTree ? cursor : undefined;
+}
+export function incomingHeadPaths(repo: Repo, start: HeadMoveCursor, end: HeadMoveCursor, budget?: SnapshotBudget): string[] | undefined {
+  const validCursor = (cursor: HeadMoveCursor) => Number.isSafeInteger(cursor.size) && cursor.size >= 0 &&
+    (cursor.size > 0 ? !!cursor.head && !!cursor.tree : cursor.head === null && cursor.tree === null && /^[0-9a-f]{64}$/.test(cursor.unbornRefHash ?? "")) &&
+    cursor.anchorOffset === Math.max(0, cursor.size - HEAD_LOG_TAIL_BYTES) && /^[0-9a-f]{64}$/.test(cursor.anchor);
+  if (!validCursor(start) || !validCursor(end) || (start.size > 0 && (start.dev !== end.dev || start.ino !== end.ino)) ||
+      end.size < start.size || end.size - start.size > HEAD_LOG_MAX_APPEND_BYTES) return undefined;
+  if (!end.size) {
+    checkSnapshotBudget(budget);
+    const unchanged = start.unbornRefHash === end.unbornRefHash && missingHeadLog(repo);
+    checkSnapshotBudget(budget);
+    return unchanged ? [] : undefined;
+  }
+  const appended = readHeadLog(repo, budget, (fd, stat) => {
+    if (stat.dev !== end.dev || stat.ino !== end.ino || stat.size < end.size) return undefined;
+    for (const cursor of [start, end]) {
+      const anchor = headLogBytes(fd, cursor.anchorOffset, cursor.size - cursor.anchorOffset, budget);
+      if (!anchor || headLogHash(anchor) !== cursor.anchor) return undefined;
+    }
+    return headLogBytes(fd, start.size, end.size - start.size, budget);
+  });
+  if (!appended) return undefined;
+  if (!appended.length) return start.head === end.head && start.tree === end.tree ? [] : undefined;
+  if (appended[appended.length - 1] !== 10) return undefined;
+  const lines = appended.toString("utf8").slice(0, -1).split("\n");
+  if (lines.length > HEAD_LOG_MAX_MOVES) return undefined;
+  const own = new Set<string>(), incoming = new Set<string>();
+  let previous = start.head;
+  for (const line of lines) {
+    checkSnapshotBudget(budget);
+    const row = headLogRow(line);
+    if (!row || (previous === null ? !/^0+$/.test(row.old) : row.old !== previous)) return undefined;
+    const ownMove = /^(?:commit(?: \(amend\)| \(initial\))?|cherry-pick|rebase \((?:start|pick|reword|edit|squash|fixup|finish|continue)\)): /.test(row.action);
+    let incomingMove = /^(?:checkout: moving from .+ to .+|(?:merge|pull)(?: [^:]+)?: .+)$/.test(row.action);
+    if (/^reset: moving to .+/.test(row.action)) {
+      // A reset is incoming only on positive ancestry proof; rewinds/unknown resets cannot be attributed safely.
+      const ancestor = git(repo, ["merge-base", "--is-ancestor", row.old, row.next], {}, budget);
+      if (ancestor.status !== 0) return undefined;
+      incomingMove = true;
+    }
+    if (!ownMove && !incomingMove) return undefined;
+    let paths: string[] | undefined;
+    if (/^0+$/.test(row.old)) {
+      const root = git(repo, ["diff-tree", "--root", "--no-commit-id", "-r", "--no-renames", "--name-only", "-z", row.next, "--", scope(repo)], {}, budget);
+      paths = root.status === 0 ? root.stdout.split("\0").filter(Boolean) : undefined;
+    } else paths = knownChangedPaths(repo, row.old, row.next, budget);
+    if (!paths) return undefined;
+    for (const path of paths) { checkSnapshotBudget(budget); (ownMove ? own : incoming).add(path); }
+    previous = row.next;
+  }
+  if (previous !== end.head) return undefined;
+  // A path touched by both kinds cannot be separated at file-level undo granularity.
+  const hasAncestor = (paths: Set<string>, path: string) => {
+    for (let at = path.lastIndexOf("/"); at > 0; at = path.lastIndexOf("/", at - 1)) {
+      checkSnapshotBudget(budget);
+      if (paths.has(path.slice(0, at))) return true;
+    }
+    return false;
+  };
+  for (const path of own) {
+    checkSnapshotBudget(budget);
+    if (incoming.has(path) || hasAncestor(incoming, path)) return undefined;
+  }
+  for (const path of incoming) {
+    checkSnapshotBudget(budget);
+    if (hasAncestor(own, path)) return undefined;
+  }
+  checkSnapshotBudget(budget);
+  return [...incoming];
 }
 
 /** A tree id for the project's files as they are now, leaving out the hub's own state. */

@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- HEAD moves during open turns no longer produce false concurrent-edit warnings or attributed undo paths. Real concurrent change sets publish at most one notice per affected task; snapshot Git work shares a 250 ms burst budget and records unknown boundaries on exhaustion. Status reuses a checkout-branch probe only within the current synchronous burst. Pi terminal reconciliation uses the bounded existing owner monitor instead of spawning `ps` on every read; effect admission and teardown still verify fresh process identity (#576).
+- Incoming HEAD moves during open turns no longer produce false concurrent-edit warnings or attributed undo paths; bounded per-worktree reflog evidence distinguishes them from peer commit/amend/rebase/cherry-pick changes, which stay attributed. Real concurrent change sets publish at most one notice per affected task; snapshot Git work shares a 250 ms burst budget and records unknown boundaries on exhaustion. Status reuses a checkout-branch probe only within the current synchronous burst. Pi terminal reconciliation uses the bounded existing owner monitor instead of spawning `ps` on every read; effect admission and teardown still verify fresh process identity (#576).
 
 ## 0.12.42
 
