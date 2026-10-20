@@ -120,7 +120,24 @@ export function memoryProjectFor(cwd: string, opts: Pick<StoreOptions, "home"> =
 /** Inspect selection without constructing a store, index, or candidate sidecar. */
 export function selectedMemoryProfile(opts: StoreOptions = {}): MemoryProfileReceipt {
   assertLoadedAgentMem();
-  return receipt(resolveProfile(homeFor(opts)), "ready");
+  const home = homeFor(opts);
+  if (!splitMarked(home)) return receipt(resolveProfile(home), "ready");
+  // #536: a split home selects through shards.json, not the legacy selector. The user shard is sealed by every split,
+  // so it names the active generation and selector revision without opening a store; an inactive split throws the resume remedy.
+  assertActiveSplit(home);
+  return receipt(resolveShardProfile(home, { user: true }), "ready");
+}
+
+/**
+ * #536: the shard profile a hub bound to `projectRoot` reports on an active split home, without opening a store.
+ * Returns undefined on an unsplit home; throws MEMORY_SPLIT_INCOMPLETE on an inactive split, and whatever the
+ * shard resolution throws when this project's seal is missing or corrupt.
+ */
+export function shardProfileForProject(canonicalMemoryHome: string, projectRoot: string): MemoryProfileReceipt | undefined {
+  assertLoadedAgentMem();
+  if (!splitMarked(canonicalMemoryHome)) return undefined;
+  assertActiveSplit(canonicalMemoryHome);
+  return receipt(resolveShardProfile(canonicalMemoryHome, { project: resolveAlias(canonicalMemoryHome, memoryProjectKey(projectRoot)) }), "ready");
 }
 
 export class MemoryProfileBinding {

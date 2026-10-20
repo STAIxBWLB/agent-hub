@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryStore, appendAlias, memoryProjectKey, migrateShards, openShardStore, type NoteInput } from "@staix/agent-mem";
 import { realPath } from "../src/hub/project.ts";
-import { MEMORY_PROFILE_UNAVAILABLE, MEMORY_SPLIT_INCOMPLETE, bindProfileMemory, memoryProjectFor, openProfileMemory } from "../src/hub/memory-profile.ts";
+import { MEMORY_PROFILE_UNAVAILABLE, MEMORY_SPLIT_INCOMPLETE, bindProfileMemory, memoryProjectFor, openProfileMemory, selectedMemoryProfile } from "../src/hub/memory-profile.ts";
+import { evaluateMemoryProfileCheck, type ProfileEvidence } from "../src/hub/memory-profile-check.ts";
 import { memoryCommand } from "../src/cli/memory.ts";
 
 const A = "github.com/example/hub-a", B = "github.com/example/hub-b", C = "github.com/example/hub-new";
@@ -180,4 +181,40 @@ for (const sharded of [false, true]) test(`an alias added under a running bindin
     expect(() => binding.run(() => store.note(note(raw, "must not write under the superseded key")))).toThrow(MEMORY_PROFILE_UNAVAILABLE);
     expect(binding.status(store).state).toBe("unavailable");
   } finally { store.close(); }
+});
+
+// #536: profile-check and status inspection read a split home the way the bound hubs do.
+function hubEvidence(home: string, root: string, reported: Record<string, unknown>): ProfileEvidence {
+  const project = { id: "p_split", root, stateDir: join(home, "state"), basePort: 4600, pid: 1234, instanceId: "instance-1", pidSignature: "signed-owner" };
+  return { project, liveness: "live", canonicalHome: join(home, "memory"),
+    descriptor: { url: "ws://127.0.0.1:4601", token: "t", projectId: project.id, instanceId: project.instanceId, cwd: root, pid: 1234, pidSignature: "signed-owner" },
+    status: { pid: 1234, projectId: project.id, instanceId: project.instanceId, cwd: root, version: "0.12.40", memoryProfile: { ...reported, agentMemVersion: "0.4.0" } } };
+}
+
+test("#536: a split home inspects as the shard generation and a bound hub passes profile-check", async () => {
+  const { home, memory } = seeded();
+  await split(memory);
+  const root = realPath(mkdtempSync(join(tmpdir(), "hub-memory-root-")));
+  homes.push(root);
+  const key = memoryProjectFor(root, { home });
+  const { store, binding } = openProfileMemory({ home, project: key });
+  try {
+    const bound = binding.status(store);
+    const selected = selectedMemoryProfile({ home });
+    expect(selected).toMatchObject({ profile: "generation", generation: bound.generation, selectorRevision: bound.selectorRevision, state: "ready" });
+    const report = evaluateMemoryProfileCheck({ home: selected.home, profile: selected.profile, generation: selected.generation, selectorRevision: selected.selectorRevision }, [hubEvidence(home, root, bound as unknown as Record<string, unknown>)]);
+    expect(report).toMatchObject({ ready: true });
+    const stale = evaluateMemoryProfileCheck({ home: selected.home, profile: selected.profile, generation: selected.generation, selectorRevision: selected.selectorRevision }, [hubEvidence(home, root, { ...bound, generation: "c".repeat(32) })]);
+    expect(stale.ready).toBe(false);
+    expect(stale.daemons[0]?.reason).toBe("running memory binding differs from the selected profile");
+  } finally { store.close(); }
+});
+
+test("#536: an inactive split reports the resume remedy instead of a profile", () => {
+  const { home, memory } = seeded();
+  writeFileSync(join(memory, "shards.json"), '{"schema":"agent-mem.shards/v1","phase":"captured"}');
+  expect(() => selectedMemoryProfile({ home })).toThrow(MEMORY_SPLIT_INCOMPLETE);
+  const report = evaluateMemoryProfileCheck({ home: memory, profile: "shared-v1", selectorRevision: "absent" }, [hubEvidence(home, home, { profile: "shared-v1", state: "ready", selectorRevision: "absent", home: memory })]);
+  expect(report.ready).toBe(false);
+  expect(report.daemons[0]?.reason).toBe(MEMORY_SPLIT_INCOMPLETE);
 });
