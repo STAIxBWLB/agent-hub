@@ -16,6 +16,8 @@ export interface PermissionDefault { peer: string; mode: "never-ask"; source: st
 export interface ConsoleEvent { text: string; peer?: string; kind?: string; tone?: Tone }
 export interface SettingsEdit {
   token: number; key?: string; undo: boolean; phase: "value" | "preview" | "reason" | "confirm";
+  /** The existing editor can also be opened by the Peers WIP shortcut. */
+  panel?: 1 | 6;
   text: string; value?: SettingValue; reason?: string; lines?: string[]; confirm?: string; undoDigest?: string;
 }
 export interface ConsoleState {
@@ -38,6 +40,7 @@ export interface ConsoleState {
   autoSelected?: boolean;
   input: string; editing: boolean; history: string[]; historyIndex: number;
   approvals: Approval[]; events: ConsoleEvent[]; peers: Record<string, any>; budget: Record<string, any>;
+  taskWip?: Record<string, { wip: number; wipLimit: number }>;
   tasks: any[]; tasksKnown?: boolean; taskCounts?: Record<string, number>; queue: any[]; detail?: Detail; detailOffset: number; help: boolean; notice: string; noticeAt?: number; noticeTone?: Tone;
   peerFilter?: string; kindFilter?: string; project?: string;
   taskSelection?: number; queueSelection?: string;
@@ -334,9 +337,9 @@ export const LAST_KEYS = [">", "\x1b[F", "\x1bOF", "\x1b[4~", "\x1b[8~"];
 const KEYS: [string, string[]][] = [
   ["Everywhere", ["Tab stream/panels", ": command", "? keys", "Esc back", "q quit"]],
   ["Command", ["Enter run", "Esc cancel", "Up/Down history", "Ctrl-U clear"]],
-  ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Home/< first, End/> last", "Enter view", "j/k scroll a view", "w web UI", "o pet window"]],
+  ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Home/< first, End/> last", "Enter view", "j/k scroll a view", "w web UI (outside Peers)", "o pet window"]],
   ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
-  ["Peers", ["p pause", "r resume", "m permission mode", "l make planner (then y)"]],
+  ["Peers", ["p pause", "r resume", "m permission mode", "w WIP limit", "l make planner (then y)"]],
   ["Tasks", ["a assign/reviewer (then y)", "u unassign (then y)", "r review (in review)"]],
   ["Queue", ["r resolve (reason, then y)", "queued=discard, needs_review=retry"]],
   ["Events", ["f peer filter", "g kind filter"]],
@@ -592,6 +595,17 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   // Right and Left are the digit of the next or previous tab, wrapping at both ends (#309); the same guards as the
   // digits apply (the confirm, mode-choice, key-table and editing branches above returned already).
   if (s.mode === "panels" && (key === "\x1b[C" || key === "\x1b[D") && !s.optionChoice) return switchPanel(s.panel === 6 ? key === "\x1b[C" ? 1 : 5 : (s.panel + (key === "\x1b[C" ? 0 : 3)) % 5 + 1);
+  if (s.mode === "panels" && s.panel === 1 && key === "w") {
+    const peer = selectedPanelRow(s)?.id;
+    if (!peer || s.detail !== undefined) { notify(s, "select a peer row to edit its planner WIP limit", now); return done(); }
+    const wip = s.taskWip?.[peer];
+    if (!wip || s.peers[peer]?.rostered === false) { notify(s, `planner WIP is unavailable for ${peer}`, now); return done(); }
+    const row = s.settingsRows?.find(row => row.key === `tasks.wip_limits.${peer}`);
+    if (!row || s.settingsProblem) { notify(s, s.settingsProblem ?? "WIP setting is unavailable; refresh settings and try again", now); return done(); }
+    const token = (s.settingsSequence ?? 0) + 1; s.settingsSequence = token;
+    s.settingsEdit = { token, panel: 1, key: row.key, undo: false, phase: "value", text: String(wip.wipLimit) };
+    return done();
+  }
   if (s.mode === "panels" && s.panel === 6 && s.detail === undefined && (key === "e" || key === "u")) {
     const row = selectedPanelRow(s);
     if (key === "u" && !s.settingsUndo) { notify(s, "nothing to undo", now); return done(); }
@@ -732,7 +746,7 @@ export function activeNotice(s: Pick<ConsoleState, "notice" | "noticeAt">, now =
   return !!s.notice && now - (s.noticeAt ?? now) < NOTICE_MS;
 }
 export const TABLES: Record<number, string[]> = {
-  1: ["PEER", "STATE", "LINK", "Q", "!", "REVIEW", "PAUSE", "QUOTA", "MODEL"],
+  1: ["PEER", "STATE", "LINK", "Q", "!", "WIP", "REVIEW", "PAUSE", "QUOTA", "MODEL"],
   2: ["ID", "PEER", "LEFT", "TITLE"],
   3: ["ID", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE", "STAGE"],
   4: ["ID", "PEER", "STATE", "REV", "AGE"],
@@ -745,6 +759,7 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
   const id = (text: unknown, tone: Tone | undefined) => span(text, tone && (selected ? "strong" : tone));
   if (s.panel === 1) {
     const b = s.budget[row.id];
+    const wip = s.taskWip?.[row.id];
     const paused = b?.paused ? `budget ${relative(b.paused.resetsAt, now)}` : row.paused && typeof row.paused === "object"
       ? `${row.paused.by ?? "paused"}${typeof row.paused.at === "number" ? ` ${duration(now - row.paused.at)}` : ""}`
       : row.paused === "manual" ? "user" : row.paused ? String(row.paused).split(":")[0] : "-";
@@ -752,6 +767,7 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
       ...(showPermissionModes(s) ? [span(row.permissionMode && row.permissionMode !== "ask" ? row.permissionMode : "-", row.permissionMode === "never-ask" ? "attention" : undefined)] : []),
       span(row.pullOnly && definitionOf(row.id)?.attach?.pullOnlyForms?.includes("tui") ? "pull-only" : row.toolsOnly ? "tools-only" : row.attached === false ? "detached" : "attached", row.toolsOnly ? "attention" : undefined),
       span(count(row.queued)), span(count(row.queuedImportant), row.queuedImportant ? "attention" : undefined),
+      span(wip ? `${wip.wip}/${wip.wipLimit}` : "-", wip && wip.wip >= wip.wipLimit ? "attention" : undefined),
       span(count(row.needsReview), row.needsReview ? "failure" : undefined), span(paused, paused === "-" ? undefined : "attention"),
       span(b?.windows?.length ? b.windows.map((w: any) => `${w.id} ${Math.round(w.used * 100)}%${typeof w.resetsAt === "number" ? ` ${relative(w.resetsAt, now)}` : ""}`).join(", ") : "-"),
       span(row.servedBy ?? row.requestedModel ?? "-")];
@@ -801,6 +817,25 @@ export function table(head: string[], rows: Span[][], columns: number, explicitW
     return { ...cell, text: text + " ".repeat(Math.max(0, widths[i]! - Bun.stringWidth(text)) + (i === head.length - 1 ? 0 : 2)) };
   }));
 }
+/** Keep the status/quota columns visible instead of clipping them behind optional peer metadata. */
+function peerTable(head: string[], rows: Span[][], columns: number): Span[][] {
+  const cap = Math.max(24, Math.floor(columns / 3));
+  const widths = head.map((name, i) => Math.min(cap, rows.reduce((max, row) => Math.max(max, Bun.stringWidth(flat(row[i]?.text ?? ""))), name.length)));
+  const keep = head.map((_, i) => i);
+  const total = () => keep.reduce((sum, i) => sum + widths[i]!, 0) + 2 * (keep.length - 1);
+  for (const name of ["MODEL", "WIP", "PAUSE", "REVIEW", "LINK", "Q", "!", "MODE"]) {
+    if (total() <= columns - 2) break;
+    const at = keep.findIndex(i => head[i] === name);
+    if (at >= 0) keep.splice(at, 1);
+  }
+  // Very long peer/state/quota values still fit, with their headers intact.
+  while (total() > columns - 2) {
+    const largest = keep.reduce((best, i) => widths[i]! - head[i]!.length > widths[best]! - head[best]!.length ? i : best, keep[0]!);
+    if (widths[largest]! <= head[largest]!.length) break;
+    widths[largest] = widths[largest]! - 1;
+  }
+  return table(keep.map(i => head[i]!), rows.map(row => keep.map(i => row[i]!)), columns, keep.map(i => widths[i]!));
+}
 function taskHints(row: any): string[] {
   if (!["proposed", "in_progress", "in_review", "changes_requested"].includes(row.state)) return [];
   const review = row.state === "in_review";
@@ -813,7 +848,7 @@ const settingValueText = (value: unknown): string => value === null || value ===
 function panelContext(s: ConsoleState, row: any): string[] {
   if (!row) return [];
   if (s.panel === 6) return ["e edit", ...(s.settingsUndo ? ["u undo"] : [])];
-  if (s.panel === 1) return ["p pause", "r resume", "m permission mode"];
+  if (s.panel === 1) return ["p pause", "r resume", "m permission mode", "w WIP limit"];
   if (s.panel === 3) return [...taskHints(row), ...(s.features?.includes("task_cancel") ? ["c cancel"] : [])];
   if (s.panel === 4) return [row.state === "queued" ? "r discard" : "r resolve"];
   return [];
@@ -827,7 +862,9 @@ function hint(s: ConsoleState, columns: number): string {
   if (s.detail !== undefined || s.requestDetail) return [...approvals, "j/k scroll", "Esc back", "? keys", "q quit"].join("  ");
   const rows = panelRows(s); const row = selectedPanelRow(s);
   const text = [...approvals, ...panelContext(s, row), ...(s.panel === 5 ? ["f peer", "g kind"] : []), ...(rows.length ? ["j/k move"] : []), ...(row ? ["Enter view"] : []), "? keys", ": command", "Tab stream", "q quit"].join("  ");
-  return s.panel === 1 && Bun.stringWidth(text) > columns ? text.replace("m permission mode", "m mode").replace("j/k move", "j/k").replace(": command", ": cmd") : text;
+  if (s.panel !== 1 || Bun.stringWidth(text) <= columns) return text;
+  const compact = text.replace("m permission mode", "m mode").replace("w WIP limit", "w WIP").replace("j/k move", "j/k").replace(": command", ": cmd");
+  return Bun.stringWidth(compact) > columns ? compact.replace("Enter view", "Enter") : compact;
 }
 /** The project, then the tabs: the active one in brackets, pending approvals and held deliveries counted. */
 function header(s: ConsoleState, columns: number): Span[] {
@@ -927,7 +964,9 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   if (s.confirm?.type === "permission_default") lines.push(...fieldLines([["default", `${s.confirm.peer} never-ask`], ["source", s.confirm.source], ["bounds", permissionBoundary(s.confirm.peer)], ["decision", "y enables; n cancels for this hub; Esc defers; until then ask"]], columns, now).flat());
   else if (s.settingsEdit) {
     const edit = s.settingsEdit;
-    lines.push(...fieldLines([["setting", edit.key ?? s.settingsUndo ?? "last write"], ["preview", (edit.lines ?? []).join("\n")], ["decision", "Esc cancels; saving needs a reason and explicit y"]], columns, now).flat());
+    const row = s.settingsRows?.find(row => row.key === edit.key);
+    const definition: [string, unknown][] = row ? [["type", row.type], ...(row.min !== undefined || row.max !== undefined ? [["range", `${row.min ?? "-"}..${row.max ?? "-"}`] as [string, unknown]] : []), ["risk", row.risk], ["applies", row.applies]] : [];
+    lines.push(...fieldLines([["setting", edit.key ?? s.settingsUndo ?? "last write"], ...definition, ["preview", (edit.lines ?? []).join("\n")], ["decision", "Esc cancels; saving needs a reason and explicit y"]], columns, now).flat());
   }
   else if (s.help) lines.push(...keyTable(columns, !!s.petEnabled || !!s.petChoices?.length, !!s.petChoices?.length));
   else if (s.detail !== undefined || (s.requestDetail && permission)) {
@@ -944,7 +983,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     const tail = [...allow, ...deny];
     const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : height - (s.panel === 3 ? 2 : 1)); const start = Math.max(0, at - capacity + 1);
     const stages = new Map(progress.stages.map(stage => [stage.id, stage]));
-    const rowsOf = head ? table(head, data.map((row, i) => cells(s, row, i === at, now, stages)), columns) : undefined;
+    const rowsOf = head ? (s.panel === 1 ? peerTable : table)(head, data.map((row, i) => cells(s, row, i === at, now, stages)), columns) : undefined;
     if (s.panel === 6) {
       const row = selectedPanelRow(s);
       const info = s.settingsProblem ?? (!s.settingsKnown ? "settings loading..." : row?.restartReason ?? row?.note ?? row?.label ?? "Settings");

@@ -190,7 +190,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       const replies = await Promise.all([
         client.request({ t: "status" }, 3000), client.request({ t: "budget" }, 3000),
         ...(panels ? [client.request({ t: "task", op: "hub_task_list", args: {} }, 3000), client.request({ t: "queue", op: "list" }, 3000), client.request({ t: "task", op: "hub_task_list", args: { ready: true } }, 3000)] : []),
-        ...(panels && state.panel === 6 ? [client.request({ t: "settings_get" }, 3000)] : []),
+        ...(panels && (state.panel === 1 || state.panel === 6) ? [client.request({ t: "settings_get" }, 3000)] : []),
       ]);
       if (!active) return;
       const [status, budget, tasks, queue, ready, settings] = replies;
@@ -210,6 +210,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (status.status) state.features = Array.isArray(status.status.features) ? status.status.features : [];
       if (status.status?.peers) state.peers = Object.fromEntries(Object.entries(status.status.peers).map(([peer, value]) => [peer, { ...(value as object), ...status.status.roleInfo?.[peer] }]));
       if (status.status && status.ok !== false) {
+        state.taskWip = status.status.taskWip ?? {};
         state.attentionFacts = attentionFacts(status.status.attentionItems);
         state.storageBlocked = !!status.status.deliveryError;
         state.recoveryNeed = status.status.recovery ? { id: status.status.recovery.operationId, running: true } : undefined;
@@ -257,7 +258,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     if (action.type === "settings_preview") {
       const response = await client.request(action.undo ? { t: "settings_preview", undo: true } : { t: "settings_preview", key: action.key, value: action.value }, 3000);
       const edit = state.settingsEdit;
-      if (!active || state.mode !== "panels" || state.panel !== 6 || !edit || edit.phase !== "preview" || edit.token !== action.token || edit.undo !== action.undo || edit.key !== action.key || (!action.undo && JSON.stringify(edit.value) !== JSON.stringify(action.value))) return;
+      if (!active || state.mode !== "panels" || !edit || state.panel !== (edit.panel ?? 6) || edit.phase !== "preview" || edit.token !== action.token || edit.undo !== action.undo || edit.key !== action.key || (!action.undo && JSON.stringify(edit.value) !== JSON.stringify(action.value))) return;
       if (response.ok === false) { state.settingsEdit = undefined; notice(String(response.error ?? "setting preview refused")); }
       else if (action.undo && (typeof response.key !== "string" || !response.key || response.key.trim() !== response.key || response.key.length > 160 || typeof response.undoDigest !== "string" || !/^[a-f0-9]{64}$/i.test(response.undoDigest))) {
         state.settingsEdit = undefined; notice("undo preview is unavailable or changed; reload settings and review it again");

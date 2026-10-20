@@ -166,7 +166,8 @@ chunk can only edit the command line, but a read that holds nothing but arrow or
 Home/End sequences is that many key presses, so a held key repeats its move. Home
 or `<` jumps to a panel's first row and End or `>` to its last; the Events tab
 follows new events while the last row is selected and stays on a row you moved to.
-`w` opens the dashboard and `o` the pet window; `:ui --all` and `:pet --window --close`
+`w` opens the dashboard outside the Peers tab; in Peers it edits the selected
+peer's WIP limit. `o` opens the pet window; `:ui --all` and `:pet --window --close`
 work on the command line too. In the Peers tab the planner's row reads `(planner)`, and
 `l` then `y` makes the selected peer the planner (`ahub settings set planner <peer>`). In the Events
 tab a row's header line is tokenized and coloured exactly as the same event in
@@ -181,14 +182,30 @@ meter keeps a fixed column at the right edge.
 
 | Panel | Columns |
 |---|---|
-| Peers | PEER STATE MODE LINK Q ! REVIEW PAUSE QUOTA MODEL |
+| Peers | PEER STATE MODE LINK Q ! WIP REVIEW PAUSE QUOTA MODEL |
 | Approvals | ID PEER LEFT TITLE |
 | Tasks | ID STATE OWNER REVIEWER CLASS AGE TITLE STAGE |
 | Queue | ID PEER STATE REV AGE |
 | Settings | GROUP KEY VALUE SOURCE APPLIES |
 
 The MODE column appears only when at least one peer has a non-`ask` mode.
-Zero counters and unknown values read `-`. Durations read `45s`, `12m`, `3h05m`
+Peers' WIP column shows planner work in progress as `wip/limit` from `taskWip`,
+including `0/2`; a peer without an entry reads `-`. At or above the limit, the
+cell uses the attention tone. At narrow widths WIP gives way before PEER, STATE
+and QUOTA, whether or not MODE is present.
+
+In Peers, select a row and press `w` to edit `tasks.wip_limits.<peer>`, prefilled
+with its current limit. The editor stays on Peers and uses the existing Settings
+value, daemon preview, nonempty reason and `y` confirmation flow; Esc cancels without writing. The
+setting definition supplies the bounds (currently 0..32), risk label (`raises`)
+and `applies: live`; the shortcut adds no configuration write path. The Peers
+hint reads `w WIP limit` and shortens to `w WIP` at narrow widths, alongside
+`m permission mode` shortening to `m mode`. Without a `taskWip` entry, `w` shows
+a notice and opens no edit. Press `6`, then `u` to preview and confirm the usual
+Settings undo. These controls remain person-only, and `ahub settings` retains
+its agent-shell refusal.
+
+Other zero counters and unknown values read `-`. Durations read `45s`, `12m`, `3h05m`
 or `2d03h`; quota resets and budget pauses read `in 2h13m`, and a pause by the
 console user reads `user`. When a peer's status carries #205's optional
 `toolsOnly` field (a Claude session attached without channel pushes), LINK reads

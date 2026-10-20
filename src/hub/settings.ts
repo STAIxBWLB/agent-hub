@@ -87,7 +87,7 @@ export function projectSettings(instances?: KindMap): readonly SettingDef[] {
       path: Object.freeze(base.path.map(part => part === adapter.kind ? peer : part)),
       ...(base.values ? { values: Object.freeze([...base.values]) } : {}),
     });
-    for (const prefix of ["roster", "permission", "permission_modes"]) {
+    for (const prefix of ["roster", "permission", "permission_modes", "tasks.wip_limits"]) {
       const base = SETTINGS.find(def => def.key === `${prefix}.${adapter.kind}`);
       if (base) extra.push(copy(base, `${prefix}.${peer}`));
     }
