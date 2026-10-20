@@ -91,6 +91,53 @@ test("agy pull attach and native hooks are bound to person launch, daemon, sessi
   }
 }, 10000);
 
+test("agy's native view_file read is a peer fact: a later change to the file is offered at its next invocation (#555)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-agy-facts-")), stateDir = join(root, "state"), savedHome = process.env.HOME;
+  process.env.HOME = root;
+  const session = "ee5ab2ab-7319-4a81-82ca-bf2fc84678d0";
+  const logs = join(root, ".gemini/antigravity-cli/brain", session, ".system_generated/logs"), transcript = join(logs, "transcript_full.jsonl");
+  mkdirSync(logs, { recursive: true }); writeFileSync(transcript, "");
+  writeFileSync(join(root, "a.txt"), "x\n"); const file = join(root, "b.txt"); writeFileSync(file, "one\ntwo\nthree\n"); // the tasks name a.txt only; b.txt is covered only through agy's read
+  const config = { ...DEFAULT_CONFIG, roster: { agy: true, claude: true }, batch_ms: 0, coordination: "turn-free" as const, profile: "dev" as const,
+    memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
+    inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false },
+    snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false } };
+  mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify(config));
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
+  const person = await ControlClient.connect(stateDir, { role: "console" });
+  const tools = await ControlClient.connect(stateDir, { role: "tools", peer: "agy" });
+  let peer: ControlClient | undefined;
+  const cleanup: (() => void)[] = [];
+  try {
+    const admission = await person.request({ t: "native_hook_launch", op: "begin", peer: "agy" }); expect(admission.ok).toBe(true);
+    peer = await ControlClient.connect(stateDir, { role: "peer", peer: "agy", channel: false });
+    await until(() => daemon.bus.peers.get("agy")?.state === "idle");
+    // Facts cover a peer that owns an open task overlapping another owner's: a cohort of agy and claude on a.txt.
+    const claude = await ControlClient.connect(stateDir, { role: "peer", peer: "claude" }); cleanup.push(() => claude.close());
+    const op = async (client: ControlClient, name: string, args: unknown) => (await client.request({ t: "task", op: name, args })).text as string;
+    await op(person, "hub_task_propose", { title: "agy part", class: "implement", owner: "agy", refs: { paths: ["a.txt"] } });
+    await op(person, "hub_task_propose", { title: "claude part", class: "implement", owner: "claude", refs: { paths: ["a.txt"] } });
+    await op(peer, "hub_task_accept", { id: 1 }); await op(claude, "hub_task_accept", { id: 2 });
+    const hook = (event: string, extra: Record<string, unknown> = {}) => tools.request({ t: "native_facts", event,
+      payload: { conversationId: session, transcriptPath: transcript, workspacePaths: [root], invocationNum: 0, ...extra },
+      nativeInstanceId: admission.instanceId, nativeLaunchId: admission.launchId });
+    const call = { name: "view_file", args: { AbsolutePath: file } };
+    expect((await hook("PreInvocation")).ok).toBe(true);
+    expect((await hook("PreToolUse", { toolCall: call, stepIdx: 5 })).ok).toBe(true);
+    expect((await hook("PostToolUse", { toolCall: call, stepIdx: 5 })).ok).toBe(true);
+    writeFileSync(file, "one\nTWO\nthree\n"); // another peer's (or a shell's) change after agy read the file
+    const next = await hook("PreInvocation", { invocationNum: 1 });
+    expect(next.ok).toBe(true);
+    expect(next.text).toContain("b.txt");
+    expect(next.text).toContain("+TWO");
+  } finally {
+    for (const close of cleanup) close();
+    peer?.close(); tools.close(); person.close(); await daemon.stop();
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 10000);
+
 async function claimingHooks(run: (fixture: {
   daemon: Awaited<ReturnType<typeof startDaemon>>; owner: { state: string; claiming: boolean }; tools: ControlClient;
   person: ControlClient; peer: ControlClient; admission: any; stateDir: string; transcript: string;
