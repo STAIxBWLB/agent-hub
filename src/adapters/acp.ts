@@ -159,6 +159,9 @@ export class AcpPeer extends BasePeer {
   private activeDeliveryId: string | undefined;
   private activeLegacy: { turn: number; envs: Envelope[] } | undefined;
   private deliveryAccepted = false;
+  /** What the running turn answers: its delivery plus whatever the transport took into it mid-turn (#572). */
+  private turnEnvs: Envelope[] = [];
+  private steerIds: string[] = [];
   private cancelWait: { turn: number; successor: number; timer: ReturnType<typeof setTimeout>; reported: boolean; released: Promise<void>; release: () => void } | undefined;
   private promptActivity = false;
   private activityOpen = false;
@@ -324,6 +327,7 @@ export class AcpPeer extends BasePeer {
     if (legacy?.turn === this.turn) this.onFailed?.(legacy.envs);
     if (reason !== undefined) this.turn++; // a requested stop cannot escalate or complete the cancelled turn
     if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: reason ?? "ACP session stopped before settlement" });
+    this.settleSteers("needs_review", reason ?? "ACP session stopped before settlement");
     this.activeDeliveryId = undefined;
     const proc = this.proc;
     if (!proc) { this.setState("offline"); return; }
@@ -341,6 +345,7 @@ export class AcpPeer extends BasePeer {
     const turn = ++this.turn;
     this.activeDeliveryId = deliveryId;
     this.activeLegacy = deliveryId ? undefined : { turn, envs };
+    this.turnEnvs = envs; this.steerIds = [];
     this.deliveryAccepted = false;
     this.promptActivity = false;
     this.chunks = [];
@@ -366,13 +371,16 @@ export class AcpPeer extends BasePeer {
         this.observeUsage(result, "prompt_result");
         this.primed = true;
         const body = this.chunks.join("").trim();
-        if (body) this.onMessage?.(body, { inReplyTo: replyParent(envs), to: replyAudience(envs) });
+        // What was steered into the turn is answered by it too: its senders hear back, and the hop cap still holds.
+        const answering = this.turnEnvs.length ? this.turnEnvs : envs;
+        if (body) this.onMessage?.(body, { inReplyTo: replyParent(answering), to: replyAudience(answering) });
         // Partial output cannot certify normal completion (#160).
         if (result?.stopReason !== "end_turn") this.reportTurnFailure(envs, `ACP prompt ended without normal completion (${String(result?.stopReason ?? "unknown")})`);
         if (deliveryId && this.activeDeliveryId === deliveryId) {
           this.acceptDelivery();
           this.delivery({ id: deliveryId, state: result?.stopReason === "end_turn" ? "completed" : "needs_review", ...(result?.stopReason === "end_turn" ? {} : { reason: "ACP prompt ended without normal completion" }) });
         }
+        this.settleSteers(result?.stopReason === "end_turn" ? "completed" : "needs_review", "ACP prompt ended without normal completion");
       })
       .catch((e: Error) => {
         if (turn !== this.turn) {
@@ -381,6 +389,7 @@ export class AcpPeer extends BasePeer {
         }
         this.endActivity("failed", true);
         const reason = sanitize(e.message);
+        this.settleSteers("needs_review", reason);
         this.opts.log?.(`[${this.id}] prompt failed: ${reason}`);
         const quota = !this.stopping && this.kimiAgent ? acpQuotaRefusal(e.message) : undefined;
         if (quota) {
@@ -437,6 +446,7 @@ export class AcpPeer extends BasePeer {
     this.activeLegacy = undefined; // the cancelled prompt is discarded, never returned by a later stop
     const durable = !!this.activeDeliveryId;
     if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "ACP turn watchdog timeout" });
+    this.settleSteers("needs_review", "ACP turn watchdog timeout");
     this.activeDeliveryId = undefined;
     this.notify("session/cancel", { sessionId: this.sessionId });
     this.turn++; // whatever the cancelled prompt still reports is stale
@@ -474,6 +484,28 @@ export class AcpPeer extends BasePeer {
     if (observation.availability === "known") this.opts.onTokens?.(observation.total!, this.sessionId);
   }
 
+  /** The running turn's generation, for a transport that must adopt into exactly this turn after an async step (#572). */
+  protected currentTurn(): number { return this.turn; }
+
+  /**
+   * A transport that took envelopes into the running turn (#572) reports them here, once it has acknowledged them. The
+   * turn now answers their senders too, and their receipts settle with the turn: completed on a normal end, held for
+   * review on anything else. Only the busy turn the caller named (`currentTurn()` before sending) can adopt.
+   */
+  protected adoptIntoTurn(turn: number, envs: Envelope[], deliveryId?: string): void {
+    // Fenced to the exact turn the caller saw before it sent anything: a later turn on the same session is never adopted into.
+    if (turn !== this.turn || this.state !== "busy" || this.cancelWait || this.stopping) throw new Error(`${this.id} is ${this.state}, or its turn changed`);
+    this.turnEnvs = [...this.turnEnvs, ...envs];
+    this.activityPrivate ||= envs.some(env => env.private === true);
+    this.primed = true;
+    if (deliveryId) { this.steerIds.push(deliveryId); this.delivery({ id: deliveryId, state: "accepted" }); }
+  }
+
+  private settleSteers(state: "completed" | "needs_review", reason?: string): void {
+    const ids = this.steerIds; this.steerIds = [];
+    for (const id of ids) this.delivery({ id, state, ...(state === "needs_review" ? { reason: reason ?? "steered turn did not complete normally" } : {}) });
+  }
+
   private acceptDelivery(): void {
     if (!this.activeDeliveryId || this.deliveryAccepted) return;
     this.deliveryAccepted = true;
@@ -486,6 +518,7 @@ export class AcpPeer extends BasePeer {
     for (const p of this.pending.values()) p.reject(new Error(reason));
     this.pending.clear();
     if (this.activeDeliveryId) this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason });
+    this.settleSteers("needs_review", reason);
     this.activeDeliveryId = undefined;
     this.setState("offline");
   }

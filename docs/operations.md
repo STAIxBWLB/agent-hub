@@ -213,7 +213,7 @@ In Tasks, `a` assigns the owner in ordinary open states and the reviewer in
 the corresponding role, and `r` reviews only in `in_review`. In Queue, `r`
 prefills `discard` for a queued row and `retry` for a needs_review row, with the
 action still editable before confirmation. `completed` is never the default.
-Status, console notices and `route explain` show every held row with its id, sender, kind and age. The hub completes rows made entirely of superseded hub workflow notices or presence items, recording an ids-only reason and the hub actor. Mixed messages, live task notices and unknown references remain held. A Claude session without channel support safely returns unseen pushes for `hub_inbox`; a thrown notification write remains uncertain.
+Status, console notices and `route explain` show every held row with its id, sender, kind and age. The hub completes rows made entirely of superseded hub workflow notices or presence items, recording an ids-only reason and the hub actor. An owner task offer with its structured offer marker also settles when the recipient still owns the task, has reached in-progress, in-review or changes-requested state, and its own acceptance follows the last ownership change. A person's acceptance and an unread replacement-owner offer do not count; missing or older-than-4096-entry proof keeps the hold. This runs on hold entry, hub startup, recovery release and task changes, with an ids-only accepted-task reason and the hub actor; it is a disposition, never proof that the offer was read. Mixed messages, unaccepted offers, unmarked live reminders and unknown references remain held. A requested-stop hold still needs the person. A Claude session without channel support safely returns unseen pushes for `hub_inbox`; a thrown notification write remains uncertain.
 
 Claude channel/pull sessions, Codex and Pi may call `hub_delivery_retry { delivery_id }` for their own
 `needs_review` row once. Its tool results show held-row count, ids, senders,
@@ -997,7 +997,7 @@ Run `ahub memory profile-check [--json]` from the person's terminal for the read
 
 Before real migration, first upgrade every hub sharing the home to 0.12.30 or later. Obtain positive ready or unbound/quiesced receipts in every relevant registry; then quiesce consumers and close bound handles before changing the selector. A matching ready handle proves compatibility but is still an open handle. Verify synthetic cross-writes before the separately approved real migration, then reopen through the supported session-preserving lifecycle afterward. Merely installing this release does not authorize migration or provide live capture/device-sync evidence.
 
-A curated split (`amem migrate --shards`) writes `M/shards.json`; from 0.12.37 the hub then opens this project's shard, with the user shard as its overlay, under the alias-resolved project key the `amem` CLI binds (#534, #537). Before splitting, upgrade or stop every hub using the home: a hub on 0.12.36 or earlier does not detect the split and keeps writing the old layout, which reaches the shards only through `amem migrate --shards --resume`. A split that is not active (captured, malformed, or a dangling or unreadable `shards.json`) makes native memory unavailable with that resume command as the remedy. An `amem alias add` that remaps a running hub's key latches its memory unavailable until a restart. `ahub memory profile-check` is not split-aware yet: on a split home it reports a mismatch for every correctly bound hub (#536). See [the shard binding](memory.md#selected-memory-profile).
+A curated split (`amem migrate --shards`) writes `M/shards.json`; from 0.12.37 the hub then opens this project's shard, with the user shard as its overlay, under the alias-resolved project key the `amem` CLI binds (#534, #537). Before splitting, upgrade or stop every hub using the home: a hub on 0.12.36 or earlier does not detect the split and keeps writing the old layout, which reaches the shards only through `amem migrate --shards --resume`. A split that is not active (captured, malformed, or a dangling or unreadable `shards.json`) makes native memory unavailable with that resume command as the remedy. An `amem alias add` that remaps a running hub's key latches its memory unavailable until a restart. `ahub memory profile-check` is split-aware: each running hub is compared with the shard profile of its own project, and an inactive split reports that resume command (#536). See [the shard binding](memory.md#selected-memory-profile).
 
 Managed agents read through `hub_memory_search`, `hub_memory_show` and `hub_memory_graph`, with the server's project identity, the `memory_read` capability and current privacy screening. They cannot supply another project; private turns are refused. The tools bound UTF-8 input/output, screen before counts and truncation, and exclude their arguments/results from hub-managed capture. `hub_memory_correct` has its own `memory_correct` capability and records a screened correction candidate, not a note change. See [the complete memory contract](memory.md) for caps and refusal semantics.
 
@@ -2315,6 +2315,35 @@ Ending a peer's running turn is not part of these screens: finish or interrupt
 it in that peer's terminal, answer approvals with `ahub permit` or the console,
 or cancel and upgrade later.
 
+Terminal recovery records a launch only after that native session owns the peer
+(#482). Capturing an Orca terminal or receiving `start: ok` creates only a pending
+candidate; a second launcher that exits or is refused cannot replace the live
+owner's row. A running hub without `terminal_owner` support leaves the new launch
+unrecorded and prints an upgrade remedy. The plan names an attached native TUI
+without a live launcher or exact Orca session proof as `attached, launcher
+unrecorded`: end it in its terminal or use its native resume flow in an Orca
+terminal, then refresh the plan. Plain Claude's same-protocol reconnect-only
+session still reconnects by itself without a terminal restart.
+
+Background Orca identity reads are limited to 30 seconds and 1 MiB of output.
+Shutdown cancels their owned query process groups and waits for reconciliation.
+A query whose termination cannot be confirmed is logged as incomplete; the
+remaining peer and daemon teardown still runs. Native terminal execution keeps
+its foreground TTY behavior. Unknown terminal evidence is shown as unverified
+ownership, with end or native resume guidance.
+
+An Orca pane that is orphaned but still connected needs reattachment, not turn
+cancellation: run `orca terminal switch --terminal <handle>` yourself, then refresh.
+The coordinator never switches panes. Such a pane is not evidence that its native
+process ended and never authorizes a duplicate restore. Disconnected terminals
+keep their existing guidance.
+
+The ledger retains historical and invalid rows; it does not prune them on launch.
+Only this project, current daemon instance and peer can supply ownership evidence,
+and a successful publication replaces only its matching valid row. Old-instance
+rows cannot claim the current terminal. Older binaries that directly write
+`terminal-recovery.json` are outside the new writer guarantee.
+
 ### A partial operation
 
 `ahub recovery status <operation-id>` reads the receipt without changing it:
@@ -3163,6 +3192,10 @@ Use `ahub roster add jcode`, then `ahub jcode [--model <alias>] [--provider-prof
 The native TUI opens only after Jcode has saved the selected session. On 0.98.1, `session/new` does not save it; the first real hub turn does. The launcher prints `jcode's TUI opens after its first hub turn; send it work, or Ctrl-C` once and waits for the same owned launch's saved session. Send Jcode work from the hub, or press Ctrl-C to end only the wait. No artificial prompt is sent. A console `peer_start` uses a terminal provider to run the same launcher, even while ACP is running; a conductor or dashboard start of an attached Jcode answers `already` and opens nothing (#559). Without a provider, run its displayed command in your own terminal. Options with no terminal need that manual path.
 
 `ahub jcode --dry-run` stays pure and redacted. A person's `--print-command` can show the actual top-level native argv and closed native environment for an already-saved running session; it starts nothing. The private socket/session tuple is not returned to hub tools or status. Native saved-session evidence is read-only and capped at 32 MiB; unsafe, mismatched or larger evidence refuses the TUI launch.
+
+A busy jcode takes an `important` message into its running turn (#572): the hub sends it as a soft interrupt through jcode's own private server socket, which jcode injects at its next tool boundary, so the message no longer waits for the turn to end. The hub never cancels a turn to deliver. Headless Kimi and Qwen have no such path: an `important` message waits, and `ahub status` and the console show `important messages waiting on a busy ACP peer for N min` once it has waited past `budget.stale_min`, so you can decide to stop the peer.
+
+jcode has no switch to choose which MCP servers its `serve` and `acp` load, so the hub-owned jcode starts every server named in `<JCODE_HOME>/mcp.json` and the project's `.jcode/mcp.json`, `.mcp.json` and `.claude/mcp.json`, besides the hub's own (#572). `ahub doctor` lists their names in its `jcode MCP servers` row (names only, from those four files only). To keep a server out, remove it from those files, or point `jcode_home` at a separate home.
 
 Known ceiling (#559): jcode 0.98.1's top-level TUI spawns a shared server, without `--temporary-server` or `--owner-pid`, when nothing answers on the dialed socket at startup or on its reload-handoff reconnect, and no native flag prevents it. A hub stop or an owned-server crash between the launcher's confirm and the TUI's check can leave an unowned jcode server on the private socket under the person's `JCODE_HOME`; stop it by hand. Revisit if upstream adds an owner flag. An option that differs from the running session (`--model`, `--provider-profile`, `--session-id`) is refused by name.
 

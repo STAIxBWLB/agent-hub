@@ -80,6 +80,7 @@ import { closeSync, constants as fsConstants, openSync, lstatSync, readSync, sta
 import { basename, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { realPath, hubHome } from "./project.ts";
+import { mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent } from "./bus.ts";
 import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, profileTaskTools } from "./hub-tools.ts";
 import { Conductor, ConductorHolds, conductorPeer, conductorProgressSink, publicConductorTask, publicPeerBudget, type ConductEvent } from "./conductor.ts";
@@ -112,7 +113,8 @@ import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./li
 import { changedPaths, hasTree, repoOf, snapshot, Turns, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContinuity } from "./recovery-continuity.ts";
-import { shellQuote } from "../cli/terminal-recovery.ts";
+import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate } from "../cli/terminal-recovery.ts";
+import { TerminalLaunches, terminalOwnerReads } from "./terminal-launch.ts";
 
 import { peerStartConfig, PEER_START_RETRY_MS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
 import { hasKimiHubMcp } from "../cli/kimi-mcp.ts";
@@ -502,6 +504,7 @@ interface Client {
   authed: boolean;
   role?: "peer" | "console" | "tools";
   peer?: PeerId;
+  launchId?: string;
   tail?: () => void;
   watch?: () => void;
   /** The one-launch Kimi TUI admission this socket attached under; its close clears only that admission. */
@@ -515,6 +518,10 @@ class WsPeer extends BasePeer {
   // Checkpoints become stale at hello/claim, before asynchronous recall finishes and attach changes delivery generation.
   private claimGeneration = crypto.randomUUID();
   get sessionGeneration(): string { return this.claimGeneration; }
+  terminalOwner(launchId: string): { generation: string } | undefined {
+    return this.sock?.readyState === WebSocket.OPEN && this.sock.data.launchId === launchId && this.state !== "offline" && !this.claiming
+      ? { generation: this.claimGeneration } : undefined;
+  }
   private delivered = new Set<string>();
   private sock: Sock | undefined;
   private claimed: Sock | undefined;
@@ -2317,7 +2324,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // A silent cohort (issue #107): the member that integrates is asked to check its work first; no done yet.
         const last = t.history.at(-1);
         if (last?.event === "integration requested" && last.by === HUB) return last.note ?? "";
-        const extra = tasks.takeDoneNote(t.id); // the notices a silence held, when no integration step ran
+        const extra = [tasks.takeDoneNote(t.id), tasks.checkoutNote()].filter(Boolean).join("\n"); // held silence notices, then the #572 checkout advisory
         const result = tasks.isChecking(t.id) ? `${line(t)}; its check is queued or running, and the result comes as a task message` : line(t);
         return extra ? `${result}\n${extra}` : result;
       }
@@ -2491,10 +2498,40 @@ export async function startDaemon(opts: DaemonOptions) {
   const claudePermissionGenerations = new Map<string, string>();
   const permissions = new Map<string, { push: string; peer: string; tool?: string; createdAt: number; expiresAt: number; done: (optionId: string | undefined, surface?: "console" | "dashboard" | "terminal", reason?: "expired" | "cancelled") => boolean }>();
   let stopping = false;
+  const terminalReads = terminalOwnerReads();
+  const terminalLaunches = new TerminalLaunches({
+    owner: row => {
+      const owner = bus.peers.get(row.peer), proof = owner?.terminalOwner?.(row.launchId);
+      if (!proof) return undefined;
+      return { ...proof, isCurrent: () => {
+        if (stopping || !membershipAllowed(row.peer) || bus.peers.get(row.peer) !== owner) return false;
+        const current = owner?.terminalOwner?.(row.launchId);
+        return current?.generation === proof.generation && current?.nativePid === proof.nativePid;
+      } };
+    },
+    publish: (row, current) => publishTerminalLaunch(opts.stateDir, row, current, { runner: terminalReads.run }),
+    log,
+  });
+  const terminalLaunchTimer = setInterval(() => { void terminalLaunches.reconcile(); }, 1_000);
+  terminalLaunchTimer.unref();
+  intervals.push(terminalLaunchTimer);
+  startupCleanup.push(() => terminalLaunches.clear());
 
   const pausedNote = (id: PeerId) => {
     const r = budget.record(id); // one read per peer: status.json is rewritten on every bus event
     return r ? { paused: `budget: ${r.reason}, resets ${new Date(r.resetsAt).toLocaleTimeString()}` } : manualPaused.has(id) && bus.stateOf(id) === "offline" ? { paused: "manual" } : {};
+  };
+  /**
+   * #572 AC1: an ACP peer's turn cannot take a message mid-turn unless its adapter has a `steer` (jcode's does; headless Kimi
+   * and Qwen do not). The hub never cancels a turn to deliver, so an `important` message waits in the queue; once it has
+   * waited past `budget.stale_min` the status says so, and the person decides. Read-only.
+   */
+  const importantWaitingStatus = (id: PeerId, peer: PeerAdapter | undefined): Record<string, unknown> => {
+    if (!(peer instanceof AcpPeer) || (peer as PeerAdapter).steer || bus.stateOf(id) !== "busy") return {};
+    const since = bus.oldestQueuedImportantAt(id);
+    if (since === undefined || Date.now() - since < config.budget.stale_min * 60_000) return {};
+    const count = bus.queuedImportant(id), minutes = Math.floor((Date.now() - since) / 60_000);
+    return { importantWaitingSince: since, importantWaitingNote: `${count} important message${count === 1 ? "" : "s"} waiting on a busy ACP peer for ${minutes} min; its turn is never cancelled to deliver, so decide whether to stop it` };
   };
   /** Why a paused peer gets nothing; the bus pause itself is the hold. */
   const pauseReason = (id: PeerId) => {
@@ -2709,6 +2746,7 @@ export async function startDaemon(opts: DaemonOptions) {
     pluginBundle: SERVER_JS,
     pendingRestart,
     retainedConfig,
+    ...(() => { const warning = mainCheckoutWarning(opts.cwd, tasks.publicMetadataText); return warning ? { mainCheckout: warning } : {}; })(),
     startModes: Object.fromEntries(START_MODE_PEERS.map(peer => [peer, startModeOf(config.peers, peer, declarations)])),
     memoryProfile: memoryProfileStatus(includeAttentionItems),
     lifecycleStages: [...lifecycleConfig.stages],
@@ -2727,7 +2765,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof WsPeer && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
+      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof WsPeer && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
     ),
     taskWip: Object.fromEntries(peerIds.map(id => [id, { wip: tasks.wip(id), wipLimit: tasks.wipLimit(id) }])),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
@@ -5109,6 +5147,7 @@ export async function startDaemon(opts: DaemonOptions) {
             if (launch.instanceId === instanceId && typeof launch.launchId === "string" && launch.launchId) currentLaunch = launch.launchId;
           } catch { /* No current launch evidence: retain plain/pre-daemon attachment compatibility. */ }
           if (currentLaunch !== undefined && msg.launchId !== currentLaunch) return sock.close(4430, "Claude launch ended; start a new session with ahub claude");
+          if (typeof msg.launchId === "string" && msg.launchId.length <= 128) c.launchId = msg.launchId;
         }
         let peer = bus.peers.get(c.peer);
         if (kimiPull && peer instanceof AcpPeer && peer.state === "offline") peer = undefined;
@@ -5609,6 +5648,14 @@ export async function startDaemon(opts: DaemonOptions) {
         if (typeof msg.admissionId === "string" && msg.admissionId === kimiAdmissionId) clearKimiAdmission();
         return void reply({ ok: true });
       }
+      case "terminal_launch": {
+        if (c.role !== "console") return void reply({ ok: false, error: "terminal launch registration is console only" });
+        if (stopping || recoveryActive() && !(recoveryPhase === "restored" && msg.operationId === recoveryOperationId)) return void reply({ ok: false, error: "recovery is holding terminal launches" });
+        const row = terminalLaunchCandidate(msg.launch, opts.cwd, opts.stateDir, instanceId);
+        if (!row || !membershipAllowed(row.peer) || !definitionOf(row.peer)?.session.launchRecord || recoveryActive() && !recoveryPeerAllowed(row.peer)) return void reply({ ok: false, error: "terminal launch identity unavailable" });
+        try { terminalLaunches.register(row); return void reply({ ok: true }); }
+        catch { return void reply({ ok: false, error: "terminal launch could not be registered; managed recovery is unavailable" }); }
+      }
       case "native_tui_launch": {
         if (c.role !== "console") return void reply({ ok: false, error: "native TUI launch is console only" });
         const peer = String(msg.peer), owner = bus.peers.get(peer);
@@ -5752,6 +5799,9 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function stopOnce(): Promise<void> {
     stopping = true;
+    terminalLaunches.clear();
+    // Start cancellation immediately; a failed read cleanup must not strand the other owned peers or finalization.
+    const terminalReadsStopped = terminalReads.stop().catch(() => { log("terminal owner query cleanup failed during shutdown"); });
     runnerRefreshAbort.abort();
     // A stop someone asked for is not a crash, even if it then runs past the shutdown deadline: forget the sessions now.
     try { removeSessions(opts.stateDir, instanceId); } catch { /* the state dir is gone */ }
@@ -5766,6 +5816,8 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const pending of checkpointWaits.values()) pending.done(undefined);
     for (const p of permissions.values()) p.done(undefined);
     try {
+      await terminalReadsStopped;
+      await terminalLaunches.settled();
       // A peer can still be inside memory recall or its native handshake when kill arrives.
       // Drain those starts before taking the final owned-process snapshot.
       // Fence/abort the runner now, but slow container teardown must not consume the peer-stop deadline.

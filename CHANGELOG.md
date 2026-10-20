@@ -4,11 +4,18 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Held task offers settle automatically when their recipient already owns and accepted the task, so a peer restart no longer blocks its queue on an obsolete offer; mixed messages, unaccepted offers and requested-stop holds remain held (#434).
 - `ahub jcode --print-command` names a `--model`, `--provider-profile` or `--session-id` that differs from the attached saved session, as the launch does, instead of saying the session is not saved and ready (#574).
 - A Claude channel session asks Claude Code to list the hub tools again when a hub reconnect changes them, names or schemas (`tools/list_changed`; an unavailable status probe is retried, then announced anyway), so a session that listed them while the hub was down no longer keeps the short list (#490).
+- `ahub memory profile-check` is split-aware: on a split memory home each running hub is compared with the shard profile of its own project instead of the legacy selector's, and an inactive split reports the `amem migrate --shards --resume` remedy (#536).
 - `ahub jcode` opens its TUI again: on 0.12.39 it stopped after the first hub turn with `jcode: no managed terminal recovery adapter`, because the launcher tried to record a managed terminal that Jcode does not have (#564).
+- Terminal recovery records only a proven native owner, preserves the live row after an unsuccessful second launch, and offers reattach guidance for connected orphaned panes; published unchanged owners skip process probes on ordinary timer ticks. A stale or closed Codex link cannot adopt a thread (#482).
 - Retire the Switchyard sidecar. Model routes run in process, old tables load as retired settings with direct fallback, and doctor checks every configured routing model alias (#553).
 - Refuse Claude channel plugins from an obsolete recorded launch, stop their reconnect loop, and check live socket ownership before a standing-by session reclaims the peer (#551).
+- A busy jcode now takes an `important` hub message into its running turn through its own server socket, instead of the message waiting for the turn to end, and its reply also reaches the sender of what was steered in. The hub never cancels a turn to deliver. For headless Kimi and Qwen, which cannot be steered, `ahub status` and the console show how long an `important` message has waited on a busy turn once it passes `budget.stale_min` (#572).
+- Finishing a task now says `the main checkout is on <branch>; move the work to a worktree under .worktrees/` in the owner's result, the reviewer's request and `ahub status` while the project root checkout is on a branch other than its default (`origin/HEAD`, else `main`). It is advice only (#572).
+- `ahub init` adds one line to the hub instruction block: after pushing a PR, call `hub_task_done` with the PR, head and CI state and end the turn, without waiting for CI (#572).
+- `ahub doctor` lists the extra MCP servers the hub-owned jcode would load from its config files, names only. jcode has no switch to choose them (#572).
 
 ## 0.12.39
 
