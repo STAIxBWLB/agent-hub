@@ -252,6 +252,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
     if (source.recovery?.operationId && source.recovery.phase !== "released") blockers.push(`existing recovery operation ${source.recovery.operationId} must be resolved first`);
     const sessions: Partial<Record<TerminalBinding["peer"], string | SessionRef>> = {};
     const reconnectOnly: string[] = [];
+    const unrecordedTerminals: string[] = [];
     for (const peer of source.peers) {
       if (peer.state === "offline") continue;
       const adapter = projectDefinition(peer.id, project.root);
@@ -271,6 +272,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
         }
         const launcher = recorded?.state === "live" ? recorded.record! : undefined;
         if (!launcher) {
+          unrecordedTerminals.push(peer.id);
           delete peer.sessionId;
           if (source.protocol === PROTOCOL) reconnectOnly.push(peer.id);
           else blockers.push(`${peer.id}: unmanaged session (no live ahub claude launcher recorded) runs a protocol-${source.protocol} plugin and cannot reconnect to a protocol-${PROTOCOL} hub; next action: end that Claude session, or relaunch it with ahub claude in an Orca terminal, then make a new plan`);
@@ -300,6 +302,16 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
       ...terminalOptions(run), stateDir: project.stateDir, instanceId: source.instanceId,
     });
     blockers.push(...terminals.blockers.map((b) => `${b.message}${b.terminalReference ? ` (terminal ${b.terminalReference})` : ""}${b.nextAction ? `; next action: ${b.nextAction}` : ""}`));
+    for (const peer of source.peers) {
+      if (peer.state === "offline" || unrecordedTerminals.includes(peer.id) || terminals.bindings.some(binding => binding.peer === peer.id)) continue;
+      const unrecorded = projectDefinition(peer.id, project.root)?.session.unrecordedTerminal;
+      if (unrecorded !== "always" && !(unrecorded === "tui" && peer.args?.mode === "tui")) continue;
+      const recorded = await launcherOf(peer.id, project.root, { ...terminalOptions(run), stateDir: project.stateDir, instanceId: source.instanceId });
+      // Unknown or unreadable evidence remains unknown; exact Orca ownership above is an independent positive proof.
+      if (recorded && recorded.state !== "gone") continue;
+      unrecordedTerminals.push(peer.id);
+      blockers.push(`${peer.id}: attached, launcher unrecorded; no current live launcher or verified terminal binding; manual-required; next action: end it in its terminal, or resume the original conversation through its native resume flow in an Orca terminal, then make a new plan`);
+    }
     const freshStart: string[] = [];
     for (const binding of terminals.bindings) if (projectDefinition(binding.peer, binding.projectRoot)?.session.missingEvidence === "rollout") {
       const transcript = sessionState(binding);
@@ -309,7 +321,7 @@ export async function makeUpgradePlan(kind: "restart" | "upgrade", version: stri
         ? `${unresumable(binding)}; manual-required; next action: make that store readable, then make a new plan`
         : `${unresumable(binding)}, and the hub cannot show that no turn ran on it, so its conversation may not come back after the restart; manual-required; next action: end that Codex session and close its Orca terminal ${binding.handle} (ahub codex starts a new one later), then make a new plan`);
     }
-    body.projects.push({ project, source, terminals: terminals.bindings, blockers, ...(reconnectOnly.length ? { reconnectOnly } : {}), ...(freshStart.length ? { freshStart } : {}) });
+    body.projects.push({ project, source, terminals: terminals.bindings, blockers, ...(reconnectOnly.length ? { reconnectOnly } : {}), ...(unrecordedTerminals.length ? { unrecordedTerminals } : {}), ...(freshStart.length ? { freshStart } : {}) });
   }
   if (!body.projects.length) body.blockers.push("no running registered projects in scope");
   return { ...body, fingerprint: planFingerprint(body) };

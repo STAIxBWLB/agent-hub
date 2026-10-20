@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { acquireRecoveryLock, claimRunner, writeOperation } from "../src/hub/recovery-store.ts";
+import { processSignature } from "../src/pi/process-signature.ts";
 
 const RESTART_LOG_BYTES = 64 * 1024;
 const RESTART_OPERATION = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -388,14 +389,13 @@ test("recovery commands without an id use the operation that holds the lock", as
   } finally { rmSync(temp, { recursive: true, force: true }); }
 });
 
-// #215 review: a recovery launch of `ahub codex` records its launcher before the hub round trip, so the coordinator
-// never takes a launcher still starting for one that never ran; an ordinary launch records only after the hub accepted.
-test("ahub codex records a recovery launch before the hub start, and an ordinary one only after it", async () => {
+// #482 replaces #215's pre-start publication premise: an unconnected recovery attempt is not a native owner.
+test("ahub Codex and Pi failed recovery starts preserve prior owner rows without pre-attach publication (#482)", async () => {
   const temp = mkdtempSync(join(tmpdir(), "ahub-codex-record-"));
   mkdirSync(join(temp, "project"));
   const root = realpathSync(join(temp, "project")), home = join(temp, "home"), stateDir = join(root, ".agenthub", "state");
   mkdirSync(stateDir, { recursive: true });
-  // A hub manifest whose port nothing listens on: the start round trip fails after the launcher could have recorded.
+  // An unreachable hub cannot establish native ownership for either ordinary or recovery launches.
   const probe = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response("ok") });
   const deadPort = probe.port; probe.stop(true);
   writeFileSync(join(stateDir, "control-token"), "token\n");
@@ -418,13 +418,18 @@ test("ahub codex records a recovery launch before the hub start, and an ordinary
     expect(records()).toEqual([]); // ordinary: the refused start recorded nothing
     mkdirSync(home, { recursive: true });
     writeFileSync(join(home, "recovery.lock"), JSON.stringify({ operationId: id }));
+    const file = join(stateDir, "terminal-recovery.json");
+    const incumbent = ["codex", "pi"].map(peer => ({ peer, projectRoot: root, stateDir, instanceId: "i-codex", launcherPid: process.pid,
+      launcherSignature: processSignature(process.pid), launchId: `incumbent-${peer}`, handle: `term-${peer}`, incarnationId: `inc-${peer}`, worktreeId: "wt", env: {} }));
+    const authoritative = JSON.stringify(incumbent);
+    writeFileSync(file, authoritative);
     expect(await codex({ AGENTHUB_RECOVERY_OPERATION: id })).toBe(1);
-    expect(records().map((row) => [row.peer, row.handle])).toEqual([["codex", "term-x"]]);
-    // A Pi TUI launch by the same operation records itself before the hub round trip too.
+    expect(readFileSync(file, "utf8")).toBe(authoritative);
+    // Pi's failed recovery start has the same no-publication boundary.
     const pi = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.js"), "--project", root, "pi", "--mode", "tui"], { cwd: root, env: { ...env, AGENTHUB_RECOVERY_OPERATION: id }, stdout: "pipe", stderr: "pipe" });
     const [piCode] = await Promise.all([pi.exited, new Response(pi.stdout).text(), new Response(pi.stderr).text()]);
     expect(piCode).toBe(1);
-    expect(records().map((row) => [row.peer, row.handle])).toEqual([["codex", "term-x"], ["pi", "term-x"]]);
+    expect(readFileSync(file, "utf8")).toBe(authoritative);
   } finally { rmSync(temp, { recursive: true, force: true }); }
 });
 

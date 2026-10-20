@@ -84,6 +84,7 @@ const left = (op: { id: string; sourceRoot?: string }, io: ScreenIO): string => 
 export function peerKind(planned: PlannedProject, peer: RecoveryPeer): "tui" | "headless" | "unmanaged" | "offline" {
   if (peer.state === "offline") return "offline";
   if ((planned.terminals as { peer: string }[]).some((t) => t.peer === peer.id)) return "tui";
+  if (planned.unrecordedTerminals?.includes(peer.id)) return "unmanaged";
   const unrecorded = definitionOf(peer.id)?.session.unrecordedTerminal;
   if (unrecorded === "always" || unrecorded === "tui" && peer.args?.mode === "tui") return "unmanaged";
   return "headless";
@@ -91,10 +92,14 @@ export function peerKind(planned: PlannedProject, peer: RecoveryPeer): "tui" | "
 
 function peerAction(planned: PlannedProject, peer: RecoveryPeer): string {
   if (peer.state === "offline") return "offline, left as it is";
+  if (planned.unrecordedTerminals?.includes(peer.id)) return planned.reconnectOnly?.includes(peer.id)
+    ? "attached, launcher unrecorded; reconnects by itself (its terminal is left alone)"
+    : "attached, launcher unrecorded; end it in its terminal or resume the original conversation, then refresh the plan";
   if (planned.reconnectOnly?.includes(peer.id)) return "reconnects by itself (unmanaged session; its terminal is left alone)";
   if (planned.freshStart?.includes(peer.id)) return "restarts as a new session (no turn to lose)";
   const terminal = (planned.terminals as { peer: string; handle: string }[]).find((t) => t.peer === peer.id);
   if (terminal) return `resumes its session in a new terminal (replaces ${terminal.handle})`;
+  if (peerKind(planned, peer) === "unmanaged") return "attached, terminal ownership unverified; resolve its evidence or end it in its terminal or resume the original conversation, then refresh the plan";
   return definitionOf(peer.id)?.session.restoreOnStart ? "restarts headless on its recorded session" : "restarts headless as a new session";
 }
 

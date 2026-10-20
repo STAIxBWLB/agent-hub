@@ -20,6 +20,79 @@ function bounded(lines: string[], columns: number, color: boolean) {
   for (const line of lines) { expect(Bun.stringWidth(terminalText(line))).toBeLessThanOrEqual(columns); if (!color) expect(line).not.toContain("\x1b"); }
 }
 
+for (const peer of ["codex", "pi"] as const) test(`#482 ${peer} attached launcher-unrecorded plan offers end or resume without a headless restart promise`, () => {
+  const op = fixture(), planned = op.plan.projects[0]!;
+  planned.project = { ...planned.project, id: "fixture-project", root: "/fixture/project" };
+  planned.source.peers = [{ id: peer, state: "idle", ...(peer === "codex" ? { threadId: "live-thread" } : { sessionId: "live-session", args: { mode: "tui" } }) }];
+  planned.blockers = [];
+  Object.assign(planned, { unrecordedTerminals: [peer] });
+  const before = JSON.stringify(op.plan);
+  const lines = planLines(op.plan, "0.12.31");
+  const text = lines.join("\n");
+  expect(text).toContain("attached, launcher unrecorded");
+  expect(text).toMatch(/end/i);
+  expect(text).toMatch(/resume/i);
+  expect(text).not.toContain("restarts headless");
+  expect(text).not.toContain("restarts as a new session");
+  for (const columns of [80, 120]) {
+    const rendered = renderPlan(op.plan, "0.12.31", options(columns), lines);
+    bounded(rendered, columns, false);
+    expect(rendered.join("\n").replace(/\s+/g, " ")).toContain("attached, launcher unrecorded");
+    expect(rendered.join("\n")).not.toContain("restarts headless");
+  }
+  expect(JSON.stringify(op.plan)).toBe(before);
+});
+
+for (const peer of ["codex", "pi"] as const) for (const evidence of ["unknown-ledger", "connected-orphan"] as const) {
+  test(`#482 ${peer} with ${evidence} and no final terminal binding reports unverified ownership without promising a restart`, () => {
+    const op = fixture(), planned = op.plan.projects[0]!;
+    planned.project = { ...planned.project, id: "fixture-project", root: "/fixture/project" };
+    planned.source.peers = [{ id: peer, state: "idle", ...(peer === "codex" ? { threadId: "live-thread" } : { sessionId: "live-session", args: { mode: "tui" } }) }];
+    planned.terminals = [];
+    planned.blockers = [evidence === "unknown-ledger"
+      ? `${peer}: terminal-recovery.json cannot be read, so no terminal can be bound to its launch`
+      : `${peer}: terminal term-live is orphaned but still connected; reattach the pane with orca terminal switch --terminal term-live; then refresh the recovery plan`];
+    expect(planned.unrecordedTerminals).toBeUndefined(); // A live or unreadable launcher is not positive evidence of an absent row.
+    const before = JSON.stringify(op.plan);
+    const lines = planLines(op.plan, "0.12.31");
+    const assertGuidance = (text: string) => {
+      const normalized = text.replace(/\s+/g, " ");
+      expect(normalized).toContain("attached");
+      expect(normalized).toContain("terminal ownership unverified");
+      expect(normalized).toMatch(/end/i);
+      expect(normalized).toMatch(/resume/i);
+      expect(normalized).not.toContain("launcher unrecorded");
+      expect(normalized).not.toContain("headless");
+      expect(normalized).not.toContain("new session");
+    };
+    assertGuidance(lines.join("\n"));
+    for (const columns of [80, 120]) for (const color of [false, true]) {
+      const rendered = renderPlan(op.plan, "0.12.31", options(columns, color), lines);
+      bounded(rendered, columns, color);
+      assertGuidance(rendered.map(terminalText).join("\n"));
+    }
+    expect(JSON.stringify(op.plan)).toBe(before);
+  });
+}
+
+test("#482 plain Claude reconnect-only remains compatible while naming its unrecorded launcher accurately", () => {
+  const op = fixture(), planned = op.plan.projects[0]!;
+  planned.source.peers = [{ id: "claude", state: "idle" }];
+  planned.blockers = [];
+  planned.reconnectOnly = ["claude"];
+  Object.assign(planned, { unrecordedTerminals: ["claude"] });
+  const before = JSON.stringify(op.plan);
+  const text = planLines(op.plan, "0.12.31").join("\n");
+  expect(text).toContain("attached, launcher unrecorded");
+  expect(text).toContain("reconnects by itself");
+  expect(text).toContain("terminal is left alone");
+  expect(text).not.toContain("restarts headless");
+  expect(text).not.toContain("restarts as a new session");
+  expect(planned.blockers).toEqual([]);
+  expect(planned.reconnectOnly).toEqual(["claude"]);
+  expect(JSON.stringify(op.plan)).toBe(before);
+});
+
 for (const columns of [80, 120]) for (const color of [false, true]) test(`#466 all human views fit ${columns} columns with color ${color}`, () => {
   const op = fixture(), opts = options(columns, color), before = JSON.stringify(op);
   const menus = [{ key: "r", label: "resume 한국어 프로젝트", recommended: true }, { key: "e", label: "stop and archive", destructive: true }, { key: "f", label: "fresh session", disabledReason: "recorded conversation must be retained" }];

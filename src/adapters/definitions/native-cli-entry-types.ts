@@ -19,6 +19,8 @@ export interface NativeCliEntryContext {
     launcherPreview: typeof import("../../cli/preview.ts").launcherPreview;
     readControl: typeof import("../../hub/control-client.ts").readControl;
     recordTerminalLaunch: typeof import("../../cli/terminal-recovery.ts").recordTerminalLaunch;
+    prepareTerminalLaunch: typeof import("../../cli/terminal-recovery.ts").prepareTerminalLaunch;
+    registerTerminalLaunch: typeof import("../../cli/terminal-recovery.ts").registerTerminalLaunch;
     recoveryLock: typeof import("../../hub/recovery-store.ts").recoveryLock;
     processSignature: typeof import("../../pi/process-signature.ts").processSignature;
     buildLaunch: typeof import("../../cli/launch.ts").buildLaunch;

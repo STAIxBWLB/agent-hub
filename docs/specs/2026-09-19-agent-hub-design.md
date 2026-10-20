@@ -3701,12 +3701,37 @@ extra instance. Revoked declarations or changed directories refuse reuse.
 Effective roles resolve from declaration roles, exact-id policy roles, kind policy
 roles, then definition defaults; launch validation uses the same order.
 
-I2 recovery ceiling: a recovering extra Codex launcher records its launch row only
-after the authenticated start response supplies its execution-root binding. Until
-then, the coordinator retains durable pending terminal-creation and attachment-wait
-evidence; it never records an assumed checkout. Base Codex pre-start recording is
-unchanged. Earlier recording for extras requires independently verified exact-instance
-execution-root evidence. Past-commit resumes do not repeat pre-commit instance
+Terminal ownership (#482): an authenticated start response supplies an extra
+Codex launcher's execution-root binding, but is not native ownership proof.
+Every managed terminal launch first captures an Orca candidate without changing
+the recovery ledger. A daemon advertising `terminal_owner` admits at most 64 live
+or unknown candidates through the console-only `terminal_launch` request. It
+publishes only after the current native owner is bound: the adopted Codex link's
+launch nonce, the attached Claude channel's launch id, or Pi's verified owner
+process descending from that launcher. Orca root, handle, incarnation, worktree,
+launcher signature and current native generation are checked before publication;
+a failed second launch preserves the incumbent row. Claude's hook record remains
+pre-spawn and does not wait for this terminal proof. The coordinator retains
+durable pending creation and attachment-wait evidence until ownership is proven;
+no pre-start candidate is restoration evidence.
+
+Background Orca queries have a 30-second deadline and 1 MiB output ceiling. Their
+owned process groups are cancelled and awaited on shutdown before reconciliation
+settles. A cleanup failure is logged without preventing other peer teardown or
+daemon finalization; native TUI foreground execution is unchanged.
+
+Without the advertised feature a current launcher runs unrecorded and names the
+upgrade remedy. Attached native TUIs without a live launcher or independent exact
+Orca session proof are shown as `attached, launcher unrecorded`, with person end
+or native resume guidance, never a fresh headless restart. Plain same-protocol
+Claude keeps its unmanaged reconnect-only path. An orphaned but connected pane
+requires the person to run `orca terminal switch --terminal <handle>` and refresh;
+it does not authorize another restore. Historical rows are retained, including
+invalid rows; current ownership is scoped to project, instance and peer, and a
+publication replaces only that scope's valid row. This current-source guarantee
+does not fence older binaries that directly rewrite the shared ledger.
+
+Past-commit resumes do not repeat pre-commit instance
 compatibility checks. Abort and stop-and-archive validate historical receipt structure
 and authenticated runtime ownership independently of mutable declarations; restore,
 fresh and reattach retain current declaration authority.

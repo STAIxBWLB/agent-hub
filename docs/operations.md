@@ -2315,6 +2315,35 @@ Ending a peer's running turn is not part of these screens: finish or interrupt
 it in that peer's terminal, answer approvals with `ahub permit` or the console,
 or cancel and upgrade later.
 
+Terminal recovery records a launch only after that native session owns the peer
+(#482). Capturing an Orca terminal or receiving `start: ok` creates only a pending
+candidate; a second launcher that exits or is refused cannot replace the live
+owner's row. A running hub without `terminal_owner` support leaves the new launch
+unrecorded and prints an upgrade remedy. The plan names an attached native TUI
+without a live launcher or exact Orca session proof as `attached, launcher
+unrecorded`: end it in its terminal or use its native resume flow in an Orca
+terminal, then refresh the plan. Plain Claude's same-protocol reconnect-only
+session still reconnects by itself without a terminal restart.
+
+Background Orca identity reads are limited to 30 seconds and 1 MiB of output.
+Shutdown cancels their owned query process groups and waits for reconciliation.
+A query whose termination cannot be confirmed is logged as incomplete; the
+remaining peer and daemon teardown still runs. Native terminal execution keeps
+its foreground TTY behavior. Unknown terminal evidence is shown as unverified
+ownership, with end or native resume guidance.
+
+An Orca pane that is orphaned but still connected needs reattachment, not turn
+cancellation: run `orca terminal switch --terminal <handle>` yourself, then refresh.
+The coordinator never switches panes. Such a pane is not evidence that its native
+process ended and never authorizes a duplicate restore. Disconnected terminals
+keep their existing guidance.
+
+The ledger retains historical and invalid rows; it does not prune them on launch.
+Only this project, current daemon instance and peer can supply ownership evidence,
+and a successful publication replaces only its matching valid row. Old-instance
+rows cannot claim the current terminal. Older binaries that directly write
+`terminal-recovery.json` are outside the new writer guarantee.
+
 ### A partial operation
 
 `ahub recovery status <operation-id>` reads the receipt without changing it:
