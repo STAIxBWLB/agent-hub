@@ -5,7 +5,7 @@ import { ControlClient, readControl, type ControlDescriptor } from "./control-cl
 import { canonicalPath, hubHome, realPath } from "./project.ts";
 import { processLiveness, type Liveness } from "../pi/process-signature.ts";
 import type { Project } from "./registry.ts";
-import type { UnboundMemoryProfileReceipt } from "./memory-profile.ts";
+import { MEMORY_SPLIT_INCOMPLETE, shardProfileForProject, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
 
 export interface ExpectedMemoryProfile {
   home: string;
@@ -94,7 +94,11 @@ export function evaluateMemoryProfileCheck(expected: ExpectedMemoryProfile, evid
       result.ready = true; result.quiesced = true; result.reason = `memory handle ${bound.state}; quiesced`; daemons.push(result); continue;
     }
     if (bound.state !== "ready") { reject("running memory binding is not ready"); continue; }
-    if (bound.profile !== expected.profile || bound.generation !== expected.generation || bound.selectorRevision !== expected.selectorRevision) { reject("running memory binding differs from the selected profile"); continue; }
+    // #536: on a split home each hub is bound to its own project's shard, so compare like with like.
+    let want: ExpectedMemoryProfile = expected;
+    try { want = shardProfileForProject(expected.home, project.root) ?? expected; }
+    catch (e) { reject((e as Error).message === MEMORY_SPLIT_INCOMPLETE ? MEMORY_SPLIT_INCOMPLETE : "running memory binding differs from the selected profile"); continue; }
+    if (bound.profile !== want.profile || bound.generation !== want.generation || bound.selectorRevision !== want.selectorRevision) { reject("running memory binding differs from the selected profile"); continue; }
     result.ready = true; daemons.push(result);
   }
   const relevant = daemons.filter(row => row.scope !== "different-home");

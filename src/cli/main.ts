@@ -1594,7 +1594,9 @@ const commands: Record<string, () => Promise<void> | void> = {
     // #258: the hub's own memory on this machine; reads are anyone's, changes a person's.
     if (args.filter(arg => arg !== "--json")[0] === "profile-check") {
       if (args.some(arg => arg !== "profile-check" && arg !== "--json")) fail("usage: ahub memory profile-check [--json]");
-      const result = await checkMemoryProfiles(selectedMemoryProfile());
+      let selected: ReturnType<typeof selectedMemoryProfile>;
+      try { selected = selectedMemoryProfile(); } catch (e) { return fail((e as Error).message); } // an inactive split names the resume remedy
+      const result = await checkMemoryProfiles(selected);
       console.log(args.includes("--json") ? JSON.stringify(result, null, 2) : formatMemoryProfileCheck(result));
       if (!result.ready) process.exitCode = 1;
       return;
