@@ -4,8 +4,9 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- `ahub memory profile-check` is split-aware: on a split memory home each running hub is compared with the shard profile of its own project instead of the legacy selector's, and an inactive split reports the `amem migrate --shards --resume` remedy (#536).
+- `ahub jcode --print-command` names a `--model`, `--provider-profile` or `--session-id` that differs from the attached saved session, as the launch does, instead of saying the session is not saved and ready (#574).
 - A Claude channel session asks Claude Code to list the hub tools again when a hub reconnect changes them, names or schemas (`tools/list_changed`; an unavailable status probe is retried, then announced anyway), so a session that listed them while the hub was down no longer keeps the short list (#490).
+- `ahub memory profile-check` is split-aware: on a split memory home each running hub is compared with the shard profile of its own project instead of the legacy selector's, and an inactive split reports the `amem migrate --shards --resume` remedy (#536).
 - `ahub jcode` opens its TUI again: on 0.12.39 it stopped after the first hub turn with `jcode: no managed terminal recovery adapter`, because the launcher tried to record a managed terminal that Jcode does not have (#564).
 - Retire the Switchyard sidecar. Model routes run in process, old tables load as retired settings with direct fallback, and doctor checks every configured routing model alias (#553).
 - Refuse Claude channel plugins from an obsolete recorded launch, stop their reconnect loop, and check live socket ownership before a standing-by session reclaims the peer (#551).
