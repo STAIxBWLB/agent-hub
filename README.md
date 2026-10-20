@@ -5,7 +5,7 @@ Codex, Kimi Code, Pi and a hub-owned local worker (Qwen Code, Jcode and Antigrav
 optional) share a message bus and a task board per project and one memory on the
 machine, each attached through its own native interface.
 
-Status: 0.12.40, control protocol 16. Bun + TypeScript, one loopback daemon per
+Status: 0.12.41, control protocol 16. Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## What it does today
@@ -84,14 +84,15 @@ writes the running hub's own plugin bundle (#502). Since 0.12.37 the hub accepts
 Since 0.12.39 `ahub jcode` opens Jcode's native TUI on the hub-owned ACP session by
 default (#464); `--mode headless` or `ahub settings set peers.jcode.start_mode headless`
 keeps headless startup. On 0.12.39 the TUI launcher stopped after the first hub turn;
-0.12.40 opens it again (#564).
+0.12.40 opens it again (#564). On 0.12.40 `ahub codex` in a recorded Orca terminal
+failed with `invalid remote address`; 0.12.41 starts it again (#586).
 Cancellation needs a daemon advertising `task_cancel`; controlled downgrades
 refuse while cancelled rows exist. Live-test delegated CLI commands need a daemon
 advertising `cli_audit_delegated` and refuse with an upgrade remedy otherwise
 (#410). For local/Pi implementation, opt in to an available
 `checks.runner = "container"`; issue-backed owners also need authenticated
 spec access. PII work and designated reviewers retain their separate exemptions.
-See [release verification](docs/verification/2026-10-20-0.12.40.md) for the live legs
+See [release verification](docs/verification/2026-10-20-0.12.41.md) for the live legs
 still open, including #418 AC8, #438 AC7, the native console settings leg (#439 AC5),
 real upgrades with reattach (#463) and with a managed terminal and cancelled tasks
 (#478), a live headless Claude review (#223), a Claude session over 32 MiB (#517), a
