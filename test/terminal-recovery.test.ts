@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   inspectTerminals,
+  inspectSavedTerminal,
   recordTerminalLaunch,
   createTerminal,
   launcherOf,
@@ -12,6 +13,7 @@ import {
   shellQuote,
   waitForIdle,
   type CommandResult,
+  type RecordedTerminalLaunch,
   type TerminalBinding,
 } from "../src/cli/terminal-recovery.ts";
 
@@ -44,6 +46,58 @@ function fake(commands: (argv: readonly string[]) => CommandResult | Promise<Com
   return { calls, runner };
 }
 
+// Exercise the proposed optional ownership gate while the production signature is still being implemented.
+const recordWithOwnerProof = recordTerminalLaunch as (
+  peer: Parameters<typeof recordTerminalLaunch>[0],
+  projectRoot: string,
+  stateDir: string,
+  instanceId: string,
+  options: Parameters<typeof recordTerminalLaunch>[4],
+  ownsNative?: (row: RecordedTerminalLaunch) => boolean,
+) => ReturnType<typeof recordTerminalLaunch>;
+
+for (const proof of ["absent", "refused", "stale"] as const) {
+  test(`#482 a second same-peer launch with ${proof} native ownership proof preserves the live row and planned terminal`, async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), "ahub-second-launch-"));
+    const saved = { handle: process.env.ORCA_TERMINAL_HANDLE, worktree: process.env.ORCA_WORKTREE_ID, launch: process.env.AGENTHUB_LAUNCH_ID, instance: process.env.AGENTHUB_INSTANCE_ID };
+    const firstTerminal = terminal({ handle: "term-live", incarnationId: "inc-live", agentIdentity: undefined, sessionId: undefined });
+    const secondTerminal = terminal({ handle: "term-refused", incarnationId: "inc-refused", agentIdentity: undefined, sessionId: undefined });
+    const { runner } = fake(argv => argv[1] === "list"
+      ? { result: { terminals: [firstTerminal, secondTerminal] } }
+      : { result: { terminal: argv[argv.indexOf("--terminal") + 1] === firstTerminal.handle ? firstTerminal : secondTerminal } });
+    const options = { runner, processIdentity: (pid: number) => pid === process.pid ? "launcher-live" : undefined };
+    try {
+      process.env.ORCA_WORKTREE_ID = worktreeId;
+      process.env.ORCA_TERMINAL_HANDLE = firstTerminal.handle;
+      const first = await recordWithOwnerProof("codex", root, stateDir, "instance-live", options, () => true);
+      expect(first?.handle).toBe(firstTerminal.handle);
+      const file = join(stateDir, "terminal-recovery.json");
+      const olderInstance = { ...first!, instanceId: "instance-old", handle: "term-older-instance", launchId: "older-launch" };
+      writeFileSync(file, JSON.stringify([first, olderInstance]));
+      const authoritative = readFileSync(file, "utf8");
+
+      // This launcher reaches the same hub but its native child never becomes that peer's owner.
+      process.env.ORCA_TERMINAL_HANDLE = secondTerminal.handle;
+      const ownsNative = proof === "absent" ? undefined : proof === "refused" ? () => false
+        : (row: RecordedTerminalLaunch) => row.launchId === first!.launchId;
+      await recordWithOwnerProof("codex", root, stateDir, "instance-live", options, ownsNative);
+
+      expect(readFileSync(file, "utf8")).toBe(authoritative);
+      const inspected = await inspectTerminals(root, { codex: session }, { ...options, stateDir, instanceId: "instance-live" });
+      expect(inspected.manualRequired).toBe(false);
+      expect(inspected.bindings).toHaveLength(1);
+      expect(inspected.byPeer.codex?.handle).toBe(firstTerminal.handle);
+      expect(inspected.byPeer.codex?.incarnationId).toBe(firstTerminal.incarnationId);
+      expect(JSON.parse(readFileSync(file, "utf8"))).toContainEqual(olderInstance);
+    } finally {
+      for (const [key, value] of Object.entries({ ORCA_TERMINAL_HANDLE: saved.handle, ORCA_WORKTREE_ID: saved.worktree, AGENTHUB_LAUNCH_ID: saved.launch, AGENTHUB_INSTANCE_ID: saved.instance })) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+      rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+}
+
 test("#482 an orphaned but connected terminal asks the person to reattach, never to finish a turn", async () => {
   const handle = "term ' with space";
   const shown = terminal({ handle, orphaned: true, connected: true });
@@ -63,6 +117,19 @@ test("#482 disconnected terminals retain their existing turn guidance", async ()
   const result = await inspectTerminals(root, { codex: session }, probe.runner);
   expect(result.blockers[0]?.nextAction).toContain("finish or cancel");
   expect(result.blockers[0]?.nextAction).not.toContain("terminal switch");
+});
+
+test("#482 a saved orphaned but connected terminal remains unknown and cannot authorize another restore", async () => {
+  const shown = terminal({ orphaned: true, connected: true });
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js codex", argv: [], env: {} };
+  const binding: TerminalBinding = { peer: "codex", handle: shown.handle, incarnationId: shown.incarnationId, worktreeId, projectRoot: root, sessionId: session, launch, launchMetadata: launch };
+  const { calls, runner } = fake(() => ({ result: { terminal: shown } }));
+  const result = await inspectSavedTerminal(binding, runner);
+  expect(result.state).toBe("unknown");
+  expect(result.blocker?.code).toBe("terminal-orphaned");
+  expect(result.blocker?.nextAction).toContain(`orca terminal switch --terminal ${shellQuote(shown.handle)}`);
+  expect(result.blocker?.nextAction).not.toMatch(/finish|cancel/);
+  expect(calls.every(argv => argv[1] === "show")).toBe(true);
 });
 
 test("inspect binds exact session metadata even when list omits agentIdentity", async () => {
