@@ -242,7 +242,8 @@ test("runner failures become manual-required results", async () => {
 
 test("recorded launch is private, allowlisted, and authenticates Orca metadata without agentWait", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "ahub-terminal-recovery-"));
-  const previous = { handle: process.env.ORCA_TERMINAL_HANDLE, worktree: process.env.ORCA_WORKTREE_ID, codex: process.env.CODEX_HOME, secret: process.env.RECOVERY_SECRET, launchId: process.env.AGENTHUB_LAUNCH_ID };
+  const previous = { handle: process.env.ORCA_TERMINAL_HANDLE, worktree: process.env.ORCA_WORKTREE_ID, codex: process.env.CODEX_HOME, secret: process.env.RECOVERY_SECRET, launchId: process.env.AGENTHUB_LAUNCH_ID, claude: process.env.CLAUDE_CONFIG_DIR };
+  delete process.env.CLAUDE_CONFIG_DIR; // also allowlisted: an ambient value would be recorded (#595)
   process.env.ORCA_TERMINAL_HANDLE = "term-recorded";
   process.env.ORCA_WORKTREE_ID = worktreeId;
   process.env.CODEX_HOME = "/safe/codex";
@@ -274,6 +275,7 @@ test("recorded launch is private, allowlisted, and authenticates Orca metadata w
     if (previous.codex === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = previous.codex;
     if (previous.secret === undefined) delete process.env.RECOVERY_SECRET; else process.env.RECOVERY_SECRET = previous.secret;
     if (previous.launchId === undefined) delete process.env.AGENTHUB_LAUNCH_ID; else process.env.AGENTHUB_LAUNCH_ID = previous.launchId;
+    if (previous.claude !== undefined) process.env.CLAUDE_CONFIG_DIR = previous.claude;
     rmSync(stateDir, { recursive: true, force: true });
   }
 });
