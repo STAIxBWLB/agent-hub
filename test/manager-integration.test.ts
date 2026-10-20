@@ -106,43 +106,75 @@ test("manager starts outside any project and rejects a corrupted stop token", as
 });
 
 // #584: two concurrent opens each spawn a detached manager and only one wins the owner claim. A spawn that is still booting
-// when the winner is stopped finds the owner row gone and claims it, and nothing stops that manager. This holds the loser at
-// startup, answers the opens from the winner, stops it, releases the loser, and asserts that no manager is left.
-test("a spawn that boots after the answering manager was stopped does not leave a manager running (#584)", async () => {
-  const home = mkdtempSync(join(tmpdir(), "ahub-manager-redundant-")); roots.push(home);
+// when the winner is stopped finds the owner row gone and claims it, and nothing stops that manager. The stand-in below holds
+// the loser at startup, so the test can answer the opens from the winner, stop it, release the loser and look for a manager.
+const pidAlive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+/** A stand-in for `ahub manager` (the `cli` option of openManager). Every pid it ever started is in the log, so stop() reaches
+ * them whatever failed in the test; and a stand-in whose wait runs out exits instead of becoming the real manager. */
+function gatedManager(home: string, polls = 1000) {
   const main = join(import.meta.dir, "..", "src/cli/main.ts"), wrapper = join(home, "gated-manager.ts");
   const log = join(home, "spawns.log"), release = join(home, "release");
-  // Stands in for the manager entry point. Both spawns announce their pid first. The one that creates "first" waits until
-  // both have started, so the other is certainly alive when the winner answers; the other waits for "release".
+  // Both spawns announce their pid first. The one that creates "first" waits until both have started, so the other is
+  // certainly alive when the winner answers; the other waits for "release".
   writeFileSync(wrapper, [
     'import { appendFileSync, closeSync, existsSync, openSync, readFileSync } from "node:fs";',
     `const log = ${JSON.stringify(log)}, release = ${JSON.stringify(release)};`,
     'let role = "late";',
     `try { closeSync(openSync(${JSON.stringify(join(home, "first"))}, "wx")); role = "early"; } catch { /* another spawn is first */ }`,
     'appendFileSync(log, `${process.pid} ${role}\\n`);',
-    'const until = async (done: () => boolean) => { for (let i = 0; i < 1000 && !done(); i++) await Bun.sleep(20); };',
-    'if (role === "early") await until(() => readFileSync(log, "utf8").trim().split("\\n").length >= 2);',
-    'else await until(() => existsSync(release));',
+    `const until = async (done: () => boolean) => { for (let i = 0; i < ${polls}; i++) { if (done()) return true; await Bun.sleep(20); } return false; };`,
+    'const ready = role === "early" ? await until(() => readFileSync(log, "utf8").trim().split("\\n").length >= 2) : await until(() => existsSync(release));',
+    'if (!ready) process.exit(3);',
     `await import(${JSON.stringify(main)});`,
   ].join("\n"));
-  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-  const spawns = () => existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => ({ pid: Number(line.split(" ")[0]), role: line.split(" ")[1] })) : [];
-  const gone = async (pid: number) => { for (let i = 0; i < 150 && alive(pid); i++) await Bun.sleep(20); return !alive(pid); };
-  const all: number[] = [];
+  const spawns = () => existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => Number(line.split(" ")[0])) : [];
+  const stop = async () => {
+    for (const pid of spawns()) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+    for (const pid of spawns()) for (let i = 0; i < 150 && pidAlive(pid); i++) await Bun.sleep(20);
+  };
+  return { wrapper, release, spawns, stop };
+}
+
+test("a spawn that boots after the answering manager was stopped does not leave a manager running (#584)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ahub-manager-redundant-")); roots.push(home);
+  const gate = gatedManager(home);
   try {
-    const urls = await Promise.all([openManager({ home, cli: wrapper }), openManager({ home, cli: wrapper })]);
+    const urls = await Promise.all([openManager({ home, cli: gate.wrapper }), openManager({ home, cli: gate.wrapper })]);
     expect(new URL(urls[0]!).origin).toBe(new URL(urls[1]!).origin);
-    all.push(...spawns().map((spawn) => spawn.pid));
-    expect(all).toHaveLength(2);
+    expect(gate.spawns()).toHaveLength(2);
     await stopManager({ home });
-    appendFileSync(release, "");
+    appendFileSync(gate.release, "");
     // The released spawn now either exits (an owner is not free) or claims the owner row. Wait for it to settle, then look.
-    for (let i = 0; i < 100 && !existsSync(join(home, "manager", "status.json")) && all.some(alive); i++) await Bun.sleep(20);
+    for (let i = 0; i < 100 && !existsSync(join(home, "manager", "status.json")) && gate.spawns().some(pidAlive); i++) await Bun.sleep(20);
     const left = existsSync(join(home, "manager", "status.json"));
     if (left) await stopManager({ home }).catch(() => {}); // clean up before asserting, so a red run leaves nothing behind
     expect(left).toBe(false);
-    for (const pid of all) expect(await gone(pid)).toBe(true);
+    for (const pid of gate.spawns()) { for (let i = 0; i < 150 && pidAlive(pid); i++) await Bun.sleep(20); expect(pidAlive(pid)).toBe(false); }
   } finally {
-    for (const pid of all) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+    // Reread the log here: a failure before the assertions above must still reach every wrapper that started.
+    await gate.stop();
   }
+});
+
+test("the stand-in is reached by its teardown on a failed open and never turns into the real manager (#584)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ahub-manager-failed-open-")); roots.push(home);
+  const gate = gatedManager(home);
+  const child = spawn(process.execPath, [gate.wrapper], { env: { ...env(home), AGENTHUB_HOME: home }, stdio: "ignore" }); running.push(child);
+  try {
+    // One spawn only: it is the "early" one and waits for a second that never comes, which is a setup that failed midway.
+    for (let i = 0; i < 150 && gate.spawns().length < 1; i++) await Bun.sleep(20);
+    expect(gate.spawns()).toEqual([child.pid]);
+  } finally { await gate.stop(); }
+  expect(pidAlive(child.pid!)).toBe(false);
+  await Bun.sleep(200);
+  expect(existsSync(join(home, "manager", "status.json"))).toBe(false);
+});
+
+test("a stand-in whose wait runs out exits instead of starting the real manager (#584)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ahub-manager-gate-timeout-")); roots.push(home);
+  const gate = gatedManager(home, 5);
+  const child = spawn(process.execPath, [gate.wrapper], { env: { ...env(home), AGENTHUB_HOME: home }, stdio: "ignore" }); running.push(child);
+  const code = await new Promise<number | null>((resolve) => child.on("close", resolve));
+  expect(code).toBe(3);
+  expect(existsSync(join(home, "manager", "status.json"))).toBe(false);
 });
