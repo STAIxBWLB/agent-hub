@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 import { runCheck } from "../src/hub/checks.ts";
 
 // issue #7: the completion check runner. Which config may choose the command: test/config-trust.test.ts.
@@ -110,4 +111,26 @@ test("a check stopped by the hub is interrupted, not failed", async () => {
   for (const stop of running) stop();
   expect(await finished).toMatchObject({ code: 3, timedOut: false });
   expect((await finished).interrupted).toBeUndefined();
+});
+
+// issue #558: on hosted macOS a check once hung past bun's 20 s test timeout; neither its exit nor its close event came.
+/** A real child whose exit and close events never reach runCheck. */
+const silentSpawn = ((...args: Parameters<typeof spawn>) => {
+  const child = spawn(...args);
+  const on = child.on.bind(child);
+  child.on = ((event: string, listener: (...a: unknown[]) => void) => (event === "exit" || event === "close" ? child : on(event, listener))) as typeof child.on;
+  return child;
+}) as typeof spawn;
+
+test("a killed check settles within its kill grace when the child's exit and close events never arrive", async () => {
+  const started = Date.now();
+  expect(await runCheck("sleep 30", tempDir(), 300, undefined, silentSpawn)).toMatchObject({ code: null, timedOut: true });
+  expect(Date.now() - started).toBeLessThan(3000);
+  const running = new Set<() => void>();
+  const pending = runCheck("sleep 30", tempDir(), 30_000, running, silentSpawn);
+  await Bun.sleep(50);
+  const stopped = Date.now();
+  for (const stop of running) stop();
+  expect(await pending).toMatchObject({ code: null, timedOut: false, interrupted: true });
+  expect(Date.now() - stopped).toBeLessThan(3000);
 });

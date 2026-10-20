@@ -967,7 +967,9 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   killed at the timeout or on shutdown; a check still queued at shutdown never
   starts. A check ends when its command exits: what it left in its process group
   is killed then, and a descendant that left the group gets 0.5 s more to flush
-  output and is not waited for. Exit 0: the task
+  output and is not waited for. A check killed at the timeout or on shutdown
+  settles 1 s after the kill even if its exit and close events never arrive
+  (#558). Exit 0: the task
   completes as before, the review envelope carrying `Check: <command> -> exit 0`
   and the output tail; shared memory gets the summary and the outcome line, never
   the output. Any other outcome: the task stays with its owner, who gets a task
