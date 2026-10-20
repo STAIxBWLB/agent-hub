@@ -3448,10 +3448,14 @@ built-ins and off for the current console only. `?` lists this under Pet, even
 while drawing is off. The command prompt keeps its original row and width.
 
 `pet.glyphs` selects auto/ascii/blocks; unsupported locales and dumb/linux
-terminals retain the ASCII floor. `pet.blink:false` is static. Neither choosing
-nor drawing a character changes authority, config files, task state or polling.
-Explicit `ahub pet` and text status use the configured line face; prompt tokens
-remain character-independent. Native glyph width and tmux are unverified.
+terminals retain the ASCII floor. `pet.blink:false` is static. `pet.palette`
+selects blue, teal (default), violet or ochre (`a`/`b`/`c`/`d`), and `pet.window`
+controls standalone window opt-in; both `pet` (`false` or an option block) and its
+fields validate in `.agenthub/config.json` and `.agenthub/config.local.json`,
+apply live as console-local presentation, and grant no authority (#483). Neither
+choosing nor drawing a character changes authority, config files, task state or
+polling. Explicit `ahub pet` and text status use the configured line face; prompt
+tokens remain character-independent. Native glyph width and tmux are unverified.
 
 ## Dashboard views and attention (#391, replaces the #280 in-page character)
 

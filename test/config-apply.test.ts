@@ -1,10 +1,14 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { configApply, configChanges, validateRawConfig, validateEffectiveConfig, assertReloadTrust, type ConfigLayer } from "../src/hub/config-apply.ts";
-import { DEFAULT_CONFIG } from "../src/hub/daemon.ts";
-import { SETTINGS } from "../src/hub/settings.ts";
+import { parseConfigSources, configSourceTexts } from "../src/hub/config-reload.ts";
+import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
+import { ControlClient } from "../src/hub/control-client.ts";
+import { savePetPalette } from "../src/pet/config.ts";
+import { init } from "../src/cli/init.ts";
+import { SETTINGS, writeConfigSetting } from "../src/hub/settings.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import * as configAuthorization from "../src/hub/config-apply.ts";
 
@@ -174,4 +178,78 @@ test("tasks.escalate_after is a bounded integer that applies live (#488)", () =>
   for (const value of [0, 11, 2.5, "3"]) expect(() => validateRawConfig({ tasks: { escalate_after: value } })).toThrow();
   expect(configApply("tasks.escalate_after").applies).toBe("live");
   expect(DEFAULT_CONFIG.tasks.escalate_after).toBe(3);
+});
+
+test("#483 A1-A6: pet config block validates, applies live as console-local presentation, and never blocks unrelated or removed-block reloads", async () => {
+  // A1: schema, apply class and leaf authorization for pet
+  expect(() => validateRawConfig({ pet: false })).not.toThrow();
+  expect(() => validateRawConfig({ pet: { character: "gyul", size: "mini", glyphs: "blocks", blink: false, bell: true, palette: "c", window: true } })).not.toThrow();
+  for (const bad of [{ pet: true }, { pet: "stai" }, { pet: [] }, { pet: { unknown: true } }, { pet: { character: "dragon" } }, { pet: { size: "huge" } }, { pet: { glyphs: "emoji" } }, { pet: { palette: "red" } }, { pet: { blink: "yes" } }, { pet: { bell: 1 } }, { pet: { window: "true" } }]) {
+    expect(() => validateRawConfig(bad)).toThrow();
+  }
+  for (const key of ["pet", "pet.character", "pet.size", "pet.glyphs", "pet.blink", "pet.bell", "pet.palette", "pet.window"]) {
+    expect(configApply(key)).toEqual({ applies: "live" });
+    expect(authorize({ ...ordinary, key, before: undefined, after: "teal", tracked: true })).toMatchObject({ key, allowed: true, guarded: false });
+    expect(authorize({ ...ordinary, key, before: "teal", after: undefined, tracked: false })).toMatchObject({ key, allowed: true, guarded: false });
+  }
+  expect(() => configApply("pet.typo")).toThrow();
+
+  // A4: round-trip every config writer (init, savePetPalette, writeConfigSetting for settings and roster) through validateRawConfig and parseConfigSources
+  const root = mkdtempSync(join(tmpdir(), "ahub-pet-reload-"));
+  try {
+    init(root);
+    expect(() => parseConfigSources(configSourceTexts(root))).not.toThrow();
+    for (const choice of ["a", "b", "c", "d", "blue", "teal", "violet", "ochre"]) {
+      savePetPalette(root, choice);
+      expect(() => validateRawConfig(JSON.parse(readFileSync(join(root, ".agenthub/config.local.json"), "utf8")))).not.toThrow();
+      expect(() => parseConfigSources(configSourceTexts(root))).not.toThrow();
+    }
+    const stateDir = join(root, ".agenthub/state");
+    for (const [key, value] of [["research.enabled", true], ["roster.jcode", true]] as const) {
+      const def = SETTINGS.find(s => s.key === key)!;
+      writeConfigSetting(root, stateDir, def, value, scratch => parseConfigSources(configSourceTexts(scratch)));
+      expect(() => parseConfigSources(configSourceTexts(root))).not.toThrow();
+    }
+
+    // A2, A3, A5, A6: live daemon reload with saved palette, unrelated jcode_cmd + roster add, and removing the pet block
+    writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, pet: { window: true, character: "boxbot" } }));
+    writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify({ pet: { palette: "teal" } }));
+    expect(hubGitSync(["init", "-q"], { cwd: root, encoding: "utf8", timeout: 1000 }).status).toBe(0);
+    const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0 });
+    const client = await ControlClient.connect(stateDir, { role: "console" });
+    try {
+      // A2: savePetPalette round-trips through live reload
+      savePetPalette(root, "violet");
+      const r1 = await client.request({ t: "settings_reload" });
+      expect(r1).toMatchObject({ ok: true, rejected: [] });
+      expect(r1.applied).toContain("pet.palette");
+
+      // A3: unrelated config.local.json change (jcode_cmd) + roster add reloads with saved palette present
+      const current = JSON.parse(readFileSync(join(root, ".agenthub/config.local.json"), "utf8"));
+      writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify({ ...current, jcode_cmd: ["jcode", "--custom"] }, null, 2) + "\n");
+      const rosterReply = await client.request({ t: "settings_set", key: "roster.jcode", value: true });
+      expect(rosterReply).toMatchObject({ ok: true });
+      const reloadPreview = await client.request({ t: "settings_reload" });
+      expect(reloadPreview.ok).toBe(true);
+      expect(reloadPreview.confirmation?.keys).toEqual(["jcode_cmd"]);
+      const reloadConfirmed = await client.request({ t: "settings_reload", confirm: reloadPreview.confirmation.token });
+      expect(reloadConfirmed).toMatchObject({ ok: true, rejected: [] });
+      expect(reloadConfirmed.applied).toContain("jcode_cmd");
+
+      // A5 & A6: removing the pet block from config.local.json (and config.json) reloads cleanly without deadlock
+      writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify({ roster: { jcode: true }, jcode_cmd: ["jcode", "--custom"] }, null, 2) + "\n");
+      const afterLocalRemove = await client.request({ t: "settings_reload" });
+      expect(afterLocalRemove).toMatchObject({ ok: true, rejected: [] });
+      expect(afterLocalRemove.applied).toContain("pet.palette");
+      writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false } }));
+      const afterAllRemove = await client.request({ t: "settings_reload" });
+      expect(afterAllRemove).toMatchObject({ ok: true, rejected: [] });
+      expect(afterAllRemove.applied).toEqual(["pet"]);
+    } finally {
+      client.close();
+      await daemon.stop();
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });

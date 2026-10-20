@@ -200,6 +200,8 @@ export interface HubConfig {
   coordination: "advisory" | "turn-free";
   /** Switches for controlled ablations only (issue #110): `stale_notices: "deliver"` turns #106's dropping off. */
   experiments?: { stale_notices?: "drop" | "deliver" };
+  /** Console-local character and window presentation (#280, #483); grants no authority. */
+  pet?: false | Record<string, unknown>;
   /** Machine-local fields a config file set but git could not vouch for, and why (issue #17). */
   ignored?: string[];
   /** Settings that were removed or are about to be (issue #83): what each does now, for `hub.log` and `ahub doctor`. */
@@ -253,7 +255,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = INSTANCE_CONFIG_FILES;
 export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<string, any> }
-const CONFIG_BLOCKS = ["memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal"];
+const CONFIG_BLOCKS = ["memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "pet"];
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
 export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]): { roles: Record<string, string[]>; conductor: HubConfig["conductor"]; planner?: string; notices?: string[] } {
@@ -4185,12 +4187,18 @@ export async function startDaemon(opts: DaemonOptions) {
     const parts = key.split(".");
     if (parts.some(part => ["__proto__", "constructor", "prototype"].includes(part))) throw new Error("unsafe configuration path");
     let node = target as Record<string, unknown>;
+    const trail: [Record<string, unknown>, string][] = [];
     for (const part of parts.slice(0, -1)) {
       if (!Object.hasOwn(node, part) || !node[part] || typeof node[part] !== "object" || Array.isArray(node[part])) node[part] = {};
+      trail.push([node, part]);
       node = node[part] as Record<string, unknown>;
     }
-    if (value === undefined) delete node[parts.at(-1)!];
-    else node[parts.at(-1)!] = structuredClone(value);
+    if (value === undefined) {
+      delete node[parts.at(-1)!];
+      for (const [parent, part] of trail.reverse()) {
+        if (!Object.keys(parent[part] as object).length) delete parent[part];
+      }
+    } else node[parts.at(-1)!] = structuredClone(value);
   }
   function changedRawPaths(before: unknown, after: unknown, prefix = ""): string[] {
     const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
