@@ -33,6 +33,14 @@ function runAgyTui(argv: string[], cwd: string, env: NodeJS.ProcessEnv): Promise
   });
 }
 
+/** agy auto-updates, so the 1.4.x line launches; only 1.4.2 has a T0 receipt and other patches warn (#589). */
+export function agyVersionGate(stdout: string): { ok: true; message?: string } | { ok: false; message: string } {
+  const version = stdout.trim();
+  if (version === "1.4.2") return { ok: true };
+  if (/^1\.4\.\d+$/.test(version)) return { ok: true, message: `agy ${version}: only 1.4.2 is T0-verified; launching on the 1.4.x line unverified` };
+  return { ok: false, message: "agy P1 requires the Antigravity CLI 1.4.x line (1.4.2 verified)" };
+}
+
 export async function runAgyEntry(ctx: NativeCliEntryContext): Promise<void> {
   const { args, cwd, stateDir, cliDir, connect, fail } = ctx;
   if (ctx.instance) fail("extra Antigravity TUI instances are not verified in P1");
@@ -45,7 +53,9 @@ export async function runAgyEntry(ctx: NativeCliEntryContext): Promise<void> {
   const argv = nativeArgs;
   if (preview) { console.log(JSON.stringify({ command: "agy", args: argv.map(publicArg), mode: "tui", permission: "unmanaged", mcp: ".agents/plugins/agent-hub/", writes: false })); return; }
   const version = spawnSync("agy", ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: peerChildEnv("agy") });
-  if (version.status !== 0 || version.stdout.trim() !== "1.4.2") fail("agy P1 requires the verified Antigravity CLI 1.4.2");
+  const gate = agyVersionGate(version.status === 0 ? version.stdout : "");
+  if (!gate.ok) fail(gate.message);
+  if (gate.message) console.error(gate.message);
   const hub = await connect();
   let options: AgyMcpOptions | undefined;
   let pluginWritten = false;
