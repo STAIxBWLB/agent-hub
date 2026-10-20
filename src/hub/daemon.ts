@@ -45,7 +45,7 @@ import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
 import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
-import { authorizeConfigLeaf, configApply, configChanges, validateEffectiveConfig } from "./config-apply.ts";
+import { authorizeConfigLeaf, configApply, configChanges, validateEffectiveConfig, validatePetConfig } from "./config-apply.ts";
 import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSources } from "./config-reload.ts";
 import { eventLog, readEvents, tokenDeltas, type RoleIdentity } from "./events.ts";
@@ -351,6 +351,8 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     peerStartConfig(file.peers, instances);
     if (file.terminal != null && (typeof file.terminal !== "object" || Array.isArray(file.terminal))) throw new Error("terminal must be an object");
     terminalTemplate(file.terminal?.open);
+    if (file.pet !== undefined) validatePetConfig(file.pet, "config.pet");
+    if (file.pet && typeof file.pet === "object" && !Object.keys(file.pet).length) delete file.pet;
     delete file.permission_default_sources; // provenance is loader-owned, never a file claim
     const why = stripUntrusted(file, DEFAULT_CONFIG, cwd, name);
     if (why) ignored.push(why);
@@ -4196,7 +4198,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (value === undefined) {
       delete node[parts.at(-1)!];
       for (const [parent, part] of trail.reverse()) {
-        if (!Object.keys(parent[part] as object).length) delete parent[part];
+        if (!Object.hasOwn(DEFAULT_CONFIG, part) && !Object.keys(parent[part] as object).length) delete parent[part];
       }
     } else node[parts.at(-1)!] = structuredClone(value);
   }

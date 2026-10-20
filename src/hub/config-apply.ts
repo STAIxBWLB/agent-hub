@@ -118,17 +118,17 @@ const petFields: Record<string, Check> = {
   palette: (v, k) => { if (!petPalette(v)) fail(k, "unknown choice"); },
   window: bool,
 };
-const petCheck: Check = (v, k) => {
+export const validatePetConfig: Check = (v, k) => {
   if (v === false) return;
   block(petFields)(v, k);
 };
-shapes.set(petCheck, { fields: petFields });
+shapes.set(validatePetConfig, { fields: petFields });
 const nativeValidators = { bool, text, strings, argv, number, words, block };
 const schema: Record<string, Check> = {
   ...Object.assign({}, ...ADAPTERS.map(adapter => adapter.configuration?.schema?.(nativeValidators) ?? {})),
   watchdog_ms: number(1, 2_147_483_647), kimi_cmd: argv, qwen_cmd: argv, jcode_cmd: argv, codex_bin: text, jcode_home: text, jcode_provider_profile: text,
   permission_modes: v => { permissionDefaults(v); }, protect_instruction_files: bool,
-  instances: v => { validateInstances(v); }, pet: petCheck,
+  instances: v => { validateInstances(v); }, pet: validatePetConfig,
   batch_max: number(1, 100_000, true), batch_ms: number(0, 2_147_483_647), queue_cap: number(1, 1_000_000, true),
   memory: block({ enabled: bool, worker_url: text, inject_tokens: number(0, 1_000_000, true), brief_items: number(0, 10_000, true), native: bool,
     short_ttl_days: number(1, 3650, true), sync_interval_min: number(0, 1440, true), suggest_edges: bool }),
@@ -159,6 +159,7 @@ const schema: Record<string, Check> = {
   review: block({ adaptive: bool, min_reviews: number(1, Number.MAX_SAFE_INTEGER, true), pool: v => { reviewerPoolConfig({ pool: v }, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS); }, rerotate: bool }), recovery: block({ auto_resume_after_crash: bool }),
   capabilities: map(strings), coordination: words(["advisory", "turn-free"]), experiments: block({ stale_notices: words(["drop", "deliver"]) }),
 };
+export const SCHEMA_KEYS: readonly string[] = Object.freeze(Object.keys(schema));
 export function validateRawConfig(raw: unknown, declarations?: InstancesConfig): asserts raw is Record<string, unknown> {
   const value = object(raw, "config");
   const instances = validateInstances(value.instances ?? declarations);

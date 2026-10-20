@@ -3451,8 +3451,10 @@ while drawing is off. The command prompt keeps its original row and width.
 terminals retain the ASCII floor. `pet.blink:false` is static. `pet.palette`
 selects blue, teal (default), violet or ochre (`a`/`b`/`c`/`d`), and `pet.window`
 controls standalone window opt-in; both `pet` (`false` or an option block) and its
-fields validate in `.agenthub/config.json` and `.agenthub/config.local.json`,
-apply live as console-local presentation, and grant no authority (#483). Neither
+fields validate identically at startup and reload in `.agenthub/config.json` and
+`.agenthub/config.local.json`, apply live as console-local presentation (including
+an open console's next refresh and the standalone pet window), and grant no
+authority (#483). Neither
 choosing nor drawing a character changes authority, config files, task state or
 polling. Explicit `ahub pet` and text status use the configured line face; prompt
 tokens remain character-independent. Native glyph width and tmux are unverified.
