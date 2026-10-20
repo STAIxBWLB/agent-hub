@@ -56,7 +56,16 @@ if (import.meta.main) {
   const arg = (name: string) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
   const project = arg("--project") ?? process.cwd();
   const config = loadConfig(project);
-  const omni = new OmniRoute(config.omniroute);
+  const gateway = new OmniRoute(config.omniroute);
+  // The alias (`fixedModel`) can be remapped later; record the model the gateway reports serving (review of #613).
+  const served = new Set<string>();
+  const omni = Object.assign(Object.create(gateway) as OmniRoute, {
+    chat: async (...call: Parameters<OmniRoute["chat"]>) => {
+      const res = await gateway.chat(...call);
+      if (res && typeof res === "object" && "servedModel" in res && typeof res.servedModel === "string") served.add(res.servedModel);
+      return res;
+    },
+  });
   const fixedModel = currentRouting(project).local.fixed_model;
   const device = config.mlx.enabled === false ? undefined : () => ensureMlx(config.mlx);
   const deps = { ...(device ? { device } : {}), omni, onCampus: () => omni.onCampus(), fixedModel: () => fixedModel };
@@ -73,6 +82,7 @@ if (import.meta.main) {
     `# PII screen calibration (issue #198), ${new Date().toISOString().slice(0, 10)}`,
     "",
     `- Screen: ${path}`,
+    `- Served model (as the gateway reported it): ${[...served].sort().join(", ") || "not reported"}`,
     `- Fixtures: ${s.counts.items} synthetic items (${s.counts.positives} positives, ${s.counts.negatives} hard negatives), test/fixtures/pii-screen.json`,
     `- Recall (pii labels only): ${pct(s.recall)}; bound ${pct(RECALL_BOUND)}, fixed before measuring: ${s.recall >= RECALL_BOUND ? "met" : "NOT met"}`,
     `- Recall as handled (pii or unknown): ${pct(s.handledRecall)}`,
