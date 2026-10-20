@@ -73,6 +73,7 @@ import { addonReport, appendRecords, formatAddons, formatResearch, LABELS, label
 import { summarize, summarizeByTask } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 import { pathWarnings } from "../hub/conflicts.ts";
+import { COMPLETION_SHELLS, completionScript } from "./completion.ts";
 import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, LIVE_TEST_PERSON_REFUSAL, liveTestRefusal, peerCommandRefusal } from "./identity.ts";
 import { recordCliAudit, recordDelegatedCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
@@ -764,6 +765,11 @@ const commands: Record<string, () => Promise<void> | void> = {
     const text = renderHelp(process.stdout.columns ?? 80, color, topic);
     if (!text) fail(`unknown command "${topic}"; run ahub help`);
     console.log(text);
+  },
+  completion: () => {
+    const script = completionScript(args[0]);
+    if (args.length !== 1 || !script) fail(`usage: ahub completion ${COMPLETION_SHELLS.join("|")}`);
+    process.stdout.write(script!);
   },
   "--version": () => console.log(VERSION),
   version: () => console.log(VERSION),

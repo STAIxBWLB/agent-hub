@@ -6,4 +6,8 @@ if (!version || !(Number(version[1]) > 1 || (Number(version[1]) === 1 && (Number
   process.exit(1);
 }
 
-await import("./main.ts");
+// Shell completion asks on every Tab: answer from the help entries without loading the CLI (#603).
+if (process.argv[2] === "__complete") {
+  const { completeWords } = await import("./completion.ts");
+  console.log(completeWords(process.argv.slice(process.argv[3] === "--" ? 4 : 3)).join("\n"));
+} else await import("./main.ts");
