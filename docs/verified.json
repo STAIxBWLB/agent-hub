@@ -236,6 +236,23 @@
         "test/console-attention.test.ts",
         "docs/agent-notes/daemon.md"
       ]
+    },
+    "src/cli/help.ts": {
+      "verifiedAgainst": "09d85684a53322b816f47f37c61faeb8a359419c",
+      "paths": [
+        "src/cli/main.ts",
+        "src/cli/launch.ts",
+        "src/adapters/definitions/native-cli-entry-claude.ts",
+        "src/adapters/definitions/native-cli-entry-codex.ts",
+        "src/adapters/definitions/native-cli-entry-jcode.ts",
+        "src/adapters/definitions/native-cli-entry-kimi.ts",
+        "src/adapters/definitions/native-cli-entry-local.ts",
+        "src/adapters/definitions/native-cli-entry-pi.ts",
+        "src/adapters/definitions/native-cli-entry-qwen.ts",
+        "src/adapters/definitions/native-cli-entry-types.ts",
+        "src/adapters/definitions/native-cli-entry.ts",
+        "src/adapters/agy/entry.ts"
+      ]
     }
   }
 }
