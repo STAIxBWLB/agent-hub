@@ -40,7 +40,8 @@ test("#410 helper-module connections cannot bypass an invocation's authenticated
   } finally { release(); original.close(); server.stop(true); rmSync(state, { recursive: true, force: true }); }
 });
 
-for (const supported of [false, true]) test(`#410 authenticated welcome ${supported ? "supports" : "refuses"} delegated audit before effects`, async () => {
+for (const mode of ["legacy", "retained", "unacknowledged"] as const) test(`#410 authenticated audit consumer ${mode} gates effects`, async () => {
+  const supported = mode !== "legacy", retained: ReturnType<typeof drainCliAudits> = [];
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-audit-compat-")));
   const state = join(root, ".agenthub/state");
   mkdirSync(state, { recursive: true });
@@ -58,6 +59,9 @@ for (const supported of [false, true]) test(`#410 authenticated welcome ${suppor
       } else if (msg.t === "permission") {
         effects++;
         ws.send(JSON.stringify({ rid: msg.rid, ok: true }));
+      } else if (msg.t === "cli_audit_ack") {
+        if (mode === "retained") retained.push(...drainCliAudits(state));
+        ws.send(JSON.stringify({ rid: msg.rid, ok: retained.some(row => row.id === msg.auditId), auditId: msg.auditId, instanceId: "fixture-instance" }));
       }
     } },
   });
@@ -71,11 +75,11 @@ for (const supported of [false, true]) test(`#410 authenticated welcome ${suppor
   const timer = setTimeout(() => child.kill("SIGKILL"), 8000);
   try {
     const [code, , stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
-    if (supported) {
+    if (mode === "retained") {
       expect(code, stderr).toBe(0);
       expect(effects).toBe(1);
       expect(hellos).toEqual(["console"]);
-      expect(drainCliAudits(state)).toMatchObject([{ peer: "codex", command: "permission", outcome: "delegated" }]);
+      expect(retained).toMatchObject([{ peer: "codex", command: "permission", outcome: "delegated" }]);
     } else {
       expect(code, stderr).toBe(1);
       expect(effects).toBe(0);

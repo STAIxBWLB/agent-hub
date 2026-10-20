@@ -6,6 +6,24 @@ import { drainCliAudits, recordCliAudit, recordDelegatedCliAudit } from "../src/
 import { nativeLaunchEnv } from "../src/cli/launch.ts";
 import { cliCommandLabel } from "../src/cli/identity.ts";
 import { peerChildEnv } from "../src/hub/child-process.ts";
+import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { ControlClient } from "../src/hub/control-client.ts";
+import { readEvents } from "../src/hub/events.ts";
+
+test("#410 only console acknowledges an exact retained audit before command effects", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-audit-ack-")), state = join(root, "state");
+  const daemon = await startDaemon({ cwd: root, stateDir: state, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
+  const person = await ControlClient.connect(state, { role: "console" }), tools = await ControlClient.connect(state, { role: "tools", peer: "codex" });
+  try {
+    recordCliAudit(state, "codex", "permission", "delegated");
+    const id = readdirSync(join(state, "cli-audit")).find(name => name.endsWith(".json"))!.slice(0, -5);
+    expect((await tools.request({ t: "cli_audit_ack", auditId: id })).ok).toBe(false);
+    expect(await person.request({ t: "cli_audit_ack", auditId: id })).toMatchObject({ ok: true, auditId: id, instanceId: person.instanceId });
+    expect(readEvents(join(state, "events.jsonl"))).toContainEqual(expect.objectContaining({ type: "agent_cli", peer: "codex", command: "permission", delegated: true }));
+    expect((await person.request({ t: "cli_audit_ack", auditId: crypto.randomUUID() })).ok).toBe(false);
+  } finally { tools.close(); person.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
+});
 
 test("#410 negotiation reserves a bounded private pending row, invisible to drains", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-pending-audit-"));
