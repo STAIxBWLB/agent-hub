@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { initialConsoleState, reduceConsole, renderConsole } from "../src/cli/console-state.ts";
 import { runConsole, type ConsoleTerminal } from "../src/cli/console.ts";
+import { settingDef } from "../src/hub/settings.ts";
 
 const row = { key: "approvals.notify", group: "Switches", label: "Desktop notice", type: "boolean", file: "config.local.json", applies: "restart", restartReason: "Notifier is created at startup", risk: "safe", value: false, fileValue: true, source: "config.local.json", pending: true };
 const undoDigest = "d".repeat(64);
@@ -146,5 +147,22 @@ for (const status of [() => ({ peers: { codex: { state: "idle" } } }), () => ({ 
     expect(frame(f)).toContain("planner WIP is unavailable for codex");
     expect(frame(f)).not.toContain("value for");
     expect(f.requests.some(msg => msg.t === "settings_preview")).toBe(false); expect(writes(f)).toEqual([]);
+  } finally { await f.stop(); }
+});
+
+test("#532 Peers w opens the registry-backed declared instance editor with its current WIP limit", async () => {
+  const key = "tasks.wip_limits.codex-review";
+  const def = settingDef(key, { "codex-review": { kind: "codex" } });
+  expect(typeof def).toBe("object");
+  if (typeof def === "string") throw new Error(def);
+  const f = fixture(undefined, { ...def, file: "config.local.json", source: "default", value: 2, fileValue: null }, () => ({ peers: { "codex-review": { state: "idle", rostered: true } }, taskWip: { "codex-review": { wip: 1, wipLimit: 4 } } }));
+  try {
+    await tick(); f.input("w");
+    expect(frame(f)).toContain(`value for ${key} (inherit removes): 4`);
+    for (const value of ["0..32", "raises", "live"]) expect(frame(f)).toContain(value);
+    f.input("\x15"); f.input("2"); f.input("\r"); await tick();
+    expect(f.requests.find(msg => msg.t === "settings_preview")).toEqual({ t: "settings_preview", key, value: 2 });
+    reason(f); expect(writes(f)).toEqual([]); f.input("y"); await tick();
+    expect(writes(f)).toEqual([{ t: "settings_set", key, value: 2, reason: "test reason", confirm: "approved-setting-token" }]);
   } finally { await f.stop(); }
 });
