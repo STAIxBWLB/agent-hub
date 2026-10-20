@@ -2137,7 +2137,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op.startsWith("hub_release_") || op === "hub_backlog_return_untouched" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and claude-mem. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
-    if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && a.plan != null))) {
+    if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && (a.plan != null || a.refs != null)))) {
       const target = board.get(Number(a.id));
       if (target && !tasks.isPii(target)) throw new PreEffectToolRefusal(`${op} on task #${target.id} is not available while working on a PII task: its text would reach other peers; do it in a turn without the PII task`);
     }
@@ -2291,10 +2291,10 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "hub_task_accept": {
         // S1 spec acceptance and S9 plan review are checked against one task snapshot before acceptance.
-        const t = await tasks.acceptReviewed(by, a.id, a.plan);
+        const t = await tasks.acceptReviewed(by, a.id, a.plan, a.refs);
         // A silent cohort (issue #107): the owners' plans come with every accept, as what the newcomer works from.
         const silent = tasks.silentFor(t.id);
-        const overlap = a.plan == null && !silent ? "" : tasks.overlaps(t);
+        const overlap = a.plan == null && a.refs == null && !silent ? "" : tasks.overlaps(t);
         if (silent && factsOn()) factsFor(by).sawPlans(by, tasks.overlapTasks(t)); // the plans in this answer need no fact later
         return [line(t), overlap, tasks.planGuardText(t)].filter(Boolean).join("\n");
       }

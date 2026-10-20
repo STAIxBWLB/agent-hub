@@ -1075,8 +1075,23 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
 - A plan's text counts for PII detection when a task is proposed. On accept the
   task's signals are fixed, so a plan that matches a PII pattern is refused for
   an ordinary task.
-- Overlap: paths from refs and plan (same file or a directory of it), or the
-  same symbol named in both plans. An overlap that only the new plan reveals on
+- Overlap (#476): each task has one repository key, chosen from explicit
+  `refs.repo` (GitHub owner/name slug or checkout path), else the common Git
+  top-level of outside-project absolute refs (bounded hardened Git and realPath),
+  with common-parent fallback, else this project. Confirmed GitHub remote slugs
+  connect path/SSH/HTTPS aliases; without that evidence a path key stays distinct.
+  Relative plan paths belong to that task's key. Paths from refs and plan (same
+  file or directory prefix), symbols, sections and sources are compared only
+  within one key, including contradiction, replay and held-change comparisons.
+  Existing project-only display spelling, notices, cohorts and telemetry stay
+  unchanged. Repository/root and failed Git probes are cached for the daemon's
+  lifetime; new metadata resolves new inputs, and a restart refreshes prior probes. No network
+  lookup, directory scan, execution-root change or filesystem grant is implied.
+  Propose reports one ids-only notice when refs and absolute plan evidence name
+  different repositories. Both propose and accept tools expose `refs.repo`;
+  acceptance may correct that repository metadata only, with ordinary authority,
+  privacy, spec and plan gates retained. A changed repository leaves its previous
+  cohort before joining any new same-repository overlaps. An overlap that only the new plan reveals on
   accept is announced like one found at assignment (console notice and overlap
   event); one already announced is not announced again, but the other owner
   still gets the new plan.

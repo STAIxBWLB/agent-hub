@@ -27,6 +27,7 @@ import { assign, detectSignals, peerEntry, predictSplit, relayCandidates, type A
 import { ExecutionBudget, type ExecutionBudgetConfig, type ExecutionBudgetDecision, type ExecutionBudgetStatus, type ExecutionUnit } from "./execution-budget.ts";
 import { Cohorts, MAX_REQUESTS, type Cohort, type Completion } from "./cohorts.ts";
 import { realPath } from "./project.ts";
+import { TaskRepositories } from "./task-repository.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { coverageGap, renderReviewBrief, type ReviewBrief } from "./review-brief.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf } from "../adapters/registry.ts";
@@ -228,6 +229,16 @@ function cleanRefs(input: unknown): TaskRefs {
   return out;
 }
 
+/** Acceptance may correct repository metadata, never file intent or work evidence. */
+function acceptRefs(input: unknown): TaskRefs | undefined {
+  if (input == null) return undefined;
+  if (typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => key !== "repo")) throw new PreEffectToolRefusal("accept refs may contain only repo");
+  const raw = input as Record<string, unknown>;
+  if (!Object.hasOwn(raw, "repo")) return undefined;
+  if (typeof raw.repo !== "string" || !raw.repo.trim() || raw.repo.length > 300) throw new PreEffectToolRefusal("accept refs.repo must be a bounded repository slug or path");
+  return { repo: text(raw.repo)! };
+}
+
 /** The same for a plan (issue #31): only its four lists, each of short strings. */
 function cleanPlan(input: unknown, profile: ProfileSelection = "dev"): TaskPlan {
   const r = fields(input);
@@ -248,6 +259,7 @@ const RESCREEN_MAX = 10;
  * PII handling, envelopes, briefs and memory notes are decided in one place.
  */
 export class Tasks {
+  private readonly repositories: TaskRepositories;
   private readonly incomingBacklog = new Set<number>();
   private readonly plannerBacklog = new Map<PeerId, Set<number>>();
   private readonly plannerBlockedQueue = new Map<PeerId, string>();
@@ -259,6 +271,8 @@ export class Tasks {
   private sweeping = false;
 
   constructor(private readonly d: TasksDeps) {
+    this.repositories = new TaskRepositories(d.cwd, d.repository);
+    for (const task of d.board.list()) this.warmRepository(task);
     if (d.coordination) {
       const mode = d.coordination();
       for (const task of d.board.list()) this.coordinationModes.set(task.id, mode);
@@ -685,6 +699,7 @@ export class Tasks {
       const theirs = this.places(t);
       // Blame needs the same file or symbol: a directory or `.` would contradict every approval under it. Older rows
       // were stored as written, so both sides are compared in one spelling.
+      if (mine.repositoryKey !== theirs.repositoryKey) continue;
       const file = (p: string) => normPath(p) !== "." && theirs.paths.some((q) => normPath(q) === normPath(p));
       const same = mine.paths.some(file) || mine.symbols.some((x) => theirs.symbols.includes(x));
       if (!same || this.d.board.reviews({ task: t.id }).some((r) => r.kind === "contradicted")) continue;
@@ -1044,6 +1059,7 @@ export class Tasks {
     const verdicts = screenedVerdicts.map((verdict, index) => deterministicPrivate[index] ? undefined : verdict);
     const inherited = current.drafts.map((_part, index) => (initialParentPrivate || this.isPii(current.parent)) && !deterministicPrivate[index]);
     const drafts = current.drafts.map((part, index) => ({ ...part, ...(screening ? { screeningNote: inherited[index] ? "pii: inherited" : this.screenNote(verdicts[index]) } : {}), signals: [...new Set([...initialPrivacy[index]!, ...initialParentPrivacy, ...finalSignals[index]!, ...current.parent.signals.filter(signal => ["pii", "pii_path", "urgent"].includes(signal)), ...(verdicts[index] && verdicts[index]!.label !== "clear" ? ["pii"] : [])])] }));
+    for (const draft of drafts) this.warmRepository(draft);
     const result = this.d.board.splitBacklog(id, by, revision, drafts, reason, withheld || initialReasonPrivate || this.isPii(current.parent) || !this.nameable(reason));
     if (this.d.coordination) {
       const mode = this.d.coordination();
@@ -1238,7 +1254,7 @@ export class Tasks {
     const text = { title, detail: String(input.detail ?? "").slice(0, 8000), refs: cleanRefs(input.refs) };
     const plan = cleanPlan(input.plan, this.d.profileData ?? profile);
     // The plan reaches other owners, so a PII pattern in it makes the task a PII task like one in the detail would.
-    const screenDetail = [text.detail, external?.repo, external?.url].filter(value => value !== undefined && value !== "").join("\n");
+    const screenDetail = [text.detail, text.refs.repo, external?.repo, external?.url].filter(value => value !== undefined && value !== "").join("\n");
     const signals = this.signalsFor({ ...text, detail: [screenDetail, planText(plan)].join("\n"), plan });
     // Urgent work is handed over even when its paused owner's window resets soon (issue #36).
     if (input.urgent === true && !signals.includes("urgent")) signals.push("urgent");
@@ -1268,7 +1284,10 @@ export class Tasks {
     const draft = { ...text, class: cls, ...(selected ? { role: selected.id } : {}), ...(profile !== "dev" || given !== undefined && given !== cls || this.d.profileData && this.d.profileData !== projectProfile("dev") ? { profile, profileClass: given ?? cls, ...(profile === "dev" ? { customProfile: true as const } : {}) } : {}) };
     if (external) { const prior = this.d.board.imported(external.repo, external.issue); if (prior) return prior; }
     if (reserved) this.requireCapabilities({ ...draft, signals, ...(external ? { external } : {}) }, reserved);
+    this.warmRepository({ refs: draft.refs, plan });
+    const repositoryMismatch = !this.isPii({ signals }) && this.repositories.mismatch(draft.refs, plan);
     let task = this.d.board.propose(by, { ...draft, plan, ...(external ? { external } : {}), ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals, ...(backlog ? { backlog: true } : {}) });
+    if (repositoryMismatch) this.releaseNotice(`task #${task.id}: refs and plan name different repositories; check refs.repo before editing`);
     if (this.d.coordination) this.coordinationModes.set(task.id, this.d.coordination());
     created?.();
     if (screening) task = this.screenedTask(task, screened);
@@ -1553,9 +1572,15 @@ export class Tasks {
    * Paths from refs and plan, symbols from the plan: the places a task says it touches (issue #31). Models write paths
    * absolute or relative: one inside the project is compared in its project-relative spelling.
    */
-  private places(task: Task): { paths: string[]; symbols: string[] } {
-    const paths = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])].map((p) => this.projectPath(p));
-    return { paths: [...new Set(paths)], symbols: [...(task.plan?.symbols ?? []), ...(task.plan?.sections ?? []).map(v => `section ${v}`), ...(task.plan?.sources ?? []).map(v => `source ${v}`)] };
+  private warmRepository(task: Pick<Task, "refs" | "plan">): void {
+    const scope = this.repositories.scope(task.refs);
+    if (scope !== this.repositories.project) for (const path of [...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])]) this.repositories.relativePath(scope, path);
+  }
+
+  private places(task: Task): { repositoryKey: string; paths: string[]; symbols: string[] } {
+    const scope = this.repositories.scope(task.refs);
+    const paths = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])].map((p) => scope === this.repositories.project ? this.projectPath(p) : normPath(this.repositories.relativePath(scope, p)));
+    return { repositoryKey: scope.key, paths: [...new Set(paths)], symbols: [...(task.plan?.symbols ?? []), ...(task.plan?.sections ?? []).map(v => `section ${v}`), ...(task.plan?.sources ?? []).map(v => `source ${v}`)] };
   }
 
   private roots?: string[];
@@ -1579,6 +1604,7 @@ export class Tasks {
     return this.d.board.list().flatMap((t) => {
       if (t.id === task.id || !t.owner || t.owner === task.owner || t.owner === this.releasing || !OPEN.includes(t.state) || this.isPii(t)) return [];
       const theirs = this.places(t);
+      if (mine.repositoryKey !== theirs.repositoryKey) return [];
       const paths = task.profile && t.profile && (task.plan?.sections?.length && t.plan?.sections?.length) ? [] : mine.paths.filter((p) => theirs.paths.some((q) => samePlace(p, q)));
       const symbols = mine.symbols.filter((x) => theirs.symbols.includes(x));
       return paths.length || symbols.length ? [{ task: t, paths, symbols }] : [];
@@ -2442,18 +2468,22 @@ export class Tasks {
     const base = task.sdlc ? stageDefinition(config, task.sdlc.stage)?.base : undefined;
     return base === "build" || base === "implement";
   }
-  async acceptReviewed(by: PeerId, id: unknown, plan?: unknown): Promise<Task> {
+  async acceptReviewed(by: PeerId, id: unknown, plan?: unknown, refs?: unknown): Promise<Task> {
+    const metadata = acceptRefs(refs);
     const task = this.need(id, false, true);
     this.mine(task, by, "owner", true);
     this.acceptanceCapacity(task);
-    if ((this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode === "off" || !this.isBuildTask(task)) return this.accept(by, id, plan);
+    if (metadata && !this.isPii(task) && (!this.nameable(metadata.repo!) || looksSecret(metadata.repo!) || this.aboutPrivatePath("", metadata.repo!, task))) throw new PreEffectToolRefusal("this repository metadata is private or sensitive and is not kept");
+    const draft = metadata ? { ...task, refs: { ...task.refs, ...metadata } } : task;
+    this.warmRepository(draft);
+    if ((this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode === "off" || !this.isBuildTask(task)) return this.accept(by, id, plan, metadata);
     await this.specGate(by, id);
-    await this.planEntryGate(by, task);
+    await this.planEntryGate(by, draft);
     const current = this.need(id, false, true);
     this.mine(current, by, "owner", true);
     if (current.history.length !== task.history.length || current.owner !== task.owner) throw new PreEffectToolRefusal("task changed during build admission");
     this.reviewedAdmissions.set(current.id, { flow: current.history.length, owner: current.owner });
-    try { return this.accept(by, id, plan); }
+    try { return this.accept(by, id, plan, metadata); }
     finally { this.reviewedAdmissions.delete(current.id); }
   }
 
@@ -2494,7 +2524,8 @@ export class Tasks {
    * With a plan, the owners of overlapping tasks get it as a ride-along line, and an overlap only the plan reveals is
    * announced like one found at assignment (issue #31).
    */
-  accept(by: PeerId, id: unknown, plan?: unknown): Task {
+  accept(by: PeerId, id: unknown, plan?: unknown, refs?: unknown): Task {
+    const metadata = acceptRefs(refs);
     const task = this.need(id, false, true);
     this.mine(task, by, "owner", true);
     this.ready(task, true);
@@ -2521,10 +2552,15 @@ export class Tasks {
     if (cleaned && !this.isPii(task) && this.isPii({ signals: this.signalsFor({ title: "", detail: planText(cleaned), refs: {}, plan: cleaned }) })) {
       throw new PreEffectToolRefusal("this plan matches a PII pattern and is not kept: other owners would see it");
     }
+    if (metadata && !this.isPii(task) && (!this.nameable(metadata.repo!) || looksSecret(metadata.repo!) || this.aboutPrivatePath("", metadata.repo!, task))) throw new PreEffectToolRefusal("this repository metadata is private or sensitive and is not kept");
+    const draft = { ...task, refs: { ...task.refs, ...metadata }, ...(cleaned ? { plan: cleaned } : {}) };
+    this.warmRepository(draft);
+    const repositoryChanged = this.repositories.scope(task.refs).key !== this.repositories.scope(draft.refs).key;
     const before = new Set(this.overlapHits(task).map((h) => h.task.id));
-    const next = this.d.board.update(task.id, by, "accepted", { state: "in_progress", ...(cleaned ? { plan: cleaned } : {}) });
+    const next = this.d.board.update(task.id, by, "accepted", { state: "in_progress", ...(cleaned ? { plan: cleaned } : {}), ...(metadata ? { refs: metadata } : {}) });
     this.d.notify(`task ${this.publicTitle(next)} accepted by ${by}`);
-    if (cleaned) {
+    if (repositoryChanged) this.cohorts.leave(next.id);
+    if (cleaned || metadata) {
       const hits = this.overlapHits(next);
       this.formCohort(next, hits);
       const fresh = hits.filter((h) => !before.has(h.task.id));
@@ -2660,7 +2696,9 @@ export class Tasks {
     if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
     this.checking.set(task.id, task.owner);
-    const pending = this.d.board.update(task.id, by, "done (checking)", { refs: cleanRefs(refs) }, summary, { withheld: withheld || undefined });
+    const checkedRefs = cleanRefs(refs);
+    this.warmRepository({ ...task, refs: { ...task.refs, ...checkedRefs } });
+    const pending = this.d.board.update(task.id, by, "done (checking)", { refs: checkedRefs }, summary, { withheld: withheld || undefined });
     this.releaseNotice(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
     const seen = { events: pending.history.length, owner: pending.owner };
     this.pendingChecks++;
@@ -2700,6 +2738,7 @@ export class Tasks {
         const at = [...u.history].reverse().find((h) => h.event === "done");
         if (u.owner === t.owner || !at || at.at < handedAt(t)) return [];
         const theirs = this.places(u);
+        if (mine.repositoryKey !== theirs.repositoryKey) return [];
         const paths = t.profile && u.profile && (t.plan?.sections?.length && u.plan?.sections?.length) ? [] : mine.paths.filter((p) => theirs.paths.some((q) => samePlace(p, q)));
         const symbols = mine.symbols.filter((x) => theirs.symbols.includes(x));
         return paths.length || symbols.length ? [this.completedNotice(u, { task: t, paths, symbols }, at.note, at.withheld)] : [];
@@ -2809,7 +2848,9 @@ export class Tasks {
     const reviewCost: ReviewCost | undefined = reviewer && task.plan && (task.plan.review || task.plan.ci)
       ? { ...cleanCostPlan(task.plan), ...(admission?.ready && admission.head ? { head: admission.head } : {}) } : undefined;
     const routedSummary = selection?.reviewSelection?.blocked ? `${summary ?? ""}\nReview routing: ${this.assignmentNote("pool unavailable", selection)}`.trim() : summary;
-    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", ...(selection ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: cleanRefs(refs) }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { withheld: withheld || undefined, ...this.reviewMetadata(selection), ...(reviewCost ? { reviewCost } : {}) });
+    const completedRefs = cleanRefs(refs);
+    this.warmRepository({ ...task, refs: { ...task.refs, ...completedRefs } });
+    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", ...(selection ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { withheld: withheld || undefined, ...this.reviewMetadata(selection), ...(reviewCost ? { reviewCost } : {}) });
     this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`, withheld);
     this.tellCompleted(next, summary, withheld);
@@ -2869,7 +2910,9 @@ export class Tasks {
       const t = this.d.board.get(id);
       if (!t || this.isPii(t)) return [];
       const done = [...t.history].reverse().find((h) => h.event === "done");
-      return [this.completedNotice(t, { task, paths: this.places(task).paths.filter((p) => this.places(t).paths.some((q) => samePlace(p, q))), symbols: [] }, done?.note, done?.withheld)];
+      const mine = this.places(task), theirs = this.places(t);
+      if (mine.repositoryKey !== theirs.repositoryKey) return [];
+      return [this.completedNotice(t, { task, paths: mine.paths.filter((p) => theirs.paths.some((q) => samePlace(p, q))), symbols: [] }, done?.note, done?.withheld)];
     });
     return lines.length ? lines.join("\n") : undefined;
   }

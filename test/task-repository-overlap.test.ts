@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +8,7 @@ import { BasePeer } from "../src/hub/peers.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { TASK_TOOLS } from "../src/hub/hub-tools.ts";
+import { resolveProfile } from "../src/hub/profiles.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
 
@@ -18,7 +19,7 @@ class Peer extends BasePeer {
   async stop() { this.setState("offline"); }
   async deliver() {}
 }
-async function fixture() {
+async function fixture(allPlanKeys = false) {
   const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-repo-overlap-")));
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const hub = join(dir, "hub"), sibling = join(dir, "sibling");
@@ -34,10 +35,12 @@ async function fixture() {
   const bus = new Bus({ batchMs: 0 });
   for (const id of ["codex", "kimi", "local"]) { const peer = new Peer(id); bus.add(peer); await peer.start(); }
   const notices: string[] = [], records: Parameters<NonNullable<TasksDeps["recordOverlap"]>>[] = [];
-  const tasks = new Tasks({ board, bus, cwd: hub, project: "hub", repository: "example/hub", routing: () => loadRouting(hub), wipLimit: () => 16,
+  const routing = loadRouting(hub);
+  const profileData = allPlanKeys ? resolveProfile("dev", { plan_keys: ["paths", "symbols", "sections", "sources", "signatures", "insertion_points"] }) : undefined;
+  const tasks = new Tasks({ ...(profileData ? { profileData } : {}), board, bus, cwd: hub, project: "hub", repository: "example/hub", routing: () => routing, wipLimit: () => 16,
     coordination: () => true, capable: () => true, notify: line => notices.push(line), recordOverlap: (...args) => records.push(structuredClone(args)) });
   const claim = (owner: string, refs: TaskRefs, plan: TaskPlan = {}) => tasks.propose(owner, { owner, title: "repository fixture", class: "implement", refs, plan });
-  return { dir, hub, sibling, tasks, board, bus, notices, records, claim };
+  return { dir, hub, sibling, tasks, board, bus, notices, records, claim, routing };
 }
 
 test("#476 sibling absolute refs and relative test plan never overlap the hub repository", async () => {
@@ -45,6 +48,14 @@ test("#476 sibling absolute refs and relative test plan never overlap the hub re
   await f.claim("codex", { paths: [join(f.sibling, "test", "x.test.ts")] }, { paths: ["test"], symbols: ["sharedSymbol"] });
   const mine = await f.claim("kimi", { paths: ["test/x.test.ts"] }, { symbols: ["sharedSymbol"] });
   expect(f.tasks.overlaps(mine)).toBe(""); expect(f.records).toEqual([]); expect(f.tasks.cohorts.list()).toEqual([]);
+});
+
+for (const inferredFirst of [false, true]) test(`#476 explicit slug with an absolute plan shares its inferred checkout (inferred first: ${inferredFirst})`, async () => {
+  const f = await fixture();
+  const inferred = () => f.claim("codex", { paths: [join(f.sibling, "test", "x.test.ts")] });
+  const named = () => f.claim("kimi", { repo: "example/sibling" }, { paths: [join(f.sibling, "test", "x.test.ts")] });
+  if (inferredFirst) { await inferred(); const mine = await named(); expect(f.tasks.overlaps(mine)).toContain("#1 (owner codex)"); }
+  else { await named(); const mine = await inferred(); expect(f.tasks.overlaps(mine)).toContain("#1 (owner kimi)"); }
 });
 
 for (const explicit of ["slug", "path", "alias"] as const) test(`#476 same sibling repository overlaps through inferred and explicit ${explicit} identity`, async () => {
@@ -65,8 +76,9 @@ for (const repo of ["example/hub", "."] as const) test(`#476 explicit hub ${repo
 });
 
 for (const field of ["symbols", "sections", "sources"] as const) test(`#476 ${field} are compared only inside one repository`, async () => {
-  const f = await fixture(), plan = { [field]: ["shared-reference"] };
-  await f.claim("codex", { repo: "example/sibling" }, plan);
+  const f = await fixture(field !== "symbols"), plan: TaskPlan = { [field]: ["shared-reference"] };
+  const first = await f.claim("codex", { repo: "example/sibling" }, plan);
+  expect(first.plan?.[field]).toEqual(["shared-reference"]);
   const mine = await f.claim("kimi", {}, plan);
   expect(f.tasks.overlaps(mine)).toBe(""); expect(f.records).toEqual([]);
 });
@@ -102,4 +114,60 @@ test("#476 accepting repository metadata updates only through Tasks and scopes t
   const accept = f.tasks.accept.bind(f.tasks) as (by: string, id: number, plan?: unknown, refs?: unknown) => Task;
   const mine = accept("kimi", assigned.id, { paths: ["test/x.test.ts"] }, { repo: "example/sibling" });
   expect(mine.refs.repo).toBe("example/sibling"); expect(f.tasks.overlaps(mine)).toContain("#1 (owner codex)");
+});
+
+test("#476 correcting a task repository removes its obsolete cohort membership", async () => {
+  const f = await fixture();
+  const incumbent = await f.claim("codex", { paths: ["test"] });
+  const moved = await f.claim("kimi", { paths: ["test/x.test.ts"] });
+  expect(f.tasks.cohorts.of(moved.id)?.members.has(incumbent.id)).toBe(true);
+  const accept = f.tasks.accept.bind(f.tasks) as (by: string, id: number, plan?: unknown, refs?: unknown) => Task;
+  const next = accept("kimi", moved.id, undefined, { repo: "example/sibling" });
+  expect(f.tasks.overlaps(next)).toBe("");
+  expect(f.tasks.cohorts.of(next.id)).toBeUndefined();
+});
+
+
+test("#476 accept repository metadata cannot alter file intent or persist sensitive names", async () => {
+  const f = await fixture();
+  const task = await f.tasks.propose("user", { title: "accept guard fixture", class: "implement", owner: "kimi" });
+  const accept = f.tasks.accept.bind(f.tasks) as (by: string, id: number, plan?: unknown, refs?: unknown) => Task;
+  const before = f.board.get(task.id)!;
+  expect(() => accept("kimi", task.id, undefined, { paths: ["other.ts"] })).toThrow("only repo");
+  f.routing.signals.pii_patterns.push("SYNTH-PRIVATE-REPO");
+  expect(() => accept("kimi", task.id, undefined, { repo: "SYNTH-PRIVATE-REPO" })).toThrow("private or sensitive");
+  const synthetic = ["sk", "A".repeat(32)].join("-");
+  expect(() => accept("kimi", task.id, undefined, { repo: synthetic })).toThrow("private or sensitive");
+  expect(f.board.get(task.id)).toEqual(before);
+});
+
+
+test("#476 unchanged repository metadata never repeats Git probes on overlap reads", async () => {
+  const f = await fixture();
+  const repositories = f.tasks["repositories"] as unknown as { git(dir: string, args: string[]): string | undefined };
+  const read = spyOn(repositories, "git");
+  try {
+    await f.claim("codex", { paths: ["test"] });
+    expect(read.mock.calls).toHaveLength(0);
+    const external = await f.claim("kimi", { paths: [join(f.sibling, "test", "x.test.ts")] }, { paths: ["test"] });
+    const probes = read.mock.calls.length;
+    expect(probes).toBeGreaterThan(0);
+    for (let count = 0; count < 20; count++) f.tasks.overlaps(external);
+    expect(read.mock.calls).toHaveLength(probes);
+  } finally { read.mockRestore(); }
+});
+
+test("#476 the authenticated accept tool carries repository metadata through the host", async () => {
+  const f = await fixture();
+  const assigned = await f.tasks.propose("user", { title: "host accept fixture", class: "implement", owner: "kimi" });
+  const { DEFAULT_CONFIG, startDaemon } = await import("../src/hub/daemon.ts");
+  const { ControlClient } = await import("../src/hub/control-client.ts");
+  const daemon = await startDaemon({ cwd: f.hub, stateDir: f.hub, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
+  const owner = await ControlClient.connect(f.hub, { role: "tools", peer: "kimi" });
+  try {
+    const reply = await owner.request({ t: "task", op: "hub_task_accept", args: { id: assigned.id, refs: { repo: "example/sibling" }, plan: { paths: ["test"] } } });
+    expect(reply.ok).toBe(true);
+    expect(f.board.get(assigned.id)?.refs.repo).toBe("example/sibling");
+  } finally { owner.close(); await daemon.stop(); }
 });
