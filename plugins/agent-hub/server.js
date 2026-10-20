@@ -27246,7 +27246,7 @@ var TOOLS_INSTRUCTIONS = ["agent-hub task tools for this project. Messages from 
 `);
 var log = (line) => console.error(`[agent-hub] ${line}`);
 var text4 = (s) => ({ content: [{ type: "text", text: s }] });
-var server = new Server({ name: "agent-hub", version: VERSION3 }, toolsMode ? { capabilities: { tools: {} }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: channel ? { experimental: { "claude/channel": {} }, tools: {} } : { tools: {} }, instructions: INSTRUCTIONS });
+var server = new Server({ name: "agent-hub", version: VERSION3 }, toolsMode ? { capabilities: { tools: { listChanged: true } }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: channel ? { experimental: { "claude/channel": {} }, tools: { listChanged: true } } : { tools: { listChanged: true } }, instructions: INSTRUCTIONS });
 var inbox = [];
 var hub;
 var detached;
@@ -27378,6 +27378,8 @@ async function connectLoop() {
       standingBy = false;
       detached = undefined;
       log(`connected to hub as "${peerId}"`);
+      if (listedTools !== undefined)
+        reannounce(client).catch(() => {});
       code = await new Promise((r) => {
         client.onClose = (value, reason) => {
           closeReason = reason;
@@ -27406,8 +27408,26 @@ async function connectLoop() {
     await new Promise((r) => setTimeout(r, Math.min(1000 * 2 ** Math.max(attempt, 0), MAX_RECONNECT_DELAY_MS)));
   }
 }
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const lifecycle = await activeLifecycle(stateDir, peerId, projectRoot2, hub);
+var listedTools;
+var toolKey = (list) => JSON.stringify(list.tools);
+async function reannounce(client) {
+  for (let tries = 0;; tries++) {
+    if (hub !== client)
+      return;
+    const lifecycle = await activeLifecycle(stateDir, peerId, projectRoot2, client);
+    if (lifecycle === undefined && tries < 2) {
+      await new Promise((r) => setTimeout(r, 1000));
+      continue;
+    }
+    if (lifecycle === undefined || toolKey(toolListFor(lifecycle)) !== listedTools)
+      await server.sendToolListChanged();
+    return;
+  }
+}
+async function buildToolList() {
+  return toolListFor(await activeLifecycle(stateDir, peerId, projectRoot2, hub));
+}
+function toolListFor(lifecycle) {
   return {
     tools: [
       {
@@ -27442,6 +27462,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       ...CONDUCTOR_TOOLS
     ]
   };
+}
+server.setRequestHandler(ListToolsRequestSchema, async () => {
+  const list = await buildToolList();
+  listedTools = toolKey(list);
+  return list;
 });
 async function callTool(req) {
   const { name, arguments: args } = req.params;
