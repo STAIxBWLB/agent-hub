@@ -19,10 +19,15 @@ export function decodeAgyHook(event: string, value: unknown): NativeFactsInput |
   if ((event === "PreToolUse" || event === "PostToolUse") && (!call || typeof call.name !== "string" || call.name.length > 128 || !record(call.args))) return;
   const native = call?.args as Record<string, unknown> | undefined;
   // Only the observed native read is classified. Unobserved edits never receive a scoped grant or effect attribution.
-  const observedRead = call?.name === "view_file" && typeof native?.AbsolutePath === "string";
+  // 1.4.2 names it view_file(AbsolutePath); 1.4.3 renamed it read_file(Path, optional StartLine/EndLine).
+  const readPath = call?.name === "view_file" ? native?.AbsolutePath : call?.name === "read_file" ? native?.Path : undefined;
+  const observedRead = typeof readPath === "string";
+  // A line range is a partial read: carry it as offset/limit so it never counts as a whole-file view.
+  const range = observedRead && Number.isSafeInteger(native?.StartLine) && (native!.StartLine as number) > 0
+    ? { offset: native!.StartLine as number, ...(Number.isSafeInteger(native?.EndLine) && (native!.EndLine as number) >= (native!.StartLine as number) ? { limit: (native!.EndLine as number) - (native!.StartLine as number) + 1 } : {}) } : {};
   const phase = ({ SessionStart: "session", PreInvocation: "start", PostInvocation: "post", PreToolUse: "pre", PostToolUse: "post", Stop: "stop" } as const)[event as typeof EVENTS[number]];
   return { event: event as NativeFactsInput["event"], phase, sessionId: value.conversationId, transcriptPath: value.transcriptPath,
-    workspacePaths: value.workspacePaths as string[], tool: observedRead ? "Read" : typeof call?.name === "string" ? call.name : "", input: observedRead ? { file_path: native!.AbsolutePath } : native ?? {},
+    workspacePaths: value.workspacePaths as string[], tool: observedRead ? "Read" : typeof call?.name === "string" ? call.name : "", input: observedRead ? { file_path: readPath, ...range } : native ?? {},
     ...(Number.isSafeInteger(value.stepIdx) && (value.stepIdx as number) >= 0 ? { toolUseId: `${value.conversationId}:${value.stepIdx}` } : {}),
     ...(Number.isSafeInteger(value.invocationNum) && (value.invocationNum as number) >= 0 ? { invocation: value.invocationNum as number } : {}),
     ...(event === "Stop" ? { fullyIdle: value.fullyIdle as boolean, terminationReason: typeof value.terminationReason === "string" ? value.terminationReason : "" } : {}) };

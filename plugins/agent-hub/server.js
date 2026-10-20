@@ -8599,7 +8599,9 @@ function decodeAgyHook(event, value) {
   if ((event === "PreToolUse" || event === "PostToolUse") && (!call || typeof call.name !== "string" || call.name.length > 128 || !record3(call.args)))
     return;
   const native = call?.args;
-  const observedRead = call?.name === "view_file" && typeof native?.AbsolutePath === "string";
+  const readPath = call?.name === "view_file" ? native?.AbsolutePath : call?.name === "read_file" ? native?.Path : undefined;
+  const observedRead = typeof readPath === "string";
+  const range = observedRead && Number.isSafeInteger(native?.StartLine) && native.StartLine > 0 ? { offset: native.StartLine, ...Number.isSafeInteger(native?.EndLine) && native.EndLine >= native.StartLine ? { limit: native.EndLine - native.StartLine + 1 } : {} } : {};
   const phase = { SessionStart: "session", PreInvocation: "start", PostInvocation: "post", PreToolUse: "pre", PostToolUse: "post", Stop: "stop" }[event];
   return {
     event,
@@ -8608,7 +8610,7 @@ function decodeAgyHook(event, value) {
     transcriptPath: value.transcriptPath,
     workspacePaths: value.workspacePaths,
     tool: observedRead ? "Read" : typeof call?.name === "string" ? call.name : "",
-    input: observedRead ? { file_path: native.AbsolutePath } : native ?? {},
+    input: observedRead ? { file_path: readPath, ...range } : native ?? {},
     ...Number.isSafeInteger(value.stepIdx) && value.stepIdx >= 0 ? { toolUseId: `${value.conversationId}:${value.stepIdx}` } : {},
     ...Number.isSafeInteger(value.invocationNum) && value.invocationNum >= 0 ? { invocation: value.invocationNum } : {},
     ...event === "Stop" ? { fullyIdle: value.fullyIdle, terminationReason: typeof value.terminationReason === "string" ? value.terminationReason : "" } : {}
