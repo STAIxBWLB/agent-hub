@@ -9,7 +9,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
-import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
+import { MAX_HOP, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { Capture } from "../src/memory/capture.ts";
 import { MemoryClient } from "../src/memory/client.ts";
@@ -626,4 +626,29 @@ test("daemon local expiry text and N2 stop use real approval timeout without rep
 test("local worker publishes resolved custom profile classes and selected plan fields to its actual provider (#259)",async()=>{
   const {resolveProfile}=await import("../src/hub/profiles.ts");const data=resolveProfile("research",{classes:{annotate:"bulk_edit"},plan_keys:["paths","sources"]});const {model,bus,said}=await setup(()=>({content:"profile schema ready"}),{profile:data,taskTool:async()=>"ok"});bus.publish(newEnvelope("claude","inspect your profile tools"));await until(()=>said.length===1,"local schema response");
   const schema=model.requests[0]!.body.tools.find((tool:any)=>tool.function.name==="hub_task_propose").function.parameters.properties;expect(schema.class.enum).toContain("annotate");expect(Object.keys(schema.plan.properties)).toEqual(["paths","sources"]);
+});
+
+
+test("local hub_send reports a hop-capped implicit reply instead of sent (#550)", async () => {
+  const ctx = await setup(body => body.messages.some(message => message.role === "tool")
+    ? { content: "[FYI] finished" }
+    : { tool_calls: [toolCall("hub_send", { text: "reply past cap" })] });
+  const dropped: string[] = [];
+  ctx.bus.tap(event => { if (event.t === "envelope" && event.dropped && event.env.body === "reply past cap") dropped.push(event.dropped); });
+  ctx.bus.publish({ ...newEnvelope("claude", "reply to this", { to: ["local"] }), hop: MAX_HOP });
+  await until(() => ctx.model.requests.length >= 2 && ctx.peer.state === "idle", "tool result after capped reply");
+  expect(dropped).toEqual(["hop"]);
+  expect(ctx.model.requests[1]!.body.messages.find(message => message.role === "tool")?.content)
+    .toBe(`not delivered: reply chain reached the hop cap (${MAX_HOP}); send a new message without reply_to`);
+});
+
+test("local hub_send preserves FYI recording and a genuine empty audience (#550)", async () => {
+  for (const text of ["[FYI] progress recorded", "no attached audience"]) {
+    const ctx = await setup(body => body.messages.some(message => message.role === "tool")
+      ? { content: "[FYI] finished" }
+      : { tool_calls: [toolCall("hub_send", { text })] });
+    ctx.bus.publish(newEnvelope("claude", "reply to this", { to: ["local"] }));
+    await until(() => ctx.model.requests.length >= 2 && ctx.peer.state === "idle", "ordinary send result");
+    expect(ctx.model.requests[1]!.body.messages.find(message => message.role === "tool")?.content).toBe("sent");
+  }
 });
