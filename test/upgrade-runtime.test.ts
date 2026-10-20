@@ -104,6 +104,7 @@ test("an unmanaged Claude with a stale session record is planned reconnect-only 
 
     const plan = await makeUpgradePlan("restart", VERSION, project.root, run);
     expect(plan.projects[0]?.reconnectOnly).toEqual(["claude"]);
+    expect((plan.projects[0] as PlannedProject & { unrecordedTerminals?: string[] }).unrecordedTerminals).toEqual(["claude"]);
     expect(plan.projects[0]?.blockers).toEqual([]);
     expect(plan.projects[0]?.terminals).toEqual([]);
     expect(JSON.stringify(plan)).not.toContain("a9ac5acc-stale");
@@ -124,6 +125,57 @@ test("an unmanaged Claude with a stale session record is planned reconnect-only 
     expect(invalid.projects[0]?.blockers.some((b) => b.startsWith("claude: a launch record in terminal-recovery.json that may be its launcher's cannot be read"))).toBe(true);
   } finally {
     claude.close(); await daemon.stop();
+    if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
+    rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+for (const peer of ["codex", "pi"] as const) test(`#482 attached ${peer} TUI without a current live launcher or Orca session proof stays unrecorded, never fresh`, async () => {
+  const temp = realPath(mkdtempSync(join(tmpdir(), "ahub-unrecorded-native-")));
+  mkdirSync(join(temp, "project"));
+  const previousHome = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(temp, "home");
+  const registry = new Registry(join(temp, "home", "registry.db"));
+  const project = registry.register(join(temp, "project"));
+  registry.close();
+  const daemon = await startDaemon({ cwd: project.root, stateDir: project.stateDir, projectId: project.id, instanceId: "i-current", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [] } } });
+  class NativeTuiLike extends BasePeer {
+    async deliver(): Promise<void> {}
+    async start(): Promise<void> { this.setState("idle"); }
+    async stop(): Promise<void> { this.setState("offline"); }
+    recoveryMetadata(): Record<string, unknown> {
+      return { launch: { kind: peer }, ...(peer === "codex" ? { threadId: "recorded-thread" } : { sessionId: "recorded-session", sessionFile: join(temp, "pi-session.jsonl"), args: { mode: "tui" } }) };
+    }
+  }
+  const native = new NativeTuiLike(peer);
+  daemon.bus.add(native);
+  await native.start();
+  const terminal = { handle: "term-live", incarnationId: "inc-live", worktreeId: "wt", worktreePath: project.root, connected: true };
+  const run = async (argv: string[]) => ({ code: 0, stdout: JSON.stringify({ ok: true, result: argv[2] === "list" ? { terminals: [terminal] } : { terminal } }), stderr: "" });
+  try {
+    for (const evidence of ["absent", "current-gone", "older-live"] as const) {
+      const file = join(project.stateDir, "terminal-recovery.json");
+      if (evidence === "absent") rmSync(file, { force: true });
+      else writeFileSync(file, JSON.stringify([{ peer, projectRoot: project.root, stateDir: project.stateDir,
+        instanceId: evidence === "older-live" ? "i-older" : "i-current", launcherPid: process.pid,
+        launcherSignature: evidence === "older-live" ? processSignature(process.pid) : "signature-of-replaced-process",
+        launchId: `launch-${evidence}`, handle: terminal.handle, incarnationId: terminal.incarnationId, worktreeId: terminal.worktreeId, env: {} }]));
+      const plan = await makeUpgradePlan("restart", VERSION, project.root, run);
+      const planned = plan.projects[0] as PlannedProject & { unrecordedTerminals?: string[] };
+      expect(planned.source.peers.find(row => row.id === peer)?.state).toBe("idle");
+      expect(planned.unrecordedTerminals).toEqual([peer]);
+      expect(planned.terminals).toEqual([]);
+      expect(planned.freshStart).toBeUndefined();
+      const guidance = planned.blockers.join("\n");
+      expect(guidance).toContain("attached, launcher unrecorded");
+      expect(guidance).toMatch(/end/i);
+      expect(guidance).toMatch(/resume/i);
+      expect(guidance).not.toContain("restarts headless");
+      expect(guidance).not.toContain("restarts as a new session");
+    }
+  } finally {
+    await daemon.stop();
     if (previousHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previousHome;
     rmSync(temp, { recursive: true, force: true });
   }
