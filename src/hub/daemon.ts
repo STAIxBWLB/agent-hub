@@ -2486,6 +2486,18 @@ export async function startDaemon(opts: DaemonOptions) {
     const r = budget.record(id); // one read per peer: status.json is rewritten on every bus event
     return r ? { paused: `budget: ${r.reason}, resets ${new Date(r.resetsAt).toLocaleTimeString()}` } : manualPaused.has(id) && bus.stateOf(id) === "offline" ? { paused: "manual" } : {};
   };
+  /**
+   * #572 AC1: an ACP peer's turn cannot take a message mid-turn unless its adapter has a `steer` (jcode's does; headless Kimi
+   * and Qwen do not). The hub never cancels a turn to deliver, so an `important` message waits in the queue; once it has
+   * waited past `budget.stale_min` the status says so, and the person decides. Read-only.
+   */
+  const importantWaitingStatus = (id: PeerId, peer: PeerAdapter | undefined): Record<string, unknown> => {
+    if (!(peer instanceof AcpPeer) || (peer as PeerAdapter).steer || bus.stateOf(id) !== "busy") return {};
+    const since = bus.oldestQueuedImportantAt(id);
+    if (since === undefined || Date.now() - since < config.budget.stale_min * 60_000) return {};
+    const count = bus.queuedImportant(id), minutes = Math.floor((Date.now() - since) / 60_000);
+    return { importantWaitingSince: since, importantWaitingNote: `${count} important message${count === 1 ? "" : "s"} waiting on a busy ACP peer for ${minutes} min; its turn is never cancelled to deliver, so decide whether to stop it` };
+  };
   /** Why a paused peer gets nothing; the bus pause itself is the hold. */
   const pauseReason = (id: PeerId) => {
     const r = budget.record(id), hold = conductorHolds.get(id);
@@ -2718,7 +2730,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof WsPeer && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
+      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(p instanceof LocalPeer && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(p instanceof WsPeer && p.claiming ? { claiming: true } : {}), ...(p instanceof WsPeer && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(p instanceof PiPeer ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
     ),
     taskWip: Object.fromEntries(peerIds.map(id => [id, { wip: tasks.wip(id), wipLimit: tasks.wipLimit(id) }])),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
