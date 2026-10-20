@@ -62,6 +62,7 @@ export function terminalOwnerReads(executable = orcaExecutable()): { run: Comman
 export class TerminalLaunches {
   private readonly candidates = new Map<string, { row: RecordedTerminalLaunch; published?: string }>();
   private running = false;
+  private lastCollection: number | undefined;
   private stopped = false;
   private readonly settlementWaiters: Array<() => void> = [];
   constructor(private readonly opts: {
@@ -73,43 +74,50 @@ export class TerminalLaunches {
   }) {}
 
   register(row: RecordedTerminalLaunch): void {
-    if (this.stopped || processLiveness(row.launcherPid, row.launcherSignature, (this.opts.signature ?? processSignature)) !== "live") throw new Error("terminal launcher identity unavailable");
+    if (this.stopped || processLiveness(row.launcherPid, row.launcherSignature, this.opts.signature ?? processSignature) !== "live") throw new Error("terminal launcher identity unavailable");
     const previous = this.candidates.get(row.launchId);
     if (previous) {
       if (JSON.stringify(previous.row) !== JSON.stringify(row)) throw new Error("terminal launch identity changed");
       return;
     }
-    if (this.candidates.size >= 64) {
-      const states = new Map<string, ReturnType<typeof processLiveness>>();
-      for (const [id, candidate] of this.candidates) {
-        const key = `${candidate.row.launcherPid}:${candidate.row.launcherSignature}`;
-        const state = states.get(key) ?? processLiveness(candidate.row.launcherPid, candidate.row.launcherSignature, (this.opts.signature ?? processSignature));
-        states.set(key, state);
-        if (state === "gone") this.candidates.delete(id);
-      }
-    }
+    if (this.candidates.size >= 64) this.collectGone();
     // ponytail: 64 live/unknown launch candidates per daemon. Fail closed at the cap; a durable owner ledger can extend it.
     if (this.candidates.size >= 64) throw new Error("too many pending terminal launches");
     this.candidates.set(row.launchId, { row });
+    this.lastCollection ??= (this.opts.now ?? Date.now)();
+  }
+
+  private collectGone(): void {
+    this.lastCollection = (this.opts.now ?? Date.now)();
+    const states = new Map<string, ReturnType<typeof processLiveness>>();
+    for (const [id, { row }] of this.candidates) {
+      const key = `${row.launcherPid}:${row.launcherSignature}`;
+      const state = states.get(key) ?? processLiveness(row.launcherPid, row.launcherSignature, this.opts.signature ?? processSignature);
+      states.set(key, state);
+      if (state === "gone") this.candidates.delete(id);
+    }
   }
 
   async reconcile(): Promise<void> {
     if (this.running || this.stopped) return;
     this.running = true;
     try {
+      // Native ownership is in memory. Only publication needs an immediate process probe;
+      // collect exited launchers every 30 s (or at admission cap), not on the daemon's 1 s tick.
+      if (this.lastCollection !== undefined && (this.opts.now ?? Date.now)() - this.lastCollection >= 30_000) this.collectGone();
       for (const [id, candidate] of this.candidates) {
         const { row } = candidate;
-        const liveness = processLiveness(row.launcherPid, row.launcherSignature, (this.opts.signature ?? processSignature));
-        if (liveness === "gone") { this.candidates.delete(id); continue; }
-        if (liveness !== "live") continue;
         const proof = this.opts.owner(row);
         if (!proof || !proof.isCurrent() || candidate.published === proof.generation) continue;
+        const liveness = processLiveness(row.launcherPid, row.launcherSignature, this.opts.signature ?? processSignature);
+        if (liveness === "gone") { this.candidates.delete(id); continue; }
+        if (liveness !== "live") continue;
         if (proof.nativePid !== undefined) {
           const table = await readProcessTable();
           if (!table || !descendantsOf(table, row.launcherPid).some(child => child.pid === proof.nativePid)) continue;
         }
         const current = () => !this.stopped && this.candidates.get(id) === candidate && proof.isCurrent() &&
-          processLiveness(row.launcherPid, row.launcherSignature, (this.opts.signature ?? processSignature)) === "live";
+          processLiveness(row.launcherPid, row.launcherSignature, this.opts.signature ?? processSignature) === "live";
         try {
           if (current() && await this.opts.publish(row, current)) candidate.published = proof.generation;
         } catch { if (!this.stopped) this.opts.log?.("terminal owner publication unavailable; inspect recovery terminal evidence"); }

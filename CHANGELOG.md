@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Terminal recovery records only a proven native owner, preserves the live row after an unsuccessful second launch, and offers reattach guidance for connected orphaned panes; published unchanged owners skip process probes on ordinary timer ticks. A stale or closed Codex link cannot adopt a thread (#482).
 - `ahub jcode` opens its TUI again: on 0.12.39 it stopped after the first hub turn with `jcode: no managed terminal recovery adapter`, because the launcher tried to record a managed terminal that Jcode does not have (#564).
 - Retire the Switchyard sidecar. Model routes run in process, old tables load as retired settings with direct fallback, and doctor checks every configured routing model alias (#553).
 - Refuse Claude channel plugins from an obsolete recorded launch, stop their reconnect loop, and check live socket ownership before a standing-by session reclaims the peer (#551).
