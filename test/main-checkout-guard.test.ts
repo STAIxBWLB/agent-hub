@@ -46,7 +46,7 @@ test("the default branch comes from origin/HEAD, falling back to main (#572 AC3)
   expect(mainCheckoutWarning(realPath(mkdtempSync(join(tmpdir(), "ahub-not-a-repo-"))), ok)).toBeUndefined();
 });
 
-async function fixture(branch?: string, piiPattern?: string) {
+async function fixture(branch?: string, piiPattern?: string, privatePaths?: string[]) {
   const dir = repo(); if (branch) git(dir, "switch", "-q", "-c", branch);
   if (piiPattern) {
     mkdirSync(join(dir, ".agenthub"), { recursive: true });
@@ -59,7 +59,7 @@ async function fixture(branch?: string, piiPattern?: string) {
   board.update(task.id, "user", "assigned", { owner: "local", reviewer: "codex" });
   board.update(task.id, "local", "accepted", { state: "in_progress" }); board.close();
   const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, batch_ms: 0,
-    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } } as never);
+    config: { ...DEFAULT_CONFIG, ...(privatePaths ? { pii: { paths: privatePaths } } : {}), memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } } as never);
   cleanups.push(() => daemon.stop());
   const client = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => client.close());
   const published: { kind: string; body: string; to?: string[] }[] = [];
@@ -116,3 +116,25 @@ test("a branch name that is not a plain ref, or that the screen refuses, is repl
   git(dir, "switch", "-q", "-c", "fix/caf\u00e9"); // git allows it; it is not a plain ref name, so it is never echoed
   expect(mainCheckoutWarning(dir, ok)).toContain("its name is withheld"); expect(mainCheckoutWarning(dir, ok)).not.toContain("caf");
 });
+
+// Review round 2, I2: the claim is the whole public-text screen (PII pattern, secret shape, private path), not the pattern alone.
+// Every value is synthetic: a secret-shaped string the package's own `looksSecret` refuses, and a path the project marks private.
+for (const [label, branch, privatePaths] of [
+  ["a token-shaped branch name", "fix/ghp_abcdefghijklmnopqrstuvwxyz0123456789", undefined],
+  ["a key-shaped branch name", "fix/AKIAABCDEFGHIJKLMNOP", undefined],
+  ["a branch name that is a private path", "private/notes", ["private/**"]],
+] as const) {
+  test(`${label} never leaves the hub in the done result, the review request, status or status.json (#572 AC3, review round 2 I2)`, async () => {
+    const f = await fixture(branch, undefined, privatePaths ? [...privatePaths] : undefined);
+    const generic = "the main checkout is on a branch other than its default (its name is withheld); move the work to a worktree under .worktrees/";
+    const status = await f.status();
+    expect(status.mainCheckout).toBe(generic);
+    const done = await f.client.request({ t: "task", op: "hub_task_done", args: { id: f.task.id, summary: "done" } });
+    expect(done.ok).toBe(true); expect(done.text).toContain(generic); expect(done.text).not.toContain(branch);
+    expect(f.published.find(env => env.to?.includes("codex"))?.body).not.toContain(branch);
+    const tools = await ControlClient.connect(join(f.dir, ".agenthub", "state"), { role: "tools", peer: "codex" }); cleanups.push(() => tools.close());
+    expect(JSON.stringify((await tools.request({ t: "status" })).status ?? {})).not.toContain(branch);
+    expect(readFileSync(join(f.dir, ".agenthub", "state", "status.json"), "utf8")).not.toContain(branch);
+    expect(JSON.stringify(status)).not.toContain(branch);
+  });
+}

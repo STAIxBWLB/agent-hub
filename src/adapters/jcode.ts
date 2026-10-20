@@ -88,8 +88,12 @@ const STEER_TIMEOUT_MS = 5000;
  * (jcode injects it at the next tool boundary, or when a text-only turn ends). Established on 0.99.0 under an isolated
  * home: ping lists `soft_interrupt_ids`, subscribe with `target_session_id` joins the same session without a new one,
  * `state` says whether a turn runs, and the injection survives this client's disconnect. Nothing here cancels the turn.
+ * `canSend` runs immediately before the soft interrupt is written and names why the hub no longer wants it sent. What
+ * cannot be closed from here is the native side: the server's `state` reply is a snapshot, so a turn that ends and
+ * another that begins inside the server between its reply and the write still receives the message. Such a steer is
+ * acknowledged, adopted by nobody, and held for review; an upstream atomic "steer turn N" request would remove it.
  */
-function nativeSteer(socket: string, cwd: string, sessionId: string, text: string, clientId: string, timeoutMs = STEER_TIMEOUT_MS): Promise<void> {
+function nativeSteer(socket: string, cwd: string, sessionId: string, text: string, clientId: string, timeoutMs = STEER_TIMEOUT_MS, canSend: () => string | undefined = () => undefined): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const conn = createConnection(socket);
     let phase: "ping" | "subscribe" | "state" | "sent" = "ping", buffer = "", finished = false;
@@ -120,6 +124,11 @@ function nativeSteer(socket: string, cwd: string, sessionId: string, text: strin
           phase = "state"; send({ type: "state", id: 3 });
         } else if (phase === "state" && msg.type === "state" && msg.id === 3) {
           if (msg.session_id !== sessionId || msg.is_processing !== true) return fail("the session has no running turn");
+          // The last check before anything is sent (review round 2 I1): the hub's own turn, launch, session and stop state may
+          // have changed during the connect, ping, subscribe and state round trips. Past this write the server may have taken
+          // the message, so it is never refused as unsent again.
+          const changed = canSend();
+          if (changed) return fail(changed);
           phase = "sent"; send({ type: "soft_interrupt", id: 4, content: text, urgent: false, client_id: clientId });
         } else if (phase === "sent" && msg.type === "ack" && msg.id === 4) finish();
       }
@@ -236,8 +245,16 @@ export class JcodePeer extends AcpPeer {
     if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null ||
       !socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino || typeof sessionId !== "string") refuse("owned Jcode server is unavailable");
     // The turn this steer is for. The native acknowledgement is asynchronous: only this exact turn may take the message.
-    const turn = this.currentTurn();
-    try { await nativeSteer(this.socket, this.jcode.cwd, sessionId as string, renderDigest(envs, true), deliveryId ?? crypto.randomUUID(), this.jcode.steerTimeoutMs); }
+    const turn = this.currentTurn(), launch = this.server!, identity = this.socketIdentity; // both proven present above
+    const stillCurrent = (): string | undefined => {
+      if (this.currentTurn() !== turn || this.state !== "busy") return `jcode's turn changed before the steer was sent (${this.state})`;
+      if (this.ending || this.server !== launch || launch.exitCode !== null || launch.signalCode !== null || this.socketIdentity !== identity) return "owned Jcode server changed before the steer was sent";
+      if (super.recoveryMetadata().sessionId !== sessionId) return "jcode's session changed before the steer was sent";
+      const now = lstatSync(this.socket, { throwIfNoEntry: false });
+      if (!now?.isSocket() || now.dev !== identity?.dev || now.ino !== identity.ino) return "owned Jcode socket changed before the steer was sent";
+      return undefined;
+    };
+    try { await nativeSteer(this.socket, this.jcode.cwd, sessionId as string, renderDigest(envs, true), deliveryId ?? crypto.randomUUID(), this.jcode.steerTimeoutMs, stillCurrent); }
     catch (error) {
       if (error instanceof SteerUncertain) {
         if (deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: "steering outcome is uncertain" });

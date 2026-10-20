@@ -63,7 +63,7 @@ export function configureJcodeMcp(cwd: string, stateDir: string, bundle: string,
  * does not stop a project `.mcp.json`). The hub-owned jcode therefore starts every server these files name, besides
  * the hub's own. This lists their names for `ahub doctor`. It reads only `<JCODE_HOME>/mcp.json` and the project's
  * `.jcode/mcp.json`, `.mcp.json` and `.claude/mcp.json`: no other path, no home search.
- * Links are never followed below the trusted root: each controlled directory component (`.jcode`, `.claude`) and the
+ * Links are refused below the trusted root (ceiling: per-component `lstat` plus `O_NOFOLLOW` does not pin a directory against a concurrent same-user swap; that would need fd-relative traversal): each controlled directory component (`.jcode`, `.claude`) and the
  * file itself must be a real directory or a real regular file, and the file is opened without following a link and
  * checked again after the open (review I3). The project root and the home are the hub's own configured paths, so a
  * system alias at or above them (macOS `/var`) stays legitimate. Names only: a command, url, header or environment

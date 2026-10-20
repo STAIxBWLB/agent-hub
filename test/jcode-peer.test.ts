@@ -412,3 +412,41 @@ test("a steer acknowledged after its turn ended is never adopted into the next t
   expect(rig.replies.at(-1)!.opts.to).toEqual(["qwen"]); // B answers only its own sender, never A's steered one
   expect(rig.replies.at(-1)!.opts.inReplyTo.from).toBe("qwen");
 });
+
+test("a steer whose turn changed while the hub waited on the server is refused before anything is sent (#572 AC1, review round 2 I1)", async () => {
+  const dir = realPath(root()), stateGate = join(dir, "state-gate");
+  const rig = steerRig(["--state-reply-gate", stateGate]);
+  await rig.peer.start();
+  await rig.peer.deliver([newEnvelope("user", "turn A", { to: ["jcode"] })], "d-A");
+  await until(() => existsSync(`${rig.gate}.busy`));
+  const outcome = rig.peer.steer!([newEnvelope("claude", "meant for A", { to: ["jcode"], priority: "important" })], "d-steer").then(() => "sent", (error: Error) => error.message);
+  await until(() => existsSync(`${stateGate}.waiting`)); // the server's state reply is held: the hub is between ping and send
+  expect(rig.rows().some(row => row.kind === "soft_interrupt")).toBe(false);
+  writeFileSync(rig.gate, "finish A"); await until(() => rig.peer.state === "idle" && rig.receipts.some(r => r.id === "d-A" && r.state === "completed"));
+  rmSync(rig.gate, { force: true });
+  await rig.peer.deliver([newEnvelope("qwen", "turn B, another audience", { to: ["jcode"] })], "d-B");
+  await until(() => existsSync(`${rig.gate}.busy`)); // B is busy, so the held reply will now say "processing"
+  writeFileSync(stateGate, "release");
+  expect(await outcome).toContain("turn changed");
+  expect(rig.rows().some(row => row.kind === "soft_interrupt")).toBe(false); // nothing reached the native server, so B is untouched
+  writeFileSync(rig.gate, "finish B"); await until(() => rig.peer.state === "idle");
+  expect(rig.receipts.filter(r => r.id === "d-steer").map(r => r.state)).toEqual(["failed_safe"]);
+  expect(rig.replies.at(-1)!.opts.to).toEqual(["qwen"]);
+});
+
+test("a stop, a cancel or a replaced launch before the send also refuses the steer without sending (#572 AC1, review round 2 I1)", async () => {
+  const dir = realPath(root()), stateGate = join(dir, "state-gate");
+  const rig = steerRig(["--state-reply-gate", stateGate]);
+  await rig.peer.start();
+  await rig.peer.deliver([newEnvelope("user", "turn A", { to: ["jcode"] })], "d-A");
+  await until(() => existsSync(`${rig.gate}.busy`));
+  const outcome = rig.peer.steer!([newEnvelope("claude", "meant for A", { to: ["jcode"], priority: "important" })], "d-steer").then(() => "sent", (error: Error) => error.message);
+  await until(() => existsSync(`${stateGate}.waiting`));
+  const stopping = rig.peer.stop("a person stopped it"); // the owned server goes away while the steer waits
+  writeFileSync(stateGate, "release");
+  expect(await outcome).not.toBe("sent");
+  await stopping;
+  expect(rig.rows().some(row => row.kind === "soft_interrupt")).toBe(false);
+  const states = rig.receipts.filter(r => r.id === "d-steer").map(r => r.state);
+  expect(states).not.toContain("accepted"); expect(states).not.toContain("completed");
+});

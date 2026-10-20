@@ -3250,7 +3250,9 @@ function jcodeVersionSupported(version) {
   const v = typeof version === "string" ? release(version) : undefined;
   return !!v && compare(v, release(JCODE_MIN_VERSION)) >= 0 && compare(v, release(JCODE_BREAKING_VERSION)) < 0;
 }
-function nativeSteer(socket, cwd, sessionId, text, clientId, timeoutMs = STEER_TIMEOUT_MS) {
+function nativeSteer(socket, cwd, sessionId, text, clientId, timeoutMs = STEER_TIMEOUT_MS, canSend = () => {
+  return;
+}) {
   return new Promise((resolve, reject) => {
     const conn = createConnection(socket);
     let phase = "ping", buffer = "", finished = false;
@@ -3301,6 +3303,9 @@ function nativeSteer(socket, cwd, sessionId, text, clientId, timeoutMs = STEER_T
         } else if (phase === "state" && msg.type === "state" && msg.id === 3) {
           if (msg.session_id !== sessionId || msg.is_processing !== true)
             return fail("the session has no running turn");
+          const changed = canSend();
+          if (changed)
+            return fail(changed);
           phase = "sent";
           send({ type: "soft_interrupt", id: 4, content: text, urgent: false, client_id: clientId });
         } else if (phase === "sent" && msg.type === "ack" && msg.id === 4)
@@ -3461,9 +3466,21 @@ var init_jcode = __esm(() => {
         refuse(`jcode is ${this.state}`);
       if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null || !socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino || typeof sessionId !== "string")
         refuse("owned Jcode server is unavailable");
-      const turn = this.currentTurn();
+      const turn = this.currentTurn(), launch = this.server, identity = this.socketIdentity;
+      const stillCurrent = () => {
+        if (this.currentTurn() !== turn || this.state !== "busy")
+          return `jcode's turn changed before the steer was sent (${this.state})`;
+        if (this.ending || this.server !== launch || launch.exitCode !== null || launch.signalCode !== null || this.socketIdentity !== identity)
+          return "owned Jcode server changed before the steer was sent";
+        if (super.recoveryMetadata().sessionId !== sessionId)
+          return "jcode's session changed before the steer was sent";
+        const now = lstatSync4(this.socket, { throwIfNoEntry: false });
+        if (!now?.isSocket() || now.dev !== identity?.dev || now.ino !== identity.ino)
+          return "owned Jcode socket changed before the steer was sent";
+        return;
+      };
       try {
-        await nativeSteer(this.socket, this.jcode.cwd, sessionId, renderDigest(envs, true), deliveryId ?? crypto.randomUUID(), this.jcode.steerTimeoutMs);
+        await nativeSteer(this.socket, this.jcode.cwd, sessionId, renderDigest(envs, true), deliveryId ?? crypto.randomUUID(), this.jcode.steerTimeoutMs, stillCurrent);
       } catch (error) {
         if (error instanceof SteerUncertain) {
           if (deliveryId)

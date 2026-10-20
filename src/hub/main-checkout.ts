@@ -24,7 +24,7 @@ export function mainCheckoutBranch(cwd: string): { branch: string; defaultBranch
 /**
  * The one advisory sentence, or undefined while the checkout is on its default branch.
  * A branch name is text a person or an agent chose, so it is not safe because git printed it: `nameable` is the hub's
- * own screen (`Tasks.nameable`: the configured PII patterns, secrets and private paths). A name it refuses, or any text
+ * whole public-text screen (`Tasks.publicMetadataText`: the configured PII patterns, secret shapes and private paths). A name it refuses, or any text
  * that is not a plain ref name, is replaced by a generic sentence that carries no part of it (#572 review I2).
  */
 export function mainCheckoutWarning(cwd: string, nameable: (text: string) => boolean = () => false): string | undefined {

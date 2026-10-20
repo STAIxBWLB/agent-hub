@@ -27,7 +27,16 @@ if (args.includes("version")) {
         const reply = (value: unknown) => socket.write(JSON.stringify(value) + "\n");
         if (msg.type === "ping") reply({ type: "pong", id: msg.id, capabilities: args.includes("--no-soft-interrupt") ? ["session_tools"] : ["session_tools", "soft_interrupt_ids"] });
         else if (msg.type === "subscribe") { reply({ type: "ack", id: msg.id }); reply({ type: "session", session_id: args.includes("--wrong-session") ? "other-session" : msg.target_session_id ?? "jcode-s1" }); reply({ type: "done", id: msg.id }); }
-        else if (msg.type === "state") reply({ type: "state", id: msg.id, session_id: msg.session_id ?? "jcode-s1", is_processing: !!steerFile && existsSync(`${steerFile}.busy`), pending_soft_interrupts: 0 });
+        else if (msg.type === "state") {
+          // `--state-reply-gate F`: the reply is held until F exists, so a test can change the turn while the hub waits (no timing).
+          const respond = () => reply({ type: "state", id: msg.id, session_id: msg.session_id ?? "jcode-s1", is_processing: !!steerFile && existsSync(`${steerFile}.busy`), pending_soft_interrupts: 0 });
+          if (args.includes("--state-reply-gate")) {
+            const stateGate = value("--state-reply-gate")!;
+            writeFileSync(`${stateGate}.waiting`, "held");
+            const timer = setInterval(() => { if (existsSync(stateGate)) { clearInterval(timer); respond(); } }, 5);
+            socket.once("close", () => clearInterval(timer));
+          } else respond();
+        }
         else if (msg.type === "soft_interrupt") {
           if (record) appendFileSync(record, JSON.stringify({ kind: "soft_interrupt", content: msg.content, client_id: msg.client_id, urgent: msg.urgent }) + "\n");
           if (args.includes("--no-ack")) continue;
