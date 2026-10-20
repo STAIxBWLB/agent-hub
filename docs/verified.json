@@ -18,7 +18,7 @@
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "6f01288071848891e54ae1dda6ba87f365a060c8",
+      "verifiedAgainst": "ba26148f52511968910d5596572bc8ad7b5c6a3a",
       "paths": [
         "package.json",
         "src/",
@@ -215,7 +215,7 @@
       ]
     },
     "docs/agent-notes/tests.md": {
-      "verifiedAgainst": "6f01288071848891e54ae1dda6ba87f365a060c8",
+      "verifiedAgainst": "ba26148f52511968910d5596572bc8ad7b5c6a3a",
       "paths": [
         "test/",
         "scripts/check.sh",
