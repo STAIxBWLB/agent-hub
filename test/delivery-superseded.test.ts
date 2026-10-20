@@ -48,3 +48,24 @@ test("mixed and legacy row context never becomes automatic settlement authority 
   expect(deliveryTaskContext([notice()], live, "pi")).toBe("task #42 moved");
   expect(supersededDeliveryReason([notice()], live, "pi")).toBeUndefined();
 });
+
+
+for (const state of ["in_progress", "in_review", "changes_requested"] as const) test(`#434 an owner task offer is moot after its recipient accepted (${state})`, () => {
+  const offer = notice("task", "hub", "owner"); offer.refs!.taskOffer = 2;
+  const current = { get: () => ({ ...task, state }) };
+  expect(supersededDeliveryReason([offer], current, "codex")).toBe("superseded: task #42 accepted");
+});
+
+test("#434 accepted-offer settlement never consumes a live reminder, mixed row, or unaccepted offer", () => {
+  const offer = notice("task", "hub", "owner"); offer.refs!.taskOffer = 2;
+  const current = { get: () => ({ ...task, state: "in_progress" as const }) };
+  expect(supersededDeliveryReason([offer, newEnvelope("pi", "private chat")], current, "codex")).toBeUndefined();
+  expect(supersededDeliveryReason([offer], { get: () => ({ ...task, state: "proposed" as const }) }, "codex")).toBeUndefined();
+  expect(supersededDeliveryReason([notice("task", "hub", "owner")], current, "codex")).toBeUndefined();
+  for (const invalid of [0, -1, Number.NaN, Number.MAX_SAFE_INTEGER + 1]) {
+    const bad = { ...offer, refs: { ...offer.refs, taskOffer: invalid } };
+    expect(supersededDeliveryReason([bad], current, "codex")).toBeUndefined();
+  }
+  const review = notice("review", "hub", "reviewer"); review.refs!.taskOffer = 2;
+  expect(supersededDeliveryReason([review], { get: () => ({ ...task, state: "in_review" as const }) }, "claude")).toBeUndefined();
+});
