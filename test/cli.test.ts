@@ -125,6 +125,9 @@ test("default launches keep permission prompts; --unattended opts out and warns"
 
   const codex = buildLaunch("codex", ["--new"], { unattended: false, proxyUrl: "ws://127.0.0.1:4602" });
   expect(codex.args).toEqual(["--enable", "tui_app_server", "--remote", "ws://127.0.0.1:4602"]);
+  // #586: the launch id rides a bearer env var; --remote stays a bare ws://host:port that codex accepts.
+  expect(buildLaunch("codex", [], { unattended: false, proxyUrl: "ws://127.0.0.1:4602", launchTokenEnv: "AGENTHUB_LAUNCH_ID" }).args).toEqual(["--enable", "tui_app_server", "--remote", "ws://127.0.0.1:4602", "--remote-auth-token-env", "AGENTHUB_LAUNCH_ID"]);
+  expect(() => buildLaunch("codex", ["--remote-auth-token-env", "X"], { unattended: false, proxyUrl: "ws://x" })).toThrow(/managed by the hub/);
 
   const loud = buildLaunch("claude", ["--unattended"], { unattended: false });
   expect(loud.args).toContain("--dangerously-skip-permissions");

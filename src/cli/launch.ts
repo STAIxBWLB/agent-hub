@@ -329,7 +329,7 @@ export function sessionSettings(tee?: StatusLineTee, facts?: FactsHook): string 
 export function buildLaunch(
   tool: "claude" | "codex",
   userArgs: string[],
-  ctx: { instance?: string; unattended: boolean; proxyUrl?: string; codexBin?: string; statusLine?: StatusLineTee; facts?: FactsHook; preview?: boolean },
+  ctx: { instance?: string; unattended: boolean; proxyUrl?: string; launchTokenEnv?: string; codexBin?: string; statusLine?: StatusLineTee; facts?: FactsHook; preview?: boolean },
 ): Launch {
   const adapter = definitionOf(tool);
   if (!adapter) throw new Error("native launch definition unavailable");

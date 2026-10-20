@@ -145,7 +145,7 @@ export class CodexPeer extends BasePeer {
       fetch: (req, server) => {
         // Browsers always send Origin on WebSocket upgrades; the TUI never does.
         if (req.headers.has("origin")) return new Response("forbidden", { status: 403 });
-        const launchId = new URL(req.url).searchParams.get("launchId");
+        const launchId = /^Bearer (\S+)$/.exec(req.headers.get("authorization") ?? "")?.[1]; // codex --remote-auth-token-env (#586)
         if (server.upgrade(req, { data: { ...(launchId && launchId.length <= 128 ? { launchId } : {}) } as Link })) return undefined;
         return new Response("agent-hub codex proxy");
       },

@@ -1841,7 +1841,7 @@ var init_codex_appserver = __esm(() => {
           fetch: (req, server) => {
             if (req.headers.has("origin"))
               return new Response("forbidden", { status: 403 });
-            const launchId = new URL(req.url).searchParams.get("launchId");
+            const launchId = /^Bearer (\S+)$/.exec(req.headers.get("authorization") ?? "")?.[1];
             if (server.upgrade(req, { data: { ...launchId && launchId.length <= 128 ? { launchId } : {} } }))
               return;
             return new Response("agent-hub codex proxy");
@@ -9396,22 +9396,20 @@ async function runCodexEntry(ctx) {
     ctx.executionCwd = res.executionCwd;
   }
   const control = readControl(stateDir);
-  let proxyUrl = res.proxyUrl;
+  let launchTokenEnv;
   try {
     if (control?.instanceId) {
       const terminal = await prepareTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: ctx.executionCwd } : undefined);
       if (terminal) {
         await registerTerminalLaunch(hub, terminal, process.env.AGENTHUB_RECOVERY_OPERATION);
-        const url = new URL(proxyUrl);
-        url.searchParams.set("launchId", terminal.launchId);
-        proxyUrl = url.toString();
+        launchTokenEnv = "AGENTHUB_LAUNCH_ID";
       }
     }
   } finally {
     hub.close();
   }
   const runningCodexBin = res.retainedLaunchConfig?.codex_bin;
-  const launch = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl, codexBin: typeof runningCodexBin === "string" ? runningCodexBin : projectConfig().codex_bin });
+  const launch = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl: res.proxyUrl, launchTokenEnv, codexBin: typeof runningCodexBin === "string" ? runningCodexBin : projectConfig().codex_bin });
   if (launch0.warning)
     console.error(launch0.warning);
   exec(launch.cmd, launch.args, "codex");
@@ -10426,7 +10424,7 @@ function codexNativeLaunch(ctx) {
     throw new Error("codex proxy url is missing");
   return nativeLaunchPlan({
     cmd: ctx.codexBin ?? "codex",
-    args: ["--enable", "tui_app_server", "--remote", ctx.proxyUrl, ...unattended ? ["--dangerously-bypass-approvals-and-sandbox"] : [], ...passthrough],
+    args: ["--enable", "tui_app_server", "--remote", ctx.proxyUrl, ...ctx.launchTokenEnv ? ["--remote-auth-token-env", ctx.launchTokenEnv] : [], ...unattended ? ["--dangerously-bypass-approvals-and-sandbox"] : [], ...passthrough],
     unattended,
     ...warning
   }, ctx);
@@ -10434,7 +10432,7 @@ function codexNativeLaunch(ctx) {
 var CODEX_LAUNCH_POLICY;
 var init_native_cli_codex_launch = __esm(() => {
   init_native_cli_launch_common();
-  CODEX_LAUNCH_POLICY = Object.freeze({ hubSwitches: Object.freeze(["--unattended", "--safe", "--new"]), ownedFlags: Object.freeze(["--remote", "--yolo", "--dangerously-bypass-approvals-and-sandbox"]), unattended: true, passthrough: true });
+  CODEX_LAUNCH_POLICY = Object.freeze({ hubSwitches: Object.freeze(["--unattended", "--safe", "--new"]), ownedFlags: Object.freeze(["--remote", "--remote-auth-token-env", "--yolo", "--dangerously-bypass-approvals-and-sandbox"]), unattended: true, passthrough: true });
 });
 
 // src/hub/events.ts
@@ -10732,7 +10730,7 @@ var init_builtin_metadata = __esm(() => {
         conductorStartable: true,
         unattended: true,
         hubSwitches: switches,
-        ownedFlags: Object.freeze(["--remote", "--yolo", "--dangerously-bypass-approvals-and-sandbox"])
+        ownedFlags: Object.freeze(["--remote", "--remote-auth-token-env", "--yolo", "--dangerously-bypass-approvals-and-sandbox"])
       },
       identity: { mcp: "env" },
       permission: {
@@ -10902,7 +10900,7 @@ var init_builtin_metadata = __esm(() => {
         conductorStartable: true,
         unattended: true,
         hubSwitches: switches,
-        ownedFlags: Object.freeze(["--remote", "--yolo", "--dangerously-bypass-approvals-and-sandbox"])
+        ownedFlags: Object.freeze(["--remote", "--remote-auth-token-env", "--yolo", "--dangerously-bypass-approvals-and-sandbox"])
       },
       identity: { mcp: "env" },
       permission: {

@@ -29,6 +29,8 @@ export interface LaunchContext {
   userArgs: string[];
   unattended: boolean;
   proxyUrl?: string;
+  /** Env var holding the terminal launch id; Codex sends it as the proxy upgrade's bearer token (#586). */
+  launchTokenEnv?: string;
   codexBin?: string;
   statusLine?: StatusLineTee;
   facts?: FactsHook;

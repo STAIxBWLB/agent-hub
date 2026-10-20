@@ -55,9 +55,10 @@ test("#482 terminal ownership needs an adopted thread on the matching launch lin
   const owner = peer as CodexPeer & { terminalOwner?: (launchId: string) => { generation: string; nativePid?: number } | undefined };
   const nonceA = "c221bdce-3895-42bc-98e0-e6fa236a7dc0";
   const nonceB = "d221bdce-3895-42bc-98e0-e6fa236a7dc0";
-  const url = (nonce: string) => { const target = new URL(peer.proxyUrl); target.searchParams.set("launchId", nonce); return target.toString(); };
+  // Real codex sends the launch id only as a bearer token: --remote refuses a path or query (#586).
+  const open = (nonce: string) => new WebSocket(peer.proxyUrl, { headers: { authorization: `Bearer ${nonce}` } } as any);
   const seen: any[] = [];
-  const tui = new WebSocket(url(nonceA));
+  const tui = open(nonceA);
   cleanup.push(() => tui.close());
   tui.onmessage = ev => seen.push(JSON.parse(String(ev.data)));
   await new Promise(resolve => { tui.onopen = resolve; });
@@ -76,7 +77,7 @@ test("#482 terminal ownership needs an adopted thread on the matching launch lin
   expect(owner.terminalOwner?.(nonceB)).toBeUndefined();
 
   let refusedCode: number | undefined;
-  const second = new WebSocket(url(nonceB));
+  const second = open(nonceB);
   cleanup.push(() => second.close());
   second.onclose = event => { refusedCode = event.code; };
   await until(() => refusedCode !== undefined);
