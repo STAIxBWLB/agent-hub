@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Board, type Task } from "../src/hub/board.ts";
+import { Board } from "../src/hub/board.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
@@ -42,7 +42,7 @@ async function until(condition: () => boolean) {
 
 function resolution(f: ReturnType<typeof fixture>, instanceId: string, id: string) {
   const journal = new DeliveryJournal({ file: f.file, projectRoot: f.dir, projectId: "accepted-offer", instanceId });
-  try { return { audit: journal.resolution(id), read: journal.offerRead("jcode", id) }; }
+  try { return journal.resolution(id); }
   finally { journal.close(); }
 }
 
@@ -60,8 +60,8 @@ test("#434 a restarted Jcode's accepted offer settles on restore, but mixed, una
   for (const id of ["mixed", "pending", "requested", "reminder"]) expect(daemon.bus.queueShow(id)?.state).toBe("needs_review");
   const status = (await client.request({ t: "status" })).status;
   const proof = resolution(f, status.instanceId, "accepted");
-  expect(proof.audit).toMatchObject({ actor: "hub", reason: `superseded: task #${accepted.task.id} accepted` });
-  expect(JSON.stringify(proof.audit)).not.toContain("private");
+  expect(proof).toMatchObject({ actor: "hub", reason: `superseded: task #${accepted.task.id} accepted` });
+  expect(JSON.stringify(proof)).not.toContain("private");
   const journal = new DeliveryJournal({ file: f.file, projectRoot: f.dir, projectId: "accepted-offer", instanceId: status.instanceId });
   try { expect(journal.offerRead("jcode", accepted.env.id)).toBe(false); }
   finally { journal.close(); }
@@ -76,7 +76,7 @@ test("#434 actual task acceptance clears its held offer through board.onChange w
   const accepted = await client.request({ t: "task", op: "hub_task_accept", args: { id: pending.task.id } });
   expect(accepted.ok).toBe(true);
   expect(daemon.bus.queueShow("waiting-for-accept")?.state).toBe("completed");
-  const shown = await client.request({ t: "task", op: "hub_task_show", args: { id: pending.task.id } });
+  const shown = await client.request({ t: "task", op: "task_show", args: { id: pending.task.id } });
   expect(shown.ok).toBe(true); expect(shown.text).toContain("in_progress");
 });
 
@@ -84,15 +84,16 @@ test("#434 a held receipt for an already accepted offer settles and releases the
   const f = fixture(), accepted = f.make(true); f.close();
   const daemon = await start(f);
   class UncertainPeer extends BasePeer {
+    deliveredId?: string;
     async start() { this.setState("idle"); }
     async stop() { this.setState("offline"); }
-    async deliver(_envs: Envelope[], id?: string) { if (id) this.delivery({ id, state: "needs_review" }); }
+    async deliver(_envs: Envelope[], id?: string) { if (id) { this.deliveredId = id; this.delivery({ id, state: "needs_review" }); } }
   }
   const replacement = new UncertainPeer("jcode"); daemon.bus.add(replacement); await replacement.start();
   daemon.bus.publish(accepted.env);
-  await until(() => daemon.bus.queueList("jcode").some(row => row.originals.some(env => env.id === accepted.env.id)));
-  const row = daemon.bus.queueList("jcode").find(row => row.originals.some(env => env.id === accepted.env.id))!;
-  await until(() => daemon.bus.queueShow(row.id)?.state === "completed");
+  await until(() => replacement.deliveredId !== undefined);
+  // A queued row is grouped into a new dispatch: bind the actual transport receipt, not its queued predecessor.
+  expect(daemon.bus.queueShow(replacement.deliveredId!)?.state).toBe("completed");
   expect(daemon.bus.queueSummary("jcode").heldBy).toBeUndefined();
   expect(daemon.bus.queued("jcode")).toBe(0);
 });

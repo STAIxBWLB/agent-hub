@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Held task offers settle automatically when their recipient already owns and accepted the task, so a peer restart no longer blocks its queue on an obsolete offer; mixed messages, unaccepted offers and requested-stop holds remain held (#434).
+
 - A Claude channel session asks Claude Code to list the hub tools again when a hub reconnect changes them, names or schemas (`tools/list_changed`; an unavailable status probe is retried, then announced anyway), so a session that listed them while the hub was down no longer keeps the short list (#490).
 - `ahub jcode` opens its TUI again: on 0.12.39 it stopped after the first hub turn with `jcode: no managed terminal recovery adapter`, because the launcher tried to record a managed terminal that Jcode does not have (#564).
 - Retire the Switchyard sidecar. Model routes run in process, old tables load as retired settings with direct fallback, and doctor checks every configured routing model alias (#553).

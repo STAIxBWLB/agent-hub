@@ -22,6 +22,8 @@ export function supersededDeliveryReason(
       if (typeof env.refs.taskCancelled === "number" && env.refs.taskCancelled === task.cancelled?.flowRevision) return undefined;
       reasons.add(`task #${task.id} cancelled`);
     } else if (task.state === "approved") reasons.add(`task #${task.id} approved`);
+    else if (env.kind === "task" && env.refs.taskRecipient === "owner" && Number.isSafeInteger(env.refs.taskOffer) && env.refs.taskOffer! >= 1 &&
+      task.owner === recipient && ["in_progress", "in_review", "changes_requested"].includes(task.state)) reasons.add(`task #${task.id} accepted`);
     else if ((env.kind === "review" || env.refs.taskRecipient === "reviewer") && (task.state !== "in_review" || task.reviewer !== recipient)) reasons.add(`task #${task.id} review moved`);
     else if (env.kind === "task" && env.refs.taskRecipient === "owner" && task.owner !== recipient) reasons.add(`task #${task.id} owner moved`);
     else return undefined; // Untagged legacy task notices and planner coordination carry no proof of supersession.
