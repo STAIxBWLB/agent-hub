@@ -127,3 +127,11 @@ test("successful reused required checks cannot become a fresh full-gate proof", 
   };
   expect(await read(boundedApi, "expected", { currentRunId: 99 })).toMatchObject({ kind: "reuse", run: { id: 2 } });
 });
+
+test("#609 PR checks run in a group per PR and cancel superseded heads; main and dispatch queue without cancel", async () => {
+  const workflow = await Bun.file(new URL("../.github/workflows/check.yml", import.meta.url)).text();
+  expect(workflow).toContain("github.event_name == 'pull_request' && format('check-pr-{0}', github.event.pull_request.number) || 'check-main'");
+  expect(workflow).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
+  expect(workflow).toContain("inputs.timing_runs == '20' && 'macos-timing'");
+  for (const job of ["check:", "seeded:", "decision:"]) expect(workflow).toContain(`\n  ${job}`);
+});

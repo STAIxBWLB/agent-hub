@@ -3,6 +3,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# #610: `--changed [<base>]` runs every non-test step and only the tests the change touches (scripts/changed-tests.mjs).
+# Agents run it before a PR; the full gate is CI's on both OSes.
+changed=0
+changed_base=""
+if [ "${1:-}" = "--changed" ]; then changed=1; changed_base=${2:-}; fi
+
 # One heavy job per repo (#398): every worktree shares the git common dir, so a second gate waits here instead of
 # depending on a chat message being read in time. AHUB_CHECK_LOCK_WAIT_S bounds the wait (0 fails at once).
 # ponytail: liveness is `kill -0`, so a reused pid keeps a crashed holder's slot until its directory is removed by
@@ -33,8 +39,21 @@ bun scripts/check-roles.ts
 bun scripts/build.mjs --check
 node scripts/check-package.mjs # includes the standalone pet host, JXA and HTML assets
 
+test_args=()
+if [ "$changed" -eq 1 ]; then
+  selection=$(node scripts/changed-tests.mjs ${changed_base:+"$changed_base"})
+  if [ "$selection" = "ALL" ]; then echo "check: --changed selected the full suite" >&2
+  elif [ -z "$selection" ]; then echo "check: --changed found no affected tests"; echo "check: OK (changed)"; exit 0
+  else
+    while IFS= read -r file; do test_args+=("$file"); done <<< "$selection"
+    echo "check: --changed runs ${#test_args[@]} test files" >&2
+  fi
+fi
+
 tests=0
-check_tmp=$(mktemp -d "${TMPDIR:-/tmp}/ahub-check.XXXXXX")
+# #610: the temp root is the OS per-user temp dir, never an inherited TMPDIR that may sit inside an agent's home.
+os_tmp=$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null || echo /tmp)
+check_tmp=$(mktemp -d "${os_tmp%/}/ahub-check.XXXXXX")
 check_tmp=$(cd "$check_tmp" && pwd -P)
 export TMPDIR="$check_tmp"
 ledger="$check_tmp/owned-processes.jsonl"
@@ -69,8 +88,11 @@ trap 'exit 143' TERM
 # runner's OS environment before Bun starts; identity tests set their own child markers.
 # An `ahub claude` session also carries its hub's project, state dir and launch identity:
 # a fixture's plugin would send that project at hello and be refused by the fixture hub.
+# #610: and not the person's git config (a global ignore hid fixture files) or color settings (NO_COLOR and a dumb
+# TERM broke the ANSI goldens); tests that need either set it themselves.
 env -u AGENTHUB_PEER_ID -u AGENTHUB_DELIVERY_ONLY -u AGENTHUB_CHANNEL -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID \
-  -u AGENTHUB_PROJECT_DIR -u AGENTHUB_STATE_DIR -u AGENTHUB_INSTANCE_ID -u AGENTHUB_LAUNCH_ID bun test --timeout 20000 &
+  -u AGENTHUB_PROJECT_DIR -u AGENTHUB_STATE_DIR -u AGENTHUB_INSTANCE_ID -u AGENTHUB_LAUNCH_ID -u NO_COLOR \
+  GIT_CONFIG_GLOBAL=/dev/null TERM=xterm-256color bun test --timeout 20000 ${test_args[@]+"${test_args[@]}"} &
 test_pid=$!
 scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-960}" &
 watch_pid=$!
@@ -90,4 +112,4 @@ if [ "$tests" -ne 0 ] || [ "$leaks" -ne 0 ]; then
   exit "$tests"
 fi
 preserve_tmp=0
-echo "check: OK"
+if [ "$changed" -eq 1 ] && [ ${#test_args[@]} -gt 0 ]; then echo "check: OK (changed)"; else echo "check: OK"; fi
