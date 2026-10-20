@@ -434,10 +434,10 @@ describe("console layout (#213)", () => {
     const s = sample(); const views: string[][] = [];
     for (let panel = 1; panel <= 4; panel++) { s.panel = panel; views.push(renderConsole(s, 200, 40, T)); }
     const peers = views[0]!.join("\n");
-    expect(peers).toMatch(/claude +idle +tools-only +- +- +- +- +5h 40% in 2h13m +-/);
-    expect(peers).toMatch(/codex +busy +attached +2 +1 +1 +budget in 1h00m +- +-/);
-    expect(peers).toMatch(/pi +paused +attached +- +- +- +user 12m +- +dgx\/coding/);
-    expect(peers).toMatch(/kimi +offline +detached +- +- +- +user +- +-/);
+    expect(peers).toMatch(/claude +idle +tools-only +- +- +- +- +- +5h 40% in 2h13m +-/);
+    expect(peers).toMatch(/codex +busy +attached +2 +1 +- +1 +budget in 1h00m +- +-/);
+    expect(peers).toMatch(/pi +paused +attached +- +- +- +- +user 12m +- +dgx\/coding/);
+    expect(peers).toMatch(/kimi +offline +detached +- +- +- +- +user +- +-/);
     expect(views[2]!.join("\n")).toMatch(/#7 +changes_requested +claude +user +review +3h05m +한국어 리뷰/);
     for (const panel of [1, 2]) { s.panel = panel; views.push(renderConsole(reduceConsole(s, "\r", T).state, 200, 40, T)); }
     s.panel = 3;
@@ -496,7 +496,7 @@ describe("console layout (#213)", () => {
   test("the footer hint lists only keys that act in this mode, panel and state", () => {
     const s = sample(); const hints: string[] = [];
     const hint = () => { const line = renderConsole(s, 80, 24, T).at(-1)!; hints.push(line); return line; };
-    s.panel = 1; expect(hint()).toBe("p pause  r resume  m mode  j/k  Enter view  ? keys  : cmd  Tab stream  q quit");
+    s.panel = 1; expect(hint()).toBe("p pause  r resume  m mode  w WIP  j/k  Enter  ? keys  : cmd  Tab stream  q quit");
     s.panel = 2; expect(hint()).toBe("a allow  d deny  j/k move  Enter view  ? keys  : command  Tab stream  q quit");
     s.panel = 3; expect(hint()).toStartWith("a assign  u unassign  j/k move");
     s.panel = 4; expect(hint()).toStartWith("r resolve  j/k move");
@@ -1663,8 +1663,8 @@ test("#441 navigation reads split into presses only when made of known sequences
   expect([s.events.map(e => e.text), s.selection, selectedPanelRow(s)?.text]).toEqual([["e2", "e3", "e4", "e5"], 0, "e2"]);
 });
 
-test("#452 w opens the web UI and o the pet window as console commands, never while editing, confirming or under the key table", () => {
-  let s = reduceConsole(state(true), "1", NOW).state;
+test("#452 w outside Peers opens the web UI and o the pet window, never while editing, confirming or under the key table", () => {
+  let s = reduceConsole(state(true), "2", NOW).state;
   expect(reduceConsole(s, "w", NOW).effects).toEqual([{ type: "command", args: ["ui"] }]);
   expect(reduceConsole(s, "o", NOW).effects).toEqual([{ type: "command", args: ["pet", "--window"] }]);
   const editing = { ...s, editing: true, input: "" };
@@ -1683,6 +1683,39 @@ test("#452 w opens the web UI and o the pet window as console commands, never wh
   expect(parseConsoleCommand("ui --all")).toEqual(["ui", "--all"]);
   expect(parseConsoleCommand("pet --window --close")).toEqual(["pet", "--window", "--close"]);
   expect(() => parseConsoleCommand("kill")).toThrow("use another shell for this command");
+});
+
+test("#532 Peers WIP shows counts, missing entries and capacity attention", () => {
+  const s = initialConsoleState(true);
+  s.peers = { codex: { state: "idle" }, claude: { state: "idle" } };
+  s.taskWip = { codex: { wip: 1, wipLimit: 2 } };
+  expect(cells(s, panelRows(s)[0], false, NOW).find(cell => cell.text === "1/2")?.tone).toBeUndefined();
+  const header = renderConsoleLines(s, 200, 24, NOW)[2]!;
+  const wip = header.findIndex(cell => cell.text.trim() === "WIP");
+  expect(wip).toBeGreaterThan(0);
+  const lines = renderConsoleLines(s, 200, 24, NOW);
+  expect(lines[3]![wip]?.text.trim()).toBe("1/2");
+  expect(lines[4]![wip]?.text.trim()).toBe("-");
+  s.taskWip.codex!.wip = 2;
+  expect(cells(s, panelRows(s)[0], false, NOW).find(cell => cell.text === "2/2")?.tone).toBe("attention");
+  s.taskWip.codex = { wip: 0, wipLimit: 0 };
+  expect(cells(s, panelRows(s)[0], false, NOW).find(cell => cell.text === "0/0")?.tone).toBe("attention");
+});
+
+for (const permissionMode of ["ask", "never-ask"]) test(`#532 narrow Peers preserves PEER STATE QUOTA before WIP (${permissionMode})`, () => {
+  const s = sample(); s.peers.codex.permissionMode = permissionMode;
+  s.taskWip = { codex: { wip: 1, wipLimit: 2 } };
+  const wide = renderConsole(s, 200, 24, NOW);
+  expect(wide[2]).toContain("WIP");
+  expect(wide.at(-1)).toContain("w WIP limit");
+  for (const columns of [80, 90, 100, 120, 160, 200]) {
+    const lines = renderConsole(s, columns, 24, NOW);
+    for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+    for (const name of ["PEER", "STATE", "QUOTA"]) expect(lines[2]).toContain(name);
+    expect(/\bMODE\b/.test(lines[2]!)).toBe(permissionMode !== "ask");
+  }
+  expect(renderConsole(s, 80, 24, NOW)[2]).not.toContain("WIP");
+  expect(renderConsole(s, 80, 24, NOW).at(-1)).toContain("w WIP");
 });
 
 test("cancelled console task rows have a neutral meter distinct from checked approval (#438)", () => {

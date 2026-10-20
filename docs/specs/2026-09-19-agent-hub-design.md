@@ -1546,9 +1546,10 @@ or Home/End sequences is that many key presses, never a paste. Home or `<` selec
 the first row of a panel and End or `>` the last (Home tops an open view); the
 Events panel follows new events while its selection is on the last row, keeps a
 row the person moved to, and opening it or changing its filter selects the newest
-row (#441). In panels `w` opens the project dashboard (`ahub ui`) and `o` the pet
-window (`ahub pet --window`) as a person's console command; the `:` line also
-accepts `ui` and `pet` (#452). An Events row's header is
+row (#441). Outside the Peers panel, `w` opens the project dashboard (`ahub ui`);
+in Peers it opens the selected peer's WIP limit edit (#532 W1-W3). `o` opens the
+pet window (`ahub pet --window`) as a person's console command; the `:` line
+also accepts `ui` and `pet` (#452). An Events row's header is
 tokenized by the stream's own tokenizer on the same tab-flattened text, with the
 event's tone and kind; body lines stay plain, and selection changes only the
 `>` marker. The tail prints a peer's context reading once and repeats it only
@@ -1634,9 +1635,16 @@ console emits no box-drawing or other ambiguous-width glyph. The active tab is
 bracketed; the Approvals and Queue tabs count pending requests and
 `needs_review` deliveries. Peers, Approvals, Tasks and Queue are tables: a
 header row, columns two spaces apart sized with `Bun.stringWidth` from every
-row (at most a third of the width), the last column taking the rest. Peers' LINK
-column reads `tools-only` when the optional `toolsOnly` status field (#205) is
-present. Zero counters read `-`, durations `45s`, `12m`, `3h05m` or `2d03h`, and
+row (at most a third of the width), the last column taking the rest. Peers'
+columns are PEER, STATE, MODE, LINK, Q, !, WIP, REVIEW, PAUSE, QUOTA and MODEL;
+MODE appears only when at least one peer has a non-`ask` mode. WIP reads
+`wip/limit` from the peer's `taskWip` entry, preserving zero (for example `0/2`),
+or `-` when absent. It uses the attention tone at `wip >= wipLimit`. WIP is
+optional at narrow widths and drops before PEER, STATE and QUOTA, with or
+without MODE. The Peers hint includes `w WIP limit`, shortened to `w WIP`
+through the existing width adaptation alongside `m permission mode`/`m mode`.
+LINK reads `tools-only` when the optional `toolsOnly` status field (#205) is
+present. Other zero counters read `-`, durations `45s`, `12m`, `3h05m` or `2d03h`, and
 resets and pauses are relative. Detail views and the Approvals panel's request
 block put labels at column 0 and values one column past the longest label; a
 list puts `- ` before each item, and every other line of a value (its own
@@ -3235,7 +3243,14 @@ later turn; a running turn retains its capture decision and is never stopped.
 
 The console's sixth Settings tab reads the same registry as the dashboard. It edits
 through the authenticated daemon client: value, preview, nonempty bounded reason,
-then explicit y; undo also previews and confirms. Stale preview replies cannot arm a
+then explicit y; undo also previews and confirms. In the Peers tab, `w` enters
+this same editor in place on Peers for `tasks.wip_limits.<peer>`, prefilled
+with the selected peer's current limit. Bounds (currently 0..32), the `raises` risk label and
+`applies: live` come from the setting definition. A missing `taskWip` entry
+produces a notice and opens no edit. Esc cancels without a write; `6`, then
+`u` invokes the existing Settings undo preview/confirmation operation. The shortcut creates no
+write path or authority: Settings remain person-only and `ahub settings` keeps
+its agent-shell refusal. Stale preview replies cannot arm a
 write, and pasted confirmation text never executes one. The daemon accepts additive
 settings_reload and undo-preview requests only from console roles. The dashboard's
 setting_reload action uses its existing authenticated session; manager forwarding

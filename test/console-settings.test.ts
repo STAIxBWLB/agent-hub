@@ -5,18 +5,18 @@ import { runConsole, type ConsoleTerminal } from "../src/cli/console.ts";
 const row = { key: "approvals.notify", group: "Switches", label: "Desktop notice", type: "boolean", file: "config.local.json", applies: "restart", restartReason: "Notifier is created at startup", risk: "safe", value: false, fileValue: true, source: "config.local.json", pending: true };
 const undoDigest = "d".repeat(64);
 const tick = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
-function fixture(preview?: (msg: any) => Promise<any>, selectedRow: Record<string, unknown> = row) {
+function fixture(preview?: (msg: any) => Promise<any>, selectedRow: Record<string, unknown> = row, status: () => Record<string, unknown> = () => ({}), onSet?: (msg: any) => void) {
   let data = (_text: string) => {};
   const output: string[] = [], requests: any[] = [];
   const terminal: ConsoleTerminal = { columns: 160, rows: 30, isTTY: true, write: text => { output.push(text); }, raw: () => {}, onData: listener => { data = listener; return () => {}; }, onResize: () => () => {}, onSignal: () => () => {} };
   const client = { onPush: (_msg: any) => {}, onClose: (_code: number, _reason: string) => {}, send: (_msg: any) => {}, close: () => {}, request: async (msg: any) => {
     requests.push(msg);
     if (msg.t === "settings_get") return { ok: true, rows: [selectedRow], undo: selectedRow.key, pendingRestart: [{ key: row.key, reason: row.restartReason }] };
-    if (msg.t === "settings_preview") return preview ? preview(msg) : { ok: true, key: row.key, ...(msg.undo ? { undoDigest } : {}), lines: ["preview only, notifier restarts"], confirm: "approved-setting-token" };
-    if (msg.t === "settings_set" || msg.t === "settings_undo") return { ok: true, text: "saved" };
-    return { ok: true, status: { peers: {}, pendingRestart: [{ key: row.key, reason: row.restartReason }] }, budget: {}, text: "[]", deliveries: [] };
+    if (msg.t === "settings_preview") return preview ? preview(msg) : { ok: true, key: selectedRow.key, ...(msg.undo ? { undoDigest } : {}), lines: ["preview only, notifier restarts"], confirm: "approved-setting-token" };
+    if (msg.t === "settings_set" || msg.t === "settings_undo") { onSet?.(msg); return { ok: true, text: "saved" }; }
+    return { ok: true, status: { peers: {}, pendingRestart: [{ key: row.key, reason: row.restartReason }], ...status() }, budget: {}, text: "[]", deliveries: [] };
   } };
-  const running = runConsole({ client, cwd: "/tmp/fixture-only", stateDir: "/tmp/fixture-only", terminal, panels: true, color: false, noPet: true });
+  const running = runConsole({ client, cwd: "/tmp/fixture-only", stateDir: "/tmp/fixture-only", terminal, panels: true, color: false, noPet: true, runCommand: () => () => {} });
   return { output, requests, input: (text: string) => data(text), stop: async () => { data("\x03"); await running; } };
 }
 const writes = (f: ReturnType<typeof fixture>) => f.requests.filter(msg => msg.t === "settings_set" || msg.t === "settings_undo");
@@ -94,5 +94,57 @@ test("#439 busy roster preview explains the manual --now choice without forcing 
     await edit(f, "false"); expect(f.output.join("")).toContain(command); expect(f.output.join("")).toContain("stops its active turn");
     reason(f); f.input("y"); await tick();
     expect(writes(f)).toEqual([{ t: "settings_set", key: "roster.kimi", value: false, reason: "test reason", confirm: "kimi" }]);
+  } finally { await f.stop(); }
+});
+
+const frame = (f: ReturnType<typeof fixture>) => f.output.join("").split("\x1b[r\x1b[1;1H").at(-1)!;
+const wipRow = { key: "tasks.wip_limits.codex", group: "Routing", label: "codex: planner WIP limit", type: "integer", min: 0, max: 32, risk: "raises", applies: "live", value: 2, fileValue: null, file: "config.local.json", source: "default" };
+const wipStatus = (limit = 2) => ({ peers: { codex: { state: "idle", rostered: true } }, taskWip: { codex: { wip: 1, wipLimit: limit } } });
+
+test("#532 Peers w edits current WIP through settings preview, explicit confirmation and refresh, with existing undo", async () => {
+  let limit = 2;
+  const f = fixture(undefined, wipRow, () => wipStatus(limit), msg => { limit = msg.t === "settings_undo" ? 2 : msg.value; });
+  try {
+    await tick(); f.input("w");
+    expect(frame(f)).toContain("value for tasks.wip_limits.codex (inherit removes): 2");
+    for (const text of ["0..32", "raises", "live"]) expect(frame(f)).toContain(text);
+    f.input("\x15"); f.input("3"); f.input("\r"); await tick();
+    expect(f.requests.find(msg => msg.t === "settings_preview")).toEqual({ t: "settings_preview", key: wipRow.key, value: 3 });
+    reason(f); expect(writes(f)).toEqual([]); f.input("y"); await tick();
+    expect(writes(f)).toEqual([{ t: "settings_set", key: wipRow.key, value: 3, reason: "test reason", confirm: "approved-setting-token" }]);
+    expect(frame(f)).toContain("1/3");
+    f.input("6"); await tick(); f.input("u"); await tick(); reason(f); f.input("y"); await tick();
+    expect(writes(f)[1]).toEqual({ t: "settings_undo", key: wipRow.key, undoDigest, reason: "test reason", confirm: "approved-setting-token" });
+    f.input("1"); await tick(); expect(frame(f)).toContain("1/2");
+  } finally { await f.stop(); }
+});
+
+for (const phase of ["value", "preview", "confirm"]) test(`#532 Peers WIP Esc cancels in ${phase} without writing`, async () => {
+  const f = fixture(undefined, wipRow, wipStatus);
+  try {
+    await tick(); f.input("w"); expect(frame(f)).toContain("value for tasks.wip_limits.codex");
+    if (phase !== "value") { f.input("\r"); await tick(); }
+    if (phase === "confirm") reason(f);
+    f.input("\x1b"); f.input("y"); await tick(); expect(writes(f)).toEqual([]);
+  } finally { await f.stop(); }
+});
+
+test("#532 Peers WIP stale preview cannot arm a cancelled edit", async () => {
+  let finish!: (reply: any) => void;
+  const f = fixture(() => new Promise(resolve => { finish = resolve; }), wipRow, wipStatus);
+  try {
+    await tick(); f.input("w"); f.input("\r"); await tick(); expect(typeof finish).toBe("function");
+    f.input("\x1b"); f.input("6"); finish({ ok: true, lines: ["stale"], confirm: "stale" }); await tick();
+    reason(f); f.input("y"); await tick(); expect(writes(f)).toEqual([]);
+  } finally { await f.stop(); }
+});
+
+for (const status of [() => ({ peers: { codex: { state: "idle" } } }), () => ({ ...wipStatus(), peers: { codex: { state: "idle", rostered: false } } })]) test("#532 Peers w refuses a missing WIP entry or off-roster peer without opening an editor", async () => {
+  const f = fixture(undefined, wipRow, status);
+  try {
+    await tick(); f.input("w");
+    expect(frame(f)).toContain("planner WIP is unavailable for codex");
+    expect(frame(f)).not.toContain("value for");
+    expect(f.requests.some(msg => msg.t === "settings_preview")).toBe(false); expect(writes(f)).toEqual([]);
   } finally { await f.stop(); }
 });
