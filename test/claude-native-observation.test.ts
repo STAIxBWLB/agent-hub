@@ -10,7 +10,7 @@ import { formatReport, summarize } from "../src/hub/report.ts";
 import { buildLaunch, claudeObservationHooks } from "../src/cli/launch.ts";
 import { HUB, newEnvelope } from "../src/hub/envelope.ts";
 import { nativeHookIdentity } from "../src/cli/facts-hook.ts";
-import { claudeReportedTokens, readClaudeTranscriptUsage } from "../src/hub/usage.ts";
+import { claudeReportedTokens, COMPLETION_TAIL_BYTES, readClaudeTranscriptUsage } from "../src/hub/usage.ts";
 
 const cleanup: Array<() => unknown> = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -251,7 +251,7 @@ test("a transcript over 32 MiB still ends the native turn, and an unconfirmed St
   const instanceId = JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).instanceId;
   const launchId = crypto.randomUUID(), sessionId = "long-session", transcript = join(projects, `${sessionId}.jsonl`);
   const row = (id: string) => JSON.stringify({ type: "assistant", sessionId, timestamp: new Date().toISOString(), message: { id, stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } } }) + "\n";
-  writeFileSync(transcript, row("earlier-turn") + JSON.stringify({ type: "user", padding: "x".repeat(33 * 1024 * 1024) }) + "\n");
+  writeFileSync(transcript, JSON.stringify({ type: "user", padding: "x".repeat(33 * 1024 * 1024) }) + "\n");
   writeFileSync(join(stateDir, "claude-launch.json"), JSON.stringify({ instanceId, launchId }));
   const observed = claudeObservationHooks({ coordination: "advisory", task_sweep: { enabled: true }, roles: { claude: ["planner", "reviewer"] } }, { script: join(import.meta.dir, "../src/cli/facts-hook.ts"), stateDir })!;
   const launch = buildLaunch("claude", [], { unattended: false, statusLine: { script: join(import.meta.dir, "../src/cli/statusline-tee.ts"), stateDir }, facts: observed });
@@ -275,4 +275,18 @@ test("a transcript over 32 MiB still ends the native turn, and an unconfirmed St
   for (let n = 0; n < 400 && daemon.bus.stateOf("claude") !== "idle"; n++) await Bun.sleep(5);
   expect(daemon.bus.stateOf("claude")).toBe("idle");
   expect(notices()).toHaveLength(1);
+  // #528: a completed turn buried behind a chunk is still the next turn's baseline, never its completion.
+  appendFileSync(transcript, JSON.stringify({ type: "progress", padding: "x".repeat(COMPLETION_TAIL_BYTES + 1024) }) + "\n");
+  await hook("UserPromptSubmit");
+  expect(daemon.bus.stateOf("claude")).toBe("busy");
+  await hook("Stop");
+  const baselineRefused = () => readFileSync(join(stateDir, "hub.log"), "utf8").includes("completion still matches start baseline");
+  for (let n = 0; n < 400 && !baselineRefused(); n++) await Bun.sleep(5);
+  expect(baselineRefused()).toBe(true);
+  expect(daemon.bus.stateOf("claude")).toBe("busy");
+  expect(notices()).toHaveLength(1);
+  appendFileSync(transcript, row("next-final-turn"));
+  await hook("Stop");
+  for (let n = 0; n < 400 && daemon.bus.stateOf("claude") !== "idle"; n++) await Bun.sleep(5);
+  expect(daemon.bus.stateOf("claude")).toBe("idle");
 }, 30_000);

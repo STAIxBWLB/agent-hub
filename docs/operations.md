@@ -1817,7 +1817,7 @@ A Claude session started with `ahub claude` receives pushes when it is idle. Whi
 - `hub_inbox` reads the daemon queue (and any local failed-push buffer) in a channel session too. A read is one `completed` delivery, like a tools-only read; holds refuse it the same way.
 - An important message is pushed into the running turn (steered) instead of waiting for the turn to end. Mid-turn reading was verified on Claude Code 2.1.302; an older client that drops it leaves the delivery `accepted` until a person resolves it. Ordinary messages still wait for the idle push or `hub_inbox`.
 - Do not use `[FYI]` for PR ready, done, submitted, ruling-needed, blocker or changed-contract messages: they need action. `hub_task_done` and `hub_review` already notify their recipients.
-- Turn completion is read from the transcript's last 4 MiB, whatever its size. When no completed turn is found there, the console says once per turn that the peer stays busy and its messages wait in its queue (#517).
+- Turn completion is read backwards in 4 MiB chunks, up to 64 MiB plus one row-boundary byte, whatever the transcript's size. A row crossing chunks is reconstructed whole; a row starting outside the bound stays unavailable. When no completed turn is found within that bound, the console says once per turn that the peer stays busy and its messages wait in its queue (#517).
 
 ## Graceful shutdown
 
