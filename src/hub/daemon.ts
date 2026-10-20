@@ -113,7 +113,7 @@ import { changedPaths, hasTree, repoOf, snapshot, Turns, type TurnRecord } from 
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContinuity } from "./recovery-continuity.ts";
 import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate } from "../cli/terminal-recovery.ts";
-import { TerminalLaunches } from "./terminal-launch.ts";
+import { TerminalLaunches, terminalOwnerReads } from "./terminal-launch.ts";
 
 import { peerStartConfig, PEER_START_RETRY_MS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
 import { hasKimiHubMcp } from "../cli/kimi-mcp.ts";
@@ -2482,6 +2482,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const claudePermissionGenerations = new Map<string, string>();
   const permissions = new Map<string, { push: string; peer: string; tool?: string; createdAt: number; expiresAt: number; done: (optionId: string | undefined, surface?: "console" | "dashboard" | "terminal", reason?: "expired" | "cancelled") => boolean }>();
   let stopping = false;
+  const terminalReads = terminalOwnerReads();
   const terminalLaunches = new TerminalLaunches({
     owner: row => {
       const owner = bus.peers.get(row.peer), proof = owner?.terminalOwner?.(row.launchId);
@@ -2492,7 +2493,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return current?.generation === proof.generation && current?.nativePid === proof.nativePid;
       } };
     },
-    publish: (row, current) => publishTerminalLaunch(opts.stateDir, row, current),
+    publish: (row, current) => publishTerminalLaunch(opts.stateDir, row, current, { runner: terminalReads.run }),
     log,
   });
   const terminalLaunchTimer = setInterval(() => { void terminalLaunches.reconcile(); }, 1_000);
@@ -5752,6 +5753,8 @@ export async function startDaemon(opts: DaemonOptions) {
   async function stopOnce(): Promise<void> {
     stopping = true;
     terminalLaunches.clear();
+    // Start cancellation immediately; a failed read cleanup must not strand the other owned peers or finalization.
+    const terminalReadsStopped = terminalReads.stop().catch(() => { log("terminal owner query cleanup failed during shutdown"); });
     runnerRefreshAbort.abort();
     // A stop someone asked for is not a crash, even if it then runs past the shutdown deadline: forget the sessions now.
     try { removeSessions(opts.stateDir, instanceId); } catch { /* the state dir is gone */ }
@@ -5766,6 +5769,8 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const pending of checkpointWaits.values()) pending.done(undefined);
     for (const p of permissions.values()) p.done(undefined);
     try {
+      await terminalReadsStopped;
+      await terminalLaunches.settled();
       // A peer can still be inside memory recall or its native handshake when kill arrives.
       // Drain those starts before taking the final owned-process snapshot.
       // Fence/abort the runner now, but slow container teardown must not consume the peer-stop deadline.

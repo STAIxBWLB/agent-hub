@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { realPath } from "../src/hub/project.ts";
 import { processLiveness, processSignature } from "../src/pi/process-signature.ts";
 import type { RecordedTerminalLaunch } from "../src/cli/terminal-recovery.ts";
+import * as terminalLaunchModule from "../src/hub/terminal-launch.ts";
 
 const cleanup: Array<() => unknown> = [];
 afterEach(async () => { for (const action of cleanup.splice(0).reverse()) await action(); });
@@ -53,6 +54,29 @@ writeFileSync(${JSON.stringify(finished)}, "finished");
   const rows = (): RecordedTerminalLaunch[] => existsSync(ledger) ? JSON.parse(readFileSync(ledger, "utf8")) : [];
   return { root, stateDir, daemon, console_, connect, ledger, candidate, rows, gate, started, finished };
 }
+
+test("#482 a failed query cleanup still tears down the other peers and daemon state", async () => {
+  let fail = true;
+  const reader = spyOn(terminalLaunchModule, "terminalOwnerReads").mockImplementation(() => ({
+    run: async () => { throw new Error("unexpected query in cleanup-only fixture"); },
+    stop: async () => { if (fail) throw new Error("fixture cleanup failure with private details"); },
+  }));
+  const f = await fixture();
+  try {
+    await f.connect({ role: "peer", peer: "claude", channel: true });
+    await until(() => f.daemon.bus.stateOf("claude") === "idle", "unrelated peer attached");
+    await expect(f.daemon.stop()).resolves.toBeUndefined();
+    await f.daemon.stopped;
+    expect(f.daemon.bus.stateOf("claude")).toBe("offline");
+    expect(existsSync(join(f.stateDir, "status.json"))).toBe(false);
+    const log = readFileSync(join(f.stateDir, "hub.log"), "utf8");
+    expect(log).toContain("terminal owner query cleanup failed during shutdown");
+    expect(log).not.toContain("private details");
+  } finally {
+    fail = false;
+    try { await f.daemon.stop(); } finally { reader.mockRestore(); }
+  }
+});
 
 test("#482 terminal_launch replies to console-only and wrong daemon binding refusals without publishing", async () => {
   const f = await fixture(), row = f.candidate();

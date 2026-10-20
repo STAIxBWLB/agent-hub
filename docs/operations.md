@@ -2307,6 +2307,13 @@ unrecorded`: end it in its terminal or use its native resume flow in an Orca
 terminal, then refresh the plan. Plain Claude's same-protocol reconnect-only
 session still reconnects by itself without a terminal restart.
 
+Background Orca identity reads are limited to 30 seconds and 1 MiB of output.
+Shutdown cancels their owned query process groups and waits for reconciliation.
+A query whose termination cannot be confirmed is logged as incomplete; the
+remaining peer and daemon teardown still runs. Native terminal execution keeps
+its foreground TTY behavior. Unknown terminal evidence is shown as unverified
+ownership, with end or native resume guidance.
+
 An Orca pane that is orphaned but still connected needs reattachment, not turn
 cancellation: run `orca terminal switch --terminal <handle>` yourself, then refresh.
 The coordinator never switches panes. Such a pane is not evidence that its native

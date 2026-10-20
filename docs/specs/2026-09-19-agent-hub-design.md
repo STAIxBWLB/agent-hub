@@ -3714,6 +3714,11 @@ pre-spawn and does not wait for this terminal proof. The coordinator retains
 durable pending creation and attachment-wait evidence until ownership is proven;
 no pre-start candidate is restoration evidence.
 
+Background Orca queries have a 30-second deadline and 1 MiB output ceiling. Their
+owned process groups are cancelled and awaited on shutdown before reconciliation
+settles. A cleanup failure is logged without preventing other peer teardown or
+daemon finalization; native TUI foreground execution is unchanged.
+
 Without the advertised feature a current launcher runs unrecorded and names the
 upgrade remedy. Attached native TUIs without a live launcher or independent exact
 Orca session proof are shown as `attached, launcher unrecorded`, with person end

@@ -99,6 +99,7 @@ function peerAction(planned: PlannedProject, peer: RecoveryPeer): string {
   if (planned.freshStart?.includes(peer.id)) return "restarts as a new session (no turn to lose)";
   const terminal = (planned.terminals as { peer: string; handle: string }[]).find((t) => t.peer === peer.id);
   if (terminal) return `resumes its session in a new terminal (replaces ${terminal.handle})`;
+  if (peerKind(planned, peer) === "unmanaged") return "attached, terminal ownership unverified; resolve its evidence or end it in its terminal or resume the original conversation, then refresh the plan";
   return definitionOf(peer.id)?.session.restoreOnStart ? "restarts headless on its recorded session" : "restarts headless as a new session";
 }
 
