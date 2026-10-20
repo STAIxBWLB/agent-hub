@@ -1987,16 +1987,7 @@ task list polling does not. `hub_status` stays conductor-only.
   PII task still goes to `local` or nobody.
 - Lasting exclusions are refusals only: a plain decline records the owner it was
   declined for in its history entry's `from` (also when the console declines
-  for that owner). A decline with `capacity: true` (`hub_task_decline`, #531) says
-  the owner has no room right now: its history entry carries `capacity: true`,
-  `excluded()` skips it, and the owner is left out of that move's own reroute
-  only, like the budget relay and the idle sweep, so a later reroute or planner
-  pull may offer the task to it again from its reservation; entries without the
-  field, all older rows included, read as refusals. A planner pull that finds no
-  owner names the cause (the peers a lasting exclusion keeps out, a peer at its
-  WIP limit with wip/limit, a held queue, needs_review), by peer id and count
-  only, and `hub_backlog_plan` refuses a reservation for a peer `excluded()`
-  returns for that task. A decline, with or without `capacity`, and an escalation with reason `rejections` (a reviewer's
+  for that owner), and an escalation with reason `rejections` (a reviewer's
   repeated changes_requested) or `manual` (by hand) records the owner it took
   the task from the same way. `excluded()` reads both (older decline rows name
   only the decliner), so those peers stay out of every later reroute and of
@@ -2010,6 +2001,16 @@ task list polling does not. `hub_status` stays conductor-only.
   clears an agent's reservation, so a later reroute does not hand the task to
   the agent's choice; the conductor's and a proposer's assigns respect the
   exclusions and keep the reservation.
+- A capacity decline is not a lasting exclusion (#531): `hub_task_decline` with
+  `capacity: true` says the owner has no room right now. Its history entry
+  records `from` and `capacity: true`, `excluded()` skips it, and the owner is
+  left out of that move's own reroute only, like the budget relay and the idle
+  sweep, so a later reroute or planner pull may offer the task to it again from
+  its reservation. Entries without the field, all older rows included, read as
+  refusals. A planner pull that finds no owner names the cause (the peers a
+  lasting exclusion keeps out, a peer at its WIP limit with wip/limit, a held
+  queue, needs_review), by peer id and count only, and `hub_backlog_plan`
+  refuses a reservation for a peer `excluded()` returns for that task.
 - A named candidate list (console or conductor assign, escalation, budget
   relay, the idle sweep's auto-reassignment of its suggestion) replaces the
   reservation; the idle sweep's step-3 suggestion itself is an `assign()`
