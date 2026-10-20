@@ -891,6 +891,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     if (p.permissionMode && p.permissionMode !== "ask") summary.push(span(` ${p.permissionMode}`, "attention"));
     if (p.needsReview) summary.push(span(` review${p.needsReview}`, "failure"));
     if (p.paused) summary.push(span(" paused", "attention"));
+    if (typeof p.importantWaitingSince === "number") summary.push(span(` important waiting ${duration(now - p.importantWaitingSince)}`, "attention")); // #572 AC1: a busy ACP peer that cannot be steered
     if (p.toolsOnly) summary.push(span(definitionOf(id)?.attach?.pullOnlyForms?.includes("tui") ? ` pull-only, read ${typeof p.lastInboxAt === "number" ? relative(p.lastInboxAt, now) : "never"}` : " tools-only: ahub claude", "attention"));
   }
   if (s.pendingRestart?.length) summary.push(span(`${summary.length ? " | " : ""}restart pending: ${s.pendingRestart.map(row => row.key).join(", ")}`, "attention"));

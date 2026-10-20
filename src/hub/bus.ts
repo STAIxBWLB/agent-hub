@@ -894,6 +894,11 @@ export class Bus {
     return (this.queues.get(id) ?? []).filter((e) => e.priority === "important").length;
   }
 
+  /** The oldest `important` envelope still waiting in a queue, for the busy-peer notice (#572 AC1); a read, never a delivery. */
+  oldestQueuedImportantAt(id: PeerId): number | undefined {
+    return (this.queues.get(id) ?? []).reduce<number | undefined>((oldest, e) => e.priority !== "important" ? oldest : oldest === undefined ? e.ts : Math.min(oldest, e.ts), undefined);
+  }
+
   private enqueue(id: PeerId, env: Envelope, front = false): void {
     if (this.withdrawn.has(env.id)) return;
     const queue = this.queues.get(id) ?? [];

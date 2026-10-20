@@ -17,7 +17,7 @@ import { profileName, projectProfile, resolveProfile } from "../hub/profiles.ts"
 import { catalogAssignments, loadRoleCatalog, selectedRoles } from "../hub/roles.ts";
 import { attachWatch } from "./watch.ts";
 import { verifiedJcodeCommand } from "../adapters/jcode.ts";
-import { configureJcodeMcp } from "./jcode-mcp.ts";
+import { configureJcodeMcp, jcodeExtraMcpServers } from "./jcode-mcp.ts";
 import { qwenSessionId } from "../hub/crash.ts";
 import { isPermissionMode } from "../hub/permission-mode.ts";
 import { parseSettingText, settingDef, settingText, type SettingRow } from "../hub/settings.ts";
@@ -56,7 +56,7 @@ import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts
 import { operationScreen, planScreen, type ScreenIO, type UpgradeHost } from "./upgrade-interactive.ts";
 import { readRecoveryPresentationFlags } from "./upgrade-presentation-flags.ts";
 import { renderOperation, renderBlocked, renderSummary, type RecoveryPresentationOptions } from "./upgrade-presentation.ts";
-import { recordTerminalLaunch, type TerminalPeer } from "./terminal-recovery.ts";
+import { recordTerminalLaunch, prepareTerminalLaunch, registerTerminalLaunch, type TerminalPeer } from "./terminal-recovery.ts";
 import { stopAndArchiveSummary } from "./recovery-guidance.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
 import { setupOllamaModel } from "./models-setup.ts";
@@ -902,7 +902,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       projectConfig, connect: nativeConnect, fail,
       exec: (bin, argv, tool) => exec(bin, argv, tool, context.executionCwd),
       execWithEnv: (bin, argv, env) => execWithEnv(bin, argv, env, selectedInstance ?? entry.command, context.executionCwd), takeFlags,
-      helpers: { launcherPreview: (tool, raw, projectRoot, state, unattended) => launcherPreview(tool, raw, projectRoot, state, unattended, selectedInstance), readControl, recordTerminalLaunch, recoveryLock, processSignature,
+      helpers: { launcherPreview: (tool, raw, projectRoot, state, unattended) => launcherPreview(tool, raw, projectRoot, state, unattended, selectedInstance), readControl, recordTerminalLaunch, prepareTerminalLaunch, registerTerminalLaunch, recoveryLock, processSignature,
         buildLaunch, claudeObservationHooks, recordClaudeLaunch, cleanupStaleClaudeSettings, cleanupClaudeSettings,
         nativeLaunchEnv, runClaudeLaunch, childEnv, qwenSessionId, configureJcodeMcp, configureKimiMcp,
         buildKimiTuiLaunch, startModeOf },
@@ -1594,7 +1594,9 @@ const commands: Record<string, () => Promise<void> | void> = {
     // #258: the hub's own memory on this machine; reads are anyone's, changes a person's.
     if (args.filter(arg => arg !== "--json")[0] === "profile-check") {
       if (args.some(arg => arg !== "profile-check" && arg !== "--json")) fail("usage: ahub memory profile-check [--json]");
-      const result = await checkMemoryProfiles(selectedMemoryProfile());
+      let selected: ReturnType<typeof selectedMemoryProfile>;
+      try { selected = selectedMemoryProfile(); } catch (e) { return fail((e as Error).message); } // an inactive split names the resume remedy
+      const result = await checkMemoryProfiles(selected);
       console.log(args.includes("--json") ? JSON.stringify(result, null, 2) : formatMemoryProfileCheck(result));
       if (!result.ready) process.exitCode = 1;
       return;
@@ -1934,7 +1936,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       for (const error of routingErrors) row(false, "routing", error);
       for (const probe of nativeDoctorOptionalProbes(config)) {
         if (probe.kind === "source-identity") row(verifiedJcodeCommand(probe.command, cwd), probe.name, probe.detail);
-        else {
+        else if (probe.kind === "jcode-mcp") {
+          const { servers, unreadable } = jcodeExtraMcpServers(cwd, probe.home);
+          row(servers.length || unreadable.length ? false : true, probe.name,
+            [servers.length ? `${servers.length} besides the hub's own would load in the hub-owned jcode (${servers.join(", ")}); jcode has no switch to choose them, so remove them from its config or use another JCODE_HOME` : "",
+              unreadable.length ? `unreadable or unsafe, not listed: ${unreadable.join(", ")}` : ""].filter(Boolean).join("; ") || "none besides the hub's own");
+        } else {
           const v = version(probe.command[0]!);
           row(v === probe.expected, probe.name, v === probe.expected ? probe.confirmed : probe.unconfirmed);
         }

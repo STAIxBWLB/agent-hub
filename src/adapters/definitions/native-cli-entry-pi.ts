@@ -5,7 +5,7 @@ import type { NativeCliEntryContext } from "./native-cli-entry-types.ts";
 export async function runPiEntry(ctx: NativeCliEntryContext): Promise<void> {
   const peer = ctx.instance ?? "pi";
   const { args, cwd, stateDir, unattendedEnv, projectConfig, connect, fail, execWithEnv } = ctx;
-  const { launcherPreview, startModeOf, recoveryLock, readControl, recordTerminalLaunch } = ctx.helpers;
+  const { launcherPreview, startModeOf, readControl, prepareTerminalLaunch, registerTerminalLaunch } = ctx.helpers;
   // --headless is --mode headless everywhere this command goes: the preview, the hub and the conductor path.
   if (args.includes("--headless") && !args.includes("--mode")) args.splice(args.indexOf("--headless"), 1, "--mode", "headless");
   if (args.includes("--print-command") || args.includes("--dry-run")) {
@@ -34,11 +34,6 @@ export async function runPiEntry(ctx: NativeCliEntryContext): Promise<void> {
       return console.log(reply.already ? "pi is already attached" : reply.opened ? `pi: opened a terminal running ${reply.command}; it attaches when its TUI is ready` : 'pi attached (headless). Talk to it with: ahub say @pi "..."');
     } finally { hub.close(); }
   }
-  // #215: as for Codex, a TUI launch by the recovery operation holding the lock records itself before the hub round
-  // trip, so a resume in that window never reads it as gone; an ordinary launch records only after the hub accepted it.
-  const recovering = options.mode === "tui" && !!process.env.AGENTHUB_RECOVERY_OPERATION && process.env.AGENTHUB_RECOVERY_OPERATION === recoveryLock();
-  const before = readControl(stateDir);
-  if (recovering && before?.instanceId) await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
   const snapshot = (await hub.request({ t: "status" })).status;
   const warning = retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
@@ -52,7 +47,14 @@ export async function runPiEntry(ctx: NativeCliEntryContext): Promise<void> {
     delete launchEnv.AGENTHUB_RECOVERY_OPERATION;
     delete launchEnv.AGENTHUB_UNATTENDED;
     const control = readControl(stateDir);
-    if (!recovering && control?.instanceId) await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId);
+    if (control?.instanceId) {
+      const terminal = await prepareTerminalLaunch(peer, cwd, stateDir, control.instanceId);
+      if (terminal) {
+        const registration = await connect();
+        try { await registerTerminalLaunch(registration, terminal, process.env.AGENTHUB_RECOVERY_OPERATION); }
+        finally { registration.close(); }
+      }
+    }
     return execWithEnv(launch.cmd, launch.args, launchEnv);
   }
   console.log(res.already ? `${peer} is already attached` : `${peer} attached (headless). Talk to it with: ahub say @${peer} "..."`);

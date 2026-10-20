@@ -1,4 +1,4 @@
-import { closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { hubGitSync } from "../../hub/git.ts";
@@ -55,4 +55,58 @@ export function configureJcodeMcp(cwd: string, stateDir: string, bundle: string,
     renameSync(temporary, file);
   } finally { if (existsSync(temporary)) unlinkSync(temporary); }
   return { changed: true, tracked };
+}
+
+/**
+ * #572 AC4: jcode 0.99.0 has no flag or environment variable that chooses which MCP servers its `serve` and `acp`
+ * load (`--mcp-tools` and `JCODE_MCP_TOOLS` only change how their tools are exposed, and `JCODE_DISABLE_CLAUDE_MCP`
+ * does not stop a project `.mcp.json`). The hub-owned jcode therefore starts every server these files name, besides
+ * the hub's own. This lists their names for `ahub doctor`. It reads only `<JCODE_HOME>/mcp.json` and the project's
+ * `.jcode/mcp.json`, `.mcp.json` and `.claude/mcp.json`: no other path, no home search.
+ * Links are refused below the trusted root (ceiling: per-component `lstat` plus `O_NOFOLLOW` does not pin a directory against a concurrent same-user swap; that would need fd-relative traversal): each controlled directory component (`.jcode`, `.claude`) and the
+ * file itself must be a real directory or a real regular file, and the file is opened without following a link and
+ * checked again after the open (review I3). The project root and the home are the hub's own configured paths, so a
+ * system alias at or above them (macOS `/var`) stays legitimate. Names only: a command, url, header or environment
+ * value never leaves the file.
+ */
+function readBoundedJson(root: string, parts: string[]): unknown | undefined {
+  let dir = root;
+  for (const part of parts.slice(0, -1)) {
+    dir = join(dir, part);
+    const info = lstatSync(dir, { throwIfNoEntry: false });
+    if (!info) return undefined; // absent: nothing to list
+    if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("unsafe directory");
+  }
+  const file = join(dir, parts[parts.length - 1]!), info = lstatSync(file, { throwIfNoEntry: false });
+  if (!info) return undefined;
+  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.size > 256 * 1024) throw new Error("unsafe file");
+  let fd: number;
+  try { fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+  try {
+    const open = fstatSync(fd);
+    if (!open.isFile() || open.nlink !== 1 || open.size > 256 * 1024 || open.dev !== info.dev || open.ino !== info.ino) throw new Error("unsafe file");
+    const bytes = Buffer.alloc(open.size);
+    let offset = 0;
+    while (offset < bytes.length) { const n = readSync(fd, bytes, offset, bytes.length - offset, offset); if (!n) break; offset += n; }
+    return JSON.parse(bytes.subarray(0, offset).toString("utf8"));
+  } finally { closeSync(fd); }
+}
+
+export function jcodeExtraMcpServers(cwd: string, home: string): { servers: string[]; unreadable: string[] } {
+  const sources: [label: string, root: string, parts: string[]][] = [
+    ["mcp.json (JCODE_HOME)", home, ["mcp.json"]], [JCODE_MCP_FILE, cwd, [".jcode", "mcp.json"]],
+    [".mcp.json", cwd, [".mcp.json"]], [".claude/mcp.json", cwd, [".claude", "mcp.json"]],
+  ];
+  const names = new Set<string>(), unreadable: string[] = [];
+  for (const [label, root, parts] of sources) {
+    try {
+      const doc = readBoundedJson(root, parts);
+      if (doc === undefined) continue;
+      const servers = object(doc) ? (doc.mcpServers ?? doc.servers) : undefined;
+      if (!object(doc) || (servers !== undefined && !object(servers))) { unreadable.push(label); continue; }
+      for (const name of Object.keys(servers ?? {})) if (name !== JCODE_MCP_NAME) names.add(name);
+    } catch { unreadable.push(label); }
+  }
+  return { servers: [...names].sort(), unreadable };
 }

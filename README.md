@@ -105,7 +105,7 @@ every hub using that home to run 0.12.37 or later, which opens memory through sh
 (#534). An older hub (0.12.36 or earlier, agent-mem 0.3.1) does not detect the
 split: it keeps reading and writing the old layout, and its writes reach the shards
 only through `amem migrate --shards --resume`. Upgrade or stop every such hub before
-splitting. `ahub memory profile-check` is not split-aware yet (#536). See [memory profiles and rollout](docs/memory.md#selected-memory-profile).
+splitting. `ahub memory profile-check` is split-aware (#536). See [memory profiles and rollout](docs/memory.md#selected-memory-profile).
 
 ## Documentation
 

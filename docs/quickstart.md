@@ -52,7 +52,7 @@ The restarted Claude planner gets the release-train tools (`hub_release_new`, `h
 
 Jcode must be 0.98.0 or later, below 1.0.0; 0.94.0 is no longer accepted, so `ahub doctor` fails its Jcode row for an older install and the peer does not start (#529). Every owned jcode process runs with `JCODE_NO_TELEMETRY=1`.
 
-Since 0.12.37 the hub pins `@staix/agent-mem` 0.4.0 and opens a split memory home through its shards (#534). Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is not split-aware yet and reports a mismatch for every correctly bound hub on a split home (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
+Since 0.12.37 the hub pins `@staix/agent-mem` 0.4.0 and opens a split memory home through its shards (#534). Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
 
 From 0.12.30 or earlier, existing Jcode project MCP entries need one refresh before conductor or dashboard starts. Once per project, the person runs:
 

@@ -27,8 +27,13 @@ import { runPiEntry } from "../src/adapters/definitions/native-cli-entry-pi.ts";
 import { runQwenEntry } from "../src/adapters/definitions/native-cli-entry-qwen.ts";
 import { runLocalEntry } from "../src/adapters/definitions/native-cli-entry-local.ts";
 import { runCodexEntry } from "../src/adapters/definitions/native-cli-entry-codex.ts";
+import { runClaudeEntry } from "../src/adapters/definitions/native-cli-entry-claude.ts";
 import type { NativeCliEntryContext } from "../src/adapters/definitions/native-cli-entry-types.ts";
 import { definitionOf } from "../src/adapters/registry.ts";
+import type { RecordedTerminalLaunch } from "../src/cli/terminal-recovery.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 function entryContext(kind: string, args: string[] = []) {
   const requests: Record<string, unknown>[] = [];
@@ -92,4 +97,99 @@ test("native child environment keeps selected instance and removes inherited ven
   expect(env.CLAUDECODE).toBeUndefined();
   expect(env.CODEX_THREAD_ID).toBeUndefined();
   expect(env.AGENTHUB_RECOVERY_OPERATION).toBeUndefined();
+});
+
+function terminalEntryFixture(kind: "codex" | "pi" | "claude", directory: string, refused = false) {
+  const { context } = entryContext(kind, kind === "pi" ? ["--mode", "tui"] : []);
+  delete context.instance;
+  context.cwd = directory;
+  context.stateDir = join(directory, "state");
+  const order: string[] = [];
+  const candidate: RecordedTerminalLaunch = { peer: kind, projectRoot: directory, stateDir: context.stateDir, instanceId: "instance-terminal", launcherPid: process.pid, launcherSignature: "fixture-signature", launchId: "3c402333-506a-4448-aad0-bdab112e48e2", handle: "term-fixture", incarnationId: "inc-fixture", worktreeId: "fixture-worktree", env: {} };
+  context.connect = async () => ({ features: ["terminal_owner"], request: async (message: Record<string, unknown>) => {
+    if (message.t === "status") return { status: { peers: { [kind]: { state: "offline" } } } };
+    order.push("start");
+    return refused ? { ok: false, error: "native start refused" } : { ok: true, proxyUrl: "ws://127.0.0.1:5555/?retained=1", launch: { cmd: "fake-pi", args: ["--fixture"], env: { FIXTURE_NATIVE: "1" } } };
+  }, close() {} }) as unknown as Awaited<ReturnType<NativeCliEntryContext["connect"]>>;
+  const helpers: Partial<NativeCliEntryContext["helpers"]> = {
+    readControl: () => ({ instanceId: candidate.instanceId }) as ReturnType<NativeCliEntryContext["helpers"]["readControl"]>,
+    recordTerminalLaunch: async () => { throw new Error("authoritative terminal writer must not run in a native leaf"); },
+    prepareTerminalLaunch: async (peer, projectRoot, stateDir, instanceId) => {
+      expect({ peer, projectRoot, stateDir, instanceId }).toEqual({ peer: kind, projectRoot: directory, stateDir: candidate.stateDir, instanceId: candidate.instanceId });
+      order.push("prepare");
+      process.env.AGENTHUB_LAUNCH_ID = candidate.launchId;
+      return candidate;
+    },
+    registerTerminalLaunch: async (_client, row) => { expect(row).toEqual(candidate); order.push("register-pending"); },
+  };
+  Object.assign(context.helpers, helpers);
+  context.exec = (_bin, argv): never => {
+    order.push("foreground-exec");
+    const remote = new URL(argv[0]!);
+    expect(remote.searchParams.get("launchId")).toBe(candidate.launchId);
+    expect(remote.searchParams.get("retained")).toBe("1");
+    throw new Error("foreground native boundary");
+  };
+  context.execWithEnv = (bin, argv, env): never => {
+    order.push("foreground-exec");
+    expect(bin).toBe("fake-pi"); expect(argv).toEqual(["--fixture"]);
+    expect(env.FIXTURE_NATIVE).toBe("1");
+    throw new Error("foreground native boundary");
+  };
+  return { context, candidate, order };
+}
+
+for (const [kind, run] of [["codex", runCodexEntry], ["pi", runPiEntry]] as const) {
+  for (const refused of [false, true]) {
+    test(`#482 ${kind} ${refused ? "refused start never registers or executes" : "prepares and registers pending ownership before foreground execution"}`, async () => {
+      const directory = mkdtempSync(join(tmpdir(), "ahub-leaf-wiring-"));
+      const previous = process.env.AGENTHUB_LAUNCH_ID;
+      try {
+        const { context, order } = terminalEntryFixture(kind, directory, refused);
+        await expect(run(context)).rejects.toThrow(refused ? "native start refused" : "foreground native boundary");
+        expect(order).toEqual(refused ? ["start"] : ["start", "prepare", "register-pending", "foreground-exec"]);
+      } finally {
+        if (previous === undefined) delete process.env.AGENTHUB_LAUNCH_ID; else process.env.AGENTHUB_LAUNCH_ID = previous;
+        rmSync(directory, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+test("#482 Claude registers pending terminal ownership and publishes its hook record before the native child", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "ahub-claude-leaf-wiring-"));
+  const previous = { home: process.env.HOME, launch: process.env.AGENTHUB_LAUNCH_ID, instance: process.env.AGENTHUB_INSTANCE_ID };
+  process.env.HOME = directory;
+  try {
+    const { context, candidate, order } = terminalEntryFixture("claude", directory);
+    const helpers: Partial<NativeCliEntryContext["helpers"]> = {
+      claudeObservationHooks: (_config, paths) => ({ ...paths, purpose: "permission" }),
+      buildLaunch: () => ({ cmd: "fake-claude", args: [], permissionHook: true, settingsFile: join(directory, "fixture-settings.json") }),
+      processSignature: () => candidate.launcherSignature,
+      recordClaudeLaunch: (_stateDir, record) => {
+        expect(record.launchId).toBe(candidate.launchId);
+        expect(record.permissionHook).toBe(true);
+        order.push("publish-hook-record");
+        return { recorded: true };
+      },
+      cleanupStaleClaudeSettings: () => {},
+      nativeLaunchEnv: (_kind, env) => env,
+      childEnv: () => ({ HOME: directory }),
+      runClaudeLaunch: async (_launch, options) => {
+        expect(options.record?.launchId).toBe(candidate.launchId);
+        expect(options.env.HOME).toBe(directory);
+        order.push("foreground-exec");
+        throw new Error("foreground Claude boundary");
+      },
+      cleanupClaudeSettings: () => { order.push("cleanup-settings"); },
+    };
+    Object.assign(context.helpers, helpers);
+    await expect(runClaudeEntry(context)).rejects.toThrow("foreground Claude boundary");
+    expect(order).toEqual(["prepare", "register-pending", "publish-hook-record", "foreground-exec", "cleanup-settings"]);
+  } finally {
+    for (const [key, value] of Object.entries({ HOME: previous.home, AGENTHUB_LAUNCH_ID: previous.launch, AGENTHUB_INSTANCE_ID: previous.instance })) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

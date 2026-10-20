@@ -1828,6 +1828,10 @@ var init_codex_appserver = __esm(() => {
     get proxyUrl() {
       return `ws://127.0.0.1:${this.server?.port ?? this.opts.proxyPort}`;
     }
+    terminalOwner(launchId) {
+      const link = this.link;
+      return this.threadId && link && link === this.claimedTui && link.launchId === launchId && link.tui.readyState === WebSocket.OPEN && link.up.readyState === WebSocket.OPEN ? { generation: String(this.sessionGeneration) } : undefined;
+    }
     async start() {
       const upstream = this.opts.upstreamUrl ?? await this.spawnAppServer();
       try {
@@ -1837,7 +1841,8 @@ var init_codex_appserver = __esm(() => {
           fetch: (req, server) => {
             if (req.headers.has("origin"))
               return new Response("forbidden", { status: 403 });
-            if (server.upgrade(req, { data: {} }))
+            const launchId = new URL(req.url).searchParams.get("launchId");
+            if (server.upgrade(req, { data: { ...launchId && launchId.length <= 128 ? { launchId } : {} } }))
               return;
             return new Response("agent-hub codex proxy");
           },
@@ -2139,7 +2144,7 @@ ${renderDigest(envs, false)}`;
     }
     attach(tui, upstream) {
       const up = new WebSocket(upstream);
-      const link = { tui, up, backlog: [], tracked: new Map };
+      const link = { tui, up, backlog: [], tracked: new Map, ...tui.data.launchId ? { launchId: tui.data.launchId } : {} };
       this.claimedTui = link;
       tui.data = link;
       up.onopen = () => {
@@ -2288,7 +2293,7 @@ ${renderDigest(envs, false)}`;
       link.tui.send(raw);
     }
     adopt(link, threadId, fresh = false) {
-      if (typeof threadId !== "string" || !threadId)
+      if (typeof threadId !== "string" || !threadId || link !== this.claimedTui || link.tui.readyState !== WebSocket.OPEN || link.up.readyState !== WebSocket.OPEN)
         return;
       this.abandonSteers("thread changed");
       for (const [id, pending] of this.pending)
@@ -2584,6 +2589,8 @@ var init_acp = __esm(() => {
     activeDeliveryId;
     activeLegacy;
     deliveryAccepted = false;
+    turnEnvs = [];
+    steerIds = [];
     cancelWait;
     promptActivity = false;
     activityOpen = false;
@@ -2773,6 +2780,7 @@ var init_acp = __esm(() => {
         this.turn++;
       if (this.activeDeliveryId)
         this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: reason ?? "ACP session stopped before settlement" });
+      this.settleSteers("needs_review", reason ?? "ACP session stopped before settlement");
       this.activeDeliveryId = undefined;
       const proc = this.proc;
       if (!proc) {
@@ -2793,6 +2801,8 @@ var init_acp = __esm(() => {
       const turn = ++this.turn;
       this.activeDeliveryId = deliveryId;
       this.activeLegacy = deliveryId ? undefined : { turn, envs };
+      this.turnEnvs = envs;
+      this.steerIds = [];
       this.deliveryAccepted = false;
       this.promptActivity = false;
       this.chunks = [];
@@ -2825,14 +2835,16 @@ ${renderDigest(envs, false)}` }] });
         this.observeUsage(result, "prompt_result");
         this.primed = true;
         const body = this.chunks.join("").trim();
+        const answering = this.turnEnvs.length ? this.turnEnvs : envs;
         if (body)
-          this.onMessage?.(body, { inReplyTo: replyParent(envs), to: replyAudience(envs) });
+          this.onMessage?.(body, { inReplyTo: replyParent(answering), to: replyAudience(answering) });
         if (result?.stopReason !== "end_turn")
           this.reportTurnFailure(envs, `ACP prompt ended without normal completion (${String(result?.stopReason ?? "unknown")})`);
         if (deliveryId && this.activeDeliveryId === deliveryId) {
           this.acceptDelivery();
           this.delivery({ id: deliveryId, state: result?.stopReason === "end_turn" ? "completed" : "needs_review", ...result?.stopReason === "end_turn" ? {} : { reason: "ACP prompt ended without normal completion" } });
         }
+        this.settleSteers(result?.stopReason === "end_turn" ? "completed" : "needs_review", "ACP prompt ended without normal completion");
       }).catch((e) => {
         if (turn !== this.turn) {
           if (this.cancelWait?.turn === turn)
@@ -2841,6 +2853,7 @@ ${renderDigest(envs, false)}` }] });
         }
         this.endActivity("failed", true);
         const reason = sanitize(e.message);
+        this.settleSteers("needs_review", reason);
         this.opts.log?.(`[${this.id}] prompt failed: ${reason}`);
         const quota = !this.stopping && this.kimiAgent ? acpQuotaRefusal(e.message) : undefined;
         if (quota) {
@@ -2920,6 +2933,7 @@ ${renderDigest(envs, false)}` }] });
       const durable = !!this.activeDeliveryId;
       if (this.activeDeliveryId)
         this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason: "ACP turn watchdog timeout" });
+      this.settleSteers("needs_review", "ACP turn watchdog timeout");
       this.activeDeliveryId = undefined;
       this.notify("session/cancel", { sessionId: this.sessionId });
       this.turn++;
@@ -2960,6 +2974,26 @@ ${renderDigest(envs, false)}` }] });
       if (observation.availability === "known")
         this.opts.onTokens?.(observation.total, this.sessionId);
     }
+    currentTurn() {
+      return this.turn;
+    }
+    adoptIntoTurn(turn, envs, deliveryId) {
+      if (turn !== this.turn || this.state !== "busy" || this.cancelWait || this.stopping)
+        throw new Error(`${this.id} is ${this.state}, or its turn changed`);
+      this.turnEnvs = [...this.turnEnvs, ...envs];
+      this.activityPrivate ||= envs.some((env) => env.private === true);
+      this.primed = true;
+      if (deliveryId) {
+        this.steerIds.push(deliveryId);
+        this.delivery({ id: deliveryId, state: "accepted" });
+      }
+    }
+    settleSteers(state, reason) {
+      const ids = this.steerIds;
+      this.steerIds = [];
+      for (const id of ids)
+        this.delivery({ id, state, ...state === "needs_review" ? { reason: reason ?? "steered turn did not complete normally" } : {} });
+    }
     acceptDelivery() {
       if (!this.activeDeliveryId || this.deliveryAccepted)
         return;
@@ -2974,6 +3008,7 @@ ${renderDigest(envs, false)}` }] });
       this.pending.clear();
       if (this.activeDeliveryId)
         this.delivery({ id: this.activeDeliveryId, state: "needs_review", reason });
+      this.settleSteers("needs_review", reason);
       this.activeDeliveryId = undefined;
       this.setState("offline");
     }
@@ -3129,6 +3164,7 @@ ${renderDigest(envs, false)}` }] });
 
 // src/adapters/jcode.ts
 import { spawn as spawn6, spawnSync as spawnSync2 } from "child_process";
+import { createConnection } from "net";
 import { closeSync, constants, existsSync as existsSync4, fstatSync, lstatSync as lstatSync4, mkdtempSync as mkdtempSync3, openSync, readSync, rmSync as rmSync3 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
 import { isAbsolute as isAbsolute3, join as join5 } from "path";
@@ -3219,8 +3255,73 @@ function jcodeVersionSupported(version) {
   const v = typeof version === "string" ? release(version) : undefined;
   return !!v && compare(v, release(JCODE_MIN_VERSION)) >= 0 && compare(v, release(JCODE_BREAKING_VERSION)) < 0;
 }
-var JcodeOptionMismatch, JCODE_OWNED_ENV, JCODE_MIN_VERSION = "0.98.0", JCODE_BREAKING_VERSION = "1.0.0", release = (version) => /^(\d+)\.(\d+)\.(\d+)$/.exec(version)?.slice(1).map(Number), compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2], JcodePeer;
+function nativeSteer(socket, cwd, sessionId, text, clientId, timeoutMs = STEER_TIMEOUT_MS, canSend = () => {
+  return;
+}) {
+  return new Promise((resolve, reject) => {
+    const conn = createConnection(socket);
+    let phase = "ping", buffer = "", finished = false;
+    const finish = (error) => {
+      if (finished)
+        return;
+      finished = true;
+      clearTimeout(timer);
+      conn.destroy();
+      if (error)
+        reject(error);
+      else
+        resolve();
+    };
+    const fail = (why) => finish(phase === "sent" ? new SteerUncertain(`Jcode steering outcome is uncertain: ${why}`) : new SteerRefused(`Jcode owned server cannot take a steer: ${why}`));
+    const timer = setTimeout(() => fail(`no answer in the ${phase} step`), timeoutMs);
+    const send = (value) => conn.write(`${JSON.stringify(value)}
+`);
+    conn.once("error", () => fail("connection failed"));
+    conn.once("close", () => fail("connection closed"));
+    conn.once("connect", () => send({ type: "ping", id: 1 }));
+    conn.on("data", (chunk) => {
+      buffer += chunk.toString();
+      if (buffer.length > 1024 * 1024)
+        return fail("oversized reply");
+      const lines = buffer.split(`
+`);
+      buffer = lines.pop();
+      for (const line of lines) {
+        let msg;
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (msg.type === "error" && typeof msg.id === "number" && msg.id >= 1)
+          return fail("the server refused a request");
+        if (phase === "ping" && msg.type === "pong" && msg.id === 1) {
+          if (!Array.isArray(msg.capabilities) || !msg.capabilities.includes("soft_interrupt_ids"))
+            return fail("no soft interrupt support");
+          phase = "subscribe";
+          send({ type: "subscribe", id: 2, working_dir: cwd, target_session_id: sessionId, continue_on_disconnect: true });
+        } else if (phase === "subscribe" && msg.type === "session") {
+          if (msg.session_id !== sessionId)
+            return fail("the server answered for another session");
+          phase = "state";
+          send({ type: "state", id: 3 });
+        } else if (phase === "state" && msg.type === "state" && msg.id === 3) {
+          if (msg.session_id !== sessionId || msg.is_processing !== true)
+            return fail("the session has no running turn");
+          const changed = canSend();
+          if (changed)
+            return fail(changed);
+          phase = "sent";
+          send({ type: "soft_interrupt", id: 4, content: text, urgent: false, client_id: clientId });
+        } else if (phase === "sent" && msg.type === "ack" && msg.id === 4)
+          finish();
+      }
+    });
+  });
+}
+var JcodeOptionMismatch, JCODE_OWNED_ENV, JCODE_MIN_VERSION = "0.98.0", JCODE_BREAKING_VERSION = "1.0.0", release = (version) => /^(\d+)\.(\d+)\.(\d+)$/.exec(version)?.slice(1).map(Number), compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2], SteerRefused, SteerUncertain, STEER_TIMEOUT_MS = 5000, JcodePeer;
 var init_jcode = __esm(() => {
+  init_envelope();
   init_acp();
   init_child_process();
   JcodeOptionMismatch = class JcodeOptionMismatch extends Error {
@@ -3231,6 +3332,10 @@ var init_jcode = __esm(() => {
     }
   };
   JCODE_OWNED_ENV = { JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" };
+  SteerRefused = class SteerRefused extends Error {
+  };
+  SteerUncertain = class SteerUncertain extends Error {
+  };
   JcodePeer = class JcodePeer extends AcpPeer {
     jcode;
     launchId = crypto.randomUUID();
@@ -3353,6 +3458,49 @@ var init_jcode = __esm(() => {
       }
       if (failure)
         throw failure;
+    }
+    async steer(envs, deliveryId) {
+      const refuse = (reason) => {
+        if (deliveryId)
+          this.delivery({ id: deliveryId, state: "failed_safe", reason });
+        throw new Error(reason);
+      };
+      const sessionId = super.recoveryMetadata().sessionId;
+      const socket = lstatSync4(this.socket, { throwIfNoEntry: false });
+      if (this.state !== "busy")
+        refuse(`jcode is ${this.state}`);
+      if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null || !socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino || typeof sessionId !== "string")
+        refuse("owned Jcode server is unavailable");
+      const turn = this.currentTurn(), launch = this.server, identity = this.socketIdentity;
+      const stillCurrent = () => {
+        if (this.currentTurn() !== turn || this.state !== "busy")
+          return `jcode's turn changed before the steer was sent (${this.state})`;
+        if (this.ending || this.server !== launch || launch.exitCode !== null || launch.signalCode !== null || this.socketIdentity !== identity)
+          return "owned Jcode server changed before the steer was sent";
+        if (super.recoveryMetadata().sessionId !== sessionId)
+          return "jcode's session changed before the steer was sent";
+        const now = lstatSync4(this.socket, { throwIfNoEntry: false });
+        if (!now?.isSocket() || now.dev !== identity?.dev || now.ino !== identity.ino)
+          return "owned Jcode socket changed before the steer was sent";
+        return;
+      };
+      try {
+        await nativeSteer(this.socket, this.jcode.cwd, sessionId, renderDigest(envs, true), deliveryId ?? crypto.randomUUID(), this.jcode.steerTimeoutMs, stillCurrent);
+      } catch (error) {
+        if (error instanceof SteerUncertain) {
+          if (deliveryId)
+            this.delivery({ id: deliveryId, state: "needs_review", reason: "steering outcome is uncertain" });
+          throw error;
+        }
+        return refuse(error instanceof Error ? error.message : "Jcode steer failed");
+      }
+      try {
+        this.adoptIntoTurn(turn, envs, deliveryId);
+      } catch {
+        if (deliveryId)
+          this.delivery({ id: deliveryId, state: "needs_review", reason: "steered turn ended before its receipt" });
+        throw new SteerUncertain("Jcode steering outcome is uncertain: its turn ended first");
+      }
     }
     tuiLaunch(expected, options = {}) {
       const sessionId = super.recoveryMetadata().sessionId;
@@ -4611,6 +4759,12 @@ var init_pi = __esm(() => {
     }
     verifiedOwner() {
       return this.ownerClaimed && !!this.ownerPid && !!this.ownerSignature && processSignature(this.ownerPid) === this.ownerSignature;
+    }
+    terminalOwner(_launchId) {
+      if (this.opts.mode !== "tui" || !this.started || this.stopping || this.rosterDetached || !this.verifiedOwner() || !this.sessionId || !this.sessionFile || this.opts.sessionId && this.opts.sessionId !== this.sessionId || this.opts.sessionFile && this.opts.sessionFile !== this.sessionFile)
+        return;
+      const generation = this.sessionGeneration;
+      return generation && this.ownerPid ? { generation, nativePid: this.ownerPid } : undefined;
     }
     abortTools() {
       this.executionAbort?.abort();
@@ -9153,7 +9307,7 @@ async function runClaudeEntry(ctx) {
     }
     return console.log(`${peer} started: a headless reviewer the hub runs per review (stop it with ahub stop ${peer})`);
   }
-  const { launcherPreview, readControl, recordTerminalLaunch, claudeObservationHooks, buildLaunch, runClaudeLaunch, processSignature, recordClaudeLaunch, cleanupStaleClaudeSettings, nativeLaunchEnv, childEnv, cleanupClaudeSettings } = ctx.helpers;
+  const { launcherPreview, readControl, prepareTerminalLaunch, registerTerminalLaunch, claudeObservationHooks, buildLaunch, runClaudeLaunch, processSignature, recordClaudeLaunch, cleanupStaleClaudeSettings, nativeLaunchEnv, childEnv, cleanupClaudeSettings } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
     try {
       return console.log(JSON.stringify(launcherPreview("claude", args, cwd, stateDir, unattendedEnv), null, 2));
@@ -9164,9 +9318,17 @@ async function runClaudeEntry(ctx) {
   const control = readControl(stateDir);
   if (control?.instanceId) {
     process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
-    const terminal = await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: cwd } : undefined);
+    const terminal = await prepareTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: cwd } : undefined);
     if (!terminal)
       process.env.AGENTHUB_LAUNCH_ID = randomUUID6();
+    else {
+      const hub = await ctx.connect();
+      try {
+        await registerTerminalLaunch(hub, terminal, process.env.AGENTHUB_RECOVERY_OPERATION);
+      } finally {
+        hub.close();
+      }
+    }
   }
   let original;
   for (const file of [join16(cwd, ".claude", "settings.local.json"), join16(cwd, ".claude", "settings.json"), join16(process.env.HOME ?? "", ".claude", "settings.json")]) {
@@ -9209,7 +9371,7 @@ var init_native_cli_entry_claude = __esm(() => {
 async function runCodexEntry(ctx) {
   const peer = ctx.instance ?? "codex";
   const { args, cwd, stateDir, unattendedEnv, projectConfig, connect, fail, exec } = ctx;
-  const { launcherPreview, buildLaunch, recoveryLock, readControl, recordTerminalLaunch } = ctx.helpers;
+  const { launcherPreview, buildLaunch, readControl, prepareTerminalLaunch, registerTerminalLaunch } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
     try {
       return console.log(JSON.stringify(launcherPreview("codex", args, cwd, stateDir, unattendedEnv), null, 2));
@@ -9218,29 +9380,38 @@ async function runCodexEntry(ctx) {
     }
   }
   const launch0 = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl: "pending" });
-  const recovering = !!process.env.AGENTHUB_RECOVERY_OPERATION && process.env.AGENTHUB_RECOVERY_OPERATION === recoveryLock();
-  const before = readControl(stateDir);
-  if (recovering && !ctx.instance && before?.instanceId)
-    await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
   const snapshot = (await hub.request({ t: "status" })).status;
   const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
   if (warning)
     console.error(warning);
   const res = await hub.request({ t: "start", peer, args: { unattended: launch0.unattended === true }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
-  hub.close();
-  if (!res.ok)
+  if (!res.ok) {
+    hub.close();
     fail(res.error);
+  }
   if (ctx.instance) {
     if (typeof res.executionCwd !== "string" || !res.executionCwd.startsWith("/"))
       fail("instance execution directory was not verified");
     ctx.executionCwd = res.executionCwd;
   }
   const control = readControl(stateDir);
-  if ((!recovering || ctx.instance) && control?.instanceId)
-    await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: ctx.executionCwd } : undefined);
+  let proxyUrl = res.proxyUrl;
+  try {
+    if (control?.instanceId) {
+      const terminal = await prepareTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: ctx.executionCwd } : undefined);
+      if (terminal) {
+        await registerTerminalLaunch(hub, terminal, process.env.AGENTHUB_RECOVERY_OPERATION);
+        const url = new URL(proxyUrl);
+        url.searchParams.set("launchId", terminal.launchId);
+        proxyUrl = url.toString();
+      }
+    }
+  } finally {
+    hub.close();
+  }
   const runningCodexBin = res.retainedLaunchConfig?.codex_bin;
-  const launch = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl: res.proxyUrl, codexBin: typeof runningCodexBin === "string" ? runningCodexBin : projectConfig().codex_bin });
+  const launch = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl, codexBin: typeof runningCodexBin === "string" ? runningCodexBin : projectConfig().codex_bin });
   if (launch0.warning)
     console.error(launch0.warning);
   exec(launch.cmd, launch.args, "codex");
@@ -9570,7 +9741,7 @@ function piConductorStartArgs(args) {
 async function runPiEntry(ctx) {
   const peer = ctx.instance ?? "pi";
   const { args, cwd, stateDir, unattendedEnv, projectConfig, connect, fail, execWithEnv } = ctx;
-  const { launcherPreview, startModeOf, recoveryLock, readControl, recordTerminalLaunch } = ctx.helpers;
+  const { launcherPreview, startModeOf, readControl, prepareTerminalLaunch, registerTerminalLaunch } = ctx.helpers;
   if (args.includes("--headless") && !args.includes("--mode"))
     args.splice(args.indexOf("--headless"), 1, "--mode", "headless");
   if (args.includes("--print-command") || args.includes("--dry-run")) {
@@ -9604,10 +9775,6 @@ async function runPiEntry(ctx) {
       hub.close();
     }
   }
-  const recovering = options.mode === "tui" && !!process.env.AGENTHUB_RECOVERY_OPERATION && process.env.AGENTHUB_RECOVERY_OPERATION === recoveryLock();
-  const before = readControl(stateDir);
-  if (recovering && before?.instanceId)
-    await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
   const snapshot = (await hub.request({ t: "status" })).status;
   const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
@@ -9625,8 +9792,17 @@ async function runPiEntry(ctx) {
     delete launchEnv.AGENTHUB_RECOVERY_OPERATION;
     delete launchEnv.AGENTHUB_UNATTENDED;
     const control = readControl(stateDir);
-    if (!recovering && control?.instanceId)
-      await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId);
+    if (control?.instanceId) {
+      const terminal = await prepareTerminalLaunch(peer, cwd, stateDir, control.instanceId);
+      if (terminal) {
+        const registration = await connect();
+        try {
+          await registerTerminalLaunch(registration, terminal, process.env.AGENTHUB_RECOVERY_OPERATION);
+        } finally {
+          registration.close();
+        }
+      }
+    }
     return execWithEnv(launch.cmd, launch.args, launchEnv);
   }
   console.log(res.already ? `${peer} is already attached` : `${peer} attached (headless). Talk to it with: ahub say @${peer} "..."`);
@@ -18442,6 +18618,12 @@ init_board();
 init_envelope();
 init_routing();
 init_project();
+
+// src/hub/main-checkout.ts
+init_child_process();
+init_git();
+
+// src/hub/tasks.ts
 init_tool_refusal();
 init_review_brief();
 init_registry();
