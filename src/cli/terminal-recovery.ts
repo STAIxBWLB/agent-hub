@@ -179,6 +179,8 @@ const MAX_WAIT_MS = 10 * 60 * 1000;
 export const MAX_COMMAND_MS = 30_000;
 /** #215: a replacement's readiness is awaited in slices this long, checking between them whether its launcher still runs. */
 const EXIT_SLICE_MS = 5_000;
+/** #599: after the replacement reads idle, its session mapping is re-read this often until the deadline. */
+const MAP_POLL_MS = 1_000;
 const ALLOWED_ENV = ["CODEX_HOME", "CLAUDE_CONFIG_DIR"] as const;
 type AllowedEnvName = (typeof ALLOWED_ENV)[number];
 
@@ -909,16 +911,23 @@ export async function createTerminal(binding: TerminalBinding, options?: Command
       idle = await waitForIdle(replacement, slice(), config);
     }
     if (!idle.satisfied) return { created: true, ready: false, manualRequired: true, blockers: idle.blockers };
-    // An idle terminal may be the login shell the launcher returned to.
-    const launch = await launches();
-    if (launch.gone) return exited("exited");
-    const shown = await showBinding(replacement, config);
-    const identity = identityFrom(shown);
-    const session = sessionFrom(shown);
-    const recorded = launch.live;
     const same = (value: string | undefined) => anySession || value === binding.sessionId;
-    if ((identity !== binding.peer || !same(session)) && !(recorded && (identity === undefined || identity === binding.peer) && (session === undefined || same(session)))) {
-      return { created: true, ready: true, manualRequired: true, blockers: [blocker("ambiguous-create", `created terminal ${createdHandle} cannot be mapped to the original ${binding.peer} session`, binding.peer, createdHandle)] };
+    let session: string | undefined;
+    // An idle terminal may be the login shell the launcher returned to, or a TUI that has not yet recorded its
+    // launch or been identified by Orca (#599): poll until it maps, contradicts, or the deadline passes.
+    for (;;) {
+      const launch = await launches();
+      if (launch.gone) return exited("exited");
+      const shown = await showBinding(replacement, config);
+      const identity = identityFrom(shown);
+      session = sessionFrom(shown);
+      const recorded = launch.live;
+      if ((identity === binding.peer && same(session)) || (recorded && (identity === undefined || identity === binding.peer) && (session === undefined || same(session)))) break;
+      const contradicts = (identity !== undefined && identity !== binding.peer) || (session !== undefined && !same(session));
+      if (contradicts || Date.now() >= deadline) {
+        return { created: true, ready: true, manualRequired: true, blockers: [blocker("ambiguous-create", `created terminal ${createdHandle} cannot be mapped to the original ${binding.peer} session`, binding.peer, createdHandle)] };
+      }
+      await Bun.sleep(Math.max(1, Math.min(MAP_POLL_MS, deadline - Date.now())));
     }
     if (anySession && session) replacement = { ...replacement, sessionId: session };
     return { created: true, ready: true, manualRequired: false, binding: replacement, newBinding: replacement, blockers: [] };

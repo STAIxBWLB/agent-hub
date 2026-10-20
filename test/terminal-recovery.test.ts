@@ -320,6 +320,67 @@ test("create accepts a recorded replacement only after exact readback and reject
 });
 
 
+test("#599 an idle replacement maps when its launch record and Claude identity appear on a later poll", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ahub-late-mapping-"));
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js claude --resume session-1", argv: [], env: {} };
+  const binding: TerminalBinding = { peer: "claude", handle: "term-old", incarnationId: "inc-old", worktreeId, projectRoot: root, sessionId: session, launch, launchMetadata: launch };
+  const replacement = terminal({ handle: "term-new", incarnationId: "inc-new", agentIdentity: undefined, sessionId: undefined });
+  let idle = false;
+  let mappingReads = 0;
+  const { calls, runner } = fake(argv => {
+    if (argv[1] === "create") return { result: { terminal: replacement } };
+    if (argv[1] === "wait") {
+      idle = true;
+      return { result: { satisfied: true } };
+    }
+    if (argv[1] === "show") {
+      if (!idle) return { result: { terminal: replacement } };
+      if (++mappingReads === 1) {
+        // The first mapping check already read the empty record file. Publish the launcher
+        // now so only a subsequent launches() read can prove the session without Orca's id.
+        writeFileSync(join(stateDir, "terminal-recovery.json"), JSON.stringify([{
+          peer: "claude", projectRoot: root, stateDir, instanceId: "i-target", launcherPid: process.pid,
+          launcherSignature: "launcher-start", launchId: "launch-new", handle: "term-new", incarnationId: "inc-new", worktreeId, env: {},
+        }]));
+        return { result: { terminal: replacement } };
+      }
+      return { result: { terminal: { ...replacement, agentIdentity: "claude" } } };
+    }
+    throw new Error(`unexpected ${argv.join(" ")}`);
+  });
+  try {
+    const result = await createTerminal(binding, { runner, stateDir, instanceId: "i-target", processIdentity: () => "launcher-start" }, 4_000);
+    expect(result).toMatchObject({ created: true, ready: true, manualRequired: false, blockers: [] });
+    expect(result.newBinding).toMatchObject({ peer: "claude", handle: "term-new", incarnationId: "inc-new", sessionId: session });
+    expect(mappingReads).toBe(2);
+    expect(calls.filter(argv => argv[1] === "wait")).toHaveLength(1);
+    expect(calls.filter(argv => argv[1] === "create")).toHaveLength(1);
+    expect(calls.some(argv => argv[1] === "close")).toBe(false);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+}, 10_000);
+
+test("#599 an idle replacement identifying as another peer blocks without waiting for the mapping deadline", async () => {
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js claude --resume session-1", argv: [], env: {} };
+  const binding: TerminalBinding = { peer: "claude", handle: "term-old", incarnationId: "inc-old", worktreeId, projectRoot: root, sessionId: session, launch, launchMetadata: launch };
+  const replacement = terminal({ handle: "term-new", incarnationId: "inc-new", agentIdentity: "codex" });
+  const { calls, runner } = fake(argv => {
+    if (argv[1] === "create" || argv[1] === "show") return { result: { terminal: replacement } };
+    if (argv[1] === "wait") return { result: { satisfied: true } };
+    throw new Error(`unexpected ${argv.join(" ")}`);
+  });
+  const started = Date.now();
+  const result = await createTerminal(binding, runner, 60_000);
+  expect(Date.now() - started).toBeLessThan(5_000);
+  expect(result).toMatchObject({ created: true, ready: true, manualRequired: true });
+  expect(result.blockers[0]?.code).toBe("ambiguous-create");
+  expect(result.newBinding).toBeUndefined();
+  expect(calls.filter(argv => argv[1] === "show")).toHaveLength(2); // pre-idle validation and one mapping check
+  expect(calls.filter(argv => argv[1] === "create")).toHaveLength(1);
+  expect(calls.some(argv => argv[1] === "close")).toBe(false);
+});
+
 test("native restoration permits unrelated terminals in the same worktree", async () => {
   const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js codex resume session-1", argv: [], env: {} };
   const binding: TerminalBinding = { peer: "codex", handle: "term-old", incarnationId: "inc-old", worktreeId, projectRoot: root, sessionId: session, launch, launchMetadata: launch };
