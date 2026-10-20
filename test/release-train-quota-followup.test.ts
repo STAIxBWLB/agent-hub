@@ -14,7 +14,7 @@ async function rig(softLimit: number, run: (r: {
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined, person: ControlClient | undefined, board: Board | undefined;
   try {
     mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/sdlc.toml"), 'mode = "advise"\n');
-    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
+    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
       releaseHostAdmission: async () => ({ admitted: true, current: () => true, close: async () => {} }),
       config: { ...DEFAULT_CONFIG, batch_ms: 0, budget: { ...DEFAULT_CONFIG.budget, kimi_tokens_5h: softLimit },
         instances: { "claude-review": { kind: "claude", roles: ["reviewer"], start_mode: "headless" } },

@@ -35,7 +35,7 @@ test("instance native cwd and completed turn snapshots follow its validated work
     writeFileSync(join(worktree, "owned.txt"), "worktree old\n");
     const stateDir = join(project, ".agenthub", "state"), record = join(base, "spawn.json"), bin = join(base, "fake-codex");
     writeFileSync(bin, `#!${process.execPath}\nimport { writeFileSync } from "node:fs";\nwriteFileSync(${JSON.stringify(record)},JSON.stringify({cwd:process.cwd(),peer:process.env.AGENTHUB_PEER_ID}));\nawait import(${JSON.stringify(pathToFileURL(join(import.meta.dir, "fakes/codex-bin.ts")).href)});\n`, { mode: 0o700 });
-    daemon = await startDaemon({ cwd: project, stateDir, controlPort: 0, codexAppPort: freePort(), codexProxyPort: freePort(), switchyardPort: 0,
+    daemon = await startDaemon({ cwd: project, stateDir, controlPort: 0, codexAppPort: freePort(), codexProxyPort: freePort(),
       config: { ...DEFAULT_CONFIG, instances: { [instance]: { kind: "codex", roles: ["reviewer"], start_mode: "headless", worktree } }, codex_bin: bin, batch_ms: 0,
         snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true }, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
         approvals: { ...DEFAULT_CONFIG.approvals, notify: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false } } });

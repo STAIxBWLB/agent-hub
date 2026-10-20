@@ -40,7 +40,7 @@ test("I2 daemon never promotes a canonical reviewer runtime into a write owner t
     const write = (role: string) => writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify(configuration(role)));
     write("reviewer");
     writeFileSync(join(root, ".agenthub", "routing.toml"), '[local]\nfixed_model="fixture"\n[classes.implement]\npeers=["codex"]\n[classes.review]\npeers=["claude"]\n');
-    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: freePort(), codexProxyPort: freePort(), switchyardPort: 0 });
+    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: freePort(), codexProxyPort: freePort() });
     console_ = await ControlClient.connect(stateDir, { role: "console", projectRoot: root });
     const client = console_;
     const started = await client.request({ t: "start", peer: instance });

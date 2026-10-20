@@ -69,21 +69,15 @@ test("Cloudflare Access headers go only to listed hosts", async () => {
   expect(up.requests[1]!.headers["cf-access-client-id"]).toBeUndefined();
 });
 
-test("through the sidecar: no key is sent, the session id is, the selected model is read", async () => {
-  const sidecar = Bun.serve({
-    hostname: "127.0.0.1",
-    port: 0,
-    fetch: async (req) =>
-      Response.json(
-        { choices: [{ message: { role: "assistant", content: `auth=${req.headers.get("authorization")} session=${req.headers.get("x-switchyard-session-id")}` } }] },
-        { headers: { "x-model-router-selected-model": "vllm/x" } },
-      ),
-  });
-  cleanup.push(() => sidecar.stop(true));
-  process.env.OMNIROUTE_API_KEY = "sk-must-not-leak";
-  const res = await new OmniRoute().chat({ model: "sy/coding", messages: [] }, { via: `http://127.0.0.1:${sidecar.port}/v1`, sessionId: "s1" });
-  expect(res.message.content).toBe("auth=null session=s1");
-  expect(res.selectedModel).toBe("vllm/x");
+test("direct calls send gateway auth and no retired session header", async () => {
+  const gateway = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: req => new URL(req.url).pathname.endsWith("/models")
+    ? Response.json({ data: [{ id: "coding" }] })
+    : Response.json({ model: "vllm/x", choices: [{ message: { role: "assistant", content: `auth=${req.headers.get("authorization")} session=${req.headers.get("x-switchyard-session-id")}` } }] }) });
+  cleanup.push(() => gateway.stop(true));
+  process.env.OMNIROUTE_API_KEY = "fixture-key";
+  const res = await new OmniRoute({ urls: [`http://127.0.0.1:${gateway.port}/v1`], access_hosts: [] }).chat({ model: "coding", messages: [] });
+  expect(res.message.content).toBe("auth=Bearer fixture-key session=null");
+  expect(res.servedModel).toBe("vllm/x");
 });
 
 test("provider usage and served-model provenance are normalized without filling missing counters", async () => {
@@ -98,9 +92,8 @@ test("provider usage and served-model provenance are normalized without filling 
 test("routing.toml: shipped default loads; a project file wins; a file without fixed_model is refused", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const routing = loadRouting(dir);
-  expect(routing.local.route).toBe("sy/coding");
-  expect(routing.routes["sy/coding"]).toEqual({ type: "passthrough", target: "dsv4f" });
-  expect(routing.targets.dsv4f!.id).toBe(routing.local.fixed_model);
+  expect(routing.local).toEqual({ route: "hub/stage", fixed_model: "coding" });
+  expect(routing.hub_routes?.["hub/stage"]?.type).toBe("stage");
 
   Bun.spawnSync(["mkdir", "-p", join(dir, ".agenthub")]);
   writeFileSync(join(dir, ".agenthub", "routing.toml"), '[local]\nfixed_model = "mine"\n');

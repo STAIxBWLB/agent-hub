@@ -21,7 +21,7 @@ for (const kind of ["claude", "codex"] as const) test(`daemon ${kind} review var
   const before = Object.fromEntries(Object.keys(vars).map(key => [key, process.env[key]])); Object.assign(process.env, vars);
   cleanup.push(() => { for (const [key, value] of Object.entries(before)) if (value === undefined) delete process.env[key]; else process.env[key] = value; });
   const peer = `${kind}-review`;
-  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, codex_bin: executable, instances: { [peer]: { kind, roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } }, roles: { ...DEFAULT_CONFIG.roles, builder: ["implementer"] },
       review: { ...DEFAULT_CONFIG.review, pool: [kind] }, batch_ms: 0, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
       mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false } } });
@@ -69,7 +69,7 @@ for (const kind of ["claude", "codex"] as const) test(`daemon ${kind} review var
 test("declared unavailable variants refuse startup and recovery cannot downgrade reviewer safety", async () => {
   const root = mkdtempSync(join(tmpdir(), "ahub-reviewer-unavailable-")), stateDir = join(root, "state");
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
-  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, instances: { "agy-review": { kind: "agy", roles: ["reviewer"], start_mode: "headless" } },
       review: { ...DEFAULT_CONFIG.review, pool: ["agy"] }, batch_ms: 0, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
       mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false } } });
@@ -91,7 +91,7 @@ test("per-review isolation failure excludes the reviewer until a verified restar
   mkdirSync(root); mkdirSync(bin); cleanup.push(() => rmSync(home, { recursive: true, force: true }));
   const executable = join(bin, "codex"), fake = resolve(import.meta.dir, "fakes/fake-codex-reviewer.ts");
   writeFileSync(executable, `#!/bin/sh\nif [ "$1" = "--version" ]; then echo probe >> '${probes}'; if [ -f '${fail}' ]; then exit 1; fi; fi\nexec '${process.execPath}' '${fake}' "$@"\n`); chmodSync(executable, 0o755);
-  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: { builder: 3 } }, codex_bin: executable, instances: { "codex-review": { kind: "codex", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } }, roles: { ...DEFAULT_CONFIG.roles, builder: ["implementer"] },
       review: { ...DEFAULT_CONFIG.review, pool: ["codex"] }, batch_ms: 0, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
       mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false } } });

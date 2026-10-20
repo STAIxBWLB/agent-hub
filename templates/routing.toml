@@ -1,6 +1,5 @@
 # agent-hub routing: who takes which kind of task (L1), and which model route the local worker asks for (L2).
-# [targets.*] and [routes.*] use Switchyard's own table shapes (v0.2.0 toml_schema): the hub copies them into the
-# sidecar config and adds the gateway client, so anything Switchyard accepts can be written here.
+# Hub routes run in-process and name gateway aliases directly.
 
 # Top-level keys, before any table. Pi's hub/auto and the hub stage routes keep a session's model through a tool loop and
 # switch only where it pays (#197): "off", "shadow" (record in events.jsonl what the planner would do, routing unchanged)
@@ -9,41 +8,8 @@ stay_switch = "shadow"
 max_switch_prefill_tokens = 32000
 
 [local]
-route = "sy/coding"                                        # Switchyard route the local worker asks for
-fixed_model = "vllm/deepseek-ai/DeepSeek-V4-Flash-0731"    # straight to OmniRoute when the sidecar is absent or unhealthy
-
-[targets.dsv4f]
-id = "vllm/deepseek-ai/DeepSeek-V4-Flash-0731"
-
-[routes."sy/coding"]
-type = "passthrough"
-target = "dsv4f"
-
-[routes."sy/fast"]
-type = "passthrough"
-target = "dsv4f"
-
-# With a second model served (here GLM-5.3-Flash), replace sy/coding with the two-tier route and add the review escalation:
-#
-# [targets.glm53f]
-# id = "vllm/zai-org/GLM-5.3-Flash"
-#
-# [routes."sy/coding"]
-# type = "stage_router"
-# efficient_target = "glm53f"
-# capable_target = "dsv4f"
-# picker = "efficient_first"
-# confidence_threshold = 0.5
-#
-# [routes."sy/review"]
-# type = "llm_classifier"
-# mode = "escalation"
-# classifier_target = "glm53f"
-# weak_target = "glm53f"
-# strong_target = "dsv4f"
-#
-# [routes."sy/review".escalation]      # required by the 0.2.0 binary for mode = "escalation"
-# confirmations = 2
+route = "hub/stage"             # hub-owned model routing
+fixed_model = "coding"          # direct gateway fallback when the route is unavailable
 
 # L1: task assignment. `peers` is the preference order among attached, unpaused peers (idle before busy).
 # `route` / `fixed_model` apply when the task lands on the local worker. `tasks.escalate_after` consecutive
@@ -70,19 +36,19 @@ local_allowed = false
 
 [classes.implement]
 peers = ["pi", "local", "codex", "kimi"]
-route = "sy/coding"
+route = "hub/stage"
 pi_backend = "dgx"
 escalate_to = ["codex", "kimi", "claude"]
 
 [classes.bulk_edit]
 peers = ["pi", "local", "kimi"]
-route = "sy/fast"
+fixed_model = "fast"
 pi_backend = "dgx"
 escalate_to = ["codex", "kimi"]
 
 [classes.test]
 peers = ["pi", "local", "kimi", "codex"]
-route = "sy/fast"
+fixed_model = "fast"
 pi_backend = "dgx"
 escalate_to = ["codex", "kimi"]
 
@@ -92,18 +58,18 @@ local_allowed = false         # judgment classes never go to local
 
 [classes.summarize]
 peers = ["pi", "local", "kimi"]
-route = "sy/fast"
+fixed_model = "fast"
 pi_backend = "mlx"
 escalate_to = ["codex", "kimi"]
 
 [classes.triage]
 peers = ["pi", "local", "kimi"]
-route = "sy/fast"
+fixed_model = "fast"
 pi_backend = "mlx"
 escalate_to = ["codex", "kimi"]
 
-# In-process L2 routes are opt-in: set local.route or a class route to hub/<id>.
-# They never enter the optional Switchyard sidecar TOML. Defaults are efficient fast, capable coding.
+# In-process L2 routes: set local.route or a class route to hub/<id>.
+# A class with fixed_model and no route calls that alias directly. Defaults are efficient fast, capable coding.
 [hub_routes."hub/stage"]
 type = "stage"
 efficient = "fast"

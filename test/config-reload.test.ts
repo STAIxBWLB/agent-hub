@@ -18,10 +18,11 @@ for (const [name, routing] of [
   expect(candidate["config.json"]).toBe('{"research":{"enabled":true}}');
 });
 
-test("#439 strict routing preserves open Switchyard table fields and explicit startup fallback", () => {
+test("#553 strict routing ignores retired table fields and preserves explicit startup fallback", () => {
   const routing = base + '[targets.custom]\nid = "provider/model"\ncustom_option = 1\n[targets.custom.extension]\nflag = true\n[routes.custom]\ntype = "custom_switchyard_type"\ncustom_option = "kept"\n';
   const accepted = parseConfigSources(texts(routing));
-  expect(accepted.routing.targets.custom?.custom_option).toBe(1);
-  expect(accepted.routing.routes.custom?.custom_option).toBe("kept");
+  expect(accepted.routing).not.toHaveProperty("targets");
+  expect(accepted.routing).not.toHaveProperty("routes");
+  expect(accepted.routing.retired).toHaveLength(2);
   expect(parseConfigSources(texts(base + '[classes.implement]\npeers="codex"\n'), accepted.routing).routing).toBe(accepted.routing);
 });

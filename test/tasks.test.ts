@@ -107,7 +107,7 @@ test("assignment: preference order, idle before busy, paused/offline/detached sk
   expect(assign(task("implement"), all, routing, { candidates: ["claude"] }).reviewer).toBe("codex"); // never reviews its own work
 
   const pii = assign(task("implement", ["pii"]), all, routing);
-  expect(pii).toMatchObject({ owner: "local", reviewer: "user", route: "sy/coding" });
+  expect(pii).toMatchObject({ owner: "local", reviewer: "user", route: "hub/stage" });
   expect(assign(task("implement", ["pii"]), { claude: "idle", codex: "idle" }, routing).owner).toBeUndefined();
   expect(assign(task("plan", ["pii"]), all, routing).owner).toBeUndefined(); // pii + a class local may not take: nobody
   expect(pii.trace.join("\n")).toContain("candidate codex: skipped, pii: on-prem peers only");
@@ -277,7 +277,9 @@ test("a PII task stays on-prem: local only, private envelopes, console review, r
   await tick();
   const ordinary = peers.local!.got.find((e) => e.refs?.task === "2")!;
   const secret = peers.local!.got.find((e) => e.refs?.task === "1")!;
-  expect(tasks.turnPolicy([ordinary, secret])).toMatchObject({ pii: true, route: "sy/fast" });
+  const mixed = tasks.turnPolicy([ordinary, secret]);
+  expect(mixed).toMatchObject({ pii: true, fixedModel: "fast" });
+  expect(mixed?.route).toBeUndefined();
   expect(tasks.turnPolicy([ordinary])).toMatchObject({ pii: false });
 });
 

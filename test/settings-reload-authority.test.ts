@@ -44,7 +44,7 @@ async function fixture(options: { trackedRouting?: boolean; codex?: boolean; kim
   git("init", "-q"); git("add", "-f", ".agenthub/config.json", ...(options.trackedRouting === false ? [] : [".agenthub/routing.toml"])); git("commit", "-qm", "authority fixture");
   const embedded = options.embedded ? { ...loadConfig(dir), batch_ms: 0, limits: { sender_per_min: 0, pair_per_min: 0, important_per_hour: 0, repeat_window_s: 0 } } : undefined;
   if (options.malformedInitial) writeFileSync(file("config.local.json"), "{ malformed fixture");
-  const daemon = await startDaemon({ cwd: dir, stateDir: state, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0, ...(embedded ? { config: embedded } : {}) });
+  const daemon = await startDaemon({ cwd: dir, stateDir: state, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, ...(embedded ? { config: embedded } : {}) });
   cleanup.push(() => daemon.stop());
   const client = await ControlClient.connect(state, { role: "console" }); cleanup.push(() => client.close());
   const pushes: any[] = []; client.onPush = message => pushes.push(message); client.send({ t: "tail" }); await client.request({ t: "status" });
@@ -353,13 +353,13 @@ test("#439 nested routing extension keys cannot traverse an object prototype dur
 test("#439 confirmed routing dictionaries preserve quoted route names containing dots", async () => {
   const f = await fixture();
   f.git("rm", "--cached", "-f", ".agenthub/routing.toml");
-  writeFileSync(f.file("routing.toml"), f.routing + '\n[routes."sy/model.v1"]\ntype = "passthrough"\ntarget = "dsv4f"\n');
+  writeFileSync(f.file("routing.toml"), f.routing + '\n[hub_routes."hub/model.v1"]\ntype = "stage"\nefficient = "fast"\ncapable = "coding"\n');
   const preview = await f.reload();
   expect(preview.ok).toBe(true);
-  expect(preview.confirmation?.keys).toContain("routing.routes");
-  expect((await f.row("routing.classes.implement.route")).values).not.toContain("sy/model.v1");
+  expect(preview.confirmation?.keys).toContain("routing.hub_routes");
+  expect((await f.row("routing.classes.implement.route")).values).not.toContain("hub/model.v1");
   expect((await f.reload(preview.confirmation.token)).ok).toBe(true);
-  expect((await f.row("routing.classes.implement.route")).values).toContain("sy/model.v1");
+  expect((await f.row("routing.classes.implement.route")).values).toContain("hub/model.v1");
 }, 15_000);
 
 test("#439 undo preview cannot undo a different key written by another console", async () => {

@@ -49,7 +49,7 @@ async function fixture(initial: { local?: unknown; trackedLocal?: boolean; embed
   git("init", "-q"); git("add", "-f", ".agenthub/config.json", ".agenthub/routing.toml", "example.txt"); git("commit", "-qm", "fixture baseline");
   if (initial.trackedLocal) git("add", "-f", ".agenthub/config.local.json");
   let ticks = 0;
-  const daemon = await startDaemon({ cwd: dir, stateDir: state, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
+  const daemon = await startDaemon({ cwd: dir, stateDir: state, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     ...(initial.embedded ? { config: loadConfig(dir) } : {}), taskSweepNow: () => { ticks++; return Date.now(); }, researchGraceMs: 1 });
   cleanup.push(() => daemon.stop());
   const client = await ControlClient.connect(state, { role: "console" }); cleanup.push(() => client.close());

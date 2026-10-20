@@ -36,7 +36,7 @@ function rig() {
   const opened: string[][] = [];
   const opener: TerminalOpener = { available: () => ({ ok: true, via: "fixture" }), open: async (_title, argv) => { opened.push([...argv]); return { ok: true, via: "fixture" }; } };
   const start = async (mode: "headless" | "tui", overrides: Partial<HubConfig> = {}) => {
-    const daemon = await startDaemon({ cwd, stateDir, projectId: bookmark.projectId, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0, terminal: () => opener,
+    const daemon = await startDaemon({ cwd, stateDir, projectId: bookmark.projectId, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, terminal: () => opener,
       config: { ...DEFAULT_CONFIG, roster: { claude: false, codex: false, kimi: false, qwen: false, jcode: false, local: false, pi: true }, batch_ms: 0,
         memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
         mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true, backend: "dgx", cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")] },

@@ -30,7 +30,7 @@ test("#542 a retained guarded launch key stays visible until confirmed", async (
     expect(result.status, result.stderr).toBe(0);
   };
   git("init", "-q"); git("add", "-f", ".agenthub/config.json", ".agenthub/routing.toml"); git("commit", "-qm", "fixture baseline");
-  const daemon = await startDaemon({ cwd: dir, stateDir: state, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0 });
+  const daemon = await startDaemon({ cwd: dir, stateDir: state, controlPort: 0, codexAppPort: 0, codexProxyPort: 0 });
   cleanup.push(() => daemon.stop());
   const client = await ControlClient.connect(state, { role: "console" }); cleanup.push(() => client.close());
 
@@ -92,7 +92,7 @@ test("#542 ahub jcode warns about a retained command and starts with the accepte
   };
   git("init", "-q"); git("add", "-f", ".agenthub/config.json", ".agenthub/routing.toml"); git("commit", "-qm", "fixture baseline");
 
-  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0 });
+  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0 });
   cleanup.push(() => daemon.stop());
   const client = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => client.close());
   expect(readControl(stateDir)?.startModes).toMatchObject({ kimi: "tui", pi: "tui" });

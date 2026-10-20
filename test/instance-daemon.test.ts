@@ -22,7 +22,7 @@ async function fixture(instances: InstancesConfig = reviewers, overrides: Partia
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   // Record identities and endpoint metadata only, never the control token or complete MCP environment.
   writeFileSync(bin, `#!${process.execPath}\nimport { appendFileSync } from "node:fs";\nconst args=process.argv.slice(2),env=args.find(arg=>arg.startsWith("mcp_servers.agent-hub.env="))??"";\nappendFileSync(${JSON.stringify(record)},JSON.stringify({peer:process.env.AGENTHUB_PEER_ID,mcpPeer:env.match(/AGENTHUB_PEER_ID="([^"]+)"/)?.[1],listen:args[args.indexOf("--listen")+1]})+"\\n");\nawait import(${JSON.stringify(pathToFileURL(join(import.meta.dir, "fakes/codex-bin.ts")).href)});\n`, { mode: 0o700 });
-  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: freePort(), codexProxyPort: freePort(), switchyardPort: 0,
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: freePort(), codexProxyPort: freePort(),
     config: { ...DEFAULT_CONFIG, instances, codex_bin: bin, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, ...overrides } });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console", projectRoot: root }); cleanup.push(() => console_.close());

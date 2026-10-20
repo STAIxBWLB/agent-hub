@@ -1900,13 +1900,15 @@ const commands: Record<string, () => Promise<void> | void> = {
       row(!!omni.apiKey(), "omniroute key", omni.apiKey() ? "present" : "missing: set OMNIROUTE_API_KEY or omniroute.api_key_file in .agenthub/config.local.json");
       if (gateway && omni.apiKey()) {
         try {
-          const fixed = currentRouting(cwd).local.fixed_model;
-          const served = (await omni.models()).includes(fixed);
-          row(served, "local fixed_model", served ? `${fixed} served` : `${fixed} is not served by the gateway`);
-        } catch { row(undefined, "local fixed_model", "could not read the gateway model inventory"); }
-      }
-      const sy = spawnSync(process.env.AGENTHUB_SWITCHYARD_BIN ?? "switchyard-server", ["--version"], { encoding: "utf8" });
-      row(sy.status === 0 ? true : undefined, "switchyard", sy.status === 0 ? sy.stdout.trim() : "not installed: ahub local uses fixed_model on OmniRoute (cargo install --locked switchyard-server)");
+          const routing = currentRouting(cwd);
+          const aliases = new Set([routing.local.fixed_model, ...Object.values(routing.classes).flatMap(policy => policy.fixed_model ? [policy.fixed_model] : []),
+            ...Object.values(routing.hub_routes ?? {}).flatMap(route => [route.efficient ?? "fast", route.capable ?? "coding", ...(route.judge ? [route.judge] : [])])]);
+          const served = new Set(await omni.models());
+          const missing = [...aliases].filter(alias => !served.has(alias)).sort();
+          for (const alias of missing) row(false, "routing model", `${alias} is not served by the gateway`);
+          if (!missing.length) row(true, "routing models", `all ${aliases.size} routing aliases are served`);
+        } catch { row(undefined, "routing models", "could not read the gateway model inventory"); }
+      } else row(undefined, "routing models", "gateway model inventory unavailable");
       const mlxConfig = config.mlx;
       if (mlxConfig.enabled === false) row(true, "pi mlx", "disabled (mlx.enabled=false; local endpoint not probed)");
       else {

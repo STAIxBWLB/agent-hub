@@ -7730,6 +7730,41 @@ function safeModelLabel(value) {
   const label = value.trim();
   return label.length > 0 && label.length <= 160 && /^[A-Za-z0-9][A-Za-z0-9._:/+@-]*$/.test(label) ? label : undefined;
 }
+// src/hub/tool-refusal.ts
+var init_tool_refusal = () => {};
+
+// src/hub/spec-read.ts
+var BODY_LIMIT, RESULT_LIMIT, STDOUT_LIMIT;
+var init_spec_read = __esm(() => {
+  init_tool_refusal();
+  init_host_executable();
+  init_child_process();
+  BODY_LIMIT = 64 * 1024;
+  RESULT_LIMIT = 80 * 1024;
+  STDOUT_LIMIT = 512 * 1024;
+});
+
+// src/models/route/config.ts
+var TYPES;
+var init_config = __esm(() => {
+  TYPES = new Set(["stage", "plan_execute", "advisor", "escalation"]);
+});
+
+// src/hub/routing.ts
+import { join as join13, resolve as resolve10 } from "path";
+function effectiveLocalRoute(defaultRoute, classRoute, classFixedModel) {
+  return classRoute ?? (classFixedModel === undefined ? defaultRoute : undefined);
+}
+var TEMPLATE, cache;
+var init_routing = __esm(() => {
+  init_registry();
+  init_board();
+  init_spec_read();
+  init_config();
+  init_stage();
+  TEMPLATE = join13(import.meta.dir, "..", "..", "templates", "routing.toml");
+  cache = new Map;
+});
 
 // src/adapters/local-worker.ts
 import { randomUUID as randomUUID4 } from "crypto";
@@ -7756,6 +7791,7 @@ var init_local_worker = __esm(() => {
   init_hub_tools();
   init_sandbox();
   init_tools();
+  init_routing();
   SIDE_EFFECTS = new Set(["write", "edit", "bash", "git", "hub_send"]);
   ExecutionBudgetStop = class ExecutionBudgetStop extends Error {
     budgetStop = true;
@@ -7766,6 +7802,7 @@ var init_local_worker = __esm(() => {
     history = [];
     sessionId = `agent-hub-local-${randomUUID4()}`;
     routes;
+    warnedLegacyRoutes = new Set;
     routeEnvs = [];
     routePii = false;
     routeTask;
@@ -7924,8 +7961,7 @@ var init_local_worker = __esm(() => {
       const { maxSteps = 30 } = this.opts;
       const turnSignal = this.abort.signal;
       const capture = policy?.pii ? undefined : this.opts.capture;
-      const viaOffCampus = !(policy?.route ?? this.opts.route)?.startsWith("hub/") && !!this.opts.sidecar?.upstream && this.opts.omni.isAccessHost(this.opts.sidecar.upstream);
-      if (policy?.pii && (viaOffCampus || !await this.opts.omni.onCampus())) {
+      if (policy?.pii && !await this.opts.omni.onCampus()) {
         return "Refused: this is a PII task and the only reachable gateway is off campus (Cloudflare Access). Connect the VPN and assign it again.";
       }
       this.routeEnvs = envs;
@@ -8093,8 +8129,12 @@ var init_local_worker = __esm(() => {
         msgs.push({ role: "tool", tool_call_id, content: result });
     }
     async call(turnMsgs, policy, envs) {
-      const { omni, sidecar } = this.opts;
-      const route = policy?.route ?? this.opts.route;
+      const { omni } = this.opts;
+      const route = effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel);
+      if (route && !route.startsWith("hub/") && !this.warnedLegacyRoutes.has(route)) {
+        this.warnedLegacyRoutes.add(route);
+        this.opts.log?.(`legacy route ${route} is deprecated and ignored; using fixed model`);
+      }
       const fixedModel = policy?.fixedModel ?? this.opts.fixedModel;
       const task = policy?.task === undefined ? undefined : Number(policy.task);
       const tools = [...TOOL_SCHEMAS, ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : []];
@@ -8103,20 +8143,6 @@ var init_local_worker = __esm(() => {
       const routed = await this.hubCall(route, messages, policy, signal);
       if (routed)
         return routed;
-      const via = await this.sidecarEndpoint(route, !!policy?.pii);
-      if (via) {
-        await this.requireBudget(envs, "model_calls");
-        try {
-          const res = await omni.chat({ model: route, messages, tools }, { via, sessionId: this.sessionId, signal });
-          this.lastServedBy = `switchyard ${route} -> ${res.selectedModel ?? "?"}`;
-          this.recordUsage(res, route, task);
-          return res;
-        } catch (e) {
-          if (signal.aborted)
-            throw e;
-          sidecar.disable(e.message);
-        }
-      }
       await this.requireBudget(envs, "model_calls");
       const res = await omni.chat({ model: fixedModel, messages, tools }, { signal, ...policy?.pii ? { onCampusOnly: true } : {} });
       this.lastServedBy = `omniroute ${fixedModel} (provider ${res.provider ?? "?"})`;
@@ -8165,13 +8191,8 @@ var init_local_worker = __esm(() => {
         return;
       }
     }
-    async sidecarEndpoint(route, pii) {
-      if (!route || route.startsWith("hub/") || pii)
-        return;
-      return this.opts.sidecar?.endpoint();
-    }
     async conclude(msgs, policy, turn, step, maxSteps, answer, signal, decisionId) {
-      const route = policy?.route ?? this.opts.route, config = this.hubConfig(route);
+      const route = effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel), config = this.hubConfig(route);
       if (!route || !config)
         return answer;
       const messages = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...msgs];
@@ -8197,7 +8218,7 @@ var init_local_worker = __esm(() => {
           ...res.usage ? { usage: res.usage } : {},
           requestedModel: safeModelLabel(requestedModel) ?? "unknown",
           ...Number.isSafeInteger(task) && task > 0 ? { task } : {},
-          ...safeModelLabel(res.servedModel ?? res.selectedModel) ? { servedModel: safeModelLabel(res.servedModel ?? res.selectedModel) } : {},
+          ...safeModelLabel(res.servedModel) ? { servedModel: safeModelLabel(res.servedModel) } : {},
           ...safeModelLabel(res.provider) ? { provider: safeModelLabel(res.provider) } : {}
         });
       } catch {}
@@ -8366,7 +8387,7 @@ var init_reviewer_variants = __esm(() => {
 // src/adapters/agy/hooks.ts
 import { closeSync as closeSync4, constants as constants4, fstatSync as fstatSync3, lstatSync as lstatSync8, openSync as openSync4, readSync as readSync3 } from "fs";
 import { homedir as homedir4 } from "os";
-import { isAbsolute as isAbsolute5, join as join13, relative as relative5 } from "path";
+import { isAbsolute as isAbsolute5, join as join14, relative as relative5 } from "path";
 import { createHash as createHash6 } from "crypto";
 function decodeAgyHook(event, value) {
   if (!EVENTS.includes(event) || !record3(value) || typeof value.conversationId !== "string" || !UUID.test(value.conversationId) || typeof value.transcriptPath !== "string" || !isAbsolute5(value.transcriptPath) || value.transcriptPath.length > 4096 || !Array.isArray(value.workspacePaths) || !value.workspacePaths.length || value.workspacePaths.length > 32 || !value.workspacePaths.every((path) => typeof path === "string" && path.length <= 4096 && isAbsolute5(path)))
@@ -8402,14 +8423,14 @@ function readAgyTranscript(session, transcript) {
   if (!UUID.test(session))
     return empty;
   const home = process.env.HOME ?? homedir4();
-  const candidates = ["antigravity-cli", "antigravity", "antigravity-ide"].map((surface) => join13(home, ".gemini", surface, "brain", session, ".system_generated/logs/transcript_full.jsonl"));
+  const candidates = ["antigravity-cli", "antigravity", "antigravity-ide"].map((surface) => join14(home, ".gemini", surface, "brain", session, ".system_generated/logs/transcript_full.jsonl"));
   if (!candidates.includes(transcript))
     return empty;
   let fd;
   try {
     let cursor = home;
     for (const name of relative5(home, transcript).split("/")) {
-      cursor = join13(cursor, name);
+      cursor = join14(cursor, name);
       if (lstatSync8(cursor).isSymbolicLink())
         return empty;
     }
@@ -8572,7 +8593,7 @@ function bundleInStatus(status) {
 // src/cli/agy-mcp.ts
 import { randomUUID as randomUUID5 } from "crypto";
 import { closeSync as closeSync5, fstatSync as fstatSync4, lstatSync as lstatSync9, mkdirSync as mkdirSync6, openSync as openSync5, readFileSync as readFileSync6, renameSync, rmdirSync, unlinkSync, writeFileSync as writeFileSync4 } from "fs";
-import { isAbsolute as isAbsolute6, join as join14, resolve as resolve10 } from "path";
+import { isAbsolute as isAbsolute6, join as join15, resolve as resolve11 } from "path";
 import { isDeepStrictEqual } from "util";
 function object4(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -8621,7 +8642,7 @@ function validateOptions(options) {
     if (typeof value !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(value))
       throw new Error(`${name} is invalid`);
   }
-  const root = resolve10(options.projectRoot);
+  const root = resolve11(options.projectRoot);
   return { root, peer };
 }
 function safeDirectory(path) {
@@ -8644,7 +8665,7 @@ function safeFile(path) {
 function pluginDirectories(root) {
   const directories = [];
   for (const relative of [".", ".agents", ".agents/plugins", PLUGIN_DIR]) {
-    const path = relative === "." ? root : join14(root, relative);
+    const path = relative === "." ? root : join15(root, relative);
     const stat = safeDirectory(path);
     if (!stat)
       throw new Error(`${path} must be an existing project directory`);
@@ -8655,7 +8676,7 @@ function pluginDirectories(root) {
 function verifyPluginDirectory(plan, target) {
   if (!plan.canonicalPluginDir || !plan.directories)
     throw new Error("managed agy plugin directory identity is unavailable");
-  if (realPath(plan.root) !== plan.canonicalRoot || realPath(plan.pluginDir) !== plan.canonicalPluginDir || plan.canonicalPluginDir !== join14(plan.canonicalRoot, PLUGIN_DIR)) {
+  if (realPath(plan.root) !== plan.canonicalRoot || realPath(plan.pluginDir) !== plan.canonicalPluginDir || plan.canonicalPluginDir !== join15(plan.canonicalRoot, PLUGIN_DIR)) {
     throw new Error("managed agy plugin path changed; inspect it before writing");
   }
   for (const expected of plan.directories) {
@@ -8663,12 +8684,12 @@ function verifyPluginDirectory(plan, target) {
     if (!current || current.dev !== expected.stat.dev || current.ino !== expected.stat.ino)
       throw new Error("managed agy plugin directory changed; inspect it before writing");
   }
-  if (!FILES.some((file) => join14(plan.root, file) === target)) {
+  if (!FILES.some((file) => join15(plan.root, file) === target)) {
     throw new Error("atomic write target is outside the managed agy plugin files");
   }
 }
 function hookCommand(phase, options, peer) {
-  return `AGENTHUB_HOOK_EVENT='${phase}' AGENTHUB_INSTANCE_ID='${options.instanceId}' AGENTHUB_LAUNCH_ID='${options.launchId}' AGENTHUB_HOOK_PURPOSE='facts' AGENTHUB_PEER_ID=${shellQuote2(peer)} AGENTHUB_STATE_DIR=${shellQuote2(options.stateDir)} AGENTHUB_PROJECT_DIR=${shellQuote2(resolve10(options.projectRoot))} bun ${shellQuote2(options.hookScript)}`;
+  return `AGENTHUB_HOOK_EVENT='${phase}' AGENTHUB_INSTANCE_ID='${options.instanceId}' AGENTHUB_LAUNCH_ID='${options.launchId}' AGENTHUB_HOOK_PURPOSE='facts' AGENTHUB_PEER_ID=${shellQuote2(peer)} AGENTHUB_STATE_DIR=${shellQuote2(options.stateDir)} AGENTHUB_PROJECT_DIR=${shellQuote2(resolve11(options.projectRoot))} bun ${shellQuote2(options.hookScript)}`;
 }
 function desired(options, root, peer) {
   const events = {};
@@ -8691,7 +8712,7 @@ function parseManagedHookCommand(command, phase, options, peer) {
     return;
   const prefix = `AGENTHUB_HOOK_EVENT='${phase}' AGENTHUB_INSTANCE_ID='`;
   const middle = `' AGENTHUB_LAUNCH_ID='`;
-  const suffix = `' AGENTHUB_HOOK_PURPOSE='facts' AGENTHUB_PEER_ID=${shellQuote2(peer)} AGENTHUB_STATE_DIR=${shellQuote2(options.stateDir)} AGENTHUB_PROJECT_DIR=${shellQuote2(resolve10(options.projectRoot))} bun `;
+  const suffix = `' AGENTHUB_HOOK_PURPOSE='facts' AGENTHUB_PEER_ID=${shellQuote2(peer)} AGENTHUB_STATE_DIR=${shellQuote2(options.stateDir)} AGENTHUB_PROJECT_DIR=${shellQuote2(resolve11(options.projectRoot))} bun `;
   if (!command.startsWith(prefix))
     return;
   const rest = command.slice(prefix.length);
@@ -8757,23 +8778,23 @@ function internalPlan(options) {
   if (!rootStat)
     throw new Error("project root must be an existing directory");
   const canonicalRoot = realPath(root);
-  const pluginDir = join14(root, PLUGIN_DIR);
+  const pluginDir = join15(root, PLUGIN_DIR);
   let parentsPresent = true;
   for (const relative of [".agents", ".agents/plugins", PLUGIN_DIR]) {
     if (!parentsPresent)
       break;
-    parentsPresent = !!safeDirectory(join14(root, relative));
+    parentsPresent = !!safeDirectory(join15(root, relative));
   }
   let directories;
   let canonicalPluginDir;
   if (parentsPresent) {
     directories = pluginDirectories(root);
     canonicalPluginDir = realPath(pluginDir);
-    if (canonicalPluginDir !== join14(canonicalRoot, PLUGIN_DIR))
+    if (canonicalPluginDir !== join15(canonicalRoot, PLUGIN_DIR))
       throw new Error("managed agy plugin path traverses a symlink");
   }
   const snapshots = Object.fromEntries(FILES.map((relative) => {
-    const path = join14(root, relative);
+    const path = join15(root, relative);
     const found = parentsPresent ? safeFile(path) : undefined;
     return [relative, found];
   }));
@@ -8805,7 +8826,7 @@ function internalPlan(options) {
     const old = snapshots[relative];
     const next = Buffer.from(`${JSON.stringify(docs[relative], null, 2)}
 `);
-    return { path: join14(root, relative), relative, ...old ? { current: old.bytes, stat: old.stat } : {}, next, changed: !old || !isDeepStrictEqual(current[relative], docs[relative]) };
+    return { path: join15(root, relative), relative, ...old ? { current: old.bytes, stat: old.stat } : {}, next, changed: !old || !isDeepStrictEqual(current[relative], docs[relative]) };
   });
   const git = memoryGitSync(["ls-files", "--", ...FILES], { cwd: root, encoding: "utf8", timeout: 3000 });
   const tracked = git.status === 0 && !!git.stdout.trim();
@@ -8874,7 +8895,7 @@ function ensureAgyMcp(options) {
   const written = [];
   try {
     for (const relative of [".agents", ".agents/plugins", PLUGIN_DIR]) {
-      const path = join14(plan.root, relative);
+      const path = join15(plan.root, relative);
       const prior = safeDirectory(path);
       if (prior)
         continue;
@@ -8884,7 +8905,7 @@ function ensureAgyMcp(options) {
     }
     plan.directories = pluginDirectories(plan.root);
     plan.canonicalPluginDir = realPath(plan.pluginDir);
-    if (plan.canonicalRoot !== realPath(plan.root) || plan.canonicalPluginDir !== join14(plan.canonicalRoot, PLUGIN_DIR))
+    if (plan.canonicalRoot !== realPath(plan.root) || plan.canonicalPluginDir !== join15(plan.canonicalRoot, PLUGIN_DIR))
       throw new Error("managed agy plugin path changed; inspect it before writing");
     for (const target of plan.targets) {
       if (!target.changed)
@@ -8907,7 +8928,7 @@ function cleanupAgyMcp(options) {
     return;
   if (present.length !== FILES.length)
     throw new Error("managed agy plugin is incomplete; inspect it before cleanup");
-  const currentHooks = parseJson(readFileSync6(join14(plan.root, HOOKS_FILE)), HOOKS_FILE);
+  const currentHooks = parseJson(readFileSync6(join15(plan.root, HOOKS_FILE)), HOOKS_FILE);
   const launch = managedHookLaunch(currentHooks, options, options.peer ?? "agy");
   if (!launch || launch.instanceId !== options.instanceId || launch.launchId !== options.launchId)
     return;
@@ -8970,7 +8991,7 @@ var init_agy_mcp = __esm(() => {
 
 // src/adapters/agy/entry.ts
 import { spawn as spawn9, spawnSync as spawnSync4 } from "child_process";
-import { resolve as resolve11 } from "path";
+import { resolve as resolve12 } from "path";
 function agyTuiSpawnOptions(cwd, env) {
   return { cwd, env, stdio: "inherit" };
 }
@@ -9039,8 +9060,8 @@ async function runAgyEntry(ctx) {
     options = {
       projectRoot: cwd,
       stateDir,
-      serverJs: bundleInStatus(status) ?? resolve11(cliDir, "../../plugins/agent-hub/server.js"),
-      hookScript: resolve11(cliDir, "facts-hook.ts"),
+      serverJs: bundleInStatus(status) ?? resolve12(cliDir, "../../plugins/agent-hub/server.js"),
+      hookScript: resolve12(cliDir, "facts-hook.ts"),
       peer: "agy",
       launchId: admitted.launchId,
       instanceId: admitted.instanceId
@@ -9100,7 +9121,7 @@ var init_claude_state = __esm(() => {
 
 // src/adapters/definitions/native-cli-entry-claude.ts
 import { readFileSync as readFileSync7 } from "fs";
-import { join as join15 } from "path";
+import { join as join16 } from "path";
 import { randomUUID as randomUUID6 } from "crypto";
 async function runClaudeEntry(ctx) {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, fail } = ctx;
@@ -9138,17 +9159,17 @@ async function runClaudeEntry(ctx) {
       process.env.AGENTHUB_LAUNCH_ID = randomUUID6();
   }
   let original;
-  for (const file of [join15(cwd, ".claude", "settings.local.json"), join15(cwd, ".claude", "settings.json"), join15(process.env.HOME ?? "", ".claude", "settings.json")]) {
+  for (const file of [join16(cwd, ".claude", "settings.local.json"), join16(cwd, ".claude", "settings.json"), join16(process.env.HOME ?? "", ".claude", "settings.json")]) {
     try {
       original ??= JSON.parse(readFileSync7(file, "utf8")).statusLine;
     } catch {}
   }
-  const facts = claudeObservationHooks(projectConfig(), { script: join15(cliDir, "facts-hook.ts"), stateDir });
+  const facts = claudeObservationHooks(projectConfig(), { script: join16(cliDir, "facts-hook.ts"), stateDir });
   let previousLaunch;
   try {
-    previousLaunch = JSON.parse(readFileSync7(join15(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
+    previousLaunch = JSON.parse(readFileSync7(join16(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
   } catch {}
-  const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join15(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
+  const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join16(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
   let result;
   try {
     let launchRecord;
@@ -9217,7 +9238,7 @@ async function runCodexEntry(ctx) {
 var init_native_cli_entry_codex = () => {};
 
 // src/adapters/definitions/native-cli-entry-jcode.ts
-import { resolve as resolve12 } from "path";
+import { resolve as resolve13 } from "path";
 async function waitForJcodeTui(hub, fail, signal, options, first) {
   let binding = first?.binding, announced = false, current = first;
   while (!signal.aborted) {
@@ -9333,7 +9354,7 @@ async function runJcodeEntry(ctx) {
         return;
       }
     }
-    const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve12(cliDir, "../../plugins/agent-hub/server.js"));
+    const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve13(cliDir, "../../plugins/agent-hub/server.js"));
     if (written.tracked)
       console.error(".jcode/mcp.json is tracked; review this local machine-path change before committing it");
     const reply = await hub.request({ t: "start", peer: "jcode", args: { mode, ...options }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 65000);
@@ -9402,7 +9423,7 @@ async function runQwenEntry(ctx) {
 var init_native_cli_entry_qwen = () => {};
 
 // src/adapters/definitions/native-cli-entry-kimi.ts
-import { resolve as resolve13 } from "path";
+import { resolve as resolve14 } from "path";
 import { spawnSync as spawnSync5 } from "child_process";
 async function runKimiEntry(ctx) {
   const peer = ctx.instance ?? "kimi";
@@ -9461,7 +9482,7 @@ async function runKimiEntry(ctx) {
       const launch = buildKimiTuiLaunch(Array.isArray(runningCommand) && runningCommand.every((arg) => typeof arg === "string") ? runningCommand : projectConfig().kimi_cmd, model);
       let result;
       try {
-        const written = configureKimiMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve13(cliDir, "../../plugins/agent-hub/server.js"), "tui");
+        const written = configureKimiMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve14(cliDir, "../../plugins/agent-hub/server.js"), "tui");
         if (written.tracked)
           console.error(".kimi-code/mcp.json is tracked; the agent-hub entry contains machine paths. Review this local change before committing it.");
         result = spawnSync5(launch.cmd, launch.args, { cwd, stdio: "inherit", env: { ...nativeLaunchEnv("kimi", childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
@@ -9481,7 +9502,7 @@ async function runKimiEntry(ctx) {
     if (owner?.pullOnly && owner.state !== "offline")
       fail("Kimi runs in a terminal; end it there before starting a headless one");
     if (!ctx.instance)
-      configureKimiMcp(cwd, stateDir, resolve13(cliDir, "../../plugins/agent-hub/server.js"), "headless");
+      configureKimiMcp(cwd, stateDir, resolve14(cliDir, "../../plugins/agent-hub/server.js"), "headless");
     const res = await hub.request({ t: "start", peer, args: { mode: "headless", model }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
     if (!res.ok)
       fail(res.error);
@@ -9650,7 +9671,7 @@ var init_native_cli_entry = __esm(() => {
 
 // src/adapters/definitions/native-cli-preview-claude.ts
 import { readFileSync as readFileSync8 } from "fs";
-import { join as join16 } from "path";
+import { join as join17 } from "path";
 function previewClaude(ctx) {
   const { args, cwd, stateDir, cliDir, unattended, config } = ctx;
   const { buildLaunch, claudeObservationHooks } = ctx.helpers;
@@ -9658,13 +9679,13 @@ function previewClaude(ctx) {
   let envNames = state.envNames;
   let launch;
   let original;
-  for (const file of [join16(cwd, ".claude/settings.local.json"), join16(cwd, ".claude/settings.json"), join16(process.env.HOME ?? "", ".claude/settings.json")]) {
+  for (const file of [join17(cwd, ".claude/settings.local.json"), join17(cwd, ".claude/settings.json"), join17(process.env.HOME ?? "", ".claude/settings.json")]) {
     try {
       original ??= JSON.parse(readFileSync8(file, "utf8")).statusLine;
     } catch {}
   }
-  const facts = claudeObservationHooks(config, { script: join16(cliDir, "facts-hook.ts"), stateDir });
-  launch = buildLaunch("claude", args, { preview: true, unattended, statusLine: { script: join16(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {} }, ...facts ? { facts } : {} });
+  const facts = claudeObservationHooks(config, { script: join17(cliDir, "facts-hook.ts"), stateDir });
+  launch = buildLaunch("claude", args, { preview: true, unattended, statusLine: { script: join17(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {} }, ...facts ? { facts } : {} });
   const safeArgs = args.map((arg, i) => {
     if (args[i - 1] === "--settings")
       return "{}";
@@ -9675,7 +9696,7 @@ function previewClaude(ctx) {
     return publicArg(arg);
   });
   const publicLaunch = buildLaunch("claude", safeArgs, { preview: true, unattended, statusLine: {
-    script: join16(cliDir, "statusline-tee.ts"),
+    script: join17(cliDir, "statusline-tee.ts"),
     stateDir,
     ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {}
   }, facts });
@@ -9708,7 +9729,7 @@ function previewCodex(ctx) {
 var init_native_cli_preview_codex = () => {};
 
 // src/adapters/definitions/native-cli-preview-kimi.ts
-import { join as join17 } from "path";
+import { join as join18 } from "path";
 function previewKimi(ctx) {
   const { args, cwd, stateDir, cliDir, config } = ctx;
   const { childEnv, startModeOf, buildKimiLaunch, buildKimiTuiLaunch, nativeLaunchEnv, kimiMcpPlan } = ctx.helpers;
@@ -9731,14 +9752,14 @@ function previewKimi(ctx) {
     launch = { ...native, cmd: native.cmd === "kimi" ? "kimi" : REDACTED, args: native.args.map((arg) => arg === "--model" || arg === REDACTED ? arg : REDACTED) };
     envNames = Object.keys(nativeLaunchEnv("kimi", childEnv())).concat(["AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR"]);
   }
-  const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join17(cliDir, "../../plugins/agent-hub/server.js"), mode);
+  const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join18(cliDir, "../../plugins/agent-hub/server.js"), mode);
   kimiMetadata = { mode, mcp: { file, action, changed, tracked } };
   return finishPreview(ctx, launch, envNames, unresolved, kimiMetadata);
 }
 var init_native_cli_preview_kimi = () => {};
 
 // src/adapters/definitions/native-cli-preview-pi.ts
-import { join as join18, resolve as resolve14 } from "path";
+import { join as join19, resolve as resolve15 } from "path";
 function previewPi(ctx) {
   const { args, stateDir, cliDir, config } = ctx;
   const { relayModelIds, buildPiLaunch, startModeOf } = ctx.helpers;
@@ -9773,7 +9794,7 @@ function previewPi(ctx) {
     tools: [],
     preamble: REDACTED,
     maxSteps: config.pi.max_steps
-  }, {}, resolve14(join18(cliDir, "../pi/extension.ts")), UNRESOLVED, UNRESOLVED);
+  }, {}, resolve15(join19(cliDir, "../pi/extension.ts")), UNRESOLVED, UNRESOLVED);
   launch = pi;
   envNames = Object.keys(pi.env).concat(["PATH", "HOME", "USER", "SHELL", "TMPDIR", "TERM", "TERM_PROGRAM", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "CODEX_HOME"].filter((key) => process.env[key] !== undefined));
   if (mode === "tui")
@@ -9786,7 +9807,7 @@ function previewPi(ctx) {
 var init_native_cli_preview_pi = () => {};
 
 // src/adapters/definitions/native-cli-preview-qwen.ts
-import { join as join19 } from "path";
+import { join as join20 } from "path";
 function previewQwen(ctx) {
   const { tool, args, cwd, stateDir, cliDir, config } = ctx;
   const state = previewState(args, ctx.baseEnvNames), { unresolved, value } = state;
@@ -9809,7 +9830,7 @@ function previewQwen(ctx) {
     form: "headless",
     projectRoot: cwd,
     stateDir,
-    entrypoint: join19(cliDir, "main.js"),
+    entrypoint: join20(cliDir, "main.js"),
     userArgs: [],
     unattended: false,
     env: {},
@@ -9918,7 +9939,7 @@ var init_native_config_policy = __esm(() => {
 
 // src/adapters/definitions/native-policy-aux.ts
 import { closeSync as closeSync6, constants as constants5, fstatSync as fstatSync5, openSync as openSync6, readdirSync as readdirSync3, readFileSync as readFileSync9 } from "fs";
-import { isAbsolute as isAbsolute7, join as join20, normalize } from "path";
+import { isAbsolute as isAbsolute7, join as join21, normalize } from "path";
 function claudeCrashPlan(_meta) {
   return { how: "claude: the Claude Code plugin reconnects by itself while that session is still open" };
 }
@@ -9963,13 +9984,13 @@ function localCrashPlan(meta) {
 }
 function claudePlugins(root, cwd) {
   const enabled = new Map;
-  for (const file of [join20(root, "settings.json"), ...cwd ? [join20(cwd, ".claude", "settings.json"), join20(cwd, ".claude", "settings.local.json")] : []]) {
+  for (const file of [join21(root, "settings.json"), ...cwd ? [join21(cwd, ".claude", "settings.json"), join21(cwd, ".claude", "settings.local.json")] : []]) {
     const map = json(file)?.enabledPlugins;
     if (map && typeof map === "object")
       for (const [key, on] of Object.entries(map))
         enabled.set(key, on === true);
   }
-  const installed = json(join20(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
+  const installed = json(join21(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
   const out = [];
   for (const [key, on] of enabled) {
     if (!on)
@@ -9983,7 +10004,7 @@ function claudePlugins(root, cwd) {
   return out;
 }
 function codexPlugins(root) {
-  const config = text(join20(root, "config.toml"));
+  const config = text(join21(root, "config.toml"));
   if (config === undefined)
     return [];
   const found = new Map, disabled = new Set;
@@ -10002,7 +10023,7 @@ function codexPlugins(root) {
       continue;
     let versions = [];
     try {
-      versions = readdirSync3(join20(root, "plugins", "cache", market, plugin));
+      versions = readdirSync3(join21(root, "plugins", "cache", market, plugin));
     } catch {}
     out.push({ name, version: versions.length === 1 ? version2(versions[0]) : null });
   }
@@ -10040,7 +10061,7 @@ var str3 = (value) => typeof value === "string" && value ? value : undefined, PL
   } catch {
     return;
   }
-}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join20(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join20(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
+}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join21(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join21(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
 var init_native_policy_aux = __esm(() => {
   PLUGINS = new Map([["claude-mem", "claude-mem"], ["ponytail", "ponytail"], ["open-code-review", "open-code-review"]]);
   CLAUDE_ONLY = new Map([["codex@openai-codex", "codex-plugin"]]);
@@ -10110,17 +10131,17 @@ var init_native_cli_launch_common = __esm(() => {
 // src/adapters/definitions/native-cli-claude-launch.ts
 import { mkdirSync as mkdirSync7, writeFileSync as writeFileSync5, renameSync as renameSync2, unlinkSync as unlinkSync2, readFileSync as readFileSync10 } from "fs";
 import { randomUUID as randomUUID7 } from "crypto";
-import { resolve as resolve15, join as join21 } from "path";
+import { resolve as resolve16, join as join22 } from "path";
 function claudeChannel(userArgs) {
-  const bundle = resolve15(import.meta.dir, "../../../plugins/agent-hub/server.js");
+  const bundle = resolve16(import.meta.dir, "../../../plugins/agent-hub/server.js");
   for (let i = 0;i < userArgs.length; i++) {
     const arg = userArgs[i];
     const path = arg === "--mcp-config" ? userArgs[i + 1] : arg.startsWith("--mcp-config=") ? arg.slice("--mcp-config=".length) : undefined;
     if (!path)
       continue;
     try {
-      const server = JSON.parse(readFileSync10(resolve15(path), "utf8")).mcpServers?.["agent-hub"];
-      if (server?.command === "bun" && Array.isArray(server.args) && server.args.some((value) => typeof value === "string" && resolve15(value) === bundle))
+      const server = JSON.parse(readFileSync10(resolve16(path), "utf8")).mcpServers?.["agent-hub"];
+      if (server?.command === "bun" && Array.isArray(server.args) && server.args.some((value) => typeof value === "string" && resolve16(value) === bundle))
         return "server:agent-hub";
     } catch {}
   }
@@ -10143,7 +10164,7 @@ function claudeNativeLaunch(ctx) {
         throw new Error("--settings requires a JSON object or readable file so the hub permission hook can be installed");
       let caller;
       try {
-        caller = JSON.parse(value.trim().startsWith("{") ? value : readFileSync10(resolve15(value), "utf8"));
+        caller = JSON.parse(value.trim().startsWith("{") ? value : readFileSync10(resolve16(value), "utf8"));
         if (!caller || typeof caller !== "object" || Array.isArray(caller))
           throw new Error("not an object");
       } catch {
@@ -10172,7 +10193,7 @@ function claudeNativeLaunch(ctx) {
       const stateDir = ctx.facts?.stateDir ?? ctx.statusLine?.stateDir;
       if (!stateDir)
         throw new Error("Claude session settings require the hub state directory");
-      const file = join21(stateDir, `claude-settings-${randomUUID7()}.json`);
+      const file = join22(stateDir, `claude-settings-${randomUUID7()}.json`);
       try {
         mkdirSync7(stateDir, { recursive: true, mode: 448 });
         writeFileSync5(`${file}.tmp`, settingsArgs[1], { mode: 384, flag: "wx" });
@@ -10251,13 +10272,13 @@ var init_events = () => {};
 // src/cli/recovery-session-file.ts
 import { statSync as statSync4 } from "fs";
 import { homedir as homedir5 } from "os";
-import { join as join22 } from "path";
+import { join as join23 } from "path";
 function checkedSessionPath(binding, kind) {
   if (kind === "rollout")
-    return join22(binding.launch.env.CODEX_HOME ?? join22(homedir5(), ".codex"), "sessions");
-  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join22(homedir5(), ".claude");
+    return join23(binding.launch.env.CODEX_HOME ?? join23(homedir5(), ".codex"), "sessions");
+  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join23(homedir5(), ".claude");
   const slug = binding.projectRoot.replace(/[^a-zA-Z0-9]/g, "-");
-  return join22(config, "projects", slug, `${binding.sessionId}.jsonl`);
+  return join23(config, "projects", slug, `${binding.sessionId}.jsonl`);
 }
 function recordedFileState(file) {
   try {
@@ -10270,7 +10291,7 @@ var init_recovery_session_file = () => {};
 
 // src/adapters/definitions/native-recovery.ts
 import { readdirSync as readdirSync4 } from "fs";
-import { basename as basename5, join as join23 } from "path";
+import { basename as basename5, join as join24 } from "path";
 var rolloutState = (binding) => {
   try {
     return readdirSync4(checkedSessionPath(binding, "rollout"), { recursive: true }).some((name) => String(name).endsWith(".jsonl") && basename5(String(name)).includes(binding.sessionId));
@@ -10294,7 +10315,7 @@ var init_native_recovery = __esm(() => {
       if (phase !== "plan")
         return false;
       let current, started = false, turned = false;
-      for (const e of readEvents(join23(stateDir, "events.jsonl"))) {
+      for (const e of readEvents(join24(stateDir, "events.jsonl"))) {
         if (e.type === "native_thread" && e.peer === binding.peer) {
           current = e.thread;
           if (e.thread === binding.sessionId && e.fresh)
@@ -18204,12 +18225,8 @@ init_child_process();
 init_git();
 init_sdlc();
 
-// src/hub/spec-read.ts
-init_host_executable();
-init_child_process();
-var BODY_LIMIT = 64 * 1024;
-var RESULT_LIMIT = 80 * 1024;
-var STDOUT_LIMIT = 512 * 1024;
+// src/hub/tasks.ts
+init_spec_read();
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
@@ -18399,20 +18416,11 @@ init_store();
 // node_modules/@staix/agent-mem/src/memory/vault.ts
 init_generation();
 init_generation();
-// src/hub/routing.ts
-init_registry();
-init_board();
-import { join as join24, resolve as resolve16 } from "path";
-
-// src/models/route/config.ts
-var TYPES = new Set(["stage", "plan_execute", "advisor", "escalation"]);
-
-// src/hub/routing.ts
-init_stage();
-var TEMPLATE = join24(import.meta.dir, "..", "..", "templates", "routing.toml");
-var cache = new Map;
+// src/hub/memory-candidates.ts
+init_tool_refusal();
 
 // src/hub/memory-policy.ts
+init_routing();
 init_path_policy();
 
 // src/hub/tasks.ts
@@ -18420,7 +18428,9 @@ init_profiles();
 init_workflow();
 init_board();
 init_envelope();
+init_routing();
 init_project();
+init_tool_refusal();
 init_review_brief();
 init_registry();
 
@@ -18429,10 +18439,15 @@ var GROOMING_CODES = new Set(["tests", "spec", "roster", "pull-only", "not-attac
 
 // src/hub/tasks.ts
 init_sdlc();
+init_routing();
 var DEMOTION_HALF_LIFE_MS = 24 * 3600000;
 var CONTRADICTION_WINDOW_MS = 7 * 86400000;
 var QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep", "memory reference started"]);
 var OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassigned"]);
+
+// src/hub/conductor.ts
+init_tool_refusal();
+
 // src/hub/config-trust.ts
 init_child_process();
 init_git();

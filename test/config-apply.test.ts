@@ -158,7 +158,7 @@ test("#439 non-machine settings retain terminal authority outside Git without tr
 
  test("#439 routing policy is live while published Pi relay models require restart", () => {
   for (const key of ["routing.classes.implement.peer", "routing.stay_switch", "routing.constraints.pii", "routing.hub_routes"]) expect(configApply(key).applies).toBe("live");
-  for (const key of ["routing.targets", "routing.routes", "routing.local.model"]) expect(configApply(key).applies).toBe("next use");
+  for (const key of ["routing.local.fixed_model"]) expect(configApply(key).applies).toBe("next use");
   for (const key of ["routing.pi.context_window", "pi.dgx_coding", "pi.dgx_fast"]) {
     expect(configApply(key).applies).toBe("restart"); expect(configApply(key).reason).toContain("relay");
   }

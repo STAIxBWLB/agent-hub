@@ -13,7 +13,7 @@ test("daemon release tools preserve planner identity and defer unknown peer quot
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined, person: ControlClient | undefined, peer: ControlClient | undefined, closed = 0, board: Board | undefined, hostAllowed = true, closeFails = false, duringAdmission: (() => Promise<void>) | undefined;
   try {
     mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/sdlc.toml"), 'mode = "advise"\n');
-    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, switchyardPort: 0,
+    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
       releaseHostAdmission: async () => { await duringAdmission?.(); return { admitted: hostAllowed, ...(hostAllowed ? {} : { reason: "host slot held" }), current: () => true, close: async () => { closed++; if (closeFails) throw new Error("cleanup failed"); } }; },
       config: { ...DEFAULT_CONFIG, roles: { claude: ["planner"], codex: ["implementer"] }, batch_ms: 0,
         roster: { claude: true, codex: true, kimi: false, qwen: false, jcode: false, pi: false, local: false },

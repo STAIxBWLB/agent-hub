@@ -29,8 +29,8 @@ project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
   `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools. Agents
   can propose corrections; candidates stay outside evidence until a person acts.
 - **Local and remote models.** Pi and the local worker run on DGX or local MLX
-  through an authenticated relay; Switchyard routes model calls by task in front
-  of a self-hosted OmniRoute gateway. Tasks flagged as PII stay on the on-prem
+  through an authenticated relay; in-process hub routes select models by task
+  through a self-hosted OmniRoute gateway. Tasks flagged as PII stay on the on-prem
   worker.
 - **Guard rails.** The local worker and Pi run in a sandbox, and by default their
   writes and shell commands wait for the person's approval; a permission mode

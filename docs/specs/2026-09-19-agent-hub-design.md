@@ -68,6 +68,39 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
   are never pooled through a gateway; local models are for bulk and low-stakes work;
   PII never leaves the campus network (internal routing criteria).
 
+## Amendment: retire the Switchyard sidecar (#553, 2026-10-20)
+
+- All model routing runs in process. Remove `src/switchyard/`, the external binary,
+  generated config, lifecycle, health/status/doctor entries, `AGENTHUB_SWITCHYARD_BIN`
+  and `x-switchyard-session-id`. Port offset `SWITCHYARD = 3` remains reserved and
+  unused; other port offsets do not move. Keep `src/models/route/` Apache-2.0
+  notices and `scripts/check-switchyard-upstream.ts` as algorithm provenance.
+- Translate `stage_router` to a hub `stage` route: `efficient_target` becomes
+  `efficient`, `capable_target` becomes `capable`, and `confidence_threshold` is
+  unchanged. Translate passthrough to the class's `fixed_model`, without a route.
+  The old unshipped classifier escalation uses the existing hub escalation route.
+- Existing `[targets]` and `[routes]` tables load as retired settings, are ignored
+  and produce startup/doctor diagnostics naming their hub-route replacements.
+  Every selection without the `hub/` prefix, including legacy named routes and
+  `sy/` selections, uses its fixed-model fallback with one warning, not a
+  process start. Never rewrite an operator's routing files during load or reload.
+- The shipped template uses `[hub_routes]`, local/implement `hub/stage` and direct
+  `fast` fixed models for former `sy/fast` classes. A class with a `fixed_model`
+  and no `route` explicitly selects direct inference rather than inheriting the
+  global local route. A fixed-model fallback remains required.
+- Internal digest, triage and other hub inference calls use only their configured
+  fixed model through OmniRoute, preserving bounded, optional, fail-open behavior.
+- Doctor compares every local/class fixed alias and every hub route's effective
+  efficient/capable/judge alias with gateway inventory: one failure per missing
+  alias, or one passing row when all are served. An unavailable inventory is not
+  proof that an alias is served. PII keeps positive campus admission and
+  `onCampusOnly`; no model-route selection may bypass either guard.
+
+This decision supersedes earlier active sidecar deployment and fallback wording
+below. Historical binary observations remain evidence of the former integration,
+not instructions to install or run it. Phase 5 of the source-port design records
+the same retirement decision.
+
 ## Decisions
 
 1. Greenfield hub, not a fork. Bun + TypeScript, one repo, MIT.
@@ -80,12 +113,10 @@ Facts below are tagged **verified** (measured on 2026-09-19 on the owner's Mac) 
    per-call model selection needs the hub to own the call. OpenCode ACP is kept as an
    optional fallback runtime behind the same adapter interface.
 5. Model selection has three layers: L1 hub policy (which peer, which route),
-   L2 Switchyard (which model per call for hub-owned traffic), L3 OmniRoute (keys,
-   provider fallback, usage). Switchyard runs as a hub-managed sidecar on the Mac for the
-   duration of a hub session only; it is not resident. The hub must work with L2 absent
-   (fixed model ids straight to OmniRoute).
+   L2 in-process hub routes (which model per call for hub-owned traffic), L3 OmniRoute
+   (keys, provider fallback, usage). Fixed models go straight to OmniRoute (#553).
 6. All hub-originated model traffic (local worker, internal summaries, triage) goes
-   Switchyard -> OmniRoute. Subscription CLIs keep their own auth.
+   directly to OmniRoute, optionally selected by an in-process route. Subscription CLIs keep their own auth.
 7. Quota relay hands open tasks to the `local` peer first, then waits for the window
    reset for judgment-heavy classes. Task-level escalation on verification failure.
 8. Safety defaults: cross-peer text is framed as untrusted; permission prompts stay on
@@ -116,7 +147,7 @@ kimi acp (child, stdio) ── ACP client adapter ──────────
 local worker (in-process agent loop) ─────────────────────────────────┤ router L1
 hub CLI / console ── control WS 127.0.0.1:<ctl> ──────────────────────┘
                                    │ model calls
-                     switchyard-server sidecar (127.0.0.1, session-scoped)  L2
+                     in-process model routes                              L2
                                    │ base_url
                      OmniRoute: internal URL (VPN) / Access-protected public URL    L3
 ```
@@ -173,7 +204,7 @@ hub CLI / console ── control WS 127.0.0.1:<ctl> ─────────�
   answer); no reads of credential stores or denylisted files, no `.git/hooks` or `.git/config` writes, no network, loopback included, unless
   `local.bash_network`, scrubbed environment; without seatbelt there is no `bash`. 30 steps per
   turn, `reasoning_content` is never stored or shared. Model comes from `routing.toml`:
-  a Switchyard route id, or `fixed_model` straight to OmniRoute.
+  an in-process hub route, or `fixed_model` straight to OmniRoute.
 - Console: `ahub tail` (live stream), `ahub say [@peer] <text>`, `ahub permit`, `ahub doctor`, `ahub board`,
   `ahub route explain <task>`, `ahub budget`, `ahub status`, `ahub logs`, `ahub kill`.
 - Launchers: `ahub up`, `ahub claude [--safe|--unattended] [--via dgx]`,
@@ -314,21 +345,21 @@ long_context_tokens = 120000
 
 [classes.implement]
 peers = ["codex", "kimi", "local"]      # preference order among idle, unpaused peers
-route = "sy/coding"                     # Switchyard route id for the local worker
+route = "hub/stage"                     # in-process route for the local worker
 escalate_to = ["kimi", "claude"]        # on verification failure
 
 [classes.bulk_edit]
 peers = ["local", "kimi"]
-route = "sy/fast"
+fixed_model = "fast"
 
 [classes.review]
 peers = ["claude", "codex"]
-route = "sy/review"
+route = "hub/review"
 local_allowed = false                   # never route judgment classes to local
 
 [classes.summarize]
 peers = ["local"]
-route = "sy/fast"
+fixed_model = "fast"
 
 [constraints]
 pii = "local_only"                      # hard: on-prem models only
@@ -341,28 +372,15 @@ transport, budget admission and complete-turn history ownership; algorithms make
 from normalized chat input and bounded session state. See
 [the source-port contract](2026-10-04-switchyard-source-port-design.md) for upstream
 provenance, intentional fail-open escalation and REDO history differences. These tables
-are never copied to sidecar configuration. Existing `sy/` routes and fixed-model fallback
-remain supported. The Pi `hub/auto` alias uses the same stage signals with session-scoped
+run without a sidecar. Legacy selections without the `hub/` prefix use only their fixed-model fallback. The Pi `hub/auto` alias uses the same stage signals with session-scoped
 hold and context admission; peer progress observations suggest but never execute reassignment.
 
-L2, Switchyard sidecar (amended in M3, verified against `switchyard-server` 0.2.0 built with
-`cargo install --locked switchyard-server`; there is no prebuilt macOS binary).
-`routing.toml` carries `[targets.*]` and `[routes."sy/..."]` in Switchyard's own table
-shapes; the hub copies them into `.agenthub/state/switchyard.toml` (0600, removed on stop)
-and adds `schema_version`, one `[llm_clients.gateway]` (`format = "openai_chat"`, the live
-OmniRoute URL, `api_key_env = "OMNIROUTE_API_KEY"`, Access `extra_headers` only for an
-Access host), `llm_client` on targets and the public `id` on routes. The key reaches the
-sidecar through its environment only. Verified facts: the binary rejects `timeout_ms` on
-`llm_clients`; there is no `escalation_router` type, escalation is `llm_classifier` with
-`mode = "escalation"` and a mandatory `[routes.<name>.escalation]` table; the default bind is
-`0.0.0.0`, so the hub always passes `--host 127.0.0.1`; a route is selected by sending its id
-as `model`; the chosen target returns in `x-model-router-selected-model`; tool calls pass
-through. The config goes through `--dry-run` first. The sidecar starts on the first
-hub-owned model call and stops with the hub. A missing binary, a rejected config, failed
-health, an exit or a failed call turns L2 off for the hub run with one log line and the
-worker calls `fixed_model` on OmniRoute directly. Until a second model (GLM-5.3-Flash) is served the
-shipped routes are `passthrough` to DeepSeek-V4-Flash; the `stage_router` and escalation
-blocks ship commented out and validate against the real binary.
+Legacy L2 compatibility (#553): `[targets]` and `[routes]` are retired, ignored
+settings. Every selection without the `hub/` prefix falls back directly to its
+fixed model with one warning, including legacy route ids without a prefix.
+No binary, generated model-router config or model-router listener remains. The
+migration mapping is in the retirement amendment above; historical native binary
+observations remain in `docs/smoke.md`.
 
 L3, OmniRoute (amended in M3): candidates from `omniroute.urls` (for the owner: the internal
 URL over VPN, then a public URL behind Cloudflare Access; the tool ships with none)
@@ -381,7 +399,7 @@ Assignment is a pure function of `routing.toml`, the task's signals and the peer
 same function and prints its trace: signals, every candidate with the reason it was kept
 or skipped, owner, reviewer and route. `local` uses the class's `route` / `fixed_model` for a
 task turn and `[local]` otherwise. Verification failure (tests fail, review `changes_requested` `tasks.escalate_after` times in a row, default 3, #488) escalates
-the task to the next peer in `escalate_to`; Switchyard handles per-call escalation
+the task to the next peer in `escalate_to`; hub routes handle per-call escalation
 inside a peer.
 
 ### Budget relay
@@ -504,11 +522,11 @@ inside a peer.
   bus.
 - `ahub ask` (added after 0.1.0). Retrieval first, model second, read-only. Evidence is gathered from the task
   board, claude-mem (index search plus the timeline around the top hit) and this run's hub log, capped at 6000
-  characters; the hub's model (`sy/fast`) answers from that list only and has to cite its ids, and an answer that
+  characters; the hub's configured fixed model (default `fast`) answers from that list only and has to cite its ids, and an answer that
   cites nothing from the list is dropped. No evidence means no model call; no model means the evidence is the result.
   Every row is capped and rows that match the question lead, so one long row cannot empty the list. Every cited id
   has to be in the list: one invented id drops the answer. PII task text is evidence only when an on-campus model is
-  positively confirmed (a gateway answered, it is not behind Access, and no sidecar points off campus); otherwise
+  positively confirmed (a gateway answered and it is not behind Access); otherwise
   the row stays as a `[pii]` stub so counts are right. A question that itself carries PII skips the memory worker.
   Such results are marked and never saved. `--remember` saves a real answer as a model-written note attributed to
   the hub, under a title later asks exclude from their evidence; "nothing found" is never saved. The call is
@@ -537,9 +555,9 @@ inside a peer.
 
 - `.agenthub/config.json` (roles, ports, filter tiers, watchdog), `.agenthub/routing.toml`.
 - `.agenthub/state/` gitignored: `status.json` (with the daemon's pid and process signature, #226; daemons up to 0.12.20 also wrote `hub.pid`), `control-token` (0600, per run),
-  `hub.db` (tasks, messages, budget; from M4), `hub.log`, `switchyard.toml`, `checkpoint.md`.
+  `hub.db` (tasks, messages, budget; from M4), `hub.log`, `checkpoint.md`.
 - Env: `AGENTHUB_STATE_DIR`, `AGENTHUB_OMNIROUTE_URL`, `OMNIROUTE_API_KEY`,
-  `AGENTHUB_SWITCHYARD_BIN`, `AGENTHUB_UNATTENDED`.
+  `AGENTHUB_UNATTENDED`.
 
 ### Testing
 
@@ -548,7 +566,7 @@ inside a peer.
 - Fakes: fake ACP server, fake app-server (ws), fake MCP client, fake OpenAI-compatible
   model server. Integration tests spawn the daemon against fakes.
 - Live smoke (manual, documented): trio chat, steer during a Codex turn, Kimi
-  busy-queue drain, local worker completes a bulk edit through Switchyard -> OmniRoute
+  busy-queue drain, local worker completes a bulk edit through in-process routes -> OmniRoute
   with `x-omniroute-provider` visible, budget pause and resume with a mocked probe.
 - One command gates everything: `scripts/check.sh` (typecheck, unit, integration).
 
@@ -559,7 +577,6 @@ New repo layout:
 ```
 src/hub/            daemon, bus, peer-registry, state-machines, board, budget, router
 src/adapters/       claude-channel.ts, codex-appserver.ts, acp.ts, local-worker.ts
-src/switchyard/     config generator, sidecar lifecycle, health
 src/memory/         hub memory integration: claude-mem client, capture, briefs and recall; portable core is @staix/agent-mem
 src/cli/            up, claude, codex, kimi, local, say, tail, board, route, budget, status, logs, kill, init
 plugins/agent-hub/  .claude-plugin/plugin.json, .mcp.json, server bundle, hooks (SessionStart health, Stop announce)
@@ -583,7 +600,7 @@ AGENTS.md, REVIEW.md
 5. `ahub local` completes a `bulk_edit` task; OmniRoute log shows the request with the
    per-peer token and `x-omniroute-provider: vllm`; `ahub route explain` shows the
    chosen route.
-6. With Switchyard absent, the local worker still works via `fixed_model`.
+6. All model routes run in process; retired selections without the `hub/` prefix use `fixed_model`.
 7. A PII-flagged task never leaves the `local` peer (test with a fake pattern).
 8. Mocked Codex quota at 0.95 pauses Codex, checkpoints, reassigns its open
    `implement` task to `local`, and resumes Codex after the mocked reset.
@@ -627,8 +644,8 @@ M2 coordination
 M3 local worker and routing L2/L3
 - [x] Local worker agent loop with cwd-scoped tools, secrets denylist, approvals and seatbelt sandbox
 - [x] OmniRoute client with Cloudflare Access headers and the owner-issued inference key; the off-campus live path remains blocked in `docs/smoke.md` (#1)
-- [x] Switchyard sidecar: config generation, lifecycle, health, fallback to fixed model
-- [x] `ahub local`, smoke through OmniRoute with provider header check, and through the real sidecar
+- [x] Historical M3 Switchyard integration, retired in #553; fixed fallback remains.
+- [x] `ahub local`, smoke through OmniRoute with provider header check; historical sidecar receipts in smoke.md.
 - [x] Local worker capture into claude-mem (`sessions/init`, `observations`, `summarize`, `session-end`, skip list)
 
 M4 task board, roles, routing L1
@@ -648,7 +665,7 @@ M5 budget relay
 - [ ] Live: a real pause driven by Codex's own numbers with a TUI attached; the natural near-limit prerequisite remains blocked by issue #1
 
 M6 internal inference, packaging
-- [x] Status digests and triage through `sy/fast` (amended: optional and fail-open with a backoff. Only plain status
+- [x] Status digests and triage through the configured fixed model (default `fast`; amended: optional and fail-open with a backoff. Only plain status
       chatter over a threshold is condensed, into one item from `digest` that keeps every sender, envelope id and the
       highest hop; important, task, review, budget, preface and private items are never touched. A task proposed
       without a class is labelled from the closed class list, a PII task only when the gateway is on campus. The
@@ -699,7 +716,7 @@ M6 internal inference, packaging
 | Risk | Mitigation |
 | --- | --- |
 | Claude channels are research preview; flag or protocol may change | Adapter isolated in one file; plugin version pinned to a Claude Code range; `hub_inbox` fallback |
-| `switchyard-server` is Demo grade, pre-1.0 | Session-scoped sidecar, pinned version, L1 `fixed_model` fallback |
+| Model routing algorithm drift | In-process golden tests, Apache-2.0 notices and upstream provenance check |
 | Anthropic-to-chat translation drops `tool_use` | Claude never runs on local models in this design |
 | Local worker executes untrusted room text | Untrusted framing, cwd scope, denylist, no `--unattended` by default |
 | Steering a Codex turn changes its plan mid-flight | Only `important` steers; default tier is `status` |
@@ -2192,7 +2209,7 @@ acts on the stopped state directory.
   is started the way Pi's relay starts it and keeps running until `ahub models
   stop`), else the gateway's `local.fixed_model` only while the
   daemon's `onCampus()` holds, with `onCampusOnly` so the client refuses an Access
-  host once more before transport; never the Switchyard sidecar. One call per item,
+  host once more before transport. One call per item,
   an 8 s deadline over the whole call, and a generation slot of its own: it asks
   for one without waiting (`acquire(abort.signal, 0)`: one look, then
   `MlxBusyError`); with all taken (Pi generating, another screen) it uses the
@@ -3147,7 +3164,7 @@ and reason. The registry exposes the running and file values separately.
 | next use | permission_modes and catalog_roles at the next peer start; peers.*.start_mode and native launch argv; coordination for newly created tasks; task release/review policy; new approval timeouts; bus batch/admission limits; budget/context/inference/limits; peer watchdog and step limits; recovery and experiment decisions; memory brief/injection/suggestion limits |
 | next use | pi.auto_start changes a later startup/recovery auto-start decision; reloading it never starts or replaces a running peer |
 | restart | memory.enabled/native/worker_url/short_ttl_days/sync_interval_min: open consumers, selected profile binding, client and sync timer must be quiesced together |
-| next use | routing targets/routes/local selection at the next local peer or sidecar creation; existing native sessions retain their model contract |
+| next use | local model selection at the next local peer creation; retired tables never execute; existing native sessions retain their model contract |
 | restart | pi.dgx_coding/dgx_fast and routing.pi: model catalogue and context publication belong to the existing Pi relay; a reload must not replace a live native relay |
 | restart | omniroute: credential and gateway clients are bound to relay ownership |
 | restart | mlx: model/runtime ownership and device resources belong to the running instance |
@@ -3233,7 +3250,7 @@ Inheritance and undo use the actual destination source trust. They may restore a
 
 Reserved prototype path components are refused throughout nested routing extension tables before publication. Configuration path writes never traverse inherited object properties.
 
-Switchyard targets/routes and hub-route dictionaries retain opaque quoted keys, including dots. Each dictionary is one guarded value for reload confirmation and publication; privacy fields and ordinary registry settings retain leaf-level decisions.
+Hub-route dictionaries retain opaque quoted keys, including dots. Each active dictionary is one guarded value for reload confirmation and publication; retired targets/routes never enter publication. Privacy fields and ordinary registry settings retain leaf-level decisions.
 
 ### Settled authority and reviewable confirmation (#439 round-2 amendment)
 

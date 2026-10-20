@@ -1512,7 +1512,7 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
   watcher cannot adopt unrelated raising local edits. A settings session cannot
   adopt routing fields outside its editable registry. Existing confirmation and
   roster lifecycle fences remain; use the confirmed roster setting for membership.
-Pi relay model aliases (`pi.dgx_coding`, `pi.dgx_fast`) and `routing.pi` retain their running values until restart, because existing native sessions use the published relay catalogue and context contract. Routing policy changes apply to future decisions; local model/target changes apply at the next peer or sidecar creation.
+Pi relay model aliases (`pi.dgx_coding`, `pi.dgx_fast`) and `routing.pi` retain their running values until restart, because existing native sessions use the published relay catalogue and context contract. Routing policy changes apply to future decisions; local model changes apply at the next peer creation.
 
 - Runtime/client ownership still requires restart for memory handles and sync,
   gateway/MLX, runner/check commands, profile/tool contracts, converters, existing
@@ -2625,10 +2625,33 @@ config with `provider: "legacy"`; Ollama errors never launch Python.
 
 ### In-process model routes
 
-`routing.toml` supports `[hub_routes."hub/<id>"]`, separate from sidecar `[routes]`.
+`routing.toml` supports in-process `[hub_routes."hub/<id>"]`.
 Set `[local] route = "hub/stage"` or a task class's `route` to enable a hub route.
 The shipped examples use OmniRoute `fast` and `coding`; `fixed_model` remains the fallback.
-`--model` pins the worker and bypasses both routing engines. Sidecar `sy/` routes remain optional.
+`--model` pins the worker and bypasses route selection. A class with `fixed_model`
+and no `route` also calls that alias directly, even when `[local]` names a route.
+
+The Switchyard sidecar is retired (#553). No binary or generated model-router
+config is used, and its reserved port offset remains unused. Existing `[targets]`
+and `[routes]` tables are ignored and listed as retired settings in startup logs
+and doctor. Every route without the `hub/` prefix, including named legacy routes
+and `sy/` selections, uses the fixed alias with one warning. Loading or reloading
+never rewrites the operator's routing files.
+
+Migrate the retired settings as follows:
+
+| Retired setting or route | In-process replacement |
+| --- | --- |
+| `stage_router` | `[hub_routes."hub/<id>"]` with `type = "stage"`; select it with `route = "hub/<id>"` |
+| `efficient_target` / `capable_target` | Put the targets' model aliases in `efficient` / `capable` |
+| `confidence_threshold` | Keep the same value on the hub stage route |
+| Passthrough class route | Put its target model alias in the class's `fixed_model` and remove the class's `route` |
+| Former unshipped classifier escalation | Use the existing hub `escalation` policy |
+| `[targets]` / `[routes]` | Remove these retired tables after migrating their selections |
+
+Doctor inventories all local/class fixed aliases and effective efficient/capable/judge aliases, reporting
+each missing alias once or aggregate success when all are served. Hub summaries
+and triage use their fixed model directly.
 
 Route types: `stage` scores recent tools and holds capable recovery for two calls;
 `plan_execute` plans on capable until the first mutation and then stays efficient;

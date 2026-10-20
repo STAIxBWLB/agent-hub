@@ -12,7 +12,7 @@ import { runTool, toolResultFailed, TOOL_SCHEMAS, touchedPaths, ApprovalWaitStop
 import type { Capture } from "../memory/capture.ts";
 import type { ChatMessage, ChatResult, OmniRoute, ToolCall } from "../omniroute/client.ts";
 import { safeModelLabel } from "../omniroute/usage.ts";
-import type { Sidecar } from "../switchyard/sidecar.ts";
+import { effectiveLocalRoute } from "../hub/routing.ts";
 import type { ExecutionBudgetDecision } from "../hub/execution-budget.ts";
 
 export interface LocalOptions {
@@ -21,11 +21,9 @@ export interface LocalOptions {
   sdlcCriteria?: boolean;
   cwd: string;
   omni: OmniRoute;
-  /** Absent = always the fixed model on OmniRoute. */
-  sidecar?: Sidecar;
-  /** Switchyard route id asked of the sidecar. */
+  /** In-process hub route id; legacy routes use the fixed model. */
   route?: string;
-  /** Model id sent straight to OmniRoute when the sidecar is absent, unhealthy or fails a call. */
+  /** Model alias sent straight to OmniRoute when no hub route is active or its call fails. */
   fixedModel: string;
   hubRoutes?: () => Record<string, HubRoute>;
   /** routing.toml `stay_switch` for hub stage routes (#197). */
@@ -81,6 +79,7 @@ export class LocalPeer extends BasePeer {
   private readonly history: ChatMessage[] = [];
   private readonly sessionId = `agent-hub-local-${randomUUID()}`;
   private readonly routes: HubRouteRuntime;
+  private readonly warnedLegacyRoutes = new Set<string>();
   private routeEnvs: Envelope[] = [];
   private routePii = false;
   private routeTask?: number;
@@ -237,10 +236,8 @@ export class LocalPeer extends BasePeer {
     const turnSignal = this.abort!.signal;
     // claude-mem's observer is a cloud model: nothing of a PII turn is captured.
     const capture = policy?.pii ? undefined : this.opts.capture;
-    // Positive confirmation, and for the path this turn will really take: a sidecar generated against the off-campus URL
-    // keeps sending there even after the client has found the campus gateway again.
-    const viaOffCampus = !(policy?.route ?? this.opts.route)?.startsWith("hub/") && !!this.opts.sidecar?.upstream && this.opts.omni.isAccessHost(this.opts.sidecar.upstream);
-    if (policy?.pii && (viaOffCampus || !(await this.opts.omni.onCampus()))) {
+    // Unknown gateway state is never permission to send PII.
+    if (policy?.pii && !(await this.opts.omni.onCampus())) {
       return "Refused: this is a PII task and the only reachable gateway is off campus (Cloudflare Access). Connect the VPN and assign it again.";
     }
     this.routeEnvs = envs;
@@ -372,11 +369,14 @@ export class LocalPeer extends BasePeer {
     for (const tool_call_id of missing) msgs.push({ role: "tool", tool_call_id, content: result });
   }
 
-  /** L2 when the sidecar is up, otherwise (or when a call through it fails) the fixed model on L3. */
+  /** Hub-owned in-process policy, with a fixed OmniRoute alias as fallback. */
   private async call(turnMsgs: ChatMessage[], policy: { route?: string; fixedModel?: string; pii?: boolean; task?: string } | undefined, envs: Envelope[]): Promise<ChatResult> {
-    const { omni, sidecar } = this.opts;
-    // A task turn asks for its class's route; a route needs the sidecar, which exists only when the worker was started with one.
-    const route = policy?.route ?? this.opts.route;
+    const { omni } = this.opts;
+    const route = effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel);
+    if (route && !route.startsWith("hub/") && !this.warnedLegacyRoutes.has(route)) {
+      this.warnedLegacyRoutes.add(route);
+      this.opts.log?.(`legacy route ${route} is deprecated and ignored; using fixed model`);
+    }
     const fixedModel = policy?.fixedModel ?? this.opts.fixedModel;
     const task = policy?.task === undefined ? undefined : Number(policy.task);
     const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : [])];
@@ -384,19 +384,6 @@ export class LocalPeer extends BasePeer {
     const messages: ChatMessage[] = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
     const routed = await this.hubCall(route, messages, policy, signal);
     if (routed) return routed;
-    const via = await this.sidecarEndpoint(route, !!policy?.pii);
-    if (via) {
-      await this.requireBudget(envs, "model_calls");
-      try {
-        const res = await omni.chat({ model: route!, messages, tools }, { via, sessionId: this.sessionId, signal });
-        this.lastServedBy = `switchyard ${route} -> ${res.selectedModel ?? "?"}`;
-        this.recordUsage(res, route!, task);
-        return res;
-      } catch (e) {
-        if (signal.aborted) throw e;
-        sidecar!.disable((e as Error).message);
-      }
-    }
     await this.requireBudget(envs, "model_calls");
     const res = await omni.chat({ model: fixedModel, messages, tools }, { signal, ...(policy?.pii ? { onCampusOnly: true } : {}) });
     this.lastServedBy = `omniroute ${fixedModel} (provider ${res.provider ?? "?"})`;
@@ -441,13 +428,8 @@ export class LocalPeer extends BasePeer {
     }
   }
 
-  private async sidecarEndpoint(route: string | undefined, pii: boolean): Promise<string | undefined> {
-    if (!route || route.startsWith("hub/") || pii) return undefined;
-    return this.opts.sidecar?.endpoint();
-  }
-
-  private async conclude(msgs: ChatMessage[], policy: { route?: string; pii: boolean } | undefined, turn: number, step: number, maxSteps: number, answer: string, signal: AbortSignal, decisionId?: string): Promise<string | undefined> {
-    const route = policy?.route ?? this.opts.route, config = this.hubConfig(route);
+  private async conclude(msgs: ChatMessage[], policy: { route?: string; fixedModel?: string; pii: boolean } | undefined, turn: number, step: number, maxSteps: number, answer: string, signal: AbortSignal, decisionId?: string): Promise<string | undefined> {
+    const route = effectiveLocalRoute(this.opts.route, policy?.route, policy?.fixedModel), config = this.hubConfig(route);
     if (!route || !config) return answer;
     const messages: ChatMessage[] = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...msgs];
     const feedback = await this.routes.review(route, config, messages, this.routeScope(!!policy?.pii, turn), !!policy?.pii, signal, decisionId);
@@ -472,7 +454,7 @@ export class LocalPeer extends BasePeer {
         ...(res.usage ? { usage: res.usage } : {}),
         requestedModel: safeModelLabel(requestedModel) ?? "unknown",
         ...(Number.isSafeInteger(task) && task! > 0 ? { task } : {}),
-        ...(safeModelLabel(res.servedModel ?? res.selectedModel) ? { servedModel: safeModelLabel(res.servedModel ?? res.selectedModel)! } : {}),
+        ...(safeModelLabel(res.servedModel) ? { servedModel: safeModelLabel(res.servedModel)! } : {}),
         ...(safeModelLabel(res.provider) ? { provider: safeModelLabel(res.provider)! } : {}),
       });
     } catch {
