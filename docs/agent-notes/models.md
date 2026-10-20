@@ -1,6 +1,6 @@
 # Model relay, inference and gateway
 
-Scope: the model relay and its journal, the hub's own inference and its slots, OmniRoute and in-process model routes. Read before editing `src/models/`, `src/hub/inference.ts`, `src/omniroute/`.
+Scope: the model relay and its journal, the hub's own inference and its slots, OmniRoute and in-process model routes. Read before editing `src/models/`, `src/hub/inference.ts` or `src/omniroute/`.
 
 - The model relay journals per-request identity (`RelayRequestRecord`): a request's served model comes only from its own gateway header, its own generation SSE event (#137 heartbeat classification), or the locally validated MLX configuration. A backend's mutable last-served label is never a request's evidence, HTTP 200 plus the requested alias identifies nothing, and a request cancelled before identification stays explicitly unidentified (`identified: false`, `outcome: "cancelled"`). Journal records carry no prompts, tools, keys or Access headers.
 - Inference is optional and fail-open: it returns its input or `undefined` on any failure and backs off, so a delivery never waits on a dead model twice. Its output is only ever capped text or a value checked against a closed list.

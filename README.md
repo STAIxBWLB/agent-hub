@@ -5,7 +5,7 @@ Codex, Kimi Code, Pi and a hub-owned local worker (Qwen Code, Jcode and Antigrav
 optional) share a message bus and a task board per project and one memory on the
 machine, each attached through its own native interface.
 
-Status: 0.12.39, control protocol 16. Bun + TypeScript, one loopback daemon per
+Status: 0.12.40, control protocol 16. Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## What it does today
@@ -19,7 +19,7 @@ project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
   implementation and review, and a designated planner can be changed live.
   Cause-deduplicated stalls and unread pull-only offers need attention; cancellation
   closes work without approving it or releasing its dependents. Owners of
-  overlapping work are told what changed.
+  overlapping work in the same repository are told what changed.
 - **Shared memory.** Decisions, contracts, fails and findings go to the hub's own
   store through the exact-pinned first-party `@staix/agent-mem` library (short-
   and long-term tiers, a typed graph, git sync between machines),
@@ -83,19 +83,24 @@ writes the running hub's own plugin bundle (#502). Since 0.12.37 the hub accepts
 0.98.0 or later, below 1.0.0, and no longer 0.94.0 (#529).
 Since 0.12.39 `ahub jcode` opens Jcode's native TUI on the hub-owned ACP session by
 default (#464); `--mode headless` or `ahub settings set peers.jcode.start_mode headless`
-keeps headless startup.
+keeps headless startup. On 0.12.39 the TUI launcher stopped after the first hub turn;
+0.12.40 opens it again (#564).
 Cancellation needs a daemon advertising `task_cancel`; controlled downgrades
-refuse while cancelled rows exist. For local/Pi implementation, opt in to an
-available `checks.runner = "container"`; issue-backed owners also need authenticated
+refuse while cancelled rows exist. Live-test delegated CLI commands need a daemon
+advertising `cli_audit_delegated` and refuse with an upgrade remedy otherwise
+(#410). For local/Pi implementation, opt in to an available
+`checks.runner = "container"`; issue-backed owners also need authenticated
 spec access. PII work and designated reviewers retain their separate exemptions.
-See [release verification](docs/verification/2026-10-20-0.12.39.md) for the live legs
+See [release verification](docs/verification/2026-10-20-0.12.40.md) for the live legs
 still open, including #418 AC8, #438 AC7, the native console settings leg (#439 AC5),
 real upgrades with reattach (#463) and with a managed terminal and cancelled tasks
 (#478), a live headless Claude review (#223), a Claude session over 32 MiB (#517), a
 live fresh Codex review (#519), a live split of a real memory home (#536), the live
 agy TUI/account leg (#485, hub task #251), Kimi's interactive-TUI coexistence and
 usage checks (#533), Jcode's TUI with a personal account, a real provider and hub-tool
-calls (#464) and a live Jcode tool call held past the inactivity watchdog (#542).
+calls (#464), a live Jcode tool call held past the inactivity watchdog (#542), a live
+steer of a busy Jcode turn (#572) and a real upgrade that exercises the terminal owner
+record (#482).
 
 Before migrating a memory home with `amem`, upgrade every hub using that home to
 0.12.30 or later, check `ahub memory profile-check`, then quiesce and close all memory

@@ -2,7 +2,9 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
-## Unreleased
+## 0.12.40
+
+A bug-fix release. Held task offers settle on their own (#434), terminal recovery binds the live native owner (#482), a busy jcode takes an important message into its running turn (#572), and the check runner, hop-capped sends and planner pulls say what happened instead of hanging or claiming success (#558, #550, #531).
 
 - Held task offers settle automatically when their recipient already owns and accepted the task, so a peer restart no longer blocks its queue on an obsolete offer; mixed messages, unaccepted offers and requested-stop holds remain held (#434).
 - `ahub jcode --print-command` names a `--model`, `--provider-profile` or `--session-id` that differs from the attached saved session, as the launch does, instead of saying the session is not saved and ready (#574).
@@ -17,6 +19,14 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Finishing a task now says `the main checkout is on <branch>; move the work to a worktree under .worktrees/` in the owner's result, the reviewer's request and `ahub status` while the project root checkout is on a branch other than its default (`origin/HEAD`, else `main`). It is advice only (#572).
 - `ahub init` adds one line to the hub instruction block: after pushing a PR, call `hub_task_done` with the PR, head and CI state and end the turn, without waiting for CI (#572).
 - `ahub doctor` lists the extra MCP servers the hub-owned jcode would load from its config files, names only. jcode has no switch to choose them (#572).
+- `hub_task_decline` takes `capacity: true` for "no room right now": the owner is skipped for that move only, and a later reroute or planner pull may offer the task to it again; a plain decline stays a lasting refusal. A planner pull that finds no owner names the cause (a lasting exclusion, WIP full with wip/limit, a held queue or needs_review), and `hub_backlog_plan` refuses a reservation for an excluded peer (#531).
+- Pi and the local worker report a reply dropped at the hop cap as `not delivered: reply chain reached the hop cap (3); send a new message without reply_to` instead of `sent` (#550).
+- Task overlap findings compare only tasks in the same repository. Each task gets one repository key: its `refs.repo`, else the git top-level of its absolute paths outside the project, else the project. `hub_task_propose` and `hub_task_accept` take `refs.repo`, and single-repository boards behave as before (#476).
+- Claude's turn completion is found again when more than 4 MiB of transcript follows the final answer: the reader scans back in 4 MiB chunks up to 64 MiB, so a valid Stop is no longer missed on a long session (#528).
+- A saved console pet palette no longer blocks reloading `.agenthub/config.local.json`: the config schema and live reload accept the documented `pet` block, and removing it no longer deadlocks the reload (#483).
+- A conductor or dashboard start of an attached jcode answers `already` and opens no second terminal; only the console reopens its TUI. A jcode option refusal names the flag (`--model`, `--provider-profile` or `--session-id`) (#559).
+- `ahub doctor` names a malformed `routing.toml` or `routing.local.toml` and its parse error, without the file contents, instead of blaming the gateway's model inventory (#563).
+- Delegated CLI commands record their audit attribution only when the running daemon advertises `cli_audit_delegated`. An older daemon that would drop the record gets a refusal with the upgrade remedy, and an upgrade or recovery from an older source keeps the attribution in its operation receipt (#410).
 
 ## 0.12.39
 

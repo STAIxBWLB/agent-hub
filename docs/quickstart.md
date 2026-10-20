@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.39
+bun add -g github:STAIxBWLB/agent-hub#v0.12.40
 ahub setup
 ```
 
@@ -30,9 +30,23 @@ and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
 
-## Upgrading to 0.12.39
+## Upgrading to 0.12.40
 
-Restart Claude sessions after upgrading: each keeps the plugin server it started with until restarted, so a restart loads the 0.12.39 plugin.
+Restart Claude sessions after upgrading: each keeps the plugin server it started with until restarted, so a restart loads the 0.12.40 plugin. That plugin asks Claude Code to list the hub tools again when a hub reconnect changes them (#490), and one from an older `ahub claude` launch is refused and stops reconnecting instead of reclaiming the peer (#551).
+
+`ahub jcode` opens its TUI again; on 0.12.39 it stopped after the first hub turn (#564). A busy Jcode now takes an `important` message into its running turn (#572), and `ahub doctor` lists the extra MCP servers the hub-owned Jcode loads from its config files. See [Jcode operations](operations.md#optional-jcode-peer).
+
+The Switchyard sidecar is retired (#553). An existing `routing.toml` keeps working: its `[targets]` and `[routes]` tables are ignored and reported as retired settings, and a route without the `hub/` prefix (such as `sy/coding`) uses the fixed model with one warning. Migrate with the table in [in-process model routes](operations.md#in-process-model-routes); the hub never rewrites the file.
+
+Run `ahub init` once per project to refresh the hub block in `AGENTS.md`: it adds the line that tells agents to report a pushed PR with `hub_task_done` and end the turn instead of waiting for CI (#572). Finishing a task now also says when the project root checkout is on a branch other than its default.
+
+`hub_task_decline` takes `capacity: true` for "no room right now", which does not exclude the owner for good (#531). Task overlap compares only tasks in the same repository; set `refs.repo` on `hub_task_propose` or `hub_task_accept` for work in another repository (#476). Pi and the local worker report a reply stopped by the hop cap as not delivered (#550).
+
+Live-test delegated CLI commands and terminal-recovery launch records need the upgraded daemon (`cli_audit_delegated`, `terminal_owner`): against an older running hub the first refuses with an upgrade remedy and the second leaves the launch unrecorded, so upgrade running hubs with `ahub upgrade` (#410, #482).
+
+Upgrading from 0.12.38 or earlier, the 0.12.39 notes below also apply.
+
+## Upgrading to 0.12.39
 
 `ahub jcode` now opens Jcode's native TUI on the hub-owned ACP session by default (#464). The TUI opens after Jcode's first hub turn saves the session; until then the launcher prints one waiting line, and Ctrl-C ends only the wait. Hub-made starts (the dashboard's Start control, the conductor's `hub_peer_start`) follow the start mode too, so they open a terminal for Jcode through a terminal provider. To keep the old headless default, run `ahub settings set peers.jcode.start_mode headless`, or pass `--mode headless`. See [Jcode operations](operations.md#optional-jcode-peer).
 
@@ -94,7 +108,7 @@ ahub say @kimi "run the tests and report"          # one peer
 { "omniroute": { "urls": ["http://your-gateway:20128/v1"], "api_key_file": "/path/to/key" } }
 ```
 
-or set `OMNIROUTE_API_KEY`. Name the model in `.agenthub/routing.toml` (`[local] fixed_model`). Then `ahub local`. It works only inside the project, asks before it writes or runs anything (`ahub permit <id> allow`) unless you chose a permission mode for it (`ahub permission`), and everything it executes is sandboxed. Keep `ahub console` open while it works: a request nobody answers expires, and after two in a row its turn ends.
+or set `OMNIROUTE_API_KEY`. The `.agenthub/routing.toml` that `ahub init` writes asks the gateway for the model aliases `fast` and `coding` (the in-process `hub/stage` route, with `[local] fixed_model` as its fallback); serve those aliases or name yours there, and `ahub doctor` lists any alias the gateway does not serve. Then `ahub local`. It works only inside the project, asks before it writes or runs anything (`ahub permit <id> allow`) unless you chose a permission mode for it (`ahub permission`), and everything it executes is sandboxed. Keep `ahub console` open while it works: a request nobody answers expires, and after two in a row its turn ends.
 
 ## Commands of a working day
 

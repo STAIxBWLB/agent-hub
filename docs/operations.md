@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.39 and control protocol 16. Live verification
+This guide describes ahub 0.12.40 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -801,12 +801,20 @@ A class can carry a completion check in `.agenthub/config.json`, for example
 `"checks": { "implement": "scripts/check.sh", "timeout_s": 600 }`. When the owner
 marks such a task done, the tool answers at once, the hub runs the command in the
 project root (one at a time; what it left in its process group is killed when it
-exits, at the timeout or on shutdown), and then either
+exits, at the timeout or on shutdown, and a check killed at its timeout or on
+shutdown settles within one second even if its exit is never reported), and then either
 sends the task to review with the command, exit code and output tail, or keeps it
 with its owner and tells it what failed. `checks` is machine-local (see Install
 and start): a committed file must not choose commands the hub runs. Keys that
 are not task classes are ignored with a log line. A hub stopped mid-check leaves
 the task in progress (`check interrupted`); the owner marks it done again.
+
+While the project root checkout is on a branch other than its default
+(`origin/HEAD`, else `main`), finishing a task adds `the main checkout is on
+<branch>; move the work to a worktree under .worktrees/` to the owner's result
+and the reviewer's request, and `ahub status` shows it as `main checkout`
+(#572). It is advice only. A branch name that fails the hub's public-text screen
+is withheld from the sentence.
 
 A task reaching `approved` is a board transition. It is not proof that an
 external side effect happened unless the task's refs and a live readback show
@@ -850,7 +858,12 @@ open tasks on the same paths or symbols get a message with the changed files,
 the plan's signatures and the first line of the summary, each left out when it
 matches a PII pattern (the summary also when `signals.pii_screen = "local"` did
 not clear it); nobody else does. PII
-tasks are left out on both sides.
+tasks are left out on both sides. Overlap is compared only between tasks in the
+same repository (#476): a task's repository is its `refs.repo` (an `owner/name`
+slug or a checkout path, accepted by `hub_task_propose` and `hub_task_accept`),
+else the common git top-level (or common parent) of its absolute paths outside
+the project, else the project. A board with one repository behaves as before. `refs.repo` is metadata
+only: it grants no file access and changes no execution root.
 
 A task can wait for others: `hub_task_propose` takes `after: [ids]` (`ahub task
 propose ... --after <id>`). Until every one of them is approved, the task is
@@ -876,7 +889,10 @@ reservation was passed over and why, and the assignment's history note keeps
 it, unless it is no news (the reserved peer is the owner the task moves away
 from, or it already refused the task). A peer the task was declined for (by
 itself or by the console) or escalated away from after repeated
-changes_requested or by hand stays excluded on every later reroute; an owner
+changes_requested or by hand stays excluded on every later reroute. A decline
+with `capacity: true` (`hub_task_decline`, "no room right now") is the
+exception: it skips that owner for this move only, and a later reroute or
+planner pull may offer the task to it again (#531). An owner
 released as gone, or moved by the hub after a failed delivery or inference, is
 excluded only from that move and may get the task again from its reservation
 later. Your own `ahub task assign` is not blocked by those exclusions, and it
@@ -1812,6 +1828,12 @@ but cannot show pushes, so it attaches tools-only (protocol 16, issue #205):
   started while an `ahub claude` session holds the peer stands by and attaches
   only after that session leaves.
 
+When a hub reconnect changes the hub tools (names or schemas), the plugin asks
+Claude Code to list them again (`tools/list_changed`), so a session that listed
+them while the hub was down does not keep the short list (#490). A status probe
+that is unavailable right after a restart is retried, then the list is
+announced anyway.
+
 ### Replaced or ended Claude sessions (#551)
 
 A replaced session says it is standing by. Its reconnect requests cannot reclaim
@@ -2022,21 +2044,21 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.39), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.40), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.39 ahub upgrade --to 0.12.39 --dry-run
-bunx --package @staix/agent-hub@0.12.39 ahub upgrade --to 0.12.39 --yes
+bunx --package @staix/agent-hub@0.12.40 ahub upgrade --to 0.12.40 --dry-run
+bunx --package @staix/agent-hub@0.12.40 ahub upgrade --to 0.12.40 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.39 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.40 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -2068,14 +2090,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.39 --dry-run
+ahub upgrade --to 0.12.40 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.39 --yes
+ahub upgrade --to 0.12.40 --yes
 ahub recovery status [<operation-id>]
 ahub recovery resume [<operation-id>]
 ahub recovery abort [<operation-id>]
@@ -2673,8 +2695,10 @@ config with `provider: "legacy"`; Ollama errors never launch Python.
 ### In-process model routes
 
 `routing.toml` supports in-process `[hub_routes."hub/<id>"]`.
-Set `[local] route = "hub/stage"` or a task class's `route` to enable a hub route.
-The shipped examples use OmniRoute `fast` and `coding`; `fixed_model` remains the fallback.
+A task uses a hub route when `[local] route` or its class's `route` names one.
+A new `routing.toml` from `ahub init` sets `[local]` and `implement` to `hub/stage`
+(fixed model `coding` as the fallback) and gives the lighter classes
+`fixed_model = "fast"`. The shipped examples use OmniRoute `fast` and `coding`; `fixed_model` remains the fallback.
 `--model` pins the worker and bypasses route selection. A class with `fixed_model`
 and no `route` also calls that alias directly, even when `[local]` names a route.
 
@@ -2697,7 +2721,10 @@ Migrate the retired settings as follows:
 | `[targets]` / `[routes]` | Remove these retired tables after migrating their selections |
 
 Doctor inventories all local/class fixed aliases and effective efficient/capable/judge aliases, reporting
-each missing alias once or aggregate success when all are served. Hub summaries
+each missing alias once or aggregate success when all are served. A
+`routing.toml` or `routing.local.toml` that does not parse gets its own `routing`
+row naming the file and the parse error, without the file's contents, and the
+alias check is skipped (#563). Hub summaries
 and triage use their fixed model directly.
 
 Route types: `stage` scores recent tools and holds capable recovery for two calls;
@@ -3191,7 +3218,7 @@ Use `ahub roster add jcode`, then `ahub jcode [--model <alias>] [--provider-prof
 
 The native TUI opens only after Jcode has saved the selected session. On 0.98.1, `session/new` does not save it; the first real hub turn does. The launcher prints `jcode's TUI opens after its first hub turn; send it work, or Ctrl-C` once and waits for the same owned launch's saved session. Send Jcode work from the hub, or press Ctrl-C to end only the wait. No artificial prompt is sent. A console `peer_start` uses a terminal provider to run the same launcher, even while ACP is running; a conductor or dashboard start of an attached Jcode answers `already` and opens nothing (#559). Without a provider, run its displayed command in your own terminal. Options with no terminal need that manual path.
 
-`ahub jcode --dry-run` stays pure and redacted. A person's `--print-command` can show the actual top-level native argv and closed native environment for an already-saved running session; it starts nothing. The private socket/session tuple is not returned to hub tools or status. Native saved-session evidence is read-only and capped at 32 MiB; unsafe, mismatched or larger evidence refuses the TUI launch.
+`ahub jcode --dry-run` stays pure and redacted. A person's `--print-command` can show the actual top-level native argv and closed native environment for an already-saved running session; it starts nothing, and like the launch it names a `--model`, `--provider-profile` or `--session-id` that differs from the running session (#574). The private socket/session tuple is not returned to hub tools or status. Native saved-session evidence is read-only and capped at 32 MiB; unsafe, mismatched or larger evidence refuses the TUI launch.
 
 A busy jcode takes an `important` message into its running turn (#572): the hub sends it as a soft interrupt through jcode's own private server socket, which jcode injects at its next tool boundary, so the message no longer waits for the turn to end. The hub never cancels a turn to deliver. Headless Kimi and Qwen have no such path: an `important` message waits, and `ahub status` and the console show `important messages waiting on a busy ACP peer for N min` once it has waited past `budget.stale_min`, so you can decide to stop the peer.
 
@@ -3563,7 +3590,7 @@ a fresh peer status read on the same authenticated connection.
 
 Integer WIP editors save a value, including zero and inheritance; it applies at the next admission. GitHub intake accepts dot-prefixed repository names within the existing bounded owner/repository identity. Split undo also refuses children referenced by another task's persisted phase checklist.
 
-Declining rework returns changes_requested to To Do before rerouting. When a planner-pulled task has no eligible destination capacity, it remains ownerless in To Do and is retried after capacity clears, preserving the declined-owner exclusion.
+Declining rework returns changes_requested to To Do before rerouting. When a planner-pulled task has no eligible destination capacity, it remains ownerless in To Do and is retried after capacity clears, preserving the declined-owner exclusion. A planner pull that finds no owner names the cause by peer id: a lasting exclusion, WIP full (with wip/limit), a held queue or needs_review deliveries; a capacity-only decline is not an exclusion (#531).
 
 With no release cut, outside approved tasks are reported under unknown cut evidence, including tasks with a known approval time. A child task execution budget also prevents split undo until the person disables that budget.
 

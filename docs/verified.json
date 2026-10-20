@@ -108,7 +108,8 @@
         "src/hub/inference.ts",
         "src/hub/daemon.ts",
         "src/hub/supervision.ts",
-        "src/cli/reset.ts"
+        "src/cli/reset.ts",
+        "src/hub/delivery-superseded.ts"
       ]
     },
     "docs/agent-notes/daemon.md": {
@@ -207,7 +208,10 @@
         "src/hub/review-brief.ts",
         "src/hub/reviewer-pool.ts",
         "src/hub/reviewer-pool-config.ts",
-        "src/hub/release-admission.ts"
+        "src/hub/release-admission.ts",
+        "src/hub/main-checkout.ts",
+        "src/hub/checks.ts",
+        "src/hub/task-repository.ts"
       ]
     },
     "docs/agent-notes/tests.md": {
