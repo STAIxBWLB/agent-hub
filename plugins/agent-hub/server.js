@@ -9379,10 +9379,6 @@ async function runJcodeEntry(ctx) {
     const ready = await waitForJcodeTui(hub, fail, abort.signal, options);
     if (interruptedWait() || !ready)
       return;
-    const instanceId = typeof snapshot?.instanceId === "string" ? snapshot.instanceId : undefined;
-    if (!instanceId)
-      return fail("cannot bind Jcode's terminal to the running hub");
-    await ctx.helpers.recordTerminalLaunch("jcode", cwd, stateDir, instanceId);
     const confirmed = await hub.request({ t: "native_tui_launch", peer: "jcode", binding: ready.binding, args: options });
     if (interruptedWait())
       return;

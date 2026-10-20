@@ -89,9 +89,8 @@ export async function runJcodeEntry(ctx: NativeCliEntryContext): Promise<void> {
     if (mode === "headless") { console.log(reply.already ? "jcode is already attached" : "jcode attached (headless); native policy unmanaged, NO hub sandbox"); return; }
     const ready = await waitForJcodeTui(hub, fail, abort.signal, options);
     if (interruptedWait() || !ready) return;
-    const instanceId = typeof snapshot?.instanceId === "string" ? snapshot.instanceId : undefined;
-    if (!instanceId) return fail("cannot bind Jcode's terminal to the running hub");
-    await ctx.helpers.recordTerminalLaunch("jcode", cwd, stateDir, instanceId);
+    // No managed terminal record: Jcode's controlled recovery is refused at plan time, so, like Kimi's TUI, it has
+    // no terminal recovery adapter (#564).
     const confirmed = await hub.request({ t: "native_tui_launch", peer: "jcode", binding: ready.binding, args: options });
     if (interruptedWait()) return;
     if (!confirmed.ok || confirmed.state !== "ready") fail("Jcode launch changed before its terminal opened");

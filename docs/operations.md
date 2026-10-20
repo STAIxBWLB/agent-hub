@@ -1817,7 +1817,7 @@ A Claude session started with `ahub claude` receives pushes when it is idle. Whi
 - `hub_inbox` reads the daemon queue (and any local failed-push buffer) in a channel session too. A read is one `completed` delivery, like a tools-only read; holds refuse it the same way.
 - An important message is pushed into the running turn (steered) instead of waiting for the turn to end. Mid-turn reading was verified on Claude Code 2.1.302; an older client that drops it leaves the delivery `accepted` until a person resolves it. Ordinary messages still wait for the idle push or `hub_inbox`.
 - Do not use `[FYI]` for PR ready, done, submitted, ruling-needed, blocker or changed-contract messages: they need action. `hub_task_done` and `hub_review` already notify their recipients.
-- Turn completion is read from the transcript's last 4 MiB, whatever its size. When no completed turn is found there, the console says once per turn that the peer stays busy and its messages wait in its queue (#517).
+- Turn completion is read backwards in 4 MiB chunks, up to 64 MiB plus one row-boundary byte, whatever the transcript's size. A row crossing chunks is reconstructed whole; a row starting outside the bound stays unavailable. When no completed turn is found within that bound, the console says once per turn that the peer stays busy and its messages wait in its queue (#517).
 
 ## Graceful shutdown
 
@@ -3450,10 +3450,16 @@ built-ins and off for the current console only. `?` lists this under Pet, even
 while drawing is off. The command prompt keeps its original row and width.
 
 `pet.glyphs` selects auto/ascii/blocks; unsupported locales and dumb/linux
-terminals retain the ASCII floor. `pet.blink:false` is static. Neither choosing
-nor drawing a character changes authority, config files, task state or polling.
-Explicit `ahub pet` and text status use the configured line face; prompt tokens
-remain character-independent. Native glyph width and tmux are unverified.
+terminals retain the ASCII floor. `pet.blink:false` is static. `pet.palette`
+selects blue, teal (default), violet or ochre (`a`/`b`/`c`/`d`), and `pet.window`
+controls standalone window opt-in; both `pet` (`false` or an option block) and its
+fields validate identically at startup and reload in `.agenthub/config.json` and
+`.agenthub/config.local.json`, apply live as console-local presentation (including
+an open console's next refresh and the standalone pet window), and grant no
+authority (#483). Neither
+choosing nor drawing a character changes authority, config files, task state or
+polling. Explicit `ahub pet` and text status use the configured line face; prompt
+tokens remain character-independent. Native glyph width and tmux are unverified.
 
 ## Dashboard views and attention (#391, replaces the #280 in-page character)
 

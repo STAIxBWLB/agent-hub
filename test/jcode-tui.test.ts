@@ -115,7 +115,7 @@ test("Jcode TUI refuses borrowed authority and explicit nonterminal options befo
   } finally { if (descriptor) Object.defineProperty(process.stdin, "isTTY", descriptor); else delete (process.stdin as {isTTY?: boolean}).isTTY; }
 });
 
-test("Jcode opens a saved bound TUI with the owned native environment only after terminal recording and a fresh check (#464)", async () => {
+test("Jcode opens a saved bound TUI with the owned native environment only after a fresh check, without a managed terminal record (#464, #564)", async () => {
   const fixture = entry(), events: string[] = [], binding = { launchId: "launch", sessionId: "session" };
   const launch = { cmd: "jcode-wrapper", args: ["prefix", "--socket", "/owned/socket", "--resume", "session"], env: { JCODE_HOME: "/native/home", JCODE_SOCKET: "/owned/socket", JCODE_NO_TELEMETRY: "1" } };
   fixture.context.connect = async () => ({ features: ["native_tui_launch"], close() {}, request: async (message: { t: string; binding?: unknown }) => {
@@ -128,7 +128,8 @@ test("Jcode opens a saved bound TUI with the owned native environment only after
     return { ok: true };
   } } as never);
   fixture.context.helpers.readControl = () => ({ instanceId: "hub-instance" } as never);
-  fixture.context.helpers.recordTerminalLaunch = async () => { events.push("record"); return {} as never; };
+  // As the real helper does for a definition without session.launchRecord (#564): Jcode has no managed terminal recovery.
+  fixture.context.helpers.recordTerminalLaunch = async () => { events.push("record"); throw new Error("jcode: no managed terminal recovery adapter"); };
   fixture.context.helpers.childEnv = () => ({ PATH: "/fixture/bin" });
   fixture.context.execWithEnv = (cmd, args, env): never => {
     events.push("exec"); expect(cmd).toBe(launch.cmd); expect(args).toEqual(launch.args);
@@ -139,7 +140,7 @@ test("Jcode opens a saved bound TUI with the owned native environment only after
     Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true });
     Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
     await expect(runJcodeEntry(fixture.context)).rejects.toThrow("fixture exec");
-    expect(events).toEqual(["status", "start", "native_tui_launch", "record", "native_tui_launch", "exec"]);
+    expect(events).toEqual(["status", "start", "native_tui_launch", "native_tui_launch", "exec"]);
   } finally {
     if (before.input) Object.defineProperty(process.stdin, "isTTY", before.input); else delete (process.stdin as { isTTY?: boolean }).isTTY;
     if (before.output) Object.defineProperty(process.stdout, "isTTY", before.output); else delete (process.stdout as { isTTY?: boolean }).isTTY;

@@ -1719,9 +1719,11 @@ distinct from the completed-message baseline recorded at that start. Later tool
 activity does not move this turn-start boundary. Missing start evidence or a
 start from another session, launch or channel claim leaves completion unknown.
 Accepted completion consumes that start before the peer becomes idle, so another
-message cannot reuse it. The completion and the baseline are read from the last
-4 MiB of the transcript, whatever its size (#517): the 32 MiB cap applies only to
-usage accounting, so a long session still ends its turns. A Stop refused because
+message cannot reuse it. Completion and baseline lookup scans backwards in fixed
+4 MiB chunks, up to 64 MiB plus one boundary byte (#528). Complete UTF-8 JSONL rows
+are reconstructed across chunks; a row starting outside the bound stays unknown.
+A near-EOF completion costs one chunk even in a 200 MiB transcript. The separate
+32 MiB cap applies only to usage accounting (#517). A Stop refused because
 no completion is found tells the console once per turn start that the peer stays
 busy and its messages wait in its queue. A valid bound Stop request receives one prompt
 acknowledgement with pending=true, within the existing two-second hook deadline.
@@ -2497,7 +2499,7 @@ the queue.
 - Jcode's default start mode is `tui`; `--mode headless` and `peers.jcode.start_mode: headless` retain the owned headless driver. Mode precedence is the explicit flag, the running hub's accepted mode, then the file/default. A console `peer_start` opens the same waiting launcher through the terminal provider, including when ACP is already running; a conductor `hub_peer_start` or dashboard start of an attached jcode answers `already` and opens no terminal, so a repeated call never adds another TUI writer to the live session (#559). With no provider the answer is an actionable terminal command, never a headless downgrade.
 - J1.4 (#464): the 0.98.1 native receipt disproved persistence after `session/new`. A person launcher opens the top-level `jcode --socket S --resume ID` only after bounded native saved-session evidence for the same launch, socket and session. Until then it prints once: `jcode's TUI opens after its first hub turn; send it work, or Ctrl-C`. Ctrl-C ends that wait without stopping or cancelling ACP. No artificial production prompt or hub-created native session JSON is allowed. The native prerequisite and account limits are recorded in `docs/verification/2026-10-20-jcode-tui-0.98.1.md`.
 - The actual private tuple is available only through the authenticated console-only, feature-negotiated `native_tui_launch` request, never status, tools replies or generic start replies. Pure dry previews remain redacted and start nothing; a person's print-command may resolve an already-saved running session. TUI argv preserves the owned command prefix, model and provider profile; its environment selects the same native home/socket and telemetry opt-out. No `jcode connect` path or external/global daemon is adopted.
-- J3's lack of a single-writer guard is accepted: a person's TUI input may interleave with a hub ACP turn. Closing the TUI keeps the owned ACP runtime alive. Owned ACP recovery metadata remains headless, and the terminal is recorded separately; native session/load identity refusal is unchanged.
+- J3's lack of a single-writer guard is accepted: a person's TUI input may interleave with a hub ACP turn. Closing the TUI keeps the owned ACP runtime alive. Owned ACP recovery metadata remains headless. The TUI terminal is not recorded as a managed terminal binding (#564): controlled recovery of Jcode is refused at plan time, so, like Kimi's TUI, it has no terminal recovery adapter; native session/load identity refusal is unchanged.
 - The private socket name ends in `.sock`: jcode names its debug socket by replacing that suffix. Every owned jcode process runs with `JCODE_NO_TELEMETRY=1` (#529).
 - Native ACP load (verified on 0.94.0 and 0.98.1) lacks identity proof. Controlled recovery refuses before effects, crash recovery is manual and a load without an exact echoed id refuses before a prompt or restored claim. Real provider/tool/teardown evidence and comparative measurement remain unverified.
 

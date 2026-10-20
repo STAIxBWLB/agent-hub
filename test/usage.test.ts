@@ -1,8 +1,9 @@
-import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
+import { expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
+import { closeSync, mkdtempSync, openSync, rmSync, truncateSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readClaudeTranscriptCompletion, readClaudeTranscriptUsage } from "../src/hub/usage.ts";
+import { COMPLETION_TAIL_BYTES, readClaudeTranscriptCompletion, readClaudeTranscriptUsage } from "../src/hub/usage.ts";
 
 test("Claude transcript usage collapses streamed message records and exposes no transcript identity or text", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-transcript-"));
@@ -109,3 +110,84 @@ test("turn completion reads the transcript tail at any size: the 32 MiB usage ca
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+
+function completionFixture(run: (file: string) => void): void {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-completion-scan-"));
+  try { run(join(dir, "fixture.jsonl")); }
+  finally { rmSync(dir, { recursive: true, force: true }); }
+}
+const completionRow = (id: string, content = "", stop = "end_turn") => JSON.stringify({ type: "assistant", sessionId: "s", timestamp: "2026-10-02T00:00:08Z", message: { id, stop_reason: stop, content } });
+
+test("#528 completion survives more than one chunk of later non-assistant rows", () => completionFixture(file => {
+  writeFileSync(file, completionRow("buried") + "\n" + JSON.stringify({ type: "progress", content: "x".repeat(COMPLETION_TAIL_BYTES + 1024) }) + "\n");
+  expect(readClaudeTranscriptCompletion("s", file)).toMatchObject({ completedTurn: true, at: "2026-10-02T00:00:08.000Z" });
+}));
+
+test("#528 a completion row straddling a chunk preserves its UTF-8 message identity", () => completionFixture(file => {
+  const row = Buffer.from(completionRow("boundary-한글") + "\n");
+  writeFileSync(file, row);
+  const expected = readClaudeTranscriptUsage("s", file)[0]!.id;
+  const cut = row.indexOf(Buffer.from("한")) + 1; // Put the chunk edge inside a UTF-8 sequence.
+  const trailingBytes = COMPLETION_TAIL_BYTES - (row.length - cut);
+  const overhead = Buffer.byteLength(JSON.stringify({ type: "progress", content: "" }) + "\n");
+  const trailing = JSON.stringify({ type: "progress", content: "x".repeat(trailingBytes - overhead) }) + "\n";
+  writeFileSync(file, Buffer.concat([row, Buffer.from(trailing)]));
+  expect(readClaudeTranscriptCompletion("s", file)?.id).toBe(expected);
+}));
+
+test("#528 a completion row larger than one chunk is reconstructed whole", () => completionFixture(file => {
+  writeFileSync(file, completionRow("large-row", "x".repeat(COMPLETION_TAIL_BYTES + 1024)) + "\n");
+  const expected = readClaudeTranscriptUsage("s", file)[0]!.id;
+  expect(readClaudeTranscriptCompletion("s", file)?.id).toBe(expected);
+}));
+
+test("#528 newer non-completion records shadow the same message id in older chunks", () => completionFixture(file => {
+  const previous = completionRow("previous");
+  writeFileSync(file, previous);
+  const expected = readClaudeTranscriptUsage("s", file)[0]!.id;
+  writeFileSync(file, [previous, completionRow("shadowed"), JSON.stringify({ type: "progress", content: "x".repeat(COMPLETION_TAIL_BYTES + 1024) }), completionRow("shadowed", "", "tool_use")].join("\n"));
+  expect(readClaudeTranscriptCompletion("s", file)?.id).toBe(expected);
+}));
+
+test("#528 a near-EOF completion in a sparse 200 MiB transcript costs only a tail read", () => completionFixture(file => {
+  const size = 200 * 1024 * 1024;
+  writeFileSync(file, ""); truncateSync(file, size);
+  const tail = Buffer.from("\n" + completionRow("near-eof") + "\n");
+  const fd = openSync(file, "r+");
+  try { writeSync(fd, tail, 0, tail.length, size - tail.length); }
+  finally { closeSync(fd); }
+  const reads = spyOn(fs, "readSync");
+  try {
+    expect(readClaudeTranscriptCompletion("s", file)?.completedTurn).toBe(true);
+    expect(reads.mock.calls.length).toBeGreaterThan(0);
+    const requested = reads.mock.calls.reduce((sum, args) => sum + Number((args as unknown[])[3]), 0);
+    expect(requested).toBeLessThanOrEqual(4 * 1024 * 1024 + 1);
+  } finally { reads.mockRestore(); }
+}));
+
+
+test("#528 the extra boundary byte cannot certify a row starting outside the lookback", () => completionFixture(file => {
+  const row = completionRow("outside-by-one");
+  writeFileSync(file, row);
+  expect(readClaudeTranscriptCompletion("s", file, Buffer.byteLength(row) - 1)).toBeUndefined();
+}));
+
+
+test("#528 total read bytes stay capped even with a huge requested lookback", () => completionFixture(file => {
+  writeFileSync(file, completionRow("past-cap") + "\n");
+  const hardCap = 64 * 1024 * 1024;
+  truncateSync(file, hardCap + 8 * 1024 * 1024);
+  const reads = spyOn(fs, "readSync");
+  try {
+    expect(readClaudeTranscriptCompletion("s", file, Number.MAX_SAFE_INTEGER)).toBeUndefined();
+    const requested = reads.mock.calls.reduce((sum, args) => sum + Number((args as unknown[])[3]), 0);
+    expect(requested).toBe(hardCap + 1);
+    expect(reads.mock.calls.every(args => Number((args as unknown[])[3]) <= 4 * 1024 * 1024)).toBe(true);
+  } finally { reads.mockRestore(); }
+}));
+
+test("#528 invalid lookback budgets certify no completion", () => completionFixture(file => {
+  writeFileSync(file, completionRow("valid"));
+  for (const budget of [0, -1, NaN, Infinity, 1.5]) expect(readClaudeTranscriptCompletion("s", file, budget)).toBeUndefined();
+}));
