@@ -2,6 +2,12 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## 0.12.41
+
+A one-fix release for a 0.12.40 regression.
+
+- `ahub codex` starts in a recorded Orca terminal again: 0.12.40 put the terminal launch id into the `--remote` URL (`ws://127.0.0.1:<port>/?launchId=...`) and Codex refused it with `invalid remote address`, because it accepts only `ws://host:port`. The launcher now passes `--remote-auth-token-env AGENTHUB_LAUNCH_ID`, Codex sends the id as the upgrade's bearer token, and the proxy reads it from there; `--remote-auth-token-env` joins the hub-owned Codex flags (#586).
+
 ## 0.12.40
 
 A bug-fix release. Held task offers settle on their own (#434), terminal recovery binds the live native owner (#482), a busy jcode takes an important message into its running turn (#572), and the check runner, hop-capped sends and planner pulls say what happened instead of hanging or claiming success (#558, #550, #531).
