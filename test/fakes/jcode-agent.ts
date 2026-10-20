@@ -31,8 +31,10 @@ if (args.includes("version")) {
         else if (msg.type === "soft_interrupt") {
           if (record) appendFileSync(record, JSON.stringify({ kind: "soft_interrupt", content: msg.content, client_id: msg.client_id, urgent: msg.urgent }) + "\n");
           if (args.includes("--no-ack")) continue;
-          reply({ type: "ack", id: msg.id }); reply({ type: "ack", id: msg.id });
+          // `--ack-delay-ms N`: the native server takes the message (the running turn is released at once) but answers late.
+          const acknowledge = () => { reply({ type: "ack", id: msg.id }); reply({ type: "ack", id: msg.id }); };
           if (steerFile) writeFileSync(steerFile, "steered");
+          if (args.includes("--ack-delay-ms")) setTimeout(acknowledge, Number(value("--ack-delay-ms"))); else acknowledge();
         }
       }
     });

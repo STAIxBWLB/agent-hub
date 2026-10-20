@@ -484,13 +484,17 @@ export class AcpPeer extends BasePeer {
     if (observation.availability === "known") this.opts.onTokens?.(observation.total!, this.sessionId);
   }
 
+  /** The running turn's generation, for a transport that must adopt into exactly this turn after an async step (#572). */
+  protected currentTurn(): number { return this.turn; }
+
   /**
    * A transport that took envelopes into the running turn (#572) reports them here, once it has acknowledged them. The
    * turn now answers their senders too, and their receipts settle with the turn: completed on a normal end, held for
-   * review on anything else. Only a busy, current turn can adopt.
+   * review on anything else. Only the busy turn the caller named (`currentTurn()` before sending) can adopt.
    */
-  protected adoptIntoTurn(envs: Envelope[], deliveryId?: string): void {
-    if (this.state !== "busy" || this.cancelWait || this.stopping) throw new Error(`${this.id} is ${this.state}`);
+  protected adoptIntoTurn(turn: number, envs: Envelope[], deliveryId?: string): void {
+    // Fenced to the exact turn the caller saw before it sent anything: a later turn on the same session is never adopted into.
+    if (turn !== this.turn || this.state !== "busy" || this.cancelWait || this.stopping) throw new Error(`${this.id} is ${this.state}, or its turn changed`);
     this.turnEnvs = [...this.turnEnvs, ...envs];
     this.activityPrivate ||= envs.some(env => env.private === true);
     this.primed = true;

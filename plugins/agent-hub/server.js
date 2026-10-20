@@ -2969,9 +2969,12 @@ ${renderDigest(envs, false)}` }] });
       if (observation.availability === "known")
         this.opts.onTokens?.(observation.total, this.sessionId);
     }
-    adoptIntoTurn(envs, deliveryId) {
-      if (this.state !== "busy" || this.cancelWait || this.stopping)
-        throw new Error(`${this.id} is ${this.state}`);
+    currentTurn() {
+      return this.turn;
+    }
+    adoptIntoTurn(turn, envs, deliveryId) {
+      if (turn !== this.turn || this.state !== "busy" || this.cancelWait || this.stopping)
+        throw new Error(`${this.id} is ${this.state}, or its turn changed`);
       this.turnEnvs = [...this.turnEnvs, ...envs];
       this.activityPrivate ||= envs.some((env) => env.private === true);
       this.primed = true;
@@ -3458,6 +3461,7 @@ var init_jcode = __esm(() => {
         refuse(`jcode is ${this.state}`);
       if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null || !socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino || typeof sessionId !== "string")
         refuse("owned Jcode server is unavailable");
+      const turn = this.currentTurn();
       try {
         await nativeSteer(this.socket, this.jcode.cwd, sessionId, renderDigest(envs, true), deliveryId ?? crypto.randomUUID(), this.jcode.steerTimeoutMs);
       } catch (error) {
@@ -3469,7 +3473,7 @@ var init_jcode = __esm(() => {
         return refuse(error instanceof Error ? error.message : "Jcode steer failed");
       }
       try {
-        this.adoptIntoTurn(envs, deliveryId);
+        this.adoptIntoTurn(turn, envs, deliveryId);
       } catch {
         if (deliveryId)
           this.delivery({ id: deliveryId, state: "needs_review", reason: "steered turn ended before its receipt" });

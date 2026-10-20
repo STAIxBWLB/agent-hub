@@ -390,3 +390,25 @@ test("a conductor start of an attached Jcode answers already and opens no termin
   expect(person.ok).toBe(true); expect(person.opened).toBe("fixture"); expect(person.already).toBeUndefined();
   expect(opened).toHaveLength(1);
 });
+
+test("a steer acknowledged after its turn ended is never adopted into the next turn (#572 AC1, review I1)", async () => {
+  const rig = steerRig(["--ack-delay-ms", "500"]);
+  await rig.peer.start();
+  await rig.peer.deliver([newEnvelope("user", "turn A", { to: ["jcode"] })], "d-A");
+  await until(() => existsSync(`${rig.gate}.busy`));
+  const important = newEnvelope("claude", "important for A", { to: ["jcode"], priority: "important" });
+  const outcome = rig.peer.steer!([important], "d-steer").then(() => "adopted", (error: Error) => error.message);
+  // The server took the message and A ends before the acknowledgement arrives; an unrelated turn B starts on the same session.
+  await until(() => rig.rows().some(row => row.kind === "soft_interrupt"));
+  await until(() => rig.peer.state === "idle" && rig.receipts.some(r => r.id === "d-A" && r.state === "completed"));
+  rmSync(rig.gate, { force: true });
+  await rig.peer.deliver([newEnvelope("qwen", "turn B, another audience", { to: ["jcode"] })], "d-B");
+  await until(() => existsSync(`${rig.gate}.busy`));
+  expect(rig.peer.state).toBe("busy");
+  expect(await outcome).toContain("uncertain");
+  writeFileSync(rig.gate, "release B"); await until(() => rig.peer.state === "idle");
+  const steer = rig.receipts.filter(r => r.id === "d-steer").map(r => r.state);
+  expect(steer).toContain("needs_review"); expect(steer).not.toContain("completed"); expect(steer).not.toContain("accepted"); expect(steer).not.toContain("failed_safe");
+  expect(rig.replies.at(-1)!.opts.to).toEqual(["qwen"]); // B answers only its own sender, never A's steered one
+  expect(rig.replies.at(-1)!.opts.inReplyTo.from).toBe("qwen");
+});

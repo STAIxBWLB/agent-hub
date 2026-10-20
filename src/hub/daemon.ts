@@ -2722,7 +2722,7 @@ export async function startDaemon(opts: DaemonOptions) {
     pluginBundle: SERVER_JS,
     pendingRestart,
     retainedConfig,
-    ...(() => { const warning = mainCheckoutWarning(opts.cwd); return warning ? { mainCheckout: warning } : {}; })(),
+    ...(() => { const warning = mainCheckoutWarning(opts.cwd, tasks.nameable); return warning ? { mainCheckout: warning } : {}; })(),
     startModes: Object.fromEntries(START_MODE_PEERS.map(peer => [peer, startModeOf(config.peers, peer, declarations)])),
     memoryProfile: memoryProfileStatus(includeAttentionItems),
     lifecycleStages: [...lifecycleConfig.stages],

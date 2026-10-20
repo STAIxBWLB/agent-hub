@@ -43,3 +43,27 @@ test("the doctor plan carries the jcode home so the host can list the extras, an
   expect(nativeDoctorOptionalProbes({ roster: { jcode: true }, ...config }).find(probe => probe.kind === "jcode-mcp")).toEqual({ kind: "jcode-mcp", name: "jcode MCP servers", home: "/native/home" });
   expect(nativeDoctorOptionalProbes({ roster: {}, ...config }).some(probe => probe.kind === "jcode-mcp")).toBe(false);
 });
+
+test("a linked .jcode or .claude directory is never entered, so an outside file's server names stay unread (#572 AC4, review I3)", () => {
+  for (const parent of [".jcode", ".claude"]) {
+    const project = root(), home = root(), outside = root();
+    write(join(outside, "mcp.json"), { mcpServers: { "outside-leak": {} } });
+    symlinkSync(outside, join(project, parent));
+    const found = jcodeExtraMcpServers(project, home);
+    expect(found.servers).toEqual([]);
+    expect(found.unreadable).toEqual([parent === ".jcode" ? ".jcode/mcp.json" : ".claude/mcp.json"]);
+    expect(JSON.stringify(found)).not.toContain("outside-leak");
+  }
+});
+
+test("a linked JCODE_HOME or a linked ancestor above the trusted project root is a system alias and stays readable (#572 AC4, review I3)", () => {
+  const real = root(), alias = join(root(), "alias");
+  write(join(real, "project", ".mcp.json"), { mcpServers: { "via-alias": {} } });
+  symlinkSync(real, alias);
+  // The project root and home are the hub's own configured paths: links above or at them are legitimate aliases (macOS /var).
+  expect(jcodeExtraMcpServers(join(alias, "project"), root()).servers).toEqual(["via-alias"]);
+  const home = root(), homeAlias = join(root(), "home-alias");
+  write(join(home, "mcp.json"), { mcpServers: { "home-via-alias": {} } });
+  symlinkSync(home, homeAlias);
+  expect(jcodeExtraMcpServers(root(), homeAlias).servers).toEqual(["home-via-alias"]);
+});

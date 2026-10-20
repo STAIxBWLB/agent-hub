@@ -2580,7 +2580,7 @@ export class Tasks {
     return note;
   };
   /** #572 AC3: what the owner's `hub_task_done` result adds while the project root checkout is on a task branch. */
-  checkoutNote = (): string | undefined => { const warning = mainCheckoutWarning(this.d.cwd); return warning ? `Note: ${warning}.` : undefined; };
+  checkoutNote = (): string | undefined => { const warning = mainCheckoutWarning(this.d.cwd, this.nameable); return warning ? `Note: ${warning}.` : undefined; };
 
   async decline(by: PeerId, id: unknown, reason?: string): Promise<Task> {
     const task = this.need(id, true, true);
@@ -2960,7 +2960,7 @@ export class Tasks {
     catch { projection = "(document projection unavailable)"; }
     const brief = this.briefText(task);
     // #572 AC3: advisory only, from git state never from task text, so it is safe for a PII task too.
-    const checkout = mainCheckoutWarning(this.d.cwd);
+    const checkout = mainCheckoutWarning(this.d.cwd, this.nameable);
     const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
     this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, ...(this.reviewHead(task) ? { commit: this.reviewHead(task)! } : {}), task: String(task.id), reviewRevision: String(this.reviewRequestRevision(task)) }, ...(this.isPii(task) ? { private: true } : {}) }));
   }

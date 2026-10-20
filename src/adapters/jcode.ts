@@ -235,6 +235,8 @@ export class JcodePeer extends AcpPeer {
     if (this.state !== "busy") refuse(`jcode is ${this.state}`);
     if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null ||
       !socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino || typeof sessionId !== "string") refuse("owned Jcode server is unavailable");
+    // The turn this steer is for. The native acknowledgement is asynchronous: only this exact turn may take the message.
+    const turn = this.currentTurn();
     try { await nativeSteer(this.socket, this.jcode.cwd, sessionId as string, renderDigest(envs, true), deliveryId ?? crypto.randomUUID(), this.jcode.steerTimeoutMs); }
     catch (error) {
       if (error instanceof SteerUncertain) {
@@ -243,8 +245,8 @@ export class JcodePeer extends AcpPeer {
       }
       return refuse(error instanceof Error ? error.message : "Jcode steer failed");
     }
-    // The turn may have ended while the server answered: it then also took the message, so it is never refused as unsent.
-    try { this.adoptIntoTurn(envs, deliveryId); }
+    // The turn may have ended, or another begun, while the server answered: it did take the message, so it is held for review, never refused as unsent and never adopted into a different turn.
+    try { this.adoptIntoTurn(turn, envs, deliveryId); }
     catch { if (deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: "steered turn ended before its receipt" }); throw new SteerUncertain("Jcode steering outcome is uncertain: its turn ended first"); }
   }
   tuiLaunch(expected?: JcodeTuiBinding, options: { model?: string; providerProfile?: string; sessionId?: string } = {}): JcodeTuiState {

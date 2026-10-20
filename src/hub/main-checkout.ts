@@ -21,8 +21,16 @@ export function mainCheckoutBranch(cwd: string): { branch: string; defaultBranch
   } catch { return undefined; }
 }
 
-/** The one advisory sentence, or undefined while the checkout is on its default branch. */
-export function mainCheckoutWarning(cwd: string): string | undefined {
+/**
+ * The one advisory sentence, or undefined while the checkout is on its default branch.
+ * A branch name is text a person or an agent chose, so it is not safe because git printed it: `nameable` is the hub's
+ * own screen (`Tasks.nameable`: the configured PII patterns, secrets and private paths). A name it refuses, or any text
+ * that is not a plain ref name, is replaced by a generic sentence that carries no part of it (#572 review I2).
+ */
+export function mainCheckoutWarning(cwd: string, nameable: (text: string) => boolean = () => false): string | undefined {
   const found = mainCheckoutBranch(cwd);
-  return found ? `the main checkout is on \`${found.branch}\`; move the work to a worktree under .worktrees/` : undefined;
+  if (!found) return undefined;
+  const plain = /^[A-Za-z0-9][A-Za-z0-9._\/-]{0,99}$/.test(found.branch) && nameable(found.branch);
+  return plain ? `the main checkout is on \`${found.branch}\`; move the work to a worktree under .worktrees/`
+    : "the main checkout is on a branch other than its default (its name is withheld); move the work to a worktree under .worktrees/";
 }
