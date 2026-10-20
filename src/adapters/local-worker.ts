@@ -4,9 +4,10 @@ import type { RouteLabelEvent, RouteTurnOutcome } from "../models/route/labels.t
 import type { StaySwitchPolicy } from "../models/route/stage.ts";
 import type { ToolObservation } from "../models/route/signals.ts";
 import { randomUUID } from "node:crypto";
-import { renderDigest, replyAudience, replyParent, STANDING_INSTRUCTION, USER, type Envelope, type EnvelopeOpts, type PeerId } from "../hub/envelope.ts";
+import { MAX_HOP, renderDigest, replyAudience, replyParent, STANDING_INSTRUCTION, USER, type Envelope, type EnvelopeOpts, type PeerId } from "../hub/envelope.ts";
 import { CONDUCTOR_TOOL_NAMES, CONDUCTOR_TOOLS, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
 import { BasePeer } from "../hub/peers.ts";
+import type { PublishResult } from "../hub/bus.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { runTool, toolResultFailed, TOOL_SCHEMAS, touchedPaths, ApprovalWaitStop, type ToolApproval, type ApprovalProvenance, type ToolContext } from "../local/tools.ts";
 import type { Capture } from "../memory/capture.ts";
@@ -325,8 +326,9 @@ export class LocalPeer extends BasePeer {
       sandboxEnv: { ...proxyEnv(this.opts.tools.bashNetwork ?? false), AGENTHUB_PEER_ID: this.id },
       signal: turnSignal,
       send: (text, to) => {
-        const refused = this.onMessage?.(text, pii ? reply : { inReplyTo: replyParent(envs), to: to?.length ? to : replyAudience(envs) });
-        if (typeof refused === "string") return `not sent: ${refused}`;
+        const result = this.onMessage?.(text, pii ? reply : { inReplyTo: replyParent(envs), to: to?.length ? to : replyAudience(envs) }) as PublishResult | string | undefined;
+        if (typeof result === "string") return `not sent: ${result}`;
+        if (result?.dropped === "hop") return `not delivered: reply chain reached the hop cap (${MAX_HOP}); send a new message without reply_to`;
         return pii ? "sent to the console user only (PII task)" : "sent";
       },
     };

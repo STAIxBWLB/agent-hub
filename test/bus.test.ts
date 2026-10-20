@@ -1126,3 +1126,31 @@ test("failed hub presence completion restores its preface and preserves pauses t
     expect(journal.resolution(row.id)).toBeUndefined();
   } finally { bus.closeJournal(); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("peer callback exposes a hop drop while retaining legacy success and FYI returns (#550)", async () => {
+  const { MAX_HOP } = await import("../src/hub/envelope.ts");
+  const bus = new Bus({ batchMs: 0 });
+  const peer = new NativeFakePeer("local");
+  bus.add(peer);
+  await peer.start();
+  const parent = { ...newEnvelope("user", "reply to this"), hop: MAX_HOP };
+  expect(peer.onMessage!("reply past cap", { inReplyTo: parent })).toEqual({ targets: [], dropped: "hop" });
+  expect(peer.onMessage!("[FYI] recorded only")).toBeUndefined();
+  expect(peer.onMessage!("genuine empty audience")).toBeUndefined();
+  await peer.stop();
+});
+
+test("#550 a hop drop never claims mixed roster recipients were retained or delivered", async () => {
+  const { MAX_HOP } = await import("../src/hub/envelope.ts");
+  const bus = new Bus({ batchMs: 0, rostered: peer => peer !== "kimi" });
+  const sender = new NativeFakePeer("local"), allowed = new FakePeer("claude"), blocked = new FakePeer("kimi");
+  for (const peer of [sender, allowed, blocked]) { bus.add(peer); await peer.start(); }
+  try {
+    const parent = { ...newEnvelope("user", "reply to this"), hop: MAX_HOP };
+    expect(sender.onMessage!("reply past cap", { inReplyTo: parent, to: ["claude", "kimi"] })).toEqual({ targets: [], dropped: "hop" });
+    await rosterTurnSettled();
+    expect(allowed.got).toEqual([]); expect(blocked.got).toEqual([]);
+    expect(bus.queueList("kimi")).toEqual([]);
+    expect(bus.snapshot().prefaces.local?.body ?? "").not.toContain("retained off roster");
+  } finally { bus.closeJournal(); await Promise.all([sender.stop(), allowed.stop(), blocked.stop()]); }
+});

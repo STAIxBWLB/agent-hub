@@ -230,12 +230,12 @@ export class Bus {
         this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered: ${refused}`));
         return refused;
       }
-      this.publish(env);
-      if (offRoster.length) this.note(peer.id, noteLine(HUB, "decision", `your message is retained off roster for ${offRoster.join(", ")}; delivered to the other recipients`));
+      const published = this.publishResult(env);
+      if (offRoster.length && published.dropped !== "hop") this.note(peer.id, noteLine(HUB, "decision", `your message is retained off roster for ${offRoster.join(", ")}; delivered to the other recipients`));
       // The sender's result (issue #107): a turn answer has no caller, so it hears it on its next delivery. It counts as
       // not sent only when nobody got it.
       if (hushed.length) this.note(peer.id, noteLine(HUB, "decision", `your message was not delivered to ${hushed.map((h) => h.peer).join(", ")}: ${hushed[0]!.reason}`));
-      return heldBack ? hushed[0]!.reason : undefined;
+      return heldBack ? hushed[0]!.reason : published.dropped === "hop" ? published : undefined;
     };
     peer.onFailed = (envs, failure) => {
       // The adapter got the condensed list; what has to come back is what that list replaced.

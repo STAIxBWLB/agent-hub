@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { PiPeer } from "../src/adapters/pi.ts";
 import { processSignature as ownerSignature } from "../src/pi/process-signature.ts";
-import { newEnvelope } from "../src/hub/envelope.ts";
+import { MAX_HOP, newEnvelope } from "../src/hub/envelope.ts";
 import type { CheckRequest, RunReceipt } from "../src/hub/check-runner.ts";
 import { randomUUID } from "node:crypto";
 import { hubGitSync } from "../src/hub/git.ts";
@@ -1362,4 +1362,25 @@ test("Pi check refusals after stale/output effects remain pending and never repl
     expect((await piToolCall(peer, "hub_check_result", { run: changedRun }, "changed-output")).text).toContain("previous tool outcome is uncertain");
     expect(consumes).toBe(2);
   } finally { db.close(); }
+});
+
+
+test("Pi hub_send reports a hop-capped implicit reply instead of sent (#550)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agenthub-pi-hop-"));
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const config = { ...DEFAULT_CONFIG, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, fakePi(dir)] } };
+  const { daemon, console_ } = await hub(config);
+  expect((await console_.request({ t: "start", peer: "pi", args: { mode: "headless", backend: "dgx" } })).ok).toBe(true);
+  const peer = daemon.bus.peers.get("pi") as PiPeer;
+  const launch = peer["tuiLaunch"]!;
+  const dropped: string[] = [];
+  daemon.bus.tap(event => { if (event.t === "envelope" && event.dropped && event.env.body === "reply past cap") dropped.push(event.dropped); });
+  await peer.deliver([{ ...newEnvelope("user", "reply to this", { to: ["pi"] }), hop: MAX_HOP }]);
+  const response = await fetch(`${launch.env.AGENTHUB_PI_BRIDGE_URL}/tool`, {
+    method: "POST", headers: { authorization: `Bearer ${launch.env.AGENTHUB_PI_BRIDGE_TOKEN}`, "content-type": "application/json" },
+    body: JSON.stringify({ name: "hub_send", args: { text: "reply past cap" }, toolCallId: "hop-send", sessionId: peer.recoveryMetadata().sessionId, generation: peer["budgetGeneration"] }),
+  });
+  const result = await response.json() as { text: string };
+  expect(dropped).toEqual(["hop"]);
+  expect(result.text).toBe(`not delivered: reply chain reached the hop cap (${MAX_HOP}); send a new message without reply_to`);
 });
