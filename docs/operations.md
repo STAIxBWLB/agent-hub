@@ -2946,8 +2946,8 @@ unreadable result runs the main gate again and refuses release. A manual
 it is never accepted as full-gate evidence. A `timing_runs=20` dispatch runs only the daemon, PII screen and ACP
 test files twenty times on macOS, in its own concurrency group; it does not replace the full gate.
 `scripts/check.sh` stops a suite still running after `AHUB_CHECK_HANG_S` seconds
-(600 by default); hosted macOS CI sets 780 inside the unchanged 15-minute job
-limit (#378).
+(960 by default); hosted CI sets 780 on Linux and 1260 on macOS inside a 25-minute
+job limit (#378, #593).
 The gate holds `<git common dir>/ahub-heavy.lock` across every worktree of a
 repository. A second gate waits up to `AHUB_CHECK_LOCK_WAIT_S` (1800 seconds by
 default; 0 fails immediately) and names the holder. A holder whose PID is gone
