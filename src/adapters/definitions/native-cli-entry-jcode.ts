@@ -7,6 +7,11 @@ import { bundleInStatus, rosterInStatus } from "../../hub/status-roster.ts";
 
 const WAITING = "jcode's TUI opens after its first hub turn; send it work, or Ctrl-C";
 
+/** The daemon names the one session option that differs from the attached saved session (#559 N2, #574). */
+function refuseNamedOption(reply: { ok?: unknown; option?: unknown }, fail: NativeCliEntryContext["fail"]): void {
+  if (!reply.ok && typeof reply.option === "string" && ["--session-id", "--model", "--provider-profile"].includes(reply.option)) fail(`Jcode is already running with a different ${reply.option}; run ahub jcode without it, or stop jcode first`);
+}
+
 export async function waitForJcodeTui(hub: ControlClient, fail: NativeCliEntryContext["fail"], signal: AbortSignal,
   options: Record<string, string | undefined>, first?: JcodeTuiState): Promise<Extract<JcodeTuiState, { state: "ready" }> | undefined> {
   let binding: JcodeTuiBinding | undefined = first?.binding, announced = false, current = first;
@@ -14,7 +19,7 @@ export async function waitForJcodeTui(hub: ControlClient, fail: NativeCliEntryCo
     if (!current) {
       const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", binding, args: options });
       if (signal.aborted) return;
-      if (!reply.ok && typeof reply.option === "string" && ["--session-id", "--model", "--provider-profile"].includes(reply.option)) fail(`Jcode is already running with a different ${reply.option}; run ahub jcode without it, or stop jcode first`);
+      refuseNamedOption(reply, fail);
       if (!reply.ok || !reply.binding || !["waiting", "ready"].includes(reply.state)) fail("Jcode launch changed or its native saved session is unavailable; retry from a terminal");
       current = reply as JcodeTuiState;
     }
@@ -69,6 +74,7 @@ export async function runJcodeEntry(ctx: NativeCliEntryContext): Promise<void> {
     if (print) {
       if (!hub.features.includes("native_tui_launch") || mode !== "tui") return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2));
       const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", args: options });
+      refuseNamedOption(reply, fail);
       if (!reply.ok || reply.state !== "ready") fail("Jcode's selected native session is not saved and ready; run ahub jcode to wait for its first hub turn");
       return console.log(JSON.stringify(reply.launch, null, 2));
     }

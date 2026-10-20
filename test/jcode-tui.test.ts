@@ -192,3 +192,18 @@ test("a mismatched model or provider profile is named in the refusal (#559)", as
     if (before.output) Object.defineProperty(process.stdout, "isTTY", before.output); else delete (process.stdout as { isTTY?: boolean }).isTTY;
   }
 });
+
+test("--print-command names a mismatched session option, as the launch does (#574)", async () => {
+  for (const option of ["--model", "--provider-profile", "--session-id"] as const) {
+    const fixture = entry(["--print-command", option, "other"]);
+    fixture.context.helpers.readControl = () => ({ features: ["native_tui_launch"] } as never);
+    fixture.context.connect = async () => ({ features: ["native_tui_launch"], close() {}, request: async (message: Record<string, unknown>) => {
+      fixture.requests.push(message);
+      return message.t === "status" ? { status: { instanceId: "i", roster: [{ peer: "jcode", on: true }] } }
+        : message.t === "native_tui_launch" ? { ok: false, option, error: "differs" } : { ok: true };
+    } }) as never;
+    await expect(runJcodeEntry(fixture.context)).rejects.toThrow(`a different ${option}`);
+    expect(fixture.requests.some(row => row.t === "native_tui_launch")).toBe(true);
+    expect(fixture.executed()).toBe(0); expect(fixture.configured()).toBe(0);
+  }
+});

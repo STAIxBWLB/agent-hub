@@ -9247,6 +9247,10 @@ var init_native_cli_entry_codex = () => {};
 
 // src/adapters/definitions/native-cli-entry-jcode.ts
 import { resolve as resolve13 } from "path";
+function refuseNamedOption(reply, fail) {
+  if (!reply.ok && typeof reply.option === "string" && ["--session-id", "--model", "--provider-profile"].includes(reply.option))
+    fail(`Jcode is already running with a different ${reply.option}; run ahub jcode without it, or stop jcode first`);
+}
 async function waitForJcodeTui(hub, fail, signal, options, first) {
   let binding = first?.binding, announced = false, current = first;
   while (!signal.aborted) {
@@ -9254,8 +9258,7 @@ async function waitForJcodeTui(hub, fail, signal, options, first) {
       const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", binding, args: options });
       if (signal.aborted)
         return;
-      if (!reply.ok && typeof reply.option === "string" && ["--session-id", "--model", "--provider-profile"].includes(reply.option))
-        fail(`Jcode is already running with a different ${reply.option}; run ahub jcode without it, or stop jcode first`);
+      refuseNamedOption(reply, fail);
       if (!reply.ok || !reply.binding || !["waiting", "ready"].includes(reply.state))
         fail("Jcode launch changed or its native saved session is unavailable; retry from a terminal");
       current = reply;
@@ -9347,6 +9350,7 @@ async function runJcodeEntry(ctx) {
       if (!hub.features.includes("native_tui_launch") || mode !== "tui")
         return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2));
       const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", args: options });
+      refuseNamedOption(reply, fail);
       if (!reply.ok || reply.state !== "ready")
         fail("Jcode's selected native session is not saved and ready; run ahub jcode to wait for its first hub turn");
       return console.log(JSON.stringify(reply.launch, null, 2));
