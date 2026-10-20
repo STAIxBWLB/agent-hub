@@ -2314,7 +2314,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify(tasks.publicView(await tasks.cancel(a.id, by, { reason: a.reason, supersededBy: a.superseded_by, expectedFlowRevision: a.revision })));
       }
       case "hub_task_decline":
-        return line(await tasks.decline(by, a.id, a.reason));
+        return line(await tasks.decline(by, a.id, a.reason, a.capacity === true));
       case "hub_task_done": {
         const t = await tasks.done(by, a.id, a.summary, a.refs);
         const completion = t.history.findLast(h => h.by === by && (h.event === "done" || h.event === "done (checking)"));
