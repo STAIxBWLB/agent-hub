@@ -15,16 +15,19 @@ const TAIL_CHARS = 4000;
 const KEEP_CHARS = 64 * 1024;
 /** How long output may still arrive after the command exited; a descendant that left the group can hold the pipes. */
 const DRAIN_MS = 500;
+/** How long a killed check may wait for its exit and close events before it settles without them (#558). */
+const KILL_GRACE_MS = 1000;
 
 /** Runs one check command in the project root, in its own process group so a timeout stops what it started. */
-export function runCheck(command: string, cwd: string, timeoutMs: number, running?: Set<() => void>): Promise<CheckResult> {
+export function runCheck(command: string, cwd: string, timeoutMs: number, running?: Set<() => void>, spawnChild: typeof spawn = spawn): Promise<CheckResult> {
   return new Promise((resolve) => {
     let out = "";
     let timedOut = false;
     let interrupted = false;
     let settled = false;
     let exited = false;
-    const child = spawn("sh", ["-c", command], { cwd, env: childEnv(process.env), stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const child = spawnChild("sh", ["-c", command], { cwd, env: childEnv(process.env), stdio: ["ignore", "pipe", "pipe"], detached: true });
+    let grace: ReturnType<typeof setTimeout> | undefined;
     const killGroup = () => {
       try {
         if (child.pid) process.kill(-child.pid, "SIGKILL");
@@ -32,10 +35,15 @@ export function runCheck(command: string, cwd: string, timeoutMs: number, runnin
         // already gone
       }
     };
-    const stop = () => {
-      if (exited) return; // finished before the hub stopped: its own result stands
-      interrupted = true;
+    /** A kill that is a verdict (timeout, hub stop) settles even if the child's events never come. */
+    const killAndSettle = () => {
       killGroup();
+      grace ??= setTimeout(() => done(null), KILL_GRACE_MS);
+    };
+    const stop = () => {
+      if (exited || settled) return; // finished before the hub stopped, or already settled: its result stands and the group may be reused
+      interrupted = true;
+      killAndSettle();
     };
     running?.add(stop);
     const keep = (chunk: string) => {
@@ -48,12 +56,13 @@ export function runCheck(command: string, cwd: string, timeoutMs: number, runnin
     }
     const timer = setTimeout(() => {
       timedOut = true;
-      killGroup();
+      killAndSettle();
     }, timeoutMs);
     const done = (code: number | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(grace);
       running?.delete(stop);
       child.stdout?.destroy();
       child.stderr?.destroy();
@@ -65,6 +74,7 @@ export function runCheck(command: string, cwd: string, timeoutMs: number, runnin
       done(null);
     });
     child.on("exit", (code) => {
+      if (settled) return; // the kill grace settled it: the process group id is no longer ours to signal
       exited = true;
       clearTimeout(timer); // it finished in time; only its output may still be on the way
       killGroup(); // a background job it left behind (sh has no job control, so it is still in the group)
