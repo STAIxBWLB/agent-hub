@@ -365,6 +365,7 @@ test("the bus steers an important message into a busy Jcode through the owned so
   await until(() => existsSync(record) && readFileSync(record, "utf8").includes("STEER-ME-NOW"));
   await until(() => daemon.bus.queued("jcode") === 0 && daemon.bus.peers.get("jcode")!.state === "idle");
   expect(readFileSync(record, "utf8").match(/"kind":"soft_interrupt"/g)).toHaveLength(1);
+});
 
 test("a conductor start of an attached Jcode answers already and opens no terminal; the console's start still reopens one (#559 N1)", async () => {
   const dir = realPath(root()), stateDir = join(dir, "state"), home = join(dir, "home"), opened: string[][] = [];
