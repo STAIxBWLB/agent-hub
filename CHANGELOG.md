@@ -6,6 +6,19 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - Incoming HEAD moves during open turns no longer produce false concurrent-edit warnings or attributed undo paths; bounded per-worktree reflog evidence distinguishes them from peer commits and sequencer replay changes, which stay attributed unless ambiguous. Rebase/pull --rebase start checkout is incoming; uncommitted edits carried through autostash or checkout -m are never excluded. Real concurrent change sets publish at most one notice per affected task; snapshot Git work shares a 250 ms burst budget and records unknown boundaries on exhaustion. Status reuses a checkout-branch probe only within the current synchronous burst. Pi terminal reconciliation uses the bounded existing owner monitor instead of spawning `ps` on every read; effect admission and teardown still verify fresh process identity (#576).
 
+## 0.12.43
+
+A busy daemon no longer stalls on git HEAD movement under open turns (#576); upgrade restore, task assignment and the agy peer get fixes, `ahub completion` arrives, and the verification gate changes for contributors (#609, #610).
+
+- The daemon stays responsive when the checkout's HEAD moves (fast-forward, checkout, worktree merge) while turns are open: snapshot and diff Git calls in one burst share a 250 ms budget and an exhausted budget records unknown evidence, concurrent-edit notices go out once per affected task instead of once per task pair, and HEAD moves are classified from the worktree's HEAD reflog so an incoming checkout, merge or fast-forward is not attributed to a peer while the peer's own commit, amend, rebase replay or cherry-pick still is; ambiguous history stays unknown and paths still dirty at turn end are always kept. On a scratch burst `status` went from 21.3 s to 0.27 s and false conflicts from 144 to 0 (#576).
+- An upgrade or restart no longer blocks on a restored Claude session whose launch record or terminal identity appears a few seconds after its terminal reads idle: the mapping is re-read until the restore deadline, and only a positive contradiction or the deadline blocks (#599).
+- `hub_task_assign` and `ahub task assign` refuse with the routing reason (offline, not attached, excluded, plan review missing ...) instead of returning the unchanged task, and a proposal whose named owner could not take it says why in its result (#601).
+- `ahub completion zsh|bash|fish` prints a completion script; candidates come from the help entries through the hidden `ahub __complete`, so they cannot drift from `ahub help` (#603).
+- agy: native file reads are recorded as peer facts, for agy 1.4.2's `view_file` and 1.4.3's `read_file`, with a line range counted as a partial read (#555). agy 1.4.3 stays unverified (T0 re-run, #267); in its TUI the hub tools appear from the second turn (#607).
+- The console's Peers tab shows each peer's planner WIP against its limit, and `w` edits the limit through the existing settings flow, for declared instances too (#532, first slice).
+- A manager open that loses the race to another manager stops the process it spawned (#584).
+- Contributors: CI runs per pull request (`check-pr-<number>`, a newer pending run replaces the older) instead of one repository-wide queue; `scripts/check.sh --changed` runs only the tests a change touches, and the gate pins its test environment (`GIT_CONFIG_GLOBAL=/dev/null`, no `NO_COLOR`, `TERM=xterm-256color`, temp root under the OS per-user temp dir); the full gate is CI's (#609, #610). Two timing-dependent tests were fixed (#617, #618). The live PII screen calibration is recorded with the served model id (#198).
+
 ## 0.12.42
 
 `ahub agy` starts again after the Antigravity CLI updated itself (#589); the rest is contributor tooling (#591, #593, #595).

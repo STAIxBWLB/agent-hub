@@ -5,7 +5,7 @@ Codex, Kimi Code, Pi and a hub-owned local worker (Qwen Code, Jcode and Antigrav
 optional) share a message bus and a task board per project and one memory on the
 machine, each attached through its own native interface.
 
-Status: 0.12.42, control protocol 16. Bun + TypeScript, one loopback daemon per
+Status: 0.12.43, control protocol 16. Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## What it does today
