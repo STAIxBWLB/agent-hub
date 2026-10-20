@@ -5356,7 +5356,7 @@ export async function startDaemon(opts: DaemonOptions) {
             return;
           }
           const offered = factsOn() && (native.event === "PreInvocation" || native.event === "SessionStart") ? offerFor(peer, native.toolUseId ?? `${native.sessionId}:invocation`) : undefined;
-          // The decoded native read (agy view_file, as `Read`) is a peer fact: its target is observed before it runs and the
+          // The decoded native read (agy view_file or read_file, as `Read`) is a peer fact: its target is observed before it runs and the
           // view moves after it. Nothing is offered here: agy's hook encodes an offer only on SessionStart/PreInvocation.
           if (factsOn() && native.event === "PreToolUse") factsFor(peer).preTool(peer, native.toolUseId, native.tool, native.input);
           if (factsOn() && native.event === "PostToolUse") factsFor(peer).postTool(peer, native.toolUseId, native.tool, native.input);

@@ -91,7 +91,7 @@ test("agy pull attach and native hooks are bound to person launch, daemon, sessi
   }
 }, 10000);
 
-test("agy's native view_file read is a peer fact: a later change to the file is offered at its next invocation (#555)", async () => {
+for (const [version, name, args] of [["1.4.2", "view_file", (file: string) => ({ AbsolutePath: file })], ["1.4.3", "read_file", (file: string) => ({ Path: file })]] as const) test(`agy ${version}'s native ${name} read is a peer fact: a later change to the file is offered at its next invocation (#555)`, async () => {
   const root = mkdtempSync(join(tmpdir(), "ahub-agy-facts-")), stateDir = join(root, "state"), savedHome = process.env.HOME;
   process.env.HOME = root;
   const session = "ee5ab2ab-7319-4a81-82ca-bf2fc84678d0";
@@ -121,7 +121,7 @@ test("agy's native view_file read is a peer fact: a later change to the file is 
     const hook = (event: string, extra: Record<string, unknown> = {}) => tools.request({ t: "native_facts", event,
       payload: { conversationId: session, transcriptPath: transcript, workspacePaths: [root], invocationNum: 0, ...extra },
       nativeInstanceId: admission.instanceId, nativeLaunchId: admission.launchId });
-    const call = { name: "view_file", args: { AbsolutePath: file } };
+    const call = { name, args: args(file) };
     expect((await hook("PreInvocation")).ok).toBe(true);
     expect((await hook("PreToolUse", { toolCall: call, stepIdx: 5 })).ok).toBe(true);
     expect((await hook("PostToolUse", { toolCall: call, stepIdx: 5 })).ok).toBe(true);

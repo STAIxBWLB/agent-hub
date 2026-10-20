@@ -24,6 +24,9 @@ test("agy hook codec requires a known explicit event and pinned native envelope"
   const read = decodeAgyHook("PreToolUse", { ...payload, stepIdx: 4, toolCall: { name: "view_file", args: { AbsolutePath: "/tmp/work/file.ts" } } });
   expect(read?.tool).toBe("Read"); expect(read?.toolUseId).toBe(`${session}:4`);
   expect(decodeAgyHook("PreToolUse", { ...payload, toolCall: { name: "view_file", args: "bad" } })).toBeUndefined();
+  // agy 1.4.3: read_file with Path, and a line range is a partial read.
+  expect(decodeAgyHook("PreToolUse", { ...payload, stepIdx: 5, toolCall: { name: "read_file", args: { Path: "/tmp/work/file.ts" } } })).toMatchObject({ tool: "Read", input: { file_path: "/tmp/work/file.ts" } });
+  expect(decodeAgyHook("PreToolUse", { ...payload, stepIdx: 5, toolCall: { name: "read_file", args: { Path: "/tmp/work/file.ts", StartLine: 3, EndLine: 7 } } })).toMatchObject({ tool: "Read", input: { file_path: "/tmp/work/file.ts", offset: 3, limit: 5 } });
 });
 
 test("agy facts inject only at observed model boundaries and never set native permissions", () => {
