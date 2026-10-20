@@ -34,9 +34,21 @@ function alternatives(text: string): string[] {
   return [...out, text.slice(start)];
 }
 
-/** `<path|id>` is a path, `<text>` free text, `a|b|<iso>` the literals a and b. */
+/**
+ * A value spec: `a|b|<iso>` offers the literals a and b; an upper-case word (`N`) is a placeholder. Inside angle
+ * brackets the words are placeholders (`<path|id>` is a path, `<id|node>` free text), except a list of three or more
+ * (`<blue|teal|violet|ochre>`) and the keywords none and inherit.
+ */
+// ponytail: the keyword list is what help uses today; a new keyword inside <> needs adding here.
 function value(spec: string): Value {
-  const literal = spec.split("|").filter(part => /^[\w.-]+$/.test(part));
+  if (spec.startsWith("<")) {
+    const parts = spec.slice(1, -1).split("|");
+    if (parts.length >= 3) return parts;
+    if (/path|dir|file/.test(spec)) return "path";
+    const keywords = parts.filter(part => part === "none" || part === "inherit");
+    return keywords.length ? keywords : "text";
+  }
+  const literal = spec.split("|").filter(part => /^[a-z0-9][\w.-]*$/.test(part));
   if (literal.length) return literal;
   return /path|dir|file/.test(spec) ? "path" : "text";
 }
@@ -96,11 +108,13 @@ export function completeWords(words: readonly string[]): string[] {
   const cur = words.at(-1) ?? "";
   const path: string[] = [];
   let pending: Value | undefined;
+  let positional = false; // after a positional argument no subcommand can follow
   const optionOf = (name: string) => nodes.get(path.join(" "))?.options.get(name) ?? root.options.get(name);
   for (const word of words.slice(0, -1)) {
     if (pending !== undefined) { pending = undefined; continue; }
     if (word.startsWith("-")) { const kind = optionOf(word); if (kind && !word.includes("=")) pending = kind; continue; }
-    if (nodes.get(path.join(" "))?.children.has(word)) path.push(word);
+    if (!positional && nodes.get(path.join(" "))?.children.has(word)) path.push(word);
+    else positional = true;
   }
   const values = (kind: Value, prefix = "") => kind === "path" ? [FILES] : Array.isArray(kind) ? kind.map(v => prefix + v) : [];
   if (pending !== undefined) return values(pending).filter(v => v === FILES || v.startsWith(cur));
@@ -109,9 +123,10 @@ export function completeWords(words: readonly string[]): string[] {
   const here = nodes.get(path.join(" "))!;
   // An option documented as `--name=value` is offered as `--name=`; the shell adds no space after it.
   const opts = [...new Set([...here.options.keys(), ...(path.length ? [] : root.options.keys())])].map(o => here.equals.has(o) ? `${o}=` : o);
-  const candidates = cur.startsWith("-") ? opts : [...here.children, ...(cur ? [] : opts)];
+  const children = positional ? [] : [...here.children];
+  const candidates = cur.startsWith("-") ? opts : [...children, ...(cur && children.length ? [] : opts)];
   const matched = candidates.filter(c => c.startsWith(cur)).sort();
-  return matched.length || cur.startsWith("-") || here.children.size ? matched : [FILES];
+  return matched.length || cur.startsWith("-") || children.length ? matched : [FILES];
 }
 
 const SCRIPTS: Record<string, string> = {
@@ -138,7 +153,9 @@ complete -o default -F _ahub ahub
 `,
   fish: `# ahub fish completion: candidates come from \`ahub __complete\`, read from ahub's own help entries.
 function __ahub_complete
-    set -l out (ahub __complete -- (commandline -opc)[2..-1] (commandline -ct) 2>/dev/null)
+    set -l cur (commandline -ct)
+    # "$cur" keeps an empty current word as an argument: Tab after a space completes the next word
+    set -l out (ahub __complete -- (commandline -opc)[2..-1] "$cur" 2>/dev/null)
     if test "$out[1]" = ${FILES}
         __fish_complete_path (commandline -ct)
     else

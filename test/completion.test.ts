@@ -27,6 +27,17 @@ test("#603 candidates follow commands, subcommands, enum values, = forms and pat
   expect(completeWords(["completion", ""])).toEqual(["bash", "fish", "zsh"]);
 });
 
+test("#603 review: placeholders are not values, <a|b|c> lists are, and positionals end subcommands", () => {
+  expect(completeWords(["task", "assign", "7", "codex", "--revision", ""])).toEqual([]); // N is a placeholder
+  expect(completeWords(["pet", "--palette", ""]).sort()).toEqual(["blue", "ochre", "teal", "violet"]);
+  expect(completeWords(["review", ""])).toContain("brief");
+  expect(completeWords(["review", "42", ""])).not.toContain("brief");
+});
+
+test("#603 review: the fish script passes an empty current word, so Tab after a space completes the next word", () => {
+  expect(completionScript("fish")).toContain('"$cur"');
+});
+
 test("#603 the scripts parse in their shells, an unknown shell has none, and agents may print them", () => {
   expect(COMPLETION_SHELLS).toEqual(["zsh", "bash", "fish"]);
   expect(completionScript("tcsh")).toBeUndefined();
