@@ -37,8 +37,9 @@ export function fullGateAdmission(tree, runs, { currentRunId, complete = false }
 }
 
 /**
- * Read-only bounded admission snapshot. Atomic admission belongs to the workflow's whole-controller concurrency lock;
- * querying Actions alone cannot prevent two simultaneous controllers from observing the same empty snapshot.
+ * Read-only bounded admission snapshot. Within one concurrency group (one PR, or main) the whole-controller lock makes
+ * admission atomic; controllers of different groups may observe the same empty snapshot for one tree and run it twice
+ * (#609: accepted as a duplicate run, never a false green).
  */
 export async function readFullGateAdmission(api, tree, { currentRunId } = {}) {
   const evidence = [], commits = new Map();
@@ -75,7 +76,7 @@ export async function readFullGateAdmission(api, tree, { currentRunId } = {}) {
     }
     let complete = true;
     const visited = new Set();
-    // With the whole-workflow lock, queued/waiting controllers cannot have admitted gate jobs and need no API read.
+    // A queued/waiting controller has started no job, so it cannot have admitted gate jobs and needs no API read.
     // Gate jobs queued for a runner after decision admission are under an in_progress workflow instead.
     for (const status of ["in_progress"]) {
       const active = page(await read(`actions/workflows/check.yml/runs?status=${status}&per_page=100`), "workflow_runs");
@@ -90,7 +91,7 @@ export async function readFullGateAdmission(api, tree, { currentRunId } = {}) {
         const launched = gates.some(job => job.status === "in_progress" || decisionDone && job.status === "queued");
         const other = jobs.complete && (jobs.rows.some(job => ["macos-timing", "prepare-bundle"].includes(job.name) && job.status !== "completed")
           || !launched && (status !== "in_progress" || jobs.rows.length > 0 && jobs.rows.every(job => job.name === "decision" || job.status === "completed")));
-        // A queued/waiting workflow controller with no launched full-gate job waits behind our global workflow lock.
+        // A controller that launched no full-gate job (decision still running, or no gate) admits nothing yet.
         if (other) continue;
         const candidateTree = await treeOf(run);
         evidence.push({ ...run, tree: candidateTree, status, scope: launched ? "full" : "unknown", jobs: jobs.rows, jobsComplete: jobs.complete });

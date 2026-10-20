@@ -21,10 +21,14 @@ permissions:
   actions: read
 
 concurrency:
-  group: ${{ github.event_name == 'workflow_dispatch' && inputs.timing_runs == '20' && 'macos-timing' || 'check' }}
-  # Hold the whole controller until its admitted gate ends. A decision-job-only lock races queued gate jobs.
+  # #609: one group per PR, so PRs run side by side; within a PR a newer pending run replaces the older pending one
+  # (queue single), while an admitted controller is never cancelled. Main pushes and dispatches keep queue max.
+  # GitHub refuses queue max together with cancel-in-progress true, so in-progress runs are not cancelled.
+  # ponytail: controllers of different groups admitting the same tree at the same instant both run it (a duplicate run,
+  # never a false green); a repository-wide group removes that at the cost of serializing every PR.
+  group: ${{ github.event_name == 'workflow_dispatch' && inputs.timing_runs == '20' && 'macos-timing' || github.event_name == 'pull_request' && format('check-pr-{0}', github.event.pull_request.number) || 'check-main' }}
   cancel-in-progress: false
-  queue: max
+  queue: ${{ github.event_name == 'pull_request' && 'single' || 'max' }}
 
 jobs:
   decision:
