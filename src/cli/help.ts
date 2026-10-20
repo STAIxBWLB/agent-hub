@@ -14,6 +14,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub --live-test [--project <path|id>] <command> [args...]", "user-authorized operational console delegation; ordinary calls retain peer identity; person-authored content refuses"],
     ["ahub help [command]", "this help, or one command's entries; also --help and -h"],
     ["ahub version | --version", "print the installed version"],
+    ["ahub completion zsh|bash|fish", "print a shell completion script; its candidates come from these help entries"],
   ]],
   ["Daemon and runtime", [
     ["ahub up [--unattended] [--no-console]", "start the daemon; interactive terminals enter console"],

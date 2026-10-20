@@ -93,6 +93,27 @@ cyan, arguments and descriptions the terminal's default foreground. It has no
 not `dumb` and `NO_COLOR` is empty or absent. Pipes and redirects get plain text
 without escape sequences, laid out for 80 columns.
 
+### Shell completion
+
+`ahub completion zsh|bash|fish` prints a completion script; it never installs
+files or edits shell configuration. On each Tab the script runs
+`ahub __complete`, which answers from the help entries above (commands,
+subcommands, options, their listed values and file names for path arguments)
+without loading the rest of the CLI or contacting a hub, so completion always
+matches the installed `ahub`. Agent shells may print the script too.
+
+```sh
+# zsh: any directory on fpath works; this one needs no .zshrc change with oh-my-zsh
+ahub completion zsh > ~/.oh-my-zsh/custom/completions/_ahub && rm -f ~/.zcompdump* && exec zsh
+# bash
+ahub completion bash > ~/.local/share/bash-completion/completions/ahub
+# fish
+ahub completion fish > ~/.config/fish/completions/ahub.fish
+```
+
+Upgrading ahub needs no regeneration. To remove it, delete that file and start
+a new shell.
+
 ## Operator console and panels
 
 `ahub console` combines the existing tail stream with peer, quota, approval-age

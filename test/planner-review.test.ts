@@ -122,6 +122,18 @@ test("enforce does not offer build work before a current planner review (#481 S9
   expect(task.history.some(entry => entry.event === "assigned")).toBe(false);
 });
 
+test("#601 an explicit assign of build work without a planner review says why before any write", async () => {
+  const r = reviewRig(async () => metadata(), "enforce");
+  class Peer extends BasePeer { async start() { this.setState("idle"); } async stop() {} async deliver(_envs: Envelope[]) {} }
+  const peer = new Peer("codex");
+  r.bus.add(peer); await peer.start();
+  const task = await r.tasks.propose("user", { title: "new build scope", class: "implement", owner: "codex" });
+  const before = r.board.get(task.id)!.history.length;
+  await expect(r.tasks.assignTo(task.id, "codex", "user", true)).rejects.toThrow(/cannot assign task #\d+ to codex: plan not reviewed since proposal; planner: call hub_planner_groom/);
+  expect(r.board.get(task.id)!.history.length).toBe(before);
+  expect(r.board.get(task.id)!.owner).toBeNull();
+});
+
 test("done cannot implicitly accept build work without a planner review (#481 S9)", async () => {
   const r = reviewRig(async () => {
     const reading = JSON.parse(metadata().stdout);

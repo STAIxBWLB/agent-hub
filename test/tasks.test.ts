@@ -239,7 +239,8 @@ test("decline moves on; nobody left keeps it proposed with a notice; the console
   expect(after).toMatchObject({ owner: null, state: "proposed" });
   expect(notices.at(-1)).toContain("ahub task assign 1");
   expect((await tasks.assignTo(1, "codex")).owner).toBe("codex");
-  expect((await tasks.assignTo(1, "ghost")).owner).toBe("codex"); // a failed console assign leaves the task where it was
+  await expect(tasks.assignTo(1, "ghost")).rejects.toThrow(/cannot assign task #1 to ghost: not attached/); // #601: says why
+  expect(board.get(1)!.owner).toBe("codex"); // a failed console assign leaves the task where it was
   tasks.accept("codex", 1);
   await tasks.done("codex", 1, "renamed");
   await expect(tasks.done("codex", 1, "again")).rejects.toThrow(/already approved/);
@@ -965,9 +966,40 @@ test("a person's explicit assign is not blocked by past declines; the conductor'
   await approve(tasks, board, a.id);
   await tasks.decline(USER, c.id, "not now");
   expect(board.get(c.id)!.owner).toBe("local");
-  expect(await tasks.assignTo(c.id, "codex", "claude")).toMatchObject({ owner: "local" });
-  expect(notices.at(-1)).toContain("no peer can take it");
+  await expect(tasks.assignTo(c.id, "codex", "claude", true)).rejects.toThrow(/cannot assign task #\d+ to codex: excluded/); // #601: refused before any write
+  expect(board.get(c.id)!.owner).toBe("local");
   expect(await tasks.assignTo(c.id, "codex")).toMatchObject({ owner: "codex" });
+});
+
+test("#601 naming an owner that cannot take the task says why instead of a silent no-op", async () => {
+  const { tasks, board, peers } = await setup();
+  peers.codex!.set("offline");
+  const t = await tasks.propose("claude", { title: "client", class: "implement", owner: "codex" });
+  expect(t.owner).toBeNull();
+  expect(tasks.namedOwnerNote(t, "codex", "claude")).toMatch(/^codex was not assigned \(offline\): no-eligible-peer; assign it again/);
+  const before = board.get(t.id)!.history.length;
+  await expect(tasks.assignTo(t.id, "codex", "claude", true)).rejects.toThrow(/cannot assign task #\d+ to codex: offline; assign again once it is attached/);
+  expect(board.get(t.id)!.history.length).toBe(before); // refused before any write
+  peers.codex!.set("idle");
+  expect(await tasks.assignTo(t.id, "codex", "claude", true)).toMatchObject({ owner: "codex" });
+  expect(tasks.namedOwnerNote(board.get(t.id)!, "codex", "claude")).toBeUndefined();
+});
+
+test("#601 a failed self-claim says why too", async () => {
+  const { tasks } = await setup();
+  const t = await tasks.propose("codex", { title: PII, class: "implement", owner: "codex" });
+  expect(t.owner).toBeNull(); // a self-claim names only itself: routing refuses the cloud peer and offers nobody else
+  expect(tasks.namedOwnerNote(t, "codex", "codex")).toMatch(/^codex was not assigned \(pii\)/);
+});
+
+test("#601 a proposer's assign over a stale reservation of a peer that declined goes through", async () => {
+  const { tasks, board } = await setup();
+  const a = await tasks.propose("claude", { title: "schema", class: "implement" });
+  const c = await tasks.propose("claude", { title: "client", class: "implement", owner: "codex", after: [a.id] });
+  await approve(tasks, board, a.id);
+  expect(board.get(c.id)).toMatchObject({ owner: "codex", reserved: "codex" });
+  await tasks.decline("codex", c.id, "not now");
+  expect(await tasks.assignTo(c.id, "kimi", "claude", true)).toMatchObject({ owner: "kimi" });
 });
 
 test("a person's assign of a ready task drops the agent's reservation; the conductor's keeps it", async () => {

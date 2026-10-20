@@ -1783,7 +1783,7 @@ export class Tasks {
   }
 
   /** `override`: a person's explicit assign, which past refusals do not block and which drops an agent's reservation (#207). */
-  private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean; planner?: boolean; expectedFlowRevision?: number } = {}): Promise<Task> {
+  private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean; planner?: boolean; expectedFlowRevision?: number; refuseNamed?: "pre" | "plain" } = {}): Promise<Task> {
     if (task.state === "backlog") throw new PreEffectToolRefusal(`task #${task.id}: pull backlog work before assigning it`);
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
     let stagedClaimGap: string | undefined;
@@ -1797,6 +1797,7 @@ export class Tasks {
         if (mode === "enforce") {
           if (opts.claim && opts.namedOwner === by) stagedClaimGap = gap;
           else {
+            if (opts.refuseNamed && opts.namedOwner) throw new (opts.refuseNamed === "pre" ? PreEffectToolRefusal : Error)(`cannot assign task #${current.id} to ${opts.namedOwner}: ${gap}; planner: call hub_planner_groom then hub_plan_review`); // #601, before the stall write
             this.reportStall(current, { kind: "no-eligible-peer", code: "policy" });
             return current;
           }
@@ -1814,6 +1815,11 @@ export class Tasks {
     }
     const passed = this.passedOver(task, a);
     if (!a.owner) {
+      // An explicit assignment says why the named peer cannot take it, before any write (#601).
+      if (opts.refuseNamed && opts.namedOwner) {
+        const why = a.refusals?.find(row => row.role === "owner" && row.peer === opts.namedOwner)?.reason ?? "not eligible";
+        throw new (opts.refuseNamed === "pre" ? PreEffectToolRefusal : Error)(`cannot assign task #${task.id} to ${opts.namedOwner}: ${why}${/offline|not attached/.test(why) ? "; assign again once it is attached" : ""}`);
+      }
       if (!task.owner && task.state === "proposed") this.reportStall(task, this.ownerStallCause(task, a));
       this.releaseNotice(opts.roster
         ? `task ${this.publicTitle(task)}: ${task.owner} is off roster and no peer can take it; it stays with ${task.owner} in ${task.state}; assign with: ahub task assign ${task.id} <peer>`
@@ -2047,6 +2053,14 @@ export class Tasks {
     })]);
     if (this.stallView?.key !== key) this.stallView = { key, stalls: this.stallCandidates.rows.filter(({ stall, task, planned }) => stall.cause.kind === "cancelled-dependency" || !(planned ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.health() })).owner).map(({ stall }) => stall) };
     return structuredClone(this.stallView.stalls);
+  }
+  /** Why a proposal's named owner (a self-claim included) did not get it, from the stall its proposal recorded (#601); undefined when it did. */
+  namedOwnerNote(task: Task, named: PeerId | undefined, by: PeerId): string | undefined {
+    if (!named || task.owner || task.state !== "proposed") return undefined;
+    const stall = this.d.board.stalls().find(row => row.task === task.id);
+    if (!stall) return undefined;
+    const code = stall.cause.refusals?.find(row => row.peer === named)?.code ?? (stall.cause.peer === named ? stall.cause.code : undefined);
+    return `${named} was not assigned${code ? ` (${code})` : ""}: ${stall.cause.kind}; assign it again with hub_task_assign once ${named} can take it`;
   }
   private ownerStallCause(task: Task, admission: Assignment): TaskStall["cause"] {
     const refusal = admission.refusals?.find(row => row.role === "owner" && row.peer === task.reserved);
@@ -3300,7 +3314,7 @@ export class Tasks {
       return next;
     }
     // Work that waits is handed to nobody yet (issue #207): the peer becomes its reserved owner instead.
-    if (!this.waitsFor(task).length) return this.assignOwner(task, by, { candidates: [peer], namedOwner: peer, event: "reassigned", reason: "manual", override: by === USER, expectedFlowRevision });
+    if (!this.waitsFor(task).length) return this.assignOwner(task, by, { candidates: [peer], namedOwner: peer, event: "reassigned", reason: "manual", override: by === USER, expectedFlowRevision, refuseNamed: preEffect ? "pre" : "plain" });
     const next = this.d.board.update(task.id, by, "reserved", { reserved: peer }, `for ${peer}`, { reason: "manual" }, expectedFlowRevision);
     this.releaseNotice(`task ${this.publicTitle(next)} reserved for ${peer} by ${by}; it is offered to ${peer} first once what it waits for is approved`);
     return next;
