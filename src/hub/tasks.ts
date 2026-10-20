@@ -728,6 +728,24 @@ export class Tasks {
   private plannerFull(task: Task): PeerId[] {
     return Object.keys(this.states()).filter(peer => { const queue = this.d.bus.queueSummary(peer); return this.wip(peer, task.id) >= this.wipLimit(peer) || !!queue.heldBy || queue.needsReview > 0; });
   }
+  /**
+   * Why a planner pull finds no owner (#531), named from what the assignment saw and never from task text: the peers a
+   * lasting exclusion keeps out, a peer at its WIP limit (with wip/limit), a held queue and needs_review. Peer ids and counts
+   * only, so the text is safe for a PII task too. `route explain` reads the same `excluded()` and `plannerFull` inputs.
+   */
+  plannerRefusal(task: Task): string {
+    const parts: string[] = [];
+    const excluded = [...new Set(this.excluded(task))];
+    if (excluded.length) parts.push(`${excluded.join(", ")} declined or was escalated away from this task for good; only a person's ahub task assign lifts that`);
+    for (const peer of Object.keys(this.states())) {
+      if (excluded.includes(peer)) continue;
+      const queue = this.d.bus.queueSummary(peer), wip = this.wip(peer, task.id), limit = this.wipLimit(peer);
+      if (wip >= limit) parts.push(`${peer} WIP full (${wip}/${limit}); no eligible planner WIP capacity`);
+      else if (queue.heldBy) parts.push(`${peer} has a held queue (a delivery is held; resolve it with ahub queue list)`);
+      else if (queue.needsReview > 0) parts.push(`${peer} has ${queue.needsReview} delivery(ies) in needs_review`);
+    }
+    return parts.length ? `no peer can take the planner pull: ${parts.join("; ")}` : "no peer has eligible planner WIP capacity";
+  }
   private plannerAssignment(task: Task, reservedOnly = false): Assignment {
     const states = this.states();
     const full = this.plannerFull(task);
@@ -758,7 +776,7 @@ export class Tasks {
         })) throw new PreEffectToolRefusal("a person's P0 backlog order is retained");
       }
       const assignment = this.plannerAssignment(task);
-      if (!assignment.owner) throw new PreEffectToolRefusal("no peer has eligible planner WIP capacity");
+      if (!assignment.owner) throw new PreEffectToolRefusal(this.plannerRefusal(task));
       if (this.hasPersonReservation(task) && assignment.owner !== task.reserved) throw new PreEffectToolRefusal("a person's reservation is retained");
       return { task, owner: assignment.owner };
     };
@@ -899,6 +917,8 @@ export class Tasks {
         }
         if (patch.reserved && !definitionOf(patch.reserved, this.d.instances?.()) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer");
         if (patch.reserved && !this.d.bus.isRostered(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is off roster");
+        // #531 D3: a reservation for a peer routing leaves out for good could never be honoured. Say so, and who can lift it.
+        if (patch.reserved && this.excluded(task).includes(patch.reserved)) throw new PreEffectToolRefusal(`${patch.reserved} is excluded from this task (it declined it or was escalated away from it for good); a reservation for it can never be honoured. Only a person's ahub task assign lifts the exclusion`);
         if (patch.reserved) this.requireCapabilities(task, patch.reserved);
         const rows = new Map(this.d.board.list().map(row => [row.id, row]));
         const pending = [...(patch.deps ?? task.deps ?? [])], seen = new Set<number>();
@@ -1672,7 +1692,7 @@ export class Tasks {
    * Peers routing leaves out for good (#207): the owners a task was declined for (the console declines for one; older rows
    * name only the decliner) and the owners it was escalated away from, so a reservation never hands it back to them.
    */
-  private excluded = (task: Task) => task.history.flatMap((h) => (h.event === "declined" ? [h.from ?? h.by] : h.event === "escalated" && h.from ? [h.from] : []));
+  private excluded = (task: Task) => task.history.flatMap((h) => (h.event === "declined" && h.capacity !== true ? [h.from ?? h.by] : h.event === "escalated" && h.from ? [h.from] : []));
 
   private checkFlowRevision(task: Task, expected: number | undefined, preEffect = false): void {
     if (expected !== undefined && (!Number.isSafeInteger(expected) || expected < 0 || task.history.length !== expected)) {
@@ -2579,15 +2599,21 @@ export class Tasks {
     return note;
   };
 
-  async decline(by: PeerId, id: unknown, reason?: string): Promise<Task> {
+  /**
+   * `capacity` (#531): the owner has no room right now, so the decline excludes it only from this move's own reroute
+   * (below), never from a later reroute or planner pull. Without it, a decline is a lasting refusal (`excluded()`), and so
+   * is every older row, which has no such field.
+   */
+  async decline(by: PeerId, id: unknown, reason?: string, capacity?: boolean): Promise<Task> {
     const task = this.need(id, true, true);
     this.mine(task, by, "owner", true);
     // The owner it is declined for goes on the entry, also when the console declines for it: `excluded()` keeps it out (#207).
     const planned = this.plannerPullRecord(task)?.pull === true;
-    const back = this.d.board.update(task.id, by, "declined", { ...(["in_progress", "changes_requested"].includes(task.state) ? { state: "proposed" as const } : {}), ...(planned ? { reserved: null } : {}) }, reason, task.owner ? { from: task.owner } : {});
+    const back = this.d.board.update(task.id, by, "declined", { ...(["in_progress", "changes_requested"].includes(task.state) ? { state: "proposed" as const } : {}), ...(planned ? { reserved: null } : {}) }, reason, task.owner ? { from: task.owner, ...(capacity === true ? { capacity: true as const } : {}) } : {});
     if (planned) this.offered.delete(task.id);
-    this.d.notify(`task ${this.publicTitle(back)} declined by ${by}${reason && !this.isPii(back) ? `: ${reason}` : ""}`);
-    return this.assignOwner(back, HUB, { event: "reassigned", reason: "declined", clearOnFail: true, ...(planned ? { planner: true } : {}) });
+    this.d.notify(`task ${this.publicTitle(back)} declined${capacity === true ? " (capacity only)" : ""} by ${by}${reason && !this.isPii(back) ? `: ${reason}` : ""}`);
+    // A capacity decline is not in excluded(), so this move's own reroute leaves the decliner out explicitly.
+    return this.assignOwner(back, HUB, { event: "reassigned", reason: "declined", clearOnFail: true, ...(capacity === true && task.owner ? { exclude: [task.owner] } : {}), ...(planned ? { planner: true } : {}) });
   }
 
   /** Tasks whose check is queued or running, and the owner it was started for. */

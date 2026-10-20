@@ -45,6 +45,8 @@ export interface HistoryEntry {
   owner?: PeerId | null;
   /** On a decline or an escalation: the owner it was declined for or taken from (#207); later reroutes leave it out. */
   from?: PeerId;
+  /** On a decline: the owner had no capacity right now (#531). Absent on older rows and on a plain refusal, which read as lasting. */
+  capacity?: true;
   /** On a hand-over: the new owner's split profile then (#109); absent when it was unknown. */
   profile?: string;
   /** Structured cause recorded at the operation source, never inferred from note text. */
@@ -302,7 +304,7 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "withheld" | "reviewCost" | "reviewContext" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "capacity" | "withheld" | "reviewCost" | "reviewContext" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
@@ -318,7 +320,7 @@ export class Board {
     }
     if (patch.state === "backlog" && taskHasStarted(task) && !untouchedReturn) throw new Error(`task #${id}: started work cannot return to backlog`);
     const reviewMetadata = reviewerHistory(extra);
-    const history = [...task.history, { at: Date.now(), by, event, ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.withheld && note ? { withheld: true as const } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}) }];
+    const history = [...task.history, { at: Date.now(), by, event, ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.withheld && note ? { withheld: true as const } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}) }];
     this.taskWrite(() => this.db
       .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ? WHERE id = ?")
       .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), id));
