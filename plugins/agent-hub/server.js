@@ -7805,7 +7805,7 @@ var init_hub_tools = __esm(() => {
   refs = {
     type: "object",
     description: "where the work lives",
-    properties: { branch: str2, commit: str2, paths: { type: "array", items: str2 } },
+    properties: { repo: { type: "string", description: "owner/name repository slug or checkout path; set for work in another repository" }, branch: str2, commit: str2, paths: { type: "array", items: str2 } },
     additionalProperties: false
   };
   costPlanProperties = {
@@ -7842,8 +7842,8 @@ var init_hub_tools = __esm(() => {
     tool("hub_release_configure", "Configure/activate a release train or record a hotfix cause. Planner/person only. At most one train is active/frozen; planning rows are future trains.", { id, revision: { type: "integer", minimum: 0 }, state: { type: "string", enum: ["active"] }, cut: { type: "integer", minimum: 1 }, hotfix: { type: "object", properties: { cause: { type: "string", enum: ["loss", "security_privacy", "upgrade_start_blocked", "core_flow_no_workaround"] }, reason: { type: "string", minLength: 1, maxLength: 1000 } }, required: ["cause", "reason"], additionalProperties: false } }, ["id", "revision"]),
     tool("hub_release_cut", "Freeze an active release's approved scope after host resource admission and fresh peer quota checks. Unknown evidence defers; no publish, tag, upgrade or authorization.", { id, revision: { type: "integer", minimum: 0 } }, ["id", "revision"]),
     tool("hub_release_list", "Read public release scope and planned/actual dates for phased planning. Configured planners only.", {}),
-    tool("hub_task_propose", "Put a piece of work on the shared task board. The hub assigns an owner by class (routing.toml) unless you name one. Classes: plan, implement, bulk_edit, test, review, summarize, triage. Name the class when you know it; without one the hub tries to pick it. Name yourself as owner to claim work nobody assigned you: it starts in progress. Put the paths the work touches in refs, and when you claim work, a plan; the hub says when they overlap another open task.", { title: str2, class: { type: "string", enum: ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] }, detail: str2, role: { type: "string", description: "catalog role id for this task class; guidance only, no routing or authority change" }, refs, plan, owner: { type: "string", description: "peer id; yours to claim the work, omit to let the hub route it. With after, the owner is reserved: offered the task first once it is ready" }, after: { type: "array", items: { type: "integer" }, description: "ids of tasks that must be approved first; until then this one waits, offered to nobody, and cannot be claimed" }, backlog: { type: "boolean", description: "stage unoffered work; owner is only a reservation, even when naming yourself" }, urgent: { type: "boolean", description: "hand it over even when its owner is paused for quota only briefly" }, goal: { type: "string", description: "id of this project's long-term task (ahub goal list) the work is part of" } }, ["title"]),
-    tool("hub_task_accept", "Take a task that was assigned to you, with your plan for it.", { id, plan: acceptPlan }, ["id"]),
+    tool("hub_task_propose", "Put a piece of work on the shared task board. The hub assigns an owner by class (routing.toml) unless you name one. Classes: plan, implement, bulk_edit, test, review, summarize, triage. Name the class when you know it; without one the hub tries to pick it. Name yourself as owner to claim work nobody assigned you: it starts in progress. Put the paths the work touches in refs, set refs.repo for work in another repository, and when you claim work, a plan; the hub says when they overlap another open task.", { title: str2, class: { type: "string", enum: ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] }, detail: str2, role: { type: "string", description: "catalog role id for this task class; guidance only, no routing or authority change" }, refs, plan, owner: { type: "string", description: "peer id; yours to claim the work, omit to let the hub route it. With after, the owner is reserved: offered the task first once it is ready" }, after: { type: "array", items: { type: "integer" }, description: "ids of tasks that must be approved first; until then this one waits, offered to nobody, and cannot be claimed" }, backlog: { type: "boolean", description: "stage unoffered work; owner is only a reservation, even when naming yourself" }, urgent: { type: "boolean", description: "hand it over even when its owner is paused for quota only briefly" }, goal: { type: "string", description: "id of this project's long-term task (ahub goal list) the work is part of" } }, ["title"]),
+    tool("hub_task_accept", "Take a task that was assigned to you, with your plan for it. Set refs.repo for work in another repository; acceptance may correct only that repository metadata.", { id, plan: acceptPlan, refs: { ...refs, properties: { repo: refs.properties.repo } } }, ["id"]),
     tool("hub_task_cancel", "Cancel unaccepted proposed/backlog work you proposed as its configured planner; accepted work is person-only. Keeps history and does not stop a native turn or delete files.", { id, reason: str2, superseded_by: str2, revision: { type: "integer", minimum: 0 } }, ["id", "reason"]),
     tool("hub_task_decline", "Pass on a task assigned to you; the hub offers it to the next peer. A plain decline is a lasting refusal: you are never offered this task again. Pass capacity: true when you only have no room right now: you are skipped for this move only, and a later reroute or planner pull may offer it to you again.", { id, reason: str2, capacity: { type: "boolean" } }, ["id"]),
     tool("hub_task_done", "Mark your task finished. It goes to its reviewer with your summary and refs; no duplicate hub_send chat is needed. When the project configures a check for its class, the hub runs it first and the result comes as a task message: a failed check keeps the task with you.", { id, summary: { type: "string", description: "what changed, why, and the check you ran with its result" }, refs }, ["id", "summary"]),
@@ -18618,6 +18618,12 @@ init_board();
 init_envelope();
 init_routing();
 init_project();
+
+// src/hub/task-repository.ts
+init_git();
+init_project();
+init_spec_read();
+var GIT_MAX_BYTES = 16 * 1024;
 
 // src/hub/main-checkout.ts
 init_child_process();
