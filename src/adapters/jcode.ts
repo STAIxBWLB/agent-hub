@@ -60,6 +60,10 @@ function savedSession(home: string, id: string): boolean {
 }
 
 /** Set on every owned jcode process: no Claude MCP import, and no native telemetry (jcode-telemetry-core is_enabled, #529). */
+/** A TUI launch option that differs from the running owned session; carries the flag name only. */
+export class JcodeOptionMismatch extends Error {
+  constructor(readonly option: "--session-id" | "--model" | "--provider-profile") { super("Jcode launch options differ from its running session"); }
+}
 const JCODE_OWNED_ENV = { JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" } as const;
 /** The oldest native release accepted; its ACP, serve and MCP contract was verified live on 0.98.1 (docs/verification). */
 export const JCODE_MIN_VERSION = "0.98.0";
@@ -250,9 +254,11 @@ export class JcodePeer extends AcpPeer {
       !socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino || typeof sessionId !== "string") throw new Error("owned Jcode launch is unavailable");
     const binding = { launchId: this.launchId, sessionId };
     if (expected && (expected.launchId !== binding.launchId || expected.sessionId !== binding.sessionId)) throw new Error("Jcode launch changed");
-    if ((options.sessionId !== undefined && options.sessionId !== sessionId) ||
-      (options.model !== undefined && options.model !== this.jcode.launchModel) ||
-      (options.providerProfile !== undefined && options.providerProfile !== this.jcode.providerProfile)) throw new Error("Jcode launch options differ from its running session");
+    // Names the option, never its value: the flag is the person's own and carries nothing private (#559).
+    const differs = options.sessionId !== undefined && options.sessionId !== sessionId ? "--session-id"
+      : options.model !== undefined && options.model !== this.jcode.launchModel ? "--model"
+      : options.providerProfile !== undefined && options.providerProfile !== this.jcode.providerProfile ? "--provider-profile" : undefined;
+    if (differs) throw new JcodeOptionMismatch(differs);
     if (!savedSession(this.jcode.home, sessionId)) return { state: "waiting", binding };
     const [cmd, ...args] = jcodeTuiCommand(this.jcode.command, this.socket, sessionId, this.jcode.launchModel, this.jcode.providerProfile);
     return { state: "ready", binding, launch: { cmd: cmd!, args, env: { JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, ...JCODE_OWNED_ENV } } };

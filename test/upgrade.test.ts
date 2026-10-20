@@ -4,7 +4,7 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { abortRecovery, abortRefusal, createOperation, disposeRecovery, FinalRefusal, liveProjects, nextActions, nextChoices, planFingerprint, publicOperation, recordRestart, recoveryCommand, registeredProjects, runRecovery, type Inspection, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
+import { abortRecovery, abortRefusal, createOperation, disposeRecovery, FinalRefusal, liveProjects, nextActions, nextChoices, planFingerprint, publicOperation, recordRecoveryDelegation, recordRestart, recoveryCommand, registeredProjects, runRecovery, type Inspection, type ProjectProgress, type RecoveryDriver, type RecoveryOperation, type UpgradePlan } from "../src/cli/upgrade.ts";
 import { acquireRecoveryLock, activeOperation, claimRunner, readOperation, recoveryLock, recoveryRunner, releaseRecoveryLock, writeOperation } from "../src/hub/recovery-store.ts";
 import { exactVersion, packageDigest, registryRelease } from "../src/cli/recovery-package.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
@@ -1550,4 +1550,95 @@ for (const wrapped of [false, true]) test(`#466 coordinator persists a proven ${
   const later = await runRecovery(f.operation.id, f.driver, f.home);
   expect(later.phase).toBe("blocked"); expect(later.presentationCause).toBeUndefined();
   expect(later.error).toContain(wrapped ? "ordinary repair failure" : "unknown unrelated failure");
+});
+
+
+// #410: v0.12.28 src/cli/upgrade.ts, blob 584fc315c1d0d038799f6acd837796792397b68f, lines 365/378.
+// It re-reads the complete operation and saves the same object, preserving additive metadata.
+function legacyRecoverySave(id: string, home: string) {
+  let op = readOperation<RecoveryOperation>(id, home);
+  const driver = { now: () => 1 };
+  const save = () => { op.updatedAt = driver.now(); writeOperation(id, op, home); };
+  op.step = "legacy-resume";
+  save();
+}
+
+test("#410 initiating delegation is retained before runtime effects and through legacy save and resume", async () => {
+  const f = fixture("upgrade", ["alpha"]);
+  releaseRecoveryLock(f.operation.id, f.home);
+  const op = createOperation(f.plan, PACKAGE_ROOT, f.home, { peer: "codex", command: "upgrade" });
+  const initial = readOperation<RecoveryOperation>(op.id, f.home).delegatedAudits;
+  expect(initial).toEqual([{ at: expect.any(Number), peer: "codex", command: "upgrade", operationId: op.id }]);
+  expect(f.calls).toEqual([]);
+  legacyRecoverySave(op.id, f.home);
+  expect(readOperation<RecoveryOperation>(op.id, f.home).delegatedAudits).toEqual(initial);
+  recordRecoveryDelegation(op.id, { peer: "kimi", command: "recovery resume" }, f.home);
+  const stage = f.driver.stage;
+  f.driver = { ...f.driver, liveTestPeer: "kimi", stage: async value => {
+    expect(readOperation<RecoveryOperation>(op.id, f.home).delegatedAudits?.map(row => row.command))
+      .toEqual(["upgrade", "recovery resume", "recovery-run"]);
+    return stage(value);
+  } };
+  const result = await runRecovery(op.id, f.driver, f.home);
+  expect(result.phase).toBe("completed");
+  expect(result.delegatedAudits?.[0]).toEqual(initial?.[0]);
+  expect(publicOperation(result).delegatedAudits).toEqual(result.delegatedAudits);
+});
+
+test("#410 delegated abort and disposal retain caller before their first effect", async () => {
+  for (const action of ["abort", "dispose"] as const) {
+    const f = fixture("restart", ["alpha"]);
+    f.states.get("alpha")!.recovery = { operationId: f.operation.id, phase: "prepared", ready: true };
+    f.driver = { ...f.driver, liveTestPeer: "codex", abort: async () => {
+      expect(readOperation<RecoveryOperation>(f.operation.id, f.home).delegatedAudits?.[0])
+        .toEqual({ at: expect.any(Number), peer: "codex", command: `recovery ${action}`, operationId: f.operation.id });
+      f.calls.push("abort-effect");
+    } };
+    if (action === "abort") await abortRecovery(f.operation.id, f.driver, f.home);
+    else await disposeRecovery(f.operation.id, { stop: true }, "finish", f.driver, f.home);
+    expect(f.calls).toContain("abort-effect");
+  }
+});
+
+test("#410 retained evidence never grants delegation to a later person runner", async () => {
+  const f = fixture("restart", ["alpha"]);
+  recordRecoveryDelegation(f.operation.id, { peer: "codex", command: "restart" }, f.home);
+  const result = await runRecovery(f.operation.id, f.driver, f.home);
+  expect(result.delegatedAudits?.map(row => row.command)).toEqual(["restart"]);
+  expect(f.driver.liveTestPeer).toBeUndefined();
+});
+
+test("#410 operation audit refuses malformed evidence and full journals before effects", async () => {
+  const invalidRows = [
+    { at: 1, peer: "codex", command: "upgrade extra", operationId: "same" },
+    { at: 1, peer: "bad peer", command: "upgrade", operationId: "same" },
+    { at: -1, peer: "codex", command: "upgrade", operationId: "same" },
+    { at: 1, peer: "codex", command: "upgrade", operationId: "different" },
+    { at: 1, peer: "codex", command: "upgrade", operationId: "same", text: "not ids" },
+  ];
+  for (const invalid of invalidRows) {
+    const f = fixture("restart", ["alpha"]);
+    f.operation.delegatedAudits = [{ ...invalid, operationId: invalid.operationId === "same" ? f.operation.id : invalid.operationId }] as RecoveryOperation["delegatedAudits"];
+    writeOperation(f.operation.id, f.operation, f.home);
+    expect(() => recordRecoveryDelegation(f.operation.id, { peer: "codex", command: "restart" }, f.home)).toThrow("delegation audit");
+    await expect(runRecovery(f.operation.id, { ...f.driver, liveTestPeer: "codex" }, f.home)).rejects.toThrow("delegation audit");
+    expect(f.calls).toEqual([]);
+  }
+  const f = fixture("restart", ["alpha"]);
+  f.operation.delegatedAudits = Array.from({ length: 256 }, () => ({ at: 1, peer: "codex", command: "restart" as const, operationId: f.operation.id }));
+  writeOperation(f.operation.id, f.operation, f.home);
+  const before = readFileSync(join(f.home, "recovery", `${f.operation.id}.json`), "utf8");
+  expect(() => recordRecoveryDelegation(f.operation.id, { peer: "codex", command: "restart" }, f.home)).toThrow("delegation audit");
+  await expect(runRecovery(f.operation.id, { ...f.driver, liveTestPeer: "codex" }, f.home)).rejects.toThrow("delegation audit");
+  expect(f.calls).toEqual([]);
+  expect(readFileSync(join(f.home, "recovery", `${f.operation.id}.json`), "utf8")).toBe(before);
+});
+
+test("#410 external delegation append refuses a held runner without overwriting its receipt", () => {
+  const f = fixture("restart", ["alpha"]);
+  const release = claimRunner(f.operation.id, f.home);
+  try {
+    expect(() => recordRecoveryDelegation(f.operation.id, { peer: "codex", command: "recovery resume" }, f.home)).toThrow();
+    expect(readOperation<RecoveryOperation>(f.operation.id, f.home).delegatedAudits).toBeUndefined();
+  } finally { release(); }
 });

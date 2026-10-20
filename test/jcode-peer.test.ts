@@ -249,7 +249,8 @@ test("only a console can resolve the same owned Jcode launch, and a new session 
 
 
 test("the actual person CLI waits for native persistence and executes the TUI with Jcode identity while ACP stays alive (#464)", async () => {
-  const dir = root(), stateDir = join(dir, ".agenthub", "state"), home = join(dir, "home"), record = join(dir, "record");
+  // The CLI resolves --project to the real path; macOS's default TMPDIR is a symlink (#559 N6).
+  const dir = realPath(root()), stateDir = join(dir, ".agenthub", "state"), home = join(dir, "home"), record = join(dir, "record");
   mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}"); mkdirSync(join(dir, ".agenthub"));
   expect(Bun.spawnSync(["git", "init", "--quiet", dir], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } }).exitCode).toBe(0);
   const command = [...fake, "--save-native-session", "--record", record];
@@ -364,4 +365,27 @@ test("the bus steers an important message into a busy Jcode through the owned so
   await until(() => existsSync(record) && readFileSync(record, "utf8").includes("STEER-ME-NOW"));
   await until(() => daemon.bus.queued("jcode") === 0 && daemon.bus.peers.get("jcode")!.state === "idle");
   expect(readFileSync(record, "utf8").match(/"kind":"soft_interrupt"/g)).toHaveLength(1);
+
+test("a conductor start of an attached Jcode answers already and opens no terminal; the console's start still reopens one (#559 N1)", async () => {
+  const dir = realPath(root()), stateDir = join(dir, "state"), home = join(dir, "home"), opened: string[][] = [];
+  mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}"); mkdirSync(join(dir, ".agenthub"));
+  configureJcodeMcp(dir, stateDir, join(import.meta.dir, "../plugins/agent-hub/server.js"));
+  const terminal = () => ({ available: () => ({ ok: true as const, via: "fixture" }), open: async (_title: string, argv: readonly string[]) => { opened.push([...argv]); return { ok: true as const, via: "fixture" }; } });
+  const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, terminal,
+    config: { ...DEFAULT_CONFIG, jcode_cmd: [...fake, "--save-native-session"], jcode_home: home, roster: { jcode: true }, roles: { ...DEFAULT_CONFIG.roles, claude: ["conductor"] },
+      memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
+  cleanups.push(() => daemon.stop());
+  const consoleClient = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => consoleClient.close());
+  const lead = await ControlClient.connect(stateDir, { role: "tools", peer: "claude" }); cleanups.push(() => lead.close());
+  expect((await consoleClient.request({ t: "start", peer: "jcode", args: { mode: "headless" } })).ok).toBe(true);
+  expect(daemon.bus.peers.get("jcode")?.state).not.toBe("offline");
+  for (let i = 0; i < 2; i++) {
+    const reply = await lead.request({ t: "task", op: "hub_peer_start", args: { peer: "jcode" } });
+    expect(reply.ok).toBe(true);
+    expect(JSON.parse(reply.text)).toMatchObject({ peer: "jcode", mode: "tui", already: true });
+  }
+  expect(opened).toEqual([]);
+  const person = await consoleClient.request({ t: "peer_start", peer: "jcode" });
+  expect(person.ok).toBe(true); expect(person.opened).toBe("fixture"); expect(person.already).toBeUndefined();
+  expect(opened).toHaveLength(1);
 });

@@ -22,7 +22,7 @@ import { qwenSessionId } from "../hub/crash.ts";
 import { isPermissionMode } from "../hub/permission-mode.ts";
 import { parseSettingText, settingDef, settingText, type SettingRow } from "../hub/settings.ts";
 import { startModeOf } from "../hub/start-mode.ts";
-import { currentRouting } from "../hub/routing.ts";
+import { OVERLAY_FILE, parseOverlay, parseRouting, routingText, type Routing, type RoutingOverlay } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
@@ -50,7 +50,7 @@ import { createInterface } from "node:readline/promises";
 import { createInterface as lineReader } from "node:readline";
 import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, recoveryLock, recoveryRunner, signedRunner, stopSignedRunner, supportsAction } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
-import { abortRecovery, createOperation, disposeRecovery, repairedFreshSession, reattachRecovery, liveProjects, nextChoices, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation, type Inspection } from "./upgrade.ts";
+import { abortRecovery, createOperation, disposeRecovery, recordRecoveryDelegation, repairedFreshSession, reattachRecovery, liveProjects, nextChoices, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation, type Inspection } from "./upgrade.ts";
 import { endPlannedPeer, makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts";
 import { operationScreen, planScreen, type ScreenIO, type UpgradeHost } from "./upgrade-interactive.ts";
@@ -74,7 +74,7 @@ import { summarize, summarizeByTask } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 import { pathWarnings } from "../hub/conflicts.ts";
 import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, LIVE_TEST_PERSON_REFUSAL, liveTestRefusal, peerCommandRefusal } from "./identity.ts";
-import { recordCliAudit } from "./identity-audit.ts";
+import { recordCliAudit, recordDelegatedCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
 import { outputWidth, renderRoster, renderStatus, renderBoard, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "./output.ts";
@@ -167,7 +167,7 @@ const delegatedPeer = liveTest && caller.role === "tools" && commandAccess !== "
 const identity = delegatedPeer ? { role: "console" as const } : caller;
 function audit(outcome: "run" | "refused" | "invalid"): void {
   if (caller.role === "console") return;
-  try { recordCliAudit(stateDir, caller.role === "tools" ? caller.peer : "unknown", commandLabel, delegatedPeer && outcome === "run" ? "delegated" : outcome); }
+  try { recordCliAudit(stateDir, caller.role === "tools" ? caller.peer : "unknown", commandLabel, outcome); }
   catch {
     if (delegatedPeer) fail("live-test delegation audit unavailable; nothing was executed");
     console.error("ahub: CLI audit could not be recorded (outbox unavailable or full)");
@@ -176,7 +176,42 @@ function audit(outcome: "run" | "refused" | "invalid"): void {
 if (identity.role === "invalid") { audit("invalid"); fail(`${identity.reason}; use ahub console or a terminal with no agent markers`); }
 if (delegationRefused) { audit("refused"); fail(LIVE_TEST_PERSON_REFUSAL); }
 if (identity.role === "tools" && commandAccess === "console") { audit("refused"); fail(peerCommandRefusal(identity.peer, commandLabel)); }
-if (identity.role === "tools" || delegatedPeer) audit("run");
+// Recovery keeps its authoritative delegation audit in the operation receipt, independent of an old source drain.
+// With no daemon manifest, local bootstrap commands have no consumer to negotiate with; use the compatible outcome.
+const recoveryAudit = ["upgrade", "restart", "recovery", "recovery-run"].includes(cmd);
+const noAuditConsumer = !existsSync(join(stateDir, "status.json")) && !existsSync(join(stateDir, "hub.pid"));
+let delegatedAuditHub: ControlClient | undefined;
+let delegatedConnectionTaken = false;
+let releaseAuditInstance: (() => void) | undefined;
+if (delegatedPeer && !recoveryAudit && !noAuditConsumer) {
+  let published = false;
+  try {
+    const auditId = await recordDelegatedCliAudit(stateDir, delegatedPeer, commandLabel, async () => {
+      // The validated invocation already has operational console authority; a tools hello would add a roster gate.
+      delegatedAuditHub = await ControlClient.connect(stateDir, { role: "console", projectRoot: cwd });
+      return delegatedAuditHub.instanceId ? delegatedAuditHub.features : [];
+    });
+    published = true;
+    releaseAuditInstance = ControlClient.pinInstance(stateDir, delegatedAuditHub!.instanceId!);
+    assertDelegatedAuditConsumer();
+    const retained = await delegatedAuditHub!.request({ t: "cli_audit_ack", auditId }, 3000);
+    if (retained.ok !== true || retained.auditId !== auditId || retained.instanceId !== delegatedAuditHub!.instanceId) {
+      throw new Error("live-test audit retention was not confirmed; nothing was executed; inspect the hub or upgrade it before retrying");
+    }
+  } catch (error) {
+    releaseAuditInstance?.(); delegatedAuditHub?.close();
+    if (published) {
+      try { recordCliAudit(stateDir, delegatedPeer, commandLabel, "refused"); }
+      catch { fail("live-test delegation audit unavailable; nothing was executed"); }
+    }
+    fail((error as Error).message);
+  }
+} else if (identity.role === "tools" || delegatedPeer) audit("run");
+function assertDelegatedAuditConsumer(): void {
+  if (delegatedAuditHub && ((!delegatedConnectionTaken && !delegatedAuditHub.isOpen) || readControl(stateDir)?.instanceId !== delegatedAuditHub.instanceId)) {
+    throw new Error("delegated audit consumer changed; refusing further actions; inspect the result before retrying");
+  }
+}
 // Forward only to ahub's own continuation commands, never to native agent argv or an environment flag.
 const liveTestArgs = liveTest ? ["--live-test"] : [];
 const invokedFrom = process.cwd(); // relative paths a person types (a bench suite) are theirs, not the project's
@@ -199,7 +234,12 @@ function printOutput(lines: Span[][], color: boolean): void {
 }
 const unattendedEnv = process.env.AGENTHUB_UNATTENDED === "1";
 const lifecycle = { inspectProject, startProject, stopProject };
-const connect = () => ControlClient.connect(stateDir, identity.role === "tools" ? { role: "tools", peer: identity.peer, projectRoot: cwd } : { role: "console", projectRoot: cwd });
+const connect = async () => {
+  assertDelegatedAuditConsumer();
+  if (delegatedAuditHub && !delegatedConnectionTaken) { delegatedConnectionTaken = true; return delegatedAuditHub; }
+  return ControlClient.connect(stateDir, identity.role === "tools" ? { role: "tools", peer: identity.peer, projectRoot: cwd }
+    : { role: "console", projectRoot: cwd, ...(delegatedAuditHub ? { instanceId: delegatedAuditHub.instanceId } : {}) });
+};
 
 function registeredProject(): Project {
   const registry = new Registry();
@@ -509,7 +549,7 @@ function upgradeHost(kind: "restart" | "upgrade", version: string): UpgradeHost 
       if (current.fingerprint !== plan.fingerprint) throw new Error("the plan changed during review; review it again");
       // The check above takes seconds: a Ctrl+C in that time is still a no.
       if (interrupted()) throw new Error("interrupted; nothing was started");
-      const operation = createOperation(plan, preserveSource(plan));
+      const operation = createOperation(plan, preserveSource(plan), undefined, delegatedPeer ? { peer: delegatedPeer, command: kind } : undefined);
       spawnRecovery(operation, true);
       return operation;
     },
@@ -583,7 +623,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   const current = await makeUpgradePlan(kind, plan.version, kind === "restart" ? cwd : undefined);
   if (current.fingerprint !== plan.fingerprint) fail("plan changed during review; run the command again");
   const sourceRoot = preserveSource(plan);
-  const operation = createOperation(plan, sourceRoot);
+  const operation = createOperation(plan, sourceRoot, undefined, delegatedPeer ? { peer: delegatedPeer, command: kind } : undefined);
   if (display.json) { spawnRecovery(operation, true); console.log(JSON.stringify(publicOperation(operation), null, 2)); }
   else spawnRecovery(operation, false, humanRecovery(false) ? display.options : undefined);
 }
@@ -707,8 +747,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       else if (humanRecovery(false)) printRecoveryStatus(operation, `runner ${runner} is still working on this operation`, display.options);
       else console.log(`runner ${runner} is still working on this operation; ${recoveryCommand(operation, "status")}`);
     }
-    else if (display.json) { spawnRecovery(operation, true); console.log(JSON.stringify(publicOperation(operation), null, 2)); }
-    else spawnRecovery(operation, false, humanRecovery(false) ? display.options : undefined);
+    else {
+      if (delegatedPeer) operation = recordRecoveryDelegation(operation.id, { peer: delegatedPeer, command: "recovery resume" });
+      if (display.json) { spawnRecovery(operation, true); console.log(JSON.stringify(publicOperation(operation), null, 2)); }
+      else spawnRecovery(operation, false, humanRecovery(false) ? display.options : undefined);
+    }
   },
   "recovery-run": async () => {
     if (args.length !== 1 || process.env.AGENTHUB_RECOVERY_OPERATION !== args[0]) fail("recovery-run is an internal command");
@@ -1887,6 +1930,8 @@ const commands: Record<string, () => Promise<void> | void> = {
       const config = loadConfig(cwd);
       row(!config.ignored, "config", config.ignored ? `${config.ignored.join("; ")} (move them to .agenthub/config.local.json)` : "no machine-local field ignored");
       for (const line of config.retired ?? []) row(false, "retired setting", line);
+      const { routing, errors: routingErrors } = inspectDoctorRouting(cwd);
+      for (const error of routingErrors) row(false, "routing", error);
       for (const probe of nativeDoctorOptionalProbes(config)) {
         if (probe.kind === "source-identity") row(verifiedJcodeCommand(probe.command, cwd), probe.name, probe.detail);
         else if (probe.kind === "jcode-mcp") {
@@ -1903,9 +1948,10 @@ const commands: Record<string, () => Promise<void> | void> = {
       const gateway = await omni.base();
       row(gateway ? true : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? false : undefined, "omniroute", gateway ? `${new URL(gateway).host} healthy` : config.omniroute.urls.length || process.env.AGENTHUB_OMNIROUTE_URL ? "no candidate reachable (VPN off?); ahub local cannot run" : "not configured: set omniroute.urls in .agenthub/config.local.json (any OpenAI-compatible gateway); ahub local cannot run");
       row(!!omni.apiKey(), "omniroute key", omni.apiKey() ? "present" : "missing: set OMNIROUTE_API_KEY or omniroute.api_key_file in .agenthub/config.local.json");
-      if (gateway && omni.apiKey()) {
+      if (!routing) {
+        row(undefined, "routing models", "routing could not be read");
+      } else if (gateway && omni.apiKey()) {
         try {
-          const routing = currentRouting(cwd);
           const aliases = new Set([routing.local.fixed_model, ...Object.values(routing.classes).flatMap(policy => policy.fixed_model ? [policy.fixed_model] : []),
             ...Object.values(routing.hub_routes ?? {}).flatMap(route => [route.efficient ?? "fast", route.capable ?? "coding", ...(route.judge ? [route.judge] : [])])]);
           const served = new Set(await omni.models());
@@ -1938,6 +1984,60 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 };
 
+function sanitizeRoutingParseError(file: "routing.toml" | "routing.local.toml", error: unknown): string {
+  const raw = ((error as Error)?.message || "invalid TOML").split("\n")[0]!.trim();
+  const cleaned = raw
+    .replace(/^(TOML Parse error: Strings must be quoted): ".*"$/, "$1")
+    .replace(/^(TOML Parse error: Cannot redefine (?:key|table)) '.*'$/, "$1")
+    .replace(/^Invalid regular expression: \/.*\/[a-z]*: /, "Invalid regular expression: ");
+  return cleaned.startsWith(`${file}:`) ? `.agenthub/${cleaned}`
+    : cleaned.startsWith(`.agenthub/${file}:`) ? cleaned
+    : `.agenthub/${file}: ${cleaned}`;
+}
+
+function inspectDoctorRouting(cwd: string): { routing?: Routing; errors: string[] } {
+  const errors: string[] = [];
+  let baseText: string | undefined;
+  try {
+    baseText = readFileSync(join(cwd, ".agenthub", "routing.toml"), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") baseText = routingText(cwd);
+    else errors.push(sanitizeRoutingParseError("routing.toml", error));
+  }
+  let baseRouting: Routing | undefined;
+  if (baseText !== undefined) {
+    try {
+      baseRouting = parseRouting(baseText);
+    } catch (error) {
+      errors.push(sanitizeRoutingParseError("routing.toml", error));
+    }
+  }
+  let overlayText: string | undefined;
+  try {
+    overlayText = readFileSync(join(cwd, ".agenthub", OVERLAY_FILE), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      errors.push(sanitizeRoutingParseError("routing.local.toml", error));
+    }
+  }
+  let overlay: RoutingOverlay | undefined;
+  if (overlayText !== undefined) {
+    try {
+      overlay = parseOverlay(overlayText);
+    } catch (error) {
+      errors.push(sanitizeRoutingParseError("routing.local.toml", error));
+    }
+  }
+  if (errors.length || !baseText) return { errors };
+  if (overlay === undefined) return { routing: baseRouting, errors };
+  try {
+    return { routing: parseRouting(baseText, overlay), errors };
+  } catch (error) {
+    errors.push(sanitizeRoutingParseError("routing.local.toml", error));
+    return { errors };
+  }
+}
+
 async function runConductorCommand(): Promise<void> {
   let op: string;
   let input: Record<string, unknown>;
@@ -1965,8 +2065,9 @@ async function runConductorCommand(): Promise<void> {
 }
 const run = identity.role === "tools" && commandAccess === "conductor" ? runConductorCommand : (Object.hasOwn(commands, cmd) ? commands[cmd] : undefined) ?? (() => fail(`unknown command "${cmd}"; run ahub help`));
 try {
+  assertDelegatedAuditConsumer(); // Local command paths must not begin after the authenticated consumer was replaced either.
   await run();
 } catch (e) {
   audit("refused");
   fail((e as Error).message);
-}
+} finally { releaseAuditInstance?.(); delegatedAuditHub?.close(); }

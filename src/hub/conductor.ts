@@ -240,7 +240,8 @@ export class Conductor {
       if (definitionOf(start.peer, instances)?.kind !== start.peer && !this.hooks.known(start.peer)) throw new PreEffectToolRefusal(`unknown peer: ${start.peer}`);
       const result = await this.hooks.start(start.peer);
       const opened = result && typeof result === "object" && typeof (result as { opened?: unknown }).opened === "string" ? { opened: (result as { opened: string }).opened } : {};
-      emit({ peer: start.peer }); return { ...start, ...opened };
+      const already = result && typeof result === "object" && (result as { already?: unknown }).already === true ? { already: true } : {};
+      emit({ peer: start.peer }); return { ...start, ...opened, ...already };
     }
     const peer = peerId(args.peer, true);
     if (!this.hooks.known(peer)) throw new PreEffectToolRefusal(`unknown peer: ${peer}`);

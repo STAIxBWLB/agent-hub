@@ -20,7 +20,7 @@ import { buildReviewBrief } from "./review-brief.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
 import { ActivityRing } from "./activity.ts";
-import { JcodePeer } from "../adapters/jcode.ts";
+import { JcodeOptionMismatch, JcodePeer } from "../adapters/jcode.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc, readSpecEdit, sdlcGh } from "./sdlc.ts";
 import { claudeStateFile, ownTerminalRow, pathEvidence, transcriptPersisted } from "./claude-state.ts";
@@ -1966,6 +1966,24 @@ export async function startDaemon(opts: DaemonOptions) {
   let claudeUsageSeen = 0;
   const claudeContextSeen = new Map<string, string>();
   const contextTailSeen = new Map<PeerId, string>();
+  const retainedCliAudits = new Set<string>();
+  function drainCliAuditsNow(): void {
+    for (const audit of drainCliAudits(opts.stateDir)) {
+      const delegated = audit.outcome === "delegated";
+      const refused = audit.outcome !== "run" && !delegated;
+      if (!event({ type: "agent_cli", peer: audit.peer, command: audit.command, refused, ...(delegated ? { delegated: true } : {}) })) {
+        throw new Error("CLI audit event was not retained");
+      }
+      retainedCliAudits.add(audit.id); // Only after the event append succeeded.
+      // ponytail: 4096 live-instance acknowledgements; eviction or restart fails closed. Durable keyed receipts can extend this window.
+      if (retainedCliAudits.size > 4096) retainedCliAudits.delete(retainedCliAudits.values().next().value!);
+      try {
+        notify(refused ? `${audit.peer} refused ahub ${audit.command}` : delegated
+          ? `${audit.peer} ran ahub ${audit.command} with delegated live-test console authority`
+          : `${audit.peer} ran ahub ${audit.command} as ${audit.peer}`);
+      } catch { /* The audit event is retained even if its advisory notice cannot be delivered. */ }
+    }
+  }
   const intervals = [
     setInterval(() => {
       void refreshRunner().catch(() => {});
@@ -1976,14 +1994,7 @@ export async function startDaemon(opts: DaemonOptions) {
       feedBudgetPauses();
       supervision.checkRound();
       try {
-        for (const audit of drainCliAudits(opts.stateDir)) {
-          const delegated = audit.outcome === "delegated";
-          const refused = audit.outcome !== "run" && !delegated;
-          event({ type: "agent_cli", peer: audit.peer, command: audit.command, refused, ...(delegated ? { delegated: true } : {}) });
-          notify(refused ? `${audit.peer} refused ahub ${audit.command}` : delegated
-            ? `${audit.peer} ran ahub ${audit.command} with delegated live-test console authority`
-            : `${audit.peer} ran ahub ${audit.command} as ${audit.peer}`);
-        }
+        drainCliAuditsNow();
       } catch { log("CLI audit outbox unavailable; inspect state before retrying an agent command"); }
       for (const peer of bus.knownPeers()) {
         contexts.retry(peer, contextSession(peer));
@@ -3340,7 +3351,9 @@ export async function startDaemon(opts: DaemonOptions) {
       if (owner instanceof PiPeer && owner.state !== "offline" && owner.mode === "tui") return { ok: false, error: "Pi runs in a terminal; end it there before starting a headless one", command: "ahub pi --headless" };
       return startPeer(peer, definitionOf(peer)?.start.explicitHeadlessMode ? { mode: "headless", ...(resume ?? {}) } : {});
     }
-    if (owner && owner.state !== "offline" && definitionOf(peer)?.start.daemonPort !== "owned-acp") return { ok: true, already: true, mode };
+    // #559 N1: only the console's own start reopens a frontend on an attached owned-ACP peer. The conductor and the
+    // dashboard answer `already`, so a repeated call never adds another TUI writer to the live session.
+    if (owner && owner.state !== "offline" && !(definitionOf(peer)?.start.daemonPort === "owned-acp" && by === "the console")) return { ok: true, already: true, mode };
     const words = [...startWords(peer, mode)];
     if (resume) words.push(...(resume.sessionFile ? ["--session-file", resume.sessionFile] : ["--session-id", resume.sessionId]), ...(resume.backend ? ["--backend", resume.backend] : []), ...(resume.model ? ["--model", resume.model] : []));
     const command = `ahub ${resume ? words.map(shellQuote).join(" ") : words.join(" ")}`;
@@ -5566,6 +5579,13 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "status":
         return void reply({ t: "status", status: status(c.role === "console") });
+      case "cli_audit_ack": {
+        if (c.role !== "console") return void reply({ ok: false, error: "cli_audit_ack is a console command" });
+        if (typeof msg.auditId !== "string" || !/^[a-f0-9-]{36}$/.test(msg.auditId)) return void reply({ ok: false, error: "invalid audit id" });
+        try { drainCliAuditsNow(); }
+        catch { return void reply({ ok: false, error: "CLI audit was not retained" }); }
+        return void reply({ ok: retainedCliAudits.has(msg.auditId), auditId: msg.auditId, instanceId });
+      }
       case "ui_snapshot":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_snapshot is a console command" });
         if (!Number.isSafeInteger(msg.after ?? 0) || (msg.after ?? 0) < 0) return void reply({ ok: false, error: "invalid cursor" });
@@ -5613,7 +5633,10 @@ export async function startDaemon(opts: DaemonOptions) {
           const options = msg.args ?? {};
           for (const key of ["model", "providerProfile", "sessionId"]) if (options[key] !== undefined && typeof options[key] !== "string") throw new Error("invalid option");
           return void reply({ ok: true, ...owner.tuiLaunch(msg.binding, options) });
-        } catch { return void reply({ ok: false, error: "owned Jcode launch or saved session could not be verified; details withheld" }); }
+        } catch (error) {
+          if (error instanceof JcodeOptionMismatch) return void reply({ ok: false, option: error.option, error: `owned Jcode launch differs from its running session in ${error.option}; start without it or stop jcode first` });
+          return void reply({ ok: false, error: "owned Jcode launch or saved session could not be verified; details withheld" });
+        }
       }
       case "peer_start":
         // #269: a start the hub makes in the peer's start mode, for a console child with no terminal of its own.

@@ -226,7 +226,13 @@ function claudeRestoreFixture(attachedSession: string, onStart?: (message: any, 
     fetch(_request, srv) { return srv.upgrade(_request) ? undefined : new Response("no"); },
     websocket: { message(ws, data) {
       const msg = JSON.parse(String(data));
-      if (msg.t === "hello") { ws.data = msg; ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p-restore", instanceId: "i-target", cwd: root, protocol: PROTOCOL })); }
+      if (msg.t === "hello") { ws.data = msg; ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p-restore", instanceId: "i-target", cwd: root, protocol: PROTOCOL, features: ["cli_audit_delegated"] })); }
+      else if (msg.t === "cli_audit_ack") {
+        const file = join(stateDir, "retained-audits.json");
+        const retained = [...(existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : []), ...drainCliAudits(stateDir)];
+        writeFileSync(file, JSON.stringify(retained));
+        ws.send(JSON.stringify({ rid: msg.rid, ok: retained.some((row: { id: string }) => row.id === msg.auditId), auditId: msg.auditId, instanceId: "i-target" }));
+      }
       else if (msg.t === "start") { onStart?.(msg, ws.data); ws.send(JSON.stringify({ rid: msg.rid, t: "started", ok: true })); }
       else if (msg.t === "status") ws.send(JSON.stringify({ rid: msg.rid, t: "status", ok: true, status: { projectId: "p-restore", instanceId: "i-target", cwd: root, version: VERSION, protocol: PROTOCOL } }));
       else ws.send(JSON.stringify({ rid: msg.rid, t: "recovery", ok: true, recovery: { operationId: "op-restore", phase: "restored", ready: true, peers: { claude: { id: "claude", state: "idle", sessionId: attachedSession } } } }));
@@ -287,7 +293,7 @@ await import(${JSON.stringify(argv[1])});\n`);
     expect(hellos[0]).toMatchObject({ role: "console" });
     expect(starts[0]).toMatchObject({ t: "start", peer: "pi", operationId: f.op.id,
       args: { mode: "headless", backend: "dgx", model: "saved-model", sessionId: "pi-saved" } });
-    expect(drainCliAudits(f.planned.project.stateDir)).toMatchObject([{ peer: "codex", command: "pi", outcome: "delegated" }]);
+    expect(JSON.parse(readFileSync(join(f.planned.project.stateDir, "retained-audits.json"), "utf8"))).toMatchObject([{ peer: "codex", command: "pi", outcome: "delegated" }]);
   } finally {
     if (oldHome === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = oldHome;
     f.cleanup();

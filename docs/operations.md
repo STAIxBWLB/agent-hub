@@ -32,9 +32,27 @@ Person verdicts and user-authored workflow writes are not delegated. Dashboard
 sessions issued through the flag retain operational controls but refuse message
 and task/planning content writes. Use native peer tools for agent-authored work.
 
-Use a CLI/coordinator containing this feature throughout the experiment. Older
-daemons do not understand the new delegated audit outcome; run the candidate
-daemon to capture its delegated event and console notice. This policy does not
+Use a CLI/coordinator containing this feature throughout the experiment. Ordinary
+delegation requires `cli_audit_delegated` in the authenticated running daemon's
+welcome, rather than its protocol number or disk status. Execution reuses that
+connection; all helper connections are pinned to its authenticated instance, and
+local commands check that instance before dispatch. Replacement control
+connections refuse. Before effects, the same daemon must acknowledge the exact
+audit UUID after successfully appending its event; a feature claim or spool write
+alone is insufficient. That retained event survives later consumer replacement,
+including a delayed local setup confirmation. Missing or unavailable
+support refuses before command effects with an upgrade remedy; its refused audit
+uses an outcome older consumers retain. The private pending audit is reserved
+before connecting, so an unavailable outbox still refuses before any connection.
+Upgrade/recovery uses a compatible `run` spool row and stores the authoritative
+delegation in the operation's `delegatedAudits`: peer, closed command label,
+timestamp and operation id. Creation, resume handoff, runner, abort and disposal
+persist this evidence before runtime/target effects, independently of the source
+daemon's drain. Schema-1 receipts retain it through source replacement and resume;
+stored evidence never grants a later invocation authority. The journal is capped
+at 256 entries and refuses further delegated attempts rather than evicting its
+initiator. Local bootstrap commands with no daemon manifest use the compatible
+`run` row too. This policy does not
 change external computer-use restrictions. Recovery staging refuses old targets
 without live-test support before source effects. Delegated headless recovery restores through the ordinary target CLI, carrying
 its operationId on the delegated console connection; existing native ownership
@@ -3142,13 +3160,15 @@ Qwen controlled recovery and automatic crash resume load the recorded conversati
 
 Use `ahub roster add jcode`, then `ahub jcode [--model <alias>] [--provider-profile <name>]`. It opens the native TUI attached to the hub-owned ACP session by default. Use `--mode headless` or `ahub settings set peers.jcode.start_mode headless` to keep headless startup. The launcher reads roster membership from the hub's status reply; a hub older than 0.12.35 does not send it, so the launcher stops with an upgrade-or-restart remedy and starts nothing (#484). The person launcher configures only agent-hub-jcode in .jcode/mcp.json; run ahub init afterwards to ignore the untracked machine-path file. It writes the plugin bundle the running hub reports in `status`, so a CLI from another install no longer leaves a stale entry; `ahub kimi` does the same for Kimi's TUI entry (#502). Conductor/dashboard starts read that entry without editing it. Preview starts nothing, and ahub stop jcode stops only the owned private daemon/ACP groups. jcode_cmd, jcode_home and jcode_provider_profile are machine-local and never editable from settings.
 
-The native TUI opens only after Jcode has saved the selected session. On 0.98.1, `session/new` does not save it; the first real hub turn does. The launcher prints `jcode's TUI opens after its first hub turn; send it work, or Ctrl-C` once and waits for the same owned launch's saved session. Send Jcode work from the hub, or press Ctrl-C to end only the wait. No artificial prompt is sent. A console/conductor start uses a terminal provider to run the same launcher. Without a provider, run its displayed command in your own terminal. Options with no terminal need that manual path.
+The native TUI opens only after Jcode has saved the selected session. On 0.98.1, `session/new` does not save it; the first real hub turn does. The launcher prints `jcode's TUI opens after its first hub turn; send it work, or Ctrl-C` once and waits for the same owned launch's saved session. Send Jcode work from the hub, or press Ctrl-C to end only the wait. No artificial prompt is sent. A console `peer_start` uses a terminal provider to run the same launcher, even while ACP is running; a conductor or dashboard start of an attached Jcode answers `already` and opens nothing (#559). Without a provider, run its displayed command in your own terminal. Options with no terminal need that manual path.
 
 `ahub jcode --dry-run` stays pure and redacted. A person's `--print-command` can show the actual top-level native argv and closed native environment for an already-saved running session; it starts nothing. The private socket/session tuple is not returned to hub tools or status. Native saved-session evidence is read-only and capped at 32 MiB; unsafe, mismatched or larger evidence refuses the TUI launch.
 
 A busy jcode takes an `important` message into its running turn (#572): the hub sends it as a soft interrupt through jcode's own private server socket, which jcode injects at its next tool boundary, so the message no longer waits for the turn to end. The hub never cancels a turn to deliver. Headless Kimi and Qwen have no such path: an `important` message waits, and `ahub status` and the console show `important messages waiting on a busy ACP peer for N min` once it has waited past `budget.stale_min`, so you can decide to stop the peer.
 
 jcode has no switch to choose which MCP servers its `serve` and `acp` load, so the hub-owned jcode starts every server named in `<JCODE_HOME>/mcp.json` and the project's `.jcode/mcp.json`, `.mcp.json` and `.claude/mcp.json`, besides the hub's own (#572). `ahub doctor` lists their names in its `jcode MCP servers` row (names only, from those four files only). To keep a server out, remove it from those files, or point `jcode_home` at a separate home.
+
+Known ceiling (#559): jcode 0.98.1's top-level TUI spawns a shared server, without `--temporary-server` or `--owner-pid`, when nothing answers on the dialed socket at startup or on its reload-handoff reconnect, and no native flag prevents it. A hub stop or an owned-server crash between the launcher's confirm and the TUI's check can leave an unowned jcode server on the private socket under the person's `JCODE_HOME`; stop it by hand. Revisit if upstream adds an owner flag. An option that differs from the running session (`--model`, `--provider-profile`, `--session-id`) is refused by name.
 
 TUI input may interleave with an ACP turn; there is no single-writer guard. Closing the TUI leaves the owned ACP session running, and native policy remains unmanaged. The isolated 0.98.1 transport receipt is [recorded separately](verification/2026-10-20-jcode-tui-0.98.1.md); it is not personal account or real provider verification.
 

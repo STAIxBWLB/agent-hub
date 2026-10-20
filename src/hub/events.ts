@@ -78,7 +78,7 @@ function cutShort(file: string): boolean {
 }
 
 /** An appender that never throws: the state dir can vanish under a running hub, and telemetry must not take it down. */
-export function eventLog(file: string, onFailure?: (e: HubEvent) => void): (e: HubEvent) => void {
+export function eventLog(file: string, onFailure?: (e: HubEvent) => void): (e: HubEvent) => boolean {
   let first = true;
   return (e) => {
     try {
@@ -86,9 +86,12 @@ export function eventLog(file: string, onFailure?: (e: HubEvent) => void): (e: H
       const lead = first && cutShort(file) ? "\n" : "";
       first = false;
       appendFileSync(file, `${lead}${JSON.stringify({ v: EVENTS_SCHEMA, at: new Date().toISOString(), ...e })}\n`);
+      return true;
     } catch {
+      first = true; // A failed append may have left a partial row; recheck its newline before the next event.
       try { onFailure?.(e); } catch { /* telemetry failure reporting is optional too */ }
       // the state dir is gone; the watchdog is stopping the hub
+      return false;
     }
   };
 }
