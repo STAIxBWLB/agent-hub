@@ -985,6 +985,13 @@ test("#601 naming an owner that cannot take the task says why instead of a silen
   expect(tasks.namedOwnerNote(board.get(t.id)!, "codex", "claude")).toBeUndefined();
 });
 
+test("#601 a failed self-claim says why too", async () => {
+  const { tasks } = await setup();
+  const t = await tasks.propose("codex", { title: PII, class: "implement", owner: "codex" });
+  expect(t.owner).toBeNull(); // a self-claim names only itself: routing refuses the cloud peer and offers nobody else
+  expect(tasks.namedOwnerNote(t, "codex", "codex")).toMatch(/^codex was not assigned \(pii\)/);
+});
+
 test("#601 a proposer's assign over a stale reservation of a peer that declined goes through", async () => {
   const { tasks, board } = await setup();
   const a = await tasks.propose("claude", { title: "schema", class: "implement" });

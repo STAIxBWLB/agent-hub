@@ -1797,6 +1797,7 @@ export class Tasks {
         if (mode === "enforce") {
           if (opts.claim && opts.namedOwner === by) stagedClaimGap = gap;
           else {
+            if (opts.refuseNamed && opts.namedOwner) throw new (opts.refuseNamed === "pre" ? PreEffectToolRefusal : Error)(`cannot assign task #${current.id} to ${opts.namedOwner}: ${gap}; planner: call hub_planner_groom then hub_plan_review`); // #601, before the stall write
             this.reportStall(current, { kind: "no-eligible-peer", code: "policy" });
             return current;
           }
@@ -2053,9 +2054,9 @@ export class Tasks {
     if (this.stallView?.key !== key) this.stallView = { key, stalls: this.stallCandidates.rows.filter(({ stall, task, planned }) => stall.cause.kind === "cancelled-dependency" || !(planned ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.health() })).owner).map(({ stall }) => stall) };
     return structuredClone(this.stallView.stalls);
   }
-  /** Why a proposal's named owner did not get it, from the stall its proposal recorded (#601); undefined when it did. */
+  /** Why a proposal's named owner (a self-claim included) did not get it, from the stall its proposal recorded (#601); undefined when it did. */
   namedOwnerNote(task: Task, named: PeerId | undefined, by: PeerId): string | undefined {
-    if (!named || named === by || task.owner || task.state !== "proposed") return undefined;
+    if (!named || task.owner || task.state !== "proposed") return undefined;
     const stall = this.d.board.stalls().find(row => row.task === task.id);
     if (!stall) return undefined;
     const code = stall.cause.refusals?.find(row => row.peer === named)?.code ?? (stall.cause.peer === named ? stall.cause.code : undefined);
