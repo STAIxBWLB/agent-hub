@@ -52,7 +52,7 @@ test("mixed and legacy row context never becomes automatic settlement authority 
 
 for (const state of ["in_progress", "in_review", "changes_requested"] as const) test(`#434 an owner task offer is moot after its recipient accepted (${state})`, () => {
   const offer = notice("task", "hub", "owner"); offer.refs!.taskOffer = 2;
-  const current = { get: () => ({ ...task, state }) };
+  const current = { get: () => ({ ...task, state, history: [{ at: 1, by: "user", event: "assigned", owner: "codex" }, { at: 2, by: "codex", event: "accepted" }] }) };
   expect(supersededDeliveryReason([offer], current, "codex")).toBe("superseded: task #42 accepted");
 });
 
@@ -68,4 +68,18 @@ test("#434 accepted-offer settlement never consumes a live reminder, mixed row, 
   }
   const review = notice("review", "hub", "reviewer"); review.refs!.taskOffer = 2;
   expect(supersededDeliveryReason([review], { get: () => ({ ...task, state: "in_review" as const }) }, "claude")).toBeUndefined();
+});
+
+
+test("#434 acceptance must be the recipient's own after its latest ownership boundary", () => {
+  const offer = notice("task", "hub", "owner"); offer.refs!.taskOffer = 2;
+  const ownAccept = { at: 1, by: "codex", event: "accepted" };
+  const assigned = { at: 2, by: "user", event: "reassigned", owner: "codex" };
+  const current = (history?: typeof ownAccept[]) => ({ get: () => ({ ...task, state: "in_review" as const, history }) });
+  expect(supersededDeliveryReason([offer], current([ownAccept, assigned]), "codex")).toBeUndefined();
+  expect(supersededDeliveryReason([offer], current([assigned, { at: 3, by: "user", event: "accepted" }]), "codex")).toBeUndefined();
+  expect(supersededDeliveryReason([offer], current(undefined), "codex")).toBeUndefined();
+  expect(supersededDeliveryReason([offer], current([assigned, { ...ownAccept, at: 3 }]), "codex")).toBe("superseded: task #42 accepted");
+  const bounded = [ownAccept, ...Array.from({ length: 4096 }, () => ({ at: 2, by: "hub", event: "check result" }))];
+  expect(supersededDeliveryReason([offer], current(bounded), "codex")).toBeUndefined();
 });

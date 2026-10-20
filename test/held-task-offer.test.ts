@@ -75,6 +75,9 @@ test("#434 actual task acceptance clears its held offer through board.onChange w
   expect(daemon.bus.queueShow("waiting-for-accept")?.state).toBe("needs_review");
   const accepted = await client.request({ t: "task", op: "hub_task_accept", args: { id: pending.task.id } });
   expect(accepted.ok).toBe(true);
+  expect(daemon.bus.queueShow("waiting-for-accept")?.state).toBe("needs_review"); // A person's acceptance is not this peer reading its brief.
+  const owner = await ControlClient.connect(f.dir, { role: "tools", peer: "jcode" }); cleanups.push(() => owner.close());
+  expect((await owner.request({ t: "task", op: "hub_task_accept", args: { id: pending.task.id } })).ok).toBe(true);
   expect(daemon.bus.queueShow("waiting-for-accept")?.state).toBe("completed");
   const shown = await client.request({ t: "task", op: "task_show", args: { id: pending.task.id } });
   expect(shown.ok).toBe(true); expect(shown.text).toContain("in_progress");
@@ -116,4 +119,17 @@ test("#434 recovery release settles an accepted offer while preserving a manual 
     try { expect(board.get(accepted.task.id)).toMatchObject({ owner: "jcode", state: "in_progress" }); }
     finally { board.close(); }
   } finally { journal.close(); }
+});
+
+
+test("#434 a replacement owner's unread offer in_review is held despite that peer accepting an earlier ownership span", async () => {
+  const f = fixture(), earlier = f.make(true);
+  f.board.update(earlier.task.id, "user", "reassigned", { owner: "codex", state: "proposed" });
+  f.board.update(earlier.task.id, "codex", "accepted", { state: "in_progress" });
+  f.board.update(earlier.task.id, "codex", "done", { state: "in_review" });
+  const moved = f.board.update(earlier.task.id, "user", "reassigned", { owner: "jcode" });
+  const env = newEnvelope("hub", "ownership moved while under review; wait for the verdict", { kind: "task", to: ["jcode"], refs: { task: String(moved.id), taskRecipient: "owner", taskOffer: moved.history.length } });
+  f.held("replacement-offer", [env]); f.close();
+  const daemon = await start(f);
+  expect(daemon.bus.queueShow("replacement-offer")?.state).toBe("needs_review");
 });
