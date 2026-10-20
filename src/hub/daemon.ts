@@ -2294,7 +2294,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (t.state === "backlog") return line(t);
         const overlap = tasks.overlaps(t, t.owner === by);
         if (t.owner === by && tasks.silentFor(t.id) && factsOn()) factsFor(by).sawPlans(by, tasks.overlapTasks(t)); // as for an accept
-        return [line(t), overlap, tasks.claimRoleGuidance(t, by), t.owner === by ? tasks.planGuardText(t) : ""].filter(Boolean).join("\n");
+        return [line(t), tasks.namedOwnerNote(t, a.owner as PeerId | undefined, by), overlap, tasks.claimRoleGuidance(t, by), t.owner === by ? tasks.planGuardText(t) : ""].filter(Boolean).join("\n");
       }
       case "hub_task_accept": {
         // S1 spec acceptance and S9 plan review are checked against one task snapshot before acceptance.
