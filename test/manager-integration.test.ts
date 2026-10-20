@@ -163,7 +163,7 @@ test("the stand-in is reached by its teardown on a failed open and never turns i
   try {
     // One spawn only: it is the "early" one and waits for a second that never comes, which is a setup that failed midway.
     for (let i = 0; i < 150 && gate.spawns().length < 1; i++) await Bun.sleep(20);
-    expect(gate.spawns()).toEqual([child.pid]);
+    expect(gate.spawns()).toEqual([child.pid!]);
   } finally { await gate.stop(); }
   expect(pidAlive(child.pid!)).toBe(false);
   await Bun.sleep(200);
