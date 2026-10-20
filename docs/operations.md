@@ -32,9 +32,21 @@ Person verdicts and user-authored workflow writes are not delegated. Dashboard
 sessions issued through the flag retain operational controls but refuse message
 and task/planning content writes. Use native peer tools for agent-authored work.
 
-Use a CLI/coordinator containing this feature throughout the experiment. Older
-daemons do not understand the new delegated audit outcome; run the candidate
-daemon to capture its delegated event and console notice. This policy does not
+Use a CLI/coordinator containing this feature throughout the experiment. Ordinary
+delegation requires `cli_audit_delegated` in the authenticated running daemon's
+welcome, rather than its protocol number or disk status. Missing or unavailable
+support refuses before command effects with an upgrade remedy; its refused audit
+uses an outcome older consumers retain. The private pending audit is reserved
+before connecting, so an unavailable outbox still refuses before any connection.
+Upgrade/recovery uses a compatible `run` spool row and stores the authoritative
+delegation in the operation's `delegatedAudits`: peer, closed command label,
+timestamp and operation id. Creation, resume handoff, runner, abort and disposal
+persist this evidence before runtime/target effects, independently of the source
+daemon's drain. Schema-1 receipts retain it through source replacement and resume;
+stored evidence never grants a later invocation authority. The journal is capped
+at 256 entries and refuses further delegated attempts rather than evicting its
+initiator. Local bootstrap commands with no daemon manifest use the compatible
+`run` row too. This policy does not
 change external computer-use restrictions. Recovery staging refuses old targets
 without live-test support before source effects. Delegated headless recovery restores through the ordinary target CLI, carrying
 its operationId on the delegated console connection; existing native ownership

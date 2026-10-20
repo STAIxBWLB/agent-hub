@@ -2,10 +2,34 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { drainCliAudits, recordCliAudit } from "../src/cli/identity-audit.ts";
+import { drainCliAudits, recordCliAudit, recordDelegatedCliAudit } from "../src/cli/identity-audit.ts";
 import { nativeLaunchEnv } from "../src/cli/launch.ts";
 import { cliCommandLabel } from "../src/cli/identity.ts";
 import { peerChildEnv } from "../src/hub/child-process.ts";
+
+test("#410 negotiation reserves a bounded private pending row, invisible to drains", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-pending-audit-"));
+  try {
+    await recordDelegatedCliAudit(dir, "codex", "permission", async () => {
+      expect(readdirSync(join(dir, "cli-audit"))).toEqual([expect.stringMatching(/\.tmp$/)]);
+      expect(drainCliAudits(dir)).toEqual([]);
+      return ["cli_audit_delegated"];
+    });
+    expect(drainCliAudits(dir)).toMatchObject([{ peer: "codex", outcome: "delegated" }]);
+    expect(readdirSync(join(dir, "cli-audit"))).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("#410 failed authentication records only a compatible refusal and clears the reservation", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-refused-audit-"));
+  try {
+    await expect(recordDelegatedCliAudit(dir, "codex", "permission", async () => { throw new Error("secret must not reach the remedy"); })).rejects.toThrow("upgrade");
+    const rows = drainCliAudits(dir);
+    expect(rows).toMatchObject([{ peer: "codex", outcome: "refused" }]);
+    expect(JSON.stringify(rows)).not.toContain("secret");
+    expect(readdirSync(join(dir, "cli-audit"))).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test("pre-connection audit contains only validated identifiers and drains once", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-cli-audit-"));

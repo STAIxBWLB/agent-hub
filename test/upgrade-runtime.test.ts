@@ -226,7 +226,7 @@ function claudeRestoreFixture(attachedSession: string, onStart?: (message: any, 
     fetch(_request, srv) { return srv.upgrade(_request) ? undefined : new Response("no"); },
     websocket: { message(ws, data) {
       const msg = JSON.parse(String(data));
-      if (msg.t === "hello") { ws.data = msg; ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p-restore", instanceId: "i-target", cwd: root, protocol: PROTOCOL })); }
+      if (msg.t === "hello") { ws.data = msg; ws.send(JSON.stringify({ rid: msg.rid, t: "welcome", ok: true, projectId: "p-restore", instanceId: "i-target", cwd: root, protocol: PROTOCOL, features: ["cli_audit_delegated"] })); }
       else if (msg.t === "start") { onStart?.(msg, ws.data); ws.send(JSON.stringify({ rid: msg.rid, t: "started", ok: true })); }
       else if (msg.t === "status") ws.send(JSON.stringify({ rid: msg.rid, t: "status", ok: true, status: { projectId: "p-restore", instanceId: "i-target", cwd: root, version: VERSION, protocol: PROTOCOL } }));
       else ws.send(JSON.stringify({ rid: msg.rid, t: "recovery", ok: true, recovery: { operationId: "op-restore", phase: "restored", ready: true, peers: { claude: { id: "claude", state: "idle", sessionId: attachedSession } } } }));

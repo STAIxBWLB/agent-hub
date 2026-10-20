@@ -50,7 +50,7 @@ import { createInterface } from "node:readline/promises";
 import { createInterface as lineReader } from "node:readline";
 import { activeOperation, assertLifecycleAvailable, operationIdPattern, readOperation, recoveryLock, recoveryRunner, signedRunner, stopSignedRunner, supportsAction } from "../hub/recovery-store.ts";
 import { childEnv } from "../hub/child-process.ts";
-import { abortRecovery, createOperation, disposeRecovery, repairedFreshSession, reattachRecovery, liveProjects, nextChoices, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation, type Inspection } from "./upgrade.ts";
+import { abortRecovery, createOperation, disposeRecovery, recordRecoveryDelegation, repairedFreshSession, reattachRecovery, liveProjects, nextChoices, nextActionsText, publicOperation, recoveryCommand, registeredProjects, runRecovery, type RecoveryOperation, type Inspection } from "./upgrade.ts";
 import { endPlannedPeer, makeRecoveryDriver, makeUpgradePlan, preserveSource } from "./upgrade-runtime.ts";
 import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts";
 import { operationScreen, planScreen, type ScreenIO, type UpgradeHost } from "./upgrade-interactive.ts";
@@ -74,7 +74,7 @@ import { summarize, summarizeByTask } from "../hub/report.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 import { pathWarnings } from "../hub/conflicts.ts";
 import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, LIVE_TEST_PERSON_REFUSAL, liveTestRefusal, peerCommandRefusal } from "./identity.ts";
-import { recordCliAudit } from "./identity-audit.ts";
+import { recordCliAudit, recordDelegatedCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
 import { outputWidth, renderRoster, renderStatus, renderBoard, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "./output.ts";
@@ -167,7 +167,7 @@ const delegatedPeer = liveTest && caller.role === "tools" && commandAccess !== "
 const identity = delegatedPeer ? { role: "console" as const } : caller;
 function audit(outcome: "run" | "refused" | "invalid"): void {
   if (caller.role === "console") return;
-  try { recordCliAudit(stateDir, caller.role === "tools" ? caller.peer : "unknown", commandLabel, delegatedPeer && outcome === "run" ? "delegated" : outcome); }
+  try { recordCliAudit(stateDir, caller.role === "tools" ? caller.peer : "unknown", commandLabel, outcome); }
   catch {
     if (delegatedPeer) fail("live-test delegation audit unavailable; nothing was executed");
     console.error("ahub: CLI audit could not be recorded (outbox unavailable or full)");
@@ -176,7 +176,20 @@ function audit(outcome: "run" | "refused" | "invalid"): void {
 if (identity.role === "invalid") { audit("invalid"); fail(`${identity.reason}; use ahub console or a terminal with no agent markers`); }
 if (delegationRefused) { audit("refused"); fail(LIVE_TEST_PERSON_REFUSAL); }
 if (identity.role === "tools" && commandAccess === "console") { audit("refused"); fail(peerCommandRefusal(identity.peer, commandLabel)); }
-if (identity.role === "tools" || delegatedPeer) audit("run");
+// Recovery keeps its authoritative delegation audit in the operation receipt, independent of an old source drain.
+// With no daemon manifest, local bootstrap commands have no consumer to negotiate with; use the compatible outcome.
+const recoveryAudit = ["upgrade", "restart", "recovery", "recovery-run"].includes(cmd);
+const noAuditConsumer = !existsSync(join(stateDir, "status.json")) && !existsSync(join(stateDir, "hub.pid"));
+if (delegatedPeer && !recoveryAudit && !noAuditConsumer) {
+  try {
+    await recordDelegatedCliAudit(stateDir, delegatedPeer, commandLabel, async () => {
+      // The validated invocation already has operational console authority; a tools hello would add a roster gate.
+      const hub = await ControlClient.connect(stateDir, { role: "console", projectRoot: cwd });
+      try { return hub.features; }
+      finally { hub.close(); }
+    });
+  } catch (error) { fail((error as Error).message); }
+} else if (identity.role === "tools" || delegatedPeer) audit("run");
 // Forward only to ahub's own continuation commands, never to native agent argv or an environment flag.
 const liveTestArgs = liveTest ? ["--live-test"] : [];
 const invokedFrom = process.cwd(); // relative paths a person types (a bench suite) are theirs, not the project's
@@ -509,7 +522,7 @@ function upgradeHost(kind: "restart" | "upgrade", version: string): UpgradeHost 
       if (current.fingerprint !== plan.fingerprint) throw new Error("the plan changed during review; review it again");
       // The check above takes seconds: a Ctrl+C in that time is still a no.
       if (interrupted()) throw new Error("interrupted; nothing was started");
-      const operation = createOperation(plan, preserveSource(plan));
+      const operation = createOperation(plan, preserveSource(plan), undefined, delegatedPeer ? { peer: delegatedPeer, command: kind } : undefined);
       spawnRecovery(operation, true);
       return operation;
     },
@@ -583,7 +596,7 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   const current = await makeUpgradePlan(kind, plan.version, kind === "restart" ? cwd : undefined);
   if (current.fingerprint !== plan.fingerprint) fail("plan changed during review; run the command again");
   const sourceRoot = preserveSource(plan);
-  const operation = createOperation(plan, sourceRoot);
+  const operation = createOperation(plan, sourceRoot, undefined, delegatedPeer ? { peer: delegatedPeer, command: kind } : undefined);
   if (display.json) { spawnRecovery(operation, true); console.log(JSON.stringify(publicOperation(operation), null, 2)); }
   else spawnRecovery(operation, false, humanRecovery(false) ? display.options : undefined);
 }
@@ -707,8 +720,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       else if (humanRecovery(false)) printRecoveryStatus(operation, `runner ${runner} is still working on this operation`, display.options);
       else console.log(`runner ${runner} is still working on this operation; ${recoveryCommand(operation, "status")}`);
     }
-    else if (display.json) { spawnRecovery(operation, true); console.log(JSON.stringify(publicOperation(operation), null, 2)); }
-    else spawnRecovery(operation, false, humanRecovery(false) ? display.options : undefined);
+    else {
+      if (delegatedPeer) operation = recordRecoveryDelegation(operation.id, { peer: delegatedPeer, command: "recovery resume" });
+      if (display.json) { spawnRecovery(operation, true); console.log(JSON.stringify(publicOperation(operation), null, 2)); }
+      else spawnRecovery(operation, false, humanRecovery(false) ? display.options : undefined);
+    }
   },
   "recovery-run": async () => {
     if (args.length !== 1 || process.env.AGENTHUB_RECOVERY_OPERATION !== args[0]) fail("recovery-run is an internal command");
