@@ -1828,6 +1828,10 @@ var init_codex_appserver = __esm(() => {
     get proxyUrl() {
       return `ws://127.0.0.1:${this.server?.port ?? this.opts.proxyPort}`;
     }
+    terminalOwner(launchId) {
+      const link = this.link;
+      return this.threadId && link && link === this.claimedTui && link.launchId === launchId && link.tui.readyState === WebSocket.OPEN && link.up.readyState === WebSocket.OPEN ? { generation: String(this.sessionGeneration) } : undefined;
+    }
     async start() {
       const upstream = this.opts.upstreamUrl ?? await this.spawnAppServer();
       try {
@@ -1837,7 +1841,8 @@ var init_codex_appserver = __esm(() => {
           fetch: (req, server) => {
             if (req.headers.has("origin"))
               return new Response("forbidden", { status: 403 });
-            if (server.upgrade(req, { data: {} }))
+            const launchId = new URL(req.url).searchParams.get("launchId");
+            if (server.upgrade(req, { data: { ...launchId && launchId.length <= 128 ? { launchId } : {} } }))
               return;
             return new Response("agent-hub codex proxy");
           },
@@ -2139,7 +2144,7 @@ ${renderDigest(envs, false)}`;
     }
     attach(tui, upstream) {
       const up = new WebSocket(upstream);
-      const link = { tui, up, backlog: [], tracked: new Map };
+      const link = { tui, up, backlog: [], tracked: new Map, ...tui.data.launchId ? { launchId: tui.data.launchId } : {} };
       this.claimedTui = link;
       tui.data = link;
       up.onopen = () => {
@@ -2288,7 +2293,7 @@ ${renderDigest(envs, false)}`;
       link.tui.send(raw);
     }
     adopt(link, threadId, fresh = false) {
-      if (typeof threadId !== "string" || !threadId)
+      if (typeof threadId !== "string" || !threadId || link !== this.claimedTui || link.tui.readyState !== WebSocket.OPEN || link.up.readyState !== WebSocket.OPEN)
         return;
       this.abandonSteers("thread changed");
       for (const [id, pending] of this.pending)
@@ -4603,6 +4608,12 @@ var init_pi = __esm(() => {
     }
     verifiedOwner() {
       return this.ownerClaimed && !!this.ownerPid && !!this.ownerSignature && processSignature(this.ownerPid) === this.ownerSignature;
+    }
+    terminalOwner(_launchId) {
+      if (this.opts.mode !== "tui" || !this.started || this.stopping || this.rosterDetached || !this.verifiedOwner() || !this.sessionId || !this.sessionFile || this.opts.sessionId && this.opts.sessionId !== this.sessionId || this.opts.sessionFile && this.opts.sessionFile !== this.sessionFile)
+        return;
+      const generation = this.sessionGeneration;
+      return generation && this.ownerPid ? { generation, nativePid: this.ownerPid } : undefined;
     }
     abortTools() {
       this.executionAbort?.abort();
@@ -9143,7 +9154,7 @@ async function runClaudeEntry(ctx) {
     }
     return console.log(`${peer} started: a headless reviewer the hub runs per review (stop it with ahub stop ${peer})`);
   }
-  const { launcherPreview, readControl, recordTerminalLaunch, claudeObservationHooks, buildLaunch, runClaudeLaunch, processSignature, recordClaudeLaunch, cleanupStaleClaudeSettings, nativeLaunchEnv, childEnv, cleanupClaudeSettings } = ctx.helpers;
+  const { launcherPreview, readControl, prepareTerminalLaunch, registerTerminalLaunch, claudeObservationHooks, buildLaunch, runClaudeLaunch, processSignature, recordClaudeLaunch, cleanupStaleClaudeSettings, nativeLaunchEnv, childEnv, cleanupClaudeSettings } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
     try {
       return console.log(JSON.stringify(launcherPreview("claude", args, cwd, stateDir, unattendedEnv), null, 2));
@@ -9154,9 +9165,17 @@ async function runClaudeEntry(ctx) {
   const control = readControl(stateDir);
   if (control?.instanceId) {
     process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
-    const terminal = await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: cwd } : undefined);
+    const terminal = await prepareTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: cwd } : undefined);
     if (!terminal)
       process.env.AGENTHUB_LAUNCH_ID = randomUUID6();
+    else {
+      const hub = await ctx.connect();
+      try {
+        await registerTerminalLaunch(hub, terminal, process.env.AGENTHUB_RECOVERY_OPERATION);
+      } finally {
+        hub.close();
+      }
+    }
   }
   let original;
   for (const file of [join16(cwd, ".claude", "settings.local.json"), join16(cwd, ".claude", "settings.json"), join16(process.env.HOME ?? "", ".claude", "settings.json")]) {
@@ -9199,7 +9218,7 @@ var init_native_cli_entry_claude = __esm(() => {
 async function runCodexEntry(ctx) {
   const peer = ctx.instance ?? "codex";
   const { args, cwd, stateDir, unattendedEnv, projectConfig, connect, fail, exec } = ctx;
-  const { launcherPreview, buildLaunch, recoveryLock, readControl, recordTerminalLaunch } = ctx.helpers;
+  const { launcherPreview, buildLaunch, readControl, prepareTerminalLaunch, registerTerminalLaunch } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
     try {
       return console.log(JSON.stringify(launcherPreview("codex", args, cwd, stateDir, unattendedEnv), null, 2));
@@ -9208,29 +9227,38 @@ async function runCodexEntry(ctx) {
     }
   }
   const launch0 = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl: "pending" });
-  const recovering = !!process.env.AGENTHUB_RECOVERY_OPERATION && process.env.AGENTHUB_RECOVERY_OPERATION === recoveryLock();
-  const before = readControl(stateDir);
-  if (recovering && !ctx.instance && before?.instanceId)
-    await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
   const snapshot = (await hub.request({ t: "status" })).status;
   const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
   if (warning)
     console.error(warning);
   const res = await hub.request({ t: "start", peer, args: { unattended: launch0.unattended === true }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
-  hub.close();
-  if (!res.ok)
+  if (!res.ok) {
+    hub.close();
     fail(res.error);
+  }
   if (ctx.instance) {
     if (typeof res.executionCwd !== "string" || !res.executionCwd.startsWith("/"))
       fail("instance execution directory was not verified");
     ctx.executionCwd = res.executionCwd;
   }
   const control = readControl(stateDir);
-  if ((!recovering || ctx.instance) && control?.instanceId)
-    await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: ctx.executionCwd } : undefined);
+  let proxyUrl = res.proxyUrl;
+  try {
+    if (control?.instanceId) {
+      const terminal = await prepareTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: ctx.executionCwd } : undefined);
+      if (terminal) {
+        await registerTerminalLaunch(hub, terminal, process.env.AGENTHUB_RECOVERY_OPERATION);
+        const url = new URL(proxyUrl);
+        url.searchParams.set("launchId", terminal.launchId);
+        proxyUrl = url.toString();
+      }
+    }
+  } finally {
+    hub.close();
+  }
   const runningCodexBin = res.retainedLaunchConfig?.codex_bin;
-  const launch = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl: res.proxyUrl, codexBin: typeof runningCodexBin === "string" ? runningCodexBin : projectConfig().codex_bin });
+  const launch = buildLaunch("codex", args, { unattended: unattendedEnv, instance: peer, proxyUrl, codexBin: typeof runningCodexBin === "string" ? runningCodexBin : projectConfig().codex_bin });
   if (launch0.warning)
     console.error(launch0.warning);
   exec(launch.cmd, launch.args, "codex");
@@ -9554,7 +9582,7 @@ function piConductorStartArgs(args) {
 async function runPiEntry(ctx) {
   const peer = ctx.instance ?? "pi";
   const { args, cwd, stateDir, unattendedEnv, projectConfig, connect, fail, execWithEnv } = ctx;
-  const { launcherPreview, startModeOf, recoveryLock, readControl, recordTerminalLaunch } = ctx.helpers;
+  const { launcherPreview, startModeOf, readControl, prepareTerminalLaunch, registerTerminalLaunch } = ctx.helpers;
   if (args.includes("--headless") && !args.includes("--mode"))
     args.splice(args.indexOf("--headless"), 1, "--mode", "headless");
   if (args.includes("--print-command") || args.includes("--dry-run")) {
@@ -9588,10 +9616,6 @@ async function runPiEntry(ctx) {
       hub.close();
     }
   }
-  const recovering = options.mode === "tui" && !!process.env.AGENTHUB_RECOVERY_OPERATION && process.env.AGENTHUB_RECOVERY_OPERATION === recoveryLock();
-  const before = readControl(stateDir);
-  if (recovering && before?.instanceId)
-    await recordTerminalLaunch(peer, cwd, stateDir, before.instanceId);
   const hub = await connect();
   const snapshot = (await hub.request({ t: "status" })).status;
   const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
@@ -9609,8 +9633,17 @@ async function runPiEntry(ctx) {
     delete launchEnv.AGENTHUB_RECOVERY_OPERATION;
     delete launchEnv.AGENTHUB_UNATTENDED;
     const control = readControl(stateDir);
-    if (!recovering && control?.instanceId)
-      await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId);
+    if (control?.instanceId) {
+      const terminal = await prepareTerminalLaunch(peer, cwd, stateDir, control.instanceId);
+      if (terminal) {
+        const registration = await connect();
+        try {
+          await registerTerminalLaunch(registration, terminal, process.env.AGENTHUB_RECOVERY_OPERATION);
+        } finally {
+          registration.close();
+        }
+      }
+    }
     return execWithEnv(launch.cmd, launch.args, launchEnv);
   }
   console.log(res.already ? `${peer} is already attached` : `${peer} attached (headless). Talk to it with: ahub say @${peer} "..."`);

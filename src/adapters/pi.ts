@@ -429,6 +429,13 @@ export class PiPeer extends BasePeer {
   private verifiedOwner(): boolean {
     return this.ownerClaimed && !!this.ownerPid && !!this.ownerSignature && processSignature(this.ownerPid) === this.ownerSignature;
   }
+
+  terminalOwner(_launchId: string): { generation: string; nativePid: number } | undefined {
+    if (this.opts.mode !== "tui" || !this.started || this.stopping || this.rosterDetached || !this.verifiedOwner() || !this.sessionId || !this.sessionFile ||
+        this.opts.sessionId && this.opts.sessionId !== this.sessionId || this.opts.sessionFile && this.opts.sessionFile !== this.sessionFile) return undefined;
+    const generation = this.sessionGeneration;
+    return generation && this.ownerPid ? { generation, nativePid: this.ownerPid } : undefined;
+  }
   private abortTools(): Promise<void>[] {
     this.executionAbort?.abort();
     this.idleBashReservations.clear();

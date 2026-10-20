@@ -62,7 +62,7 @@ test("#450 extra execution cwd and Orca grouping roots remain separate and reval
       const terminal = { handle: f.binding.handle, incarnationId: f.binding.incarnationId, worktreeId: f.binding.worktreeId,
         worktreePath: terminalRoot, agentIdentity: "codex", sessionId: f.binding.sessionId, connected: true, orphaned: false };
       const options = { executionCwd: f.executionCwd, stateDir: f.stateDir, instanceId: "hub-instance", processIdentity: () => "fixture-start", runner: async (args: readonly string[]) => args[1] === "list" ? { result: { terminals: [terminal] } } : { result: { terminal } } };
-      const recorded = await recordTerminalLaunch("codex-worker", f.root, f.stateDir, "hub-instance", options);
+      const recorded = await recordTerminalLaunch("codex-worker", f.root, f.stateDir, "hub-instance", options, () => true);
       expect(recorded?.projectRoot).toBe(f.root); expect(recorded?.executionCwd).toBe(f.executionCwd); expect(recorded?.terminalRoot).toBe(terminalRoot);
       const inspected = await inspectTerminals(f.root, { "codex-worker": f.binding.sessionId }, options), binding = inspected.byPeer["codex-worker"];
       expect(inspected.manualRequired).toBe(false); expect(binding?.executionCwd).toBe(f.executionCwd); expect(binding?.terminalRoot).toBe(terminalRoot);

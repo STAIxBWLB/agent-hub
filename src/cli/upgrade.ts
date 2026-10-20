@@ -51,6 +51,8 @@ export interface PlannedProject {
   blockers: string[];
   /** Unmanaged sessions (#206): their plugin reattaches to the new daemon; no terminal is closed or relaunched and no session id is compared. */
   reconnectOnly?: string[];
+  /** Attached native terminals with neither a current live launcher record nor an independently verified terminal binding. */
+  unrecordedTerminals?: string[];
   /** #215: Codex threads with no rollout and no turn the hub recorded; they restart as a new session, nothing to lose. */
   freshStart?: string[];
 }

@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { atomicPrivateJSON } from "../hub/recovery-store.ts";
+import type { ControlClient } from "../hub/control-client.ts";
 
 /** The only terminal commands used by this adapter. Keep this list in sync with Orca's public CLI. */
 export type OrcaTerminalCommand = "list" | "show" | "wait" | "close" | "create";
@@ -73,6 +74,7 @@ export interface RecoveryBlocker {
     | "ownership-unknown"
     | "ambiguous-terminal"
     | "terminal-unready"
+    | "terminal-orphaned"
     | "command-error"
     | "ambiguous-create"
     | "launcher-exited"
@@ -443,7 +445,7 @@ export async function launcherOf(peer: TerminalPeer, projectRoot: string, option
  * Capture the Orca terminal handed to an ahub launcher. This is the authenticated
  * identity source for legacy Orca payloads that omit agent/session metadata.
  */
-export async function recordTerminalLaunch(peer: TerminalPeer, projectRoot: string, stateDir: string, instanceId: string, options?: CommandRunner | TerminalRecoveryOptions): Promise<RecordedTerminalLaunch | undefined> {
+export async function prepareTerminalLaunch(peer: TerminalPeer, projectRoot: string, stateDir: string, instanceId: string, options?: CommandRunner | TerminalRecoveryOptions): Promise<RecordedTerminalLaunch | undefined> {
   const config = normalizeOptions(options);
   const handle = process.env.ORCA_TERMINAL_HANDLE;
   const worktreeIdFromEnv = process.env.ORCA_WORKTREE_ID;
@@ -465,17 +467,59 @@ export async function recordTerminalLaunch(peer: TerminalPeer, projectRoot: stri
   process.env.AGENTHUB_LAUNCH_ID = launchId;
   process.env.AGENTHUB_INSTANCE_ID = instanceId;
   const row: RecordedTerminalLaunch = { peer, projectRoot, ...(!definitionOf(peer) ? { executionCwd: expectedRoot, terminalRoot: actualRoot } : {}), stateDir, instanceId, launcherPid: process.pid, launcherSignature, launchId, handle, incarnationId, worktreeId: actualWorktree, env: allowedEnv({ env: process.env }) };
+  return row;
+}
+
+/** Decode a console candidate against this daemon, never against paths supplied by that candidate. */
+export function terminalLaunchCandidate(value: unknown, projectRoot: string, stateDir: string, instanceId: string): RecordedTerminalLaunch | undefined {
+  if (!validRecord(value) || JSON.stringify(value).length > 32 * 1024 || value.projectRoot !== projectRoot || value.stateDir !== stateDir || value.instanceId !== instanceId ||
+      !Number.isSafeInteger(value.launcherPid) || value.launcherPid <= 0 || value.launchId.length > 128 || value.launcherSignature.length > 256) return undefined;
+  try {
+    const expected = executionRoot(value.peer, projectRoot, value.executionCwd);
+    if (value.executionCwd !== undefined && value.executionCwd !== expected || value.terminalRoot !== undefined && value.terminalRoot !== projectRoot && value.terminalRoot !== expected) return undefined;
+    return { peer: value.peer, projectRoot, stateDir, instanceId, launcherPid: value.launcherPid, launcherSignature: value.launcherSignature,
+      launchId: value.launchId, handle: value.handle, incarnationId: value.incarnationId, worktreeId: value.worktreeId,
+      ...(value.executionCwd ? { executionCwd: value.executionCwd } : {}), ...(value.terminalRoot ? { terminalRoot: value.terminalRoot } : {}), env: allowedEnv({ env: object(value.env) }) };
+  } catch { return undefined; }
+}
+
+/** Old daemons may launch the TUI, but cannot turn a pre-attach candidate into recovery authority. */
+export async function registerTerminalLaunch(client: Pick<ControlClient, "features" | "request">, row: RecordedTerminalLaunch, operationId?: string): Promise<void> {
+  if (!client.features.includes("terminal_owner")) {
+    console.error("terminal launcher is unrecorded; upgrade the running hub for managed terminal recovery");
+    return;
+  }
+  const result = await client.request({ t: "terminal_launch", launch: row, ...(operationId ? { operationId } : {}) });
+  if (result.ok !== true) throw new Error("terminal launch registration failed; inspect ahub status before launching again");
+}
+
+/** Capture alone is not ownership: a refused native child must leave the live row untouched. */
+export async function recordTerminalLaunch(peer: TerminalPeer, projectRoot: string, stateDir: string, instanceId: string, options?: CommandRunner | TerminalRecoveryOptions, isCurrentOwner?: (row: RecordedTerminalLaunch) => boolean): Promise<RecordedTerminalLaunch | undefined> {
+  const row = await prepareTerminalLaunch(peer, projectRoot, stateDir, instanceId, options);
+  if (!row || !isCurrentOwner) return undefined;
+  return await publishTerminalLaunch(stateDir, row, () => isCurrentOwner(row), options) ? row : undefined;
+}
+
+/** Only the daemon's current native-owner proof may publish a captured candidate. No await after its final fence. */
+export async function publishTerminalLaunch(stateDir: string, row: RecordedTerminalLaunch, isCurrent: () => boolean, options?: CommandRunner | TerminalRecoveryOptions): Promise<boolean> {
+  const config = normalizeOptions(options);
+  if (!isCurrent() || await launcherState(row, config.processIdentity, config.legacyIdentity) !== "live") return false;
+  const terminal = terminalObject(await run(config.runner, ["terminal", "show", "--terminal", row.handle, "--json"]));
+  const expectedRoot = executionRoot(row.peer, row.projectRoot, row.executionCwd);
+  if (nestedString(terminal, ["handle"]) !== row.handle || nestedString(terminal, ["incarnationId"]) !== row.incarnationId ||
+      nestedString(terminal, ["worktreeId"]) !== row.worktreeId || nestedString(terminal, ["worktreePath", "projectRoot"]) !== (row.terminalRoot ?? expectedRoot)) return false;
+  if (await launcherState(row, config.processIdentity, config.legacyIdentity) !== "live" || !terminalLaunchCandidate(row, row.projectRoot, stateDir, row.instanceId) || !isCurrent()) return false;
   const existing = launchRecords(stateDir);
   // #215: rewriting an unreadable file would replace every other launcher's record with this one, and recovery would
   // then read those launchers as gone.
   if (existing === "unreadable") {
-    throw new OrcaCommandError(blocker("command-error", `${recordPath(stateDir)} cannot be read, so recording this launch would erase every other launcher's record; next action: inspect that file and move it aside (recovery then treats sessions it recorded as unmanaged), then launch again`, peer, handle));
+    throw new OrcaCommandError(blocker("command-error", `${recordPath(stateDir)} cannot be read, so recording this launch would erase every other launcher's record; next action: inspect that file and move it aside (recovery then treats sessions it recorded as unmanaged), then launch again`, row.peer, row.handle));
   }
   // #228: every row that cannot be evaluated goes back unchanged; only this peer's valid row for this instance is replaced.
-  const rows = existing.all.filter((item) => !(validRecord(item) && item.peer === peer && item.instanceId === instanceId));
+  const rows = existing.all.filter((item) => !(validRecord(item) && item.peer === row.peer && item.projectRoot === row.projectRoot && item.instanceId === row.instanceId));
   rows.push(row);
   writeLaunchRecords(stateDir, rows);
-  return row;
+  return true;
 }
 
 function rootMatches(actual: unknown, expected: string): boolean {
@@ -567,6 +611,7 @@ function blocker(code: RecoveryBlocker["code"], message: string, peer?: Terminal
     code === "ownership-unknown" ? "confirm the terminal owner in Orca, then resume recovery" :
     code === "ambiguous-terminal" ? "close or identify the duplicate terminal, then resume recovery" :
     code === "ambiguous-create" ? "inspect the existing terminal and attach the original session before resuming" :
+    code === "terminal-orphaned" ? `reattach the pane with orca terminal switch --terminal ${shellQuote(handle!)}; then refresh the recovery plan` :
     code === "terminal-unready" ? "finish or cancel the active terminal turn, then resume recovery" :
     code === "launcher-exited" ? "the session was not restored; the coordinator's error names the choices" :
     code === "terminal-gone" ? "the terminal was closed; inspect the project's terminals in Orca before resuming recovery" :
@@ -610,6 +655,7 @@ export async function inspectSavedTerminal(binding: TerminalBinding, options?: C
     if (!completeIdentity(shown)) return unknown();
     const issue = verifyBindingData(shown, binding);
     if (issue) return { state: "changed", blocker: issue };
+    if (shown.orphaned === true && shown.connected === true) return { state: "unknown", blocker: blocker("terminal-orphaned", "the saved terminal is orphaned but still connected", binding.peer, binding.handle) };
     if (shown.orphaned === true) return { state: "orphaned", blocker: blocker("terminal-gone", "the saved terminal is orphaned", binding.peer, binding.handle) };
     if (shown.connected === false) return unknown();
     return { state: "present" };
@@ -723,6 +769,10 @@ export async function inspectTerminals(projectRoot: string, sessions: Partial<Re
     const worktreeId = nestedString(terminal, ["worktreeId"]);
     if (!handle || !incarnationId || !worktreeId) {
       blockers.push(blocker("stale-terminal", `terminal metadata lacks a stable handle, incarnation or worktree id`, peer, handle));
+      continue;
+    }
+    if (terminal.orphaned === true && terminal.connected === true) {
+      blockers.push(blocker("terminal-orphaned", `terminal ${handle} is orphaned but still connected`, peer, handle));
       continue;
     }
     if (terminal.orphaned === true || terminal.connected === false) {

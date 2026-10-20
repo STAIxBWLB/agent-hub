@@ -145,7 +145,7 @@ for (const peer of ["codex", "pi"] as const) test(`#482 attached ${peer} TUI wit
     async start(): Promise<void> { this.setState("idle"); }
     async stop(): Promise<void> { this.setState("offline"); }
     recoveryMetadata(): Record<string, unknown> {
-      return { launch: { kind: peer }, ...(peer === "codex" ? { threadId: "recorded-thread" } : { sessionId: "recorded-session", sessionFile: join(temp, "pi-session.jsonl"), args: { mode: "tui" } }) };
+      return { launch: { kind: peer, ...(peer === "pi" ? { mode: "tui" } : {}) }, ...(peer === "codex" ? { threadId: "recorded-thread" } : { sessionId: "recorded-session", sessionFile: join(temp, "pi-session.jsonl") }) };
     }
   }
   const native = new NativeTuiLike(peer);
@@ -164,6 +164,7 @@ for (const peer of ["codex", "pi"] as const) test(`#482 attached ${peer} TUI wit
       const plan = await makeUpgradePlan("restart", VERSION, project.root, run);
       const planned = plan.projects[0] as PlannedProject & { unrecordedTerminals?: string[] };
       expect(planned.source.peers.find(row => row.id === peer)?.state).toBe("idle");
+      if (peer === "pi") expect(planned.source.peers.find(row => row.id === peer)?.args?.mode).toBe("tui");
       expect(planned.unrecordedTerminals).toEqual([peer]);
       expect(planned.terminals).toEqual([]);
       expect(planned.freshStart).toBeUndefined();

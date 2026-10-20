@@ -40,7 +40,7 @@ for (const roleKey of ["codex-worker", "codex"]) test(`#450 terminal recovery ho
   const f = fixture();
   try {
     f.configure({ [roleKey]: ["reviewer"] });
-    const row = await recordTerminalLaunch("codex-worker", f.root, f.stateDir, "hub-instance", f.options);
+    const row = await recordTerminalLaunch("codex-worker", f.root, f.stateDir, "hub-instance", f.options, () => true);
     expect(row?.executionCwd).toBe(f.root);
     const inspected = await inspectTerminals(f.root, { "codex-worker": "worker-thread" }, f.options);
     expect(inspected.manualRequired).toBe(false);
@@ -63,7 +63,7 @@ test("#450 ordinary implementer roles require and recover only the declared mana
   const f = fixture(true);
   try {
     f.configure({ "codex-worker": ["implementer"], codex: ["reviewer"] });
-    const row = await recordTerminalLaunch("codex-worker", f.root, f.stateDir, "hub-instance", f.options);
+    const row = await recordTerminalLaunch("codex-worker", f.root, f.stateDir, "hub-instance", f.options, () => true);
     expect(row?.executionCwd).toBe(f.executionCwd);
     const inspected = await inspectTerminals(f.root, { "codex-worker": "worker-thread" }, f.options);
     expect(inspected.manualRequired).toBe(false);

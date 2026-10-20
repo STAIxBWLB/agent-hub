@@ -49,6 +49,7 @@ export interface CodexOptions {
 }
 
 interface Link {
+  launchId?: string;
   tui: ServerWebSocket<Link>;
   up: WebSocket;
   backlog: string[]; // TUI frames that arrived before the upstream socket opened
@@ -128,6 +129,13 @@ export class CodexPeer extends BasePeer {
     return `ws://127.0.0.1:${this.server?.port ?? this.opts.proxyPort}`;
   }
 
+  terminalOwner(launchId: string): { generation: string } | undefined {
+    const link = this.link;
+    return this.threadId && link && link === this.claimedTui && link.launchId === launchId &&
+      link.tui.readyState === WebSocket.OPEN && link.up.readyState === WebSocket.OPEN
+      ? { generation: String(this.sessionGeneration) } : undefined;
+  }
+
   async start(): Promise<void> {
     const upstream = this.opts.upstreamUrl ?? (await this.spawnAppServer());
     try {
@@ -137,7 +145,8 @@ export class CodexPeer extends BasePeer {
       fetch: (req, server) => {
         // Browsers always send Origin on WebSocket upgrades; the TUI never does.
         if (req.headers.has("origin")) return new Response("forbidden", { status: 403 });
-        if (server.upgrade(req, { data: {} as Link })) return undefined;
+        const launchId = new URL(req.url).searchParams.get("launchId");
+        if (server.upgrade(req, { data: { ...(launchId && launchId.length <= 128 ? { launchId } : {}) } as Link })) return undefined;
         return new Response("agent-hub codex proxy");
       },
       websocket: {
@@ -418,7 +427,7 @@ export class CodexPeer extends BasePeer {
 
   private attach(tui: ServerWebSocket<Link>, upstream: string): void {
     const up = new WebSocket(upstream);
-    const link: Link = { tui, up, backlog: [], tracked: new Map() };
+    const link: Link = { tui, up, backlog: [], tracked: new Map(), ...(tui.data.launchId ? { launchId: tui.data.launchId } : {}) };
     this.claimedTui = link;
     tui.data = link;
     up.onopen = () => {
@@ -556,7 +565,7 @@ export class CodexPeer extends BasePeer {
   }
 
   private adopt(link: Link, threadId: unknown, fresh = false): void {
-    if (typeof threadId !== "string" || !threadId) return;
+    if (typeof threadId !== "string" || !threadId || link !== this.claimedTui || link.tui.readyState !== WebSocket.OPEN || link.up.readyState !== WebSocket.OPEN) return;
     this.abandonSteers("thread changed");
     for (const [id, pending] of this.pending) if (pending.kind === "deliver") {
       pending.invalidate?.("Codex native thread changed before acceptance was confirmed");

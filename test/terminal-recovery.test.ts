@@ -250,7 +250,7 @@ test("recorded launch is private, allowlisted, and authenticates Orca metadata w
   const shown = terminal({ handle: "term-recorded", agentIdentity: undefined, sessionId: undefined, agentWait: null, env: undefined });
   const runner = async (argv: readonly string[]) => argv[1] === "show" ? { result: { terminal: shown } } : argv[1] === "list" ? { result: { terminals: [shown] } } : { result: {} };
   try {
-    const recorded = await recordTerminalLaunch("codex", root, stateDir, "instance-1", runner);
+    const recorded = await recordTerminalLaunch("codex", root, stateDir, "instance-1", runner, () => true);
     expect(recorded?.env).toEqual({ CODEX_HOME: "/safe/codex" });
     expect(recorded?.launchId).toMatch(/^[0-9a-f-]{36}$/);
     expect(process.env.AGENTHUB_LAUNCH_ID).toBe(recorded?.launchId);
@@ -291,7 +291,7 @@ test("create accepts a recorded replacement only after exact readback and reject
     launchMetadata: { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js --project /tmp codex resume session-1", argv: [], env: {} },
   };
   try {
-    await recordTerminalLaunch("codex", root, stateDir, "instance-2", recordRunner);
+    await recordTerminalLaunch("codex", root, stateDir, "instance-2", recordRunner, () => true);
     const runner = async (argv: readonly string[]) => {
       if (argv[1] === "create") return { result: { terminal: { handle: "term-new", incarnationId: "inc-new", worktreeId } } };
       if (argv[1] === "wait") return { result: { wait: { satisfied: true } } };
@@ -369,7 +369,7 @@ test("the default launcher signature is stable across the reading invocation's t
     process.env.ORCA_TERMINAL_HANDLE = "term-tz";
     process.env.ORCA_WORKTREE_ID = ${JSON.stringify(worktreeId)};
     if (${JSON.stringify(mode)} === "record") {
-      const recorded = await recordTerminalLaunch("codex", root, ${JSON.stringify(stateDir)}, "instance-tz", runner);
+      const recorded = await recordTerminalLaunch("codex", root, ${JSON.stringify(stateDir)}, "instance-tz", runner, () => true);
       console.log(recorded ? "recorded" : "skipped");
       await Bun.sleep(60_000);
     } else {
@@ -498,7 +498,7 @@ test("a launch is not recorded over an unreadable record file", async () => {
   const runner = async (argv: readonly string[]) => argv[1] === "show" ? { result: { terminal: shown } } : { result: {} };
   try {
     writeFileSync(join(stateDir, "terminal-recovery.json"), "[{ half a write");
-    await expect(recordTerminalLaunch("codex", root, stateDir, "instance-1", runner)).rejects.toThrow("cannot be read, so recording this launch would erase every other launcher's record");
+    await expect(recordTerminalLaunch("codex", root, stateDir, "instance-1", runner, () => true)).rejects.toThrow("cannot be read, so recording this launch would erase every other launcher's record");
     expect(readFileSync(join(stateDir, "terminal-recovery.json"), "utf8")).toBe("[{ half a write");
   } finally {
     for (const [key, value] of [["ORCA_TERMINAL_HANDLE", previous.handle], ["ORCA_WORKTREE_ID", previous.worktree], ["AGENTHUB_LAUNCH_ID", previous.launchId], ["AGENTHUB_INSTANCE_ID", previous.instance]] as const) {
@@ -591,7 +591,7 @@ test("recording a launch keeps every invalid row unchanged and replaces only its
     expect((await launcherOf("pi", root, { stateDir, instanceId: "i-now", processIdentity: identitySelf }))?.state).toBe("live");
     const shown = terminal({ handle: "term-claude", incarnationId: "inc-claude", agentIdentity: "claude" });
     const { runner } = fake(() => ({ result: { terminal: shown } }));
-    const recorded = await recordTerminalLaunch("claude", root, stateDir, "i-now", { runner, processIdentity: identitySelf });
+    const recorded = await recordTerminalLaunch("claude", root, stateDir, "i-now", { runner, processIdentity: identitySelf }, () => true);
     const rows = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>[];
     expect(rows).toHaveLength(4);
     expect(rows).toContainEqual(invalid);

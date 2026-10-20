@@ -56,7 +56,7 @@ import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts
 import { operationScreen, planScreen, type ScreenIO, type UpgradeHost } from "./upgrade-interactive.ts";
 import { readRecoveryPresentationFlags } from "./upgrade-presentation-flags.ts";
 import { renderOperation, renderBlocked, renderSummary, type RecoveryPresentationOptions } from "./upgrade-presentation.ts";
-import { recordTerminalLaunch, type TerminalPeer } from "./terminal-recovery.ts";
+import { recordTerminalLaunch, prepareTerminalLaunch, registerTerminalLaunch, type TerminalPeer } from "./terminal-recovery.ts";
 import { stopAndArchiveSummary } from "./recovery-guidance.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
 import { setupOllamaModel } from "./models-setup.ts";
@@ -859,7 +859,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       projectConfig, connect: nativeConnect, fail,
       exec: (bin, argv, tool) => exec(bin, argv, tool, context.executionCwd),
       execWithEnv: (bin, argv, env) => execWithEnv(bin, argv, env, selectedInstance ?? entry.command, context.executionCwd), takeFlags,
-      helpers: { launcherPreview: (tool, raw, projectRoot, state, unattended) => launcherPreview(tool, raw, projectRoot, state, unattended, selectedInstance), readControl, recordTerminalLaunch, recoveryLock, processSignature,
+      helpers: { launcherPreview: (tool, raw, projectRoot, state, unattended) => launcherPreview(tool, raw, projectRoot, state, unattended, selectedInstance), readControl, recordTerminalLaunch, prepareTerminalLaunch, registerTerminalLaunch, recoveryLock, processSignature,
         buildLaunch, claudeObservationHooks, recordClaudeLaunch, cleanupStaleClaudeSettings, cleanupClaudeSettings,
         nativeLaunchEnv, runClaudeLaunch, childEnv, qwenSessionId, configureJcodeMcp, configureKimiMcp,
         buildKimiTuiLaunch, startModeOf },

@@ -31,6 +31,8 @@ export interface PeerAdapter {
   onDelivery?: (receipt: DeliveryReceipt) => void;
   /** Safe restart metadata only: ids and launch parameters, never prompt/message text. */
   recoveryMetadata?(): Record<string, unknown>;
+  /** Current native TUI ownership, correlated to one launcher. A start acknowledgement is never evidence. */
+  terminalOwner?(launchId: string): { generation: string; nativePid?: number } | undefined;
 }
 
 export const DEFAULT_WATCHDOG_MS = 300_000;

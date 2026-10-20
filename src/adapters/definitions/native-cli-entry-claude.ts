@@ -22,7 +22,7 @@ export async function runClaudeEntry(ctx: NativeCliEntryContext): Promise<void> 
     } finally { hub.close(); }
     return console.log(`${peer} started: a headless reviewer the hub runs per review (stop it with ahub stop ${peer})`);
   }
-  const { launcherPreview, readControl, recordTerminalLaunch, claudeObservationHooks, buildLaunch, runClaudeLaunch, processSignature, recordClaudeLaunch, cleanupStaleClaudeSettings, nativeLaunchEnv, childEnv, cleanupClaudeSettings } = ctx.helpers;
+  const { launcherPreview, readControl, prepareTerminalLaunch, registerTerminalLaunch, claudeObservationHooks, buildLaunch, runClaudeLaunch, processSignature, recordClaudeLaunch, cleanupStaleClaudeSettings, nativeLaunchEnv, childEnv, cleanupClaudeSettings } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
     try { return console.log(JSON.stringify(launcherPreview("claude", args, cwd, stateDir, unattendedEnv), null, 2)); }
     catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
@@ -30,8 +30,13 @@ export async function runClaudeEntry(ctx: NativeCliEntryContext): Promise<void> 
   const control = readControl(stateDir);
   if (control?.instanceId) {
     process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
-    const terminal = await recordTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: cwd } : undefined);
+    const terminal = await prepareTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: cwd } : undefined);
     if (!terminal) process.env.AGENTHUB_LAUNCH_ID = randomUUID();
+    else {
+      const hub = await ctx.connect();
+      try { await registerTerminalLaunch(hub, terminal, process.env.AGENTHUB_RECOVERY_OPERATION); }
+      finally { hub.close(); }
+    }
   }
   // `--settings` outranks project and user settings, so the tee has to wrap whichever status line would have won:
   // project local, then project, then user.

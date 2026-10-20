@@ -130,7 +130,7 @@ test("#542 Claude's ordinary launcher does not require a hub connection", async 
     connect: async () => { connections++; throw new Error("unexpected hub connection"); },
     fail: (message: string): never => { throw new Error(message); },
     helpers: {
-      launcherPreview: () => ({}), readControl: () => undefined, recordTerminalLaunch: async () => undefined,
+      launcherPreview: () => ({}), readControl: () => undefined, recordTerminalLaunch: async () => undefined, prepareTerminalLaunch: async () => undefined, registerTerminalLaunch: async () => undefined,
       claudeObservationHooks: () => undefined, buildLaunch: () => ({ cmd: "claude", args: [] }),
       runClaudeLaunch: async () => { throw new Error("native launcher boundary reached"); },
       processSignature: () => undefined, recordClaudeLaunch: () => undefined, cleanupStaleClaudeSettings: () => undefined,
@@ -159,7 +159,7 @@ function modeEntryContext(peer: "kimi" | "pi", args: string[] = []) {
       startModeOf: (peers: unknown, kind: string) => startModeOf(peers as any, kind),
       buildKimiTuiLaunch: () => ({ cmd: "fake-kimi", args: [] }), configureKimiMcp: () => ({ tracked: false }),
       nativeLaunchEnv: () => ({}), childEnv: () => ({}),
-      recoveryLock: () => undefined, readControl: () => ({ startModes: { [peer]: "tui" } }), recordTerminalLaunch: async () => undefined,
+      recoveryLock: () => undefined, readControl: () => ({ startModes: { [peer]: "tui" } }), recordTerminalLaunch: async () => undefined, prepareTerminalLaunch: async () => undefined, registerTerminalLaunch: async () => undefined,
     },
   } as any;
   return { context, requests, snapshot };

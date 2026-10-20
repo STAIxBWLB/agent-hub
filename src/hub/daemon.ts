@@ -112,7 +112,8 @@ import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./li
 import { changedPaths, hasTree, repoOf, snapshot, Turns, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContinuity } from "./recovery-continuity.ts";
-import { shellQuote } from "../cli/terminal-recovery.ts";
+import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate } from "../cli/terminal-recovery.ts";
+import { TerminalLaunches } from "./terminal-launch.ts";
 
 import { peerStartConfig, PEER_START_RETRY_MS, startModeOf, terminalTemplate, type PeerStartConfig, type StartMode } from "./start-mode.ts";
 import { hasKimiHubMcp } from "../cli/kimi-mcp.ts";
@@ -498,6 +499,7 @@ interface Client {
   authed: boolean;
   role?: "peer" | "console" | "tools";
   peer?: PeerId;
+  launchId?: string;
   tail?: () => void;
   watch?: () => void;
   /** The one-launch Kimi TUI admission this socket attached under; its close clears only that admission. */
@@ -511,6 +513,10 @@ class WsPeer extends BasePeer {
   // Checkpoints become stale at hello/claim, before asynchronous recall finishes and attach changes delivery generation.
   private claimGeneration = crypto.randomUUID();
   get sessionGeneration(): string { return this.claimGeneration; }
+  terminalOwner(launchId: string): { generation: string } | undefined {
+    return this.sock?.readyState === WebSocket.OPEN && this.sock.data.launchId === launchId && this.state !== "offline" && !this.claiming
+      ? { generation: this.claimGeneration } : undefined;
+  }
   private delivered = new Set<string>();
   private sock: Sock | undefined;
   private claimed: Sock | undefined;
@@ -2476,6 +2482,23 @@ export async function startDaemon(opts: DaemonOptions) {
   const claudePermissionGenerations = new Map<string, string>();
   const permissions = new Map<string, { push: string; peer: string; tool?: string; createdAt: number; expiresAt: number; done: (optionId: string | undefined, surface?: "console" | "dashboard" | "terminal", reason?: "expired" | "cancelled") => boolean }>();
   let stopping = false;
+  const terminalLaunches = new TerminalLaunches({
+    owner: row => {
+      const owner = bus.peers.get(row.peer), proof = owner?.terminalOwner?.(row.launchId);
+      if (!proof) return undefined;
+      return { ...proof, isCurrent: () => {
+        if (stopping || !membershipAllowed(row.peer) || bus.peers.get(row.peer) !== owner) return false;
+        const current = owner?.terminalOwner?.(row.launchId);
+        return current?.generation === proof.generation && current?.nativePid === proof.nativePid;
+      } };
+    },
+    publish: (row, current) => publishTerminalLaunch(opts.stateDir, row, current),
+    log,
+  });
+  const terminalLaunchTimer = setInterval(() => { void terminalLaunches.reconcile(); }, 1_000);
+  terminalLaunchTimer.unref();
+  intervals.push(terminalLaunchTimer);
+  startupCleanup.push(() => terminalLaunches.clear());
 
   const pausedNote = (id: PeerId) => {
     const r = budget.record(id); // one read per peer: status.json is rewritten on every bus event
@@ -5086,6 +5109,7 @@ export async function startDaemon(opts: DaemonOptions) {
             if (launch.instanceId === instanceId && typeof launch.launchId === "string" && launch.launchId) currentLaunch = launch.launchId;
           } catch { /* No current launch evidence: retain plain/pre-daemon attachment compatibility. */ }
           if (currentLaunch !== undefined && msg.launchId !== currentLaunch) return sock.close(4430, "Claude launch ended; start a new session with ahub claude");
+          if (typeof msg.launchId === "string" && msg.launchId.length <= 128) c.launchId = msg.launchId;
         }
         let peer = bus.peers.get(c.peer);
         if (kimiPull && peer instanceof AcpPeer && peer.state === "offline") peer = undefined;
@@ -5579,6 +5603,14 @@ export async function startDaemon(opts: DaemonOptions) {
         if (typeof msg.admissionId === "string" && msg.admissionId === kimiAdmissionId) clearKimiAdmission();
         return void reply({ ok: true });
       }
+      case "terminal_launch": {
+        if (c.role !== "console") return void reply({ ok: false, error: "terminal launch registration is console only" });
+        if (stopping || recoveryActive() && !(recoveryPhase === "restored" && msg.operationId === recoveryOperationId)) return void reply({ ok: false, error: "recovery is holding terminal launches" });
+        const row = terminalLaunchCandidate(msg.launch, opts.cwd, opts.stateDir, instanceId);
+        if (!row || !membershipAllowed(row.peer) || !definitionOf(row.peer)?.session.launchRecord || recoveryActive() && !recoveryPeerAllowed(row.peer)) return void reply({ ok: false, error: "terminal launch identity unavailable" });
+        try { terminalLaunches.register(row); return void reply({ ok: true }); }
+        catch { return void reply({ ok: false, error: "terminal launch could not be registered; managed recovery is unavailable" }); }
+      }
       case "native_tui_launch": {
         if (c.role !== "console") return void reply({ ok: false, error: "native TUI launch is console only" });
         const peer = String(msg.peer), owner = bus.peers.get(peer);
@@ -5719,6 +5751,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function stopOnce(): Promise<void> {
     stopping = true;
+    terminalLaunches.clear();
     runnerRefreshAbort.abort();
     // A stop someone asked for is not a crash, even if it then runs past the shutdown deadline: forget the sessions now.
     try { removeSessions(opts.stateDir, instanceId); } catch { /* the state dir is gone */ }
