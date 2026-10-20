@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { ControlClient, type Hello } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { realPath } from "../src/hub/project.ts";
-import { processSignature } from "../src/pi/process-signature.ts";
+import { processLiveness, processSignature } from "../src/pi/process-signature.ts";
 import type { RecordedTerminalLaunch } from "../src/cli/terminal-recovery.ts";
 
 const cleanup: Array<() => unknown> = [];
@@ -16,7 +16,7 @@ async function until(ready: () => boolean, label: string) {
   expect(ready(), label).toBe(true);
 }
 
-async function fixture(memoryUrl?: string) {
+async function fixture(memoryUrl?: string, ignoreQuerySigterm = false) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-terminal-launch-daemon-")));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const stateDir = join(root, "state"); mkdirSync(stateDir);
@@ -25,7 +25,8 @@ async function fixture(memoryUrl?: string) {
   const terminal = { handle: "term-fixture", incarnationId: "inc-fixture", worktreeId: "wt-fixture", worktreePath: root, connected: true };
   writeFileSync(executable, `#!${process.execPath}\nimport { existsSync, writeFileSync } from "node:fs";
 if (process.argv.slice(2).join(" ") !== "terminal show --terminal term-fixture --json") process.exit(2);
-writeFileSync(${JSON.stringify(started)}, "started");
+${ignoreQuerySigterm ? 'process.on("SIGTERM", () => {});' : ""}
+writeFileSync(${JSON.stringify(started)}, String(process.pid));
 while (existsSync(${JSON.stringify(gate)})) await Bun.sleep(5);
 console.log(JSON.stringify({ ok: true, result: { terminal: ${JSON.stringify(terminal)} } }));
 writeFileSync(${JSON.stringify(finished)}, "finished");
@@ -123,4 +124,30 @@ test("#482 superseded WsPeer generation cannot publish after its delayed Orca re
   expect((await f.console_.request({ t: "terminal_launch", launch: next })).ok).toBe(true);
   await until(() => f.rows().some(saved => saved.launchId === next.launchId), "only replacement owner published");
   expect(f.rows()).toEqual([next]);
+}, 10_000);
+
+for (const ignoreQuerySigterm of [false, true]) test(`#482 daemon stop awaits termination of its ${ignoreQuerySigterm ? "SIGTERM-ignoring" : "normal"} gated Orca publication query`, async () => {
+  const f = await fixture(undefined, ignoreQuerySigterm), row = f.candidate();
+  writeFileSync(f.gate, "hold");
+  let queryPid: number | undefined, querySignature: string | undefined;
+  try {
+    expect((await f.console_.request({ t: "terminal_launch", launch: row })).ok).toBe(true);
+    await f.connect({ role: "peer", peer: "claude", channel: true, launchId: row.launchId });
+    await until(() => existsSync(f.started), "owned Orca publication query started");
+    queryPid = Number(readFileSync(f.started, "utf8"));
+    expect(Number.isSafeInteger(queryPid) && queryPid > 0).toBe(true);
+    expect(queryPid).not.toBe(process.pid);
+    querySignature = processSignature(queryPid);
+    expect(querySignature).toBeDefined();
+    expect(processLiveness(queryPid, querySignature)).toBe("live");
+    await f.daemon.stop();
+    // Check immediately at stop completion, without a grace-period poll that could hide an unawaited kill.
+    expect(processLiveness(queryPid, querySignature)).toBe("gone");
+    expect(existsSync(f.ledger)).toBe(false);
+    expect(f.rows()).toEqual([]);
+  } finally {
+    // The red version may leave this fixture child waiting; release it even when the stop assertion fails.
+    rmSync(f.gate, { force: true });
+    if (queryPid !== undefined && querySignature) await until(() => processLiveness(queryPid, querySignature) === "gone", "fixture query exited after cleanup");
+  }
 }, 10_000);
