@@ -184,14 +184,28 @@ let delegatedAuditHub: ControlClient | undefined;
 let delegatedConnectionTaken = false;
 let releaseAuditInstance: (() => void) | undefined;
 if (delegatedPeer && !recoveryAudit && !noAuditConsumer) {
+  let published = false;
   try {
-    await recordDelegatedCliAudit(stateDir, delegatedPeer, commandLabel, async () => {
+    const auditId = await recordDelegatedCliAudit(stateDir, delegatedPeer, commandLabel, async () => {
       // The validated invocation already has operational console authority; a tools hello would add a roster gate.
       delegatedAuditHub = await ControlClient.connect(stateDir, { role: "console", projectRoot: cwd });
       return delegatedAuditHub.instanceId ? delegatedAuditHub.features : [];
     });
+    published = true;
     releaseAuditInstance = ControlClient.pinInstance(stateDir, delegatedAuditHub!.instanceId!);
-  } catch (error) { delegatedAuditHub?.close(); fail((error as Error).message); }
+    assertDelegatedAuditConsumer();
+    const retained = await delegatedAuditHub!.request({ t: "cli_audit_ack", auditId }, 3000);
+    if (retained.ok !== true || retained.auditId !== auditId || retained.instanceId !== delegatedAuditHub!.instanceId) {
+      throw new Error("live-test audit retention was not confirmed; nothing was executed; inspect the hub or upgrade it before retrying");
+    }
+  } catch (error) {
+    releaseAuditInstance?.(); delegatedAuditHub?.close();
+    if (published) {
+      try { recordCliAudit(stateDir, delegatedPeer, commandLabel, "refused"); }
+      catch { fail("live-test delegation audit unavailable; nothing was executed"); }
+    }
+    fail((error as Error).message);
+  }
 } else if (identity.role === "tools" || delegatedPeer) audit("run");
 function assertDelegatedAuditConsumer(): void {
   if (delegatedAuditHub && ((!delegatedConnectionTaken && !delegatedAuditHub.isOpen) || readControl(stateDir)?.instanceId !== delegatedAuditHub.instanceId)) {

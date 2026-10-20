@@ -39,6 +39,7 @@ function reserveCliAudit(stateDir: string, peer: string, command: string, outcom
   try { writeFileSync(pending, text, { mode: 0o600, flag: "wx" }); }
   catch (error) { try { unlinkSync(pending); } catch { /* only this writer's unpublished file */ } throw error; }
   return {
+    id: row.id,
     commit(outcome: CliAudit["outcome"]) {
       if (!valid({ ...row, outcome })) throw new Error("invalid CLI audit identifiers");
       writeFileSync(pending, JSON.stringify({ ...row, outcome }) + "\n", { mode: 0o600 });
@@ -55,7 +56,7 @@ export function recordCliAudit(stateDir: string, peer: string, command: string, 
 }
 
 /** Reserve the bounded audit before connecting; old drains never see an unsupported ready row. */
-export async function recordDelegatedCliAudit(stateDir: string, peer: string, command: string, features: () => Promise<readonly string[]>): Promise<void> {
+export async function recordDelegatedCliAudit(stateDir: string, peer: string, command: string, features: () => Promise<readonly string[]>): Promise<string> {
   let pending: ReturnType<typeof reserveCliAudit>;
   try { pending = reserveCliAudit(stateDir, peer, command, "delegated"); }
   catch { throw new Error("live-test delegation audit unavailable; nothing was executed"); }
@@ -66,6 +67,7 @@ export async function recordDelegatedCliAudit(stateDir: string, peer: string, co
     try { pending.commit(supported ? "delegated" : "refused"); }
     catch { throw new Error("live-test delegation audit unavailable; nothing was executed"); }
     if (!supported) throw new Error("running hub cannot retain delegated CLI audits; upgrade it from a person's terminal, or use the audited upgrade/recovery path; nothing was executed");
+    return pending.id;
   } finally { pending.close(); }
 }
 

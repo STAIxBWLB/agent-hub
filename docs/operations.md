@@ -36,8 +36,11 @@ Use a CLI/coordinator containing this feature throughout the experiment. Ordinar
 delegation requires `cli_audit_delegated` in the authenticated running daemon's
 welcome, rather than its protocol number or disk status. Execution reuses that
 connection; all helper connections are pinned to its authenticated instance, and
-local commands check that instance before dispatch. A replacement refuses further
-actions. Missing or unavailable
+local commands check that instance before dispatch. Replacement control
+connections refuse. Before effects, the same daemon must acknowledge the exact
+audit UUID after successfully appending its event; a feature claim or spool write
+alone is insufficient. That retained event survives later consumer replacement,
+including a delayed local setup confirmation. Missing or unavailable
 support refuses before command effects with an upgrade remedy; its refused audit
 uses an outcome older consumers retain. The private pending audit is reserved
 before connecting, so an unavailable outbox still refuses before any connection.

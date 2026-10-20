@@ -22,6 +22,13 @@ test("#410 only console acknowledges an exact retained audit before command effe
     expect(await person.request({ t: "cli_audit_ack", auditId: id })).toMatchObject({ ok: true, auditId: id, instanceId: person.instanceId });
     expect(readEvents(join(state, "events.jsonl"))).toContainEqual(expect.objectContaining({ type: "agent_cli", peer: "codex", command: "permission", delegated: true }));
     expect((await person.request({ t: "cli_audit_ack", auditId: crypto.randomUUID() })).ok).toBe(false);
+    const eventsFile = join(state, "events.jsonl"), saved = readFileSync(eventsFile);
+    rmSync(eventsFile); mkdirSync(eventsFile);
+    try {
+      recordCliAudit(state, "codex", "permission", "delegated");
+      const failedId = readdirSync(join(state, "cli-audit")).find(name => name.endsWith(".json"))!.slice(0, -5);
+      expect((await person.request({ t: "cli_audit_ack", auditId: failedId })).ok).toBe(false);
+    } finally { rmSync(eventsFile, { recursive: true }); writeFileSync(eventsFile, saved); }
   } finally { tools.close(); person.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
 });
 

@@ -1961,6 +1961,24 @@ export async function startDaemon(opts: DaemonOptions) {
   let claudeUsageSeen = 0;
   const claudeContextSeen = new Map<string, string>();
   const contextTailSeen = new Map<PeerId, string>();
+  const retainedCliAudits = new Set<string>();
+  function drainCliAuditsNow(): void {
+    for (const audit of drainCliAudits(opts.stateDir)) {
+      const delegated = audit.outcome === "delegated";
+      const refused = audit.outcome !== "run" && !delegated;
+      if (!event({ type: "agent_cli", peer: audit.peer, command: audit.command, refused, ...(delegated ? { delegated: true } : {}) })) {
+        throw new Error("CLI audit event was not retained");
+      }
+      retainedCliAudits.add(audit.id); // Only after the event append succeeded.
+      // ponytail: 4096 live-instance acknowledgements; eviction or restart fails closed. Durable keyed receipts can extend this window.
+      if (retainedCliAudits.size > 4096) retainedCliAudits.delete(retainedCliAudits.values().next().value!);
+      try {
+        notify(refused ? `${audit.peer} refused ahub ${audit.command}` : delegated
+          ? `${audit.peer} ran ahub ${audit.command} with delegated live-test console authority`
+          : `${audit.peer} ran ahub ${audit.command} as ${audit.peer}`);
+      } catch { /* The audit event is retained even if its advisory notice cannot be delivered. */ }
+    }
+  }
   const intervals = [
     setInterval(() => {
       void refreshRunner().catch(() => {});
@@ -1971,14 +1989,7 @@ export async function startDaemon(opts: DaemonOptions) {
       feedBudgetPauses();
       supervision.checkRound();
       try {
-        for (const audit of drainCliAudits(opts.stateDir)) {
-          const delegated = audit.outcome === "delegated";
-          const refused = audit.outcome !== "run" && !delegated;
-          event({ type: "agent_cli", peer: audit.peer, command: audit.command, refused, ...(delegated ? { delegated: true } : {}) });
-          notify(refused ? `${audit.peer} refused ahub ${audit.command}` : delegated
-            ? `${audit.peer} ran ahub ${audit.command} with delegated live-test console authority`
-            : `${audit.peer} ran ahub ${audit.command} as ${audit.peer}`);
-        }
+        drainCliAuditsNow();
       } catch { log("CLI audit outbox unavailable; inspect state before retrying an agent command"); }
       for (const peer of bus.knownPeers()) {
         contexts.retry(peer, contextSession(peer));
@@ -5542,6 +5553,13 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "status":
         return void reply({ t: "status", status: status(c.role === "console") });
+      case "cli_audit_ack": {
+        if (c.role !== "console") return void reply({ ok: false, error: "cli_audit_ack is a console command" });
+        if (typeof msg.auditId !== "string" || !/^[a-f0-9-]{36}$/.test(msg.auditId)) return void reply({ ok: false, error: "invalid audit id" });
+        try { drainCliAuditsNow(); }
+        catch { return void reply({ ok: false, error: "CLI audit was not retained" }); }
+        return void reply({ ok: retainedCliAudits.has(msg.auditId), auditId: msg.auditId, instanceId });
+      }
       case "ui_snapshot":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_snapshot is a console command" });
         if (!Number.isSafeInteger(msg.after ?? 0) || (msg.after ?? 0) < 0) return void reply({ ok: false, error: "invalid cursor" });
