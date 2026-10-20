@@ -142,6 +142,9 @@ test("#493 actionable notices are not FYI in both session instruction modes, sen
   }
   const template = readFileSync(new URL("../templates/AGENTS.block.md", import.meta.url), "utf8");
   expect(template).toContain("Do not use `[FYI]`"); expect(template).toContain("no duplicate");
+  // #572 AC2: an implementer ends its turn after pushing; the reviewer, not the implementer, watches CI.
+  expect(template).toContain("After pushing a PR, call `hub_task_done` stating the PR, its head commit and the CI state, then end your turn");
+  expect(template).toContain("Do not wait for or poll CI");
   expect(TASK_TOOLS.find(tool => tool.name === "hub_task_done")?.description).toContain("no duplicate");
   expect(TASK_TOOLS.find(tool => tool.name === "hub_review")?.description).toContain("no duplicate");
 });
