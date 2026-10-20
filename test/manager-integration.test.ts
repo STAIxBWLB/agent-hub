@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
+import { openManager, stopManager } from "../src/hub/manager.ts";
 
 const roots: string[] = [];
 const running: ReturnType<typeof spawn>[] = [];
@@ -102,4 +103,46 @@ test("manager starts outside any project and rejects a corrupted stop token", as
   const reopened = cli(home, ["ui", "--all", "--no-open"]);
   expect(new URL(reopened).origin).toBe(url.origin);
   cli(home, ["ui", "--all", "--stop"]);
+});
+
+// #584: two concurrent opens each spawn a detached manager and only one wins the owner claim. A spawn that is still booting
+// when the winner is stopped finds the owner row gone and claims it, and nothing stops that manager. This holds the loser at
+// startup, answers the opens from the winner, stops it, releases the loser, and asserts that no manager is left.
+test("a spawn that boots after the answering manager was stopped does not leave a manager running (#584)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ahub-manager-redundant-")); roots.push(home);
+  const main = join(import.meta.dir, "..", "src/cli/main.ts"), wrapper = join(home, "gated-manager.ts");
+  const log = join(home, "spawns.log"), release = join(home, "release");
+  // Stands in for the manager entry point. Both spawns announce their pid first. The one that creates "first" waits until
+  // both have started, so the other is certainly alive when the winner answers; the other waits for "release".
+  writeFileSync(wrapper, [
+    'import { appendFileSync, closeSync, existsSync, openSync, readFileSync } from "node:fs";',
+    `const log = ${JSON.stringify(log)}, release = ${JSON.stringify(release)};`,
+    'let role = "late";',
+    `try { closeSync(openSync(${JSON.stringify(join(home, "first"))}, "wx")); role = "early"; } catch { /* another spawn is first */ }`,
+    'appendFileSync(log, `${process.pid} ${role}\\n`);',
+    'const until = async (done: () => boolean) => { for (let i = 0; i < 1000 && !done(); i++) await Bun.sleep(20); };',
+    'if (role === "early") await until(() => readFileSync(log, "utf8").trim().split("\\n").length >= 2);',
+    'else await until(() => existsSync(release));',
+    `await import(${JSON.stringify(main)});`,
+  ].join("\n"));
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const spawns = () => existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean).map((line) => ({ pid: Number(line.split(" ")[0]), role: line.split(" ")[1] })) : [];
+  const gone = async (pid: number) => { for (let i = 0; i < 150 && alive(pid); i++) await Bun.sleep(20); return !alive(pid); };
+  const all: number[] = [];
+  try {
+    const urls = await Promise.all([openManager({ home, cli: wrapper }), openManager({ home, cli: wrapper })]);
+    expect(new URL(urls[0]!).origin).toBe(new URL(urls[1]!).origin);
+    all.push(...spawns().map((spawn) => spawn.pid));
+    expect(all).toHaveLength(2);
+    await stopManager({ home });
+    appendFileSync(release, "");
+    // The released spawn now either exits (an owner is not free) or claims the owner row. Wait for it to settle, then look.
+    for (let i = 0; i < 100 && !existsSync(join(home, "manager", "status.json")) && all.some(alive); i++) await Bun.sleep(20);
+    const left = existsSync(join(home, "manager", "status.json"));
+    if (left) await stopManager({ home }).catch(() => {}); // clean up before asserting, so a red run leaves nothing behind
+    expect(left).toBe(false);
+    for (const pid of all) expect(await gone(pid)).toBe(true);
+  } finally {
+    for (const pid of all) try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
+  }
 });
