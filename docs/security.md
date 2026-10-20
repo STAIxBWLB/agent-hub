@@ -95,9 +95,21 @@ the existing console authority for console-class operations and conductor-class 
 settings, roster and lifecycle operations. It does not restrict effects to a
 scratch project: the agent must stay within the authorized commands and targets.
 Malformed or conflicting caller markers still refuse. The original peer and
-closed command label are recorded with outcome `delegated` before execution;
-if that audit cannot be written, the command refuses. The current daemon emits
-`agent_cli` with `delegated: true` and `refused: false`. Allowed-class commands retain the peer identity and capability checks, including
+closed command label are audited before execution. Ordinary delegation requires
+the authenticated welcome feature `cli_audit_delegated` before publishing that
+outcome. The negotiated connection is reused, helper connections are pinned to
+its authenticated instance, and local dispatch checks that instance. Replacement
+control connections refuse. Before command effects, a console-only acknowledgement
+must confirm the exact UUID was retained by a successful event append in that
+instance; an unavailable acknowledgement refuses. Later local work therefore does
+not depend on a future consumer draining the spool. An older or unavailable consumer gets a compatible `refused` row and the
+command refuses with an upgrade remedy. An unwritable outbox refuses before the
+connection; an event append failure refuses before command effects. Upgrade/recovery instead records compatible `run` spool rows and
+keeps authoritative ids-only `delegatedAudits` in its operation receipt before
+runtime effects, including resume through an older retained coordinator. Local bootstrap commands with no daemon manifest use `run` too. Stored attribution
+never grants authority; the current invocation still needs its own validated peer
+and flag. The current daemon emits `agent_cli` with `delegated: true` and
+`refused: false` for the negotiated outcome. Allowed-class commands retain the peer identity and capability checks, including
 messages, proposals and reviews. Peer starts, pause and resume may delegate
 operational console authority; task assign/escalate under the flag refuse. `--as-user`, person task labels,
 person-authored planning/release/memory/goal writes, SDLC record, benchmark run,

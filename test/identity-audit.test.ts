@@ -2,10 +2,59 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { drainCliAudits, recordCliAudit } from "../src/cli/identity-audit.ts";
+import { drainCliAudits, recordCliAudit, recordDelegatedCliAudit } from "../src/cli/identity-audit.ts";
 import { nativeLaunchEnv } from "../src/cli/launch.ts";
 import { cliCommandLabel } from "../src/cli/identity.ts";
 import { peerChildEnv } from "../src/hub/child-process.ts";
+import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { ControlClient } from "../src/hub/control-client.ts";
+import { readEvents } from "../src/hub/events.ts";
+
+test("#410 only console acknowledges an exact retained audit before command effects", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-audit-ack-")), state = join(root, "state");
+  const daemon = await startDaemon({ cwd: root, stateDir: state, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
+  const person = await ControlClient.connect(state, { role: "console" }), tools = await ControlClient.connect(state, { role: "tools", peer: "codex" });
+  try {
+    recordCliAudit(state, "codex", "permission", "delegated");
+    const id = readdirSync(join(state, "cli-audit")).find(name => name.endsWith(".json"))!.slice(0, -5);
+    expect((await tools.request({ t: "cli_audit_ack", auditId: id })).ok).toBe(false);
+    expect(await person.request({ t: "cli_audit_ack", auditId: id })).toMatchObject({ ok: true, auditId: id, instanceId: person.instanceId });
+    expect(readEvents(join(state, "events.jsonl"))).toContainEqual(expect.objectContaining({ type: "agent_cli", peer: "codex", command: "permission", delegated: true }));
+    expect((await person.request({ t: "cli_audit_ack", auditId: crypto.randomUUID() })).ok).toBe(false);
+    const eventsFile = join(state, "events.jsonl"), saved = readFileSync(eventsFile);
+    rmSync(eventsFile); mkdirSync(eventsFile);
+    try {
+      recordCliAudit(state, "codex", "permission", "delegated");
+      const failedId = readdirSync(join(state, "cli-audit")).find(name => name.endsWith(".json"))!.slice(0, -5);
+      expect((await person.request({ t: "cli_audit_ack", auditId: failedId })).ok).toBe(false);
+    } finally { rmSync(eventsFile, { recursive: true }); writeFileSync(eventsFile, saved); }
+  } finally { tools.close(); person.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
+test("#410 negotiation reserves a bounded private pending row, invisible to drains", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-pending-audit-"));
+  try {
+    await recordDelegatedCliAudit(dir, "codex", "permission", async () => {
+      expect(readdirSync(join(dir, "cli-audit"))).toEqual([expect.stringMatching(/\.tmp$/)]);
+      expect(drainCliAudits(dir)).toEqual([]);
+      return ["cli_audit_delegated"];
+    });
+    expect(drainCliAudits(dir)).toMatchObject([{ peer: "codex", outcome: "delegated" }]);
+    expect(readdirSync(join(dir, "cli-audit"))).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("#410 failed authentication records only a compatible refusal and clears the reservation", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-refused-audit-"));
+  try {
+    await expect(recordDelegatedCliAudit(dir, "codex", "permission", async () => { throw new Error("secret must not reach the remedy"); })).rejects.toThrow("upgrade");
+    const rows = drainCliAudits(dir);
+    expect(rows).toMatchObject([{ peer: "codex", outcome: "refused" }]);
+    expect(JSON.stringify(rows)).not.toContain("secret");
+    expect(readdirSync(join(dir, "cli-audit"))).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test("pre-connection audit contains only validated identifiers and drains once", () => {
   const dir = mkdtempSync(join(tmpdir(), "agenthub-cli-audit-"));

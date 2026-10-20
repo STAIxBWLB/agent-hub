@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { projectContext } from "./project.ts";
 
 export function stateDirFor(cwd: string): string {
@@ -8,7 +8,7 @@ export function stateDirFor(cwd: string): string {
 
 /** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`; 5 = `ask`; 6 = console-only `ui` session bootstrap; 8 = controlled recovery; 9 = Pi bridge metadata; 10 = durable delivery receipts; 11 = queue hold diagnostics; 12 = generation-bound channel settlement and execution budgets; 13 = turn-free facts (`facts` with tool, session and transcript binding, `silenced`) and per-recipient send results (issue #108). 14 = native context-window status and session-bound context checkpoint request ids (issue #185). 15 = conductor tools and permission deadlines/closed events (issues #190, #194). 16 = a Claude session without channel evidence: hello `channel: false` and `inbox` (issue #205). The plugin is installed apart from the daemon, so they can drift. */
 export const PROTOCOL = 16;
-export const DAEMON_FEATURES = ["native_hook_launch", "task_cancel", "recovery_deferred_hub", "peer_instances", "release_trains", "reviewer_pool", "native_tui_launch"] as const;
+export const DAEMON_FEATURES = ["native_hook_launch", "task_cancel", "recovery_deferred_hub", "peer_instances", "release_trains", "reviewer_pool", "native_tui_launch", "cli_audit_delegated"] as const;
 /** Protocols a current coordinator may authenticate while upgrading a running source. */
 export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, PROTOCOL] as const;
 
@@ -60,9 +60,15 @@ export function readControl(stateDir: string): ControlDescriptor | undefined {
   }
 }
 
+const instancePins = new Map<string, { instanceId: string }>();
+
 /** One authenticated control connection. `request` correlates replies by `rid`; everything else goes to `onPush`. */
 export class ControlClient {
   features: readonly string[] = [];
+  private welcomeInstanceId?: string;
+  /** Identity from the authenticated welcome, never the unauthenticated descriptor alone. */
+  get instanceId(): string | undefined { return this.welcomeInstanceId; }
+  get isOpen(): boolean { return this.ws.readyState === WebSocket.OPEN; }
   private nextRid = 1;
   private readonly pending = new Map<number, (msg: any) => void>();
   onPush: (msg: any) => void = () => {};
@@ -71,11 +77,23 @@ export class ControlClient {
 
   private constructor(private readonly ws: WebSocket) {}
 
+  /** Scope all helper-module connections in one CLI invocation to its authenticated audit consumer. */
+  static pinInstance(stateDir: string, instanceId: string): () => void {
+    const key = resolve(stateDir), pin = { instanceId };
+    if (!instanceId || instancePins.has(key)) throw new Error("control instance is already pinned or unavailable");
+    instancePins.set(key, pin);
+    return () => { if (instancePins.get(key) === pin) instancePins.delete(key); };
+  }
+
   /** `protocol` is used only by the upgrade coordinator for an authenticated, explicitly supported source contract. */
   static connect(stateDir: string, hello: Hello, timeoutMs = 3000, protocol = PROTOCOL): Promise<ControlClient> {
     if (!RECOVERY_SOURCE_PROTOCOLS.includes(protocol as (typeof RECOVERY_SOURCE_PROTOCOLS)[number])) return Promise.reject(new Error(`unsupported recovery source protocol ${protocol}`));
     const control = readControl(stateDir);
     if (!control) return Promise.reject(new Error(`no hub running for ${stateDir} (run: ahub up)`));
+    const pin = instancePins.get(resolve(stateDir));
+    if (pin && (control.instanceId !== pin.instanceId || hello.instanceId !== undefined && hello.instanceId !== pin.instanceId)) {
+      return Promise.reject(new Error("delegated audit consumer changed; refusing a connection to its replacement"));
+    }
     if (control.protocol !== undefined && control.protocol !== protocol) {
       return Promise.reject(Object.assign(new Error(`wire version mismatch: hub speaks ${control.protocol}, CLI speaks ${protocol}; stop it with its matching CLI, then upgrade and restart`), { code: 4426 }));
     }
@@ -84,7 +102,7 @@ export class ControlClient {
         (hello.projectRoot && hello.projectRoot !== control.cwd)) {
       return Promise.reject(Object.assign(new Error("hub project or instance does not match the selected project"), { code: 4404 }));
     }
-    const expected = { projectId: hello.projectId ?? control.projectId, instanceId: hello.instanceId ?? control.instanceId,
+    const expected = { projectId: hello.projectId ?? control.projectId, instanceId: pin?.instanceId ?? hello.instanceId ?? control.instanceId,
       projectRoot: hello.projectRoot ?? control.cwd };
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(control.url);
@@ -117,6 +135,7 @@ export class ControlClient {
           return refuse(Object.assign(new Error("connected hub has a different project or instance"), { code: 4404 }));
         }
         client.features = Object.freeze(Array.isArray(reply.features) ? reply.features.filter((feature: unknown): feature is string => typeof feature === "string") : []);
+        client.welcomeInstanceId = typeof reply.instanceId === "string" && reply.instanceId ? reply.instanceId : undefined;
         clearTimeout(timer);
         resolve(client);
       });

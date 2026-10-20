@@ -99,6 +99,15 @@ export interface ReattachmentMarker {
   cause: "detached after restore";
   binding: TerminalBinding;
 }
+/** Trusted per-invocation attribution from the CLI identity preflight, never authority read from a receipt. */
+export interface RecoveryDelegation {
+  peer: string;
+  command: "upgrade" | "restart" | "recovery resume" | "recovery abort" | "recovery dispose" | "recovery-run";
+}
+type RecoveryDelegationAudit = RecoveryDelegation & { at: number; operationId: string };
+const MAX_RECOVERY_DELEGATIONS = 256;
+const RECOVERY_DELEGATION_COMMANDS: readonly string[] = ["upgrade", "restart", "recovery resume", "recovery abort", "recovery dispose", "recovery-run"];
+
 export interface RecoveryOperation {
   /**
    * #227: 2 marks a stop-and-archive recorded on an operation whose coordinator predates #215. Every older runner and
@@ -112,6 +121,8 @@ export interface RecoveryOperation {
   phase: "pending" | "running" | "blocked" | "completed" | "cancelled";
   step: string;
   sourceRoot: string;
+  /** Ids-only initiating and subsequent delegated invocations; retained across coordinator replacement. */
+  delegatedAudits?: RecoveryDelegationAudit[];
   targetRoot?: string;
   targetDigest?: string;
   /** Verified capability evidence bound to targetRoot/targetDigest; absence is legacy unknown, not an empty list. */
@@ -395,7 +406,7 @@ export function planFingerprint(plan: Omit<UpgradePlan, "fingerprint">): string 
   return createHash("sha256").update(JSON.stringify(stable)).digest("hex");
 }
 
-export function createOperation(plan: UpgradePlan, sourceRoot: string, home = hubHome()): RecoveryOperation {
+export function createOperation(plan: UpgradePlan, sourceRoot: string, home = hubHome(), delegation?: RecoveryDelegation): RecoveryOperation {
   if (plan.blockers.length || plan.projects.some((p) => p.blockers.length)) throw new Error("upgrade plan has blockers; no runtimes were changed");
   if (!plan.projects.length) throw new Error("no running projects to recover");
   const { fingerprint, ...body } = plan;
@@ -405,6 +416,7 @@ export function createOperation(plan: UpgradePlan, sourceRoot: string, home = hu
     schema: 1, id, plan, sourceRoot, createdAt: Date.now(), updatedAt: Date.now(), phase: "pending", step: "stage",
     projects: plan.projects.map((p) => ({ id: p.project.id, phase: "pending", terminals: {} })),
   };
+  if (delegation) appendRecoveryDelegation(op, delegation, op.createdAt);
   writeOperation(id, op, home);
   acquireRecoveryLock(id, home);
   return op;
@@ -423,11 +435,49 @@ function abandoned(op: RecoveryOperation): boolean {
   return true;
 }
 
+function validRecoveryDelegation(value: unknown): value is RecoveryDelegation {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const row = value as Record<string, unknown>;
+  return typeof row.peer === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(row.peer)
+    && typeof row.command === "string" && RECOVERY_DELEGATION_COMMANDS.includes(row.command);
+}
+
+function validateRecoveryDelegations(op: RecoveryOperation): void {
+  if (op.delegatedAudits === undefined) return;
+  if (!Array.isArray(op.delegatedAudits) || op.delegatedAudits.length > MAX_RECOVERY_DELEGATIONS || op.delegatedAudits.some(row =>
+    !validRecoveryDelegation(row) || Object.keys(row).some(key => !["at", "peer", "command", "operationId"].includes(key)) ||
+    !Number.isFinite(row.at) || row.at < 0 || row.operationId !== op.id)) throw new Error("invalid recovery delegation audit");
+}
+
+function appendRecoveryDelegation(op: RecoveryOperation, delegation: RecoveryDelegation, at: number): void {
+  validateRecoveryDelegations(op);
+  if (!validRecoveryDelegation(delegation) || Object.keys(delegation).some(key => !["peer", "command"].includes(key)) ||
+      !Number.isFinite(at) || at < 0) throw new Error("invalid recovery delegation audit");
+  if ((op.delegatedAudits?.length ?? 0) >= MAX_RECOVERY_DELEGATIONS) throw new Error("recovery delegation audit is full; nothing was executed");
+  (op.delegatedAudits ??= []).push({ at, peer: delegation.peer, command: delegation.command, operationId: op.id });
+}
+
+/** Record an external resume before handing off to even an older retained coordinator. */
+export function recordRecoveryDelegation(id: string, delegation: RecoveryDelegation, home = hubHome()): RecoveryOperation {
+  validateReceipt(id, readOperation<RecoveryOperation>(id, home));
+  const releaseRunner = claimRunner(id, home);
+  try {
+    const op = readOperation<RecoveryOperation>(id, home);
+    validateReceipt(id, op);
+    const at = Date.now();
+    appendRecoveryDelegation(op, delegation, at);
+    op.updatedAt = at;
+    writeOperation(id, op, home);
+    return op;
+  } finally { releaseRunner(); }
+}
+
 function validateReceipt(id: string, op: RecoveryOperation, historical = false): void {
   // Cleanup validates owned historical facts; this mode never authorizes restore, fresh or reattach.
   const options = historical ? { authority: "historical" as const } : {};
   const decode = (value: unknown) => decodeRestoreReceipt(value, options);
   if (!(op.schema === 1 || (op.schema === 2 && op.disposition)) || op.id !== id) throw new Error("unsupported operation receipt");
+  validateRecoveryDelegations(op);
   if (op.targetFeatures !== undefined && (!Array.isArray(op.targetFeatures) || !op.targetFeatures.every(feature => typeof feature === "string" && feature.length > 0) || !op.targetRoot || !op.targetDigest)) throw new Error("invalid target features");
   const { fingerprint, ...reviewed } = op.plan;
   if (fingerprint !== planFingerprint(reviewed) || op.projects.length !== op.plan.projects.length ||
@@ -523,6 +573,10 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
       if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
       releaseRunner();
       return op;
+    }
+    if (driver.liveTestPeer) {
+      appendRecoveryDelegation(op, { peer: driver.liveTestPeer, command: "recovery-run" }, driver.now());
+      writeOperation(id, op, home);
     }
   } catch (error) { releaseRunner(); throw error; }
   let targetFeatures: readonly string[] = [];
@@ -778,6 +832,7 @@ export async function runRecovery(id: string, driver: RecoveryDriver, home = hub
 
 /** Receipts and runner state only (#215): ids, phases and effects, never task or message text. */
 export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unknown", live: Record<string, Inspection | undefined> = {}) {
+  validateRecoveryDelegations(op);
   const effect = (key: string, value: unknown) => {
     if (!key.startsWith("restored:")) return value === "pending" || value === "failed" ? value : "done";
     const receipt = decodeRestoreReceipt(value, { authority: "historical" });
@@ -798,6 +853,7 @@ export function publicOperation(op: RecoveryOperation, runnerPid?: number | "unk
       ...(p.restarts?.length ? { restarts: p.restarts.length } : {}) })),
     pluginInstalled: !!op.pluginInstalled, globalInstalled: !!op.globalInstalled,
     ...(!targetReadsWaivers(op) && op.projects.some((p) => failedPeers(op, p).length) ? { freshSession: `not offered: target ${op.plan.version} cannot read recovery waivers, so it could not release a new session` } : {}),
+    ...(op.delegatedAudits ? { delegatedAudits: op.delegatedAudits } : {}),
     ...(op.error ? { error: op.error } : {}), ...(op.failure ? { failure: op.failure } : {}), ...(op.blockedReattachment ? { blockedReattachment: op.blockedReattachment } : {}), ...(op.disposition ? { disposition: op.disposition } : {}), ...(op.audit ? { audit: op.audit } : {}), ...(op.freshOverride ? { freshOverride: op.freshOverride } : {}), ...(op.missingRecordedSession ? { missingRecordedSession: op.missingRecordedSession } : {}),
     ...(op.waits ? { waits: op.waits } : {}), ...(op.presentationCause ? { presentationCause: op.presentationCause } : {}), next };
 }
@@ -881,6 +937,10 @@ export async function abortRecovery(id: string, driver: RecoveryDriver, home = h
       if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
       return;
     }
+    if (driver.liveTestPeer) {
+      appendRecoveryDelegation(op, { peer: driver.liveTestPeer, command: "recovery abort" }, driver.now());
+      writeOperation(id, op, home);
+    }
     if (abandoned(op)) writeOperation(id, op, home);
     const { fingerprint, ...body } = op.plan;
     if (fingerprint !== planFingerprint(body)) throw new Error("operation plan changed");
@@ -924,6 +984,10 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
       // Another runner finished it while this one waited: leave no lock behind, as resume and abort do.
       if (recoveryLock(home) === id) releaseRecoveryLock(id, home);
       throw new Error(`operation is already ${op.phase}`);
+    }
+    if (driver.liveTestPeer) {
+      appendRecoveryDelegation(op, { peer: driver.liveTestPeer, command: "recovery dispose" }, driver.now());
+      writeOperation(id, op, home);
     }
     if (abandoned(op)) writeOperation(id, op, home);
     const at = driver.now();
