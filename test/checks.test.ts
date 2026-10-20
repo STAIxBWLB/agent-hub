@@ -134,3 +134,30 @@ test("a killed check settles within its kill grace when the child's exit and clo
   expect(await pending).toMatchObject({ code: null, timedOut: false, interrupted: true });
   expect(Date.now() - stopped).toBeLessThan(3000);
 });
+
+test("a late exit event or a retained stop after the kill grace settled the check never signals the old process group", async () => {
+  const exits: ((code: number | null) => void)[] = [];
+  const recording = ((...args: Parameters<typeof spawn>) => {
+    const child = spawn(...args);
+    const on = child.on.bind(child);
+    child.on = ((event: string, listener: (...a: unknown[]) => void) => {
+      if (event === "exit") exits.push(listener as (code: number | null) => void);
+      return event === "exit" || event === "close" ? child : on(event, listener);
+    }) as typeof child.on;
+    return child;
+  }) as typeof spawn;
+  const running = new Set<() => void>();
+  const pending = runCheck("sleep 30", tempDir(), 300, running, recording);
+  const [stop] = running;
+  expect(await pending).toMatchObject({ code: null, timedOut: true });
+  const kills: number[] = [];
+  const kill = process.kill;
+  process.kill = ((pid: number, signal?: string | number) => (kills.push(pid), kill.call(process, pid, signal))) as typeof process.kill;
+  try {
+    for (const exit of exits) exit(null);
+    stop?.();
+  } finally {
+    process.kill = kill;
+  }
+  expect(kills).toEqual([]);
+});

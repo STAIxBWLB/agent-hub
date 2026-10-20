@@ -41,7 +41,7 @@ export function runCheck(command: string, cwd: string, timeoutMs: number, runnin
       grace ??= setTimeout(() => done(null), KILL_GRACE_MS);
     };
     const stop = () => {
-      if (exited) return; // finished before the hub stopped: its own result stands
+      if (exited || settled) return; // finished before the hub stopped, or already settled: its result stands and the group may be reused
       interrupted = true;
       killAndSettle();
     };
@@ -74,6 +74,7 @@ export function runCheck(command: string, cwd: string, timeoutMs: number, runnin
       done(null);
     });
     child.on("exit", (code) => {
+      if (settled) return; // the kill grace settled it: the process group id is no longer ours to signal
       exited = true;
       clearTimeout(timer); // it finished in time; only its output may still be on the way
       killGroup(); // a background job it left behind (sh has no job control, so it is still in the group)
