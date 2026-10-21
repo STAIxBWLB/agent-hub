@@ -4198,7 +4198,8 @@ The owner gave the #516 track its go-ahead on 2026-10-22. This section closes th
 - `ahub source add <path|url>` is person-only, refused in agent shells like the other console commands. The id is `src:` plus the first 16 hex digits of the snapshot's SHA-256, so adding the same bytes twice returns the existing id.
 - The snapshot lives in the hub state directory under `sources/<id>/`: `meta.json` (`{id, kind, origin, sha256, bytes, added_at, private}`), the raw bytes, and the projected text. The raw cap is the text-projection input cap (`MAX_PROJECTION_INPUT`, 16 MiB), and the text comes from the existing text_projection converters with their caps and sandbox. Larger inputs are refused with the cap in the reason; nothing is truncated silently.
 - A URL is fetched once, by the person's CLI process, over https only, following at most 5 redirects, within the same 16 MiB cap. No agent, sandbox or hub tool fetches a URL. Because the person issues the fetch, a PII project does not refuse it; the snapshot is screened like any file.
-- A path under `pii.paths`, or a snapshot whose text the PII screen flags, is stored with `private: true`. `hub_source_read` returns the text of a private source only to the on-prem worker inside a PII task. Every other caller gets `{id, kind, private: true}` with no text, origin or excerpt.
+- A path under `pii.paths`, or a snapshot whose text the PII screen flags, is stored with `private: true`.
+- Privacy is monotonic per id. Because equal bytes share one id, `private` is the OR over every registration of those bytes. Re-adding them from a private path, or with screened text that is now flagged, upgrades the existing record to private. Re-adding from a public path never downgrades it. `meta.json` keeps every origin; a private record shows no origin to anyone but the person. Readers, the CLI and dashboard lists, overlap notices and plan validation always use the record's current flag, never the flag of the registration that created it. Implementation tests cover both orders, public then private and private then public, and show that the second add returns the same id with `private: true`. `hub_source_read` returns the text of a private source only to the on-prem worker inside a PII task. Every other caller gets `{id, kind, private: true}` with no text, origin or excerpt.
 - `hub_source_read {id, range?}` returns at most 32 KiB of text per call (`range: {offset, length}` in characters), passed through `sanitize()` and the PII screen, and is excluded from capture.
 - The plan's `sources` field is validated against the registry: an unknown id is refused at propose, accept and plan. Overlap notices name registry ids, never origins.
 
@@ -4222,3 +4223,15 @@ The owner gave the #516 track its go-ahead on 2026-10-22. This section closes th
 ### Deliverables (#509)
 
 - In a PII task, or for a deliverable under `pii.paths`, the record keeps the id, format, version and SHA-256 only, never a path or an excerpt, in every view, log and memory call. Hashing still runs on the real path under the existing path guard.
+
+### Knowledge corpus (#510), owner decision 2026-10-22
+
+- The hub indexes plain notes folders only, read-only. `corpus.paths` is a machine-local key.
+- A folder that is, or contains, an Obsidian vault (a `.obsidian/` directory at or below the path, checked with `realPath`) is refused as a corpus path. The reason names MCP: a vault is reached only through the Obsidian MCP tools, never read by the hub from disk.
+- AC3 (vault candidates) stays with agent-mem (tasks 112 and 122); the hub adds no vault reader.
+
+### On-prem web reading (#515), owner decision 2026-10-22
+
+- `web_fetch` is refused for the whole turn of a PII task, whatever the host. The outbound URL or query could carry PII to the web, and `pii.paths` and `sanitize()` do not cover outbound requests.
+- Outside PII turns it runs only through the egress proxy, to hosts in a machine-local per-project allowlist, and returns bounded text only.
+- `doc_read` is unaffected by this rule; it keeps its own `pii.paths` and `data.readonly` checks.
