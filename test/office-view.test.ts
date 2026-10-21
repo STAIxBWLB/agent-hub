@@ -740,7 +740,8 @@ test("every dashboard colour lives in the token blocks, and the two dark blocks 
  for(const step of ["4px","8px","12px","16px","24px","32px"])expect(lightBlock()).toContain(":"+step);
  // The dead rules the issue lists are gone.
  expect(css).not.toContain("grid-template-columns:minmax(0,1fr) 340px");
- expect(css).not.toContain(".task-list{");expect(css.match(/\.eyebrow\{/g)).toHaveLength(1);expect(css.match(/\[hidden\]\{/g)).toHaveLength(1);
+ expect(css).not.toContain(".task-list{");// Anchored to the start of a rule: a scoped rule such as ".brand .eyebrow{" is not a duplicate of the global one.
+ expect(css.match(/(?:^|\})\s*\.eyebrow\{/g)).toHaveLength(1);expect(css.match(/(?:^|\})\s*\[hidden\]\{/g)).toHaveLength(1);
 });
 test("contrast covers accent, dots, disabled controls and every peer colour in both themes (#469 R1 AC2)",()=>{
  for(const [theme,block] of [["light",lightBlock()],["dark",darkBlock()]] as const){
