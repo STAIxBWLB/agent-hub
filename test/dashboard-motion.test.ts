@@ -4,6 +4,7 @@ import { runInNewContext } from "node:vm";
 import { boardColumns } from "../src/ui/task-board.ts";
 import { taskProgress } from "../src/ui/task-progress.ts";
 import { PEER_PALETTE } from "../src/ui/peer-palette.ts";
+import { renderHelp } from "../src/cli/help.ts";
 
 // #469 R6: keyed rendering, quiet motion, and the loading, empty, disconnected and toast states.
 
@@ -218,8 +219,9 @@ test("an empty view says what fills it and the command that does it (#469 R6 AC9
     ["No ' + memory.tier + '-term entries match. Save one with ahub remember <text>.", "ahub remember"],
     ["No long-term tasks. A person creates one with ahub goal new <title>.", "ahub goal new"],
   ] as const) { expect(html, text).toContain(text); expect(text).toContain(command); }
-  // Every command named is a real one in the help text.
-  const help = readFileSync(new URL("../src/cli/help.ts", import.meta.url), "utf8");
+  // Every command named is a real one in `ahub help`. Read the rendered help, not help.ts: the native commands are derived from the
+  // adapter definitions (#625), so their words are not in that source file.
+  const help = renderHelp(100, false);
   for (const command of ["ahub task propose", "ahub say", "ahub permit", "ahub remember", "ahub goal new", "ahub claude", "ahub codex"]) expect(help, command).toContain(command);
 });
 
