@@ -4210,6 +4210,63 @@ import. Builtins keep their existing applicable contract tests and explicit
 unsupported-leg reasons; an external module exercises the same contracts in
 its own CI.
 
+### S4 test integrity boundary (#481)
+
+S4 applies only when the linked issue's complete label metadata contains `bug` (case-insensitive); known non-bug issues are exempt. Unknown labels never establish exemption: enforce blocks entering review and approval, advise reports unknown. Off retains its receipt/schema/readback behavior. No issue/PR body, patch or test output is retained.
+
+The optional enabled-lifecycle `redFirst` receipt contains red/green legs, each `{source, head, check, result}`. Sources are `local`, `container` or `ci`; local/container results remain labelled claims, CI results require the exact named completed FAILURE/SUCCESS CheckRun at that commit, never an agent-posted StatusContext. `checkEvidence` labels each leg claimed or observed; verified describes receipt structure plus supplied results. Red is failed, green is passed, check names match, full lowercase SHAs differ, and green equals current PR head. Red must belong to the PR and have one parent with a nonempty commit diff adding only recognized test paths. Its single-parent ancestry within the complete PR commit set must touch only tests; earlier implementation or ambiguous/merge ancestry refuses the proof. Relinking repository, issue or PR drops an unsupplied red-first receipt. In enforce, only USER may change an already-established repository or issue; peers may initially fill missing identity and still relink the PR. This durable identity rule prevents owner-controlled bug-to-nonbug relinks before a first observation or after restart, without status writes; advise/off retain their prior authority.
+
+Complete PR file metadata flags modified/deleted pre-existing test paths; newly added tests are permitted. Test paths have a test/tests/__tests__ directory component or a supported .test/.spec language suffix, plus conventional *_test.go, test_*.py, *_test.py, *_spec.rb and *Test.java names. Missing types, unsafe paths, rename/copy identities and truncation remain unknown. Missing/invalid/unknown red-first proof and changed existing tests block both review and approval in enforce, and appear as advisory findings in advise. Current task/privacy/authority fences hold after asynchronous reads and before effects.
+
+Readbacks use bounded metadata calls within the existing shared 20 s deadline: at most 100 labels, 100 PR commits, fewer than 100 red-commit files and 100 contexts per CI leg; beyond those ceilings proof is unknown (upgrade path: bounded pagination). The merge queue's last remote snapshot revalidates applicability for every linked issue, up to 32 distinct issues (upgrade path: bounded snapshot pagination). Status/queue reports carry source labels and current-host-screened path identities; private metadata becomes neutral unknown, and receipt metadata is screened again on public output. Metadata cannot detect later gutting of newly added test assertions; content-aware review is the upgrade path. These gates never execute checks, merge, publish or confer authority, and source/fixture verification does not certify the separate native lifecycle receipt.
+
 ### S2 plan conformance boundary (#481)
 
 Optional proof/risks lists are bounded to 32 strings of 512 characters. Literal file/directory-prefix coverage uses complete current PR file metadata, never patches or glob execution. Root plan entries never cover all files; renamed/copied files whose old identity is unavailable make the inventory unknown. Untouched paths are advisory; uncovered changed paths block enforce approval until plan amendment or person acceptance. Host content revisions are separate from backlog planningRevision. "Plan revisions after the first observed push" binds the first observed remote head to plan fingerprint/revision; earlier pushes are unknown. Pending observations persist only at successful owner/reviewer transitions; status and queue reads never append history, and off mode captures no S2 observations or content revisions. Lost pending intervals remain unknown. The ceiling is no true push-event source; the upgrade path is a webhook or Actions push receipt. Person-only `ahub sdlc accept-departure <task> <head> <reason...>` records complete current repo/PR/head inventory and plan fingerprint/revision, with bounded sanitized privacy-screened rationale; changed identity, plan or inventory invalidates it, including plan edits while reporting is off. Departure consent expires on host restart to prevent unpersisted invalidations from reviving; the upgrade path is a durable host observation journal. Private projections reveal only existence, and unavailable private inventories stay unknown.
+
+## Amendment: general-purpose intake, sources, drafts, schedules and deliverables (#516)
+
+The owner gave the #516 track its go-ahead on 2026-10-22. This section closes the design gaps that blocked coding #508, #509, #511 and #512. Each child issue keeps its own ACs; where this section is stricter, it wins.
+
+### Sources (#508)
+
+- `ahub source add <path|url>` is person-only, refused in agent shells like the other console commands. The id is `src:` plus the first 16 hex digits of the snapshot's SHA-256, so adding the same bytes twice returns the existing id.
+- The snapshot lives in the hub state directory under `sources/<id>/`: `meta.json` (`{id, kind, origin, sha256, bytes, added_at, private}`), the raw bytes, and the projected text. The raw cap is the text-projection input cap (`MAX_PROJECTION_INPUT`, 16 MiB), and the text comes from the existing text_projection converters with their caps and sandbox. Larger inputs are refused with the cap in the reason; nothing is truncated silently.
+- A URL is fetched once, by the person's CLI process, over https only, following at most 5 redirects, within the same 16 MiB cap. No agent, sandbox or hub tool fetches a URL. Because the person issues the fetch, a PII project does not refuse it; the snapshot is screened like any file.
+- A path under `pii.paths`, or a snapshot whose text the PII screen flags, is stored with `private: true`.
+- Privacy is monotonic per id. Because equal bytes share one id, `private` is the OR over every registration of those bytes. Re-adding them from a private path, or with screened text that is now flagged, upgrades the existing record to private. Re-adding from a public path never downgrades it. `meta.json` keeps every origin; a private record shows no origin to anyone but the person. Readers, the CLI and dashboard lists, overlap notices and plan validation always use the record's current flag, never the flag of the registration that created it. Implementation tests cover both orders, public then private and private then public, and show that the second add returns the same id with `private: true`. `hub_source_read` returns the text of a private source only to the on-prem worker inside a PII task. Every other caller gets `{id, kind, private: true}` with no text, origin or excerpt.
+- `hub_source_read {id, range?}` takes `range: {offset, length}` in characters but bounds the response in bytes: after `sanitize()` and the PII screen, the text is at most 32 KiB of UTF-8, cut at a character boundary with an explicit cut marker, and the reply returns the `next` character offset. It is excluded from capture.
+- The plan's `sources` field is validated against the registry: an unknown id is refused at propose, accept and plan. Overlap notices name registry ids, never origins.
+
+### Intake drafts (#511)
+
+- A draft is a backlog card carrying `draft: true`. Backlog work is never offered, `hub_backlog_pull` refuses a draft, and the draft's children inherit the mark, so AC3 holds by construction.
+- `ahub intake "<text>" [--source <id>...]` (person-only) creates one parent draft holding the request, with its sources validated as above.
+  - With a planner, the hub sends it a `task` envelope of class `plan` that names the draft id. The request text goes through `publicView`. The planner answers with `hub_backlog_split` on the draft, giving each child a profile class, its sources, dependencies (`after`/`afterParts`) and acceptance criteria in the #507 criteria-id format.
+  - Without a planner, the hub model (`inference.ts`) proposes the same split as JSON. The hub validates it against the `hub_backlog_split` schema and writes it; invalid output leaves the parent draft unsplit, with the reason.
+  - PII in the request never goes to a planner peer, because PII turns refuse `hub_backlog_split` (`taskOpBody`). The hub's on-prem model proposes the split instead, under the existing triage screen, and the hub writes it itself through `Tasks` as private (PII) drafts, which show as stubs everywhere. Without an on-prem model, the draft stays unsplit for the person.
+- `ahub intake approve <id>` (person-only) clears `draft` on the parent and its children, which then follow the normal backlog pull. `ahub intake discard <id>` cancels them through `Tasks.cancel`.
+
+### Schedules and folder triggers (#512)
+
+- `schedules` is a machine-local key: add it to `MACHINE_LOCAL` in `config-trust.ts`, so only `config.local.json` can set it. A committed config that creates tasks is refused, like the other machine-local keys.
+- Entry: `{id, every, class, title, detail?, sources?, owner?, queue?: "backlog" | "ready"}`. `every` is `<n>m|h|d` with a 15-minute minimum. `cron` is accepted by the schema but refused with "cron not supported yet; use every", because a cron parser is a new runtime dependency or new code; it is a later slice.
+- Due checks run on their own interval timer, started whenever `schedules` or folder triggers are configured, independent of `task_sweep.enabled` (the task sweep's timer exists only when that option is on, and it defaults to off). The timer runs no task sweep, and it is re-armed on config reload. `queue` defaults to `backlog`. Missed runs coalesce: a schedule proposes at most one task per tick, and none while its previous task is still open. A global pause or hold skips the tick and coalesces it. Last and next run times live in `hub.db`, and status and the dashboard show the next run.
+- Folder trigger: `{id, folder, glob?, class, title, ...}`. `folder` is resolved with `realPath`, must lie inside the project or a declared data path, and is polled on the schedules timer, not watched. Symlinks that leave the folder are skipped. A new file (by `realPath`, size, mtime and SHA-256 recorded in `hub.db`) is registered as a source (#508) and proposes one task that names it. The trigger therefore lands after the source registry.
+- `ahub schedule list|run <id>|pause <id>|resume <id>` is person-only.
+
+### Deliverables (#509)
+
+- In a PII task, or for a deliverable under `pii.paths`, the record keeps the id, format, version and SHA-256 only, never a path or an excerpt, in every view, log and memory call. Hashing still runs on the real path under the existing path guard.
+
+### Knowledge corpus (#510), owner decision 2026-10-22
+
+- The hub indexes plain notes folders only, read-only. `corpus.paths` is a machine-local key.
+- A corpus path that lies in, is, or contains an Obsidian vault is refused. The check runs on the `realPath` of the configured root, so a symlink into a vault is caught. It looks for a `.obsidian/` directory in every ancestor of that real path (a root inside a vault, such as `/vault/notes` when `/vault/.obsidian` exists), at the root itself, and below it. The index walk also skips no `.obsidian/` it meets; it refuses the root instead. Evidence it cannot read (an unreadable ancestor or subdirectory, or a realPath failure) refuses the path; it never certifies a plain folder. The reason names MCP: a vault is reached only through the Obsidian MCP tools, never read by the hub from disk.
+- AC3 (vault candidates) stays with agent-mem (tasks 112 and 122); the hub adds no vault reader.
+
+### On-prem web reading (#515), owner decision 2026-10-22
+
+- `web_fetch` is refused for the whole turn of a PII task, whatever the host. The outbound URL or query could carry PII to the web, and `pii.paths` and `sanitize()` do not cover outbound requests.
+- Outside PII turns it runs only through the egress proxy, to hosts in a machine-local per-project allowlist, and returns bounded text only.
+- `doc_read` is unaffected by this rule; it keeps its own `pii.paths` and `data.readonly` checks.

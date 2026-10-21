@@ -1,3 +1,4 @@
+import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
 import { completePlanInventory, planConformance, planConformanceBlockers, planFingerprint, type PlanConformance } from "./plan-conformance.ts";
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, type CostPlan, type ReviewCost } from "./cost-governance.ts";
@@ -586,6 +587,9 @@ export class Tasks {
     const { title, detail, history, external, cancelled, ...taskRest } = task;
     const rest = { ...taskRest, ...(history.some(h => h.by === USER && h.planDeparture) ? { planDepartureAccepted: true } : {}) };
     if (this.isPii(task)) return { ...rest, actualDates: actualTaskDates(task), refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: stageDefinition(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc.stage)?.base ?? "unknown" } } : {}), title: "[pii]", detail: "[pii]" };
+    if (rest.sdlc?.redFirst && !this.publicMetadataText(JSON.stringify(rest.sdlc.redFirst))) {
+      const { redFirst: _withheld, ...receipt } = rest.sdlc; rest.sdlc = receipt;
+    }
     const screenHistoryText = (text: string, field: string, withheld = false): string => !withheld && this.nameable(text) ? text : `[history ${field} withheld: ${this.whyWithheld(text)}; ahub task show ${task.id}]`;
     const publicHistory = (fullHistory ? history : history.slice(-5)).map(h => ({
       at: h.at, by: h.by, event: h.event,
@@ -2503,7 +2507,11 @@ export class Tasks {
     if (by !== USER && by !== task.owner && by !== task.reviewer) throw new PreEffectToolRefusal("only the task owner, reviewer or console user may record lifecycle evidence");
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     const next = sdlcReceipt(input, task.sdlc, config, VERSION);
+    // The spec identity is person-owned in enforce. No observation cache or restart can reopen a relink bypass.
+    const specRelink = (task.sdlc?.repo !== undefined && next.repo !== task.sdlc.repo) || (task.sdlc?.issue !== undefined && next.issue !== task.sdlc.issue);
+    if (config.mode === "enforce" && by !== USER && specRelink) throw new PreEffectToolRefusal("only the person may relink an established repository or issue in enforce");
     const definition = stageDefinition(config, next.stage);
+    if (next.redFirst && input && typeof input === "object" && "redFirst" in input && !this.isPii(task) && !this.publicMetadataText(JSON.stringify(next.redFirst))) throw new PreEffectToolRefusal("red-first metadata matches a PII pattern; use private work");
     // #481 S1: entering a build stage in enforce needs the person's spec acceptance; the person may move any stage.
     if (config.mode === "enforce" && by !== USER && next.stage !== task.sdlc?.stage && definition && canonicalStage(definition.base) === "build" && specState(next, undefined) === "missing") throw new PreEffectToolRefusal(this.specText(task, "missing", "blocked"));
     if (config.mode === "enforce" && config.definitions && input && typeof input === "object" && "stage" in input && next.stage !== task.sdlc?.stage && by !== USER) {
@@ -2531,7 +2539,7 @@ export class Tasks {
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     const before = workflowHash(this.d.board.list().map(t => ({ id: t.id, state: t.state, after: t.deps, sdlc: t.sdlc, history: t.history.length })));
     const links = this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t), plan: config.mode === "off" || this.isPii(t) ? undefined : { paths: this.planPaths(t), revision: t.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(t.plan ?? {}), accepted: this.validPlanDepartures(t) } }));
-    const report = await readMergeQueue(repo, config, links, this.d.sdlc?.gh);
+    const report = await readMergeQueue(repo, config, links, this.d.sdlc?.gh, this.publicMetadataText);
     // Policy can change across remote awaits without any board write. Never return its stale public projection.
     const currentPrivacy = this.d.board.list().map(task => ({ id: task.id, private: this.isPii(task) }));
     if (workflowHash(links.map(({ id, private: hidden }) => ({ id, private: hidden }))) !== workflowHash(currentPrivacy)) {
@@ -2545,6 +2553,13 @@ export class Tasks {
       if (task?.sdlc?.repo?.toLowerCase() === report.repo.toLowerCase() && task.sdlc.pr === row.pr) {
         if (this.validPlanDepartures(task).length && row.planConformance?.some(item => item.task === id && item.state !== "unknown" && !item.accepted)) this.invalidatedPlanDepartures.add(id);
         this.capturePlanHead(task, row.head);
+      }
+    }
+    for (const row of report.rows) if (row.testIntegrity) {
+      row.testIntegrity = row.testIntegrity.map(item => ({ ...publicTestIntegrity(item, this.publicMetadataText), ...(item.task === undefined ? {} : { task: item.task }) }));
+      if (config.mode === "enforce") {
+        row.blockers = [...new Set([...row.blockers, ...row.testIntegrity.flatMap(testIntegrityBlockers)])];
+        row.ready = row.ready && row.blockers.length === 0;
       }
     }
     return report;
@@ -2676,16 +2691,18 @@ export class Tasks {
   async lifecycleStatus(id: unknown, refresh = true): Promise<SdlcStatus> {
     const task = this.need(id), config = this.d.sdlc?.config() ?? sdlcConfig(undefined), identity = this.planIdentity(task);
     const valid = () => { const now = this.need(id, false, true); if (this.planIdentity(now) !== identity || now.history.length !== task.history.length) throw new PreEffectToolRefusal("task changed during lifecycle readback"); return now; };
-    const read: SdlcGh = (args, timeout, cwd, cap) => { valid(); return (this.d.sdlc?.gh ?? sdlcGh)(args, timeout, cwd, cap); };
-    const evidence = task.sdlc && !this.isPii(task) && refresh && config.mode !== "off" ? await readSdlcPr(task.sdlc, read) : undefined;
+    const deadline = performance.now() + 20_000;
+    const read: SdlcGh = (args, timeout, cwd, cap) => { valid(); const remaining = deadline - performance.now(); return remaining > 0 ? (this.d.sdlc?.gh ?? sdlcGh)(args, Math.min(timeout ?? 10_000, remaining), cwd, cap) : Promise.resolve({ code: 1, stdout: "" }); };
+    const evidence = task.sdlc && !this.isPii(task) && refresh && config.mode !== "off" ? await readSdlcPr(task.sdlc, read, true) : undefined;
     valid();
     const accepted = task.sdlc?.acceptance;
     const edit = accepted && !this.isPii(task) && refresh && config.mode !== "off" ? await readSpecEdit(accepted.repo, accepted.issue, read) : undefined;
+    const integrity = config.mode !== "off" ? publicTestIntegrity(task.sdlc && evidence && !this.isPii(task) ? await readTestIntegrity(task.sdlc, evidence, read) : this.unknownTestIntegrity(this.isPii(task)), this.publicMetadataText) : undefined;
     const current = valid();
     if (this.planIdentity(current) !== this.planIdentity(task) || current.history.length !== task.history.length) throw new PreEffectToolRefusal("task changed during lifecycle readback");
     this.capturePlanRead(current, evidence);
     return sdlcStatus(config, current.sdlc, evidence, this.workflowView(current), edit, this.isPii(current) ? [] : this.reviewFindingSets(current), current.refs.commit,
-      config.mode !== "off" ? this.planReport(this.d.board.get(current.id)!, evidence) : undefined);
+      config.mode !== "off" ? this.planReport(this.d.board.get(current.id)!, evidence) : undefined, integrity);
   }
 
   /** #481 S1: only build work starts from an accepted spec. */
@@ -2751,26 +2768,33 @@ export class Tasks {
     this.d.notify(this.specText(task, state, "advice"));
   }
 
+  private unknownTestIntegrity(privateTask = false): TestIntegrity {
+    return { applicability: "unknown", redFirst: "unknown", fileState: "unknown", modifiedTests: [], blockers: [privateTask ? "test integrity: private evidence unavailable" : "test integrity: current evidence unknown"] };
+  }
+
   private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string, findings?: readonly ReviewFindingSet[]): Promise<PrEvidence | undefined> {
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     if (config.mode === "off") return;
     const receipt = task.sdlc && { ...task.sdlc, ...(reviewedHead ? { reviewedHead } : {}) };
+    const deadline = performance.now() + 20_000;
     const read: SdlcGh = (args, timeout, cwd, cap) => {
       const current = this.need(task.id, false, true);
       if (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || this.isPii(current) !== this.isPii(task)) return Promise.resolve({ code: 1, stdout: "" });
-      return (this.d.sdlc?.gh ?? sdlcGh)(args, timeout, cwd, cap);
+      const remaining = deadline - performance.now();
+      return remaining > 0 ? (this.d.sdlc?.gh ?? sdlcGh)(args, Math.min(timeout ?? 10_000, remaining), cwd, cap) : Promise.resolve({ code: 1, stdout: "" });
     };
-    const evidence = receipt && !this.isPii(task) ? await readSdlcPr(receipt, read) : undefined;
+    const evidence = receipt && !this.isPii(task) ? await readSdlcPr(receipt, read, true) : undefined;
+    const integrity = publicTestIntegrity(receipt && evidence && !this.isPii(task) ? await readTestIntegrity(receipt, evidence, read) : this.unknownTestIntegrity(this.isPii(task)), this.publicMetadataText);
     const current = this.need(task.id, false, true);
     if (config.mode === "enforce" && (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state)) throw new PreEffectToolRefusal(`task #${task.id}: changed during lifecycle readback; retry on current work`);
     // Advise may continue on the current task, but evidence from its previous link cannot admit that task's review.
     if (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state || this.isPii(current) !== this.isPii(task)) return;
     this.capturePlanRead(current, evidence);
     const planReport = this.planReport(current, evidence);
-    const status = sdlcStatus(config, receipt, evidence, this.workflowView(current), undefined, this.isPii(current) ? [] : findings ?? this.reviewFindingSets(current), current.refs.commit, planReport);
-    const blockers = transition === "review" ? [...new Set([...status.blockers.filter(blocker => ["lifecycle stage definition unknown", "issue identity missing", "PR identity missing", "current PR evidence unknown", "PR is not open", "local gate on current head missing or failed"].includes(blocker)), ...(status.entry ?? []), ...(status.exit ?? [])])] : status.blockers;
+    const status = sdlcStatus(config, receipt, evidence, this.workflowView(current), undefined, this.isPii(current) ? [] : findings ?? this.reviewFindingSets(current), current.refs.commit, planReport, integrity);
+    const blockers = transition === "review" ? [...new Set([...status.blockers.filter(blocker => ["lifecycle stage definition unknown", "issue identity missing", "PR identity missing", "current PR evidence unknown", "PR is not open", "local gate on current head missing or failed"].includes(blocker) || blocker.startsWith("test integrity:")), ...(status.entry ?? []), ...(status.exit ?? [])])] : status.blockers;
     if (config.mode === "enforce" && blockers.length) throw new PreEffectToolRefusal(`task #${task.id}: SDLC ${transition} blocked: ${blockers.join("; ")}`);
-    const advice = [...new Set([...blockers, ...planConformanceBlockers(planReport)])];
+    const advice = [...new Set([...blockers, ...planConformanceBlockers(planReport), ...testIntegrityBlockers(integrity)])];
     if (config.mode === "advise" && advice.length) this.d.notify(`task ${this.publicTitle(task)}: SDLC ${transition} advice: ${this.isPii(task) ? "private lifecycle evidence unknown" : advice.join("; ")}`);
     return evidence;
   }

@@ -7784,6 +7784,22 @@ var init_runtime = __esm(() => {
   init_text();
 });
 
+// src/hub/test-integrity.ts
+var CHECK_SOURCES, legSchema = (result) => ({ type: "object", additionalProperties: false, required: ["source", "head", "check", "result"], properties: {
+  source: { type: "string", enum: CHECK_SOURCES.map((origin) => origin.value), description: CHECK_SOURCES.map((origin) => `${origin.value}: ${origin.evidence}`).join("; ") },
+  head: { type: "string", pattern: "^[a-f0-9]{40}$" },
+  check: { type: "string", minLength: 1, maxLength: 120 },
+  result: { type: "string", enum: [result] }
+} }), redFirstSchema;
+var init_test_integrity = __esm(() => {
+  CHECK_SOURCES = [
+    { value: "local", evidence: "claimed" },
+    { value: "container", evidence: "claimed" },
+    { value: "ci", evidence: "observed" }
+  ];
+  redFirstSchema = { type: "object", additionalProperties: false, required: ["red", "green"], properties: { red: legSchema("failed"), green: legSchema("passed") } };
+});
+
 // src/hub/plan-conformance.ts
 var init_plan_conformance = () => {};
 
@@ -7807,6 +7823,7 @@ var init_host_executable = __esm(() => {
 // src/hub/sdlc.ts
 var SDLC_STAGES, PLAYBOOK_STAGES, BASES, STAGE_GATES, GATES;
 var init_sdlc = __esm(() => {
+  init_test_integrity();
   init_plan_conformance();
   init_review_findings();
   init_workflow();
@@ -8629,7 +8646,7 @@ function profileTaskTools(profile = "dev", stages, criteria = false) {
       if (criteria) {
         const { phase, ...current } = fields;
         const { tasks: _retiredImport, ...checklist } = phase.properties;
-        fields = { ...current, criteria: { ...phase, properties: checklist, required: ["id", "criteria"] } };
+        fields = { ...current, redFirst: redFirstSchema, criteria: { ...phase, properties: checklist, required: ["id", "criteria"] } };
       }
       properties.receipt = { ...receipt, properties: fields };
     }
@@ -8659,6 +8676,7 @@ var ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submi
   inputSchema: { type: "object", properties, required, additionalProperties: false }
 }), BOUNDED_TASK_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
 var init_hub_tools = __esm(() => {
+  init_test_integrity();
   init_sdlc();
   init_profiles();
   init_roles();
@@ -19328,6 +19346,7 @@ init_hub_tools();
 init_envelope();
 
 // src/hub/tasks.ts
+init_test_integrity();
 init_plan_conformance();
 
 // src/hub/sdlc-release.ts
@@ -19405,6 +19424,7 @@ init_sdlc();
 init_planning();
 
 // src/hub/sdlc-queue.ts
+init_test_integrity();
 init_plan_conformance();
 init_review_findings();
 init_sdlc();
