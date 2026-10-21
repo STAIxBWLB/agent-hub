@@ -34,7 +34,7 @@ function page(options: { cached?: boolean; now?: () => number; focus?: string } 
     cookiePrefs:{get:()=>options.focus ?? "",set:(name:string,value:string)=>cookies.push([name,value])},
     Date: class extends Date { static override now() { return options.now?.() ?? Date.now(); } },
     location: { origin: "http://127.0.0.1:4000" }, context: () => ({ ...scope }), canMutate: () => true,
-    document: { createElement: (tag: string) => new Node(tag) }, $, boardColumns, taskProgress, peerPalette: PEER_PALETTE, badge: (text: string) => el("span", text),
+    document: { createElement: (tag: string) => new Node(tag) }, $, boardColumns, taskProgress, peerPalette: PEER_PALETTE, badge: (text: string, cls = "") => el("span", text, "badge" + (cls ? " " + cls : "")),
     renderTaskProgress: () => {}, renderTaskStage: (stage: { label: string }) => el("p", stage.label),
     empty: (target: Node, text: string) => target.append(el("p", text)),
     update: (id: string, _value: unknown, render: (node: Node) => void) => { get(id).replaceChildren(); render(get(id)); },
@@ -336,4 +336,108 @@ test("cancelled and approved cards and details are never overdue while the open 
   expect(all(get("tasks")).filter(node => node.textContent === "Overdue")).toHaveLength(1);
   api.open(1);
   expect(all(get("task-detail-content")).some(node => node.textContent === "Overdue")).toBe(false);
+});
+
+// #469 R3 (AC5): a card shows the title, the owner avatar, ONE state/priority badge and the release, and nothing else of the detail.
+const classes = (node: Node) => node.className.split(" ").filter(Boolean);
+test("a compact card has the title, an owner avatar, one state and priority badge and the release, and nothing more (#469 R3 AC5)", () => {
+  const { api, get, all, peers, snapshot } = page();
+  api.draw({ ...snapshot, releases: [{ id: 2, name: "phase two" }], tasks: snapshot.tasks.map(task => ({ ...task, release: 2, detail: "long private-looking detail", reworkRound: 2, plannedStart: 1, due: 2, pinned: true, role: "backend-engineer" })) }, peers, Object.keys(peers));
+  const cards = all(get("tasks")).filter(node => node.tag === "article");
+  expect(cards.length).toBeGreaterThan(0);
+  for (const card of cards) {
+    const nodes = all(card);
+    expect(nodes.filter(node => classes(node).includes("card-title"))).toHaveLength(1);
+    expect(nodes.filter(node => classes(node).includes("owner-avatar"))).toHaveLength(1);
+    expect(nodes.filter(node => classes(node).includes("badge") && !/^Overdue|^Check running/.test(node.textContent))).toHaveLength(1);
+    expect(nodes.filter(node => classes(node).includes("release-chip")).map(node => node.textContent)).toEqual(["Release #2 phase two"]);
+    // Nothing of the detail leaks onto a card: no body, no groups, no dates, no rework, no controls.
+    for (const forbidden of ["long private-looking detail", "Rework round", "Planned ", "Pinned", "Status", "People", "Dates", "Links"]) expect(nodes.some(node => node.textContent.includes(forbidden)), forbidden).toBe(false);
+    expect(nodes.some(node => node.tag === "select" || node.tag === "button" || node.tag === "section" || node.tag === "p")).toBe(false);
+  }
+});
+test("the card badge folds the priority into the state and keeps its tone; the avatar names its owner (#469 R3 AC5)", () => {
+  const { api, get, all, peers, snapshot } = page();
+  api.draw(snapshot, peers, Object.keys(peers));
+  const byTitle = (title: string) => all(get("tasks")).filter(node => node.tag === "article").find(node => all(node).some(child => child.textContent.endsWith(title)))!;
+  const review = byTitle("review"), badgeOf = (card: Node) => all(card).find(node => classes(node).includes("badge"))!;
+  expect(badgeOf(review).textContent).toMatch(/^in review P\d$/);expect(classes(badgeOf(review))).toContain("info");
+  const proposed = byTitle("<img src=x onerror=alert(1)>");expect(badgeOf(proposed).textContent).toMatch(/^proposed P\d$/);expect(classes(badgeOf(proposed)).filter(name => ["ok", "warn", "info", "err"].includes(name))).toEqual([]);
+  const avatar = all(review).find(node => classes(node).includes("owner-avatar"))!;
+  expect(avatar.textContent).toBe("C");expect(classes(avatar)).toContain("peer-claude");expect(avatar.attrs["aria-label"]).toBe("owner: claude");expect(avatar.attrs.role).toBe("img");
+  // A task with no owner, and an owner the palette does not know, both get a neutral avatar and an honest name.
+  api.draw({ ...snapshot, tasks: [{ id: 9, state: "backlog", title: "nobody", class: "implement" }, { id: 10, state: "backlog", title: "stranger", class: "implement", owner: "zed" }] }, peers, Object.keys(peers));
+  const avatars = all(get("tasks")).filter(node => classes(node).includes("owner-avatar"));
+  expect(avatars.map(node => node.attrs["aria-label"])).toEqual(["owner: unassigned", "owner: zed"]);expect(avatars.every(node => classes(node).includes("peer-other"))).toBe(true);
+  expect(avatars.map(node => node.textContent)).toEqual(["U", "Z"]);
+});
+test("a card with a long title keeps the whole title in the DOM and clamps it to two lines in CSS (#469 R3 AC5)", () => {
+  const { api, get, all, peers, snapshot } = page(), long = "word ".repeat(80).trim();
+  api.draw({ ...snapshot, tasks: [{ id: 5, state: "proposed", title: long, class: "implement", owner: "codex" }] }, peers, Object.keys(peers));
+  const title = all(get("tasks")).find(node => classes(node).includes("card-title"))!;
+  expect(title.textContent).toBe("#5 " + long);
+  const css = /<style>([\s\S]*?)<\/style>/.exec(readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8"))![1]!;
+  const rule = /\.task-card\.compact \.card-title\{([^}]*)\}/.exec(css)![1]!;
+  expect(rule).toContain("-webkit-line-clamp:2");expect(rule).toContain("line-clamp:2");expect(rule).toContain("overflow:hidden");
+});
+test("the detail groups its metadata into Status, People, Dates and Links without losing or duplicating a line (#469 R3 AC5)", () => {
+  const { api, get, all, peers, snapshot } = page({ now: () => 10_000 });
+  api.draw({ ...snapshot, releases: [{ id: 2, name: "phase two" }], tasks: [{ id: 7, state: "in_progress", title: "grouped", class: "implement", owner: "codex", reviewer: "claude", release: 2, role: "backend-engineer", reworkRound: 2, checking: true, pinned: true, plannedStart: 1000, due: 2000, actualDates: { startedAt: 1500 }, external: { provider: "github", issue: 12, url: "https://example.invalid/12" }, detail: "the description" }] }, peers, Object.keys(peers));
+  api.open(7);
+  const detail = all(get("task-detail-content")).find(node => node.tag === "article")!, groups = detail.children.filter(node => node.tag === "section");
+  expect(groups.map(node => node.children[0]!.textContent)).toEqual(["Status", "People", "Dates", "Links"]);
+  const text = (node: Node) => all(node).map(child => child.textContent).join("\n");
+  const [status, people, dates, links] = groups.map(text) as [string, string, string, string];
+  expect(status).toContain("Rework round 2");expect(status).toContain("Check running");expect(status).toContain("Overdue");
+  expect(people).toContain("owner: codex");expect(people).toContain("reviewer: claude");expect(people).toContain("Task guidance: backend-engineer (grants no authority)");
+  expect(dates).toContain("Planned ");expect(dates).toContain("Actual start ");
+  expect(links).toContain("Release #2 phase two");expect(links).toContain("GitHub #12");expect(links).toContain("Pinned");
+  // Each fact appears once, in its own group; the description stays directly under the head.
+  for (const line of ["Rework round 2", "Planned ", "Release #2 phase two", "Pinned", "owner: codex"]) expect(text(detail).split(line).length - 1, line).toBe(1);
+  expect(detail.children.find(node => node.textContent === "the description")).toBeDefined();
+  // A group with nothing to show is left out rather than shown empty.
+  api.draw({ ...snapshot, tasks: [{ id: 8, state: "backlog", title: "bare", class: "implement" }] }, peers, Object.keys(peers));
+  api.open(8);
+  const bare = all(get("task-detail-content")).find(node => node.tag === "article")!;
+  expect(bare.children.filter(node => node.tag === "section").map(node => node.children[0]!.textContent)).toEqual(["Status", "People"]);
+});
+
+// #469 R3 (AC6): the five board forms live in the Plan sheet with the same fields, names and actions as before. The expected
+// control list is written out here, so a dropped or renamed field fails; the page's handlers attach by these ids.
+const PLAN_FORMS: Record<string, string[]> = {
+  planning: ["select#planning-task", "select#planning-priority", "input#planning-rank", "select#planning-release", "input#planning-start", "input#planning-due", "input#planning-pinned", "input#planning-reason", "button#planning-save", "button#planning-undo", "button#planning-reload"],
+  "split-backlog": ["textarea#split-titles", "input#split-sequential", "input#split-reason", "button#split-save"],
+  "release-new": ["input#release-name", "input#release-order", "input#release-goal"],
+  "release-plan": ["select#release-edit", "input#release-start", "input#release-cut", "input#release-ship", "button#release-save", "button#release-reload"],
+  propose: ["input#title", "textarea#detail", "select#class", "select#owner", "input#backlog-proposal"],
+};
+test("the five board forms sit in the Plan sheet with every field, id and name they had (#469 R3 AC6)", () => {
+  const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
+  const plan = /<dialog id="plan-dialog"[\s\S]*?\n<\/dialog>/.exec(html)![0], board = /<section class="task-board-section"[\s\S]*?<div class="stack">/.exec(html)![0];
+  expect(html).toMatch(/<dialog id="plan-dialog" aria-labelledby="plan-title">/);
+  for (const [form, controls] of Object.entries(PLAN_FORMS)) {
+    const match = new RegExp(`<form id="${form}"[^>]*>([\\s\\S]*?)</form>`).exec(plan);
+    expect(match, form + " is inside the Plan sheet").not.toBeNull();
+    expect(board.includes(`<form id="${form}"`), form + " is not left on the board").toBe(false);
+    const found = [...match![1]!.matchAll(/<(input|select|textarea|button)\b[^>]*?\bid="([^"]+)"/g)].map(item => item[1] + "#" + item[2]);
+    expect(found, form).toEqual(controls);
+  }
+  // The evidence and release panels and the split panel keep the ids the page writes to.
+  for (const id of ["split-panel", "delivery", "delivery-repo", "delivery-live", "delivery-queue", "delivery-release", "delivery-report", "releases"]) expect(plan, id).toContain(`id="${id}"`);
+  expect(plan).not.toMatch(/<details|<summary/);
+  // Opened by a Plan button in the board toolbar, closed by its own button or Esc (a native dialog).
+  expect(board).toMatch(/id="plan-open"[^>]*>Plan<\/button>/);expect(plan).toMatch(/id="plan-close"[^>]*aria-label="Close plan sheet"/);
+  // Every handler the five forms depend on is still attached by id.
+  for (const form of Object.keys(PLAN_FORMS)) expect(html, form).toMatch(new RegExp(`\\$\\('${form}'\\)\\.addEventListener\\('submit'`));
+});
+test("the Plan sheet and the detail sheet are right-hand native dialogs that stop the view keys while open (#469 R3 AC5 AC6)", () => {
+  const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8"), css = /<style>([\s\S]*?)<\/style>/.exec(html)![1]!;
+  expect(html).toMatch(/<dialog id="task-detail-dialog" aria-labelledby="task-detail-title">/);
+  const sheet = /#task-detail-dialog,#plan-dialog\{([^}]*)\}/.exec(css)![1]!;
+  expect(sheet).toContain("inset:0 0 0 auto");expect(sheet).toContain("height:100vh");expect(sheet).toMatch(/width:min\(520px,100%\)/);
+  expect(css).toMatch(/@media\(max-width:600px\)\{#task-detail-dialog,#plan-dialog\{/);
+  // Motion is transform and opacity only, and off under reduced motion.
+  expect(/@keyframes sheet-in\{(from\{[^}]*\})\}/.exec(css)![1]).toBe("from{transform:translateX(24px);opacity:0}");
+  expect(css).toMatch(/@media\(prefers-reduced-motion:reduce\)\{#task-detail-dialog\[open\],#plan-dialog\[open\]\{animation:none\}\}/);
+  expect(html).toContain("$('task-detail-dialog').open || $('plan-dialog').open");
 });
