@@ -79,13 +79,16 @@ Controls session restoration, thread continuity, and crash recovery:
 * `transcriptPath(binding)`: Resolves local transcript file path for audit/usage tracking.
 
 #### `projection`
-Where the kind sits in the host's derived lists: `roleRank`, `startRank`, `helpRank` and `plannerEligible`. `KNOWN_PEERS`, `OPTIONAL_PEERS`, `START_MODE_PEERS`, `ROLE_ORDER`, `HELP_ORDER` and `PLANNER_PEERS` are derived from `ADAPTERS` and these ranks (`deriveAdapterLists`), so adding a kind never edits a list. A configured or external definition cannot set it.
+Where the kind sits in the host's derived lists: `roleRank`, `startRank`, `helpRank` and `plannerEligible`. `KNOWN_PEERS`, `OPTIONAL_PEERS`, `START_MODE_PEERS`, `ROLE_ORDER`, `HELP_ORDER` and `PLANNER_PEERS` are derived from `ADAPTERS` and these ranks (`deriveAdapterLists`). The only hand-kept lists are the cross-release copies in `src/hub/peer-catalog.ts` (`KNOWN_PEERS`, `OPTIONAL_PEERS`) and `src/hub/start-mode.ts` (`START_MODE_PEERS`, for a dual-form kind): a new native kind is added there too, and `test/registry-guard.test.ts` fails until those copies equal the derived lists. A configured or external definition cannot set `projection`.
 
 #### `cli`
 The `ahub <kind>` surface: `command`, `startWords(form)`, and for a fixed builtin `entry` (the launcher and whether it needs lifecycle admission), `preview`, `usage` (help lines) and `launchConfigKeys`. `builtinCliEntries(definitions)` projects the entries; no configuration or module can register one.
 
 #### `instances` and `attach`
 `instances.mode` is `headless` (needs a headless `start.create` factory) or `external` (a channel instance started from the person's terminal). A kind with no `instances` policy (Jcode) takes no extra instance, and `validateInstances` refuses a declaration of one. `attach` holds the pull-only forms, external-hello admission and the refusal texts for a TUI that attaches without a driven peer.
+
+#### Peer capability members
+The runtime peer (`PeerAdapter`, `src/hub/peers.ts`) exposes optional members that the daemon reads instead of checking its class (#625 phase 6): `sessionGeneration` (native session identity: absent keeps the owner-token fallback, present but undefined is unknown and refuses bounded checks), `checkpointUsesSessionGeneration` (opt out of generation-fenced checkpoints, as Pi does), `permissionModeState` (the effective native approval state, or `unknown` / `unmanaged`) and `setPermissionMode(mode)` (resolves only after the native side acknowledges). Native safety proofs (Codex proxy and restoration, Claude launch generation) stay in the daemon.
 
 #### `budget`
 Defines quota and context window consumption readers:
