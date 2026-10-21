@@ -611,3 +611,17 @@ test("daemon escalation, idle sweep and digest routing skip an off-roster candid
     expect(peers.kimi!.got).toEqual([]); expect(hub.daemon.bus.queued("kimi")).toBe(0);
   } finally { await hub.close(); rmSync(root, { recursive: true, force: true }); if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous; }
 }, 20_000);
+
+// #225: an instance that was declared, put on the roster and later undeclared leaves a roster key behind. The config must still load
+// (a stale key is inert), a key that never named an instance stays an error, and the key can be removed.
+test("a roster key of an undeclared instance loads as inert, a key that never named an instance still fails (#225)", () => {
+  const catalog = builtinProjectCatalog();
+  const roster = peerRosterConfig({ "codex-2": false, "kimi-a": true, codex: true }, undefined, catalog);
+  expect(roster).toEqual({ "codex-2": false, "kimi-a": true, codex: true });
+  // Inert: it decides nothing for a peer the project does not declare, so no unrelated id is admitted or refused by it.
+  expect(rosterAllows(roster, "codex-2", false, undefined, catalog)).toBe(true);
+  for (const bad of ["external-1", "unsupported", "codex-", "codex--", "Codex-2", "codex-2/x", "__proto__", "constructor", "claude-" + "x".repeat(40)]) {
+    expect(() => peerRosterConfig({ [bad]: false }, undefined, catalog), bad).toThrow("unsupported peer");
+  }
+  expect(() => peerRosterConfig({ "codex-2": "false" }, undefined, catalog)).toThrow("must be a boolean");
+});

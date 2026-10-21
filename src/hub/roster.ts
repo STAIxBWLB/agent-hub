@@ -1,7 +1,19 @@
 import { definitionOf as builtinDefinitionOf, type ProjectAdapterCatalog, type KindMap } from "../adapters/registry.ts";
-import { defaultRosterEnabled as builtinDefaultRosterEnabled } from "../adapters/registry.ts";
+import { defaultRosterEnabled as builtinDefaultRosterEnabled, createProjectAdapterCatalog as builtinCatalog } from "../adapters/registry.ts";
 
 export type PeerRoster = Partial<Record<string, boolean>>;
+
+/**
+ * A roster key of an instance that was declared, put on the roster and later undeclared (#225). It has the shape a declaration
+ * could have had (`<builtin kind>-<name>`, the rule validateInstances applies to an id) and no definition now, so it grants and
+ * refuses nothing: the config still loads and `ahub roster remove` can delete it. Anything else stays an unsupported peer.
+ */
+export function staleInstanceKey(peer: string, catalog: ProjectAdapterCatalog | undefined): boolean {
+  const definitionOf = catalog?.definitionOf ?? builtinDefinitionOf;
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(peer) || RESERVED_IDS.has(peer) || definitionOf(peer)) return false;
+  return (catalog?.definitions ?? []).some(kind => peer.startsWith(`${kind.kind}-`) && /^[a-z0-9][a-z0-9-]*$/.test(peer.slice(kind.kind.length + 1)) && !catalog?.externalDefinitions.some(item => item.kind === kind.kind));
+}
+const RESERVED_IDS = new Set(["user", "hub", "digest"]);
 
 export function peerRosterConfig(value: unknown, instances?: KindMap, catalog?: ProjectAdapterCatalog, inertUnknown = false): PeerRoster {
   const definitionOf = catalog?.definitionOf ?? builtinDefinitionOf;
@@ -9,7 +21,7 @@ export function peerRosterConfig(value: unknown, instances?: KindMap, catalog?: 
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("roster must be an object of boolean peer values");
   const roster: PeerRoster = {};
   const requireKnownPeer = (peer: string) => {
-    if (!definitionOf(peer, instances)) throw new Error("roster contains an unsupported peer");
+    if (!definitionOf(peer, instances) && !staleInstanceKey(peer, catalog ?? builtinCatalog())) throw new Error("roster contains an unsupported peer");
   };
   for (const [peer, on] of Object.entries(value)) {
     if (!inertUnknown || !/^[a-z][a-z0-9-]{0,31}$/.test(peer)) requireKnownPeer(peer);
