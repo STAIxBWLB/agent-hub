@@ -404,5 +404,5 @@ test("#624 agy attached beside Claude gets no Claude statusline context and no C
   const peers = (await f.console_.request({ t: "status" })).status.peers;
   expect(peers.claude.context.used).toBe(0.5);
   expect(peers.agy.context?.source ?? null).toBeNull();
-  expect(usage().map(e => e.peer)).toEqual(["claude"]);
+  expect(usage().map(e => (e as { peer?: string }).peer)).toEqual(["claude"]);
 }, 20_000);
