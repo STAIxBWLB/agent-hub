@@ -13,14 +13,14 @@ import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 const until = async (f: () => boolean) => { for (let n = 0; n < 350 && !f(); n++) await Bun.sleep(10); expect(f()).toBe(true); };
-async function fixture(gate = 0.8, reviewOther = false, wipLimits?: Record<string, number>) {
+async function fixture(gate = 0.8, reviewOther = false, wipLimits?: Record<string, number>, extra: Partial<typeof DEFAULT_CONFIG> = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-context-")); cleanup.push(() => rmSync(cwd, { recursive: true, force: true }));
   const mem = startFakeMemWorker(); cleanup.push(mem.stop);
   mkdirSync(join(cwd, ".agenthub"));
   if (wipLimits) writeFileSync(join(cwd, ".agenthub", "config.json"), JSON.stringify({ tasks: { wip_limits: wipLimits } }));
   const routing = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8").replace(/^pii_patterns = .*$/m, 'pii_patterns = ["PRIVATE-MARKER"]');
   writeFileSync(join(cwd, ".agenthub", "routing.toml"), routing);
-  const daemon = await startDaemon({ cwd, stateDir: cwd, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, instanceId: "context-instance", config: { ...DEFAULT_CONFIG, batch_ms: 0, ...(wipLimits ? { tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: wipLimits } } : {}), ...(reviewOther ? { roles: { ...DEFAULT_CONFIG.roles, other: ["reviewer"] } } : {}), context: { gate, stale_min: 1 }, memory: { ...DEFAULT_CONFIG.memory, enabled: true, worker_url: mem.url }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, budget: { ...DEFAULT_CONFIG.budget, checkpoint_timeout_s: 5 } } });
+  const daemon = await startDaemon({ cwd, stateDir: cwd, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, instanceId: "context-instance", config: { ...DEFAULT_CONFIG, batch_ms: 0, ...(wipLimits ? { tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: wipLimits } } : {}), ...(reviewOther ? { roles: { ...DEFAULT_CONFIG.roles, other: ["reviewer"] } } : {}), context: { gate, stale_min: 1 }, memory: { ...DEFAULT_CONFIG.memory, enabled: true, worker_url: mem.url }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, budget: { ...DEFAULT_CONFIG.budget, checkpoint_timeout_s: 5 }, ...extra } });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(cwd, { role: "console" }); cleanup.push(() => console_.close());
   const pushes: any[] = []; console_.onPush = m => pushes.push(m); console_.send({ t: "tail" });
@@ -387,4 +387,35 @@ test("a fabricated source-only ContextWindows view change isolates the daemon st
     expect(pushed()).toHaveLength(3); expect(pushed().at(-1).reading).toEqual(after);
     await clock.flush(f.console_); expect(pushed()).toHaveLength(3);
   } finally { ContextWindows.prototype.view = view; clock.restore(); }
+}, 20_000);
+
+test("#624 agy attached beside Claude gets no Claude statusline context and no Claude transcript usage", async () => {
+  const f = await fixture(0.8, false, undefined, { roster: { ...DEFAULT_CONFIG.roster, agy: true } });
+  const transcript = join(f.cwd, "native-1.jsonl");
+  writeFileSync(transcript, JSON.stringify({ type: "assistant", sessionId: "native-1", timestamp: new Date().toISOString(), message: { id: "msg-1", stop_reason: "end_turn", usage: { input_tokens: 7, output_tokens: 3 } } }) + "\n");
+  writeFileSync(join(f.cwd, "claude-session.json"), JSON.stringify({ instanceId: "context-instance", sessionId: "native-1", launchId: "launch-1", transcriptPath: transcript }));
+  const agy = await ControlClient.connect(f.cwd, { role: "peer", peer: "agy", channel: false }); cleanup.push(() => agy.close());
+  await until(() => f.daemon.bus.stateOf("agy") === "idle");
+  f.reading(50);
+  const usage = () => readEvents(join(f.cwd, "events.jsonl")).filter(e => e.type === "usage" && e.source === "claude_transcript");
+  await until(() => usage().length > 0);
+  for (let n = 0; n < 100 && (await f.console_.request({ t: "status" })).status.peers.claude.context?.used !== 0.5; n++) await Bun.sleep(20);
+  await Bun.sleep(1100); // one more context round and one more usage round
+  const peers = (await f.console_.request({ t: "status" })).status.peers;
+  expect(peers.claude.context.used).toBe(0.5);
+  expect(peers.agy.context?.source ?? null).toBeNull();
+  expect(usage().map(e => (e as { peer?: string }).peer)).toEqual(["claude"]);
+}, 20_000);
+
+test("#624 Claude's transcript usage is never filed under agy when Claude's own session read is fenced", async () => {
+  const f = await fixture(0.8, false, undefined, { roster: { ...DEFAULT_CONFIG.roster, agy: true } });
+  const transcript = join(f.cwd, "native-1.jsonl");
+  writeFileSync(transcript, JSON.stringify({ type: "assistant", sessionId: "native-1", timestamp: new Date().toISOString(), message: { id: "msg-1", stop_reason: "end_turn", usage: { input_tokens: 7, output_tokens: 3 } } }) + "\n");
+  writeFileSync(join(f.cwd, "claude-session.json"), JSON.stringify({ instanceId: "context-instance", sessionId: "native-1", launchId: "launch-1", transcriptPath: transcript }));
+  // The field path: Claude's own recovery row names another launch, so claude's read is fenced; agy has no row of its own.
+  writeFileSync(join(f.cwd, "terminal-recovery.json"), JSON.stringify([{ peer: "claude", projectRoot: f.cwd, instanceId: "context-instance", launchId: "launch-other" }]));
+  const agy = await ControlClient.connect(f.cwd, { role: "peer", peer: "agy", channel: false }); cleanup.push(() => agy.close());
+  await until(() => f.daemon.bus.stateOf("agy") === "idle");
+  await Bun.sleep(2500); // more than one 2 s usage round
+  expect(readEvents(join(f.cwd, "events.jsonl")).filter(e => e.type === "usage")).toEqual([]);
 }, 20_000);

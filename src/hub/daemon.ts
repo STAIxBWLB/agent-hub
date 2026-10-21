@@ -661,8 +661,10 @@ export async function startDaemon(opts: DaemonOptions) {
   const extraIds = Object.keys(declarations);
   // #450 I3: channel extras (Claude) attach from the person's terminal; the hub never starts them and their hello is admitted.
   const channelExtras = extraIds.filter(id => instanceDefinitionOf(id, declarations)?.identity.mcp === "channel-plugin");
-  // Every Claude-family peer whose own state files the daemon reads: the builtin channel kinds, then their declared instances.
-  const channelPeers = [...ADAPTERS.filter(definition => definition.identity.mcp === "channel-plugin").map(definition => definition.kind), ...channelExtras];
+  // #624: every Claude peer whose own state files the daemon reads, keyed on the Claude transport, never on channel-plugin
+  // (agy is a channel-plugin peer with no Claude state): the builtin, then its declared instances.
+  const channelPeers = [...ADAPTERS.filter(definition => definition.transport === "claude-channel").map(definition => definition.kind),
+    ...channelExtras.filter(id => instanceDefinitionOf(id, declarations)?.transport === "claude-channel")];
   const executionRoots = new Map<string, string>();
   const executionOwners = new Map<string, { owner: PeerAdapter; cwd: string }>();
   const reviewerUnavailable = new Map<string, string>();
@@ -1692,6 +1694,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   /** Claude's transcript for this session: the one the status line reported, or the hook's own, inside Claude's projects. */
   const claudeTranscript = (sessionId: string | undefined, fromHook: unknown, peer = "claude"): string | undefined => {
+    if (definitionOf(peer)?.transport !== "claude-channel") return undefined; // #624: no Claude transcript for another kind
     const reported = claudeSession(peer);
     if (reported.transcriptPath && (!sessionId || reported.sessionId === sessionId)) return reported.transcriptPath;
     if (!sessionId || typeof fromHook !== "string" || !isAbsolute(fromHook) || basename(fromHook) !== `${sessionId}.jsonl`) return undefined;
@@ -1760,7 +1763,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const contextSession = (peer: PeerId): string | undefined => {
     const p = bus.peers.get(peer);
     if (p instanceof WsPeer && p.claiming) return undefined;
-    if (definitionOf(peer)?.turnEnd === "native-hook") { const c = claudeSession(peer); return c.sessionId ? `${c.sessionId}:${c.launchId ?? ""}` : undefined; }
+    if (definitionOf(peer)?.transport === "claude-channel") { const c = claudeSession(peer); return c.sessionId ? `${c.sessionId}:${c.launchId ?? ""}` : undefined; }
     if (p instanceof CodexPeer) return p.thread || undefined;
     if (p instanceof AcpPeer || p instanceof PiPeer) { const id = p.recoveryMetadata().sessionId; return typeof id === "string" ? id : undefined; }
     return undefined;
@@ -2594,6 +2597,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   /** #450 I3: each Claude peer (claude and every claude-<name> instance) has its own session and launch files. */
   const claudeSession = (peer = "claude"): { sessionId?: string; transcriptPath?: string; launchId?: string } => {
+    if (definitionOf(peer)?.transport !== "claude-channel") return {}; // #624: Claude state files belong to Claude peers only
     try {
       const value = JSON.parse(readFileSync(join(opts.stateDir, claudeStateFile("claude-session", peer)), "utf8"));
       if (value.instanceId !== instanceId) return {};
@@ -5522,7 +5526,7 @@ export async function startDaemon(opts: DaemonOptions) {
           const permissionReply = phase === "pre" && permission !== undefined ? { permission: permission === "ask-when-needed" && protectedWrite ? "ask" : permission, projectRoot: opts.cwd, protectInstructionFiles: config.protect_instruction_files } : {};
           // Permission-only hooks carry no native-turn evidence and must never drive busy state.
           const purpose = permissionLaunch?.hookPurpose ?? msg.hookPurpose;
-          const observesNative = purpose === "facts" || purpose === "idle" || purpose === "facts-and-idle" || (purpose === undefined && (config.coordination === "turn-free" || config.task_sweep.enabled || config.roles.claude?.includes("conductor")));
+          const observesNative = purpose === "facts" || purpose === "idle" || purpose === "facts-and-idle" || (purpose === undefined && (config.coordination === "turn-free" || config.task_sweep.enabled || config.roles[peer]?.includes("conductor")));
           if (nativeClaude && !observesNative) return void reply({ t: "facts", ok: true, ...permissionReply });
           if (phase === "session") { recordSessions(); return void reply({ t: "facts", ok: true }); }
           if ((phase === "start" || phase === "pre") && nativePeer instanceof WsPeer) {
