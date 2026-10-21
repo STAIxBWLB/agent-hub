@@ -801,6 +801,7 @@ export async function startDaemon(opts: DaemonOptions) {
   if (recoveryOperation || restartFilePresent) try { removeSessions(opts.stateDir); } catch { /* nothing to remove */ }
   const autoResume = () => config.recovery.auto_resume_after_crash === true; // a string "false" is not a yes
   const autoStartAdapter = ADAPTERS.find(adapter => adapter.start.autoStart !== undefined);
+  const continuityKind = ADAPTERS.find(adapter => adapter.start.daemonPort === "pi-rpc")!.kind;
   const piAutoStart = () => !!autoStartAdapter && onRoster(autoStartAdapter.kind) && config.pi.auto_start;
   const startedAt = Date.now();
   /** What crash recovery did or asks the user to do, for `ahub status`. */
@@ -912,11 +913,18 @@ export async function startDaemon(opts: DaemonOptions) {
     bus.setRecoveryHold(false);
   }
   const recoveryPeerAllowed = (id: PeerId) => !recoveryActive() || !recoveryPeerSnapshot || recoveryPeerSnapshot.some((peer) => peer.id === id);
-  const armRecoveryLease = (delayMs = 10 * 60_000): void => {
+  // One log line per failure streak: the 1 s retry itself is unchanged, only its repeated line is not.
+  let recoveryLeaseRetryLogged = false;
+  const armRecoveryLease = (delayMs = 10 * 60_000, retrying = false): void => {
+    if (!retrying) recoveryLeaseRetryLogged = false;
     clearTimeout(recoveryLeaseTimer);
     recoveryLeaseTimer = setTimeout(() => {
-      if (!recoveryOperationId || recoveryCommitted || (recoveryPhase !== "preparing" && recoveryPhase !== "prepared")) return;
-      try { bus.setRecoveryHold(false); } catch (error) { log("recovery lease release deferred; delivery storage must be restored before abort"); armRecoveryLease(1000); return; }
+      if (!recoveryOperationId || recoveryCommitted || (recoveryPhase !== "preparing" && recoveryPhase !== "prepared")) { recoveryLeaseRetryLogged = false; return; }
+      try { bus.setRecoveryHold(false); } catch {
+        if (!recoveryLeaseRetryLogged) { recoveryLeaseRetryLogged = true; log("recovery lease release deferred; delivery storage must be restored before abort (retrying every second)"); }
+        armRecoveryLease(1000, true); return;
+      }
+      recoveryLeaseRetryLogged = false;
       log(`recovery lease expired for ${recoveryOperationId}; hold aborted`);
       recoveryOperationId = undefined;
       recoveryPhase = undefined;
@@ -2977,7 +2985,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let piSettlementFailure: { key: string; error: string; retryAfter: number } | undefined;
   function settlePiContinuity(): void {
     if (stopping || recoveryActive() || piContinuity.state !== "ready") return;
-    const peer = bus.peers.get("pi");
+    const peer = bus.peers.get(continuityKind);
     if (!isPiPeer(peer) || peer.state === "offline" || !peer.sessionGeneration || !peer.recoveryReady) return;
     const saved = piContinuity.bookmark, actual = peer.recoveryMetadata();
     if (typeof actual.sessionId !== "string" || !actual.sessionId) return;
@@ -3007,7 +3015,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   const recordSessions = () => {
     if (stopping) return;
-    const pi = bus.peers.get("pi");
+    const pi = bus.peers.get(continuityKind);
     if (piContinuity.state === "ready" && (!isPiPeer(pi) || pi.state === "offline" || !pi.sessionGeneration || !pi.recoveryReady)) {
       piContinuity = readRecoveryContinuity(opts.stateDir, { projectId, projectRoot: opts.cwd });
     }

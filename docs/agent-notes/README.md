@@ -15,3 +15,8 @@ Background behind some of the rules, moved from the top-level README on 2026-10-
   `docs/verification/2026-10-03-0.12.6.md`); minimal reproductions did not hang, so
   the full trigger is not pinned down. On Bun 1.4.2 the next test still starts there
   (#121, checked directly); the spin was not reproduced on demand on either version.
+
+The #451 predicate and identity-lookup moves exposed unbound names in a VM fixture
+that extracts daemon closures. Reconnecting imported helpers and deterministic
+identity ports preserved the fixture's existing assertions; changing the asserted
+behavior would have hidden the missing dependency.

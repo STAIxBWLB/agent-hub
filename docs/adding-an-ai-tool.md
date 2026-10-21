@@ -14,7 +14,7 @@ Under **Adapter API 1** (issue #451), every tool is integrated as an `AdapterDef
 4. **Trust & Security Boundaries**:
    - **On-prem vs. Cloud**: `trust.onPrem` controls whether private/PII tasks may be routed to the agent. A cloud agent (`trust.onPrem: false`) never receives PII task text or memory entries.
    - **Path Protection**: Any workspace configuration directory owned by the agent (e.g., `.agents/`, `.codex/`) must be listed in `AGENT_CONFIG_SEGMENTS` (`src/hub/permission-mode.ts`) so agents cannot self-modify their own hooks or plugins.
-   - **Process Isolation**: Spawns must run in their own process groups and obey the hub's stop timeout (`stopGraceMs`).
+   - **Process Isolation**: Spawns must run in their own process groups and are stopped as a whole group by the hub.
 
 ---
 
@@ -32,7 +32,7 @@ agent-hub supports five transport architectures (`transport` in `AdapterDefiniti
 
 ### Generic ACP vs. Dedicated Adapter
 
-* **Generic ACP (Config-only, Planned)**: Planned support (#451 A3, #217) will allow tools speaking standard ACP (stdio JSON-RPC) to be configured without core TypeScript changes.
+* **Generic ACP (Config-only, Planned)**: Planned support (#451 A3, board task #217) will allow tools speaking standard ACP (stdio JSON-RPC) to be configured without core TypeScript changes.
 * **Dedicated Adapter**: Current builtin mechanism where each tool exports an `AdapterDefinition` under `src/adapters/` with its transport, hooks, and launch plans.
 
 ---
@@ -116,15 +116,15 @@ Defines quota and context window consumption readers:
 
 ---
 
-## 4. Planned: Config-Only Generic ACP Adapters (#451 A3, #217)
+## 4. Planned: Config-Only Generic ACP Adapters (#451 A3)
 
-Support for defining ACP-based tools purely via local project configuration (`.agenthub/config.local.json`) is currently in progress under issue #217 (task #217). The configuration schema, command invocation, and permission mode mappings will land with that milestone.
+Support for defining ACP-based tools purely via local project configuration (`.agenthub/config.local.json`) is in progress as board task #217 (GitHub issue #486 for its Grok receipt). The configuration schema, command invocation, and permission mode mappings will land with that milestone.
 
 ---
 
-## 5. Planned: External Adapter Modules (#451 A4, #135)
+## 5. Planned: External Adapter Modules (#451 A4)
 
-Support for loading adapter definitions from external modules outside the core repository is planned under issue #135 (task #135). As decided in issue #451 (P3), external modules will be governed by strict trust rules:
+Support for loading adapter definitions from external modules outside the core repository is planned as board task #135. As decided in issue #451 (P3), external modules will be governed by strict trust rules:
 
 * **Machine-Local Only**: Loaded exclusively from local files specified in local configuration; never from repository tracking or network URLs.
 * **Content-Hash Pinning**: Explicit SHA-256 hash pinning to prevent unauthorized tampering.
@@ -151,7 +151,7 @@ bun test test/conformance/agy.test.ts
 2. **Delivery Occupancy**: Sending messages updates driven peer state to `busy` synchronously, delivering digests reliably.
 3. **Recovery Metadata Hygiene**: No prompt text or credentials leaked into `recoveryMetadata`.
 4. **Watchdog Cancellation & Generation Fencing**: Expiry of the turn watchdog cancels prompts cleanly and generation fences prevent stale late answers from publishing.
-5. **Teardown & Cleanup**: When an adapter is stopped (`peer.stop()`), all owned child processes in the process group terminate within `stopGraceMs`.
+5. **Teardown & Cleanup**: When an adapter is stopped (`peer.stop()`), all owned child processes in the process group stop with it (the peer reaches offline).
 
 ---
 

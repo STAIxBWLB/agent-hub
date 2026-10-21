@@ -3845,4 +3845,4 @@ The per-release "gates run" record is deferred to S6/S7. Person ruling 2026-10-1
 If Codex is offline with `statusNotice.code = unidentified-cancellation`, the hub
 could not identify a cancelled native turn. Reattach the native session before
 further hub delivery. A late completion keeps this hold; verified native
-reattachment clears it. The notice contains fixed guidance, without native ids.
+reattachment or TUI detachment clears it. The notice contains fixed guidance, without native ids.

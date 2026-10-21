@@ -1,4 +1,4 @@
-import { definitionOf } from "../adapters/registry.ts";
+import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
 import { readInstanceConfig } from "../hub/instance-config.ts";
 import type { TerminalBinding } from "./terminal-recovery.ts";
 
@@ -102,7 +102,8 @@ export function restoreTransition(receipt: RestoreReceipt, evidence: RestoreEvid
 /** Checkable compact documentation, enumerated through the same pure decision function. */
 export function renderRestoreTransitionTable(): string {
   const launch = { packageEntrypoint: "table", command: "table", argv: [], env: {} };
-  const binding: TerminalBinding = { peer: "codex", handle: "selected", incarnationId: "selected", worktreeId: "selected", projectRoot: "table", sessionId: "planned", launch, launchMetadata: launch };
+  const examplePeer = ADAPTERS.find(definition => definition.transport === "codex-appserver")!.kind;
+  const binding: TerminalBinding = { peer: examplePeer, handle: "selected", incarnationId: "selected", worktreeId: "selected", projectRoot: "table", sessionId: "planned", launch, launchMetadata: launch };
   const receipts: RestoreReceipt[] = [{ state: "pending" }, { state: "waiting", origin: "pending", binding }, { state: "waiting", origin: "failed", binding }, { state: "done", binding }, { state: "failed" }];
   const launchers: RestoreEvidence["launcher"][] = ["live", "gone", "unknown", "no-record-yet", "replaced", "older-instance"];
   const result = (receipt: RestoreReceipt, evidence: RestoreEvidence, unchanged = false) => {

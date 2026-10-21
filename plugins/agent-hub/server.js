@@ -2369,7 +2369,8 @@ ${renderDigest(envs, false)}`;
         return;
       const unknownTurn = () => [...this.activeTurns].some((id) => id.startsWith("unknown:"));
       if (method === "thread/tokenUsage/updated") {
-        this.opts.onContext?.((this.opts.contextReader?.read ?? codexContext)(params.tokenUsage, this.threadId, Date.now()));
+        const reader = this.opts.contextReader;
+        this.opts.onContext?.(reader ? reader.read(params.tokenUsage, this.threadId, Date.now()) : codexContext(params.tokenUsage, this.threadId, Date.now()));
         const total = Number(params.tokenUsage?.total?.totalTokens);
         if (!Number.isFinite(total))
           return;
@@ -11207,6 +11208,9 @@ function assertDefinitionCoherence(definition) {
   };
   const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
   assertDaemonEngine(definition);
+  if (definition.identity.mcp === "channel-plugin" && definition.transport !== "claude-channel" && definition.transport !== "ws-pull") {
+    fail("identity.mcp", "channel-plugin requires claude-channel or ws-pull transport");
+  }
   if (definition.turnEnd === "native-hook" && definition.transport !== "claude-channel" && !definition.hooks?.factsHook) {
     fail("turnEnd", "native-hook requires the Claude transport or a native factsHook");
   }

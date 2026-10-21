@@ -3676,7 +3676,9 @@ unchanged and authoritative. Missing metadata never grants permission.
 `instances.mode` separately selects external or headless declaration policy,
 with an optional fixed role ceiling. MCP configuration shape grants neither.
 Claude keeps human-owned external planner/reviewer instances and its fresh
-headless reviewer exception; agy still refuses ordinary extra instances.
+headless reviewer exception; agy now refuses ordinary extra instances at config load (older declarations could load as inert pull-only extras).
+Qwen context is now unknown because it has no verified occupancy source; it no
+longer borrows Kimi's context parser.
 Declaration admission never proves execution-root ownership or isolation.
 
 Daemon normalization dispatches through the resolved definition's `budget.reader`
@@ -3786,7 +3788,7 @@ ahub builds the review brief that the workspace gate used to take from `ocr dele
 
 ## Claude peer instances I3 amendment (#450)
 
-- A declared instance of a channel-plugin kind (Claude) is admitted when its declaration names `roles`, reviewer and/or planner only. `start_mode` and `worktree` are refused: the instance starts only from the person's terminal with `ahub claude --as <id>`, so the hub never starts, watches or owns writes for it, and it is neither startable nor reserved from external admission.
+- Superseded by A2b `instances.mode` and explicit role policy (MCP shape grants no instance admission): a declared instance of a channel-plugin kind (Claude) was admitted when its declaration names `roles`, reviewer and/or planner only. `start_mode` and `worktree` are refused: the instance starts only from the person's terminal with `ahub claude --as <id>`, so the hub never starts, watches or owns writes for it, and it is neither startable nor reserved from external admission.
 - The launcher sets the child's `AGENTHUB_PEER_ID` to the instance id; the channel plugin and the statusline tee already key on it. Launch, session and context state files stay `claude-launch.json`, `claude-session.json` and `claude-context.json` for the builtin and become `<base>.<id>.json` for an instance (`src/hub/claude-state.ts`). Account usage stays shared. The daemon's context and usage readers, the permission-launch check, the facts handler, terminal recovery (project root, no worktree), the upgrade blocker check and `ahub reset` read each instance's own files.
 - The Claude version probe stays on the builtin peer (ponytail: instances are reviewers started by hand); zero-turn detection reads each peer's own evidence, as below.
 - Status, which the console and dashboard read, lists each declared instance right after its kind. `ahub <kind> --as <id>` starts only an instance the running daemon bound at startup (status `activeInstances`); otherwise it asks for a restart or an upgrade before any effect.
@@ -4001,5 +4003,5 @@ Version line (#589, owner decision 2026-10-20): agy updates itself, so the launc
   - Transport selection: `acp` (stdio JSON-RPC), `codex-appserver`, `claude-channel`, `ws-pull` (pull-only workspace MCP plugin), and `hub-native`.
   - Conformance kit (`test/conformance/`): enrollment invariants, delivery occupancy, watchdog expiry, process-group teardown, and explicit `UNSUPPORTED_LEGS` reasons for unsupported legs.
   - Review and verification checklist: T0 receipt, path protection (`AGENT_CONFIG_SEGMENTS`), PII safety (`trust.onPrem`), process isolation, and documentation freshness.
-  - Planned config-only generic ACP adapters (#451 A3, #217) and external adapter modules (#451 A4, #135) are outlined as upcoming milestones; their configuration schemas, hash-pinning rules, and implementation details land with those respective PRs.
+  - Planned config-only generic ACP adapters (#451 A3, board task #217) and external adapter modules (#451 A4, board task #135) are outlined as upcoming milestones; their configuration schemas, hash-pinning rules, and implementation details land with those respective PRs.
 - `docs/agent-notes/adapters.md` keeps only the per-adapter rules that bind code, pointing to `docs/adding-an-ai-tool.md` and `src/adapters/registry-types.ts` for conceptual architecture and definitions.
