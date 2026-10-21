@@ -146,6 +146,22 @@ for (const mode of ["channel", "plain", "tools"] as const) test(`#221 ${mode}: a
   } finally { await f.close(); }
 });
 
+// #221: a pre-#493 daemon answers delivery_holds with held rows but no counts; the legacy nudge must not advise the refused read.
+test("#221 a held hint without fresh counts suppresses the legacy hub_inbox nudge", async () => {
+  const f = await client("plain");
+  try {
+    f.push({ t: "queued", queued: 4, important: 2 });
+    const row = { id: "held-1", senders: ["codex"], kinds: ["task"], createdAt: Date.now() - 5000 };
+    f.holds({ ok: true, held: { count: 1, rows: [row], truncated: false } });
+    const held = output(await f.call("hub_task_list"));
+    expect(held).toContain("Held hub deliveries: 1");
+    expect(held).not.toContain("call hub_inbox");
+    // Without a hold the legacy nudge still works.
+    f.holds({ ok: true, held: { count: 0, rows: [], truncated: false } });
+    expect(output(await f.call("hub_task_list"))).toContain("2 important hub message(s) waiting: call hub_inbox");
+  } finally { await f.close(); }
+});
+
 // #221 item 3: one queued count per hub_inbox result.
 test("#221 a hub_inbox result states the queued count once", async () => {
   const f = await client("plain");

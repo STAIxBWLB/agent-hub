@@ -171,10 +171,11 @@ async function withPendingHint<T>(result: T, recommendInbox = true): Promise<T> 
   };
   if (hub && r.content) {
     let freshCounts = false;
+    let hint = "";
     try {
       const response = await hub.request({ t: "delivery_holds" }, 1000);
       // A hold that refuses pulls (#221): hub_inbox would only be refused again, so the counts stay and the advice goes.
-      const hint = response?.ok ? renderHeldHint(response.held, Date.now(), !deliveryOnly) : "";
+      hint = response?.ok ? renderHeldHint(response.held, Date.now(), !deliveryOnly) : "";
       if (response?.ok && Number.isSafeInteger(response.queued) && response.queued >= 0
         && Number.isSafeInteger(response.important) && response.important >= 0 && response.important <= response.queued) {
         freshCounts = true;
@@ -190,7 +191,8 @@ async function withPendingHint<T>(result: T, recommendInbox = true): Promise<T> 
       }
       if (hint) r.content.push({ type: "text", text: hint });
     } catch { /* advisory metadata can never change a saved tool result or its effect classification */ }
-    if (!freshCounts && recommendInbox && !channel && !toolsMode && pendingQueued && pendingQueued.important > 0) {
+    // A pre-#493 daemon sends held rows without counts; the legacy nudge must not advise a read the hold refuses (#221).
+    if (!freshCounts && !hint && recommendInbox && !channel && !toolsMode && pendingQueued && pendingQueued.important > 0) {
       appendQueued(`(${pendingQueued.important} important hub message(s) waiting: call hub_inbox before starting long local work)`);
     }
   }

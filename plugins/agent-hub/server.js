@@ -28049,9 +28049,10 @@ ${hint}`;
   };
   if (hub && r.content) {
     let freshCounts = false;
+    let hint = "";
     try {
       const response = await hub.request({ t: "delivery_holds" }, 1000);
-      const hint = response?.ok ? renderHeldHint(response.held, Date.now(), !deliveryOnly) : "";
+      hint = response?.ok ? renderHeldHint(response.held, Date.now(), !deliveryOnly) : "";
       if (response?.ok && Number.isSafeInteger(response.queued) && response.queued >= 0 && Number.isSafeInteger(response.important) && response.important >= 0 && response.important <= response.queued) {
         freshCounts = true;
         pendingQueued = undefined;
@@ -28064,7 +28065,7 @@ ${hint}`;
       if (hint)
         r.content.push({ type: "text", text: hint });
     } catch {}
-    if (!freshCounts && recommendInbox && !channel && !toolsMode && pendingQueued && pendingQueued.important > 0) {
+    if (!freshCounts && !hint && recommendInbox && !channel && !toolsMode && pendingQueued && pendingQueued.important > 0) {
       appendQueued(`(${pendingQueued.important} important hub message(s) waiting: call hub_inbox before starting long local work)`);
     }
   }
