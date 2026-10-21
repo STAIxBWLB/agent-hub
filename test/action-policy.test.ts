@@ -1,4 +1,11 @@
 import { expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Board } from "../src/hub/board.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { Tasks } from "../src/hub/tasks.ts";
+import { loadRouting } from "../src/hub/routing.ts";
 import { ActionBudgets, actionApprovalText, actionPolicyConfig, type ActionChallenge } from "../src/hub/action-policy.ts";
 
 function rig() {
@@ -55,6 +62,8 @@ test("mixed classes spend atomically; unknown and unselected actions retain nati
   expect(r.ledger.request(r.bound, ["publish"])).toEqual({ kind: "native" });
   r.config({ enabled: false });
   expect(r.ledger.request(r.bound, ["destroy"])).toEqual({ kind: "native" });
+  expect(r.ledger.status("worker", false).note).toContain("always-ask not enforceable");
+  expect(r.ledger.status("worker", false).note).toContain("policy disabled");
 });
 
 test("policy changes invalidate cached budget and outstanding approval challenges", () => {
@@ -89,4 +98,16 @@ test("action approval copy uses the public task view and whole-command privacy p
   const privateText = actionApprovalText(["publish"], "secret raw command", task, ports);
   expect(calls).toBe(1); expect(privateText).toContain("[pii]"); expect(privateText).not.toContain("patient"); expect(privateText).not.toContain("secret");
   expect(actionApprovalText(["install"], "raw", undefined, { ...ports, private: false, commandView: () => undefined })).toContain("[private command withheld]");
+});
+
+
+test("approval copy composes the actual Tasks public view and metadata privacy boundary", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-action-copy-")), board = new Board(join(cwd, "hub.db"));
+  try {
+    const tasks = new Tasks({ cwd, project: "fixture", board, bus: new Bus({ batchMs: 0 }), routing: () => loadRouting(cwd), notify: () => {} });
+    const task = board.propose("user", { title: "private patient details", class: "implement", signals: ["pii"] });
+    const command = `gh api -f token=ghp_${"a".repeat(36)}`;
+    const text = actionApprovalText(["external-write"], command, task, { publicView: value => tasks.publicView(value), private: tasks.isPii(task), commandView: value => tasks.publicMetadataText(value) ? value : undefined });
+    expect(text).toContain("[pii]"); expect(text).not.toContain("patient"); expect(text).not.toContain("ghp_");
+  } finally { board.close(); rmSync(cwd, { recursive: true, force: true }); }
 });

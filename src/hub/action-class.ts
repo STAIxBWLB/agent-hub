@@ -54,7 +54,7 @@ function commands(text: string): Command[] | undefined {
     word += c; active = true;
     if (words.length + outputs.length > 256) return;
   }
-  if (quote || redirect) return;
+  if (quote || (redirect && !active)) return;
   finish();
   return result;
 }

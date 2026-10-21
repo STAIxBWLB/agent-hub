@@ -50,8 +50,8 @@ export interface ConfigAuthorizationDecision { key: string; allowed: boolean; gu
 export function authorizeConfigLeaf(input: ConfigAuthorizationInput): ConfigAuthorizationDecision {
   const { key, before, after } = input;
   const result = (allowed: boolean, guarded: boolean, reason: string): ConfigAuthorizationDecision => ({ key, allowed, guarded, reason });
-  if (same(before, after)) return result(true, false, "unchanged");
   if ((key === "action_policy" || key.startsWith("action_policy.")) && input.tracked !== false) return result(false, true, "action policy requires an untracked machine-local source");
+  if (same(before, after)) return result(true, false, "unchanged");
   const supplied = input.guard;
   const guard = supplied && (key === supplied.key || key === `${supplied.store === "routing" ? "routing." : ""}${supplied.path.join(".")}`) ? supplied : undefined;
   const machine = input.source === "config" && ALL_MACHINE_LOCAL.some(path => key === path || key.startsWith(`${path}.`));

@@ -33,7 +33,7 @@ const empty = (): Record<ActionClass, number> => ({ publish: 0, destroy: 0, "ext
 export class ActionBudgets {
   private sessions = new Map<string, Session>();
   private challenges = new WeakMap<ActionChallenge, { handle: ActionSessionBudget; policy: string; classes: ActionClass[] }>();
-  constructor(private readonly config: () => ActionPolicyConfig, private readonly currentSession: (peer: string) => string | undefined) {}
+  constructor(private readonly config: () => ActionPolicyConfig | undefined, private readonly currentSession: (peer: string) => string | undefined) {}
   bindSession(peer: string, session: string): ActionSessionBudget | undefined {
     if (!session || this.currentSession(peer) !== session) return undefined;
     const previous = this.sessions.get(peer);
@@ -72,7 +72,7 @@ export class ActionBudgets {
     for (const key of classes) state.remaining[key]--;
     return { kind: "budget", classes };
   }
-  /** Called only after a person's positive answer; the approved invocation consumes its first slot. */
+  /** Explicit class-budget approval only, never an ordinary allow_once; this invocation consumes slot one. */
   approve(challenge: ActionChallenge | undefined): boolean {
     if (!challenge) return false;
     const grant = this.challenges.get(challenge); this.challenges.delete(challenge);
@@ -87,7 +87,7 @@ export class ActionBudgets {
     const config = actionPolicyConfig(this.config()), state = this.sessions.get(peer);
     const bound = !!state && this.currentSession(peer) === state.handle.session && state.policy === JSON.stringify(config);
     return { enabled: config.enabled, alwaysAsk: [...config.always_ask], limits: { ...config.budgets }, remaining: bound ? { ...state.remaining } : empty(), sessionBound: bound,
-      enforceable: enforced, note: !config.enabled ? "always-ask disabled" : enforced ? "always-ask active" : "always-ask not enforceable: adapter integration pending" };
+      enforceable: enforced, note: !enforced ? `always-ask not enforceable: adapter integration pending${config.enabled ? "" : "; policy disabled"}` : config.enabled ? "always-ask active" : "always-ask disabled" };
   }
 }
 

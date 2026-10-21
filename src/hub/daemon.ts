@@ -146,7 +146,7 @@ export interface HubConfig {
   jcode_cmd: string[];
   jcode_home: string;
   jcode_provider_profile: string;
-  action_policy: ActionPolicyConfig;
+  action_policy?: ActionPolicyConfig;
   permission_modes: Record<string, PermissionMode>;
   protect_instruction_files: boolean;
   /** Loader-owned provenance of requested defaults, before machine-local filtering. */

@@ -12,6 +12,7 @@ test("slice1 status never claims adapter enforcement before its pre-tool gate is
   const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
       inference: { ...DEFAULT_CONFIG.inference, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, snapshots: { enabled: false, keep: 1 } } });
+  daemon.bus.add({ id: "claude", state: "idle", start: async () => {}, stop: async () => {}, deliver: async () => {} });
   let client: ControlClient | undefined;
   try {
     client = await ControlClient.connect(stateDir, { role: "console" });
