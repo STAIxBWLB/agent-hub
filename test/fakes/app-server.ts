@@ -77,12 +77,20 @@ export function startFakeAppServer(
         const slow = /SLOW:(\d+)/.exec(text); // a turn that keeps running for this many ms
         if (slow) await Bun.sleep(Number(slow[1]));
         if (text.includes("EDIT:")) {
-          // A real patch (issue #108): one line appended to the file, reported with a diff that matches it.
-          const path = /EDIT:(\S+)/.exec(text)![1]!;
-          const before = await Bun.file(path).text();
-          await Bun.write(path, `${before}codex line\n`);
-          const n = before.split("\n").length - 1;
-          note("item/completed", { threadId, turnId: turn.id, completedAtMs: Date.now(), item: { type: "fileChange", id: "f2", status: "completed", changes: [{ path, kind: { type: "update", move_path: null }, diff: `@@ -${n} +${n},2 @@\n+codex line` }] } });
+          // `GATE:<file>` holds the edit until the test has created that file (#634): the hub captures the turn's start
+          // tree synchronously on `turn/started`, and a slow git there must finish before the edit lands, or the start
+          // tree already contains it and the turn reads as having changed nothing. A gate that never opens skips the
+          // edit altogether, so the test fails on its missing change instead of passing on a late, unsynchronized edit.
+          const gate = /GATE:(\S+)/.exec(text)?.[1];
+          if (gate) for (let attempt = 0; attempt < 1500 && !(await Bun.file(gate).exists()); attempt++) await Bun.sleep(10);
+          if (!gate || await Bun.file(gate).exists()) {
+            // A real patch (issue #108): one line appended to the file, reported with a diff that matches it.
+            const path = /EDIT:(\S+)/.exec(text)![1]!;
+            const before = await Bun.file(path).text();
+            await Bun.write(path, `${before}codex line\n`);
+            const n = before.split("\n").length - 1;
+            note("item/completed", { threadId, turnId: turn.id, completedAtMs: Date.now(), item: { type: "fileChange", id: "f2", status: "completed", changes: [{ path, kind: { type: "update", move_path: null }, diff: `@@ -${n} +${n},2 @@\n+codex line` }] } });
+          }
           await Bun.sleep(Math.max(delayMs, 250)); // room for a steer from the item handler, on a slow CI runner too
         }
         if (text.includes("ITEMS")) {
