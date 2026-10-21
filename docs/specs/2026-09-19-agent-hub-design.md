@@ -2671,11 +2671,11 @@ the queue.
 
 # Per-project profile data amendment, 2026-10-12 (#259)
 
-- Pure `profile_overrides` resolution supplies per-project class maps, supported plan-key selection, flow-role guidance, catalog defaults, managed AGENTS content and advisory example checks. Shipped defaults are not mutated. Map fields merge across shared/local layers; lists/text replace.
+- Pure `profile_overrides` resolution supplies per-project class maps, supported plan-key selection, flow-role guidance, catalog defaults, managed AGENTS content, advisory example checks and review checklist lines (#507). Shipped defaults are not mutated. Map fields merge across shared/local layers; lists/text replace.
 - Base flow meanings, routing, budgets and permission checks stay unchanged; aliases persist beside their bases even for custom dev data. Ordinary tasks under custom dev data also retain profile semantics for document overlap; unmodified dev data keeps the legacy row shape. Unknown fields/base meanings, duplicate/unknown plan fields and oversized guidance fail before task effects.
 - Schemas, CLI classification, Tasks, daemon/native contracts, plugin instructions, both local-worker tool-building paths, check-name allowlists and init use the same resolved data. No-override dev contracts/schemas/instructions remain byte-identical. Old accept schemas support existing task fields.
 - Flow authority remains the separately validated `roles` map; executable checks remain trusted `checks`. Example checks are display data and do not execute. Managed instruction content keeps surrounding text and quotes forged headers.
-- Override maps are bounded to 32 class entries and existing base classes; plan selections use existing fields. Role text is 2000 characters, agents 16000, examples 16 strings of 2000 characters. Native ingestion/retention/measurement remains unverified; configuration changes apply after daemon/MCP restart.
+- Override maps are bounded to 32 class entries and existing base classes; plan selections use existing fields. Role text is 2000 characters, agents 16000, examples 16 strings of 2000 characters, review checklist 16 lines of 500 characters (#507). Native ingestion/retention/measurement remains unverified; configuration changes apply after daemon/MCP restart.
 
 
 ## Amendment: bounded data policy globs (#259)
