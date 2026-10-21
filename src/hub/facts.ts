@@ -28,10 +28,11 @@ const HASHED_BYTES = 64 * 1024 * 1024;
  * A large file whose last change (ctime) is this recent may still be rewritten with the same stat: Linux before 6.13
  * stamps files from a coarse clock, so a same-size rewrite within one tick keeps size, mtime, ctime and inode (#428).
  * Such a file is named by its bytes, as git treats a racily clean entry: at most RACY_HASH_MAX_BYTES each, hashed once
- * per version in a public entry point, RACY_BURST_BYTES in all per event-loop turn (the hooks run on the daemon's loop).
+ * per version in a public entry point, RACY_BURST_BYTES in all per store (Facts instance) per event-loop turn (the hooks
+ * run on the daemon's loop). The HEAD comparison keeps its own bound (HASHED_BYTES) and is not limited by these.
  * ponytail: ceilings, each falling back to the stat-only stamp (no claim either way): a racy file over the per-file cap,
- * or past the turn's budget, misses a same-size rewrite within one timestamp tick and is not compared with HEAD until it
- * settles; a file written continuously never settles and is hashed at every look, within that budget; FAT's 2 s mtime
+ * or past the turn's budget, misses a same-size rewrite within one timestamp tick; a racy file first seen past the
+ * budget (kept stat-only) reads as changed once when a later turn hashes it with the same bytes; a file written continuously never settles and is hashed at every look, within that budget; FAT's 2 s mtime
  * is the widest covered; a settled file made racy with the same bytes (chmod, `cp -p`, touch) reads as changed once; a
  * version first seen racy costs an open and a stat at every later look (largeBlob's cache answers). A per-file history
  * of racy versions if any of these matters.
@@ -339,13 +340,17 @@ export class Facts {
     const seen = files.filter((f) => head.has(f)).map((f) => [f, version(f)] as const);
     const large = seen.reduce((n, [, v]) => n + (v?.hash.startsWith("large:") ? Number(v.hash.split(":")[1]) : 0), 0);
     return new Set(seen.filter(([f, v]) => {
-      const blob = !v?.hash.startsWith("large:") ? v?.blob : large <= HASHED_BYTES ? v.blob ?? this.largeBlob(f, v.hash) : undefined;
+      const blob = !v?.hash.startsWith("large:") ? v?.blob : large <= HASHED_BYTES ? v.blob ?? this.largeBlob(f, v.hash, true) : undefined;
       return blob !== undefined && blob === head.get(f);
     }).map(([f]) => f));
   }
 
   /** Git's blob id of a file too large to load, streamed; undefined for anything that is not a small enough regular file. */
-  private largeBlob(file: string, observed: string): string | undefined {
+  /**
+   * `head`: for the HEAD comparison, which bounds its own hashing (HASHED_BYTES): a racy file is streamed whatever the
+   * racy cap and the turn's budget, uncached. Otherwise a racy file goes through racyBlob's limits.
+   */
+  private largeBlob(file: string, observed: string, head = false): string | undefined {
     if (this.rel(join(this.root, file)) !== file) return undefined;
     let fd: number | undefined;
     try {
@@ -355,7 +360,8 @@ export class Facts {
       // A file that stays stat-dirty but equal to HEAD is looked at again at every boundary: hashed once per version.
       const stamp = `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`, known = this.largeBlobs.get(file);
       if (known?.stamp === stamp) return known.blob;
-      if (Date.now() - st.ctimeMs < RACY_MS) return this.racyBlob(file, fd, st); // a racy stamp may name other bytes later: never cached
+      // A racy stamp may name other bytes later: never cached.
+      if (Date.now() - st.ctimeMs < RACY_MS) return head ? this.racyMemo.get(racyKey(file, st)) ?? streamBlob(fd, st.size) : this.racyBlob(file, fd, st);
       const blob = streamBlob(fd, st.size);
       if (blob) this.largeBlobs.set(file, { stamp, blob });
       return blob;
@@ -369,7 +375,7 @@ export class Facts {
   /** A racy large file's blob id (#428), or undefined when it is settled, over the per-file cap or past the turn's budget. */
   private racyBlob(file: string, fd: number, st: Stats): string | undefined {
     if (Date.now() - st.ctimeMs >= RACY_MS || st.size > RACY_HASH_MAX_BYTES) return undefined;
-    const key = `${file}\0${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`, known = this.racyMemo.get(key);
+    const key = racyKey(file, st), known = this.racyMemo.get(key);
     if (known) return known;
     if (!this.racyLeft) {
       const turn = this.racyLeft = { bytes: RACY_BURST_BYTES };
@@ -922,4 +928,9 @@ function streamBlob(fd: number, size: number): string | undefined {
   let got = 0;
   for (let n = 0; got < size && (n = readSync(fd, buf, 0, buf.length, got)) > 0; got += n) h.update(buf.subarray(0, n));
   return got === size ? h.digest("hex") : undefined;
+}
+
+/** A racy large file's version within one boundary: its path and every stat field. */
+function racyKey(file: string, st: Stats): string {
+  return `${file}\0${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
 }

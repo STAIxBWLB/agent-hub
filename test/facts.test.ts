@@ -240,6 +240,29 @@ test("a racy large file over the per-file cap is not hashed, and one turn hashes
   expect(files.filter((f) => f !== "huge.bin" && (o?.text ?? "").includes(f))).toHaveLength(4);
 });
 
+// issue #428: the HEAD comparison keeps its own 64 MiB bound; the racy per-file cap and turn budget never weaken it, so a
+// HEAD-equal rewrite is no change while racy and the integration target does not move when it settles.
+test("a racy large file with HEAD's bytes under a named directory is not named, and the target holds when it settles", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));
+  dirs.push(root);
+  mkdirSync(join(root, "src"));
+  const big = Buffer.alloc(5 * 1024 * 1024, 7); // over the 4 MiB racy cap
+  writeFileSync(join(root, "src", "big.bin"), big);
+  const git = (...a: string[]) => spawnSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...a]);
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const later = new Date(Date.now() + 60_000);
+  writeFileSync(join(root, "src", "big.bin"), big); // `sed -i` with no match: HEAD's bytes, new stat data
+  utimesSync(join(root, "src", "big.bin"), later, later);
+  expect(git("diff-index", "--name-only", "HEAD").stdout.toString()).toContain("src/big.bin");
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: ["src"], plans: [] }), peers: () => ["claude"], nameable: () => true });
+  expect(facts.due("claude")?.text ?? "").not.toContain("big.bin");
+  const target = facts.tree(["src"]);
+  await Bun.sleep(2100);
+  expect(facts.tree(["src"])).toBe(target);
+});
+
 test("reset (a PII task opened and closed) never shows a diff across it; work from before tracking is named as not covered", async () => {
   const { facts, write, look } = rig({ claude: { paths: ["a.txt"], plans: [], since: Date.now() - 60_000 } });
   look("claude");
