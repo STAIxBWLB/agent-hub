@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { appendFileSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { headMoveCursor, headState, headTree, incomingHeadPaths, repoOf, SnapshotBudgetExceeded, type Repo } from "../src/hub/snapshots.ts";
+import { changedPaths, headMoveCursor, headState, headTree, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, type Repo, type SnapshotBudget } from "../src/hub/snapshots.ts";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -48,8 +48,21 @@ test("#576 a peer's cherry-pick is retained", () => {
   expect(incomingHeadPaths(f.repo, before, f.capture())).toEqual([]);
 }, 10_000);
 
-test("#576 a rebase onto advanced upstream leaves mixed own and incoming paths unknown", () => {
+test("#612 a rebase onto advanced upstream excludes incoming paths and preserves own commits", () => {
   const f = fixture(); f.incoming(); f.commit("own.txt"); const before = f.capture();
+  f.git("rebase", "incoming");
+  expect(incomingHeadPaths(f.repo, before, f.capture())).toEqual(["incoming.txt"]);
+}, 10_000);
+
+test("#612 a rebase with mixed own and incoming edits to the same path is unknown", () => {
+  const f = fixture();
+  // base.txt has 10 lines
+  writeFileSync(join(f.root, "base.txt"), "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"); f.git("add", "base.txt"); f.git("commit", "-qm", "multiline base");
+  f.git("switch", "-qc", "incoming");
+  writeFileSync(join(f.root, "base.txt"), "incoming1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"); f.git("add", "base.txt"); f.git("commit", "-qm", "incoming edit");
+  f.git("switch", "-q", "main");
+  writeFileSync(join(f.root, "base.txt"), "1\n2\n3\n4\n5\n6\n7\n8\n9\nown10\n"); f.git("add", "base.txt"); f.git("commit", "-qm", "own edit");
+  const before = f.capture();
   f.git("rebase", "incoming");
   expect(incomingHeadPaths(f.repo, before, f.capture())).toBeUndefined();
 }, 10_000);
@@ -202,7 +215,7 @@ test("#576 a proven head/tree state avoids a redundant cursor Git probe", () => 
 
 
 for (const gitBinary of ["git", ...(existsSync("/opt/homebrew/bin/git") ? ["/opt/homebrew/bin/git"] : [])]) {
-  for (const autostash of [false, true]) test(`#576 ${gitBinary} pull --rebase${autostash ? " --autostash" : ""} keeps own sequencer edits out of incoming classification`, () => {
+  for (const autostash of [false, true]) test(`#612 ${gitBinary} pull --rebase${autostash ? " --autostash" : ""} keeps own sequencer edits out of incoming classification`, () => {
     const f = fixture(gitBinary); f.incoming(); f.commit("own.txt"); const before = f.capture();
     if (autostash) writeFileSync(join(f.root, "own.txt"), "uncommitted in-turn edit\n");
     f.git("pull", "-q", "--rebase", ...(autostash ? ["--autostash"] : []), ".", "incoming");
@@ -210,7 +223,7 @@ for (const gitBinary of ["git", ...(existsSync("/opt/homebrew/bin/git") ? ["/opt
     const actions = readFileSync(f.log).subarray(before.size, after.size).toString("utf8").trim().split("\n").map(line => line.slice(line.indexOf("\t") + 1));
     expect(actions.some(action => /\(start\): checkout /.test(action))).toBe(true);
     expect(actions.some(action => /\(pick\): /.test(action))).toBe(true);
-    expect(incomingHeadPaths(f.repo, before, after)).toBeUndefined();
+    expect(incomingHeadPaths(f.repo, before, after)).toEqual(["incoming.txt"]);
     if (autostash) expect(readFileSync(join(f.root, "own.txt"), "utf8")).toBe("uncommitted in-turn edit\n");
   }, 10_000);
 }
@@ -234,4 +247,51 @@ test("#576 phase-like text in a reflog message is not an own sequencer action", 
   writeFileSync(join(f.root, "incoming.txt"), "incoming path\n"); f.git("add", "incoming.txt");
   f.git("-c", "alias.phase=!GIT_REFLOG_ACTION='pull: completed (pick): detail' git commit -qm incoming", "phase");
   expect(incomingHeadPaths(f.repo, before, f.capture())).toEqual(["incoming.txt"]);
+}, 10_000);
+
+test("#612 fetch + rebase origin/main with pre-turn own commit and in-turn edit attributes edit and excludes upstream", () => {
+  const f = fixture();
+  f.incoming();
+  f.commit("own.txt", "own commit\n");
+  const snapBefore = snapshot(f.repo);
+  expect(snapBefore).toBeDefined();
+  const before = f.capture();
+
+  // In-turn uncommitted working tree edit
+  writeFileSync(join(f.root, "in-turn.txt"), "in-turn edit\n");
+
+  f.git("rebase", "incoming");
+  const snapAfter = snapshot(f.repo);
+  expect(snapAfter).toBeDefined();
+  const after = f.capture();
+
+  const incoming = incomingHeadPaths(f.repo, before, after);
+  expect(incoming).toEqual(["incoming.txt"]);
+
+  // End tree diff attributes in-turn edit while excluding upstream
+  const changed = changedPaths(f.repo, snapBefore!, snapAfter!);
+  expect(changed.sort()).toEqual(["in-turn.txt", "incoming.txt"]);
+  const incomingSet = new Set(incoming);
+  const attributed = changed.filter(p => !incomingSet.has(p));
+  expect(attributed).toEqual(["in-turn.txt"]);
+}, 10_000);
+
+test("#612 a 20-pick rebase stays within the 250 ms burst budget", () => {
+  const f = fixture();
+  f.incoming();
+  for (let i = 1; i <= 20; i++) {
+    f.commit(`own${i}.txt`, `own${i}\n`);
+  }
+  const before = f.capture();
+  f.git("rebase", "incoming");
+  const after = f.capture();
+
+  const deadline = performance.now() + 250;
+  const budget: SnapshotBudget = { deadline };
+  const t0 = performance.now();
+  const incoming = incomingHeadPaths(f.repo, before, after, budget);
+  const elapsed = performance.now() - t0;
+
+  expect(incoming).toEqual(["incoming.txt"]);
+  expect(elapsed).toBeLessThan(250);
 }, 10_000);
