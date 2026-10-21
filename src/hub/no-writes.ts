@@ -46,5 +46,5 @@ export function ownerToolEffect(op: string, input: Record<string, unknown> | und
 /** Canonical snapshots cannot disprove work in the owner's separately recorded checkout/PR. */
 export function canonicalWriteUnknown(task: Pick<Task, "refs" | "plan" | "sdlc">): boolean {
   return !!(task.refs.branch || task.refs.commit || task.sdlc?.head || task.sdlc?.localHead || task.sdlc?.pr)
-    || [...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])].some(path => /(?:^|[\\/])\.worktrees(?:[\\/]|$)/.test(path));
+    || [...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])].some(path => /(?:^|[\\/])\.worktrees(?:[\\/]|$)/i.test(path));
 }
