@@ -2746,19 +2746,21 @@ export class Tasks {
   /** Whether a completion check is still running for this task. */
   isChecking = (id: number) => this.checking.has(id);
 
+  private completionCurrent(id: unknown, by: PeerId, preEffect: boolean): Task {
+    const t = this.need(id, false, preEffect);
+    this.mine(t, by, "owner", preEffect);
+    if (t.state === "in_review" || isClosedTaskState(t.state)) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${t.id} is already ${t.state}`);
+    this.ready(t, preEffect);
+    if (t.state === "proposed" || t.state === "changes_requested") this.acceptanceCapacity(t);
+    if (this.checking.has(t.id)) {
+      // The result goes only to the owner the check was started for: anyone who took the task since hears nothing.
+      throw new (preEffect ? PreEffectToolRefusal : Error)(this.checking.get(t.id) === t.owner ? `task #${t.id}: its check is still running; its result comes as a task message` : `task #${t.id}: a check from before it changed hands is still running; call hub_task_done again in a few minutes`);
+    }
+    return t;
+  }
+
   async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs): Promise<Task> {
-    const valid = (): Task => {
-      const t = this.need(id, false, true);
-      this.mine(t, by, "owner", true);
-      if (t.state === "in_review" || isClosedTaskState(t.state)) throw new PreEffectToolRefusal(`task #${t.id} is already ${t.state}`);
-      this.ready(t, true);
-      if (t.state === "proposed" || t.state === "changes_requested") this.acceptanceCapacity(t);
-      if (this.checking.has(t.id)) {
-        // The result goes only to the owner the check was started for: anyone who took the task since hears nothing.
-        throw new PreEffectToolRefusal(this.checking.get(t.id) === t.owner ? `task #${t.id}: its check is still running; its result comes as a task message` : `task #${t.id}: a check from before it changed hands is still running; call hub_task_done again in a few minutes`);
-      }
-      return t;
-    };
+    const valid = () => this.completionCurrent(id, by, true);
     // The PII screen reads the summary of a done that passes these checks (issue #198); they run again after it.
     const withheld = await this.withholds("summary", summary, valid());
     let task = valid();
@@ -2814,7 +2816,13 @@ export class Tasks {
     this.pendingChecks++;
     this.checkQueue = this.checkQueue
       .then(() => this.finishChecked(pending.id, by, summary, command, seen, withheld))
-      .catch((e: Error) => this.d.notify(`task #${pending.id}: its check result could not be recorded: ${e.message}`))
+      .catch((e: Error) => {
+        this.releaseNotice(`task #${pending.id}: its check result could not be recorded: ${e.message}`);
+        this.releaseNotice(`task #${pending.id}: its owner retry notice could not be published`, () => {
+          const current = this.d.board.get(pending.id);
+          if (current) this.tell(current, `Task #${current.id}: its check completion was refused. Call hub_task_done again when it is ready.`, this.isPii(current));
+        });
+      })
       .finally(() => this.pendingChecks--);
     return pending;
   }
@@ -2947,11 +2955,8 @@ export class Tasks {
     }
     // A delayed local check needs a new readback; the immediate done path already admitted before effects.
     if (reviewer && !admission && (this.d.sdlc?.config().mode ?? "off") !== "off") {
-      const observed = task;
       admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence);
-      task = this.need(task.id);
-      this.mine(task, by, "owner");
-      if (task.history.length !== observed.history.length || task.state === "in_review" || isClosedTaskState(task.state)) throw new Error("task changed during review admission");
+      task = this.completionCurrent(task.id, by, false);
     }
     selection = this.poolReview(task, refs);
     reviewer = selection?.reviewer ?? task.reviewer;
@@ -3052,30 +3057,41 @@ export class Tasks {
   private async reviewRequestAdmission(task: Task, refs?: TaskRefs, preEffect = true, actor: PeerId = task.owner ?? USER, previous?: PrEvidence, sameRequest?: () => boolean): Promise<ReviewReadiness | undefined> {
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
     if (mode === "off") return undefined;
+    let quietDrift = false;
     const guard = () => {
       if (actor !== USER && actor !== task.owner) {
         const holders = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([peer]) => peer);
         if (holders.length !== 1 || holders[0] !== actor) throw new (preEffect ? PreEffectToolRefusal : Error)("review admission authority changed");
       }
       const current = this.need(task.id, false, preEffect);
-      if ((this.d.sdlc?.config().mode ?? "off") !== mode || current.history.length !== task.history.length && !sameRequest?.() || current.owner !== task.owner || current.reviewer !== task.reviewer
+      const changed = current.history.length !== task.history.length;
+      const quiet = current.history.length > task.history.length && current.history.slice(task.history.length).every(entry => QUIET_EVENTS.has(entry.event));
+      const sameHistory = !changed || (mode === "advise" ? quiet : sameRequest?.());
+      if ((this.d.sdlc?.config().mode ?? "off") !== mode || !sameHistory || current.owner !== task.owner || current.reviewer !== task.reviewer
         || this.isPii(current) !== this.isPii(task) || JSON.stringify(current.sdlc ?? null) !== JSON.stringify(task.sdlc ?? null)
+        || mode === "advise" && (current.state !== task.state || current.refs.commit !== task.refs.commit)
         || actor !== USER && this.d.privateTurn?.(actor) && !this.isPii(current)) throw new (preEffect ? PreEffectToolRefusal : Error)("task or authority changed during review admission");
+      quietDrift ||= mode === "advise" && changed && quiet;
       return current;
     };
     guard();
     const expected = cleanRefs(refs).commit ?? task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead;
-    const read: SdlcGh = (args, timeout, cwd, cap) => { guard(); return (this.d.sdlc?.gh ?? sdlcGh)(args, timeout, cwd, cap); };
+    const read: SdlcGh = (args, timeout, cwd, cap) => {
+      guard();
+      if (quietDrift) throw new Error("review readiness unknown: task changed during readback");
+      return (this.d.sdlc?.gh ?? sdlcGh)(args, timeout, cwd, cap);
+    };
     const evidence: ReviewReadiness = this.isPii(task)
       ? { ready: false, blockers: ["private review readiness unavailable"] }
       : task.sdlc ? reviewReadinessFromEvidence(previous, expected, this.d.sdlc?.config().requiredChecks ?? []) ?? await readReviewReadiness(task.sdlc, expected, read, this.d.sdlc?.config().requiredChecks ?? []) : { ready: false, blockers: ["review PR identity missing"] };
     const current = guard();
-    if (!evidence.ready) {
-      const message = `task ${this.publicTitle(current)}: premature review: ${evidence.blockers.join("; ")}`;
+    const admitted: ReviewReadiness = quietDrift ? { ready: false, blockers: ["review readiness unknown: task changed during readback"] } : evidence;
+    if (!admitted.ready) {
+      const message = `task ${this.publicTitle(current)}: premature review: ${admitted.blockers.join("; ")}`;
       if (mode === "enforce") throw new (preEffect ? PreEffectToolRefusal : Error)(message);
       this.releaseNotice(message);
     }
-    return evidence;
+    return admitted;
   }
 
   private sendReview(task: Task, reviewer: PeerId, why = "", admission?: ReviewReadiness): void {

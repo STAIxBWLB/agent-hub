@@ -79,18 +79,18 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
-import { Tasks } from "../src/hub/tasks.ts";
+import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0)) close(); });
-function scopeRig(mode: "off" | "advise" | "enforce", gh?: SdlcGh) {
+function scopeRig(mode: "off" | "advise" | "enforce", gh?: SdlcGh, checks: Pick<TasksDeps, "check" | "runCheck"> = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-cost-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   const notices: string[] = [];
-  const roles: Record<string, string[]> = { claude: ["planner"], codex: ["implementer"] }, privacy = { active: false };
-  const tasks = new Tasks({ cwd, board, bus, project: "fixture", roles, privateTurn: () => privacy.active, routing: () => loadRouting(cwd), notify: text => notices.push(text), repository: "o/r", sdlc: { config: () => sdlcConfig({ mode }), ...(gh ? { gh } : {}) } });
+  const roles: Record<string, string[]> = { claude: ["planner"], codex: ["implementer"] }, privacy = { active: false }, policy = { mode };
+  const tasks = new Tasks({ cwd, board, bus, project: "fixture", roles, privateTurn: () => privacy.active, routing: () => loadRouting(cwd), notify: text => notices.push(text), repository: "o/r", ...checks, sdlc: { config: () => sdlcConfig({ mode: policy.mode }), ...(gh ? { gh } : {}) } });
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
-  return { tasks, board, bus, roles, privacy, notices };
+  return { tasks, board, bus, roles, privacy, notices, policy };
 }
 test("task plan scopes survive normalization and bind the planner receipt (#481 S10)", async () => {
   const r = scopeRig("enforce"), scope = { review: { scope: "delta" as const, reviewers: 2 }, ci: "reuse" as const };
@@ -416,4 +416,120 @@ test("advise discards a clean lifecycle snapshot when the task relinks to anothe
   expect(r.notices.join("\n")).toContain("bot review threads unanswered");
   expect(done.history.findLast(entry => entry.event === "done")?.reviewCost?.head).toBeUndefined();
   expect(r.reads()).toBeGreaterThan(2);
+});
+
+
+// #230 item4: isolate the admission readback, then exercise its delayed completion through done().
+type CostRig = ReturnType<typeof scopeRig>;
+const scopeTask = (r: CostRig) => {
+  const task = r.board.propose("user", { title: "PRIVATE_TITLE_CANARY", class: "summarize" });
+  return r.board.update(task.id, "user", "accepted", { owner: "codex", reviewer: "user", state: "in_progress", refs: { commit: head },
+    sdlc: { stage: "build", repo: "o/r", issue: 1, pr: 1, head, localHead: head, localResult: "passed" } });
+};
+const admitScope = (r: CostRig, task: ReturnType<typeof scopeTask>, actor = "codex") =>
+  (r.tasks as unknown as { reviewRequestAdmission(snapshot: ReturnType<typeof scopeTask>, refs: undefined, preEffect: boolean, actor: string): Promise<import("../src/hub/sdlc.ts").ReviewReadiness | undefined> })
+    .reviewRequestAdmission(task, undefined, true, actor);
+const changedReadback = "review readiness unknown: task changed during readback";
+for (const event of ["answer", "reviewer changed", "idle sweep", "memory reference started"]) test(`F4a advise discards ${event} drift and continues with one metadata read`, async () => {
+  let calls = 0;
+  const r = scopeRig("advise", async () => {
+    calls++; r.board.update(task.id, "hub", event, {});
+    return { code: 0, stdout: JSON.stringify(readinessReply()) };
+  });
+  const task = scopeTask(r);
+  expect(await admitScope(r, task)).toEqual({ ready: false, blockers: [changedReadback] });
+  expect(calls).toBe(1);
+  expect(r.notices.join("\n")).toContain(changedReadback);
+  expect(r.board.get(task.id)?.state).toBe("in_progress");
+});
+
+test("F4a advise quiet drift stops later identical-tree proof reads", async () => {
+  let calls = 0;
+  const r = scopeRig("advise", async () => {
+    calls++; r.board.update(task.id, "hub", "answer", {});
+    return { code: 0, stdout: JSON.stringify(readinessReply("SKIPPED")) };
+  });
+  const task = scopeTask(r);
+  expect(await admitScope(r, task)).toEqual({ ready: false, blockers: [changedReadback] });
+  expect(calls).toBe(1);
+});
+
+for (const drift of ["non-quiet", "mode", "owner", "privacy", "receipt", "conductor", "private turn"] as const) test(`F4b advise refuses ${drift} drift even alongside a quiet event`, async () => {
+  let calls = 0;
+  const r = scopeRig("advise", async () => {
+    calls++;
+    r.board.update(task.id, "hub", drift === "non-quiet" ? "plan changed" : "answer", {
+      ...(drift === "owner" ? { owner: "kimi" } : {}),
+      ...(drift === "privacy" ? { signals: ["pii"] } : {}),
+      ...(drift === "receipt" ? { sdlc: { ...task.sdlc!, localHead: "d".repeat(40) } } : {}),
+    });
+    if (drift === "mode") r.policy.mode = "off";
+    if (drift === "conductor") r.roles.director = [];
+    if (drift === "private turn") r.privacy.active = true;
+    return { code: 0, stdout: JSON.stringify(readinessReply()) };
+  });
+  r.roles.director = ["conductor"];
+  const task = scopeTask(r);
+  await expect(admitScope(r, task, drift === "conductor" ? "director" : "codex")).rejects.toThrow(/admission/);
+  expect(calls).toBe(1);
+  expect(r.board.get(task.id)?.history.some(entry => entry.event === "done")).toBe(false);
+});
+
+test("F4c enforce still refuses quiet readback drift", async () => {
+  let calls = 0;
+  const r = scopeRig("enforce", async () => {
+    calls++; r.board.update(task.id, "hub", "answer", {});
+    return { code: 0, stdout: JSON.stringify(readinessReply()) };
+  });
+  const task = scopeTask(r);
+  await expect(admitScope(r, task)).rejects.toThrow("changed during review admission");
+  expect(calls).toBe(1);
+});
+
+const waitCheck = async (condition: () => boolean) => {
+  for (let attempt = 0; attempt < 500 && !condition(); attempt++) await Bun.sleep(10);
+  expect(condition()).toBe(true);
+};
+for (const scenario of ["advise quiet", "enforce quiet", "owner change", "privacy change"] as const) test(`F4d delayed completion handles ${scenario} and tells a refused owner`, async () => {
+  const mode = scenario === "enforce quiet" ? "enforce" : "advise";
+  let finish!: (result: { code: number; timedOut: boolean; tail: string }) => void;
+  const checked = new Promise<{ code: number; timedOut: boolean; tail: string }>(resolve => { finish = resolve; });
+  let checkStarted!: () => void;
+  const started = new Promise<void>(resolve => { checkStarted = resolve; });
+  let afterCheck = false, admissionCalls = 0;
+  const r = scopeRig(mode, async args => {
+    if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ headRefOid: head, state: "OPEN", statusCheckRollup: [], reviewRequests: [], files: [], changedFiles: 0 }) };
+    if (args.join(" ").includes("commits(last:1)")) {
+      admissionCalls++;
+      if (afterCheck) r.board.update(task.id, "hub", "answer", {
+        ...(scenario === "owner change" ? { owner: "kimi" } : {}),
+        ...(scenario === "privacy change" ? { owner: "local", signals: ["pii"] } : {}),
+      });
+    }
+    return { code: 0, stdout: JSON.stringify(readinessReply()) };
+  }, { check: () => "fixture check", runCheck: () => { checkStarted(); return checked; } });
+  const task = scopeTask(r);
+  // Owners are registered but offline, so the real bus retains their retry notices for inspection.
+  for (const owner of ["codex", "kimi", "local"]) r.bus.add(new ReadyReviewer(owner));
+  expect((await r.tasks.done("codex", task.id, "PRIVATE_SUMMARY_CANARY")).state).toBe("in_progress");
+  await started;
+  afterCheck = true; finish({ code: 0, timedOut: false, tail: "fixture passed" });
+  await waitCheck(() => r.tasks.checksPending() === 0);
+  expect(admissionCalls).toBe(2);
+  const current = r.board.get(task.id)!;
+  if (scenario === "advise quiet") {
+    expect(current.state).toBe("in_review");
+    expect(current.history.filter(entry => entry.event === "done")).toHaveLength(1);
+    expect(r.notices.join("\n")).toContain(changedReadback);
+  } else {
+    expect(current.state).toBe("in_progress");
+    expect(current.history.some(entry => entry.event === "done")).toBe(false);
+    const recipient = scenario === "owner change" ? "kimi" : scenario === "privacy change" ? "local" : "codex";
+    const retries = r.bus.pendingEnvelopes(recipient).filter(env => env.body.includes("hub_task_done again"));
+    expect(retries).toHaveLength(1);
+    expect(retries[0]?.refs?.taskRecipient).toBe("owner");
+    if (scenario === "privacy change") expect(retries[0]?.private).toBe(true);
+    expect(JSON.stringify(retries)).not.toContain("PRIVATE_SUMMARY_CANARY");
+    expect(JSON.stringify(retries)).not.toContain("PRIVATE_TITLE_CANARY");
+  }
 });
