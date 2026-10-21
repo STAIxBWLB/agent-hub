@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "documents": {
     "README.md": {
-      "verifiedAgainst": "53743efd865a91f1f0766f5af0613c298ac3d7b9",
+      "verifiedAgainst": "e185b9e62bd96aa0638f8e694628eeb698e38649",
       "paths": [
         "package.json",
         "src/",
@@ -11,14 +11,14 @@
       ]
     },
     "docs/security.md": {
-      "verifiedAgainst": "53743efd865a91f1f0766f5af0613c298ac3d7b9",
+      "verifiedAgainst": "e185b9e62bd96aa0638f8e694628eeb698e38649",
       "paths": [
         "src/",
         "templates/"
       ]
     },
     "docs/operations.md": {
-      "verifiedAgainst": "53743efd865a91f1f0766f5af0613c298ac3d7b9",
+      "verifiedAgainst": "e185b9e62bd96aa0638f8e694628eeb698e38649",
       "paths": [
         "package.json",
         "src/",
@@ -35,7 +35,7 @@
       ]
     },
     "docs/quickstart.md": {
-      "verifiedAgainst": "53743efd865a91f1f0766f5af0613c298ac3d7b9",
+      "verifiedAgainst": "e185b9e62bd96aa0638f8e694628eeb698e38649",
       "paths": [
         "package.json",
         "src/",
@@ -43,7 +43,7 @@
       ]
     },
     "docs/agent-notes/adapters.md": {
-      "verifiedAgainst": "53743efd865a91f1f0766f5af0613c298ac3d7b9",
+      "verifiedAgainst": "e185b9e62bd96aa0638f8e694628eeb698e38649",
       "paths": [
         "src/adapters/",
         "src/pi/",
@@ -65,11 +65,15 @@
         "src/hub/peer-catalog.ts",
         "src/cli/agy-mcp.ts",
         "src/cli/kimi-mcp.ts",
-        "src/cli/jcode-mcp.ts"
+        "src/cli/jcode-mcp.ts",
+        "src/cli/configured-acp-entry.ts",
+        "src/cli/preview.ts",
+        "src/hub/roster.ts",
+        "src/hub/instances.ts"
       ]
     },
     "docs/agent-notes/benchmarks.md": {
-      "verifiedAgainst": "53743efd865a91f1f0766f5af0613c298ac3d7b9",
+      "verifiedAgainst": "e185b9e62bd96aa0638f8e694628eeb698e38649",
       "paths": [
         "scripts/benchmarks/",
         "test/benchmarks/",
@@ -81,7 +85,7 @@
       ]
     },
     "docs/agent-notes/budget.md": {
-      "verifiedAgainst": "53743efd865a91f1f0766f5af0613c298ac3d7b9",
+      "verifiedAgainst": "e185b9e62bd96aa0638f8e694628eeb698e38649",
       "paths": [
         "src/hub/budget.ts",
         "src/cli/statusline-tee.ts",
@@ -94,11 +98,12 @@
         "src/adapters/definitions/native-context.ts",
         "src/adapters/registry.ts",
         "src/hub/instance-budget.ts",
-        "src/hub/claude-state.ts"
+        "src/hub/claude-state.ts",
+        "src/adapters/definitions/native-channel-state.ts"
       ]
     },
     "docs/agent-notes/bus.md": {
-      "verifiedAgainst": "53743efd865a91f1f0766f5af0613c298ac3d7b9",
+      "verifiedAgainst": "e185b9e62bd96aa0638f8e694628eeb698e38649",
       "paths": [
         "src/hub/bus.ts",
         "src/hub/envelope.ts",
@@ -113,7 +118,7 @@
       ]
     },
     "docs/agent-notes/daemon.md": {
-      "verifiedAgainst": "53743efd865a91f1f0766f5af0613c298ac3d7b9",
+      "verifiedAgainst": "e185b9e62bd96aa0638f8e694628eeb698e38649",
       "paths": [
         "src/hub/daemon.ts",
         "src/hub/control-client.ts",
@@ -164,11 +169,17 @@
         "src/hub/memory-profile.ts",
         "src/hub/native-hook-launch.ts",
         "src/cli/output.ts",
-        "src/ui/index.html"
+        "src/ui/index.html",
+        "src/hub/roster.ts",
+        "src/adapters/registry.ts",
+        "src/adapters/configured-acp.ts",
+        "src/hub/config-trust.ts",
+        "src/cli/memory.ts",
+        "src/adapters/definitions/native-channel-state.ts"
       ]
     },
     "docs/agent-notes/local-worker.md": {
-      "verifiedAgainst": "e57b1936bd234fad65aded000c921f5c9d7a3718",
+      "verifiedAgainst": "e185b9e62bd96aa0638f8e694628eeb698e38649",
       "paths": [
         "src/adapters/local-worker.ts",
         "src/local/",
@@ -188,7 +199,7 @@
       ]
     },
     "docs/agent-notes/tasks.md": {
-      "verifiedAgainst": "53743efd865a91f1f0766f5af0613c298ac3d7b9",
+      "verifiedAgainst": "e185b9e62bd96aa0638f8e694628eeb698e38649",
       "paths": [
         "src/hub/tasks.ts",
         "src/hub/board.ts",
@@ -211,11 +222,13 @@
         "src/hub/release-admission.ts",
         "src/hub/main-checkout.ts",
         "src/hub/checks.ts",
-        "src/hub/task-repository.ts"
+        "src/hub/task-repository.ts",
+        "src/hub/no-writes.ts",
+        "src/adapters/registry.ts"
       ]
     },
     "docs/agent-notes/tests.md": {
-      "verifiedAgainst": "53743efd865a91f1f0766f5af0613c298ac3d7b9",
+      "verifiedAgainst": "e185b9e62bd96aa0638f8e694628eeb698e38649",
       "paths": [
         "test/",
         "scripts/check.sh",
@@ -233,7 +246,7 @@
       ]
     },
     "docs/agent-notes/README.md": {
-      "verifiedAgainst": "53743efd865a91f1f0766f5af0613c298ac3d7b9",
+      "verifiedAgainst": "e185b9e62bd96aa0638f8e694628eeb698e38649",
       "paths": [
         "src/cli/console-state.ts",
         "src/cli/attention.ts",
@@ -242,7 +255,7 @@
       ]
     },
     "src/cli/help.ts": {
-      "verifiedAgainst": "53743efd865a91f1f0766f5af0613c298ac3d7b9",
+      "verifiedAgainst": "e185b9e62bd96aa0638f8e694628eeb698e38649",
       "paths": [
         "src/cli/main.ts",
         "src/cli/launch.ts",
@@ -255,7 +268,9 @@
         "src/adapters/definitions/native-cli-entry-qwen.ts",
         "src/adapters/definitions/native-cli-entry-types.ts",
         "src/adapters/definitions/native-cli-entry.ts",
-        "src/adapters/agy/entry.ts"
+        "src/adapters/agy/entry.ts",
+        "src/cli/configured-acp-entry.ts",
+        "src/adapters/configured-acp.ts"
       ]
     }
   }

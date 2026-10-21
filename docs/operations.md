@@ -3074,7 +3074,7 @@ consumption, so no token total is counted from it; the adapter accepts the
 update whenever it names the current session, because 2.1.1's source text
 emits it after the turn settles (read from the source, not yet observed live
 through the hub; docs/smoke.md), so the peer may already be idle.
-Pi and other unsupported surfaces show unknown.
+Pi, Qwen (until a native source is verified, #625) and other unsupported surfaces show unknown.
 A stale or disconnected reading is unknown, not 0%. Codex's accumulated session
 usage is never used as context occupancy. In the tail (`ahub tail` and the
 console's stream) a reading prints once and repeats only when the line changes
@@ -3292,7 +3292,7 @@ Modes: ask maps to default, scoped frequency maps to auto-edit, never-ask maps t
 yolo. Qwen yolo approves every tool outside any hub sandbox; its own vendor bounds
 apply. Auto and plan are not hub mode mappings. Unknown quota refusals are not
 classified as authoritative quota; until a real pinned refusal is recorded, pause
-by hand. Occupancy is context with a source, never a consumption estimate. Roles
+by hand. Context occupancy shows unknown until a native source is verified; it no longer uses Kimi's usage parser (#625). Roles
 do not establish that Qwen can reliably replace Kimi before the live leg.
 
 Qwen controlled recovery and automatic crash resume load the recorded conversation with ACP session/load. The emitted launcher passes --session-id; a controlled plan with a missing or unsafe identity refuses before effects. Preview redacts the id. A custom executable argv keeps its wrapper arguments before appended model flags. Native recovery remains unverified.
@@ -3320,18 +3320,58 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 
 ## Optional Antigravity (agy) peer
 
-Antigravity is optional and off roster by default. Use `ahub roster add agy`, then run `ahub agy` in a terminal: it runs the Antigravity CLI as a fresh pull-only TUI in that terminal. It accepts the 1.4.x line: 1.4.2 is the verified version, any other 1.4.x launches with a stderr warning (agy updates itself), and other versions are refused (#589). The running hub must advertise `native_hook_launch`; an older hub refuses before any write with an upgrade-or-restart remedy. Only the person's launcher starts it: conductor starts are refused, there is no controlled restore or resume, and extra agy instances are unavailable. Headless/print, resume (`--conversation`, `--continue`, `--new`), `--mode`, `--dangerously-skip-permissions` and `--unattended` are refused until their native mapping is verified; `--print-command` previews without writing.
+Antigravity is optional and off roster by default. Use `ahub roster add agy`, then run `ahub agy` in a terminal: it runs the Antigravity CLI as a fresh pull-only TUI in that terminal. It accepts the 1.4.x line: 1.4.2 is the verified version, any other 1.4.x launches with a stderr warning (agy updates itself), and other versions are refused (#589). The running hub must advertise `native_hook_launch`; an older hub refuses before any write with an upgrade-or-restart remedy. Only the person's launcher starts it: conductor starts are refused, there is no controlled restore or resume, and a declared agy extra instance is refused when the config loads (#625). Headless/print, resume (`--conversation`, `--continue`, `--new`), `--mode`, `--dangerously-skip-permissions` and `--unattended` are refused until their native mapping is verified; `--print-command` previews without writing.
 
 The launcher writes exactly `plugin.json`, `mcp_config.json` and `hooks.json` in `.agents/plugins/agent-hub/`, refusing linked or foreign entries before any write, and removes only its own matching files when the TUI ends. It never writes project-level `.agents/hooks.json` or the person's `~/.gemini` settings. Run `ahub init` afterwards to ignore the untracked plugin directory; a tracked plugin is written with a warning. The native model sees the hub tools under the server name `agent-hub_agent-hub`.
 
 Like Kimi's TUI, agy is pull-only: it reads `hub_inbox` and shares results with `hub_send`, messages do not interrupt it, and automatic routing never picks it. Its roles are capped at implementer and verifier; a plan or review assignment and PII work are refused. Native permissions are unmanaged, with no hub sandbox, hub permission mode, quota source or session resume. Plugin hooks bound to that launch carry the hub's turn facts and report each completed native turn. A native read is recorded as a peer `Read` fact: `view_file` (`AbsolutePath`) in 1.4.2 and `read_file` (`Path`) in 1.4.3; a `StartLine`/`EndLine` range counts as a partial read, never a whole-file view (#555). The live TUI/account leg is unverified ([T0 receipt](verification/2026-10-19-agy-p1-t0.md)). The 1.4.3 T0 re-run keeps 1.4.3 unverified: its `call_mcp_tool` schema and native tool names changed, and the TUI attaches the hub tools only from the second model turn ([1.4.3 receipt](verification/2026-10-21-agy-1.4.3-t0.md), #607).
+
+## Configured ACP adapters (#451 A3)
+
+A tool that speaks standard ACP over stdio can join a project without a code change. The declaration is machine-local authority: put it only in an untracked `.agenthub/config.local.json` (in `config.json` or a tracked file it is ignored with a notice), then restart the hub. The hub compiles its adapter catalog once at startup, so adding, changing or removing a declaration needs a restart; settings list the change as pending restart and never edit `adapters`.
+
+    {
+      "adapters": {
+        "myagent": {
+          "transport": "acp",
+          "command": "/opt/myagent/bin/myagent",
+          "args": ["acp"],
+          "displayName": "My Agent",
+          "roles": ["implementer", "verifier"],
+          "identity": { "name": "<initialize agentInfo.name>", "version": "<agentInfo.version>" },
+          "permission": { "ask": "<native mode id>", "ask-when-needed": "<native mode id>", "never-ask": "<native mode id>" },
+          "readOnly": "<native read-only mode id>"
+        }
+      }
+    }
+
+- The kind matches `[a-z][a-z0-9-]`, has at most 32 characters, and may not collide with a builtin peer, an `ahub` command or a reserved id. A project can declare at most 64 kinds. Unknown fields refuse the config.
+- `roles` is a non-empty subset of `planner`, `implementer`, `verifier` and `reviewer`. `conductor` is refused here; only explicit project role policy can appoint one.
+- `identity` is the name and version that ACP `initialize` reports. A start without it, or with a mismatch, refuses before any prompt.
+- `args` may not select a leader, attach, connect or remote mode (`--leader*`, `--attach*`, `--connect*`, `--remote*`): only a foreground process the hub owns is supported. A Grok declaration (kind `grok`, a `grok` executable or identity name `grok`) must also pass a standalone `--no-leader` before any `--`. Grok 1.0.62 itself is not supported ([T0 receipt](verification/2026-10-21-grok-config-acp-t0.md)).
+- `permission` maps hub modes to native ACP mode ids. Only mapped modes can be selected, and the session must advertise and acknowledge each one. Without a map (or with an empty one) native policy is unmanaged: `ahub permission <kind> <mode>` and `permission_modes.<kind>` are refused. No hub sandbox applies either way.
+- `readOnly` names the native mode that read-only instances use (below). It is not applied to the kind itself.
+
+    ahub roster add myagent          # configured kinds are off roster by default
+    ahub myagent                     # headless; asks the running hub to start it
+    ahub myagent --session-id <id>   # load a recorded native session; the agent must echo the id
+    ahub myagent --print-command     # preview: executable, argv and session id are withheld
+    ahub stop myagent
+
+`ahub <kind>` accepts only `--mode headless`, `--as <instance>`, `--session-id <id>` and one of `--print-command`/`--dry-run`; model, route, unattended and other launch overrides are refused. The running hub must advertise `configured_acp` and list the kind as loaded; otherwise the command tells you to upgrade or restart. If the file changed since the hub started, the start warns and uses the running definition. A conductor may start the kind with `hub_peer_start` (headless, with no session override). There is no TUI form: `peers.<kind>.start_mode` accepts only `headless`, and `ahub watch` is not available. Default routing never picks a configured kind; it gets work through its roles, an explicit owner or reviewer, or a reservation.
+
+Before admission the hub verifies the native identity, a valid session id, the requested native mode and positive ownership of the spawned process and its process group. A failure refuses the start with a generic reason; the agent's stderr and error text are withheld from the log. `ahub stop` signals only that original verified group. If teardown cannot be confirmed, the peer stays offline but held, and new starts are refused until `ahub stop <kind>` succeeds.
+
+Extra instances use the existing `instances` block. For example, `"myagent-review": { "kind": "myagent", "roles": ["reviewer"], "readOnly": true }` is started with `ahub myagent --as myagent-review`. Unlike the kind, a declared instance is on the roster by default. `readOnly: true` requires the kind's `readOnly` mode, and the session must advertise and acknowledge that mode before a prompt. Native permission requests other than read, search and think are rejected. The instance is offered only `hub_send`, `hub_inbox`, `hub_delivery_done`, `hub_review`, `hub_task_show`, `hub_task_list`, `hub_memory_search|show|graph` and `hub_status`; the hub refuses every other hub tool. Its permission mode is locked: settings show it as read-only, no write, undo or `ahub permission` changes it, and `permission_mode` next to `readOnly` is refused.
+
+Configured kinds are cloud peers and never receive PII work. Quota and context are unknown, and a kind with no budget source is exempt from quota accounting, so pause it by hand if its provider refuses. After a crash the hub resumes a recorded session through `session/load` only when the agent echoes the same id, and it never reuses a recorded model. Controlled recovery (`ahub upgrade`, `restart`, `recovery`) refuses a running configured kind: stop it, then start it again with its session id. While the project declares adapters, the upgrade or restart target must advertise `configured_acp`.
 
 # Headless ACP watch (#286)
 
 - A person opens `ahub watch kimi` or `ahub watch qwen` in a second terminal. `--no-thoughts` hides thought items; `--color=auto|always|never` controls colour. `q` or Ctrl+C leaves the view, keeping the peer running. Answer approvals in `ahub console` or with `ahub permit`.
 - Watch replays bounded memory history from this daemon, then displays live updates. It is the hub's read-only view, with no prompt input. It does not read native session files.
 - Kimi's default is its own pull-only TUI (#316). Watch requires `ahub kimi --mode headless`; its own TUI remains visible in its native terminal. Qwen requires roster participation and verified ACP 0.25.0. `ahub qwen --mode tui` remains refused.
-- Protocol stays 16; a same-protocol older daemon answers the new request as unknown, which the CLI reports. No automatic pane opening is included in this slice.
+- Protocol stays 16; a same-protocol older daemon answers the new request as unknown, which the CLI reports. Since 0.12.44 a headless start that the hub itself makes for Kimi or Qwen opens this view automatically through the terminal provider (see Start modes; #286).
 - Native T0 limits: [ACP watch verification](verification/2026-10-11-acp-watch-t0.md).
 
 # Acceptance-criteria checklist (#481)
