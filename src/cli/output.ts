@@ -17,7 +17,7 @@ export interface StatusOutput {
   isolatedChecks?: { pending?: number; orphans?: string[]; unknownReceipts?: readonly string[]; maintenanceUnavailable?: boolean };
   memoryProfile?: { profile?: string; generation?: string; state?: string; agentMemVersion?: string; skippedRows?: number; error?: string };
   taskWip?: Record<string, { wip: number; wipLimit: number }>;
-  pid?: number; controlPort?: number; cwd?: string; version?: string; peers: Record<string, any>; roleInfo?: Record<string, any>; budget?: Record<string, any>; planner?: { peers?: string[]; source?: string };
+  pid?: number; controlPort?: number; cwd?: string; version?: string; peers: Record<string, any>; roleInfo?: Record<string, any>; actionPolicyInfo?: Record<string, { note: string; enforceable: boolean }>; budget?: Record<string, any>; planner?: { peers?: string[]; source?: string };
   tasks?: Record<string, number>; models?: { backends?: any[] }; permissionDefaults?: any[]; deliveryError?: string; crash?: string[];
 }
 export interface BudgetOutput { budget: Record<string, any>; gate?: number }
