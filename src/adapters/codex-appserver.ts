@@ -488,6 +488,7 @@ export class CodexPeer extends BasePeer {
   get proxyAttached(): boolean { return !!this.link && this.link.up.readyState === WebSocket.OPEN; }
 
   getPermissionMode(): PermissionMode { return this.permissionMode; }
+  get permissionModeState(): PermissionMode { return this.getPermissionMode(); }
 
   /** Reconcile the daemon's current choice after startup, before the returned proxy URL has a TUI. */
   setStartupPermissionMode(mode: PermissionMode): void {
