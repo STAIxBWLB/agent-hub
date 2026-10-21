@@ -65,7 +65,8 @@ export function validateInstances(raw: unknown, catalog: ProjectAdapterCatalog):
     const kind: unknown = entry.kind?.value;
     if (typeof kind !== "string") return fail(`${path}.kind`, "must name a native kind");
     const definition = resolve(kind), prefix = `${kind}-`;
-    if (!definition) return fail(`${path}.kind`, "unknown native kind");
+    if (!definition) return fail(`${path}.kind`, "unknown native kind (external adapter instances are unsupported in A4)");
+    if (catalog.externalDefinitions.some(item => item.kind === kind)) return fail(`${path}.kind`, "external adapter instances are unsupported in A4");
     if (!id.startsWith(prefix) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length))) return fail(path, "id must be <kind>-<name>");
     const declaredRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
     const reviewer = (definition.reviewerVariant ?? definition).reviewer;

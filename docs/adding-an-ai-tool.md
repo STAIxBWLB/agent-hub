@@ -10,7 +10,7 @@ Under **Adapter API 1** (issue #451), every tool is integrated as an `AdapterDef
 
 1. **One Definition per Kind**: Each tool is identified by a unique `kind` (e.g., `codex`, `kimi`, `agy`, `claude`, `jcode`, `pi`, `local`, `qwen`). Its capabilities, transport, launch argv, permission mappings, and recovery contracts are encapsulated in an `AdapterDefinition`.
 2. **Core Independence**: Core daemon logic (`src/hub/daemon.ts`), task management (`src/hub/tasks.ts`), and routing (`src/hub/routing.ts`) inspect definition fields (such as `transport`, `identity`, `attach`, `budget`), never raw vendor names.
-3. **Strict Conformance**: Every builtin adapter must run the conformance test kit (`test/conformance/`). Unsupported legs must provide explicit, documented reasons rather than silent test skips. (External adapter enrollment lands with A4.)
+3. **Strict Conformance**: Every builtin adapter must run the conformance test kit (`test/conformance/`). Unsupported legs must provide explicit, documented reasons rather than silent test skips. (A4 exports the same callable contracts for external package CI.)
 4. **Trust & Security Boundaries**:
    - **On-prem vs. Cloud**: `trust.onPrem` controls whether private/PII tasks may be routed to the agent. A cloud agent (`trust.onPrem: false`) never receives PII task text or memory entries.
    - **Path Protection**: Any workspace configuration directory owned by the agent (e.g., `.agents/`, `.codex/`) must be listed in `AGENT_CONFIG_SEGMENTS` (`src/hub/permission-mode.ts`) so agents cannot self-modify their own hooks or plugins.
@@ -94,20 +94,94 @@ Grok declarations require explicit `--no-leader`, since native defaults can inhe
 
 ---
 
-## 5. Planned: External Adapter Modules (#451 A4)
+## 5. External Adapter Modules (#451 A4)
 
-Support for loading adapter definitions from external modules outside the core repository is planned as board task #135. As decided in issue #451 (P3), external modules will be governed by strict trust rules:
+A person can authorize a bundled adapter in an untracked
+`.agenthub/config.local.json`:
 
-* **Machine-Local Only**: Loaded exclusively from local files specified in local configuration; never from repository tracking or network URLs.
-* **Content-Hash Pinning**: Explicit SHA-256 hash pinning to prevent unauthorized tampering.
-* **Person Authority**: Enabling external modules requires explicit human authorization.
-* **Conformance Requirement**: External modules must pass the conformance kit before admission.
+```json
+{
+  "adapter_modules": [
+    { "path": ".agenthub/adapters/my-tool.mjs", "sha256": "<64 hex digits from the exact bundle>" }
+  ]
+}
+```
+
+The daemon imports the module at startup. Settings, reload, previews and ordinary
+CLI reads never import it. A changed declaration requires restart; it cannot be
+written through a hub tool or Settings. The CLI sees only the running daemon's
+bounded kind and display name. Tracked/shared/cloned configuration cannot enable
+code. A wrong hash, API mismatch, builtin collision, symlink component, path
+outside the project, nonregular/world-writable file, oversized file or unsupported
+module construct refuses loading without exposing source text in the error.
+
+Publish a single self-contained ESM JavaScript bundle. Bundle third-party
+implementation into that file; do not add runtime dependencies to the hub.
+Runtime imports may use Node/Bun builtins except `bun:ffi` and `bun:test`, plus
+`@staix/agent-hub/adapter`, bound to the running daemon's own SDK rather than
+project packages. `/conformance` is available to module CI, not runtime modules.
+Relative or other package imports, dynamic imports, require (including
+`import.meta.require`), eval and Function-based loading
+are refused. The scan is conservative, not a sandbox. Authorized module code runs
+with daemon privileges; inspect the full bundle before recording its hash.
+Dependencies must be ESM-only. The loader verifies the captured original bytes,
+rewrites only scanned SDK imports to host-owned file URLs, and imports that result
+rather than reopening a mutable source path after the hash check. A refused
+module appears in bounded status diagnostics while other adapters keep working.
+Its roster row stays inert; CLI config reads also retain inert unknown rows when
+trusted module declarations exist but daemon metadata is unavailable.
+
+The module exports `definition` with `api: ADAPTER_API`. Import the version,
+`AcpPeer`, `BasePeer` and definition/context types from
+`@staix/agent-hub/adapter`. The initial executable subset uses a headless ACP
+factory, its own kind/family, `optional: true`, `defaultOnRoster: false` and
+`trust: { onPrem: false, hubSandboxed: false }`. Preserve the host's factory
+options and instance id when constructing the transport. Supply a launch plan,
+start/identity/session/CLI/display metadata and only supported native mode
+mappings; no mapping means unmanaged. By default the host disables native
+hub-tool title auto-approval for external kinds. A cooperating module must preserve
+that factory option; approved module code runs with daemon privileges, so this is
+a host default rather than isolation from a module that overrides its options. The loader refuses fixed-builtin capabilities and unsupported
+fields rather than silently ignoring them. See `validateExternalDefinition` for
+the exact accepted subset.
+
+External kind instances are explicitly unsupported in A4. Follow-up board task
+#287 owns execution roots, CLI identity and recovery for them. Broadening the
+module transport beyond the existing headless ACP host port also needs a reviewed
+host contract (#625 phase 6); selecting a different native engine is not a generic extension.
+
+For example, bundle an ESM definition with its dependencies and record its digest:
+
+```bash
+bun build ./adapter.ts --target bun --format esm --external @staix/agent-hub/adapter --outfile .agenthub/adapters/my-tool.mjs
+shasum -a 256 .agenthub/adapters/my-tool.mjs
+```
+
+Enable its roster row only after loading it and exercising the applicable
+conformance contracts. Source and target recovery runtimes must advertise
+`external_adapter_modules`; old runtimes cannot preserve the verified catalog.
 
 ---
 
 ## 6. The Conformance Kit
 
-The conformance kit (`test/conformance/`) validates that an adapter satisfies hub invariants:
+The exported Bun kit (`@staix/agent-hub/conformance`) supplies callable transport
+registrations, `createFromDefinition`, `registerConformance`, explicit unsupported
+leg validation and immutable `fakePaths`. Importing it starts no fake transport;
+call a registration in your own Bun test file. The hub's `test/conformance/`
+wrappers run the same implementation against every applicable builtin.
+
+An external adapter test imports its definition and calls
+`registerConformance` with its real factory and a fake transport fixture. ACP
+adapters also call `registerAcpConformance({ definition, ... })`; unsupported native
+approval, mode or quota legs require concrete reasons, never silent skips. Other
+exports cover Codex, owned ACP, Pi, local and external-channel fixture contracts.
+Those exports do not grant an external runtime access to a builtin-only engine.
+The shipped fake assets live under `src/adapters/conformance/fakes`, so package CI needs
+no development-tree files. Native account/TUI probes remain separate from these
+synthetic protocol contracts.
+
+The kit validates that an adapter satisfies hub invariants:
 
 ```bash
 # Run the complete conformance suite

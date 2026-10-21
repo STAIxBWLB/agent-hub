@@ -1,4 +1,5 @@
 import { ADAPTERS, createProjectAdapterCatalog } from "../adapters/registry.ts";
+import { externalMetadataDefinitions, type ExternalAdapterMetadata } from "../adapters/external-metadata.ts";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -86,7 +87,7 @@ function validateRoutingRaw(value: unknown): void {
 }
 
 /** Strict reloads never use routing's last-good fallback. Startup can retain its existing fallback explicitly. */
-export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: Routing, cwd?: string): ConfigSources {
+export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: Routing, cwd?: string, externalAdapters?: readonly ExternalAdapterMetadata[]): ConfigSources {
   const layers: ConfigLayer[] = [], trustLayers: ConfigSources["trustLayers"] = [];
   const jsonLayers: ConfigLayer[] = [];
   for (const name of ["config.json", "config.local.json"] as const) {
@@ -103,13 +104,15 @@ export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: R
   const localRaw = jsonLayers.find(layer => layer.name === "config.local.json")?.raw ?? {};
   let declared;
   let identityAdapters: ConfigIdentitySnapshot["adapters"];
+  let inertModuleRoster = false;
   let catalog = createProjectAdapterCatalog();
   try {
     if (cwd) {
-      const accepted = readInstanceConfig(cwd, jsonLayers);
+      const accepted = readInstanceConfig(cwd, jsonLayers, externalAdapters === undefined ? undefined : externalMetadataDefinitions(externalAdapters));
       catalog = accepted.catalog; declared = accepted.instances; identityAdapters = accepted.adapters;
+      inertModuleRoster = !!accepted.adapter_modules?.length;
     } else {
-      catalog = createProjectAdapterCatalog(localRaw?.adapters);
+      catalog = createProjectAdapterCatalog(localRaw?.adapters, externalMetadataDefinitions(externalAdapters));
       identityAdapters = localRaw?.adapters as ConfigIdentitySnapshot["adapters"];
       declared = validateInstances(localRaw?.instances, catalog);
     }
@@ -135,7 +138,7 @@ export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: R
           const structural = { ...raw };
           // Declaration provenance was checked before compilation; ignored source data is never re-admitted.
           delete structural.adapters; delete structural.instances;
-          validateRawConfig(structural, declared, catalog);
+          validateRawConfig(structural, declared, catalog, inertModuleRoster);
         }
         catch (error) { throw new Error(`.agenthub/${name}: ${(error as Error).message}`); }
       }
@@ -153,5 +156,5 @@ export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: R
     try { routing = parseRouting(base, overlay); }
     catch { throw new Error(".agenthub/routing.toml / routing.local.toml: invalid effective routing"); }
   }
-  return { texts, layers, trustLayers, routing, fingerprint: configFingerprint(texts), identity: { ...(identityAdapters ? { adapters: structuredClone(identityAdapters) } : {}), instances: declared ?? validateInstances(undefined, catalog) } };
+  return { texts, layers, trustLayers, routing, fingerprint: configFingerprint(texts), identity: { ...(identityAdapters ? { adapters: structuredClone(identityAdapters) } : {}), instances: declared ?? validateInstances(undefined, catalog), ...(catalog.externalDefinitions.length ? { externalAdapters: catalog.externalDefinitions.map(({ kind, displayName }) => ({ kind, displayName })) } : {}) } };
 }

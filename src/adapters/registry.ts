@@ -11,7 +11,8 @@ import type { AdapterDefinition, KindMap, ProjectAdapterCatalog } from "./regist
 import { types } from "node:util";
 
 export type * from "./registry-types.ts";
-export const ADAPTER_API = 1;
+import { ADAPTER_API } from "./adapter-api.ts";
+export { ADAPTER_API };
 
 /** Ordered compatibility projections stay typed independently of definition implementation inference. */
 export const KNOWN_PEERS = ["claude", "codex", "kimi", "pi", "local"] as const;
@@ -101,14 +102,21 @@ export function familyOf(id: string, instances?: KindMap): string | undefined {
 }
 
 /** Compile one captured, host-trusted declaration set; never register native policy globally. */
-export function createProjectAdapterCatalog(rawAdapters?: unknown): ProjectAdapterCatalog {
+export function createProjectAdapterCatalog(rawAdapters?: unknown, externalDefinitions: readonly AdapterDefinition[] = []): ProjectAdapterCatalog {
   const configured = configuredAcpDefinitions(rawAdapters, [...definitions.keys()]);
   for (const definition of configured) { assertDefinitionCoherence(definition); assertNativeCapabilityScope(definition); }
-  const entries = Object.freeze([...ADAPTERS, ...configured]);
-  const catalog = new Map([...definitions, ...configured.map(definition => [definition.kind, definition] as const)]);
+  const seen = new Set([...definitions.keys(), ...configured.map(item => item.kind)]);
+  for (const definition of externalDefinitions) {
+    if (definition.api !== ADAPTER_API || seen.has(definition.kind)) throw new Error("external adapter kind or API collision");
+    assertDefinitionCoherence(definition); assertNativeCapabilityScope(definition);
+    seen.add(definition.kind);
+  }
+  const external = immutable([...externalDefinitions]);
+  const entries = Object.freeze([...ADAPTERS, ...configured, ...external]);
+  const catalog = new Map([...definitions, ...[...configured, ...external].map(definition => [definition.kind, definition] as const)]);
   const kindOf = (id: string, instances?: KindMap): string | undefined => catalog.has(id) ? id : typeof id === "string" ? declaredKind(id, instances, catalog) : undefined;
   const definitionOf = (id: string, instances?: KindMap): AdapterDefinition | undefined => resolvedDefinition(id, kindOf(id, instances), instances, catalog);
-  return Object.freeze({ definitions: entries, kindOf, definitionOf,
+  return Object.freeze({ definitions: entries, externalDefinitions: external, kindOf, definitionOf,
     familyOf: (id: string, instances?: KindMap) => definitionOf(id, instances)?.family,
     isSupportedPeer: (id: unknown, instances?: KindMap): id is string => {
       if (typeof id !== "string") return false;

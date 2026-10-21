@@ -299,6 +299,7 @@ export type KindMap = Readonly<Record<string, { readonly kind: string; readonly 
 /** Immutable per-project resolver; exported globals remain builtin-only. */
 export interface ProjectAdapterCatalog {
   readonly definitions: readonly AdapterDefinition[];
+  readonly externalDefinitions: readonly AdapterDefinition[];
   definitionOf(id: string, instances?: KindMap): AdapterDefinition | undefined;
   kindOf(id: string, instances?: KindMap): string | undefined;
   familyOf(id: string, instances?: KindMap): string | undefined;

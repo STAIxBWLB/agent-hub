@@ -7,6 +7,7 @@ import { DEFAULT_CONFIG, startDaemon } from "../../src/hub/daemon.ts";
 import { ControlClient } from "../../src/hub/control-client.ts";
 import { newEnvelope } from "../../src/hub/envelope.ts";
 import { until } from "./kit.ts";
+import { fakePaths } from "../../src/adapters/conformance/fake-paths.ts";
 
 test("P4 Kimi TUI: its external pull-only channel queues work without fabricating driven occupancy", async () => {
   const definition = ADAPTERS.find(candidate => candidate.kind === "kimi")!;
@@ -15,7 +16,7 @@ test("P4 Kimi TUI: its external pull-only channel queues work without fabricatin
   mkdirSync(join(dir, ".agenthub")); writeFileSync(join(dir, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false } }));
   const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "tui" } }, batch_ms: 0,
-      kimi_cmd: [process.execPath, join(import.meta.dir, "../fakes/acp-server.ts")],
+      kimi_cmd: [process.execPath, fakePaths.acpServer],
       memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
       pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
     },

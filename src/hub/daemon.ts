@@ -1,3 +1,4 @@
+import { loadExternalAdapterDefinitions, readAdapterModuleDeclarations, type AdapterModuleDeclaration } from "../adapters/external-modules.ts";
 import { WsPeer, isWsPeer } from "../adapters/channel-peer.ts";
 import { ownerToolEffect, canonicalWriteUnknown } from "./no-writes.ts";
 import { NativeHookLaunches } from "./native-hook-launch.ts";
@@ -134,6 +135,7 @@ import { nativeRecall } from "../memory/recall.ts";
 import { promotionScreen, withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
 
 export interface HubConfig {
+  adapter_modules?: readonly AdapterModuleDeclaration[];
   adapters?: Readonly<Record<string, import("../adapters/configured-acp.ts").ConfiguredAcpAdapterConfig>>;
   /** Person-owned declarations, read only from an untracked machine-local file. Bound for this daemon lifetime. */
   instances?: InstancesConfig;
@@ -322,12 +324,13 @@ function retiredRoutingSettings(cwd: string): readonly string[] {
   catch { return []; } // Routing admission and reload report parse errors using their own last-good state.
 }
 
-export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routingRetired: readonly string[] = retiredRoutingSettings(cwd)): HubConfig {
+export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routingRetired: readonly string[] = retiredRoutingSettings(cwd), externalDefinitions?: readonly import("../adapters/registry-types.ts").AdapterDefinition[]): HubConfig {
   const captured = layers ?? readInstanceConfigLayers(cwd);
-  const instanceConfig = readInstanceConfig(cwd, captured);
+  const instanceConfig = readInstanceConfig(cwd, captured, externalDefinitions);
   const instances = instanceConfig.instances;
   const adapterCatalog = instanceConfig.catalog;
   const ignored: string[] = [...instanceConfig.ignored];
+  const inertModuleRoster = !!instanceConfig.adapter_modules?.length;
   const appliedPermissionSources: NonNullable<HubConfig["permission_default_sources"]> = {};
   const files = CONFIG_FILES.flatMap((name) => {
     let file: Record<string, any>; // parsed JSON, checked field by field below
@@ -338,9 +341,10 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;
     }
+    delete file.adapter_modules; // Code provenance is captured separately and never evaluated by configuration reads.
     delete file.adapters; // Adapter provenance is compiled by the same project-local loader.
     delete file.instances; // Declaration authority was checked against its exact captured origin above.
-    peerRosterConfig(file.roster, instances, adapterCatalog);
+    peerRosterConfig(file.roster, instances, adapterCatalog, inertModuleRoster);
     catalogAssignments(file.catalog_roles);
     profileName(file.profile);
     resolveProfile(file.profile, file.profile_overrides);
@@ -412,6 +416,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     ...DEFAULT_CONFIG,
     ...file,
     ...(instanceConfig.adapters ? { adapters: instanceConfig.adapters } : {}),
+    ...(instanceConfig.adapter_modules ? { adapter_modules: instanceConfig.adapter_modules } : {}),
     ...(instances ? { instances } : {}),
     ...(file.text_projection !== undefined ? { text_projection: projectionConfig(file.text_projection) } : {}),
     ...(file.pii !== undefined ? { pii: { paths: policyPaths(file.pii.paths, "pii.paths") } } : {}),
@@ -421,7 +426,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     permission_default_sources: appliedPermissionSources,
     memory: { ...DEFAULT_CONFIG.memory, native: true, ...file.memory, ...(file.memory?.short_ttl_days !== undefined ? { short_ttl_days: ttlDays(file.memory.short_ttl_days) } : {}),
       ...(file.memory?.sync_interval_min !== undefined ? { sync_interval_min: syncMinutes(file.memory.sync_interval_min) } : {}) }, // the native store is on with any project config (#258)
-    roster: peerRosterConfig(file.roster, instances, adapterCatalog),
+    roster: peerRosterConfig(file.roster, instances, adapterCatalog, inertModuleRoster),
     roles: { ...configuredRoles, ...conductorPolicy.roles, ...extraRoles },
     planner: conductorPolicy.planner,
     conductor: conductorPolicy.conductor,
@@ -531,12 +536,21 @@ export async function startDaemon(opts: DaemonOptions) {
   const startupCleanup: (() => void)[] = [];
   let ready = false;
   try {
-  const loadedConfig = opts.config ?? loadConfig(opts.cwd);
+  let startupLayers: ReturnType<typeof readInstanceConfigLayers>;
+  try { startupLayers = readInstanceConfigLayers(opts.cwd); }
+  catch (error) { if (!opts.config) throw error; startupLayers = []; } // Explicit embeddings may ignore unreadable file config; no code is loaded from it.
+  const externalAdapterRefusals: import("../adapters/external-modules.ts").ExternalAdapterRefusalRecord[] = [];
+  const externalDefinitions = await loadExternalAdapterDefinitions(opts.cwd, startupLayers, refusal => externalAdapterRefusals.push(refusal));
+  const externalAdapters = externalDefinitions.map(({ kind, displayName }) => ({ kind, displayName }));
+  const externalIds = new Set(externalAdapters.map(item => item.kind));
+  const moduleDeclarations = readAdapterModuleDeclarations(opts.cwd, startupLayers).modules;
+  const loadedConfig = opts.config ? { ...opts.config, adapter_modules: moduleDeclarations.length ? moduleDeclarations : undefined }
+    : loadConfig(opts.cwd, startupLayers, undefined, externalDefinitions);
   reviewerPoolConfig(loadedConfig.review, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS);
   const lifecycleConfig = loadSdlc(opts.cwd, VERSION);
   // Preserve embedding-owned policy references, but never publish reloads into shared defaults.
   const ownedConfig = Object.fromEntries(Object.entries(loadedConfig).map(([key, value]) => [key, !opts.config || value === (DEFAULT_CONFIG as unknown as Record<string, unknown>)[key] ? structuredClone(value) : value])) as unknown as HubConfig;
-  const adapterCatalog = createProjectAdapterCatalog(loadedConfig.adapters);
+  const adapterCatalog = createProjectAdapterCatalog(loadedConfig.adapters, externalDefinitions);
   const configuredIds = adapterCatalog.definitions.filter(d => !builtinDefinitionOf(d.kind)).map(d => d.kind);
   const declarations = validateInstances(loadedConfig.instances, adapterCatalog);
   const extraIds = Object.keys(declarations);
@@ -562,7 +576,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
   }
   const config: HubConfig = { ...ownedConfig, ...(extraIds.length ? { instances: declarations } : {}),
-    roster: peerRosterConfig(loadedConfig.roster, declarations, adapterCatalog),
+    roster: peerRosterConfig(loadedConfig.roster, declarations, adapterCatalog, moduleDeclarations.length > 0),
     permission_modes: { ...permissionModesFromInstances, ...permissionDefaults(loadedConfig.permission_modes, declarations, adapterCatalog) },
     peers: { ...startModesFromInstances, ...peerStartConfig(loadedConfig.peers, declarations, adapterCatalog) },
     ...(extraIds.length ? { permission_default_sources: { ...instancePermissionSources, ...loadedConfig.permission_default_sources } } : {}),
@@ -593,7 +607,8 @@ export async function startDaemon(opts: DaemonOptions) {
   let kimiAdmissionId: string | undefined;
   let kimiAdmissionExpiry: ReturnType<typeof setTimeout> | undefined;
   const clearKimiAdmission = () => { clearTimeout(kimiAdmissionExpiry); kimiAdmissionExpiry = undefined; kimiSessionMode = undefined; kimiAdmissionId = undefined; };
-  const onRoster = (peer: string) => rosterAllows(config.roster, peer, config.pi.enabled, declarations, adapterCatalog);
+  const projectRosterAllows = (roster: PeerRoster, peer: string, piEnabled: boolean) => rosterAllows(roster, peer, piEnabled, declarations, adapterCatalog, moduleDeclarations.length > 0);
+  const onRoster = (peer: string) => projectRosterAllows(config.roster, peer, config.pi.enabled);
   // pi.enabled historically gates starts, not retained queues or tools sockets. Only an explicit roster.pi changes those.
   const membershipAllowed = (peer: string) => definitionOf(peer)?.enabledSwitchStartOnly && config.roster[peer] === undefined ? true : onRoster(peer);
   conductorPeer(config.roles); // reject ambiguous leadership before opening a control listener
@@ -604,7 +619,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // The state dir can vanish under a running hub (issue #56): a log line must never take a handler down with it.
   const log = (line: string) => { try { appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* the state dir is gone; the watchdog is stopping the hub */ } };
   let runningRouting = currentRouting(opts.cwd, log);
-  let acceptedSources = parseConfigSources(configSourceTexts(opts.cwd), runningRouting, opts.cwd);
+  let acceptedSources = parseConfigSources(configSourceTexts(opts.cwd), runningRouting, opts.cwd, externalAdapters);
   const startupSources = structuredClone(acceptedSources.trustLayers);
   const embeddedConfig = structuredClone(config);
   let desiredConfig = structuredClone(config);
@@ -2745,6 +2760,8 @@ export async function startDaemon(opts: DaemonOptions) {
     protocol: PROTOCOL,
     features: DAEMON_FEATURES,
     configuredAdapters: configuredIds,
+    ...(externalAdapters.length ? { externalAdapters } : {}),
+    ...(externalAdapterRefusals.length ? { externalAdapterRefusals } : {}),
     startablePeers: SUPPORTED_PEERS.filter(isStartablePeer),
     readOnlyPeers: extraIds.filter(readOnlyPeer),
     // #450 I3: the instance ids this daemon bound at startup; a launcher selects only one of these.
@@ -3740,9 +3757,10 @@ export async function startDaemon(opts: DaemonOptions) {
         onActivity: item => activityRings[peer]?.append(item),
         isPrivateTurn: () => !!turns.get(peer)?.private || contextPii(peer),
         kind: adapter.kind, cmd: [launch.cmd, ...launch.args], permissionMode: permission === "read-only" ? "ask" : permission,
+        ...(externalIds.has(adapter.kind) ? { requireOwnedGroup: true, requireLoadSessionEcho: true, nativePolicy: adapter.permission.genericAcp ?? {} } : {}),
         ...(args.model ? { launchModel: args.model } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}),
         cwd: executionCwd, watchdogMs: config.watchdog_ms, onPermission,
-        autoApprove: title => !stopping && HUB_TOOL_TITLES.has(title),
+        autoApprove: title => !externalIds.has(adapter.kind) && !stopping && HUB_TOOL_TITLES.has(title),
         log: () => log(`${peer}: ACP runtime diagnostic: details withheld`),
         onUsageDiagnostic: (observation, sessionId) => {
           if (observation.source !== "usage_update" || observation.shape !== "context-used") return;
@@ -3755,7 +3773,7 @@ export async function startDaemon(opts: DaemonOptions) {
         mcpServers,
         preamble: sessionRoleContract(peer),
       } } });
-      if (!isAcpPeer(owner)) throw new Error("ACP factory did not return its native transport");
+      if (!isAcpPeer(owner) || owner.id !== peer) throw new Error("ACP factory did not return its bound native transport");
       recoveryTaskPreface(peer); await ensurePreface(peer);
       try { await owner.start(); await reconcileNativeStart(peer, owner); }
       catch (error) {
@@ -4398,12 +4416,12 @@ export async function startDaemon(opts: DaemonOptions) {
   function roleHolders(candidate: HubConfig): { planners: string[]; conductors: string[] } {
     // A valid transfer may briefly have two conductors while its leaves are planned. Validate the final map later.
     const policy = Object.fromEntries(Object.entries(candidate.roles).map(([peer, roles]) => [peer, roles.filter(role => role !== "conductor")]));
-    const settled = resolveSettledRoles(policy, candidate.planner, peer => rosterAllows(candidate.roster, peer, candidate.pi.enabled, declarations, adapterCatalog));
+    const settled = resolveSettledRoles(policy, candidate.planner, peer => projectRosterAllows(candidate.roster, peer, candidate.pi.enabled));
     return { planners: settled.planners, conductors: Object.keys(candidate.roles).filter(peer => candidate.roles[peer]!.includes("conductor")).sort() };
   }
   function prepareConfiguration(sources: ConfigSources, authority: SettingAuthority, scope?: string, confirmed: readonly string[] = []) {
-    const fileConfig = loadConfig(opts.cwd, sources.layers, sources.routing.retired ?? []);
-    validateEffectiveConfig(fileConfig);
+    const fileConfig = loadConfig(opts.cwd, sources.layers, sources.routing.retired ?? [], externalDefinitions);
+    validateEffectiveConfig(fileConfig, adapterCatalog);
     const candidate = structuredClone(desiredConfig), routing = structuredClone(desiredRouting);
     const accepted: string[] = [], rejected: { key: string; reason: string }[] = [], guarded: string[] = [];
     const previews: { key: string; before: string; after: string; effect?: string }[] = [];
@@ -4500,7 +4518,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const running = structuredClone({ ...config, roles: policyRoles });
     for (const change of changes) if (change.applies !== "restart") putConfig(running, change.key, change.after);
     running.retired = fileConfig.retired;
-    validateEffectiveConfig(running);
+    validateEffectiveConfig(running, adapterCatalog);
     conductorPeer(running.roles);
     for (const peer of Object.keys(running.catalog_roles ?? {})) selectedRoles(peer, running.roles, { ...resolvedProfile.catalog_roles, ...catalogAssignments(running.catalog_roles) }, catalog);
     const problem = running.mlx.enabled === false ? mlxPinProblem(routing, sources.texts["routing.toml"] !== null) : undefined;
@@ -4530,7 +4548,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const texts = configSourceTexts(opts.cwd), next = configSourceTexts(scratch);
     texts["config.json"] = next["config.json"];
     texts["config.local.json"] = next["config.local.json"];
-    const prepared = prepareConfiguration(parseConfigSources(texts, undefined, opts.cwd), authority, scope);
+    const prepared = prepareConfiguration(parseConfigSources(texts, undefined, opts.cwd, externalAdapters), authority, scope);
     const refusal = prepared.rejected.find(item => item.key === scope);
     if (refusal) throw new Error(`${refusal.key}: ${refusal.reason}`);
     return prepared.fileConfig;
@@ -4538,7 +4556,7 @@ export async function startDaemon(opts: DaemonOptions) {
   function routingWriteCheck(authority: SettingAuthority, overlay: import("./routing.ts").RoutingOverlay | undefined, scope?: string): void {
     const texts = configSourceTexts(opts.cwd);
     texts["routing.local.toml"] = overlay === undefined ? null : overlayToml(overlay);
-    const prepared = prepareConfiguration(parseConfigSources(texts, undefined, opts.cwd), authority, scope);
+    const prepared = prepareConfiguration(parseConfigSources(texts, undefined, opts.cwd, externalAdapters), authority, scope);
     const refusal = prepared.rejected.find(item => item.key === scope);
     if (refusal) throw new Error(`${refusal.key}: ${refusal.reason}`);
   }
@@ -4555,7 +4573,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const texts = configSourceTexts(opts.cwd);
       fingerprint = configFingerprint(texts);
       if (confirm !== undefined && (typeof confirm !== "string" || authority !== "terminal" || scope || !reloadConfirmation || reloadConfirmation.token !== confirm || reloadConfirmation.fingerprint !== fingerprint || reloadConfirmation.revision !== configRevision)) return { ok: false, error: "configuration confirmation is stale or changed; run ahub settings reload again" };
-      const sources = parseConfigSources(texts, undefined, opts.cwd);
+      const sources = parseConfigSources(texts, undefined, opts.cwd, externalAdapters);
       const prepared = prepareConfiguration(sources, authority, scope, confirm === undefined ? [] : reloadConfirmation!.keys);
       if (confirm !== undefined && prepared.rejected.some(item => reloadConfirmation!.keys.includes(item.key))) return { ok: false, error: "configuration trust changed; run ahub settings reload again" };
       if (scope && prepared.rejected.some(item => item.key === scope)) return { ok: false, error: prepared.rejected.find(item => item.key === scope)!.reason };
@@ -4622,7 +4640,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const stamp = CONFIG_FILES.map((name) => { try { const s = statSync(join(opts.cwd, ".agenthub", name)); return `${s.mtimeMs}:${s.size}`; } catch { return "-"; } }).join("|");
     if (storedConfigCache?.stamp !== stamp) {
       let loaded: HubConfig | undefined;
-      try { loaded = loadConfig(opts.cwd); } catch { /* the rows say that the files do not load */ }
+      try { loaded = loadConfig(opts.cwd, undefined, undefined, externalDefinitions); } catch { /* the rows say that the files do not load */ }
       storedConfigCache = { stamp, config: loaded };
     }
     return storedConfigCache.config;
@@ -4645,7 +4663,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const rows = settingRows({
       instances: declarations, adapterCatalog, cwd: opts.cwd, routing: activeRouting(), ...(routingProblem ? { routingProblem } : {}), ...(stored?.ignored ? { ignored: stored.ignored } : {}),
       running: (path) => path[0] === "roster" ? onRoster(path[1]!) : path[0] === "tasks" && path[1] === "wip_limits" ? tasks.wipLimit(path[2]!) : valueAt(config, path),
-      next: stored ? (path) => path[0] === "roster" ? rosterAllows(stored.roster, path[1]!, stored.pi.enabled, declarations, adapterCatalog) : path[0] === "tasks" && path[1] === "wip_limits" ? (Object.hasOwn(stored.tasks.wip_limits ?? {}, path[2]!) ? stored.tasks.wip_limits![path[2]!] : 1) : valueAt(stored, path) : undefined,
+      next: stored ? (path) => path[0] === "roster" ? projectRosterAllows(stored.roster, path[1]!, stored.pi.enabled) : path[0] === "tasks" && path[1] === "wip_limits" ? (Object.hasOwn(stored.tasks.wip_limits ?? {}, path[2]!) ? stored.tasks.wip_limits![path[2]!] : 1) : valueAt(stored, path) : undefined,
       roles: roleState,
       mode: (peer) => {
         const owner = bus.peers.get(peer), attached = !!owner && owner.state !== "offline";
@@ -4701,7 +4719,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const terminalNotice = retainedTerminalNotice(peer);
     let handoff: Awaited<ReturnType<Tasks["reassignForRoster"]>> = [];
     try {
-      const next = rosterCandidate(def, value, undo), before = onRoster(peer), after = rosterAllows(next, peer, config.pi.enabled, declarations, adapterCatalog);
+      const next = rosterCandidate(def, value, undo), before = onRoster(peer), after = projectRosterAllows(next, peer, config.pi.enabled);
       if (!after) {
         const refusal = rosterRemovalRefusal(peer, now);
         if (refusal) return { ok: false, error: refusal };
@@ -4850,7 +4868,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const { def, value } = input;
     if (def.group === "Roster") {
       try {
-        const peer = def.path[1]!, next = rosterCandidate(def, value), on = rosterAllows(next, peer, config.pi.enabled, declarations, adapterCatalog);
+        const peer = def.path[1]!, next = rosterCandidate(def, value), on = projectRosterAllows(next, peer, config.pi.enabled);
         return { ok: true, lines: [`${peer}: ${onRoster(peer) ? "on" : "off"} -> ${on ? "on" : "off"} roster`, ...(on ? ["Admission, starts and new work become available; any existing pause or held delivery remains."] : [`${bus.queued(peer)} queued messages are retained until the peer returns.`, "Owned runtimes stop; native terminal sessions detach. Open tasks are offered to another eligible peer.", `For a busy peer, use ahub roster remove ${peer} --now explicitly; this stops its owned runtime or detaches its native session during the active turn.`, ...(retainedTerminalNotice(peer) ? [retainedTerminalNotice(peer)!] : []), ...tasks.rosterPreview(peer).map(move => sanitize(`task ${move.title}: ${move.to ? `${move.role} offered to ${move.to} if removed now` : `${move.role} stays with ${peer}; no eligible replacement`}`)), ...(rosterRemovalRefusal(peer, false) ? [rosterRemovalRefusal(peer, false)!] : [])])], ...(on ? {} : { confirm: peer }) };
       } catch (error) { return { ok: false, error: sanitize((error as Error).message) }; }
     }
@@ -5009,6 +5027,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const incompatibleRecoveryTarget = () => {
       const cancelled = incompatibleCancellationTarget();
       if (cancelled) return cancelled;
+      if (externalIds.size && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("external_adapter_modules"))) return "target lacks external_adapter_modules; verified external definitions cannot be preserved by that daemon";
       if (configuredIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("configured_acp"))) return "target lacks configured_acp; project adapter definitions cannot be preserved by that daemon";
       if (extraIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("peer_instances"))) return "target lacks peer_instances; declared instance identities cannot be restored by that daemon";
       if (board.releases().some(release => release.train && ["active", "frozen"].includes(release.state)) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("release_trains"))) return "target lacks release_trains; active or frozen train safeguards cannot be preserved";

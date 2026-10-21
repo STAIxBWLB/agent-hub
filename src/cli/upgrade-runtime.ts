@@ -145,6 +145,7 @@ export async function endPlannedPeer(planned: PlannedProject, peer: RecoveryPeer
 /** Declared identities cannot be reinterpreted against an older running source's unbound peer rows. */
 export function instanceRecoverySourceRefusal(projectRoot: string, features: unknown, observedPeers?: unknown): string | undefined {
   const bound = readInstanceConfig(projectRoot);
+  if (bound.adapter_modules?.length && !(Array.isArray(features) && features.includes("external_adapter_modules"))) return "source lacks external_adapter_modules; restart with a supporting source before recovering module peers";
   const configured = Object.keys(bound.adapters ?? {});
   const configuredIds = [...configured, ...Object.entries(bound.instances ?? {}).filter(([, entry]) => configured.includes(entry.kind)).map(([id]) => id)];
   if (configuredIds.length && !(Array.isArray(features) && features.every(feature => typeof feature === "string") && features.includes("configured_acp"))) {
@@ -626,6 +627,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         return { ...target, ...(op.targetFeatures === undefined ? {} : { targetFeatures: [...op.targetFeatures] }) };
       }
       if (cached && op.targetFeatures !== undefined) {
+        if (!op.targetFeatures.includes("external_adapter_modules") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && (readInstanceConfig(planned.project.root).adapter_modules?.length ?? 0) > 0)) throw new FinalRefusal("target lacks external_adapter_modules; module peers require a supporting target before recovery effects");
         if (!op.targetFeatures.includes("configured_acp") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).adapters ?? {}).length > 0)) throw new FinalRefusal("target lacks configured_acp; configured adapters require a supporting target before recovery effects");
         if (!op.targetFeatures.includes("peer_instances") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).instances ?? {}).length > 0)) throw new FinalRefusal("target lacks peer_instances; declared project instances require a supporting target before recovery effects");
         return { ...target, targetFeatures: [...op.targetFeatures] };
@@ -638,6 +640,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if (!metadata || typeof metadata !== "object" || !Number.isInteger(metadata.protocol)) throw new Error(`the staged target's control protocol could not be read (probe exit ${probe.code}); staged package retained, runtimes unchanged; resume again once it can run`);
       if (!Array.isArray(metadata.features) || !metadata.features.every((feature: unknown) => typeof feature === "string" && feature.length > 0)) throw new Error("the staged target features could not be read; staged package retained, runtimes unchanged");
       const targetFeatures: readonly string[] = [...metadata.features];
+      if (!targetFeatures.includes("external_adapter_modules") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && (readInstanceConfig(planned.project.root).adapter_modules?.length ?? 0) > 0)) throw new FinalRefusal("target lacks external_adapter_modules; module peers require a supporting target before recovery effects");
       if (!targetFeatures.includes("configured_acp") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).adapters ?? {}).length > 0)) throw new FinalRefusal("target lacks configured_acp; configured adapters require a supporting target before recovery effects");
       if (metadata.protocol !== PROTOCOL) throw new FinalRefusal("target protocol requires a newer coordinator; staged package retained, runtimes unchanged");
       if (!targetFeatures.includes("peer_instances") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).instances ?? {}).length > 0)) throw new FinalRefusal("target lacks peer_instances; declared project instances require a supporting target before recovery effects");
