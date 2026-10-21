@@ -548,9 +548,9 @@ export class Tasks {
       const same = (finding: ReviewFinding) => finding.id === item.id && finding.pass === item.pass;
       const holders = rows.filter(row => {
         if (this.isPii(row)) return false;
-        const last = row.history.findLast(entry => entry.reviewFindings?.items.some(same));
-        const finding = last?.reviewFindings?.items.find(same);
-        return !last?.withheld && finding && finding.disposition !== "false_positive" && this.findingTextAllowed(row, [finding]);
+        const last = row.history.findLast(entry => entry.reviewFindings?.items.some(value => value.id === item.id));
+        const finding = last?.reviewFindings?.items.find(value => value.id === item.id);
+        return !last?.withheld && finding && same(finding) && finding.disposition !== "false_positive" && this.findingTextAllowed(row, [finding]);
       });
       if (new Set(holders.map(row => row.id)).size < 2) continue;
       const key = `Review finding key: ${item.pass}:${item.id}`;
@@ -3167,7 +3167,7 @@ export class Tasks {
     const spec = reviewOnly && specRepo && specIssue ? `Spec issue: ${specRepo}#${specIssue}\n` : "";
     const findings = reviewOnly ? task.history.filter(h => h.event === "changes_requested" && h.note).map(h => `- ${h.by}: ${this.screen(task, h.note!, "review note", reviewer, h.withheld)}`) : [];
     const carried = findingsForHead(this.reviewFindingSets(task), this.findingHead(task)).filter(item => item.severity === "important" && item.disposition === "open");
-    const visible = this.isPii(task) ? [] : carried.filter(item => this.findingTextAllowed(task, [item]) && !task.history.some(entry => entry.withheld && entry.reviewFindings?.items.some(value => value.id === item.id && value.pass === item.pass)));
+    const visible = this.isPii(task) ? [] : carried.filter(item => this.findingTextAllowed(task, [item]) && !task.history.some(entry => entry.withheld && entry.reviewFindings?.items.some(value => value.id === item.id)));
     const carriedText = carried.length ? `Open Important findings carried until explicitly dispositioned: ${carried.length}\n${visible.map(({ id, pass, severity, path }) => JSON.stringify({ id, pass, severity, ...(path ? { path } : {}) })).join("\n")}${visible.length < carried.length ? "\nSome finding details withheld." : ""}\n` : "";
     const guidance = this.roleGuidance(task, reviewer, true);
     let projection = "";

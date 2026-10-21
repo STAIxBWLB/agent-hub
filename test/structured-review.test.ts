@@ -245,3 +245,13 @@ test("S3 R1 private carried findings reach the review request as counts only", a
     expect(requests[0]?.body).not.toContain("private/record.txt");
   } finally { untap(); }
 });
+
+
+test("S3 R1 a reclassified false positive is not evidence for a recurring amendment", async () => {
+  const r = rig(), first = r.create();
+  await submit(r.tasks, first.id, [finding("reclassified", { pass: "bugs" })]);
+  r.reopen(first.id);
+  await submit(r.tasks, first.id, [finding("reclassified", { pass: "security", disposition: "false_positive" })]);
+  await submit(r.tasks, r.create().id, [finding("reclassified", { pass: "bugs" })]);
+  expect(r.board.list("backlog")).toHaveLength(0);
+});

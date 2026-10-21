@@ -46,10 +46,10 @@ test("finding data inspection never invokes accessors/proxies or accepts inherit
   expect(executed).toBe(false);
 });
 
-test("same-head findings retain omitted IDs and optional fields while passes stay independent", async () => {
+test("same-head findings retain omitted IDs and optional fields while unrelated IDs stay independent", async () => {
   const { findingsForHead, findingTally } = await findings();
   const open = { id: "one", pass: "bugs" as const, severity: "important" as const, disposition: "open" as const, path: "src/original.ts" };
-  const sets = [{ head: "A", items: [open] }, { head: "A", items: [] }, { head: "B", items: [{ ...open, pass: "security" as const, disposition: "accepted" as const, rationale: "other pass" }] }];
+  const sets = [{ head: "A", items: [open] }, { head: "A", items: [] }, { head: "B", items: [{ ...open, id: "other", pass: "security" as const, disposition: "accepted" as const, rationale: "other finding" }] }];
   expect(findingsForHead(sets, "A")).toEqual([open]);
   expect(findingsForHead(sets)).toEqual([open]);
   const unbound = [{ items: [open] }, { items: [] }];
@@ -101,15 +101,14 @@ for (const disposition of ["fixed", "false_positive", "accepted"] as const) test
   expect(findingTally(findingsForHead(reopened, "C")).openImportant).toBe(1);
 });
 
-test("R1 finding identity is pass plus ID across reports, while parser keeps per-report raw ID uniqueness", async () => {
+test("R1 per-task identity stays ID-only across pass reclassification while raw report IDs remain unique", async () => {
   const { findingsForHead, findingTally, parseReviewFindings } = await findings();
   const bugs = { id: "same", pass: "bugs" as const, severity: "important" as const, disposition: "open" as const };
   const security = { ...bugs, pass: "security" as const };
   const sets = [{ head: "A", items: [bugs] }, { head: "B", items: [security] }];
-  expect(findingTally(findingsForHead(sets, "B")).openImportant).toBe(2);
-  const resolvedOtherPass = [...sets, { head: "B", items: [{ ...security, disposition: "fixed" as const }] }];
-  expect(findingTally(findingsForHead(resolvedOtherPass, "B")).openImportant).toBe(1);
-  expect(findingsForHead(resolvedOtherPass, "B").some(item => item.pass === "bugs" && item.disposition === "open")).toBe(true);
+  expect(findingTally(findingsForHead(sets, "B")).openImportant).toBe(1);
+  const resolved = [...sets, { head: "B", items: [{ ...security, disposition: "fixed" as const }] }];
+  for (const head of ["A", "B", "C", undefined]) expect(findingTally(findingsForHead(resolved, head)).openImportant).toBe(0);
   expect(() => parseReviewFindings([bugs, security], options)).toThrow("duplicate");
 });
 

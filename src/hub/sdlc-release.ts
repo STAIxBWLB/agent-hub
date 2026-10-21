@@ -4,7 +4,12 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { childEnv, stopOwnedProcess } from "./child-process.ts";
 import { hubGitSync } from "./git.ts";
-import { sdlcGh, type SdlcGh } from "./sdlc.ts";
+import type { SdlcGh } from "./sdlc.ts";
+// Standalone document evidence does not need lifecycle/review code; load the default remote reader only when used.
+const sdlcGh: SdlcGh = async (...args) => {
+  try { return await (await import("./sdlc.ts")).sdlcGh(...args); }
+  catch { return { code: 1, stdout: "" }; }
+};
 export interface DocEvidence { schemaVersion: 1; head?: string; version?: string; documents: { path?: string; state: "fresh" | "stale" | "nonancestor" | "unknown"; verifiedAgainst?: string; commits?: number; dirty?: boolean }[]; errors: number; fresh: boolean; }
 export interface ReleaseReadiness { repo: string; head?: string; version?: string; tag?: string; tagCommit?: string; commits: string[]; mergedPrs: { pr: number; commit: string }[]; documents?: DocEvidence; liveIssues: { id: number; state: "open" | "closed" | "unknown" }[]; blockers: string[]; sourceReady: boolean; native: "unverified"; ready: false; }
 export type ReleaseGit = (args: string[]) => { code: number; stdout: string };

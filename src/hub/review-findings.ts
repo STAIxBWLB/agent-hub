@@ -66,14 +66,14 @@ export function findingHead(receipt?: { head?: string; reviewedHead?: string; lo
 
 /**
  * Nits belong only to their head bucket, including the explicit undefined bucket.
- * Open Important is an obligation across heads until an explicit disposition resolves its pass+ID globally.
+ * Open Important is an obligation across heads until an explicit disposition resolves its ID globally.
  */
 export function findingsForHead(sets: readonly ReviewFindingSet[], head?: string): ReviewFinding[] {
   interface Entry { item: ReviewFinding; order: number }
   const current = new Map<string, Entry>(), important = new Map<string, Entry>();
   let order = 0;
   for (const set of sets) for (const item of set.items) {
-    const key = item.pass + ":" + item.id, position = order++;
+    const key = item.id, position = order++;
     if (set.head === head) current.set(key, { item: { ...current.get(key)?.item, ...item }, order: position });
     const prior = important.get(key);
     if (item.severity === "important") {

@@ -19298,7 +19298,6 @@ init_envelope();
 // src/hub/sdlc-release.ts
 init_child_process();
 init_git();
-init_sdlc();
 
 // src/hub/tasks.ts
 init_spec_read();
