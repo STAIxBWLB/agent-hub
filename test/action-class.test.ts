@@ -1,0 +1,136 @@
+import { expect, test } from "bun:test";
+import { ACTION_CLASSES, classifyAction, type ActionClass } from "../src/hub/action-class.ts";
+
+const root = "/work/project";
+const cases: Array<[string, ActionClass[]]> = [
+  ["git push origin main", ["publish"]],
+  ["'/usr/bin/git' -C '/work/my project' push --tags", ["publish"]],
+  ["git --no-pager push origin v1", ["publish"]],
+  ["git tag v1", []],
+  ["git status", []],
+  ["printf 'git push origin main'", []],
+  ["npm publish --access public", ["publish"]],
+  ["cargo publish", ["publish"]],
+  ["gh release create v1 --notes 'a release'", ["publish"]],
+  ["gh release view v1", []],
+  ["gh release list", []],
+  ["git reset --hard HEAD~1", ["destroy"]],
+  ["git reset --soft HEAD~1", []],
+  ["git clean -fdx", ["destroy"]],
+  ["git clean -f -d -x", ["destroy"]],
+  ["git clean -ndx", []],
+  ["git branch -D feature", ["destroy"]],
+  ["git branch --delete --force feature", ["destroy"]],
+  ["git branch -d feature", []],
+  ["rm -rf ../archive", ["destroy"]],
+  ["rm --recursive -- '/work/private records'", ["destroy"]],
+  ["rm -r /work/project-other", ["destroy"]],
+  ["rm -rf ./cache", []],
+  ["rm -rf /work/project/cache", []],
+  ["rm ../single-file", []],
+  ["cp -f input ../output", ["destroy"]],
+  ["mv --force 'input file' /tmp/output", ["destroy"]],
+  ["cp -f input ./output", []],
+  ["cp input ../output", []],
+  ["printf 'replacement' > ../output", ["destroy"]],
+  ["> ../output", ["destroy"]],
+  ["cp -f -t ../output input", ["destroy"]],
+  ["printf 'replacement' > ./output", []],
+  ["printf 'append' >> ../output", []],
+  ["cd /tmp && rm -rf target", ["destroy"]],
+  ["cd ../archive; cp -f input output", ["destroy"]],
+  ["cd ./cache && rm -rf target", []],
+  ["cd /tmp; cd /work/project; rm -rf target", ["destroy"]],
+  ["printf 'literal > ../output'", []],
+  ["curl -X POST https://example.test", ["external-write"]],
+  ["curl --request=PATCH https://example.test", ["external-write"]],
+  ["curl -XDELETE https://example.test", ["external-write"]],
+  ["curl -d 'git push; rm -rf /tmp/data' https://example.test", ["external-write"]],
+  ["curl --json '{}' https://example.test", ["external-write"]],
+  ["curl --data-binary @file https://example.test", ["external-write"]],
+  ["curl -T input https://example.test", ["external-write"]],
+  ["curl https://example.test", []],
+  ["curl --head https://example.test", []],
+  ["curl -X GET https://example.test", []],
+  ["curl --get -d q=term https://example.test", []],
+  ["http POST https://example.test key=value", ["external-write"]],
+  ["http GET https://example.test", []],
+  ["gh api repos/org/repo", []],
+  ["gh api -X GET repos/org/repo -f q=value", []],
+  ["gh api repos/org/repo/issues -f title=hello", ["external-write"]],
+  ["gh api --method DELETE repos/org/repo", ["external-write"]],
+  ["gh issue comment 636 --body 'read me'", ["external-write"]],
+  ["gh pr review 2 --approve", ["external-write"]],
+  ["gh issue view 636", []],
+  ["mail -s 'hello' person@example.test", ["external-write"]],
+  ["sendmail person@example.test", ["external-write"]],
+  ["slack chat.postMessage --channel test --text hello", ["external-write"]],
+  ["telegram send --text hello", ["external-write"]],
+  ["slack history", []],
+  ["npm install -g tool", ["install"]],
+  ["npm install --global tool", ["install"]],
+  ["npm --global install tool", ["install"]],
+  ["pnpm add -g tool", ["install"]],
+  ["yarn global add tool", ["install"]],
+  ["cargo install tool", ["install"]],
+  ["brew install tool", ["install"]],
+  ["pipx install tool", ["install"]],
+  ["pip install --user tool", ["install"]],
+  ["pip install package", []],
+  ["npm install package", []],
+  ["bun install", []],
+  ["npm test && git push origin main; curl -X POST https://example.test | cat", ["publish", "external-write"]],
+  ["git push && rm -rf ../old && npm install -g tool && gh issue comment 1 --body hi", [...ACTION_CLASSES]],
+  ["printf 'git push && npm install -g tool'; git status", []],
+  ["env TOKEN=placeholder git push", ["publish"]],
+  ["TOKEN=placeholder git push", ["publish"]],
+  ["command git push", ["publish"]],
+  ["bash -lc 'git push && curl -X POST https://example.test'", ["publish", "external-write"]],
+  ["git status # git push\nnpm publish", ["publish"]],
+  ["git push && git push", ["publish"]],
+  ["printf '한국어'; git push", ["publish"]],
+  ["git push 'unterminated", []],
+  ["git push $(choose_remote)", []],
+  ["git push `choose_remote`", []],
+  ["git push $REMOTE", []],
+  ["git push >", []],
+  ["cat << EOF\ngit push\nEOF", []],
+];
+
+for (const [command, expected] of cases) {
+  test(`#636 literal action classes: ${command}`, () => {
+    expect(classifyAction("Bash", { command }, root)).toEqual(expected);
+  });
+}
+
+test("#636 shell argv and native string arguments retain literal quoting", () => {
+  expect(classifyAction("exec_command", { cmd: ["git", "push", "origin", "main"] }, root)).toEqual(["publish"]);
+  expect(classifyAction("shell", { command: ["printf", "git push"] }, root)).toEqual([]);
+  expect(classifyAction("bash", JSON.stringify({ command: "npm publish" }), root)).toEqual(["publish"]);
+  expect(classifyAction("run_shell_command", "git push", root)).toEqual(["publish"]);
+});
+
+test("#636 direct HTTP tools classify methods while unknown tools remain native", () => {
+  expect(classifyAction("http_request", { method: "POST", url: "https://example.test" }, root)).toEqual(["external-write"]);
+  expect(classifyAction("fetch", { method: "HEAD" }, root)).toEqual([]);
+  expect(classifyAction("fetch", { url: "https://example.test" }, root)).toEqual([]);
+  expect(classifyAction("unknown", { command: "git push" }, root)).toEqual([]);
+  expect(classifyAction("Read", { command: "git push" }, root)).toEqual([]);
+});
+
+test("#636 malformed and bounded inputs never become permission decisions", () => {
+  for (const args of [null, 2, [], { cmd: ["git", 2] }, { command: "x".repeat(16_385) }, { command: "git push\0" }, { command: "git push;".repeat(65) }]) {
+    expect(classifyAction("bash", args, root)).toEqual([]);
+  }
+  expect(classifyAction("bash", { command: "rm -rf ../outside" }, "relative-root")).toEqual([]);
+});
+
+
+test("#636 literal shell cwd/workdir and direct git argv use their actual shape", () => {
+  expect(classifyAction("bash", { command: "rm -rf target", cwd: "/tmp" }, root)).toEqual(["destroy"]);
+  expect(classifyAction("exec_command", { cmd: "cp -f input output", workdir: "../archive" }, root)).toEqual(["destroy"]);
+  expect(classifyAction("bash", { command: "rm -rf target", cwd: "/work/project/cache" }, root)).toEqual([]);
+  expect(classifyAction("git", { args: ["push", "origin", "main"] }, root)).toEqual(["publish"]);
+  expect(classifyAction("git", { args: ["reset", "--hard"] }, root)).toEqual(["destroy"]);
+  expect(classifyAction("git", { args: ["status"] }, root)).toEqual([]);
+});

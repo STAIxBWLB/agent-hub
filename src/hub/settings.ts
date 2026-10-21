@@ -1,3 +1,4 @@
+import { ACTION_CLASSES } from "./action-class.ts";
 import { definitionOf, type KindMap, type ProjectAdapterCatalog, ADAPTERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS } from "../adapters/registry.ts";
 import { createHash } from "node:crypto";
 import { types } from "node:util";
@@ -59,6 +60,8 @@ export const SETTINGS: readonly SettingDef[] = [
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `catalog_roles.${peer}`, group: "Roles", label: `${peer}: catalog guidance`, type: "roles", store: "config", applies: "next use", risk: "safe", path: ["catalog_roles", peer] })),
   { key: "scoped_grants.protect_instructions", group: "Permissions", label: "Ask before writing instruction files", type: "boolean", store: "config", applies: "live", risk: "raises", floor: true, path: ["protect_instruction_files"] },
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `roster.${peer}`, group: "Roster", label: `${peer}: participates`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", peer] })),
+  { key: "action_policy.enabled", group: "Permissions", label: "Always-ask action policy", type: "boolean", store: "config", applies: "live", risk: "raises", floor: true, path: ["action_policy", "enabled"] },
+  ...ACTION_CLASSES.map((kind): SettingDef => ({ key: `action_policy.budgets.${kind}`, group: "Permissions", label: `${kind}: approved session budget`, type: "integer", min: 0, max: 1000, store: "config", applies: "live", risk: "raises", floor: 0, path: ["action_policy", "budgets", kind] })),
   ...SETTING_PEERS.filter(peer => !definitionOf(peer)?.permission.unmanaged).map((peer): SettingDef => ({ key: `permission.${peer}`, group: "Permissions", label: `${peer}: mode now`, type: "enum", values: PERMISSION_MODES, store: "runtime", applies: "live", risk: "raises", floor: "ask", path: [peer] })),
   ...SETTING_PEERS.filter(peer => !definitionOf(peer)?.permission.unmanaged).map((peer): SettingDef => ({ key: `permission_modes.${peer}`, group: "Permissions", label: `${peer}: mode at next peer start`, type: "enum", values: PERMISSION_MODES, store: "config", applies: "next use", risk: "raises", floor: "ask", path: ["permission_modes", peer] })),
   ...START_MODE_PEERS.map((peer): SettingDef => ({ key: `peers.${peer}.start_mode`, group: "Start", label: `${peer}: start mode (tui unless set)`, type: "enum", values: START_MODES, store: "config", applies: "next use", risk: "raises", floor: "tui", path: ["peers", peer, "start_mode"] })),

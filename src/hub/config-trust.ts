@@ -29,7 +29,7 @@ export const MACHINE_LOCAL = [
   "terminal.open", // the command a hub-made TUI start runs to open a terminal (#269)
 ] as const;
 /** Legacy exported field list stays compatible; new policies use the complete list below. */
-export const ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"] as const;
+export const ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"] as const;
 
 /** A known repository, including an unreadable marker, must never be mistaken for a plain directory. */
 export function configRepositoryPresent(cwd: string): boolean {
@@ -95,14 +95,17 @@ const drop = (file: Record<string, unknown>, path: string) => {
  * once resolved to the project root). A committed copy of the template sets them to defaults and asks git nothing.
  */
 export function stripUntrusted(file: Record<string, unknown>, defaults: object, cwd: string, name: string): string | undefined {
+  const localOnly = name !== "config.local.json" && file.action_policy !== undefined;
+  if (localOnly) delete file.action_policy;
+  const originNotice = localOnly ? "action_policy ignored: only .agenthub/config.local.json may set it" : undefined;
   for (const p of ALL_MACHINE_LOCAL) if (valueAt(file, p) !== undefined && !chooses(valueAt(file, p))) drop(file, p);
   const set = ALL_MACHINE_LOCAL.filter((p) => {
     const v = valueAt(file, p);
     return v !== undefined && JSON.stringify(v) !== JSON.stringify(valueAt(defaults, p));
   });
-  if (!set.length) return undefined;
+  if (!set.length) return originNotice;
   const why = configRefusal(cwd, name);
-  if (!why) return undefined;
+  if (!why) return originNotice;
   for (const p of set) drop(file, p);
-  return `${set.join(", ")} in .agenthub/${name} ignored: ${why}`;
+  return [originNotice, `${set.join(", ")} in .agenthub/${name} ignored: ${why}`].filter(Boolean).join("; ");
 }

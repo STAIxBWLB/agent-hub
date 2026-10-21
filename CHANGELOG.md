@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- Add the #636 action-policy foundation: a pure classifier, machine-local always-ask configuration, session-bound approval budgets and explicit per-peer enforcement status. Adapter pre-tool gates remain pending; status reports that limit instead of claiming protection.
+
 ## 0.12.45
 
 The dashboard is redesigned (#469), a machine-local, content-pinned adapter module can add an ACP agent (#451 A4), the peer lists and the CLI surface come from the adapter definitions (#625), and reviews gain structured findings with an Important gate (#481 S3) and plan conformance with a person-only departure acceptance (#481 S2).

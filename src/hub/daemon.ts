@@ -1,3 +1,4 @@
+import { ActionBudgets, actionPolicyConfig, type ActionPolicyConfig } from "./action-policy.ts";
 import { loadExternalAdapterDefinitions, readAdapterModuleDeclarations, type AdapterModuleDeclaration } from "../adapters/external-modules.ts";
 import { WsPeer, isWsPeer } from "../adapters/channel-peer.ts";
 import { ownerToolEffect, canonicalWriteUnknown } from "./no-writes.ts";
@@ -145,6 +146,7 @@ export interface HubConfig {
   jcode_cmd: string[];
   jcode_home: string;
   jcode_provider_profile: string;
+  action_policy: ActionPolicyConfig;
   permission_modes: Record<string, PermissionMode>;
   protect_instruction_files: boolean;
   /** Loader-owned provenance of requested defaults, before machine-local filtering. */
@@ -218,6 +220,7 @@ const nativeDefaults = nativeConfigurationDefaults({ home: homedir(), env: proce
 export const DEFAULT_CONFIG: HubConfig = {
   watchdog_ms: DEFAULT_WATCHDOG_MS,
   ...nativeDefaults.commands,
+  action_policy: actionPolicyConfig(),
   permission_modes: {},
   protect_instruction_files: false,
   ...nativeDefaults.proxy,
@@ -263,7 +266,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = INSTANCE_CONFIG_FILES;
 export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<string, any> }
-const CONFIG_BLOCKS = ["memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "pet"];
+const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "pet"];
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
 export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]): { roles: Record<string, string[]>; conductor: HubConfig["conductor"]; planner?: string; notices?: string[] } {
@@ -358,6 +361,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     if (file.jcode_home !== undefined && (typeof file.jcode_home !== "string" || !isAbsolute(file.jcode_home))) throw new Error("jcode_home must be an absolute path");
     for (const key of ["jcode_home", "jcode_provider_profile"]) if (file[key] !== undefined && typeof file[key] !== "string") throw new Error(`${key} must be a string`);
     if (file.qwen_cmd !== undefined && (!Array.isArray(file.qwen_cmd) || !file.qwen_cmd.length || file.qwen_cmd.some((word: unknown) => typeof word !== "string" || !word))) throw new Error("qwen_cmd must be a nonempty executable argv");
+    actionPolicyConfig(file.action_policy);
     instructionProtection(file.protect_instruction_files);
     permissionDefaults(file.permission_modes, instances, adapterCatalog); // malformed declarations fail even when trust would drop them
     peerStartConfig(file.peers, instances, adapterCatalog);
@@ -421,6 +425,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     ...(file.text_projection !== undefined ? { text_projection: projectionConfig(file.text_projection) } : {}),
     ...(file.pii !== undefined ? { pii: { paths: policyPaths(file.pii.paths, "pii.paths") } } : {}),
     ...(file.data !== undefined ? { data: { readonly: policyPaths(file.data.readonly, "data.readonly") } } : {}),
+    action_policy: actionPolicyConfig(file.action_policy),
     permission_modes: { ...instancePermissions, ...permissionDefaults(file.permission_modes, instances, adapterCatalog) },
     protect_instruction_files: instructionProtection(file.protect_instruction_files),
     permission_default_sources: appliedPermissionSources,
@@ -2496,6 +2501,7 @@ export async function startDaemon(opts: DaemonOptions) {
       else delete defaultSources[peer];
     }
   };
+  const actionBudgets = new ActionBudgets(() => config.action_policy, contextSession);
   const permissionMode = (peer: string): PermissionMode => permissionModes.get(peer) ?? "ask";
   const permissionModeSources = new Map(Object.entries(defaultSources).map(([peer, value]) => [peer, value.source]));
   const unattendedPeers = new Set<string>();
@@ -2788,7 +2794,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(isCodexPeer(p) && p.statusNotice ? { statusNotice: p.statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) && p.claiming ? { claiming: true } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
+      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), actionPolicy: actionBudgets.status(id, false), ...(isCodexPeer(p) && p.statusNotice ? { statusNotice: p.statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) && p.claiming ? { claiming: true } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
     ),
     taskWip: Object.fromEntries(peerIds.map(id => [id, { wip: tasks.wip(id), wipLimit: tasks.wipLimit(id) }])),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
@@ -4603,6 +4609,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (change.applies === "restart" || change.key === "roles" || change.key.startsWith("roles.")) continue;
         putConfig(config, change.key, change.after);
       }
+      if (changes.some(change => change.key === "action_policy" || change.key.startsWith("action_policy."))) actionBudgets.policyChanged();
       if (rolesChanged) { policyRoles = structuredClone(prepared.running.roles); settlePlanner(); }
       for (const change of changes.filter(change => change.key === "permission_modes" || change.key.startsWith("permission_modes."))) {
         for (const peer of change.key === "permission_modes" ? SUPPORTED_PEERS : [change.key.split(".")[1]!]) changedPermissionDefaults.add(peer);

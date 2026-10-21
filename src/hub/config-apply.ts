@@ -1,3 +1,5 @@
+import { ACTION_CLASSES } from "./action-class.ts";
+import { actionPolicyConfig } from "./action-policy.ts";
 import { adapterModuleDeclarations } from "../adapters/external-modules.ts";
 import { externalMetadataDefinitions, type ExternalAdapterMetadata } from "../adapters/external-metadata.ts";
 import { reviewerPoolConfig } from "./reviewer-pool-config.ts";
@@ -49,6 +51,7 @@ export function authorizeConfigLeaf(input: ConfigAuthorizationInput): ConfigAuth
   const { key, before, after } = input;
   const result = (allowed: boolean, guarded: boolean, reason: string): ConfigAuthorizationDecision => ({ key, allowed, guarded, reason });
   if (same(before, after)) return result(true, false, "unchanged");
+  if ((key === "action_policy" || key.startsWith("action_policy.")) && input.tracked !== false) return result(false, true, "action policy requires an untracked machine-local source");
   const supplied = input.guard;
   const guard = supplied && (key === supplied.key || key === `${supplied.store === "routing" ? "routing." : ""}${supplied.path.join(".")}`) ? supplied : undefined;
   const machine = input.source === "config" && ALL_MACHINE_LOCAL.some(path => key === path || key.startsWith(`${path}.`));
@@ -135,6 +138,7 @@ const nativeValidators = { bool, text, strings, argv, number, words, block };
 const schema: Record<string, Check> = {
   ...Object.assign({}, ...ADAPTERS.map(adapter => adapter.configuration?.schema?.(nativeValidators) ?? {})),
   watchdog_ms: number(1, 2_147_483_647), kimi_cmd: argv, qwen_cmd: argv, jcode_cmd: argv, codex_bin: text, jcode_home: text, jcode_provider_profile: text,
+  action_policy: block({ enabled: bool, always_ask: (v, k) => { actionPolicyConfig({ always_ask: v }); }, budgets: map(number(0, 1000, true), ACTION_CLASSES) }),
   permission_modes: v => { permissionDefaults(v); }, protect_instruction_files: bool,
   adapter_modules: v => { adapterModuleDeclarations(v); },
   adapters: v => { createProjectAdapterCatalog(v); }, instances: v => { validateInstances(v, createProjectAdapterCatalog()); }, pet: validatePetConfig,
@@ -201,7 +205,7 @@ const restart: Record<string, string> = {
   profile: "Session tool schemas and profile contracts are bound at startup", profile_overrides: "Session tool schemas and profile contracts are bound at startup",
   text_projection: "Converter and cache ownership are bound at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", bench: "Benchmark execution environment is selected before work starts",
 };
-const live = new Set(["permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "research", "snapshots", "tasks.wip_limits", "tasks.escalate_after", "approvals.notify", "pet"]);
+const live = new Set(["action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "research", "snapshots", "tasks.wip_limits", "tasks.escalate_after", "approvals.notify", "pet"]);
 const nextMemory = new Set(["memory.inject_tokens", "memory.brief_items", "memory.suggest_edges"]);
 /** Closed top-level schema; leaf overrides retain the existing session/runtime boundaries. */
 export function configApply(key: string, scopes: readonly ConfigIdentityScope[] = []): ApplyRule {

@@ -1,0 +1,48 @@
+import { afterEach, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { DEFAULT_CONFIG, loadConfig } from "../src/hub/daemon.ts";
+import { hubGitSync } from "../src/hub/git.ts";
+import { ALL_MACHINE_LOCAL } from "../src/hub/config-trust.ts";
+import { authorizeConfigLeaf, configApply, validateRawConfig } from "../src/hub/config-apply.ts";
+import { SETTINGS, checkSettingValue } from "../src/hub/settings.ts";
+const cleanup: string[] = [];
+afterEach(() => { for (const dir of cleanup.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+function fixture() {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-action-config-")); cleanup.push(dir);
+  expect(hubGitSync(["init", "-q"], { cwd: dir, encoding: "utf8" }).status).toBe(0);
+  mkdirSync(join(dir, ".agenthub"));
+  return { dir, write: (name: string, value: unknown) => writeFileSync(join(dir, ".agenthub", name), JSON.stringify(value)),
+    track: (name: string) => expect(hubGitSync(["add", "-f", `.agenthub/${name}`], { cwd: dir, encoding: "utf8" }).status).toBe(0) };
+}
+
+test("action policy overrides are local-only even when shared config is untracked", () => {
+  const f = fixture(), chosen = { enabled: false, always_ask: [], budgets: { publish: 9 } };
+  f.write("config.json", { action_policy: chosen });
+  expect(loadConfig(f.dir).action_policy).toEqual(DEFAULT_CONFIG.action_policy);
+  expect(loadConfig(f.dir).ignored?.join(" ")).toContain("only .agenthub/config.local.json");
+  f.write("config.local.json", { action_policy: chosen });
+  expect(loadConfig(f.dir).action_policy).toMatchObject(chosen);
+  f.track("config.local.json");
+  expect(loadConfig(f.dir).action_policy).toEqual(DEFAULT_CONFIG.action_policy);
+  expect(loadConfig(f.dir).ignored?.join(" ")).toContain("committed to git");
+  expect(ALL_MACHINE_LOCAL).toContain("action_policy");
+});
+
+test("action settings validate all configured leaves and require person confirmation to weaken", () => {
+  const defs = SETTINGS.filter(def => def.key.startsWith("action_policy."));
+  expect(defs).toHaveLength(5);
+  for (const def of defs) {
+    expect(def.store).toBe("config"); expect(configApply(def.key).applies).toBe("live");
+    expect(() => checkSettingValue(def, def.type === "boolean" ? "no" : -1)).toThrow();
+    const guard = { ...def };
+    const before = def.type === "boolean" ? true : 1, after = def.type === "boolean" ? false : 2;
+    expect(authorizeConfigLeaf({ key: def.key, before, after, source: "config", tracked: false, authority: "ordinary", guard }).allowed).toBe(false);
+    expect(authorizeConfigLeaf({ key: def.key, before, after, source: "config", tracked: false, authority: "settings", confirmed: true, guard }).allowed).toBe(true);
+    expect(authorizeConfigLeaf({ key: def.key, before, after: def.floor, source: "config", tracked: true, authority: "settings", confirmed: true, guard }).allowed).toBe(false);
+  }
+  expect(() => validateRawConfig({ action_policy: { budgets: { publish: 1001 } } })).toThrow();
+  expect(() => validateRawConfig({ action_policy: { always_ask: ["unknown"] } })).toThrow();
+  expect(configApply("action_policy.always_ask").applies).toBe("live");
+});
