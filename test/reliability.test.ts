@@ -208,7 +208,7 @@ test("#91 sequential overwrite of an in_review task is still a conflict", async 
   const file = join(h.stateDir, "events.jsonl");
   await until(() => readEvents(file).some((e) => e.type === "conflict"));
   expect(readEvents(file).find((e) => e.type === "conflict")).toMatchObject({ peer: "codex", other: 1, owner: "kimi", concurrent: false, paths: ["shared.txt"] });
-});
+}, 30_000); // #661: the budget clock is held, so a slow git only makes this longer, never wrong: its wall-clock limit is stated, not left at the 5 s default
 
 
 test("#91 self-claims after both turns start still associate concurrent edits with their tasks", async () => {
