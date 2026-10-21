@@ -341,7 +341,11 @@ export function incomingHeadPaths(repo: Repo, start: HeadMoveCursor, end: HeadMo
     if (!row) continue;
     const separator = row.action.indexOf(": ");
     const action = separator < 0 ? "" : row.action.slice(0, separator);
-    const isPickOrCommit = /^.+ \((?:pick|reword|edit|squash|fixup)\)$/.test(action) || action === "commit";
+    // #612: diff-tree --stdin compares a commit to its first parent. In git sequencer, only pick
+    // and initial/regular commits have row.old as the parent of row.next. Sequencer squash, fixup,
+    // reword and edit amend the commit, so row.next's parent is row.old's parent. Only batch rows
+    // where row.old is the parent (pick and commit); other rows are diffed individually.
+    const isPickOrCommit = /^.+ \(pick\)$/.test(action) || action === "commit";
     if (isPickOrCommit && row.old !== row.next && !/^0+$/.test(row.old)) {
       batchCandidates.add(row.next);
     }
@@ -362,7 +366,11 @@ export function incomingHeadPaths(repo: Repo, start: HeadMoveCursor, end: HeadMo
         if (currentCommit) {
           for (const r of parsedRows) {
             if (r && r.next === currentCommit && r.old !== r.next) {
-              diffCache.set(`${r.old}..${r.next}`, [...currentPaths]);
+              const sep = r.action.indexOf(": ");
+              const act = sep < 0 ? "" : r.action.slice(0, sep);
+              if (/^.+ \(pick\)$/.test(act) || act === "commit") {
+                diffCache.set(`${r.old}..${r.next}`, [...currentPaths]);
+              }
             }
           }
         }

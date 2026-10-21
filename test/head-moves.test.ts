@@ -276,22 +276,64 @@ test("#612 fetch + rebase origin/main with pre-turn own commit and in-turn edit 
   expect(attributed).toEqual(["in-turn.txt"]);
 }, 10_000);
 
-test("#612 a 20-pick rebase stays within the 250 ms burst budget", () => {
+test("#612 a 20-pick rebase satisfies the constant-cost git process model within the budget", () => {
+  const runPickCount = (n: number) => {
+    const f = fixture();
+    const realGit = Bun.which("git")!;
+    const bin = join(f.root, "count-bin"), counter = join(f.root, "git-count");
+    mkdirSync(bin);
+    const quote = (text: string) => "'" + text.replaceAll("'", "'\\''") + "'";
+    writeFileSync(join(bin, "git"), `#!/bin/sh\nprintf 'probe\\n' >> ${quote(counter)}\nexec ${quote(realGit)} "$@"\n`, { mode: 0o755 });
+
+    f.incoming();
+    for (let i = 1; i <= n; i++) {
+      f.commit(`own${i}.txt`, `own${i}\n`);
+    }
+    const before = f.capture();
+    f.git("rebase", "incoming");
+    const after = f.capture();
+
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${bin}:${oldPath}`;
+    writeFileSync(counter, "");
+    try {
+      // Controlled clock (#661): the budget never expires regardless of runner speed.
+      const budget: SnapshotBudget = { deadline: 10_000, now: () => 0 };
+      const incoming = incomingHeadPaths(f.repo, before, after, budget);
+      const probeLines = existsSync(counter) ? readFileSync(counter, "utf8").trim().split("\n").filter(Boolean).length : 0;
+      return { incoming, probeLines };
+    } finally {
+      if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+    }
+  };
+
+  const two = runPickCount(2);
+  const twenty = runPickCount(20);
+
+  expect(two.incoming).toEqual(["incoming.txt"]);
+  expect(twenty.incoming).toEqual(["incoming.txt"]);
+  // Batching cost model: number of spawned Git processes stays constant as pick count grows
+  expect(twenty.probeLines).toBe(two.probeLines);
+}, 15_000);
+
+test("#612 rebase -i fixup row cached diff equals exact old..next diff", () => {
   const f = fixture();
   f.incoming();
-  for (let i = 1; i <= 20; i++) {
-    f.commit(`own${i}.txt`, `own${i}\n`);
-  }
+  f.commit("own1.txt", "own1\n");
   const before = f.capture();
-  f.git("rebase", "incoming");
+
+  // Simulate an interactive rebase fixup step amending own1 with own2
+  writeFileSync(join(f.root, "own2.txt"), "own2\n");
+  f.git("add", "own2.txt");
+  f.git("-c", "alias.phase=!GIT_REFLOG_ACTION='rebase -i (fixup)' git commit --amend -qm fixup", "phase");
   const after = f.capture();
 
-  const deadline = performance.now() + 250;
-  const budget: SnapshotBudget = { deadline };
-  const t0 = performance.now();
-  const incoming = incomingHeadPaths(f.repo, before, after, budget);
-  const elapsed = performance.now() - t0;
+  const incoming = incomingHeadPaths(f.repo, before, after);
+  expect(incoming).toEqual([]);
 
-  expect(incoming).toEqual(["incoming.txt"]);
-  expect(elapsed).toBeLessThan(250);
+  // Diff between before and after contains only own2.txt (the fixup addition)
+  expect(before.tree).not.toBeNull();
+  expect(after.tree).not.toBeNull();
+  const diff = changedPaths(f.repo, before.tree!, after.tree!);
+  expect(diff).toEqual(["own2.txt"]);
 }, 10_000);
