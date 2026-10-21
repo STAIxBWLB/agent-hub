@@ -1,6 +1,6 @@
 import { detectCliIdentity } from "./identity.ts";
 import { createStalenessProbe } from "../hub/memory-staleness.ts";
-import { looksSecret, type MemoryStore } from "@staix/agent-mem";
+import { looksSecret, memoryProjectKey, type MemoryStore } from "@staix/agent-mem";
 import type { SyncOptions } from "@staix/agent-mem";
 import { MEMORY_USAGE as CORE_MEMORY_USAGE, rawMemoryCommand, rawGoalCommand } from "@staix/agent-mem";
 import { mentionsPrivatePath, promotionScreen, withoutPii } from "../hub/memory-policy.ts";
@@ -20,8 +20,8 @@ const loadConfigSafe = (cwd: string) => { try { return loadConfig(cwd); } catch 
 const projectOf = (cwd: string, provided: MemoryStore | undefined): string => provided ? memoryProjectForStore(provided, cwd) : memoryProjectFor(cwd);
 
 /** Bind each command at entry; the CLI closes default opens and injected stores remain caller-owned. */
-function commandStores(provided: MemoryStore | undefined, options: ProfileMemoryOptions) {
-  try { return { ...(provided ? bindProfileMemory(provided) : openProfileMemory(options)), owned: !provided }; }
+function commandStores(provided: MemoryStore | undefined, options: ProfileMemoryOptions, cwd: string) {
+  try { return { ...(provided ? bindProfileMemory(provided, undefined, memoryProjectKey(cwd)) : openProfileMemory(options)), owned: !provided }; }
   catch (error) { throw new Error(error instanceof Error && error.message === MEMORY_SPLIT_INCOMPLETE ? error.message : MEMORY_PROFILE_UNAVAILABLE); }
 }
 function profileOutput(text: string, json: boolean, profile: MemoryProfileReceipt | undefined, person: boolean): string {
@@ -48,7 +48,7 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
     const cutoff = new Date(cutoffMs).toISOString();
     const project = projectOf(cwd, opts.store), routing = currentRouting(cwd), paths = privatePaths();
     // Review must not promote a held source while reading it: only explicit person actions may append rows.
-    const context = commandStores(opts.store, { project, deferPromotions: true, now: opts.now });
+    const context = commandStores(opts.store, { project, deferPromotions: true, now: opts.now }, cwd);
     const store = context.store;
     try {
       context.binding.assertCurrent();
@@ -72,7 +72,7 @@ export async function memoryCommand(args: string[], cwd: string, opts: { store?:
   let showStale = false;
   const project = projectOf(cwd, opts.store);
   const context = commandStores(opts.store, { project, ttlMs: (loadConfigSafe(cwd)?.memory.short_ttl_days ?? 14) * 24 * 3600_000,
-    screen: promotionScreen(project, cwd, () => currentRouting(cwd), privatePaths) });
+    screen: promotionScreen(project, cwd, () => currentRouting(cwd), privatePaths) }, cwd);
   try {
     context.binding.assertCurrent();
     const text = await rawMemoryCommand(args, cwd, { ...opts, project, store: context.store, open: () => context.store,
@@ -96,7 +96,7 @@ export async function goalCommand(args: string[], cwd: string, opts: { store?: M
   const person = opts.person ?? detectCliIdentity(process.env).role === "console";
   const policy = (): string[] => { try { return loadConfig(cwd).pii?.paths ?? []; } catch (e) { return fail(`the project's config does not load (${(e as Error).message}); fix it before using long-term tasks`); } };
   const project = projectOf(cwd, opts.store);
-  const context = commandStores(opts.store, { project });
+  const context = commandStores(opts.store, { project }, cwd);
   try {
     context.binding.assertCurrent();
     const text = await rawGoalCommand(args, cwd, { ...opts, project, store: context.store, open: () => context.store,

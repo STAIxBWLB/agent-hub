@@ -249,11 +249,16 @@ export function openProfileMemory(opts: ProfileMemoryOptions = {}, onUnavailable
   }
 }
 
-/** Bind a caller-owned store only when it exactly matches the current person selection. */
-export function bindProfileMemory(store: MemoryStore, onUnavailable?: (neutralReason: string) => void): {
+/**
+ * Bind a caller-owned store only when it exactly matches the current person selection. `projectKey` is the raw key
+ * the caller resolves its project from (#240): a sharded store whose home now aliases that key to another project is
+ * refused, and a later remap latches the binding unavailable, so a command never runs as B through A's shard.
+ */
+export function bindProfileMemory(store: MemoryStore, onUnavailable?: (neutralReason: string) => void, projectKey?: string): {
   store: MemoryStore; binding: MemoryProfileBinding;
 } {
-  const binding = new MemoryProfileBinding({ project: store.profile.shardKey }, onUnavailable, store.profile.home);
+  const sharded = store.profile.shardKey !== undefined;
+  const binding = new MemoryProfileBinding({ project: store.profile.shardKey, ...(sharded && projectKey !== undefined ? { projectKey } : {}) }, onUnavailable, store.profile.home);
   binding.assertCurrent();
   if (!sameProfile(store.profile, binding.profile)) throw new Error(UNAVAILABLE);
   return { store, binding };
