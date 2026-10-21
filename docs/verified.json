@@ -43,7 +43,7 @@
       ]
     },
     "docs/agent-notes/adapters.md": {
-      "verifiedAgainst": "e185b9e62bd96aa0638f8e694628eeb698e38649",
+      "verifiedAgainst": "5505f53f07b7b702b946cc3504e7efa32ce3eace",
       "paths": [
         "src/adapters/",
         "src/pi/",
