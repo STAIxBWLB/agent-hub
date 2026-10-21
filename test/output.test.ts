@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { PALETTE, paint, terminalText, wrap, table, type Span } from "../src/cli/console-state.ts";
+import { PALETTE, paint, terminalText, wrap, table, initialConsoleState, renderConsoleLines, type Span } from "../src/cli/console-state.ts";
 import { outputWidth, renderRoster, renderStatus, renderBoard, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "../src/cli/output.ts";
 import { summarize, summarizeByTask, formatReport, formatTaskReport } from "../src/hub/report.ts";
 const now = 1_800_000_000_000;
@@ -28,6 +28,33 @@ export const outputFixture = {
 const text = (value: ReturnType<typeof renderBoard>, color = false) => value.map(line => paint(line, color)).join("\n");
 const renderers = (columns?: number) => [renderStatus(outputFixture.status, columns, now), renderBoard(outputFixture.tasks, columns, now), renderBudget(outputFixture.budget, columns, now), renderDoctor(outputFixture.doctor, columns, now)];
 describe("one-shot output", () => {
+  test("generic peer status notices are visible attention text in status and console", () => {
+    const message = "reattach the native session before further delivery";
+    const peers = { other: { state: "offline", queued: 0, statusNotice: { code: "reattach-required", message } } };
+    const status = renderStatus({ peers }, 160, now);
+    expect(text(status)).toContain(message);
+    expect(status.flat().some(cell => cell.tone === "attention" && cell.text.includes(message))).toBe(true);
+    const state = initialConsoleState(); state.peers = peers;
+    const console = renderConsoleLines(state, 240, 24, now);
+    expect(text(console)).toContain(message);
+    expect(console.flat().some(cell => cell.tone === "attention" && cell.text.includes(message))).toBe(true);
+    state.peers = { other: { state: "offline", queued: 0 } };
+    expect(text(renderConsoleLines(state, 240, 24, now))).not.toContain(message);
+    expect(text(renderStatus({ peers: state.peers }, 160, now))).not.toContain(message);
+  });
+
+  test("peer status notices keep terminal display sanitization", () => {
+    const message = "\x1b[31mreattach session\x1b[0m\nstatus guidance";
+    const peers = { other: { state: "offline", statusNotice: { message } } };
+    const state = initialConsoleState(); state.peers = peers;
+    for (const rendered of [renderStatus({ peers }, 160, now), renderConsoleLines(state, 240, 24, now)]) {
+      const plain = text(rendered);
+      expect(plain).toContain("reattach session"); expect(plain).toContain("status guidance");
+      expect(plain).not.toContain("\x1b");
+      expect(plain).not.toMatch(/^status guidance/m);
+    }
+  });
+
   test("width comes from a terminal or an explicit piped COLUMNS", () => {
     expect(outputWidth({ isTTY: true, columns: 40 })).toBe(80);
     expect(outputWidth({ isTTY: true, columns: 120 })).toBe(120);

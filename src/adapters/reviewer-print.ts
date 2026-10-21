@@ -380,3 +380,7 @@ export class ReviewerPrintPeer extends BasePeer {
     if (this.child === child) { await this.childCleanup?.(); this.child = undefined; this.childStop = undefined; this.childCleanup = undefined; this.childCurrent = undefined; }
   }
 }
+
+export function isReviewerPrintPeer(value: unknown): value is ReviewerPrintPeer {
+  return value instanceof ReviewerPrintPeer;
+}

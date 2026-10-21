@@ -1,5 +1,7 @@
 # Daemon, control protocol and recovery
 
+- Keep external-channel behavior in `src/adapters/channel-peer.ts`; the daemon owns socket authentication, admission and generation binding. Use adapter-owned native type predicates in core. Preserve the Codex `unidentified-cancellation` status notice until verified reattachment clears its existing offline latch.
+
 - For explicitly user-authorized live verification, use the per-invocation CLI delegation in `docs/security.md` §Agent CLI identity and conductor authority; keep caller markers and record native evidence separately from fixtures.
 - Keep `export const LIVE_TEST_SUPPORTED = true;` in `src/cli/identity.ts`: delegated recovery staging reads this declaration before any source effect.
 - A delegated non-recovery command runs only after `recordDelegatedCliAudit` committed `delegated` against a hub whose `features` list `cli_audit_delegated`, that instance's console `cli_audit_ack` confirmed retention, and `ControlClient.pinInstance` pinned the invocation to it; a refused feature, failed ack or changed consumer executes nothing (#410). Upgrade, restart and recovery record delegation only in the operation receipt (`delegatedAudits` through `createOperation` or `recordRecoveryDelegation`). The daemon counts an audit retained only after `event()` returned true.

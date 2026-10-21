@@ -1,5 +1,8 @@
 # Native adapters and spawned agents
 
+- Consume quota/context through the resolved definition's declared readers; absence stays unknown. Use explicit `attach.externalHello` and `instances` policy for admission, never `identity.mcp`; keep runtime owner/root and reviewer isolation proof in the host.
+- Validate coherence and conformance enrollment for reviewer variants too. Construct driven conformance peers through `start.create`; name dedicated coverage and concrete reasons for unsupported legs. Do not restore removed placeholder launch, lifecycle, init or permission metadata.
+
 Scope: the Codex, ACP and Pi adapters and the Pi extension (turn `generation` and `activity` events), peer turn state, approvals, and the agent processes the hub spawns and stops. Read before editing `src/adapters/`, `src/pi/`, `src/hub/peers.ts`, `src/hub/permission-mode.ts`, `src/hub/tool-refusal.ts`, `src/hub/child-process.ts`, `src/hub/lifecycle.ts` (shutdown deadline), `src/hub/start-mode.ts`, `src/hub/terminal-open.ts`, `src/memory/capture.ts` (session end), `src/hub/native-hook-launch.ts`, `src/hub/peer-catalog.ts`, the launcher-managed MCP entries (`src/cli/agy-mcp.ts`, `src/cli/kimi-mcp.ts`, `src/cli/jcode-mcp.ts`) or the process-tree stop in `scripts/benchmarks/teardown.ts`, or before adding a native peer.
 
 - When an adapter lands, add its project config directories to `AGENT_CONFIG_SEGMENTS` (`src/hub/permission-mode.ts`); scoped automatic writes must ask there, while explicit approval and `never-ask` keep their existing behavior.

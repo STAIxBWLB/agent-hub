@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { QWEN_DEFINITION } from "../src/adapters/definitions/qwen.ts";
 import { AcpPeer } from "../src/adapters/acp.ts";
-import { QwenIdentityError, QWEN_MODE_IDS } from "../src/adapters/definitions/qwen-native.ts";
+import { QwenIdentityError, QWEN_MODE_IDS, qwenNativeIdentity } from "../src/adapters/definitions/qwen-native.ts";
 import { shellQuote } from "../src/cli/terminal-recovery.ts";
 import type { CreateContext, LaunchContext } from "../src/adapters/registry-types.ts";
 
@@ -11,27 +11,28 @@ test("#451 Qwen definition preserves its optional headless ACP policy", () => {
   expect(QWEN_DEFINITION.api).toBe(1); expect(QWEN_DEFINITION.kind).toBe("qwen"); expect(QWEN_DEFINITION.family).toBe("qwen");
   expect(QWEN_DEFINITION.transport).toBe("acp"); expect(QWEN_DEFINITION.optional).toBe(true); expect(QWEN_DEFINITION.defaultOnRoster).toBe(false);
   expect(QWEN_DEFINITION.roles).toEqual(["implementer", "verifier"]); expect(QWEN_DEFINITION.start.forms).toEqual(["headless"]);
-  expect(QWEN_DEFINITION.start.defaultForm).toBe("headless"); expect(QWEN_DEFINITION.start.ownsTerminal("headless")).toBe(false);
+  expect(QWEN_DEFINITION.start.defaultForm).toBe("headless"); expect(QWEN_DEFINITION.start).not.toHaveProperty("ownsTerminal");
   expect(QWEN_DEFINITION.start.preflight?.({ instance: "qwen", form: "tui" })).toContain("not offered");
   expect(QWEN_DEFINITION.identity.mcp).toBe("acp-session"); expect(QWEN_DEFINITION.capabilities?.watch).toBe(true);
   expect(QWEN_DEFINITION.trust.onPrem).toBe(false); expect(QWEN_DEFINITION.trust.hubSandboxed).toBe(false);
-  expect(QWEN_DEFINITION.permission.readOnly).toBeUndefined(); expect(QWEN_DEFINITION.turnEnd).toBe("adapter");
+  expect(QWEN_DEFINITION.permission).not.toHaveProperty("readOnly"); expect(QWEN_DEFINITION.turnEnd).toBe("adapter");
 });
 
 test("#451 Qwen definition launch keeps configured wrapper argv before model and produces quoted metadata", () => {
   const command = ["/fixture/native qwen", "wrapper.js", "--acp", "--source", "fixture source"];
-  const plan = QWEN_DEFINITION.start.launch({ ...launchContext, nativeCommand: command, model: "fixture/model" });
+  const plan = QWEN_DEFINITION.start.launch!({ ...launchContext, nativeCommand: command, model: "fixture/model" });
   expect(plan.cmd).toBe(command[0]!); expect(plan.args).toEqual([...command.slice(1), "--model", "fixture/model"]);
   expect(command).toEqual(["/fixture/native qwen", "wrapper.js", "--acp", "--source", "fixture source"]);
   expect(plan.metadata.packageEntrypoint).toBe(launchContext.entrypoint); expect(plan.metadata.argv).toEqual([plan.cmd, ...plan.args]);
   expect(plan.metadata.command).toBe(plan.metadata.argv.map(shellQuote).join(" ")); expect(plan.metadata.env).toEqual({});
-  expect(QWEN_DEFINITION.start.launch(launchContext).args).toEqual(["--acp"]);
+  expect(QWEN_DEFINITION.start.launch!(launchContext).args).toEqual(["--acp"]);
 });
 
 test("#451 Qwen definition retains its exact native identity and permission mappings", () => {
-  expect(() => QWEN_DEFINITION.hooks?.agentIdentity?.({ agentInfo: { name: "qwen-code", version: "0.25.0" } })).not.toThrow();
-  for (const agentInfo of [{ name: "qwen-code", version: "0.24.7" }, { name: "Qwen Code", version: "0.25.0" }, {}]) expect(() => QWEN_DEFINITION.hooks?.agentIdentity?.({ agentInfo })).toThrow(QwenIdentityError);
-  for (const mode of ["ask", "ask-when-needed", "never-ask"] as const) expect(QWEN_DEFINITION.permission.modes[mode]).toEqual({ kind: "acp-mode", modeId: QWEN_MODE_IDS[mode] });
+  expect(() => qwenNativeIdentity("qwen", true, { agentInfo: { name: "qwen-code", version: "0.25.0" } })).not.toThrow();
+  for (const agentInfo of [{ name: "qwen-code", version: "0.24.7" }, { name: "Qwen Code", version: "0.25.0" }, {}]) expect(() => qwenNativeIdentity("qwen", true, { agentInfo })).toThrow(QwenIdentityError);
+  expect(QWEN_MODE_IDS).toEqual({ ask: "default", "ask-when-needed": "auto-edit", "never-ask": "yolo" });
+  expect(QWEN_DEFINITION.permission).not.toHaveProperty("modes");
   expect(QWEN_DEFINITION.permission.grants?.["never-ask"]).toContain("every tool");
   expect(QWEN_DEFINITION.permission.grants?.["ask-when-needed"]).toContain("auto-edit");
 });

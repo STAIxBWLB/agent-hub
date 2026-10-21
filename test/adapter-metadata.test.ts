@@ -1,10 +1,20 @@
 import { expect, test } from "bun:test";
 import { permissionGrant } from "../src/hub/permission-mode.ts";
 import { peerStyle } from "../src/ui/peer-palette.ts";
-import type { AdapterDefinition, LaunchContext } from "../src/adapters/registry-types.ts";
+import type { LaunchContext } from "../src/adapters/registry-types.ts";
 import type { PeerAdapter } from "../src/hub/peers.ts";
+import { BUILTIN_DEFINITIONS_WITHOUT_QWEN, type LegacyAdapterDefinition } from "../src/adapters/definitions/builtin-metadata.ts";
 
-async function definitions(): Promise<readonly AdapterDefinition[]> {
+test("#451 the public frozen A1 export preserves its caller-visible legacy type", () => {
+  const legacy: readonly LegacyAdapterDefinition[] = BUILTIN_DEFINITIONS_WITHOUT_QWEN;
+  expect(legacy[0]!.start.ownsTerminal("tui")).toBe(true);
+  expect(legacy[0]!.permission.modes).toEqual({});
+  const mode = legacy.find(definition => definition.kind === "kimi")!.permission.modes["never-ask"];
+  expect(mode?.kind).toBe("acp-mode");
+  if (mode?.kind === "acp-mode") expect(mode.modeId).toBe("auto");
+});
+
+async function definitions(): Promise<readonly import("../src/adapters/definitions/builtin-metadata.ts").LegacyAdapterDefinition[]> {
   const path = "../src/adapters/definitions/builtin-metadata.ts";
   const module = await import(path).catch(() => undefined);
   expect(Array.isArray(module?.BUILTIN_DEFINITIONS_WITHOUT_QWEN)).toBe(true);

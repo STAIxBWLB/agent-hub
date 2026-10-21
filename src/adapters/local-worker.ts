@@ -490,3 +490,7 @@ function safeParse(json: string): Record<string, unknown> {
     return {};
   }
 }
+
+export function isLocalPeer(value: unknown): value is LocalPeer {
+  return value instanceof LocalPeer;
+}

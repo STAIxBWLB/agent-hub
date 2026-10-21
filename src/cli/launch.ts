@@ -1,3 +1,4 @@
+import { claudePeer as defaultChannelPeer } from "../hub/claude-state.ts";
 // Launchers inject only the flags the hub owns and refuse user-supplied duplicates.
 import { claudeStateFile } from "../hub/claude-state.ts";
 import { mkdirSync, writeFileSync, renameSync, unlinkSync, lstatSync, readFileSync, openSync, closeSync, readSync, accessSync, constants, linkSync } from "node:fs";
@@ -202,7 +203,7 @@ export async function recordClaudeNative(stateDir: string, launch: ClaudeLaunchR
   const publication = await withClaudeLaunchRecord(stateDir, () => {
     let current: ClaudeLaunchRecord;
     try {
-      const file = join(stateDir, claudeStateFile("claude-launch", launch.peer ?? "claude")), stat = lstatSync(file);
+      const file = join(stateDir, claudeStateFile("claude-launch", launch.peer ?? defaultChannelPeer(undefined))), stat = lstatSync(file);
       if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o777) !== 0o600 || !process.getuid || stat.uid !== process.getuid()) return;
       current = JSON.parse(readFileSync(file, "utf8"));
     } catch { return; }
@@ -219,7 +220,7 @@ export async function recordClaudeNative(stateDir: string, launch: ClaudeLaunchR
       writeFileSync(temp, JSON.stringify({ ...launch, nativePid: pid, nativeSignature: signature, nativeIdentity: "direct-child" }), { mode: 0o600, flag: "wx" });
       renameSync(temp, file);
     } finally { try { unlinkSync(temp); } catch { /* atomic rename consumed our private temporary file */ } }
-    try { recorded = sameClaudeLaunch(JSON.parse(readFileSync(join(stateDir, claudeStateFile("claude-launch", launch.peer ?? "claude")), "utf8")), launch); } catch { /* replaced or unreadable managed record */ }
+    try { recorded = sameClaudeLaunch(JSON.parse(readFileSync(join(stateDir, claudeStateFile("claude-launch", launch.peer ?? defaultChannelPeer(undefined))), "utf8")), launch); } catch { /* replaced or unreadable managed record */ }
   });
   if (publication.warning) report?.(publication.warning);
   return publication.recorded && recorded;
@@ -333,7 +334,7 @@ export function buildLaunch(
 ): Launch {
   const adapter = definitionOf(tool);
   if (!adapter) throw new Error("native launch definition unavailable");
-  const { metadata: _metadata, ...launch } = adapter.start.launch({
+  const { metadata: _metadata, ...launch } = adapter.start.launch!({
     instance: ctx.instance ?? tool, form: "tui", projectRoot: process.cwd(), stateDir: ctx.facts?.stateDir ?? ctx.statusLine?.stateDir ?? "",
     entrypoint: resolve(import.meta.dir, "main.js"), userArgs, env: {}, ...ctx,
   });

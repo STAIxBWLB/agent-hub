@@ -25,7 +25,6 @@ export const AGY_DEFINITION: AdapterDefinition = {
   start: {
     forms: ["tui"],
     defaultForm: "tui",
-    ownsTerminal: form => form === "tui",
     launch: agyLaunch,
     conductorStartable: false,
     hubSwitches: [],
@@ -33,13 +32,12 @@ export const AGY_DEFINITION: AdapterDefinition = {
     conductorStartArgs: args => args.length ? new Error("conductor starts accept no launch overrides; use ahub agy") : {},
   },
   identity: { mcp: "channel-plugin" },
-  attach: {
+  attach: { externalHello: true,
     pullOnlyForms: ["tui"],
     recoveryLaunch: instance => ({ kind: "agy", peer: instance }),
     pullOnlyNotice: "pull-only: messages wait for hub_inbox; permission modes and session recovery are not managed",
   },
   permission: {
-    modes: {},
     unmanaged: "Antigravity selects its own permission mode in its TUI; no hub permission mode",
     unmanagedForms: ["tui"],
     unmanagedNote: "Antigravity approves tools in its own TUI; no hub permission mode",

@@ -5,6 +5,9 @@ import type { PermissionMode } from "../hub/permission-mode.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { codexContext, type ContextReading } from "../hub/context-window.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
+import type { ContextReader } from "./registry-types.ts";
+
+const UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery";
 
 export interface CodexOptions {
   /** Port the TUI attaches to: `codex --enable tui_app_server --remote ws://127.0.0.1:<proxyPort>`. */
@@ -26,6 +29,8 @@ export interface CodexOptions {
   /** Tokens the thread used since the previous update (see `tokenTotal` for how they are counted). */
   onTokens?: (added: number) => void;
   onContext?: (reading: ContextReading) => void;
+  /** The definition's native occupancy reader; standalone proxies retain the native default. */
+  contextReader?: ContextReader;
   /** The native id of each turn as it starts, after the peer turned busy (issue #33: `ahub undo --context`). */
   onTurn?: (turnId: string) => void;
   /** Each thread the TUI starts (`fresh`) or resumes, as it is adopted (#215: which turns belong to which thread). */
@@ -90,6 +95,10 @@ export class CodexPeer extends BasePeer {
   /** Cancellation tombstones last until that exact native completion or session replacement. */
   private readonly retiredTurns = new Set<string>();
   private unidentifiedCancellation = false;
+  /** Fixed operator guidance only; native identifiers and agent text never enter status. */
+  get statusNotice(): { code: "unidentified-cancellation"; message: string } | undefined {
+    return this.unidentifiedCancellation ? { code: "unidentified-cancellation", message: UNIDENTIFIED_CANCELLATION_NOTICE } : undefined;
+  }
   private unboundAccepted = false;
   private nextId = -1;
   private readonly pending = new Map<number, { resolve: (result?: any) => void; reject: (e: Error) => void; deliveryId?: string; kind?: "deliver" | "steer"; expectedTurnId?: string; afterTurn?: () => void; invalidate?: (reason: string) => void }>();
@@ -342,7 +351,7 @@ export class CodexPeer extends BasePeer {
       // ponytail: after one unidentifiable cancellation, lifecycle attribution requires a session reattach.
       // Never guess that an unnamed late report or a later named start belongs to a new turn.
       this.unidentifiedCancellation = true;
-      this.opts.log?.("Codex cancelled turn has no verified native id; reattach the native session before further hub delivery");
+      this.opts.log?.(UNIDENTIFIED_CANCELLATION_NOTICE);
     }
     for (const turnId of known) this.retireTurn(turnId);
     for (const pending of pendingStarts) pending.invalidate?.("Codex turn watchdog timeout before native acceptance was confirmed");
@@ -634,7 +643,7 @@ export class CodexPeer extends BasePeer {
     if (this.unidentifiedCancellation) return; // native traffic is still forwarded to its TUI; hub attribution is fenced
     const unknownTurn = () => [...this.activeTurns].some(id => id.startsWith("unknown:"));
     if (method === "thread/tokenUsage/updated") {
-      this.opts.onContext?.(codexContext(params.tokenUsage, this.threadId, Date.now()));
+      this.opts.onContext?.((this.opts.contextReader?.read ?? codexContext)(params.tokenUsage, this.threadId, Date.now()));
       const total = Number(params.tokenUsage?.total?.totalTokens);
       if (!Number.isFinite(total)) return;
       const added = this.tokenTotal === undefined ? (this.freshThread ? total : 0) : Math.max(0, total - this.tokenTotal);
@@ -706,4 +715,8 @@ function parse(raw: string): any {
   } catch {
     return undefined;
   }
+}
+
+export function isCodexPeer(value: unknown): value is CodexPeer {
+  return value instanceof CodexPeer;
 }

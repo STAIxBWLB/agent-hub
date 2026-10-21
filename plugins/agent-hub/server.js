@@ -1771,7 +1771,7 @@ function parse(raw) {
     return;
   }
 }
-var TRACKED, CodexPeer;
+var UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery", TRACKED, CodexPeer;
 var init_codex_appserver = __esm(() => {
   init_envelope();
   init_context_window();
@@ -1798,6 +1798,9 @@ var init_codex_appserver = __esm(() => {
     deliveryEpoch = 0;
     retiredTurns = new Set;
     unidentifiedCancellation = false;
+    get statusNotice() {
+      return this.unidentifiedCancellation ? { code: "unidentified-cancellation", message: UNIDENTIFIED_CANCELLATION_NOTICE } : undefined;
+    }
     unboundAccepted = false;
     nextId = -1;
     pending = new Map;
@@ -2049,7 +2052,7 @@ ${renderDigest(envs, false)}`;
       const pendingStarts = [...this.pending.values()].filter((pending) => pending.kind === "deliver");
       if ([...this.activeTurns].some((id) => id.startsWith("unknown:")) || (this.unboundDeliveries.size || this.unboundAccepted || pendingStarts.length) && !known.size) {
         this.unidentifiedCancellation = true;
-        this.opts.log?.("Codex cancelled turn has no verified native id; reattach the native session before further hub delivery");
+        this.opts.log?.(UNIDENTIFIED_CANCELLATION_NOTICE);
       }
       for (const turnId of known)
         this.retireTurn(turnId);
@@ -2366,7 +2369,7 @@ ${renderDigest(envs, false)}`;
         return;
       const unknownTurn = () => [...this.activeTurns].some((id) => id.startsWith("unknown:"));
       if (method === "thread/tokenUsage/updated") {
-        this.opts.onContext?.(codexContext(params.tokenUsage, this.threadId, Date.now()));
+        this.opts.onContext?.((this.opts.contextReader?.read ?? codexContext)(params.tokenUsage, this.threadId, Date.now()));
         const total = Number(params.tokenUsage?.total?.totalTokens);
         if (!Number.isFinite(total))
           return;
@@ -8533,9 +8536,6 @@ var init_native_display = __esm(() => {
 });
 
 // src/adapters/definitions/reviewer-variants.ts
-function unavailableLaunch() {
-  throw new Error("Reviewer unavailable: verified runtime support is deferred to #533");
-}
 function reviewerVariant(kind, displayName, reviewer, display) {
   return {
     api: 1,
@@ -8550,14 +8550,13 @@ function reviewerVariant(kind, displayName, reviewer, display) {
       ...reviewer.backend ? { create: createReviewer, daemonPort: "reviewer-print" } : {},
       forms: ["headless"],
       defaultForm: "headless",
-      ownsTerminal: () => false,
-      launch: unavailableLaunch,
       conductorStartable: true,
       hubSwitches: [],
       ownedFlags: []
     },
     identity: { mcp: "env" },
-    permission: { modes: {}, readOnly: { kind: "hub-gate", allow: ["read", "search", "think"] }, unmanaged: "fresh read-only reviewer; an isolation receipt is required before startup" },
+    instances: { mode: "headless" },
+    permission: { unmanaged: "fresh read-only reviewer; an isolation receipt is required before startup" },
     session: { idField: "sessionId", currentId: () => {
       return;
     }, freshOnRestore: true, launchKind: "reviewer-print", crashPlan: () => ({ resume: {}, how: "starts a fresh isolated review session" }) },
@@ -8714,7 +8713,6 @@ var init_definition = __esm(() => {
     start: {
       forms: ["tui"],
       defaultForm: "tui",
-      ownsTerminal: (form) => form === "tui",
       launch: agyLaunch,
       conductorStartable: false,
       hubSwitches: [],
@@ -8723,12 +8721,12 @@ var init_definition = __esm(() => {
     },
     identity: { mcp: "channel-plugin" },
     attach: {
+      externalHello: true,
       pullOnlyForms: ["tui"],
       recoveryLaunch: (instance) => ({ kind: "agy", peer: instance }),
       pullOnlyNotice: "pull-only: messages wait for hub_inbox; permission modes and session recovery are not managed"
     },
     permission: {
-      modes: {},
       unmanaged: "Antigravity selects its own permission mode in its TUI; no hub permission mode",
       unmanagedForms: ["tui"],
       unmanagedNote: "Antigravity approves tools in its own TUI; no hub permission mode",
@@ -8834,7 +8832,7 @@ function shellUnquote(value) {
   return out;
 }
 function validateOptions(options) {
-  const peer = options.peer ?? "agy";
+  const peer = options.peer ?? AGY_DEFINITION.kind;
   if (!/^[a-z][a-z0-9-]{0,31}$/.test(peer))
     throw new Error("agy peer id is invalid");
   for (const [name, value] of Object.entries({ projectRoot: options.projectRoot, stateDir: options.stateDir, serverJs: options.serverJs, hookScript: options.hookScript })) {
@@ -9132,7 +9130,7 @@ function cleanupAgyMcp(options) {
   if (present.length !== FILES.length)
     throw new Error("managed agy plugin is incomplete; inspect it before cleanup");
   const currentHooks = parseJson(readFileSync6(join15(plan.root, HOOKS_FILE)), HOOKS_FILE);
-  const launch = managedHookLaunch(currentHooks, options, options.peer ?? "agy");
+  const launch = managedHookLaunch(currentHooks, options, options.peer ?? AGY_DEFINITION.kind);
   if (!launch || launch.instanceId !== options.instanceId || launch.launchId !== options.launchId)
     return;
   if (plan.changed)
@@ -9182,6 +9180,7 @@ function cleanupAgyMcp(options) {
 }
 var PLUGIN_DIR = ".agents/plugins/agent-hub", PLUGIN_KEY = "agent-hub", MANIFEST_FILE, MCP_FILE, HOOKS_FILE, FILES, EVENTS2, MANAGED_DESCRIPTION = "Managed by ahub agy launcher.", MAX_CONFIG_BYTES;
 var init_agy_mcp = __esm(() => {
+  init_definition();
   init_git();
   init_project();
   MANIFEST_FILE = `${PLUGIN_DIR}/plugin.json`;
@@ -9325,16 +9324,21 @@ function retainedLaunchWarning(status, peer, definition) {
   return unique.length ? `ahub: config retained: ${unique.join(", ")}; starting ${peer} with the running value; run ahub settings reload to apply the file's value` : undefined;
 }
 
-// src/hub/claude-state.ts
+// src/adapters/definitions/native-channel-state.ts
 function claudeStateFile(base, peer) {
   if (!CLAUDE_PEER.test(peer) || !PEER2.test(peer))
     throw new Error(`${peer} is not a Claude peer; Claude state files belong to Claude peers only`);
   return peer.includes("-") ? `${base}.${peer}.json` : `${base}.json`;
 }
 var PEER2, CLAUDE_PEER;
-var init_claude_state = __esm(() => {
+var init_native_channel_state = __esm(() => {
   PEER2 = /^[a-z][a-z0-9-]{0,31}$/;
   CLAUDE_PEER = /^claude(?:-[a-z0-9-]+)?$/;
+});
+
+// src/hub/claude-state.ts
+var init_claude_state = __esm(() => {
+  init_native_channel_state();
 });
 
 // src/adapters/definitions/native-cli-entry-claude.ts
@@ -10340,6 +10344,7 @@ function sessionSettings(tee, facts) {
 var CLAUDE_CHANNEL = "plugin:agent-hub@agent-hub", UNATTENDED_WARNING = "WARNING: --unattended disables permission prompts. Other agents' messages are untrusted input and this agent will act on its own judgment without asking you.", sh = (s) => `'${s.replace(/'/g, `'\\''`)}'`;
 var init_launch2 = __esm(() => {
   init_claude_state();
+  init_claude_state();
   init_process_signature();
   init_project();
   init_child_process();
@@ -10685,7 +10690,7 @@ function sessionId(field) {
     return typeof value === "string" && value ? value : undefined;
   };
 }
-var terminal = (form) => form === "tui", headless = () => false, switches, implementerRoles, dualForms, headlessForms, hubGrants, CLAUDE_REVIEWER_VARIANT, NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, palette = (fg) => ({ palette: { fg, bg: "transparent" } }), BUILTIN_DEFINITIONS_WITHOUT_QWEN;
+var switches, implementerRoles, dualForms, headlessForms, hubGrants, CLAUDE_REVIEWER_VARIANT, NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, terminal = (form) => form === "tui", headless = () => false, palette = (fg) => ({ palette: { fg, bg: "transparent" } }), BUILTIN_DEFINITIONS_WITHOUT_QWEN;
 var init_builtin_metadata = __esm(() => {
   init_reviewer_variants();
   init_native_config_policy();
@@ -10713,9 +10718,10 @@ var init_builtin_metadata = __esm(() => {
     roles: Object.freeze(["reviewer"]),
     defaultOnRoster: true,
     trust: { onPrem: false, hubSandboxed: false },
-    start: { create: createClaudeReviewer, daemonPort: "claude-print", forms: headlessForms, defaultForm: "headless", ownsTerminal: headless, launch: (ctx) => compatibilityLaunch("claude", ctx), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+    start: { create: createClaudeReviewer, daemonPort: "claude-print", forms: headlessForms, defaultForm: "headless", conductorStartable: true, hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "env" },
-    permission: { modes: {}, unmanaged: "each review runs read-only (Read, Grep, Glob) and may call only hub_review and hub_task_show" },
+    instances: { mode: "headless" },
+    permission: { unmanaged: "each review runs read-only (Read, Grep, Glob) and may call only hub_review and hub_task_show" },
     session: { idField: "sessionId", currentId: () => {
       return;
     }, freshOnRestore: true, launchKind: "claude-print", crashPlan: () => ({ resume: {}, how: "claude reviewer: starts again; every review runs in a new session" }) },
@@ -10739,7 +10745,6 @@ var init_builtin_metadata = __esm(() => {
       start: {
         forms: Object.freeze(["tui"]),
         defaultForm: "tui",
-        ownsTerminal: terminal,
         launch: claudeNativeLaunch,
         version: claudeObservedVersion,
         ...CLAUDE_LAUNCH_POLICY,
@@ -10749,8 +10754,9 @@ var init_builtin_metadata = __esm(() => {
         ownedFlags: Object.freeze(["--dangerously-load-development-channels", "--dangerously-skip-permissions"])
       },
       identity: { mcp: "channel-plugin" },
-      attach: { recoveryLaunch: claudeRecoveryLaunch },
-      permission: { modes: {}, grants: {
+      instances: { mode: "external", roles: ["reviewer", "planner"] },
+      attach: { externalHello: true, recoveryLaunch: claudeRecoveryLaunch },
+      permission: { grants: {
         ask: "Claude's own permission rules decide",
         "ask-when-needed": "file tools on project files run without asking, outside .agenthub, .git and agent configuration; other tools keep Claude's own rules",
         "never-ask": "every tool runs without asking"
@@ -10778,7 +10784,6 @@ var init_builtin_metadata = __esm(() => {
         daemonPort: "codex-appserver",
         forms: dualForms,
         defaultForm: "tui",
-        ownsTerminal: terminal,
         launch: codexNativeLaunch,
         version: codexObservedVersion,
         ...CODEX_LAUNCH_POLICY,
@@ -10788,15 +10793,8 @@ var init_builtin_metadata = __esm(() => {
         ownedFlags: Object.freeze(["--remote", "--remote-auth-token-env", "--yolo", "--dangerously-bypass-approvals-and-sandbox"])
       },
       identity: { mcp: "env" },
-      permission: {
-        trackUnattended: true,
-        modes: {
-          ask: { kind: "native-only", note: "restore the session's captured native approval policy" },
-          "ask-when-needed": { kind: "codex-approval", policy: "on-request" },
-          "never-ask": { kind: "codex-approval", policy: "never" }
-        },
-        grants: { ask: "the session's own approval policy applies again", "ask-when-needed": "approval policy on-request on every turn", "never-ask": "approval policy never on every turn: nothing asks" }
-      },
+      instances: { mode: "headless" },
+      permission: { trackUnattended: true, grants: { ask: "the session's own approval policy applies again", "ask-when-needed": "approval policy on-request on every turn", "never-ask": "approval policy never on every turn: nothing asks" } },
       session: { nativeRevert: true, idField: "threadId", currentId: sessionId("threadId"), configDirEnv: "CODEX_HOME", zeroTurnFresh: true, launchKind: "codex", launchRecord: true, ...CODEX_RECOVERY_SESSION, crashPlan: codexCrashPlan, unrecordedTerminal: "always" },
       turnEnd: "adapter",
       budget: { account: "codex", checkpoint: true, reader: { source: "codex rateLimits", read: codexWindows }, context: { source: "codex_token_usage", read: codexContext } },
@@ -10814,8 +10812,9 @@ var init_builtin_metadata = __esm(() => {
       roles: implementerRoles,
       defaultOnRoster: true,
       trust: { onPrem: false, hubSandboxed: false },
-      start: { create: createKimi, acpCommand: kimiAcpCommand, explicitHeadlessMode: true, planCommand: () => "ahub kimi", daemonPort: "acp", forms: dualForms, defaultForm: "tui", ownsTerminal: terminal, launch: (ctx) => compatibilityLaunch("kimi", ctx), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+      start: { create: createKimi, acpCommand: kimiAcpCommand, explicitHeadlessMode: true, planCommand: () => "ahub kimi", daemonPort: "acp", forms: dualForms, defaultForm: "tui", conductorStartable: true, hubSwitches: [], ownedFlags: [] },
       identity: { mcp: "acp-session" },
+      instances: { mode: "headless" },
       attach: {
         pullOnlyForms: Object.freeze(["tui"]),
         recoveryLaunch: kimiRecoveryLaunch,
@@ -10823,7 +10822,6 @@ var init_builtin_metadata = __esm(() => {
         admission: { reservedRefusal: "Kimi attaches pull-only in TUI mode; run ahub kimi", watchRefusal: "Kimi is in pull-only TUI mode; use its native terminal or start headless" }
       },
       permission: {
-        modes: { ask: { kind: "acp-mode", modeId: "default" }, "ask-when-needed": { kind: "acp-mode", modeId: "yolo" }, "never-ask": { kind: "acp-mode", modeId: "auto" } },
         grants: { ask: "Kimi asks as it does on its own", "ask-when-needed": "Kimi's yolo mode: it asks only where it judges it must", "never-ask": "Kimi's auto mode: nothing asks" },
         unmanagedForms: Object.freeze(["tui"]),
         unmanagedStatusNote: "Kimi approves tools in its own TUI; no hub permission mode",
@@ -10833,7 +10831,6 @@ var init_builtin_metadata = __esm(() => {
       turnEnd: "adapter",
       budget: { account: "kimi", resetSoftTokensOnResume: true, context: { source: "acp_usage_update", read: acpContextValue } },
       capabilities: { watch: true },
-      init: { mcpFile: ".kimi-code/mcp.json" },
       hooks: { recallPlatform: "kimi", recallSource: "kimi" },
       cli: { command: "kimi", launchConfigKeys: ["kimi_cmd", "peers.kimi.start_mode"], stopNotice: (form) => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: (form) => ["kimi", "--mode", form] },
       display: KIMI_DISPLAY
@@ -10848,9 +10845,10 @@ var init_builtin_metadata = __esm(() => {
       roles: implementerRoles,
       defaultOnRoster: false,
       trust: { onPrem: false, hubSandboxed: true },
-      start: { create: createPi, exclusiveStartRefusal: "Pi start is in progress; inspect status before retrying", refreshTools: true, explicitHeadlessMode: true, daemonPort: "pi-rpc", forms: dualForms, defaultForm: "tui", ownsTerminal: terminal, launch: (ctx) => compatibilityLaunch("pi", ctx), conductorStartable: true, autoStart: "pi.auto_start", conductorStartArgs: piConductorStartArgs, hubSwitches: [], ownedFlags: [] },
+      start: { create: createPi, exclusiveStartRefusal: "Pi start is in progress; inspect status before retrying", refreshTools: true, explicitHeadlessMode: true, daemonPort: "pi-rpc", forms: dualForms, defaultForm: "tui", conductorStartable: true, autoStart: "pi.auto_start", conductorStartArgs: piConductorStartArgs, hubSwitches: [], ownedFlags: [] },
       identity: { mcp: "env" },
-      permission: { modes: {}, grants: { ...hubGrants } },
+      instances: { mode: "headless" },
+      permission: { grants: { ...hubGrants } },
       session: { idField: "sessionId", currentId: sessionId("sessionId"), restoreOnStart: true, launchKind: "pi", launchRecord: true, ...PI_RECOVERY_SESSION, crashPlan: piCrashPlan, unrecordedTerminal: "tui", continuityBookmark: piRecoveryContinuity, continuity: { key: "pi", parse: parsePiContinuity } },
       turnEnd: "adapter",
       budget: { account: "pi", instrumented: true },
@@ -10869,9 +10867,10 @@ var init_builtin_metadata = __esm(() => {
       roles: implementerRoles,
       defaultOnRoster: true,
       trust: { onPrem: true, hubSandboxed: true },
-      start: { create: createLocal, reconfigureWhileAttached: true, refreshTools: true, daemonPort: "local-worker", forms: headlessForms, defaultForm: "headless", ownsTerminal: headless, launch: (ctx) => compatibilityLaunch("local", ctx), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+      start: { create: createLocal, reconfigureWhileAttached: true, refreshTools: true, daemonPort: "local-worker", forms: headlessForms, defaultForm: "headless", conductorStartable: true, hubSwitches: [], ownedFlags: [] },
       identity: { mcp: "env" },
-      permission: { modes: {}, grants: { ...hubGrants } },
+      instances: { mode: "headless" },
+      permission: { grants: { ...hubGrants } },
       session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: true, launchKind: "local", ...LOCAL_RECOVERY_SESSION, crashPlan: localCrashPlan },
       turnEnd: "adapter",
       budget: { account: "local", quotaExempt: true, instrumented: true },
@@ -10890,9 +10889,9 @@ var init_builtin_metadata = __esm(() => {
       optional: true,
       defaultOnRoster: false,
       trust: { onPrem: false, hubSandboxed: false },
-      start: { create: createJcode, preflight: jcodeStartPreflight, daemonPort: "owned-acp", forms: dualForms, defaultForm: "tui", ownsTerminal: terminal, explicitHeadlessMode: true, launch: (ctx) => compatibilityLaunch("jcode", ctx, true), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+      start: { create: createJcode, preflight: jcodeStartPreflight, daemonPort: "owned-acp", forms: dualForms, defaultForm: "tui", explicitHeadlessMode: true, conductorStartable: true, hubSwitches: [], ownedFlags: [] },
       identity: { mcp: "project-file" },
-      permission: { modes: {}, unmanaged: "Jcode native policy is unmanaged; no hub mode mapping", grants: {
+      permission: { unmanaged: "Jcode native policy is unmanaged; no hub mode mapping", grants: {
         ask: "no verified hub mode mapping; native policy only",
         "ask-when-needed": "no verified hub mode mapping; native policy only",
         "never-ask": "no verified hub mode mapping; native policy only"
@@ -11081,7 +11080,6 @@ var init_qwen = __esm(() => {
       daemonPort: "acp",
       forms: ["headless"],
       defaultForm: "headless",
-      ownsTerminal: () => false,
       conductorStartable: true,
       hubSwitches: [],
       ownedFlags: [],
@@ -11103,12 +11101,8 @@ var init_qwen = __esm(() => {
       conductorStartArgs: (args) => args.length ? new Error("conductor starts accept no launch overrides; use ahub qwen") : {}
     },
     identity: { mcp: "acp-session" },
+    instances: { mode: "headless" },
     permission: {
-      modes: {
-        ask: { kind: "acp-mode", modeId: QWEN_MODE_IDS.ask },
-        "ask-when-needed": { kind: "acp-mode", modeId: QWEN_MODE_IDS["ask-when-needed"] },
-        "never-ask": { kind: "acp-mode", modeId: QWEN_MODE_IDS["never-ask"] }
-      },
       grants: {
         ask: "every write, edit and shell command asks",
         "ask-when-needed": "Qwen auto-edit approves file edits; shell commands ask; NO hub sandbox",
@@ -11134,9 +11128,7 @@ var init_qwen = __esm(() => {
     capabilities: { watch: true },
     cli: { command: "qwen", launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
     display: QWEN_DISPLAY,
-    hooks: { agentIdentity: (init) => {
-      qwenNativeIdentity("qwen", true, init);
-    }, recallPlatform: "qwen" }
+    hooks: { recallPlatform: "qwen" }
   };
 });
 
@@ -11209,6 +11201,56 @@ function assertDaemonEngine(definition) {
   if (definition.start.create && engine === undefined || engine !== undefined && !Object.hasOwn(DAEMON_PORTS, engine))
     throw new Error("invalid adapter daemon engine");
 }
+function assertDefinitionCoherence(definition) {
+  const fail = (field, reason) => {
+    throw new Error(`${definition.kind}.${field}: ${reason}`);
+  };
+  const nonempty = (value) => typeof value === "string" && value.trim().length > 0;
+  assertDaemonEngine(definition);
+  if (definition.turnEnd === "native-hook" && definition.transport !== "claude-channel" && !definition.hooks?.factsHook) {
+    fail("turnEnd", "native-hook requires the Claude transport or a native factsHook");
+  }
+  const attach = definition.attach, pullOnly = attach?.pullOnlyForms;
+  if (pullOnly !== undefined) {
+    if (!Array.isArray(pullOnly) || pullOnly.some((form) => !definition.start.forms.includes(form)))
+      fail("attach.pullOnlyForms", "each pull-only form must be a supported start form");
+  }
+  if (definition.transport === "ws-pull" || definition.transport === "claude-channel" || definition.instances?.mode === "external") {
+    if (attach?.externalHello !== true)
+      fail("attach.externalHello", "external transport or instance admission requires an explicit hello policy");
+  }
+  if (definition.transport === "ws-pull" && !pullOnly?.length)
+    fail("attach.pullOnlyForms", "ws-pull requires a nonempty pull-only contract");
+  if (attach?.admission !== undefined) {
+    if (!attach.admission || typeof attach.admission !== "object")
+      fail("attach.admission", "admission must declare its refusal policy");
+    if (!definition.start.forms.includes("tui") || !pullOnly?.includes("tui"))
+      fail("attach.admission", "native admission requires a supported pull-only TUI form");
+    for (const field of ["reservedRefusal", "watchRefusal"]) {
+      if (!nonempty(attach.admission[field]))
+        fail(`attach.admission.${field}`, "admission refusal text must be nonempty");
+    }
+  }
+  if (definition.budget !== undefined) {
+    if (!nonempty(definition.budget?.account))
+      fail("budget.account", "declared budget account must be a nonempty string");
+    for (const field of ["reader", "context"]) {
+      const reader = definition.budget[field];
+      if (reader === undefined)
+        continue;
+      if (!reader || typeof reader !== "object")
+        fail(`budget.${field}`, "telemetry reader must be an object");
+      if (!nonempty(reader.source))
+        fail(`budget.${field}.source`, "telemetry source must be a nonempty string");
+      if (typeof reader.read !== "function")
+        fail(`budget.${field}.read`, "telemetry read must be callable");
+    }
+  }
+  if (definition.reviewerVariant && !definition.reviewerVariant.reviewer)
+    fail("reviewerVariant.reviewer", "reviewer variant lacks reviewer policy");
+  if (definition.reviewer?.unavailable && (definition.start.create || definition.reviewer.backend))
+    fail("reviewer", "unavailable reviewer must remain metadata-only");
+}
 function assertNativeCapabilityScope(definition) {
   if (fixedBuiltinDefinitions.has(definition))
     return;
@@ -11256,10 +11298,10 @@ var init_registry = __esm(() => {
   declarationOnlyDefinitions = immutable([]);
   definitions = new Map;
   for (const definition of [...ADAPTERS, ...declarationOnlyDefinitions]) {
-    assertDaemonEngine(definition);
+    assertDefinitionCoherence(definition);
     assertNativeCapabilityScope(definition);
     if (definition.reviewerVariant) {
-      assertDaemonEngine(definition.reviewerVariant);
+      assertDefinitionCoherence(definition.reviewerVariant);
       assertNativeCapabilityScope(definition.reviewerVariant);
     }
     if (definition.api !== ADAPTER_API || definitions.has(definition.kind))
@@ -18704,6 +18746,135 @@ var OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassign
 // src/hub/conductor.ts
 init_tool_refusal();
 
+// src/hub/instances.ts
+init_registry();
+init_permission_mode();
+import { types as types2 } from "util";
+var MAX_INSTANCES = 64;
+var FLOW_ROLES = new Set(["planner", "implementer", "verifier", "reviewer", "conductor"]);
+var PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
+var RESERVED = new Set(["user", "hub", "digest"]);
+var fail = (field, reason) => {
+  throw new Error(`${field}: ${reason}`);
+};
+function fields(value, field) {
+  if (!value || typeof value !== "object" || types2.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length)
+    return fail(field, "must be a plain own-data object");
+  const descriptors = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(value));
+  if (Object.values(descriptors).some((entry) => !Object.hasOwn(entry, "value") || !entry.enumerable))
+    return fail(field, "must contain enumerable data fields only");
+  return descriptors;
+}
+function roles(value, field) {
+  if (!Array.isArray(value) || types2.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype || Object.getOwnPropertySymbols(value).length)
+    return fail(field, "must be a role array");
+  const descriptors = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(value));
+  const length = descriptors.length?.value;
+  if (!Number.isSafeInteger(length) || length > FLOW_ROLES.size || Object.keys(descriptors).length !== length + 1)
+    return fail(field, "invalid role array");
+  const out = [];
+  for (let index = 0;index < length; index++) {
+    const descriptor = descriptors[String(index)];
+    if (!descriptor || !Object.hasOwn(descriptor, "value") || !descriptor.enumerable || typeof descriptor.value !== "string" || !FLOW_ROLES.has(descriptor.value) || out.includes(descriptor.value))
+      return fail(field, "roles must be known and unique");
+    out.push(descriptor.value);
+  }
+  return out;
+}
+function supportsHeadlessInstances(definition) {
+  return definition.instances?.mode === "headless" && !!definition.start.create && definition.start.forms.includes("headless");
+}
+function validateInstances(raw) {
+  const result = Object.create(null);
+  if (raw === undefined)
+    return Object.freeze(result);
+  const declarations = fields(raw, "instances");
+  if (Object.keys(declarations).length > MAX_INSTANCES)
+    return fail("instances", "at most 64 extra instances are supported");
+  for (const [id, descriptor] of Object.entries(declarations)) {
+    if (!PEER_ID.test(id) || RESERVED.has(id) || definitionOf(id))
+      return fail("instances", "ids must be nonreserved extra instance ids, not builtin ids");
+    const path = `instances.${id}`, entry = fields(descriptor.value, path);
+    if (Object.keys(entry).some((key) => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode"].includes(key)))
+      return fail(path, "unsupported field");
+    const kind = entry.kind?.value;
+    if (typeof kind !== "string")
+      return fail(`${path}.kind`, "must name a native kind");
+    const definition = definitionOf(kind), prefix = `${kind}-`;
+    if (!definition)
+      return fail(`${path}.kind`, "unknown native kind");
+    if (!id.startsWith(prefix) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length)))
+      return fail(path, "id must be <kind>-<name>");
+    const declaredRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
+    const reviewer = (definition.reviewerVariant ?? definition).reviewer;
+    const reviewerOnly = entry.start_mode?.value === "headless" && declaredRoles.length === 1 && declaredRoles[0] === "reviewer";
+    if (entry.review_mode && (entry.review_mode.value !== "fresh" || !reviewerOnly || !reviewer))
+      return fail(`${path}.review_mode`, "fresh requires reviewer-only roles, headless mode and a declared fresh-review capability");
+    const freshReviewer = reviewerOnly && !!reviewer && (reviewer.declaration === "automatic" || entry.review_mode?.value === "fresh");
+    if (definition.routing?.reviewOnly && !freshReviewer)
+      return fail(path, 'a review-only kind requires headless roles exactly ["reviewer"]');
+    if (freshReviewer && entry.worktree)
+      return fail(`${path}.worktree`, "a fresh reviewer reads the project checkout: worktree is not supported");
+    if (freshReviewer && entry.permission_mode)
+      return fail(`${path}.permission_mode`, "a fresh reviewer has a fixed read-only policy");
+    const external = definition.instances?.mode === "external";
+    const runtime = freshReviewer ? definition.reviewerVariant ?? definition : definition;
+    const unavailableReviewer = freshReviewer && !!(definition.reviewerVariant ?? definition).reviewer?.unavailable;
+    if (!unavailableReviewer && runtime.instances?.mode !== "external" && !supportsHeadlessInstances(runtime))
+      return fail(`${path}.kind`, definition.reviewerVariant ? 'unsupported; this kind only declares headless reviewer instances with roles exactly ["reviewer"]' : "unsupported; explicit external instance policy or a headless instance policy with a headless factory is required");
+    if (external) {
+      const declared = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
+      if (entry.start_mode && definition.reviewerVariant) {
+        if (entry.worktree)
+          return fail(path, "a headless reviewer reads the project checkout: worktree is not supported");
+        if (declared.length !== 1 || declared[0] !== "reviewer")
+          return fail(`${path}.roles`, 'a headless channel-kind instance is a reviewer: roles must be exactly ["reviewer"]');
+      } else {
+        if (entry.start_mode || entry.worktree)
+          return fail(path, `a channel instance starts only from the person's terminal (ahub <kind> --as <id>): start_mode and worktree are not supported; a headless reviewer declares roles ["reviewer"] and start_mode "headless"`);
+        const allowed = definition.instances?.roles ?? definition.roles;
+        if (!declared.length || declared.some((role) => !allowed.includes(role)))
+          return fail(`${path}.roles`, "a channel instance must declare its roles: reviewer and/or planner");
+      }
+    } else {
+      const allowed = runtime.instances?.roles;
+      if (allowed && (declaredRoles.length ? declaredRoles : runtime.roles).some((role) => !allowed.includes(role)))
+        return fail(`${path}.roles`, "roles must fit the definition's instance policy");
+    }
+    const value = { kind, ...entry.review_mode ? { review_mode: "fresh" } : {} };
+    if (entry.roles) {
+      value.roles = roles(entry.roles.value, `${path}.roles`);
+      Object.freeze(value.roles);
+    }
+    if (entry.start_mode) {
+      if (entry.start_mode.value !== "headless")
+        return fail(`${path}.start_mode`, "I2 extra instances require headless mode");
+      value.start_mode = "headless";
+    }
+    if (entry.permission_mode) {
+      if (!isPermissionMode(entry.permission_mode.value))
+        return fail(`${path}.permission_mode`, "must be ask, ask-when-needed or never-ask");
+      value.permission_mode = entry.permission_mode.value;
+    }
+    if (entry.worktree) {
+      const worktree = entry.worktree.value;
+      if (typeof worktree !== "string" || !worktree.trim() || Buffer.byteLength(worktree) > 4096 || /\p{Cc}/u.test(worktree))
+        return fail(`${path}.worktree`, "must be a nonempty control-free path of at most 4096 UTF-8 bytes");
+      value.worktree = worktree;
+    }
+    result[id] = Object.freeze(value);
+  }
+  return Object.freeze(result);
+}
+function effectiveInstanceRoles(id, declarations, policyRoles) {
+  const definition = definitionOf(id, declarations);
+  if (!definition)
+    throw new Error(`${id}: no declared native instance`);
+  const declaration = declarations && Object.hasOwn(declarations, id) ? declarations[id] : undefined;
+  const ownRoles = (key) => Object.hasOwn(policyRoles, key) ? policyRoles[key] : undefined;
+  return [...declaration?.roles ?? ownRoles(id) ?? ownRoles(definition.kind) ?? definition.roles];
+}
+
 // src/hub/config-trust.ts
 init_child_process();
 init_git();
@@ -18755,126 +18926,6 @@ function configTracked(cwd, name) {
       return false;
     }
   });
-}
-
-// src/hub/instances.ts
-init_registry();
-init_permission_mode();
-import { types as types2 } from "util";
-var MAX_INSTANCES = 64;
-var FLOW_ROLES = new Set(["planner", "implementer", "verifier", "reviewer", "conductor"]);
-var PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
-var RESERVED = new Set(["user", "hub", "digest"]);
-var fail = (field, reason) => {
-  throw new Error(`${field}: ${reason}`);
-};
-function fields(value, field) {
-  if (!value || typeof value !== "object" || types2.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length)
-    return fail(field, "must be a plain own-data object");
-  const descriptors = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(value));
-  if (Object.values(descriptors).some((entry) => !Object.hasOwn(entry, "value") || !entry.enumerable))
-    return fail(field, "must contain enumerable data fields only");
-  return descriptors;
-}
-function roles(value, field) {
-  if (!Array.isArray(value) || types2.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype || Object.getOwnPropertySymbols(value).length)
-    return fail(field, "must be a role array");
-  const descriptors = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(value));
-  const length = descriptors.length?.value;
-  if (!Number.isSafeInteger(length) || length > FLOW_ROLES.size || Object.keys(descriptors).length !== length + 1)
-    return fail(field, "invalid role array");
-  const out = [];
-  for (let index = 0;index < length; index++) {
-    const descriptor = descriptors[String(index)];
-    if (!descriptor || !Object.hasOwn(descriptor, "value") || !descriptor.enumerable || typeof descriptor.value !== "string" || !FLOW_ROLES.has(descriptor.value) || out.includes(descriptor.value))
-      return fail(field, "roles must be known and unique");
-    out.push(descriptor.value);
-  }
-  return out;
-}
-function validateInstances(raw) {
-  const result = Object.create(null);
-  if (raw === undefined)
-    return Object.freeze(result);
-  const declarations = fields(raw, "instances");
-  if (Object.keys(declarations).length > MAX_INSTANCES)
-    return fail("instances", "at most 64 extra instances are supported");
-  for (const [id, descriptor] of Object.entries(declarations)) {
-    if (!PEER_ID.test(id) || RESERVED.has(id) || definitionOf(id))
-      return fail("instances", "ids must be nonreserved extra instance ids, not builtin ids");
-    const path = `instances.${id}`, entry = fields(descriptor.value, path);
-    if (Object.keys(entry).some((key) => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode"].includes(key)))
-      return fail(path, "unsupported field");
-    const kind = entry.kind?.value;
-    if (typeof kind !== "string")
-      return fail(`${path}.kind`, "must name a native kind");
-    const definition = definitionOf(kind), prefix = `${kind}-`;
-    if (!definition)
-      return fail(`${path}.kind`, "unknown native kind");
-    if (!id.startsWith(prefix) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length)))
-      return fail(path, "id must be <kind>-<name>");
-    const declaredRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
-    const reviewer = (definition.reviewerVariant ?? definition).reviewer;
-    const reviewerOnly = entry.start_mode?.value === "headless" && declaredRoles.length === 1 && declaredRoles[0] === "reviewer";
-    if (entry.review_mode && (entry.review_mode.value !== "fresh" || !reviewerOnly || !reviewer))
-      return fail(`${path}.review_mode`, "fresh requires reviewer-only roles, headless mode and a declared fresh-review capability");
-    const freshReviewer = reviewerOnly && !!reviewer && (reviewer.declaration === "automatic" || entry.review_mode?.value === "fresh");
-    if (definition.routing?.reviewOnly && !freshReviewer)
-      return fail(path, 'a review-only kind requires headless roles exactly ["reviewer"]');
-    if (freshReviewer && entry.worktree)
-      return fail(`${path}.worktree`, "a fresh reviewer reads the project checkout: worktree is not supported");
-    if (freshReviewer && entry.permission_mode)
-      return fail(`${path}.permission_mode`, "a fresh reviewer has a fixed read-only policy");
-    const channel = definition.identity.mcp === "channel-plugin";
-    const unavailableReviewer = freshReviewer && !!(definition.reviewerVariant ?? definition).reviewer?.unavailable;
-    if (!channel && !unavailableReviewer && (!definition.start.create || !definition.start.forms.includes("headless") || !["env", "acp-session"].includes(definition.identity.mcp)))
-      return fail(`${path}.kind`, "unsupported; a headless factory with env or ACP-session identity, or a channel-plugin kind, is required, not project-file identity");
-    if (channel) {
-      const declared = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
-      if (entry.start_mode && definition.reviewerVariant) {
-        if (entry.worktree)
-          return fail(path, "a headless reviewer reads the project checkout: worktree is not supported");
-        if (declared.length !== 1 || declared[0] !== "reviewer")
-          return fail(`${path}.roles`, 'a headless channel-kind instance is a reviewer: roles must be exactly ["reviewer"]');
-      } else {
-        if (entry.start_mode || entry.worktree)
-          return fail(path, `a channel instance starts only from the person's terminal (ahub <kind> --as <id>): start_mode and worktree are not supported; a headless reviewer declares roles ["reviewer"] and start_mode "headless"`);
-        if (!declared.length || declared.some((role) => role !== "reviewer" && role !== "planner"))
-          return fail(`${path}.roles`, "a channel instance must declare its roles: reviewer and/or planner");
-      }
-    }
-    const value = { kind, ...entry.review_mode ? { review_mode: "fresh" } : {} };
-    if (entry.roles) {
-      value.roles = roles(entry.roles.value, `${path}.roles`);
-      Object.freeze(value.roles);
-    }
-    if (entry.start_mode) {
-      if (entry.start_mode.value !== "headless")
-        return fail(`${path}.start_mode`, "I2 extra instances require headless mode");
-      value.start_mode = "headless";
-    }
-    if (entry.permission_mode) {
-      if (!isPermissionMode(entry.permission_mode.value))
-        return fail(`${path}.permission_mode`, "must be ask, ask-when-needed or never-ask");
-      value.permission_mode = entry.permission_mode.value;
-    }
-    if (entry.worktree) {
-      const worktree = entry.worktree.value;
-      if (typeof worktree !== "string" || !worktree.trim() || Buffer.byteLength(worktree) > 4096 || /\p{Cc}/u.test(worktree))
-        return fail(`${path}.worktree`, "must be a nonempty control-free path of at most 4096 UTF-8 bytes");
-      value.worktree = worktree;
-    }
-    result[id] = Object.freeze(value);
-  }
-  return Object.freeze(result);
-}
-function effectiveInstanceRoles(id, declarations, policyRoles) {
-  const definition = definitionOf(id, declarations);
-  if (!definition)
-    throw new Error(`${id}: no declared native instance`);
-  const declaration = declarations && Object.hasOwn(declarations, id) ? declarations[id] : undefined;
-  const ownRoles = (key) => Object.hasOwn(policyRoles, key) ? policyRoles[key] : undefined;
-  return [...declaration?.roles ?? ownRoles(id) ?? ownRoles(definition.kind) ?? definition.roles];
 }
 
 // src/hub/instance-config.ts

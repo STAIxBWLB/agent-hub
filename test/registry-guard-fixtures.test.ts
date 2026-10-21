@@ -152,3 +152,146 @@ test("registry guard does not borrow a constant from an unrelated supplied scrip
     "src/hub/second.ts": `const LOCAL="shadow"; function second(value:string){return value===LOCAL;}`,
   }).map(site => site.symbol)).toEqual(["first"]);
 });
+
+for (const body of [
+  `function choose(peer = "claude") { return peer; }`,
+  `const CLAUDE = "claude"; function choose(peer = CLAUDE) { return peer; }`,
+  `function choose(options: any) { const { peer = "codex" } = options; return peer; }`,
+  `function choose(peer: string | undefined) { return peer ?? "kimi"; }`,
+  `const PI = "pi"; function choose(peer?: string) { return peer ?? PI; }`,
+  `function choose(peer?: string) { peer ??= "qwen"; return peer; }`,
+]) test(`registry guard A2b detects native default identity: ${body}`, () => {
+  const sites = scanRegistrySources(source(body));
+  expect(sites).toHaveLength(1);
+  expect(sites[0]?.symbol).toBe("choose");
+});
+
+for (const expression of [
+  `budget.report("claude", 1)`,
+  `definitionOf("codex")`,
+  `peer.startsWith("codex-")`,
+  `peer.startsWith("kimi")`,
+  `ids.includes("pi")`,
+  `"qwen".includes(peer)`,
+  `Object.hasOwn(states, "jcode")`,
+  `Object.prototype.hasOwnProperty.call(states, "agy")`,
+]) test(`registry guard A2b detects vendor call or peer-id predicate: ${expression}`, () => {
+  const sites = scanRegistrySources(source(`declare const budget: { report(peer: string, used: number): void }; declare const ids: readonly PeerId[]; declare const states: Record<PeerId, unknown>; declare function definitionOf(peer: string): unknown; function choose(peer: string) { return ${expression}; }`));
+  expect(sites).toHaveLength(1);
+  expect(sites[0]?.symbol).toBe("choose");
+});
+
+test("registry guard A2b resolves vendor call/default aliases without confusing shadowed bindings", () => {
+  const sites = scanRegistrySources({
+    "src/adapters/native-test.ts": `export const KIND = "codex"; export const PREFIX = "codex-";`,
+    "src/hub/example.ts": `import { KIND as name, PREFIX as prefix } from '../adapters/native-test.ts'; declare const budget: {report(peer: string): void}; function choose(peer?:string) { peer ??= name; budget.report(name); return peer.startsWith(prefix); } function other(name:string,prefix:string) { return budget.report(name) || peer.startsWith(prefix); }`,
+  });
+  expect(sites).toHaveLength(3);
+  expect(sites.map(site => site.symbol)).toEqual(["choose", "choose", "choose"]);
+});
+
+for (const expression of [
+  `/^codex$/.test(peer)`,
+  `/^(?:kimi|pi)$/.test(peer)`,
+  `/^claude$/i.test(peer)`,
+  `new RegExp("^qwen$").test(peer)`,
+]) test(`registry guard A2b detects anchored native kind regex: ${expression}`, () => {
+  const sites = scanRegistrySources(source(`function choose(peer:string) { return ${expression}; }`));
+  expect(sites).toHaveLength(1);
+  expect(sites[0]?.symbol).toBe("choose");
+});
+
+for (const body of [
+  `import { AcpPeer } from '../adapters/acp.ts'; function choose(peer:unknown) { return peer instanceof AcpPeer; }`,
+  `import { CodexPeer as Native } from '../adapters/codex-appserver.ts'; function choose(peer:unknown) { return peer instanceof Native; }`,
+  `import * as native from '../adapters/acp.ts'; function choose(peer:unknown) { return peer instanceof native.AcpPeer; }`,
+]) test(`registry guard A2b detects native instanceof dispatch outside adapters: ${body}`, () => {
+  const sites = scanRegistrySources(source(body));
+  expect(sites).toHaveLength(1);
+  expect(sites[0]?.symbol).toBe("choose");
+});
+
+test("registry guard A2b keeps prose, unrelated defaults/predicates/regex and ordinary instanceof out of policy", () => {
+  expect(inventory(`
+    // /^codex$/.test(peer), peer.startsWith("kimi-") and peer instanceof AcpPeer are examples.
+    const prose = "budget.report('claude')";
+    function choose(mode = "ask") {
+      mode ??= "off";
+      return /^codex session/.test(mode) || /^(?:ask|off)$/.test(mode)
+        || mode.startsWith("feature-") || Object.hasOwn(states, "ask")
+        || error instanceof Error || states instanceof Map;
+    }
+  `)).toEqual([]);
+});
+
+test("registry guard A2b adapter exclusion applies to every broadened detector without adding core exemptions", () => {
+  const body = `import { AcpPeer } from '../adapters/acp.ts'; declare function report(peer: string): void; function choose(peer="codex") { return /^kimi$/.test(peer) || peer.startsWith("pi-") || report("claude") || peer instanceof AcpPeer; }`;
+  expect(inventory(body, "src/adapters/native-policy.ts")).toEqual([]);
+  expect(inventory(body, "src/hub/new-native-policy.ts").reduce((count, row) => count + row.count, 0)).toBe(5);
+});
+
+
+test("registry guard A2b call arguments require a source-proven peer or kind position", () => {
+  const sites = scanRegistrySources(source(`
+    declare function report(peer: string): void;
+    declare function byModel(model: string): void;
+    declare function byFile(file: string): void;
+    function choose() { report("claude"); byModel("claude"); byFile("codex"); unknownFunction("kimi"); }
+  `));
+  expect(sites).toHaveLength(1);
+  expect(sites[0]?.text).toContain('"claude"');
+  expect(sites[0]?.symbol).toBe("choose");
+});
+
+
+test("registry guard A2b follows constant peer aliases for predicates and refuses local constructor shadowing", () => {
+  expect(inventory(`function choose(peer:string) { const target=peer; const selected=target; return selected.startsWith("codex-"); }`)).toEqual([{ file: "src/hub/example.ts", symbol: "choose", count: 1 }]);
+  expect(inventory(`import { AcpPeer as Native } from '../adapters/acp.ts'; function choose(peer:unknown, Native:Function) { return peer instanceof Native; }`)).toEqual([]);
+  expect(inventory(`import * as native from '../adapters/acp.ts'; function choose(peer:unknown, native:any) { return peer instanceof native.AcpPeer; }`)).toEqual([]);
+});
+
+for (const expression of [
+  `peer["startsWith"]("codex-")`,
+  `peers["includes"]("pi")`,
+  `Object["hasOwn"](states, "codex")`,
+  `states["hasOwnProperty"]("kimi")`,
+  `Object.prototype["hasOwnProperty"]["call"](states, "agy")`,
+]) test(`registry guard A2b detects constant bracket peer predicates: ${expression}`, () => {
+  const sites = scanRegistrySources(source(`declare const peers: readonly PeerId[]; declare const states: Record<PeerId, unknown>; function choose(peer:string) { return ${expression}; }`));
+  expect(sites).toHaveLength(1);
+  expect(sites[0]?.symbol).toBe("choose");
+});
+
+test("registry guard A2b resolves lexical bracket method aliases but never guesses dynamic or shadowed keys", () => {
+  const sites = scanRegistrySources({
+    "src/adapters/method-names.ts": `export const STARTS="startsWith";`,
+    "src/hub/example.ts": `import { STARTS as starts } from '../adapters/method-names.ts'; const includes="includes"; function choose(peer:string,peers:PeerId[]) { return peer[starts]("codex-") || peers[includes]("pi"); } function shadow(peer:string,starts:string,includes:string) { return peer[starts]("codex-") || peer[includes]("pi"); } function dynamic(peer:string,key:string) { return peer[key]("codex-"); }`,
+  });
+  expect(sites).toHaveLength(2);
+  expect(sites.map(site => site.symbol)).toEqual(["choose", "choose"]);
+});
+
+test("registry guard A2b resolves constant bracket native constructor names with lexical namespace shadowing", () => {
+  const sites = scanRegistrySources({
+    "src/adapters/ctor-names.ts": `export const CTOR="AcpPeer";`,
+    "src/hub/example.ts": `import * as native from '../adapters/acp.ts'; import { CTOR as ctor } from '../adapters/ctor-names.ts'; function choose(peer:unknown) { return peer instanceof native["AcpPeer"] || peer instanceof native[ctor]; } function shadow(peer:unknown,native:any) { return peer instanceof native[ctor]; } function dynamic(peer:unknown,key:string) { return peer instanceof native[key]; }`,
+  });
+  expect(sites).toHaveLength(2);
+  expect(sites.map(site => site.symbol)).toEqual(["choose", "choose"]);
+});
+
+
+test("registry guard A2b native instanceof requires adapter provenance rather than a Peer suffix", () => {
+  expect(scanRegistrySources({
+    "src/hub/peers.ts": `export class BasePeer {}`,
+    "src/hub/example.ts": `import { BasePeer } from './peers.ts'; function choose(peer:unknown) { return peer instanceof BasePeer; }`,
+  })).toEqual([]);
+  expect(inventory(`class Peer {} class WsPeer extends Peer {} function choose(peer:unknown) { return peer instanceof Peer || peer instanceof WsPeer; }`)).toEqual([]);
+  const sites = scanRegistrySources({
+    "src/adapters/acp.ts": `export class AcpPeer {}`,
+    "src/hub/reexport.ts": `export { AcpPeer as Native } from '../adapters/acp.ts';`,
+    "src/hub/example.ts": `import { Native } from './reexport.ts'; class Derived extends Native {} function choose(peer:unknown) { return peer instanceof Native || peer instanceof Derived; }`,
+  });
+  expect(sites).toHaveLength(2);
+  expect(sites.map(site => site.symbol)).toEqual(["choose", "choose"]);
+});

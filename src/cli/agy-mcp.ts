@@ -1,3 +1,4 @@
+import { AGY_DEFINITION } from "../adapters/agy/definition.ts";
 import type { Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { closeSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, renameSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
@@ -53,7 +54,7 @@ function shellUnquote(value: string): string | undefined {
 }
 
 function validateOptions(options: AgyMcpOptions) {
-  const peer = options.peer ?? "agy";
+  const peer = options.peer ?? AGY_DEFINITION.kind;
   if (!/^[a-z][a-z0-9-]{0,31}$/.test(peer)) throw new Error("agy peer id is invalid");
   for (const [name, value] of Object.entries({ projectRoot: options.projectRoot, stateDir: options.stateDir, serverJs: options.serverJs, hookScript: options.hookScript })) {
     if (typeof value !== "string" || !isAbsolute(value) || value.length > 4096 || /[\u0000-\u001f\u007f]/.test(value)) throw new Error(`${name} must be an absolute control-free path`);
@@ -326,7 +327,7 @@ export function cleanupAgyMcp(options: AgyMcpOptions): void {
   if (!present.length) return;
   if (present.length !== FILES.length) throw new Error("managed agy plugin is incomplete; inspect it before cleanup");
   const currentHooks = parseJson(readFileSync(join(plan.root, HOOKS_FILE)), HOOKS_FILE);
-  const launch = managedHookLaunch(currentHooks, options, options.peer ?? "agy");
+  const launch = managedHookLaunch(currentHooks, options, options.peer ?? AGY_DEFINITION.kind);
   if (!launch || launch.instanceId !== options.instanceId || launch.launchId !== options.launchId) return;
   // A stale cleanup never removes files a newer config update has replaced.
   if (plan.changed) return;

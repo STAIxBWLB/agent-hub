@@ -3493,9 +3493,9 @@ load daemon config or infer executable commands from environment text.
 the host still performs each probe, while definitions validate or display it.
 `cli.authority` and `cli.personOnlyFlags` can only restrict existing authority;
 identity.ts stays authoritative and missing/unknown metadata retains today's
-rule. `start.passthrough` is data only. The MCP hook is a pure plan over the
-existing project/state/server-entrypoint/form tuple; every write, ordering fence
-and finally cleanup remains in the CLI host.
+rule. `start.passthrough` is data only. MCP installation, ordering fences and
+finally cleanup remain in the existing CLI host; A2b removes the unconsumed
+`init.mcpPlan` sketch instead of advertising another installation path.
 
 ### A2 internal native host projections (2026-10-18)
 
@@ -3657,6 +3657,68 @@ The guard resolves immutable peer-id constant aliases and supplied-source
 import/reexport bindings through lexical symbols before classifying comparisons.
 Shadowed and unrelated bindings remain independent; named non-peer enum exceptions
 keep their exact scope. It performs no filesystem or package lookup.
+
+### A2b consumed contracts and conformance (2026-10-21, #451, #625 phases 2-3)
+
+Runtime `start.launch` is optional and supplies only real native argv planners.
+Kimi, Pi, local, Jcode and fresh-review children use verified host startup ports,
+not unused CLI-wrapper plans. The frozen A1 export retains its old compatibility
+shape under a separate legacy type and is never selected by runtime consumers.
+Remove unused `start.ownsTerminal`, `init`, `QuotaReader.resetOnWindow` and hooks
+`agentIdentity`, `onAttach`, `onDetach`, `conversationRevert`, `replaceSession`.
+Actual terminal ownership, identity, revert, replacement and MCP writes retain
+their existing transport/host paths. The consumed native facts hook remains.
+Remove unconsumed runtime `permission.modes` and `permission.readOnly`; native mode
+mappings, host approval gates and fresh-review isolation receipts remain
+unchanged and authoritative. Missing metadata never grants permission.
+
+`attach.externalHello` explicitly admits an authenticated external process.
+`instances.mode` separately selects external or headless declaration policy,
+with an optional fixed role ceiling. MCP configuration shape grants neither.
+Claude keeps human-owned external planner/reviewer instances and its fresh
+headless reviewer exception; agy still refuses ordinary extra instances.
+Declaration admission never proves execution-root ownership or isolation.
+
+Daemon normalization dispatches through the resolved definition's `budget.reader`
+and `budget.context`. Preserve source timestamps and current session, launch,
+generation and privacy fences. Missing readers stay unknown, including ACP kinds
+without a verified occupancy source; never borrow another kind's parser or
+manufacture empty quota readings or zero occupancy.
+
+The fixed-builtin restrictions above remain ceilings: `acpCommand` selects the
+Kimi-specific host startup path; `attach.admission` consumes its native TUI launch
+receipt; `resetSoftTokensOnResume` resets host-owned soft accounting;
+`crashIdentity` validates released native recovery records; `pi-rpc` owns the
+verified relay, sandbox and process-monitor lifecycle. Configured definitions
+cannot opt into these host-global assumptions. Their upgrade path is typed,
+kind-neutral host ports before external loading, not removal of scope guards.
+
+Registry coherence validates base and reviewer-variant attach, factory and reader
+structure without invoking a reader or performing I/O. Conformance enumerates
+every definition and variant with distinct enrollment or an unsupported reason
+naming dedicated coverage. Driven fixtures use `definition.start.create`; Claude
+uses its real external channel. Jcode exercises its owned-ACP watchdog and Kimi
+separately exercises TUI pull-only queue behavior. Unsupported native permission
+or quota legs never imply readiness.
+
+The AST guard additionally checks native defaults, source-proven peer/kind call
+arguments, exact native regexes, startsWith/includes/hasOwn predicates (including
+constant bracket spellings), and adapter-origin native instanceof dispatch.
+Aliases and shadowing remain source-bound; generic hub classes, dynamic keys and
+prose are not native identity policy. Keep the frozen core baseline empty and
+existing seed entries unchanged except the reviewed search/replacement-only
+reanchors of `roster-detached-pi-recovery` and `kimi-watch-live-owner` from
+instanceof to the equivalent native predicates. Their identity and named tests
+stay unchanged, with green-to-named-assertion proof through the seed runner. Add a
+registry START_MODE_PEERS membership mutation seed.
+Native type predicates and the external channel implementation live in adapters;
+authentication and lifecycle authority remain in the daemon. Stable hub leaf
+exports preserve source compatibility for native state readers.
+
+After unidentifiable Codex cancellation, status carries a fixed
+`unidentified-cancellation` notice while its existing offline latch holds. Late
+completion cannot clear it; verified native reattachment does. No native ids or
+provider text reach the notice.
 
 ## Amendment: playbook lifecycle and criteria checklist, 2026-10-18 (#481 S0/S8)
 

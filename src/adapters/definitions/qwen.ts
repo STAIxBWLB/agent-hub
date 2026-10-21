@@ -2,7 +2,7 @@ import { QWEN_DISPLAY } from "./native-display.ts";
 import { QWEN_RECOVERY_SESSION } from "./native-recovery.ts";
 import { AcpPeer } from "../acp.ts";
 import type { AdapterDefinition } from "../registry-types.ts";
-import { buildQwenLaunch, qwenNativeIdentity, qwenSessionId, QWEN_MODE_IDS } from "./qwen-native.ts";
+import { buildQwenLaunch, qwenSessionId } from "./qwen-native.ts";
 import { shellQuote } from "../../cli/shell-quote.ts";
 
 /** Production Qwen policy. Legacy AcpPeer callers opt in separately through qwen025. */
@@ -20,7 +20,6 @@ export const QWEN_DEFINITION: AdapterDefinition = {
     daemonPort: "acp",
     forms: ["headless"],
     defaultForm: "headless",
-    ownsTerminal: () => false,
     conductorStartable: true,
     hubSwitches: [],
     ownedFlags: [],
@@ -40,12 +39,8 @@ export const QWEN_DEFINITION: AdapterDefinition = {
     conductorStartArgs: args => args.length ? new Error("conductor starts accept no launch overrides; use ahub qwen") : {},
   },
   identity: { mcp: "acp-session" },
+  instances: { mode: "headless" },
   permission: {
-    modes: {
-      ask: { kind: "acp-mode", modeId: QWEN_MODE_IDS.ask },
-      "ask-when-needed": { kind: "acp-mode", modeId: QWEN_MODE_IDS["ask-when-needed"] },
-      "never-ask": { kind: "acp-mode", modeId: QWEN_MODE_IDS["never-ask"] },
-    },
     grants: {
       ask: "every write, edit and shell command asks",
       "ask-when-needed": "Qwen auto-edit approves file edits; shell commands ask; NO hub sandbox",
@@ -71,5 +66,5 @@ export const QWEN_DEFINITION: AdapterDefinition = {
   capabilities: { watch: true },
   cli: { command: "qwen", launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
   display: QWEN_DISPLAY,
-  hooks: { agentIdentity: init => { qwenNativeIdentity("qwen", true, init); }, recallPlatform: "qwen" },
+  hooks: { recallPlatform: "qwen" },
 };

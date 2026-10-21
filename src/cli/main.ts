@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { claudePeer as defaultChannelPeer } from "../hub/claude-state.ts";
 import { effectiveInstanceRoles } from "../hub/instances.ts";
 import { resolveInstanceExecutionCwd } from "../hub/instance-execution.ts";
 import { readInstanceConfig } from "../hub/instance-config.ts";
@@ -1662,7 +1663,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   facts: async () => {
     if (!args.includes("--hook")) return fail("usage: ahub facts --hook (a Claude Code PreToolUse, PostToolUse and Stop hook)");
     try {
-      const out = await factsHook(await Bun.stdin.text(), stateDir, process.env.AGENTHUB_PEER_ID ?? "claude");
+      const out = await factsHook(await Bun.stdin.text(), stateDir, process.env.AGENTHUB_PEER_ID ?? defaultChannelPeer(undefined));
       if (out) console.log(out);
     } catch {
       // a hook that fails must not get in the way of the tool call
@@ -1671,7 +1672,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   "check-path": async () => {
     const hook = args.includes("--hook");
     const { one, rest } = takeFlags(args.filter((a) => a !== "--hook"), ["--peer"], []);
-    const peer = one["--peer"] ?? "claude";
+    const peer = one["--peer"] ?? defaultChannelPeer(undefined);
     let target = rest[0];
     try {
       if (hook) {

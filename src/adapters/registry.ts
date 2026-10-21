@@ -41,9 +41,9 @@ export const ADAPTERS: readonly AdapterDefinition[] = immutable([
 const declarationOnlyDefinitions: readonly AdapterDefinition[] = immutable([]);
 const definitions = new Map<string, AdapterDefinition>();
 for (const definition of [...ADAPTERS, ...declarationOnlyDefinitions]) {
-  assertDaemonEngine(definition);
+  assertDefinitionCoherence(definition);
   assertNativeCapabilityScope(definition);
-  if (definition.reviewerVariant) { assertDaemonEngine(definition.reviewerVariant); assertNativeCapabilityScope(definition.reviewerVariant); }
+  if (definition.reviewerVariant) { assertDefinitionCoherence(definition.reviewerVariant); assertNativeCapabilityScope(definition.reviewerVariant); }
   if (definition.api !== ADAPTER_API || definitions.has(definition.kind)) throw new Error("invalid builtin adapter registry");
   definitions.set(definition.kind, definition);
 }
@@ -124,6 +124,43 @@ export function defaultRosterEnabled(peer: string, piEnabled: boolean): boolean 
 export function assertDaemonEngine(definition: Pick<AdapterDefinition, "start">): void {
   const engine = definition.start.daemonPort;
   if (definition.start.create && engine === undefined || engine !== undefined && !Object.hasOwn(DAEMON_PORTS, engine)) throw new Error("invalid adapter daemon engine");
+}
+
+/** Structural registry contract only: native telemetry readers are never executed during loading. */
+export function assertDefinitionCoherence(definition: AdapterDefinition): void {
+  const fail = (field: string, reason: string): never => { throw new Error(`${definition.kind}.${field}: ${reason}`); };
+  const nonempty = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
+  assertDaemonEngine(definition);
+  if (definition.turnEnd === "native-hook" && definition.transport !== "claude-channel" && !definition.hooks?.factsHook) {
+    fail("turnEnd", "native-hook requires the Claude transport or a native factsHook");
+  }
+  const attach = definition.attach, pullOnly = attach?.pullOnlyForms;
+  if (pullOnly !== undefined) {
+    if (!Array.isArray(pullOnly) || pullOnly.some(form => !definition.start.forms.includes(form))) fail("attach.pullOnlyForms", "each pull-only form must be a supported start form");
+  }
+  if (definition.transport === "ws-pull" || definition.transport === "claude-channel" || definition.instances?.mode === "external") {
+    if (attach?.externalHello !== true) fail("attach.externalHello", "external transport or instance admission requires an explicit hello policy");
+  }
+  if (definition.transport === "ws-pull" && !pullOnly?.length) fail("attach.pullOnlyForms", "ws-pull requires a nonempty pull-only contract");
+  if (attach?.admission !== undefined) {
+    if (!attach.admission || typeof attach.admission !== "object") fail("attach.admission", "admission must declare its refusal policy");
+    if (!definition.start.forms.includes("tui") || !pullOnly?.includes("tui")) fail("attach.admission", "native admission requires a supported pull-only TUI form");
+    for (const field of ["reservedRefusal", "watchRefusal"] as const) {
+      if (!nonempty(attach.admission[field])) fail(`attach.admission.${field}`, "admission refusal text must be nonempty");
+    }
+  }
+  if (definition.budget !== undefined) {
+    if (!nonempty(definition.budget?.account)) fail("budget.account", "declared budget account must be a nonempty string");
+    for (const field of ["reader", "context"] as const) {
+      const reader = definition.budget[field];
+      if (reader === undefined) continue;
+      if (!reader || typeof reader !== "object") fail(`budget.${field}`, "telemetry reader must be an object");
+      if (!nonempty(reader.source)) fail(`budget.${field}.source`, "telemetry source must be a nonempty string");
+      if (typeof reader.read !== "function") fail(`budget.${field}.read`, "telemetry read must be callable");
+    }
+  }
+  if (definition.reviewerVariant && !definition.reviewerVariant.reviewer) fail("reviewerVariant.reviewer", "reviewer variant lacks reviewer policy");
+  if (definition.reviewer?.unavailable && (definition.start.create || definition.reviewer.backend)) fail("reviewer", "unavailable reviewer must remain metadata-only");
 }
 
 /** Host-global native quirks are not capabilities a config-only or external definition may opt into. */

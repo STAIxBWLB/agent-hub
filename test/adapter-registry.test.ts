@@ -18,14 +18,16 @@ test("adapter registry keeps the existing native order, defaults and permissions
     expect(r.definitionOf(definition.kind)).toBe(definition);
     expect(r.kindOf(definition.kind)).toBe(definition.kind);
     expect(r.familyOf(definition.kind)).toBe(definition.kind);
-    expect(typeof definition.start.launch).toBe("function");
+    expect(definition.start.launch === undefined || typeof definition.start.launch === "function").toBe(true);
+    expect(definition.start).not.toHaveProperty("ownsTerminal");
+    expect(definition.permission).not.toHaveProperty("modes");
+    expect(definition.permission).not.toHaveProperty("readOnly");
+    expect(definition).not.toHaveProperty("init");
   }
   expect(r.definitionOf("qwen")).toMatchObject({ optional: true, defaultOnRoster: false, transport: "acp", roles: ["implementer", "verifier"], trust: { onPrem: false, hubSandboxed: false } });
   expect(r.definitionOf("qwen").start.forms).toEqual(["headless"]);
-  expect(r.definitionOf("qwen").start.ownsTerminal("headless")).toBe(false);
-  expect(r.definitionOf("qwen").permission.modes).toEqual({ ask: { kind: "acp-mode", modeId: "default" }, "ask-when-needed": { kind: "acp-mode", modeId: "auto-edit" }, "never-ask": { kind: "acp-mode", modeId: "yolo" } });
   expect(r.definitionOf("qwen").permission.readOnly).toBeUndefined();
-  expect(r.definitionOf("agy")).toMatchObject({ optional: true, defaultOnRoster: false, transport: "ws-pull", roles: ["implementer", "verifier"], identity: { mcp: "channel-plugin" }, permission: { modes: {}, unmanagedForms: ["tui"] }, turnEnd: "native-hook" });
+  expect(r.definitionOf("agy")).toMatchObject({ optional: true, defaultOnRoster: false, transport: "ws-pull", roles: ["implementer", "verifier"], identity: { mcp: "channel-plugin" }, permission: { unmanagedForms: ["tui"] }, turnEnd: "native-hook" });
   expect(r.definitionOf("agy").start.forms).toEqual(["tui"]);
   expect(r.definitionOf("agy").session.recoveryRefusal()).toContain("continuity and resume are unavailable");
   expect(r.definitionOf("agy").reviewerVariant.reviewer.unavailable).toBe("agy is an implementer peer (#485)");
@@ -45,7 +47,7 @@ test("registry policy data is immutable across projects", async () => {
   expect(Object.isFrozen(r.ADAPTERS)).toBe(true);
   expect(Object.isFrozen(qwen)).toBe(true);
   expect(Object.isFrozen(qwen.roles)).toBe(true);
-  expect(Object.isFrozen(qwen.permission.modes)).toBe(true);
+  expect(Object.isFrozen(qwen.permission.grants)).toBe(true);
   expect(() => qwen.roles.push("planner")).toThrow();
   expect(r.definitionOf("qwen").roles).toEqual(["implementer", "verifier"]);
 });

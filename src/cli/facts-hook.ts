@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { claudePeer as defaultChannelPeer } from "../hub/claude-state.ts";
 import { definitionOf } from "../adapters/registry.ts";
 // Managed Claude hook transport for turn-free facts, native observations and runtime permissions.
 // PreToolUse preserves facts additionalContext and adds permission decisions; other phases observe only.
@@ -101,7 +102,7 @@ export async function factsHook(stdin: string, stateDir: string, peer: string, t
 if (import.meta.main) {
   try {
     const stateDir = process.env.AGENTHUB_STATE_DIR;
-    const out = stateDir ? await factsHook(await Bun.stdin.text(), stateDir, process.env.AGENTHUB_PEER_ID ?? "claude", 2000, process.env.AGENTHUB_HOOK_EVENT) : undefined;
+    const out = stateDir ? await factsHook(await Bun.stdin.text(), stateDir, process.env.AGENTHUB_PEER_ID ?? defaultChannelPeer(undefined), 2000, process.env.AGENTHUB_HOOK_EVENT) : undefined;
     if (out) console.log(out);
   } catch {
     // a hook that fails must not get in the way of the tool call

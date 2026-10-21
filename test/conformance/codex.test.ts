@@ -2,17 +2,17 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { CodexPeer } from "../../src/adapters/codex-appserver.ts";
+import type { CodexPeer } from "../../src/adapters/codex-appserver.ts";
 import { newEnvelope } from "../../src/hub/envelope.ts";
 import type { DeliveryReceipt } from "../../src/hub/peers.ts";
 import { startFakeAppServer } from "../fakes/app-server.ts";
 import { processTable } from "../../src/hub/child-process.ts";
 import { until } from "./kit.ts";
+import { createRegisteredPeer, expire } from "./factories.ts";
 
-class WatchdogCodex extends CodexPeer { expire(): void { this.onWatchdog(); } }
 async function fixture(fake: Pick<ReturnType<typeof startFakeAppServer>, "url" | "requests" | "stop"> = startFakeAppServer()) {
   const dir = mkdtempSync(join(tmpdir(), "conformance-codex-")), messages: string[] = [], receipts: DeliveryReceipt[] = [], usage: boolean[] = [];
-  const peer = new WatchdogCodex("codex", { cwd: dir, upstreamUrl: fake.url, appPort: 0, proxyPort: 0, onUsage: (_reading, hard) => { usage.push(hard); } });
+  const peer = createRegisteredPeer<CodexPeer>("codex", { codex: { cwd: dir, upstreamUrl: fake.url, appPort: 0, proxyPort: 0, onUsage: (_reading, hard) => { usage.push(hard); } } });
   peer.onMessage = text => { messages.push(text); }; peer.onDelivery = receipt => { receipts.push(receipt); };
   await peer.start();
   const seen: any[] = [], tui = new WebSocket(peer.proxyUrl);
@@ -59,7 +59,7 @@ test("P4 Codex: watchdog fences a late result after observed native acceptance",
   try {
     await f.peer.deliver([newEnvelope("user", "SLOW:100")], "old");
     await until(() => f.receipts.some(receipt => receipt.state === "accepted"), "Codex native acceptance");
-    f.peer.expire();
+    expire(f.peer);
     // Forwarded turn/completed is a transport consumption barrier, not a guessed grace delay.
     await until(() => f.seen.some(row => row.method === "turn/completed"), "late result consumed");
     expect(f.messages).toEqual([]);
@@ -74,7 +74,7 @@ test("P4 Codex: stopping owns the launcher's group and its native app-server chi
   writeFileSync(bin, `#!/bin/sh\necho $$ > ${quote(launcher)}\ntrap '' TERM\n${quote(process.execPath)} ${quote(join(import.meta.dir, "../fakes/codex-bin.ts"))} "$@" &\necho $! > ${quote(native)}\nwhile :; do sleep 1; done\n`, { mode: 0o755 });
   const reservation = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
   const appPort = reservation.port!; reservation.stop(true);
-  const peer = new CodexPeer("codex", { cwd: dir, bin, appPort, proxyPort: 0 });
+  const peer = createRegisteredPeer<CodexPeer>("codex", { codex: { cwd: dir, bin, appPort, proxyPort: 0 } });
   try {
     await peer.start();
     const leader = Number(readFileSync(launcher, "utf8")), child = Number(readFileSync(native, "utf8"));
@@ -119,7 +119,7 @@ test("P4 Codex: accepted-before-start watchdog tombstone survives delayed native
     const request = native.requests.find(row => row.method === "turn/start");
     native.send({ id: request.id, result: { turn: { id: "retired" } } });
     await delivery; // The fake has deliberately emitted no turn/started.
-    f.peer.expire();
+    expire(f.peer);
     native.note("turn/started", { turn: { id: "retired" } });
     native.note("item/completed", { turnId: "retired", item: { id: "old-answer", type: "agentMessage", text: "must not publish" } });
     await barrier(f, 50);
@@ -139,7 +139,7 @@ for (const acceptance of [true, false]) test(`P4 Codex: invalidated pending ${ac
     const request = native.requests.find(row => row.method === "turn/start");
     native.note("turn/started", { turn: { id: "old-pending" } });
     await barrier(f, 60);
-    f.peer.expire();
+    expire(f.peer);
     expect((await delivery as Error).message).toContain("watchdog");
     expect(f.receipts.map(receipt => receipt.state)).toEqual(["needs_review"]);
     native.note("turn/started", { turn: { id: "personal-current" } });
@@ -170,7 +170,7 @@ test("P4 Codex: legacy unnamed turn works until cancellation makes its identity 
     await barrier(f, 70);
     expect(f.messages).toEqual(["legacy answer"]); expect(f.peer.state).toBe("idle");
     native.note("turn/started", { turn: {} }); await barrier(f, 71);
-    f.peer.expire(); expect(f.peer.state).toBe("offline");
+    expire(f.peer); expect(f.peer.state).toBe("offline");
     native.note("turn/started", { turn: { id: "unattributable-late" } });
     native.note("item/completed", { item: { id: "late", type: "agentMessage", text: "unattributable answer" } });
     native.note("turn/completed", { turn: { id: "unattributable-late", status: "completed" } });

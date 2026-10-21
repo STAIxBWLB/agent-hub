@@ -10,6 +10,7 @@ import type { HubEvent } from "./events.ts";
 import type { SupervisionFeed } from "./supervision.ts";
 import type { Budget } from "./budget.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
+import { supportsHeadlessInstances } from "./instances.ts";
 
 /** The production ProgressObserver sink forwards structured verdicts, never its observations/reasoning. */
 export function conductorProgressSink(record: (event: HubEvent) => void, feed: Pick<SupervisionFeed, "milestone">): (event: HubEvent) => void {
@@ -116,7 +117,7 @@ export function conductorStart(peer: unknown, mode: unknown, preview: (peer: "cl
   if (typeof peer !== "string" || !adapter?.start.conductorStartable) throw refuse("only claude, codex, kimi, pi and local, plus opt-in qwen/jcode, may be started by the conductor");
   const selected = peer;
   const extra = adapter.kind !== selected;
-  if (extra && (!adapter.start.create || !adapter.start.forms.includes("headless") || !["env", "acp-session"].includes(adapter.identity.mcp))) throw refuse(`${peer}: this native transport does not support extra headless instances`);
+  if (extra && !supportsHeadlessInstances(adapter)) throw refuse(`${peer}: this native transport does not support extra headless instances`);
   const own = startMode(selected);
   if (extra && own !== "headless") throw refuse(`${peer}: extra instances require headless mode in I2`);
   if (mode !== undefined && mode !== own) throw refuse(`${peer} starts ${own} here; a person sets a start mode (ahub settings), the conductor cannot choose one`);

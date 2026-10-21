@@ -1,4 +1,4 @@
-import { definitionOf } from "../adapters/registry.ts";
+import { definitionOf, type AdapterDefinition } from "../adapters/registry.ts";
 import { Database } from "bun:sqlite";
 import type { PeerId } from "./envelope.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
@@ -12,6 +12,10 @@ export interface UsageWindow {
   /** length of the window, for a fallback reset time */
   windowMins?: number;
   source: string;
+}
+/** No declared source is unknown, not a synthetic empty provider reading. */
+export function readNativeQuota(definition: AdapterDefinition | undefined, value: unknown): UsageWindow[] | undefined {
+  return definition?.budget?.reader?.read(value);
 }
 interface Reading extends UsageWindow {
   at: number;

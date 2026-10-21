@@ -945,3 +945,7 @@ export class PiPeer extends BasePeer {
     void this.terminateFailedTurn(new Error("Pi run became inactive before agent_settled"));
   }
 }
+
+export function isPiPeer(value: unknown): value is PiPeer {
+  return value instanceof PiPeer;
+}

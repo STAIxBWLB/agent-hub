@@ -2,14 +2,14 @@ import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LocalPeer } from "../../src/adapters/local-worker.ts";
-import { PiPeer } from "../../src/adapters/pi.ts";
+import type { LocalPeer } from "../../src/adapters/local-worker.ts";
+import type { PiPeer } from "../../src/adapters/pi.ts";
 import { OmniRoute } from "../../src/omniroute/client.ts";
 import { newEnvelope } from "../../src/hub/envelope.ts";
 import { startFakeModelServer, toolCall } from "../fakes/model-server.ts";
 import { until } from "./kit.ts";
+import { createRegisteredPeer, expire } from "./factories.ts";
 
-class WatchdogLocal extends LocalPeer { expire(): void { this.onWatchdog(); } }
 
 test("P4 local: a consumed model result from an expired generation cannot publish into the next turn", async () => {
   const dir = mkdtempSync(join(tmpdir(), "conformance-local-late-"));
@@ -29,12 +29,12 @@ test("P4 local: a consumed model result from an expired generation cannot publis
     if (old) parsed(); return result;
   };
   const messages: string[] = [];
-  const peer = new WatchdogLocal("local", { cwd: dir, omni, fixedModel: "vllm/fixed", tools: { deny: [], permit: async () => false } });
+  const peer = createRegisteredPeer<LocalPeer>("local", { local: { cwd: dir, omni, fixedModel: "vllm/fixed", tools: { deny: [], permit: async () => false } } });
   peer.onMessage = text => { messages.push(text); };
   let oldTurn: Promise<void> | undefined;
   try {
     await peer.start(); oldTurn = peer.deliver([newEnvelope("user", "OLD_GENERATION")]); oldTurn.catch(() => {});
-    await until(() => observed, "old gateway call held"); peer.expire();
+    await until(() => observed, "old gateway call held"); expire(peer);
     expect(peer.state).toBe("idle");
     await peer.deliver([newEnvelope("user", "CURRENT_GENERATION")]);
     await until(() => messages.length === 1, "new generation publishes");
@@ -56,8 +56,8 @@ test("P4 local: tool approval refusal prevents the write and hub tools use the h
   } });
   const oldUrl = process.env.AGENTHUB_OMNIROUTE_URL, oldKey = process.env.OMNIROUTE_API_KEY;
   process.env.AGENTHUB_OMNIROUTE_URL = server.url; process.env.OMNIROUTE_API_KEY = "conformance-key";
-  const peer = new LocalPeer("local", { cwd: dir, omni: new OmniRoute({ urls: [server.url], access_hosts: [] }), fixedModel: "vllm/fixed",
-    tools: { deny: [], permit: async title => { asked.push(title); return false; } }, taskTool: async name => { called.push(name); return "[]"; } });
+  const peer = createRegisteredPeer<LocalPeer>("local", { local: { cwd: dir, omni: new OmniRoute({ urls: [server.url], access_hosts: [] }), fixedModel: "vllm/fixed",
+    tools: { deny: [], permit: async title => { asked.push(title); return false; } }, taskTool: async name => { called.push(name); return "[]"; } } });
   try {
     await peer.start(); await peer.deliver([newEnvelope("user", "edit and list tasks")]);
     await until(() => peer.state === "idle", "local tools settled");
@@ -71,8 +71,8 @@ test("P4 Pi: recovery resumes its exact persisted session and rejects a stale br
   const dir = mkdtempSync(join(tmpdir(), "conformance-pi-resume-")), stateDir = join(dir, "state"), sessions = join(stateDir, "pi-sessions");
   mkdirSync(sessions, { recursive: true });
   const sessionFile = join(sessions, "saved-session.jsonl"); writeFileSync(sessionFile, JSON.stringify({ type: "session", id: "saved-session", cwd: dir }) + "\n");
-  const peer = new PiPeer("pi", { cwd: dir, stateDir, sessionFile, mode: "headless", backend: "dgx", cmd: [process.execPath, join(import.meta.dir, "../fakes/pi-rpc.ts")],
-    relay: { url: "http://127.0.0.1:9/v1", token: "fixture", models: [{ id: "dgx/coding" }] }, tools: [], executeTool: async () => "fixture" });
+  const peer = createRegisteredPeer<PiPeer>("pi", { pi: { cwd: dir, stateDir, sessionFile, mode: "headless", backend: "dgx", cmd: [process.execPath, join(import.meta.dir, "../fakes/pi-rpc.ts")],
+    relay: { url: "http://127.0.0.1:9/v1", token: "fixture", models: [{ id: "dgx/coding" }] }, tools: [], executeTool: async () => "fixture" } });
   const messages: string[] = []; peer.onMessage = text => { messages.push(text); };
   try {
     await peer.start(); expect(peer.recoveryMetadata()).toMatchObject({ sessionId: "saved-session", sessionFile });

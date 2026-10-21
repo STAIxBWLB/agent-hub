@@ -3838,3 +3838,11 @@ blocks that undo until the identity and workspace can be reviewed.
 Use `ahub sdlc train report <release-id>` for scope readiness and recorded release metrics. The planner creates future release rows, activates one train, and assigns tasks through the release-only hub tools. A due date requests a cut review; it never clears unfinished work. Move missed tasks to the next row with a reason, then use `ahub sdlc train cut <release-id> <revision>` from the person's terminal or `hub_release_cut` as the planner. The cut retains a short host admission lease through freeze and defers on held gate slots or unknown/quota-limited peer windows with a real quota source. Accounts without a quota reader (Kimi included when `kimi_tokens_5h` is zero) report `no quota source`; manual and budget-record pauses still defer. It does not run release preparation or publish anything. Schedule bundle/check/docs work under separate heavy admission and retain the person's native verification, authorization and upgrade window. A hotfix records its enumerated cause and keeps every gate.
 
 The per-release "gates run" record is deferred to S6/S7. Person ruling 2026-10-19 supersedes the earlier S11 upgrade-admission ruling: upgrades use pre-S11 recovery readiness (no busy peers, pending approvals resolved, completion checks settled) and retain the existing operation checks. S11 adds no host-admission, quota or all-idle requirement to upgrade. An active/frozen configured train still requires recovery-target `release_trains` compatibility. Release-cut admission remains unchanged: follow its refusal's applicable exit by stopping or resuming the paused peer, adjusting `ahub budget set`, or using `ahub release drop`. Missing/shadowed `dot` requires the resource controller or a PATH correction for the cut; nested admission requires retrying the cut outside the outer lease.
+
+
+## Codex cancellation identity notice
+
+If Codex is offline with `statusNotice.code = unidentified-cancellation`, the hub
+could not identify a cancelled native turn. Reattach the native session before
+further hub delivery. A late completion keeps this hold; verified native
+reattachment clears it. The notice contains fixed guidance, without native ids.

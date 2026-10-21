@@ -1,28 +1,33 @@
-import { expect } from "bun:test";
+import { expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AcpPeer } from "../../src/adapters/acp.ts";
-import { CodexPeer } from "../../src/adapters/codex-appserver.ts";
-import { JcodePeer } from "../../src/adapters/jcode.ts";
-import { PiPeer } from "../../src/adapters/pi.ts";
-import { LocalPeer } from "../../src/adapters/local-worker.ts";
+import type { AcpPeer } from "../../src/adapters/acp.ts";
+import type { CodexPeer } from "../../src/adapters/codex-appserver.ts";
+import type { JcodePeer } from "../../src/adapters/jcode.ts";
+import type { PiPeer } from "../../src/adapters/pi.ts";
+import type { LocalPeer } from "../../src/adapters/local-worker.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../../src/hub/daemon.ts";
 import { ControlClient } from "../../src/hub/control-client.ts";
 import { processTable } from "../../src/hub/child-process.ts";
 import { OmniRoute } from "../../src/omniroute/client.ts";
 import { startFakeAppServer } from "../fakes/app-server.ts";
 import { startFakeModelServer } from "../fakes/model-server.ts";
-import { registerConformance, until } from "./kit.ts";
+import { registerConformance, until, type ConformanceFixture } from "./kit.ts";
+import { ADAPTERS, type AdapterDefinition } from "../../src/adapters/registry.ts";
+import { createFromDefinition } from "./factories.ts";
+import { assertEnrollment, UNSUPPORTED } from "./enrollment.ts";
 
 const fake = (name: string) => join(import.meta.dir, "../fakes", name);
 const root = () => mkdtempSync(join(tmpdir(), "ahub-conformance-"));
 const lines = (file: string): any[] => readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
 const qwen = ["--agent-name", "qwen-code", "--agent-version", "0.25.0", "--modes", "default,auto-edit,yolo"];
 
-for (const kind of ["kimi", "qwen"] as const) registerConformance({ kind, async create() {
+const fixtures: Record<string, (definition: AdapterDefinition) => Promise<ConformanceFixture>> = {};
+const acpFixture = async (definition: AdapterDefinition): Promise<ConformanceFixture> => {
+  const kind = definition.kind;
   const dir = root(), record = join(dir, "rpc"), pid = join(dir, "pid"), messages: string[] = [];
-  const peer = new AcpPeer(kind, { cwd: dir, cmd: [process.execPath, fake("acp-server.ts"), "--record-protocol", record, "--record-pid", pid, ...(kind === "qwen" ? qwen : [])], qwen025: kind === "qwen", resumeSessionId: "s1" });
+  const peer = createFromDefinition<AcpPeer>(definition, { acp: { cwd: dir, cmd: [process.execPath, fake("acp-server.ts"), "--record-protocol", record, "--record-pid", pid, ...(kind === "qwen" ? qwen : [])], qwen025: kind === "qwen", resumeSessionId: "s1" } });
   peer.onMessage = text => { messages.push(text); };
   try { await peer.start(); } catch (error) { await peer.stop(); rmSync(dir, { recursive: true, force: true }); throw error; }
   return { peer, messages, busyOnDeliver: true,
@@ -32,23 +37,24 @@ for (const kind of ["kimi", "qwen"] as const) registerConformance({ kind, async 
       finally { rmSync(dir, { recursive: true, force: true }); }
     },
   };
-} });
+};
+for (const definition of ADAPTERS.filter(candidate => candidate.transport === "acp" && candidate.start.daemonPort === "acp")) fixtures[definition.kind] = acpFixture;
 
-registerConformance({ kind: "jcode", async create() {
+fixtures.jcode = async (definition) => {
   const dir = root(), home = join(dir, "home"), record = join(dir, "rpc"), messages: string[] = [];
   mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");
-  const peer = new JcodePeer({ cwd: dir, home, command: [process.execPath, fake("jcode-agent.ts"), "--record", record], resumeSessionId: "saved-jcode" });
+  const peer = createFromDefinition<JcodePeer>(definition, { jcode: { cwd: dir, home, command: [process.execPath, fake("jcode-agent.ts"), "--record", record], resumeSessionId: "saved-jcode" } });
   peer.onMessage = text => { messages.push(text); };
   try { await peer.start(); } catch (error) { await peer.stop(); rmSync(dir, { recursive: true, force: true }); throw error; }
   return { peer, messages, busyOnDeliver: true,
     async verifyTransport() { expect(lines(record).find(row => row.method === "session/load").params.sessionId).toBe("saved-jcode"); expect(peer.permissionModeState).toBe("unmanaged"); await expect(peer.setPermissionMode("ask")).rejects.toThrow("no verified mode mapping"); },
     async close() { try { await peer.stop(); const owned = lines(record).find(row => row.kind === "serve").pid; const table = processTable(); expect(table).toBeDefined(); expect(table!.some(row => row.pid === owned || row.pgid === owned)).toBe(false); } finally { rmSync(dir, { recursive: true, force: true }); } },
   };
-} });
+};
 
-registerConformance({ kind: "codex", async create() {
+fixtures.codex = async (definition) => {
   const dir = root(), server = startFakeAppServer(), messages: string[] = [];
-  const peer = new CodexPeer("codex", { cwd: dir, appPort: 0, proxyPort: 0, upstreamUrl: server.url });
+  const peer = createFromDefinition<CodexPeer>(definition, { codex: { cwd: dir, appPort: 0, proxyPort: 0, upstreamUrl: server.url } });
   peer.onMessage = text => { messages.push(text); };
   await peer.start();
   const tui = new WebSocket(peer.proxyUrl), seen: any[] = [];
@@ -62,12 +68,12 @@ registerConformance({ kind: "codex", async create() {
     verifyTransport() { expect(peer.recoveryMetadata().threadId).toBe("saved-thread"); expect(server.requests.find(row => row.method === "turn/start").params.threadId).toBe("saved-thread"); expect(seen.some(row => typeof row.id === "number" && row.id < 0)).toBe(false); },
     async close() { try { tui.close(); await peer.stop(); } finally { server.stop(); rmSync(dir, { recursive: true, force: true }); } },
   };
-} });
+};
 
-registerConformance({ kind: "pi", async create() {
+fixtures.pi = async (definition) => {
   const dir = root(), stateDir = join(dir, "state"), messages: string[] = [];
-  const peer = new PiPeer("pi", { cwd: dir, stateDir, mode: "headless", backend: "dgx", cmd: [process.execPath, fake("pi-rpc.ts")],
-    relay: { url: "http://127.0.0.1:9/v1", token: "fixture", models: [{ id: "dgx/coding" }] }, tools: [], executeTool: async () => "fixture" });
+  const peer = createFromDefinition<PiPeer>(definition, { pi: { cwd: dir, stateDir, mode: "headless", backend: "dgx", cmd: [process.execPath, fake("pi-rpc.ts")],
+    relay: { url: "http://127.0.0.1:9/v1", token: "fixture", models: [{ id: "dgx/coding" }] }, tools: [], executeTool: async () => "fixture" } });
   peer.onMessage = text => { messages.push(text); };
   try { await peer.start(); } catch (error) { await peer.stop(); rmSync(dir, { recursive: true, force: true }); throw error; }
   const launch = peer.tuiLaunch!;
@@ -81,15 +87,15 @@ registerConformance({ kind: "pi", async create() {
     verifyTransport() { expect(peer.recoveryMetadata().sessionId).toBe(metadata.sessionId); expect(typeof metadata.sessionFile).toBe("string"); },
     async close() { try { await peer.stop(); const stopped = processTable(); expect(stopped).toBeDefined(); expect(stopped!.some(row => owners.some(owner => row.pid === owner.pid || row.pgid === owner.pgid))).toBe(false); } finally { rmSync(dir, { recursive: true, force: true }); } },
   };
-} });
+};
 
-registerConformance({ kind: "local", async create() {
+fixtures.local = async (definition) => {
   const dir = root(), messages: string[] = [], server = startFakeModelServer({ key: "conformance-key" });
   const oldUrl = process.env.AGENTHUB_OMNIROUTE_URL, oldKey = process.env.OMNIROUTE_API_KEY;
   process.env.AGENTHUB_OMNIROUTE_URL = server.url; process.env.OMNIROUTE_API_KEY = "conformance-key";
   const key = join(dir, "gateway-key"); writeFileSync(key, "conformance-key");
   const omni = new OmniRoute({ urls: [server.url], access_hosts: [], api_key_file: key });
-  const peer = new LocalPeer("local", { cwd: dir, omni, fixedModel: "vllm/fixed", tools: { deny: [], permit: async () => false } });
+  const peer = createFromDefinition<LocalPeer>(definition, { local: { cwd: dir, omni, fixedModel: "vllm/fixed", tools: { deny: [], permit: async () => false } } });
   peer.onMessage = text => { messages.push(text); }; await peer.start();
   return { peer, messages, busyOnDeliver: true,
     verifyTransport() { expect(server.requests).toHaveLength(1); expect(JSON.stringify(server.requests[0]!.body)).toContain("conformance ping"); },
@@ -98,9 +104,11 @@ registerConformance({ kind: "local", async create() {
       if (oldKey === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = oldKey;
       rmSync(dir, { recursive: true, force: true }); } },
   };
-} });
+};
 
-registerConformance({ kind: "claude", async create() {
+fixtures.claude = async (definition) => {
+  // External channel ownership stays in the real daemon; no driven constructor is invented for it.
+  expect(definition.start.create).toBeUndefined();
   const dir = root(), stateDir = join(dir, "state"), messages: string[] = [], delivered: any[] = [];
   const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
@@ -114,4 +122,16 @@ registerConformance({ kind: "claude", async create() {
     verifyTransport() { expect(delivered).toHaveLength(1); expect(delivered[0].envs[0].body).toBe("conformance ping"); },
     async close() { try { channel.close(); await daemon.stop(); } finally { rmSync(dir, { recursive: true, force: true }); } },
   };
-} });
+};
+
+
+test("#451 all registry kinds and reviewer variants have explicit conformance enrollment", () => {
+  assertEnrollment(ADAPTERS, Object.keys(fixtures), UNSUPPORTED);
+});
+for (const definition of ADAPTERS) {
+  const create = fixtures[definition.kind];
+  if (create) registerConformance({ kind: definition.kind, create: () => create(definition) });
+  else test(`P4 ${definition.kind}: explicitly unsupported generic driven legs`, () => {
+    expect(UNSUPPORTED[definition.kind]?.trim()).not.toBeEmpty();
+  });
+}

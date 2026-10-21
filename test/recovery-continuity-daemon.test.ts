@@ -10,6 +10,7 @@ import { DEFAULT_CONFIG, startDaemon, type HubConfig } from "../src/hub/daemon.t
 import { realPath } from "../src/hub/project.ts";
 import { readRecoveryContinuity, retireRecoveryContinuity, writeRecoveryContinuity, type RecoveryContinuityBookmark } from "../src/hub/recovery-continuity.ts";
 import { BasePeer } from "../src/hub/peers.ts";
+import { PiPeer, isPiPeer } from "../src/adapters/pi.ts";
 import type { TerminalOpener } from "../src/hub/terminal-open.ts";
 import { parsePiFlags as parseNativePiFlags } from "../src/adapters/definitions/native-cli-pi.ts";
 
@@ -128,13 +129,24 @@ function continuityRecorder() {
   const ready = { state: "ready", bookmark, digest: "a".repeat(64) };
   class Owner {
     id = "pi"; state = "idle"; sessionGeneration = 1; recoveryReady = true; sessionId = "recorded";
+    constructor() {
+      // Keep the real runtime identity predicate connected without starting a native process or bridge.
+      const peer = new PiPeer("pi", { cwd: "/fixture", stateDir: "/fixture/state", mode: "headless", backend: "dgx",
+        relay: { url: "http://127.0.0.1:9/v1", token: "fixture", models: [] }, tools: [], executeTool: async () => "unused fixture tool" });
+      for (const field of ["state", "sessionGeneration", "recoveryReady", "sessionId"] as const) {
+        Object.defineProperty(peer, field, { value: this[field], writable: true, configurable: true, enumerable: true });
+      }
+      const owner = peer as unknown as Owner;
+      Object.defineProperty(peer, "recoveryMetadata", { value: () => ({ sessionId: owner.sessionId }), configurable: true });
+      return owner;
+    }
     recoveryMetadata() { return { sessionId: this.sessionId }; }
   }
   const peers = new Map<string, Owner>();
   const writes: unknown[] = [], calls: unknown[] = [], logs: string[] = [];
   const state: { disk: unknown; writeFails: boolean; settleFails: boolean; settleSucceeds: boolean; now: number; reads: number } = { disk: ready, writeFails: false, settleFails: false, settleSucceeds: false, now: 1000, reads: 0 };
   const context = { piContinuity: ready, stopping: false, recoveryActive: () => false,
-    bus: { peers }, PiPeer: Owner, opts: { cwd: "/fixture", stateDir: "/fixture/state" }, projectId: "fixture", instanceId: "current",
+    bus: { peers }, isPiPeer, opts: { cwd: "/fixture", stateDir: "/fixture/state" }, projectId: "fixture", instanceId: "current",
     Date: { now: () => state.now },
     readRecoveryContinuity: () => { state.reads++; return state.disk; },
     writeSessions: (_directory: string, value: unknown) => { if (state.writeFails) throw new Error("write failed"); writes.push(value); },

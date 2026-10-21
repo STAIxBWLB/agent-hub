@@ -789,6 +789,7 @@ function render(snapshot) {
       if (peer.attached === false) row.append(el('p', 'Disconnected recipient; work is retained.', 'meta'));
       if (peer.toolsOnly) row.append(el('p', peer.toolsOnly, 'meta'));
       if (peer.permissionNote) row.append(el('p', peer.permissionNote, 'meta'));
+      if (typeof peer.statusNotice?.message === 'string' && peer.statusNotice.message) { const notice = el('p', peer.statusNotice.message, 'meta'); notice.style.color = 'var(--amber)'; row.append(notice); }
       if (peer.pullOnly && adapterDisplay[id]?.pullOnlyRead) row.append(el('p', 'Last hub_inbox read: ' + (typeof peer.lastInboxAt === 'number' ? Math.max(0, Math.floor((Date.now() - peer.lastInboxAt) / 1000)) + 's ago' : 'never'), 'meta'));
       if (peer.paused) row.append(el('p', peer.paused, 'meta'));
       if (peer.requestedModel) row.append(el('p', 'Requested: ' + peer.requestedModel, 'meta'));
