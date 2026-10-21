@@ -4,7 +4,7 @@ import { runInNewContext } from "node:vm";
 import { officeModel } from "../src/ui/office-model.ts";
 import { taskProgress } from "../src/ui/task-progress.ts";
 import { boardColumns } from "../src/ui/task-board.ts";
-import { PEER_PALETTE } from "../src/ui/peer-palette.ts";
+import { PEER_PALETTE, DARK_SURFACES, LIGHT_SURFACES, contrast, peerPaletteThemeCss, peerVariant } from "../src/ui/peer-palette.ts";
 import { startDashboard } from "../src/hub/ui.ts";
 
 const cleanup: (() => void)[] = [];
@@ -716,6 +716,57 @@ test("Office text palette meets 4.5 contrast in light and dark themes (#394)",()
    const a=luminance(tokens.get(foreground!)!),b=luminance(tokens.get(background!)!);expect((Math.max(a,b)+0.05)/(Math.min(a,b)+0.05)).toBeGreaterThanOrEqual(4.5);
   }
  }
+});
+
+// #469 R1 (AC1, AC2): one token block owns every colour, and the contrast checks cover accent, dots, disabled controls and the peer palette.
+const dashboardCss=()=>html.match(/<style>([\s\S]*?)<\/style>/)![1]!;
+const lightBlock=()=>/:root\{([^}]+)\}/.exec(dashboardCss())![1]!;
+const darkBlock=()=>/:root\[data-theme="dark"\]\{([^}]+)\}/.exec(dashboardCss())![1]!;
+const systemDarkBlock=()=>/@media\(prefers-color-scheme:dark\)\{:root:not\(\[data-theme="light"\]\):not\(\[data-theme="dark"\]\)\{([^}]+)\}\}/.exec(dashboardCss())![1]!;
+const tokenMap=(block:string)=>new Map([...block.matchAll(/--([a-z0-9-]+):#([0-9a-f]{6})\b/g)].map(match=>[match[1]!,"#"+match[2]!]));
+const ratio=(a:string,b:string)=>contrast(a,b);
+test("every dashboard colour lives in the token blocks, and the two dark blocks are identical (#469 R1 AC1)",()=>{
+ expect(darkBlock().replace(/color-scheme:dark;/,"").trim()).toBe(systemDarkBlock().replace(/color-scheme:dark;/,"").trim());
+ const css=dashboardCss().replace(/\/\*[\s\S]*?\*\//g,"");
+ // Everything outside the three token blocks and the Office scene (R5) may only name colours through var(--token).
+ const strip=(block:string)=>block.replace(/\/\*[\s\S]*?\*\//g,"");
+ const withoutTokens=css.replace(strip(lightBlock()),"").replace(strip(darkBlock()),"").replace(strip(systemDarkBlock()),"");
+ const officeStart=withoutTokens.indexOf(".office-scene{"),officeEnd=withoutTokens.indexOf("[hidden]{");
+ const outside=withoutTokens.slice(0,officeStart)+withoutTokens.slice(officeEnd);
+ const stray=[...outside.matchAll(/#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/g)].map(match=>match[0]);
+ expect(stray).toEqual([]);
+ // The 4px scale and the three radii are the only spacing and radius values written as numbers outside the token block.
+ expect(lightBlock()).toMatch(/--radius-control:6px/);expect(lightBlock()).toMatch(/--radius-surface:10px/);expect(lightBlock()).toMatch(/--radius-full:999px/);
+ for(const step of ["4px","8px","12px","16px","24px","32px"])expect(lightBlock()).toContain(":"+step);
+ // The dead rules the issue lists are gone.
+ expect(css).not.toContain("grid-template-columns:minmax(0,1fr) 340px");
+ expect(css).not.toContain(".task-list{");expect(css.match(/\.eyebrow\{/g)).toHaveLength(1);expect(css.match(/\[hidden\]\{/g)).toHaveLength(1);
+});
+test("contrast covers accent, dots, disabled controls and every peer colour in both themes (#469 R1 AC2)",()=>{
+ for(const [theme,block] of [["light",lightBlock()],["dark",darkBlock()]] as const){
+  const t=tokenMap(block),surfaces=["paper","panel","raised","panel-soft"].map(name=>t.get(name)!);
+  expect(surfaces).toEqual([...(theme==="light"?LIGHT_SURFACES:DARK_SURFACES)]);
+  // Text on the accent, and the accent itself as a non-text mark on every surface.
+  expect(ratio(t.get("on-accent")!,t.get("accent")!),theme+" on-accent").toBeGreaterThanOrEqual(4.5);
+  for(const surface of surfaces)expect(ratio(t.get("accent")!,surface),theme+" accent on "+surface).toBeGreaterThanOrEqual(3);
+  for(const name of ["ink","muted","faint","green","amber","blue","red"])for(const surface of surfaces)expect(ratio(t.get(name)!,surface),theme+" "+name+" on "+surface).toBeGreaterThanOrEqual(4.5);
+  for(const name of ["dot","dot-ok","dot-warn","dot-err","focus"])for(const surface of surfaces)expect(ratio(t.get(name)!,surface),theme+" "+name+" on "+surface).toBeGreaterThanOrEqual(3);
+  // Disabled controls are button:disabled at opacity .5: the composited text must stay readable as a non-text mark.
+  const control=t.get("control")!,ink=t.get("ink")!,mix=(a:string,b:string)=>"#"+[1,3,5].map(at=>Math.round((parseInt(a.slice(at,at+2),16)+parseInt(b.slice(at,at+2),16))/2).toString(16).padStart(2,"0")).join("");
+  const paper=t.get("paper")!;expect(ratio(mix(ink,paper),mix(control,paper)),theme+" disabled control").toBeGreaterThanOrEqual(3);
+  // Every peer colour as the dashboard serves it for this theme, against panel and raised (and the other surfaces).
+  for(const [peer,value] of Object.entries(PEER_PALETTE)){
+   const served=peerVariant(value.css,theme);
+   for(const surface of surfaces)expect(ratio(served,surface),theme+" peer "+peer+" on "+surface).toBeGreaterThanOrEqual(3);
+  }
+ }
+ // The served CSS carries those variants: light by default, dark under the theme and the system preference.
+ const served=peerPaletteThemeCss();
+ for(const peer of Object.keys(PEER_PALETTE)){
+  expect(served).toContain(".peer-"+peer+"{--peer-color:"+peerVariant(PEER_PALETTE[peer as keyof typeof PEER_PALETTE].css,"light")+"}");
+  expect(served).toContain(':root[data-theme="dark"] .peer-'+peer+"{--peer-color:"+peerVariant(PEER_PALETTE[peer as keyof typeof PEER_PALETTE].css,"dark")+"}");
+ }
+ expect(served).toContain('@media(prefers-color-scheme:dark){:root:not([data-theme="light"]):not([data-theme="dark"]) .peer-claude{');
 });
 
 test("isometric cards paint by depth across occupied rooms (#394)",()=>{

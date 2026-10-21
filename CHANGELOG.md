@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- The dashboard's style block is rewritten around one token block (colour, a 4px spacing scale, a type scale, a 6/10/full radius rule and two shadows), the dead rules are gone, the indigo accent replaces green for primary actions, focus and selection, and every peer colour has a light and a dark variant. The layout, views and behaviour are unchanged, and the contrast test now also covers the accent, dots, disabled controls and the peer palette in both themes (#469 R1).
 - A Claude channel tool result no longer tells a session to call `hub_inbox` while a delivery hold refuses its pulls (the counts and held rows stay), and a `hub_inbox` result states the queued count once (#221). Documented limit: mid-turn steer of a push-capable Claude session was proven only on Claude Code 2.1.302.
 
 ## 0.12.44
