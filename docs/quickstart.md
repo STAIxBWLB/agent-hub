@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.42
+bun add -g github:STAIxBWLB/agent-hub#v0.12.43
 ahub setup
 ```
 
@@ -30,6 +30,10 @@ and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
 
+## Upgrading to 0.12.43
+
+A busy hub no longer stalls when the checkout's HEAD moves under open turns: snapshot Git work in one burst shares a 250 ms budget, and incoming checkouts, merges and fast-forwards are told apart from a peer's own commits through the HEAD reflog, so they no longer raise false concurrent-edit warnings (#576). `ahub task assign` and `hub_task_assign` now refuse with the reason when the named peer cannot take the task (#601). `ahub completion zsh|bash|fish` prints a shell completion script (#603). The console's Peers tab shows each peer's planner WIP, and `w` edits its limit (#532). agy native file reads are recorded as peer facts on 1.4.2 and 1.4.3 (#555); 1.4.3 stays unverified, and in its TUI the hub tools appear from the second turn (#267, #607). Coming from 0.12.41 or older, the notes below apply too.
+
 ## Upgrading to 0.12.42
 
 0.12.42 lets `ahub agy` start again after the Antigravity CLI updated itself to 1.4.3: the launcher accepts the 1.4.x line, launching 1.4.2 (the verified version) silently and another 1.4.x patch with a warning (#589). The rest of the release is contributor tooling (#591, #593, #595). Coming from 0.12.40 or older, the notes below apply too.
@@ -40,7 +44,7 @@ terminal: it reviews the plan with you, applies it and follows it.
 
 ## Upgrading to 0.12.40
 
-Restart Claude sessions after upgrading: each keeps the plugin server it started with until restarted, so a restart loads the 0.12.42 plugin. That plugin asks Claude Code to list the hub tools again when a hub reconnect changes them (#490), and one from an older `ahub claude` launch is refused and stops reconnecting instead of reclaiming the peer (#551).
+Restart Claude sessions after upgrading: each keeps the plugin server it started with until restarted, so a restart loads the 0.12.43 plugin. That plugin asks Claude Code to list the hub tools again when a hub reconnect changes them (#490), and one from an older `ahub claude` launch is refused and stops reconnecting instead of reclaiming the peer (#551).
 
 `ahub jcode` opens its TUI again; on 0.12.39 it stopped after the first hub turn (#564). A busy Jcode now takes an `important` message into its running turn (#572), and `ahub doctor` lists the extra MCP servers the hub-owned Jcode loads from its config files. See [Jcode operations](operations.md#optional-jcode-peer).
 
@@ -62,7 +66,7 @@ Upgrading from 0.12.37 or earlier, the 0.12.38 notes below also apply.
 
 The 0.12.38 plugin reports a reply stopped by the hop cap as not delivered instead of as sent (#546); the restart above loads it.
 
-Antigravity (`agy`) can join as an optional pull-only implementer (#485). It is off roster by default: install the Antigravity CLI 1.4.x (1.4.2 verified; other 1.4.x patches launch with a warning), run `ahub roster add agy`, then run `ahub agy` in a terminal. Its native permissions are unmanaged and it has no hub sandbox. See [Antigravity operations](operations.md#optional-antigravity-agy-peer).
+Antigravity (`agy`) can join as an optional pull-only implementer (#485). It is off roster by default: install the Antigravity CLI 1.4.x (1.4.2 verified; other 1.4.x patches launch with a warning; on 1.4.3 the hub tools appear from the second TUI turn), run `ahub roster add agy`, then run `ahub agy` in a terminal. Its native permissions are unmanaged and it has no hub sandbox. See [Antigravity operations](operations.md#optional-antigravity-agy-peer).
 
 Reviews can rotate across fresh Claude, Codex and Kimi reviewer sessions (#519, #533). Declare headless reviewer-only instances in `.agenthub/config.local.json`; Codex and Kimi join only with `review_mode: "fresh"`. Codex also needs an installed Codex 0.146.0 (select it with `codex_bin` when PATH resolves another version), and Kimi needs Kimi Code 2.2.0 on PATH, signed in with its own OAuth login. A headless reviewer instance without `review_mode` keeps its native behavior and stays out of the pool. agy is not a reviewer: naming it in `review.pool` shows an unavailable skip in `ahub route explain`, never a review. Once a train is active or frozen, or `review.pool` is set or fresh reviewer instances are declared, `ahub upgrade` refuses a target release without that support, so an older release cannot take the project over. See [fresh reviewer pool](operations.md#fresh-reviewer-pool-519).
 

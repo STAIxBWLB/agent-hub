@@ -42,7 +42,7 @@ project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
   running sessions across versions. Settings reload without a restart where their
   apply class allows; guarded values wait for a person's confirmed
   `ahub settings reload` in a terminal. The console supports revision-checked task
-  assignment/unassignment and delivery-queue resolution. Peers with independent
+  assignment/unassignment, delivery-queue resolution and per-peer planner WIP limits. Peers with independent
   tool turns can request one uncertain redelivery; the delivery-only local worker
   and headless ACP peers leave held deliveries for the person to resolve.
 
@@ -87,14 +87,14 @@ keeps headless startup. On 0.12.39 the TUI launcher stopped after the first hub 
 0.12.40 opens it again (#564). On 0.12.40 `ahub codex` in a recorded Orca terminal
 failed with `invalid remote address`; 0.12.41 starts it again (#586). Since 0.12.42
 `ahub agy` accepts the Antigravity CLI 1.4.x line (1.4.2 verified; other patches warn),
-because agy updates itself and 0.12.41 refused 1.4.3 (#589).
+because agy updates itself and 0.12.41 refused 1.4.3 (#589). Since 0.12.43 agy's native reads are recorded as peer facts on 1.4.2 and 1.4.3 (#555); 1.4.3 stays unverified, and in its TUI the hub tools appear from the second turn (#267).
 Cancellation needs a daemon advertising `task_cancel`; controlled downgrades
 refuse while cancelled rows exist. Live-test delegated CLI commands need a daemon
 advertising `cli_audit_delegated` and refuse with an upgrade remedy otherwise
 (#410). For local/Pi implementation, opt in to an available
 `checks.runner = "container"`; issue-backed owners also need authenticated
 spec access. PII work and designated reviewers retain their separate exemptions.
-See [release verification](docs/verification/2026-10-20-0.12.42.md) for the live legs
+See [release verification](docs/verification/2026-10-21-0.12.43.md) for the live legs
 still open, including #418 AC8, #438 AC7, the native console settings leg (#439 AC5),
 real upgrades with reattach (#463) and with a managed terminal and cancelled tasks
 (#478), a live headless Claude review (#223), a Claude session over 32 MiB (#517), a
