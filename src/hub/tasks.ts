@@ -8,7 +8,7 @@ import { NoWriteTurns } from "./no-writes.ts";
 import { readGitHubImport, type GitHubSource, type GitHubImportSelection } from "./github-import.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { readMergeQueue } from "./sdlc-queue.ts";
-import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingTally, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
+import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
 import { readReleaseReadiness } from "./sdlc-release.ts";
 import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
 import { matchesPolicy } from "./path-policy.ts";
@@ -530,8 +530,7 @@ export class Tasks {
   private reviewFindingSets(task: Task): ReviewFindingSet[] { return task.history.flatMap(entry => entry.reviewFindings ? [entry.reviewFindings] : []); }
 
   private findingHead(task: Task, reviewedHead?: string): string | undefined {
-    const head = reviewedHead ?? this.reviewHead(task) ?? task.sdlc?.reviewedHead;
-    return head && /^[a-f0-9]{40}$/.test(head) ? head : undefined;
+    return resolveFindingHead(task.sdlc, reviewedHead ? { head: reviewedHead } : undefined, task.refs.commit);
   }
 
   private findingTextAllowed(task: Task, items: readonly ReviewFinding[]): boolean {
@@ -542,20 +541,27 @@ export class Tasks {
   /** Host-authored proposals contain only cleared IDs, integer task references and fixed instruction targets. */
   private proposeRecurringFindings(task: Task, by: PeerId, items: readonly ReviewFinding[], withheld: boolean): void {
     if (withheld || this.isPii(task) || this.d.privateTurn?.(by) || !items.length || !this.findingTextAllowed(task, items)) return;
-    const rows = this.d.board.list(), titles = new Set(rows.map(row => row.title));
+    const rows = this.d.board.list(), keys = new Set(rows.flatMap(row => row.detail?.split("\n").filter(line => line.startsWith("Review finding key: ")) ?? []));
     const created: number[] = [];
     // No await separates the durable dedupe read from creation; concurrent verdicts see the first proposal.
-    for (const id of new Set(items.map(item => item.id))) {
-      const holders = rows.filter(row => !this.isPii(row) && row.history.some(entry => !entry.withheld && entry.reviewFindings?.items.some(item => item.id === id && this.findingTextAllowed(row, [item]))));
+    for (const item of items.filter(item => item.disposition !== "false_positive")) {
+      const same = (finding: ReviewFinding) => finding.id === item.id && finding.pass === item.pass;
+      const holders = rows.filter(row => {
+        if (this.isPii(row)) return false;
+        const last = row.history.findLast(entry => entry.reviewFindings?.items.some(same));
+        const finding = last?.reviewFindings?.items.find(same);
+        return !last?.withheld && finding && finding.disposition !== "false_positive" && this.findingTextAllowed(row, [finding]);
+      });
       if (new Set(holders.map(row => row.id)).size < 2) continue;
-      const title = `Review policy amendment for recurring finding ${id}`;
-      if (titles.has(title)) continue;
-      const detail = `Finding ${id} recurred on tasks ${holders.slice(0, 8).map(row => `#${row.id}`).join(", ")}. Inspect their review histories and propose an AGENTS.md or relevant docs/agent-notes/ amendment. This backlog card is a proposal, not authorization to edit instruction files.`;
+      const key = `Review finding key: ${item.pass}:${item.id}`;
+      if (keys.has(key)) continue;
+      const title = `Review policy amendment for recurring finding ${item.pass}:${item.id}`;
+      const detail = `${key}\nFinding ${item.pass}:${item.id} recurred on tasks ${holders.slice(0, 8).map(row => `#${row.id}`).join(", ")}. Inspect their review histories and propose an AGENTS.md or relevant docs/agent-notes/ amendment. This backlog card is a proposal, not authorization to edit instruction files.`;
       const draft = { title, detail, refs: { paths: ["AGENTS.md", "docs/agent-notes/"] } };
       const signals = this.signalsFor(draft);
       if (this.isPii({ signals }) || !this.candidateTextAllowed(`${title}\n${detail}`)) continue;
       const proposal = this.d.board.propose(HUB, { ...draft, class: "plan", backlog: true, signals });
-      this.incomingBacklog.add(proposal.id); titles.add(title); created.push(proposal.id);
+      this.incomingBacklog.add(proposal.id); keys.add(key); created.push(proposal.id);
     }
     for (const id of created) this.releaseNotice(`task #${id}: recurring review finding amendment proposed in the backlog`);
   }
@@ -583,7 +589,7 @@ export class Tasks {
       ...(h.sweep ? { sweep: { kind: h.sweep.kind, activity: h.sweep.activity, step: h.sweep.step, at: h.sweep.at } } : {}),
     }));
     const sets = this.reviewFindingSets(task), current = findingsForHead(sets, this.findingHead(task));
-    return { ...rest, ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets) } : {}), title, detail, history: publicHistory };
+    return { ...rest, ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets, task.refs.commit) } : {}), title, detail, history: publicHistory };
   }
 
   /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */
@@ -2500,7 +2506,7 @@ export class Tasks {
     const evidence = task.sdlc && !this.isPii(task) && refresh && config.mode !== "off" ? await readSdlcPr(task.sdlc, this.d.sdlc?.gh) : undefined;
     const accepted = task.sdlc?.acceptance;
     const edit = accepted && !this.isPii(task) && refresh && config.mode !== "off" ? await readSpecEdit(accepted.repo, accepted.issue, this.d.sdlc?.gh) : undefined;
-    return sdlcStatus(config, task.sdlc, evidence, this.workflowView(task), edit, this.isPii(task) ? [] : this.reviewFindingSets(task));
+    return sdlcStatus(config, task.sdlc, evidence, this.workflowView(task), edit, this.isPii(task) ? [] : this.reviewFindingSets(task), task.refs.commit);
   }
 
   /** #481 S1: only build work starts from an accepted spec. */
@@ -2580,7 +2586,7 @@ export class Tasks {
     if (config.mode === "enforce" && (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state)) throw new PreEffectToolRefusal(`task #${task.id}: changed during lifecycle readback; retry on current work`);
     // Advise may continue on the current task, but evidence from its previous link cannot admit that task's review.
     if (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state || this.isPii(current) !== this.isPii(task)) return;
-    const status = sdlcStatus(config, receipt, evidence, this.workflowView(current), undefined, this.isPii(current) ? [] : findings ?? this.reviewFindingSets(current));
+    const status = sdlcStatus(config, receipt, evidence, this.workflowView(current), undefined, this.isPii(current) ? [] : findings ?? this.reviewFindingSets(current), current.refs.commit);
     const blockers = transition === "review" ? [...new Set([...status.blockers.filter(blocker => ["lifecycle stage definition unknown", "issue identity missing", "PR identity missing", "current PR evidence unknown", "PR is not open", "local gate on current head missing or failed"].includes(blocker)), ...(status.entry ?? []), ...(status.exit ?? [])])] : status.blockers;
     if (config.mode === "enforce" && blockers.length) throw new PreEffectToolRefusal(`task #${task.id}: SDLC ${transition} blocked: ${blockers.join("; ")}`);
     if (config.mode === "advise" && blockers.length) this.d.notify(`task ${this.publicTitle(task)}: SDLC ${transition} advice: ${this.isPii(task) ? "private lifecycle evidence unknown" : blockers.join("; ")}`);
@@ -3160,6 +3166,9 @@ export class Tasks {
     const specRepo = task.sdlc?.repo ?? task.external?.repo, specIssue = task.sdlc?.issue ?? task.external?.issue;
     const spec = reviewOnly && specRepo && specIssue ? `Spec issue: ${specRepo}#${specIssue}\n` : "";
     const findings = reviewOnly ? task.history.filter(h => h.event === "changes_requested" && h.note).map(h => `- ${h.by}: ${this.screen(task, h.note!, "review note", reviewer, h.withheld)}`) : [];
+    const carried = findingsForHead(this.reviewFindingSets(task), this.findingHead(task)).filter(item => item.severity === "important" && item.disposition === "open");
+    const visible = this.isPii(task) ? [] : carried.filter(item => this.findingTextAllowed(task, [item]) && !task.history.some(entry => entry.withheld && entry.reviewFindings?.items.some(value => value.id === item.id && value.pass === item.pass)));
+    const carriedText = carried.length ? `Open Important findings carried until explicitly dispositioned: ${carried.length}\n${visible.map(({ id, pass, severity, path }) => JSON.stringify({ id, pass, severity, ...(path ? { path } : {}) })).join("\n")}${visible.length < carried.length ? "\nSome finding details withheld." : ""}\n` : "";
     const guidance = this.roleGuidance(task, reviewer, true);
     let projection = "";
     try { const text = this.d.projectedReview?.(task); if (text) projection = this.screen(task, sanitize(text), "document projection", reviewer); }
@@ -3167,7 +3176,7 @@ export class Tasks {
     const brief = this.briefText(task);
     // #572 AC3: advisory only, from git state never from task text, so it is safe for a PII task too.
     const checkout = mainCheckoutWarning(this.d.cwd, this.publicMetadataText);
-    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${last?.noWrites ? "no writes recorded since acceptance\n" : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet, findings: [{id, pass: "bugs" | "security" | "compliance", severity: "important" | "nit", path?, disposition: "open" | "fixed" | "false_positive"}]}. Reuse finding ids when updating their disposition; only the person may accept a finding with a rationale.`;
+    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${last?.noWrites ? "no writes recorded since acceptance\n" : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${carriedText}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet, findings: [{id, pass: "bugs" | "security" | "compliance", severity: "important" | "nit", path?, disposition: "open" | "fixed" | "false_positive"}]}. Reuse finding ids when updating their disposition; only the person may accept a finding with a rationale.`;
     this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, ...(this.reviewHead(task) ? { commit: this.reviewHead(task)! } : {}), task: String(task.id), reviewRevision: String(this.reviewRequestRevision(task)) }, ...(this.isPii(task) ? { private: true } : {}) }));
   }
 
@@ -3256,6 +3265,7 @@ export class Tasks {
         if (identity(task) !== original) throw new PreEffectToolRefusal("task review identity, privacy or findings changed during the verdict; review current work again");
         if (by !== USER && suppliedFindings && this.d.privateTurn?.(by) && !this.isPii(task)) throw new PreEffectToolRefusal("structured review of ordinary work is unavailable during a private turn");
         if (parsed.filter(item => item.severity === "nit").length > (this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS)) throw new PreEffectToolRefusal("review nit cap exceeded");
+        if (report?.items.length && !report.head && this.d.sdlc?.config().mode === "enforce") throw new PreEffectToolRefusal("a finding report requires a resolvable full reviewed head in enforce");
         const current = findingsForHead(proposedSets(task), findingHead);
         if (current.length > 64) throw new PreEffectToolRefusal("one reviewed head supports at most 64 distinct finding IDs");
         if (verdict === "approved" && this.d.sdlc?.config().mode === "enforce" && findingTally(current).openImportant) throw new PreEffectToolRefusal("approval blocked: open important review findings on this head");

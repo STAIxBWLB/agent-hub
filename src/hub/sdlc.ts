@@ -1,4 +1,4 @@
-import { DEFAULT_MAX_NITS, findingsForHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
+import { DEFAULT_MAX_NITS, findingsForHead, findingHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
 import type { CostPlan } from "./cost-governance.ts";
 import { criteriaReceipt, type CriteriaReceipt, type CriteriaView, type LegacyPhaseReceipt } from "./workflow.ts";
 import { constants, openSync, fstatSync, readSync, closeSync } from "node:fs";
@@ -246,10 +246,10 @@ export const SPEC_STATE_TEXT: Record<Exclude<SpecState, "current">, string> = {
 export interface SdlcStatus { findings?: ReviewFindingTally; spec?: { issue: number; state: SpecState }; playbook?: string; criteria?: CriteriaView; mode: SdlcMode; stage: SdlcStage; definition?: StageDefinition; entry?: string[]; exit?: string[]; blockers: string[]; ready: boolean; actor: string; next: string; }
 /** The acceptance-criteria checklist (#481 S8, Compliance pass) counts once recorded, and on every task under the retired gsd-lite setting. Off keeps #257's output. */
 export const criteriaRequired = (config: SdlcConfig, receipt: SdlcReceipt | undefined): boolean => config.workflow === "gsd-lite" || (config.mode !== "off" && !!checklistOf(receipt));
-export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined, evidence?: PrEvidence, criteria?: CriteriaView, specEdit?: SpecEdit, sets: readonly ReviewFindingSet[] = []): SdlcStatus {
+export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined, evidence?: PrEvidence, criteria?: CriteriaView, specEdit?: SpecEdit, sets: readonly ReviewFindingSet[] = [], commit?: string): SdlcStatus {
   const stage = receipt?.stage ?? config.stages[0] ?? "spec", blockers: string[] = [];
   const definition = stageDefinition(config, stage);
-  const items = findingsForHead(sets, evidence?.head ?? receipt?.reviewedHead ?? receipt?.localHead);
+  const items = findingsForHead(sets, findingHead(receipt, evidence, commit));
   const findings = items.length ? findingTally(items) : undefined;
   if (config.mode === "enforce" && findings?.openImportant) blockers.push("open important review findings: " + findings.openImportant);
   if (!definition) blockers.push("lifecycle stage definition unknown");

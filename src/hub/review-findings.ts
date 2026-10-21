@@ -58,11 +58,40 @@ export function parseReviewFindings(raw: unknown, options: { person: boolean; ma
   return result;
 }
 
-/** The undefined head is its own explicit unbound bucket; omitted IDs never settle prior findings. */
+/** Prefer live artifact identity, skipping malformed historical candidates rather than hiding a valid fallback. */
+export function findingHead(receipt?: { head?: string; reviewedHead?: string; localHead?: string }, evidence?: { head: string }, commit?: string): string | undefined {
+  return [evidence?.head, receipt?.head, receipt?.reviewedHead, receipt?.localHead, commit]
+    .find((head): head is string => typeof head === "string" && /^[a-f0-9]{40}$/.test(head));
+}
+
+/**
+ * Nits belong only to their head bucket, including the explicit undefined bucket.
+ * Open Important is an obligation across heads until an explicit disposition resolves its pass+ID globally.
+ */
 export function findingsForHead(sets: readonly ReviewFindingSet[], head?: string): ReviewFinding[] {
-  const folded = new Map<string, ReviewFinding>();
-  for (const set of sets) if (set.head === head) for (const item of set.items) folded.set(item.id, { ...folded.get(item.id), ...item });
-  return [...folded.values()];
+  interface Entry { item: ReviewFinding; order: number }
+  const current = new Map<string, Entry>(), important = new Map<string, Entry>();
+  let order = 0;
+  for (const set of sets) for (const item of set.items) {
+    const key = item.pass + ":" + item.id, position = order++;
+    if (set.head === head) current.set(key, { item: { ...current.get(key)?.item, ...item }, order: position });
+    const prior = important.get(key);
+    if (item.severity === "important") {
+      important.set(key, { item: { ...prior?.item, ...item }, order: position });
+    } else if (prior && (prior.item.disposition === "open" || item.disposition !== "open")) {
+      // A nit/open reclassification cannot discharge Important. An explicit disposition can.
+      important.set(key, { item: { ...prior.item, ...item, severity: "important" }, order: position });
+    }
+  }
+  for (const [key, entry] of important) {
+    if (entry.item.disposition === "open") current.set(key, entry);
+    else {
+      const seen = current.get(key);
+      // Settling on B also settles older A when A is queried again. A later new nit/open remains a head-local nit.
+      if (seen?.item.disposition === "open" && seen.order <= entry.order) current.delete(key);
+    }
+  }
+  return [...current.values()].map(entry => ({ ...entry.item }));
 }
 export function findingTally(items: readonly ReviewFinding[]): ReviewFindingTally {
   const tally: ReviewFindingTally = { important: 0, nit: 0, openImportant: 0, openNit: 0, fixed: 0, falsePositive: 0, accepted: 0 };

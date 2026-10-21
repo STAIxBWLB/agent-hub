@@ -19,7 +19,7 @@ const refs = {
 const list = (description: string) => ({ type: "array", items: str, description }) as const;
 const reviewFindings = {
   type: "array", maxItems: 64,
-  description: "Head-bound findings; omitted ids stay open. accepted is person-only and requires rationale. Nit count is capped by sdlc.max_nits (default 5).",
+  description: "Head-bound findings; open Important findings carry across heads until explicitly fixed, false_positive or person-accepted; omission never settles them. Nits stay on their head. accepted is person-only and requires rationale. Nit count is capped by sdlc.max_nits (default 5).",
   items: { type: "object", properties: {
     id: { type: "string", minLength: 1, maxLength: 96, pattern: "^[A-Za-z0-9._:-]+$" },
     pass: { type: "string", enum: ["bugs", "security", "compliance"] },

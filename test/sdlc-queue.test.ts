@@ -201,19 +201,19 @@ test("last remote queue read combines identities and gates without an intervenin
   expect(query).toContain("queue_p1:pullRequest");
 });
 
-test("S3 merge queue sums matching-head findings across public holders and exposes counts only", async () => {
+test("S3 merge queue carries Important and keeps nits on matching heads with counts only", async () => {
   const first = task(1, 1), second = task(2, 1);
   first.findings = [{ head: A, items: [{ id: "ONE_PRIVATE_ID", pass: "bugs", severity: "important", disposition: "open", path: "PRIVATE_PATH", rationale: "PRIVATE_REASON" }] }];
   second.findings = [{ head: A, items: [{ id: "TWO_PRIVATE_ID", pass: "compliance", severity: "nit", disposition: "open" }] }, { head: B, items: [{ id: "stale", pass: "security", severity: "important", disposition: "open" }] }];
   const view = await readMergeQueue("owner/repo", config, [first, second], fake({ ids: [1] }).run);
-  expect(view.rows[0]?.findings).toEqual({ important: 1, nit: 1, openImportant: 1, openNit: 1, fixed: 0, falsePositive: 0, accepted: 0 });
+  expect(view.rows[0]?.findings).toEqual({ important: 2, nit: 1, openImportant: 2, openNit: 1, fixed: 0, falsePositive: 0, accepted: 0 });
   expect(view.rows[0]?.ready).toBe(false);
   expect(JSON.stringify(view)).not.toContain("PRIVATE");
   expect(JSON.stringify(view)).not.toContain("stale");
   const advise = await readMergeQueue("owner/repo", sdlcConfig({ mode: "advise", required_checks: ["gate"] }), [first, second], fake({ ids: [1] }).run);
   expect(advise.rows[0]?.ready).toBe(true);
   const changed = await readMergeQueue("owner/repo", config, [first, second], fake({ ids: [1], heads: { 1: M } }).run);
-  expect(changed.rows[0]?.findings).toBeUndefined();
+  expect(changed.rows[0]?.findings).toEqual({ important: 2, nit: 0, openImportant: 2, openNit: 0, fixed: 0, falsePositive: 0, accepted: 0 });
 });
 
 test("S3 private holder findings never reach a queue row or initiate its PR evidence read", async () => {

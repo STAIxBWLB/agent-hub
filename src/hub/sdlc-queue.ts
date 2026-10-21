@@ -1,4 +1,4 @@
-import { findingsForHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
+import { findingsForHead, findingHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
 import type { CriteriaView } from "./workflow.ts";
 import { parsePrEvidence, readSdlcPr, sdlcGh, sdlcStatus, type PrEvidence, type SdlcConfig, type SdlcGh, type SdlcReceipt } from "./sdlc.ts";
 export interface DeliveryTask { findings?: readonly ReviewFindingSet[]; id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: CriteriaView; }
@@ -55,7 +55,7 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
     if (!read || read.state !== "OPEN") { row.blockers.push("current PR evidence unknown or no longer open"); continue; }
     evidence.set(pr, read); row.head = read.head;
     for (const holder of holders) {
-      const items = findingsForHead(holder.findings ?? [], read.head);
+      const items = findingsForHead(holder.findings ?? [], findingHead(holder.receipt, read));
       if (!items.length) continue;
       const tally = findingTally(items);
       row.findings ??= findingTally([]);
