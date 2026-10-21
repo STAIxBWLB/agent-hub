@@ -77,6 +77,11 @@ export function startFakeAppServer(
         const slow = /SLOW:(\d+)/.exec(text); // a turn that keeps running for this many ms
         if (slow) await Bun.sleep(Number(slow[1]));
         if (text.includes("EDIT:")) {
+          // `GATE:<file>` holds the edit until the test has created that file (#634): the hub captures the turn's start
+          // tree synchronously on `turn/started`, and a slow git there must finish before the edit lands, or the start
+          // tree already contains it and the turn reads as having changed nothing. Bounded, so a lost gate fails the test.
+          const gate = /GATE:(\S+)/.exec(text)?.[1];
+          if (gate) for (let attempt = 0; attempt < 1500 && !(await Bun.file(gate).exists()); attempt++) await Bun.sleep(10);
           // A real patch (issue #108): one line appended to the file, reported with a diff that matches it.
           const path = /EDIT:(\S+)/.exec(text)![1]!;
           const before = await Bun.file(path).text();

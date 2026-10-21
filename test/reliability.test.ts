@@ -221,7 +221,10 @@ test("#91 self-claims after both turns start still associate concurrent edits wi
     expect(result.text).toContain("in_progress"); tools.close();
   }
   writeFileSync(join(h.cwd, "shared.txt"), "kimi then codex");
-  c.held = false; c.finish!(); k.held = false; k.finish!();
+  // #634: this tests association, not the cumulative snapshot budget. Both turns stay open over the edit, but each end
+  // capture gets its own I/O turn: two captures in one synchronous burst share the 250 ms budget and, on a slow
+  // runner, can correctly record unknown evidence (the #617 cause).
+  c.held = false; c.finish!(); await new Promise<void>(resolve => setImmediate(() => setImmediate(resolve))); k.held = false; k.finish!();
   const file = join(h.stateDir, "events.jsonl");
   await until(() => readEvents(file).some((e) => e.type === "conflict" && e.concurrent));
   expect(readEvents(file).filter((e) => e.type === "conflict" && e.concurrent)).toHaveLength(1);

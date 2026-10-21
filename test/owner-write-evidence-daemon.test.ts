@@ -152,7 +152,12 @@ test("#498 dirty work in the extra owner's real execution root exempts done with
 
 test("#498 completed native extra-owner writes retain their exemption after the file returns to acceptance baseline", async () => {
   const f = await fixture(true), id = await f.make();
-  const turn = await f.runTurn(undefined, `EDIT:${join(f.cwd, "owned.txt")}`);
+  // The fake's edit waits for this gate, so it can never land before the hub recorded the turn's start tree (#634).
+  const gate = join(f.project, "..", "edit-gate"), before = f.turns.latest(f.peer)?.id;
+  const turn = await f.runTurn(async () => {
+    await until(() => { const latest = f.turns.latest(f.peer); return latest?.id !== before && latest?.start_tree != null; }, "native turn start tree recorded");
+    writeFileSync(gate, "go");
+  }, `EDIT:${join(f.cwd, "owned.txt")} GATE:${gate}`);
   expect(f.turns.workspace(turn.id)).toBe(f.cwd);
   expect(turn.changed).toContain("owned.txt");
   expect(f.turns.touchesFor([id])).toContainEqual(expect.objectContaining({ peer: f.peer, path: "owned.txt" }));
