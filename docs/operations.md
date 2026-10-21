@@ -142,7 +142,7 @@ without color. The Approvals tab counts pending requests and the Queue tab
 counts `needs_review` deliveries, in the attention and failure tones.
 
 The console attention companion (#280) shows waiting, blocked, review, working,
-idle or asleep with separate action/watch counts. `n` selects the exact approval,
+idle or asleep with separate action/watch counts. Outside the Tasks table, `n` selects the exact approval,
 held queue or review row, or prints applicable guidance; it never answers a
 request or runs a command. Editing, choices and confirmation retain their controls.
 `P` cycles the five built-in characters and off for the current console.
@@ -185,8 +185,32 @@ meter keeps a fixed column at the right edge.
 | Peers | PEER STATE MODE LINK Q ! WIP REVIEW PAUSE QUOTA MODEL |
 | Approvals | ID PEER LEFT TITLE |
 | Tasks | ID STATE OWNER REVIEWER CLASS AGE TITLE STAGE |
+| Tasks, backlog view (`b`) | ID PRI RESERVED DEPS CLASS AGE TITLE |
 | Queue | ID PEER STATE REV AGE |
 | Settings | GROUP KEY VALUE SOURCE APPLIES |
+
+In Tasks, `b` toggles open work and backlog. The backlog heading counts its rows;
+rows sort by rank, then id. PRI shows priority/rank, RESERVED the reserved peer,
+and DEPS either `ready` or the unapproved dependency ids. Titles use the public
+board projection, so PII work remains `[pii]`. Narrow layouts keep ID, RESERVED
+and TITLE before the other columns.
+
+On a backlog row, `p` prefills `backlog pull-ready <id> <planningRevision> <reason>`,
+`a` prefills `backlog plan` with a reservation JSON object, and `e` prefills the
+same command with priority, rank and deps. Edit the JSON and supply a reason;
+`c` uses the existing revision-bound `task cancel` command. Once pulled into open
+work, `a` uses the usual task assignment flow. In either Tasks view, `n` prefills
+`backlog add implement `; edit the class and title, or use
+`:task propose --backlog` with paths/deps flags. On proposed or in-progress open
+work, `R` prefills `backlog return <id>` for an ownerless proposal, or the
+planning-revision-and-reason form for accepted, untouched work. The hub refuses
+returns with execution, branch or commit evidence; its refusal appears as a notice.
+
+These actions run the existing person CLI commands, after explicit confirmation;
+Esc sends nothing. Row-prefilled ids and revisions cannot be edited, and stale
+row revisions require a reload. `:backlog list` reads without confirmation;
+backlog mutations (including pull, pull-ready, return, plan, split and undo)
+confirm first. The console adds no write path or planner authority.
 
 The MODE column appears only when at least one peer has a non-`ask` mode.
 Peers' WIP column shows planner work in progress as `wip/limit` from `taskWip`,
@@ -3548,7 +3572,7 @@ recovery action can be shown. The output never resumes, aborts or disposes a run
 Person-reviewed tasks contribute review actions; an offline peer holding
 unfinished work contributes one watch item with its lowest task id. The console
 receives those structural facts through its existing authenticated status reply.
-`n` selects an exact visible review task, or prints the task/review guidance if
+Outside the Tasks table, `n` selects an exact visible review task, or prints the task/review guidance if
 that row is unavailable. Offline guidance names status/task reads and an explicit
 assignment command. No command is executed by navigation. There is no extra
 console poll, timer or task-list request for stream mode.

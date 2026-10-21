@@ -1643,6 +1643,27 @@ or `-` when absent. It uses the attention tone at `wip >= wipLimit`. WIP is
 optional at narrow widths and drops before PEER, STATE and QUOTA, with or
 without MODE. The Peers hint includes `w WIP limit`, shortened to `w WIP`
 through the existing width adaptation alongside `m permission mode`/`m mode`.
+Tasks has a `b` toggle between open work and backlog (#532 B1-B5), using the
+same public board response. Backlog rows sort by rank (missing last), then id;
+the heading counts them. Its columns are ID, PRI (priority/rank), RESERVED,
+DEPS (ready or unapproved dependency ids), CLASS, AGE and TITLE. PII titles stay
+stubs. Narrow widths drop metadata before ID, RESERVED and TITLE.
+
+Backlog row keys prefill the existing person CLI: `p` is
+`backlog pull-ready <id> <planningRevision> <reason>`, `a` is `backlog plan`
+with a reservation JSON object, `e` is `backlog plan` with priority/rank/deps,
+and `c` is the existing flow-revision-bound `task cancel`. `n` in either Tasks
+view adds backlog work (`backlog add <class> <title...>`, or the command line's
+`task propose --backlog` with paths/deps). On proposed or in-progress open work,
+`R` returns an ownerless proposal with `backlog return <id>` or accepted,
+untouched work with the planning-revision-and-reason form. The hub retains its
+execution-evidence refusal. Row commands preserve id and revision through
+editing and confirmation, reject stale rows, and execute only after explicit
+confirmation; Esc sends nothing. Backlog mutations on the `:` line confirm too,
+while `backlog list` is read-only. Refusal notices preserve the hub's reason.
+There is no new write path or actor authority; person CLI and planner revision
+checks remain authoritative. Hints follow the selected row's available actions.
+
 LINK reads `tools-only` when the optional `toolsOnly` status field (#205) is
 present. Other zero counters read `-`, durations `45s`, `12m`, `3h05m` or `2d03h`, and
 resets and pauses are relative. Detail views and the Approvals panel's request
