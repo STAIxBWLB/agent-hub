@@ -17,10 +17,10 @@ export function peerRosterConfig(value: unknown, instances?: KindMap, catalog?: 
 }
 
 /** External ids keep their existing admission rules; Pi's legacy switch is only its default. */
-export function rosterAllows(roster: PeerRoster, peer: string, piEnabled: boolean, instances: KindMap | undefined, catalog: ProjectAdapterCatalog): boolean {
+export function rosterAllows(roster: PeerRoster, peer: string, piEnabled: boolean, instances: KindMap | undefined, catalog: ProjectAdapterCatalog, inertUnknown = false): boolean {
   const definitionOf = catalog.definitionOf;
   const defaultRosterEnabled = (id: string, enabled: boolean) => !builtinDefinitionOf(id) ? catalog.definitionOf(id)?.defaultOnRoster ?? false : builtinDefaultRosterEnabled(id, enabled);
   const definition = definitionOf(peer, instances);
-  if (!definition) return !Object.hasOwn(roster, peer); // Inert declaration rows grant no identity; unrelated external clients retain their admission rules.
+  if (!definition) return !inertUnknown || !Object.hasOwn(roster, peer); // Only a captured module scope makes unresolved rows inert; legacy external clients keep their admission rules.
   return roster[peer] ?? (definition.kind === peer ? defaultRosterEnabled(peer, piEnabled) : true);
 }

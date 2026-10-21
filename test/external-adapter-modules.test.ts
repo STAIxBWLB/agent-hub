@@ -127,8 +127,8 @@ test("A4 unresolved module roster rows retain only bounded booleans and grant no
   const catalog = createProjectAdapterCatalog();
   const roster = peerRosterConfig({ fixture: true }, undefined, catalog, true);
   expect(roster).toEqual({ fixture: true });
-  expect(rosterAllows(roster, "fixture", false, undefined, catalog)).toBe(false);
-  expect(rosterAllows(roster, "unrelated-client", false, undefined, catalog)).toBe(true);
+  expect(rosterAllows(roster, "fixture", false, undefined, catalog, true)).toBe(false);
+  expect(rosterAllows(roster, "unrelated-client", false, undefined, catalog, true)).toBe(true);
   expect(() => peerRosterConfig({ fixture: "true" }, undefined, catalog, true)).toThrow();
   expect(() => peerRosterConfig({ "bad/id": true }, undefined, catalog, true)).toThrow();
   expect(() => peerRosterConfig({ fixture: true }, undefined, catalog)).toThrow();

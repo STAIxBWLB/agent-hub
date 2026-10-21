@@ -607,7 +607,8 @@ export async function startDaemon(opts: DaemonOptions) {
   let kimiAdmissionId: string | undefined;
   let kimiAdmissionExpiry: ReturnType<typeof setTimeout> | undefined;
   const clearKimiAdmission = () => { clearTimeout(kimiAdmissionExpiry); kimiAdmissionExpiry = undefined; kimiSessionMode = undefined; kimiAdmissionId = undefined; };
-  const onRoster = (peer: string) => rosterAllows(config.roster, peer, config.pi.enabled, declarations, adapterCatalog);
+  const projectRosterAllows = (roster: PeerRoster, peer: string, piEnabled: boolean) => rosterAllows(roster, peer, piEnabled, declarations, adapterCatalog, moduleDeclarations.length > 0);
+  const onRoster = (peer: string) => projectRosterAllows(config.roster, peer, config.pi.enabled);
   // pi.enabled historically gates starts, not retained queues or tools sockets. Only an explicit roster.pi changes those.
   const membershipAllowed = (peer: string) => definitionOf(peer)?.enabledSwitchStartOnly && config.roster[peer] === undefined ? true : onRoster(peer);
   conductorPeer(config.roles); // reject ambiguous leadership before opening a control listener
@@ -4415,7 +4416,7 @@ export async function startDaemon(opts: DaemonOptions) {
   function roleHolders(candidate: HubConfig): { planners: string[]; conductors: string[] } {
     // A valid transfer may briefly have two conductors while its leaves are planned. Validate the final map later.
     const policy = Object.fromEntries(Object.entries(candidate.roles).map(([peer, roles]) => [peer, roles.filter(role => role !== "conductor")]));
-    const settled = resolveSettledRoles(policy, candidate.planner, peer => rosterAllows(candidate.roster, peer, candidate.pi.enabled, declarations, adapterCatalog));
+    const settled = resolveSettledRoles(policy, candidate.planner, peer => projectRosterAllows(candidate.roster, peer, candidate.pi.enabled));
     return { planners: settled.planners, conductors: Object.keys(candidate.roles).filter(peer => candidate.roles[peer]!.includes("conductor")).sort() };
   }
   function prepareConfiguration(sources: ConfigSources, authority: SettingAuthority, scope?: string, confirmed: readonly string[] = []) {
@@ -4662,7 +4663,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const rows = settingRows({
       instances: declarations, adapterCatalog, cwd: opts.cwd, routing: activeRouting(), ...(routingProblem ? { routingProblem } : {}), ...(stored?.ignored ? { ignored: stored.ignored } : {}),
       running: (path) => path[0] === "roster" ? onRoster(path[1]!) : path[0] === "tasks" && path[1] === "wip_limits" ? tasks.wipLimit(path[2]!) : valueAt(config, path),
-      next: stored ? (path) => path[0] === "roster" ? rosterAllows(stored.roster, path[1]!, stored.pi.enabled, declarations, adapterCatalog) : path[0] === "tasks" && path[1] === "wip_limits" ? (Object.hasOwn(stored.tasks.wip_limits ?? {}, path[2]!) ? stored.tasks.wip_limits![path[2]!] : 1) : valueAt(stored, path) : undefined,
+      next: stored ? (path) => path[0] === "roster" ? projectRosterAllows(stored.roster, path[1]!, stored.pi.enabled) : path[0] === "tasks" && path[1] === "wip_limits" ? (Object.hasOwn(stored.tasks.wip_limits ?? {}, path[2]!) ? stored.tasks.wip_limits![path[2]!] : 1) : valueAt(stored, path) : undefined,
       roles: roleState,
       mode: (peer) => {
         const owner = bus.peers.get(peer), attached = !!owner && owner.state !== "offline";
@@ -4718,7 +4719,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const terminalNotice = retainedTerminalNotice(peer);
     let handoff: Awaited<ReturnType<Tasks["reassignForRoster"]>> = [];
     try {
-      const next = rosterCandidate(def, value, undo), before = onRoster(peer), after = rosterAllows(next, peer, config.pi.enabled, declarations, adapterCatalog);
+      const next = rosterCandidate(def, value, undo), before = onRoster(peer), after = projectRosterAllows(next, peer, config.pi.enabled);
       if (!after) {
         const refusal = rosterRemovalRefusal(peer, now);
         if (refusal) return { ok: false, error: refusal };
@@ -4867,7 +4868,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const { def, value } = input;
     if (def.group === "Roster") {
       try {
-        const peer = def.path[1]!, next = rosterCandidate(def, value), on = rosterAllows(next, peer, config.pi.enabled, declarations, adapterCatalog);
+        const peer = def.path[1]!, next = rosterCandidate(def, value), on = projectRosterAllows(next, peer, config.pi.enabled);
         return { ok: true, lines: [`${peer}: ${onRoster(peer) ? "on" : "off"} -> ${on ? "on" : "off"} roster`, ...(on ? ["Admission, starts and new work become available; any existing pause or held delivery remains."] : [`${bus.queued(peer)} queued messages are retained until the peer returns.`, "Owned runtimes stop; native terminal sessions detach. Open tasks are offered to another eligible peer.", `For a busy peer, use ahub roster remove ${peer} --now explicitly; this stops its owned runtime or detaches its native session during the active turn.`, ...(retainedTerminalNotice(peer) ? [retainedTerminalNotice(peer)!] : []), ...tasks.rosterPreview(peer).map(move => sanitize(`task ${move.title}: ${move.to ? `${move.role} offered to ${move.to} if removed now` : `${move.role} stays with ${peer}; no eligible replacement`}`)), ...(rosterRemovalRefusal(peer, false) ? [rosterRemovalRefusal(peer, false)!] : [])])], ...(on ? {} : { confirm: peer }) };
       } catch (error) { return { ok: false, error: sanitize((error as Error).message) }; }
     }
