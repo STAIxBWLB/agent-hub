@@ -3338,12 +3338,26 @@ export class Tasks {
     const cachedPlanRead = this.planReads.get(task.id);
     const planRead = this.planReport(task, cachedPlanRead?.identity === this.planReadIdentity(task) && cachedPlanRead.evidence.head === this.findingHead(task) ? cachedPlanRead.evidence : undefined);
     const conformanceText = mode !== "off" ? this.screen(task, `Plan conformance: ${JSON.stringify(planRead)}`, "plan conformance", reviewer) + "\n" : "";
+    const profile = (task.profile ?? "dev") === (this.d.profile ?? "dev") ? profileData(this.d.profileData ?? task.profile ?? "dev") : profileData(task.profile);
+    const target = plan ? `the plan (${plan})` : task.detail ? "the task detail above" : "the task title";
+    const noCheckWording = profile.name === "research" || profile.name === "writing"
+      ? "No check ran for this class: verify the claims and sources yourself."
+      : profile.name === "general"
+        ? "No check ran for this class: verify the outcome yourself."
+        : "No check ran for this class: run the affected tests yourself.";
+    const checkResult = check ? `Check result: ${(check.note ?? "").split("\n")[0]}` : noCheckWording;
+    const checklistTemplates = profile.review_checklist ?? [
+      "Map the changed signatures and call sites to {target}, and name each one that does not match.",
+      "{check}",
+      "List what is unmet in hub_review's unmet, one item each.",
+    ];
+    const checklistLines = checklistTemplates.map(template =>
+      template.replaceAll("{target}", target).replaceAll("{check}", checkResult)
+    );
     const checklist = [
       "Checklist:",
       ...this.planGuardItems(task).map(item => `- Check the plan against this live fail before the remaining checks: ${item.line}`),
-      `- Map the changed signatures and call sites to ${plan ? `the plan (${plan})` : task.detail ? "the task detail above" : "the task title"}, and name each one that does not match.`,
-      `- ${check ? `Check result: ${(check.note ?? "").split("\n")[0]}` : "No check ran for this class: run the affected tests yourself."}`,
-      `- List what is unmet in hub_review's unmet, one item each.`,
+      ...checklistLines.map(line => `- ${line}`),
     ].join("\n");
     // #223 R2: a reviewer-only instance judges from facts; the builder's narrative stays out, earlier findings go in.
     const reviewOnly = this.d.reviewOnly?.(reviewer) === true;

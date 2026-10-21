@@ -197,6 +197,15 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
     }
     if (customProfile && tool.name === "hub_task_propose") properties.class = { type: "string", enum: [...new Set([...Object.keys(data.classes), ...PROFILE_CLASS_NAMES.filter(v => projectProfile("dev").classes[v])])] };
     if (customProfile && properties.plan && tool.name !== "hub_task_accept") properties.plan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) } };
+    if (customProfile && tool.name === "hub_task_done" && data.name !== "dev") {
+      const summaryProp = properties.summary as { type: string; description: string };
+      properties.summary = {
+        ...summaryProp,
+        description: data.name === "research" || data.name === "writing"
+          ? "changed deliverables, provenance, checks and unknowns"
+          : "what changed, why, and the check or verification you ran with its result",
+      };
+    }
     if (customProfile && tool.name === "hub_backlog_split") {
       const parts = properties.parts as { items: { properties: Record<string, unknown> } };
       const selectedPlan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) } };
@@ -210,6 +219,18 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
       const parts = properties.parts as { items: { properties: { plan: { properties: Record<string, unknown> } } } };
       properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: { ...parts.items.properties.plan, properties: { ...parts.items.properties.plan.properties, ...costPlanProperties, ...evidencePlanProperties } } } } };
     }
-    return { ...tool, ...(customProfile && tool.name === "hub_task_propose" ? { description: tool.description + ` Selected profile ${data.name}: ${Object.keys(data.classes).join(", ")}. Routing uses their existing base classes.` } : {}), inputSchema: { ...tool.inputSchema, properties } };
+    let description = tool.description;
+    if (customProfile && tool.name === "hub_task_propose") {
+      description = tool.description + ` Selected profile ${data.name}: ${Object.keys(data.classes).join(", ")}. Routing uses their existing base classes.`;
+    } else if (customProfile && tool.name === "hub_review" && data.name !== "dev") {
+      const reviewAction = data.name === "research" || data.name === "writing"
+        ? "assess scope, provenance and unsupported claims against the task's plan or detail"
+        : "assess the deliverables against the task's plan or detail";
+      description = `Give your verdict on a task you were asked to review: ${reviewAction}, read the check result (hub_task_show has it, with the done summary), and list what is unmet. The verdict notifies the task owner; no duplicate hub_send chat is needed. Consecutive changes_requested verdicts (three by default, \`tasks.escalate_after\`) move the task to another peer.`;
+    } else if (customProfile && tool.name === "hub_task_done" && data.name !== "dev") {
+      const summaryLabel = data.name === "research" || data.name === "writing" ? "deliverables, provenance and checks" : "deliverables and checks";
+      description = `Mark your task finished. It goes to its reviewer with your summary (${summaryLabel}) and refs; no duplicate hub_send chat is needed. When the project configures a check for its class, the hub runs it first and the result comes as a task message: a failed check keeps the task with you.`;
+    }
+    return { ...tool, description, inputSchema: { ...tool.inputSchema, properties } };
   });
 }
