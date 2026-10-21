@@ -36,7 +36,7 @@ async function fixture(extra = true) {
   writeFileSync(declarationFile, JSON.stringify({ instances }));
   const bin = join(base, "fake-codex"), record = join(base, "reverts.jsonl"), stateDir = join(project, ".agenthub", "state");
   writeFileSync(bin, `#!${process.execPath}\nprocess.argv.push("--record",${JSON.stringify(record)});\nawait import(${JSON.stringify(pathToFileURL(join(import.meta.dir, "fakes/codex-bin.ts")).href)});\n`, { mode: 0o700 });
-  const daemon = await startDaemon({ cwd: project, stateDir, controlPort: 0, codexAppPort: freePort(), codexProxyPort: freePort(),
+  const daemon = await startDaemon({ cwd: project, stateDir, controlPort: 0, codexAppPort: freePort(), codexProxyPort: freePort(), snapshotClock: () => 0, // #661: held, so a slow runner cannot spend the shared snapshot budget (#576)
     config: { ...DEFAULT_CONFIG, instances, codex_bin: bin, batch_ms: 0, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
       approvals: { ...DEFAULT_CONFIG.approvals, notify: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false } } });

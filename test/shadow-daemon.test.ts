@@ -14,7 +14,7 @@ async function fixture(shadow:boolean){
   const dir=realPath(mkdtempSync(join(tmpdir(),"ahub-shadow-daemon-")));cleanup.push(()=>rmSync(dir,{recursive:true,force:true}));init(dir,"research",shadow);writeFileSync(join(dir,"paper.txt"),"paper\n");
   const routing=join(dir,".agenthub/routing.toml");writeFileSync(routing,readFileSync(routing,"utf8").replace(/^pi_backend = "mlx"$/gm,'pi_backend = "dgx"'));
   const config=loadConfig(dir);config.memory.enabled=false;config.inference.enabled=false;config.mlx.enabled=false;config.coordination="turn-free";
-  const state=join(dir,".agenthub/state"),daemon=await startDaemon({cwd:dir,stateDir:state,config,controlPort:0,codexAppPort:0,codexProxyPort:0});cleanup.push(()=>daemon.stop());
+  const state=join(dir,".agenthub/state"),daemon=await startDaemon({cwd:dir,stateDir:state,config,controlPort:0,codexAppPort:0,codexProxyPort:0,snapshotClock:()=>0/* #661: held, so a slow runner cannot spend the shared snapshot budget (#576) */});cleanup.push(()=>daemon.stop());
   const peer=new Peer("codex");daemon.bus.add(peer);await peer.start();const client=await ControlClient.connect(state,{role:"tools",peer:"codex"});cleanup.push(()=>client.close());return{dir,state,daemon,peer,client};
 }
 test("non-dev projects without Git/shadow disable facts and snapshots with one notice (#259)",async()=>{
