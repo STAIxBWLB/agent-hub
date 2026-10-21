@@ -1,4 +1,5 @@
 import type { Envelope, EnvelopeOpts, PeerId, PeerState } from "./envelope.ts";
+import type { PermissionMode } from "./permission-mode.ts";
 
 export interface DeliveryReceipt {
   id: string;
@@ -11,6 +12,14 @@ export interface DeliveryReceipt {
 export interface PeerAdapter {
   readonly id: PeerId;
   readonly state: PeerState;
+  /** Host-observed native session identity. An absent port permits owner-token fallback; undefined means unknown. */
+  readonly sessionGeneration?: string | number;
+  /** Defaults to fencing checkpoints when the generation port exists; native legacy exceptions opt out explicitly. */
+  readonly checkpointUsesSessionGeneration?: boolean;
+  /** Effective native approval state; absent peers retain the hub-managed choice. */
+  readonly permissionModeState?: PermissionMode | "unknown" | "unmanaged";
+  /** Resolve only after native acknowledgement. This changes approval frequency, never the sandbox. */
+  setPermissionMode?(mode: PermissionMode): Promise<void>;
   /** A peer the hub drives itself (Pi, the local worker). It cannot be trusted to rate its own urgency: the bus caps it. */
   readonly hubNative?: boolean;
   /** Never handed a delivery: its queue waits for `Bus.pull` (a Claude session that cannot show channel pushes, issue #205). */

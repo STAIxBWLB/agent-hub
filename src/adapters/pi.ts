@@ -157,6 +157,8 @@ export class PiPeer extends BasePeer {
   get sessionGeneration(): string | undefined {
     return this.ownerClaimed && this.ownerPid && this.ownerSignature ? `${this.ownerPid}:${this.ownerSignature}:${this.sessionId ?? ""}` : undefined;
   }
+  // ponytail: retain Pi's owner/session-only checkpoint fence in this slice; a later native-proof port can strengthen it.
+  readonly checkpointUsesSessionGeneration = false;
 
   recoveryMetadata(): Record<string, unknown> {
     const exists = !!this.sessionFile && existsSync(this.sessionFile);
