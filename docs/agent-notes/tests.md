@@ -2,6 +2,7 @@
 
 Scope: tests, fakes and the test gate. Read before adding or changing a test or fake under `test/`, or editing `scripts/check.sh`, `scripts/hang-watch.sh`, `scripts/seeded-check.ts` or `scripts/seeds.json`.
 
+- A fake's gated action that never sees its gate skips the action; never fall through to a late, unsynchronized action. Owned-group tests inject `AcpOwnedGroupPorts`; a test never signals a process group it did not spawn.
 - When extracting production closures into a VM fixture, bind every referenced host port and actual imported policy helper. Keep native identity checks on real unstarted instances; never replace a policy predicate with an always-true stub or weaken existing assertions to accommodate a moved dependency.
 - Tests that are not about batching build the bus with `batchMs: 0`; with the default 15 s window a lone status envelope looks like a lost message.
 - In Bun 1.3.14 a test timeout that fires while `Bun.spawnSync` runs can start the next test inside spawnSync's own event loop, where another spawnSync then spins at full CPU for good (trigger not pinned down; see README). Bun 1.4.2 still runs the next test inside the outer spawnSync's event loop. `scripts/check.sh` runs tests with a 20 s timeout and under `scripts/hang-watch.sh`; a test that spawns and reads the process table gets a timeout of its own.
