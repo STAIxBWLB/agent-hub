@@ -90,6 +90,14 @@ export interface VersionContext {
   env: Readonly<Record<string, string>>;
 }
 
+/** Compatibility type for frozen A1 permission metadata, not a runtime permission port. */
+export type NativeModeSpec =
+  | { kind: "acp-mode"; modeId: string }
+  | { kind: "codex-approval"; policy: string }
+  | { kind: "launch-flag"; argv: string[] }
+  | { kind: "hub-gate"; allow: readonly ("read" | "search" | "think")[] }
+  | { kind: "native-only"; note: string };
+
 export interface QuotaReader {
   source: string;
   read(value: unknown): UsageWindow[];

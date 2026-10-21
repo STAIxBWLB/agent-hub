@@ -72,7 +72,7 @@ export function validateInstances(raw: unknown): InstancesConfig {
     const external = definition.instances?.mode === "external";
     const runtime = freshReviewer ? definition.reviewerVariant ?? definition : definition;
     const unavailableReviewer = freshReviewer && !!(definition.reviewerVariant ?? definition).reviewer?.unavailable;
-    if (!unavailableReviewer && runtime.instances?.mode !== "external" && !supportsHeadlessInstances(runtime)) return fail(`${path}.kind`, "unsupported; explicit external instance policy or a headless instance policy with a headless factory is required");
+    if (!unavailableReviewer && runtime.instances?.mode !== "external" && !supportsHeadlessInstances(runtime)) return fail(`${path}.kind`, definition.reviewerVariant ? 'unsupported; this kind only declares headless reviewer instances with roles exactly ["reviewer"]' : "unsupported; explicit external instance policy or a headless instance policy with a headless factory is required");
     if (external) {
       const declared = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
       // #223: a headless one is the kind's reviewer variant, one fresh hub-run session per review request.

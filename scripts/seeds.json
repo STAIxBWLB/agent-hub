@@ -324,7 +324,7 @@
     {
       "id": "roster-detached-pi-recovery",
       "file": "src/hub/daemon.ts",
-      "search": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\" || (peer instanceof PiPeer && !peer.recoveryReady))) return false;",
+      "search": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\" || (isPiPeer(peer) && !peer.recoveryReady))) return false;",
       "replacement": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\")) return false;",
       "testFile": "test/roster-pi.test.ts",
       "testName": "controlled recovery refuses a removed personal Pi owner until the person ends it (#315)"
@@ -3156,7 +3156,7 @@
     {
       "id": "kimi-watch-live-owner",
       "file": "src/hub/daemon.ts",
-      "search": "if (admission && !(owner instanceof AcpPeer) && (",
+      "search": "if (admission && !isAcpPeer(owner) && (",
       "replacement": "if (admission && (",
       "testFile": "test/kimi-tui.test.ts",
       "testName": "watch follows a running headless Kimi under the default TUI start mode (#382)"
@@ -3434,12 +3434,12 @@
       "testName": "declared rotation gives two actual kinds three selections each across seeds zero through five"
     },
     {
-      "id": "registry-start-mode-literal-probe",
-      "file": "src/hub/start-mode.ts",
+      "id": "registry-start-mode-jcode",
+      "file": "src/adapters/registry.ts",
       "search": "export const START_MODE_PEERS = [\"pi\", \"codex\", \"kimi\", \"jcode\"] as const;",
-      "replacement": "export const START_MODE_PEERS = REGISTRY_START_MODE_PEERS;",
-      "testFile": "test/registry-guard.test.ts",
-      "testName": "#451 registry guard matches every current source group to the reviewed frozen baseline"
+      "replacement": "export const START_MODE_PEERS = [\"pi\", \"codex\", \"kimi\"] as const;",
+      "testFile": "test/adapter-catalog-a2.test.ts",
+      "testName": "A2 catalog projections retain exact legacy orders and source-probe compatibility"
     }
   ]
 }

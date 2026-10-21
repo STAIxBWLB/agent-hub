@@ -9,6 +9,9 @@ test("#451 the public frozen A1 export preserves its caller-visible legacy type"
   const legacy: readonly LegacyAdapterDefinition[] = BUILTIN_DEFINITIONS_WITHOUT_QWEN;
   expect(legacy[0]!.start.ownsTerminal("tui")).toBe(true);
   expect(legacy[0]!.permission.modes).toEqual({});
+  const mode = legacy.find(definition => definition.kind === "kimi")!.permission.modes["never-ask"];
+  expect(mode?.kind).toBe("acp-mode");
+  if (mode?.kind === "acp-mode") expect(mode.modeId).toBe("auto");
 });
 
 async function definitions(): Promise<readonly import("../src/adapters/definitions/builtin-metadata.ts").LegacyAdapterDefinition[]> {

@@ -1,3 +1,4 @@
+import type { PermissionMode } from "../../hub/permission-mode.ts";
 import { claudeReviewerBackend, CODEX_REVIEWER_VARIANT, KIMI_REVIEWER_VARIANT } from "./reviewer-variants.ts";
 import { kimiAcpCommand } from "./native-daemon-kimi.ts";
 import { claudeRecoveryLaunch, kimiRecoveryLaunch, claudeRetainedTerminalNotice, piRetainedTerminalNotice, codexRetainedTerminalNotice, codexRosterReturnNotice, jcodeStartPreflight, claudeObservedVersion, codexObservedVersion } from "./native-daemon-policy.ts";
@@ -12,7 +13,7 @@ import { CLAUDE_DISPLAY, CODEX_DISPLAY, KIMI_DISPLAY, PI_DISPLAY, LOCAL_DISPLAY,
 import { CLAUDE_RECOVERY_SESSION, CODEX_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, PI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION } from "./native-recovery.ts";
 import { claudeWindows, codexWindows } from "./native-quota.ts";
 import { claudeContext, codexContext, acpContextValue } from "./native-context.ts";
-import type { AdapterDefinition, LaunchContext, LaunchPlan, StartForm } from "../registry-types.ts";
+import type { AdapterDefinition, LaunchContext, LaunchPlan, StartForm, NativeModeSpec } from "../registry-types.ts";
 import type { PeerAdapter } from "../../hub/peers.ts";
 import { shellQuote } from "../../cli/shell-quote.ts";
 
@@ -154,7 +155,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
 export type LegacyAdapterDefinition = AdapterDefinition & {
   init?: { templateFragment?: string; mcpFile?: string };
   start: AdapterDefinition["start"] & { ownsTerminal(form: StartForm): boolean; launch(ctx: LaunchContext): LaunchPlan };
-  permission: AdapterDefinition["permission"] & { modes: Record<string, unknown>; readOnly?: unknown };
+  permission: AdapterDefinition["permission"] & { modes: Partial<Record<PermissionMode, NativeModeSpec>>; readOnly?: NativeModeSpec };
 };
 const terminal = (form: StartForm) => form === "tui";
 const headless = () => false;

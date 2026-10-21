@@ -3706,7 +3706,11 @@ arguments, exact native regexes, startsWith/includes/hasOwn predicates (includin
 constant bracket spellings), and adapter-origin native instanceof dispatch.
 Aliases and shadowing remain source-bound; generic hub classes, dynamic keys and
 prose are not native identity policy. Keep the frozen core baseline empty and
-existing seed entries unchanged; add a registry START_MODE_PEERS mutation seed.
+existing seed entries unchanged except the reviewed search/replacement-only
+reanchors of `roster-detached-pi-recovery` and `kimi-watch-live-owner` from
+instanceof to the equivalent native predicates. Their identity and named tests
+stay unchanged, with green-to-named-assertion proof through the seed runner. Add a
+registry START_MODE_PEERS membership mutation seed.
 Native type predicates and the external channel implementation live in adapters;
 authentication and lifecycle authority remain in the daemon. Stable hub leaf
 exports preserve source compatibility for native state readers.

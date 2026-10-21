@@ -18821,7 +18821,7 @@ function validateInstances(raw) {
     const runtime = freshReviewer ? definition.reviewerVariant ?? definition : definition;
     const unavailableReviewer = freshReviewer && !!(definition.reviewerVariant ?? definition).reviewer?.unavailable;
     if (!unavailableReviewer && runtime.instances?.mode !== "external" && !supportsHeadlessInstances(runtime))
-      return fail(`${path}.kind`, "unsupported; explicit external instance policy or a headless instance policy with a headless factory is required");
+      return fail(`${path}.kind`, definition.reviewerVariant ? 'unsupported; this kind only declares headless reviewer instances with roles exactly ["reviewer"]' : "unsupported; explicit external instance policy or a headless instance policy with a headless factory is required");
     if (external) {
       const declared = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
       if (entry.start_mode && definition.reviewerVariant) {
