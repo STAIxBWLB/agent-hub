@@ -913,11 +913,18 @@ export async function startDaemon(opts: DaemonOptions) {
     bus.setRecoveryHold(false);
   }
   const recoveryPeerAllowed = (id: PeerId) => !recoveryActive() || !recoveryPeerSnapshot || recoveryPeerSnapshot.some((peer) => peer.id === id);
-  const armRecoveryLease = (delayMs = 10 * 60_000): void => {
+  // One log line per failure streak: the 1 s retry itself is unchanged, only its repeated line is not.
+  let recoveryLeaseRetryLogged = false;
+  const armRecoveryLease = (delayMs = 10 * 60_000, retrying = false): void => {
+    if (!retrying) recoveryLeaseRetryLogged = false;
     clearTimeout(recoveryLeaseTimer);
     recoveryLeaseTimer = setTimeout(() => {
-      if (!recoveryOperationId || recoveryCommitted || (recoveryPhase !== "preparing" && recoveryPhase !== "prepared")) return;
-      try { bus.setRecoveryHold(false); } catch (error) { log("recovery lease release deferred; delivery storage must be restored before abort"); armRecoveryLease(1000); return; }
+      if (!recoveryOperationId || recoveryCommitted || (recoveryPhase !== "preparing" && recoveryPhase !== "prepared")) { recoveryLeaseRetryLogged = false; return; }
+      try { bus.setRecoveryHold(false); } catch {
+        if (!recoveryLeaseRetryLogged) { recoveryLeaseRetryLogged = true; log("recovery lease release deferred; delivery storage must be restored before abort (retrying every second)"); }
+        armRecoveryLease(1000, true); return;
+      }
+      recoveryLeaseRetryLogged = false;
       log(`recovery lease expired for ${recoveryOperationId}; hold aborted`);
       recoveryOperationId = undefined;
       recoveryPhase = undefined;

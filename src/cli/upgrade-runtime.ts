@@ -178,10 +178,16 @@ export async function inspectRecovery(project: Project, targetFeatures?: readonl
   }
   // A dead pid or a missing project directory is final whatever protocol its manifest names: probing it would read
   // "unavailable" forever and wedge abort, resume and stop-and-archive (#215).
-  if (base.state === "stopped" || base.state === "missing" || (base.state !== "running" && !legacySupported)) return {
-    state: base.state, peers: [], blockers: base.state === "stopped" ? snapshotError ? [snapshotError.message] : [] : [base.state === "incompatible" ? "manual-bootstrap-required: source lacks the recovery contract; use its matching CLI" : base.error ?? base.state],
+  if (base.state === "stopped" || base.state === "missing" || (base.state !== "running" && !legacySupported)) {
+    let blockers: string[];
+    if (base.state === "stopped") blockers = snapshotError ? [snapshotError.message] : [];
+    else if (base.state === "incompatible") blockers = ["manual-bootstrap-required: source lacks the recovery contract; use its matching CLI"];
+    else blockers = [base.error ?? base.state];
+    return {
+    state: base.state, peers: [], blockers,
     ...(control?.instanceId ? { instanceId: control.instanceId } : {}), ...(control?.protocol ? { protocol: control.protocol } : {}), ...(snapshot ? { snapshot } : {}), ...(snapshotError ? { snapshotError } : {}),
-  };
+    };
+  }
   let status = base.status;
   if (!status && control && sourceProtocol === PROTOCOL) return {
     state: "unavailable", peers: [], blockers: ["runtime changed during recovery inspection"],
