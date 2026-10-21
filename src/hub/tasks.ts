@@ -2946,6 +2946,10 @@ export class Tasks {
     let reviewer = selection?.reviewer ?? task.reviewer, reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off" && gated !== (reviewer ? "review" : "approval")) {
       reviewEvidence = await this.lifecycleGate(task, reviewer ? "review" : "approval");
+      task = this.need(task.id, false, true);
+      this.mine(task, by, "owner", true);
+      // In every mode: another done may have landed during the readback.
+      if (task.state === "in_review" || isClosedTaskState(task.state)) throw new Error(`task #${task.id} is already ${task.state}`);
       task = this.completionCurrent(task.id, by, false);
       selection = this.poolReview(task, refs);
       reviewer = selection?.reviewer ?? task.reviewer;
