@@ -160,7 +160,7 @@ export function instanceRecoverySourceRefusal(projectRoot: string, features: unk
     if (peers.every(([, peer]) => !!peer && typeof peer === "object" && typeof (peer as { state?: unknown }).state === "string") &&
       !peers.some(([id, peer]) => declared.includes(id) && (peer as { state: string }).state !== "offline")) return undefined;
   }
-  return "source lacks peer_instances support for this project's declared instances; restart the source with a supporting agent-hub version before retrying recovery; for a first upgrade, end any extra native sessions and temporarily remove the instance declarations, upgrade the source, then declare them again; legacy peer identities were not reinterpreted";
+  return "source lacks peer_instances support and a declared instance of this project may be live; restart the source with a supporting agent-hub version before retrying recovery; for a first upgrade, end the extra native sessions first (a source whose declared instances are all offline proceeds without further steps); only if one cannot be ended, temporarily remove its declaration, upgrade the source, then declare it again; legacy peer identities were not reinterpreted";
 }
 
 export async function inspectRecovery(project: Project, targetFeatures?: readonly string[], purpose?: "cleanup"): Promise<Inspection> {

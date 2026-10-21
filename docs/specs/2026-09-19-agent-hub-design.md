@@ -3831,7 +3831,13 @@ never initializes that app-server on the TUI's behalf. `ahub <kind> --as <id>`
 selects the declared identity; selection is removed from native passthrough.
 Missing `peer_instances` evidence on an old daemon/upgrade target is a refusal
 before instance runtime effects, rather than a guess that the instance is a base
-peer.
+peer, but only while a declared instance is live or unreadable: a source whose
+status shows every declared id offline proceeds, because there is no extra
+identity left to reinterpret. The refusal asks the person to end extra native
+sessions and, only when an extra session cannot be ended, to remove the
+declarations temporarily. A roster key left behind by an undeclared instance
+loads as inert and `ahub roster remove <id>` deletes it; any other unknown key
+is still an unsupported peer.
 
 Each additional implementer requires an explicit registered Git worktree at
 `<project>/.worktrees/<id>` with an attached branch. I2 creates no worktree or
