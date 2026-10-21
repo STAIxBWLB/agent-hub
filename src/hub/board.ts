@@ -162,6 +162,8 @@ export class Board {
   private pendingChanges: { task: Task; entry: HistoryEntry }[] | undefined;
   /** Every recorded change, as it lands (telemetry, issue #40). */
   onChange?: (task: Task, entry: HistoryEntry) => void;
+  /** Host lifecycle policy, installed by Tasks; off projects keep their original history shape. */
+  trackPlanRevisions?: () => boolean;
   private changed(task: Task, entry: HistoryEntry): void {
     if (this.pendingChanges) { this.pendingChanges.push({ task, entry }); return; }
     try { this.onChange?.(task, entry); } catch { /* never throw after a board write */ }
@@ -241,7 +243,7 @@ export class Board {
 
   propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; profile?: import("./profiles.ts").ProfileName; profileClass?: string; customProfile?: true; role?: string; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[]; backlog?: boolean; external?: GitHubSource }): Task {
     const now = Date.now();
-    const history: HistoryEntry[] = [{ at: now, by, event: t.backlog ? "backlogged" : "proposed", ...(t.plan && Object.keys(t.plan).length ? { planRevision: { revision: 1, fingerprint: planFingerprint(t.plan) } } : {}) }];
+    const history: HistoryEntry[] = [{ at: now, by, event: t.backlog ? "backlogged" : "proposed", ...(this.trackPlanRevisions?.() && t.plan && Object.keys(t.plan).length ? { planRevision: { revision: 1, fingerprint: planFingerprint(t.plan) } } : {}) }];
     const { lastInsertRowid } = this.taskWrite(() => this.db
       .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated, project_profile, task_role, external_repo, external_issue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(t.title, t.detail ?? "", t.class, t.backlog ? "backlog" : "proposed", JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now, t.profile && (t.profile !== "dev" || t.customProfile || t.profileClass !== undefined && t.profileClass !== t.class) ? JSON.stringify({ profile: t.profile, profileClass: t.profileClass ?? t.class }) : null, t.role ?? null, t.external?.repo.toLowerCase() ?? null, t.external?.issue ?? null));
@@ -340,9 +342,13 @@ export class Board {
       reviewFindings = { ...(head ? { head } : {}), items: parseReviewFindings(extra.reviewFindings.items, { person: by === "user", maxNits: 64 }) };
     }
     if (extra.planDeparture && (by !== "user" || event !== "plan departure accepted")) throw new Error("plan departure acceptance is person-only");
-    const fingerprint = planFingerprint(next.plan ?? {}), previousRevision = task.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0;
-    const planRevision = patch.plan && fingerprint !== planFingerprint(task.plan ?? {}) ? { revision: previousRevision + 1, fingerprint } : undefined;
-    const history = [...task.history, { at: Date.now(), by, event, ...(planRevision ? { planRevision } : {}), ...(extra.planObservation ? { planObservation: extra.planObservation } : {}), ...(extra.planDeparture ? { planDeparture: extra.planDeparture } : {}), ...(extra.planDepartureInvalidated === true ? { planDepartureInvalidated: true as const } : {}), ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.withheld && (note || reviewFindings) ? { withheld: true as const } : {}), ...(reviewFindings ? { reviewFindings } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}) }];
+    const trackPlan = this.trackPlanRevisions?.() === true, hasDeparture = task.history.some(h => h.planDeparture);
+    const fingerprint = patch.plan && (trackPlan || hasDeparture) ? planFingerprint(next.plan ?? {}) : undefined;
+    const planChanged = fingerprint !== undefined && fingerprint !== planFingerprint(task.plan ?? {});
+    const planRevision = trackPlan && planChanged ? { revision: (task.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0) + 1, fingerprint: fingerprint! } : undefined;
+    // Disabling reporting must not let a plan edit/revert resurrect a prior person's consent.
+    const departureInvalidated = extra.planDepartureInvalidated === true || hasDeparture && planChanged;
+    const history = [...task.history, { at: Date.now(), by, event, ...(planRevision ? { planRevision } : {}), ...(extra.planObservation ? { planObservation: extra.planObservation } : {}), ...(extra.planDeparture ? { planDeparture: extra.planDeparture } : {}), ...(departureInvalidated ? { planDepartureInvalidated: true as const } : {}), ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.withheld && (note || reviewFindings) ? { withheld: true as const } : {}), ...(reviewFindings ? { reviewFindings } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}) }];
     this.taskWrite(() => this.db
       .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ? WHERE id = ?")
       .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), id));

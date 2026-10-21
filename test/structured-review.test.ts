@@ -25,7 +25,7 @@ function rig(mode: SdlcMode = "off", options: Partial<TasksDeps> = {}) {
   const tasks = new Tasks(deps);
   cleanups.push(() => { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
   const create = (pii = false) => {
-    const row = board.propose("user", { title: "review fixture", class: "implement", plan: { paths: ["."] }, ...(pii ? { signals: ["pii"] } : {}) });
+    const row = board.propose("user", { title: "review fixture", class: "implement", plan: { paths: ["src/hub/tasks.ts"] }, ...(pii ? { signals: ["pii"] } : {}) });
     board.update(row.id, "user", "accepted", { state: "in_progress", owner: "codex", reviewer: "claude" });
     return board.update(row.id, "codex", "done", { state: "in_review", refs: { commit: policy.head }, sdlc: { stage: "review", repo: "o/r", issue: 1, pr: 2, localHead: policy.head, localResult: "passed" } });
   };

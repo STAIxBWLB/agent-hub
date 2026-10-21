@@ -1,4 +1,4 @@
-import { planConformance, planFingerprint, type PlanConformance } from "./plan-conformance.ts";
+import { completePlanInventory, planConformance, planConformanceBlockers, planFingerprint, type PlanConformance } from "./plan-conformance.ts";
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, type CostPlan, type ReviewCost } from "./cost-governance.ts";
 import { specRefs } from "./spec-read.ts";
@@ -291,6 +291,7 @@ export class Tasks {
   private sweeping = false;
 
   constructor(private readonly d: TasksDeps) {
+    d.board.trackPlanRevisions = () => (d.sdlc?.config().mode ?? "off") !== "off";
     this.repositories = new TaskRepositories(d.cwd, d.repository);
     for (const task of d.board.list()) this.warmRepository(task);
     if (d.coordination) {
@@ -2468,13 +2469,14 @@ export class Tasks {
     if (next.reviewedHead !== undefined && (next.reviewedHead !== task.sdlc?.reviewedHead || (suppliedHead && artifactChanged))) this.mine(task, by, "reviewer", true);
     const departure = task.history.findLast(h => h.by === USER && h.planDeparture)?.planDeparture;
     const invalidatesDeparture = !!departure && (artifactChanged || next.localHead !== task.sdlc?.localHead && next.localHead !== undefined && next.localHead !== departure.head || next.reviewedHead !== task.sdlc?.reviewedHead && next.reviewedHead !== undefined && next.reviewedHead !== departure.head);
-    return this.d.board.update(task.id, by, "lifecycle", { sdlc: next }, undefined, invalidatesDeparture ? { planDepartureInvalidated: true } : {});
+    return this.d.board.update(task.id, by, "lifecycle", { sdlc: next }, undefined, { ...this.planObservation({ ...task, sdlc: next }), ...(invalidatesDeparture ? { planDepartureInvalidated: true } : {}) });
   }
 
   async deliveryQueue(repo: string) {
+    const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     const before = workflowHash(this.d.board.list().map(t => ({ id: t.id, state: t.state, after: t.deps, sdlc: t.sdlc, history: t.history.length })));
-    const links = this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t), plan: this.isPii(t) ? undefined : { paths: this.planPaths(t), revision: t.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(t.plan ?? {}), accepted: this.validPlanDepartures(t) } }));
-    const report = await readMergeQueue(repo, this.d.sdlc?.config() ?? sdlcConfig(undefined), links, this.d.sdlc?.gh);
+    const links = this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t), plan: config.mode === "off" || this.isPii(t) ? undefined : { paths: this.planPaths(t), revision: t.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(t.plan ?? {}), accepted: this.validPlanDepartures(t) } }));
+    const report = await readMergeQueue(repo, config, links, this.d.sdlc?.gh);
     // Policy can change across remote awaits without any board write. Never return its stale public projection.
     const currentPrivacy = this.d.board.list().map(task => ({ id: task.id, private: this.isPii(task) }));
     if (workflowHash(links.map(({ id, private: hidden }) => ({ id, private: hidden }))) !== workflowHash(currentPrivacy)) {
@@ -2483,7 +2485,7 @@ export class Tasks {
 
     const after = workflowHash(this.d.board.list().map(t => ({ id: t.id, state: t.state, after: t.deps, sdlc: t.sdlc, history: t.history.length })));
     if (before !== after) { report.complete = false; report.order = []; if (report.rows.length) report.unordered = report.rows.map(row => row.pr); for (const row of report.rows) { row.ready = false; row.blockers.push("board changed during delivery readback"); } }
-    else for (const row of report.rows) if (row.head && !row.private) for (const id of row.tasks) {
+    else if (config.mode !== "off") for (const row of report.rows) if (row.head && !row.private) for (const id of row.tasks) {
       const task = this.d.board.get(id);
       if (task?.sdlc?.repo?.toLowerCase() === report.repo.toLowerCase() && task.sdlc.pr === row.pr) {
         if (this.validPlanDepartures(task).length && row.planConformance?.some(item => item.task === id && item.state !== "unknown" && !item.accepted)) this.invalidatedPlanDepartures.add(id);
@@ -2560,7 +2562,7 @@ export class Tasks {
       ...(observation && observation.repo === task.sdlc?.repo && observation.pr === task.sdlc?.pr ? { revisionsAfterFirstObservedPush: Math.max(0, (revision ?? 0) - observation.revision) } : {}) };
   }
   private capturePlanRead(task: Task, evidence: PrEvidence | undefined): void {
-    if (!evidence || this.isPii(task) || !task.sdlc?.repo || !task.sdlc.pr) return;
+    if ((this.d.sdlc?.config().mode ?? "off") === "off" || !evidence || this.isPii(task) || !task.sdlc?.repo || !task.sdlc.pr) return;
     if (this.planReads.size >= 256 && !this.planReads.has(task.id)) this.planReads.delete(this.planReads.keys().next().value!);
     this.planReads.set(task.id, { identity: this.planReadIdentity(task), evidence });
     const accepted = task.history.findLast(h => h.by === USER && h.planDeparture)?.planDeparture;
@@ -2568,7 +2570,7 @@ export class Tasks {
     this.capturePlanHead(task, evidence.head);
   }
   private capturePlanHead(task: Task, head: string): void {
-    if (this.isPii(task) || !task.sdlc?.repo || !task.sdlc.pr) return;
+    if ((this.d.sdlc?.config().mode ?? "off") === "off" || this.isPii(task) || !task.sdlc?.repo || !task.sdlc.pr) return;
     if (this.planReads.get(task.id)?.evidence.head !== head) this.planReads.delete(task.id);
     const accepted = task.history.findLast(h => h.by === USER && h.planDeparture)?.planDeparture;
     if (accepted && (accepted.head !== head || accepted.repo !== task.sdlc.repo || accepted.pr !== task.sdlc.pr)) this.invalidatedPlanDepartures.add(task.id);
@@ -2581,6 +2583,7 @@ export class Tasks {
     }
   }
   private planObservation(task: Task): Pick<HistoryEntry, "planObservation" | "planDepartureInvalidated"> {
+    if ((this.d.sdlc?.config().mode ?? "off") === "off") return {};
     const observation = this.observedPlans.get(task.id);
     const lastAcceptance = task.history.findLastIndex(h => h.by === USER && h.planDeparture);
     return {
@@ -2597,7 +2600,7 @@ export class Tasks {
     if (this.isPii(initial)) throw new PreEffectToolRefusal("private PR file evidence is unavailable; amend the private plan instead");
     const read: SdlcGh = (args, timeout, cwd, cap) => { valid(); return (this.d.sdlc?.gh ?? sdlcGh)(args, timeout, cwd, cap); };
     const evidence = initial.sdlc && await readSdlcPr(initial.sdlc, read); valid();
-    if (!evidence || planConformance(["."], evidence).state === "unknown") throw new PreEffectToolRefusal("complete PR file inventory unknown");
+    if (!evidence || completePlanInventory(evidence) === undefined) throw new PreEffectToolRefusal("complete PR file inventory unknown");
     if (evidence.head !== head) throw new PreEffectToolRefusal("departure acceptance head is not the current PR head");
     const note = sanitize(reason.replace(/\s+/g, " ").trim());
     const withheld = await this.withholds("note", note, initial); const current = valid();
@@ -2618,8 +2621,6 @@ export class Tasks {
     const current = valid();
     if (this.planIdentity(current) !== this.planIdentity(task) || current.history.length !== task.history.length) throw new PreEffectToolRefusal("task changed during lifecycle readback");
     this.capturePlanRead(current, evidence);
-    const observation = this.planObservation(current);
-    if (observation.planObservation || observation.planDepartureInvalidated) this.d.board.update(current.id, HUB, "plan observed", {}, undefined, observation);
     return sdlcStatus(config, current.sdlc, evidence, this.workflowView(current), edit, this.isPii(current) ? [] : this.reviewFindingSets(current), current.refs.commit,
       config.mode !== "off" ? this.planReport(this.d.board.get(current.id)!, evidence) : undefined);
   }
@@ -2706,7 +2707,8 @@ export class Tasks {
     const status = sdlcStatus(config, receipt, evidence, this.workflowView(current), undefined, this.isPii(current) ? [] : findings ?? this.reviewFindingSets(current), current.refs.commit, planReport);
     const blockers = transition === "review" ? [...new Set([...status.blockers.filter(blocker => ["lifecycle stage definition unknown", "issue identity missing", "PR identity missing", "current PR evidence unknown", "PR is not open", "local gate on current head missing or failed"].includes(blocker)), ...(status.entry ?? []), ...(status.exit ?? [])])] : status.blockers;
     if (config.mode === "enforce" && blockers.length) throw new PreEffectToolRefusal(`task #${task.id}: SDLC ${transition} blocked: ${blockers.join("; ")}`);
-    if (config.mode === "advise" && blockers.length) this.d.notify(`task ${this.publicTitle(task)}: SDLC ${transition} advice: ${this.isPii(task) ? "private lifecycle evidence unknown" : blockers.join("; ")}`);
+    const advice = [...new Set([...blockers, ...planConformanceBlockers(planReport)])];
+    if (config.mode === "advise" && advice.length) this.d.notify(`task ${this.publicTitle(task)}: SDLC ${transition} advice: ${this.isPii(task) ? "private lifecycle evidence unknown" : advice.join("; ")}`);
     return evidence;
   }
 

@@ -11,10 +11,11 @@ const A = "a".repeat(40), B = "b".repeat(40), closes: (() => void)[] = [];
 afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
 function rig(mode: "off" | "advise" | "enforce" = "enforce") {
  const cwd=mkdtempSync(join(tmpdir(),"ahub-plan-conformance-")),board=new Board(join(cwd,"hub.db")),bus=new Bus({batchMs:0}), routing=loadRouting(cwd);
- const state={mode,head:A,paths:["src/a.ts","src/extra.ts"],complete:true, calls:[] as string[][],gate:undefined as Promise<void>|undefined};
+ const state={mode,head:A,paths:["src/a.ts","src/extra.ts"],complete:true,changeType:"MODIFIED",queueList:false, calls:[] as string[][],gate:undefined as Promise<void>|undefined};
  const deps: TasksDeps={cwd,project:"fixture",repository:"o/r",board,bus,routing:()=>routing,notify:()=>{},sdlc:{config:()=>sdlcConfig({mode:state.mode,required_checks:["gate"]}),gh:async args=>{
  state.calls.push(args); await state.gate;
- return {code:0,stdout:JSON.stringify(args[0]==="pr"?{headRefOid:state.head,state:"OPEN",reviewDecision:"APPROVED",reviewRequests:[],statusCheckRollup:[{name:"gate",conclusion:"SUCCESS"}],files:state.paths.map(path=>({path})),changedFiles:state.paths.length+(state.complete?0:1)}:{data:{repository:{pullRequest:{headRefOid:state.head,reviewThreads:{nodes:[],pageInfo:{hasNextPage:false}}}}}})};
+ if(state.queueList && args[0]==="pr" && args[1]==="list")return {code:0,stdout:JSON.stringify([{number:2,headRefOid:state.head,baseRefName:"main",baseRefOid:A}])};
+ return {code:0,stdout:JSON.stringify(args[0]==="pr"?{headRefOid:state.head,state:"OPEN",reviewDecision:"APPROVED",reviewRequests:[],statusCheckRollup:[{name:"gate",conclusion:"SUCCESS"}],files:state.paths.map(path=>({path,changeType:state.changeType})),changedFiles:state.paths.length+(state.complete?0:1)}:{data:{repository:{pullRequest:{headRefOid:state.head,reviewThreads:{nodes:[],pageInfo:{hasNextPage:false}}}}}})};
  }}};
  const tasks=new Tasks(deps);
  const row=board.propose("user",{title:"conformance",class:"implement",plan:{paths:["src/a.ts","src/untouched.ts"]}});
@@ -123,4 +124,76 @@ test("S2 a restarted host cannot revive consent after an unpersisted refused-hea
  await expect(restarted.review("user",r.id,"approved",undefined,undefined,A)).rejects.toThrow(/plan conformance/i);
  await restarted.acceptPlanDeparture("user",r.id,A,"person accepts in the new host lifetime");
  expect((await restarted.review("user",r.id,"approved",undefined,undefined,A)).state).toBe("approved");
+});
+
+test("S2 R1 lifecycle status reads never append history, including closed tasks", async () => {
+ const r=rig(), before=r.board.get(r.id);
+ await r.tasks.lifecycleStatus(r.id); await r.tasks.lifecycleStatus(r.id);
+ expect(r.board.get(r.id)).toEqual(before);
+ const closed=rig("advise");closed.board.update(closed.id,"user","approved",{state:"approved"});
+ const saved=closed.board.get(closed.id);await closed.tasks.lifecycleStatus(closed.id);
+ expect(closed.board.get(closed.id)).toEqual(saved);
+});
+
+test("S2 R1 advise transitions announce departure and unknown without refusing", async () => {
+ for(const complete of [true,false]) {
+  const r=rig("advise"), notices:string[]=[];r.deps.notify=notice=>{notices.push(notice);};r.state.complete=complete;
+  expect((await r.tasks.review("user",r.id,"approved",undefined,undefined,A)).state).toBe("approved");
+  expect(notices.some(notice=>notice.includes(complete?"changed files outside the plan":"plan conformance unknown"))).toBe(true);
+ }
+});
+
+test("S2 R1 off-mode plans do not create content revision or observation metadata", async () => {
+ const r=rig("off");r.board.update(r.id,"user","approved",{state:"approved"});
+ const task=await r.tasks.propose("user",{title:"off-mode plan",class:"test",owner:"codex",plan:{paths:["src/a.ts"]}});
+ r.board.update(task.id,"user","assigned",{owner:"codex"});
+ const accepted=r.tasks.accept("codex",task.id,{paths:["src/extra.ts"]});
+ expect(accepted.history.some(entry=>entry.planRevision || entry.planObservation)).toBe(false);
+ const before=r.board.get(task.id);expect((await r.tasks.lifecycleStatus(task.id) as any).planConformance).toBeUndefined();
+ expect(r.board.get(task.id)).toEqual(before);
+});
+
+test("S2 R1 status during an approval readback cannot perturb its history fence", async () => {
+ const r=rig();r.state.paths=["src/a.ts"];
+ let release!:()=>void;r.state.gate=new Promise<void>(resolve=>{release=resolve;});
+ const pending=r.tasks.review("user",r.id,"approved",undefined,undefined,A).then(value=>({value}),error=>({error}));
+ for(let i=0;i<30&&!r.state.calls.length;i++)await new Promise(resolve=>setImmediate(resolve));
+ expect(r.state.calls.length).toBeGreaterThan(0);
+ r.state.gate=undefined;
+ try {await r.tasks.lifecycleStatus(r.id);} finally {release();}
+ const result=await pending;expect("value" in result && result.value.state).toBe("approved");
+});
+
+test("S2 R1 off-mode plan edits cannot revive an earlier departure consent by reverting", async () => {
+ const r=rig(), original=r.board.get(r.id)!.plan!;
+ await r.tasks.acceptPlanDeparture("user",r.id,A,"bounded departure");
+ r.state.mode="off";
+ r.board.update(r.id,"codex","accepted",{plan:{paths:["src/"]}});
+ r.board.update(r.id,"codex","accepted",{plan:original});
+ r.state.mode="enforce";
+ await expect(r.tasks.review("user",r.id,"approved",undefined,undefined,A)).rejects.toThrow(/plan conformance/i);
+});
+
+test("S2 R1 a status observation persists only on the next review transition", async () => {
+ const r=rig();await r.tasks.lifecycleStatus(r.id);
+ expect(r.board.get(r.id)!.history.some(entry=>entry.planObservation)).toBe(false);
+ r.board.update(r.id,"codex","accepted",{plan:{paths:["src/"]}});
+ const saved=await r.tasks.review("user",r.id,"approved",undefined,undefined,A);
+ expect(saved.history.find(entry=>entry.planObservation)?.planObservation?.revision).toBe(1);
+ expect((await r.tasks.lifecycleStatus(r.id) as any).planConformance.revisionsAfterFirstObservedPush).toBe(1);
+});
+
+test("S2 R1 off-mode queue read captures no S2 head or revision", async () => {
+ const r=rig("off");r.state.queueList=true;
+ const before=r.board.get(r.id), report=await r.tasks.deliveryQueue("o/r");
+ expect(report.rows[0]?.head).toBe(A);expect(report.rows[0]?.planConformance).toBeUndefined();
+ expect((r.tasks as any).observedPlans.size).toBe(0);expect((r.tasks as any).planReads.size).toBe(0);
+ expect(r.board.get(r.id)).toEqual(before);
+});
+
+for(const changeType of ["RENAMED","COPIED"])test(`S2 R1 ${changeType} refuses both approval and departure acceptance before writes`, async () => {
+ const r=rig();r.state.changeType=changeType;const before=r.board.get(r.id);
+ await expect(r.tasks.review("user",r.id,"approved",undefined,undefined,A)).rejects.toThrow(/plan conformance unknown/i);
+ await expect(r.tasks.acceptPlanDeparture("user",r.id,A,"bounded departure")).rejects.toThrow(/inventory unknown/i);
+ expect(r.board.get(r.id)).toEqual(before);
 });

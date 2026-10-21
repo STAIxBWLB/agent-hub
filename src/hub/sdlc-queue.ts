@@ -3,7 +3,7 @@ import { findingsForHead, findingHead, findingTally, type ReviewFindingSet, type
 import type { CriteriaView } from "./workflow.ts";
 import { parsePrEvidence, readSdlcPr, sdlcGh, sdlcStatus, type PrEvidence, type SdlcConfig, type SdlcGh, type SdlcReceipt } from "./sdlc.ts";
 export interface DeliveryTask { plan?: { paths?: string[]; revision: number; fingerprint: string; accepted: { repo: string; pr: number; head: string; revision: number; fingerprint: string; paths: string[] }[] }; findings?: readonly ReviewFindingSet[]; id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: CriteriaView; }
-export interface MergeQueueRow { planConformance?: { task: number; state: string; outside: number; untouched: number; accepted: boolean }[]; findings?: ReviewFindingTally; pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
+export interface MergeQueueRow { planConformance?: { task?: number; state: string; outside: number; untouched: number; accepted: boolean }[]; findings?: ReviewFindingTally; pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
 export interface MergeConflict { left: number; right: number; files: number; order: "dependency" | "person_required"; }
 export interface MergeQueue { repo: string; rows: MergeQueueRow[]; order: number[]; unordered?: number[]; conflicts: MergeConflict[]; complete: boolean; truncated: boolean; }
 const validRepo = (value: string) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && !value.startsWith("-");
@@ -32,6 +32,8 @@ async function finalSnapshot(repo: string, evidence: Map<number, PrEvidence>, ru
       const threads = p?.reviewThreads, reviews = p?.reviewRequests, checks = p?.statusCheckRollup === null ? { nodes: [], pageInfo: { hasNextPage: false } } : p?.statusCheckRollup?.contexts;
       if (threads?.pageInfo?.hasNextPage !== false || reviews?.pageInfo?.hasNextPage !== false || checks?.pageInfo?.hasNextPage !== false || !Array.isArray(threads.nodes) || threads.nodes.length > 100 || threads.nodes.some((n: { isResolved?: unknown }) => typeof n?.isResolved !== "boolean") || !Array.isArray(reviews.nodes) || !Array.isArray(checks.nodes) || checks.nodes.length > 100) return { gatesStable: false, prs };
       const after = parsePrEvidence({ ...p, files: before.paths.map(path => ({ path })), statusCheckRollup: checks.nodes, reviewRequests: reviews.nodes, unresolvedThreads: threads.nodes.filter((n: { isResolved: boolean }) => !n.isResolved).length });
+      // The pinned head keeps the earlier typed inventory; this final gate read supplies no file change types.
+      after.pathsComplete = before.pathsComplete === true && p.changedFiles === before.paths.length;
       if (gateIdentity(before) !== gateIdentity(after)) return { gatesStable: false, prs };
     }
     return { gatesStable: true, prs };
@@ -51,7 +53,7 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
   for (const pr of ids) {
     const holders = tasks.filter(t => sameRepo(t.receipt?.repo) && t.receipt?.pr === pr); links.set(pr, holders);
     const row: MergeQueueRow = { pr, tasks: holders.some(t => t.private) ? [] : holders.map(t => t.id), ready: false, blockers: [], after: [] }; result.rows.push(row);
-    if (holders.some(t => t.private)) { row.private = true; row.blockers.push("private lifecycle evidence unavailable"); continue; }
+    if (holders.some(t => t.private)) { row.private = true; if (config.mode !== "off") row.planConformance = [{ state: "unknown", outside: 0, untouched: 0, accepted: false }]; row.blockers.push("private lifecycle evidence unavailable"); continue; }
     const read = await readSdlcPr(holders[0]?.receipt ?? { stage: config.stages[0] ?? "spec", repo, pr }, bounded);
     if (!read || read.state !== "OPEN") { row.blockers.push("current PR evidence unknown or no longer open"); continue; }
     evidence.set(pr, read); row.head = read.head;

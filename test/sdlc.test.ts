@@ -13,7 +13,7 @@ import { parsePrEvidence, readSdlcPr, sdlcGh, sdlcConfig, sdlcReceipt, sdlcStatu
 const A = "a".repeat(40), B = "b".repeat(40), cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
 const config = (mode: SdlcMode) => sdlcConfig({ mode, required_checks: ["gate"] });
-const raw = (head = A, conclusion = "SUCCESS") => ({ headRefOid: head, state: "OPEN", reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [{ name: "gate", conclusion }], files: [{ path: "src/file.ts" }], changedFiles: 1, unresolvedThreads: 0 });
+const raw = (head = A, conclusion = "SUCCESS") => ({ headRefOid: head, state: "OPEN", reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [{ name: "gate", conclusion }], files: [{ path: "src/file.ts", changeType: "MODIFIED" }], changedFiles: 1, unresolvedThreads: 0 });
 
 test("SDLC defaults off and rejects unknown keys, stages, duplicate checks and unsafe artifact identities (#257)", () => {
   expect(sdlcConfig(undefined).mode).toBe("off");
@@ -195,4 +195,40 @@ test("S3 lifecycle findings carry Important across live heads and block only enf
   expect(sdlcStatus(config("enforce"), receipt, undefined, undefined, undefined, sets).findings?.openImportant).toBe(1);
   const fixed = [...sets, { head: A, items: [{ ...sets[0]!.items[0]!, disposition: "fixed" as const }] }];
   expect(sdlcStatus(config("enforce"), receipt, parsePrEvidence(raw()), undefined, undefined, fixed).blockers.some(blocker => blocker.includes("open important review findings"))).toBe(false);
+});
+
+for (const changeType of ["RENAMED", "COPIED"]) test(`#197 R1 ${changeType} metadata cannot certify a complete source-path inventory`, () => {
+  const parsed = parsePrEvidence({ ...raw(), files: [{ path: "src/destination.ts", changeType }] });
+  // Changed-files counts cover destinations, but metadata does not reveal the old/source path.
+  expect(parsed.paths).toEqual(["src/destination.ts"]);
+  expect(parsed.pathsComplete).toBe(false);
+});
+
+test("#197 R1 PR file completeness consumes changeType from actual gh view file metadata", async () => {
+  const receipt = sdlcReceipt({ repo: "owner/repo", pr: 1 });
+  for (const changeType of ["MODIFIED", "ADDED", "DELETED", "RENAMED", "COPIED", undefined, "UNRECOGNIZED"]) {
+    const calls: string[][] = [];
+    const gh: SdlcGh = async args => {
+      calls.push(args);
+      return { code: 0, stdout: JSON.stringify(args[0] === "pr"
+        ? { ...raw(), files: [{ path: "src/view-path.ts", ...(changeType === undefined ? {} : { changeType }) }] }
+        : { data: { repository: { pullRequest: { headRefOid: A,
+          reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } },
+        } } } }) };
+    };
+    const parsed = await readSdlcPr(receipt, gh);
+    expect(parsed?.paths).toEqual(["src/view-path.ts"]);
+    expect(parsed?.pathsComplete).toBe(["MODIFIED", "ADDED", "DELETED"].includes(changeType ?? ""));
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.join(" ")).toContain("files");
+    expect(calls.flat().join(" ")).not.toMatch(/\bbody\b|\bpatch\b/);
+  }
+});
+
+test("#197 R1 typed view file metadata remains bound to the existing thread head fence", async () => {
+  const receipt = sdlcReceipt({ repo: "owner/repo", pr: 1 });
+  const gh: SdlcGh = async args => ({ code: 0, stdout: JSON.stringify(args[0] === "pr"
+    ? { ...raw(), files: [{ path: "src/file.ts", changeType: "MODIFIED" }] }
+    : { data: { repository: { pullRequest: { headRefOid: B, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) });
+  expect(await readSdlcPr(receipt, gh)).toBeUndefined();
 });

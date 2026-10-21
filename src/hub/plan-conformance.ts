@@ -12,25 +12,33 @@ function pathIdentity(raw: unknown): string | undefined {
   if (typeof raw !== "string" || !raw || raw.length > 1000 || /[\p{Cc}\p{Cf}]/u.test(raw)
     || raw.startsWith("/") || raw.startsWith("\\") || /^[A-Za-z]:/.test(raw)) return undefined;
   const path = raw.replace(/^(\.\/)+/, "").replace(/\/{2,}/g, "/").replace(/\/+$/, "") || ".";
-  if (path !== "." && path.split("/").some(part => part === "." || part === "..")) return undefined;
+  if (path === "." || path.split("/").some(part => part === "." || part === "..")) return undefined;
   return path;
 }
-const covers = (planned: string, changed: string) => planned === "." || changed === planned || changed.startsWith(`${planned}/`);
+const covers = (planned: string, changed: string) => changed === planned || changed.startsWith(`${planned}/`);
+
+/** A complete file inventory is independent of any plan or coverage claim. */
+export function completePlanInventory(evidence: { head: string; paths: readonly string[]; pathsComplete?: boolean } | undefined): string[] | undefined {
+  if (!evidence || typeof evidence.head !== "string" || !/^[a-f0-9]{40}$/.test(evidence.head) || evidence.pathsComplete !== true || !Array.isArray(evidence.paths) || evidence.paths.length > 1000) return undefined;
+  const paths: string[] = [], seen = new Set<string>();
+  for (const raw of evidence.paths) {
+    const path = pathIdentity(raw); if (path === undefined || seen.has(path)) return undefined;
+    seen.add(path); paths.push(path);
+  }
+  return paths;
+}
 
 /** Compare current complete PR file metadata with the current plan; never inspect patches or the filesystem. */
 export function planConformance(planPaths: readonly string[] | undefined, evidence: { head: string; paths: readonly string[]; pathsComplete?: boolean } | undefined): PlanConformance {
   const head = typeof evidence?.head === "string" && /^[a-f0-9]{40}$/.test(evidence.head) ? evidence.head : undefined;
   const unknown: PlanConformance = { state: "unknown", ...(head ? { head } : {}), outside: [], untouched: [] };
-  if (!head || evidence?.pathsComplete !== true || !Array.isArray(evidence.paths) || evidence.paths.length > 1000
+  const changed = completePlanInventory(evidence);
+  if (!head || changed === undefined
     || !Array.isArray(planPaths) || !planPaths.length || planPaths.length > 1000) return unknown;
-  const planned: string[] = [], changed: string[] = [], seenPlan = new Set<string>(), seenChanges = new Set<string>();
+  const planned: string[] = [], seenPlan = new Set<string>();
   for (const raw of planPaths) {
     const path = pathIdentity(raw); if (path === undefined) return unknown;
     if (!seenPlan.has(path)) { seenPlan.add(path); planned.push(path); }
-  }
-  for (const raw of evidence.paths) {
-    const path = pathIdentity(raw); if (path === undefined || seenChanges.has(path)) return unknown;
-    seenChanges.add(path); changed.push(path);
   }
   const outside = changed.filter(path => !planned.some(plan => covers(plan, path)));
   const untouched = planned.filter(plan => !changed.some(path => covers(plan, path)));

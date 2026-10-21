@@ -11,7 +11,7 @@ function fake(options: { ids?: number[]; heads?: Record<number, string>; paths?:
     if (args[0] === "pr" && args[1] === "list") return { code: 0, stdout: JSON.stringify(ids.map(number => ({ number, headRefOid: options.heads?.[number] ?? A, baseRefName: "main", baseRefOid: M }))) };
     if (args[0] === "pr") {
       const pr = Number(args[2]), paths = options.paths?.[pr] ?? ["src/shared.ts"], head = options.heads?.[pr] ?? A;
-      return { code: 0, stdout: JSON.stringify({ headRefOid: head, isDraft: false, baseRefName: "main", baseRefOid: M, state: options.merged?.includes(pr) ? "MERGED" : "OPEN", changedFiles: paths.length + (options.incomplete ? 1 : 0), statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], reviewDecision: "APPROVED", reviewRequests: [], files: paths.map(path => ({path})), mergeCommit: options.merged?.includes(pr) ? { oid: M } : undefined }) };
+      return { code: 0, stdout: JSON.stringify({ headRefOid: head, isDraft: false, baseRefName: "main", baseRefOid: M, state: options.merged?.includes(pr) ? "MERGED" : "OPEN", changedFiles: paths.length + (options.incomplete ? 1 : 0), statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], reviewDecision: "APPROVED", reviewRequests: [], files: paths.map(path => ({path, changeType: "MODIFIED"})), mergeCommit: options.merged?.includes(pr) ? { oid: M } : undefined }) };
     }
     const finalQuery = args.find(arg => arg.startsWith("query=") && arg.includes("queue_p"));
     if (finalQuery) {
@@ -44,7 +44,7 @@ test("merge queue uses explicit dependency order and never guesses precedence fr
 });
 test("queue stale heads incomplete files private and unlinked work remain blocked (#257)", async () => {
   const old = await readMergeQueue("owner/repo",config,[task(1,1)],fake({ids:[1],heads:{1:B}}).run); expect(old.rows[0]?.ready).toBe(false); expect(old.rows[0]?.blockers).toContain("current head has not been reviewed");
-  const incomplete = await readMergeQueue("owner/repo",config,[task(1,1)],fake({ids:[1],incomplete:true}).run); expect(incomplete.complete).toBe(false); expect(incomplete.rows[0]?.ready).toBe(false);
+  const incomplete = await readMergeQueue("owner/repo",config,[task(1,1)],fake({ids:[1],incomplete:true}).run); expect(incomplete.complete).toBe(false); expect(incomplete.rows[0]?.ready).toBe(false); expect(incomplete.rows[0]?.blockers).toContain("PR file coverage is incomplete or unknown");
   const f = fake({ids:[1]}); const privateView = await readMergeQueue("owner/repo",config,[task(1,1,[],true)],f.run); expect(privateView.rows[0]?.private).toBe(true); expect(f.calls).toHaveLength(1); expect(privateView.rows[0]?.head).toBeUndefined();
   const unlinked = await readMergeQueue("owner/repo",config,[],fake({ids:[1]}).run); expect(unlinked.rows[0]?.ready).toBe(false); expect(unlinked.rows[0]?.blockers).toContain("issue identity missing");
 });
@@ -240,4 +240,12 @@ test("S2 merge queue uses shared complete metadata conformance without exposing 
   expect((await readMergeQueue("owner/repo", config, [accepted], f.run)).rows[0]?.ready).toBe(true);
   const moved = { ...accepted, plan: { ...accepted.plan, revision: 2 } };
   expect((await readMergeQueue("owner/repo", config, [moved], f.run)).rows[0]?.ready).toBe(false);
+});
+
+test("S2 R1 private queue holders report conformance unknown without identities or reads", async () => {
+ const f=fake({ids:[1]});
+ const report=await readMergeQueue("owner/repo",config,[task(908172,1,[],true),task(908173,1)],f.run);
+ expect(report.rows[0]?.planConformance).toEqual([{state:"unknown",outside:0,untouched:0,accepted:false}]);
+ expect(report.rows[0]?.tasks).toEqual([]);expect(f.calls).toHaveLength(1);
+ expect(JSON.stringify(report)).not.toContain("908172");expect(JSON.stringify(report)).not.toContain("908173");
 });
