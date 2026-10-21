@@ -2452,6 +2452,9 @@ export class Tasks {
     if (by !== USER && by !== task.owner && by !== task.reviewer) throw new PreEffectToolRefusal("only the task owner, reviewer or console user may record lifecycle evidence");
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     const next = sdlcReceipt(input, task.sdlc, config, VERSION);
+    // The spec identity is person-owned in enforce. No observation cache or restart can reopen a relink bypass.
+    const specRelink = (task.sdlc?.repo !== undefined && next.repo !== task.sdlc.repo) || (task.sdlc?.issue !== undefined && next.issue !== task.sdlc.issue);
+    if (config.mode === "enforce" && by !== USER && specRelink) throw new PreEffectToolRefusal("only the person may relink an established repository or issue in enforce");
     const definition = stageDefinition(config, next.stage);
     if (next.redFirst && input && typeof input === "object" && "redFirst" in input && !this.isPii(task) && !this.publicMetadataText(JSON.stringify(next.redFirst))) throw new PreEffectToolRefusal("red-first metadata matches a PII pattern; use private work");
     // #481 S1: entering a build stage in enforce needs the person's spec acceptance; the person may move any stage.

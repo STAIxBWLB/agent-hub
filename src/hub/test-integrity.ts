@@ -42,6 +42,7 @@ export interface TestIntegrity {
   fileState: "complete" | "unknown" | "not_required";
   modifiedTests: string[];
   sources?: { red: string; green: string };
+  checkEvidence?: { red: "claimed" | "observed"; green: "claimed" | "observed" };
   blockers: string[];
 }
 function safePath(value: unknown): value is string {
@@ -51,7 +52,8 @@ function safePath(value: unknown): value is string {
 /** Literal repository paths, never globs or filesystem reads. */
 export function isTestPath(path: string): boolean {
   return safePath(path) && (path.split("/").slice(0, -1).some(part => ["test", "tests", "__tests__"].includes(part))
-    || /\.(?:test|spec)\.(?:[cm]?[jt]sx?|py|go|rs|rb|java|kt|swift|sh)$/.test(path));
+    || /\.(?:test|spec)\.(?:[cm]?[jt]sx?|py|go|rs|rb|java|kt|swift|sh)$/.test(path)
+    || /(?:^|\/)(?:[^/]+_test\.go|test_[^/]+\.py|[^/]+_test\.py|[^/]+_spec\.rb|[^/]*Test\.java)$/.test(path));
 }
 export function testIntegrityBlockers(view: TestIntegrity | undefined): string[] { return view ? [...view.blockers] : []; }
 /** Host policy decides whether remote path identities can enter a public projection. */
@@ -114,6 +116,7 @@ export async function readTestIntegrity(receipt: { repo?: string; issue?: number
     try { proof = parseRedFirst(receipt.redFirst); } catch { view.redFirst = "invalid"; }
     if (proof) {
       view.sources = { red: proof.red.source, green: proof.green.source };
+      view.checkEvidence = { red: "claimed", green: "claimed" };
       if (!evidence || !SHA.test(evidence.head) || !Number.isSafeInteger(pr) || pr! <= 0) view.redFirst = "unknown";
       else if (proof.green.head !== evidence.head) view.redFirst = "invalid";
       else try {
@@ -121,17 +124,34 @@ export async function readTestIntegrity(receipt: { repo?: string; issue?: number
         if (current?.headRefOid !== evidence.head || current.commits?.pageInfo?.hasNextPage !== false || !Array.isArray(current.commits.nodes) || current.commits.nodes.length > 100 || current.commits.nodes.some((node: any) => !SHA.test(node?.commit?.oid ?? ""))) throw new Error("metadata unavailable");
         if (!current.commits.nodes.some((node: any) => node.commit.oid === proof!.red.head)) view.redFirst = "invalid";
         else {
-          const commit = await read(["api", `repos/${repository}/commits/${proof.red.head}?per_page=100`, "--jq", "{sha,parents:[.parents[].sha],files:[.files[]|{path:.filename,change:.status}]}"], 256 * 1024);
-          if (commit?.sha !== proof.red.head || !Array.isArray(commit.parents) || !Array.isArray(commit.files) || commit.files.length >= 100) throw new Error("metadata unavailable");
-          view.redFirst = commit.parents.length === 1 && SHA.test(commit.parents[0]) && commit.files.length > 0 && commit.files.every((file: any) => file?.change === "added" && isTestPath(file.path)) ? "verified" : "invalid";
-          for (const leg of [proof.red, proof.green]) {
+          const commits = new Set<string>(current.commits.nodes.map((node: any) => node.commit.oid));
+          if (commits.size !== current.commits.nodes.length || !commits.has(evidence.head)) throw new Error("metadata unavailable");
+          const seen = new Set<string>();
+          let cursor: string = proof.red.head;
+          view.redFirst = "verified";
+          // ponytail: metadata proves file identity and ordering, not later gutting of added tests; content-aware review is the upgrade path.
+          while (commits.has(cursor)) {
+            if (seen.has(cursor) || seen.size >= 100) throw new Error("metadata unavailable");
+            seen.add(cursor);
+            const commit = await read(["api", `repos/${repository}/commits/${cursor}?per_page=100`, "--jq", "{sha,parents:[.parents[].sha],files:[.files[]|{path:.filename,change:.status}]}"], 256 * 1024);
+            if (commit?.sha !== cursor || !Array.isArray(commit.parents) || !Array.isArray(commit.files) || commit.files.length >= 100) throw new Error("metadata unavailable");
+            const red = cursor === proof.red.head;
+            if (commit.parents.length !== 1 || !SHA.test(commit.parents[0]) || (red && commit.files.length === 0)
+              || !commit.files.every((file: any) => isTestPath(file?.path) && (red ? file.change === "added" : ["added", "modified", "removed", "changed"].includes(file.change)))) {
+              view.redFirst = "invalid"; break;
+            }
+            cursor = commit.parents[0];
+          }
+          for (const key of ["red", "green"] as const) {
+            const leg = proof[key];
             if (view.redFirst !== "verified" || leg.source !== "ci") continue;
-            const object = (await read(graphql("query($owner:String!,$name:String!,$oid:String!){repository(owner:$owner,name:$name){object(expression:$oid){... on Commit{oid statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name status conclusion} ... on StatusContext{context state}} pageInfo{hasNextPage}}}}}}}", ["-f", `oid=${leg.head}`]))).data?.repository?.object;
+            const object = (await read(graphql("query($owner:String!,$name:String!,$oid:String!){repository(owner:$owner,name:$name){object(expression:$oid){... on Commit{oid statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name status conclusion}} pageInfo{hasNextPage}}}}}}}", ["-f", `oid=${leg.head}`]))).data?.repository?.object;
             const contexts = object?.statusCheckRollup?.contexts;
             if (object?.oid !== leg.head || contexts?.pageInfo?.hasNextPage !== false || !Array.isArray(contexts.nodes) || contexts.nodes.length > 100) throw new Error("metadata unavailable");
-            const matches = contexts.nodes.filter((node: any) => (node?.name ?? node?.context) === leg.check);
+            const matches = contexts.nodes.filter((node: any) => node?.__typename === "CheckRun" && node.name === leg.check);
             const result = leg.result === "failed" ? "FAILURE" : "SUCCESS";
-            if (matches.length !== 1 || (matches[0].name ? matches[0].status !== "COMPLETED" || matches[0].conclusion !== result : matches[0].state !== result)) view.redFirst = "invalid";
+            if (matches.length !== 1 || matches[0].status !== "COMPLETED" || matches[0].conclusion !== result) view.redFirst = "invalid";
+            else view.checkEvidence[key] = "observed";
           }
         }
       } catch { view.redFirst = "unknown"; }
