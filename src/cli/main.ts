@@ -1231,6 +1231,17 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (!flags.rest.length || (scope === undefined) !== (reviewers === undefined)) fail("plan-review needs a reason and both --review and --reviewers when supplying review scope");
       return console.log(await taskOp("hub_plan_review", { id, revision, reason: flags.rest.join(" "), ...(scope !== undefined ? { review: { scope, reviewers: Number(reviewers) } } : {}), ...(flags.one["--ci"] !== undefined ? { ci: flags.one["--ci"] } : {}) }));
     }
+    if (sub === "accept-departure") {
+      const head = args[2], rawReason = args.slice(3).join(" "), reason = rawReason.trim();
+      if (!Number.isSafeInteger(id) || id! <= 0 || typeof head !== "string" || !/^[a-f0-9]{40}$/.test(head) || !reason || rawReason.length > 2048) fail("usage: ahub sdlc accept-departure <task> <head> <reason...>");
+      const hub = await connect();
+      try {
+        const reply = await hub.request({ t: "sdlc", op: "accept-departure", id, head, reason }, 30_000);
+        if (!reply.ok) fail(reply.error);
+        console.log(`task #${id}: plan departure accepted for the reviewed head`);
+      } finally { hub.close(); }
+      return;
+    }
     if (sub === "accept") {
       // #481 S1: the person accepts the task's spec issue at its current body; agent shells are refused before this runs.
       const flags = takeFlags(args.slice(2), ["--issue", "--repo"], []);
