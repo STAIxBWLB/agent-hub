@@ -22,14 +22,14 @@ async function observed(condition: () => boolean) {
   while (!condition() && performance.now() < end) await Bun.sleep(10);
   expect(condition()).toBe(true);
 }
-async function rig(mode?: "tui" | "headless") {
+async function rig(mode?: "tui" | "headless", kimiCmd?: (cwd: string) => string[]) {
   const cwd = realPath(mkdtempSync(join(tmpdir(), "ahub-kimi-tui-"))), stateDir = join(cwd, "state");
   cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
   mkdirSync(join(cwd, ".agenthub"));
   writeFileSync(join(cwd, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false } }));
   const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, peers: mode ? { kimi: { start_mode: mode } } : {}, batch_ms: 0,
-      kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts")],
+      kimi_cmd: kimiCmd?.(cwd) ?? [process.execPath, join(import.meta.dir, "fakes/acp-server.ts")],
       pi: { ...DEFAULT_CONFIG.pi, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false } } });
   cleanups.push(() => daemon.stop());
@@ -132,8 +132,32 @@ test("Kimi's MCP child exposes inbox without completion and round-trips queued k
   expect(delivered.filter(message => message.body.includes("MCP answer once"))).toHaveLength(1);
 });
 
-test("the person's Kimi TUI launcher writes MCP then runs the configured fake with its own clean identity (#316)", async () => {
+test("a Kimi TUI launch that fails on the running hub's retained kimi_cmd says where the command came from (#654)", async () => {
+  // The hub runs the ACP fixture, a command with no TUI form. The file then names another one; the daemon's watcher reloads it and,
+  // because kimi_cmd is machine-local, keeps the running value and records a retained row. The launcher uses the running value.
   const hub = await rig();
+  const fake = join(hub.cwd, "fake-kimi");
+  expect(hubGitSync(["init", "-q"], { cwd: hub.cwd, encoding: "utf8" }).status).toBe(0);
+  writeFileSync(join(hub.cwd, ".agenthub/config.local.json"), JSON.stringify({ kimi_cmd: [fake, "acp"] }));
+  const deadline = performance.now() + 5000; let retained = false;
+  while (!retained && performance.now() < deadline) { retained = ((await hub.console_.request({ t: "status" })).status.retainedConfig ?? []).some((row: any) => row.key === "kimi_cmd"); if (!retained) await Bun.sleep(25); }
+  expect(retained).toBe(true); // the daemon has reloaded the file and kept its running value
+  const env: NodeJS.ProcessEnv = { ...process.env, AGENTHUB_HOME: join(hub.cwd, "home"), AGENTHUB_PROJECT_DIR: hub.cwd, AGENTHUB_STATE_DIR: hub.stateDir };
+  for (const key of ["AGENTHUB_PEER_ID", "AGENTHUB_CHANNEL", "AGENTHUB_MODE", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_RECOVERY_OPERATION", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID"]) delete env[key];
+  const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "kimi", "--mode", "tui"], { cwd: hub.cwd, env, stdout: "pipe", stderr: "pipe" });
+  const [, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+  expect(code).not.toBe(0);
+  expect(err).toContain("kimi_cmd has no derivable TUI form");
+  expect(err).toContain("the running hub's kimi_cmd"); expect(err).toContain("retained until ahub settings reload"); // the cause, in the error itself
+  expect(err).not.toContain(process.execPath); expect(err).not.toContain("acp-server"); // never the argv
+  expect(hub.daemon.bus.peers.get("kimi")?.state).not.toBe("busy"); // the admission was released
+});
+
+test("the person's Kimi TUI launcher writes MCP then runs the configured fake with its own clean identity (#316)", async () => {
+  // The hub runs the very command the file will name (#654). The launcher prefers the running hub's kimi_cmd to the file's whenever a
+  // reload of the file is retained, and the daemon's 100 ms watcher decides when that reload happens; a hub that already runs the same
+  // value has nothing to retain, so the test no longer depends on whether the child's request lands before or after the reload.
+  const hub = await rig(undefined, cwd => [join(cwd, "fake-kimi"), "acp"]);
   const fake = join(hub.cwd, "fake-kimi");
   writeFileSync(fake, `#!${process.execPath}\nimport {readFileSync} from 'node:fs'; console.log(JSON.stringify({peer:process.env.AGENTHUB_PEER_ID,mode:process.env.AGENTHUB_MODE??null,channel:process.env.AGENTHUB_CHANNEL??null,recovery:process.env.AGENTHUB_RECOVERY_OPERATION??null,args:process.argv.slice(2),mcp:JSON.parse(readFileSync('.kimi-code/mcp.json','utf8'))}));\n`); chmodSync(fake, 0o700);
   expect(hubGitSync(["init", "-q"], { cwd: hub.cwd, encoding: "utf8" }).status).toBe(0);

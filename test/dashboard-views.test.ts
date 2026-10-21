@@ -111,7 +111,8 @@ test("the icon sprite has at most 20 Tabler symbols, one stroke width, no extern
  const widths=new Set([...html.matchAll(/stroke-width:([\d.]+)/g)].map(match=>match[1]));expect(sprite).not.toContain("stroke-width");
  expect(html).toMatch(/\.icon\{[^}]*stroke-width:2;/);expect(widths.has("2")).toBe(true);
  expect(sprite).not.toMatch(/href=|xlink|<image|<script|data:/);
- const uses=[...html.matchAll(/<use href="#([^"]+)"/g)].map(match=>match[1]!);
+ // An icon is used by static markup (<use href>) or by a script call (icon("i-x"), officeIcon("i-x", ...)).
+ const uses=[...html.matchAll(/<use href="#([^"]+)"/g),...html.matchAll(/\b(?:icon|officeIcon)\('(i-[a-z-]+)'/g)].map(match=>match[1]!);
  expect(uses.filter(id=>!ids.includes(id))).toEqual([]);expect(ids.filter(id=>!uses.includes(id))).toEqual([]);
  const notices=readFileSync(new URL("../THIRD_PARTY_NOTICES.md",import.meta.url),"utf8");
  expect(notices).toContain("## Tabler Icons");expect(notices).toContain("MIT License");expect(notices).toContain("Paweł Kuna");

@@ -20,9 +20,10 @@ specific language governing permissions and limitations under the License.
 
 ## Tabler Icons
 
-The inline icon sprite in `src/ui/index.html` (the dashboard's navigation, help and close icons) contains the SVG path data of nine
-icons from Tabler Icons (outline set, 24x24, stroke 2), copied unchanged from https://github.com/tabler/tabler-icons: `layout-kanban`,
-`building-store`, `activity`, `users`, `message`, `brain`, `settings`, `help` and `x`. No Tabler package is installed or bundled.
+The inline icon sprite in `src/ui/index.html` (the dashboard's navigation, help, close, star, arrow and checking icons) contains the SVG
+path data of twelve icons from Tabler Icons (outline set, 24x24, stroke 2), copied unchanged from https://github.com/tabler/tabler-icons:
+`layout-kanban`, `building-store`, `activity`, `users`, `message`, `brain`, `settings`, `help`, `x`, `star`, `arrow-right` and
+`refresh`. No Tabler package is installed or bundled.
 
 MIT License
 
