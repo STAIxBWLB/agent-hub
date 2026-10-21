@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- The dashboard's style block is rewritten around one token block (colour, a 4px spacing scale, a type scale, a 6/10/full radius rule and two shadows), the dead rules are gone, the indigo accent replaces green for primary actions, focus and selection, and every peer colour has a light and a dark variant. The layout, views and behaviour are unchanged, and the contrast test now also covers the accent, dots, disabled controls and the peer palette in both themes (#469 R1).
+
 ## 0.12.44
 
 A standard ACP agent can join a project from config alone (#451 A3), adapter definitions become the single dispatch point (#451 A2b), agy stops reading Claude's state files (#624), and owner turns that write nothing are flagged (#498).

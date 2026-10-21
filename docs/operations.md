@@ -635,6 +635,19 @@ Private envelopes and PII tasks stay redacted. Local-worker and Pi tool details 
 allow decisions stay in `ahub tail` / `ahub permit`; the page can deny them.
 No dashboard port is opened until requested. See [the session security model](security.md#local-dashboard-sessions-issue-6).
 
+### Dashboard design tokens (#469 R1)
+
+The page's style block starts with one token block that owns every colour, the 4px spacing scale (4, 8, 12, 16, 24, 32), the
+type scale (12, 13, 14, 16, 20) and the radius rule: 6px for controls, 10px for surfaces (panels, cards, the dialog), full
+radius for chips and avatars. Neutrals are one cool family with three surface levels (page, panel, raised) and one accent for
+primary actions, focus and selection; the state colours keep their meaning. The dark values are written twice, once for
+`data-theme="dark"` and once for the system preference, and a test keeps the two identical. Two shadows exist for raised
+elements only (`--shadow-2` is the dialog's; `--shadow-1` waits for the board cards in R3). Each peer colour has a light and a
+dark variant of one hue, generated from the registry's colour by `peerPaletteThemeCss` (`src/ui/peer-palette.ts`) so it clears
+3:1 on every surface. System fonts only. The layout, the views, the keys and the behaviour are unchanged by R1; the contrast
+test (`test/office-view.test.ts`) covers the text pairs, the accent, the dots, disabled controls and every peer colour in both
+themes. The Office scene keeps its own rules until R5.
+
 ## Multiple projects and worktrees
 
 Version 0.4.0 adds one independent hub per repository or Git worktree.
