@@ -4261,3 +4261,192 @@ The owner gave the #516 track its go-ahead on 2026-10-22. This section closes th
 - `web_fetch` is refused for the whole turn of a PII task, whatever the host. The outbound URL or query could carry PII to the web, and `pii.paths` and `sanitize()` do not cover outbound requests.
 - Outside PII turns it runs only through the egress proxy, to hosts in a machine-local per-project allowlist, and returns bounded text only.
 - `doc_read` is unaffected by this rule; it keeps its own `pii.paths` and `data.readonly` checks.
+
+## Amendment: roles per SDLC stage (#525)
+
+Written against main `8efdba48` (v0.12.45 + #671). Claims about current code carry `file:line` at that commit. "Probe" means a read-only `bun` run of `validateInstances` / `resolveSettledRoles` against that commit on 2026-10-22. Anything marked unverified was not run or read.
+
+This amendment extends, and where stated replaces, the I2/I3 instance amendments (#450), Reviewer separation (#223), Reviewer pool (#519), Designated planner (#455) and S9 plan review (#481). Everything not named here keeps its current rule.
+
+### Current state (what changes and what does not)
+
+- Claude channel instances accept only roles inside `instances.roles: ["reviewer", "planner"]` (`src/adapters/definitions/builtin-metadata.ts:92`, checked at `src/hub/instances.ts:92-93`) and refuse `start_mode` and `worktree` (`src/hub/instances.ts:91`). A headless Claude instance must be exactly `["reviewer"]` and refuses `worktree` (`src/hub/instances.ts:87-89`). Probe: `claude-impl` with `["implementer"]` and a worktree is refused in both forms.
+- Codex has no `instances.roles` ceiling (`builtin-metadata.ts:109`), so the headless branch skips the role check (`src/hub/instances.ts:95-98`). Probe: Codex instances with `["planner"]` (headless or no mode), `["reviewer"]` headless (native app-server), `["reviewer"]` + `review_mode: "fresh"`, `["implementer"]` + worktree, and `["conductor"]` are all accepted today. Probe also: a `local-*` instance with `["planner"]` is accepted, although `local` is excluded from `PLANNER_PEERS` (`builtin-metadata.ts:145`, `src/adapters/registry.ts:55`).
+- Planner authority today is "holds the `planner` role in the settled map": `planningAuthority` (`src/hub/tasks.ts:833-835`), custom stage actor `planner` (`src/hub/tasks.ts:2511`), planner notices (`src/hub/tasks.ts:397-401`, `:426`, `:2236`). Several planners already work when no `planner` key is set (probe: `resolveSettledRoles` returns `planners: ["claude", "codex-plan"]`, source `roles`). The `planner` key pins one peer and only from `PLANNER_PEERS` (`src/hub/settled-roles.ts:18-23`); the loader throws on anything else (`src/hub/daemon.ts:289-291`) and the setting is an enum of `PLANNER_PEERS` (`src/hub/settings.ts:58`). Probe: `planner: "codex-plan"` is ignored and the source stays `roles`.
+- S9 records `planReview: { planner: by, ... }` (`src/hub/tasks.ts:2491`) with no check that `by` did not write the plan (`src/hub/tasks.ts:2460-2491`).
+- `assign()` picks owner and reviewer, never a planner (`src/hub/routing.ts:325`, `Assignment` at `:302-319`). The reviewer is never the current owner (`not` = `reviewOwner`, `src/hub/routing.ts:494`, `:541`). Former owners of the task are not excluded (no history read for that purpose; unverified beyond `routing.ts:483-560`).
+- A declared extra owns `implement`/`bulk_edit`/`test` only with the implementer role and `ownerIsolation[id] === true` (`src/hub/routing.ts:400-403`); the daemon sets it only for an adapter the hub started in a verified noncanonical root (`src/hub/daemon.ts:1346-1349`). A person-started channel instance never gets it.
+
+### R1. Role capability per kind and form
+
+One capability rule, read by `validateInstances`, `loadConductorPolicy` and `assign()`:
+
+- **Planner** requires the base kind's `projection.plannerEligible === true` (the field `PLANNER_PEERS` is derived from, `src/adapters/registry.ts:55`). True for claude, codex, kimi, qwen, jcode; false for pi, local, agy.
+- **Every other flow role** requires membership in the resolved runtime definition's `instances.roles` (`src/adapters/registry-types.ts:205`) when it is set, and in `routing.allowedRoles` (`registry-types.ts:261`) when that is set. Unset `instances.roles` keeps today's behaviour (no instance ceiling).
+- The form is the runtime definition: the base definition (terminal/channel form for claude; app-server for codex) or a variant chosen by `resolvedDefinition` (`src/adapters/registry.ts:110-118`). Each variant carries its own `instances.roles`.
+
+Capability table after this amendment (P planner, I implementer, V verifier, R reviewer):
+
+| Kind | Form | Roles | Notes |
+|---|---|---|---|
+| claude | channel/terminal (base, `instances.mode: "external"`) | P, I, V, R | I or V requires `worktree` (R5 terminal) |
+| claude | headless reviewer variant (#223) | R only, exactly `["reviewer"]` | unchanged |
+| claude | headless implementer variant (new) | I, V; must include I | requires `worktree`; refuses P and R |
+| codex | app-server (headless start, TUI attach) | P, I, V, R, conductor | unchanged; no ceiling added |
+| codex | fresh reviewer variant (#519) | R only | unchanged, `review_mode: "fresh"` |
+| kimi, qwen, jcode | unchanged | unchanged | planner allowed only through `plannerEligible` (already true) |
+| pi, local, agy | unchanged | planner refused | new refusal, see below |
+
+Validator changes (`src/hub/instances.ts`):
+
+1. `builtin-metadata.ts:92`: claude base `instances.roles` becomes `["planner", "implementer", "verifier", "reviewer"]`.
+2. New `CLAUDE_IMPLEMENTER_VARIANT` beside `CLAUDE_REVIEWER_VARIANT` (`builtin-metadata.ts:72-81`), exposed as `headlessVariant` on the claude definition, with `instances: { mode: "headless", roles: ["implementer", "verifier"] }`, `transport: "hub-native"`, `start.forms: ["headless"]`, `start.create: createClaudeImplementer`, `budget: { account: "claude" }`, no `routing.reviewOnly`. External and configured definitions cannot declare `headlessVariant` (same rule as `reviewerVariant`, `registry.ts:219`, `:235`).
+3. `resolvedDefinition` (`registry.ts:110-118`): order is reviewer variant (unchanged condition), then `headlessVariant` when the declaration is a non-builtin id with `start_mode: "headless"` and roles do not equal `["reviewer"]`, then the base.
+4. External branch (`instances.ts:84-94`) becomes:
+   - `start_mode: "headless"` with roles exactly `["reviewer"]`: reviewer variant, `worktree` refused (unchanged, `:87-89`).
+   - `start_mode: "headless"` otherwise: implementer variant. Roles must be a nonempty subset of `["implementer", "verifier"]` containing `implementer`; `worktree` required; `permission_mode` limited to `ask` or `ask-when-needed` (default `ask-when-needed`); `never-ask` refused with "a headless Claude implementer has no hub sandbox; never-ask is unavailable". `review_mode` refused.
+   - No `start_mode` (terminal): roles nonempty and inside the base ceiling. `worktree` required when roles include `implementer` or `verifier`, refused otherwise (planner/reviewer channel instances stay on the project checkout, as I3). `permission_mode` stays refused (Claude's terminal mode is the launcher's, as today).
+5. Planner check, all branches: a declared or policy role `planner` on a kind with `plannerEligible !== true` is refused at validation ("this kind cannot plan"). This is new for `local-*` and `pi-*` instances (probe shows `local-x` `["planner"]` accepted today). `loadConductorPolicy` drops a `roles.<peer>` planner entry for such a kind with the existing ceiling notice (`src/hub/daemon.ts:283-286`), never throws.
+6. Error text in `:89`, `:91`, `:93` is replaced; no other branch changes.
+
+Still refused: a headless Claude planner (plan from a channel instance); a headless Claude instance mixing reviewer with implementer/verifier (a fresh reviewer is read-only by construction; a writing session never reviews); `worktree` on any reviewer or planner-only Claude instance; external/configured kinds as instance kinds (`instances.ts:68-69`); `start_mode` other than `"headless"` (`instances.ts:107-108`); everything `routing.allowedRoles` excludes (agy).
+
+### R2/R4. Stage holders and independence
+
+Stage to role, fixed:
+
+| Stage base | Holder | Picked by |
+|---|---|---|
+| intent, spec, plan | the task's planner (R3) | `assign()` planner walk, or the person |
+| build, test | the owner: implementer (verifier for `test` class may hold it as today) | `assign()` owner walk (`routing.ts:471-479`) |
+| review | the reviewer | `assign()` reviewer walk (`routing.ts:483-560`), pool #519 |
+| merge, release | the person, or the task's/release's planner | unchanged authority, now per task/release (R3) |
+
+- Explicit holders per stage are the existing knobs, not a new lifecycle store: `[classes.<class>].peers` in `routing.toml` for owners, `[classes.review].peers` and `review.pool` for reviewers, the `planner` setting (now a list, R3) for planners. Custom stage `actor` (#257, checked at `tasks.ts:2511`) keeps its four values; `planner` there now means the task's planner (R3), `owner/planner` likewise. No per-stage holder list is added to lifecycle config (ponytail: add `stages[].holders` only if a project needs a holder set that differs from the role's holders).
+- Each holder is chosen by its own walk over its own candidates. A multi-role peer appears in each walk where it holds the role. The walks share only these independence rules:
+  - **I-1 (existing).** The reviewer is never the current owner, by id (`routing.ts:494`, `:541`).
+  - **I-2 (new).** The reviewer is never a peer that implemented this task: any peer with an `accepted` or `done` history entry `by` it on this task, read from `task.history` inside `assign()`. Refusal code `policy`, reason `implemented this task`. When this empties the candidates the reviewer is the person (`reviewBlocked`), never a fallback to an implementer.
+  - **I-3 (existing, #519).** Other family first; own family only when no other is eligible, recorded as `sameFamilyFallback=true` (`routing.ts:547-550`).
+  - **I-4 (new, enforced in `Tasks.recordPlanReview`, not in `assign()`).** The plan author does not record the plan review of that plan. Plan author: `by` of the latest history entry with `planRevision` (`src/hub/board.ts:69`, `:348`); when none (lifecycle off), the latest entry whose `planning.fields` includes `plan`; when none, `history[0].by` if `plan` is nonempty; otherwise unknown. If the caller is the author and another planner holder is rostered and not offline, refuse pre-effect ("an independent planner reviews this plan"). If the caller is the author and no other holder is eligible, record the receipt with `selfReview: true` (the single-planner case keeps working). Unknown author records `planAuthor: null` and does not refuse. The receipt gains `planAuthor`.
+  - Planner and owner may be the same peer; planner and reviewer may be the same peer (today's default `claude: [planner, reviewer]`). I-4 covers the only conflict between them.
+- **Purity.** The planner walk runs inside `assign()` with the same inputs it already takes plus `planners` (sorted settled holder ids) and `namedPlanner`. `Assignment` gains `planner?: PeerId` and `plannerReason?: "rotation" | "named" | "kept" | "none"`. Every caller that routes a new or pulled task reads the planner from this result; `ahub route explain` prints the same walk (`planner candidate X: ...` lines, then `planner: X (reason)`), so explain and assignment cannot drift. `Tasks` never chooses a planner outside `assign()`.
+
+### R3. Per-task planner
+
+- **Field.** `tasks.planner TEXT NULL` (board migration beside `src/hub/board.ts:223`). `releases.planner TEXT NULL` likewise. `null` is legacy: any current planner holder acts, exactly as today. Existing rows keep `null`; no backfill.
+- **Setting.** `planner` accepts a string (one pinned planner, unchanged) or a list of up to 8 distinct ids. Each id is a builtin in `PLANNER_PEERS` or a declared instance id whose capability (R1) includes planner. The listed ids are the only planner holders (the exclusive rule of `settled-roles.ts:20-23`, applied to each). `SettingDef` type changes from `enum` to `peers` (the type exists, `src/hub/settings.ts:27`). A one-element list is written back as a string so an older daemon still loads it. `loadConductorPolicy` (`daemon.ts:289-291`) validates against the startup-bound catalog instead of `PLANNER_PEERS` alone. `resolveSettledRoles` takes `planner: string | readonly string[] | undefined`; `source` values are unchanged; automatic fallback (`settled-roles.ts:25-31`) still picks one builtin.
+- **Choice.** At `propose` (after the PII screen and the board insert, in the same flow that records the owner assignment) and at backlog pull when `planner` is `null`:
+  - a person-named planner (`namedPlanner`) is exact, refused like a named owner if not a holder (#601 rule);
+  - otherwise rotation: holders sorted by id, start at `task.id mod holders.length`, walk forward skipping off-roster, offline, paused (`budget_paused = skip_peer`), failing and `routing.allowedRoles`-excluded holders; do not renumber by availability (the #519 seed rule). If all are skipped, take the seed holder with reason `rotation (none available)`.
+  - PII tasks get `planner: null` and trace `planner: none (pii)`; their planning stays as today (stubs only, person acts).
+  - The choice is written on the `assigned` (or `backlog pulled`) history entry as `planner` and `plannerReason`, through the same metadata path as `reviewerFamily`/`reviewerReason`.
+- **Effective planner.** `Tasks.taskPlanner(task)`: `task.planner` when it is still a settled planner holder and rostered; otherwise all current holders (legacy). A pause or offline state does not move it; the person moves it.
+- **Authority.** `planningAuthority(by)` (`tasks.ts:833`) becomes `planningAuthority(by, task?)`: with a task, `by` must be the person or the task's effective planner; without one (backlog list, release list, new release, grooming read, import) any holder, as today. Every call site that has a task in hand passes it: pull (`:892`), plan (`:1035`), undo (`:1089`), split (`:1148`), assign/configure/cut release (`:1218-1286`, against `releases.planner`), plan review (`:2461`, plus I-4), planner cancel (`:2247`), and the custom stage actor (`:2511`). Rechecks after awaits keep their places. Grooming reads stay project-wide; grooming, sweep and stall notices (`:397-401`, `:426`, `:2236`, `:938-971`) go to the task's effective planner only.
+- **Naming.** `ahub task assign <id> <peer> --role planner` (person only; `TaskAssignmentRole` gains `planner`, `src/hub/tasks.ts:42`; parsers `src/cli/main.ts:1292`, `:2109`; help `src/cli/help.ts:86`). A planner cannot reassign planning to another peer. The write is a `planner changed` entry (reason `named`), which neither moves nor settles the task, so it never counts as supersession of an owner delivery (tasks.md assignment rule). `hub_task_assign` with role `planner` from a peer is refused pre-effect.
+- **Release planner.** `newRelease` records `by` as the release's planner (`null` for the person); cut/configure/assign check it like a task's.
+- **Migration.** No `planner` key and one planner holder: rotation always yields it. A single pinned planner: same. Old rows and old releases: `null`, legacy authority. Tests that assert a planner tool succeeds for the only planner stay green unchanged.
+
+### R5a. Headless Claude implementer
+
+Declaration: `"claude-impl": { "kind": "claude", "roles": ["implementer"], "start_mode": "headless", "worktree": ".worktrees/claude-impl" }`, optional `permission_mode: "ask" | "ask-when-needed"`.
+
+- **Worktree.** The I2 rule: an explicit registered worktree at `<project>/.worktrees/<id>` with an attached branch, resolved by `resolveInstanceExecutionCwd`. The hub creates no worktree or branch (I4 orchestration stays a follow-up); the implementer switches task branches inside it. `executionOwners` is set for the started peer, so `ownerIsolation` holds (`daemon.ts:1346-1349`).
+- **Start.** `ahub claude --as <id>`, the console and the dashboard ask the hub to start it (as #223). It holds no process while idle.
+- **One session per task.** For a delivery the peer groups envelopes by `refs.task` and runs one child at a time, in the worktree:
+  - first turn of a task: `--session-id <new uuid>`, session persisted (no `--no-session-persistence`);
+  - later turns: `--resume <that task's uuid>`; never `--continue`, never `--fork-session`, never another task's id;
+  - the task-to-session map is a per-peer state file named through `claudeStateFile(<id>, ...)` (daemon.md rule), listed in `sessionPointers` (`src/cli/reset.ts`);
+  - a missing transcript (positive ENOENT through `transcriptPersisted`) starts a new session for that task and records `fresh` with a console notice; any other read error keeps the recorded id;
+  - chat with no task goes to the session of the task the instance owns `in_progress` (WIP default 1, `daemon.ts:1350`); with none, a one-off child with `--no-session-persistence`.
+- **argv.** `-p --output-format stream-json --verbose --strict-mcp-config --mcp-config <tools-mode server for <id>> --setting-sources "" --settings <0600 managed settings file with the PreToolUse facts hook, purpose permission> --permission-mode <manual|acceptEdits per below> --permission-prompts host --permission-prompt-tool mcp__agent-hub__hub_permission_request --allowedTools <implementer hub tools>`. No `--bare` (it skips hooks, `claude --help` 2.1.307). No `dontAsk`, no `bypassPermissions`. Unverified: `--permission-prompt-tool` is named by the `--permission-prompts` help text of 2.1.307 but has no entry of its own; the slice proves it with a fake and one live probe before claiming support, and refuses to start (reason recorded) on a Claude version where the probe fails.
+- **Hub tools.** The implementer set (`hub_task_accept`, `hub_task_decline`, `hub_task_done`, `hub_checkpoint`, `hub_send`, `hub_task_show`, `hub_task_propose`, `hub_remember`, `hub_inbox`) through the ordinary tools-mode server with `AGENTHUB_PEER_ID=<id>` and a per-child `AGENTHUB_LAUNCH_ID`. The daemon accepts a `tools` hello for this id only with the current child's launch id; it is revoked when the child's group is confirmed gone.
+- **Permissions.**
+  - `ask`: the hook decides nothing; every write, edit and shell call reaches the prompt tool.
+  - `ask-when-needed`: the hook answers `allow` only for `projectFileTool` targets with `projectRoot` = the execution root (worktree), so `.git`, `.agenthub` and agent configuration stay protected (`src/cli/facts-hook.ts:20-54`, `:91-96`). Shell, git writes and every path outside the worktree reach the prompt tool. This is the Pi/local ask-when-needed grant ("bash and mutating git retain console approval", operator permission modes amendment), without its sandbox, so `never-ask` is refused (R1).
+  - The daemon puts `permission` in a `facts` reply for this instance's current child launch id, as it does for the recorded `ahub claude` launch (daemon.md facts-hook rule extended to this one case).
+- **Person approvals.** `hub_permission_request` (tools-mode server, callable only by this variant's current child) puts the request on the existing approval path: console `permission` push, macOS notification (#5), `approvals.timeout_s`. Payload is tool name plus the argument JSON cut at 600 characters (#72 rule), screened through `publicView`; never task text. Options are allow-once and deny; no allow-always. While a request waits, the watchdog is kept alive (as ACP, #5).
+  - **No answer.** At `approvals.timeout_s` the tool returns deny with "no person answered"; Claude continues the turn with the denial; the delivery is not failed by the timeout itself; a console and log line is written.
+  - **Hub down or refusing.** The prompt tool returns deny. If Claude cannot reach the MCP server at all, its behaviour is unverified; the fake test pins the hub side (deny), and the live smoke records Claude's.
+  - **Hook down.** Decides nothing (`facts-hook.ts:6`), so the call reaches the prompt tool: fail closed to the person, never to allow.
+- **Lifecycle.** The #223 guarantees, shared code, not a copy: extract the spawn (`detached: true`, own process group, `src/adapters/reviewer-print.ts:315`), watchdog and group kill from `ReviewerPrintPeer` into one helper used by both. Stop fences the generation before any await, holds the delivery `needs_review`, keeps the peer busy until the group is confirmed gone and offline only after (`reviewer-print.ts:153-164`); a failed cleanup keeps it busy and refuses a start. A start failure before the child runs is `failed_safe`; after, `needs_review`. A watchdog timeout ends the turn, not the task: the task stays `in_progress` with this owner, and the next delivery resumes its session.
+- **Delivery.** Ordinary implementer delivery (task and chat items). The #223 R2 review-only filter does not apply (it keys on roles exactly `["reviewer"]`).
+- **Usage.** Tokens from the child's `result` event `usage` (as `claude-print.ts:82-85`), added to the peer and attributed per task (#200). Account `claude`, shared pauses and readings (I2). Quota windows come only from the account's existing reader (the terminal statusline tee); none is classified from result text. A `result` with an error subtype is a failed turn, not a quota reading (unverified whether 2.1.307 emits a distinct rate-limit result).
+- **Done.** `hub_task_done` from the child completes the task through `Tasks` with the ordinary owner check (`by === task.owner`), then the reviewer is notified (I-2 excludes this instance from reviewing it).
+- **Recovery.** `session.freshOnRestore` is false; crash resume reuses the per-task map, and each task's session is checked by transcript as above. No terminal row. Controlled recovery requires target feature `role_stages` (below).
+
+### R5b. Terminal Claude implementer
+
+Declaration: `"claude-impl-t": { "kind": "claude", "roles": ["implementer"], "worktree": ".worktrees/claude-impl-t" }`.
+
+- `ahub claude --as <id>` (`src/cli/launch.ts`) resolves the execution root with `resolveInstanceExecutionCwd`, starts Claude with that cwd, and records `executionCwd` in `claude-launch.<id>.json` beside `launchId`. The hub never starts it (daemon.md: channel extras stay out of `STARTABLE_PEERS`).
+- The channel's hello gains an optional `cwd` (realPath of the MCP server's `process.cwd()`); additive, no `PROTOCOL` bump. Unverified: that Claude Code spawns stdio MCP servers in its own cwd; the slice verifies it with a live probe and, if false, uses the `cwd` field of the first PreToolUse hook input instead.
+- **Admission as owner.** At attach the daemon sets `executionOwners[id]` only when all hold: the hello's `launchId` is this instance's current launch record (#551); the record's `executionCwd` equals `executionRoots[id]`; the reported `cwd` resolves to the same root; the root is not the canonical cwd. Otherwise the peer attaches as before but `ownerIsolation[id]` stays false, so `assign()` refuses it as a code owner (`routing.ts:402`) and status says why. Detach, a new launch id or a changed root clears it.
+- The facts reply's `projectRoot` for this instance is its execution root, so ask-when-needed grants are worktree-scoped. `never-ask` follows the terminal's existing rules.
+- Terminal recovery records `terminalRoot` = the verified execution root (I2 permits it); the I3 line "terminal recovery (project root, no worktree)" is amended for implementer channel instances only.
+- Ceiling: the root evidence is reported by same-user processes the hub launched, not kernel isolation; it carries the same trust as launch records (#240 boundary).
+
+Headless and terminal forms of one kind coexist as separate ids. Neither reviews a task it implemented (I-2).
+
+### R6. Codex planner and reviewer instances
+
+- Reviewer: done (#535, `review_mode: "fresh"`); native continuing `["reviewer"]` instances keep #519's rule. No change.
+- Planner: a Codex instance whose roles hold `planner` and neither `implementer` nor `verifier` is a planner instance. It is accepted today (probe); this amendment adds:
+  - no worktree (refused, it plans on the project checkout);
+  - its app-server threads start with the read-only sandbox. Unverified: the adapter's thread start sandbox parameter (`src/adapters/codex-appserver.ts` has no `sandbox` match at `8efdba48`); the slice adds it and refuses the start when the thread's reply does not confirm read-only (unknown is never read-only). The attached TUI is the person's and may change it; recorded as a ceiling;
+  - owner admission already refuses it for code classes (no implementer role, `routing.ts:401`); it may own `plan`-class tasks.
+- Claude planner instances stay channel instances (I3). For a declared planner-only Claude instance the facts hook grants nothing for mutating file tools or shell, whatever its permission mode; Claude's own prompt goes to the person in that terminal. The builtin `claude` is unchanged.
+- Planning writes go through `Tasks` as today.
+
+### R7. Visibility
+
+Additive optional fields, no `PROTOCOL` bump (daemon.md):
+
+- Status `roleInfo[peer]` (`daemon.ts:2795`) gains `form` (`channel` | `headless` | `terminal-implementer` | builtin form) and `capableRoles`; `planner` (`daemon.ts:2796`) keeps `{ peers, source }`.
+- `ui_snapshot` task rows and `ahub task show` gain `planner` and `plannerReason`; owner and reviewer rows show the reason already recorded (`reviewerReason`, `sameFamilyFallback`, reservation, named).
+- Dashboard task detail (`src/ui/index.html`) and the console Tasks panel show planner, owner and reviewer with reasons.
+- `ahub route explain` prints the planner walk (R2 purity).
+- Status lists `ownerIsolation` per extra as `isolated` / `not isolated: <reason>` (ids and fixed reasons only).
+
+### Interactions
+
+- **PII.** Unchanged gate in `assign()`: PII owners only `trust.onPrem` (`routing.ts:408`), reviewer the person. Both new Claude forms are cloud peers and never own PII work. PII tasks get no rotated planner. A headless Claude child never receives a private envelope (refused before spawn, as `reviewer-print.ts` does for reviews). PII-turn refusals (`hub_remember`, `hub_task_propose`, release tools, memory reads) apply to the on-prem worker as today; no new tool is callable in a PII turn. `hub_permission_request` payloads go through `publicView`.
+- **Planner WIP cap (#655).** Unchanged: `reservedHold`/`acceptanceCapacity` key on the reserved owner and `wipLimit(owner)` (`daemon.ts:1350`, default 1). Each new instance has its own `tasks.wip_limits.<id>`. Planner pull requires the card's effective planner (R3); `plannerRefusal` text stays ids and counts.
+- **Budget pauses.** The Claude implementer shares the `claude` account's pauses and readings (I2). A pause holds new deliveries; a running child finishes its turn (not killed by the pause). Rotation skips paused planners at choice time only; a later pause does not move a task's planner. Reviewer pool behaviour is unchanged.
+- **Always-ask (#636).** Not a dependency. When #636 lands, its classifier runs in the same PreToolUse hook; an `ask` from the hook in `-p` mode reaches `hub_permission_request`, which carries the class and applies the class budget. Since the headless variant has no `never-ask`, #636 only adds the class label there. #636's adapter table must list both new Claude forms; both have the hook, so neither is "always-ask not enforceable".
+- **Recovery.** New target feature `role_stages` in `DAEMON_FEATURES` and `incompatibleRecoveryTarget` (daemon.md floor rule), required while the project declares a Claude implementer instance, a Codex planner-only instance with the read-only sandbox, or a `planner` setting that is a list or names an instance. An older daemon would throw on the list or instance planner (`daemon.ts:289-291`) and on the new declarations (`instances.ts:89`, `:91`). An older daemon reading the board ignores the `planner` column (`SELECT *` + `parse`; unverified that `parse` tolerates unknown columns, check in 525-2).
+- **Settings.** `planner` stays a guarded settled-holder key (`roleHolders`, `daemon.ts:4431-4435`); a list change goes through the same confirmation.
+
+### Acceptance (from the issue, mapped)
+
+- AC-1 Config: Claude `["implementer"]` + worktree accepted as terminal and as headless; Codex `["planner"]` and Codex `["reviewer"]` headless accepted (already true, kept by regression tests); planner on pi/local refused; headless Claude `["planner"]`, `["implementer","reviewer"]`, implementer without worktree, `never-ask` refused.
+- AC-2 Pure `assign()` matrix: planner, owner, reviewer picked by separate walks; a multi-role holder never reviews its own or a former implementation (I-1, I-2); planner rotates by `task.id mod n` over three holders; route explain output equals the assignment trace.
+- AC-3 Daemon test: one task planned by `codex-plan`, built by headless `claude-impl` in its worktree with `ownerIsolation` true, reviewed by `codex-review` (fresh); each history entry names its holder and reason.
+- AC-4 Fake `claude -p`: same-task turns pass `--resume <same id>`, a new task gets a new `--session-id`; writes outside the worktree and to protected paths get no `allow` and reach the prompt tool, which denies on timeout and on hub failure; watchdog, stop and group cleanup match the reviewer tests; `hub_task_done` from the child completes the task; a stale child's launch id is refused.
+- AC-5 Planner tools refuse a peer that is not the task's planner, the person still acts, a single pinned planner and `null`-planner rows still work; I-4 refuses own-plan review with another eligible planner and records `selfReview` without one.
+- AC-6 Live six-instance run (#138 I4 leg) recorded in `docs/smoke.md`.
+
+### Implementation slices (dependency order)
+
+1. **525-1 Roles capability and validator.** Size M.
+   - Paths: `src/adapters/definitions/builtin-metadata.ts`, `src/adapters/registry.ts`, `src/adapters/registry-types.ts`, `src/hub/instances.ts`, `src/hub/daemon.ts` (`loadConductorPolicy` planner drop only), tests `test/instances*.test.ts`, registry conformance.
+   - Adds the capability rule, the claude base ceiling, a `headlessVariant` slot (definition stub refused at start until 525-4: "headless Claude implementer is not available in this release"), the new branches and refusals.
+   - ACs: AC-1. Registry seeds and baseline unchanged except named reanchors.
+2. **525-3 Stage mapping and independence in `assign()`.** Size M. Depends on 525-1.
+   - Paths: `src/hub/routing.ts`, `src/hub/tasks.ts` (call sites pass `planners`/`namedPlanner`, explain), `test/routing*.test.ts`.
+   - Planner walk, `Assignment.planner`/`plannerReason`, I-2, explain lines. No board write of the planner yet (result unused until 525-2).
+   - ACs: AC-2.
+3. **525-2 Per-task planner.** Size L. Depends on 525-3.
+   - Paths: `src/hub/board.ts` (columns, migration), `src/hub/tasks.ts` (`taskPlanner`, `planningAuthority(by, task)`, notices, I-4 in `recordPlanReview`, release planner), `src/hub/settled-roles.ts`, `src/hub/settings.ts`, `src/hub/daemon.ts` (loader, status, `role_stages` floor for list/instance planner), `src/cli/main.ts`, `src/cli/help.ts`, `docs/verified.json` restamp of help.
+   - ACs: AC-5.
+4. **525-4 Headless Claude implementer.** Size L. Depends on 525-1 (and 525-2 only for the daemon test's planner).
+   - Paths: new `src/adapters/claude-implementer.ts`, shared child helper extracted from `src/adapters/reviewer-print.ts`, `src/adapters/definitions/builtin-metadata.ts` (variant), `src/hub/daemon.ts` (start, facts permission for child launch id, tools hello fence, `executionOwners`, `role_stages` floor), `src/hub/claude-state.ts`, `src/cli/reset.ts`, `src/hub/hub-tools.ts` (`hub_permission_request`, published only to this variant's child) and `src/adapters/claude-channel.ts` tools mode (rebuild `plugins/agent-hub/server.js`), `test/fakes/` fake `claude -p`.
+   - Includes the `--permission-prompt-tool` probe gate.
+   - ACs: AC-4, AC-3 (with 525-6 for `codex-plan` and #535 for `codex-review`).
+5. **525-5 Terminal Claude implementer.** Size M. Depends on 525-1.
+   - Paths: `src/cli/launch.ts`, `src/adapters/claude-channel.ts` (hello `cwd`), `src/hub/daemon.ts` (admission, `executionOwners`, facts `projectRoot`), `src/cli/terminal-recovery.ts`, rebuild bundle.
+   - ACs: terminal half of AC-1 at runtime; a test that a mismatched or missing root keeps `ownerIsolation` false and `assign()` refuses with `owner-admission`.
+6. **525-6 Codex planner and visibility.** Size M. Depends on 525-2, 525-3.
+   - Paths: `src/adapters/codex-appserver.ts` (read-only thread sandbox, refusal on unconfirmed), `src/cli/facts-hook.ts` (no grants for planner-only Claude instances), `src/hub/daemon.ts` (status fields), `src/ui/index.html`, `src/cli/console.ts`, `docs/operations.md`, `docs/smoke.md` (six-instance live leg).
+   - ACs: R7 fields in status, snapshot, dashboard, console, explain; AC-3 complete; AC-6 live run.
+
+Spec-first: each slice's PR amends this section where its implementation differs, together with `docs/operations.md`.
