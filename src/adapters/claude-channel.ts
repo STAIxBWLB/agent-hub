@@ -157,6 +157,8 @@ const offline = () => detached ?? "hub is not running for this project (start it
  * Surfaced on the next tool result; the pull itself still happens only through hub_inbox.
  */
 let pendingQueued: { queued: number; important: number } | undefined;
+/** Marks a tool result whose text already states the queued count (#221), so the fresh-count block does not repeat it. Symbol keys never reach the client. */
+const QUEUED_COUNTED = Symbol("queuedCounted");
 /** Fresh own-peer counts accompany all tool modes; only old plain sessions use advisory queued nudges. */
 async function withPendingHint<T>(result: T, recommendInbox = true): Promise<T> {
   const r = result as { content?: { type: string; text?: string }[] };
@@ -171,18 +173,21 @@ async function withPendingHint<T>(result: T, recommendInbox = true): Promise<T> 
     let freshCounts = false;
     try {
       const response = await hub.request({ t: "delivery_holds" }, 1000);
+      // A hold that refuses pulls (#221): hub_inbox would only be refused again, so the counts stay and the advice goes.
+      const hint = response?.ok ? renderHeldHint(response.held, Date.now(), !deliveryOnly) : "";
       if (response?.ok && Number.isSafeInteger(response.queued) && response.queued >= 0
         && Number.isSafeInteger(response.important) && response.important >= 0 && response.important <= response.queued) {
         freshCounts = true;
         pendingQueued = undefined; // A current zero must never resurrect an earlier queued nudge.
         if (response.important > 0) {
-          const next = !recommendInbox ? "" : toolsMode
+          const next = !recommendInbox || hint ? "" : toolsMode
             ? ": use hub_inbox on a pull-capable peer session; otherwise finish the current turn to receive queued deliveries"
             : ": call hub_inbox before starting long local work";
-          appendQueued(`(${response.queued} queued hub message(s), ${response.important} important hub message(s) waiting${next})`);
+          // One queued count per result (#221): a hub_inbox result that already says how many remain unread adds only the important count.
+          const counted = (result as { [QUEUED_COUNTED]?: boolean })[QUEUED_COUNTED] === true;
+          appendQueued(counted ? `(${response.important} important hub message(s) waiting${next})` : `(${response.queued} queued hub message(s), ${response.important} important hub message(s) waiting${next})`);
         }
       }
-      const hint = response?.ok ? renderHeldHint(response.held, Date.now(), !deliveryOnly) : "";
       if (hint) r.content.push({ type: "text", text: hint });
     } catch { /* advisory metadata can never change a saved tool result or its effect classification */ }
     if (!freshCounts && recommendInbox && !channel && !toolsMode && pendingQueued && pendingQueued.important > 0) {
@@ -391,7 +396,9 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     // Only pushes without a journal delivery id enter this buffer. Pull completion belongs to the daemon.
     const out = [...inbox.splice(0), ...remote];
     if (notice) out.push(notice);
-    return text(out.length ? out.join("\n\n") : "(no queued hub messages)");
+    const result = text(out.length ? out.join("\n\n") : "(no queued hub messages)");
+    if (notice.endsWith("remain unread)")) Object.defineProperty(result, QUEUED_COUNTED, { value: true });
+    return result;
   }
   if (name === "hub_send") {
     const { text: body, to, reply_to } = (args ?? {}) as { text?: string; to?: string[]; reply_to?: string };

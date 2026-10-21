@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- A Claude channel tool result no longer tells a session to call `hub_inbox` while a delivery hold refuses its pulls (the counts and held rows stay), and a `hub_inbox` result states the queued count once (#221). Documented limit: mid-turn steer of a push-capable Claude session was proven only on Claude Code 2.1.302.
+
 ## 0.12.44
 
 A standard ACP agent can join a project from config alone (#451 A3), adapter definitions become the single dispatch point (#451 A2b), agy stops reading Claude's state files (#624), and owner turns that write nothing are flagged (#498).

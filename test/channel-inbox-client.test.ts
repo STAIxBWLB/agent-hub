@@ -130,6 +130,39 @@ test("#493 refused inbox shows fresh counts without a repeat-read loop and old p
   } finally { await f.close(); }
 });
 
+// #221 item 1: while a delivery hold refuses pulls, advising hub_inbox sends the session into a refused read.
+for (const mode of ["channel", "plain", "tools"] as const) test(`#221 ${mode}: a hold that refuses pulls keeps the counts and drops the hub_inbox advice`, async () => {
+  const f = await client(mode);
+  try {
+    const row = { id: "held-1", senders: ["codex"], kinds: ["task"], createdAt: Date.now() - 5000 };
+    f.holds({ ok: true, held: { count: 1, rows: [row], truncated: false }, queued: 3, important: 2 });
+    const held = output(await f.call("hub_task_list"));
+    expect(held).toContain("3 queued"); expect(held).toContain("2 important");
+    expect(held).toContain("Held hub deliveries: 1");
+    expect(held).not.toContain("call hub_inbox"); expect(held).not.toContain("use hub_inbox");
+    // Without a hold the advice is unchanged.
+    f.holds({ ok: true, held: { count: 0, rows: [], truncated: false }, queued: 3, important: 2 });
+    expect(output(await f.call("hub_task_list"))).toContain("hub_inbox");
+  } finally { await f.close(); }
+});
+
+// #221 item 3: one queued count per hub_inbox result.
+test("#221 a hub_inbox result states the queued count once", async () => {
+  const f = await client("plain");
+  try {
+    f.inbox({ ok: true, envs: [newEnvelope("codex", "first")], waiting: 4, waitingImportant: 2 });
+    f.holds({ ok: true, held: { count: 0, rows: [], truncated: false }, queued: 4, important: 2 });
+    const read = output(await f.call("hub_inbox"));
+    expect(read).toContain("4 queued hub message(s) remain unread");
+    expect(read.match(/\b4 queued\b/g)).toHaveLength(1);
+    // With nothing important left the notice is still the only count.
+    f.inbox({ ok: true, envs: [], waiting: 1, waitingImportant: 0 });
+    f.holds({ ok: true, held: { count: 0, rows: [], truncated: false }, queued: 1, important: 0 });
+    const quiet = output(await f.call("hub_inbox"));
+    expect(quiet.match(/\b1 queued\b/g)).toHaveLength(1);
+  } finally { await f.close(); }
+});
+
 test("#493 actionable notices are not FYI in both session instruction modes, send guidance and template", async () => {
   for (const mode of ["channel", "tools"] as const) {
     const f = await client(mode);
