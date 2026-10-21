@@ -1,7 +1,8 @@
+import { findingsForHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
 import type { CriteriaView } from "./workflow.ts";
 import { parsePrEvidence, readSdlcPr, sdlcGh, sdlcStatus, type PrEvidence, type SdlcConfig, type SdlcGh, type SdlcReceipt } from "./sdlc.ts";
-export interface DeliveryTask { id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: CriteriaView; }
-export interface MergeQueueRow { pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
+export interface DeliveryTask { findings?: readonly ReviewFindingSet[]; id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: CriteriaView; }
+export interface MergeQueueRow { findings?: ReviewFindingTally; pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
 export interface MergeConflict { left: number; right: number; files: number; order: "dependency" | "person_required"; }
 export interface MergeQueue { repo: string; rows: MergeQueueRow[]; order: number[]; unordered?: number[]; conflicts: MergeConflict[]; complete: boolean; truncated: boolean; }
 const validRepo = (value: string) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && !value.startsWith("-");
@@ -53,10 +54,18 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
     const read = await readSdlcPr(holders[0]?.receipt ?? { stage: config.stages[0] ?? "spec", repo, pr }, bounded);
     if (!read || read.state !== "OPEN") { row.blockers.push("current PR evidence unknown or no longer open"); continue; }
     evidence.set(pr, read); row.head = read.head;
+    for (const holder of holders) {
+      const items = findingsForHead(holder.findings ?? [], read.head);
+      if (!items.length) continue;
+      const tally = findingTally(items);
+      row.findings ??= findingTally([]);
+      for (const key of Object.keys(tally) as (keyof ReviewFindingTally)[]) row.findings[key] += tally[key];
+    }
     if (!read.pathsComplete) row.blockers.push("PR file coverage is incomplete or unknown");
     if (read.draft !== false) row.blockers.push("PR is draft or draft status is unknown");
     if (!read.base) row.blockers.push("PR target branch is unknown");
     const linked = holders.length ? holders : [undefined];
+    if (config.mode === "enforce" && row.findings?.openImportant) row.blockers.push("open important review findings: " + row.findings.openImportant);
     for (const holder of linked) row.blockers.push(...sdlcStatus(config, holder?.receipt, read, holder?.phase).blockers);
   }
   const dependencyEvidence = new Map<number, PrEvidence | undefined>(); let dependencyReads = 0;

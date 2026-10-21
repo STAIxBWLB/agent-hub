@@ -17,7 +17,7 @@ The built-in lifecycle follows the [AI-Native SDLC Playbook](https://claude.com/
 | plan | Build | planner/owner | plan, branch, existing predecessor gates | current planner review required at build admission; conformance pending S2 |
 | build | Build | owner | PR identity/current head and local check on that head | entering review, when enabled |
 | test | Test | verifier/reviewer | required checks and local gate on the reviewed head | approval, when enabled; integrity/evals pending S4/S5 |
-| review | Deploy | assigned reviewer | current head-bound verdict, no pending change request/open thread; AC checklist under Compliance | approval, when enabled; structured findings pending S3 |
+| review | Deploy | assigned reviewer | current head-bound verdict, no pending change request/open thread; AC checklist under Compliance | approval, when enabled; open Important findings block in enforce |
 | merge | Deploy | person | current-head readiness, ordered touching PRs | shown; no mutation |
 | release | Deploy | person | merged commit, version/tag, docs freshness/live receipt checklist | shown; authorization pending S6 |
 | maintain | Maintain | person/planner | follow-up intent and operational evidence | shown; metrics/control bands pending S7 |
@@ -31,7 +31,7 @@ Stored `implement` and `verify` stage ids read as `build` and `test`. A write th
 | S0 | Plan, Design, Build, Test, Deploy, Maintain stage model | Nine built-in bases, canonical ids, stored receipt aliases and playbook labels |
 | S1 | Accepted intent/spec and spec drift | Person-only `ahub sdlc accept`, bound to the issue's body edit time; build entry needs it in enforce (see Spec acceptance below) |
 | S2 | Accepted plan and diff conformance | Pending; existing task plans remain authoritative without a conformance readback |
-| S3 | Bugs, Security and Compliance review passes | Pending structured findings; existing reviewer separation and head-bound review remain |
+| S3 | Bugs, Security and Compliance review passes | Head-bound findings, configured nit cap, Important approval gate and recurring-finding amendment proposals |
 | S4 | Red-first tests and test integrity | Pending receipts/gates; repository test-integrity rules still apply |
 | S5 | Continuous evals for agent configuration | Pending gate, dependent on #251/#266; no eval pass claimed |
 | S6 | Production approval gate | Pending person-only release authorization; release report stays read-only |
@@ -260,3 +260,11 @@ Configured cut dates must be positive safe UTC millisecond timestamps; the train
 Release-cut refusals name the applicable exits: stop or resume a paused peer, adjust `ahub budget set`, or drop the train with `ahub release drop`. Install the resource controller or fix PATH when `dot` is unavailable or shadowed; retry the cut outside an outer admission lease when nested admission is refused.
 
 Train history retains at most 256 events. Configuration no-ops retain the revision and history; meaningful configuration reserves the final two slots for cut and shipment. Capacity refusals occur before effects; an already exhausted legacy train requires a person-selected replacement.
+
+## Structured review findings (#481 S3)
+
+`hub_review` accepts optional `findings`, or the person can pass JSON with `ahub review <id> <verdict> --findings '<json>'`. Each item has a stable `id`, `pass` (`bugs`, `security`, `compliance`), `severity` (`important`, `nit`) and `disposition` (`open`, `fixed`, `false_positive`, `accepted`), with optional `path` and `rationale`. Only the person can use `accepted`, with a non-empty rationale. Reports have at most 64 findings and 64 KiB; ids, paths and rationale have bounded lengths. `max_nits = 5` in `.agenthub/sdlc.toml` sets the report's nit cap (0..64), including in off mode.
+
+Verdict history retains each report and its reviewed head. Updates settle matching ids on that head; omitting an id never clears it. A new head has its own findings. Status and the merge queue show counts for the current head. In enforce, approval refuses while any Important finding remains open; advise exposes the count without blocking. Existing verdicts without structured findings stay compatible.
+
+Finding text passes through the task privacy boundary. PII tasks remain stubs; withheld reports expose only counts on ordinary tasks. When the same public, non-withheld finding id appears on a second distinct task, Tasks proposes one durable, deduplicated backlog plan to amend AGENTS.md or an area note. The proposal grants no editing or acceptance authority.

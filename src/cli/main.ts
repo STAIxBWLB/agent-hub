@@ -1315,10 +1315,15 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (args.length !== 2 || !/^\d+$/.test(args[1]!)) fail("usage: ahub review brief <task id>");
       return console.log(await taskOp("review_brief", { id: Number(args[1]) }));
     }
-    const { one, many, rest } = takeFlags(args, ["--head"], ["--unmet"]);
+    const { one, many, rest } = takeFlags(args, ["--head", "--findings"], ["--unmet"]);
     const [id, verdict, ...note] = rest;
-    if (!id || !verdict) fail("usage: ahub review <id> approved|changes_requested [note...] [--unmet <item>]... | ahub review brief <id>");
-    console.log(await taskOp("hub_review", { id: Number(id), verdict, ...(one["--head"] ? { head: one["--head"] } : {}), note: note.join(" "), ...(many["--unmet"]?.length ? { unmet: many["--unmet"] } : {}) }));
+    if (!id || !verdict) fail("usage: ahub review <id> approved|changes_requested [note...] [--unmet <item>]... [--head <sha>] [--findings <json>] | ahub review brief <id>");
+    let findings: unknown;
+    if (one["--findings"] !== undefined) {
+      try { findings = JSON.parse(one["--findings"]); } catch { fail("--findings must be a JSON array"); }
+      if (!Array.isArray(findings)) fail("--findings must be a JSON array");
+    }
+    console.log(await taskOp("hub_review", { id: Number(id), verdict, ...(one["--head"] ? { head: one["--head"] } : {}), note: note.join(" "), ...(findings === undefined ? {} : { findings }), ...(many["--unmet"]?.length ? { unmet: many["--unmet"] } : {}) }));
   },
 
   remember: async () => console.log(await taskOp("hub_remember", { text: freeText(args, "ahub remember <text>") })),

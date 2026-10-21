@@ -2309,7 +2309,7 @@ export async function startDaemon(opts: DaemonOptions) {
         await tasks.specStageGate(by, a.id, a.receipt); // #481 S1: a live spec edit-time check before a build stage
         return line(tasks.recordLifecycle(by, a.id, a.receipt));
       case "hub_review":
-        return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head, a.coverage));
+        return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head, a.coverage, a.findings));
       case "hub_remember":
         return tasks.remember(by, a);
       case "hub_checkpoint": {

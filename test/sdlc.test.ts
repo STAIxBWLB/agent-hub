@@ -172,3 +172,27 @@ test("#449 SDLC gh missing executable remains a neutral unavailable readback", a
     expect(await sdlcGh(["pr", "view", "1"], 1000, project)).toEqual({ code: 1, stdout: "" });
   } finally { if (path === undefined) delete process.env.PATH; else process.env.PATH = path; }
 });
+
+test("S3 max_nits validates a bounded integer while omitted config keeps exact default shape", () => {
+  expect(sdlcConfig(undefined)).toEqual({ mode: "off", requiredChecks: [], stages: ["spec", "plan", "implement", "review", "verify", "merge", "release"] });
+  expect(sdlcConfig({ mode: "off" })).not.toHaveProperty("maxNits");
+  expect(sdlcConfig({ max_nits: 0 }).maxNits).toBe(0);
+  expect(sdlcConfig({ max_nits: 64 }).maxNits).toBe(64);
+  for (const max_nits of [-1, 65, 1.5, true, "5", null, Number.NaN]) expect(() => sdlcConfig({ max_nits })).toThrow("max_nits");
+});
+
+test("S3 lifecycle findings bind to the live head and only open important findings block enforce", () => {
+  const receipt = sdlcReceipt({ repo: "owner/repo", issue: 1, pr: 1, stage: "review", reviewedHead: A, localHead: A, localResult: "passed" });
+  const sets = [{ head: A, items: [{ id: "private:identity", pass: "security" as const, severity: "important" as const, disposition: "open" as const, path: "PRIVATE_PATH", rationale: "PRIVATE_RATIONALE" }] }];
+  for (const mode of ["off", "advise", "enforce"] as const) {
+    const status = sdlcStatus(config(mode), receipt, parsePrEvidence(raw()), undefined, undefined, sets);
+    expect(status.findings).toEqual({ important: 1, nit: 0, openImportant: 1, openNit: 0, fixed: 0, falsePositive: 0, accepted: 0 });
+    expect(status.blockers.some(blocker => blocker.includes("open important review findings"))).toBe(mode === "enforce");
+    expect(JSON.stringify(status)).not.toContain("PRIVATE_");
+    expect(JSON.stringify(status)).not.toContain("private:identity");
+  }
+  expect(sdlcStatus(config("enforce"), receipt, parsePrEvidence(raw(B)), undefined, undefined, sets).findings).toBeUndefined();
+  expect(sdlcStatus(config("enforce"), receipt, undefined, undefined, undefined, sets).findings?.openImportant).toBe(1);
+  const fixed = [...sets, { head: A, items: [{ ...sets[0]!.items[0]!, disposition: "fixed" as const }] }];
+  expect(sdlcStatus(config("enforce"), receipt, parsePrEvidence(raw()), undefined, undefined, fixed).blockers.some(blocker => blocker.includes("open important review findings"))).toBe(false);
+});
