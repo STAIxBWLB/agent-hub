@@ -39,7 +39,13 @@ export function readInstanceConfig(cwd: string, layers: readonly InstanceConfigL
     if (raw.adapters !== undefined) adapters = raw.adapters as Readonly<Record<string, import("../adapters/configured-acp.ts").ConfiguredAcpAdapterConfig>>;
     if (raw.instances !== undefined) rawInstances = raw.instances;
   }
-  const external = externalDefinitions ?? externalMetadataDefinitions(readControl(stateDirFor(cwd))?.externalAdapters);
+  let external = externalDefinitions;
+  if (external === undefined) {
+    // Metadata discovery is optional: retained recovery receipts may name a project that no longer exists.
+    let metadata;
+    try { metadata = readControl(stateDirFor(cwd))?.externalAdapters; } catch { /* no running catalog available */ }
+    external = externalMetadataDefinitions(metadata);
+  }
   const catalog = createProjectAdapterCatalog(adapters, external);
   const instances = validateInstances(rawInstances, catalog);
   return { ...(moduleConfig.modules.length ? { adapter_modules: moduleConfig.modules } : {}), ...(adapters !== undefined ? { adapters } : {}), ...(Object.keys(instances).length ? { instances } : {}), catalog, ignored };
