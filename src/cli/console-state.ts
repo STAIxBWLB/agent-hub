@@ -41,11 +41,12 @@ export interface ConsoleState {
   input: string; editing: boolean; history: string[]; historyIndex: number;
   approvals: Approval[]; events: ConsoleEvent[]; peers: Record<string, any>; budget: Record<string, any>;
   taskWip?: Record<string, { wip: number; wipLimit: number }>;
+  backlogView?: boolean;
   tasks: any[]; tasksKnown?: boolean; taskCounts?: Record<string, number>; queue: any[]; detail?: Detail; detailOffset: number; help: boolean; notice: string; noticeAt?: number; noticeTone?: Tone;
   peerFilter?: string; kindFilter?: string; project?: string;
   taskSelection?: number; queueSelection?: string;
-  actionLock?: { prefix: string[]; id: string; revision: number; state: string; owner?: string; reserved?: string; reviewer?: string; waiting?: boolean };
-  confirm?: { type: "permission"; id: string; option: string; peer: string } | { type: "command"; args: string[]; prompt?: string } | { type: "permission_default"; peer: string; source: string };
+  actionLock?: { prefix: string[]; id: string; revision: number; state: string; owner?: string; reserved?: string; reviewer?: string; waiting?: boolean; syntax?: "planning" | "ownerless-return"; revisionField?: "planningRevision" | "flowRevision" };
+  confirm?: { type: "permission"; id: string; option: string; peer: string } | { type: "command"; args: string[]; prompt?: string; lock?: ConsoleState["actionLock"] } | { type: "permission_default"; peer: string; source: string };
   optionChoice?: string;
   modeChoice?: string;
   permissionDefaults: PermissionDefault[];
@@ -340,7 +341,7 @@ const KEYS: [string, string[]][] = [
   ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Home/< first, End/> last", "Enter view", "j/k scroll a view", "w web UI (outside Peers)", "o pet window"]],
   ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
   ["Peers", ["p pause", "r resume", "m permission mode", "w WIP limit", "l make planner (then y)"]],
-  ["Tasks", ["a assign/reviewer (then y)", "u unassign (then y)", "r review (in review)"]],
+  ["Tasks", ["b backlog/open", "n add backlog", "a assign/reserve (then y)", "u unassign (then y)", "r review (in review)", "p pull, e plan (backlog)", "R return to backlog", "c cancel (then y)"]],
   ["Queue", ["r resolve (reason, then y)", "queued=discard, needs_review=retry"]],
   ["Events", ["f peer filter", "g kind filter"]],
   ["Settings", ["6 Settings panel", "e edit", "u undo", "preview, reason, then y"]],
@@ -374,7 +375,7 @@ function bound(s: ConsoleState): ConsoleState {
   if (s.requestDetail && s.requestDetail !== s.approvalId) { s.requestDetail = s.approvalId; s.detailOffset = 0; }
   return s;
 }
-const COMMANDS = new Set(["status", "board", "task", "review", "say", "pause", "resume", "budget", "queue", "permit", "permission", "ask", "remember", "route", "sdlc", "turns", "undo", "check-path", "report", "ui", "pet"]);
+const COMMANDS = new Set(["status", "board", "task", "backlog", "review", "say", "pause", "resume", "budget", "queue", "permit", "permission", "ask", "remember", "route", "sdlc", "turns", "undo", "check-path", "report", "ui", "pet"]);
 /** A tiny argv parser, never a shell. Quotes group arguments; backslash escapes one character. */
 export function parseConsoleCommand(input: string): string[] {
   const words: string[] = []; let word = ""; let quote = ""; let escaped = false; let started = false;
@@ -394,12 +395,13 @@ export function parseConsoleCommand(input: string): string[] {
 }
 export function commandNeedsConfirmation(args: string[]): boolean {
   const positional = args.filter(arg => arg !== "--yes");
-  return (positional[0] === "permission" && positional[2] === "never-ask") || (args[0] === "task" && ["assign", "unassign", "cancel"].includes(args[1] ?? "")) || (args[0] === "queue" && args[1] === "resolve") || (args[0] === "permit" && args[2] !== "deny");
+  return (args[0] === "backlog" && args[1] !== "list") || (args[0] === "task" && args[1] === "propose" && args.includes("--backlog")) || (positional[0] === "permission" && positional[2] === "never-ask") || (args[0] === "task" && ["assign", "unassign", "cancel"].includes(args[1] ?? "")) || (args[0] === "queue" && args[1] === "resolve") || (args[0] === "permit" && args[2] !== "deny");
 }
 export function panelRows(s: ConsoleState): any[] {
   if (s.panel === 1) return Object.entries(s.peers).map(([id, peer]) => ({ id, ...peer, budget: s.budget[id] }));
   if (s.panel === 2) return s.approvals;
   if (s.panel === 3) {
+    if (s.backlogView) return s.tasks.filter(t => t.state === "backlog").sort((a, b) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER) || a.id - b.id);
     const states = ["proposed", "in_progress", "in_review", "changes_requested"];
     return s.tasks.filter(t => states.includes(t.state)).sort((a, b) => states.indexOf(a.state) - states.indexOf(b.state));
   }
@@ -433,11 +435,20 @@ export function captureConsoleSelection(s: ConsoleState, byIndex = false): void 
 const commandFlag = (args: string[], name: string) => { const at = args.indexOf(name); return at < 0 ? undefined : args[at + 1]; };
 function validateLockedCommand(lock: NonNullable<ConsoleState["actionLock"]>, args: string[]): void {
   const revisions = args.flatMap((arg, index) => arg === "--revision" ? [args[index + 1]] : []);
-  if (args[0] !== lock.prefix[0] || args[1] !== lock.prefix[1] || args[2] !== lock.id || revisions.length !== 1 || revisions[0] !== String(lock.revision)) {
+  const matches = lock.syntax === "planning" ? args[3] === String(lock.revision) : lock.syntax === "ownerless-return" ? args.length === 3 : revisions.length === 1 && revisions[0] === String(lock.revision);
+  if (args[0] !== lock.prefix[0] || args[1] !== lock.prefix[1] || args[2] !== lock.id || !matches) {
     throw new Error("the selected id and revision cannot be edited; start again from the row");
   }
 }
+function validateLockedRow(s: ConsoleState, lock: NonNullable<ConsoleState["actionLock"]>): void {
+  if (!lock.revisionField) return;
+  const row = s.tasks.find(row => String(row.id) === lock.id);
+  // Board rows omit a zero planning revision; flow revisions are always explicit in the console projection.
+  const revision = row && (lock.revisionField === "planningRevision" ? row.planningRevision ?? 0 : row.flowRevision);
+  if (!row || row.state !== lock.state || revision !== lock.revision) throw new Error("the selected task revision changed; reload and start again from the row");
+}
 function lockedCommandPrompt(lock: NonNullable<ConsoleState["actionLock"]>, args: string[]): string {
+  if (lock.prefix[0] === "backlog") return `${lock.prefix[1]} task #${lock.id} at ${lock.revisionField === "planningRevision" ? "planning " : ""}revision ${lock.revision}`;
   if (lock.prefix[0] === "queue") {
     const action = commandFlag(args, "--action") ?? "resolve";
     return `${action} delivery ${lock.id} at revision ${lock.revision}${action === "completed" ? "; this asserts external effects" : action === "discard" ? "; no task or native turn is cancelled" : ""}`;
@@ -496,6 +507,9 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       return done();
     }
     if (key === "y") {
+      if (confirm.type === "command" && confirm.lock) {
+        try { validateLockedRow(s, confirm.lock); } catch (error) { notify(s, (error as Error).message, now); return done(); }
+      }
       if (confirm.type === "command") effects.push({ type: "command", args: confirm.args[0] === "permission" && confirm.args[2] === "never-ask" ? [...confirm.args.filter(arg => arg !== "--yes"), "--yes"] : confirm.args });
       else if (s.approvals.some(a => a.id === confirm.id && allowOptions(a).some(o => o.optionId === confirm.option))) {
         effects.push({ type: "permit", id: confirm.id, option: confirm.option });
@@ -538,14 +552,22 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
         }
         if (lock) {
           validateLockedCommand(lock, args);
+          validateLockedRow(s, lock);
+          if (lock.syntax === "planning" && args.length < (lock.prefix[1] === "plan" ? 6 : 5)) throw new Error("backlog row actions require a reason");
           if (lock.prefix[0] === "task" && !["owner", "reviewer"].includes(commandFlag(args, "--role") ?? "owner")) throw new Error("role must be owner or reviewer");
         }
         s.history = [...s.history, input].slice(-100); s.historyIndex = s.history.length;
-        if (commandNeedsConfirmation(args)) s.confirm = { type: "command", args, ...(lock ? { prompt: lockedCommandPrompt(lock, args) } : {}) };
+        if (commandNeedsConfirmation(args)) s.confirm = { type: "command", args, ...(lock ? { prompt: lockedCommandPrompt(lock, args), ...(lock.revisionField ? { lock } : {}) } : {}) };
         else effects.push({ type: "command", args });
       } catch (error) { notify(s, String((error as Error).message), now); }
     } else if (!key.startsWith("\x1b")) s.input += terminalText(key).replace(/\n/g, "");
     return done();
+  }
+  if (s.mode === "panels" && s.panel === 3 && key === "b") {
+    s.backlogView = !s.backlogView; s.selection = 0; s.taskSelection = undefined; s.detail = undefined; s.detailOffset = 0; return done();
+  }
+  if (s.mode === "panels" && s.panel === 3 && key === "n" && s.detail === undefined) {
+    s.input = "backlog add implement "; s.editing = true; return done();
   }
   if ((key === "n" || key === "P") && attentionKeyBlocked) return done();
   if (key === "q") { effects.push({ type: "exit" }); return done(); }
@@ -575,9 +597,9 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       const selected = item.id === undefined ? -1 : rows.findIndex(row => row.id === item.id);
       if (selected >= 0) { s.panel = 4; s.selection = selected; navigated = true; }
     } else if (item.kind === "review" && s.mode === "panels") {
-      const rows = panelRows({ ...s, panel: 3 });
+      const rows = panelRows({ ...s, panel: 3, backlogView: false });
       const selected = rows.findIndex(row => row.id === item.id);
-      if (selected >= 0) { s.panel = 3; s.selection = selected; navigated = true; }
+      if (selected >= 0) { s.panel = 3; s.backlogView = false; s.selection = selected; navigated = true; }
     }
     if (navigated) { captureConsoleSelection(s, true); s.detail = undefined; s.requestDetail = undefined; }
     else {
@@ -680,6 +702,16 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     return done();
   }
   if (s.mode === "panels" && item !== undefined && item !== null) {
+    if (s.panel === 3 && (selected.state === "backlog" && ["p", "a", "e"].includes(key) || key === "R" && ["proposed", "in_progress"].includes(selected.state))) {
+      const ownerless = key === "R" && selected.state === "proposed" && !selected.owner;
+      const revision = ownerless ? selected.flowRevision : selected.planningRevision ?? 0;
+      if (!Number.isSafeInteger(revision) || revision < 0) { notify(s, "backlog row actions need a valid revision; refresh the board", now); return done(); }
+      const sub = key === "R" ? "return" : key === "p" ? "pull-ready" : "plan";
+      s.actionLock = { prefix: ["backlog", sub], id: String(item), revision, state: String(selected.state), syntax: ownerless ? "ownerless-return" : "planning", revisionField: ownerless ? "flowRevision" : "planningRevision" };
+      const fields = key === "a" ? { reserved: selected.reserved ?? "" } : { priority: selected.priority ?? null, rank: selected.rank ?? null, deps: selected.deps ?? [] };
+      s.input = ownerless ? `backlog return ${item}` : `backlog ${sub} ${item} ${revision} ${sub === "plan" ? `'${JSON.stringify(fields)}' ` : ""}`;
+      s.editing = true; return done();
+    }
     if (s.panel === 1 && key === "m") {
       const peer = String(item);
       const info = s.peers[peer];
@@ -704,7 +736,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       const revision = selected.flowRevision;
       if (!["proposed", "in_progress", "in_review", "changes_requested", "backlog"].includes(selected.state)) return done();
       if (!Number.isSafeInteger(revision) || revision < 0) { notify(s, "task row actions need flowRevision; upgrade the hub", now); return done(); }
-      s.actionLock = { prefix: ["task", "cancel"], id: String(item), revision, state: String(selected.state) };
+      s.actionLock = { prefix: ["task", "cancel"], id: String(item), revision, state: String(selected.state), ...(selected.state === "backlog" ? { revisionField: "flowRevision" as const } : {}) };
       s.input = `task cancel ${item} --revision ${revision} --reason `; s.editing = true; return done();
     }
     if (s.panel === 3 && (key === "a" || key === "u")) {
@@ -754,6 +786,8 @@ export const TABLES: Record<number, string[]> = {
 };
 const showPermissionModes = (s: ConsoleState) => Object.values(s.peers).some(peer => peer.permissionMode && peer.permissionMode !== "ask");
 const count = (n: unknown) => typeof n === "number" && n ? String(n) : "-";
+const BACKLOG_COLUMNS = ["ID", "PRI", "RESERVED", "DEPS", "CLASS", "AGE", "TITLE"];
+const waitingDeps = (s: ConsoleState, row: any): number[] => (row.deps ?? []).filter((id: number) => !s.tasks.some(task => task.id === id && task.state === "approved"));
 /** One span per column of a panel row; zero counters and unknown values read `-`. */
 export function cells(s: ConsoleState, row: any, selected: boolean, now: number, stages?: Map<number, ProgressStage>): Span[] {
   const id = (text: unknown, tone: Tone | undefined) => span(text, tone && (selected ? "strong" : tone));
@@ -773,6 +807,10 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
       span(row.servedBy ?? row.requestedModel ?? "-")];
   }
   if (s.panel === 2) return [id(row.id, "attention"), span(row.peer, "attention"), span(duration(row.expiresAt - now), "muted"), span(row.title)];
+  if (s.panel === 3 && s.backlogView) {
+    const waits = waitingDeps(s, row);
+    return [id(`#${row.id}`, "info"), span(`${row.priority ?? "-"}/${row.rank ?? "-"}`), span(row.reserved ?? "-"), span(waits.length ? waits.map(id => `#${id}`).join(",") : "ready", waits.length ? "attention" : "success"), span(row.class ?? "-"), span(typeof row.created === "number" ? duration(now - row.created) : "-", "muted"), span(row.pii ? "[pii]" : row.title)];
+  }
   if (s.panel === 3) {
     const last = row.history?.at(-1);
     const at = last?.at ?? row.updated ?? row.created;
@@ -818,12 +856,12 @@ export function table(head: string[], rows: Span[][], columns: number, explicitW
   }));
 }
 /** Keep the status/quota columns visible instead of clipping them behind optional peer metadata. */
-function peerTable(head: string[], rows: Span[][], columns: number): Span[][] {
+function optionalTable(head: string[], rows: Span[][], columns: number, drop = ["MODEL", "WIP", "PAUSE", "REVIEW", "LINK", "Q", "!", "MODE"]): Span[][] {
   const cap = Math.max(24, Math.floor(columns / 3));
   const widths = head.map((name, i) => Math.min(cap, rows.reduce((max, row) => Math.max(max, Bun.stringWidth(flat(row[i]?.text ?? ""))), name.length)));
   const keep = head.map((_, i) => i);
   const total = () => keep.reduce((sum, i) => sum + widths[i]!, 0) + 2 * (keep.length - 1);
-  for (const name of ["MODEL", "WIP", "PAUSE", "REVIEW", "LINK", "Q", "!", "MODE"]) {
+  for (const name of drop) {
     if (total() <= columns - 2) break;
     const at = keep.findIndex(i => head[i] === name);
     if (at >= 0) keep.splice(at, 1);
@@ -837,19 +875,21 @@ function peerTable(head: string[], rows: Span[][], columns: number): Span[][] {
   return table(keep.map(i => head[i]!), rows.map(row => keep.map(i => row[i]!)), columns, keep.map(i => widths[i]!));
 }
 function taskHints(row: any): string[] {
+  if (row.state === "backlog") return ["p pull", "a reserve", "e plan"];
   if (!["proposed", "in_progress", "in_review", "changes_requested"].includes(row.state)) return [];
   const review = row.state === "in_review";
   const hints = [review ? "a reviewer" : "a assign"];
   if (review ? row.reviewer : row.owner || row.reserved) hints.push("u unassign");
   if (review) hints.push("r review");
+  if (["proposed", "in_progress"].includes(row.state)) hints.push("R return");
   return hints;
 }
 const settingValueText = (value: unknown): string => value === null || value === undefined ? "inherit" : Array.isArray(value) ? value.join(",") : String(value);
 function panelContext(s: ConsoleState, row: any): string[] {
+  if (s.panel === 3) return [...(row ? taskHints(row) : []), ...(row && s.features?.includes("task_cancel") ? ["c cancel"] : []), s.backlogView ? "b open" : "b backlog", "n add"];
   if (!row) return [];
   if (s.panel === 6) return ["e edit", ...(s.settingsUndo ? ["u undo"] : [])];
   if (s.panel === 1) return ["p pause", "r resume", "m permission mode", "w WIP limit"];
-  if (s.panel === 3) return [...taskHints(row), ...(s.features?.includes("task_cancel") ? ["c cancel"] : [])];
   if (s.panel === 4) return [row.state === "queued" ? "r discard" : "r resolve"];
   return [];
 }
@@ -862,6 +902,11 @@ function hint(s: ConsoleState, columns: number): string {
   if (s.detail !== undefined || s.requestDetail) return [...approvals, "j/k scroll", "Esc back", "? keys", "q quit"].join("  ");
   const rows = panelRows(s); const row = selectedPanelRow(s);
   const text = [...approvals, ...panelContext(s, row), ...(s.panel === 5 ? ["f peer", "g kind"] : []), ...(rows.length ? ["j/k move"] : []), ...(row ? ["Enter view"] : []), "? keys", ": command", "Tab stream", "q quit"].join("  ");
+  if (s.panel === 3 && Bun.stringWidth(text) > columns) {
+    const compact = [...panelContext(s, row), ...(rows.length ? ["j/k"] : []), "? keys", "q quit"];
+    if (Bun.stringWidth(compact.join("  ")) > columns) return compact.filter(key => key !== "j/k").join("  ");
+    return compact.join("  ");
+  }
   if (s.panel !== 1 || Bun.stringWidth(text) <= columns) return text;
   const compact = text.replace("m permission mode", "m mode").replace("w WIP limit", "w WIP").replace("j/k move", "j/k").replace(": command", ": cmd");
   return Bun.stringWidth(compact) > columns ? compact.replace("Enter view", "Enter") : compact;
@@ -974,7 +1019,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     lines.push(...detail.slice(Math.min(s.detailOffset, Math.max(0, detail.length - height))));
   }
   else {
-    const data = panelRows(s); const head = s.panel === 1 && showPermissionModes(s) ? ["PEER", "STATE", "MODE", ...TABLES[1]!.slice(2)] : TABLES[s.panel]; const at = selection(s);
+    const data = panelRows(s); const head = s.panel === 3 && s.backlogView ? BACKLOG_COLUMNS : s.panel === 1 && showPermissionModes(s) ? ["PEER", "STATE", "MODE", ...TABLES[1]!.slice(2)] : TABLES[s.panel]; const at = selection(s);
     // Below the Approvals table: the selected request's title, its allow options and deny, one line each. Deny always
     // shows; options that do not fit are counted, rows give way to the rest, and the title gets what is left.
     const [title = [], allow = [], deny = []] = s.panel === 2 && permission ? fieldLines(approvalFields(permission).slice(3), columns, now) : [];
@@ -983,7 +1028,8 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     const tail = [...allow, ...deny];
     const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : height - (s.panel === 3 ? 2 : 1)); const start = Math.max(0, at - capacity + 1);
     const stages = new Map(progress.stages.map(stage => [stage.id, stage]));
-    const rowsOf = head ? (s.panel === 1 ? peerTable : table)(head, data.map((row, i) => cells(s, row, i === at, now, stages)), columns) : undefined;
+    const cellRows = head ? data.map((row, i) => cells(s, row, i === at, now, stages)) : [];
+    const rowsOf = head ? s.panel === 1 ? optionalTable(head, cellRows, columns) : s.panel === 3 && s.backlogView ? optionalTable(head, cellRows, columns, ["AGE", "CLASS", "DEPS", "PRI"]) : table(head, cellRows, columns) : undefined;
     if (s.panel === 6) {
       const row = selectedPanelRow(s);
       const info = s.settingsProblem ?? (!s.settingsKnown ? "settings loading..." : row?.restartReason ?? row?.note ?? row?.label ?? "Settings");
@@ -994,7 +1040,9 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
         for (const pending of s.retainedConfig) lines.push(fitLine([span(`${pending.key}: ${pending.reason}`, "attention")], columns));
       }
     }
-    if (s.panel === 3) {
+    if (s.panel === 3 && s.backlogView) {
+      lines.push(fitLine([span(s.tasksKnown === false ? "backlog loading..." : `backlog ${data.length}`, s.tasksKnown === false ? "attention" : "info")], columns));
+    } else if (s.panel === 3) {
       const done = progress.total ? Math.floor(progress.counts.approved * 20 / progress.total) : 0;
       const main = s.tasksKnown === false && !progress.total ? "tasks loading..." : `${progress.counts.approved}/${progress.total} approved [${"#".repeat(done)}${".".repeat(20 - done)}] ${progress.total ? Math.floor(progress.counts.approved * 100 / progress.total) : 0}%`;
       const known = s.tasksKnown !== false || progress.total > 0;

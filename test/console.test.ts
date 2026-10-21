@@ -498,7 +498,7 @@ describe("console layout (#213)", () => {
     const hint = () => { const line = renderConsole(s, 80, 24, T).at(-1)!; hints.push(line); return line; };
     s.panel = 1; expect(hint()).toBe("p pause  r resume  m mode  w WIP  j/k  Enter  ? keys  : cmd  Tab stream  q quit");
     s.panel = 2; expect(hint()).toBe("a allow  d deny  j/k move  Enter view  ? keys  : command  Tab stream  q quit");
-    s.panel = 3; expect(hint()).toStartWith("a assign  u unassign  j/k move");
+    s.panel = 3; expect(hint()).toBe("a assign  u unassign  R return  b backlog  n add  j/k  ? keys  q quit");
     s.panel = 4; expect(hint()).toStartWith("r resolve  j/k move");
     s.panel = 5; expect(hint()).toBe("f peer  g kind  ? keys  : command  Tab stream  q quit");
     s.panel = 2; s.detail = "x"; expect(hint()).toBe("a allow  d deny  j/k scroll  Esc back  ? keys  q quit");
