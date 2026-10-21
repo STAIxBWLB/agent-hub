@@ -53,8 +53,6 @@ const dashboardTheme = (() => {
 /* Base */
 *{box-sizing:border-box}
 body{margin:0;background:var(--paper);color:var(--ink);font:var(--text-base)/1.5 var(--font-sans)}
-header,main{max-width:1440px;margin:auto;padding:var(--space-6) var(--space-8)}
-header{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);gap:var(--space-6)}
 h1{font-size:var(--text-xl);letter-spacing:-.02em;margin:0}
 h1 span{font-weight:400;color:var(--muted)}
 h2{font-size:var(--text-lg);margin:0}
@@ -63,7 +61,7 @@ p{margin:var(--space-2) 0}
 .meta{overflow-wrap:anywhere;font-size:var(--text-xs);color:var(--muted);font-variant-numeric:tabular-nums}
 .connection{font-size:var(--text-xs);color:var(--muted)}
 .stack{display:flex;flex-direction:column;gap:var(--space-6);min-width:0}
-footer{max-width:1440px;margin:auto;padding:0 var(--space-8) var(--space-6);color:var(--faint);font-size:var(--text-xs)}
+footer{max-width:1440px;margin:auto;padding:var(--space-4) var(--space-8) var(--space-6);color:var(--faint);font-size:var(--text-xs)}
 
 /* Surfaces and rows */
 section{border:1px solid var(--line);background:var(--panel);border-radius:var(--radius-surface);overflow:hidden}
@@ -206,7 +204,7 @@ progress.critical::-moz-progress-bar{background:var(--red)}
 .board-toolbar select{width:auto;max-width:220px}
 .board-unknown{padding:var(--space-3) var(--space-4);color:var(--amber)}
 @media(max-width:1100px){.board-columns{grid-template-columns:repeat(2,minmax(0,1fr))}}
-@media(max-width:900px){.stack{gap:var(--space-4)}header,main{padding:var(--space-4)}.stream{height:300px}footer{padding:0 var(--space-4) var(--space-4)}}
+@media(max-width:900px){.stack{gap:var(--space-4)}.stream{height:300px}footer{padding:var(--space-4)}}
 @media(max-width:600px){.split{grid-template-columns:minmax(0,1fr)}.board-columns{grid-template-columns:1fr;padding:var(--space-3)}.board-toolbar{align-items:stretch}.board-toolbar select{max-width:none;width:100%}.board-toolbar label{width:100%}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
 
@@ -219,12 +217,55 @@ progress.critical::-moz-progress-bar{background:var(--red)}
 
 /* View navigation, task detail and dialog */
 [hidden]{display:none!important}
-main>.stack{margin-top:var(--space-6)}
-.view-nav{max-width:1440px;margin:auto;padding:var(--space-4) var(--space-8);display:flex;gap:var(--space-2);align-items:center;flex-wrap:wrap}
-.view-nav button{min-height:44px}
-.view-nav button[aria-current="page"]{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
-.view-nav .attention-badge{margin-left:auto}
+/* App shell (#469 R2). From 1024px: a sticky top bar over a left sidebar and the content. Below 1024px: the same nav is one
+   row of tabs that scrolls sideways inside itself, so the page never scrolls sideways. The nav buttons, their order and the
+   data-view-target markers are the ones the navigation tests pin. */
+.sprite{position:absolute;width:0;height:0;overflow:hidden}
+.icon{width:20px;height:20px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.skip-link{position:absolute;left:var(--space-2);top:-48px;z-index:30;background:var(--accent);color:var(--on-accent);padding:var(--space-2) var(--space-3);border-radius:var(--radius-control)}
+.skip-link:focus{top:var(--space-2)}
+.shell{display:grid;grid-template-columns:minmax(0,1fr);grid-template-rows:auto auto minmax(0,1fr);min-height:100vh}
+.topbar{grid-row:1;display:flex;align-items:center;gap:var(--space-4);padding:var(--space-2) var(--space-4);min-height:56px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:20}
+.brand{min-width:0}
+.brand .eyebrow{line-height:1.2}
+.brand h1{font-size:var(--text-lg);line-height:1.2;white-space:nowrap}
+.topbar #project-context{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topbar-end{margin-left:auto;display:flex;align-items:center;gap:var(--space-3);min-width:0}
+.topbar-end .connection{white-space:nowrap}
+.connection::before{content:"";display:inline-block;width:8px;height:8px;margin-right:var(--space-2);border-radius:var(--radius-full);background:var(--dot);vertical-align:baseline}
+.connection[data-state="live"]{color:var(--green)}.connection[data-state="live"]::before{background:var(--dot-ok)}
+.connection[data-state="down"]{color:var(--red)}.connection[data-state="down"]::before{background:var(--dot-err)}
+.theme-field{display:flex;align-items:center;gap:var(--space-2)}
+.theme-field label{margin:0}
+.theme-field select{width:auto}
+.icon-button{display:inline-flex;align-items:center;justify-content:center;min-width:44px;min-height:44px;padding:0}
+.attention-badge{min-height:44px}
+.view-nav{grid-row:2;display:flex;gap:var(--space-1);padding:var(--space-2) var(--space-4);overflow-x:auto;overscroll-behavior-x:contain;background:var(--panel);border-bottom:1px solid var(--line);scrollbar-width:thin}
+.view-nav button{display:inline-flex;align-items:center;gap:var(--space-2);flex:none;min-height:44px;border-color:transparent;background:transparent;white-space:nowrap}
+.view-nav button:hover{background:var(--hover)}
+.view-nav button[aria-current="page"]{background:var(--accent-soft);color:var(--accent);border-color:var(--accent);font-weight:600}
 .view-nav .badge{margin-left:var(--space-1)}
+.shell-body{grid-row:3;min-width:0}
+main{max-width:1440px;margin:auto;padding:var(--space-6) var(--space-8);display:block;min-width:0}
+main:focus{outline:none}
+.keys-list{margin:0 0 var(--space-3);display:grid;gap:var(--space-2)}
+.keys-list>div{display:grid;grid-template-columns:96px 1fr;gap:var(--space-3);align-items:baseline}
+.keys-list dt{font-weight:600}.keys-list dd{margin:0}
+kbd{display:inline-block;min-width:24px;padding:1px var(--space-2);border:1px solid var(--control-border);border-bottom-width:2px;border-radius:var(--radius-control);background:var(--control);font:var(--text-xs) var(--font-mono);text-align:center}
+#keys-dialog{width:min(480px,calc(100% - 32px));border:1px solid var(--line);border-radius:var(--radius-surface);background:var(--raised);color:var(--ink);padding:var(--space-6);box-shadow:var(--shadow-2)}
+#keys-dialog::backdrop{background:var(--scrim)}
+#keys-dialog .dialog-head button{min-width:44px;padding:0}
+@media(min-width:1024px){
+ .shell{grid-template-columns:200px minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
+ .topbar{grid-column:1/-1}
+ .view-nav{grid-row:2;grid-column:1;flex-direction:column;overflow-x:visible;overflow-y:auto;padding:var(--space-3);border-bottom:0;border-right:1px solid var(--line);position:sticky;top:56px;align-self:start;height:calc(100vh - 56px)}
+ .view-nav button{width:100%;justify-content:flex-start}
+ .view-nav .badge{margin-left:auto}
+ .shell-body{grid-row:2;grid-column:2}
+}
+@media(max-width:1023px){.topbar{flex-wrap:wrap;gap:var(--space-2) var(--space-3)}.topbar #project-context{order:3;flex-basis:100%}.topbar-end{margin-left:0;flex-wrap:wrap;width:100%}main{padding:var(--space-4)}.brand h1 span{display:none}}
+@media(max-width:600px){main{padding:var(--space-3)}.topbar{padding:var(--space-2) var(--space-3)}.theme-field label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}}
+main>.stack{margin-top:var(--space-6)}
 .task-card.compact{cursor:pointer;min-height:44px}
 .task-card.compact:hover{border-color:var(--focus)}
 .task-card.compact .row-head{gap:var(--space-2);flex-wrap:wrap}
@@ -240,22 +281,36 @@ main>.stack{margin-top:var(--space-6)}
 #task-detail-dialog::backdrop{background:var(--scrim)}
 .dialog-head{display:flex;justify-content:space-between;align-items:center;gap:var(--space-3);margin-bottom:var(--space-4)}
 .dialog-head button{min-height:44px}
-@media(max-width:600px){.view-nav{padding:var(--space-3)}.view-nav .attention-badge{margin-left:0}.board-focus{grid-template-columns:minmax(0,1fr)}}
+@media(max-width:600px){.board-focus{grid-template-columns:minmax(0,1fr)}}
 </style>
 </head>
 <body>
-<header><div><div class="eyebrow">Local control room</div><h1>agent-hub <span>/ dashboard</span></h1><div id="project-context" class="meta"></div></div><div><label for="theme">Theme</label><select id="theme" class="theme-choice"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select><div id="connection" class="connection" role="status">Connecting...</div></div></header>
+<!-- Icons: Tabler Icons (MIT licence, (c) Paweł Kuna), outline set, copied unchanged. At most 20 may live in this sprite. -->
+<svg class="sprite" width="0" height="0" aria-hidden="true" focusable="false"><defs>
+<symbol id="i-board" viewBox="0 0 24 24"><path d="M4 4l6 0" /><path d="M14 4l6 0" /><path d="M4 10a2 2 0 0 1 2 -2h2a2 2 0 0 1 2 2v8a2 2 0 0 1 -2 2h-2a2 2 0 0 1 -2 -2l0 -8" /><path d="M14 10a2 2 0 0 1 2 -2h2a2 2 0 0 1 2 2v2a2 2 0 0 1 -2 2h-2a2 2 0 0 1 -2 -2l0 -2" /></symbol>
+<symbol id="i-office" viewBox="0 0 24 24"><path d="M3 21l18 0" /><path d="M3 7v1a3 3 0 0 0 6 0v-1m0 1a3 3 0 0 0 6 0v-1m0 1a3 3 0 0 0 6 0v-1h-18l2 -4h14l2 4" /><path d="M5 21l0 -10.15" /><path d="M19 21l0 -10.15" /><path d="M9 21v-4a2 2 0 0 1 2 -2h2a2 2 0 0 1 2 2v4" /></symbol>
+<symbol id="i-stream" viewBox="0 0 24 24"><path d="M3 12h4l3 8l4 -16l3 8h4" /></symbol>
+<symbol id="i-agents" viewBox="0 0 24 24"><path d="M5 7a4 4 0 1 0 8 0a4 4 0 1 0 -8 0" /><path d="M3 21v-2a4 4 0 0 1 4 -4h4a4 4 0 0 1 4 4v2" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /><path d="M21 21v-2a4 4 0 0 0 -3 -3.85" /></symbol>
+<symbol id="i-message" viewBox="0 0 24 24"><path d="M8 9h8" /><path d="M8 13h6" /><path d="M18 4a3 3 0 0 1 3 3v8a3 3 0 0 1 -3 3h-5l-5 3v-3h-2a3 3 0 0 1 -3 -3v-8a3 3 0 0 1 3 -3h12" /></symbol>
+<symbol id="i-memory" viewBox="0 0 24 24"><path d="M15.5 13a3.5 3.5 0 0 0 -3.5 3.5v1a3.5 3.5 0 0 0 7 0v-1.8" /><path d="M8.5 13a3.5 3.5 0 0 1 3.5 3.5v1a3.5 3.5 0 0 1 -7 0v-1.8" /><path d="M17.5 16a3.5 3.5 0 0 0 0 -7h-.5" /><path d="M19 9.3v-2.8a3.5 3.5 0 0 0 -7 0" /><path d="M6.5 16a3.5 3.5 0 0 1 0 -7h.5" /><path d="M5 9.3v-2.8a3.5 3.5 0 0 1 7 0v10" /></symbol>
+<symbol id="i-settings" viewBox="0 0 24 24"><path d="M10.325 4.317c.426 -1.756 2.924 -1.756 3.35 0a1.724 1.724 0 0 0 2.573 1.066c1.543 -.94 3.31 .826 2.37 2.37a1.724 1.724 0 0 0 1.065 2.572c1.756 .426 1.756 2.924 0 3.35a1.724 1.724 0 0 0 -1.066 2.573c.94 1.543 -.826 3.31 -2.37 2.37a1.724 1.724 0 0 0 -2.572 1.065c-.426 1.756 -2.924 1.756 -3.35 0a1.724 1.724 0 0 0 -2.573 -1.066c-1.543 .94 -3.31 -.826 -2.37 -2.37a1.724 1.724 0 0 0 -1.065 -2.572c-1.756 -.426 -1.756 -2.924 0 -3.35a1.724 1.724 0 0 0 1.066 -2.573c-.94 -1.543 .826 -3.31 2.37 -2.37c1 .608 2.296 .07 2.572 -1.065" /><path d="M9 12a3 3 0 1 0 6 0a3 3 0 0 0 -6 0" /></symbol>
+<symbol id="i-help" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 18 0a9 9 0 1 0 -18 0" /><path d="M12 17l0 .01" /><path d="M12 13.5a1.5 1.5 0 0 1 1 -1.5a2.6 2.6 0 1 0 -3 -4" /></symbol>
+<symbol id="i-close" viewBox="0 0 24 24"><path d="M18 6l-12 12" /><path d="M6 6l12 12" /></symbol>
+</defs></svg>
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="shell">
+<header class="topbar"><div class="brand"><div class="eyebrow">Local control room</div><h1>agent-hub <span>/ dashboard</span></h1></div><div id="project-context" class="meta"></div><div class="topbar-end"><div id="connection" class="connection" role="status">Connecting...</div><button type="button" id="attention-badge" class="attention-badge" aria-label="Global attention" hidden>(0)</button><div class="theme-field"><label for="theme">Theme</label><select id="theme" class="theme-choice"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></div><button type="button" id="keys-open" class="icon-button" aria-label="Keyboard shortcuts" aria-haspopup="dialog"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-help"/></svg></button></div></header>
 <nav id="dashboard-nav" class="view-nav" aria-label="Dashboard views">
-<button type="button" data-view-target="board" aria-current="page">Board</button>
-<button type="button" data-view-target="office">Office</button>
-<button type="button" data-view-target="stream">Stream</button>
-<button type="button" data-view-target="agents">Agents <span id="agents-approval-count" class="badge warn" hidden></span></button>
-<button type="button" data-view-target="message">Message</button>
-<button type="button" data-view-target="memory">Memory</button>
-<button type="button" data-view-target="settings">Settings</button>
-<button type="button" id="attention-badge" class="attention-badge" aria-label="Global attention" hidden>(0)</button>
+<button type="button" data-view-target="board" aria-current="page"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-board"/></svg><span class="nav-label">Board</span></button>
+<button type="button" data-view-target="office"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-office"/></svg><span class="nav-label">Office</span></button>
+<button type="button" data-view-target="stream"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-stream"/></svg><span class="nav-label">Stream</span></button>
+<button type="button" data-view-target="agents"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-agents"/></svg><span class="nav-label">Agents</span> <span id="agents-approval-count" class="badge warn" hidden></span></button>
+<button type="button" data-view-target="message"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-message"/></svg><span class="nav-label">Message</span></button>
+<button type="button" data-view-target="memory"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-memory"/></svg><span class="nav-label">Memory</span></button>
+<button type="button" data-view-target="settings"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-settings"/></svg><span class="nav-label">Settings</span></button>
 </nav>
-<main>
+<div class="shell-body">
+<main id="main-content" tabindex="-1">
 <p id="notice" class="notice" role="status" aria-live="polite"></p>
 <section class="task-board-section" aria-labelledby="tasks-title" data-view="board"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="backlog">Backlog</option><option value="proposed">To Do</option><option value="work">Work (including rework)</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="cancelled">Cancelled</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div class="board-toolbar"><button id="board-back" type="button" hidden>Back to board</button><span id="board-focus-title" class="meta" hidden></span><label for="task-peer-filter">Agent<select id="task-peer-filter"><option value="">All agents</option></select></label><label for="task-release-filter">Release<select id="task-release-filter"><option value="">All releases</option></select></label><label for="task-lanes">View<select id="task-lanes"><option value="columns">By state</option><option value="agents">By agent</option><option value="releases">By release</option></select></label></div><div id="task-legend" class="agent-legend" role="group" aria-label="Agent legend and assignment targets"></div><div id="tasks" class="task-list"></div><details><summary>Plan a task</summary><form id="planning"><div class="field"><label for="planning-task">Task</label><select id="planning-task"><option value="">Select task</option></select></div><div class="split"><label>Priority<select id="planning-priority"><option value="">Default</option><option value="0">P0</option><option value="1">P1</option><option value="2">P2</option><option value="3">P3</option></select></label><label>Order<input id="planning-rank" type="number" min="0" step="1"></label><label>Release<select id="planning-release"><option value="">No release</option></select></label><label>Planned start<input id="planning-start" type="datetime-local" step="any"></label><label>Due<input id="planning-due" type="datetime-local" step="any"></label></div><label><input id="planning-pinned" type="checkbox">Pin against planner changes</label><label>Reason<input id="planning-reason" maxlength="1000" required></label><div class="actions"><button id="planning-save" type="submit" data-mutation="project">Save plan</button><button id="planning-undo" type="button" data-mutation="project">Undo latest plan</button><button id="planning-reload" type="button">Reload current values</button></div><p id="planning-version" class="meta"></p></form></details><details id="split-panel" hidden><summary>Split the selected backlog task</summary><form id="split-backlog"><label>Part titles, one per line<textarea id="split-titles" maxlength="2408" required></textarea></label><label><input id="split-sequential" type="checkbox">Each part waits for the previous part</label><label>Reason<input id="split-reason" maxlength="1000" required></label><p class="meta">Two to eight parts. The original task retains integration and acceptance. Unused parts can be undone from its current plan.</p><button id="split-save" type="submit" data-mutation="project">Stage parts</button></form></details><details><summary>Releases</summary><div id="releases" class="content"></div><form id="release-new"><div class="split"><label>Name<input id="release-name" maxlength="64" required></label><label>Order<input id="release-order" type="number" min="0" value="0" step="1" required></label></div><label>Goal<input id="release-goal" maxlength="1000" required></label><button type="submit" data-mutation="project">Create release</button></form><form id="release-plan"><label>Release<select id="release-edit"><option value="">Select release</option></select></label><div class="split"><label>Planned start<input id="release-start" type="datetime-local" step="any"></label><label>Cut<input id="release-cut" type="datetime-local" step="any"></label><label>Ship<input id="release-ship" type="datetime-local" step="any"></label></div><button id="release-save" type="submit" data-mutation="project">Save dates</button><button id="release-reload" type="button">Reload current release</button><p id="release-version" class="meta"></p></form></details><details id="delivery"><summary>Delivery evidence (read-only)</summary><div class="field"><label for="delivery-repo">GitHub repository</label><input id="delivery-repo" maxlength="200" placeholder="owner/repository"></div><div class="field"><label for="delivery-live">Live verification issue IDs (optional)</label><input id="delivery-live" maxlength="300" placeholder="Comma-separated issue numbers"></div><div class="actions"><button id="delivery-queue" type="button">Read merge queue</button><button id="delivery-release" type="button">Read release checklist</button></div><pre id="delivery-report" class="body" aria-live="polite"></pre></details><details><summary>Propose a task</summary><form id="propose"><div class="field"><label for="title">Title</label><input id="title" name="title" required maxlength="300" placeholder="What should the team do?"></div><div class="field"><label for="detail">Details (optional)</label><textarea id="detail" name="detail" maxlength="8000"></textarea></div><div class="split"><div class="field"><label for="class">Class</label><select id="class" name="class"><option>implement</option><option>plan</option><option>bulk_edit</option><option>test</option><option>review</option><option>summarize</option><option>triage</option></select></div><div class="field"><label for="owner">Owner</label><select id="owner" name="owner"><option value="">Automatic</option></select></div></div><label><input id="backlog-proposal" type="checkbox"> Add to Backlog without offering</label><button class="primary" data-mutation="project" type="submit">Propose task</button></form></details></section>
 <div class="stack">
@@ -274,7 +329,12 @@ main>.stack{margin-top:var(--space-6)}
 <section aria-labelledby="bench-title" data-view="agents" hidden><div class="section-head"><h2 id="bench-title">Benchmarks</h2><span id="bench-count" class="meta"></span></div><div id="bench"></div></section>
 </div>
 </main>
+</div>
+</div>
 <dialog id="task-detail-dialog" aria-labelledby="task-detail-title"><div class="dialog-head"><h2 id="task-detail-title">Task details</h2><button id="task-detail-close" type="button" autofocus>Close details</button></div><div id="task-detail-content"></div></dialog>
+<dialog id="keys-dialog" aria-labelledby="keys-title"><div class="dialog-head"><h2 id="keys-title">Keyboard shortcuts</h2><button type="button" id="keys-close" aria-label="Close shortcuts"><svg class="icon" aria-hidden="true" focusable="false"><use href="#i-close"/></svg></button></div>
+<dl class="keys-list"><div><dt><kbd>1</kbd>-<kbd>7</kbd></dt><dd>Switch view: Board, Office, Stream, Agents, Message, Memory, Settings</dd></div><div><dt><kbd>?</kbd></dt><dd>Show this list</dd></div><div><dt><kbd>Esc</kbd></dt><dd>Close the open sheet or task detail</dd></div></dl>
+<p class="meta">Keys are ignored while you type in a field, and with Ctrl, Alt or Cmd held.</p></dialog>
 <footer>Loopback session. Private task content stays in the terminal. Reopen with <code>ahub ui</code> when your session expires.</footer>
 <script>
 'use strict';
@@ -304,8 +364,25 @@ function switchView(view) {
   if (!DASHBOARD_VIEWS.includes(view)) return;
   currentView = view; dashboardCookie.set('agent-hub-view', view); applyDashboardView();
 }
+// Keys 1-7 switch views, ? lists the keys, Esc closes (a native <dialog> closes itself on Esc). View keys never fire while typing:
+// not in an input, a textarea, a select or an editable node, and not with Ctrl, Alt or Cmd held.
+const TYPING_TARGETS = ['INPUT', 'TEXTAREA', 'SELECT'];
+function dashboardKey(event) {
+  if (event.ctrlKey || event.metaKey || event.altKey) return false;
+  const target = event.target || {};
+  if (TYPING_TARGETS.includes(String(target.tagName || '').toUpperCase()) || target.isContentEditable) return false;
+  const dialog = $('keys-dialog');
+  if (event.key === '?') { if (!dialog.open) dialog.showModal?.(); event.preventDefault?.(); return true; }
+  if (dialog.open || $('task-detail-dialog').open) return false;
+  const index = Number(event.key) - 1;
+  if (!Number.isInteger(index) || index < 0 || index >= DASHBOARD_VIEWS.length || event.key.length !== 1) return false;
+  switchView(DASHBOARD_VIEWS[index]); event.preventDefault?.(); return true;
+}
 function initializeDashboardNavigation() {
   for (const button of document.querySelectorAll('button[data-view-target]')) button.addEventListener('click', () => switchView(button.dataset.viewTarget));
+  document.addEventListener('keydown', dashboardKey);
+  $('keys-open').addEventListener('click', () => { if (!$('keys-dialog').open) $('keys-dialog').showModal?.(); });
+  $('keys-close').addEventListener('click', () => $('keys-dialog').close?.());
   $('attention-badge').addEventListener('click', reachAttention);
   $('board-back').addEventListener('click', () => setColumnFocus(null));
   $('task-detail-close').addEventListener('click', closeTaskDetail);
@@ -318,6 +395,7 @@ history.replaceState(null, '', location.pathname);
 const $ = (id) => document.getElementById(id);
 const el = (tag, text, cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); if (cls) node.className = cls; return node; };
 let stopped = false, cursor = 0, timer, projectsTimer, eventCount = 0;
+const setConnection = (text, state) => { const node = $('connection'); node.textContent = text; node.dataset.state = state; };
 let managerMode = false, projectList = [], selectedProjectId = '', selectedInstanceId = '', snapshotValid = false, viewGeneration = 0, projectRequest = 0;
 let lastSnapshot = null;
 let officePrev = null;
@@ -343,7 +421,7 @@ const peerDot = { idle: 'ok', busy: 'warn', paused: 'warn', offline: '' };
 const projectBadge = { running: 'ok', starting: 'warn', stopping: 'warn', stopped: '', unavailable: 'err', incompatible: 'err', missing: 'err' };
 function refreshRelativeTimes(root) { for (const node of root.querySelectorAll('[data-ts]')) node.textContent = rel(Number(node.dataset.ts)); }
 function notice(text, error = false) { $('notice').textContent = text; $('notice').classList.toggle('error', error); }
-function expire() { stopped = true; clearTimeout(timer); clearTimeout(projectsTimer); $('connection').textContent = 'Session closed'; notice('Session missing or expired. Run ahub ui in your terminal to reopen the dashboard.', true); document.querySelectorAll('button').forEach((button) => { button.disabled = true; }); }
+function expire() { stopped = true; clearTimeout(timer); clearTimeout(projectsTimer); setConnection('Session closed', 'down'); notice('Session missing or expired. Run ahub ui in your terminal to reopen the dashboard.', true); document.querySelectorAll('button').forEach((button) => { button.disabled = true; }); }
 async function post(path, body) {
   const response = await fetch(path, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
   if (response.status === 401) { expire(); throw new Error('Run ahub ui to start a new session.'); }
@@ -469,7 +547,7 @@ async function refreshProjects() {
     const selected = projectList.find((p) => p && p.id === selectedProjectId), nextInstance = selected && typeof selected.instanceId === 'string' ? selected.instanceId : '';
     if (!selected || selected.state !== 'running' || nextInstance !== selectedInstanceId) resetView(selected?.id || '', nextInstance);
     renderProjects();
-  } catch (error) { if (!stopped) $('connection').textContent = 'Projects unavailable: ' + error.message; }
+  } catch (error) { if (!stopped) setConnection('Projects unavailable: ' + error.message, 'down'); }
   if (!stopped) projectsTimer = setTimeout(refreshProjects, 3000);
 }
 function peerOptions(select, ids, first) { const selected = select.value; select.replaceChildren(); const initial = el('option', first); initial.value = ''; select.append(initial); for (const id of ids) { const option = el('option', id); option.value = id; select.append(option); } if (ids.includes(selected)) select.value = selected; }
@@ -1078,10 +1156,10 @@ async function poll() {
     const input = {after:cursor, memory:memoryInput()}; if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
     const result = await post('/snapshot', input);
     if (!managerMode || (result.projectId === captured.projectId && result.instanceId === captured.instanceId && captured.generation === viewGeneration)) {
-      snapshotValid = true; lastSnapshot = result; render(result); $('connection').textContent = 'Live / updated ' + new Date().toLocaleTimeString();
+      snapshotValid = true; lastSnapshot = result; render(result); setConnection('Live / updated ' + new Date().toLocaleTimeString(), 'live');
     }
   }
-  catch (error) { if (!stopped) $('connection').textContent = 'Disconnected / retrying: ' + error.message; }
+  catch (error) { if (!stopped) setConnection('Disconnected / retrying: ' + error.message, 'down'); }
   if (!stopped) timer = setTimeout(poll, 1000);
 }
 // office-scene-begin (issue 264): the office, drawn Flat or Isometric from the shared officeModel as inline
@@ -1734,7 +1812,7 @@ window.addEventListener('resize', () => { if (!stopped && officeView.get() !== '
 $('send').addEventListener('submit', async (event) => { event.preventDefault(); const generation = viewGeneration, body = $('message').value.trim(); if (!body) return; const to = $('recipient').value, payload = {action:'send', body}; if (to) payload.to = [to]; if (await action(payload, event.submitter) && generation === viewGeneration) $('message').value = ''; });
 $('propose').addEventListener('submit', async (event) => { event.preventDefault(); const generation = viewGeneration, title = $('title').value.trim(); if (!title) return; const payload = {action:'propose', title, class:$('class').value}; if ($('detail').value.trim()) payload.detail = $('detail').value.trim(); if ($('owner').value) payload.owner = $('owner').value; if ($('backlog-proposal').checked) { if(boardViewState?.snapshot.boardCapabilities?.backlog!==true || !sameBoardContext(boardContext())) return notice('Backlog is unavailable for this project snapshot.',true);payload.backlog=true; } if (await action(payload, event.submitter) && generation === viewGeneration) { $('title').value = ''; $('detail').value = ''; } });
 initializeDashboardNavigation();
-(async () => { try { if (ticket) await post('/session', {ticket}); ticket = ''; renderStreamChips(); await refreshProjects(); await poll(); } catch (error) { ticket = ''; if (!stopped) { stopped = true; notice('Could not start session: ' + error.message + ' Run ahub ui to reopen.', true); $('connection').textContent = 'Session unavailable'; } } })();
+(async () => { try { if (ticket) await post('/session', {ticket}); ticket = ''; renderStreamChips(); await refreshProjects(); await poll(); } catch (error) { ticket = ''; if (!stopped) { stopped = true; notice('Could not start session: ' + error.message + ' Run ahub ui to reopen.', true); setConnection('Session unavailable', 'down'); } } })();
 </script>
 </body>
 </html>
