@@ -113,7 +113,7 @@ import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
 import { crashPlan, lossNotice, readSessions, removeSessions, writeSessions, type SessionsFile } from "./crash.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
-import { soleWorktree, branchHeads, changedPaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
+import { soleWorktree, branchHeads, changedPaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, budgetNow, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContinuity } from "./recovery-continuity.ts";
 import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate } from "../cli/terminal-recovery.ts";
@@ -481,6 +481,8 @@ export interface DaemonOptions {
   /** Host-only snapshot/probe seams; never read from project config or tool arguments. */
   snapshot?: typeof snapshot;
   snapshotBurstMs?: number;
+  /** Host-only (#661): the clock the shared snapshot Git budget reads (default performance.now). A test holds it fixed so a slow runner cannot spend the 250 ms; production never sets it and no config key or tool reaches it. */
+  snapshotClock?: () => number;
   checkoutBranch?: typeof mainCheckoutBranch;
   /** Host-only admission transport; never selected by project config or tools. */
   releaseHostAdmission?: (cwd: string) => Promise<ReleaseHostAdmission>;
@@ -1830,7 +1832,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!snapshotBudget) {
       const requested = opts.snapshotBurstMs ?? 250;
       const ms = Number.isFinite(requested) ? Math.max(1, Math.min(250, requested)) : 250;
-      snapshotBudget = { deadline: performance.now() + ms };
+      const now = opts.snapshotClock;
+      snapshotBudget = { deadline: (now ? now() : performance.now()) + ms, ...(now ? { now } : {}) };
       setImmediate(() => { snapshotBudget = undefined; snapshotBudgetNoticed = false; });
     }
     return snapshotBudget;
@@ -3173,7 +3176,7 @@ export async function startDaemon(opts: DaemonOptions) {
                   if (!end.head) throw new Error("end HEAD evidence is unavailable");
                   const dirtyPaths = knownChangedPaths(turnRepo, end.head, end.tree, end.budget);
                   if (!dirtyPaths) throw new Error("end worktree diff evidence is unavailable");
-                  const checkBudget = () => { if (end.budget && performance.now() >= end.budget.deadline) throw new SnapshotBudgetExceeded(); };
+                  const checkBudget = () => { if (end.budget && budgetNow(end.budget) >= end.budget.deadline) throw new SnapshotBudgetExceeded(); };
                   const dirty = new Set(dirtyPaths), dirtyScope = new Set(dirtyPaths), incoming = new Set(paths);
                   for (const path of dirtyPaths) {
                     checkBudget();
