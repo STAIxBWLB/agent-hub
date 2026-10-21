@@ -220,6 +220,26 @@ test("a large file rewritten at the same size and mtime just after it was seen i
   expect(facts.tree(["big.bin"])).toBe(target);
 });
 
+// issue #428: racy hashing runs on the daemon's loop, so it is bounded: a file over the per-file cap keeps its stat-only
+// stamp (the documented ceiling: a same-tick rewrite of it is not seen), and one event-loop turn hashes 16 MiB at most.
+test("a racy large file over the per-file cap is not hashed, and one turn hashes racy files within its budget", async () => {
+  const root = mkdtempSync(join(tmpdir(), "agenthub-facts-"));
+  dirs.push(root);
+  const tick = new Date(Math.floor(Date.now() / 1000) * 1000);
+  const files = ["huge.bin", "b0.bin", "b1.bin", "b2.bin", "b3.bin", "b4.bin"];
+  const size = (f: string) => (f === "huge.bin" ? 5 : 3.5) * 1024 * 1024; // the cap is 4 MiB; five of 3.5 MiB pass 16 MiB
+  const put = (fill: string) => { for (const f of files) { writeFileSync(join(root, f), Buffer.alloc(size(f), fill)); utimesSync(join(root, f), tick, tick); } };
+  put("x");
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: files, plans: [] }), peers: () => ["claude"], nameable: () => true });
+  const look = () => { const o = facts.due("claude"); if (o) facts.ack("claude", o.id); return o; };
+  look();
+  await new Promise((r) => setImmediate(r)); // the next hook event: a new turn, a fresh budget
+  put("y"); // every file keeps its size and mtime
+  const o = look();
+  expect(o?.text ?? "").not.toContain("huge.bin");
+  expect(files.filter((f) => f !== "huge.bin" && (o?.text ?? "").includes(f))).toHaveLength(4);
+});
+
 test("reset (a PII task opened and closed) never shows a diff across it; work from before tracking is named as not covered", async () => {
   const { facts, write, look } = rig({ claude: { paths: ["a.txt"], plans: [], since: Date.now() - 60_000 } });
   look("claude");

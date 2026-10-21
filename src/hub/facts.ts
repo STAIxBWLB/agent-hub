@@ -1,7 +1,7 @@
 import { repoGitArgs, repoGitEnv, type Repo } from "./snapshots.ts";
 import { isHubWritePath } from "./permission-mode.ts";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, rmSync, statSync, writeFileSync, type Stats } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { sanitize, type PeerId } from "./envelope.ts";
 import { isDenied } from "../local/deny.ts";
@@ -27,11 +27,18 @@ const HASHED_BYTES = 64 * 1024 * 1024;
 /**
  * A large file whose last change (ctime) is this recent may still be rewritten with the same stat: Linux before 6.13
  * stamps files from a coarse clock, so a same-size rewrite within one tick keeps size, mtime, ctime and inode (#428).
- * Such a file is named by its bytes, as git treats a racily clean entry.
- * ponytail: FAT's 2 s mtime is the widest covered; a racy file is hashed at every look until it settles, a per-boundary
- * budget if that ever holds the loop.
+ * Such a file is named by its bytes, as git treats a racily clean entry: at most RACY_HASH_MAX_BYTES each, hashed once
+ * per version in a public entry point, RACY_BURST_BYTES in all per event-loop turn (the hooks run on the daemon's loop).
+ * ponytail: ceilings, each falling back to the stat-only stamp (no claim either way): a racy file over the per-file cap,
+ * or past the turn's budget, misses a same-size rewrite within one timestamp tick and is not compared with HEAD until it
+ * settles; a file written continuously never settles and is hashed at every look, within that budget; FAT's 2 s mtime
+ * is the widest covered; a settled file made racy with the same bytes (chmod, `cp -p`, touch) reads as changed once; a
+ * version first seen racy costs an open and a stat at every later look (largeBlob's cache answers). A per-file history
+ * of racy versions if any of these matters.
  */
 const RACY_MS = 2000;
+const RACY_HASH_MAX_BYTES = 4 * 1024 * 1024;
+const RACY_BURST_BYTES = 16 * 1024 * 1024;
 /** Changed lines shown in one fact, all files together; the rest is counted and the files named. */
 export const MAX_LINES = 60;
 /** What Claude Code's Read returns by default: the first 2000 lines, each cut at 2000 characters. */
@@ -153,6 +160,10 @@ export class Facts {
   private readonly seenDropped = new Map<PeerId, Set<string>>();
   /** Git blob ids of large files, by path, with the stat they were taken at. */
   private readonly largeBlobs = new Map<string, { stamp: string; blob: string }>();
+  /** Blob ids of racy large files hashed in the current boundary, by path and stat (#428). */
+  private racyMemo = new Map<string, string>();
+  /** Bytes of racy large files left to hash in this event-loop turn. */
+  private racyLeft?: { bytes: number };
   /** Directories each peer acknowledged being told were cut: once per session, not at every boundary. */
   private readonly cutTold = new Map<PeerId, Set<string>>();
   /**
@@ -225,7 +236,7 @@ export class Facts {
    * ponytail: a directory swapped between the containment check and the open is followed once; an fd-relative walk
    * (openat per component) closes that if it matters.
    */
-  private load(file: string): Omit<Version, "seq"> {
+  private load(file: string, statOnly = false): Omit<Version, "seq"> {
     if (this.rel(join(this.root, file)) !== file) return { hash: "missing" };
     const projected = this.o.projection?.(join(this.root, file));
     if (projected) return { hash: projected.rawHash, blob: projected.rawBlob, text: projected.text, projected: true };
@@ -235,7 +246,7 @@ export class Facts {
       const st = fstatSync(fd);
       if (!st.isFile()) return { hash: "missing" }; // a directory, a device or a fifo: never read
       if (st.size > MAX_BYTES) {
-        const blob = Date.now() - st.ctimeMs < RACY_MS && st.size <= HASHED_BYTES ? streamBlob(fd, st.size) : undefined;
+        const blob = statOnly ? undefined : this.racyBlob(file, fd, st);
         return blob ? { hash: `large:${st.size}:${st.mtimeMs}:${blob}`, blob } : { hash: `large:${st.size}:${st.mtimeMs}` };
       }
       const buf = Buffer.alloc(st.size);
@@ -344,14 +355,31 @@ export class Facts {
       // A file that stays stat-dirty but equal to HEAD is looked at again at every boundary: hashed once per version.
       const stamp = `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`, known = this.largeBlobs.get(file);
       if (known?.stamp === stamp) return known.blob;
+      if (Date.now() - st.ctimeMs < RACY_MS) return this.racyBlob(file, fd, st); // a racy stamp may name other bytes later: never cached
       const blob = streamBlob(fd, st.size);
-      if (blob && Date.now() - st.ctimeMs >= RACY_MS) this.largeBlobs.set(file, { stamp, blob }); // a racy stamp may name other bytes later
+      if (blob) this.largeBlobs.set(file, { stamp, blob });
       return blob;
     } catch {
       return undefined;
     } finally {
       if (fd !== undefined) closeSync(fd);
     }
+  }
+
+  /** A racy large file's blob id (#428), or undefined when it is settled, over the per-file cap or past the turn's budget. */
+  private racyBlob(file: string, fd: number, st: Stats): string | undefined {
+    if (Date.now() - st.ctimeMs >= RACY_MS || st.size > RACY_HASH_MAX_BYTES) return undefined;
+    const key = `${file}\0${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`, known = this.racyMemo.get(key);
+    if (known) return known;
+    if (!this.racyLeft) {
+      const turn = this.racyLeft = { bytes: RACY_BURST_BYTES };
+      setImmediate(() => { if (this.racyLeft === turn) this.racyLeft = undefined; });
+    }
+    if (st.size > this.racyLeft.bytes) return undefined;
+    this.racyLeft.bytes -= st.size;
+    const blob = streamBlob(fd, st.size);
+    if (blob) this.racyMemo.set(key, blob);
+    return blob;
   }
 
   /** `file` is covered again: an offer still unread that named it as dropped must not spend the notice of a later drop. */
@@ -363,6 +391,7 @@ export class Facts {
   private boundary(): void {
     this.expanded = new Map();
     this.expandedCut = new Set();
+    this.racyMemo = new Map(); // not per turn: a rewrite between two entry points of one turn is another version
   }
 
   /** `peer` worked on `file`; `seen` is the file as it was when it did, the baseline if it has no view of it yet. */
@@ -469,8 +498,12 @@ export class Facts {
     const now = this.load(file);
     const was = this.latest.get(file);
     if (was && was.hash === now.hash) return was;
-    // Seen while racy (named by its bytes), now settled with the same stat: the same version if the bytes are.
-    if (was?.blob && was.hash === `${now.hash}:${was.blob}` && this.largeBlob(file, now.hash) === was.blob) return was;
+    // Seen while racy (named by its bytes), now with the same stat but no blob (settled, or past the turn's budget): the
+    // same version if the bytes are, or when they cannot be hashed now (no claim).
+    if (was?.blob && was.hash === `${now.hash}:${was.blob}`) {
+      const blob = this.largeBlob(file, now.hash);
+      if (blob === undefined || blob === was.blob) return was;
+    }
     const version = { ...now, seq: ++this.seq };
     this.latest.set(file, version);
     if (was) {
@@ -730,7 +763,7 @@ export class Facts {
     const files = [...new Set([...this.expand(paths.flatMap((p) => { const r = this.rel(p); return r ? [r] : []; }), true), ...written])].sort();
     // ponytail: a large file counts by its stat, racy or not, so the target does not move when it settles; a same-size
     // rewrite within one timestamp tick does not move it either (observe() sees that one).
-    for (const file of files) h.update(file).update("\0").update(this.load(file).hash.replace(/^(large:[^:]+:[^:]+):.*/, "$1")).update("\0");
+    for (const file of files) h.update(file).update("\0").update(this.load(file, true).hash).update("\0");
     return h.digest("hex");
   }
 
