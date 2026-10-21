@@ -9711,9 +9711,10 @@ async function runKimiEntry(ctx) {
       if (!admission.ok)
         fail(admission.error);
       const runningCommand = admission.retainedLaunchConfig?.kimi_cmd;
-      const launch = buildKimiTuiLaunch(Array.isArray(runningCommand) && runningCommand.every((arg) => typeof arg === "string") ? runningCommand : projectConfig().kimi_cmd, model);
+      let launch;
       let result;
       try {
+        launch = buildKimiTuiLaunch(Array.isArray(runningCommand) && runningCommand.every((arg) => typeof arg === "string") ? runningCommand : projectConfig().kimi_cmd, model);
         const written = configureKimiMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve14(cliDir, "../../plugins/agent-hub/server.js"), "tui");
         if (written.tracked)
           console.error(".kimi-code/mcp.json is tracked; the agent-hub entry contains machine paths. Review this local change before committing it.");
