@@ -968,8 +968,12 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   starts. A check ends when its command exits: what it left in its process group
   is killed then, and a descendant that left the group gets 0.5 s more to flush
   output and is not waited for. A check killed at the timeout or on shutdown
-  settles 1 s after the kill even if its exit and close events never arrive
-  (#558). Exit 0: the task
+  settles 1 s after the kill even if its exit and pipes never report
+  (#558). The runner starts the command with `Bun.spawn` and reads its exit and both
+  pipes as values, not `node:child_process` events: under `bun test` on a loaded
+  macOS host the node layer can reap a quick child inside `spawn()` and emit its exit
+  and close before any listener exists (oven-sh/bun#45483), which made a trivial
+  check report a timeout and an empty tail after its limit plus the grace. Exit 0: the task
   completes as before, the review envelope carrying `Check: <command> -> exit 0`
   and the output tail; shared memory gets the summary and the outcome line, never
   the output. Any other outcome: the task stays with its owner, who gets a task

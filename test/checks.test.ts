@@ -2,8 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
-import { runCheck } from "../src/hub/checks.ts";
+import { runCheck, type CheckSpawn } from "../src/hub/checks.ts";
 
 // issue #7: the completion check runner. Which config may choose the command: test/config-trust.test.ts.
 const cleanup: (() => void)[] = [];
@@ -114,13 +113,11 @@ test("a check stopped by the hub is interrupted, not failed", async () => {
 });
 
 // issue #558: on hosted macOS a check once hung past bun's 20 s test timeout; neither its exit nor its close event came.
-/** A real child whose exit and close events never reach runCheck. */
-const silentSpawn = ((...args: Parameters<typeof spawn>) => {
-  const child = spawn(...args);
-  const on = child.on.bind(child);
-  child.on = ((event: string, listener: (...a: unknown[]) => void) => (event === "exit" || event === "close" ? child : on(event, listener))) as typeof child.on;
-  return child;
-}) as typeof spawn;
+/** A real child whose exit and pipes never report to runCheck: only the kill grace can settle it. */
+const silentSpawn: CheckSpawn = (argv, options) => {
+  const real = Bun.spawn(argv, { cwd: options.cwd, env: options.env as Record<string, string>, stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true });
+  return { pid: real.pid, exited: new Promise<number>(() => {}), signalCode: null, stdout: new ReadableStream<Uint8Array>({}), stderr: new ReadableStream<Uint8Array>({}) };
+};
 
 test("a killed check settles within its kill grace when the child's exit and close events never arrive", async () => {
   const started = Date.now();
@@ -136,16 +133,12 @@ test("a killed check settles within its kill grace when the child's exit and clo
 });
 
 test("a late exit event or a retained stop after the kill grace settled the check never signals the old process group", async () => {
-  const exits: ((code: number | null) => void)[] = [];
-  const recording = ((...args: Parameters<typeof spawn>) => {
-    const child = spawn(...args);
-    const on = child.on.bind(child);
-    child.on = ((event: string, listener: (...a: unknown[]) => void) => {
-      if (event === "exit") exits.push(listener as (code: number | null) => void);
-      return event === "exit" || event === "close" ? child : on(event, listener);
-    }) as typeof child.on;
-    return child;
-  }) as typeof spawn;
+  const exits: ((code: number) => void)[] = [];
+  const recording: CheckSpawn = (argv, options) => {
+    const real = Bun.spawn(argv, { cwd: options.cwd, env: options.env as Record<string, string>, stdin: "ignore", stdout: "ignore", stderr: "ignore", detached: true });
+    const exited = new Promise<number>((resolve) => exits.push(resolve)); // the exit report, delivered by hand after the grace
+    return { pid: real.pid, exited, signalCode: null, stdout: new ReadableStream<Uint8Array>({}), stderr: new ReadableStream<Uint8Array>({}) };
+  };
   const running = new Set<() => void>();
   const pending = runCheck("sleep 30", tempDir(), 300, running, recording);
   const [stop] = running;
@@ -154,10 +147,38 @@ test("a late exit event or a retained stop after the kill grace settled the chec
   const kill = process.kill;
   process.kill = ((pid: number, signal?: string | number) => (kills.push(pid), kill.call(process, pid, signal))) as typeof process.kill;
   try {
-    for (const exit of exits) exit(null);
+    for (const exit of exits) exit(137);
     stop?.();
   } finally {
     process.kill = kill;
   }
   expect(kills).toEqual([]);
+});
+
+// issue #558 (D1): on a loaded hosted macOS runner under `bun test`, node:child_process could reap a quick child inside
+// spawn() and emit its exit and close (output unread) before runCheck had a listener (oven-sh/bun#45483); the check then
+// reported a timeout with an empty tail after its limit plus the kill grace (~6 s). runCheck now reads values a child
+// that already ended still holds, so it does not depend on when an event fires.
+const text = (value: string) => new ReadableStream<Uint8Array>({ start(controller) { if (value) controller.enqueue(new TextEncoder().encode(value)); controller.close(); } });
+const ended = (code: number, stdout: string, stderr = "", signalCode: string | null = null): CheckSpawn => () => ({ pid: 0, exited: Promise.resolve(code), signalCode, stdout: text(stdout), stderr: text(stderr) });
+
+test("a child that already ended when runCheck got it still reports its exit code and output (#558 D1)", async () => {
+  const started = Date.now();
+  expect(await runCheck("ignored", tempDir(), 5000, undefined, ended(0, "a\nb\n"))).toEqual({ code: 0, timedOut: false, tail: "a\nb" });
+  const failed = await runCheck("ignored", tempDir(), 5000, undefined, ended(3, "", "boom\n"));
+  expect(failed).toMatchObject({ code: 3, timedOut: false });
+  expect(failed.tail).toContain("boom");
+  expect(Date.now() - started).toBeLessThan(2000); // nothing waited for the limit, the kill grace or the drain
+});
+
+test("a signalled child is no verdict on the work, and a spawn that throws reports why (#558 D1)", async () => {
+  expect(await runCheck("ignored", tempDir(), 5000, undefined, ended(137, "", "", "SIGKILL"))).toMatchObject({ code: null, timedOut: false });
+  const refusing: CheckSpawn = () => { throw new Error("ENOENT: no such file or directory, posix_spawn 'sh'"); };
+  const result = await runCheck("ignored", tempDir(), 5000, undefined, refusing);
+  expect(result).toMatchObject({ code: null, timedOut: false });
+  expect(result.tail).toContain("ENOENT");
+});
+
+test("a real quick child is read whole even when its exit is reported before its pipes are drained (#558 D1)", async () => {
+  for (let i = 0; i < 20; i++) expect(await runCheck("printf 'a\\nb\\n'; exit 0", tempDir(), 5000)).toEqual({ code: 0, timedOut: false, tail: "a\nb" });
 });
