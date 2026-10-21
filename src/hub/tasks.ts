@@ -2543,11 +2543,18 @@ export class Tasks {
     if (scope.key !== artifact.key) return;
     return task.plan?.paths?.map(path => scope === this.repositories.project ? this.projectPath(path) : this.repositories.relativePath(scope, path));
   }
+  private planScopeIdentity(task: Task): string {
+    const paths = this.planPaths(task); // Warm verified aliases before capturing the scope identity.
+    const scope = this.repositories.scope(task.refs);
+    return planFingerprint({ key: scope.key, root: scope.root ?? null, aliases: [...scope.aliases].sort(),
+      repo: task.refs.repo ?? null, absoluteRefs: (task.refs.paths ?? []).filter(isAbsolute).sort(), paths: paths ?? null });
+  }
   private validPlanDepartures(task: Task): NonNullable<HistoryEntry["planDeparture"]>[] {
     const invalidated = task.history.findLastIndex(h => h.planDepartureInvalidated && !h.planDeparture);
     if (this.invalidatedPlanDepartures.has(task.id)) return [];
     const latest = task.history.findLastIndex(h => h.by === USER && h.event === "plan departure accepted" && h.planDeparture);
-    return latest > invalidated && task.history[latest]!.planDeparture!.generation === this.departureGeneration ? [task.history[latest]!.planDeparture!] : [];
+    return latest > invalidated && task.history[latest]!.planDeparture!.generation === this.departureGeneration
+      && task.history[latest]!.planDeparture!.scope === this.planScopeIdentity(task) ? [task.history[latest]!.planDeparture!] : [];
   }
   private planReport(task: Task, evidence?: PrEvidence) {
     const rawReport = planConformance(this.isPii(task) ? undefined : this.planPaths(task), this.isPii(task) ? undefined : evidence);
@@ -2595,18 +2602,19 @@ export class Tasks {
   async acceptPlanDeparture(by: PeerId, id: unknown, head: unknown, reason: unknown): Promise<Task> {
     if (by !== USER) throw new PreEffectToolRefusal("only the person may accept a plan departure");
     if (typeof head !== "string" || !/^[a-f0-9]{40}$/.test(head) || typeof reason !== "string" || !reason.trim() || reason.length > 2048) throw new PreEffectToolRefusal("departure acceptance requires a full head and a bounded reason");
-    const initial = this.need(id, false, true), identity = this.planIdentity(initial), history = initial.history.length;
-    const valid = () => { const now = this.need(id, false, true); if (isClosedTaskState(now.state) || identity !== this.planIdentity(now) || history !== now.history.length) throw new PreEffectToolRefusal("task changed during departure readback"); return now; };
+    const initial = this.need(id, false, true), identity = this.planIdentity(initial), scope = this.planScopeIdentity(initial), history = initial.history.length;
+    const valid = () => { const now = this.need(id, false, true); if (isClosedTaskState(now.state) || identity !== this.planIdentity(now) || scope !== this.planScopeIdentity(now) || history !== now.history.length) throw new PreEffectToolRefusal("task changed during departure readback"); return now; };
     if (this.isPii(initial)) throw new PreEffectToolRefusal("private PR file evidence is unavailable; amend the private plan instead");
     const read: SdlcGh = (args, timeout, cwd, cap) => { valid(); return (this.d.sdlc?.gh ?? sdlcGh)(args, timeout, cwd, cap); };
     const evidence = initial.sdlc && await readSdlcPr(initial.sdlc, read); valid();
     if (!evidence || completePlanInventory(evidence) === undefined) throw new PreEffectToolRefusal("complete PR file inventory unknown");
     if (evidence.head !== head) throw new PreEffectToolRefusal("departure acceptance head is not the current PR head");
+    if (this.planReport(initial, evidence).state !== "departure") throw new PreEffectToolRefusal("current plan conformance is not a known departure; amend unknown scope or coverage first");
     const note = sanitize(reason.replace(/\s+/g, " ").trim());
     const withheld = await this.withholds("note", note, initial); const current = valid();
     this.capturePlanRead(current, evidence);
     const next = this.d.board.update(current.id, USER, "plan departure accepted", {}, note, { withheld: withheld || undefined, ...this.planObservation(current),
-      planDeparture: { generation: this.departureGeneration, repo: current.sdlc!.repo!, pr: current.sdlc!.pr!, head, revision: current.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(current.plan ?? {}), paths: [...evidence.paths] } });
+      planDeparture: { generation: this.departureGeneration, scope, repo: current.sdlc!.repo!, pr: current.sdlc!.pr!, head, revision: current.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(current.plan ?? {}), paths: [...evidence.paths] } });
     this.invalidatedPlanDepartures.delete(current.id);
     return next;
   }

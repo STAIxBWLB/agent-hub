@@ -69,7 +69,7 @@ export interface HistoryEntry {
   planRevision?: { revision: number; fingerprint: string };
   planObservation?: { repo: string; pr: number; head: string; revision: number; fingerprint: string };
   planDepartureInvalidated?: true;
-  planDeparture?: { generation: string; repo: string; pr: number; head: string; revision: number; fingerprint: string; paths: string[] };
+  planDeparture?: { generation: string; scope?: string; repo: string; pr: number; head: string; revision: number; fingerprint: string; paths: string[] };
   reviewerFamily?: string;
   reviewerReason?: ReviewerPoolReason;
   reviewBlocked?: true;
@@ -346,8 +346,9 @@ export class Board {
     const fingerprint = patch.plan && (trackPlan || hasDeparture) ? planFingerprint(next.plan ?? {}) : undefined;
     const planChanged = fingerprint !== undefined && fingerprint !== planFingerprint(task.plan ?? {});
     const planRevision = trackPlan && planChanged ? { revision: (task.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0) + 1, fingerprint: fingerprint! } : undefined;
-    // Disabling reporting must not let a plan edit/revert resurrect a prior person's consent.
-    const departureInvalidated = extra.planDepartureInvalidated === true || hasDeparture && planChanged;
+    // Disabling reporting must not let plan or repository refs edits/reverts resurrect prior consent.
+    const repositoryRefsChanged = patch.refs !== undefined && JSON.stringify([task.refs.repo, task.refs.paths]) !== JSON.stringify([next.refs.repo, next.refs.paths]);
+    const departureInvalidated = extra.planDepartureInvalidated === true || hasDeparture && (planChanged || repositoryRefsChanged);
     const history = [...task.history, { at: Date.now(), by, event, ...(planRevision ? { planRevision } : {}), ...(extra.planObservation ? { planObservation: extra.planObservation } : {}), ...(extra.planDeparture ? { planDeparture: extra.planDeparture } : {}), ...(departureInvalidated ? { planDepartureInvalidated: true as const } : {}), ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.withheld && (note || reviewFindings) ? { withheld: true as const } : {}), ...(reviewFindings ? { reviewFindings } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}) }];
     this.taskWrite(() => this.db
       .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ? WHERE id = ?")

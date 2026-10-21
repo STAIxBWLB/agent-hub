@@ -197,3 +197,59 @@ for(const changeType of ["RENAMED","COPIED"])test(`S2 R1 ${changeType} refuses b
  await expect(r.tasks.acceptPlanDeparture("user",r.id,A,"bounded departure")).rejects.toThrow(/inventory unknown/i);
  expect(r.board.get(r.id)).toEqual(before);
 });
+
+ test("S2 connector unknown repository mapping cannot create departure consent", async () => {
+  const r=rig();r.board.update(r.id,"codex","refs corrected",{refs:{repo:"other/repository"}});
+  const before=r.board.get(r.id);
+  await expect(r.tasks.acceptPlanDeparture("user",r.id,A,"unknown scope must not authorize future work")).rejects.toThrow(/departure|unknown/i);
+  expect(r.board.get(r.id)).toEqual(before);
+  r.board.update(r.id,"codex","refs corrected",{refs:{repo:"o/r"}});
+  await expect(r.tasks.review("user",r.id,"approved",undefined,undefined,A)).rejects.toThrow(/plan conformance/i);
+ });
+ test("S2 connector covered plans cannot mint departure consent", async () => {
+  const r=rig();r.state.paths=["src/a.ts"];
+  const before=r.board.get(r.id);
+  await expect(r.tasks.acceptPlanDeparture("user",r.id,A,"no actual departure")).rejects.toThrow(/departure/i);
+  expect(r.board.get(r.id)).toEqual(before);
+ });
+ test("S2 connector scope-only refs changes invalidate consent without a plan revision", async () => {
+  const r=rig();await r.tasks.acceptPlanDeparture("user",r.id,A,"bounded departure");
+  const before=r.board.get(r.id)!, revision=before.history.findLast(h=>h.planRevision)?.planRevision;
+  expect(before.history.findLast(h=>h.planDeparture)?.planDeparture).toHaveProperty("scope");
+  r.board.update(r.id,"codex","refs corrected",{refs:{repo:"other/repository"}});
+  r.board.update(r.id,"codex","refs corrected",{refs:{repo:"o/r"}});
+  expect(r.board.get(r.id)!.history.findLast(h=>h.planRevision)?.planRevision).toEqual(revision);
+  await expect(r.tasks.review("user",r.id,"approved",undefined,undefined,A)).rejects.toThrow(/plan conformance/i);
+ });
+ test("S2 connector status preserves planning undo on an untouched pulled task", async () => {
+  const r=rig();const row=r.board.propose("user",{title:"untouched linked backlog",class:"test",backlog:true,plan:{paths:["src/"]}});
+  r.board.update(row.id,"user","lifecycle",{sdlc:{stage:"review",repo:"o/r",pr:2}});
+  const pulled=r.board.pullPlanned(row.id,"user","codex",0,"ready");
+  await r.tasks.lifecycleStatus(row.id);await r.tasks.lifecycleStatus(row.id);
+  expect(r.board.get(row.id)).toEqual(pulled);
+  expect((await r.tasks.undoPlanning("user",row.id,1)).state).toBe("backlog");
+ });
+ test("S2 connector persisted observation shares a real lifecycle edit that already fences undo", async () => {
+  const r=rig();const row=r.board.propose("user",{title:"linked backlog edit",class:"test",backlog:true,plan:{paths:["src/"]}});
+  r.board.update(row.id,"user","lifecycle",{sdlc:{stage:"review",repo:"o/r",pr:2}});
+  const pulled=r.board.pullPlanned(row.id,"user","codex",0,"ready");
+  await r.tasks.lifecycleStatus(row.id);
+  const edited=r.tasks.recordLifecycle("user",row.id,{localHead:B});
+  expect(edited.history).toHaveLength(pulled.history.length+1);
+  expect(edited.history.at(-1)?.event).toBe("lifecycle");
+  expect(edited.history.at(-1)?.planObservation?.head).toBe(A);
+  expect(edited.sdlc?.localHead).toBe(B);
+  await expect(r.tasks.undoPlanning("user",row.id,1)).rejects.toThrow(/stale/i);
+ });
+
+ test("S2 connector persisted unbound or mismatched scopes cannot waive a departure", async () => {
+  for(const scope of [undefined,"different-scope"]) {
+   const r=rig();await r.tasks.acceptPlanDeparture("user",r.id,A,"bounded departure");
+   const receipt=r.board.get(r.id)!.history.findLast(h=>h.planDeparture)!.planDeparture!;
+   r.board.update(r.id,"user","plan departure accepted",{},"retained receipt",{planDeparture:{...receipt,scope}});
+   expect((await r.tasks.lifecycleStatus(r.id)).planConformance?.accepted).toBe(false);
+   r.state.queueList=true;
+   expect((await r.tasks.deliveryQueue("o/r")).rows[0]?.planConformance?.[0]?.accepted).toBe(false);
+   await expect(r.tasks.review("user",r.id,"approved",undefined,undefined,A)).rejects.toThrow(/plan conformance/i);
+  }
+ });
