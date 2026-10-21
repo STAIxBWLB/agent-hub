@@ -661,6 +661,34 @@ the key list or the task detail (both are native dialogs). View keys are ignored
 select, with Ctrl, Alt or Cmd held, and while a dialog is open. Icons come from one inline SVG sprite of nine Tabler icons;
 the MIT notice is in `THIRD_PARTY_NOTICES.md`. Nothing is fetched and no package is added.
 
+### Dashboard board, side sheets and the Plan sheet (#469 R3)
+
+A board card shows the title (two lines at most), the owner as a round avatar in the peer colour with its initial, one badge that
+holds the state and the priority ("in review P1") and the release when there is one. Everything else moved to the task detail,
+which keeps the same dialog and opens as a sheet pinned to the right edge (full screen below 600px). The detail groups its
+lines into Status, People, Dates and Links, and leaves out a group with nothing in it. Pull, Assign, the Ready and Waiting
+subheads, "Show N older" and drag and drop are unchanged.
+
+The five board forms (plan a task, split a backlog task, releases, delivery evidence, propose a task) are in a Plan sheet, opened by
+the Plan button in the board toolbar. It is a native dialog, so `Esc` closes it, and view keys do nothing while it is open. The
+fields, ids and actions are the ones the forms had. The sheets slide in on `transform` and `opacity` and not at all when the
+system asks for reduced motion.
+
+### Dashboard Agents, Stream, Memory, Settings, Message and the Office colours (#469 R4, R5)
+
+Agents: a peer is one row with its name and state, a summary line (queued messages and "Working on #n" or "No active task") and a
+single "Details" fold that holds the diagnostic lines it used to list. A status notice stays visible outside the fold. Approvals
+stay first. Stream: one aligned row per event (time, kind, sender, body in monospace); the filter chips and Follow latest sit in
+the section head, above the scrolling list. Memory: result rows show title, kind and age, the selected row is marked with an accent
+edge, and the graph and the detail pane use the colour tokens. Settings: each group is a section with a short header, a key that waits
+for a restart carries a "restart pending" badge, and "Pending restart" shows a count; the text lines, Preview, Save and Undo are as
+they were. Message uses the shared form styles.
+
+Icons replace the symbol glyphs: the star mark, the stream arrow and the Office "checking" mark are sprite icons (twelve Tabler icons
+in all), and the Office draws each condition (idle, busy, offline, paused, waiting on approval) as a shape (ring, disc, cross, bars, raised hand)
+next to its words. Condition names are unchanged. The Office scene names its colours only through the same tokens as the rest of the page, and the
+contrast test checks every token an Office rule uses, in both themes.
+
 ## Multiple projects and worktrees
 
 Version 0.4.0 adds one independent hub per repository or Git worktree.

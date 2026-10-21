@@ -185,7 +185,7 @@ test("installed-layout release reader finds the explicitly published checker and
   const target = mkdtempSync(join(tmpdir(), "ahub-installed-doc-reader-"));
   try {
     mkdirSync(join(target, "src/hub"), { recursive: true });
-    // This file list mirrors the import closure of sdlc-release.ts.
+    // This covers standalone document evidence, without the default reader's full lazy import closure.
     for (const name of ["sdlc-release.ts", "sdlc.ts", "workflow.ts", "git.ts", "child-process.ts", "host-executable.ts", "project.ts"]) {
       copyFileSync(resolve(import.meta.dir, "../src/hub", name), join(target, "src/hub", name));
     }
@@ -226,4 +226,25 @@ test("committed coverage preserves tracked wildcards and ignores local note-name
   writeFileSync(join(root, "docs/agent-notes/ignored.md"), "local only\n");
   const result = spawnSync("node", [checker, root, "--json", "--committed"], { encoding: "utf8" });
   expect(result.status).toBe(0); expect(JSON.parse(result.stdout).fresh).toBe(true);
+}));
+
+test("lazy release-reader import failure emits one fixed diagnostic and remains unknown (#291)", () => fixture(root => {
+  const target = mkdtempSync(join(tmpdir(), "ahub-missing-release-reader-"));
+  try {
+    mkdirSync(join(target, "src/hub"), { recursive: true });
+    for (const name of ["sdlc-release.ts", "git.ts", "child-process.ts", "host-executable.ts", "project.ts"]) copyFileSync(resolve(import.meta.dir, "../src/hub", name), join(target, "src/hub", name));
+    const memoryPackage = dirname(dirname(fileURLToPath(import.meta.resolve("@staix/agent-mem"))));
+    cpSync(memoryPackage, join(target, "node_modules/@staix/agent-mem"), { recursive: true });
+    writeFileSync(join(target, "src/hub/sdlc.ts"), 'throw new Error("PRIVATE_IMPORT_FAILURE_CANARY");');
+    writeFileSync(join(target, "probe.ts"), `import {readReleaseReadiness} from "./src/hub/sdlc-release.ts";
+const reports=[]; for(let i=0;i<2;i++) reports.push(await readReleaseReadiness(${JSON.stringify(root)},"owner/repo",[],{docs:async()=>undefined}));
+console.log(JSON.stringify(reports));`);
+    const result = spawnSync(process.execPath, [join(target, "probe.ts")], { encoding: "utf8", timeout: 20_000 });
+    expect(result.status).toBe(0);
+    const reports = JSON.parse(result.stdout);
+    expect(reports).toHaveLength(2);
+    for (const report of reports) { expect(report.sourceReady).toBe(false); expect(report.blockers).toContain("published release identity unknown"); }
+    expect(result.stderr.trim()).toBe("sdlc: release evidence reader unavailable (lifecycle import failed)");
+    expect(result.stdout + result.stderr).not.toContain("PRIVATE_IMPORT_FAILURE_CANARY");
+  } finally { rmSync(target, { recursive: true, force: true }); }
 }));

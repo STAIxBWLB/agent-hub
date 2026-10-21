@@ -182,7 +182,9 @@ export interface OfficeScene {
 export function officeModel(snapshot: OfficeSnapshotInput, previous: OfficeScene | null, options: { cols?: number; now?: number }): OfficeScene {
   const FIXED = OFFICE_PEER_ORDER;
   const KNOWN = ["proposed", "in_progress", "in_review", "changes_requested", "approved", "cancelled"];
-  const GLYPHS: Record<string, string> = { idle: "○", busy: "●", offline: "×", paused: "‖", waiting: "⚑", unknown: "?" };
+  // Shape names, not text glyphs (#469 R4): the page paints each condition as an outline shape (officeGlyphNode) and only an unknown
+  // condition falls back to the text mark. The words come from LABELS, so a state is never carried by a symbol alone.
+  const GLYPHS: Record<string, string> = { idle: "ring", busy: "disc", offline: "cross", paused: "bars", waiting: "hand", unknown: "?" };
   const LABELS: Record<string, string> = { idle: "idle", busy: "busy", offline: "offline", paused: "paused", waiting: "waiting on approval" };
   const DESK_CAP = 12, ROOM_CARDS = 8, DESK_CARDS = 3;
   const DESK_W = 10, DESK_H = 20, DESK_DX = 12, DESK_DY = 22, DESK_COLS = 4, DESK_TOP = 3;

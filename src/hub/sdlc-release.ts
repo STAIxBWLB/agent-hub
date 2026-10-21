@@ -6,8 +6,18 @@ import { childEnv, stopOwnedProcess } from "./child-process.ts";
 import { hubGitSync } from "./git.ts";
 import type { SdlcGh } from "./sdlc.ts";
 // Standalone document evidence does not need lifecycle/review code; load the default remote reader only when used.
+let importDiagnosticShown = false;
 const sdlcGh: SdlcGh = async (...args) => {
-  try { return await (await import("./sdlc.ts")).sdlcGh(...args); }
+  let reader: typeof import("./sdlc.ts");
+  try { reader = await import("./sdlc.ts"); }
+  catch {
+    if (!importDiagnosticShown) {
+      importDiagnosticShown = true;
+      try { console.warn("sdlc: release evidence reader unavailable (lifecycle import failed)"); } catch { /* a diagnostic cannot turn unknown evidence into an exception */ }
+    }
+    return { code: 1, stdout: "" };
+  }
+  try { return await reader.sdlcGh(...args); }
   catch { return { code: 1, stdout: "" }; }
 };
 export interface DocEvidence { schemaVersion: 1; head?: string; version?: string; documents: { path?: string; state: "fresh" | "stale" | "nonancestor" | "unknown"; verifiedAgainst?: string; commits?: number; dirty?: boolean }[]; errors: number; fresh: boolean; }
