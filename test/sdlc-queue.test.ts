@@ -4,14 +4,14 @@ import { sdlcConfig, type SdlcGh } from "../src/hub/sdlc.ts";
 const A = "a".repeat(40), B = "b".repeat(40), M = "c".repeat(40);
 const config = sdlcConfig({ mode: "enforce", required_checks: ["gate"] });
 const task = (id: number, pr: number, after: number[] = [], privateTask = false): DeliveryTask => ({ id, after, private: privateTask, receipt: { repo: "owner/repo", issue: id, pr, stage: "implement", reviewedHead: A, localHead: A, localResult: "passed" } });
-function fake(options: { ids?: number[]; heads?: Record<number, string>; paths?: Record<number,string[]>; merged?: number[]; incomplete?: boolean } = {}) {
+function fake(options: { ids?: number[]; heads?: Record<number, string>; paths?: Record<number,string[]>; merged?: number[]; incomplete?: boolean; changeTypes?: Record<number, string> } = {}) {
   const calls: string[][] = [], ids = options.ids ?? [1,2];
   const run: SdlcGh = async args => {
     calls.push(args);
     if (args[0] === "pr" && args[1] === "list") return { code: 0, stdout: JSON.stringify(ids.map(number => ({ number, headRefOid: options.heads?.[number] ?? A, baseRefName: "main", baseRefOid: M }))) };
     if (args[0] === "pr") {
       const pr = Number(args[2]), paths = options.paths?.[pr] ?? ["src/shared.ts"], head = options.heads?.[pr] ?? A;
-      return { code: 0, stdout: JSON.stringify({ headRefOid: head, isDraft: false, baseRefName: "main", baseRefOid: M, state: options.merged?.includes(pr) ? "MERGED" : "OPEN", changedFiles: paths.length + (options.incomplete ? 1 : 0), statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], reviewDecision: "APPROVED", reviewRequests: [], files: paths.map(path => ({path})), mergeCommit: options.merged?.includes(pr) ? { oid: M } : undefined }) };
+      return { code: 0, stdout: JSON.stringify({ headRefOid: head, isDraft: false, baseRefName: "main", baseRefOid: M, state: options.merged?.includes(pr) ? "MERGED" : "OPEN", changedFiles: paths.length + (options.incomplete ? 1 : 0), statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], reviewDecision: "APPROVED", reviewRequests: [], files: paths.map(path => ({path, changeType: options.changeTypes?.[pr] ?? "MODIFIED"})), mergeCommit: options.merged?.includes(pr) ? { oid: M } : undefined }) };
     }
     const finalQuery = args.find(arg => arg.startsWith("query=") && arg.includes("queue_p"));
     if (finalQuery) {
@@ -44,7 +44,7 @@ test("merge queue uses explicit dependency order and never guesses precedence fr
 });
 test("queue stale heads incomplete files private and unlinked work remain blocked (#257)", async () => {
   const old = await readMergeQueue("owner/repo",config,[task(1,1)],fake({ids:[1],heads:{1:B}}).run); expect(old.rows[0]?.ready).toBe(false); expect(old.rows[0]?.blockers).toContain("current head has not been reviewed");
-  const incomplete = await readMergeQueue("owner/repo",config,[task(1,1)],fake({ids:[1],incomplete:true}).run); expect(incomplete.complete).toBe(false); expect(incomplete.rows[0]?.ready).toBe(false);
+  const incomplete = await readMergeQueue("owner/repo",config,[task(1,1)],fake({ids:[1],incomplete:true}).run); expect(incomplete.complete).toBe(false); expect(incomplete.rows[0]?.ready).toBe(false); expect(incomplete.rows[0]?.blockers).toContain("PR file coverage is incomplete or unknown");
   const f = fake({ids:[1]}); const privateView = await readMergeQueue("owner/repo",config,[task(1,1,[],true)],f.run); expect(privateView.rows[0]?.private).toBe(true); expect(f.calls).toHaveLength(1); expect(privateView.rows[0]?.head).toBeUndefined();
   const unlinked = await readMergeQueue("owner/repo",config,[],fake({ids:[1]}).run); expect(unlinked.rows[0]?.ready).toBe(false); expect(unlinked.rows[0]?.blockers).toContain("issue identity missing");
 });
@@ -226,4 +226,45 @@ test("S3 private holder findings never reach a queue row or initiate its PR evid
   expect(view.rows[0]?.tasks).toEqual([]);
   expect(JSON.stringify(view)).not.toContain("PRIVATE");
   expect(f.calls).toHaveLength(1);
+});
+
+test("S2 merge queue uses shared complete metadata conformance without exposing file names", async () => {
+  const holder = { ...task(1, 1), plan: { paths: ["other/"], revision: 1, fingerprint: "plan", accepted: [] } };
+  const f = fake({ ids: [1] });
+  const report = await readMergeQueue("owner/repo", config, [holder], f.run);
+  expect(report.rows[0]?.ready).toBe(false);
+  expect(report.rows[0]?.blockers).toContain("plan conformance: changed files outside the plan");
+  expect(report.rows[0]?.planConformance).toEqual([{ task: 1, state: "departure", outside: 1, untouched: 1, accepted: false }]);
+  expect(JSON.stringify(report)).not.toContain("src/shared.ts");
+  const accepted = { ...holder, plan: { ...holder.plan, accepted: [{ repo: "owner/repo", pr: 1, head: A, revision: 1, fingerprint: "plan", paths: ["src/shared.ts"] }] } };
+  expect((await readMergeQueue("owner/repo", config, [accepted], f.run)).rows[0]?.ready).toBe(true);
+  const moved = { ...accepted, plan: { ...accepted.plan, revision: 2 } };
+  expect((await readMergeQueue("owner/repo", config, [moved], f.run)).rows[0]?.ready).toBe(false);
+});
+
+test("S2 R1 private queue holders report conformance unknown without identities or reads", async () => {
+ const f=fake({ids:[1]});
+ const report=await readMergeQueue("owner/repo",config,[task(908172,1,[],true),task(908173,1)],f.run);
+ expect(report.rows[0]?.planConformance).toEqual([{state:"unknown",outside:0,untouched:0,accepted:false}]);
+ expect(report.rows[0]?.tasks).toEqual([]);expect(f.calls).toHaveLength(1);
+ expect(JSON.stringify(report)).not.toContain("908172");expect(JSON.stringify(report)).not.toContain("908173");
+});
+
+for (const mode of ["off", "advise", "enforce"] as const) for (const changeType of ["RENAMED", "CHANGED"] as const) test(`S2 R2 ${changeType} keeps legacy queue order in ${mode}`, async () => {
+ const holder={...task(1,1),plan:{paths:["src/"],revision:1,fingerprint:"plan",accepted:[]}};
+ const f=fake({ids:[1],changeTypes:{1:changeType}});
+ const view=await readMergeQueue("owner/repo",sdlcConfig({mode,required_checks:["gate"]}),[holder],f.run);
+ expect(view.order).toEqual([1]);expect(view.unordered??[]).toEqual([]);expect(view.complete).toBe(true);
+ expect(view.rows[0]?.blockers).not.toContain("open PR file coverage incomplete; touching order unknown");
+ expect(view.rows[0]?.ready).toBe(mode!=="enforce"||changeType==="CHANGED");
+ if(mode!=="off")expect(view.rows[0]?.planConformance?.[0]?.state).toBe(changeType==="RENAMED"?"unknown":"covered");
+});
+
+test("S2 R2 a rename never makes an independent covered PR unordered",async()=>{
+ const holders=[1,2].map(id=>({...task(id,id),plan:{paths:["src/","docs/"],revision:1,fingerprint:"plan",accepted:[]}}));
+ const f=fake({ids:[1,2],paths:{1:["src/renamed.ts"],2:["docs/readme.md"]},changeTypes:{1:"RENAMED"}});
+ const view=await readMergeQueue("owner/repo",config,holders,f.run);
+ expect(view.order).toEqual([1,2]);expect(view.unordered??[]).toEqual([]);expect(view.complete).toBe(true);
+ expect(view.rows[0]?.ready).toBe(false);expect(view.rows[1]?.ready).toBe(true);
+ expect(view.rows[0]?.blockers).toContain("plan conformance unknown");
 });

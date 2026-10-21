@@ -1,8 +1,9 @@
+import { planConformance, planConformanceBlockers } from "./plan-conformance.ts";
 import { findingsForHead, findingHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
 import type { CriteriaView } from "./workflow.ts";
 import { parsePrEvidence, readSdlcPr, sdlcGh, sdlcStatus, type PrEvidence, type SdlcConfig, type SdlcGh, type SdlcReceipt } from "./sdlc.ts";
-export interface DeliveryTask { findings?: readonly ReviewFindingSet[]; id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: CriteriaView; }
-export interface MergeQueueRow { findings?: ReviewFindingTally; pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
+export interface DeliveryTask { plan?: { paths?: string[]; revision: number; fingerprint: string; accepted: { repo: string; pr: number; head: string; revision: number; fingerprint: string; paths: string[] }[] }; findings?: readonly ReviewFindingSet[]; id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: CriteriaView; }
+export interface MergeQueueRow { planConformance?: { task?: number; state: string; outside: number; untouched: number; accepted: boolean }[]; findings?: ReviewFindingTally; pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
 export interface MergeConflict { left: number; right: number; files: number; order: "dependency" | "person_required"; }
 export interface MergeQueue { repo: string; rows: MergeQueueRow[]; order: number[]; unordered?: number[]; conflicts: MergeConflict[]; complete: boolean; truncated: boolean; }
 const validRepo = (value: string) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && !value.startsWith("-");
@@ -50,7 +51,7 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
   for (const pr of ids) {
     const holders = tasks.filter(t => sameRepo(t.receipt?.repo) && t.receipt?.pr === pr); links.set(pr, holders);
     const row: MergeQueueRow = { pr, tasks: holders.some(t => t.private) ? [] : holders.map(t => t.id), ready: false, blockers: [], after: [] }; result.rows.push(row);
-    if (holders.some(t => t.private)) { row.private = true; row.blockers.push("private lifecycle evidence unavailable"); continue; }
+    if (holders.some(t => t.private)) { row.private = true; if (config.mode !== "off") row.planConformance = [{ state: "unknown", outside: 0, untouched: 0, accepted: false }]; row.blockers.push("private lifecycle evidence unavailable"); continue; }
     const read = await readSdlcPr(holders[0]?.receipt ?? { stage: config.stages[0] ?? "spec", repo, pr }, bounded);
     if (!read || read.state !== "OPEN") { row.blockers.push("current PR evidence unknown or no longer open"); continue; }
     evidence.set(pr, read); row.head = read.head;
@@ -66,7 +67,12 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
     if (!read.base) row.blockers.push("PR target branch is unknown");
     const linked = holders.length ? holders : [undefined];
     if (config.mode === "enforce" && row.findings?.openImportant) row.blockers.push("open important review findings: " + row.findings.openImportant);
-    for (const holder of linked) row.blockers.push(...sdlcStatus(config, holder?.receipt, read, holder?.phase).blockers);
+    for (const holder of linked) {
+      const conformance = holder?.plan ? { ...planConformance(holder.plan.paths, read), accepted: holder.plan.accepted.some(item => item.repo === holder.receipt?.repo && item.pr === holder.receipt?.pr && item.head === read.head && item.revision === holder.plan!.revision && item.fingerprint === holder.plan!.fingerprint && JSON.stringify([...item.paths].sort()) === JSON.stringify([...read.paths].sort())) } : undefined;
+      if (holder && conformance && config.mode !== "off") (row.planConformance ??= []).push({ task: holder.id, state: conformance.state, outside: conformance.outside.length, untouched: conformance.untouched.length, accepted: conformance.accepted });
+      row.blockers.push(...sdlcStatus(config, holder?.receipt, read, holder?.phase).blockers);
+      if (config.mode === "enforce") row.blockers.push(...planConformanceBlockers(conformance));
+    }
   }
   const dependencyEvidence = new Map<number, PrEvidence | undefined>(); let dependencyReads = 0;
   for (const row of result.rows) {

@@ -5759,6 +5759,13 @@ export async function startDaemon(opts: DaemonOptions) {
         if (msg.op === "export") {
           try { return void reply({ ok: true, export: tasks.workflowExport(msg.id) }); } catch { return void reply({ ok: false, error: "workflow export unavailable" }); }
         }
+        if (msg.op === "accept-departure") {
+          void tasks.acceptPlanDeparture(USER, msg.id, msg.head, msg.reason).then(
+            () => reply({ ok: true }),
+            () => reply({ ok: false, error: "plan departure not accepted: task changed, current complete file evidence unavailable, or arguments invalid" }),
+          );
+          return;
+        }
         if (msg.op === "accept") {
           // #481 S1: the person's spec acceptance, bound to the issue's body edit time; no body is read.
           if (!Number.isSafeInteger(msg.id) || msg.id <= 0 || !Number.isSafeInteger(msg.issue) || msg.issue <= 0 || (msg.repo !== undefined && typeof msg.repo !== "string")) return void reply({ ok: false, error: "usage: ahub sdlc accept <task> --issue <n> [--repo owner/repository]" });
