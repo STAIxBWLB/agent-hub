@@ -9,7 +9,9 @@ import { createProjectAdapterCatalog } from "../src/adapters/registry.ts";
 import { readInstanceConfig, readInstanceConfigLayers } from "../src/hub/instance-config.ts";
 import { hubGitSync as gitSync } from "../src/hub/git.ts";
 const hubGitSync = (args: string[]) => gitSync(args, { encoding: "utf8" });
-import { configApply } from "../src/hub/config-apply.ts";
+import { configApply, validateRawConfig } from "../src/hub/config-apply.ts";
+import { loadConfig } from "../src/hub/daemon.ts";
+import { parseConfigSources, configSourceTexts } from "../src/hub/config-reload.ts";
 import { settingDef } from "../src/hub/settings.ts";
 import { peerRosterConfig, rosterAllows } from "../src/hub/roster.ts";
 
@@ -209,4 +211,21 @@ for (const body of ['await import("node:fs");', 'require("node:fs");', 'eval("1"
   const f = fixture(`${body}globalThis[${JSON.stringify(marker)}]=true;export const definition=${definitionSource()};`);
   await expect(loadExternalAdapterDefinitions(f.cwd, f.layers())).rejects.toThrow();
   expect((globalThis as Record<string, unknown>)[marker]).toBeUndefined();
+});
+
+
+test("A4 raw untrusted module declarations cannot enable inert roster validation (#290)", () => {
+  const raw = { adapter_modules: [{ path: "ignored.mjs", sha256: "0".repeat(64) }], roster: { unresolved: true } };
+  expect(() => validateRawConfig(raw)).toThrow(/unsupported peer/);
+  expect(() => validateRawConfig(raw, undefined, createProjectAdapterCatalog(), false)).toThrow(/unsupported peer/);
+  expect(() => validateRawConfig(raw, undefined, createProjectAdapterCatalog(), true)).not.toThrow();
+});
+
+test("A4 tracked module config agrees between load and reload parsing (#290)", () => {
+  const f = fixture();
+  rmSync(join(f.cwd, ".agenthub", "config.local.json"));
+  writeFileSync(join(f.cwd, ".agenthub", "config.json"), JSON.stringify({ adapter_modules: [f.declaration], roster: { unresolved: true } }));
+  expect(hubGitSync(["-C", f.cwd, "add", ".agenthub/config.json"]).status).toBe(0);
+  expect(() => loadConfig(f.cwd)).toThrow(/unsupported peer/);
+  expect(() => parseConfigSources(configSourceTexts(f.cwd), undefined, f.cwd)).toThrow(/unsupported peer/);
 });

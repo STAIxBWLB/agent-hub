@@ -176,7 +176,7 @@ export function validateRawConfig(raw: unknown, declarations?: InstancesConfig, 
   block({ ...schema,
     instances: v => { validateInstances(v, catalog); },
     permission_modes: v => { permissionDefaults(v, instances, catalog); },
-    roster: v => { peerRosterConfig(v, instances, catalog, inertModuleRoster || Array.isArray(value.adapter_modules) && value.adapter_modules.length > 0); },
+    roster: v => { peerRosterConfig(v, instances, catalog, inertModuleRoster); },
     peers: v => { peerStartConfig(v, instances, catalog); },
   })(raw, "config");
 }
