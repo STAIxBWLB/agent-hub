@@ -6,6 +6,7 @@ import { HUB, type PeerId } from "./envelope.ts";
 import type { SweepRecord } from "./task-sweep.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import type { SdlcReceipt } from "./sdlc.ts";
+import { parseReviewFindings, type ReviewFindingSet } from "./review-findings.ts";
 import type { CostPlan, ReviewCost } from "./cost-governance.ts";
 
 export const CLASSES = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"] as const;
@@ -61,6 +62,8 @@ export interface HistoryEntry {
   reviewCost?: ReviewCost;
   /** #223 R4: on a verdict, whether the reviewer's context was new for it; set by the hub, never by the reviewer. */
   reviewContext?: "fresh" | "continuing";
+  /** Structured review report bound to the reviewed artifact, stored in the existing history JSON. */
+  reviewFindings?: ReviewFindingSet;
   reviewerFamily?: string;
   reviewerReason?: ReviewerPoolReason;
   reviewBlocked?: true;
@@ -307,7 +310,7 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "capacity" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "capacity" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | "reviewFindings" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
@@ -323,7 +326,14 @@ export class Board {
     }
     if (patch.state === "backlog" && taskHasStarted(task) && !untouchedReturn) throw new Error(`task #${id}: started work cannot return to backlog`);
     const reviewMetadata = reviewerHistory(extra);
-    const history = [...task.history, { at: Date.now(), by, event, ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.withheld && note ? { withheld: true as const } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}) }];
+    let reviewFindings: ReviewFindingSet | undefined;
+    if (extra.reviewFindings !== undefined) {
+      if (!["approved", "changes_requested"].includes(event) || patch.state !== event) throw new Error("finding metadata requires a saved review verdict");
+      const head = extra.reviewFindings.head;
+      if (head !== undefined && !/^[a-f0-9]{40}$/.test(head)) throw new Error("finding metadata requires a full reviewed head");
+      reviewFindings = { ...(head ? { head } : {}), items: parseReviewFindings(extra.reviewFindings.items, { person: by === "user", maxNits: 64 }) };
+    }
+    const history = [...task.history, { at: Date.now(), by, event, ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.withheld && (note || reviewFindings) ? { withheld: true as const } : {}), ...(reviewFindings ? { reviewFindings } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}) }];
     this.taskWrite(() => this.db
       .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ? WHERE id = ?")
       .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), id));
