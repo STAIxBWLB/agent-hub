@@ -16,6 +16,9 @@ import type { LocalOptions } from "./local-worker.ts";
 import type { PiOptions } from "./pi.ts";
 import type { ClaudePrintOptions } from "./claude-print.ts";
 
+import type { BuiltinCliEntry } from "./definitions/native-cli-entry-types.ts";
+import type { NativePreviewBuilder } from "./definitions/native-cli-preview-common.ts";
+
 export type StartForm = "tui" | "headless";
 export type DaemonEngine = "codex-appserver" | "acp" | "owned-acp" | "pi-rpc" | "local-worker" | "claude-print" | "reviewer-print";
 
@@ -272,8 +275,14 @@ export interface AdapterDefinition {
     validateEffective?(raw: Record<string, unknown>, fail: (key: string, reason: string) => never): void;
   };
   capabilities?: { manifest?(peer: PeerAdapter): Promise<CapabilityManifest>; watch?: boolean };
+  /** Stable host projection order and planner eligibility, independent of default task roles. */
+  projection?: { roleRank?: number; startRank?: number; helpRank?: number; plannerEligible?: boolean };
   cli: {
     command: string;
+    /** Fixed builtin CLI ports; project definitions cannot supply these callbacks. */
+    entry?: Readonly<Omit<BuiltinCliEntry, "command">>;
+    preview?: NativePreviewBuilder;
+    usage?: readonly (readonly [usage: string, description: string])[];
     /** Configuration leaves that select this peer's next native launch command or provider profile. */
     launchConfigKeys?: readonly string[];
     /** Restrictions only; core identity remains authoritative. */

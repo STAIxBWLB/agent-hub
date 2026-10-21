@@ -3436,8 +3436,8 @@
     {
       "id": "registry-start-mode-jcode",
       "file": "src/adapters/registry.ts",
-      "search": "export const START_MODE_PEERS = [\"pi\", \"codex\", \"kimi\", \"jcode\"] as const;",
-      "replacement": "export const START_MODE_PEERS = [\"pi\", \"codex\", \"kimi\"] as const;",
+      "search": "START_MODE_PEERS: ordered(\"startRank\", definition => definition.start.forms.includes(\"tui\") && definition.start.forms.includes(\"headless\")),",
+      "replacement": "START_MODE_PEERS: ordered(\"startRank\", definition => definition.start.forms.includes(\"tui\") && definition.start.forms.includes(\"headless\") && definition.kind !== \"jcode\"),",
       "testFile": "test/adapter-catalog-a2.test.ts",
       "testName": "A2 catalog projections retain exact legacy orders and source-probe compatibility"
     }
