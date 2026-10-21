@@ -7222,6 +7222,13 @@ var init_runtime = __esm(() => {
   init_text();
 });
 
+// src/hub/review-findings.ts
+var MAX_BYTES;
+var init_review_findings = __esm(() => {
+  init_envelope();
+  MAX_BYTES = 64 * 1024;
+});
+
 // src/hub/workflow.ts
 var init_workflow = __esm(() => {
   init_sdlc();
@@ -7235,6 +7242,7 @@ var init_host_executable = __esm(() => {
 // src/hub/sdlc.ts
 var SDLC_STAGES, PLAYBOOK_STAGES, BASES, STAGE_GATES, GATES;
 var init_sdlc = __esm(() => {
+  init_review_findings();
   init_workflow();
   init_child_process();
   init_host_executable();
@@ -7405,6 +7413,7 @@ var CLASSES, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
 var init_board = __esm(() => {
   init_planning();
   init_envelope();
+  init_review_findings();
   CLASSES = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"];
   PLAN_KEYS = ["paths", "symbols", "signatures", "insertion_points"];
   ALL_PLAN_KEYS = [...PLAN_KEYS, "sections", "sources", "claims"];
@@ -8077,7 +8086,7 @@ function profileTaskTools(profile = "dev", stages, criteria = false) {
     return { ...tool, ...customProfile && tool.name === "hub_task_propose" ? { description: tool.description + ` Selected profile ${data.name}: ${Object.keys(data.classes).join(", ")}. Routing uses their existing base classes.` } : {}, inputSchema: { ...tool.inputSchema, properties } };
   });
 }
-var ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submitted, ruling needed, blocker, or changed contract or path messages: each requires action from the recipient. Use [FYI] only for progress or information that needs no action. hub_task_done and hub_review already notify the assigned recipients; no duplicate hub_send chat is needed.", str2, id, refs, list = (description) => ({ type: "array", items: str2, description }), costPlanProperties, plan, acceptPlan, tool = (name, description, properties, required = []) => ({
+var ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submitted, ruling needed, blocker, or changed contract or path messages: each requires action from the recipient. Use [FYI] only for progress or information that needs no action. hub_task_done and hub_review already notify the assigned recipients; no duplicate hub_send chat is needed.", str2, id, refs, list = (description) => ({ type: "array", items: str2, description }), reviewFindings, costPlanProperties, plan, acceptPlan, tool = (name, description, properties, required = []) => ({
   name,
   description,
   inputSchema: { type: "object", properties, required, additionalProperties: false }
@@ -8095,6 +8104,19 @@ var init_hub_tools = __esm(() => {
     description: "where the work lives",
     properties: { repo: { type: "string", description: "owner/name repository slug or checkout path; set for work in another repository" }, branch: str2, commit: str2, paths: { type: "array", items: str2 } },
     additionalProperties: false
+  };
+  reviewFindings = {
+    type: "array",
+    maxItems: 64,
+    description: "Head-bound findings; omitted ids stay open. accepted is person-only and requires rationale. Nit count is capped by sdlc.max_nits (default 5).",
+    items: { type: "object", properties: {
+      id: { type: "string", minLength: 1, maxLength: 96, pattern: "^[A-Za-z0-9._:-]+$" },
+      pass: { type: "string", enum: ["bugs", "security", "compliance"] },
+      severity: { type: "string", enum: ["important", "nit"] },
+      path: { type: "string", minLength: 1, maxLength: 512 },
+      disposition: { type: "string", enum: ["open", "fixed", "false_positive", "accepted"] },
+      rationale: { type: "string", minLength: 1, maxLength: 2048 }
+    }, required: ["id", "pass", "severity", "disposition"], additionalProperties: false }
   };
   costPlanProperties = {
     review: { type: "object", properties: { scope: { type: "string", enum: ["none", "delta", "full"] }, reviewers: { type: "integer", minimum: 0, maximum: 8 } }, required: ["scope", "reviewers"], additionalProperties: false },
@@ -8137,7 +8159,7 @@ var init_hub_tools = __esm(() => {
     tool("hub_task_done", "Mark your task finished. It goes to its reviewer with your summary and refs; no duplicate hub_send chat is needed. When the project configures a check for its class, the hub runs it first and the result comes as a task message: a failed check keeps the task with you.", { id, summary: { type: "string", description: "what changed, why, and the check you ran with its result" }, refs }, ["id", "summary"]),
     tool("hub_sdlc_record", "Record artifact ids or claimed local checks on your task. This grants no authority or external-check evidence. Only its owner/reviewer or the person may record; only its reviewer/person may name a reviewed head or phase checklist. Phase evidence refs are content hashes, not external verification.", { id, receipt: { type: "object", properties: { stage: { type: "string", enum: ["spec", "plan", "implement", "review", "verify", "merge", "release"] }, repo: str2, issue: id, pr: id, localHead: str2, localResult: { type: "string", enum: ["passed", "failed", "unknown"] }, reviewedHead: str2, phase: { type: "object", properties: { id: str2, head: str2, tasks: { type: "array", maxItems: 64, items: { type: "object", properties: { id, after: { type: "array", maxItems: 16, items: id } }, required: ["id", "after"], additionalProperties: false } }, criteria: { type: "array", maxItems: 32, items: { type: "object", properties: { id: str2, required: { type: "boolean" }, result: { type: "string", enum: ["verified", "failed", "unverified"] }, refs: { type: "array", maxItems: 8, items: str2 } }, required: ["id", "required", "result", "refs"], additionalProperties: false } } }, required: ["id", "tasks", "criteria"], additionalProperties: false } }, additionalProperties: false } }, ["id", "receipt"]),
     tool("hub_task_list", "The task board. PII tasks show as [pii].", { state: { type: "string", enum: ["proposed", "in_progress", "in_review", "approved", "changes_requested", "cancelled"] }, ready: { type: "boolean", description: "only proposed tasks with nothing left to wait for" } }),
-    tool("hub_review", "Give your verdict on a task you were asked to review: map the changed signatures and call sites to the task's plan or detail, read the check result (hub_task_show has it, with the done summary), and list what is unmet. The verdict notifies the task owner; no duplicate hub_send chat is needed. Consecutive changes_requested verdicts (three by default, `tasks.escalate_after`) move the task to another peer.", { id, head: { type: "string", description: "full SHA actually reviewed; enforce binds approval to the current PR head" }, verdict: { type: "string", enum: ["approved", "changes_requested"] }, note: str2, unmet: { type: "array", items: str2, description: "each requirement of the plan or detail that the change does not meet" }, coverage: { type: "object", description: "the review brief's reviewable paths you read (reviewed) and any you did not (skipped, each with a reason); in enforce an approval must account for every one", properties: { reviewed: { type: "array", items: str2 }, skipped: { type: "array", items: { type: "object", properties: { path: str2, reason: str2 }, required: ["path", "reason"] } } } } }, ["id", "verdict"]),
+    tool("hub_review", "Give your verdict on a task you were asked to review: map the changed signatures and call sites to the task's plan or detail, read the check result (hub_task_show has it, with the done summary), and list what is unmet. The verdict notifies the task owner; no duplicate hub_send chat is needed. Consecutive changes_requested verdicts (three by default, `tasks.escalate_after`) move the task to another peer.", { id, head: { type: "string", description: "full SHA actually reviewed; enforce binds approval to the current PR head" }, findings: reviewFindings, verdict: { type: "string", enum: ["approved", "changes_requested"] }, note: str2, unmet: { type: "array", items: str2, description: "each requirement of the plan or detail that the change does not meet" }, coverage: { type: "object", description: "the review brief's reviewable paths you read (reviewed) and any you did not (skipped, each with a reason); in enforce an approval must account for every one", properties: { reviewed: { type: "array", items: str2 }, skipped: { type: "array", items: { type: "object", properties: { path: str2, reason: str2 }, required: ["path", "reason"] } } } } }, ["id", "verdict"]),
     tool("hub_checkpoint", "Answer a checkpoint request from the hub (quota or context window pressure): what you were doing, what is half done, what whoever continues must know. Write the same to .agenthub/checkpoint.md first if you can.", { summary: str2, request_id: { type: "string", description: "The request id supplied by a context checkpoint request; required for context checkpoints" } }, ["summary"]),
     tool("hub_memory_search", "Search daemon-scoped visible memory, fails first. Query <=200 UTF-8 bytes; default 8, max 20 lines; whole output <=4 KB. Incomplete excerpts are marked. No project argument.", { query: { type: "string", maxLength: 200, description: "At most 200 UTF-8 bytes, enforced by the daemon" }, limit: { type: "integer", minimum: 1, maximum: 20 } }, ["query"]),
     tool("hub_memory_show", "Read up to 8 visible memory ids or unique prefixes (6..64 UTF-8 bytes each). Original ids redirect; unavailable ids share one refusal. Whole output <=8 KB.", { ids: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", minLength: 6, maxLength: 64, description: "6 to 64 UTF-8 bytes" } } }, ["ids"]),
@@ -19349,9 +19371,11 @@ init_sdlc();
 init_planning();
 
 // src/hub/sdlc-queue.ts
+init_review_findings();
 init_sdlc();
 
 // src/hub/tasks.ts
+init_review_findings();
 init_roles();
 init_path_policy();
 
@@ -19463,7 +19487,7 @@ init_platform();
 // node_modules/@staix/agent-mem/src/memory/policy.ts
 init_screen();
 init_platform();
-var MAX_BYTES = 256 * 1024;
+var MAX_BYTES2 = 256 * 1024;
 var MAX_STRING_BYTES = 16 * 1024;
 var flags = new Set(["private", "pii", "privateturn", "isprivate", "ispii"]);
 
