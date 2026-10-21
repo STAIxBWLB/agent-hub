@@ -19,7 +19,7 @@ async function until(check: () => boolean) {
   for (let attempt = 0; attempt < 500 && !check(); attempt++) await Bun.sleep(10);
   expect(check()).toBe(true);
 }
-async function fixture(on = false, instances = false, broken = false, collision = false) {
+async function fixture(on = false, instances = false, broken = false, collision = false, pendingImport?: string) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-external-daemon-"))), stateDir = join(root, ".agenthub", "state");
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined, client: ControlClient | undefined;
   const close = async () => { try { client?.close(); await daemon?.stop(); } finally { rmSync(root, { recursive: true, force: true }); } };
@@ -47,6 +47,12 @@ session:{idField:"sessionId",currentId:peer=>peer.sessionId},turnEnd:"adapter",c
       local.adapter_modules.unshift({ path: "bad.mjs", sha256: createHash("sha256").update(bad).digest("hex") });
       local.adapter_modules.unshift({ path: ".agenthub/adapters/fixture.mjs", sha256: "0".repeat(64) });
       Object.assign(local.roster, { refused: true });
+    }
+    if (pendingImport) {
+      const hanging = `await new Promise(resolve => { globalThis[${JSON.stringify(pendingImport)}] = resolve; });`;
+      writeFileSync(join(root, "pending.mjs"), hanging);
+      local.adapter_modules.unshift({ path: "pending.mjs", sha256: createHash("sha256").update(hanging).digest("hex") });
+      Object.assign(local.roster, { pending: true });
     }
     writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify(local), { mode: 0o600 });
     writeFileSync(join(root, ".agenthub", "config.json"), JSON.stringify({ batch_ms: 0, memory: { enabled: false, native: false }, inference: { enabled: false }, snapshots: { enabled: false }, approvals: { notify: false }, mlx: { enabled: false }, pi: { enabled: false, auto_start: false } }));
@@ -148,4 +154,29 @@ test("A4 module edits remain restart-bound and reload never evaluates changed co
 
 test("A4 external-kind instance declarations are refused explicitly", async () => {
   await expect(fixture(false, true)).rejects.toThrow("external adapter instances are unsupported in A4");
+}, 20_000);
+
+
+test("A4 an unsettled module import is refused while builtins and the next module start (#290)", async () => {
+  const key = "__a4_pending_" + crypto.randomUUID();
+  const globals = globalThis as unknown as Record<string, unknown>;
+  const loading = fixture(false, false, false, false, key);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const result = await Promise.race([loading, new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), 5000); })]);
+    expect(result).toBeDefined();
+    const status = (await result!.client.request({ t: "status" })).status;
+    expect(status.externalAdapterRefusals).toEqual([{ index: 0, reason: "external adapter: module import timed out" }]);
+    expect(status.externalAdapters).toEqual([{ kind: "fixture", displayName: "External fixture" }]);
+    expect(status.roster).toContainEqual({ peer: "codex", on: true });
+    expect(result!.daemon.bus.peers.has("pending")).toBe(false);
+    expect((await result!.client.request({ t: "start", peer: "pending" })).ok).toBe(false);
+  } finally {
+    clearTimeout(timer);
+    const release = globals[key];
+    if (typeof release === "function") release();
+    delete globals[key];
+    const result = await loading;
+    await result.close();
+  }
 }, 20_000);

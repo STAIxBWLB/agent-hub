@@ -193,6 +193,18 @@ export function validateExternalDefinition(raw: unknown): AdapterDefinition {
   }) as AdapterDefinition;
 }
 
+const MODULE_IMPORT_TIMEOUT_MS = 2000;
+async function importVerifiedModule(executable: Uint8Array): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    // ponytail: a deadline stops waiting, not privileged module side effects; cancellation needs an isolated host-port engine.
+    return await Promise.race([
+      import(`data:text/javascript;nonce=${randomUUID()};base64,${Buffer.from(executable).toString("base64")}`),
+      new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new ExternalAdapterRefusal("external adapter: module import timed out")), MODULE_IMPORT_TIMEOUT_MS); }),
+    ]);
+  } finally { clearTimeout(timer); }
+}
+
 /** Only daemon startup calls this. Hash-checked bytes, not the mutable source path, reach import(). */
 export interface ExternalAdapterRefusalRecord { readonly index: number; readonly reason: string }
 export async function loadExternalAdapterDefinitions(cwd: string, layers: readonly ModuleConfigLayer[], onRefusal?: (refusal: ExternalAdapterRefusalRecord) => void): Promise<readonly AdapterDefinition[]> {
@@ -212,7 +224,7 @@ export async function loadExternalAdapterDefinitions(cwd: string, layers: readon
       assertModuleBundle(source);
       const executable = await executableBundle(source);
       if (digest(bytes) !== declaration.sha256 || configRefusal(cwd, "config.local.json")) return fail("module pin or provenance changed before import");
-      const imported: unknown = await import(`data:text/javascript;nonce=${randomUUID()};base64,${Buffer.from(executable).toString("base64")}`);
+      const imported = await importVerifiedModule(executable);
       const definition = validateExternalDefinition((imported as { definition?: unknown }).definition);
       if ([...existingKinds].some(kind => definition.kind === kind || definition.kind.startsWith(`${kind}-`))) return fail("kind collides with a configured adapter namespace");
       if (definitions.some(item => item.kind === definition.kind)) return fail("duplicate external kind");
