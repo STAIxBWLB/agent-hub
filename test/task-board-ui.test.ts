@@ -80,7 +80,7 @@ test("cached board notices deadline crossings without rewriting unchanged cards 
   const { api, get, all, peers, snapshot } = page({ cached: true, now: () => now });
   const timed = { ...snapshot, tasks: snapshot.tasks.map(task => ({ ...task, ...(task.id === 2 || task.id === 4 ? { due: 1000 } : {}) })) };
   const draw = () => api.draw(timed, peers, Object.keys(peers));
-  const overdue = () => all(get("tasks")).filter(node => node.textContent === "Overdue");
+  const overdue = () => all(get("tasks")).filter(node => classes(node).includes("badge") && /, overdue$/.test(node.textContent));
   draw();
   const before = get("tasks").children;
   expect(overdue()).toHaveLength(0);
@@ -333,7 +333,7 @@ test("cancelled and approved cards and details are never overdue while the open 
     { id: 3, title: "open child", state: "proposed", class: "implement", due: 1, deps: [1] },
   ];
   api.draw({ ...snapshot, tasks }, peers, Object.keys(peers));
-  expect(all(get("tasks")).filter(node => node.textContent === "Overdue")).toHaveLength(1);
+  expect(all(get("tasks")).filter(node => classes(node).includes("badge") && /, overdue$/.test(node.textContent))).toHaveLength(1);
   api.open(1);
   expect(all(get("task-detail-content")).some(node => node.textContent === "Overdue")).toBe(false);
 });
@@ -349,13 +349,42 @@ test("a compact card has the title, an owner avatar, one state and priority badg
     const nodes = all(card);
     expect(nodes.filter(node => classes(node).includes("card-title"))).toHaveLength(1);
     expect(nodes.filter(node => classes(node).includes("owner-avatar"))).toHaveLength(1);
-    expect(nodes.filter(node => classes(node).includes("badge") && !/^Overdue|^Check running/.test(node.textContent))).toHaveLength(1);
+    expect(nodes.filter(node => classes(node).includes("badge"))).toHaveLength(1);
     expect(nodes.filter(node => classes(node).includes("release-chip")).map(node => node.textContent)).toEqual(["Release #2 phase two"]);
     // Nothing of the detail leaks onto a card: no body, no groups, no dates, no rework, no controls.
     for (const forbidden of ["long private-looking detail", "Rework round", "Planned ", "Pinned", "Status", "People", "Dates", "Links"]) expect(nodes.some(node => node.textContent.includes(forbidden)), forbidden).toBe(false);
     expect(nodes.some(node => node.tag === "select" || node.tag === "button" || node.tag === "section" || node.tag === "p")).toBe(false);
   }
 });
+test("Overdue and Check running fold into the card's one badge and its accessible name, never a second badge (#293)", () => {
+  const { api, get, all, peers, snapshot } = page({ now: () => 10_000 });
+  const tasks = [
+    { id: 1, title: "late", state: "proposed", class: "implement", due: 1 },
+    { id: 2, title: "checking", state: "in_review", class: "implement", checking: true },
+    { id: 3, title: "both", state: "in_progress", class: "implement", due: 1, checking: true },
+    { id: 4, title: "plain", state: "proposed", class: "implement" },
+    { id: 5, title: "closed late", state: "approved", class: "implement", due: 1, checking: true },
+    { id: 6, title: "late rework", state: "changes_requested", class: "implement", due: 1 },
+  ];
+  api.draw({ ...snapshot, tasks }, peers, Object.keys(peers));
+  const card = (id: number) => all(get("tasks")).find(node => node.tag === "article" && node.attrs["aria-label"]?.startsWith("#" + id + " "))!;
+  const badges = (id: number) => all(card(id)).filter(node => classes(node).includes("badge"));
+  for (const id of [1, 2, 3, 4, 5, 6]) expect(badges(id), "card " + id).toHaveLength(1);
+  expect(badges(1)[0]!.textContent).toBe("proposed P2, overdue");
+  expect(badges(2)[0]!.textContent).toBe("in review P2, check running");
+  expect(badges(3)[0]!.textContent).toBe("in progress P2, overdue, check running");
+  expect(badges(4)[0]!.textContent).toBe("proposed P2");
+  expect(badges(5)[0]!.textContent, "a closed task is never overdue").toBe("approved P2, check running");
+  // The accessible name says it too, so a screen reader hears what the badge shows.
+  expect(card(1).attrs["aria-label"]).toContain("overdue"); expect(card(2).attrs["aria-label"]).toContain("check running");
+  expect(card(3).attrs["aria-label"]).toContain("overdue, check running"); expect(card(4).attrs["aria-label"]).not.toMatch(/overdue|check running/);
+  expect(card(5).attrs["aria-label"]).not.toContain("overdue");
+  // Tone: an err state keeps err; otherwise overdue makes the badge warn; a running check makes a neutral badge info.
+  const tone = (id: number) => classes(badges(id)[0]!).filter(name => ["warn", "info", "ok", "err"].includes(name));
+  expect(tone(1)).toEqual(["warn"]); expect(tone(2)).toEqual(["info"]); expect(tone(3)).toEqual(["warn"]); expect(tone(4)).toEqual([]);
+  expect(badges(6)[0]!.textContent).toBe("changes requested P2, overdue"); expect(tone(6), "an error state keeps its tone when overdue").toEqual(["err"]);
+});
+
 test("the card badge folds the priority into the state and keeps its tone; the avatar names its owner (#469 R3 AC5)", () => {
   const { api, get, all, peers, snapshot } = page();
   api.draw(snapshot, peers, Object.keys(peers));
