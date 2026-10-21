@@ -383,7 +383,12 @@ test("phase 3: the exact task bubble, finishing-a-turn and the check-running mar
   const card = api.maps.officeCards.get(4)!;
   const paint=api.scene().els.get("paint:card:4").node as Node;
   expect(paint.attrs.class).toContain("office-card-checking");
-  expect(paint.text()).toContain("⟳");
+  // #469 R4 (AC7): the check-running mark is the sprite's refresh icon, not the text glyph. The contract moves from "paints ⟳"
+  // to "paints exactly one check icon, hidden from assistive tech, and no text glyph"; the card's own aria-label (below) says "check running".
+  expect(paint.text()).not.toContain("⟳");
+  const checkMarks=paint.findAll((node) => (node.attrs.class ?? "")==="office-checking");
+  expect(checkMarks).toHaveLength(1);expect(checkMarks[0]!.attrs["aria-hidden"]).toBe("true");
+  expect(checkMarks[0]!.findAll((node) => node.attrs.href==="#i-check")).toHaveLength(1);
   expect(card.attrs["aria-label"]).toContain("check running");
   expect(get("office").findAll((node) => (node.attrs.class ?? "").includes("office-checking"))).toHaveLength(1);
 });
@@ -728,11 +733,11 @@ const ratio=(a:string,b:string)=>contrast(a,b);
 test("every dashboard colour lives in the token blocks, and the two dark blocks are identical (#469 R1 AC1)",()=>{
  expect(darkBlock().replace(/color-scheme:dark;/,"").trim()).toBe(systemDarkBlock().replace(/color-scheme:dark;/,"").trim());
  const css=dashboardCss().replace(/\/\*[\s\S]*?\*\//g,"");
- // Everything outside the three token blocks and the Office scene (R5) may only name colours through var(--token).
+ // Everything outside the three token blocks, the Office scene included (R5), may only name colours through var(--token).
  const strip=(block:string)=>block.replace(/\/\*[\s\S]*?\*\//g,"");
  const withoutTokens=css.replace(strip(lightBlock()),"").replace(strip(darkBlock()),"").replace(strip(systemDarkBlock()),"");
- const officeStart=withoutTokens.indexOf(".office-scene{"),officeEnd=withoutTokens.indexOf("[hidden]{");
- const outside=withoutTokens.slice(0,officeStart)+withoutTokens.slice(officeEnd);
+ // R5: the Office scene is part of the scan now (it names colours only through var(--token)).
+ const outside=withoutTokens;
  const stray=[...outside.matchAll(/#[0-9a-fA-F]{3,8}\b|rgba?\(|hsla?\(/g)].map(match=>match[0]);
  expect(stray).toEqual([]);
  // The 4px scale and the three radii are the only spacing and radius values written as numbers outside the token block.
@@ -742,6 +747,34 @@ test("every dashboard colour lives in the token blocks, and the two dark blocks 
  expect(css).not.toContain("grid-template-columns:minmax(0,1fr) 340px");
  expect(css).not.toContain(".task-list{");// Anchored to the start of a rule: a scoped rule such as ".brand .eyebrow{" is not a duplicate of the global one.
  expect(css.match(/(?:^|\})\s*\.eyebrow\{/g)).toHaveLength(1);expect(css.match(/(?:^|\})\s*\[hidden\]\{/g)).toHaveLength(1);
+});
+// #469 R5: the Office scene names its colours only through tokens, so its contrast follows from the tokens it uses. The pairs below are
+// read from the Office rules themselves (a rule that uses a token on a surface is checked), not listed by hand: a new Office rule that
+// puts a text or state colour on a surface is covered, and one that uses a token this test does not know fails.
+const officeCss=()=>{const css=dashboardCss().replace(/\/\*[\s\S]*?\*\//g,"");return css.slice(css.indexOf(".office-scene{"),css.indexOf("[hidden]{"))};
+const OFFICE_SURFACES=["panel-soft","panel","control"];
+const OFFICE_TEXT=["ink","muted"],OFFICE_STATE_TEXT=["green","amber","red","blue"],OFFICE_MARKS=["dot","dot-ok","dot-warn","dot-err","amber","red","blue","green","focus"];
+// Separators carry no information (room, desk, header and shelf edges, dividers, wires): WCAG asks 3:1 of a mark that conveys meaning, not of a hairline.
+const OFFICE_SEPARATORS=["line","control-border","hover","panel-soft","panel","control","green-soft","waiting"];
+test("every colour token the Office scene uses is checked at its kind's contrast, in both themes (#469 R5)",()=>{
+ const used=new Set([...officeCss().matchAll(/var\(--([a-z0-9-]+)\)/g)].map(match=>match[1]!));
+ const known=new Set([...OFFICE_TEXT,...OFFICE_STATE_TEXT,...OFFICE_MARKS,...OFFICE_SEPARATORS]);
+ expect([...used].filter(name=>!known.has(name)),"an Office rule uses a token this test does not classify").toEqual([]);
+ for(const [theme,block] of [["light",lightBlock()],["dark",darkBlock()]] as const){
+  const t=tokenMap(block),surfaces=OFFICE_SURFACES.map(name=>t.get(name)!);
+  for(const name of used){
+   const value=t.get(name);if(!value)continue; // a token that is not a plain hex (none today) is outside this scan
+   const need=OFFICE_TEXT.includes(name)||OFFICE_STATE_TEXT.includes(name)?4.5:OFFICE_MARKS.includes(name)?3:0;
+   if(!need)continue;
+   for(const surface of surfaces)expect(ratio(value,surface),theme+" Office "+name+" on "+surface).toBeGreaterThanOrEqual(need);
+  }
+ }
+});
+test("the Office paints each condition as an outline shape plus its words, never a text glyph (#469 R4 AC7)",()=>{
+ const html2=html;
+ expect(html2).not.toMatch(/['"][○●×‖⚑★→⟳]/);
+ expect(html2).toContain("function officeGlyphNode(");
+ for(const shape of ["ring","disc","cross","bars","hand"])expect(readFileSync(new URL("../src/ui/office-model.ts",import.meta.url),"utf8")).toContain('"'+shape+'"');
 });
 test("contrast covers accent, dots, disabled controls and every peer colour in both themes (#469 R1 AC2)",()=>{
  for(const [theme,block] of [["light",lightBlock()],["dark",darkBlock()]] as const){

@@ -674,6 +674,21 @@ the Plan button in the board toolbar. It is a native dialog, so `Esc` closes it,
 fields, ids and actions are the ones the forms had. The sheets slide in on `transform` and `opacity` and not at all when the
 system asks for reduced motion.
 
+### Dashboard Agents, Stream, Memory, Settings, Message and the Office colours (#469 R4, R5)
+
+Agents: a peer is one row with its name and state, a summary line (queued messages and "Working on #n" or "No active task") and a
+single "Details" fold that holds the diagnostic lines it used to list. A status notice stays visible outside the fold. Approvals
+stay first. Stream: one aligned row per event (time, kind, sender, body in monospace); the filter chips and Follow latest sit in
+the section head, above the scrolling list. Memory: result rows show title, kind and age, the selected row is marked with an accent
+edge, and the graph and the detail pane use the colour tokens. Settings: each group is a section with a short header, a key that waits
+for a restart carries a "restart pending" badge, and "Pending restart" shows a count; the text lines, Preview, Save and Undo are as
+they were. Message uses the shared form styles.
+
+Icons replace the symbol glyphs: the star mark, the stream arrow and the Office "checking" mark are sprite icons (twelve Tabler icons
+in all), and the Office draws each condition (idle, busy, offline, paused, waiting on approval) as a shape (ring, disc, cross, bars, raised hand)
+next to its words. Condition names are unchanged. The Office scene names its colours only through the same tokens as the rest of the page, and the
+contrast test checks every token an Office rule uses, in both themes.
+
 ## Multiple projects and worktrees
 
 Version 0.4.0 adds one independent hub per repository or Git worktree.
