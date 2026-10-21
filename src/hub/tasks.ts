@@ -541,7 +541,9 @@ export class Tasks {
   /** Host-authored proposals contain only cleared IDs, integer task references and fixed instruction targets. */
   private proposeRecurringFindings(task: Task, by: PeerId, items: readonly ReviewFinding[], withheld: boolean): void {
     if (withheld || this.isPii(task) || this.d.privateTurn?.(by) || !items.length || !this.findingTextAllowed(task, items)) return;
-    const rows = this.d.board.list(), keys = new Set(rows.flatMap(row => row.detail?.split("\n").filter(line => line.startsWith("Review finding key: ")) ?? []));
+    const rows = this.d.board.list();
+    const keys = new Set(rows.filter(row => row.class === "plan" && row.history[0]?.by === HUB)
+      .flatMap(row => row.detail?.split("\n").filter(line => line.startsWith("Review finding key: ")) ?? []));
     const created: number[] = [];
     // No await separates the durable dedupe read from creation; concurrent verdicts see the first proposal.
     for (const item of items.filter(item => item.disposition !== "false_positive")) {
@@ -3251,15 +3253,16 @@ export class Tasks {
     let parsed: ReviewFinding[];
     try { parsed = parseReviewFindings(findings, { person: by === USER, maxNits: this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS }); }
     catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid structured findings"); }
-    let findingHead = this.findingHead(initial);
-    if (head !== undefined && (suppliedFindings || this.reviewFindingSets(initial).length)) {
+    const resolvedHead = this.findingHead(initial);
+    let findingHead = resolvedHead;
+    if (head !== undefined) {
       try { findingHead = sdlcReceipt({ reviewedHead: head }, initial.sdlc, this.d.sdlc?.config() ?? sdlcConfig(undefined)).reviewedHead; }
       catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid finding head"); }
     }
     const report: ReviewFindingSet | undefined = suppliedFindings ? { ...(findingHead ? { head: findingHead } : {}), items: parsed } : undefined;
     const proposedSets = (task: Task) => [...this.reviewFindingSets(task), ...(report ? [report] : [])];
-    if (suppliedFindings || this.reviewFindingSets(initial).length) {
-      const identity = (task: Task) => JSON.stringify({ owner: task.owner, reviewer: task.reviewer, commit: task.refs.commit, receipt: task.sdlc, private: this.isPii(task), findings: this.reviewFindingSets(task) });
+    if (head !== undefined || suppliedFindings || this.reviewFindingSets(initial).length) {
+      const identity = (task: Task) => JSON.stringify({ owner: task.owner, reviewer: task.reviewer, commit: task.refs.commit, receipt: task.sdlc, resolvedHead: this.findingHead(task), private: this.isPii(task), findings: this.reviewFindingSets(task) });
       const original = identity(initial);
       findingGuard = task => {
         if (identity(task) !== original) throw new PreEffectToolRefusal("task review identity, privacy or findings changed during the verdict; review current work again");
@@ -3297,6 +3300,7 @@ export class Tasks {
         if (gap.length) note = `${note ?? ""}\nCoverage gap (${gap.length}): ${list(gap)}`.trim();
       }
     }
+    if (head !== undefined && resolvedHead && findingHead !== resolvedHead) throw new PreEffectToolRefusal("supplied review head differs from the task resolved head");
     // The PII screen reads the note of a review that passes these checks (issue #198); they run again after it.
     const withheld = await this.withholds("review note", parsed.length ? JSON.stringify({ note, findings: parsed }) : note, valid())
       || parsed.length > 0 && !this.findingTextAllowed(initial, parsed);
