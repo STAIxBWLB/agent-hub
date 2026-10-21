@@ -1690,6 +1690,15 @@ A peer that has a TUI the hub attaches to starts in it by default (issue #269).
   never downgraded to headless. `ahub settings` lists each start mode, and the
   dashboard's Start control says which mode a start will use and where its
   terminal comes from.
+- **A headless start gets a watch pane** (#286 AC10): when the hub itself
+  starts Kimi or Qwen headless (Kimi when its start mode is `headless`), it
+  also opens `ahub watch <peer>` through the same provider, a fixed command
+  with no caller text, at most once per 30 seconds per peer. The headless
+  start has already succeeded, so with no provider, or one that fails, the
+  start still stands and its result and the hub's notice give the command to
+  run by hand. A start in TUI mode opens the peer's own terminal instead, as
+  above; an already attached peer, a declared extra instance and a peer
+  without the watch capability open no pane.
 - **Dashboard Start:** the control is locked while its request is in flight. A confirmed answer unlocks it immediately, so a retry reaches the hub's own 30-second terminal reopen guard and shows any known refusal. The unified dashboard waits 35 seconds, covering a terminal provider's 30-second cap plus a 5-second response margin; a slower headless start can still end unconfirmed while the hub continues. Check the Peers panel before retrying. An unconfirmed unified-dashboard start holds that peer's control for the shared 30-second reopen bound, or until its `starts` snapshot confirms attachment, across redraws and project switches within the same hub instance; the row states the retry bound. The project-local dashboard keeps its usual confirmed-answer behavior. Other forwarded actions keep their 10-second wait; the manager opens no settings session.
 - The conductor cannot choose the mode: `hub_peer_start` takes the peer's own.
 - Recovery restores each peer in the mode its recorded session had. After an

@@ -126,9 +126,52 @@ test("AC6: with no terminal provider a TUI start is refused with the command to 
   await Bun.sleep(100);
   expect(rig.daemon.bus.peers.has("pi")).toBe(false);
   // Explicit headless Kimi still starts under ACP.
-  expect(await ui.act({ action: "start_peer", peer: "kimi" })).toEqual({ ok: true, text: "kimi started (headless)." });
+  expect(await ui.act({ action: "start_peer", peer: "kimi" })).toEqual({ ok: true, text: "kimi started (headless). Watch it with ahub watch kimi." });
   await until(() => rig.daemon.bus.stateOf("kimi") === "idle");
   expect((await ui.snapshot()).starts.find((s: any) => s.peer === "kimi").attached).toBe(true);
+}, 30_000);
+
+test("#286 AC10: a hub-made headless start of a peer without a native TUI opens `ahub watch <peer>` through the provider, with fixed words", async () => {
+  const fake = provider();
+  const rig = await hub({ peers: { kimi: { start_mode: "headless" } }, roles: { ...DEFAULT_CONFIG.roles, claude: ["conductor"] } }, fake.terminal);
+  const ui = await rig.page();
+  expect(await ui.act({ action: "start_peer", peer: "kimi", command: "sh -c evil", args: ["--x"], mode: "tui" })).toEqual({ ok: true, text: "kimi started (headless). A watch pane is open (ahub watch kimi)." });
+  await until(() => rig.daemon.bus.stateOf("kimi") === "idle");
+  expect(fake.opened).toEqual([{ title: "kimi watch (agent-hub)", argv: [process.execPath, MAIN, "--project", rig.cwd, "watch", "kimi"] }]);
+  expect(rig.log()).toContain("kimi: started headless; the hub opened a watch pane running ahub watch kimi (fake)");
+  // Already attached: nothing starts and nothing opens.
+  expect(await rig.client.request({ t: "peer_start", peer: "kimi" })).toMatchObject({ ok: true, already: true });
+  expect(fake.opened).toHaveLength(1);
+  // A peer with its own terminal form or no watch capability gets no watch pane.
+  expect((await rig.client.request({ t: "peer_stop", peer: "kimi" })).ok).toBe(true);
+  await until(() => rig.daemon.bus.stateOf("kimi") === "offline");
+  const again = await rig.client.request({ t: "peer_start", peer: "kimi" });
+  expect(again).toMatchObject({ ok: true, watch: { command: "ahub watch kimi" } }); // the 30 s hold: reported, not reopened
+  expect(again.watch.opened).toBeUndefined();
+  expect(fake.opened).toHaveLength(1);
+  const local = await rig.client.request({ t: "peer_start", peer: "local" });
+  expect(local.watch).toBeUndefined();
+  expect(fake.opened.every((o) => o.argv.at(-2) === "watch")).toBe(true);
+}, 30_000);
+
+test("#286 AC10: without a provider, or with a failing one, the headless start still succeeds and the watch command is printed", async () => {
+  const none = await hub({ peers: { kimi: { start_mode: "headless" } } });
+  const result = await none.client.request({ t: "peer_start", peer: "kimi" });
+  expect(result).toMatchObject({ ok: true, watch: { command: "ahub watch kimi" } });
+  expect(result.watch.opened).toBeUndefined();
+  await until(() => none.daemon.bus.stateOf("kimi") === "idle");
+  expect((await (await none.page()).snapshot()).starts.find((s: any) => s.peer === "kimi").attached).toBe(true);
+  expect(none.log()).toContain("kimi: started headless; the hub opened no watch pane (this hub was started without a terminal provider). Watch it with ahub watch kimi");
+
+  const failing = provider(true, [async () => ({ ok: false, why: "Orca could not create the terminal", detail: "stderr: /Users/someone/private/path refused" })]);
+  const rig = await hub({ peers: { kimi: { start_mode: "headless" } } }, failing.terminal);
+  const ui = await rig.page();
+  const text = (await ui.act({ action: "start_peer", peer: "kimi" })).text as string;
+  expect(text).toBe("kimi started (headless). Watch it with ahub watch kimi.");
+  expect(text).not.toContain("private");
+  expect(rig.log()).toContain("terminal provider for kimi watch: stderr: /Users/someone/private/path refused");
+  expect(rig.log()).toContain("the hub opened no watch pane (Orca could not create the terminal)");
+  expect(failing.opened).toEqual([]);
 }, 30_000);
 
 test("AC6: a headless start mode is how a person asks for headless: auto-start and the dashboard start Pi at once, and the setting applies at the next start", async () => {

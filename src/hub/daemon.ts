@@ -3505,6 +3505,29 @@ export async function startDaemon(opts: DaemonOptions) {
   // ponytail: one terminal per peer per 30 s, by the clock. The hub cannot see whether the terminal it opened still
   // exists, so a peer that never attaches can be opened again after that; track the provider's handle to do better.
   const opening = new Map<string, number>();
+  // #286 AC10: a peer with no native TUI (headless Kimi, Qwen) is watched through `ahub watch <peer>`. A start the hub made
+  // itself that really started such a peer opens that view through the same provider, with fixed words and no caller text.
+  // The headless start has already succeeded: a missing or failing provider never fails it, it only reports the command.
+  const watchOpening = new Map<string, number>();
+  const watchSentence = (watch: unknown): string => {
+    const w = watch as { command?: string; opened?: string } | undefined;
+    return w?.command ? (w.opened ? ` A watch pane is open (${w.command}).` : ` Watch it with ${w.command}.`) : "";
+  };
+  async function openWatchPane(peer: string, result: Record<string, unknown>): Promise<Record<string, unknown>> {
+    if (result.ok !== true || result.already || declarations[peer] || !definitionOf(peer)?.capabilities?.watch) return result;
+    const command = `ahub watch ${peer}`;
+    if (Date.now() - (watchOpening.get(peer) ?? 0) < PEER_START_RETRY_MS) return { ...result, watch: { command } };
+    watchOpening.set(peer, Date.now());
+    const opened = await opener.open(`${peer} watch (agent-hub)`, [process.execPath, CLI_ENTRY, "--project", opts.cwd, "watch", peer]).catch((error: Error) => ({ ok: false as const, why: "the terminal provider failed", detail: error.message }));
+    if (!opened.ok) {
+      watchOpening.delete(peer);
+      if (opened.detail) log(`terminal provider for ${peer} watch: ${opened.detail}`);
+      try { notify(`${peer}: started headless; the hub opened no watch pane (${opened.why}). Watch it with ${command}`); } catch { /* the start stands */ }
+      return { ...result, watch: { command } };
+    }
+    try { notify(`${peer}: started headless; the hub opened a watch pane running ${command} (${opened.via})`); } catch { /* the pane is open either way */ }
+    return { ...result, watch: { command, opened: opened.via } };
+  }
   /** For the dashboard's Start control: what a start of each peer would do now, and for a TUI where its terminal comes from. */
   // ponytail: asks the provider on every dashboard poll (a launch-record read and a PATH lookup for Orca); cache it for a few seconds if a page feels it.
   const startPlans = () => STARTABLE_PEERS.filter(startable).map((peer) => {
@@ -3553,7 +3576,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // like one whose terminal was closed, so a headless start in that window replaces it; record when a launch was
       // issued to tell the two apart.
       if (owner instanceof PiPeer && owner.state !== "offline" && owner.mode === "tui") return { ok: false, error: "Pi runs in a terminal; end it there before starting a headless one", command: "ahub pi --headless" };
-      return startPeer(peer, definitionOf(peer)?.start.explicitHeadlessMode ? { mode: "headless", ...(resume ?? {}) } : {});
+      return openWatchPane(peer, await startPeer(peer, definitionOf(peer)?.start.explicitHeadlessMode ? { mode: "headless", ...(resume ?? {}) } : {}));
     }
     // #559 N1: only the console's own start reopens a frontend on an attached owned-ACP peer. The conductor and the
     // dashboard answer `already`, so a repeated call never adds another TUI writer to the live session.
@@ -5006,7 +5029,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // #269: the hub's own start of a peer from the closed list, in the mode a person set. No argument reaches a command.
         if (!peer()) return bad;
         const result = await hubStart(a.peer, "the dashboard");
-        if (result.ok === true) return { ok: true, text: result.already ? `${a.peer} is already attached.` : result.opened ? `Opened a terminal running ${result.command}; ${a.peer} attaches when its TUI is ready.` : `${a.peer} started (headless).` };
+        if (result.ok === true) return { ok: true, text: result.already ? `${a.peer} is already attached.` : result.opened ? `Opened a terminal running ${result.command}; ${a.peer} attaches when its TUI is ready.` : `${a.peer} started (headless).${watchSentence(result.watch)}` };
         // A refusal the hub worded itself carries the command to run by hand; an adapter's own failure text stays in the log.
         if (typeof result.command === "string" || typeof a.peer === "string" && !membershipAllowed(a.peer)) return { ok: false, error: sanitize(String(result.error)) };
         log(`dashboard start ${a.peer} failed: ${String(result.error)}`);
