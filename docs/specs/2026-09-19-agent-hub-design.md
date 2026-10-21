@@ -4103,15 +4103,24 @@ Each pinned entry is a self-contained JavaScript bundle inside the canonical
 project root. Refuse symlink components, a file outside that root, a
 world-writable or nonregular entry, an unreadable/oversized entry and a SHA-256
 mismatch. A module bundles its own dependencies; core adds no third-party
-runtime dependency. Only static imports of Node/Bun builtins and the public
-`@staix/agent-hub/adapter` or `@staix/agent-hub/conformance` entries are allowed.
+runtime dependency. Runtime permits static imports of Node/Bun builtins except
+`bun:ffi` and `bun:test`, plus the public `@staix/agent-hub/adapter` entry only.
+The `/conformance` export is for the module author's CI, not runtime modules.
 Relative imports, other package imports, dynamic/nonliteral imports, require,
 eval and Function-based code loading that the loader can detect are refused.
-Use Bun.Transpiler's import scan before evaluation and re-hash the captured
-bytes immediately before import. Execute those captured bytes, never reopen
-the mutable source path after verification. A pin is code authorization, not
+Dependencies must be bundled as ESM; `import.meta.require` and CommonJS loading
+are refused. Use Bun.Transpiler's import records and token inspection before
+evaluation. After checking the original content pin, compile its scanned static
+SDK imports to file URLs of the running daemon's own adapter entry, never a
+project-resolved package copy. Re-hash the original captured bytes immediately
+before importing the rewritten result; never reopen the mutable source path.
+A pin is code authorization, not
 a sandbox: approved module code runs with daemon privileges; scanner rejection
 is deliberately conservative and is not a proof against obfuscated code.
+Refuse a failed module independently with a bounded, body-free status reason;
+keep builtins and other verified modules available. When trusted module
+declarations exist, unknown roster ids remain inert, including on CLI config
+reads while no daemon metadata is available; a roster row grants no adapter identity.
 
 A module exports `definition` with the current `ADAPTER_API`. Validate the
 accepted structural subset and fixed-builtin capability exclusions before

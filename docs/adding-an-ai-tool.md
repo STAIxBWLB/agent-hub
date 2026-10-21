@@ -117,13 +117,19 @@ module construct refuses loading without exposing source text in the error.
 
 Publish a single self-contained ESM JavaScript bundle. Bundle third-party
 implementation into that file; do not add runtime dependencies to the hub.
-Allowed imports are Node/Bun builtins and the public
-`@staix/agent-hub/adapter` and `@staix/agent-hub/conformance` entries. Relative or
-other package imports, dynamic imports, require, eval and Function-based loading
+Runtime imports may use Node/Bun builtins except `bun:ffi` and `bun:test`, plus
+`@staix/agent-hub/adapter`, bound to the running daemon's own SDK rather than
+project packages. `/conformance` is available to module CI, not runtime modules.
+Relative or other package imports, dynamic imports, require (including
+`import.meta.require`), eval and Function-based loading
 are refused. The scan is conservative, not a sandbox. Authorized module code runs
 with daemon privileges; inspect the full bundle before recording its hash.
-The loader verifies and imports captured bytes rather than reopening a mutable
-source path after the hash check.
+Dependencies must be ESM-only. The loader verifies the captured original bytes,
+rewrites only scanned SDK imports to host-owned file URLs, and imports that result
+rather than reopening a mutable source path after the hash check. A refused
+module appears in bounded status diagnostics while other adapters keep working.
+Its roster row stays inert; CLI config reads also retain inert unknown rows when
+trusted module declarations exist but daemon metadata is unavailable.
 
 The module exports `definition` with `api: ADAPTER_API`. Import the version,
 `AcpPeer`, `BasePeer` and definition/context types from
@@ -132,8 +138,10 @@ factory, its own kind/family, `optional: true`, `defaultOnRoster: false` and
 `trust: { onPrem: false, hubSandboxed: false }`. Preserve the host's factory
 options and instance id when constructing the transport. Supply a launch plan,
 start/identity/session/CLI/display metadata and only supported native mode
-mappings; no mapping means unmanaged. External kinds never auto-approve native
-hub-tool titles. The loader refuses fixed-builtin capabilities and unsupported
+mappings; no mapping means unmanaged. By default the host disables native
+hub-tool title auto-approval for external kinds. A cooperating module must preserve
+that factory option; approved module code runs with daemon privileges, so this is
+a host default rather than isolation from a module that overrides its options. The loader refuses fixed-builtin capabilities and unsupported
 fields rather than silently ignoring them. See `validateExternalDefinition` for
 the exact accepted subset.
 

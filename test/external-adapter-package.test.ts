@@ -7,7 +7,7 @@ import { realPath } from "../src/hub/project.ts";
 import { stopOwnedProcess, trackGroup } from "../src/hub/child-process.ts";
 
 test("A4 an external package runs the exported kit using only the actual npm tarball and its declared runtime dependency", async () => {
-  const root = mkdtempSync(join(tmpdir(), "ahub-public-adapter-package-")), source = realPath(join(import.meta.dir, ".."));
+  const root = mkdtempSync(join(tmpdir(), "ahub-public-adapter-package-")), project = mkdtempSync(join(tmpdir(), "ahub-external-consumer-project-")), source = realPath(join(import.meta.dir, ".."));
   try {
     const packed = spawnSync("npm", ["pack", "--json", "--pack-destination", root], { cwd: source, encoding: "utf8", timeout: 10_000 });
     expect(packed.status, packed.stderr).toBe(0);
@@ -33,6 +33,11 @@ session:{idField:"sessionId",currentId:peer=>peer.recoveryMetadata().sessionId},
 import {readFileSync,mkdtempSync,rmSync,statSync} from "node:fs";
 import {join,relative} from "node:path";
 import {tmpdir} from "node:os";
+import {createHash} from "node:crypto";
+import {mkdirSync,writeFileSync,existsSync} from "node:fs";
+import {spawnSync} from "node:child_process";
+import {startDaemon} from "./node_modules/@staix/agent-hub/src/hub/daemon.ts";
+import {ControlClient} from "./node_modules/@staix/agent-hub/src/hub/control-client.ts";
 import {definition} from "./adapter.mjs";
 import {createFromDefinition,registerConformance,registerAcpConformance,fakePaths} from "@staix/agent-hub/conformance";
 test("consumer has no development tree",()=>{expect(relative(import.meta.dir,fakePaths.acpServer)).toStartWith("node_modules/");expect(statSync(fakePaths.acpServer).isFile()).toBe(true);});
@@ -48,8 +53,26 @@ registerAcpConformance({definition,agentArgs:["--agent-name","Kit fixture","--ag
  "native-mode-ack":"This fixture declares only ask; it cannot request the never-ask timeout leg",
  "native-quota":"This fixture has no verified provider quota refusal contract"
 }});
+for(const decoy of [false,true]) test("installed daemon binds its own SDK outside the package, decoy="+decoy,async()=>{
+ const cwd=process.cwd(),stateDir=join(cwd,".agenthub","state");
+ expect(spawnSync("git",["init","-q",cwd]).status).toBe(0);
+ mkdirSync(join(cwd,".agenthub"),{recursive:true});
+ const marker=join(cwd,"decoy-ran"),fake=join(cwd,"node_modules","@staix","agent-hub");
+ if(decoy){mkdirSync(fake,{recursive:true});writeFileSync(join(fake,"package.json"),JSON.stringify({type:"module",exports:{"./adapter":"./evil.js"}}));writeFileSync(join(fake,"evil.js"),'import {writeFileSync} from "node:fs";writeFileSync('+JSON.stringify(marker)+',"ran");throw new Error("untrusted decoy");');}
+ const source=readFileSync(join(import.meta.dir,"adapter.mjs"),"utf8").replace('cmd:"fixture",args:[]','cmd:'+JSON.stringify(process.execPath)+',args:'+JSON.stringify([fakePaths.acpServer,"--agent-name","Kit fixture","--agent-version","1"]));
+ writeFileSync(join(cwd,"adapter.mjs"),source);
+ writeFileSync(join(cwd,".agenthub","config.local.json"),JSON.stringify({adapter_modules:[{path:"adapter.mjs",sha256:createHash("sha256").update(source).digest("hex")}],roster:{"kit-fixture":true}}));
+ writeFileSync(join(cwd,".agenthub","config.json"),JSON.stringify({memory:{enabled:false,native:false},inference:{enabled:false},snapshots:{enabled:false},approvals:{notify:false},mlx:{enabled:false},pi:{enabled:false,auto_start:false}}));
+ let daemon,client;try{
+  daemon=await startDaemon({cwd,stateDir,controlPort:0,codexAppPort:0,codexProxyPort:0});
+  client=await ControlClient.connect(stateDir,{role:"console",projectRoot:cwd});
+  expect((await client.request({t:"start",peer:"kit-fixture"})).ok).toBe(true);
+  expect(daemon.bus.peers.get("kit-fixture").state).toBe("idle");
+  expect(existsSync(marker)).toBe(false);
+ }finally{client?.close();await daemon?.stop();}
+},20000);
 `);
-    const child = spawn(process.execPath, ["test", "consumer.test.ts", "--timeout", "20000"], { cwd: root, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(process.execPath, ["test", join(root, "consumer.test.ts"), "--timeout", "20000"], { cwd: project, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     trackGroup(child);
     const chunks: Buffer[] = []; let size = 0;
     for (const stream of [child.stdout, child.stderr]) stream.on("data", (chunk: Buffer) => { if (size < 2 * 1024 * 1024) chunks.push(chunk); size += chunk.length; });
@@ -65,5 +88,5 @@ registerAcpConformance({definition,agentArgs:["--agent-name","Kit fixture","--ag
     expect(output).toContain("watchdog cancellation fences the consumed late native result");
     const manifest = JSON.parse(readFileSync(join(scope, "agent-hub", "package.json"), "utf8"));
     expect(Object.keys(manifest.dependencies)).toEqual(["@staix/agent-mem"]);
-  } finally { rmSync(root, { recursive: true, force: true }); }
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(project, { recursive: true, force: true }); }
 }, 40_000);

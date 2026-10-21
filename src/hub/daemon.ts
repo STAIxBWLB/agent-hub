@@ -330,6 +330,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
   const instances = instanceConfig.instances;
   const adapterCatalog = instanceConfig.catalog;
   const ignored: string[] = [...instanceConfig.ignored];
+  const inertModuleRoster = !!instanceConfig.adapter_modules?.length;
   const appliedPermissionSources: NonNullable<HubConfig["permission_default_sources"]> = {};
   const files = CONFIG_FILES.flatMap((name) => {
     let file: Record<string, any>; // parsed JSON, checked field by field below
@@ -343,7 +344,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     delete file.adapter_modules; // Code provenance is captured separately and never evaluated by configuration reads.
     delete file.adapters; // Adapter provenance is compiled by the same project-local loader.
     delete file.instances; // Declaration authority was checked against its exact captured origin above.
-    peerRosterConfig(file.roster, instances, adapterCatalog);
+    peerRosterConfig(file.roster, instances, adapterCatalog, inertModuleRoster);
     catalogAssignments(file.catalog_roles);
     profileName(file.profile);
     resolveProfile(file.profile, file.profile_overrides);
@@ -425,7 +426,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     permission_default_sources: appliedPermissionSources,
     memory: { ...DEFAULT_CONFIG.memory, native: true, ...file.memory, ...(file.memory?.short_ttl_days !== undefined ? { short_ttl_days: ttlDays(file.memory.short_ttl_days) } : {}),
       ...(file.memory?.sync_interval_min !== undefined ? { sync_interval_min: syncMinutes(file.memory.sync_interval_min) } : {}) }, // the native store is on with any project config (#258)
-    roster: peerRosterConfig(file.roster, instances, adapterCatalog),
+    roster: peerRosterConfig(file.roster, instances, adapterCatalog, inertModuleRoster),
     roles: { ...configuredRoles, ...conductorPolicy.roles, ...extraRoles },
     planner: conductorPolicy.planner,
     conductor: conductorPolicy.conductor,
@@ -538,7 +539,8 @@ export async function startDaemon(opts: DaemonOptions) {
   let startupLayers: ReturnType<typeof readInstanceConfigLayers>;
   try { startupLayers = readInstanceConfigLayers(opts.cwd); }
   catch (error) { if (!opts.config) throw error; startupLayers = []; } // Explicit embeddings may ignore unreadable file config; no code is loaded from it.
-  const externalDefinitions = await loadExternalAdapterDefinitions(opts.cwd, startupLayers);
+  const externalAdapterRefusals: import("../adapters/external-modules.ts").ExternalAdapterRefusalRecord[] = [];
+  const externalDefinitions = await loadExternalAdapterDefinitions(opts.cwd, startupLayers, refusal => externalAdapterRefusals.push(refusal));
   const externalAdapters = externalDefinitions.map(({ kind, displayName }) => ({ kind, displayName }));
   const externalIds = new Set(externalAdapters.map(item => item.kind));
   const moduleDeclarations = readAdapterModuleDeclarations(opts.cwd, startupLayers).modules;
@@ -574,7 +576,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
   }
   const config: HubConfig = { ...ownedConfig, ...(extraIds.length ? { instances: declarations } : {}),
-    roster: peerRosterConfig(loadedConfig.roster, declarations, adapterCatalog),
+    roster: peerRosterConfig(loadedConfig.roster, declarations, adapterCatalog, moduleDeclarations.length > 0),
     permission_modes: { ...permissionModesFromInstances, ...permissionDefaults(loadedConfig.permission_modes, declarations, adapterCatalog) },
     peers: { ...startModesFromInstances, ...peerStartConfig(loadedConfig.peers, declarations, adapterCatalog) },
     ...(extraIds.length ? { permission_default_sources: { ...instancePermissionSources, ...loadedConfig.permission_default_sources } } : {}),
@@ -2758,6 +2760,7 @@ export async function startDaemon(opts: DaemonOptions) {
     features: DAEMON_FEATURES,
     configuredAdapters: configuredIds,
     ...(externalAdapters.length ? { externalAdapters } : {}),
+    ...(externalAdapterRefusals.length ? { externalAdapterRefusals } : {}),
     startablePeers: SUPPORTED_PEERS.filter(isStartablePeer),
     readOnlyPeers: extraIds.filter(readOnlyPeer),
     // #450 I3: the instance ids this daemon bound at startup; a launcher selects only one of these.

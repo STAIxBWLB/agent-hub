@@ -5,15 +5,16 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { moduleDataObject as dataObject, moduleText as text, moduleArray as array } from "./external-metadata.ts";
 import { ADAPTER_API } from "./adapter-api.ts";
 import { CONFIGURED_ACP_RESERVED_COMMANDS } from "./configured-acp.ts";
-import { ADAPTERS, assertDefinitionCoherence, assertNativeCapabilityScope } from "./registry.ts";
+import { ADAPTERS, assertDefinitionCoherence, assertNativeCapabilityScope, createProjectAdapterCatalog } from "./registry.ts";
 import type { AdapterDefinition, LaunchPlan } from "./registry-types.ts";
 import { configRefusal } from "../hub/config-trust.ts";
 import { realPath } from "../hub/project.ts";
+import { scanModuleSource } from "./external-module-scan.ts";
 
 export interface AdapterModuleDeclaration { readonly path: string; readonly sha256: string }
 interface ModuleConfigLayer { name: string; raw: Record<string, unknown> }
 const MAX_MODULES = 16, MAX_MODULE_BYTES = 2 * 1024 * 1024;
-const PUBLIC_IMPORTS = new Set(["@staix/agent-hub/adapter", "@staix/agent-hub/conformance"]);
+const ADAPTER_IMPORT = "@staix/agent-hub/adapter";
 class ExternalAdapterRefusal extends Error {}
 const fail = (reason: string): never => { throw new ExternalAdapterRefusal(`external adapter: ${reason}`); };
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
@@ -77,14 +78,28 @@ function captureBundle(cwd: string, declaration: AdapterModuleDeclaration): Buff
 
 /** Conservative code-loading rejection, not an isolation boundary for approved daemon-privileged code. */
 export function assertModuleBundle(source: string): void {
-  const transpiler = new Bun.Transpiler({ loader: "js", minifyWhitespace: true });
-  for (const dependency of transpiler.scanImports(source)) {
-    const allowed = PUBLIC_IMPORTS.has(dependency.path) || /^(?:node|bun):/.test(dependency.path) && (isBuiltin(dependency.path) || dependency.path === "bun:test" || dependency.path === "bun:ffi" || dependency.path === "bun:sqlite");
-    if (dependency.kind !== "import-statement" || !allowed) return fail("only static builtin and public adapter/conformance imports are supported");
+  for (const dependency of scanModuleSource(source)) {
+    const allowed = dependency.path === ADAPTER_IMPORT || dependency.path !== "bun:test" && dependency.path !== "bun:ffi"
+      && /^(?:node|bun):/.test(dependency.path) && (isBuiltin(dependency.path) || dependency.path === "bun:sqlite");
+    if (dependency.kind !== "import-statement" || !allowed) return fail("only static builtin and public adapter imports are supported");
   }
-  // Transform normalizes escaped identifiers and comments, and catches syntax errors before evaluation.
-  const normalized = transpiler.transformSync(source);
-  if (/\bimport\s*\(|\b(?:require|createRequire|eval|Function)\b/.test(normalized)) return fail("dynamic code loading is unsupported; provide a self-contained ESM bundle");
+}
+
+/** Resolve scanned SDK imports against this running package, never project node_modules or process.cwd(). */
+async function executableBundle(source: string): Promise<Uint8Array> {
+  const imports = scanModuleSource(source);
+  const compiled = await Bun.build({ entrypoints: ["a4-pin:entry"], target: "bun", format: "esm",
+    plugins: [{ name: "host-bound-adapter-imports", setup(build) {
+      build.onResolve({ filter: /^a4-pin:/ }, () => ({ path: "entry", namespace: "a4-pin" }));
+      build.onLoad({ filter: /.*/, namespace: "a4-pin" }, () => ({ contents: source, loader: "js" }));
+      build.onResolve({ filter: /.*/ }, args => {
+        if (!imports.some(item => item.path === args.path && item.kind === "import-statement")) return fail("unscanned import refused");
+        return { path: args.path === ADAPTER_IMPORT ? new URL("./public.ts", import.meta.url).href : args.path, external: true };
+      });
+    } }],
+  });
+  if (!compiled.success || compiled.outputs.length !== 1) return fail("bundle compilation refused (details withheld)");
+  return new Uint8Array(await compiled.outputs[0]!.arrayBuffer());
 }
 
 function snapshot(value: unknown, depth = 0): unknown {
@@ -178,10 +193,15 @@ export function validateExternalDefinition(raw: unknown): AdapterDefinition {
 }
 
 /** Only daemon startup calls this. Hash-checked bytes, not the mutable source path, reach import(). */
-export async function loadExternalAdapterDefinitions(cwd: string, layers: readonly ModuleConfigLayer[]): Promise<readonly AdapterDefinition[]> {
+export interface ExternalAdapterRefusalRecord { readonly index: number; readonly reason: string }
+export async function loadExternalAdapterDefinitions(cwd: string, layers: readonly ModuleConfigLayer[], onRefusal?: (refusal: ExternalAdapterRefusalRecord) => void): Promise<readonly AdapterDefinition[]> {
   const { modules } = readAdapterModuleDeclarations(cwd, layers);
+  if (!modules.length) return Object.freeze([]);
+  let rawAdapters: unknown;
+  for (const { name, raw } of layers) if (name === "config.local.json" && !configRefusal(cwd, name) && raw.adapters !== undefined) rawAdapters = raw.adapters;
+  const existingKinds = new Set(createProjectAdapterCatalog(rawAdapters).definitions.map(definition => definition.kind));
   const definitions: AdapterDefinition[] = [];
-  for (const declaration of modules) {
+  for (const [index, declaration] of modules.entries()) {
     try {
       if (configRefusal(cwd, "config.local.json")) return fail("module configuration provenance changed");
       const local = regularPath(realPath(cwd), join(realPath(cwd), ".agenthub", "config.local.json"));
@@ -189,14 +209,17 @@ export async function loadExternalAdapterDefinitions(cwd: string, layers: readon
       const bytes = captureBundle(cwd, declaration);
       const source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
       assertModuleBundle(source);
+      const executable = await executableBundle(source);
       if (digest(bytes) !== declaration.sha256 || configRefusal(cwd, "config.local.json")) return fail("module pin or provenance changed before import");
-      const imported: unknown = await import(`data:text/javascript;nonce=${randomUUID()};base64,${bytes.toString("base64")}`);
+      const imported: unknown = await import(`data:text/javascript;nonce=${randomUUID()};base64,${Buffer.from(executable).toString("base64")}`);
       const definition = validateExternalDefinition((imported as { definition?: unknown }).definition);
+      if (existingKinds.has(definition.kind)) return fail("kind collides with a configured adapter");
       if (definitions.some(item => item.kind === definition.kind)) return fail("duplicate external kind");
       definitions.push(definition);
     } catch (error) {
-      if (error instanceof ExternalAdapterRefusal) throw error;
-      return fail("module could not be verified or loaded (details withheld)");
+      const refusal = error instanceof ExternalAdapterRefusal ? error : new ExternalAdapterRefusal("external adapter: module could not be verified or loaded (details withheld)");
+      if (!onRefusal) throw refusal;
+      onRefusal(Object.freeze({ index, reason: refusal.message }));
     }
   }
   return Object.freeze(definitions);

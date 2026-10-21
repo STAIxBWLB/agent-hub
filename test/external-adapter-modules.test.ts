@@ -11,6 +11,7 @@ import { hubGitSync as gitSync } from "../src/hub/git.ts";
 const hubGitSync = (args: string[]) => gitSync(args, { encoding: "utf8" });
 import { configApply } from "../src/hub/config-apply.ts";
 import { settingDef } from "../src/hub/settings.ts";
+import { peerRosterConfig, rosterAllows } from "../src/hub/roster.ts";
 
 const cleanup: string[] = [];
 afterEach(() => { for (const dir of cleanup.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -87,7 +88,7 @@ for (const mode of ["outside", "file symlink", "directory symlink", "world writa
 });
 
 for (const source of [
-  'import "./sibling.mjs";', 'import "some-package";', 'import("node:fs");', 'const name="node:fs";import(name);',
+  'import "./sibling.mjs";', 'import "some-package";', 'import "@staix/agent-hub/conformance";', 'import "bun:ffi";', 'import "bun:test";', 'import("node:fs");', 'const name="node:fs";import(name);',
   'require("node:fs");', 'const r=require;r("node:fs");', 'eval("1");', 'const e=eval;e("1");', 'new Function("return 1")();',
 ]) test(`A4 unbundled or dynamic loading is rejected: ${source}`, () => {
   expect(() => assertModuleBundle(source)).toThrow();
@@ -117,6 +118,16 @@ test("A4 sync configuration reads never execute an external bundle", () => {
   const f = fixture('throw new Error("MUST_NOT_IMPORT_IN_CLI");');
   expect(readInstanceConfig(f.cwd).adapter_modules).toEqual([f.declaration]);
   expect(readInstanceConfig(f.cwd).catalog.definitionOf("fixture")).toBeUndefined();
+});
+test("A4 unresolved module roster rows retain only bounded booleans and grant no roster admission", () => {
+  const catalog = createProjectAdapterCatalog();
+  const roster = peerRosterConfig({ fixture: true }, undefined, catalog, true);
+  expect(roster).toEqual({ fixture: true });
+  expect(rosterAllows(roster, "fixture", false, undefined, catalog)).toBe(false);
+  expect(rosterAllows(roster, "unrelated-client", false, undefined, catalog)).toBe(true);
+  expect(() => peerRosterConfig({ fixture: "true" }, undefined, catalog, true)).toThrow();
+  expect(() => peerRosterConfig({ "bad/id": true }, undefined, catalog, true)).toThrow();
+  expect(() => peerRosterConfig({ fixture: true }, undefined, catalog)).toThrow();
 });
 test("A4 module settings are never editable and changes require restart", () => {
   expect(settingDef("adapter_modules")).toContain("never editable");

@@ -3,7 +3,8 @@ import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startDaemon } from "../src/hub/daemon.ts";
+import { startDaemon, loadConfig } from "../src/hub/daemon.ts";
+import { parseConfigSources, configSourceTexts } from "../src/hub/config-reload.ts";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { hubGitSync as gitSync } from "../src/hub/git.ts";
 const hubGitSync = (args: string[]) => gitSync(args, { encoding: "utf8" });
@@ -18,7 +19,7 @@ async function until(check: () => boolean) {
   for (let attempt = 0; attempt < 500 && !check(); attempt++) await Bun.sleep(10);
   expect(check()).toBe(true);
 }
-async function fixture(on = false, instances = false) {
+async function fixture(on = false, instances = false, broken = false, collision = false) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-external-daemon-"))), stateDir = join(root, ".agenthub", "state");
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined, client: ControlClient | undefined;
   const close = async () => { try { client?.close(); await daemon?.stop(); } finally { rmSync(root, { recursive: true, force: true }); } };
@@ -39,6 +40,14 @@ session:{idField:"sessionId",currentId:peer=>peer.sessionId},turnEnd:"adapter",c
     writeFileSync(join(root, ".agenthub", "adapters", "fixture.mjs"), source, { mode: 0o600 });
     const local = { adapter_modules: [{ path: ".agenthub/adapters/fixture.mjs", sha256: createHash("sha256").update(source).digest("hex") }], roster: { fixture: on },
       ...(instances ? { instances: { "fixture-worker": { kind: "fixture", start_mode: "headless" } } } : {}) };
+    if (collision) Object.assign(local, { adapters: { fixture: { transport: "acp", command: "A3-never-started", args: [], displayName: "Configured fixture", roles: ["implementer"] } } });
+    if (broken) {
+      const bad = 'throw new Error("PRIVATE_MODULE_BODY");';
+      writeFileSync(join(root, "bad.mjs"), bad);
+      local.adapter_modules.unshift({ path: "bad.mjs", sha256: createHash("sha256").update(bad).digest("hex") });
+      local.adapter_modules.unshift({ path: ".agenthub/adapters/fixture.mjs", sha256: "0".repeat(64) });
+      Object.assign(local.roster, { refused: true });
+    }
     writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify(local), { mode: 0o600 });
     writeFileSync(join(root, ".agenthub", "config.json"), JSON.stringify({ batch_ms: 0, memory: { enabled: false, native: false }, inference: { enabled: false }, snapshots: { enabled: false }, approvals: { notify: false }, mlx: { enabled: false }, pi: { enabled: false, auto_start: false } }));
     daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0 });
@@ -46,6 +55,43 @@ session:{idField:"sessionId",currentId:peer=>peer.sessionId},turnEnd:"adapter",c
     return { root, stateDir, daemon, client, marker, local, close };
   } catch (error) { await close(); throw error; }
 }
+
+test("A4 bad modules are refused independently while builtins and a valid module stay usable", async () => {
+  const f = await fixture(true, false, true);
+  try {
+    const status = (await f.client.request({ t: "status" })).status;
+    expect(status.externalAdapterRefusals).toHaveLength(2);
+    expect(JSON.stringify(status.externalAdapterRefusals)).not.toMatch(/PRIVATE_MODULE_BODY|bad\.mjs|sha256/);
+    expect(status.externalAdapters).toEqual([{ kind: "fixture", displayName: "External fixture" }]);
+    expect(status.roster).toContainEqual({ peer: "codex", on: true });
+    expect(f.daemon.bus.peers.has("refused")).toBe(false);
+    expect((await f.client.request({ t: "start", peer: "refused" })).ok).toBe(false);
+    expect((await f.client.request({ t: "start", peer: "fixture" })).ok).toBe(true);
+  } finally { await f.close(); }
+}, 20_000);
+
+test("A4 an external collision with a configured kind refuses only that module", async () => {
+  const f = await fixture(false, false, false, true);
+  try {
+    const status = (await f.client.request({ t: "status" })).status;
+    expect(status.externalAdapterRefusals).toHaveLength(1);
+    expect(status.externalAdapters ?? []).toEqual([]);
+    expect(status.configuredAdapters).toContain("fixture");
+    expect(status.roster).toContainEqual({ peer: "codex", on: true });
+  } finally { await f.close(); }
+}, 20_000);
+
+test("A4 offline CLI config reads keep module roster rows inert without evaluating a bundle", async () => {
+  const f = await fixture(true);
+  try {
+    f.client.close(); await f.daemon.stop();
+    const config = loadConfig(f.root);
+    expect(config.roster.fixture).toBe(true);
+    expect(readInstanceConfig(f.root).catalog.definitionOf("fixture")).toBeUndefined();
+    expect(() => parseConfigSources(configSourceTexts(f.root), undefined, f.root)).not.toThrow();
+    expect(readFileSync(f.marker, "utf8")).toBe("loaded\n");
+  } finally { await f.close(); }
+}, 20_000);
 
 test("A4 daemon imports an off-roster module and CLI sees inert bounded metadata only", async () => {
   const f = await fixture();

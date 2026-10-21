@@ -104,11 +104,13 @@ export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: R
   const localRaw = jsonLayers.find(layer => layer.name === "config.local.json")?.raw ?? {};
   let declared;
   let identityAdapters: ConfigIdentitySnapshot["adapters"];
+  let inertModuleRoster = false;
   let catalog = createProjectAdapterCatalog();
   try {
     if (cwd) {
       const accepted = readInstanceConfig(cwd, jsonLayers, externalAdapters === undefined ? undefined : externalMetadataDefinitions(externalAdapters));
       catalog = accepted.catalog; declared = accepted.instances; identityAdapters = accepted.adapters;
+      inertModuleRoster = !!accepted.adapter_modules?.length;
     } else {
       catalog = createProjectAdapterCatalog(localRaw?.adapters, externalMetadataDefinitions(externalAdapters));
       identityAdapters = localRaw?.adapters as ConfigIdentitySnapshot["adapters"];
@@ -136,7 +138,7 @@ export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: R
           const structural = { ...raw };
           // Declaration provenance was checked before compilation; ignored source data is never re-admitted.
           delete structural.adapters; delete structural.instances;
-          validateRawConfig(structural, declared, catalog);
+          validateRawConfig(structural, declared, catalog, inertModuleRoster);
         }
         catch (error) { throw new Error(`.agenthub/${name}: ${(error as Error).message}`); }
       }

@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { changedFiles, selectTests } from "../scripts/changed-tests.mjs";
 
 // #610: `scripts/check.sh --changed` runs only the tests a change touches; anything that can move every test is ALL.
@@ -51,4 +51,16 @@ test.skipIf(!process.env.AHUB_CHECK_RUN_ROOT)("#610 the gate pins git config, co
   expect(process.env.NO_COLOR).toBeUndefined();
   expect(process.env.TERM).toBe("xterm-256color");
   if (process.platform === "darwin" && process.env.HOME) expect(process.env.TMPDIR?.startsWith(process.env.HOME)).toBe(false);
+});
+
+for (const file of ["src/adapters/conformance/kit.ts", "src/adapters/conformance/fakes/acp-server.ts"]) test("#135 shared packaged conformance edit selects ALL despite a direct importing test: " + file, () => {
+  const repo = mkdtempSync(join(tmpdir(), "ahub-conformance-selection-"));
+  try {
+    mkdirSync(join(repo, "test"), { recursive: true });
+    mkdirSync(dirname(join(repo, file)), { recursive: true });
+    writeFileSync(join(repo, file), "export const fixture = true;\n");
+    writeFileSync(join(repo, "test/direct.test.ts"), 'import "../' + file + '";\n');
+    writeFileSync(join(repo, "test/transitive.test.ts"), "// A wrapper may reach the shared public fixture without naming it directly.\n");
+    expect(selectTests([file], repo)).toBe("ALL");
+  } finally { rmSync(repo, { recursive: true, force: true }); }
 });

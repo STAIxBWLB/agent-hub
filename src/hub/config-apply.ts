@@ -169,14 +169,14 @@ const schema: Record<string, Check> = {
   capabilities: map(strings), coordination: words(["advisory", "turn-free"]), experiments: block({ stale_notices: words(["drop", "deliver"]) }),
 };
 export const SCHEMA_KEYS: readonly string[] = Object.freeze(Object.keys(schema));
-export function validateRawConfig(raw: unknown, declarations?: InstancesConfig, context?: ProjectAdapterCatalog): asserts raw is Record<string, unknown> {
+export function validateRawConfig(raw: unknown, declarations?: InstancesConfig, context?: ProjectAdapterCatalog, inertModuleRoster = false): asserts raw is Record<string, unknown> {
   const value = object(raw, "config");
   const catalog = value.adapters !== undefined ? createProjectAdapterCatalog(value.adapters, context?.externalDefinitions) : context ?? createProjectAdapterCatalog();
   const instances = validateInstances(value.instances ?? declarations, catalog);
   block({ ...schema,
     instances: v => { validateInstances(v, catalog); },
     permission_modes: v => { permissionDefaults(v, instances, catalog); },
-    roster: v => { peerRosterConfig(v, instances, catalog); },
+    roster: v => { peerRosterConfig(v, instances, catalog, inertModuleRoster || Array.isArray(value.adapter_modules) && value.adapter_modules.length > 0); },
     peers: v => { peerStartConfig(v, instances, catalog); },
   })(raw, "config");
 }
