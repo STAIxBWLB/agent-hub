@@ -1,3 +1,5 @@
+import { runQwenEntry } from "./native-cli-entry-qwen.ts";
+import { previewQwen } from "./native-cli-preview-qwen.ts";
 import { QWEN_DISPLAY } from "./native-display.ts";
 import { QWEN_RECOVERY_SESSION } from "./native-recovery.ts";
 import { AcpPeer } from "../acp.ts";
@@ -9,6 +11,7 @@ import { shellQuote } from "../../cli/shell-quote.ts";
 export const QWEN_DEFINITION: AdapterDefinition = {
   api: 1,
   kind: "qwen",
+  projection: { roleRank: 5, helpRank: 5, plannerEligible: true },
   displayName: "Qwen Code",
   family: "qwen",
   transport: "acp",
@@ -64,7 +67,7 @@ export const QWEN_DEFINITION: AdapterDefinition = {
   turnEnd: "adapter",
   budget: { account: "qwen" },
   capabilities: { watch: true },
-  cli: { command: "qwen", launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
+  cli: { command: "qwen", entry: { lifecycleAdmission: true, execute: runQwenEntry }, preview: previewQwen, usage: [["ahub qwen [--mode headless] [--model <alias>] [--session-id <id>] [--print-command]", "start optional Qwen Code 0.25.0 ACP (roster.qwen, default off)"]], launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
   display: QWEN_DISPLAY,
   hooks: { recallPlatform: "qwen" },
 };

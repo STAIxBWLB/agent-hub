@@ -1,3 +1,6 @@
+import { KNOWN_PEERS as DERIVED_KNOWN, OPTIONAL_PEERS as DERIVED_OPTIONAL, START_MODE_PEERS as DERIVED_START } from "../src/adapters/registry.ts";
+import { KNOWN_PEERS as PROBE_KNOWN, OPTIONAL_PEERS as PROBE_OPTIONAL } from "../src/hub/peer-catalog.ts";
+import { START_MODE_PEERS as PROBE_START } from "../src/hub/start-mode.ts";
 import { expect, test } from "bun:test";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -33,10 +36,10 @@ function inventory() {
     const sources = sourceFiles();
     const split = splitRegistryInventory(sources);
     expect(split.issues).toEqual([]);
-    expect(split.compatibility.map(({ file, symbol, count, reason }) => ({ file, symbol, count, reason }))).toEqual([
-      { file: "src/hub/peer-catalog.ts", symbol: "KNOWN_PEERS", count: 5, reason: "cross-release source probe" },
-      { file: "src/hub/peer-catalog.ts", symbol: "OPTIONAL_PEERS", count: 3, reason: "cross-release source probe" },
-      { file: "src/hub/start-mode.ts", symbol: "START_MODE_PEERS", count: 4, reason: "cross-release source probe" },
+    expect(split.compatibility.map(({ file, symbol, reason }) => ({ file, symbol, reason }))).toEqual([
+      { file: "src/hub/peer-catalog.ts", symbol: "KNOWN_PEERS", reason: "cross-release source probe" },
+      { file: "src/hub/peer-catalog.ts", symbol: "OPTIONAL_PEERS", reason: "cross-release source probe" },
+      { file: "src/hub/start-mode.ts", symbol: "START_MODE_PEERS", reason: "cross-release source probe" },
     ]);
     cached = { baseline, sources, actual: groupRegistrySites(split.policy) };
   }
@@ -73,4 +76,11 @@ test("#451 registry guard refuses obsolete baseline entries after a source migra
   const removed = baseline[0]!;
   const migrated = actual.filter(row => row.file !== removed.file || row.symbol !== removed.symbol);
   expect(compareRegistryBaseline(migrated, baseline).join("\n")).toContain(`stale baseline: ${removed.file} ${removed.symbol}`);
+});
+
+
+test("#625 phase5 cross-release source probes equal the live derived lists", () => {
+  expect(DERIVED_KNOWN).toEqual(PROBE_KNOWN);
+  expect(DERIVED_OPTIONAL).toEqual(PROBE_OPTIONAL);
+  expect(DERIVED_START).toEqual(PROBE_START);
 });
