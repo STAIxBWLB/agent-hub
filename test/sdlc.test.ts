@@ -52,7 +52,14 @@ function rig(mode: SdlcMode, pii = false, delayMs = 0) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-sdlc-")), board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 }), notices: string[] = [];
   cleanups.push(() => { board.close(); rmSync(dir, { recursive: true, force: true }); });
   let head = A, conclusion = "SUCCESS", calls = 0;
-  const gh: SdlcGh = async args => { calls++; if (delayMs) await Bun.sleep(delayMs); return { code: 0, stdout: JSON.stringify(args[0] === "pr" ? raw(head, conclusion) : { data: { repository: { pullRequest: { headRefOid: head, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) }; };
+  const gh: SdlcGh = async args => {
+    calls++; if (delayMs) await Bun.sleep(delayMs);
+    const issueArg = args.find(arg => arg.startsWith("issue="));
+    return { code: 0, stdout: JSON.stringify(args[0] === "pr" ? raw(head, conclusion) : { data: { repository: {
+      pullRequest: { headRefOid: head, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } },
+      ...(issueArg ? { issue: { number: Number(issueArg.split("=")[1]), labels: { nodes: [], pageInfo: { hasNextPage: false } } } } : {}),
+    } } }) };
+  };
   const tasks = new Tasks({ board, bus, cwd: dir, project: "test", repository: "owner/repo", routing: () => loadRouting(dir), notify: message => notices.push(message), sdlc: { config: () => config(mode), gh } });
   const proposed = board.propose(USER, { title: pii ? "patient 900101-1234567 marker" : "work", class: "implement", plan: { paths: ["src/file.ts"] }, ...(pii ? { signals: ["pii"] } : {}) });
   board.update(proposed.id, USER, "accepted", { owner: "codex", reviewer: USER, state: "in_progress" });

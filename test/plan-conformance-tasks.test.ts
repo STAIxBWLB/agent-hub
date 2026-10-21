@@ -15,7 +15,8 @@ function rig(mode: "off" | "advise" | "enforce" = "enforce") {
  const deps: TasksDeps={cwd,project:"fixture",repository:"o/r",board,bus,routing:()=>routing,notify:()=>{},sdlc:{config:()=>sdlcConfig({mode:state.mode,required_checks:["gate"]}),gh:async args=>{
  state.calls.push(args); await state.gate;
  if(state.queueList && args[0]==="pr" && args[1]==="list")return {code:0,stdout:JSON.stringify([{number:2,headRefOid:state.head,baseRefName:"main",baseRefOid:A}])};
- return {code:0,stdout:JSON.stringify(args[0]==="pr"?{headRefOid:state.head,state:"OPEN",reviewDecision:"APPROVED",reviewRequests:[],statusCheckRollup:[{name:"gate",conclusion:"SUCCESS"}],files:state.paths.map(path=>({path,changeType:state.changeType})),changedFiles:state.paths.length+(state.complete?0:1)}:{data:{repository:{pullRequest:{headRefOid:state.head,reviewThreads:{nodes:[],pageInfo:{hasNextPage:false}}}}}})};
+ const issueArg=args.find(arg=>arg.startsWith("issue="));
+ return {code:0,stdout:JSON.stringify(args[0]==="pr"?{headRefOid:state.head,state:"OPEN",reviewDecision:"APPROVED",reviewRequests:[],statusCheckRollup:[{name:"gate",conclusion:"SUCCESS"}],files:state.paths.map(path=>({path,changeType:state.changeType})),changedFiles:state.paths.length+(state.complete?0:1)}:{data:{repository:{pullRequest:{headRefOid:state.head,reviewThreads:{nodes:[],pageInfo:{hasNextPage:false}}},...(issueArg?{issue:{number:Number(issueArg.split("=")[1]),labels:{nodes:[],pageInfo:{hasNextPage:false}}}}:{})}}})};
  }}};
  const tasks=new Tasks(deps);
  const row=board.propose("user",{title:"conformance",class:"implement",plan:{paths:["src/a.ts","src/untouched.ts"]}});

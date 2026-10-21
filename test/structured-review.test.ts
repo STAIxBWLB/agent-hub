@@ -19,9 +19,15 @@ function rig(mode: SdlcMode = "off", options: Partial<TasksDeps> = {}) {
   const deps: TasksDeps = { cwd, project: "fixture", repository: "o/r", board, bus, routing: () => routing,
     notify: text => notices.push(text), share: (_by, text) => shared.push(text),
     sdlc: { config: () => ({ ...sdlcConfig({ mode: policy.mode, required_checks: ["gate"] }), maxNits: policy.maxNits }),
-      gh: async args => ({ code: 0, stdout: JSON.stringify(args[0] === "pr"
-        ? { headRefOid: policy.head, state: "OPEN", reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], files: [], changedFiles: 0, unresolvedThreads: 0 }
-        : { data: { repository: { pullRequest: { headRefOid: policy.head, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) }) }, ...options };
+      gh: async args => {
+        const issueArg = args.find(arg => arg.startsWith("issue="));
+        return { code: 0, stdout: JSON.stringify(args[0] === "pr"
+          ? { headRefOid: policy.head, state: "OPEN", reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], files: [], changedFiles: 0, unresolvedThreads: 0 }
+          : { data: { repository: {
+            pullRequest: { headRefOid: policy.head, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } },
+            ...(issueArg ? { issue: { number: Number(issueArg.split("=")[1]), labels: { nodes: [], pageInfo: { hasNextPage: false } } } } : {}),
+          } } }) };
+      } }, ...options };
   const tasks = new Tasks(deps);
   cleanups.push(() => { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
   const create = (pii = false) => {

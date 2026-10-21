@@ -26,11 +26,17 @@ function fake(options: { ids?: number[]; heads?: Record<number, string>; paths?:
         };
         return [`queue_p${number}`, gates];
       }));
+      for (const match of finalQuery.matchAll(/queue_i([0-9]+):issue\(number:([0-9]+)\)/g)) {
+        repository[`queue_i${match[1]}`] = { number: Number(match[2]), labels: { nodes: [], pageInfo: { hasNextPage: false } } };
+      }
       repository.pullRequests = { nodes: ids.map(number => ({ number, headRefOid: options.heads?.[number] ?? A, baseRefName: "main", baseRefOid: M })), pageInfo: { hasNextPage: false } };
       return { code: 0, stdout: JSON.stringify({ data: { repository } }) };
     }
-    const number = Number(args.at(-1)?.split("=")[1]);
-    return { code: 0, stdout: JSON.stringify({ data: { repository: { pullRequest: { headRefOid: options.heads?.[number] ?? A, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) };
+    const number = Number(args.at(-1)?.split("=")[1]), issueArg = args.find(arg => arg.startsWith("issue="));
+    return { code: 0, stdout: JSON.stringify({ data: { repository: {
+      pullRequest: { headRefOid: options.heads?.[number] ?? A, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } },
+      ...(issueArg ? { issue: { number: Number(issueArg.split("=")[1]), labels: { nodes: [], pageInfo: { hasNextPage: false } } } } : {}),
+    } } }) };
   };
   return { run, calls };
 }
