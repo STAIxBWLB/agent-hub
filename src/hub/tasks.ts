@@ -177,6 +177,7 @@ const CONTRADICTION_WINDOW_MS = 7 * 86_400_000;
 const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
 /** Board events that leave a task where its completion check found it; any other event means it moved on meanwhile. */
 const QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep", "memory reference started"]);
+QUIET_EVENTS.add("ready held"); // #655: the hub's note that a ready task waits for its reserved owner's WIP slot.
 QUIET_EVENTS.add("plan observed"); // Host observation does not move the task or replace completion intent.
 
 /**
@@ -402,7 +403,7 @@ export class Tasks {
           } else {
             const admission = this.plannerPullRecord(task)?.pull ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.weights(task.class, task) });
             this.releaseNotice(`${text} Owner reassignment suggestion: ${admission.owner ?? "no eligible peer"}.`);
-            if (admission.owner && config.auto_reassign && this.sweepAvailable(admission.owner)) {
+            if (admission.owner && config.auto_reassign && this.sweepAvailable(admission.owner) && !this.reservedHold(task)) {
               try { await this.assignOwner(this.d.board.get(task.id)!, HUB, { candidates: [admission.owner], event: "reassigned", reason: "idle", note: "ready-unassigned idle sweep" }); }
               catch (e) { if (!(e instanceof AssignmentUndeliveredError)) throw e; }
             }
@@ -1483,6 +1484,7 @@ export class Tasks {
     this.withdrawRoleRequest(confirmed, returned, "reviewer");
     this.incomingBacklog.add(confirmed.id);
     this.planningRecorded({ by, task: confirmed.id, fields: ["return"], revision: confirmed.planningRevision ?? 0 });
+    await this.releaseHeld(confirmed.owner); // its owner's slot is free (#655)
     return returned;
   }
 
@@ -2099,13 +2101,49 @@ export class Tasks {
     if (waits.length) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} waits for ${waits.map((id) => `#${id}`).join(", ")}, not approved yet`);
   }
 
+  /** Ready offers between their cap check and the owner write (#655): task id -> reserved owner whose slot it takes. */
+  private readonly readyInFlight = new Map<number, PeerId>();
+
+  /** Offer order for ready work (#655): priority (urgent is P0, none is P2), then rank, then id. */
+  private readonly readyOrder = (a: Task, b: Task): number =>
+    (a.priority ?? (a.signals.includes("urgent") ? 0 : 2)) - (b.priority ?? (b.signals.includes("urgent") ? 0 : 2))
+    || (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER) || a.id - b.id;
+
+  /** Ready work the hub parked on its reserved owner's WIP cap (#655): its latest move-or-hold entry is `ready held`. */
+  private isHeld(task: Task): boolean {
+    // A planner's priority or rank edit (`planned`) is no move: it must not make held work look released.
+    return task.history.findLast(entry => entry.event === "ready held" || !QUIET_EVENTS.has(entry.event) && entry.event !== "planned")?.event === "ready held";
+  }
+
+  /**
+   * Why readiness must not hand `task` to its reserved owner yet (#655): that owner is at its planner WIP cap, the count
+   * `acceptanceCapacity` refuses at. Peer id and counts only, so it is safe for a PII task. A reserved owner the task
+   * excludes is not honoured by routing, and planner-pulled work was admitted by its pull: neither is held.
+   */
+  private reservedHold(task: Task): string | undefined {
+    const owner = task.reserved;
+    if (!owner || task.owner || this.plannerPullRecord(task)?.pull === true || this.excluded(task).includes(owner)) return undefined;
+    // Offers in flight take a slot before their owner is written; once it is written wip() counts it, so never twice.
+    const flying = [...this.readyInFlight].filter(([id, peer]) => peer === owner && id !== task.id && !this.d.board.get(id)?.owner).length;
+    const limit = this.wipLimit(owner), used = this.wip(owner, task.id) + (this.pendingClaims.get(owner) ?? 0) + flying;
+    return used >= limit ? `reserved owner ${owner} is at its planner WIP cap (${used}/${limit}); stays ready in To Do with its reservation until a slot frees` : undefined;
+  }
+
+  /** The task is ready but its reserved owner has no room: say so once on the task history, never assign. */
+  private holdReady(task: Task, why: string, reason: string): void {
+    if (this.isHeld(task)) return;
+    const ready = task.history.at(-1)?.event === "ready" ? task : this.d.board.update(task.id, HUB, "ready", {}, why);
+    this.d.board.update(ready.id, HUB, "ready held", {}, reason);
+    this.releaseNotice(`task ${this.publicTitle(ready)} is ready but held: ${reason}`);
+  }
+
   /** An approved task may be the last thing others waited for: those go through assignment now (issue #34). */
   private async releaseDependents(approved: Task): Promise<void> {
     try {
-      for (const t of this.d.board.list("proposed")) {
-        if (!t.deps?.includes(approved.id) || t.owner || this.waitsFor(t).length) continue;
-        await this.offerReady(t, `#${approved.id} approved`);
-      }
+      // Its dependents and, as its owner's slot just freed (#655), that owner's held ready tasks: one list in priority order.
+      const ready = this.d.board.list("proposed").filter(t => !t.owner && !this.waitsFor(t).length
+        && (t.deps?.includes(approved.id) || !!approved.owner && t.reserved === approved.owner && this.isHeld(t))).sort(this.readyOrder);
+      for (const t of ready) await this.offerReady(t, t.deps?.includes(approved.id) ? `#${approved.id} approved` : "owner slot freed");
     } catch (e) {
       this.releaseNotice(`task #${approved.id}: could not release dependents: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -2227,14 +2265,25 @@ export class Tasks {
     this.offered.delete(task.id);
     this.releaseNotice(`task #${task.id}: cancellation stall cleanup unavailable`, () => this.d.board.clearStall(task.id));
     for (const peer of new Set([task.owner, task.reviewer])) if (peer && peer !== USER) this.releaseNotice(`task #${task.id}: cancellation notice unavailable`, () => this.d.bus.publish(newEnvelope(HUB, sanitize(`Task #${task.id} cancelled. Stop working on it. No native turn or working tree was changed.`), { to: [peer], kind: "task", priority: "important", refs: { task: String(task.id), taskCancelled: cancelled.flowRevision }, ...(this.isPii(next) ? { private: true } : {}) })));
+    await this.releaseHeld(task.owner); // its owner's slot is free (#655)
     this.releaseNotice(`task #${task.id}: cancellation dependent advice unavailable`, () => {
       for (const dependent of this.d.board.list()) if (!isClosedTaskState(dependent.state) && !dependent.owner && dependent.deps?.includes(task.id)) this.releaseNotice(`task #${dependent.id}: cancellation stall advice unavailable`, () => this.reportStall(dependent, { kind: "cancelled-dependency", dependency: task.id, code: "cancelled" }));
     });
     return next;
   }
 
+  /** A slot freed for `peer` (cancel, untouched return): its held ready tasks are offered in priority order, and the cap stops the offers (#655). */
+  private async releaseHeld(peer: PeerId | null | undefined): Promise<void> {
+    if (!peer) return;
+    try {
+      for (const t of this.d.board.list("proposed").filter(t => !t.owner && t.reserved === peer && this.isHeld(t) && !this.waitsFor(t).length).sort(this.readyOrder)) await this.offerReady(t, "owner slot freed");
+    } catch (e) {
+      this.releaseNotice(`task ${peer}: could not offer held ready work: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   async releaseReady(): Promise<void> {
-    for (const t of this.d.board.list("proposed")) {
+    for (const t of [...this.d.board.list("proposed")].sort(this.readyOrder)) {
       if (t.owner) { this.d.board.clearStall(t.id); continue; }
       const cancelledDependency = t.deps?.find(id => this.d.board.get(id)?.state === "cancelled");
       if (cancelledDependency) { this.reportStall(t, { kind: "cancelled-dependency", dependency: cancelledDependency, code: "cancelled" }); continue; }
@@ -2246,7 +2295,7 @@ export class Tasks {
         continue;
       }
       this.d.board.clearStall(t.id);
-      if ((!t.deps?.length && !t.history.some(h => h.event === "backlog pulled")) || (!planned && last !== "blocked" && last !== "ready" && last !== "reserved")) continue;
+      if ((!t.deps?.length && !t.history.some(h => h.event === "backlog pulled")) || (!planned && last !== "blocked" && last !== "ready" && last !== "reserved" && !this.isHeld(t))) continue;
       // ponytail: a reserved owner (#207) that attaches after another peer that can take the task is passed over here like
       // an offline one; hold reserved tasks for a grace period if restarts show that up.
       await this.offerReady(t, "nothing left to wait for");
@@ -2255,13 +2304,18 @@ export class Tasks {
 
   /** Callers hold a list read before an await: re-read, or a task the other caller offered meanwhile is offered twice. */
   private async offerReady(stale: Task, why: string): Promise<void> {
-    let offering = false, undelivered: AssignmentUndeliveredError | undefined;
+    let offering = false, undelivered: AssignmentUndeliveredError | undefined, slot: PeerId | undefined;
     try {
       const t = this.d.board.get(stale.id);
       if (!t || t.state !== "proposed" || t.owner || this.personUnassigned(t) || this.offered.has(t.id)) return;
       const planned = this.plannerPullRecord(t)?.pull === true;
       const selected = planned ? this.plannerAssignment(t, true).owner : undefined;
       if (planned && !selected) return;
+      const held = planned ? undefined : this.reservedHold(t); // #655: the cap holds before the ready move is offered
+      if (held) { this.holdReady(t, why, held); return; }
+      // The check and the slot are one synchronous step: assignOwner can yield before it writes the owner, and a second offer
+      // for the same reserved owner must see this one as taking the last slot.
+      if (!planned && t.reserved) { slot = t.reserved; this.readyInFlight.set(t.id, slot); }
       this.offered.add(t.id);
       offering = true;
       const ready = t.history.at(-1)?.event === "ready" ? t : this.d.board.update(t.id, HUB, "ready", {}, why);
@@ -2273,6 +2327,7 @@ export class Tasks {
       if (e instanceof AssignmentUndeliveredError) undelivered = e;
       else this.releaseNotice(`task ${this.publicTitle(stale)}: could not be assigned: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
+      if (slot) this.readyInFlight.delete(stale.id);
       if (offering && !undelivered) {
         try {
           if (!this.d.board.get(stale.id)?.owner) this.offered.delete(stale.id);
