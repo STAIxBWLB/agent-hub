@@ -25,10 +25,12 @@ The same sample hub was rendered from `origin/main` (c4b1c998) and from this bra
 buttons, the board section, the progress strip, the agent slots, the columns and the cards were compared (148 rectangles over the
 four size and theme combinations).
 
-- Exact pixel equality does not hold, and is not claimed. R1 rounds spacing to the 4px scale and the 8/10px radius to 6/10px, so
-  rectangles move by a few pixels: nav buttons up to 4 px wider, columns up to 35 px taller, cards up to 21 px taller (a card's
-  controls moved from 8px/6px to 8px/12px padding steps). The whole 390 px page is 78 px taller (2905 to 2983) and the 1440 px page
-  16 px taller (1595 to 1611).
+- Exact pixel equality does not hold, and is not claimed. R1 snaps spacing to the 4px scale, so three paddings grew from 10px to
+  12px: the board column (`.board-column`, 10px to 12px: columns 600 px to 635 px tall at 1440), the agent slot
+  (`.agent-slot`, 10px to 12px: 166 px to 178 px) and the 14px/18px section and row paddings moved to 12px/16px (`.section-head` 14px 18px to 12px 16px). Cards keep their height
+  except one empty-state card (47 px to 68 px) and are 3 px narrower at 1440 because their column is 4 px narrower inside. Nav
+  buttons are up to 4 px wider (control padding 6px/10px to 8px/12px; their 44 px minimum height hides the vertical change). The whole 390 px page is 78 px taller (2905 to
+  2983) and the 1440 px page 16 px taller (1595 to 1611).
 - Structure is identical in all 16 checks (4 selectors x 4 combinations): the same number of columns and rows, the same reading
   order, 5 board columns at 1440 and 1 at 390, 8 nav buttons in 1 row at 1440 and in 2 rows at 390, the same 3 card columns.
 - Nothing scrolls sideways at 390 or 1440 px after the change.
