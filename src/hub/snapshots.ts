@@ -20,19 +20,21 @@ import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
  * ponytail: the trees are unreferenced, so `git gc` may prune them after gc.pruneExpire (two weeks by default); undo
  * of an older turn says so. Refs under refs/agenthub/ would keep them, at the cost of showing up in the user's repo.
  */
-export interface SnapshotBudget { deadline: number; }
+/** `now` is a host-only clock (#661): a test holds it fixed so the budget never runs out whatever the runner's speed. Production leaves it unset (performance.now). */
+export interface SnapshotBudget { deadline: number; now?: () => number; }
+export const budgetNow = (budget: SnapshotBudget): number => budget.now ? budget.now() : performance.now();
 export class SnapshotBudgetExceeded extends Error {
   constructor() { super("snapshot burst budget exhausted; boundary evidence is unknown"); }
 }
 const git = (top: string | Repo, args: string[], env: Record<string, string> = {}, budget?: SnapshotBudget, maxBuffer?: number) => {
   const argv = repoGitArgs(top, args);
-  const remaining = budget ? budget.deadline - performance.now() : SNAPSHOT_TIMEOUT_MS;
+  const remaining = budget ? budget.deadline - budgetNow(budget) : SNAPSHOT_TIMEOUT_MS;
   if (remaining <= 0) throw new SnapshotBudgetExceeded();
   const result = hubGitSync(argv, {
     encoding: "utf8", env: { ...repoGitEnv(top), ...env }, ...(maxBuffer === undefined ? {} : { maxBuffer }),
     timeout: Math.max(1, Math.min(SNAPSHOT_TIMEOUT_MS, Math.floor(remaining))),
   });
-  if (budget && (performance.now() >= budget.deadline || (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT")) throw new SnapshotBudgetExceeded();
+  if (budget && (budgetNow(budget) >= budget.deadline || (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT")) throw new SnapshotBudgetExceeded();
   return result;
 };
 const SNAPSHOT_TIMEOUT_MS = 10_000;
@@ -146,7 +148,7 @@ export function branchHeads(repo: Repo, budget?: SnapshotBudget): string | undef
   const result = git(repo, ["for-each-ref", "--sort=refname", "--format=%(refname) %(objectname)", "refs/heads/", "refs/remotes/"], {}, budget, 1024 * 1024);
   if (result.status !== 0 || result.error) return undefined;
   const digest = createHash("sha256").update(result.stdout).digest("hex");
-  if (budget && performance.now() >= budget.deadline) throw new SnapshotBudgetExceeded();
+  if (budget && budgetNow(budget) >= budget.deadline) throw new SnapshotBudgetExceeded();
   return digest;
 }
 
@@ -158,7 +160,7 @@ export function soleWorktree(repo: Repo, budget?: SnapshotBudget): boolean | und
   const registeredRoot = repo.shadow ? repo.dir : repo.top;
   let count = 0;
   for (const field of result.stdout.split("\0")) {
-    if (budget && performance.now() >= budget.deadline) throw new SnapshotBudgetExceeded();
+    if (budget && budgetNow(budget) >= budget.deadline) throw new SnapshotBudgetExceeded();
     if (!field.startsWith("worktree ")) continue;
     if (field.slice(9) !== registeredRoot || ++count > 1) return false;
   }
@@ -179,7 +181,7 @@ export interface HeadMoveCursor {
 const HEAD_LOG_TAIL_BYTES = 4096;
 const HEAD_LOG_MAX_APPEND_BYTES = 128 * 1024;
 const HEAD_LOG_MAX_MOVES = 64;
-const checkSnapshotBudget = (budget?: SnapshotBudget) => { if (budget && performance.now() >= budget.deadline) throw new SnapshotBudgetExceeded(); };
+const checkSnapshotBudget = (budget?: SnapshotBudget) => { if (budget && budgetNow(budget) >= budget.deadline) throw new SnapshotBudgetExceeded(); };
 const sameLogFile = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino;
 function readHeadLog<T>(repo: Repo, budget: SnapshotBudget | undefined, read: (fd: number, stat: Stats) => T | undefined): T | undefined {
   let fd: number | undefined;
