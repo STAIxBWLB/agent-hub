@@ -2,7 +2,7 @@
 import { claudePeer as defaultChannelPeer } from "../hub/claude-state.ts";
 import { effectiveInstanceRoles } from "../hub/instances.ts";
 import { resolveInstanceExecutionCwd } from "../hub/instance-execution.ts";
-import { readInstanceRoleConfig, readInstanceConfig } from "../hub/instance-config.ts";
+import { readInstanceRoleConfig, readInstanceConfig, type InstanceRoleConfig } from "../hub/instance-config.ts";
 import { parseConfiguredAcpArguments, runConfiguredAcpEntry, requireActiveConfiguredAcp } from "./configured-acp-entry.ts";
 import type { NativeCliEntryContext } from "../adapters/definitions/native-cli-entry-types.ts";
 import { BUILTIN_CLI_ENTRIES, createProjectAdapterCatalog, definitionOf, DOCTOR_TOOL_PROBES, DOCTOR_MEMORY_CAPTURE_PEERS, DOCTOR_PLUGIN_PROBE, nativeDoctorCheck, nativeDoctorRecoveryIdentity, nativeDoctorOptionalProbes } from "../adapters/registry.ts";
@@ -137,6 +137,13 @@ const needsProjectDeclarations = cliCommandLabel(given, rest) === "unknown"
   || !!process.env.AGENTHUB_PEER_ID && !definitionOf(process.env.AGENTHUB_PEER_ID)
   || given === "help" && !!rest[0] && cliCommandLabel(rest[0], []) === "unknown";
 try { peerConfig = needsProjectDeclarations ? readInstanceConfig(cwd) : { catalog: createProjectAdapterCatalog(), ignored: [] }; } catch (error) { fail(startupDiagnostic(error)); }
+/** Local declarations for a command the running daemon answers. A config file that is mid-edit or invalid must not
+ * block it (lowering a permission, listing or reloading settings): such a read falls back to builtins and keeps its
+ * diagnostic for a key that only a declaration could define. */
+function localDeclarations(): { scope: Pick<InstanceRoleConfig, "instances" | "catalog">; error?: string } {
+  try { return { scope: readInstanceRoleConfig(cwd) }; }
+  catch (error) { return { scope: { catalog: createProjectAdapterCatalog() }, error: startupDiagnostic(error) }; }
+}
 const projectCatalog = peerConfig.catalog;
 const configuredCommand = !definitionOf(given) && projectCatalog.definitionOf(given)?.permission.genericAcp !== undefined;
 const unboundCaller = detectCliIdentity(process.env);
@@ -1362,8 +1369,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     const [peer, mode] = positional;
     if (positional.length > 2 || positional.some(arg => arg.startsWith("--")) || (mode !== undefined && !isPermissionMode(mode))) fail("usage: ahub permission [<peer> [ask|ask-when-needed|never-ask]] [--yes]");
     if (mode === "never-ask" && !args.includes("--yes")) fail("never-ask requires --yes; nothing was changed");
-    const permissionScope = readInstanceRoleConfig(cwd);
-    if (mode === "never-ask" && peer) console.error(`never-ask: ${permissionBoundary(peer, permissionScope.instances, permissionScope.catalog)}; approval prompts are disabled`);
+    const { scope: permissionScope, error: permissionScopeError } = localDeclarations();
+    if (mode === "never-ask" && peer) console.error(`never-ask: ${permissionBoundary(peer, permissionScope.instances, permissionScope.catalog)}; approval prompts are disabled${permissionScopeError ? ` (project config unreadable: ${permissionScopeError})` : ""}`);
     const hub = await connect();
     try {
       const reply = await hub.request({ t: "permission", ...(peer ? { peer } : {}), ...(mode ? { mode, confirmed: args.includes("--yes") } : {}) }, 35_000);
@@ -1412,9 +1419,9 @@ const commands: Record<string, () => Promise<void> | void> = {
     const allowed: Record<string, string[]> = { list: ["--json"], get: ["--json"], set: ["--yes", "--preview", "--now"], undo: [], reload: [] };
     if (!Object.hasOwn(allowed, sub) || flags.some((flag) => !allowed[sub]!.includes(flag)) || extra.length) fail(usage);
     if ((sub === "get" && (!key || text !== undefined)) || (sub === "set" && (!key || text === undefined)) || ((sub === "list" || sub === "undo" || sub === "reload") && key !== undefined)) fail(usage);
-    const settingScope = readInstanceRoleConfig(cwd);
+    const { scope: settingScope, error: settingScopeError } = localDeclarations();
     const def = key === undefined ? undefined : settingDef(key, settingScope.instances, settingScope.catalog);
-    if (typeof def === "string") fail(`${key}: ${def}`);
+    if (typeof def === "string") fail(settingScopeError && def.startsWith("unknown setting") ? `${key}: ${def}; the project config could not be read: ${settingScopeError}` : `${key}: ${def}`);
     if (flags.includes("--now") && (typeof def !== "object" || def.group !== "Roster")) fail(usage);
     const value = sub === "set" ? parseSettingText(def!, text!) : undefined;
     const peer = def?.group === "Permissions" || def?.group === "Roster" ? def.path.at(-1)! : undefined;
@@ -1470,7 +1477,9 @@ const commands: Record<string, () => Promise<void> | void> = {
         return console.log(paint([{ text: result.text }], false));
       }
       if (sub === "undo") {
-        const view = await request({ t: "settings_get" }), undoDef = settingDef(view.undo);
+        const view = await request({ t: "settings_get" }), undoDef = settingDef(view.undo, settingScope.instances, settingScope.catalog);
+        // A roster undo of a declared peer needs its confirmation prompt; without readable declarations, refuse rather than skip it.
+        if (typeof undoDef === "string" && settingScopeError) fail(`pending undo ${String(view.undo)}: ${undoDef}; the project config could not be read: ${settingScopeError}`);
         const rosterPeer = typeof undoDef !== "string" && undoDef.group === "Roster" ? undoDef.path[1] : undefined;
         let confirm: string | undefined;
         if (rosterPeer) {
