@@ -35,7 +35,7 @@ export const PACKAGE_ROOT = resolve(import.meta.dir, "../..");
 const orcaExecutable = () => process.env.ORCA_CLI_COMMAND || (process.env.ORCA_DEV_REPO_ROOT ? "orca-dev" : process.platform === "linux" && !process.env.ORCA_TERMINAL_HANDLE ? "orca-ide" : "orca");
 
 /** Definitions are resolved against the owning project's current trusted declarations, never a global instance map. */
-const projectDefinition = (peer: string, projectRoot: string) => definitionOf(peer) ?? definitionOf(peer, readInstanceConfig(projectRoot).instances);
+const projectDefinition = (peer: string, projectRoot: string) => { const builtin = definitionOf(peer); if (builtin) return builtin; const bound = readInstanceConfig(projectRoot); return bound.catalog.definitionOf(peer, bound.instances); };
 
 const sessionState = (binding: TerminalBinding): "found" | "missing" | "unknown" => {
   const state = projectDefinition(binding.peer, binding.projectRoot)?.session.transcriptExists?.(binding);
@@ -144,7 +144,14 @@ export async function endPlannedPeer(planned: PlannedProject, peer: RecoveryPeer
 
 /** Declared identities cannot be reinterpreted against an older running source's unbound peer rows. */
 export function instanceRecoverySourceRefusal(projectRoot: string, features: unknown, observedPeers?: unknown): string | undefined {
-  const declared = Object.keys(readInstanceConfig(projectRoot).instances ?? {});
+  const bound = readInstanceConfig(projectRoot);
+  const configured = Object.keys(bound.adapters ?? {});
+  const configuredIds = [...configured, ...Object.entries(bound.instances ?? {}).filter(([, entry]) => configured.includes(entry.kind)).map(([id]) => id)];
+  if (configuredIds.length && !(Array.isArray(features) && features.every(feature => typeof feature === "string") && features.includes("configured_acp"))) {
+    const rows = observedPeers && typeof observedPeers === "object" && !Array.isArray(observedPeers) ? Object.entries(observedPeers) : undefined;
+    if (!rows || !rows.every(([, peer]) => !!peer && typeof peer === "object" && typeof (peer as { state?: unknown }).state === "string") || rows.some(([id, peer]) => configuredIds.includes(id) && (peer as { state: string }).state !== "offline")) return "source lacks configured_acp; configured native identities require a supporting source before recovery";
+  }
+  const declared = Object.keys(bound.instances ?? {});
   if (!declared.length) return undefined;
   if (Array.isArray(features) && features.every(feature => typeof feature === "string") && features.includes("peer_instances")) return undefined;
   if (observedPeers && typeof observedPeers === "object" && !Array.isArray(observedPeers)) {
@@ -613,6 +620,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         return { ...target, ...(op.targetFeatures === undefined ? {} : { targetFeatures: [...op.targetFeatures] }) };
       }
       if (cached && op.targetFeatures !== undefined) {
+        if (!op.targetFeatures.includes("configured_acp") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).adapters ?? {}).length > 0)) throw new FinalRefusal("target lacks configured_acp; configured adapters require a supporting target before recovery effects");
         if (!op.targetFeatures.includes("peer_instances") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).instances ?? {}).length > 0)) throw new FinalRefusal("target lacks peer_instances; declared project instances require a supporting target before recovery effects");
         return { ...target, targetFeatures: [...op.targetFeatures] };
       }
@@ -624,6 +632,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if (!metadata || typeof metadata !== "object" || !Number.isInteger(metadata.protocol)) throw new Error(`the staged target's control protocol could not be read (probe exit ${probe.code}); staged package retained, runtimes unchanged; resume again once it can run`);
       if (!Array.isArray(metadata.features) || !metadata.features.every((feature: unknown) => typeof feature === "string" && feature.length > 0)) throw new Error("the staged target features could not be read; staged package retained, runtimes unchanged");
       const targetFeatures: readonly string[] = [...metadata.features];
+      if (!targetFeatures.includes("configured_acp") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).adapters ?? {}).length > 0)) throw new FinalRefusal("target lacks configured_acp; configured adapters require a supporting target before recovery effects");
       if (metadata.protocol !== PROTOCOL) throw new FinalRefusal("target protocol requires a newer coordinator; staged package retained, runtimes unchanged");
       if (!targetFeatures.includes("peer_instances") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).instances ?? {}).length > 0)) throw new FinalRefusal("target lacks peer_instances; declared project instances require a supporting target before recovery effects");
       const verified = { ...target, targetFeatures };

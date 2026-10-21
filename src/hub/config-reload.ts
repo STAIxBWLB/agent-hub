@@ -1,10 +1,11 @@
-import { ADAPTERS } from "../adapters/registry.ts";
+import { ADAPTERS, createProjectAdapterCatalog } from "../adapters/registry.ts";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { validateRawConfig, type ConfigLayer } from "./config-apply.ts";
 import { parseOverlay, parseRouting, type Routing } from "./routing.ts";
 import { CLASSES } from "./board.ts";
+import { readInstanceConfig } from "./instance-config.ts";
 import { validateInstances } from "./instances.ts";
 
 export const CONFIG_SOURCE_FILES = ["config.json", "config.local.json", "routing.toml", "routing.local.toml"] as const;
@@ -83,14 +84,26 @@ function validateRoutingRaw(value: unknown): void {
 }
 
 /** Strict reloads never use routing's last-good fallback. Startup can retain its existing fallback explicitly. */
-export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: Routing): ConfigSources {
+export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: Routing, cwd?: string): ConfigSources {
   const layers: ConfigLayer[] = [], trustLayers: ConfigSources["trustLayers"] = [];
   let localRaw: Record<string, unknown> = {};
   try { localRaw = JSON.parse(texts["config.local.json"] ?? "{}"); }
   catch { if (!fallbackRouting) throw new Error(".agenthub/config.local.json: invalid JSON object"); }
   let declared;
-  try { declared = validateInstances(localRaw?.instances); }
-  catch (error) {
+  let catalog = createProjectAdapterCatalog();
+  try {
+    if (cwd) {
+      const jsonLayers = (["config.json", "config.local.json"] as const).flatMap(name => {
+        const value = texts[name];
+        return value === null ? [] : [{ name, raw: JSON.parse(value) as Record<string, unknown> }];
+      });
+      const accepted = readInstanceConfig(cwd, jsonLayers);
+      catalog = accepted.catalog; declared = accepted.instances;
+    } else {
+      catalog = createProjectAdapterCatalog(localRaw?.adapters);
+      declared = validateInstances(localRaw?.instances, catalog);
+    }
+  } catch (error) {
     if (!fallbackRouting) throw new Error(`.agenthub/config.local.json: ${(error as Error).message}`);
     declared = validateInstances(undefined);
   }
@@ -108,7 +121,12 @@ export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: R
     }
     if (name === "config.json" || name === "config.local.json") {
       if (!fallbackRouting) {
-        try { validateRawConfig(raw, declared); }
+        try {
+          const structural = { ...raw };
+          // Declaration provenance was checked before compilation; ignored source data is never re-admitted.
+          delete structural.adapters; delete structural.instances;
+          validateRawConfig(structural, declared, catalog);
+        }
         catch (error) { throw new Error(`.agenthub/${name}: ${(error as Error).message}`); }
       }
       layers.push({ name, raw });

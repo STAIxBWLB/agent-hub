@@ -1,5 +1,5 @@
 import { selectReviewerPool, type ReviewerPoolSelection } from "./reviewer-pool.ts";
-import { ADAPTERS, definitionOf, kindOf, familyOf } from "../adapters/registry.ts";
+import { ADAPTERS, definitionOf, kindOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { CLASSES, type Task, type TaskClass } from "./board.ts";
@@ -115,6 +115,7 @@ export const PI: PeerId = "pi";
 
 /** Startup-bound project data, never inferred from a suffix or read from configuration here. */
 export interface InstanceRoutingOptions {
+  adapterCatalog?: ProjectAdapterCatalog;
   instances?: Readonly<Record<string, { kind: string }>>;
   wip?: Record<string, number>;
   load?: Record<string, number>;
@@ -133,8 +134,8 @@ function siblingOrder(states: Readonly<Record<string, PeerState>>, opts: Instanc
 function expandClassPeers(peers: readonly PeerId[], states: Readonly<Record<string, PeerState>>, opts: InstanceRoutingOptions): PeerId[] {
   if (!hasInstances(opts)) return [...peers];
   return [...new Set(peers.flatMap(peer => {
-    const kind = kindOf(peer, opts.instances);
-    return kind && kind === peer ? [peer, ...Object.keys(opts.instances!).filter(id => kindOf(id, opts.instances) === kind)].sort(siblingOrder(states, opts)) : [peer];
+    const kind = (opts.adapterCatalog?.kindOf ?? kindOf)(peer, opts.instances);
+    return kind && kind === peer ? [peer, ...Object.keys(opts.instances!).filter(id => (opts.adapterCatalog?.kindOf ?? kindOf)(id, opts.instances) === kind)].sort(siblingOrder(states, opts)) : [peer];
   }))];
 }
 /** Quota/adaptive policy retains kind slots; sibling workload chooses only within that kind's slots. */
@@ -142,7 +143,7 @@ function orderSiblingSlots(peers: PeerId[], states: Readonly<Record<string, Peer
   if (!hasInstances(opts)) return peers;
   const groups = new Map<string, number[]>(), out = [...peers];
   for (const [index, peer] of peers.entries()) {
-    const kind = kindOf(peer, opts.instances);
+    const kind = (opts.adapterCatalog?.kindOf ?? kindOf)(peer, opts.instances);
     if (kind) { const slots = groups.get(kind) ?? []; slots.push(index); groups.set(kind, slots); }
   }
   for (const slots of groups.values()) {
@@ -154,11 +155,11 @@ function orderSiblingSlots(peers: PeerId[], states: Readonly<Record<string, Peer
 
 /** The quota/roster relay keeps its native preference order, then the class's original tail. */
 export function relayCandidates(classPeers: readonly PeerId[], pii: boolean, opts: InstanceRoutingOptions & { states?: Readonly<Record<string, PeerState>> } = {}): PeerId[] {
-  const preferred = ADAPTERS.filter(adapter => adapter.routing?.handoffPriority !== undefined)
+  const preferred = (opts.adapterCatalog?.definitions ?? ADAPTERS).filter(adapter => adapter.routing?.handoffPriority !== undefined)
     .sort((a, b) => a.routing!.handoffPriority! - b.routing!.handoffPriority!);
   const candidates = [
     ...preferred.filter(adapter => !pii || adapter.trust.onPrem).map(adapter => adapter.kind),
-    ...classPeers.filter(peer => definitionOf(peer, opts.instances)?.routing?.handoffPriority === undefined),
+    ...classPeers.filter(peer => (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.routing?.handoffPriority === undefined),
   ].filter((peer): peer is PeerId => !!peer);
   return expandClassPeers(candidates, opts.states ?? {}, opts);
 }
@@ -378,10 +379,10 @@ export function assign(
   const refusals = new Map<string, RoutingRefusal>();
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
     const deny = (code: RoutingRefusalCode, reason: string): string => { refusals.set(`${role}:${peer}`, { peer, role, code, reason }); return reason; };
-    const ceiling = definitionOf(peer, opts.instances)?.routing?.allowedRoles;
+    const ceiling = (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.routing?.allowedRoles;
     const requiredRole = role === "reviewer" || task.class === "review" ? "reviewer" : task.class === "plan" ? "planner" : "implementer";
     if (ceiling && !ceiling.includes(requiredRole)) return deny("policy", "adapter role ceiling excludes this assignment");
-    const unavailable = role === "reviewer" ? definitionOf(peer, opts.instances)?.reviewer?.unavailable : undefined;
+    const unavailable = role === "reviewer" ? (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.reviewer?.unavailable : undefined;
     if (unavailable) return deny("policy", unavailable);
     if (role === "owner" && opts.capabilities && !pii) {
       const caps = peerEntry(opts.capabilities, peer);
@@ -394,7 +395,7 @@ export function assign(
     if (!Object.hasOwn(states, peer)) return deny("not-attached", "not attached");
     if (opts.exclude?.includes(peer)) return deny("excluded", "excluded (declined or replaced)");
     if (role === "owner" && opts.excludeOwners?.includes(peer)) return deny("owner-admission", "owner admission: WIP or delivery hold");
-    const adapter = definitionOf(peer, opts.instances);
+    const adapter = (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances);
     if (role === "owner" && adapter?.routing?.reviewOnly) return deny("owner-admission", "owner admission: a review-only instance owns no task");
     if (role === "owner" && needsTests && adapter && adapter.kind !== peer) {
       if (!peerEntry(opts.roles, peer)?.includes("implementer")) return deny("owner-admission", "owner admission: declared write owner requires the current implementer role");
@@ -404,8 +405,8 @@ export function assign(
     if (states[peer] === "paused" && routing.constraints.budget_paused === "skip_peer") return deny("paused", "paused");
     const failing = peerEntry(opts.failing, peer);
     if (failing) return deny("failing", `failing: ${failing}`);
-    if (pii && definitionOf(peer, opts.instances)?.trust.onPrem !== true) return deny("pii", "pii: on-prem peers only");
-    const nativeRouting = definitionOf(peer, opts.instances)?.routing;
+    if (pii && (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.trust.onPrem !== true) return deny("pii", "pii: on-prem peers only");
+    const nativeRouting = (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.routing;
     if (nativeRouting?.localAllowedRefusal && policy?.local_allowed === false) return deny("policy", nativeRouting.localAllowedRefusal);
     if (nativeRouting?.longContext === "backend-limit" && task.signals.includes("long_context")) {
       const backend = policy?.pi_backend ?? "dgx";
@@ -462,7 +463,7 @@ export function assign(
     }
     const ranked = sortSiblings ? orderSiblingSlots(rank(ok, role, not), states, opts) : rank(ok, role, not);
     // Demotion applies to local and Pi too: a demoted one loses its place ahead of the cloud peers.
-    const localTier = ranked.filter((p) => definitionOf(p, opts.instances)?.routing?.preferredTier === true && !(role === "owner" && peerEntry(opts.demoted, p)));
+    const localTier = ranked.filter((p) => (opts.adapterCatalog?.definitionOf ?? definitionOf)(p, opts.instances)?.routing?.preferredTier === true && !(role === "owner" && peerEntry(opts.demoted, p)));
     if (localTier.length) return localTier.find((p) => states[p] === "idle") ?? localTier[0]; // local/Pi stays ahead of an idle cloud peer
     return ranked.find((p) => states[p] === "idle") ?? ranked[0];
   };
@@ -492,13 +493,13 @@ export function assign(
       trace.push(opts.namedReviewer === undefined ? `  reviewer candidates: [classes.review] peers ${classPeers.join(", ") || "none"}${rolePeers.length ? `; reviewer role ${rolePeers.join(", ")}` : ""}` : `  reviewer candidate explicitly named: ${opts.namedReviewer}`);
       const reviewOwner = owner ?? opts.notReviewer;
       const automatic = [...new Set([...expandClassPeers(classPeers, states, opts), ...rolePeers])];
-      const ownerFamily = instanceMode && reviewOwner ? familyOf(reviewOwner, opts.instances) : undefined;
-      const sameFamily = (peer: PeerId) => ownerFamily !== undefined && familyOf(peer, opts.instances) === ownerFamily;
+      const ownerFamily = instanceMode && reviewOwner ? (opts.adapterCatalog?.familyOf ?? familyOf)(reviewOwner, opts.instances) : undefined;
+      const sameFamily = (peer: PeerId) => ownerFamily !== undefined && (opts.adapterCatalog?.familyOf ?? familyOf)(peer, opts.instances) === ownerFamily;
       const independent = ownerFamily === undefined ? [] : automatic.filter(peer => peer !== reviewOwner && !blocked(peer, "reviewer") && !sameFamily(peer));
       const named = opts.namedReviewer;
       const declaredPool = opts.reviewPool && named === undefined ? Object.keys(opts.instances ?? {}).flatMap(id => {
-        const roles = peerEntry(opts.roles, id), definition = definitionOf(id, opts.instances);
-        const kind = kindOf(id, opts.instances), family = familyOf(id, opts.instances);
+        const roles = peerEntry(opts.roles, id), definition = (opts.adapterCatalog?.definitionOf ?? definitionOf)(id, opts.instances);
+        const kind = (opts.adapterCatalog?.kindOf ?? kindOf)(id, opts.instances), family = (opts.adapterCatalog?.familyOf ?? familyOf)(id, opts.instances);
         if (roles?.length !== 1 || roles[0] !== "reviewer" || !definition?.routing?.reviewOnly || !kind || !family) return [];
         const reason = id === reviewOwner ? "is the owner" : definition.reviewer?.unavailable ?? blocked(id, "reviewer")
           ?? (states[id] === "paused" ? "paused" : undefined)
@@ -509,7 +510,7 @@ export function assign(
       if (declaredPool.length || opts.reviewPool?.required && named === undefined) {
         for (const candidate of declaredPool) if (!opts.reviewPool!.pool.includes(candidate.kind)) trace.push(`  reviewer pool candidate ${candidate.id} (${candidate.family}): unavailable skip: ${candidate.blocked ?? "kind outside configured pool"}`);
         const last = task.history?.findLast(entry => entry.event === "changes_requested");
-        const continuityFamily = last && "reviewerFamily" in last && typeof last.reviewerFamily === "string" ? last.reviewerFamily : last ? familyOf(last.by, opts.instances) : undefined;
+        const continuityFamily = last && "reviewerFamily" in last && typeof last.reviewerFamily === "string" ? last.reviewerFamily : last ? (opts.adapterCatalog?.familyOf ?? familyOf)(last.by, opts.instances) : undefined;
         const pr = task.sdlc?.pr;
         const seed = typeof pr === "number" && Number.isSafeInteger(pr) && pr > 0 ? pr : task.id ?? 0;
         reviewSelection = selectReviewerPool({ pool: opts.reviewPool!.pool, candidates: declaredPool, seed, implementerFamily: ownerFamily, continuityFamily, rerotate: opts.reviewPool!.rerotate, failed: opts.reviewPool!.failed });
@@ -518,7 +519,7 @@ export function assign(
         if (reviewSelection.blocked) {
           trace.push("blocked: no reviewer can run");
           // Optional defaults retain the legacy planner escape when no fresh reviewer can run.
-          const planners = opts.reviewPool?.required ? [] : automatic.filter(peer => peer !== reviewOwner && peerEntry(opts.roles, peer)?.includes("planner") && !definitionOf(peer, opts.instances)?.routing?.reviewOnly && !blocked(peer, "reviewer"));
+          const planners = opts.reviewPool?.required ? [] : automatic.filter(peer => peer !== reviewOwner && peerEntry(opts.roles, peer)?.includes("planner") && !(opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.routing?.reviewOnly && !blocked(peer, "reviewer"));
           const otherFamily = planners.filter(peer => !sameFamily(peer));
           const planner = pick(otherFamily.length ? otherFamily : planners, "reviewer", reviewOwner);
           if (planner) {
@@ -555,8 +556,8 @@ export function assign(
   const route = effectiveLocalRoute(routing.local.route, policy?.route, policy?.fixed_model);
   const fixedModel = policy?.fixed_model ?? routing.local.fixed_model;
   const piBackend = policy?.pi_backend;
-  if (owner && definitionOf(owner, opts.instances)?.routing?.trace === "route") trace.push(`route: ${route ?? "(none)"}, fixed_model ${fixedModel}`);
-  if (owner && definitionOf(owner, opts.instances)?.routing?.trace === "backend") trace.push(`${definitionOf(owner, opts.instances)!.routing!.backendLabel} decision: backend ${piBackend ?? "dgx"}${task.signals.includes("long_context") ? `, context limit ${piBackend === "mlx" ? routing.pi.mlx_max_context_tokens : routing.pi.dgx_max_context_tokens}` : ""}`);
+  if (owner && (opts.adapterCatalog?.definitionOf ?? definitionOf)(owner, opts.instances)?.routing?.trace === "route") trace.push(`route: ${route ?? "(none)"}, fixed_model ${fixedModel}`);
+  if (owner && (opts.adapterCatalog?.definitionOf ?? definitionOf)(owner, opts.instances)?.routing?.trace === "backend") trace.push(`${(opts.adapterCatalog?.definitionOf ?? definitionOf)(owner, opts.instances)!.routing!.backendLabel} decision: backend ${piBackend ?? "dgx"}${task.signals.includes("long_context") ? `, context limit ${piBackend === "mlx" ? routing.pi.mlx_max_context_tokens : routing.pi.dgx_max_context_tokens}` : ""}`);
   return { ...(reviewSelection ? { reviewSelection } : {}), ...(reviewBlocked ? { reviewBlocked: true as const } : {}), ...(sameFamilyFallback ? { sameFamilyFallback: true as const } : {}), ...(plannerFallback ? { plannerFallback: true as const } : {}), ...(owner ? { owner } : {}), ...(pii ? { reviewer: "user" } : reviewer ? { reviewer } : {}), ...(route ? { route } : {}), fixedModel, ...(piBackend ? { piBackend } : {}), ...(unreserved ? { unreserved } : {}), ...(refusals.size ? { refusals: [...refusals.values()] } : {}), trace };
 }
 

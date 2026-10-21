@@ -471,6 +471,8 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   if (s.settingsEdit) {
     const edit = { ...s.settingsEdit }; s.settingsEdit = edit;
     if (key === "\x1b") { s.settingsEdit = undefined; return done(); }
+    const locked = s.settingsRows?.find(row => row.key === edit.key)?.locked;
+    if (locked) { s.settingsEdit = undefined; notify(s, locked, now); return done(); }
     if (edit.phase === "preview") return done();
     if (edit.phase === "confirm") {
       s.settingsEdit = undefined;
@@ -632,6 +634,8 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     const row = selectedPanelRow(s);
     if (key === "u" && !s.settingsUndo) { notify(s, "nothing to undo", now); return done(); }
     if (key === "e" && !row) return done();
+    const locked = (key === "e" ? row : s.settingsRows?.find(row => row.key === s.settingsUndo))?.locked;
+    if (locked) { notify(s, locked, now); return done(); }
     const token = (s.settingsSequence ?? 0) + 1; s.settingsSequence = token;
     s.settingsEdit = { token, undo: key === "u", ...(key === "e" ? { key: row.key } : {}), phase: key === "u" ? "preview" : "value", text: key === "e" ? settingValueText(row.fileValue) : "" };
     if (key === "u") effects.push({ type: "settings_preview", token, undo: true });

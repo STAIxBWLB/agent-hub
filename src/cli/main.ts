@@ -3,8 +3,9 @@ import { claudePeer as defaultChannelPeer } from "../hub/claude-state.ts";
 import { effectiveInstanceRoles } from "../hub/instances.ts";
 import { resolveInstanceExecutionCwd } from "../hub/instance-execution.ts";
 import { readInstanceConfig } from "../hub/instance-config.ts";
+import { parseConfiguredAcpArguments, runConfiguredAcpEntry, requireActiveConfiguredAcp } from "./configured-acp-entry.ts";
 import type { NativeCliEntryContext } from "../adapters/definitions/native-cli-entry-types.ts";
-import { BUILTIN_CLI_ENTRIES, definitionOf, DOCTOR_TOOL_PROBES, DOCTOR_MEMORY_CAPTURE_PEERS, DOCTOR_PLUGIN_PROBE, nativeDoctorCheck, nativeDoctorRecoveryIdentity, nativeDoctorOptionalProbes } from "../adapters/registry.ts";
+import { BUILTIN_CLI_ENTRIES, createProjectAdapterCatalog, definitionOf, DOCTOR_TOOL_PROBES, DOCTOR_MEMORY_CAPTURE_PEERS, DOCTOR_PLUGIN_PROBE, nativeDoctorCheck, nativeDoctorRecoveryIdentity, nativeDoctorOptionalProbes } from "../adapters/registry.ts";
 import { parsePiFlags } from "../adapters/definitions/native-cli-pi.ts";
 import { supportsBoardReleaseFilter, supportsBoardColumnMetadata } from "./board-read.ts";
 import { matchesPolicy } from "../hub/path-policy.ts";
@@ -80,7 +81,7 @@ import { recordCliAudit, recordDelegatedCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
 import { outputWidth, renderRoster, renderStatus, renderBoard, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "./output.ts";
-import { renderHelp } from "./help.ts";
+import { renderHelp, configuredAcpHelp } from "./help.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
 
@@ -119,16 +120,25 @@ try {
     }
   } else {
     const markedPeer = process.env.AGENTHUB_PEER_ID, markedRoot = process.env.AGENTHUB_PROJECT_DIR;
-    const declarations = markedPeer && markedRoot && !definitionOf(markedPeer) ? readInstanceConfig(realPath(markedRoot)).instances : undefined;
+    const markedConfig = markedPeer && markedRoot && !definitionOf(markedPeer) ? readInstanceConfig(realPath(markedRoot)) : undefined;
+    const declarations = markedConfig?.instances;
     if (markedPeer && markedRoot && declarations && Object.hasOwn(declarations, markedPeer)) {
       const canonicalRoot = realPath(markedRoot), config = loadConfig(canonicalRoot);
-      const executionCwd = resolveInstanceExecutionCwd(canonicalRoot, markedPeer, declarations, effectiveInstanceRoles(markedPeer, declarations, config.roles));
+      const executionCwd = resolveInstanceExecutionCwd(canonicalRoot, markedPeer, declarations, effectiveInstanceRoles(markedPeer, declarations, config.roles, markedConfig?.catalog), markedConfig?.catalog);
       if (realPath(projectRoot(process.cwd())) !== realPath(executionCwd)) fail("native instance workspace does not match its declared checkout");
       selected = projectContext(canonicalRoot);
     } else selected = projectContext(process.cwd());
   }
 } catch (error) { fail(startupDiagnostic(error)); }
 const cwd = selected.root;
+let peerConfig: ReturnType<typeof readInstanceConfig>;
+const needsProjectDeclarations = cliCommandLabel(given, rest) === "unknown"
+  || rest.some(arg => arg === "--as" || arg.startsWith("--as="))
+  || !!process.env.AGENTHUB_PEER_ID && !definitionOf(process.env.AGENTHUB_PEER_ID)
+  || given === "help" && !!rest[0] && cliCommandLabel(rest[0], []) === "unknown";
+try { peerConfig = needsProjectDeclarations ? readInstanceConfig(cwd) : { catalog: createProjectAdapterCatalog(), ignored: [] }; } catch (error) { fail(startupDiagnostic(error)); }
+const projectCatalog = peerConfig.catalog;
+const configuredCommand = !definitionOf(given) && projectCatalog.definitionOf(given)?.permission.genericAcp !== undefined;
 const unboundCaller = detectCliIdentity(process.env);
 const markerNeedsDeclaration = unboundCaller.role === "invalid" && unboundCaller.reason === "AGENTHUB_PEER_ID conflicts with native agent marker"
   && process.env.AGENTHUB_PEER_ID !== undefined && !definitionOf(process.env.AGENTHUB_PEER_ID);
@@ -136,8 +146,11 @@ const needsInstances = definitionOf(given) && rest.some(arg => arg === "--as" ||
 let declaredInstances: ReturnType<typeof readInstanceConfig>["instances"];
 let nativeSelection: ReturnType<typeof instanceLaunchArguments>;
 try {
-  declaredInstances = needsInstances ? readInstanceConfig(cwd).instances : undefined;
-  nativeSelection = instanceLaunchArguments(given, rest, declaredInstances);
+  declaredInstances = needsInstances || configuredCommand ? peerConfig.instances : undefined;
+  if (configuredCommand && !(rest.length === 1 && ["--help", "-h"].includes(rest[0]!))) {
+    const selection = parseConfiguredAcpArguments(given, rest, projectCatalog, declaredInstances);
+    nativeSelection = { ...(selection.peer !== given ? { instance: selection.peer } : {}), args: [...rest] };
+  } else nativeSelection = instanceLaunchArguments(given, rest, declaredInstances);
 } catch (error) { fail(startupDiagnostic(error)); }
 const selectedInstance = nativeSelection.instance;
 // `ahub <command> -h` alone asks for that command's help instead of running it. Elsewhere `-h` may be message text
@@ -147,10 +160,19 @@ const cmd = asksHelp(given) || (definitionOf(given)?.start.passthrough !== true 
 const args = cmd === "help" && given !== "help" && !asksHelp(given) ? [given] : nativeSelection.args;
 
 /** Resolve a named peer only against this project's current trusted declarations. */
-const peerDefinition = (peer: unknown) => typeof peer === "string"
-  ? definitionOf(peer) ?? definitionOf(peer, readInstanceConfig(cwd).instances) : undefined;
+const peerDefinition = (peer: unknown) => {
+  if (typeof peer !== "string") return undefined;
+  const bound = projectCatalog.definitionOf(peer, peerConfig.instances);
+  if (bound) return bound;
+  const current = readInstanceConfig(cwd);
+  return current.catalog.definitionOf(peer, current.instances);
+};
 const requireNamedPeerFeature = (hub: ControlClient, peer: string | undefined) => {
-  if (peer !== undefined && !definitionOf(peer)) requirePeerInstances(hub.features);
+  if (peer !== undefined && !definitionOf(peer)) {
+    const adapter = peerDefinition(peer);
+    if (adapter?.permission.genericAcp !== undefined && !hub.features.includes("configured_acp")) throw new Error("running hub lacks configured_acp; upgrade and restart it first");
+    if (adapter?.kind !== peer) requirePeerInstances(hub.features);
+  }
 };
 
 /** The project config, saying on stderr which machine-local fields it had to ignore (issue #17). */
@@ -161,8 +183,8 @@ const projectConfig = () => {
 };
 const stateDir = selected.stateDir;
 const caller = declaredInstances ? detectCliIdentity(process.env, declaredInstances) : unboundCaller;
-const commandLabel = cliCommandLabel(cmd, args);
-const commandAccess = classifyPeerCommand(cmd, args);
+const commandLabel = cliCommandLabel(cmd, args, projectCatalog);
+const commandAccess = classifyPeerCommand(cmd, args, projectCatalog);
 // Agent-authored content keeps its peer. Operational starts/holds may borrow console authority for live verification.
 const delegationRefused = liveTest && caller.role === "tools" && commandAccess !== "allowed" && liveTestRefusal(cmd, args);
 const delegatedPeer = liveTest && caller.role === "tools" && commandAccess !== "allowed" && !delegationRefused ? caller.peer : undefined;
@@ -763,7 +785,8 @@ const commands: Record<string, () => Promise<void> | void> = {
   help: () => {
     const color = resolveColor(undefined, { isTTY: !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR }) === true;
     const topic = asksHelp(args[0]) ? undefined : args[0];
-    const text = renderHelp(process.stdout.columns ?? 80, color, topic);
+    const text = topic && !definitionOf(topic) && projectCatalog.definitionOf(topic)?.permission.genericAcp !== undefined
+      ? configuredAcpHelp(topic) : renderHelp(process.stdout.columns ?? 80, color, topic);
     if (!text) fail(`unknown command "${topic}"; run ahub help`);
     console.log(text);
   },
@@ -2062,7 +2085,18 @@ async function runConductorCommand(): Promise<void> {
     input = { peer: args[0] };
   } else {
     // Native TUIs return a human launch command through the daemon; an agent shell never executes it.
-    const parseStart = definitionOf(cmd)?.start.conductorStartArgs;
+    if (configuredCommand) {
+      const selection = parseConfiguredAcpArguments(cmd, args, projectCatalog, declaredInstances);
+      if (selection.preview) return runConfiguredAcpEntry({ kind: cmd, raw: args, catalog: projectCatalog, instances: declaredInstances, connect, print: text => console.log(text) });
+      if (selection.sessionId) fail("conductor starts accept no session override; a person starts a configured ACP session");
+      const hub = await connect();
+      try {
+        await requireActiveConfiguredAcp(hub, cmd, selection.peer);
+        console.log(await taskOp("hub_peer_start", { peer: selection.peer, mode: "headless" }, false, hub));
+      } finally { hub.close(); }
+      return;
+    }
+    const parseStart = projectCatalog.definitionOf(cmd)?.start.conductorStartArgs;
     const parsed = parseStart ? parseStart(args) : args.length ? new Error(`conductor starts accept no launch overrides; use ahub ${cmd}`) : {};
     if (parsed instanceof Error) fail(parsed.message);
     op = "hub_peer_start";
@@ -2072,7 +2106,12 @@ async function runConductorCommand(): Promise<void> {
   if (selectedInstance) { const hub = await connect(); try { requirePeerInstances(hub.features); } finally { hub.close(); } }
   console.log(await taskOp(op, input));
 }
-const run = identity.role === "tools" && commandAccess === "conductor" ? runConductorCommand : (Object.hasOwn(commands, cmd) ? commands[cmd] : undefined) ?? (() => fail(`unknown command "${cmd}"; run ahub help`));
+const runConfigured = configuredCommand ? async () => {
+  const selection = parseConfiguredAcpArguments(cmd, args, projectCatalog, declaredInstances);
+  if (!selection.preview) assertLifecycleAvailable();
+  await runConfiguredAcpEntry({ kind: cmd, raw: args, catalog: projectCatalog, instances: declaredInstances, connect, print: text => console.log(text), operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+} : undefined;
+const run = identity.role === "tools" && commandAccess === "conductor" ? runConductorCommand : (Object.hasOwn(commands, cmd) ? commands[cmd] : undefined) ?? runConfigured ?? (() => fail(`unknown command "${cmd}"; run ahub help`));
 try {
   assertDelegatedAuditConsumer(); // Local command paths must not begin after the authenticated consumer was replaced either.
   await run();

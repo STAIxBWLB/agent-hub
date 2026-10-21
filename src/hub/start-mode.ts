@@ -1,4 +1,4 @@
-import { definitionOf, SUPPORTED_PEERS, START_MODE_PEERS as REGISTRY_START_MODE_PEERS, type KindMap } from "../adapters/registry.ts";
+import { definitionOf, SUPPORTED_PEERS, START_MODE_PEERS as REGISTRY_START_MODE_PEERS, type ProjectAdapterCatalog, type KindMap } from "../adapters/registry.ts";
 
 /**
  * #269: how a peer comes up when the hub starts it: its own TUI in a terminal, or headless. A person who types
@@ -20,27 +20,29 @@ export const isStartablePeer = (value: unknown): value is StartablePeer => typeo
 
 export type PeerStartConfig = Record<string, { start_mode?: StartMode }>;
 /** The checked per-peer start modes; only peers with both forms may be configured. */
-export function peerStartConfig(value: unknown, instances?: KindMap): PeerStartConfig {
+export function peerStartConfig(value: unknown, instances?: KindMap, catalog?: ProjectAdapterCatalog): PeerStartConfig {
   if (value === undefined) return {};
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("peers must be an object of per-peer settings");
   const result: PeerStartConfig = {};
   for (const [peer, block] of Object.entries(value)) {
-    const extra = definitionOf(peer, instances)?.kind !== peer && !!definitionOf(peer, instances);
-    if (!(REGISTRY_START_MODE_PEERS as readonly string[]).includes(peer) && !extra) throw new Error(`peers.${peer}: only ${REGISTRY_START_MODE_PEERS.join(" and ")} have a start mode`);
+    const configured = !!catalog?.definitionOf(peer) && !definitionOf(peer);
+    const extra = (catalog?.definitionOf ?? definitionOf)(peer, instances)?.kind !== peer && !!(catalog?.definitionOf ?? definitionOf)(peer, instances);
+    if (!(REGISTRY_START_MODE_PEERS as readonly string[]).includes(peer) && !extra && !configured) throw new Error(`peers.${peer}: only ${REGISTRY_START_MODE_PEERS.join(" and ")} have a start mode`);
     if (!block || typeof block !== "object" || Array.isArray(block)) throw new Error(`peers.${peer} must be an object`);
+    if (Object.keys(block).some(key => key !== "start_mode")) throw new Error(`peers.${peer}: unsupported setting`);
     const mode = (block as { start_mode?: unknown }).start_mode;
     if (mode !== undefined && !(START_MODES as readonly unknown[]).includes(mode)) throw new Error(`peers.${peer}.start_mode must be tui or headless`);
-    if (extra && mode !== undefined && mode !== "headless") throw new Error(`peers.${peer}.start_mode: extra instances require headless mode in I2`);
+    if ((extra || configured) && mode !== undefined && mode !== "headless") throw new Error(`peers.${peer}.start_mode: extra instances require headless mode in I2`);
     result[peer] = mode === undefined ? {} : { start_mode: mode as StartMode };
   }
   return result;
 }
 
 /** The mode a start of `peer` takes when nothing more specific was asked: `tui` wherever the peer has one. */
-export function startModeOf(peers: PeerStartConfig | undefined, peer: string, instances?: KindMap): StartMode {
-  if (definitionOf(peer, instances)?.kind !== peer && definitionOf(peer, instances)) return peers?.[peer]?.start_mode ?? "headless";
+export function startModeOf(peers: PeerStartConfig | undefined, peer: string, instances?: KindMap, catalog?: ProjectAdapterCatalog): StartMode {
+  if ((catalog?.definitionOf ?? definitionOf)(peer, instances)?.kind !== peer && (catalog?.definitionOf ?? definitionOf)(peer, instances)) return peers?.[peer]?.start_mode ?? "headless";
   if ((REGISTRY_START_MODE_PEERS as readonly string[]).includes(peer)) return peers?.[peer]?.start_mode ?? definitionOf(peer)?.start.defaultForm ?? "tui";
-  return definitionOf(peer)?.start.defaultForm ?? "headless";
+  return (catalog?.definitionOf ?? definitionOf)(peer)?.start.defaultForm ?? "headless";
 }
 
 /**

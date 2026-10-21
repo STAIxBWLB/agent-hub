@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add project-local config-only ACP adapters: optional headless kinds stay off roster by default, with pinned native identity, strict resume identity, owned-group admission and optional mapped or read-only native modes. Grok live verification remains pending; the generic path does not by itself verify Grok support (#451, #486).
+
 - Adapter declarations now refuse ordinary agy extra instances at config load; they previously loaded as inert pull-only extras. Fresh-reviewer metadata remains unavailable (#451, #625).
 - Qwen context occupancy is now unknown until a native source is verified; it no longer inherits Kimi's usage parser (#451, #625).
 - When the hub itself starts headless Kimi or Qwen it also opens `ahub watch <peer>` through the terminal provider, a fixed command opened at most once per 30 s; with no provider or a failing one the start still succeeds and the watch command is reported (#286 AC10).

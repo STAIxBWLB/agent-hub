@@ -328,6 +328,10 @@ function settingRow(row, raise) {
   if (row.pending !== undefined) node.append(el('p', ['hub start', 'peer start'].includes(row.applies) ? 'Pending restart: ' + settingText(row.pending) + ' at the next ' + (row.applies === 'peer start' ? 'peer' : 'hub') + ' start.' : 'Pending ' + row.applies + ': ' + settingText(row.pending), 'meta'));
   if (row.hint) node.append(el('p', 'Bounds: ' + row.hint, 'meta'));
   if (row.note) node.append(el('p', row.note, 'meta'));
+  if (row.locked) {
+    if (row.note !== row.locked) node.append(el('p', row.locked, 'meta'));
+    const locked = el('button', 'Locked'); locked.disabled = true; locked.title = row.locked; node.append(locked); return node;
+  }
   if (row.risk === 'raises' && !raise) node.append(el('p', 'Raising this needs a settings session: run ahub ui --settings.' + (row.floor === undefined ? '' : ' Setting it to ' + row.floor + ' works here.'), 'meta'));
   const actions = el('div', undefined, 'actions'), stored = row.file !== 'this hub run';
   let read, confirm, force;

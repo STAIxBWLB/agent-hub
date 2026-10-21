@@ -1,5 +1,5 @@
 import { types } from "node:util";
-import { ADAPTERS, defaultPeerRoles, definitionOf, type AdapterDefinition, type StartForm } from "../adapters/registry.ts";
+import { ADAPTERS, defaultPeerRoles, definitionOf, type AdapterDefinition, type StartForm, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { isPermissionMode, type PermissionMode } from "./permission-mode.ts";
 
 export interface InstanceConfig {
@@ -9,6 +9,7 @@ export interface InstanceConfig {
   permission_mode?: PermissionMode;
   review_mode?: "fresh";
   worktree?: string;
+  readOnly?: boolean;
 }
 export type InstancesConfig = Readonly<Record<string, InstanceConfig>>;
 export interface InstanceCatalogEntry { id: string; kind: string; definition: AdapterDefinition; config?: InstanceConfig }
@@ -46,18 +47,19 @@ export function supportsHeadlessInstances(definition: AdapterDefinition): boolea
 }
 
 /** Pure I2 declaration validation. Physical worktree and startup authority checks belong to the bound host. */
-export function validateInstances(raw: unknown): InstancesConfig {
+export function validateInstances(raw: unknown, catalog?: ProjectAdapterCatalog): InstancesConfig {
+  const resolve = catalog?.definitionOf ?? definitionOf;
   const result: Record<string, InstanceConfig> = Object.create(null);
   if (raw === undefined) return Object.freeze(result);
   const declarations = fields(raw, "instances");
   if (Object.keys(declarations).length > MAX_INSTANCES) return fail("instances", "at most 64 extra instances are supported");
   for (const [id, descriptor] of Object.entries(declarations)) {
-    if (!PEER_ID.test(id) || RESERVED.has(id) || definitionOf(id)) return fail("instances", "ids must be nonreserved extra instance ids, not builtin ids");
+    if (!PEER_ID.test(id) || RESERVED.has(id) || resolve(id)) return fail("instances", "ids must be nonreserved extra instance ids, not builtin ids");
     const path = `instances.${id}`, entry = fields(descriptor.value, path);
-    if (Object.keys(entry).some(key => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode"].includes(key))) return fail(path, "unsupported field");
+    if (Object.keys(entry).some(key => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly"].includes(key))) return fail(path, "unsupported field");
     const kind: unknown = entry.kind?.value;
     if (typeof kind !== "string") return fail(`${path}.kind`, "must name a native kind");
-    const definition = definitionOf(kind), prefix = `${kind}-`;
+    const definition = resolve(kind), prefix = `${kind}-`;
     if (!definition) return fail(`${path}.kind`, "unknown native kind");
     if (!id.startsWith(prefix) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length))) return fail(path, "id must be <kind>-<name>");
     const declaredRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
@@ -88,7 +90,13 @@ export function validateInstances(raw: unknown): InstancesConfig {
       const allowed = runtime.instances?.roles;
       if (allowed && (declaredRoles.length ? declaredRoles : runtime.roles).some(role => !allowed.includes(role))) return fail(`${path}.roles`, "roles must fit the definition's instance policy");
     }
+    if (entry.readOnly) {
+      if (typeof entry.readOnly.value !== "boolean") return fail(`${path}.readOnly`, "must be a boolean");
+      if (!runtime.permission.genericAcp?.readOnly) return fail(`${path}.readOnly`, "native adapter has no verified read-only mode");
+      if (entry.readOnly.value && entry.permission_mode) return fail(`${path}.permission_mode`, "read-only instances cannot select a permission mode");
+    }
     const value: InstanceConfig = { kind, ...(entry.review_mode ? { review_mode: "fresh" as const } : {}) };
+    if (entry.readOnly) value.readOnly = entry.readOnly.value as boolean;
     if (entry.roles) { value.roles = roles(entry.roles.value, `${path}.roles`); Object.freeze(value.roles); }
     if (entry.start_mode) {
       if (entry.start_mode.value !== "headless") return fail(`${path}.start_mode`, "I2 extra instances require headless mode");
@@ -109,24 +117,25 @@ export function validateInstances(raw: unknown): InstancesConfig {
 }
 
 /** Each call derives a fresh project-local projection, without registration or suffix discovery. */
-export function instanceCatalog(declarations?: InstancesConfig): readonly InstanceCatalogEntry[] {
-  const instances = validateInstances(declarations);
+export function instanceCatalog(declarations?: InstancesConfig, catalog?: ProjectAdapterCatalog): readonly InstanceCatalogEntry[] {
+  const instances = validateInstances(declarations, catalog);
   return Object.freeze([
-    ...ADAPTERS.map(definition => Object.freeze({ id: definition.kind, kind: definition.kind, definition })),
-    ...Object.entries(instances).map(([id, config]) => Object.freeze({ id, kind: config.kind, definition: definitionOf(id, instances)!, config })),
+    ...(catalog?.definitions ?? ADAPTERS).map(definition => Object.freeze({ id: definition.kind, kind: definition.kind, definition })),
+    ...Object.entries(instances).map(([id, config]) => Object.freeze({ id, kind: config.kind, definition: (catalog?.definitionOf ?? definitionOf)(id, instances)!, config })),
   ]);
 }
-export function instancePeerIds(declarations?: InstancesConfig): string[] { return instanceCatalog(declarations).map(entry => entry.id); }
-export function instanceDefaultRoles(declarations?: InstancesConfig, includeOptional = true): Record<string, string[]> {
+export function instancePeerIds(declarations?: InstancesConfig, catalog?: ProjectAdapterCatalog): string[] { return instanceCatalog(declarations, catalog).map(entry => entry.id); }
+export function instanceDefaultRoles(declarations?: InstancesConfig, includeOptional = true, catalog?: ProjectAdapterCatalog): Record<string, string[]> {
   const result = defaultPeerRoles(includeOptional);
-  const instances = validateInstances(declarations);
-  for (const [id, config] of Object.entries(instances)) result[id] = [...(config.roles ?? definitionOf(id, instances)!.roles)];
+  for (const definition of catalog?.definitions ?? []) if (!definitionOf(definition.kind) && (includeOptional || !definition.optional)) result[definition.kind] = [...definition.roles];
+  const instances = validateInstances(declarations, catalog);
+  for (const [id, config] of Object.entries(instances)) result[id] = [...(config.roles ?? (catalog?.definitionOf ?? definitionOf)(id, instances)!.roles)];
   return result;
 }
 
 /** One precedence rule for startup, native launch and recovery; ordinary roles may use the instance id or its kind. */
-export function effectiveInstanceRoles(id: string, declarations: InstancesConfig | undefined, policyRoles: Readonly<Record<string, readonly string[]>>): string[] {
-  const definition = definitionOf(id, declarations);
+export function effectiveInstanceRoles(id: string, declarations: InstancesConfig | undefined, policyRoles: Readonly<Record<string, readonly string[]>>, catalog?: ProjectAdapterCatalog): string[] {
+  const definition = (catalog?.definitionOf ?? definitionOf)(id, declarations);
   if (!definition) throw new Error(`${id}: no declared native instance`);
   const declaration = declarations && Object.hasOwn(declarations, id) ? declarations[id] : undefined;
   const ownRoles = (key: string): readonly string[] | undefined => Object.hasOwn(policyRoles, key) ? policyRoles[key] : undefined;

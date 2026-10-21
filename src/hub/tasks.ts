@@ -32,7 +32,7 @@ import { TaskRepositories } from "./task-repository.ts";
 import { mainCheckoutWarning } from "./main-checkout.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { coverageGap, renderReviewBrief, type ReviewBrief } from "./review-brief.ts";
-import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf } from "../adapters/registry.ts";
+import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 import { readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
 
@@ -41,6 +41,7 @@ export type TaskAssignmentRole = "owner" | "reviewer";
 export interface ReleaseWindow { at: number; host: boolean; quota: boolean; idle: boolean; reasons: string[]; current?: () => boolean; close?: () => Promise<void>; }
 
 export interface TasksDeps {
+  adapterCatalog?: ProjectAdapterCatalog;
   /** Host-bound evidence only; absent/expired observations never admit a release cut. */
   releaseWindow?: () => Promise<ReleaseWindow>;
   /** Effective per-peer planner capacity, taken from the existing settings loader. */
@@ -615,9 +616,9 @@ export class Tasks {
   /** Workload is board/queue data only: wip() never calls health() or weights(). */
   private instanceRouting(): InstanceRoutingOptions {
     const instances = this.d.instances?.();
-    if (!instances || !Object.keys(instances).length) return {};
-    const peers = [...new Set([...ADAPTERS.map(adapter => adapter.kind), ...Object.keys(instances), ...this.d.bus.peers.keys()])];
-    return { instances, ownerIsolation: this.d.ownerIsolation?.() ?? {}, wip: Object.fromEntries(peers.map(peer => [peer, this.wip(peer)])), load: Object.fromEntries(peers.map(peer => [peer, this.d.bus.queued(peer)])) };
+    if (!instances || !Object.keys(instances).length) return { adapterCatalog: this.d.adapterCatalog };
+    const peers = [...new Set([...(this.d.adapterCatalog?.definitions ?? ADAPTERS).map(adapter => adapter.kind), ...Object.keys(instances), ...this.d.bus.peers.keys()])];
+    return { adapterCatalog: this.d.adapterCatalog, instances, ownerIsolation: this.d.ownerIsolation?.() ?? {}, wip: Object.fromEntries(peers.map(peer => [peer, this.wip(peer)])), load: Object.fromEntries(peers.map(peer => [peer, this.d.bus.queued(peer)])) };
   }
 
   /** Peer health and roles the daemon feeds routing (issues #89, #90, #92): failing peers are skipped, held queues explained. */
@@ -625,8 +626,8 @@ export class Tasks {
     const failing = this.d.failing?.();
     const held = this.d.held?.();
     const workload = this.instanceRouting();
-    const peers = workload.instances ? [...new Set([...ADAPTERS.map(adapter => adapter.kind), ...Object.keys(workload.instances), ...this.d.bus.peers.keys()])] : ADAPTERS.map(adapter => adapter.kind);
-    return { ...workload, reviewPool: { pool: this.d.review?.pool ?? DEFAULT_REVIEW_POOL, rerotate: this.d.review?.rerotate, required: this.d.review?.pool !== undefined }, ...(this.d.capabilities ? { capabilities: this.d.capabilities(), repository: this.d.repository } : {}), pullOnly: [...this.d.bus.peers.values()].filter(peer => definitionOf(peer.id, workload.instances)?.attach?.pullOnlyForms?.length && peer.pullOnly).map(peer => peer.id), offRoster: peers.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
+    const peers = workload.instances ? [...new Set([...(this.d.adapterCatalog?.definitions ?? ADAPTERS).map(adapter => adapter.kind), ...Object.keys(workload.instances), ...this.d.bus.peers.keys()])] : (this.d.adapterCatalog?.definitions ?? ADAPTERS).map(adapter => adapter.kind);
+    return { ...workload, reviewPool: { pool: this.d.review?.pool ?? DEFAULT_REVIEW_POOL, rerotate: this.d.review?.rerotate, required: this.d.review?.pool !== undefined }, ...(this.d.capabilities ? { capabilities: this.d.capabilities(), repository: this.d.repository } : {}), pullOnly: [...this.d.bus.peers.values()].filter(peer => (this.d.adapterCatalog?.definitionOf ?? definitionOf)(peer.id, workload.instances)?.attach?.pullOnlyForms?.length && peer.pullOnly).map(peer => peer.id), offRoster: peers.filter(peer => !this.d.bus.isRostered(peer)), ...(failing ? { failing } : {}), ...(held ? { held } : {}), ...(this.d.roles ? { roles: this.d.roles } : {}) };
   }
 
   private reviewHead(task: Task): string | undefined { return task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead; }
@@ -652,7 +653,7 @@ export class Tasks {
 
   private reviewMetadata(assignment?: Assignment): ReviewerHistory {
     const choice = assignment?.reviewSelection;
-    const family = choice && assignment?.plannerFallback && assignment.reviewer ? familyOf(assignment.reviewer, this.d.instances?.()) : choice?.family;
+    const family = choice && assignment?.plannerFallback && assignment.reviewer ? (this.d.adapterCatalog?.familyOf ?? familyOf)(assignment.reviewer, this.d.instances?.()) : choice?.family;
     const reason = choice && assignment?.plannerFallback
       ? assignment.sameFamilyFallback ? "same-family fallback" as const : "unavailable skip" as const
       : choice?.reason;
@@ -661,7 +662,7 @@ export class Tasks {
 
   /** Capability admission precedes explicit assignments/reservations, independent of readiness or transient peer health. */
   private requireCapabilities(task: Parameters<typeof assign>[0], peer: PeerId, role: TaskAssignmentRole = "owner", preEffect = true): void {
-    const instances = this.d.instances?.(), adapter = definitionOf(peer, instances);
+    const instances = this.d.instances?.(), adapter = (this.d.adapterCatalog?.definitionOf ?? definitionOf)(peer, instances);
     const declaredExtra = !!adapter && adapter.kind !== peer;
     if ((!this.d.capabilities || this.isPii(task)) && !declaredExtra) return;
     const { state: _state, ...draft } = task; // backlog/readiness must not bypass an explicit reservation's admission
@@ -988,7 +989,7 @@ export class Tasks {
         if (!returnedUntouched) {
           if (task.state !== "backlog" || taskHasStarted(task) || task.owner) throw new PreEffectToolRefusal("dependency and reservation changes require unstarted backlog work");
         }
-        if (patch.reserved && !definitionOf(patch.reserved, this.d.instances?.()) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer");
+        if (patch.reserved && !(this.d.adapterCatalog?.definitionOf ?? definitionOf)(patch.reserved, this.d.instances?.()) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer");
         if (patch.reserved && !this.d.bus.isRostered(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is off roster");
         // #531 D3: a reservation for a peer routing leaves out for good could never be honoured. Say so, and who can lift it.
         if (patch.reserved && this.excluded(task).includes(patch.reserved)) throw new PreEffectToolRefusal(`${patch.reserved} is excluded from this task (it declined it or was escalated away from it for good); a reservation for it can never be honoured. Only a person's ahub task assign lifts the exclusion`);
@@ -2000,7 +2001,7 @@ export class Tasks {
     const pii = this.isPii(task), delivery = { ...a, reviewer: task.reviewer ?? undefined };
     const rejected = task.history.filter((h) => h.event === "changes_requested").map((h) => `- ${h.by}: ${this.screen(task, h.note ?? "", "review note", delivery.owner, h.withheld)}`);
     const handoff = context && !pii ? this.screen(task, context, "handoff", delivery.owner, contextWithheld).slice(0, 3000) : "";
-    const facts = [`class ${profileTaskLabel(task)}`, delivery.owner && definitionOf(delivery.owner, this.d.instances?.())?.routing?.backendLabel ? `backend ${definitionOf(delivery.owner, this.d.instances?.())!.routing!.backendLabel}/${delivery.piBackend ?? "dgx"}` : "", task.refs.paths?.length ? `paths ${task.refs.paths.join(", ")}` : "", task.refs.branch ? `branch ${task.refs.branch}` : "", delivery.reviewer ? `reviewer ${delivery.reviewer}` : task.class === "review" ? "no reviewer" : this.noReviewer(delivery)].filter(Boolean).join("; ");
+    const facts = [`class ${profileTaskLabel(task)}`, delivery.owner && (this.d.adapterCatalog?.definitionOf ?? definitionOf)(delivery.owner, this.d.instances?.())?.routing?.backendLabel ? `backend ${(this.d.adapterCatalog?.definitionOf ?? definitionOf)(delivery.owner, this.d.instances?.())!.routing!.backendLabel}/${delivery.piBackend ?? "dgx"}` : "", task.refs.paths?.length ? `paths ${task.refs.paths.join(", ")}` : "", task.refs.branch ? `branch ${task.refs.branch}` : "", delivery.reviewer ? `reviewer ${delivery.reviewer}` : task.class === "review" ? "no reviewer" : this.noReviewer(delivery)].filter(Boolean).join("; ");
     const plan = planText(task.plan);
     const body = [
       `Task #${task.id} [${profileTaskLabel(task)}] ${task.title}`,
@@ -3226,7 +3227,7 @@ export class Tasks {
     const pii = this.isPii(task);
     const reviewContext = by === USER ? undefined : this.d.reviewContext?.(by, task.id);
     const poolRequest = task.history.findLast(entry => ["done", "reviewer changed", "reviewer unavailable"].includes(entry.event));
-    const family = by === USER ? undefined : familyOf(by, this.d.instances?.());
+    const family = by === USER ? undefined : (this.d.adapterCatalog?.familyOf ?? familyOf)(by, this.d.instances?.());
     const reviewerFamily = poolRequest?.reviewerFamily === family ? family : undefined;
     const reviewerReason = reviewerFamily ? poolRequest?.reviewerReason : undefined;
     const flag = { withheld: withheld || undefined, ...(reviewContext ? { reviewContext } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };

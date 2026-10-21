@@ -1,4 +1,4 @@
-import { definitionOf, type KindMap, ADAPTERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS } from "../adapters/registry.ts";
+import { definitionOf, type KindMap, type ProjectAdapterCatalog, ADAPTERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS } from "../adapters/registry.ts";
 import { createHash } from "node:crypto";
 import { types } from "node:util";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -19,6 +19,8 @@ export const SETTING_PEERS = SUPPORTED_PEERS;
 /** `null` removes the machine-local value, so the shared file's or the default applies again. */
 export type SettingValue = string | boolean | number | string[] | null;
 export interface SettingDef {
+  /** Fixed host policy; no authority can edit or undo this row. */
+  locked?: string;
   key: string;
   group: "Permissions" | "Start" | "Routing" | "Switches" | "Roster" | "Roles";
   label: string;
@@ -38,6 +40,7 @@ export interface SettingDef {
   path: readonly string[];
 }
 
+const READ_ONLY_LOCK = "read-only instance: permission mode is locked by its declaration";
 const PEER = /^[a-z][a-z0-9-]{0,31}$/;
 const PEERS_MAX = 8;
 const perClass = (name: TaskClass): SettingDef[] => [
@@ -72,37 +75,61 @@ export const SETTINGS: readonly SettingDef[] = [
  * Never editable from settings, whatever the session: these choose what the hub executes or where secrets and task
  * text go. A key equal to an entry, or below it, is refused by name.
  */
-export const NEVER_EDITABLE = ["kimi_cmd", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "codex_bin", "pi.cmd", "checks", "mlx", "omniroute", "memory.worker_url", "local.read_allow", "local.bash_network", "local.network_allow", "bench.enabled", "terminal", "instances"] as const;
+export const NEVER_EDITABLE = ["kimi_cmd", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "codex_bin", "pi.cmd", "checks", "mlx", "omniroute", "memory.worker_url", "local.read_allow", "local.bash_network", "local.network_allow", "bench.enabled", "terminal", "instances", "adapters"] as const;
 
 /** Derive project-bound rows from the same builtin templates used by lookup, without registering aliases globally. */
-export function projectSettings(instances?: KindMap): readonly SettingDef[] {
-  if (!instances || typeof instances !== "object" || types.isProxy(instances) || Array.isArray(instances)
-    || ![Object.prototype, null].includes(Object.getPrototypeOf(instances)) || Object.getOwnPropertySymbols(instances).length) return SETTINGS;
+export function projectSettings(instances?: KindMap, adapterCatalog?: ProjectAdapterCatalog): readonly SettingDef[] {
+  const resolve = adapterCatalog?.definitionOf ?? definitionOf;
   const extra: SettingDef[] = [];
-  for (const peer of Object.keys(instances)) {
-    if (definitionOf(peer)) continue; // An explicit declaration never changes a builtin's setting definition.
-    const adapter = definitionOf(peer, instances);
+  const headless = (peer: string): SettingDef => Object.freeze({ key: `peers.${peer}.start_mode`, group: "Start", label: `${peer}: start mode (headless only)`,
+    type: "enum", values: Object.freeze(["headless"]), store: "config", applies: "next use", risk: "raises", floor: "headless", path: Object.freeze(["peers", peer, "start_mode"]) });
+  for (const adapter of adapterCatalog?.definitions ?? []) {
+    if (definitionOf(adapter.kind)) continue;
+    const peer = adapter.kind;
+    extra.push(
+      { key: `roster.${peer}`, group: "Roster", label: `${peer}: participates`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", peer] },
+      { key: `tasks.wip_limits.${peer}`, group: "Routing", label: `${peer}: planner WIP limit`, type: "integer", min: 0, max: 32, store: "config", applies: "live", risk: "raises", floor: 0, path: ["tasks", "wip_limits", peer] },
+      headless(peer),
+    );
+    const values = Object.keys(adapter.permission.genericAcp?.modes ?? {});
+    if (!adapter.permission.unmanaged && values.length) for (const runtime of [true, false]) extra.push({
+      key: `${runtime ? "permission" : "permission_modes"}.${peer}`, group: "Permissions", label: `${peer}: mode ${runtime ? "now" : "at next peer start"}`,
+      type: "enum", values, store: runtime ? "runtime" : "config", applies: runtime ? "live" : "next use", risk: "raises", ...(values.includes("ask") ? { floor: "ask" } : {}), path: runtime ? [peer] : ["permission_modes", peer],
+    });
+  }
+  const baseSettings = [...SETTINGS, ...extra];
+  const validInstances = instances && typeof instances === "object" && !types.isProxy(instances) && !Array.isArray(instances)
+    && [Object.prototype, null].includes(Object.getPrototypeOf(instances)) && !Object.getOwnPropertySymbols(instances).length;
+  for (const peer of validInstances ? Object.keys(instances!) : []) {
+    if (resolve(peer)) continue; // An explicit declaration never changes a canonical setting definition.
+    const adapter = resolve(peer, instances);
     if (!adapter) continue;
+    const entry = Object.getOwnPropertyDescriptor(instances!, peer)?.value;
+    const readOnly = entry && typeof entry === "object" && !types.isProxy(entry) && Object.getOwnPropertyDescriptor(entry, "readOnly")?.value === true && !!adapter.permission.genericAcp?.readOnly;
     const copy = (base: SettingDef, key: string): SettingDef => Object.freeze({ ...base, key,
       label: base.label.replace(`${adapter.kind}:`, `${peer}:`),
       path: Object.freeze(base.path.map(part => part === adapter.kind ? peer : part)),
       ...(base.values ? { values: Object.freeze([...base.values]) } : {}),
     });
     for (const prefix of ["roster", "permission", "permission_modes", "tasks.wip_limits"]) {
-      const base = SETTINGS.find(def => def.key === `${prefix}.${adapter.kind}`);
+      if (readOnly && (prefix === "permission" || prefix === "permission_modes")) continue;
+      const base = baseSettings.find(def => def.key === `${prefix}.${adapter.kind}`);
       if (base) extra.push(copy(base, `${prefix}.${peer}`));
     }
-    // I2 declarations select the headless engine; settings cannot opt an extra into a native TUI.
-    extra.push(Object.freeze({ key: `peers.${peer}.start_mode`, group: "Start", label: `${peer}: start mode (headless only)`,
-      type: "enum", values: Object.freeze(["headless"]), store: "config", applies: "next use", risk: "raises", floor: "headless", path: Object.freeze(["peers", peer, "start_mode"]) } satisfies SettingDef));
+    if (readOnly) for (const runtime of [true, false]) extra.push(Object.freeze({
+      key: `${runtime ? "permission" : "permission_modes"}.${peer}`, group: "Permissions", label: `${peer}: read-only (locked)`,
+      type: "enum", values: Object.freeze(["read-only"]), store: runtime ? "runtime" : "config", applies: runtime ? "live" : "next use", risk: "safe",
+      path: Object.freeze(runtime ? [peer] : ["permission_modes", peer]), locked: READ_ONLY_LOCK,
+    } satisfies SettingDef));
+    extra.push(headless(peer));
   }
   return extra.length ? Object.freeze([...SETTINGS, ...extra]) : SETTINGS;
 }
 
 /** The definition of a key, or why there is none. */
-export function settingDef(key: unknown, instances?: KindMap): SettingDef | string {
+export function settingDef(key: unknown, instances?: KindMap, adapterCatalog?: ProjectAdapterCatalog): SettingDef | string {
   if (typeof key !== "string" || key.length > 80) return "unknown setting";
-  const found = projectSettings(instances).find((s) => s.key === key);
+  const found = projectSettings(instances, adapterCatalog).find((s) => s.key === key);
   if (found) return found;
   if (NEVER_EDITABLE.some((never) => key === never || key.startsWith(`${never}.`))) return `${key} chooses what the hub runs or where secrets and task text go: it is never editable from settings; edit .agenthub/config.local.json in your editor`;
   return "unknown setting; run ahub settings list";
@@ -110,6 +137,7 @@ export function settingDef(key: unknown, instances?: KindMap): SettingDef | stri
 
 /** The checked value, or a thrown reason. `routes`: the route ids the project's routing defines. */
 export function checkSettingValue(def: SettingDef, raw: unknown, routes: readonly string[] = []): SettingValue {
+  if (def.locked) throw new Error(def.locked);
   if (raw === null) {
     if (def.store === "runtime") throw new Error(`${def.key} has no stored value to remove`);
     return null;
@@ -152,6 +180,7 @@ export type SettingAuthority = "ordinary" | "settings" | "terminal";
 /** Why this authority may not set this value, or undefined. Removing a stored value can raise, so it counts as one. */
 export function settingRefusal(def: SettingDef | string, value: SettingValue, authority: SettingAuthority): string | undefined {
   if (typeof def === "string") return def || "invalid setting definition";
+  if (def.locked) return def.locked;
   if (def.risk === "safe" || authority !== "ordinary") return undefined;
   if (value !== null && value === def.floor) return undefined;
   return `${def.key} can widen what agents do without asking: open a settings session with ahub ui --settings, or use ahub settings in a terminal`;
@@ -391,6 +420,7 @@ export function ignoredLine(ignored: readonly string[] | undefined, def: Setting
   });
 }
 export interface SettingRow {
+  locked?: string;
   key: string; group: SettingDef["group"]; label: string; type: SettingDef["type"]; values?: readonly string[]; min?: number; max?: number;
   /** The file a write goes to, or "this hub run". */
   file: string;
@@ -419,6 +449,7 @@ export function settingRows(input: {
   cwd: string; routing: Routing;
   /** Captured trusted declarations for this daemon/project, never taken from a settings request. */
   instances?: KindMap;
+  adapterCatalog?: ProjectAdapterCatalog;
   running: (path: readonly string[]) => unknown;
   next: ((path: readonly string[]) => unknown) | undefined;
   mode: (peer: string) => { value?: string; note?: string };
@@ -433,9 +464,11 @@ export function settingRows(input: {
   const projectRouting = existsSync(join(input.cwd, ".agenthub", "routing.toml"));
   const routes = Object.keys(input.routing.hub_routes ?? {});
   const scalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" || typeof value === "number" ? value : Array.isArray(value) ? value.map(String) : null;
-  return projectSettings(input.instances).map((def): SettingRow => {
+  return projectSettings(input.instances, input.adapterCatalog).map((def): SettingRow => {
     const base = { key: def.key, group: def.group, label: def.label, type: def.type, ...(["integer", "number"].includes(def.type) ? { min: def.min, max: def.max } : {}), applies: def.applies, ...(def.restartReason ? { restartReason: def.restartReason } : {}), risk: def.risk, ...(def.floor === undefined ? {} : { floor: def.floor }),
-      ...(def.key === "scoped_grants.protect_instructions" ? { hint: "AGENTS.md, CLAUDE.md and QWEN.md remain grantable by default; enabling this asks before scoped writes and edits" } : def.group === "Permissions" ? { hint: permissionBoundary(def.path.at(-1)!, input.instances) } : {}) };
+      ...(def.key === "scoped_grants.protect_instructions" ? { hint: "AGENTS.md, CLAUDE.md and QWEN.md remain grantable by default; enabling this asks before scoped writes and edits" } : def.group === "Permissions" ? { hint: permissionBoundary(def.path.at(-1)!, input.instances, input.adapterCatalog) } : {}) };
+    if (def.locked) return { ...base, values: def.values, file: def.store === "runtime" ? "this hub run" : CONFIG_LOCAL,
+      source: "instance declaration", value: "read-only", fileValue: "read-only", locked: def.locked, note: def.locked };
     if (def.store === "runtime") {
       const mode = input.mode(def.path[0]!);
       return { ...base, values: def.values!, file: "this hub run", value: mode.value ?? null, fileValue: mode.value ?? null, source: "this hub run", ...(mode.note ? { note: mode.note } : {}) };

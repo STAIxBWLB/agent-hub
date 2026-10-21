@@ -2519,6 +2519,130 @@ var init_qwen_native = __esm(() => {
   };
 });
 
+// src/adapters/acp-owned-group.ts
+class AcpOwnedGroup {
+  proc;
+  leader;
+  signature;
+  ports;
+  confirmedGone = false;
+  constructor(proc, leader, signature, ports) {
+    this.proc = proc;
+    this.leader = leader;
+    this.signature = signature;
+    this.ports = ports;
+  }
+  static async capture(proc, ports = PORTS) {
+    const pid = proc.pid;
+    if (!Number.isSafeInteger(pid) || !pid || pid <= 1 || proc.exitCode !== null || proc.signalCode !== null)
+      throw ownershipError();
+    const rows = await AcpOwnedGroup.read(ports);
+    const leader = rows.find((row) => row.pid === pid);
+    if (!leader || leader.pgid !== pid || leader.ppid !== process.pid)
+      throw ownershipError();
+    const signature = AcpOwnedGroup.identity(ports, pid);
+    if (!signature || proc.pid !== pid || proc.exitCode !== null || proc.signalCode !== null)
+      throw ownershipError();
+    return new AcpOwnedGroup(proc, { ...leader }, signature, ports);
+  }
+  async verify() {
+    if (this.confirmedGone || !await this.inspect(false))
+      throw ownershipError();
+  }
+  async stop({ killMs = 2000 } = {}) {
+    if (this.confirmedGone)
+      return;
+    if (!Number.isFinite(killMs) || killMs <= 0 || killMs > 1e4)
+      throw shutdownError();
+    if (!await this.inspect(true)) {
+      this.confirmedGone = true;
+      return;
+    }
+    this.signal("SIGSTOP");
+    if (!await this.inspect(true)) {
+      this.confirmedGone = true;
+      return;
+    }
+    this.signal("SIGKILL");
+    const end = this.ports.now() + killMs;
+    for (;; ) {
+      const left = end - this.ports.now();
+      if (left <= 0)
+        throw shutdownError();
+      const rows = await AcpOwnedGroup.read(this.ports, Math.min(READ_MS, left));
+      const leader = rows.find((row) => row.pid === this.leader.pid);
+      if (leader && (leader.started !== this.leader.started || leader.pgid !== this.leader.pgid))
+        throw ownershipError();
+      if (!rows.some((row) => row.pgid === this.leader.pgid) && !leader) {
+        this.confirmedGone = true;
+        return;
+      }
+      if (this.ports.now() >= end)
+        throw shutdownError();
+      await this.ports.sleep(Math.min(25, end - this.ports.now()));
+    }
+  }
+  async inspect(allowGone) {
+    const rows = await AcpOwnedGroup.read(this.ports);
+    const leader = rows.find((row) => row.pid === this.leader.pid);
+    const members = rows.some((row) => row.pgid === this.leader.pgid);
+    if (!leader && !members && allowGone)
+      return false;
+    if (!leader || !this.sameLeader(leader) || this.proc.pid !== this.leader.pid || this.proc.exitCode !== null || this.proc.signalCode !== null || AcpOwnedGroup.identity(this.ports, this.leader.pid) !== this.signature)
+      throw ownershipError();
+    return true;
+  }
+  sameLeader(row) {
+    return row.pid === this.leader.pid && row.pgid === this.leader.pid && row.ppid === process.pid && row.started === this.leader.started && row.command === this.leader.command;
+  }
+  signal(signal) {
+    try {
+      this.ports.signal(-this.leader.pgid, signal);
+    } catch {
+      throw ownershipError();
+    }
+  }
+  static identity(ports, pid) {
+    try {
+      return ports.signature(pid);
+    } catch {
+      return;
+    }
+  }
+  static async read(ports, ms = READ_MS) {
+    let timer;
+    try {
+      const rows = await Promise.race([
+        Promise.resolve().then(() => ports.table()),
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve(undefined), ms);
+        })
+      ]);
+      if (!rows)
+        throw ownershipError();
+      return rows;
+    } catch {
+      throw ownershipError();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+var PORTS, READ_MS = 1000, ownershipError = () => new Error("Configured ACP process ownership could not be verified"), shutdownError = () => new Error("Configured ACP process group shutdown incomplete");
+var init_acp_owned_group = __esm(() => {
+  init_platform();
+  init_child_process();
+  PORTS = {
+    table: readProcessTable,
+    signature: processSignature,
+    signal: (target, signal) => {
+      process.kill(target, signal);
+    },
+    now: () => performance.now(),
+    sleep: (ms) => Bun.sleep(ms)
+  };
+});
+
 // src/adapters/acp.ts
 import { spawn as spawn5 } from "child_process";
 import { createInterface } from "readline";
@@ -2567,17 +2691,20 @@ var init_acp = __esm(() => {
   init_qwen_native();
   init_qwen_native();
   init_child_process();
+  init_acp_owned_group();
   TOOL_CEILING_MS = 30 * 60000;
   RpcTimeoutError = class RpcTimeoutError extends Error {
   };
   AcpPeer = class AcpPeer extends BasePeer {
     opts;
     permissionMode;
+    nativePolicy;
     modeUnknown = false;
     kimiAgent = false;
     qwenAgent = false;
     availableModes = new Set;
     proc;
+    ownedGroup;
     sessionId = "";
     nextId = 1;
     pending = new Map;
@@ -2679,12 +2806,15 @@ var init_acp = __esm(() => {
     constructor(id, opts) {
       super(id, opts.watchdogMs);
       this.opts = opts;
-      this.permissionMode = opts.permissionMode ?? "ask";
+      this.nativePolicy = opts.nativePolicy === undefined ? undefined : { ...opts.nativePolicy, ...opts.nativePolicy.modes === undefined ? {} : { modes: { ...opts.nativePolicy.modes } } };
+      this.permissionMode = this.nativePolicy?.lockedReadOnly ? "ask" : opts.permissionMode ?? "ask";
     }
     recoveryMetadata() {
       return { launch: { kind: "acp", ...this.opts.launchModel ? { model: this.opts.launchModel } : {} }, ...this.sessionId ? { sessionId: this.sessionId } : {} };
     }
     async start() {
+      if (this.opts.requireOwnedGroup && this.proc)
+        throw new Error("Configured ACP still has a process; stop it before starting another");
       this.stopping = false;
       const [bin, ...args] = this.opts.cmd;
       const proc = spawn5(bin, args, { cwd: this.opts.cwd, env: peerChildEnv(this.id, { ...process.env, ...this.opts.env ?? {} }), stdio: ["pipe", "pipe", "pipe"], detached: true });
@@ -2693,18 +2823,19 @@ var init_acp = __esm(() => {
       proc.on("error", (e) => this.down(`spawn failed: ${e.message}`));
       proc.on("exit", (code) => this.down(`exited with code ${code}`));
       proc.stdin.on("error", () => {});
-      proc.stderr.on("data", (d) => this.opts.log?.(`[${this.id}] ${String(d).trimEnd()}`));
+      proc.stderr.on("data", (d) => this.opts.log?.(this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP stderr output withheld" : `[${this.id}] ${String(d).trimEnd()}`));
       createInterface({ input: proc.stdout }).on("line", (line) => this.onLine(line));
       const handshake = async () => {
         const init = await this.request("initialize", {
           protocolVersion: 1,
           clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }
         });
-        this.kimiAgent = init?.agentInfo?.name === "Kimi Code CLI";
+        this.kimiAgent = this.nativePolicy === undefined && init?.agentInfo?.name === "Kimi Code CLI";
         const expected = this.opts.expectedAgent, version = init?.agentInfo?.version;
         if (expected && (init?.agentInfo?.name !== expected.name || !(typeof expected.version === "function" ? expected.version(version) : version === expected.version)))
           throw new Error("native ACP identity is not verified for this production adapter");
-        this.qwenAgent = qwenNativeIdentity(this.id, this.opts.qwen025, init, this.opts.kind);
+        const qwen = qwenNativeIdentity(this.id, this.opts.qwen025, init, this.opts.kind);
+        this.qwenAgent = this.nativePolicy === undefined && qwen;
         const resume = this.opts.resumeSessionId;
         if (!resume)
           return this.request("session/new", { cwd: this.opts.cwd, mcpServers: this.opts.mcpServers ?? [] });
@@ -2719,20 +2850,50 @@ var init_acp = __esm(() => {
         setTimeout(() => reject(new Error(`${this.id} did not complete the ACP handshake within ${HANDSHAKE_MS / 1000} s`)), HANDSHAKE_MS).unref();
       });
       try {
+        if (this.opts.requireOwnedGroup) {
+          const proof = await AcpOwnedGroup.capture(proc);
+          this.ownedGroup = { proc, proof };
+          if (this.proc !== proc || this.stopping)
+            throw new Error("Configured ACP process ownership could not be verified");
+        }
         const session = await Promise.race([handshake(), timeout]);
         this.sessionId = session.sessionId;
         const modes = session.modes?.availableModes;
         this.availableModes = new Set(Array.isArray(modes) ? modes.flatMap((mode) => typeof mode?.id === "string" ? [mode.id] : []) : []);
         const resetResumed = this.opts.resumeSessionId && typeof session.modes?.currentModeId === "string" && session.modes.currentModeId !== KIMI_MODE_IDS.ask;
-        if (this.qwenAgent || this.kimiAgent && (this.permissionMode !== "ask" || resetResumed))
+        if (this.nativePolicy?.lockedReadOnly)
+          await this.applyNativeMode(this.nativePolicy.readOnly, "ask");
+        else if (this.nativePolicy?.modes !== undefined || this.qwenAgent || this.kimiAgent && (this.permissionMode !== "ask" || resetResumed))
           await this.setPermissionMode(this.permissionMode);
+        if (this.opts.requireOwnedGroup) {
+          const owned = this.ownedGroup;
+          if (!owned || owned.proc !== proc || this.proc !== proc || this.stopping)
+            throw new Error("Configured ACP process ownership could not be verified");
+          await owned.proof.verify();
+          if (this.proc !== proc || this.stopping)
+            throw new Error("Configured ACP process ownership could not be verified");
+        }
       } catch (e) {
         this.setState("offline");
         if (this.proc === proc) {
-          await stopOwnedProcess(proc, { group: true }).then(() => {
-            if (this.proc === proc)
-              this.proc = undefined;
-          }, (stop) => this.opts.log?.(`[${this.id}] ${stop.message}`));
+          if (this.opts.requireOwnedGroup) {
+            const owned = this.ownedGroup;
+            if (owned?.proc === proc) {
+              await owned.proof.stop().then(() => {
+                if (this.proc === proc) {
+                  this.proc = undefined;
+                  this.ownedGroup = undefined;
+                }
+              }, () => this.opts.log?.("Configured ACP process group shutdown incomplete"));
+            } else {
+              proc.stdin.end();
+              this.opts.log?.("Configured ACP process ownership could not be verified; no process signals were sent");
+            }
+          } else
+            await stopOwnedProcess(proc, { group: true }).then(() => {
+              if (this.proc === proc)
+                this.proc = undefined;
+            }, (stop) => this.opts.log?.(`[${this.id}] ${stop.message}`));
         }
         throw e;
       }
@@ -2741,16 +2902,24 @@ var init_acp = __esm(() => {
     getPermissionMode() {
       return this.permissionMode;
     }
+    get pendingOwnedProcess() {
+      return this.opts.requireOwnedGroup === true && this.proc !== undefined;
+    }
     get permissionModeState() {
-      return !this.kimiAgent && !this.qwenAgent ? "unmanaged" : this.modeUnknown ? "unknown" : this.permissionMode;
+      return this.nativePolicy?.lockedReadOnly || this.nativePolicy?.modes !== undefined || this.kimiAgent || this.qwenAgent ? this.modeUnknown ? "unknown" : this.permissionMode : "unmanaged";
     }
     async setPermissionMode(mode) {
-      if (!this.kimiAgent && !this.qwenAgent)
+      if (this.nativePolicy?.lockedReadOnly)
+        throw new Error(`${this.id} permission mode is locked read-only; runtime changes are refused`);
+      const modes = this.nativePolicy !== undefined ? this.nativePolicy.modes : this.qwenAgent ? QWEN_MODE_IDS : this.kimiAgent ? KIMI_MODE_IDS : undefined;
+      if (modes === undefined)
         throw new Error(`${this.id} permission mode ${mode} unmanaged: this ACP agent has no verified mode mapping; use Kimi Code CLI or add an agent-specific mapping`);
+      await this.applyNativeMode(modes[mode], mode);
+    }
+    async applyNativeMode(id, mode) {
       if (this.modeUnknown)
         throw new Error(`${this.id} permission mode unknown after an unanswered change; restart the peer before changing modes`);
-      const id = (this.qwenAgent ? QWEN_MODE_IDS : KIMI_MODE_IDS)[mode];
-      if (!this.sessionId || !this.proc || !this.availableModes.has(id))
+      if (typeof id !== "string" || !id || !this.sessionId || !this.proc || !this.availableModes.has(id))
         throw new Error(`${this.id} permission mode ${mode} unavailable: session does not offer ${id}`);
       try {
         await this.request("session/set_mode", { sessionId: this.sessionId, modeId: id }, this.opts.permissionModeTimeoutMs ?? HANDSHAKE_MS);
@@ -2760,9 +2929,9 @@ var init_acp = __esm(() => {
           this.turn++;
           this.setState("offline");
           await this.stop().catch((stop) => this.opts.log?.(`[${this.id}] ${stop.message}`));
-          throw new Error(`${this.id} permission mode ${mode} unknown: ${error.message}; peer is offline, restart it before sending work`);
+          throw new Error(this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP native permission mode unknown; peer is offline, restart it before sending work" : `${this.id} permission mode ${mode} unknown: ${error.message}; peer is offline, restart it before sending work`);
         }
-        throw new Error(`${this.id} permission mode ${mode} refused: ${error.message}`);
+        throw new Error(this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP native permission mode refused" : `${this.id} permission mode ${mode} refused: ${error.message}`);
       }
       if (this.cancelWait?.reported)
         await this.cancelWait.released;
@@ -2791,7 +2960,16 @@ var init_acp = __esm(() => {
         this.setState("offline");
         return;
       }
-      await stopOwnedProcess(proc, { group: true });
+      if (this.opts.requireOwnedGroup) {
+        this.setState("offline");
+        const owned = this.ownedGroup;
+        if (!owned || owned.proc !== proc)
+          throw new Error("Configured ACP process ownership could not be verified");
+        await owned.proof.stop();
+        if (this.ownedGroup === owned)
+          this.ownedGroup = undefined;
+      } else
+        await stopOwnedProcess(proc, { group: true });
       if (this.proc === proc)
         this.proc = undefined;
       this.setState("offline");
@@ -2852,13 +3030,13 @@ ${renderDigest(envs, false)}` }] });
       }).catch((e) => {
         if (turn !== this.turn) {
           if (this.cancelWait?.turn === turn)
-            this.opts.log?.(`[${this.id}] cancelled prompt rejected: ${sanitize(e.message)}`);
+            this.opts.log?.(this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP cancelled prompt rejected; native details withheld" : `[${this.id}] cancelled prompt rejected: ${sanitize(e.message)}`);
           return;
         }
         this.endActivity("failed", true);
-        const reason = sanitize(e.message);
+        const reason = this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP prompt failed" : sanitize(e.message);
         this.settleSteers("needs_review", reason);
-        this.opts.log?.(`[${this.id}] prompt failed: ${reason}`);
+        this.opts.log?.(this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP prompt failed; native details withheld" : `[${this.id}] prompt failed: ${reason}`);
         const quota = !this.stopping && this.kimiAgent ? acpQuotaRefusal(e.message) : undefined;
         if (quota) {
           let paused = false;
@@ -2901,7 +3079,7 @@ ${renderDigest(envs, false)}` }] });
     }
     reportTurnFailure(envs, reason) {
       try {
-        const result = this.opts.onTurnFailure?.(envs, reason);
+        const result = this.opts.onTurnFailure?.(envs, this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP prompt failed" : reason);
         if (result)
           result.catch(() => this.opts.log?.("ACP failure handoff could not be completed"));
       } catch {
@@ -3006,6 +3184,8 @@ ${renderDigest(envs, false)}` }] });
     }
     down(reason) {
       this.clearCancelWait();
+      if (this.nativePolicy !== undefined || this.opts.requireOwnedGroup)
+        reason = "Configured ACP transport stopped";
       this.opts.log?.(`[${this.id}] ${reason}`);
       for (const p of this.pending.values())
         p.reject(new Error(reason));
@@ -3091,6 +3271,11 @@ ${renderDigest(envs, false)}` }] });
     async answerPermission(msg) {
       this.flushActivity();
       const call = msg.params?.toolCall ?? {};
+      const kind = typeof call.kind === "string" ? call.kind : undefined;
+      if (this.nativePolicy?.lockedReadOnly && !["read", "search", "think"].includes(kind ?? "")) {
+        const rejected = (msg.params?.options ?? []).find((option) => option.kind === "reject_once");
+        return this.send({ jsonrpc: "2.0", id: msg.id, result: { outcome: rejected ? { outcome: "selected", optionId: rejected.optionId } : { outcome: "cancelled" } } });
+      }
       const once = (msg.params?.options ?? []).find((o) => o.kind === "allow_once");
       const id = typeof call.toolCallId === "string" ? call.toolCallId : undefined;
       const announced = id === undefined ? undefined : this.toolTitles.get(id);
@@ -3109,7 +3294,7 @@ ${renderDigest(envs, false)}` }] });
       const named = typeof call.title === "string" && jsonObject(call.title) === undefined ? call.title : announced;
       const title = raw === undefined ? `${named ?? "tool call"} (payload not reported by the agent)` : `${named ?? "tool call"}${input}`;
       this.emitActivity("ask", `${String(msg.id)}: ${activityText(title)}; answer in ahub console`);
-      const options = (msg.params?.options ?? []).filter((o) => raw !== undefined && !cut || o.kind !== "allow_always");
+      const options = (msg.params?.options ?? []).filter((o) => o.kind !== "allow_always" || !this.nativePolicy?.lockedReadOnly && raw !== undefined && !cut);
       const tool = typeof named === "string" && /^[\w.:@-]{1,80}$/.test(named) ? named : undefined;
       const turn = this.turn;
       const alive = setInterval(() => this.state === "busy" && turn === this.turn && this.touch(), Math.max(10, Math.min(30000, Math.floor(this.watchdogMs / 3))));
@@ -3118,7 +3303,7 @@ ${renderDigest(envs, false)}` }] });
       let picked;
       try {
         const cancelled = new Promise((resolve) => controller.signal.addEventListener("abort", () => resolve(undefined), { once: true }));
-        picked = await Promise.race([this.opts.onPermission?.({ peer: this.id, title, options, ...tool ? { tool } : {} }, controller.signal).catch(() => {
+        picked = await Promise.race([this.opts.onPermission?.({ peer: this.id, title, options, ...tool ? { tool } : {}, ...kind ? { kind } : {} }, controller.signal).catch(() => {
           return;
         }), cancelled]);
       } finally {
@@ -11133,6 +11318,155 @@ var init_qwen = __esm(() => {
   };
 });
 
+// src/adapters/configured-acp.ts
+import { types } from "util";
+function fields(raw, at) {
+  if (!raw || typeof raw !== "object" || types.isProxy(raw) || Array.isArray(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw)) || Object.getOwnPropertySymbols(raw).length)
+    return fail(at, "must be a plain own-data object");
+  const result = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(raw));
+  if (Object.values(result).some((d) => !Object.hasOwn(d, "value") || !d.enumerable))
+    return fail(at, "enumerable data fields required");
+  return result;
+}
+function text3(raw, at, max = 4096) {
+  if (typeof raw !== "string" || !raw.trim() || Buffer.byteLength(raw) > max || /[\p{Cc}\p{Cf}]/u.test(raw))
+    return fail(at, `must be nonempty control-free text of at most ${max} bytes`);
+  return raw;
+}
+function list2(raw, at, max) {
+  if (!Array.isArray(raw) || types.isProxy(raw) || Object.getPrototypeOf(raw) !== Array.prototype || Object.getOwnPropertySymbols(raw).length)
+    return fail(at, "must be a string array");
+  const descriptors = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(raw));
+  const length = descriptors.length?.value;
+  if (!Number.isSafeInteger(length) || length > max || Object.keys(descriptors).length !== length + 1)
+    return fail(at, "array is sparse or too large");
+  return Array.from({ length }, (_, index) => {
+    const d = descriptors[String(index)];
+    if (!d || !Object.hasOwn(d, "value") || !d.enumerable)
+      return fail(at, "array data fields required");
+    return text3(d.value, `${at}.${index}`);
+  });
+}
+function freeze(value) {
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value))
+      freeze(item);
+    Object.freeze(value);
+  }
+  return value;
+}
+function configuredAcpDefinitions(raw, builtinKinds) {
+  if (raw === undefined)
+    return Object.freeze([]);
+  const declarations = fields(raw, "adapters");
+  if (Object.keys(declarations).length > 64)
+    return fail("adapters", "at most 64 configured kinds supported");
+  const reserved = new Set([...builtinKinds, ...CONFIGURED_ACP_RESERVED_COMMANDS, "user", "hub", "digest", "constructor", "prototype", "__proto__"]);
+  return Object.freeze(Object.entries(declarations).map(([kind, descriptor]) => {
+    const at = `adapters.${kind}`;
+    if (!/^[a-z][a-z0-9-]{0,31}$/.test(kind) || reserved.has(kind))
+      return fail(at, "kind is invalid, reserved or collides with a builtin");
+    const input = fields(descriptor.value, at);
+    if (Object.keys(input).some((key) => !["transport", "command", "args", "displayName", "roles", "identity", "permission", "readOnly"].includes(key)))
+      return fail(at, "unknown or privileged field");
+    if (input.transport?.value !== "acp")
+      return fail(`${at}.transport`, "must be acp");
+    const command = text3(input.command?.value, `${at}.command`), args = input.args ? list2(input.args.value, `${at}.args`, 128) : [];
+    if ([command, ...args].some((arg) => /^--(?:leader|attach|connect|remote)(?:-|=|$)/.test(arg)))
+      return fail(`${at}.args`, "attach/leader selectors are unsupported; command must run foreground owned ACP stdio");
+    const displayName = text3(input.displayName?.value, `${at}.displayName`, 256), roles = list2(input.roles?.value, `${at}.roles`, ROLES.length);
+    if (!roles.length || new Set(roles).size !== roles.length || roles.some((role) => !ROLES.includes(role)))
+      return fail(`${at}.roles`, "roles must be nonempty, known and unique");
+    let identity;
+    if (input.identity) {
+      const value = fields(input.identity.value, `${at}.identity`);
+      if (Object.keys(value).some((key) => !["name", "version"].includes(key)))
+        return fail(`${at}.identity`, "unknown identity field");
+      identity = { name: text3(value.name?.value, `${at}.identity.name`, 256), version: text3(value.version?.value, `${at}.identity.version`, 256) };
+    }
+    let modes;
+    if (input.permission) {
+      const value = fields(input.permission.value, `${at}.permission`);
+      modes = {};
+      for (const [mode, d] of Object.entries(value)) {
+        if (!MODES.includes(mode))
+          return fail(`${at}.permission.${mode}`, "unknown hub mode");
+        modes[mode] = text3(d.value, `${at}.permission.${mode}`, 256);
+      }
+    }
+    const readOnly = input.readOnly ? text3(input.readOnly.value, `${at}.readOnly`, 256) : undefined;
+    const nativePolicy = freeze({ ...modes ? { modes } : {}, ...readOnly ? { readOnly } : {} });
+    const argv = freeze([command, ...args]);
+    identity = identity && freeze(identity);
+    const definition = {
+      api: 1,
+      kind,
+      family: kind,
+      displayName,
+      transport: "acp",
+      roles,
+      optional: true,
+      defaultOnRoster: false,
+      trust: { onPrem: false, hubSandboxed: false },
+      identity: { mcp: "acp-session" },
+      instances: { mode: "headless" },
+      start: {
+        daemonPort: "acp",
+        forms: ["headless"],
+        defaultForm: "headless",
+        conductorStartable: true,
+        hubSwitches: [],
+        ownedFlags: [],
+        preflight: (request) => request.form !== undefined && request.form !== "headless" ? `${kind}: configured ACP supports headless only` : !identity ? `${kind}: native identity is unverified; configure the observed name/version pin before starting` : undefined,
+        launch: (context) => {
+          if (context.form !== "headless")
+            throw new Error(`${kind}: configured ACP supports headless only`);
+          return { cmd: command, args: [...args], metadata: { packageEntrypoint: context.entrypoint, argv: [...argv], command: argv.map(shellQuote3).join(" "), env: {} } };
+        },
+        create: (context) => {
+          if (!("acp" in context.daemon))
+            throw new Error(`${kind}: ACP transport options required`);
+          if (context.permission === "read-only" && !readOnly)
+            throw new Error(`${kind}: read-only native mode is not configured`);
+          if (!identity)
+            throw new Error(`${kind}: native identity is unverified; configure the observed name/version pin before starting`);
+          return new AcpPeer(context.instance, {
+            ...context.daemon.acp,
+            kind,
+            cmd: [...argv],
+            qwen025: false,
+            expectedAgent: identity,
+            requireLoadSessionEcho: true,
+            requireOwnedGroup: true,
+            permissionMode: context.permission === "read-only" ? "ask" : context.permission,
+            nativePolicy: { ...nativePolicy, lockedReadOnly: context.permission === "read-only" },
+            mcpServers: context.mcpServers
+          });
+        },
+        conductorStartArgs: (args) => args.length ? new Error("configured ACP starts accept no launch overrides") : {}
+      },
+      permission: { genericAcp: nativePolicy, grants: Object.fromEntries(MODES.map((mode) => [mode, modes?.[mode] ? `${kind}: asks native ACP to select configured ${mode} mode; native tool policy applies; NO hub sandbox` : `${kind}: no configured native mapping for ${mode}; NO hub sandbox`])), ...!modes || !Object.keys(modes).length ? { unmanaged: `${kind}: native policy unmanaged; no configured permission map; NO hub sandbox` } : {} },
+      session: { idField: "sessionId", currentId: (peer) => {
+        const id = peer.recoveryMetadata?.().sessionId;
+        return typeof id === "string" ? id : undefined;
+      }, launchKind: "acp", resumeById: true, recoveryRefusal: () => "configured ACP has no verified controlled-recovery driver; stop it explicitly and restart with its recorded native session id" },
+      turnEnd: "adapter",
+      cli: { command: kind, startWords: () => [kind] },
+      display: { palette: { fg: "white", bg: "black" } }
+    };
+    return freeze(definition);
+  }));
+}
+var fail = (field, reason) => {
+  throw new Error(`${field}: ${reason}`);
+}, CONFIGURED_ACP_RESERVED_COMMANDS, MODES, ROLES;
+var init_configured_acp = __esm(() => {
+  init_acp();
+  CONFIGURED_ACP_RESERVED_COMMANDS = Object.freeze(["help", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "recovery-run", "upgrade", "restart", "recovery", "models", "say", "queue", "watch", "tail", "budget", "backlog", "release", "board", "sdlc", "task", "review", "remember", "ask", "route", "pause", "resume", "stop", "permission", "roster", "settings", "permit", "pet", "status", "logs", "export", "bench", "memory", "goal", "research", "report", "facts", "check-path", "turns", "undo", "kill", "reset", "role", "doctor"]);
+  MODES = ["ask", "ask-when-needed", "never-ask"];
+  ROLES = ["planner", "implementer", "verifier", "reviewer", "conductor"];
+});
+
 // src/adapters/definitions/native-config-defaults.ts
 var init_native_config_defaults = () => {};
 
@@ -11152,7 +11486,7 @@ var init_native_cli_doctor = __esm(() => {
 });
 
 // src/adapters/registry.ts
-import { types } from "util";
+import { types as types2 } from "util";
 function immutable(value, seen = new WeakSet) {
   if (!value || typeof value !== "object" || seen.has(value))
     return value;
@@ -11162,22 +11496,22 @@ function immutable(value, seen = new WeakSet) {
   return Object.freeze(value);
 }
 function ownField(value, key) {
-  if (!value || typeof value !== "object" || types.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
+  if (!value || typeof value !== "object" || types2.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
     return;
   const field = Object.getOwnPropertyDescriptor(value, key);
   return field && Object.hasOwn(field, "value") && field.enumerable ? field.value : undefined;
 }
-function declaredKind(id, instances) {
-  if (!instances || typeof instances !== "object" || types.isProxy(instances) || Array.isArray(instances) || ![Object.prototype, null].includes(Object.getPrototypeOf(instances)))
+function declaredKind(id, instances, catalog = definitions) {
+  if (!instances || typeof instances !== "object" || types2.isProxy(instances) || Array.isArray(instances) || ![Object.prototype, null].includes(Object.getPrototypeOf(instances)))
     return;
   const field = Object.getOwnPropertyDescriptor(instances, id);
   if (!field || !Object.hasOwn(field, "value") || !field.enumerable)
     return;
   const entry = field.value;
-  if (!entry || typeof entry !== "object" || types.isProxy(entry) || Array.isArray(entry) || ![Object.prototype, null].includes(Object.getPrototypeOf(entry)))
+  if (!entry || typeof entry !== "object" || types2.isProxy(entry) || Array.isArray(entry) || ![Object.prototype, null].includes(Object.getPrototypeOf(entry)))
     return;
   const kind = Object.getOwnPropertyDescriptor(entry, "kind");
-  if (!kind || !Object.hasOwn(kind, "value") || !kind.enumerable || typeof kind.value !== "string" || !definitions.has(kind.value))
+  if (!kind || !Object.hasOwn(kind, "value") || !kind.enumerable || typeof kind.value !== "string" || !catalog.has(kind.value))
     return;
   const prefix = `${kind.value}-`;
   return /^[a-z][a-z0-9-]{0,31}$/.test(id) && id.startsWith(prefix) && /^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length)) ? kind.value : undefined;
@@ -11187,12 +11521,38 @@ function kindOf(id, instances) {
 }
 function definitionOf(id, instances) {
   const kind = kindOf(id, instances);
-  const definition = kind === undefined ? undefined : definitions.get(kind);
+  return resolvedDefinition(id, kind, instances, definitions);
+}
+function resolvedDefinition(id, kind, instances, catalog) {
+  const definition = kind === undefined ? undefined : catalog.get(kind);
   const declaration = ownField(instances, id), roles = ownField(declaration, "roles");
-  const reviewerOnly = Array.isArray(roles) && !types.isProxy(roles) && roles.length === 1 && Object.getOwnPropertyDescriptor(roles, "0")?.value === "reviewer";
+  const reviewerOnly = Array.isArray(roles) && !types2.isProxy(roles) && roles.length === 1 && Object.getOwnPropertyDescriptor(roles, "0")?.value === "reviewer";
   const variant = definition?.reviewerVariant;
   const fresh = variant?.reviewer?.declaration === "automatic" || ownField(declaration, "review_mode") === "fresh";
   return variant && kind !== id && reviewerOnly && ownField(declaration, "start_mode") === "headless" && fresh ? variant : definition;
+}
+function createProjectAdapterCatalog(rawAdapters) {
+  const configured = configuredAcpDefinitions(rawAdapters, [...definitions.keys()]);
+  for (const definition of configured) {
+    assertDefinitionCoherence(definition);
+    assertNativeCapabilityScope(definition);
+  }
+  const entries = Object.freeze([...ADAPTERS, ...configured]);
+  const catalog = new Map([...definitions, ...configured.map((definition) => [definition.kind, definition])]);
+  const kindOf = (id, instances) => catalog.has(id) ? id : typeof id === "string" ? declaredKind(id, instances, catalog) : undefined;
+  const definitionOf = (id, instances) => resolvedDefinition(id, kindOf(id, instances), instances, catalog);
+  return Object.freeze({
+    definitions: entries,
+    kindOf,
+    definitionOf,
+    familyOf: (id, instances) => definitionOf(id, instances)?.family,
+    isSupportedPeer: (id, instances) => {
+      if (typeof id !== "string")
+        return false;
+      const kind = kindOf(id, instances), runtime = kind === undefined ? undefined : catalog.get(kind), resolved = definitionOf(id, instances);
+      return runtime !== undefined && resolved !== undefined && (kind === id || resolved === runtime || resolved.reviewer?.unavailable === undefined);
+    }
+  });
 }
 function defaultPeerRoles(includeOptional = false) {
   return Object.fromEntries(ROLE_ORDER.filter((peer) => includeOptional || !definitionOf(peer).optional).map((peer) => [peer, [...definitionOf(peer).roles]]));
@@ -11283,6 +11643,7 @@ var init_registry = __esm(() => {
   init_native_factories();
   init_builtin_metadata();
   init_qwen();
+  init_configured_acp();
   init_native_config_defaults();
   init_native_cli_doctor();
   init_native_display();
@@ -11387,8 +11748,8 @@ function current(op, fields, required, placement, targets, precedence, legacyOpt
 }
 function ordinaryOp(op, placement, targets, precedence, dated = false) {
   const hasBy = !["forget", "confirm", "reject"].includes(op);
-  const by = dated ? utc : op === "supersede" ? id2 : op === "goal_state" ? { type: "string", values: ["open", "active", "blocked", "done", "dropped"] } : text3;
-  return current(op, { target: op === "settle" ? { ...text3, maxLength: 400 } : id2, actor: text3, ...hasBy ? { by } : {} }, ["target", "actor", ...hasBy ? ["by"] : []], placement, targets, precedence, ["actor"]);
+  const by = dated ? utc : op === "supersede" ? id2 : op === "goal_state" ? { type: "string", values: ["open", "active", "blocked", "done", "dropped"] } : text4;
+  return current(op, { target: op === "settle" ? { ...text4, maxLength: 400 } : id2, actor: text4, ...hasBy ? { by } : {} }, ["target", "actor", ...hasBy ? ["by"] : []], placement, targets, precedence, ["actor"]);
 }
 function blocked(op) {
   return Object.freeze({
@@ -11405,15 +11766,15 @@ function blocked(op) {
     fixtures: [`deny-${op}`]
   });
 }
-var text3, id2, utc, strings, base, identity = "sha256(canonical complete payload without id), first 32 hex; schema, at and machine participate; replay INSERT OR IGNORE", crash = "complete newline is authoritative; append precedes derived-index refresh; incomplete tail waits; refresh/rebuild recovers a complete append", v1, V1_OPS, OP_CONTRACTS, generationId, authoredHash, canonicalUtc, pruneRequired, PRUNE_GENERATION_CONTRACT, VAULT_LINK_GENERATION_CONTRACT, GENERATION_OP_CONTRACTS;
+var text4, id2, utc, strings, base, identity = "sha256(canonical complete payload without id), first 32 hex; schema, at and machine participate; replay INSERT OR IGNORE", crash = "complete newline is authoritative; append precedes derived-index refresh; incomplete tail waits; refresh/rebuild recovers a complete append", v1, V1_OPS, OP_CONTRACTS, generationId, authoredHash, canonicalUtc, pruneRequired, PRUNE_GENERATION_CONTRACT, VAULT_LINK_GENERATION_CONTRACT, GENERATION_OP_CONTRACTS;
 var init_ops_contract = __esm(() => {
-  text3 = { type: "string" };
+  text4 = { type: "string" };
   id2 = { type: "string", format: "id" };
   utc = { type: "string", format: "utc" };
   strings = { type: "string-array" };
   base = {
     schema: { type: "string", values: ["agent-hub.memory/v1"] },
-    op: text3,
+    op: text4,
     id: id2,
     at: utc,
     machine: { type: "string", maxLength: 64 }
@@ -11425,9 +11786,9 @@ var init_ops_contract = __esm(() => {
       tier: { type: "string", values: ["short", "long"] },
       kind: { type: "string", values: ["decision", "finding", "contract", "fail"] },
       peer: { type: "string", maxLength: 64 },
-      title: text3,
-      text: text3,
-      task: text3,
+      title: text4,
+      text: text4,
+      task: text4,
       about: strings,
       supersedes: id2,
       promotedFrom: id2,
@@ -11444,7 +11805,7 @@ var init_ops_contract = __esm(() => {
       title: { type: "string", maxLength: 400 },
       milestones: strings,
       dependsOn: strings,
-      actor: text3
+      actor: text4
     }, ["project", "scope", "title", "milestones", "dependsOn", "actor"], "synced", "dependsOn goal ids; goal's full id is its immutable identity", "goals newest at first; initial state open; subsequent state/link/lease ops reduce separately", ["scope", "actor"]),
     goal_state: ordinaryOp("goal_state", "synced", "target full goal id; by open|active|blocked|done|dropped", "latest valid state by at/id wins"),
     goal_link: ordinaryOp("goal_link", "synced", "target full goal id; by immutable project#task@created key", "unique authored intent; links retain at/machine; identical payload replays once"),
@@ -18753,34 +19114,34 @@ init_tool_refusal();
 // src/hub/instances.ts
 init_registry();
 init_permission_mode();
-import { types as types2 } from "util";
+import { types as types3 } from "util";
 var MAX_INSTANCES = 64;
 var FLOW_ROLES = new Set(["planner", "implementer", "verifier", "reviewer", "conductor"]);
 var PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 var RESERVED = new Set(["user", "hub", "digest"]);
-var fail = (field, reason) => {
+var fail2 = (field, reason) => {
   throw new Error(`${field}: ${reason}`);
 };
-function fields(value, field) {
-  if (!value || typeof value !== "object" || types2.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length)
-    return fail(field, "must be a plain own-data object");
+function fields2(value, field) {
+  if (!value || typeof value !== "object" || types3.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length)
+    return fail2(field, "must be a plain own-data object");
   const descriptors = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(value));
   if (Object.values(descriptors).some((entry) => !Object.hasOwn(entry, "value") || !entry.enumerable))
-    return fail(field, "must contain enumerable data fields only");
+    return fail2(field, "must contain enumerable data fields only");
   return descriptors;
 }
 function roles(value, field) {
-  if (!Array.isArray(value) || types2.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype || Object.getOwnPropertySymbols(value).length)
-    return fail(field, "must be a role array");
+  if (!Array.isArray(value) || types3.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype || Object.getOwnPropertySymbols(value).length)
+    return fail2(field, "must be a role array");
   const descriptors = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(value));
   const length = descriptors.length?.value;
   if (!Number.isSafeInteger(length) || length > FLOW_ROLES.size || Object.keys(descriptors).length !== length + 1)
-    return fail(field, "invalid role array");
+    return fail2(field, "invalid role array");
   const out = [];
   for (let index = 0;index < length; index++) {
     const descriptor = descriptors[String(index)];
     if (!descriptor || !Object.hasOwn(descriptor, "value") || !descriptor.enumerable || typeof descriptor.value !== "string" || !FLOW_ROLES.has(descriptor.value) || out.includes(descriptor.value))
-      return fail(field, "roles must be known and unique");
+      return fail2(field, "roles must be known and unique");
     out.push(descriptor.value);
   }
   return out;
@@ -18788,90 +19149,101 @@ function roles(value, field) {
 function supportsHeadlessInstances(definition) {
   return definition.instances?.mode === "headless" && !!definition.start.create && definition.start.forms.includes("headless");
 }
-function validateInstances(raw) {
+function validateInstances(raw, catalog) {
+  const resolve = catalog?.definitionOf ?? definitionOf;
   const result = Object.create(null);
   if (raw === undefined)
     return Object.freeze(result);
-  const declarations = fields(raw, "instances");
+  const declarations = fields2(raw, "instances");
   if (Object.keys(declarations).length > MAX_INSTANCES)
-    return fail("instances", "at most 64 extra instances are supported");
+    return fail2("instances", "at most 64 extra instances are supported");
   for (const [id, descriptor] of Object.entries(declarations)) {
-    if (!PEER_ID.test(id) || RESERVED.has(id) || definitionOf(id))
-      return fail("instances", "ids must be nonreserved extra instance ids, not builtin ids");
-    const path = `instances.${id}`, entry = fields(descriptor.value, path);
-    if (Object.keys(entry).some((key) => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode"].includes(key)))
-      return fail(path, "unsupported field");
+    if (!PEER_ID.test(id) || RESERVED.has(id) || resolve(id))
+      return fail2("instances", "ids must be nonreserved extra instance ids, not builtin ids");
+    const path = `instances.${id}`, entry = fields2(descriptor.value, path);
+    if (Object.keys(entry).some((key) => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly"].includes(key)))
+      return fail2(path, "unsupported field");
     const kind = entry.kind?.value;
     if (typeof kind !== "string")
-      return fail(`${path}.kind`, "must name a native kind");
-    const definition = definitionOf(kind), prefix = `${kind}-`;
+      return fail2(`${path}.kind`, "must name a native kind");
+    const definition = resolve(kind), prefix = `${kind}-`;
     if (!definition)
-      return fail(`${path}.kind`, "unknown native kind");
+      return fail2(`${path}.kind`, "unknown native kind");
     if (!id.startsWith(prefix) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length)))
-      return fail(path, "id must be <kind>-<name>");
+      return fail2(path, "id must be <kind>-<name>");
     const declaredRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
     const reviewer = (definition.reviewerVariant ?? definition).reviewer;
     const reviewerOnly = entry.start_mode?.value === "headless" && declaredRoles.length === 1 && declaredRoles[0] === "reviewer";
     if (entry.review_mode && (entry.review_mode.value !== "fresh" || !reviewerOnly || !reviewer))
-      return fail(`${path}.review_mode`, "fresh requires reviewer-only roles, headless mode and a declared fresh-review capability");
+      return fail2(`${path}.review_mode`, "fresh requires reviewer-only roles, headless mode and a declared fresh-review capability");
     const freshReviewer = reviewerOnly && !!reviewer && (reviewer.declaration === "automatic" || entry.review_mode?.value === "fresh");
     if (definition.routing?.reviewOnly && !freshReviewer)
-      return fail(path, 'a review-only kind requires headless roles exactly ["reviewer"]');
+      return fail2(path, 'a review-only kind requires headless roles exactly ["reviewer"]');
     if (freshReviewer && entry.worktree)
-      return fail(`${path}.worktree`, "a fresh reviewer reads the project checkout: worktree is not supported");
+      return fail2(`${path}.worktree`, "a fresh reviewer reads the project checkout: worktree is not supported");
     if (freshReviewer && entry.permission_mode)
-      return fail(`${path}.permission_mode`, "a fresh reviewer has a fixed read-only policy");
+      return fail2(`${path}.permission_mode`, "a fresh reviewer has a fixed read-only policy");
     const external = definition.instances?.mode === "external";
     const runtime = freshReviewer ? definition.reviewerVariant ?? definition : definition;
     const unavailableReviewer = freshReviewer && !!(definition.reviewerVariant ?? definition).reviewer?.unavailable;
     if (!unavailableReviewer && runtime.instances?.mode !== "external" && !supportsHeadlessInstances(runtime))
-      return fail(`${path}.kind`, definition.reviewerVariant ? 'unsupported; this kind only declares headless reviewer instances with roles exactly ["reviewer"]' : "unsupported; explicit external instance policy or a headless instance policy with a headless factory is required");
+      return fail2(`${path}.kind`, definition.reviewerVariant ? 'unsupported; this kind only declares headless reviewer instances with roles exactly ["reviewer"]' : "unsupported; explicit external instance policy or a headless instance policy with a headless factory is required");
     if (external) {
       const declared = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
       if (entry.start_mode && definition.reviewerVariant) {
         if (entry.worktree)
-          return fail(path, "a headless reviewer reads the project checkout: worktree is not supported");
+          return fail2(path, "a headless reviewer reads the project checkout: worktree is not supported");
         if (declared.length !== 1 || declared[0] !== "reviewer")
-          return fail(`${path}.roles`, 'a headless channel-kind instance is a reviewer: roles must be exactly ["reviewer"]');
+          return fail2(`${path}.roles`, 'a headless channel-kind instance is a reviewer: roles must be exactly ["reviewer"]');
       } else {
         if (entry.start_mode || entry.worktree)
-          return fail(path, `a channel instance starts only from the person's terminal (ahub <kind> --as <id>): start_mode and worktree are not supported; a headless reviewer declares roles ["reviewer"] and start_mode "headless"`);
+          return fail2(path, `a channel instance starts only from the person's terminal (ahub <kind> --as <id>): start_mode and worktree are not supported; a headless reviewer declares roles ["reviewer"] and start_mode "headless"`);
         const allowed = definition.instances?.roles ?? definition.roles;
         if (!declared.length || declared.some((role) => !allowed.includes(role)))
-          return fail(`${path}.roles`, "a channel instance must declare its roles: reviewer and/or planner");
+          return fail2(`${path}.roles`, "a channel instance must declare its roles: reviewer and/or planner");
       }
     } else {
       const allowed = runtime.instances?.roles;
       if (allowed && (declaredRoles.length ? declaredRoles : runtime.roles).some((role) => !allowed.includes(role)))
-        return fail(`${path}.roles`, "roles must fit the definition's instance policy");
+        return fail2(`${path}.roles`, "roles must fit the definition's instance policy");
+    }
+    if (entry.readOnly) {
+      if (typeof entry.readOnly.value !== "boolean")
+        return fail2(`${path}.readOnly`, "must be a boolean");
+      if (!runtime.permission.genericAcp?.readOnly)
+        return fail2(`${path}.readOnly`, "native adapter has no verified read-only mode");
+      if (entry.readOnly.value && entry.permission_mode)
+        return fail2(`${path}.permission_mode`, "read-only instances cannot select a permission mode");
     }
     const value = { kind, ...entry.review_mode ? { review_mode: "fresh" } : {} };
+    if (entry.readOnly)
+      value.readOnly = entry.readOnly.value;
     if (entry.roles) {
       value.roles = roles(entry.roles.value, `${path}.roles`);
       Object.freeze(value.roles);
     }
     if (entry.start_mode) {
       if (entry.start_mode.value !== "headless")
-        return fail(`${path}.start_mode`, "I2 extra instances require headless mode");
+        return fail2(`${path}.start_mode`, "I2 extra instances require headless mode");
       value.start_mode = "headless";
     }
     if (entry.permission_mode) {
       if (!isPermissionMode(entry.permission_mode.value))
-        return fail(`${path}.permission_mode`, "must be ask, ask-when-needed or never-ask");
+        return fail2(`${path}.permission_mode`, "must be ask, ask-when-needed or never-ask");
       value.permission_mode = entry.permission_mode.value;
     }
     if (entry.worktree) {
       const worktree = entry.worktree.value;
       if (typeof worktree !== "string" || !worktree.trim() || Buffer.byteLength(worktree) > 4096 || /\p{Cc}/u.test(worktree))
-        return fail(`${path}.worktree`, "must be a nonempty control-free path of at most 4096 UTF-8 bytes");
+        return fail2(`${path}.worktree`, "must be a nonempty control-free path of at most 4096 UTF-8 bytes");
       value.worktree = worktree;
     }
     result[id] = Object.freeze(value);
   }
   return Object.freeze(result);
 }
-function effectiveInstanceRoles(id, declarations, policyRoles) {
-  const definition = definitionOf(id, declarations);
+function effectiveInstanceRoles(id, declarations, policyRoles, catalog) {
+  const definition = (catalog?.definitionOf ?? definitionOf)(id, declarations);
   if (!definition)
     throw new Error(`${id}: no declared native instance`);
   const declaration = declarations && Object.hasOwn(declarations, id) ? declarations[id] : undefined;
@@ -18904,7 +19276,7 @@ var MACHINE_LOCAL = [
   "local.network_allow",
   "terminal.open"
 ];
-var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "text_projection", "instances"];
+var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "text_projection", "instances", "adapters"];
 function configRefusal(cwd, name) {
   const tracked = configTracked(cwd, name);
   return tracked === undefined ? `git could not confirm that .agenthub/${name} is untracked` : tracked ? `.agenthub/${name} is committed to git` : undefined;
@@ -18947,22 +19319,24 @@ function readInstanceConfigLayers(cwd) {
 }
 function readInstanceConfig(cwd, layers = readInstanceConfigLayers(cwd)) {
   const ignored = [];
-  let instances;
+  let adapters, rawInstances;
   for (const { name, raw } of layers) {
-    const checked = validateInstances(raw.instances);
-    if (!Object.keys(checked).length)
+    const keys = ["adapters", "instances"].filter((key) => raw[key] !== undefined);
+    if (!keys.length)
       continue;
-    if (name !== "config.local.json") {
-      ignored.push(`instances in .agenthub/${name} ignored: instances are machine-local config.local.json declarations`);
+    const refusal = name !== "config.local.json" ? "declarations are machine-local config.local.json values" : configRefusal(cwd, name);
+    if (refusal) {
+      ignored.push(`${keys.join(", ")} in .agenthub/${name} ignored: ${refusal}`);
       continue;
     }
-    const refusal = configRefusal(cwd, name);
-    if (refusal)
-      ignored.push(`instances in .agenthub/${name} ignored: ${refusal}`);
-    else
-      instances = checked;
+    if (raw.adapters !== undefined)
+      adapters = raw.adapters;
+    if (raw.instances !== undefined)
+      rawInstances = raw.instances;
   }
-  return { ...instances ? { instances } : {}, ignored };
+  const catalog = createProjectAdapterCatalog(adapters);
+  const instances = validateInstances(rawInstances, catalog);
+  return { ...adapters !== undefined ? { adapters } : {}, ...Object.keys(instances).length ? { instances } : {}, catalog, ignored };
 }
 
 // src/hub/control-client.ts
@@ -27573,7 +27947,7 @@ var INSTRUCTIONS = [
 var TOOLS_INSTRUCTIONS = ["agent-hub task tools for this project. Messages from other agents reach you as prompts, not through this server.", ACTIONABLE_MESSAGE_INSTRUCTION, roleContract(peerId, roles2(), [], profile2)].join(`
 `);
 var log = (line) => console.error(`[agent-hub] ${line}`);
-var text4 = (s) => ({ content: [{ type: "text", text: s }] });
+var text5 = (s) => ({ content: [{ type: "text", text: s }] });
 var server = new Server({ name: "agent-hub", version: VERSION3 }, toolsMode ? { capabilities: { tools: { listChanged: true } }, instructions: TOOLS_INSTRUCTIONS } : { capabilities: channel ? { experimental: { "claude/channel": {} }, tools: { listChanged: true } } : { tools: { listChanged: true } }, instructions: INSTRUCTIONS });
 var inbox = [];
 var hub;
@@ -27800,10 +28174,10 @@ async function callTool(req) {
   const { name, arguments: args } = req.params;
   if (name === "hub_delivery_done" && channel) {
     if (!hub)
-      return text4(offline());
+      return text5(offline());
     const a = args ?? {};
     const result = await hub.request({ t: "delivery_complete", deliveryId: a.delivery_id, generation: a.delivery_generation });
-    return text4(result.ok ? "delivery completed" : `not completed: ${result.error}`);
+    return text5(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }
   if (name === "hub_inbox" && !toolsMode) {
     let remote = [], notice = "";
@@ -27828,31 +28202,31 @@ async function callTool(req) {
     const out = [...inbox.splice(0), ...remote];
     if (notice)
       out.push(notice);
-    return text4(out.length ? out.join(`
+    return text5(out.length ? out.join(`
 
 `) : "(no queued hub messages)");
   }
   if (name === "hub_send") {
     const { text: body, to, reply_to } = args ?? {};
     if (!hub)
-      return text4(`${offline()} Message not sent.`);
+      return text5(`${offline()} Message not sent.`);
     const res = await hub.request({ t: "send", body, to, reply_to });
     if (!res.ok)
-      return text4(`not sent: ${res.error}`);
+      return text5(`not sent: ${res.error}`);
     if (res.recorded)
-      return text4("recorded only ([FYI]): it is on the hub console and log, and no peer spent a turn on it");
+      return text5("recorded only ([FYI]): it is on the hub console and log, and no peer spent a turn on it");
     if (res.dropped === "hop")
-      return text4(res.notice);
+      return text5(res.notice);
     const sent = `sent to: ${res.targets.join(", ") || "(no other peers attached)"}`;
-    return text4(typeof res.notice === "string" ? `${sent}; ${res.notice}` : sent);
+    return text5(typeof res.notice === "string" ? `${sent}; ${res.notice}` : sent);
   }
   if (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) {
     if (!hub)
-      return text4(offline());
+      return text5(offline());
     const res = await hub.request({ t: "task", op: name, args: args ?? {} });
-    return text4(res.ok ? res.text : `error: ${res.error}`);
+    return text5(res.ok ? res.text : `error: ${res.error}`);
   }
-  return text4(`unknown tool ${name}`);
+  return text5(`unknown tool ${name}`);
 }
 server.setRequestHandler(CallToolRequestSchema, async (req) => withPendingHint(await callTool(req), req.params.name !== "hub_inbox"));
 await server.connect(new StdioServerTransport);

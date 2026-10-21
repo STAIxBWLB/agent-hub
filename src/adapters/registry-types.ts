@@ -209,6 +209,8 @@ export interface AdapterDefinition {
     admission?: { reservedRefusal: string; watchRefusal: string };
   };
   permission: {
+    /** Consumed configured-ACP mode capability; native runtime and instance ceiling use the same validated mapping. */
+    genericAcp?: { modes?: Partial<Record<PermissionMode, string>>; readOnly?: string };
     grants?: Partial<Record<PermissionMode, string>>;
     unmanaged?: string;
     unmanagedForms?: readonly StartForm[];
@@ -293,3 +295,12 @@ export interface AdapterDefinition {
 
 /** Explicit project declarations, passed by the bound host. No process-global instance registration. */
 export type KindMap = Readonly<Record<string, { readonly kind: string; readonly roles?: readonly string[]; readonly start_mode?: "tui" | "headless"; readonly review_mode?: "fresh" }>>;
+
+/** Immutable per-project resolver; exported globals remain builtin-only. */
+export interface ProjectAdapterCatalog {
+  readonly definitions: readonly AdapterDefinition[];
+  definitionOf(id: string, instances?: KindMap): AdapterDefinition | undefined;
+  kindOf(id: string, instances?: KindMap): string | undefined;
+  familyOf(id: string, instances?: KindMap): string | undefined;
+  isSupportedPeer(id: unknown, instances?: KindMap): id is string;
+}

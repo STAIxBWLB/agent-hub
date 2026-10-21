@@ -6,7 +6,8 @@ import { DAEMON_PORTS } from "./definitions/native-factories.ts";
 export { DAEMON_PORTS };
 import { NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN } from "./definitions/builtin-metadata.ts";
 import { QWEN_DEFINITION } from "./definitions/qwen.ts";
-import type { AdapterDefinition, KindMap } from "./registry-types.ts";
+import { configuredAcpDefinitions } from "./configured-acp.ts";
+import type { AdapterDefinition, KindMap, ProjectAdapterCatalog } from "./registry-types.ts";
 import { types } from "node:util";
 
 export type * from "./registry-types.ts";
@@ -65,7 +66,7 @@ function ownField(value: unknown, key: string): unknown {
   return field && Object.hasOwn(field, "value") && field.enumerable ? field.value : undefined;
 }
 /** Declaration reads never execute caller accessors or inherit another project's mapping. */
-function declaredKind(id: string, instances: KindMap | undefined): string | undefined {
+function declaredKind(id: string, instances: KindMap | undefined, catalog: ReadonlyMap<string, AdapterDefinition> = definitions): string | undefined {
   if (!instances || typeof instances !== "object" || types.isProxy(instances) || Array.isArray(instances)
     || ![Object.prototype, null].includes(Object.getPrototypeOf(instances))) return undefined;
   const field = Object.getOwnPropertyDescriptor(instances, id);
@@ -74,7 +75,7 @@ function declaredKind(id: string, instances: KindMap | undefined): string | unde
   if (!entry || typeof entry !== "object" || types.isProxy(entry) || Array.isArray(entry)
     || ![Object.prototype, null].includes(Object.getPrototypeOf(entry))) return undefined;
   const kind = Object.getOwnPropertyDescriptor(entry, "kind");
-  if (!kind || !Object.hasOwn(kind, "value") || !kind.enumerable || typeof kind.value !== "string" || !definitions.has(kind.value)) return undefined;
+  if (!kind || !Object.hasOwn(kind, "value") || !kind.enumerable || typeof kind.value !== "string" || !catalog.has(kind.value)) return undefined;
   const prefix = `${kind.value}-`;
   return /^[a-z][a-z0-9-]{0,31}$/.test(id) && id.startsWith(prefix) && /^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length)) ? kind.value : undefined;
 }
@@ -84,7 +85,10 @@ export function kindOf(id: string, instances?: KindMap): string | undefined {
 }
 export function definitionOf(id: string, instances?: KindMap): AdapterDefinition | undefined {
   const kind = kindOf(id, instances);
-  const definition = kind === undefined ? undefined : definitions.get(kind);
+  return resolvedDefinition(id, kind, instances, definitions);
+}
+function resolvedDefinition(id: string, kind: string | undefined, instances: KindMap | undefined, catalog: ReadonlyMap<string, AdapterDefinition>): AdapterDefinition | undefined {
+  const definition = kind === undefined ? undefined : catalog.get(kind);
   // #223: only a declared extra (never the builtin id) with start_mode "headless" runs as the kind's reviewer variant.
   const declaration = ownField(instances, id), roles = ownField(declaration, "roles");
   const reviewerOnly = Array.isArray(roles) && !types.isProxy(roles) && roles.length === 1 && Object.getOwnPropertyDescriptor(roles, "0")?.value === "reviewer";
@@ -94,6 +98,24 @@ export function definitionOf(id: string, instances?: KindMap): AdapterDefinition
 }
 export function familyOf(id: string, instances?: KindMap): string | undefined {
   return definitionOf(id, instances)?.family;
+}
+
+/** Compile one captured, host-trusted declaration set; never register native policy globally. */
+export function createProjectAdapterCatalog(rawAdapters?: unknown): ProjectAdapterCatalog {
+  const configured = configuredAcpDefinitions(rawAdapters, [...definitions.keys()]);
+  for (const definition of configured) { assertDefinitionCoherence(definition); assertNativeCapabilityScope(definition); }
+  const entries = Object.freeze([...ADAPTERS, ...configured]);
+  const catalog = new Map([...definitions, ...configured.map(definition => [definition.kind, definition] as const)]);
+  const kindOf = (id: string, instances?: KindMap): string | undefined => catalog.has(id) ? id : typeof id === "string" ? declaredKind(id, instances, catalog) : undefined;
+  const definitionOf = (id: string, instances?: KindMap): AdapterDefinition | undefined => resolvedDefinition(id, kindOf(id, instances), instances, catalog);
+  return Object.freeze({ definitions: entries, kindOf, definitionOf,
+    familyOf: (id: string, instances?: KindMap) => definitionOf(id, instances)?.family,
+    isSupportedPeer: (id: unknown, instances?: KindMap): id is string => {
+      if (typeof id !== "string") return false;
+      const kind = kindOf(id, instances), runtime = kind === undefined ? undefined : catalog.get(kind), resolved = definitionOf(id, instances);
+      return runtime !== undefined && resolved !== undefined && (kind === id || resolved === runtime || resolved.reviewer?.unavailable === undefined);
+    },
+  });
 }
 
 /** Compatibility projection order is observable in default role maps and planner selection. */
