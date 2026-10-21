@@ -701,7 +701,7 @@ Motion moves `transform` and `opacity` only, 120 to 200 ms, ease-out: button pre
 arriving in a column, the toast, and the side sheets. The Office keeps its own motion. Nothing new loops. With the system setting
 "reduce motion" every transition and animation in the page is off.
 
-States: until the first snapshot arrives the board and the peer list show grey blocks shaped like them. Each empty view says what
+States: until the first snapshot arrives, after a project switch too, the board and the peer list show grey blocks shaped like them. Each empty view says what
 fills it and the command that does it (`ahub task propose`, `ahub claude` or `ahub codex`, `ahub say`, `ahub permit`, `ahub
 remember`, `ahub goal new`). When a poll fails the connection status turns red, the content dims to 60 percent but stays readable,
 and a line at the top gives the time of the last snapshot and says polling continues. Notices are a stack of up to four toasts in
@@ -1790,7 +1790,9 @@ entries and fields. It contains machine paths and the peer identity, not a token
 with a warning. `--print-command` shows the change and command without writing.
 The configured `kimi_cmd` must be a single executable or end in exactly `acp`;
 the TUI uses the executable or drops that final word. Other wrappers are refused
-with the headless command rather than guessed.
+with the headless command rather than guessed. The launcher uses the running
+hub's `kimi_cmd`; when that value has no TUI form, the refusal says so, since an
+edited file value waits for `ahub settings reload`.
 
 The TUI is pull-only. Its model reads `hub_inbox` at the start of work, between
 steps of longer work and before reporting, and shares results, and mid-work
@@ -2010,7 +2012,7 @@ bridge currently receives no positive per-server activation signal.
 
 A Claude session started with `ahub claude` receives pushes when it is idle. While it is busy:
 
-- Every hub tool result carries fresh counts, `(N queued hub message(s), M important hub message(s) waiting: call hub_inbox before starting long local work)`, when important work waits. A zero count clears an earlier hint.
+- Every hub tool result carries fresh counts, `(N queued hub message(s), M important hub message(s) waiting: call hub_inbox before starting long local work)`, when important work waits. A zero count clears an earlier hint. Under a delivery hold that refuses pulls, the counts and held rows stay but the `hub_inbox` advice is dropped.
 - `hub_inbox` reads the daemon queue (and any local failed-push buffer) in a channel session too. A read is one `completed` delivery, like a tools-only read; holds refuse it the same way.
 - An important message is pushed into the running turn (steered) instead of waiting for the turn to end. Mid-turn reading was verified on Claude Code 2.1.302; an older client that drops it leaves the delivery `accepted` until a person resolves it. Ordinary messages still wait for the idle push or `hub_inbox`.
 - Do not use `[FYI]` for PR ready, done, submitted, ruling-needed, blocker or changed-contract messages: they need action. `hub_task_done` and `hub_review` already notify their recipients.
@@ -3347,7 +3349,7 @@ that the file is untracked; a dropped value is reported by the settings result.
 
 ## SDLC artifact receipts and gates
 
-The playbook lifecycle (#257, #481) is off without `.agenthub/sdlc.toml`. When enabled its stages are intent, spec, plan, build, test, review, merge, release and maintain, grouped as Plan, Design, Build, Test, Deploy and Maintain. Advise shows blockers; enforce checks implemented head-bound review and approval gates. Stored implement/verify receipts read as build/test; new enabled receipts use canonical ids. See [the SDLC contract](sdlc.md) for gates, required check names, local receipts, console-only readbacks and the S0-S8 delivery table. A person accepts a spec issue with `ahub sdlc accept <task> --issue <n>` (S1). The planner records plan reviews with review and CI scope (`hub_plan_review`, `ahub sdlc plan-review`) and grooms with `ahub backlog groom`; `ahub backlog return <task> <revision> <reason>` returns accepted, untouched work (S9). `ahub sdlc costs [owner/repo]` reports review rounds and CI runs of merged PRs without writing the board (S10). S11 release trains ship in 0.12.37 (see [release scheduling](#planner-release-scheduling)). S2-S7 and a full live advise/release cycle remain pending. Owners/reviewers record bounded identities through `hub_sdlc_record`; these grant no additional authority. Off output, receipt and schema shapes stay unchanged.
+The playbook lifecycle (#257, #481) is off without `.agenthub/sdlc.toml`. When enabled its stages are intent, spec, plan, build, test, review, merge, release and maintain, grouped as Plan, Design, Build, Test, Deploy and Maintain. Advise shows blockers; enforce checks implemented head-bound review and approval gates. Stored implement/verify receipts read as build/test; new enabled receipts use canonical ids. See [the SDLC contract](sdlc.md) for gates, required check names, local receipts, console-only readbacks and the S0-S8 delivery table. A person accepts a spec issue with `ahub sdlc accept <task> --issue <n>` (S1). The planner records plan reviews with review and CI scope (`hub_plan_review`, `ahub sdlc plan-review`) and grooms with `ahub backlog groom`; `ahub backlog return <task> <revision> <reason>` returns accepted, untouched work (S9). `ahub sdlc costs [owner/repo]` reports review rounds and CI runs of merged PRs without writing the board (S10). S11 release trains ship in 0.12.37 (see [release scheduling](#planner-release-scheduling)). S3 structured review findings (an open Important finding blocks approval in enforce; `max_nits` in `sdlc.toml` caps nits) and S2 literal-path plan conformance with the person-only `ahub sdlc accept-departure <task> <head> <reason...>` are in source; see [findings](sdlc.md#structured-review-findings-481-s3) and [plan conformance](sdlc.md#plan-conformance-481-s2). S4-S7 and a full live advise/release cycle remain pending. Owners/reviewers record bounded identities through `hub_sdlc_record`; these grant no additional authority. Off output, receipt and schema shapes stay unchanged.
 ## Optional Qwen Code peer
 
 Select Qwen per project with `ahub roster add qwen`; it defaults off and is absent
@@ -3441,6 +3443,10 @@ Before admission the hub verifies the native identity, a valid session id, the r
 Extra instances use the existing `instances` block. For example, `"myagent-review": { "kind": "myagent", "roles": ["reviewer"], "readOnly": true }` is started with `ahub myagent --as myagent-review`. Unlike the kind, a declared instance is on the roster by default. `readOnly: true` requires the kind's `readOnly` mode, and the session must advertise and acknowledge that mode before a prompt. Native permission requests other than read, search and think are rejected. The instance is offered only `hub_send`, `hub_inbox`, `hub_delivery_done`, `hub_review`, `hub_task_show`, `hub_task_list`, `hub_memory_search|show|graph` and `hub_status`; the hub refuses every other hub tool. Its permission mode is locked: settings show it as read-only, no write, undo or `ahub permission` changes it, and `permission_mode` next to `readOnly` is refused.
 
 Configured kinds are cloud peers and never receive PII work. Quota and context are unknown, and a kind with no budget source is exempt from quota accounting, so pause it by hand if its provider refuses. After a crash the hub resumes a recorded session through `session/load` only when the agent echoes the same id, and it never reuses a recorded model. Controlled recovery (`ahub upgrade`, `restart`, `recovery`) refuses a running configured kind: stop it, then start it again with its session id. While the project declares adapters, the upgrade or restart target must advertise `configured_acp`.
+
+## External adapter modules (#451 A4)
+
+A bundled adapter module is authorized by the person with `adapter_modules` (at most 16 rows of `path` and `sha256`) in an untracked `.agenthub/config.local.json`; in `config.json` or a tracked file it is ignored with a notice, and settings never edit it. Only daemon startup imports a module: settings, reload, previews and CLI reads never do, so a change needs a restart. The module must be a single self-contained ESM file inside the project (no symlinked, world-writable or oversized file) whose bytes match the pin, and it may import only Node/Bun builtins and `@staix/agent-hub/adapter`; the scanner also refuses any `require`, `eval` or `Function` word token. Each import must settle within 2 s. A module that fails any check is refused on its own, with a bounded reason in the status reply, while startup and the other adapters continue; its roster row stays inert. A loaded kind is headless, cloud (never PII), off roster until `ahub roster add <kind>`, and has no controlled recovery: stop it and start it again with its recorded session id. While modules are declared, the upgrade or restart source and target must advertise `external_adapter_modules`. Bundling, the accepted definition subset and the conformance kit (`@staix/agent-hub/conformance`, for module CI only) are in [Adding an AI tool](adding-an-ai-tool.md#5-external-adapter-modules-451-a4). A pin authorizes code that runs with the daemon's rights; it is not a sandbox ([security](security.md)).
 
 # Headless ACP watch (#286)
 
@@ -3895,7 +3901,9 @@ the builder's summary or agent chat, and the board records its verdicts as
 the planner reviews and the task's assignment note says `reviewer=planner (fallback)`.
 A missing
 `peer_instances` feature on an old daemon or upgrade target requires a supporting
-version before launching or restoring extras.
+version before launching or restoring extras. An older recovery source without it
+is refused only while a declared instance is live or unreadable; a source whose
+status shows every declared id offline proceeds.
 
 ### Fresh reviewer pool (#519)
 
@@ -3930,11 +3938,19 @@ An additional implementer must have an existing registered Git worktree and
 attached branch at `.worktrees/<instance-id>`, named explicitly by `worktree` in
 its declaration. The hub validates it and does not create it in this phase.
 Reviewer instances may share the checkout, or name their own validated worktree.
-The execution directory is separate from the canonical hub project. An Orca
+The execution directory is separate from the canonical hub project. Resolving it
+(at an extra-instance start and for a turn undo) makes up to four git calls that
+share one 5 s allowance; when it runs out the start refuses with `Git workspace
+evidence unavailable`. An Orca
 terminal may belong to either that canonical project or the instance's execution
 worktree; recovery preserves its exact recorded grouping and live launcher.
 Changing or removing the declaration invalidates its saved extra-instance
-binding. Do not infer ownership from a native-kind label alone.
+binding; the recovery screen and `--verbose` receipt still show what was recorded
+for it. A roster key left by an undeclared instance (`codex-2`) loads as inert and
+`ahub roster remove codex-2` deletes it from `.agenthub/config.local.json`; a key
+held only in the shared `config.json` is refused with a request to edit that file.
+Any other unknown roster key is still an unsupported peer. Do not infer ownership
+from a native-kind label alone.
 
 A routing preference for a kind chooses among its instances using current load
 and WIP. A manual instance id remains exact. Reviewers from the same kind share
