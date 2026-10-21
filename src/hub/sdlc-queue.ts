@@ -32,8 +32,6 @@ async function finalSnapshot(repo: string, evidence: Map<number, PrEvidence>, ru
       const threads = p?.reviewThreads, reviews = p?.reviewRequests, checks = p?.statusCheckRollup === null ? { nodes: [], pageInfo: { hasNextPage: false } } : p?.statusCheckRollup?.contexts;
       if (threads?.pageInfo?.hasNextPage !== false || reviews?.pageInfo?.hasNextPage !== false || checks?.pageInfo?.hasNextPage !== false || !Array.isArray(threads.nodes) || threads.nodes.length > 100 || threads.nodes.some((n: { isResolved?: unknown }) => typeof n?.isResolved !== "boolean") || !Array.isArray(reviews.nodes) || !Array.isArray(checks.nodes) || checks.nodes.length > 100) return { gatesStable: false, prs };
       const after = parsePrEvidence({ ...p, files: before.paths.map(path => ({ path })), statusCheckRollup: checks.nodes, reviewRequests: reviews.nodes, unresolvedThreads: threads.nodes.filter((n: { isResolved: boolean }) => !n.isResolved).length });
-      // The pinned head keeps the earlier typed inventory; this final gate read supplies no file change types.
-      after.pathsComplete = before.pathsComplete === true && p.changedFiles === before.paths.length;
       if (gateIdentity(before) !== gateIdentity(after)) return { gatesStable: false, prs };
     }
     return { gatesStable: true, prs };

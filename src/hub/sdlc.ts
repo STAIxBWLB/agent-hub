@@ -65,6 +65,8 @@ export interface PrEvidence {
   pendingReviews: number | null;
   paths: string[];
   pathsComplete?: boolean;
+  /** All affected path identities are represented; rename/copy destinations alone cannot certify S2. */
+  typesComplete?: boolean;
   draft?: boolean;
   base?: string;
   baseHead?: string;
@@ -221,9 +223,9 @@ export function parsePrEvidence(value: unknown): PrEvidence {
     return { name, state } as PrEvidence["checks"][number];
   });
   const paths = p.files.map((f: Record<string, unknown>) => { if (typeof f.path !== "string" || !f.path || f.path.length > 1000) throw new Error("PR readback: invalid file identity"); return f.path; });
-  const completeTypes = p.files.every((file: Record<string, unknown>) => typeof file.changeType === "string" && ["ADDED", "DELETED", "MODIFIED"].includes(file.changeType));
+  const completeTypes = p.files.every((file: Record<string, unknown>) => typeof file.changeType === "string" && ["ADDED", "DELETED", "MODIFIED", "CHANGED"].includes(file.changeType));
   // Rename/copy metadata exposes only its destination, never a complete inventory of affected identities.
-  return { head: p.headRefOid, state: p.state, checks, paths, pathsComplete: Number.isSafeInteger(p.changedFiles) && p.changedFiles >= 0 && p.changedFiles === paths.length && completeTypes, ...(typeof p.isDraft === "boolean" ? { draft: p.isDraft } : {}), ...(typeof p.baseRefName === "string" && p.baseRefName && p.baseRefName.length <= 200 && !/[\x00-\x1f\x7f]/.test(p.baseRefName) ? { base: p.baseRefName } : {}), ...(sha(p.baseRefOid) ? { baseHead: p.baseRefOid } : {}),
+  return { head: p.headRefOid, state: p.state, checks, paths, pathsComplete: Number.isSafeInteger(p.changedFiles) && p.changedFiles >= 0 && p.changedFiles === paths.length, typesComplete: completeTypes, ...(typeof p.isDraft === "boolean" ? { draft: p.isDraft } : {}), ...(typeof p.baseRefName === "string" && p.baseRefName && p.baseRefName.length <= 200 && !/[\x00-\x1f\x7f]/.test(p.baseRefName) ? { base: p.baseRefName } : {}), ...(sha(p.baseRefOid) ? { baseHead: p.baseRefOid } : {}),
     review: p.reviewDecision === "APPROVED" ? "approved" : p.reviewDecision === "CHANGES_REQUESTED" ? "changes_requested" : "unknown",
     pendingReviews: Array.isArray(p.reviewRequests) && p.reviewRequests.length <= 100 && p.reviewRequests.every((r: unknown) => !!r && typeof r === "object") ? p.reviewRequests.length : null,
     unresolved: Number.isSafeInteger(p.unresolvedThreads) && p.unresolvedThreads >= 0 ? p.unresolvedThreads : null,

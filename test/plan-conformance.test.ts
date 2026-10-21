@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { planConformance, planFingerprint } from "../src/hub/plan-conformance.ts";
 const head = "a".repeat(40);
-const evidence = (paths: string[], pathsComplete = true) => ({ head, paths, pathsComplete });
+const evidence = (paths: string[], pathsComplete = true) => ({ head, paths, pathsComplete, typesComplete: true });
 test("plan conformance compares literal exact and directory descendants directionally", () => {
   expect(planConformance(["src/hub", "docs/unused.md"], evidence(["src/hub/a.ts", "src/hubcap/a.ts", "README.md"]))).toEqual({ state: "departure", head, outside: ["src/hubcap/a.ts", "README.md"], untouched: ["docs/unused.md"] });
   expect(planConformance(["src/hub/a.ts"], evidence(["src/hub"]))).toMatchObject({ state: "departure", outside: ["src/hub"], untouched: ["src/hub/a.ts"] });
@@ -17,7 +17,7 @@ test("plan conformance normalizes spelling and deduplicates without touching the
 test("missing plan and incomplete PR coverage remain unknown, including empty replies", () => {
   for (const plan of [undefined, []]) expect(planConformance(plan, evidence([])).state).toBe("unknown");
   expect(planConformance(["src"], undefined)).toEqual({ state: "unknown", outside: [], untouched: [] });
-  for (const pathsComplete of [false, undefined]) expect(planConformance(["src"], { head, paths: [], pathsComplete }).state).toBe("unknown");
+  for (const pathsComplete of [false, undefined]) expect(planConformance(["src"], { head, paths: [], pathsComplete, typesComplete: true }).state).toBe("unknown");
   expect(planConformance(["src"], evidence([]))).toEqual({ state: "covered", head, outside: [], untouched: ["src"] });
 });
 test("invalid relative identities and heads cannot certify plan coverage", () => {
@@ -50,4 +50,8 @@ test("#197 R1 empty or repository-root-mapped plan entries stay unknown", () => 
   for (const mapped of ["", "."]) expect(planConformance([mapped], evidence(["src/unplanned.ts"])).state).toBe("unknown");
   expect(planConformance(["src/", "."], evidence(["outside.ts"])).state).toBe("unknown");
   expect(planConformance(["src"], evidence(["src/owned.ts"])).state).toBe("covered");
+});
+
+test("S2 needs affected-path type proof independently of the queue count proof", () => {
+  for (const typesComplete of [false, undefined]) expect(planConformance(["src"], { head, paths: ["src/a.ts"], pathsComplete: true, typesComplete }).state).toBe("unknown");
 });

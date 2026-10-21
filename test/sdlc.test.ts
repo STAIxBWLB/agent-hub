@@ -201,12 +201,13 @@ for (const changeType of ["RENAMED", "COPIED"]) test(`#197 R1 ${changeType} meta
   const parsed = parsePrEvidence({ ...raw(), files: [{ path: "src/destination.ts", changeType }] });
   // Changed-files counts cover destinations, but metadata does not reveal the old/source path.
   expect(parsed.paths).toEqual(["src/destination.ts"]);
-  expect(parsed.pathsComplete).toBe(false);
+  expect(parsed.pathsComplete).toBe(true);
+  expect(parsed.typesComplete).toBe(false);
 });
 
 test("#197 R1 PR file completeness consumes changeType from actual gh view file metadata", async () => {
   const receipt = sdlcReceipt({ repo: "owner/repo", pr: 1 });
-  for (const changeType of ["MODIFIED", "ADDED", "DELETED", "RENAMED", "COPIED", undefined, "UNRECOGNIZED"]) {
+  for (const changeType of ["MODIFIED", "ADDED", "DELETED", "CHANGED", "RENAMED", "COPIED", undefined, "UNRECOGNIZED", "modified"]) {
     const calls: string[][] = [];
     const gh: SdlcGh = async args => {
       calls.push(args);
@@ -218,7 +219,8 @@ test("#197 R1 PR file completeness consumes changeType from actual gh view file 
     };
     const parsed = await readSdlcPr(receipt, gh);
     expect(parsed?.paths).toEqual(["src/view-path.ts"]);
-    expect(parsed?.pathsComplete).toBe(["MODIFIED", "ADDED", "DELETED"].includes(changeType ?? ""));
+    expect(parsed?.pathsComplete).toBe(true);
+    expect(parsed?.typesComplete).toBe(["MODIFIED", "ADDED", "DELETED", "CHANGED"].includes(changeType ?? ""));
     expect(calls).toHaveLength(2);
     expect(calls[0]?.join(" ")).toContain("files");
     expect(calls.flat().join(" ")).not.toMatch(/\bbody\b|\bpatch\b/);

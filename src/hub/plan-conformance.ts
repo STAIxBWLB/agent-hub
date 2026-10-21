@@ -18,8 +18,8 @@ function pathIdentity(raw: unknown): string | undefined {
 const covers = (planned: string, changed: string) => changed === planned || changed.startsWith(`${planned}/`);
 
 /** A complete file inventory is independent of any plan or coverage claim. */
-export function completePlanInventory(evidence: { head: string; paths: readonly string[]; pathsComplete?: boolean } | undefined): string[] | undefined {
-  if (!evidence || typeof evidence.head !== "string" || !/^[a-f0-9]{40}$/.test(evidence.head) || evidence.pathsComplete !== true || !Array.isArray(evidence.paths) || evidence.paths.length > 1000) return undefined;
+export function completePlanInventory(evidence: { head: string; paths: readonly string[]; pathsComplete?: boolean; typesComplete?: boolean } | undefined): string[] | undefined {
+  if (!evidence || typeof evidence.head !== "string" || !/^[a-f0-9]{40}$/.test(evidence.head) || evidence.pathsComplete !== true || evidence.typesComplete !== true || !Array.isArray(evidence.paths) || evidence.paths.length > 1000) return undefined;
   const paths: string[] = [], seen = new Set<string>();
   for (const raw of evidence.paths) {
     const path = pathIdentity(raw); if (path === undefined || seen.has(path)) return undefined;
@@ -29,7 +29,7 @@ export function completePlanInventory(evidence: { head: string; paths: readonly 
 }
 
 /** Compare current complete PR file metadata with the current plan; never inspect patches or the filesystem. */
-export function planConformance(planPaths: readonly string[] | undefined, evidence: { head: string; paths: readonly string[]; pathsComplete?: boolean } | undefined): PlanConformance {
+export function planConformance(planPaths: readonly string[] | undefined, evidence: { head: string; paths: readonly string[]; pathsComplete?: boolean; typesComplete?: boolean } | undefined): PlanConformance {
   const head = typeof evidence?.head === "string" && /^[a-f0-9]{40}$/.test(evidence.head) ? evidence.head : undefined;
   const unknown: PlanConformance = { state: "unknown", ...(head ? { head } : {}), outside: [], untouched: [] };
   const changed = completePlanInventory(evidence);
