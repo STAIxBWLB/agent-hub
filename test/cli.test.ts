@@ -281,3 +281,23 @@ test("ahub setup without a terminal and without --yes prints the step, changes n
   expect(res.stderr.toString()).toContain("not a terminal: nothing was changed; rerun with --yes to apply");
   expect(readFileSync(calls, "utf8").trim().split("\n")).toEqual(["plugin list --json", "plugin marketplace list --json"]); // listings only
 });
+
+// #638 review N1: commands the running daemon answers must not stop on a local config file that is mid-edit.
+test("permission and settings reach the daemon even when config.local.json does not parse", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "agenthub-cli-broken-config-"));
+  mkdirSync(join(cwd, ".agenthub"));
+  writeFileSync(join(cwd, ".agenthub", "config.local.json"), '{ "adapters": { broken');
+  Bun.spawnSync(["git", "init", "-q"], { cwd });
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(AGENTHUB_(?!HOME$)|CLAUDECODE|CLAUDE_CODE_SESSION_ID|CODEX_THREAD_ID)/.test(key)));
+  const run = (...args: string[]) => Bun.spawnSync(["bun", join(process.cwd(), "src/cli/main.ts"), ...args], { cwd, env }).stderr.toString();
+  try {
+    for (const args of [["permission"], ["permission", "kimi", "ask"], ["settings", "list"], ["settings", "reload"]]) {
+      const stderr = run(...args);
+      expect(stderr).not.toContain("JSON Parse error");
+      expect(stderr).toContain("no hub running");
+    }
+    // A key only a declaration could define names the unreadable file instead of a bare "unknown".
+    const unknown = run("settings", "get", "roster.fixture");
+    expect(unknown).toContain("the project config could not be read"); expect(unknown).not.toContain("no hub running");
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+});
