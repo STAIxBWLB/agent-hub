@@ -2523,13 +2523,11 @@ var init_qwen_native = __esm(() => {
 class AcpOwnedGroup {
   proc;
   leader;
-  signature;
   ports;
   confirmedGone = false;
-  constructor(proc, leader, signature, ports) {
+  constructor(proc, leader, ports) {
     this.proc = proc;
     this.leader = leader;
-    this.signature = signature;
     this.ports = ports;
   }
   static async capture(proc, ports = PORTS) {
@@ -2543,7 +2541,7 @@ class AcpOwnedGroup {
     const signature = AcpOwnedGroup.identity(ports, pid);
     if (!signature || proc.pid !== pid || proc.exitCode !== null || proc.signalCode !== null)
       throw ownershipError();
-    return new AcpOwnedGroup(proc, { ...leader }, signature, ports);
+    return new AcpOwnedGroup(proc, { pid, ppid: leader.ppid, pgid: leader.pgid, started: leader.started }, ports);
   }
   static async confirmGone(proc, ports = PORTS) {
     const pid = proc.pid;
@@ -2601,12 +2599,12 @@ class AcpOwnedGroup {
     const members = rows.some((row) => row.pgid === this.leader.pgid);
     if (!leader && !members && allowGone)
       return false;
-    if (!leader || !this.sameLeader(leader) || this.proc.pid !== this.leader.pid || this.proc.exitCode !== null || this.proc.signalCode !== null || AcpOwnedGroup.identity(this.ports, this.leader.pid) !== this.signature)
+    if (!leader || !this.sameLeader(leader) || this.proc.pid !== this.leader.pid || this.proc.exitCode !== null || this.proc.signalCode !== null || !AcpOwnedGroup.identity(this.ports, this.leader.pid))
       throw ownershipError();
     return true;
   }
   sameLeader(row) {
-    return row.pid === this.leader.pid && row.pgid === this.leader.pid && row.ppid === process.pid && row.started === this.leader.started && row.command === this.leader.command;
+    return row.pid === this.leader.pid && row.pgid === this.leader.pgid && row.ppid === this.leader.ppid && row.started === this.leader.started;
   }
   signal(signal) {
     try {
@@ -3313,7 +3311,7 @@ ${renderDigest(envs, false)}` }] });
       const id = typeof call.toolCallId === "string" ? call.toolCallId : undefined;
       const announced = id === undefined ? undefined : this.toolTitles.get(id);
       const canonical = canonicalMcpToolName(announced, this.opts.mcpServers?.map((s) => s.name));
-      const identity = [typeof call.title === "string" ? call.title : undefined, canonical].find((candidate) => candidate !== undefined && this.opts.autoApprove?.(candidate));
+      const identity = this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? undefined : [typeof call.title === "string" ? call.title : undefined, canonical].find((candidate) => candidate !== undefined && this.opts.autoApprove?.(candidate));
       if (once && identity) {
         this.opts.log?.(`permission auto-approved for ${this.id}: ${identity}`);
         this.emitActivity("ask", `${String(msg.id)}: ${activityText(announced ?? call.title)} (automatic)`);
@@ -11384,6 +11382,7 @@ var init_qwen = __esm(() => {
 });
 
 // src/adapters/configured-acp.ts
+import { basename as basename6 } from "path";
 import { types } from "util";
 function fields(raw, at) {
   if (!raw || typeof raw !== "object" || types.isProxy(raw) || Array.isArray(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw)) || Object.getOwnPropertySymbols(raw).length)
@@ -11440,6 +11439,8 @@ function configuredAcpDefinitions(raw, builtinKinds) {
     if ([command, ...args].some((arg) => /^--(?:leader|attach|connect|remote)(?:-|=|$)/.test(arg)))
       return fail(`${at}.args`, "attach/leader selectors are unsupported; command must run foreground owned ACP stdio");
     const displayName = text3(input.displayName?.value, `${at}.displayName`, 256), roles = list2(input.roles?.value, `${at}.roles`, ROLES.length);
+    if (roles.includes("conductor"))
+      return fail(`${at}.roles`, "conductor requires explicit project role policy, not adapter defaults");
     if (!roles.length || new Set(roles).size !== roles.length || roles.some((role) => !ROLES.includes(role)))
       return fail(`${at}.roles`, "roles must be nonempty, known and unique");
     let identity;
@@ -11448,6 +11449,11 @@ function configuredAcpDefinitions(raw, builtinKinds) {
       if (Object.keys(value).some((key) => !["name", "version"].includes(key)))
         return fail(`${at}.identity`, "unknown identity field");
       identity = { name: text3(value.name?.value, `${at}.identity.name`, 256), version: text3(value.version?.value, `${at}.identity.version`, 256) };
+    }
+    const grokContract = kind === "grok" || /^grok(?:\.exe)?$/i.test(basename6(command)) || identity?.name.toLowerCase() === "grok";
+    const noLeader = args.indexOf("--no-leader"), endOptions = args.indexOf("--");
+    if (grokContract && (noLeader < 0 || endOptions >= 0 && noLeader > endOptions || args.some((arg) => arg.startsWith("--no-leader=")))) {
+      return fail(`${at}.args`, "Grok requires explicit --no-leader before argv termination; valued opt-outs are unsupported");
     }
     let modes;
     if (input.permission) {
@@ -11530,7 +11536,7 @@ var init_configured_acp = __esm(() => {
   init_acp();
   CONFIGURED_ACP_RESERVED_COMMANDS = Object.freeze(["help", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "recovery-run", "upgrade", "restart", "recovery", "models", "say", "queue", "watch", "tail", "budget", "backlog", "release", "board", "sdlc", "task", "review", "remember", "ask", "route", "pause", "resume", "stop", "permission", "roster", "settings", "permit", "pet", "status", "logs", "export", "bench", "memory", "goal", "research", "report", "facts", "check-path", "turns", "undo", "kill", "reset", "role", "doctor"]);
   MODES = ["ask", "ask-when-needed", "never-ask"];
-  ROLES = ["planner", "implementer", "verifier", "reviewer", "conductor"];
+  ROLES = ["planner", "implementer", "verifier", "reviewer"];
 });
 
 // src/adapters/definitions/native-config-defaults.ts
@@ -19217,7 +19223,7 @@ function supportsHeadlessInstances(definition) {
   return definition.instances?.mode === "headless" && !!definition.start.create && definition.start.forms.includes("headless");
 }
 function validateInstances(raw, catalog) {
-  const resolve = catalog?.definitionOf ?? definitionOf;
+  const resolve = catalog.definitionOf;
   const result = Object.create(null);
   if (raw === undefined)
     return Object.freeze(result);
@@ -19310,7 +19316,7 @@ function validateInstances(raw, catalog) {
   return Object.freeze(result);
 }
 function effectiveInstanceRoles(id, declarations, policyRoles, catalog) {
-  const definition = (catalog?.definitionOf ?? definitionOf)(id, declarations);
+  const definition = catalog.definitionOf(id, declarations);
   if (!definition)
     throw new Error(`${id}: no declared native instance`);
   const declaration = declarations && Object.hasOwn(declarations, id) ? declarations[id] : undefined;
@@ -27913,9 +27919,9 @@ function roles2() {
   };
   const configured = { ...DEFAULT_ROLES, ...read("config.json"), ...read("config.local.json") };
   try {
-    const declarations = readInstanceConfig(projectRoot2).instances;
+    const { instances: declarations, catalog } = readInstanceConfig(projectRoot2);
     for (const id of Object.keys(declarations ?? {}))
-      configured[id] = effectiveInstanceRoles(id, declarations, configured);
+      configured[id] = effectiveInstanceRoles(id, declarations, configured, catalog);
   } catch {}
   return configured;
 }

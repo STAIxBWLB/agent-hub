@@ -32,7 +32,7 @@ agent-hub supports five transport architectures (`transport` in `AdapterDefiniti
 
 ### Generic ACP vs. Dedicated Adapter
 
-* **Generic ACP (Config-only, Planned)**: Planned support (#451 A3, board task #217) will allow tools speaking standard ACP (stdio JSON-RPC) to be configured without core TypeScript changes.
+* **Generic ACP (Config-only)**: A3 supports project-local standard ACP (stdio JSON-RPC) definitions without extending the builtin registry. Native support still requires a verified foreground contract and isolated T0 receipt.
 * **Dedicated Adapter**: Current builtin mechanism where each tool exports an `AdapterDefinition` under `src/adapters/` with its transport, hooks, and launch plans.
 
 ---
@@ -84,9 +84,13 @@ Defines quota and context window consumption readers:
 
 ---
 
-## 4. Planned: Config-Only Generic ACP Adapters (#451 A3)
+## 4. Config-Only Generic ACP Adapters (#451 A3)
 
-Support for defining ACP-based tools purely via local project configuration (`.agenthub/config.local.json`) is in progress as board task #217 (GitHub issue #486 for its Grok receipt). The configuration schema, command invocation, and permission mode mappings will land with that milestone.
+Declare `adapters.<kind>` only in a Git-confirmed untracked `.agenthub/config.local.json`. The declaration is wholly machine-local authority and cannot override builtin kinds or select executable modules. Its `transport` is `acp`; it names a command, optional argv, display name and default roles, with optional native identity, permission-mode mappings and read-only mode. Adapter defaults cannot appoint the conductor. A project captures its catalog at startup, so declaration changes require restart.
+
+Configured kinds are headless and off roster by default. Before a start can succeed, the native initialize name/version must match the configured pin and the spawned process group must be positively owned. Resume also requires an exact session/load echo. Missing native permission mappings mean unmanaged policy; missing usage/context sources remain exempt/unknown. Titles do not auto-approve tools, and read-only mode requires both native acknowledgement and host mutation fences.
+
+Grok declarations require explicit `--no-leader`, since native defaults can inherit ambient `[cli] use_leader`. Grok 1.0.62 remains unsupported: its isolated probe lacked initialize identity and refused session creation. The [T0 receipt](verification/2026-10-21-grok-config-acp-t0.md) records the remaining evidence. The full A3 schema and proof boundary are in the [spec amendment](specs/2026-09-19-agent-hub-design.md#amendment-config-only-acp-adapters-a3-451-486).
 
 ---
 

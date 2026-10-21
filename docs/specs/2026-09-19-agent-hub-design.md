@@ -4077,5 +4077,5 @@ Configured ACP permission requests never use hub-tool titles for automatic appro
   - Transport selection: `acp` (stdio JSON-RPC), `codex-appserver`, `claude-channel`, `ws-pull` (pull-only workspace MCP plugin), and `hub-native`.
   - Conformance kit (`test/conformance/`): enrollment invariants, delivery occupancy, watchdog expiry, process-group teardown, and explicit reasons in `UNSUPPORTED` (per kind) and `UNSUPPORTED_LEGS` (per ACP leg).
   - Review and verification checklist: T0 receipt, path protection (`AGENT_CONFIG_SEGMENTS`), PII safety (`trust.onPrem`), process isolation, and documentation freshness.
-  - Planned config-only generic ACP adapters (#451 A3, board task #217) and external adapter modules (#451 A4, board task #135) are outlined as upcoming milestones; their configuration schemas, hash-pinning rules, and implementation details land with those respective PRs.
+  - Config-only generic ACP adapters (#451 A3, board task #217) follow the A3 amendment above, including its isolated native-proof boundary. External adapter modules (#451 A4, board task #135) remain planned; their hash-pinning and module trust rules land with A4.
 - `docs/agent-notes/adapters.md` keeps only the per-adapter rules that bind code, pointing to `docs/adding-an-ai-tool.md` and `src/adapters/registry-types.ts` for conceptual architecture and definitions.
