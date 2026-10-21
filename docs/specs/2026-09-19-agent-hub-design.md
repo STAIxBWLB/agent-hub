@@ -3734,6 +3734,23 @@ After unidentifiable Codex cancellation, status carries a fixed
 completion cannot clear it; verified native reattachment does. No native ids or
 provider text reach the notice.
 
+### Peer capability ports (#625 phase 6, slice 1)
+
+`PeerAdapter` optionally exposes a readonly `sessionGeneration` (string or number),
+readonly `permissionModeState` (a permission mode, unknown or unmanaged), and an
+acknowledged `setPermissionMode(mode)` operation. Generic runtime permission and
+generation dispatch uses these ports without native-class enrollment. An absent
+generation port retains the existing recovery-session/owner-token fallback; a
+present but undefined generation is unknown and refuses bounded checks.
+Checkpoints fence a present generation unless `checkpointUsesSessionGeneration`
+is explicitly false. Pi keeps that exception so its owner/session-only checkpoint
+behavior is unchanged. BasePeer installs no default generation property.
+Read-only and unmanaged ceilings, never-ask confirmation, serialization and the
+current-owner/not-offline check after acknowledgement remain authoritative.
+Codex proxy/startup/restoration-debt and Claude launch-generation/unattended-hook
+proofs remain native branches; typed semantic ports for those proofs belong to a
+later slice.
+
 ## Amendment: playbook lifecycle and criteria checklist, 2026-10-18 (#481 S0/S8)
 
 - The AI-Native SDLC Playbook supplies the built-in stage model of an enabled lifecycle: intent (Plan), spec (Design), plan and build (Build), test (Test), review, merge and release (Deploy), maintain (Maintain). `mode` advise or enforce without `stages` selects this list. Off (no file, or `mode = "off"`) keeps the seven #257 stages, so its config, receipts, `hub_sdlc_record` schema and status output stay byte for byte. An explicit #257 list still loads: off keeps it as written, and an enabled lifecycle keeps its order under canonical ids (spec, plan, build, review, test, merge, release). Any other list needs definitions.

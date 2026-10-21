@@ -2767,6 +2767,9 @@ ${renderDigest(envs, false)}`;
     getPermissionMode() {
       return this.permissionMode;
     }
+    get permissionModeState() {
+      return this.getPermissionMode();
+    }
     setStartupPermissionMode(mode) {
       if (this.link || this.state !== "offline" || this.overriddenApprovals.size)
         throw new Error("codex startup mode reconciliation requires a fresh unattached proxy");
@@ -5201,6 +5204,7 @@ var init_pi = __esm(() => {
     get sessionGeneration() {
       return this.ownerClaimed && this.ownerPid && this.ownerSignature ? `${this.ownerPid}:${this.ownerSignature}:${this.sessionId ?? ""}` : undefined;
     }
+    checkpointUsesSessionGeneration = false;
     recoveryMetadata() {
       const exists = !!this.sessionFile && existsSync6(this.sessionFile);
       if (exists) {
