@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { projectContext } from "./project.ts";
+import { externalAdapterMetadata, type ExternalAdapterMetadata } from "../adapters/external-metadata.ts";
 
 export function stateDirFor(cwd: string): string {
   return projectContext(cwd).stateDir;
@@ -8,7 +9,7 @@ export function stateDirFor(cwd: string): string {
 
 /** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`; 5 = `ask`; 6 = console-only `ui` session bootstrap; 8 = controlled recovery; 9 = Pi bridge metadata; 10 = durable delivery receipts; 11 = queue hold diagnostics; 12 = generation-bound channel settlement and execution budgets; 13 = turn-free facts (`facts` with tool, session and transcript binding, `silenced`) and per-recipient send results (issue #108). 14 = native context-window status and session-bound context checkpoint request ids (issue #185). 15 = conductor tools and permission deadlines/closed events (issues #190, #194). 16 = a Claude session without channel evidence: hello `channel: false` and `inbox` (issue #205). The plugin is installed apart from the daemon, so they can drift. */
 export const PROTOCOL = 16;
-export const DAEMON_FEATURES = ["configured_acp", "native_hook_launch", "task_cancel", "recovery_deferred_hub", "peer_instances", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated"] as const;
+export const DAEMON_FEATURES = ["external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "recovery_deferred_hub", "peer_instances", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated"] as const;
 /** Protocols a current coordinator may authenticate while upgrading a running source. */
 export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, PROTOCOL] as const;
 
@@ -38,6 +39,7 @@ export interface ControlDescriptor {
   features?: readonly string[];
   /** The daemon's accepted native start modes, used by launchers when the file value is retained. */
   startModes?: Readonly<Record<string, "tui" | "headless">>;
+  externalAdapters?: readonly ExternalAdapterMetadata[];
   /** #226: the daemon's processSignature, written into status.json only (not the status reply); absent before 0.12.21. */
   pidSignature?: string;
 }
@@ -54,6 +56,7 @@ export function readControl(stateDir: string): ControlDescriptor | undefined {
     return { url: `ws://127.0.0.1:${status.controlPort}`, token, projectId: status.projectId,
       instanceId: status.instanceId, cwd: status.cwd, protocol: status.protocol, pid: status.pid, features: Array.isArray(status.features) ? status.features.filter((feature: unknown): feature is string => typeof feature === "string") : [],
       ...(startModes ? { startModes } : {}),
+      ...(status.externalAdapters !== undefined ? { externalAdapters: externalAdapterMetadata(status.externalAdapters) } : {}),
       ...(typeof status.pidSignature === "string" && status.pidSignature ? { pidSignature: status.pidSignature } : {}) };
   } catch {
     return undefined;

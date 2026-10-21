@@ -46,5 +46,9 @@
   "homepage": "https://github.com/STAIxBWLB/agent-hub",
   "publishConfig": {
     "access": "public"
+  },
+  "exports": {
+    "./adapter": "./src/adapters/public.ts",
+    "./conformance": "./src/adapters/conformance/index.ts"
   }
 }
