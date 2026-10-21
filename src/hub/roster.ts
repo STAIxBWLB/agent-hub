@@ -10,10 +10,9 @@ export type PeerRoster = Partial<Record<string, boolean>>;
  */
 export function staleInstanceKey(peer: string, catalog: ProjectAdapterCatalog | undefined): boolean {
   const definitionOf = catalog?.definitionOf ?? builtinDefinitionOf;
-  if (!/^[a-z][a-z0-9-]{0,31}$/.test(peer) || RESERVED_IDS.has(peer) || definitionOf(peer)) return false;
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(peer) || definitionOf(peer)) return false; // a reserved id (user, hub, digest) never starts with a kind and a dash
   return (catalog?.definitions ?? []).some(kind => peer.startsWith(`${kind.kind}-`) && /^[a-z0-9][a-z0-9-]*$/.test(peer.slice(kind.kind.length + 1)) && !catalog?.externalDefinitions.some(item => item.kind === kind.kind));
 }
-const RESERVED_IDS = new Set(["user", "hub", "digest"]);
 
 export function peerRosterConfig(value: unknown, instances?: KindMap, catalog?: ProjectAdapterCatalog, inertUnknown = false): PeerRoster {
   const definitionOf = catalog?.definitionOf ?? builtinDefinitionOf;

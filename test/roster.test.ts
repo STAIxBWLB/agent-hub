@@ -14,6 +14,7 @@ import { newEnvelope, USER, type Envelope } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { AcpPeer } from "../src/adapters/acp.ts";
 import { realPath } from "../src/hub/project.ts";
+import { hubGitSync } from "../src/hub/git.ts";
 
 async function legacyHub(root: string, enabled: boolean, roster: PeerRoster = {}, extra: Partial<HubConfig> = {}, codexAppPort = 0, hooks: { taskSweepNow?: () => number } = {}) {
   const stateDir = join(root, ".agenthub/state"); mkdirSync(stateDir, { recursive: true });
@@ -625,3 +626,67 @@ test("a roster key of an undeclared instance loads as inert, a key that never na
   }
   expect(() => peerRosterConfig({ "codex-2": "false" }, undefined, catalog)).toThrow("must be a boolean");
 });
+
+test("a stale roster key can be previewed and removed through the daemon, and removing it writes nothing else (#225)", async () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-stale-remove-"))), stateDir = join(root, ".agenthub/state"), previous = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(root, "home");
+  hubGitSync(["init", "-q", root], { encoding: "utf8" }); writeFileSync(join(root, ".gitignore"), ".agenthub/\n"); mkdirSync(join(root, ".agenthub"));
+  const file = join(root, ".agenthub/config.local.json");
+  const base = { memory: { enabled: false }, pi: { enabled: false, auto_start: false }, snapshots: { enabled: false } };
+  writeFileSync(file, JSON.stringify({ ...base, roster: { "codex-2": true, "codex-3": true, kimi: true } }));
+  // No embedded config: a real hub reads its roster from the files, which is where the stale key lives.
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0 });
+  const client = await ControlClient.connect(stateDir, { role: "console", projectRoot: root });
+  try {
+    // The hub started although the file names an instance nobody declares, and the stale key decides nothing.
+    const preview: any = await client.request({ t: "settings_preview", key: "roster.codex-2", value: null });
+    expect(preview.ok, String(preview.error)).toBe(true);
+    expect(preview.lines.join("\n")).toContain("no longer declared");
+    const removed: any = await client.request({ t: "settings_set", key: "roster.codex-2", value: null, confirm: "codex-2", now: false });
+    expect(removed.ok, String(removed.error)).toBe(true);
+    // Only that key left the file; the rest of the roster is as it was, and a second removal has nothing to do.
+    expect(JSON.parse(readFileSync(file, "utf8")).roster).toEqual({ "codex-3": true, kimi: true });
+    // A key that never named an instance is still an unknown setting.
+    expect(((await client.request({ t: "settings_set", key: "roster.external-1", value: null, confirm: "external-1", now: false })) as any).ok).toBe(false);
+    // A stale key is removed, never set: there is no peer behind it to switch on or off.
+    for (const value of [true, false]) {
+      const set: any = await client.request({ t: "settings_set", key: "roster.codex-3", value, confirm: "codex-3", now: false });
+      expect(set.ok, "setting a stale key to " + value).toBe(false); expect(String(set.error)).toContain("it can only be removed");
+    }
+    // Nor can a stale key be turned into a way to widen or narrow a real peer.
+    expect(((await client.request({ t: "settings_set", key: "roster.codex", value: null, confirm: "codex", now: false })) as any).error ?? "").not.toContain("no longer declared");
+  } finally {
+    client.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true });
+    if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous;
+  }
+}, 30000);
+
+test("ahub roster remove deletes a stale instance key through the real CLI, and refuses an id that never named an instance (#225)", async () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-stale-cli-"))), previous = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = join(root, "home");
+  hubGitSync(["init", "-q", root], { encoding: "utf8" }); writeFileSync(join(root, ".gitignore"), ".agenthub/\n"); mkdirSync(join(root, ".agenthub"));
+  const file = join(root, ".agenthub/config.local.json");
+  writeFileSync(file, JSON.stringify({ memory: { enabled: false }, pi: { enabled: false, auto_start: false }, snapshots: { enabled: false }, roster: { "codex-2": true } }));
+  const stateDir = join(root, ".agenthub/state");
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0 });
+  const cli = async (args: string[]) => {
+    const entry = join(import.meta.dir, "../src/cli/main.ts"), wrapper = join(root, `cli-${crypto.randomUUID()}.ts`);
+    writeFileSync(wrapper, `for (const key of ["AGENTHUB_PEER_ID", "AGENTHUB_CHANNEL", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR", "AGENTHUB_UNATTENDED", "AGENTHUB_RECOVERY_OPERATION", "AGENTHUB_INSTANCE_ID", "AGENTHUB_LAUNCH_ID"]) delete process.env[key];\nprocess.env.AGENTHUB_HOME = ${JSON.stringify(join(root, "home"))};\nprocess.argv = [process.execPath, ${JSON.stringify(entry)}, ...${JSON.stringify(args)}];\nawait import(${JSON.stringify(entry)});\n`);
+    const child = Bun.spawn([process.execPath, wrapper], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "pipe", env: { ...process.env, COLUMNS: "80" } });
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    return { code, stdout, stderr };
+  };
+  try {
+    const never = await cli(["roster", "remove", "external-1", "--yes"]);
+    expect(never.code).toBe(1); expect(never.stderr).toContain("usage: ahub roster"); // a typo is still a usage error
+    const removed = await cli(["roster", "remove", "codex-2", "--yes"]);
+    expect(removed.code, removed.stderr).toBe(0);
+    const after = JSON.parse(readFileSync(file, "utf8"));
+    expect(after.roster).toBeUndefined(); // the emptied block goes with its last key
+    expect(after.memory).toEqual({ enabled: false }); // and nothing else in the file moved
+    // Adding it back is not offered: an instance that is not declared cannot join the roster, and the CLI says usage before asking the hub.
+    const added = await cli(["roster", "add", "codex-2"]);
+    expect(added.code).toBe(1); expect(added.stderr).toContain("usage: ahub roster");
+    expect(JSON.parse(readFileSync(file, "utf8")).roster).toBeUndefined();
+  } finally { await daemon.stop(); rmSync(root, { recursive: true, force: true }); if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous; }
+}, 40000);

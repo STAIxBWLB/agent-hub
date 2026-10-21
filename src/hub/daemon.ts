@@ -27,7 +27,7 @@ import { JcodeOptionMismatch, isJcodePeer, type JcodePeer } from "../adapters/jc
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc, readSpecEdit, sdlcGh } from "./sdlc.ts";
 import { claudePeer as defaultChannelPeer, claudeStateFile, ownTerminalRow, pathEvidence, transcriptPersisted } from "./claude-state.ts";
-import { peerRosterConfig, rosterAllows, type PeerRoster } from "./roster.ts";
+import { peerRosterConfig, rosterAllows, staleInstanceKey, type PeerRoster } from "./roster.ts";
 import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS, isSupportedPeer, STARTABLE_PEERS, isStartablePeer } from "../adapters/registry.ts";
 import { RecoveryDeferredHubError } from "./deferred-hub.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
@@ -599,7 +599,16 @@ export async function startDaemon(opts: DaemonOptions) {
   const reviewOnlyItem = (peer: string, env: Envelope): boolean => env.from === USER || env.from === HUB && (env.kind === "review" || (env.kind === "task" && env.to?.includes(peer) === true));
   const readOnlyPeer = (peer: string): boolean => declarations[peer]?.readOnly === true;
   const SETTINGS = projectSettings(declarations, adapterCatalog);
-  const settingDef = (key: unknown) => instanceSettingDef(key, declarations, adapterCatalog);
+  // #225: a roster key whose instance was undeclared has no row of its own. The only thing a person can do with it is delete it,
+  // so it gets a boolean roster row that checkSettingValue below only accepts as a removal.
+  const staleRosterKey = (key: unknown): string | undefined => {
+    const peer = typeof key === "string" && key.startsWith("roster.") ? key.slice("roster.".length) : undefined;
+    return peer !== undefined && !declarations[peer] && Object.hasOwn(config.roster, peer) && staleInstanceKey(peer, adapterCatalog) ? peer : undefined;
+  };
+  const settingDef = (key: unknown): SettingDef | string => {
+    const found = instanceSettingDef(key, declarations, adapterCatalog), stale = staleRosterKey(key);
+    return typeof found === "string" && stale ? { key: `roster.${stale}`, group: "Roster", label: `${stale}: stale roster key (instance no longer declared)`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", stale] } : found;
+  };
   const accountOf = (peer: string) => definitionOf(peer)?.budget?.account ?? peer;
   const accountMembers = (account: string) => SUPPORTED_PEERS.filter(peer => accountOf(peer) === account);
   let rosterChanging: string | undefined;
@@ -4770,6 +4779,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const def = settingDef(key);
     if (typeof def === "string") return { error: def };
     const routing = activeRouting();
+    if (staleRosterKey(def.key) && raw !== null) return { error: `${def.key} names an instance that is no longer declared: it can only be removed (ahub roster remove ${def.path[1]})` };
     try { return { def, value: checkSettingValue(def, raw, def.type === "roles" ? compatibleRoles(def.path[1]!) : Object.keys(routing.hub_routes ?? {})) }; }
     catch (error) { return { error: (error as Error).message }; }
   }
@@ -4866,6 +4876,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const input = settingInput(key, raw);
     if ("error" in input) return { ok: false, error: input.error };
     const { def, value } = input;
+    if (def.group === "Roster" && staleRosterKey(def.key)) {
+      return { ok: true, lines: [`${def.path[1]}: no longer declared; its roster key decides nothing today.`, `Removing it deletes roster.${def.path[1]} from .agenthub/config.local.json and nothing else.`] };
+    }
     if (def.group === "Roster") {
       try {
         const peer = def.path[1]!, next = rosterCandidate(def, value), on = projectRosterAllows(next, peer, config.pi.enabled);

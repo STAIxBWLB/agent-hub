@@ -12,7 +12,7 @@ import { resolveProfile } from "./profiles.ts";
 import { taskSweepConfig } from "./task-sweep.ts";
 import { projectionConfig } from "./text-projection.ts";
 import { validateInstances, type InstancesConfig } from "./instances.ts";
-import { peerRosterConfig } from "./roster.ts";
+import { peerRosterConfig, staleInstanceKey } from "./roster.ts";
 import { CHARACTER_IDS } from "../pet/characters.ts";
 import { petPalette } from "../pet/config.ts";
 
@@ -216,7 +216,7 @@ export function configApply(key: string, scopes: readonly ConfigIdentityScope[] 
     for (const [index, part] of key.split(".").slice(1).entries()) {
       const shape = check && shapes.get(check);
       if (shape?.fields) { if (!Object.hasOwn(shape.fields, part)) return fail(key, "unknown configuration key"); check = shape.fields[part]; }
-      else if (shape?.item) { if (shape.keys && !shape.keys.includes(part) && !(top === "roster" && scopes.some(scope => scope.catalog.definitionOf(part, scope.instances)))) return fail(key, "unknown configuration key"); check = shape.item; }
+      else if (shape?.item) { if (shape.keys && !shape.keys.includes(part) && !(top === "roster" && scopes.some(scope => scope.catalog.definitionOf(part, scope.instances) || staleInstanceKey(part, scope.catalog)))) return fail(key, "unknown configuration key"); check = shape.item; }
       else if (index === 0 && (special[top]?.includes(part) || top === "checks" && /^[a-z][a-z0-9_]{0,47}$/.test(part))) break;
       else if (["permission_modes", "catalog_roles", "profile_overrides", "text_projection", "peers", "instances", "adapters", "adapter_modules"].includes(top)) break;
       else return fail(key, "unknown configuration key");
