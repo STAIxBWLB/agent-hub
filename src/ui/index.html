@@ -294,7 +294,8 @@ main>.stack{margin-top:var(--space-6)}
 .plan-block{border:1px solid var(--line);border-radius:var(--radius-surface);background:var(--panel);margin:0 0 var(--space-4);padding:var(--space-4);overflow:visible}
 .plan-block>h3{font-size:var(--text-base);margin:0 0 var(--space-3)}
 .plan-block form,.plan-block .content{padding:0}
-.detail-group{margin:var(--space-4) 0}
+/* A group is a plain heading and its lines: the global section{} box rule must not wrap each one in a card. */
+.detail-group{margin:var(--space-4) 0;border:0;background:none;border-radius:0;overflow:visible}
 .detail-heading{font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin:0 0 var(--space-2);border-bottom:1px solid var(--line);padding-bottom:var(--space-1)}
 #task-detail-dialog::backdrop{background:var(--scrim)}
 .dialog-head{display:flex;justify-content:space-between;align-items:center;gap:var(--space-3);margin-bottom:var(--space-4)}
