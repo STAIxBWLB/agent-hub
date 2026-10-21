@@ -1162,6 +1162,22 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   failed dependent reads, ready writes or assignments do not escape a saved
   approval. Their notices are best effort because notification can read the
   same unavailable board. An ownerless task stays eligible once a peer can take it.
+- Readiness respects the reserved owner's planner WIP cap (#655). A ready task is
+  handed to its reserved owner only while that owner's `wip()` (plus claims in flight)
+  is under `wipLimit()`, the count `accept` refuses at. Otherwise the task keeps its
+  reservation, stays ready in To Do (no owner, no offer, no stall) and the hub records
+  one quiet `ready held` history entry naming the owner and its count; later passes add
+  no second entry. Dependents are offered in priority (none is P2, `urgent` is P0), then
+  rank, then id order, so a free slot goes to the first of them. When an owner's slot
+  frees (an approval of its task, a cancellation or an untouched return to backlog), its
+  held ready tasks are offered in that order and the cap stops the offers; the 60 s
+  release timer does the same for a slot freed any other way. Planner-pulled work was
+  admitted by its pull and is not held, a reservation the task excludes is not
+  honoured by routing and holds nothing, and the idle sweep's automatic reassignment
+  never overrides a hold. An offer takes its reserved owner's slot in the same
+  synchronous step as the cap check, before assignment can yield, so concurrent
+  offers cannot exceed the cap; the release timer also offers a held task whose
+  latest move is a planner edit.
 - A recovery commit also waits for task operations in flight and for completion
   checks queued or running: both can write the board after its integrity digest
   (a check the commit's stop kills records `check interrupted`).
