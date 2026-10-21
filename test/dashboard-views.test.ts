@@ -42,7 +42,11 @@ test("dashboard views retain one snapshot poll and ticket-only hash with CSP-saf
  expect(html).not.toMatch(/\sstyle="|\son[a-z]+="/i);
  expect(html).toContain('<dialog id="task-detail-dialog"');
  expect(html.match(/setTimeout\(poll, 1000\)/g)).toHaveLength(2);
- expect(html.match(/setTimeout\(/g)).toHaveLength(5);
+ // #469 R6 changes this pin, as its spec requires (a success toast fades after 4 s): the page still has the same five timers as
+ // before, and the only new ones are the two inside notice() (the fade, and the removal after it). Nothing else may add a timer.
+ const toast=/function notice\(text, error = false\) \{[\s\S]*?\n\}/.exec(html)![0];
+ expect(toast.match(/setTimeout\(/g)).toHaveLength(2);
+ expect(html.replace(toast,"").match(/setTimeout\(/g)).toHaveLength(5);
  expect(html).not.toContain("setInterval(");
 });
 
