@@ -58,3 +58,15 @@ test("Qwen's definition owns its headless refusal and rejects another transport'
   expect(qwen.start.preflight({ instance: "qwen", form: "headless" })).toBeUndefined();
   expect(() => qwen.start.create({ instance: "qwen", projectRoot: "/fixture", stateDir: "/fixture/state", kindConfig: {}, permission: "ask", mcpServers: [], daemon: { local: {} } })).toThrow("ACP");
 });
+
+test("#625 follow-up runtime launch plans exist only for the verified native launch surfaces", async () => {
+  const r = await registry();
+  expect(r.ADAPTERS.filter((definition: any) => typeof definition.start.launch === "function").map((definition: any) => definition.kind).sort()).toEqual(["agy", "claude", "codex", "qwen"]);
+});
+
+test("#625 follow-up malformed channel-plugin ACP definitions require explicit external admission", async () => {
+  const r = await registry();
+  const original = r.ADAPTERS.find((definition: any) => definition.transport === "acp" && definition.start.daemonPort === "acp");
+  const malformed = { ...original, identity: { mcp: "channel-plugin" }, attach: { ...original.attach, externalHello: false } };
+  expect(() => r.assertDefinitionCoherence(malformed)).toThrow(/channel-plugin|externalHello|external.*admission/);
+});

@@ -117,7 +117,7 @@ test("Codex context dispatch uses its supplied definition reader", async () => {
   const { peer, tui, said, bus } = await setup(1, undefined, {
     contextReader: { source: "codex_token_usage", read(value, sessionId, measuredAt) {
       values.push(value);
-      return { source: "codex_token_usage", sessionId, measuredAt, tokens: 321, window: 1000, used: 0.321 };
+      return { source: "codex_token_usage", sessionId, measuredAt, tokens: this?.source === "codex_token_usage" ? 321 : null, window: 1000, used: this?.source === "codex_token_usage" ? 0.321 : null };
     } },
     onContext: reading => { readings.push(reading); },
   });

@@ -1,3 +1,4 @@
+import { nativeCliMarkerPeer } from "../adapters/definitions/native-identity-defaults.ts";
 import { recoveryPresentationFlag } from "./recovery-presentation-options.ts";
 import { definitionOf, kindOf, type KindMap } from "../adapters/registry.ts";
 
@@ -42,7 +43,7 @@ export function detectCliIdentity(env: Readonly<Record<string, string | undefine
   if (codex !== undefined && (!codex || /\s/.test(codex))) return invalid("invalid CODEX_THREAD_ID marker");
   if (session !== undefined && claude === undefined) return invalid("CLAUDE_CODE_SESSION_ID without CLAUDECODE marker");
   if (claude !== undefined && codex !== undefined) return invalid("conflicting native agent markers");
-  const native = claude !== undefined ? "claude" : codex !== undefined ? "codex" : undefined;
+  const native = nativeCliMarkerPeer(claude !== undefined, codex !== undefined);
   if (hub !== undefined && native !== undefined && (kindOf(hub, instances) ?? hub) !== native) return invalid("AGENTHUB_PEER_ID conflicts with native agent marker");
   const peer = hub ?? native;
   return peer === undefined ? { role: "console" } : { role: "tools", peer };
