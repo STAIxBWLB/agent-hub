@@ -1174,7 +1174,10 @@ session modes (`default`, `plan`, `auto`, `yolo`) but nothing per server or tool
   release timer does the same for a slot freed any other way. Planner-pulled work was
   admitted by its pull and is not held, a reservation the task excludes is not
   honoured by routing and holds nothing, and the idle sweep's automatic reassignment
-  never overrides a hold.
+  never overrides a hold. An offer takes its reserved owner's slot in the same
+  synchronous step as the cap check, before assignment can yield, so concurrent
+  offers cannot exceed the cap; the release timer also offers a held task whose
+  latest move is a planner edit.
 - A recovery commit also waits for task operations in flight and for completion
   checks queued or running: both can write the board after its integrity digest
   (a check the commit's stop kills records `check interrupted`).

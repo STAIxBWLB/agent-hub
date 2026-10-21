@@ -3774,3 +3774,46 @@ test("a planner priority edit does not release held ready work; a freed slot sti
   await tick();
   expect(board.get(held.id)!.owner).toBe("codex");
 });
+
+test("the release timer offers a held task after a planner edit when its slot freed outside Tasks (#655)", async () => {
+  const { tasks, board } = await setup(["claude", "codex"], undefined, undefined, 1);
+  const gate = await tasks.propose("claude", { title: "gate", class: "implement", owner: "claude" });
+  const held = await tasks.propose("claude", { title: "held", class: "implement", owner: "codex", after: [gate.id] });
+  const busy = board.propose("claude", { title: "busy", class: "implement" });
+  board.update(busy.id, "codex", "accepted", { owner: "codex", state: "in_progress" });
+  await tasks.done("claude", gate.id, "done");
+  await tasks.review(board.get(gate.id)!.reviewer!, gate.id, "approved");
+  await tick();
+  board.plan(held.id, "user", { priority: 1 }, 0, "bump");
+  expect(board.get(held.id)!.history.at(-1)!.event).toBe("planned");
+  await tasks.releaseReady();
+  expect(board.get(held.id)!.owner).toBeNull(); // still no slot
+  board.update(busy.id, "codex", "done", { state: "approved" }); // slot freed outside Tasks
+  await tasks.releaseReady();
+  expect(board.get(held.id)!.owner).toBe("codex");
+});
+
+test("two ready offers for one reserved owner with one slot assign exactly one while assignment yields (#655)", async () => {
+  const { tasks, board } = await setup(["claude", "codex"], undefined, undefined, 1);
+  const gate = await tasks.propose("claude", { title: "gate", class: "implement", owner: "claude" });
+  const a = await tasks.propose("claude", { title: "a", class: "implement", owner: "codex", after: [gate.id] });
+  const b = await tasks.propose("claude", { title: "b", class: "implement", owner: "codex", after: [gate.id] });
+  // Approve the gate outside Tasks so the offers below are the only release path.
+  board.update(gate.id, "claude", "accepted", { owner: "claude", state: "in_progress" });
+  board.update(gate.id, "claude", "approved", { state: "approved" });
+  const real = (tasks as any).assignOwner.bind(tasks);
+  let release!: () => void;
+  const gateOpen = new Promise<void>((resolve) => { release = resolve; });
+  let calls = 0;
+  (tasks as any).assignOwner = async (...args: unknown[]) => { calls++; await gateOpen; return real(...args); }; // a deferred admission
+  const offers = [(tasks as any).offerReady(board.get(a.id)!, "test"), (tasks as any).offerReady(board.get(b.id)!, "test")];
+  await tick();
+  expect(calls).toBe(1); // the second saw the first's slot and was held before it reached assignment
+  release();
+  await Promise.all(offers);
+  const owned = [a, b].filter((t) => board.get(t.id)!.owner === "codex");
+  expect(owned).toHaveLength(1);
+  const other = board.get([a, b].find((t) => board.get(t.id)!.owner === null)!.id)!;
+  expect(other.history.at(-1)!.event).toBe("ready held");
+  expect(other.reserved).toBe("codex");
+});

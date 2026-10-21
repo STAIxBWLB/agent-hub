@@ -2097,6 +2097,9 @@ export class Tasks {
     if (waits.length) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id} waits for ${waits.map((id) => `#${id}`).join(", ")}, not approved yet`);
   }
 
+  /** Ready offers between their cap check and the owner write (#655): task id -> reserved owner whose slot it takes. */
+  private readonly readyInFlight = new Map<number, PeerId>();
+
   /** Offer order for ready work (#655): priority (urgent is P0, none is P2), then rank, then id. */
   private readonly readyOrder = (a: Task, b: Task): number =>
     (a.priority ?? (a.signals.includes("urgent") ? 0 : 2)) - (b.priority ?? (b.signals.includes("urgent") ? 0 : 2))
@@ -2116,7 +2119,9 @@ export class Tasks {
   private reservedHold(task: Task): string | undefined {
     const owner = task.reserved;
     if (!owner || task.owner || this.plannerPullRecord(task)?.pull === true || this.excluded(task).includes(owner)) return undefined;
-    const limit = this.wipLimit(owner), used = this.wip(owner, task.id) + (this.pendingClaims.get(owner) ?? 0);
+    // Offers in flight take a slot before their owner is written; once it is written wip() counts it, so never twice.
+    const flying = [...this.readyInFlight].filter(([id, peer]) => peer === owner && id !== task.id && !this.d.board.get(id)?.owner).length;
+    const limit = this.wipLimit(owner), used = this.wip(owner, task.id) + (this.pendingClaims.get(owner) ?? 0) + flying;
     return used >= limit ? `reserved owner ${owner} is at its planner WIP cap (${used}/${limit}); stays ready in To Do with its reservation until a slot frees` : undefined;
   }
 
@@ -2286,7 +2291,7 @@ export class Tasks {
         continue;
       }
       this.d.board.clearStall(t.id);
-      if ((!t.deps?.length && !t.history.some(h => h.event === "backlog pulled")) || (!planned && last !== "blocked" && last !== "ready" && last !== "reserved")) continue;
+      if ((!t.deps?.length && !t.history.some(h => h.event === "backlog pulled")) || (!planned && last !== "blocked" && last !== "ready" && last !== "reserved" && !this.isHeld(t))) continue;
       // ponytail: a reserved owner (#207) that attaches after another peer that can take the task is passed over here like
       // an offline one; hold reserved tasks for a grace period if restarts show that up.
       await this.offerReady(t, "nothing left to wait for");
@@ -2295,7 +2300,7 @@ export class Tasks {
 
   /** Callers hold a list read before an await: re-read, or a task the other caller offered meanwhile is offered twice. */
   private async offerReady(stale: Task, why: string): Promise<void> {
-    let offering = false, undelivered: AssignmentUndeliveredError | undefined;
+    let offering = false, undelivered: AssignmentUndeliveredError | undefined, slot: PeerId | undefined;
     try {
       const t = this.d.board.get(stale.id);
       if (!t || t.state !== "proposed" || t.owner || this.personUnassigned(t) || this.offered.has(t.id)) return;
@@ -2304,6 +2309,9 @@ export class Tasks {
       if (planned && !selected) return;
       const held = planned ? undefined : this.reservedHold(t); // #655: the cap holds before the ready move is offered
       if (held) { this.holdReady(t, why, held); return; }
+      // The check and the slot are one synchronous step: assignOwner can yield before it writes the owner, and a second offer
+      // for the same reserved owner must see this one as taking the last slot.
+      if (!planned && t.reserved) { slot = t.reserved; this.readyInFlight.set(t.id, slot); }
       this.offered.add(t.id);
       offering = true;
       const ready = t.history.at(-1)?.event === "ready" ? t : this.d.board.update(t.id, HUB, "ready", {}, why);
@@ -2315,6 +2323,7 @@ export class Tasks {
       if (e instanceof AssignmentUndeliveredError) undelivered = e;
       else this.releaseNotice(`task ${this.publicTitle(stale)}: could not be assigned: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
+      if (slot) this.readyInFlight.delete(stale.id);
       if (offering && !undelivered) {
         try {
           if (!this.d.board.get(stale.id)?.owner) this.offered.delete(stale.id);
