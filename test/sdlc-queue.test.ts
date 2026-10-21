@@ -227,3 +227,17 @@ test("S3 private holder findings never reach a queue row or initiate its PR evid
   expect(JSON.stringify(view)).not.toContain("PRIVATE");
   expect(f.calls).toHaveLength(1);
 });
+
+test("S2 merge queue uses shared complete metadata conformance without exposing file names", async () => {
+  const holder = { ...task(1, 1), plan: { paths: ["other/"], revision: 1, fingerprint: "plan", accepted: [] } };
+  const f = fake({ ids: [1] });
+  const report = await readMergeQueue("owner/repo", config, [holder], f.run);
+  expect(report.rows[0]?.ready).toBe(false);
+  expect(report.rows[0]?.blockers).toContain("plan conformance: changed files outside the plan");
+  expect(report.rows[0]?.planConformance).toEqual([{ task: 1, state: "departure", outside: 1, untouched: 1, accepted: false }]);
+  expect(JSON.stringify(report)).not.toContain("src/shared.ts");
+  const accepted = { ...holder, plan: { ...holder.plan, accepted: [{ repo: "owner/repo", pr: 1, head: A, revision: 1, fingerprint: "plan", paths: ["src/shared.ts"] }] } };
+  expect((await readMergeQueue("owner/repo", config, [accepted], f.run)).rows[0]?.ready).toBe(true);
+  const moved = { ...accepted, plan: { ...accepted.plan, revision: 2 } };
+  expect((await readMergeQueue("owner/repo", config, [moved], f.run)).rows[0]?.ready).toBe(false);
+});

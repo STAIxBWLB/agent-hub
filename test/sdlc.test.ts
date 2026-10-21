@@ -13,7 +13,7 @@ import { parsePrEvidence, readSdlcPr, sdlcGh, sdlcConfig, sdlcReceipt, sdlcStatu
 const A = "a".repeat(40), B = "b".repeat(40), cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
 const config = (mode: SdlcMode) => sdlcConfig({ mode, required_checks: ["gate"] });
-const raw = (head = A, conclusion = "SUCCESS") => ({ headRefOid: head, state: "OPEN", reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [{ name: "gate", conclusion }], files: [{ path: "src/file.ts" }], unresolvedThreads: 0 });
+const raw = (head = A, conclusion = "SUCCESS") => ({ headRefOid: head, state: "OPEN", reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [{ name: "gate", conclusion }], files: [{ path: "src/file.ts" }], changedFiles: 1, unresolvedThreads: 0 });
 
 test("SDLC defaults off and rejects unknown keys, stages, duplicate checks and unsafe artifact identities (#257)", () => {
   expect(sdlcConfig(undefined).mode).toBe("off");
@@ -53,8 +53,8 @@ function rig(mode: SdlcMode, pii = false, delayMs = 0) {
   cleanups.push(() => { board.close(); rmSync(dir, { recursive: true, force: true }); });
   let head = A, conclusion = "SUCCESS", calls = 0;
   const gh: SdlcGh = async args => { calls++; if (delayMs) await Bun.sleep(delayMs); return { code: 0, stdout: JSON.stringify(args[0] === "pr" ? raw(head, conclusion) : { data: { repository: { pullRequest: { headRefOid: head, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) }; };
-  const tasks = new Tasks({ board, bus, cwd: dir, project: "test", routing: () => loadRouting(dir), notify: message => notices.push(message), sdlc: { config: () => config(mode), gh } });
-  const proposed = board.propose(USER, { title: pii ? "patient 900101-1234567 marker" : "work", class: "implement", ...(pii ? { signals: ["pii"] } : {}) });
+  const tasks = new Tasks({ board, bus, cwd: dir, project: "test", repository: "owner/repo", routing: () => loadRouting(dir), notify: message => notices.push(message), sdlc: { config: () => config(mode), gh } });
+  const proposed = board.propose(USER, { title: pii ? "patient 900101-1234567 marker" : "work", class: "implement", plan: { paths: ["src/file.ts"] }, ...(pii ? { signals: ["pii"] } : {}) });
   board.update(proposed.id, USER, "accepted", { owner: "codex", reviewer: USER, state: "in_progress" });
   tasks.recordLifecycle(USER, proposed.id, { repo: "owner/repo", issue: 2, pr: 1, localHead: A, localResult: "passed", stage: "implement" });
   return { dir, board, tasks, id: proposed.id, notices, calls: () => calls, head: (value: string) => { head = value; }, check: (value: string) => { conclusion = value; } };

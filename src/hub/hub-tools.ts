@@ -33,6 +33,10 @@ const costPlanProperties = {
   review: { type: "object", properties: { scope: { type: "string", enum: ["none", "delta", "full"] }, reviewers: { type: "integer", minimum: 0, maximum: 8 } }, required: ["scope", "reviewers"], additionalProperties: false },
   ci: { type: "string", enum: ["focused", "full", "reuse"] },
 } as const;
+const evidencePlanProperties = {
+  proof: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 }, description: "test paths or check names planned to prove the change" },
+  risks: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 }, description: "short risks to check during implementation and review" },
+} as const;
 const plan = {
   type: "object",
   description: "what you will change, before you start. Owners of open tasks on the same files or symbols see it, and get a notice when your task is done.",
@@ -41,6 +45,7 @@ const plan = {
     symbols: list("functions, types or other names you will change, as they appear in code (e.g. Bus.publish)"),
     signatures: list("new or changed signatures, as you will write them"),
     insertion_points: list("where new code goes (file and the function or line it follows)"),
+    ...evidencePlanProperties,
   },
   additionalProperties: false,
 } as const;
@@ -192,10 +197,10 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
       properties.receipt = { ...receipt, properties: fields };
     }
     if (customProfile && tool.name === "hub_task_propose") properties.class = { type: "string", enum: [...new Set([...Object.keys(data.classes), ...PROFILE_CLASS_NAMES.filter(v => projectProfile("dev").classes[v])])] };
-    if (customProfile && properties.plan && tool.name !== "hub_task_accept") properties.plan = { ...plan, properties: Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) };
+    if (customProfile && properties.plan && tool.name !== "hub_task_accept") properties.plan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])), ...evidencePlanProperties } };
     if (customProfile && tool.name === "hub_backlog_split") {
       const parts = properties.parts as { items: { properties: Record<string, unknown> } };
-      const selectedPlan = { ...plan, properties: Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) };
+      const selectedPlan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map(key => [key, plan.properties[key as keyof typeof plan.properties] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])), ...evidencePlanProperties } };
       properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: selectedPlan } } };
     }
     if (criteria && properties.plan) {

@@ -26,6 +26,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub sdlc status [task] | explain <task> | export <task> | record <task> <receipt-json>", "read head-bound lifecycle gates and the next actor/action (person only)"],
     ["ahub sdlc queue <owner/repo> | release <owner/repo> [live-issue...]", "read-only merge and release evidence (person only)"],
     ["ahub sdlc accept <task> --issue <n> [--repo owner/repo]", "accept the task's spec issue at its current body; build entry needs it in enforce (person only)"],
+    ["ahub sdlc accept-departure <task> <head> <reason...>", "accept current plan departures on that exact PR head (person only)"],
     ["ahub sdlc plan-review <task> <revision> <reason...> [--review full|delta|none --reviewers N --ci full|focused|reuse]", "record planner review, scope and host-read issue metadata"],
     ["ahub sdlc train report|configure|cut <release-id> [revision] [json]", "plan a release and freeze its approved scope after resource/quota admission"],
     ["ahub sdlc release-assign <task> <revision> <release-id|none> <reason>", "assign approved/in-flight work without changing execution"],

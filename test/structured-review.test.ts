@@ -16,16 +16,16 @@ function rig(mode: SdlcMode = "off", options: Partial<TasksDeps> = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-structured-review-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   const notices: string[] = [], shared: string[] = [], policy = { mode, maxNits: 5, head: A };
   const routing = loadRouting(cwd);
-  const deps: TasksDeps = { cwd, project: "fixture", board, bus, routing: () => routing,
+  const deps: TasksDeps = { cwd, project: "fixture", repository: "o/r", board, bus, routing: () => routing,
     notify: text => notices.push(text), share: (_by, text) => shared.push(text),
     sdlc: { config: () => ({ ...sdlcConfig({ mode: policy.mode, required_checks: ["gate"] }), maxNits: policy.maxNits }),
       gh: async args => ({ code: 0, stdout: JSON.stringify(args[0] === "pr"
-        ? { headRefOid: policy.head, state: "OPEN", reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], files: [], unresolvedThreads: 0 }
+        ? { headRefOid: policy.head, state: "OPEN", reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], files: [], changedFiles: 0, unresolvedThreads: 0 }
         : { data: { repository: { pullRequest: { headRefOid: policy.head, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) }) }, ...options };
   const tasks = new Tasks(deps);
   cleanups.push(() => { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
   const create = (pii = false) => {
-    const row = board.propose("user", { title: "review fixture", class: "implement", ...(pii ? { signals: ["pii"] } : {}) });
+    const row = board.propose("user", { title: "review fixture", class: "implement", plan: { paths: ["."] }, ...(pii ? { signals: ["pii"] } : {}) });
     board.update(row.id, "user", "accepted", { state: "in_progress", owner: "codex", reviewer: "claude" });
     return board.update(row.id, "codex", "done", { state: "in_review", refs: { commit: policy.head }, sdlc: { stage: "review", repo: "o/r", issue: 1, pr: 2, localHead: policy.head, localResult: "passed" } });
   };

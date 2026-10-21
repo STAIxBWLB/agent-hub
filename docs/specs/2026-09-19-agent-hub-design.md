@@ -4161,3 +4161,7 @@ registrations and packaged fake transports without executing those fakes on
 import. Builtins keep their existing applicable contract tests and explicit
 unsupported-leg reasons; an external module exercises the same contracts in
 its own CI.
+
+### S2 plan conformance boundary (#481)
+
+Optional proof/risks lists are bounded to 32 strings of 512 characters. Literal file/directory-prefix coverage uses complete current PR file metadata, never patches or glob execution. Untouched paths are advisory; uncovered changed paths block enforce approval until plan amendment or person acceptance. Host content revisions are separate from backlog planningRevision. "Plan revisions after the first observed push" binds the first observed remote head to plan fingerprint/revision; earlier pushes are unknown. Pending observations persist at the next successful transition or explicit status read; lost pending intervals remain unknown. The ceiling is no true push-event source; the upgrade path is a webhook or Actions push receipt. Person-only `ahub sdlc accept-departure <task> <head> <reason...>` records complete current repo/PR/head inventory and plan fingerprint/revision, with bounded sanitized privacy-screened rationale; changed identity, plan or inventory invalidates it. Private projections reveal only existence, and unavailable private inventories stay unknown.

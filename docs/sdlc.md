@@ -14,7 +14,7 @@ The built-in lifecycle follows the [AI-Native SDLC Playbook](https://claude.com/
 | --- | --- | --- | --- | --- |
 | intent | Plan | person/planner | intent or backlog identity | person spec acceptance required at build entry in enforce |
 | spec | Design | person/planner | issue identity and scope | spec acceptance/body drift checked at build entry |
-| plan | Build | planner/owner | plan, branch, existing predecessor gates | current planner review required at build admission; conformance pending S2 |
+| plan | Build | planner/owner | plan, branch, existing predecessor gates | current planner review required at build admission; literal-path conformance gates approval in enforce |
 | build | Build | owner | PR identity/current head and local check on that head | entering review, when enabled |
 | test | Test | verifier/reviewer | required checks and local gate on the reviewed head | approval, when enabled; integrity/evals pending S4/S5 |
 | review | Deploy | assigned reviewer | current head-bound verdict, no pending change request/open thread; AC checklist under Compliance | approval, when enabled; open Important findings block in enforce |
@@ -30,7 +30,7 @@ Stored `implement` and `verify` stage ids read as `build` and `test`. A write th
 | --- | --- | --- |
 | S0 | Plan, Design, Build, Test, Deploy, Maintain stage model | Nine built-in bases, canonical ids, stored receipt aliases and playbook labels |
 | S1 | Accepted intent/spec and spec drift | Person-only `ahub sdlc accept`, bound to the issue's body edit time; build entry needs it in enforce (see Spec acceptance below) |
-| S2 | Accepted plan and diff conformance | Pending; existing task plans remain authoritative without a conformance readback |
+| S2 | Accepted plan and diff conformance | Bounded proof/risks, metadata-only plan conformance and person-bound departure acceptance |
 | S3 | Bugs, Security and Compliance review passes | Head-bound findings, configured nit cap, Important approval gate and recurring-finding amendment proposals |
 | S4 | Red-first tests and test integrity | Pending receipts/gates; repository test-integrity rules still apply |
 | S5 | Continuous evals for agent configuration | Pending gate, dependent on #251/#266; no eval pass claimed |
@@ -64,7 +64,7 @@ The acceptance-criteria checklist belongs to the Compliance pass over the same b
 
 ## Delivery and verification state
 
-Head-bound review/approval gates, bounded custom definitions, read-only merge/release reports, S0/S8 vocabulary/checklist migration, S1 spec acceptance and S9 planner admission and S10 cost governance are implemented in source. S11 release-train governance ships in 0.12.37. S2-S7 and the native advise-through-merge/release cycle remain pending. Installation, native acceptance and release authorization require separate receipts.
+Head-bound review/approval gates, bounded custom definitions, read-only merge/release reports, S0/S8 vocabulary/checklist migration, S1 spec acceptance and S9 planner admission and S10 cost governance are implemented in source. S11 release-train governance ships in 0.12.37. S4-S7 and the native advise-through-merge/release cycle remain pending. S2 plan conformance and S3 findings are implemented in source. Installation, native acceptance and release authorization require separate receipts.
 
 ## Initial commands
 
@@ -268,3 +268,13 @@ Train history retains at most 256 events. Configuration no-ops retain the revisi
 Verdict history retains each report and its reviewed head. Open Important findings carry forward across heads until a reviewer explicitly sets fixed or false_positive, or the person sets accepted with a rationale. Omitting an id never settles it; nits stay on their original head. Review requests list carried public ids, pass, severity and optional path; private finding details stay withheld. Head selection uses the first valid full SHA from the PR head, reviewed head, local head, then commit metadata; unresolved non-empty reports refuse in enforce. Status and the merge queue show counts for the current head. In enforce, approval refuses while any Important finding remains open; advise exposes the count without blocking. Existing verdicts without structured findings stay compatible.
 
 Finding text passes through the task privacy boundary. PII tasks remain stubs; withheld reports expose only counts on ordinary tasks. When the same public, non-withheld semantic pass/id pair appears on a second distinct task, Tasks proposes one durable, marker-deduplicated backlog plan (excluding false positives) to amend AGENTS.md or an area note. The proposal grants no editing or acceptance authority.
+
+## Plan conformance (#481 S2)
+
+Plans accept optional `proof` (test paths or check names) and `risks`, each at most 32 strings of 512 characters. They share the task-text privacy screen. File coverage uses literal repository-relative file or directory prefixes in `plan.paths`, with no glob expansion. Symbols, proof and risks do not cover files. A planned path left untouched is advice; a changed path outside the plan is a departure. Missing plans, unsafe or unmappable paths, truncated inventories and failed metadata reads remain unknown.
+
+Review/status use the same bounded PR file metadata reader as the merge queue; no patch or body is fetched. In enforce, approval requires known coverage of every changed path or a current person acceptance of the departure. Request changes, amend the plan through `hub_task_accept`, and call done again before approval. Off adds no conformance gate; advise reports departures without blocking.
+
+The person may instead run `ahub sdlc accept-departure <task> <head> <reason...>`. The hub reads and captures the complete current repo/PR/head inventory and the plan fingerprint/revision; changing the plan, link, head or inventory invalidates that acceptance. The reason is bounded to 2048 characters, sanitized and privacy-screened. There is no peer tool or live-test delegation for this person-only operation. Private PR inventories are unavailable to this remote readback; amend the private plan instead. Public private-task projections show only whether a departure acceptance exists.
+
+The report names "plan revisions after the first observed push". Host-authored content revisions live in task history, independently of backlog `planningRevision`. The first verified remote head records the current revision/fingerprint; earlier pushes are explicitly unknown. Pending observations persist with the next successful task transition, or a successful explicit status read. If startup loses a pending observation, the earlier interval remains unknown. This observation boundary is a ceiling until a webhook or Actions push receipt provides a true push-event source.
