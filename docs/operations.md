@@ -661,6 +661,19 @@ the key list or the task detail (both are native dialogs). View keys are ignored
 select, with Ctrl, Alt or Cmd held, and while a dialog is open. Icons come from one inline SVG sprite of nine Tabler icons;
 the MIT notice is in `THIRD_PARTY_NOTICES.md`. Nothing is fetched and no package is added.
 
+### Dashboard board, side sheets and the Plan sheet (#469 R3)
+
+A board card shows the title (two lines at most), the owner as a round avatar in the peer colour with its initial, one badge that
+holds the state and the priority ("in review P1") and the release when there is one. Everything else moved to the task detail,
+which keeps the same dialog and opens as a sheet pinned to the right edge (full screen below 600px). The detail groups its
+lines into Status, People, Dates and Links, and leaves out a group with nothing in it. Pull, Assign, the Ready and Waiting
+subheads, "Show N older" and drag and drop are unchanged.
+
+The five board forms (plan a task, split a backlog task, releases, delivery evidence, propose a task) are in a Plan sheet, opened by
+the Plan button in the board toolbar. It is a native dialog, so `Esc` closes it, and view keys do nothing while it is open. The
+fields, ids and actions are the ones the forms had. The sheets slide in on `transform` and `opacity` and not at all when the
+system asks for reduced motion.
+
 ## Multiple projects and worktrees
 
 Version 0.4.0 adds one independent hub per repository or Git worktree.
