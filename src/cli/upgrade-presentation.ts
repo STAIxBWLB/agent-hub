@@ -76,7 +76,7 @@ export function renderOperation(op: RecoveryOperation, runner: number | "unknown
       if (key.startsWith("restored:")) {
         let outcome = "recorded outcome unavailable";
         try {
-          const state = restoreReceiptStatus(value);
+          const state = restoreReceiptStatus(value, { authority: "historical" }); // display only: a revoked declaration must not hide the receipt (#225)
           outcome = state === "done" ? "session restored" : state === "failed" ? "session restoration needs attention" : state.startsWith("waiting:") ? "waiting for the recorded session to attach" : "session restoration is pending";
         } catch { /* Malformed historical metadata is unknown, never successful. */ }
         output.push(...lines(`  ${key.slice("restored:".length)}: ${outcome}`, "muted", options));

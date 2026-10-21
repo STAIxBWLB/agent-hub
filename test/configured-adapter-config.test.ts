@@ -119,6 +119,21 @@ test("reload classification resolves configured and builtin extras only from bou
 });
 
 
+// #225: deleting a roster key whose instance was undeclared is a live change; adding or setting one is still an unknown key, and so is a
+// key that never had the shape of an instance id.
+test("only the removal of a stale instance roster key is classified, never its addition (#225)", () => {
+  const catalog = createProjectAdapterCatalog(adapters), declared = validateInstances(instances, catalog), scope = { catalog, instances: declared };
+  const before = { ...DEFAULT_CONFIG, adapters, instances, roster: { "codex-gone": true, "fixture-check": true } };
+  const removal = configChanges(before, { ...before, roster: { "fixture-check": true } }, [scope]);
+  expect(removal.map(row => [row.key, row.applies])).toEqual([["roster.codex-gone", "live"]]);
+  expect(() => configChanges({ ...before, roster: { "fixture-check": true } }, before, [scope])).toThrow("unknown configuration key"); // adding it back
+  expect(() => configChanges(before, { ...before, roster: { "codex-gone": false, "fixture-check": true } }, [scope])).toThrow("unknown configuration key"); // setting it
+  expect(() => configChanges({ ...before, roster: { "fixture-check": true, "never-an-instance": true } }, { ...before, roster: { "fixture-check": true } }, [scope])).toThrow("unknown configuration key");
+  expect(() => configApply("roster.codex-gone", [scope])).toThrow("unknown configuration key"); // the strict classifier itself is unchanged
+  // A kind that declares no instance support (jcode) never had an instance, so its key is a typo, not a stale key.
+  expect(() => configChanges({ ...before, roster: { "fixture-check": true, "jcode-worker": true } }, { ...before, roster: { "fixture-check": true } }, [scope])).toThrow("unknown configuration key");
+});
+
 test("reload diff classifies bound instance roster changes and retained restart declarations", () => {
   const declared = { ...instances, "codex-worker": { kind: "codex", roles: ["verifier"] } };
   const before = { ...DEFAULT_CONFIG, adapters, instances: declared, roster: { "fixture-check": true, "codex-worker": true } };

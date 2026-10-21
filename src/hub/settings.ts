@@ -384,6 +384,10 @@ export function undoSetting(cwd: string, stateDir: string, validate: (scratch: s
 export function storedLocally(cwd: string, def: SettingDef): boolean {
   try { return valueAt(JSON.parse(readFileSync(join(cwd, ".agenthub", CONFIG_LOCAL), "utf8")), def.path) !== undefined; } catch { return false; }
 }
+/** What the shared `.agenthub/config.json` holds for the key, or undefined: a removal here only ever touches the machine-local file. */
+export function sharedValue(cwd: string, def: SettingDef): unknown {
+  try { return valueAt(JSON.parse(readFileSync(join(cwd, ".agenthub", "config.json"), "utf8")), def.path); } catch { return undefined; }
+}
 /**
  * For a config setting: the value the config files would hold for it after the pending undo (the previous version of
  * the machine-local file, else the shared file), or, with `inherit`, after the machine-local value is removed (the
