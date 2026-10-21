@@ -2747,16 +2747,20 @@ export class Tasks {
   isChecking = (id: number) => this.checking.has(id);
 
   private completionCurrent(id: unknown, by: PeerId, preEffect: boolean): Task {
-    const t = this.need(id, false, preEffect);
-    this.mine(t, by, "owner", preEffect);
-    if (t.state === "in_review" || isClosedTaskState(t.state)) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${t.id} is already ${t.state}`);
-    this.ready(t, preEffect);
-    if (t.state === "proposed" || t.state === "changes_requested") this.acceptanceCapacity(t);
-    if (this.checking.has(t.id)) {
-      // The result goes only to the owner the check was started for: anyone who took the task since hears nothing.
-      throw new (preEffect ? PreEffectToolRefusal : Error)(this.checking.get(t.id) === t.owner ? `task #${t.id}: its check is still running; its result comes as a task message` : `task #${t.id}: a check from before it changed hands is still running; call hub_task_done again in a few minutes`);
+    const task = this.need(id, false, preEffect);
+    this.mine(task, by, "owner", preEffect);
+    if (preEffect) {
+      if (task.state === "in_review" || isClosedTaskState(task.state)) throw new PreEffectToolRefusal(`task #${task.id} is already ${task.state}`);
+    } else {
+      if (task.state === "in_review" || isClosedTaskState(task.state)) throw new Error(`task #${task.id} is already ${task.state}`);
     }
-    return t;
+    this.ready(task, preEffect);
+    if (task.state === "proposed" || task.state === "changes_requested") this.acceptanceCapacity(task);
+    if (this.checking.has(task.id)) {
+      // The result goes only to the owner the check was started for: anyone who took the task since hears nothing.
+      throw new (preEffect ? PreEffectToolRefusal : Error)(this.checking.get(task.id) === task.owner ? `task #${task.id}: its check is still running; its result comes as a task message` : `task #${task.id}: a check from before it changed hands is still running; call hub_task_done again in a few minutes`);
+    }
+    return task;
   }
 
   async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs): Promise<Task> {
@@ -2946,10 +2950,6 @@ export class Tasks {
     let reviewer = selection?.reviewer ?? task.reviewer, reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off" && gated !== (reviewer ? "review" : "approval")) {
       reviewEvidence = await this.lifecycleGate(task, reviewer ? "review" : "approval");
-      task = this.need(task.id, false, true);
-      this.mine(task, by, "owner", true);
-      // In every mode: another done may have landed during the readback.
-      if (task.state === "in_review" || isClosedTaskState(task.state)) throw new Error(`task #${task.id} is already ${task.state}`);
       task = this.completionCurrent(task.id, by, false);
       selection = this.poolReview(task, refs);
       reviewer = selection?.reviewer ?? task.reviewer;
