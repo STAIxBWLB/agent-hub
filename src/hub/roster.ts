@@ -8,8 +8,11 @@ export function peerRosterConfig(value: unknown, instances?: KindMap, catalog?: 
   if (value === undefined) return {};
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("roster must be an object of boolean peer values");
   const roster: PeerRoster = {};
+  const requireKnownPeer = (peer: string) => {
+    if (!definitionOf(peer, instances)) throw new Error("roster contains an unsupported peer");
+  };
   for (const [peer, on] of Object.entries(value)) {
-    if (!definitionOf(peer, instances) && !(inertUnknown && /^[a-z][a-z0-9-]{0,31}$/.test(peer))) throw new Error("roster contains an unsupported peer");
+    if (!inertUnknown || !/^[a-z][a-z0-9-]{0,31}$/.test(peer)) requireKnownPeer(peer);
     if (typeof on !== "boolean") throw new Error(`roster.${peer} must be a boolean`);
     roster[peer] = on;
   }
