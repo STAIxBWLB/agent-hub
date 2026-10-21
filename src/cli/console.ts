@@ -31,7 +31,7 @@ export interface ConsoleOptions {
   /** Explicit delegation inherited only by this console's ahub subprocesses. */
   liveTest?: boolean;
   /** Injected command runner must use argv, closed stdin, and return a cancellation handle. */
-  runCommand?: (args: string[], output: (text: string) => void, done: () => void, columns?: number) => (() => void);
+  runCommand?: (args: string[], output: (text: string) => void, done: (code?: number) => void, columns?: number) => (() => void);
   pollMs?: number;
 }
 /** Exact navigation sequences only (#309, #441); anything else in a multi-character read is a paste. */
@@ -250,7 +250,8 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       try { while (true) { const { value, done } = await reader.read(); if (done) break; output(decoder.decode(value, { stream: true })); } const end = decoder.decode(); if (end) output(end); }
       finally { reader.releaseLock(); }
     };
-    void Promise.all([read(child.stdout), read(child.stderr), child.exited]).then(([, , code]) => { if (code) output(`command exited ${code}`); }).catch(error => output(String(error.message))).finally(finished);
+    let exitCode = 0;
+    void Promise.all([read(child.stdout), read(child.stderr), child.exited]).then(([, , code]) => { exitCode = code; if (code) output(`command exited ${code}`); }).catch(error => { exitCode = 1; output(String(error.message)); }).finally(() => finished(exitCode));
     return () => { child.kill(); };
   });
   const effect = async (action: ConsoleEffect) => {
@@ -300,9 +301,10 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
     childRunning = true;
     stream({ text: `> ${action.args.join(" ")}`, kind: "command" });
     try {
+      let diagnostic = "";
       // Output lines sit at column 4, as message bodies do: what a command prints can carry peer text, and columns 0 and 2 are the hub's.
-      const output = (text: string) => { if (active) { stream({ text: terminalText(text).replace(/\t/g, " ").replace(/\n$/, "").replace(/^/gm, "    "), kind: "command" }); draw(); } };
-      cancelChild = run(action.args, output, () => { childRunning = false; cancelChild = undefined; if (active) void refresh(); }, Math.max(1, columns - 4));
+      const output = (text: string) => { if (active) { diagnostic = (diagnostic + terminalText(text)).slice(-2000); stream({ text: terminalText(text).replace(/\t/g, " ").replace(/\n$/, "").replace(/^/gm, "    "), kind: "command" }); draw(); } };
+      cancelChild = run(action.args, output, (code = 0) => { childRunning = false; cancelChild = undefined; if (active) { if (code) notice(diagnostic.trim() || `command exited ${code}`); void refresh(); } }, Math.max(1, columns - 4));
     } catch (error) { childRunning = false; notice(String((error as Error).message)); draw(); }
   };
   const handle = (key: string) => {
