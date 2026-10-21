@@ -113,7 +113,7 @@ import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
 import { crashPlan, lossNotice, readSessions, removeSessions, writeSessions, type SessionsFile } from "./crash.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
-import { soleWorktree, branchHeads, changedPaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
+import { soleWorktree, branchHeads, changedPaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, budgetNow, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContinuity } from "./recovery-continuity.ts";
 import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate } from "../cli/terminal-recovery.ts";
@@ -477,19 +477,12 @@ function mlxPinProblem(routing: Routing, project: boolean): string | undefined {
   return conflict ? `${routing.sources?.[`classes.${conflict[0]}.pi_backend`] ?? "routing.toml"}: [classes.${conflict[0]}] pi_backend=mlx conflicts with mlx.enabled=false; remove the pin for hub/auto or select dgx` : undefined;
 }
 
-/** The length of the shared snapshot Git budget: `snapshotBudgetMs` when a host sets a usable one (#661), else `snapshotBurstMs` clamped to 250 ms, else 250 ms. */
-export function snapshotBudgetLength(opts: Pick<DaemonOptions, "snapshotBurstMs" | "snapshotBudgetMs">): number {
-  if (typeof opts.snapshotBudgetMs === "number" && Number.isFinite(opts.snapshotBudgetMs) && opts.snapshotBudgetMs >= 1) return opts.snapshotBudgetMs;
-  const requested = opts.snapshotBurstMs ?? 250;
-  return Number.isFinite(requested) ? Math.max(1, Math.min(250, requested)) : 250;
-}
-
 export interface DaemonOptions {
   /** Host-only snapshot/probe seams; never read from project config or tool arguments. */
   snapshot?: typeof snapshot;
   snapshotBurstMs?: number;
-  /** Host-only (#661): the length of the shared snapshot Git budget, uncapped, so a test states its own budget instead of inheriting its runner's speed. Production never sets it: the default stays `snapshotBurstMs` clamped to 250 ms. */
-  snapshotBudgetMs?: number;
+  /** Host-only (#661): the clock the shared snapshot Git budget reads (default performance.now). A test holds it fixed so a slow runner cannot spend the 250 ms; production never sets it and no config key or tool reaches it. */
+  snapshotClock?: () => number;
   checkoutBranch?: typeof mainCheckoutBranch;
   /** Host-only admission transport; never selected by project config or tools. */
   releaseHostAdmission?: (cwd: string) => Promise<ReleaseHostAdmission>;
@@ -1837,8 +1830,10 @@ export async function startDaemon(opts: DaemonOptions) {
   let snapshotBudget: SnapshotBudget | undefined, snapshotBudgetNoticed = false;
   const reserveSnapshotBudget = (): SnapshotBudget => {
     if (!snapshotBudget) {
-      const ms = snapshotBudgetLength(opts);
-      snapshotBudget = { deadline: performance.now() + ms };
+      const requested = opts.snapshotBurstMs ?? 250;
+      const ms = Number.isFinite(requested) ? Math.max(1, Math.min(250, requested)) : 250;
+      const now = opts.snapshotClock;
+      snapshotBudget = { deadline: (now ? now() : performance.now()) + ms, ...(now ? { now } : {}) };
       setImmediate(() => { snapshotBudget = undefined; snapshotBudgetNoticed = false; });
     }
     return snapshotBudget;
@@ -3181,7 +3176,7 @@ export async function startDaemon(opts: DaemonOptions) {
                   if (!end.head) throw new Error("end HEAD evidence is unavailable");
                   const dirtyPaths = knownChangedPaths(turnRepo, end.head, end.tree, end.budget);
                   if (!dirtyPaths) throw new Error("end worktree diff evidence is unavailable");
-                  const checkBudget = () => { if (end.budget && performance.now() >= end.budget.deadline) throw new SnapshotBudgetExceeded(); };
+                  const checkBudget = () => { if (end.budget && budgetNow(end.budget) >= end.budget.deadline) throw new SnapshotBudgetExceeded(); };
                   const dirty = new Set(dirtyPaths), dirtyScope = new Set(dirtyPaths), incoming = new Set(paths);
                   for (const path of dirtyPaths) {
                     checkBudget();
