@@ -11482,6 +11482,7 @@ function configuredAcpDefinitions(raw, builtinKinds) {
         conductorStartable: true,
         hubSwitches: [],
         ownedFlags: [],
+        exclusiveStartRefusal: "configured ACP start already in progress; retry after it settles",
         preflight: (request) => request.form !== undefined && request.form !== "headless" ? `${kind}: configured ACP supports headless only` : !identity ? `${kind}: native identity is unverified; configure the observed name/version pin before starting` : undefined,
         launch: (context) => {
           if (context.form !== "headless")

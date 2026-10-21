@@ -6,7 +6,7 @@ This receipt separates the generic ACP implementation from native Grok readiness
 
 - Local native binary reports `grok 1.0.62 (1474f9cbdd91)`.
 - Version, agent help and stdio help exited 0 under a temporary HOME, Grok home, XDG config/cache/data directories and project directory outside a Git repository.
-- The protocol probe used `grok agent --no-leader stdio`, with inherited agent markers removed and a probe-specific peer identity. No personal config or credential file was copied or changed, and no production hub was used.
+- The protocol probe used `grok agent --no-leader stdio`, with inherited agent markers removed and a probe-specific peer identity. The probe harness copied no personal config or credential files and wrote only to its isolated directories; no production hub was used. The exact native-file check below is bounded, and broader native credential state remains unverified.
 - Help says `--leader` can inherit `[cli] use_leader` from `config.toml`; `--no-leader` forces a new agent. A plain `grok agent stdio` argv therefore does not itself establish foreground ownership in an ambient home. `--leader-socket` is also an attach selector.
 - Before/after SHA-256 values of the exact real Grok `config.toml` and `version.json` matched. The additionally checked `config.json`, `settings.json` and `mcp.json` were absent before and after. This bounded check is not a claim about every native configuration path.
 

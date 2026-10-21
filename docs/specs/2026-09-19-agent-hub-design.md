@@ -4029,7 +4029,7 @@ The identity pin is optional in the declaration schema so an unverified adapter
 can be described, but a start without it refuses before a prompt. Initialize must
 return the pinned agentInfo name and version. A resumed `session/load` must echo
 the requested sessionId; a missing or different echo refuses before a prompt.
-No implicit fresh-session fallback repairs an identity failure. Config argv that
+No implicit fresh-session fallback repairs an identity failure. Explicit session selectors must be nonblank, bounded and control-free. A configured start in progress refuses another start rather than joining its result; an attached peer accepts an already-running result only for the same requested native session (or no selector). Config argv that
 selects a leader or attaches to another native process is refused at load.
 
 Owned-process admission has a deliberately bounded proof. The pinned native

@@ -3584,6 +3584,10 @@ export async function startDaemon(opts: DaemonOptions) {
 
   async function startPeerBody(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }, mute: (p: PeerAdapter) => void, executionCwd: string): Promise<Record<string, unknown>> {
     const adapter = definitionOf(peer);
+    if (adapter && configuredIds.includes(adapter.kind) && args.sessionId !== undefined
+      && (typeof args.sessionId !== "string" || !args.sessionId.trim() || Buffer.byteLength(args.sessionId) > 4096 || /[\p{Cc}\p{Cf}]/u.test(args.sessionId))) {
+      return { ok: false, error: "configured ACP session selector is invalid" };
+    }
     const retainedOwner = bus.peers.get(peer);
     if (adapter?.permission.genericAcp && isAcpPeer(retainedOwner) && retainedOwner.pendingOwnedProcess && retainedOwner.state === "offline") return { ok: false, error: "configured ACP previous process teardown is unconfirmed; retry ahub stop before starting again" };
     if (adapter?.permission.genericAcp && (args.model || args.route || args.backend || args.unattended || args.providerProfile || args.sessionFile || args.fresh)) return { ok: false, error: "configured ACP accepts no native launch overrides" };
@@ -3659,6 +3663,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (adapter?.start.reconfigureWhileAttached && existing?.state !== "offline" && existing && (args.model || args.route)) {
       if (existing.state === "busy") return { ok: false, error: "local is busy; retry when it is idle" };
     } else if (existing && existing.state !== "offline") {
+      if (adapter && configuredIds.includes(adapter.kind) && args.sessionId !== undefined && args.sessionId !== adapter.session.currentId(existing)) {
+        return { ok: false, error: "configured ACP is already running a different native session; stop it before selecting another" };
+      }
       return { ok: true, already: true, ...(isCodexPeer(existing) ? { proxyUrl: existing.proxyUrl } : {}) };
     }
     if (!adapter?.start.reconfigureWhileAttached) {
@@ -4420,11 +4427,12 @@ export async function startDaemon(opts: DaemonOptions) {
       const after = valueAt(route ? sources.routing : opts.config && !current ? embeddedConfig : fileConfig, path);
       const rawAfter = current ? valueAt(current.raw, path) : undefined;
       if (!rawChanged && JSON.stringify(before) === JSON.stringify(after)) continue;
+      // Compare the running declaration, never a pending desired value accepted by an earlier reload.
       // Instance declarations are restart-bound. Their derived role/permission/start defaults cannot leak into
       // the live catalog while the old identities, paths and account callbacks still own the daemon.
       const boundId = ["roles", "permission_modes", "peers", "permission_default_sources"].includes(path[0] ?? "") ? path[1] : undefined;
       const boundKind = boundId ? declarations[boundId]?.kind ?? boundId : undefined;
-      if (!route && boundId && (JSON.stringify(desiredConfig.instances?.[boundId]) !== JSON.stringify(fileConfig.instances?.[boundId]) || JSON.stringify(boundKind ? desiredConfig.adapters?.[boundKind] : undefined) !== JSON.stringify(boundKind ? fileConfig.adapters?.[boundKind] : undefined))) {
+      if (!route && boundId && (JSON.stringify(config.instances?.[boundId]) !== JSON.stringify(fileConfig.instances?.[boundId]) || JSON.stringify(boundKind ? config.adapters?.[boundKind] : undefined) !== JSON.stringify(boundKind ? fileConfig.adapters?.[boundKind] : undefined))) {
         rejected.push({ key, reason: "instance declaration changed; its derived defaults apply together after daemon restart" });
         continue;
       }

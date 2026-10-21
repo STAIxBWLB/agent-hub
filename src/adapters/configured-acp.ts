@@ -86,6 +86,7 @@ export function configuredAcpDefinitions(raw: unknown, builtinKinds: readonly st
       trust: { onPrem: false, hubSandboxed: false }, identity: { mcp: "acp-session" }, instances: { mode: "headless" },
       start: {
         daemonPort: "acp", forms: ["headless"], defaultForm: "headless", conductorStartable: true, hubSwitches: [], ownedFlags: [],
+        exclusiveStartRefusal: "configured ACP start already in progress; retry after it settles",
         preflight: request => request.form !== undefined && request.form !== "headless" ? `${kind}: configured ACP supports headless only`
           : !identity ? `${kind}: native identity is unverified; configure the observed name/version pin before starting` : undefined,
         launch: context => {
