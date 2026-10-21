@@ -433,7 +433,7 @@ const changedReadback = "review readiness unknown: task changed during readback"
 for (const event of ["answer", "reviewer changed", "idle sweep", "memory reference started"]) test(`F4a advise discards ${event} drift and continues with one metadata read`, async () => {
   let calls = 0;
   const r = scopeRig("advise", async () => {
-    calls++; r.board.update(task.id, "hub", event, {});
+    calls++; r.board.update(task.id, "hub", event, event === "reviewer changed" ? { reviewer: "claude" } : {});
     return { code: 0, stdout: JSON.stringify(readinessReply()) };
   });
   const task = scopeTask(r);
@@ -490,8 +490,8 @@ const waitCheck = async (condition: () => boolean) => {
   for (let attempt = 0; attempt < 500 && !condition(); attempt++) await Bun.sleep(10);
   expect(condition()).toBe(true);
 };
-for (const scenario of ["advise quiet", "enforce quiet", "owner change", "privacy change"] as const) test(`F4d delayed completion handles ${scenario} and tells a refused owner`, async () => {
-  const mode = scenario === "enforce quiet" ? "enforce" : "advise";
+for (const scenario of ["advise quiet", "reviewer change", "enforce quiet", "enforce reviewer change", "owner change", "state change", "privacy change"] as const) test(`F4d delayed completion handles ${scenario} with the eligible owner notice`, async () => {
+  const mode = scenario.startsWith("enforce") ? "enforce" : "advise";
   let finish!: (result: { code: number; timedOut: boolean; tail: string }) => void;
   const checked = new Promise<{ code: number; timedOut: boolean; tail: string }>(resolve => { finish = resolve; });
   let checkStarted!: () => void;
@@ -501,31 +501,43 @@ for (const scenario of ["advise quiet", "enforce quiet", "owner change", "privac
     if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ headRefOid: head, state: "OPEN", statusCheckRollup: [], reviewRequests: [], files: [], changedFiles: 0 }) };
     if (args.join(" ").includes("commits(last:1)")) {
       admissionCalls++;
-      if (afterCheck) r.board.update(task.id, "hub", "answer", {
+      if (afterCheck) r.board.update(task.id, "hub", scenario.includes("reviewer change") ? "reviewer changed" : "answer", {
         ...(scenario === "owner change" ? { owner: "kimi" } : {}),
-        ...(scenario === "privacy change" ? { owner: "local", signals: ["pii"] } : {}),
+        ...(scenario === "privacy change" ? { signals: ["pii"] } : {}),
+        ...(scenario.includes("reviewer change") ? { reviewer: "claude" } : {}),
+        ...(scenario === "state change" ? { state: "cancelled" as const } : {}),
       });
     }
     return { code: 0, stdout: JSON.stringify(readinessReply()) };
   }, { check: () => "fixture check", runCheck: () => { checkStarted(); return checked; } });
   const task = scopeTask(r);
   // Owners are registered but offline, so the real bus retains their retry notices for inspection.
-  for (const owner of ["codex", "kimi", "local"]) r.bus.add(new ReadyReviewer(owner));
+  for (const owner of ["codex", "kimi", "local", "claude"]) r.bus.add(new ReadyReviewer(owner));
   expect((await r.tasks.done("codex", task.id, "PRIVATE_SUMMARY_CANARY")).state).toBe("in_progress");
   await started;
   afterCheck = true; finish({ code: 0, timedOut: false, tail: "fixture passed" });
   await waitCheck(() => r.tasks.checksPending() === 0);
   expect(admissionCalls).toBe(2);
   const current = r.board.get(task.id)!;
-  if (scenario === "advise quiet") {
+  if (scenario === "advise quiet" || scenario === "reviewer change") {
     expect(current.state).toBe("in_review");
     expect(current.history.filter(entry => entry.event === "done")).toHaveLength(1);
     expect(r.notices.join("\n")).toContain(changedReadback);
+    if (scenario === "reviewer change") {
+      expect(current.reviewer).toBe("claude");
+      expect(r.bus.pendingEnvelopes("claude").filter(env => env.kind === "review")).toHaveLength(1);
+    }
   } else {
-    expect(current.state).toBe("in_progress");
+    expect(current.state).toBe(scenario === "state change" ? "cancelled" : "in_progress");
     expect(current.history.some(entry => entry.event === "done")).toBe(false);
-    const recipient = scenario === "owner change" ? "kimi" : scenario === "privacy change" ? "local" : "codex";
+    const recipient = scenario === "owner change" ? "kimi" : "codex";
     const retries = r.bus.pendingEnvelopes(recipient).filter(env => env.body.includes("hub_task_done again"));
+    if (scenario === "owner change" || scenario === "state change") {
+      expect(retries).toHaveLength(0);
+      expect(r.bus.pendingEnvelopes("codex").filter(env => env.body.includes("hub_task_done again"))).toHaveLength(0);
+      expect(r.notices.join("\n")).toContain("check result could not be recorded");
+      return;
+    }
     expect(retries).toHaveLength(1);
     expect(retries[0]?.refs?.taskRecipient).toBe("owner");
     if (scenario === "privacy change") expect(retries[0]?.private).toBe(true);

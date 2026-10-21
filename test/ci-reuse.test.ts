@@ -133,13 +133,12 @@ test("#609 PR checks run in a group per PR where a newer pending run replaces th
   for (const job of ["check:", "seeded:", "decision:"]) expect(workflow).toContain(`\n  ${job}`);
 });
 
-type ProofLoss = "404" | "timeout" | "malformed" | "missing" | "invalid-json" | "limit-looking-error";
-const proofLosses: ProofLoss[] = ["404", "timeout", "malformed", "missing", "invalid-json", "limit-looking-error"];
+type ProofLoss = "404" | "timeout" | "malformed" | "missing" | "invalid-json";
+const proofLosses: ProofLoss[] = ["404", "timeout", "malformed", "missing", "invalid-json"];
 function lostProof(kind: ProofLoss): unknown {
   if (kind === "404") throw Object.assign(new Error("fixture unavailable"), { status: 404 });
   if (kind === "timeout") throw Object.assign(new Error("fixture request elapsed"), { name: "TimeoutError" });
   if (kind === "invalid-json") throw new SyntaxError("fixture unreadable JSON");
-  if (kind === "limit-looking-error") throw new Error("gate read budget exhausted");
   return kind === "missing" ? undefined : { unexpected: true };
 }
 const successRow = (id: number) => ({ id, head_sha: "success-" + id, status: "completed", conclusion: "success", event: "push" });
@@ -285,5 +284,51 @@ test("F1e --require still refuses release when lost proof allows only a fresh ad
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("No successful full CI gate for this exact tree; release refused");
     expect(readFileSync(output, "utf8")).toBe("run_gate=false\nverified_run=\nadmission=run\n");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
+
+const unknownProofFailures: [string, () => never][] = [
+  ...[403, 429, 500, 503].map(status => [String(status), () => { throw Object.assign(new Error("fixture HTTP failure"), { status }); }] as [string, () => never]),
+  ["response-size", () => { throw Object.assign(new Error("CI admission response exceeded bound"), { code: "CI_RESPONSE_SIZE" }); }],
+  ["authentication", () => { throw new Error("CI admission requires repository and scoped Actions read access"); }],
+  ["other", () => { throw new Error("fixture transport failure"); }],
+  ["type-error", () => { throw new TypeError("fixture transport implementation failed"); }],
+  ["limit-looking-error", () => { throw new Error("gate read budget exhausted"); }],
+];
+for (const phase of ["success-list", "commit", "jobs"] as const) for (const [failure, fail] of unknownProofFailures) test("bounded proof taxonomy keeps " + phase + " " + failure + " unknown even with later valid proof", async () => {
+  const calls: string[] = [];
+  const api = async (path: string) => {
+    calls.push(path);
+    if (path.includes("status=success")) return phase === "success-list" ? fail() : successPage([successRow(1), successRow(2)]);
+    if (path.includes("status=in_progress")) return emptyRuns();
+    if (phase === "commit" && path === "git/commits/success-1" || phase === "jobs" && path.includes("actions/runs/1/")) return fail();
+    return path.startsWith("git/") ? { tree: { sha: "expected" } } : verifiedJobs();
+  };
+  expect(await gates.readFullGateAdmission(api, "expected")).toMatchObject({ kind: "unknown" });
+  expect(calls).toHaveLength(phase === "success-list" ? 1 : phase === "commit" ? 2 : 3);
+});
+
+test("CLI HTTP failures retain their status: 503 proof failure refuses fresh admission", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-ci-status-"));
+  try {
+    expect(hubGitSync(["init", "-q", root], { encoding: "utf8" }).status).toBe(0);
+    expect(hubGitSync(["-C", root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], { encoding: "utf8" }).status).toBe(0);
+    const preload = join(root, "github-fixture.mjs"), output = join(root, "github-output");
+    writeFileSync(preload, [
+      "globalThis.fetch = async (url) => {",
+      '  const value = String(url);',
+      '  if (value.includes("status=success")) return Response.json({total_count:1,workflow_runs:[{id:1,head_sha:"lost-proof",conclusion:"success",event:"push"}]});',
+      '  if (value.includes("git/commits/")) return new Response("fixture unavailable", {status:503});',
+      '  if (value.includes("status=in_progress")) return Response.json({total_count:0,workflow_runs:[]});',
+      '  throw new Error("unexpected fixture request");',
+      "};",
+    ].join("\n"));
+    const result = spawnSync(process.execPath, ["--preload", preload, join(import.meta.dir, "../scripts/ci-reuse.mjs")], {
+      cwd: root, encoding: "utf8", timeout: 10_000,
+      env: { PATH: process.env.PATH, HOME: root, GITHUB_REPOSITORY: "fixture/repo", GITHUB_TOKEN: "fixture-token", GITHUB_RUN_ID: "99", GITHUB_OUTPUT: output },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("CI admission refused");
+    expect(readFileSync(output, "utf8")).toBe("run_gate=false\nverified_run=\nadmission=unknown\n");
   } finally { rmSync(root, { recursive: true, force: true }); }
 }, 20_000);

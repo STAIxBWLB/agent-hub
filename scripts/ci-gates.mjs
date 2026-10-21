@@ -3,6 +3,11 @@ const reusedJob = job => Array.isArray(job.steps) && job.steps.some(step => step
 
 const FULL_GATES = ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"];
 class GateReadLimitError extends Error {}
+class MalformedGateProofError extends Error {}
+const lostProofError = error => !(error instanceof GateReadLimitError) && (
+  error instanceof MalformedGateProofError || error instanceof SyntaxError
+  || error?.status === 404 || error?.status === undefined && error?.name === "TimeoutError"
+);
 const ACTIVE_RUN = new Set(["in_progress", "queued", "waiting", "pending", "requested"]);
 const sameRun = (left, right) => right !== undefined && String(left) === String(right);
 const successfulFullGate = run => run.status === "completed" && run.conclusion === "success"
@@ -46,24 +51,31 @@ export async function readFullGateAdmission(api, tree, { currentRunId, deadline 
     finally { checkDeadline(); } // A failed or late successful request cannot turn global exhaustion into lost proof.
   };
   const page = (value, key) => {
-    if (!value || !Array.isArray(value[key]) || value[key].length > 100 || !Number.isSafeInteger(value.total_count) || value.total_count < value[key].length) throw new Error("gate page unavailable");
+    if (!value || !Array.isArray(value[key]) || value[key].length > 100 || !Number.isSafeInteger(value.total_count) || value.total_count < value[key].length) throw new MalformedGateProofError("gate page unavailable");
     return { rows: value[key], complete: value.total_count === value[key].length };
   };
   const treeOf = async run => {
-    if (typeof run.head_sha !== "string" || !run.head_sha) throw new Error("run commit unavailable");
+    if (typeof run.head_sha !== "string" || !run.head_sha) throw new MalformedGateProofError("run commit unavailable");
     if (!commits.has(run.head_sha)) {
       const commit = await read(`git/commits/${encodeURIComponent(run.head_sha)}`);
-      if (typeof commit?.tree?.sha !== "string" || !commit.tree.sha) throw new Error("run tree unavailable");
+      if (typeof commit?.tree?.sha !== "string" || !commit.tree.sha) throw new MalformedGateProofError("run tree unavailable");
       commits.set(run.head_sha, commit.tree.sha);
     }
     return commits.get(run.head_sha);
   };
-  const jobsOf = async run => page(await read(`actions/runs/${run.id}/jobs?per_page=100`), "jobs");
+  const jobsOf = async run => {
+    const jobs = page(await read(`actions/runs/${run.id}/jobs?per_page=100`), "jobs");
+    if (jobs.rows.some(job => !job || typeof job.name !== "string" || !job.name
+      || job.steps !== undefined && (!Array.isArray(job.steps) || job.steps.some(step => !step || typeof step.name !== "string")))) {
+      throw new MalformedGateProofError("run jobs malformed");
+    }
+    return jobs;
+  };
   const gateJob = name => FULL_GATES.includes(name) || /^seeded-shard(?: \([1-4]\))?$/.test(name);
   try {
     let successful;
     try { successful = page(await read("actions/workflows/check.yml/runs?status=success&per_page=100"), "workflow_runs"); }
-    catch (error) { if (error instanceof GateReadLimitError) throw error; }
+    catch (error) { if (!lostProofError(error)) throw error; }
     // Lost success inventory or one lost candidate is absence of reuse proof, never permission to skip active coverage.
     // Older successes outside this bounded page can cause redundant work, never a false green or duplicate admission.
     for (const run of successful?.rows ?? []) {
@@ -74,7 +86,7 @@ export async function readFullGateAdmission(api, tree, { currentRunId, deadline 
         const jobs = await jobsOf(run);
         const normalized = { ...run, tree, status: "completed", scope: "full", jobs: jobs.rows, jobsComplete: jobs.complete };
         if (successfulFullGate(normalized)) return { kind: "reuse", run: normalized };
-      } catch (error) { if (error instanceof GateReadLimitError) throw error; }
+      } catch (error) { if (!lostProofError(error)) throw error; }
     }
     let complete = true;
     const visited = new Set();

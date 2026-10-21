@@ -17,7 +17,7 @@ async function api(path) {
     headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" },
     signal: AbortSignal.timeout(Math.min(15_000, remaining)),
   });
-  if (!response.ok) throw new Error(`GitHub read failed (${response.status})`);
+  if (!response.ok) throw Object.assign(new Error(`GitHub read failed (${response.status})`), { status: response.status });
   const text = await response.text();
   if (Buffer.byteLength(text) > 2 * 1024 * 1024) throw new Error("CI admission response exceeded bound");
   return JSON.parse(text);

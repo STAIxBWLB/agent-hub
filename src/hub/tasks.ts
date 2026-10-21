@@ -2820,7 +2820,7 @@ export class Tasks {
         this.releaseNotice(`task #${pending.id}: its check result could not be recorded: ${e.message}`);
         this.releaseNotice(`task #${pending.id}: its owner retry notice could not be published`, () => {
           const current = this.d.board.get(pending.id);
-          if (current) this.tell(current, `Task #${current.id}: its check completion was refused. Call hub_task_done again when it is ready.`, this.isPii(current));
+          if (current?.state === "in_progress" && current.owner === seen.owner) this.tell(current, `Task #${current.id}: its check completion was refused. Call hub_task_done again when it is ready.`, this.isPii(current));
         });
       })
       .finally(() => this.pendingChecks--);
@@ -3067,7 +3067,7 @@ export class Tasks {
       const changed = current.history.length !== task.history.length;
       const quiet = current.history.length > task.history.length && current.history.slice(task.history.length).every(entry => QUIET_EVENTS.has(entry.event));
       const sameHistory = !changed || (mode === "advise" ? quiet : sameRequest?.());
-      if ((this.d.sdlc?.config().mode ?? "off") !== mode || !sameHistory || current.owner !== task.owner || current.reviewer !== task.reviewer
+      if ((this.d.sdlc?.config().mode ?? "off") !== mode || !sameHistory || current.owner !== task.owner || mode !== "advise" && current.reviewer !== task.reviewer
         || this.isPii(current) !== this.isPii(task) || JSON.stringify(current.sdlc ?? null) !== JSON.stringify(task.sdlc ?? null)
         || mode === "advise" && (current.state !== task.state || current.refs.commit !== task.refs.commit)
         || actor !== USER && this.d.privateTurn?.(actor) && !this.isPii(current)) throw new (preEffect ? PreEffectToolRefusal : Error)("task or authority changed during review admission");
