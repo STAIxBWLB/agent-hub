@@ -1,5 +1,5 @@
 import type { Task } from "../src/hub/board.ts";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { hubGitSync } from "../src/hub/git.ts";
@@ -144,9 +144,12 @@ for (const evidence of [
   const { canonicalWriteUnknown } = await import("../src/hub/no-writes.ts");
   expect(canonicalWriteUnknown(evidence)).toBe(true);
   expect(canonicalWriteUnknown({ refs: { paths: ["src/worktrees.ts"] } })).toBe(false);
+  // A case-insensitive disk opens .WORKTREES as .worktrees: the hint must match in any case.
+  expect(canonicalWriteUnknown({ refs: { paths: [".WORKTREES/owner/file.ts"] } })).toBe(true);
+  expect(canonicalWriteUnknown({ refs: {}, plan: { paths: ["a\\.Worktrees\\x"] } })).toBe(true);
 });
 
-test("#498 branch fingerprints cover shared heads only and never expose names", async () => {
+test("#498 branch fingerprints cover shared local/remote refs and never expose names", async () => {
   const { branchHeads, soleWorktree, headState, repoOf, SnapshotBudgetExceeded } = await import("../src/hub/snapshots.ts");
   const root = mkdtempSync(join(tmpdir(), "ahub-no-write-refs-"));
   try {
@@ -167,10 +170,30 @@ test("#498 branch fingerprints cover shared heads only and never expose names", 
     expect(soleWorktree(repo)).toBe(true); // An unchecked-out branch is not another execution root.
     git("worktree", "add", "--detach", join(root, "detached"), "HEAD");
     expect(branchHeads(repo)).toBe(second); // Detached worktrees need scope evidence beyond refs/heads.
+    git("update-ref", "refs/remotes/origin/push-progress", git("rev-parse", "HEAD"));
+    expect(branchHeads(repo)).not.toBe(second); // Push-only progress also changes the shared-ref evidence.
     expect(soleWorktree(repo)).toBe(false);
     expect(() => soleWorktree(repo, { deadline: performance.now() - 1 })).toThrow(SnapshotBudgetExceeded);
     expect(soleWorktree({ ...repo, top: join(root, "missing") })).toBeUndefined();
     expect(() => branchHeads(repo, { deadline: performance.now() - 1 })).toThrow(SnapshotBudgetExceeded);
     expect(branchHeads({ ...repo, top: join(root, "missing") })).toBeUndefined();
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+
+test("#498 a valid project-bound shadow repository has known sole-worktree scope", async () => {
+  const { initShadow, repoOf, snapshot, soleWorktree, SnapshotBudgetExceeded } = await import("../src/hub/snapshots.ts");
+  const root = mkdtempSync(join(tmpdir(), "ahub-no-write-shadow-"));
+  try {
+    mkdirSync(join(root, ".agenthub"));
+    writeFileSync(join(root, "owned.txt"), "shadow work\n");
+    expect(initShadow(root)).toBe(true);
+    const repo = repoOf(root)!;
+    expect(repo.shadow).toBe(true); expect(snapshot(repo)).toMatch(/^[a-f0-9]{40,64}$/);
+    expect(soleWorktree(repo)).toBe(true);
+    expect(() => soleWorktree(repo, { deadline: performance.now() - 1 })).toThrow(SnapshotBudgetExceeded);
+    // A shadow flag alone never bypasses its metadata/path guard.
+    symlinkSync(join(root, "owned.txt"), join(repo.dir, "unsafe-link"));
+    expect(() => soleWorktree(repo)).toThrow();
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

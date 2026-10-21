@@ -1837,7 +1837,9 @@ export async function startDaemon(opts: DaemonOptions) {
     return executionRoot(peer);
   }
   function canonicalWriteScope(repo: Repo, budget?: SnapshotBudget): boolean | undefined {
-    // The mandated ignored directory may contain a plain or still-uncommitted checkout, not just registered refs.
+    // ponytail: D1 is inert for builtin owners while .worktrees exists (a deliberate false negative).
+    // Bind each owner to its real execution worktree before narrowing this unknown scope.
+    // The directory may contain a plain or still-uncommitted checkout, not just registered refs.
     if (lstatSync(join(opts.cwd, ".worktrees"), { throwIfNoEntry: false })) return false;
     return soleWorktree(repo, budget);
   }
@@ -1859,10 +1861,15 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!baseline || baseline.owner !== task.owner || baseline.at !== since || baseline.acceptance !== acceptance || baseline.root !== ownerWriteRoot(task.owner)) return undefined;
     try {
       if (turnLog.touchesFor([task.id]).some(touch => touch.peer === task.owner && touch.at >= since)) return true;
+      const canonical = baseline.root === opts.cwd;
+      if (canonical && canonicalWriteUnknown(task)) return undefined;
       const current = snap(`task #${task.id} done evidence`, true, task.owner);
       if (!current.repo || !current.tree) return undefined;
       const paths = knownChangedPaths(current.repo, baseline.tree, current.tree, current.budget);
-      return paths === undefined ? undefined : paths.length > 0;
+      if (paths === undefined) return undefined;
+      if (paths.length) return true;
+      if (canonical && canonicalWriteScope(current.repo, current.budget) !== true) return undefined;
+      return false;
     } catch { return undefined; } // Unknown is never evidence of no writes, including a missing/pruned tree.
   }
   function reviewProjection(task: Task): string | undefined {

@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,7 +8,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
-import { Turns } from "../src/hub/snapshots.ts";
+import { initShadow, repoOf, Turns } from "../src/hub/snapshots.ts";
 import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
 
 const cleanup: (() => unknown)[] = [];
@@ -28,7 +28,7 @@ class NativeFixturePeer extends BasePeer {
   finish() { this.setState("idle"); }
 }
 
-async function fixture(extra: boolean, options: { snapshots?: boolean; privateWindow?: boolean } = {}) {
+async function fixture(extra: boolean, options: { snapshots?: boolean; privateWindow?: boolean; shadow?: boolean } = {}) {
   const base = realPath(mkdtempSync(join(tmpdir(), "ahub-write-evidence-daemon-"))), project = join(base, "project");
   mkdirSync(project); cleanup.push(() => rmSync(base, { recursive: true, force: true }));
   const git = (...args: string[]) => {
@@ -36,13 +36,14 @@ async function fixture(extra: boolean, options: { snapshots?: boolean; privateWi
     if (result.status !== 0) throw new Error(`fixture git failed: ${result.stderr}`);
     return result.stdout.trim();
   };
-  git("init", "-q");
+  if (!options.shadow) git("init", "-q");
   writeFileSync(join(project, ".gitignore"), ".agenthub/\n.worktrees/\n");
   writeFileSync(join(project, "owned.txt"), "original\n");
-  git("add", ".gitignore", "owned.txt"); git("commit", "-qm", "fixture");
+  if (options.shadow) { expect(extra).toBe(false); expect(initShadow(project)).toBe(true); }
+  else { git("add", ".gitignore", "owned.txt"); git("commit", "-qm", "fixture"); }
   const peer = extra ? "codex-worker" : "codex", cwd = extra ? join(project, ".worktrees", peer) : project;
   if (extra) git("worktree", "add", "-b", "owner-write-evidence", cwd, "HEAD");
-  mkdirSync(join(project, ".agenthub"));
+  mkdirSync(join(project, ".agenthub"), { recursive: true });
   const instances = extra ? { [peer]: { kind: "codex", roles: ["implementer"], start_mode: "headless" as const, worktree: cwd } } : {};
   writeFileSync(join(project, ".agenthub/config.local.json"), JSON.stringify({ instances }));
   if (options.privateWindow) {
@@ -316,6 +317,84 @@ test("#498 an unrecorded detached worktree outside the ignored directory keeps c
   for (let turn = 0; turn < 2; turn++) {
     const completed = await f.runTurn(() => { writeFileSync(join(linked, "owned.txt"), `uncommitted detached edit ${turn}\n`); });
     expect(completed.changed).toEqual([]);
+    expect(await f.stalls(id)).toEqual([]);
+  }
+}, 20_000);
+
+
+test("#498 follow-up: ignored linked-worktree implementation does not receive a done-without-writes advisory", async () => {
+  const f = await fixture(false), linked = join(f.project, ".worktrees", "done-owner-work");
+  f.git("worktree", "add", "-b", "done-owner-work", linked, "HEAD");
+  const id = await f.make();
+  const completed = await f.runTurn(() => {
+    writeFileSync(join(linked, "owned.txt"), "implemented only in linked worktree\n");
+    f.git("-C", linked, "add", "owned.txt"); f.git("-C", linked, "commit", "-qm", "owner linked implementation");
+  });
+  expect(completed.changed).toEqual([]);
+  expect(readFileSync(join(f.project, "owned.txt"), "utf8")).toBe("original\n");
+  const done = await f.done(id);
+  expect(done.state).toBe("in_review");
+  expect(done.refs.branch).toBeUndefined(); expect(done.refs.commit).toBeUndefined(); expect(done.sdlc).toBeUndefined();
+  expect(done.history.findLast((entry: any) => entry.event === "done")?.noWrites).toBeUndefined();
+  const reviews = f.reviews.filter(review => review.task === String(id));
+  expect(reviews).toHaveLength(1); expect(reviews[0]!.body).not.toContain(NO_WRITES);
+}, 20_000);
+
+test("#498 follow-up: initialized shadow projects can prove two consecutive empty owner turns", async () => {
+  const f = await fixture(false, { shadow: true }), id = await f.make();
+  expect(existsSync(join(f.project, ".git"))).toBe(false);
+  expect(repoOf(f.project)?.shadow).toBe(true);
+  expect((await f.runTurn()).changed).toEqual([]); expect(await f.stalls(id)).toEqual([]);
+  expect((await f.runTurn()).changed).toEqual([]);
+  expect(await f.stalls(id)).toEqual([expect.objectContaining({ cause: expect.objectContaining({ kind: "no-writes", peer: f.peer, turns: 2 }) })]);
+}, 20_000);
+
+test("#498 follow-up: refs/remotes-only progress resets no-write detection with canonical HEAD and files unchanged", async () => {
+  const f = await fixture(false), ref = "refs/remotes/fixture/progress";
+  f.git("update-ref", ref, "HEAD");
+  const canonicalHead = f.git("rev-parse", "HEAD"), tree = f.git("rev-parse", "HEAD^{tree}"), id = await f.make();
+  for (let turn = 0; turn < 2; turn++) {
+    const previous = f.git("rev-parse", ref);
+    const completed = await f.runTurn(() => {
+      const next = f.git("commit-tree", tree, "-p", previous, "-m", `remote-only progress ${turn}`);
+      f.git("update-ref", ref, next, previous);
+    });
+    expect(completed.changed).toEqual([]);
+    expect(f.git("rev-parse", "HEAD")).toBe(canonicalHead);
+    expect(f.git("rev-parse", ref)).not.toBe(previous);
+    expect(readFileSync(join(f.project, "owned.txt"), "utf8")).toBe("original\n");
+    expect(await f.stalls(id)).toEqual([]);
+  }
+}, 20_000);
+
+for (const hint of ["branch", "worktree path"] as const) test(`#498 follow-up: recorded ${hint} prevents negative evidence without an actual .worktrees directory`, async () => {
+  const f = await fixture(false), absentWorktree = join(f.project, ".worktrees", "planned-owner-work", "owned.txt");
+  expect(existsSync(join(f.project, ".worktrees"))).toBe(false);
+  if (hint === "branch") f.git("branch", "planned-owner-work");
+  const refs = hint === "branch" ? { paths: ["owned.txt"], branch: "planned-owner-work" } : { paths: [absentWorktree] };
+  const id = await f.make(refs);
+  expect(existsSync(join(f.project, ".worktrees"))).toBe(false);
+  for (let turn = 0; turn < 2; turn++) {
+    expect((await f.runTurn()).changed).toEqual([]);
+    expect(await f.stalls(id)).toEqual([]);
+  }
+  const done = await f.done(id);
+  expect(done.history.findLast((entry: any) => entry.event === "done")?.noWrites).toBeUndefined();
+  const reviews = f.reviews.filter(review => review.task === String(id));
+  expect(reviews).toHaveLength(1); expect(reviews[0]!.body).not.toContain(NO_WRITES);
+}, 20_000);
+
+test("#498 follow-up: detached canonical same-tree commit movement is progress without a shared branch change", async () => {
+  const f = await fixture(false); f.git("switch", "--detach", "HEAD");
+  const tree = f.git("rev-parse", "HEAD^{tree}"), branches = f.git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/");
+  const id = await f.make();
+  for (let turn = 0; turn < 2; turn++) {
+    const before = f.git("rev-parse", "HEAD");
+    const completed = await f.runTurn(() => { f.git("commit", "--allow-empty", "-qm", `detached owner progress ${turn}`); });
+    expect(completed.changed).toEqual([]);
+    expect(f.git("rev-parse", "HEAD")).not.toBe(before);
+    expect(f.git("rev-parse", "HEAD^{tree}")).toBe(tree);
+    expect(f.git("for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/")).toBe(branches);
     expect(await f.stalls(id)).toEqual([]);
   }
 }, 20_000);

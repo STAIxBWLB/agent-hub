@@ -141,9 +141,9 @@ export function headState(repo: Repo, budget?: SnapshotBudget): { head: string |
   return current.status === 1 ? { head: null, tree: null } : undefined;
 }
 
-/** One bounded probe covers shared branch refs, including commits made in linked worktrees. Names never escape. */
+/** One bounded probe covers shared local/remote branch refs, including commit and push progress. Names never escape. */
 export function branchHeads(repo: Repo, budget?: SnapshotBudget): string | undefined {
-  const result = git(repo, ["for-each-ref", "--sort=refname", "--format=%(refname) %(objectname)", "refs/heads/"], {}, budget, 1024 * 1024);
+  const result = git(repo, ["for-each-ref", "--sort=refname", "--format=%(refname) %(objectname)", "refs/heads/", "refs/remotes/"], {}, budget, 1024 * 1024);
   if (result.status !== 0 || result.error) return undefined;
   const digest = createHash("sha256").update(result.stdout).digest("hex");
   if (budget && performance.now() >= budget.deadline) throw new SnapshotBudgetExceeded();
@@ -154,11 +154,13 @@ export function branchHeads(repo: Repo, budget?: SnapshotBudget): string | undef
 export function soleWorktree(repo: Repo, budget?: SnapshotBudget): boolean | undefined {
   const result = git(repo, ["worktree", "list", "--porcelain", "-z"], {}, budget, 1024 * 1024);
   if (result.status !== 0 || result.error) return undefined;
+  // A project-bound shadow registers its private bare Git directory, not its explicit --work-tree root.
+  const registeredRoot = repo.shadow ? repo.dir : repo.top;
   let count = 0;
   for (const field of result.stdout.split("\0")) {
     if (budget && performance.now() >= budget.deadline) throw new SnapshotBudgetExceeded();
     if (!field.startsWith("worktree ")) continue;
-    if (field.slice(9) !== repo.top || ++count > 1) return false;
+    if (field.slice(9) !== registeredRoot || ++count > 1) return false;
   }
   return count === 1 ? true : undefined;
 }
