@@ -110,6 +110,7 @@ async function hub(extra: { unattended?: boolean; memoryUrl?: string; nativeMemo
       ...(wipLimits ? { tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: wipLimits } } : {}),
     },
     permissionTimeoutMs: 200,
+    ...(snapshots?.enabled ? { snapshotClock: () => 0 } : {}), // #661: a held clock, so a slow runner cannot spend the shared snapshot budget (#576) before the end evidence is read
     ...rest,
   });
   cleanup.push(() => daemon.stop());

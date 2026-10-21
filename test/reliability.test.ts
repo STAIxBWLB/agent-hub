@@ -27,7 +27,9 @@ async function hub(modelUrl?: string, snapshots = false) {
     }
   }
   const stateDir = join(cwd, ".agenthub", "state");
-  const daemon = await startDaemon({ boundedTools: emulatedBoundedTools(), cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: {
+  const daemon = await startDaemon({ boundedTools: emulatedBoundedTools(), cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    ...(snapshots ? { snapshotClock: () => 0 } : {}), // #661: a held clock, so a slow runner cannot spend the shared snapshot budget (#576) before the end evidence is read
+    config: {
     ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false },
     pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false },
     snapshots: { enabled: snapshots, keep: 20 },
@@ -206,7 +208,7 @@ test("#91 sequential overwrite of an in_review task is still a conflict", async 
   const file = join(h.stateDir, "events.jsonl");
   await until(() => readEvents(file).some((e) => e.type === "conflict"));
   expect(readEvents(file).find((e) => e.type === "conflict")).toMatchObject({ peer: "codex", other: 1, owner: "kimi", concurrent: false, paths: ["shared.txt"] });
-});
+}, 20_000); // #661: the budget clock is held, so a slow git only makes this longer, never wrong; the limit is the gate's 20 s per-test ceiling (docs/agent-notes/tests.md), stated instead of the 5 s default
 
 
 test("#91 self-claims after both turns start still associate concurrent edits with their tasks", async () => {

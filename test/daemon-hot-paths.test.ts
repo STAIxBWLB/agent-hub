@@ -47,6 +47,8 @@ async function fixture(tasks = 1, slow = false, linked = false) {
     config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
       omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [] }, snapshots: { enabled: true, keep: 20 }, batch_ms: 0,
       tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: { kimi: 20, codex: 20 } } },
+    // #661: every fixture but the slow one holds the budget clock; the slow one is the test of the real budget (#576), so it keeps performance.now.
+    ...(slow ? {} : { snapshotClock: () => 0 }),
     // Host-only seam: a genuinely slow snapshot, without spawning a real provider or altering global functions.
     ...(slow ? { snapshotBurstMs: 500, snapshot: (...args: Parameters<typeof snapshot>) => {
       snapshotStarted?.();
