@@ -24,7 +24,7 @@ agent-hub supports five transport architectures (`transport` in `AdapterDefiniti
 
 | Transport | Description | Best Suited For | Examples |
 | :--- | :--- | :--- | :--- |
-| **`acp`** | Agent Client Protocol over stdio JSON-RPC | Agents implementing the standard ACP specification | Kimi, Qwen |
+| **`acp`** | Agent Client Protocol over stdio JSON-RPC | Agents implementing the standard ACP specification | Kimi, Qwen, Jcode |
 | **`codex-appserver`** | Bidirectional JSON-RPC with proxy intercept and thread tracking | Tools with structured thread resume and proxy-injectable RPC | Codex |
 | **`claude-channel`** | MCP plugin running inside the host agent with WebSocket control link | Agents with native plugin systems that push notifications | Claude Code |
 | **`ws-pull`** | Workspace MCP plugin connecting to daemon WebSocket; pull-only message inbox | Agents with local plugin discovery and interactive TUIs | Google Antigravity (`agy`) |
@@ -65,9 +65,11 @@ Defines how the hub MCP server identity reaches the tool:
 
 #### `permission`
 Maps hub permission modes (`ask`, `ask-when-needed`, `never-ask`) to native flags or ACP mode IDs:
-* `grants`: Record mapping `PermissionMode` to native argument/mode string.
-* `unmanaged`: String explanation if native permissions are unmanaged by the hub.
-* `unmanagedForms`: Start forms where permissions remain unmanaged (e.g. `["tui"]`).
+* `grants`: the text that says what each hub mode does for this kind (`ahub permission` and the settings preview show it). It is a description, not the native flag: the native mode id or policy is applied by the adapter (an ACP mode id, Codex's `approvalPolicy`).
+* `genericAcp`: for a configured ACP kind, the validated `modes` (hub mode to ACP mode id) and `readOnly` id that the runtime and the instance ceiling both read.
+* `unmanaged`, `unmanagedNote`, `unmanagedStatusNote`: why the hub cannot manage native permissions, when it cannot.
+* `unmanagedForms`: start forms where permissions remain unmanaged (e.g. `["tui"]`).
+* `trackUnattended`: the daemon records whether a start was `--unattended` and refuses a second start with a different setting while one is in progress (Codex).
 
 #### `session`
 Controls session restoration, thread continuity, and crash recovery:
@@ -75,6 +77,15 @@ Controls session restoration, thread continuity, and crash recovery:
 * `currentId(peer)`: Extracts the active session or thread ID from a running adapter.
 * `resumeArgv(binding, fresh)`: Builds CLI arguments to resume a persisted session.
 * `transcriptPath(binding)`: Resolves local transcript file path for audit/usage tracking.
+
+#### `projection`
+Where the kind sits in the host's derived lists: `roleRank`, `startRank`, `helpRank` and `plannerEligible`. `KNOWN_PEERS`, `OPTIONAL_PEERS`, `START_MODE_PEERS`, `ROLE_ORDER`, `HELP_ORDER` and `PLANNER_PEERS` are derived from `ADAPTERS` and these ranks (`deriveAdapterLists`), so adding a kind never edits a list. A configured or external definition cannot set it.
+
+#### `cli`
+The `ahub <kind>` surface: `command`, `startWords(form)`, and for a fixed builtin `entry` (the launcher and whether it needs lifecycle admission), `preview`, `usage` (help lines) and `launchConfigKeys`. `builtinCliEntries(definitions)` projects the entries; no configuration or module can register one.
+
+#### `instances` and `attach`
+`instances.mode` is `headless` (needs a headless `start.create` factory) or `external` (a channel instance started from the person's terminal). A kind with no `instances` policy (Jcode) takes no extra instance, and `validateInstances` refuses a declaration of one. `attach` holds the pull-only forms, external-hello admission and the refusal texts for a TUI that attaches without a driven peer.
 
 #### `budget`
 Defines quota and context window consumption readers:
@@ -194,7 +205,7 @@ bun test test/conformance/agy.test.ts
 
 ### Invariants Verified by the Kit:
 1. **Enrollment & Coherence (`enrollment.test.ts`)**: Every definition in `ADAPTERS` and reviewer variant must be enrolled. A kind without kit coverage needs a reason in `UNSUPPORTED` (`test/conformance/enrollment.ts`), and an ACP kind that skips one of the shared `ACP_LEGS` needs a reason per leg in `UNSUPPORTED_LEGS`.
-2. **Delivery Occupancy**: Sending messages updates driven peer state to `busy` synchronously, delivering digests reliably.
+2. **Delivery Occupancy**: Sending messages updates driven peer state to `busy` synchronously, delivering digests reliably. A channel peer whose native hooks own occupancy (Claude) stays idle on insertion by design.
 3. **Recovery Metadata Hygiene**: No prompt text or credentials leaked into `recoveryMetadata`.
 4. **Watchdog Cancellation & Generation Fencing**: Expiry of the turn watchdog cancels prompts cleanly and generation fences prevent stale late answers from publishing.
 5. **Teardown & Cleanup**: When an adapter is stopped (`peer.stop()`), all owned child processes in the process group stop with it (the peer reaches offline).
@@ -206,7 +217,7 @@ bun test test/conformance/agy.test.ts
 When adding or updating an adapter, verify each item before opening a PR:
 
 - [ ] **T0 Receipt Recorded**: Document native CLI version, observed hook payloads, and protocol outputs in `docs/verification/YYYY-MM-DD-<kind>-t0.md`.
-- [ ] **Registered in ADAPTERS**: Added to `src/adapters/registry.ts` with explicit `displayName`, `family`, `transport`, and `trust`.
+- [ ] **Registered in ADAPTERS**: the definition is declared under `src/adapters/definitions/` (or its own directory) with explicit `displayName`, `family`, `transport`, `trust` and `projection`, and listed in `ADAPTERS` (`src/adapters/registry.ts`). The peer lists are derived from it. The hand-kept cross-release copies in `src/hub/peer-catalog.ts` and `src/hub/start-mode.ts` and the pinned tests listed in `docs/agent-notes/adapters.md` change with it, and the PR names them as expected test changes.
 - [ ] **Config Path Protection**: Agent configuration directories added to `AGENT_CONFIG_SEGMENTS` in `src/hub/permission-mode.ts`.
 - [ ] **PII Safety Verified**: Cloud models have `trust.onPrem: false`; verify PII markers refuse routing to this peer.
 - [ ] **Process Group Teardown**: Daemon-spawned processes use process groups and exit cleanly on stop.
