@@ -186,7 +186,10 @@ test("#498 structured no-write stalls feed grooming and scoped cost metrics", as
   const digest = await f.tasks.groomingDigest(USER);
   expect(digest.items).toContainEqual(expect.objectContaining({ task: task.id, kind: "blocked", code: "no-writes" }));
   expect((await f.tasks.costReport(USER, "org/repo")).stalls).toEqual({ noWrites: 1, doneWithoutWrites: 0 });
+  // Preserve historical advisory accounting: this done had no PR yet; the report link is added later.
+  f.board.update(task.id, USER, "sdlc", { sdlc: { repo: "org/repo", stage: "build" } });
   await f.tasks.done("codex", task.id, "completed without local writes");
+  f.board.update(task.id, USER, "sdlc", { sdlc: { repo: "org/repo", pr: 1, stage: "review" } });
   expect((await f.tasks.costReport(USER, "org/repo")).stalls).toEqual({ noWrites: 0, doneWithoutWrites: 1 });
 });
 
@@ -224,4 +227,27 @@ test("#498 baseline capture belongs to explicit accept and self-claim, never an 
 test("#498 a failed host baseline capture cannot fail a saved acceptance", async () => {
   const f = await fixture({ onAccept: () => { throw new Error("capture unavailable"); } });
   expect((await f.make()).state).toBe("in_progress");
+});
+
+for (const [name, receipt] of [
+  ["observed PR head", { head: "1".repeat(40) }],
+  ["local PR head", { localHead: "2".repeat(40) }],
+  ["recorded PR", { pr: 7 }],
+] as const) test(`#498 ${name} exempts done without explicit branch/commit refs`, async () => {
+  const f = await fixture({ evidence: false }), task = await f.make();
+  f.board.update(task.id, USER, "sdlc", { sdlc: { repo: "org/repo", stage: "build", ...receipt } });
+  f.clear();
+  const done = await f.tasks.done("codex", task.id, "recorded PR work is ready");
+  expect(done.history.findLast(entry => entry.event === "done")?.noWrites).toBeUndefined();
+  expect(f.reviews(task.id)[0]?.body).not.toContain(NO_WRITES);
+  expect(f.observations).toEqual([]);
+});
+
+test("#498 D2 keeps the first acceptance in an ownership span when the owner revises its plan", async () => {
+  const f = await fixture({ evidence: false }), task = await f.make();
+  const first = task.history.findIndex(entry => entry.event === "accepted");
+  const revised = f.tasks.accept("codex", task.id, { paths: ["revised.ts"] });
+  expect(f.tasks.ownerWriteAcceptance(revised)).toEqual({ index: first, at: task.history[first]!.at });
+  await f.tasks.done("codex", task.id, "completed after a plan update");
+  expect(f.observations).toContainEqual({ task: task.id, owner: "codex", since: task.history[first]!.at });
 });

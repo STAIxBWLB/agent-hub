@@ -440,10 +440,11 @@ export class Tasks {
     }
   }
 
-  private ownerAcceptance(task: Task): { index: number; at: number } | undefined {
+  private ownerAcceptance(task: Task, first = false): { index: number; at: number } | undefined {
     if (!task.owner) return undefined;
     const boundary = task.history.findLastIndex(entry => OWNERSHIP_EVENTS.has(entry.event) || entry.owner !== undefined && entry.owner !== task.owner);
-    const index = task.history.findLastIndex(entry => entry.event === "accepted" && (entry.by === task.owner || entry.by === USER));
+    const accepted = (entry: Task["history"][number], index: number) => index > boundary && entry.event === "accepted" && (entry.by === task.owner || entry.by === USER);
+    const index = first ? task.history.findIndex(accepted) : task.history.findLastIndex(accepted);
     return index > boundary && index >= 0 ? { index, at: task.history[index]!.at } : undefined;
   }
 
@@ -476,9 +477,12 @@ export class Tasks {
     try { this.d.ownerAccepted?.(task); } catch { /* advisory capture cannot fail a saved acceptance */ }
   }
 
+  /** Host evidence spans the first acceptance after the latest ownership change, including plan revisions. */
+  ownerWriteAcceptance(task: Task): { index: number; at: number } | undefined { return this.ownerAcceptance(task, true); }
+
   private noWritesRecorded(task: Task): boolean {
-    if (!["implement", "bulk_edit"].includes(task.class) || task.refs.branch || task.refs.commit) return false;
-    const accepted = this.ownerAcceptance(task);
+    if (!["implement", "bulk_edit"].includes(task.class) || task.refs.branch || this.reviewHead(task) || task.sdlc?.pr) return false;
+    const accepted = this.ownerWriteAcceptance(task);
     if (!accepted) return false;
     try { return this.d.ownerWrites?.(task, accepted.at) === false; } catch { return false; }
   }

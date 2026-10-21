@@ -1,3 +1,8 @@
+import type { Task } from "../src/hub/board.ts";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { hubGitSync } from "../src/hub/git.ts";
 import { expect, test } from "bun:test";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig } from "../src/hub/task-sweep.ts";
 
@@ -117,4 +122,55 @@ test("#498 omission and explicit undefined retain the default without mutating c
   expect(taskSweepConfig(input)).toMatchObject({ enabled: false, no_writes_turns: 2 });
   expect(taskSweepConfig({})).toMatchObject({ no_writes_turns: 2 });
   expect(input.no_writes_turns).toBeUndefined();
+});
+
+for (const op of ["hub_check_start", "hub_check_cancel", "hub_task_escalate", "hub_memory_correct"]) test(`#498 ${op} is an owner-turn effect`, async () => {
+  const { ownerToolEffect } = await import("../src/hub/no-writes.ts");
+  expect(ownerToolEffect(op, {})).toBe(true);
+});
+test("#498 owner-turn effects exclude reads and a bare accept", async () => {
+  const { ownerToolEffect } = await import("../src/hub/no-writes.ts");
+  for (const op of ["hub_task_list", "hub_check_result", "hub_memory_search", "hub_task_accept"]) expect(ownerToolEffect(op, {})).toBe(false);
+  expect(ownerToolEffect("hub_task_accept", { plan: { paths: ["src/a.ts"] } })).toBe(true);
+});
+
+
+for (const evidence of [
+  { refs: { branch: "feat/work" } }, { refs: { commit: "a".repeat(40) } },
+  { refs: { paths: ["/project/.worktrees/owner/a.ts"] } }, { refs: {}, plan: { paths: [".worktrees/owner/a.ts"] } },
+  { refs: {}, sdlc: { stage: "build", head: "a".repeat(40) } },
+  { refs: {}, sdlc: { stage: "build", localHead: "b".repeat(40) } }, { refs: {}, sdlc: { stage: "build", pr: 2 } },
+] satisfies Pick<Task, "refs" | "plan" | "sdlc">[]) test(`#498 recorded work outside the canonical capture is unknown: ${JSON.stringify(evidence)}`, async () => {
+  const { canonicalWriteUnknown } = await import("../src/hub/no-writes.ts");
+  expect(canonicalWriteUnknown(evidence)).toBe(true);
+  expect(canonicalWriteUnknown({ refs: { paths: ["src/worktrees.ts"] } })).toBe(false);
+});
+
+test("#498 branch fingerprints cover shared heads only and never expose names", async () => {
+  const { branchHeads, soleWorktree, headState, repoOf, SnapshotBudgetExceeded } = await import("../src/hub/snapshots.ts");
+  const root = mkdtempSync(join(tmpdir(), "ahub-no-write-refs-"));
+  try {
+    const git = (...args: string[]) => {
+      const result = hubGitSync(["-C", root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null", ...args], { encoding: "utf8" });
+      expect(result.status).toBe(0); return result.stdout.trim();
+    };
+    git("init", "-qb", "main"); git("commit", "--allow-empty", "-qm", "base");
+    const repo = repoOf(root)!, first = branchHeads(repo), head = headState(repo);
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+    expect(soleWorktree(repo)).toBe(true);
+    git("tag", "not-an-owner-branch");
+    expect(branchHeads(repo)).toBe(first);
+    git("branch", "private-name-is-not-exported");
+    const second = branchHeads(repo);
+    expect(second).not.toBe(first); expect(second).toMatch(/^[a-f0-9]{64}$/);
+    expect(headState(repo)).toEqual(head);
+    expect(soleWorktree(repo)).toBe(true); // An unchecked-out branch is not another execution root.
+    git("worktree", "add", "--detach", join(root, "detached"), "HEAD");
+    expect(branchHeads(repo)).toBe(second); // Detached worktrees need scope evidence beyond refs/heads.
+    expect(soleWorktree(repo)).toBe(false);
+    expect(() => soleWorktree(repo, { deadline: performance.now() - 1 })).toThrow(SnapshotBudgetExceeded);
+    expect(soleWorktree({ ...repo, top: join(root, "missing") })).toBeUndefined();
+    expect(() => branchHeads(repo, { deadline: performance.now() - 1 })).toThrow(SnapshotBudgetExceeded);
+    expect(branchHeads({ ...repo, top: join(root, "missing") })).toBeUndefined();
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

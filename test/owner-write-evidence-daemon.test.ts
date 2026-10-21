@@ -87,8 +87,8 @@ async function fixture(extra: boolean, options: { snapshots?: boolean; privateWi
   const reviews: { task?: string; body: string }[] = [];
   daemon.bus.tap(event => { if (event.t === "envelope" && event.env.kind === "review") reviews.push({ task: event.env.refs?.task, body: event.env.body }); });
   const call = (client: ControlClient, op: string, args: Record<string, unknown>) => client.request({ t: "task", op, args });
-  const make = async () => {
-    const proposed = await call(console_, "hub_task_propose", { title: "implement the owned file change", class: "implement", owner: peer, refs: { paths: ["owned.txt"] } });
+  const make = async (refs: Record<string, unknown> = { paths: ["owned.txt"] }) => {
+    const proposed = await call(console_, "hub_task_propose", { title: "implement the owned file change", class: "implement", owner: peer, refs });
     expect(proposed.ok).toBe(true);
     const id = Number(/task #(\d+):/.exec(proposed.text)?.[1]); expect(Number.isSafeInteger(id)).toBe(true);
     if (extra) await until(() => daemon.bus.stateOf(peer) === "idle" && daemon.bus.queued(peer) === 0 && !daemon.bus.hasInFlight(peer), "native owner task offer settled");
@@ -124,7 +124,7 @@ async function fixture(extra: boolean, options: { snapshots?: boolean; privateWi
     return ended;
   };
   const stalls = async (id: number) => ((await console_.request({ t: "status" })).status.taskStalls ?? []).filter((stall: any) => stall.task === id && stall.cause.kind === "no-writes");
-  return { project, cwd, peer, daemon, console_, tools, turns, reviews, native, call, make, done, runTurn, stalls };
+  return { project, cwd, peer, daemon, console_, tools, turns, reviews, native, git, call, make, done, runTurn, stalls };
 }
 
 const NO_WRITES = "no writes recorded since acceptance";
@@ -219,4 +219,103 @@ test("#498 an unrelated open private task makes done snapshot evidence unknown w
   expect(reviews).toHaveLength(1);
   expect(reviews[0]!.body).not.toContain(NO_WRITES);
   expect(reviews[0]!.body).not.toContain("PRIVATE-WINDOW");
+}, 20_000);
+
+
+test("#498 canonical owner progress in an ignored linked worktree does not become a no-write stall", async () => {
+  const f = await fixture(false), linked = join(f.project, ".worktrees", "canonical-owner-work");
+  f.git("worktree", "add", "-b", "canonical-owner-work", linked, "HEAD");
+  const id = await f.make();
+  const first = await f.runTurn(() => { writeFileSync(join(linked, "owned.txt"), "first linked-worktree edit\n"); });
+  expect(first.changed).toEqual([]); // The canonical snapshot cannot see this ignored execution work.
+  expect(await f.stalls(id)).toEqual([]);
+  const dirty = await f.runTurn(() => { writeFileSync(join(linked, "owned.txt"), "uncommitted second turn\n"); });
+  expect(dirty.changed).toEqual([]); expect(await f.stalls(id)).toEqual([]);
+  const second = await f.runTurn(() => {
+    writeFileSync(join(linked, "owned.txt"), "second linked-worktree edit\n");
+    f.git("-C", linked, "add", "owned.txt");
+    f.git("-C", linked, "commit", "-qm", "linked owner implementation");
+  });
+  expect(second.changed).toEqual([]);
+  expect(readFileSync(join(f.project, "owned.txt"), "utf8")).toBe("original\n");
+  expect(f.git("-C", linked, "status", "--porcelain")).toBe("");
+  expect(await f.stalls(id)).toEqual([]);
+}, 20_000);
+
+test("#498 commit-only progress on a non-current shared branch is not a no-write streak", async () => {
+  const f = await fixture(false);
+  f.git("branch", "non-current-progress");
+  const canonicalHead = f.git("rev-parse", "HEAD"), tree = f.git("rev-parse", "HEAD^{tree}");
+  const id = await f.make();
+  for (let turn = 0; turn < 2; turn++) {
+    const previous = f.git("rev-parse", "refs/heads/non-current-progress");
+    const completed = await f.runTurn(() => {
+      const next = f.git("commit-tree", tree, "-p", previous, "-m", `commit-only owner progress ${turn}`);
+      f.git("update-ref", "refs/heads/non-current-progress", next, previous);
+    });
+    expect(completed.changed).toEqual([]);
+    expect(f.git("rev-parse", "HEAD")).toBe(canonicalHead);
+    expect(f.git("rev-parse", "refs/heads/non-current-progress")).not.toBe(previous);
+    expect(await f.stalls(id)).toEqual([]);
+  }
+}, 20_000);
+
+for (const evidence of ["branch", "linked-worktree path"] as const) test(`#498 a canonical owner's recorded ${evidence} keeps an empty capture unknown`, async () => {
+  const f = await fixture(false), linked = join(f.project, ".worktrees", "recorded-owner-work");
+  f.git("worktree", "add", "-b", "recorded-owner-work", linked, "HEAD");
+  const refs = evidence === "branch" ? { paths: ["owned.txt"], branch: "recorded-owner-work" } : { paths: [join(linked, "owned.txt")] };
+  const id = await f.make(refs);
+  const shown = JSON.parse((await f.call(f.console_, "task_show", { id })).text);
+  expect(shown.refs).toMatchObject(refs);
+  for (let turn = 0; turn < 2; turn++) {
+    expect((await f.runTurn()).changed).toEqual([]);
+    expect(await f.stalls(id)).toEqual([]);
+  }
+}, 20_000);
+
+test("#498 actual recorded SDLC head evidence prevents both empty-turn and done-without-refs advisories", async () => {
+  const f = await fixture(false), id = await f.make(), localHead = f.git("rev-parse", "HEAD");
+  const recorded = await f.call(f.tools, "hub_sdlc_record", { id, receipt: { localHead, localResult: "passed" } });
+  expect(recorded.ok).toBe(true);
+  const row = JSON.parse((await f.call(f.console_, "task_show", { id })).text);
+  expect(row.sdlc).toMatchObject({ localHead, localResult: "passed" });
+  expect(row.refs.branch).toBeUndefined(); expect(row.refs.commit).toBeUndefined();
+  await f.runTurn(); await f.runTurn();
+  expect(await f.stalls(id)).toEqual([]);
+  const done = await f.done(id);
+  expect(done.state).toBe("in_review");
+  expect(done.history.findLast((entry: any) => entry.event === "done")?.noWrites).toBeUndefined();
+  const reviews = f.reviews.filter(review => review.task === String(id));
+  expect(reviews).toHaveLength(1); expect(reviews[0]!.body).not.toContain(NO_WRITES);
+}, 20_000);
+
+for (const restore of [false, true]) test(`#498 a real touch survives reacceptance${restore ? " and restoration to the first acceptance baseline" : " without a later diff"}`, async () => {
+  const f = await fixture(false), id = await f.make();
+  const written = await f.runTurn(() => { writeFileSync(join(f.cwd, "owned.txt"), "real accepted-owner edit\n"); });
+  expect(written.changed).toContain("owned.txt");
+  const touches = f.turns.touchesFor([id]);
+  expect(touches).toContainEqual(expect.objectContaining({ task: id, peer: f.peer, path: "owned.txt" }));
+  await io();
+  const accepted = await f.call(f.console_, "hub_task_accept", { id, plan: { paths: ["owned.txt"], symbols: ["retained owner edit"] } });
+  expect(accepted.ok).toBe(true);
+  const row = JSON.parse((await f.call(f.console_, "task_show", { id })).text);
+  expect(row.history.filter((entry: any) => entry.event === "accepted")).toHaveLength(2);
+  if (restore) writeFileSync(join(f.cwd, "owned.txt"), "original\n");
+  expect(f.turns.touchesFor([id])).toEqual(touches);
+  const done = await f.done(id);
+  expect(done.history.findLast((entry: any) => entry.event === "done")?.noWrites).toBeUndefined();
+  const reviews = f.reviews.filter(review => review.task === String(id));
+  expect(reviews).toHaveLength(1); expect(reviews[0]!.body).not.toContain(NO_WRITES);
+}, 20_000);
+
+
+test("#498 an unrecorded detached worktree outside the ignored directory keeps canonical negative evidence unknown", async () => {
+  const f = await fixture(false), linked = join(f.project, "..", "detached-progress");
+  f.git("worktree", "add", "--detach", linked, "HEAD");
+  const id = await f.make();
+  for (let turn = 0; turn < 2; turn++) {
+    const completed = await f.runTurn(() => { writeFileSync(join(linked, "owned.txt"), `uncommitted detached edit ${turn}\n`); });
+    expect(completed.changed).toEqual([]);
+    expect(await f.stalls(id)).toEqual([]);
+  }
 }, 20_000);
