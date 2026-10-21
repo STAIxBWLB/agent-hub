@@ -38,6 +38,9 @@ const DRAIN_MS = 500;
 /** How long a killed check may wait for its exit and its pipes before it settles without them (#558). */
 const KILL_GRACE_MS = 1000;
 
+/** The last lines of the output, capped by lines and characters: the one shape every result's tail has, a failed spawn's included. */
+const tailOf = (text: string): string => text.replace(/\s+$/, "").split("\n").slice(-TAIL_LINES).join("\n").slice(-TAIL_CHARS);
+
 /** Runs one check command in the project root, in its own process group so a timeout stops what it started. */
 export function runCheck(command: string, cwd: string, timeoutMs: number, running?: Set<() => void>, spawnChild: CheckSpawn = bunSpawn): Promise<CheckResult> {
   return new Promise((resolve) => {
@@ -62,8 +65,7 @@ export function runCheck(command: string, cwd: string, timeoutMs: number, runnin
       settled = true;
       stopListening();
       running?.delete(stop);
-      const tail = out.replace(/\s+$/, "").split("\n").slice(-TAIL_LINES).join("\n").slice(-TAIL_CHARS);
-      resolve({ code: timedOut || interrupted ? null : code, timedOut, ...(interrupted ? { interrupted } : {}), tail });
+      resolve({ code: timedOut || interrupted ? null : code, timedOut, ...(interrupted ? { interrupted } : {}), tail: tailOf(out) });
     };
     const killGroup = () => {
       try {
@@ -85,7 +87,7 @@ export function runCheck(command: string, cwd: string, timeoutMs: number, runnin
     try {
       child = spawnChild(["sh", "-c", command], { cwd, env: childEnv(process.env) });
     } catch (e) {
-      resolve({ code: null, timedOut: false, tail: (e instanceof Error ? e.message : String(e)).trim() });
+      resolve({ code: null, timedOut: false, tail: tailOf(e instanceof Error ? e.message : String(e)) });
       return;
     }
     running?.add(stop);

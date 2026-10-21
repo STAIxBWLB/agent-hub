@@ -148,6 +148,8 @@ test("a late exit event or a retained stop after the kill grace settled the chec
   process.kill = ((pid: number, signal?: string | number) => (kills.push(pid), kill.call(process, pid, signal))) as typeof process.kill;
   try {
     for (const exit of exits) exit(137);
+    await Promise.resolve(); // the late exit's handler runs while the spy is still in place
+    await Bun.sleep(0);
     stop?.();
   } finally {
     process.kill = kill;
@@ -181,4 +183,13 @@ test("a signalled child is no verdict on the work, and a spawn that throws repor
 
 test("a real quick child is read whole even when its exit is reported before its pipes are drained (#558 D1)", async () => {
   for (let i = 0; i < 20; i++) expect(await runCheck("printf 'a\\nb\\n'; exit 0", tempDir(), 5000)).toEqual({ code: 0, timedOut: false, tail: "a\nb" });
+});
+
+test("a spawn that throws a long message still reports a capped tail (#558 D1)", async () => {
+  const refusing: CheckSpawn = () => { throw new Error(Array.from({ length: 200 }, (_, i) => `reason line ${i}`).join("\n")); };
+  const result = await runCheck("ignored", tempDir(), 5000, undefined, refusing);
+  expect(result).toMatchObject({ code: null, timedOut: false });
+  expect(result.tail.split("\n")).toHaveLength(40);
+  expect(result.tail.length).toBeLessThanOrEqual(4000);
+  expect(result.tail.endsWith("reason line 199")).toBe(true);
 });
