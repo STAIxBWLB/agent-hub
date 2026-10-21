@@ -87,8 +87,8 @@ export function projectSettings(instances?: KindMap, adapterCatalog?: ProjectAda
     if (definitionOf(adapter.kind)) continue;
     const peer = adapter.kind;
     extra.push(
-      { key: `roster.${peer}`, group: "Roster", label: `${peer}: participates`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", peer] },
-      { key: `tasks.wip_limits.${peer}`, group: "Routing", label: `${peer}: planner WIP limit`, type: "integer", min: 0, max: 32, store: "config", applies: "live", risk: "raises", floor: 0, path: ["tasks", "wip_limits", peer] },
+      { key: `roster.${peer}`, group: "Roster", label: `${adapter.displayName} (${peer}): participates`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", peer] },
+      { ...SETTINGS.find(def => def.key.startsWith("tasks.wip_limits."))!, key: `tasks.wip_limits.${peer}`, label: `${peer}: planner WIP limit`, path: ["tasks", "wip_limits", peer] },
       headless(peer),
     );
     const values = Object.keys(adapter.permission.genericAcp?.modes ?? {});

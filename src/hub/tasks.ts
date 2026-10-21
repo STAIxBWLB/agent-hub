@@ -32,6 +32,7 @@ import { TaskRepositories } from "./task-repository.ts";
 import { mainCheckoutWarning } from "./main-checkout.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { coverageGap, renderReviewBrief, type ReviewBrief } from "./review-brief.ts";
+import { definitionOf as builtinDefinitionOf } from "../adapters/registry.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
 import { readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
@@ -989,7 +990,8 @@ export class Tasks {
         if (!returnedUntouched) {
           if (task.state !== "backlog" || taskHasStarted(task) || task.owner) throw new PreEffectToolRefusal("dependency and reservation changes require unstarted backlog work");
         }
-        if (patch.reserved && !(this.d.adapterCatalog?.definitionOf ?? definitionOf)(patch.reserved, this.d.instances?.()) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer");
+        const definitionOf = this.d.adapterCatalog?.definitionOf ?? builtinDefinitionOf;
+        if (patch.reserved && !definitionOf(patch.reserved, this.d.instances?.()) && !this.d.bus.knownPeers().includes(patch.reserved) && !this.d.routing().classes[task.class]?.peers.includes(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is not a supported or configured peer");
         if (patch.reserved && !this.d.bus.isRostered(patch.reserved)) throw new PreEffectToolRefusal("reserved owner is off roster");
         // #531 D3: a reservation for a peer routing leaves out for good could never be honoured. Say so, and who can lift it.
         if (patch.reserved && this.excluded(task).includes(patch.reserved)) throw new PreEffectToolRefusal(`${patch.reserved} is excluded from this task (it declined it or was escalated away from it for good); a reservation for it can never be honoured. Only a person's ahub task assign lifts the exclusion`);

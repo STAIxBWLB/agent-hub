@@ -19096,6 +19096,7 @@ init_git();
 init_tool_refusal();
 init_review_brief();
 init_registry();
+init_registry();
 
 // src/hub/task-sweep.ts
 var GROOMING_CODES = new Set(["tests", "spec", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable", "runner", "approvals", "quota", "dependency", "no-writes"]);
@@ -19276,7 +19277,7 @@ var MACHINE_LOCAL = [
   "local.network_allow",
   "terminal.open"
 ];
-var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "text_projection", "instances", "adapters"];
+var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "text_projection", "instances"];
 function configRefusal(cwd, name) {
   const tracked = configTracked(cwd, name);
   return tracked === undefined ? `git could not confirm that .agenthub/${name} is untracked` : tracked ? `.agenthub/${name} is committed to git` : undefined;
