@@ -11541,6 +11541,9 @@ var init_configured_acp = __esm(() => {
   ROLES = ["planner", "implementer", "verifier", "reviewer"];
 });
 
+// src/adapters/adapter-api.ts
+var ADAPTER_API = 1;
+
 // src/adapters/definitions/native-config-defaults.ts
 var init_native_config_defaults = () => {};
 
@@ -11605,18 +11608,28 @@ function resolvedDefinition(id, kind, instances, catalog) {
   const fresh = variant?.reviewer?.declaration === "automatic" || ownField(declaration, "review_mode") === "fresh";
   return variant && kind !== id && reviewerOnly && ownField(declaration, "start_mode") === "headless" && fresh ? variant : definition;
 }
-function createProjectAdapterCatalog(rawAdapters) {
+function createProjectAdapterCatalog(rawAdapters, externalDefinitions = []) {
   const configured = configuredAcpDefinitions(rawAdapters, [...definitions.keys()]);
   for (const definition of configured) {
     assertDefinitionCoherence(definition);
     assertNativeCapabilityScope(definition);
   }
-  const entries = Object.freeze([...ADAPTERS, ...configured]);
-  const catalog = new Map([...definitions, ...configured.map((definition) => [definition.kind, definition])]);
+  const seen = new Set([...definitions.keys(), ...configured.map((item) => item.kind)]);
+  for (const definition of externalDefinitions) {
+    if (definition.api !== ADAPTER_API || seen.has(definition.kind))
+      throw new Error("external adapter kind or API collision");
+    assertDefinitionCoherence(definition);
+    assertNativeCapabilityScope(definition);
+    seen.add(definition.kind);
+  }
+  const external = immutable([...externalDefinitions]);
+  const entries = Object.freeze([...ADAPTERS, ...configured, ...external]);
+  const catalog = new Map([...definitions, ...[...configured, ...external].map((definition) => [definition.kind, definition])]);
   const kindOf = (id, instances) => catalog.has(id) ? id : typeof id === "string" ? declaredKind(id, instances, catalog) : undefined;
   const definitionOf = (id, instances) => resolvedDefinition(id, kindOf(id, instances), instances, catalog);
   return Object.freeze({
     definitions: entries,
+    externalDefinitions: external,
     kindOf,
     definitionOf,
     familyOf: (id, instances) => definitionOf(id, instances)?.family,
@@ -11708,7 +11721,7 @@ function assertNativeCapabilityScope(definition) {
   if (field)
     throw new Error(`${field} is restricted to fixed builtin adapter definitions`);
 }
-var ADAPTER_API = 1, KNOWN_PEERS, OPTIONAL_PEERS, SUPPORTED_PEERS, fixedBuiltinDefinitions, ADAPTERS, declarationOnlyDefinitions, definitions, REVIEW_POOL_KINDS, DEFAULT_REVIEW_POOL, QUOTA_HANDOFF_PLATFORMS, ROLE_ORDER, CONDUCTOR_START_PRIORITY, CONDUCTOR_START_PEERS, ADAPTER_DISPLAY, BUILTIN_CLI_ENTRIES;
+var KNOWN_PEERS, OPTIONAL_PEERS, SUPPORTED_PEERS, fixedBuiltinDefinitions, ADAPTERS, declarationOnlyDefinitions, definitions, REVIEW_POOL_KINDS, DEFAULT_REVIEW_POOL, QUOTA_HANDOFF_PLATFORMS, ROLE_ORDER, CONDUCTOR_START_PRIORITY, CONDUCTOR_START_PEERS, ADAPTER_DISPLAY, BUILTIN_CLI_ENTRIES;
 var init_registry = __esm(() => {
   init_definition();
   init_reviewer_variants();
@@ -18934,8 +18947,320 @@ var require_dist = __commonJS(function(exports, module) {
 
 // src/hub/instance-config.ts
 init_registry();
+import { readFileSync as readFileSync13 } from "fs";
+import { join as join27 } from "path";
+
+// src/adapters/external-metadata.ts
+import { types as types3 } from "util";
+var MAX_MODULES = 16;
+var fail2 = (reason) => {
+  throw new Error(`external adapter: ${reason}`);
+};
+function moduleDataObject(value) {
+  if (!value || typeof value !== "object" || types3.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length)
+    return fail2("plain own-data object required");
+  const fields = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(value));
+  if (Object.values(fields).some((field) => !Object.hasOwn(field, "value") || !field.enumerable))
+    return fail2("accessors and hidden fields are unsupported");
+  return Object.fromEntries(Object.entries(fields).map(([key, field]) => [key, field.value]));
+}
+function moduleText(value, max) {
+  if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value) > max || /[\p{Cc}\p{Cf}]/u.test(value))
+    return fail2("bounded control-free text required");
+  return value;
+}
+function moduleArray(value, max) {
+  if (!Array.isArray(value) || types3.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype || value.length > max || Object.getOwnPropertySymbols(value).length)
+    return fail2("bounded array required");
+  const fields = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(value));
+  if (Object.keys(fields).length !== value.length + 1)
+    return fail2("dense array required");
+  return Array.from({ length: value.length }, (_, index) => {
+    const field = fields[String(index)];
+    if (!field || !Object.hasOwn(field, "value") || !field.enumerable)
+      return fail2("array data fields required");
+    return field.value;
+  });
+}
+function externalAdapterMetadata(raw) {
+  if (raw === undefined)
+    return Object.freeze([]);
+  const rows = moduleArray(raw, MAX_MODULES).map((value) => {
+    const row = moduleDataObject(value), kind = row.kind;
+    if (Object.keys(row).some((key) => !["kind", "displayName"].includes(key)) || typeof kind !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(kind))
+      return fail2("invalid external display metadata");
+    return Object.freeze({ kind, displayName: moduleText(row.displayName, 256) });
+  });
+  if (new Set(rows.map((row) => row.kind)).size !== rows.length)
+    return fail2("duplicate external display metadata");
+  return Object.freeze(rows);
+}
+function externalMetadataDefinitions(raw) {
+  return Object.freeze(externalAdapterMetadata(raw).map(({ kind, displayName }) => ({
+    api: ADAPTER_API,
+    kind,
+    family: kind,
+    displayName,
+    transport: "acp",
+    roles: [],
+    optional: true,
+    defaultOnRoster: false,
+    trust: { onPrem: false, hubSandboxed: false },
+    identity: { mcp: "acp-session" },
+    permission: { genericAcp: {}, unmanaged: "external adapter metadata; authority belongs to the running daemon" },
+    start: { forms: ["headless"], defaultForm: "headless", conductorStartable: true, hubSwitches: [], ownedFlags: [] },
+    session: { idField: "sessionId", currentId: () => {
+      return;
+    } },
+    turnEnd: "adapter",
+    cli: { command: kind, startWords: () => [kind] },
+    display: { palette: { fg: "white", bg: "black" } }
+  })));
+}
+
+// src/adapters/external-modules.ts
+init_configured_acp();
+init_registry();
+
+// src/hub/config-trust.ts
+init_child_process();
+init_git();
+import { lstatSync as lstatSync10, statSync as statSync5 } from "fs";
+import { dirname as dirname10, join as join25 } from "path";
+var MACHINE_LOCAL = [
+  "kimi_cmd",
+  "permission_modes",
+  "codex_bin",
+  "pi.cmd",
+  "checks",
+  "mlx.bin",
+  "mlx.runtimeDir",
+  "mlx.modelPath",
+  "omniroute.urls",
+  "omniroute.access_hosts",
+  "omniroute.api_key_file",
+  "omniroute.cf_client_id_file",
+  "omniroute.cf_client_secret_file",
+  "memory.worker_url",
+  "local.read_allow",
+  "local.bash_network",
+  "local.network_allow",
+  "terminal.open"
+];
+var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"];
+function configRefusal(cwd, name) {
+  const tracked = configTracked(cwd, name);
+  return tracked === undefined ? `git could not confirm that .agenthub/${name} is untracked` : tracked ? `.agenthub/${name} is committed to git` : undefined;
+}
+function configTracked(cwd, name) {
+  const r = memoryGitSync(["-C", cwd, "ls-files", "-s", "-z", "--", ":(icase).agenthub"], { encoding: "utf8", env: childEnv(process.env) });
+  if (r.status !== 0)
+    return;
+  let opened;
+  try {
+    opened = statSync5(join25(cwd, ".agenthub", name));
+  } catch {}
+  return r.stdout.split("\x00").filter(Boolean).some((row) => {
+    const path = row.slice(row.indexOf("\t") + 1);
+    if (path.toLowerCase() === ".agenthub")
+      return true;
+    if (!opened)
+      return path === `.agenthub/${name}`;
+    try {
+      const s = statSync5(join25(cwd, path));
+      return !!opened && s.dev === opened.dev && s.ino === opened.ino;
+    } catch {
+      return false;
+    }
+  });
+}
+
+// src/adapters/external-modules.ts
+init_project();
+var MAX_MODULES2 = 16;
+var MAX_MODULE_BYTES = 2 * 1024 * 1024;
+var PUBLIC_IMPORTS = new Set(["@staix/agent-hub/adapter", "@staix/agent-hub/conformance"]);
+
+class ExternalAdapterRefusal extends Error {
+}
+var fail3 = (reason) => {
+  throw new ExternalAdapterRefusal(`external adapter: ${reason}`);
+};
+function adapterModuleDeclarations(raw) {
+  if (raw === undefined)
+    return Object.freeze([]);
+  return Object.freeze(moduleArray(raw, MAX_MODULES2).map((value) => {
+    const row = moduleDataObject(value);
+    if (Object.keys(row).some((key) => !["path", "sha256"].includes(key)))
+      return fail3("unknown module declaration field");
+    const path = moduleText(row.path, 4096), hash = row.sha256;
+    if (typeof hash !== "string" || !/^[a-f0-9]{64}$/i.test(hash))
+      return fail3("a SHA-256 content pin is required");
+    return Object.freeze({ path, sha256: hash.toLowerCase() });
+  }));
+}
+function readAdapterModuleDeclarations(cwd, layers) {
+  const ignored = [];
+  let modules = Object.freeze([]);
+  for (const { name, raw } of layers) {
+    if (raw.adapter_modules === undefined)
+      continue;
+    const refusal = name !== "config.local.json" ? "modules are machine-local config.local.json values" : configRefusal(cwd, name);
+    if (refusal) {
+      ignored.push(`adapter_modules in .agenthub/${name} ignored: ${refusal}`);
+      continue;
+    }
+    modules = adapterModuleDeclarations(raw.adapter_modules);
+  }
+  return { modules, ignored };
+}
+
+// src/hub/control-client.ts
+init_project();
 import { readFileSync as readFileSync12 } from "fs";
-import { join as join26 } from "path";
+import { join as join26, resolve as resolve17 } from "path";
+function stateDirFor(cwd) {
+  return projectContext(cwd).stateDir;
+}
+var PROTOCOL = 16;
+var RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, PROTOCOL];
+function readControl(stateDir) {
+  try {
+    const status = JSON.parse(readFileSync12(join26(stateDir, "status.json"), "utf8"));
+    const token = readFileSync12(join26(stateDir, "control-token"), "utf8").trim();
+    if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token)
+      return;
+    const startModes = status.startModes && typeof status.startModes === "object" && !Array.isArray(status.startModes) ? Object.fromEntries(Object.entries(status.startModes).filter((entry) => entry[1] === "tui" || entry[1] === "headless")) : undefined;
+    return {
+      url: `ws://127.0.0.1:${status.controlPort}`,
+      token,
+      projectId: status.projectId,
+      instanceId: status.instanceId,
+      cwd: status.cwd,
+      protocol: status.protocol,
+      pid: status.pid,
+      features: Array.isArray(status.features) ? status.features.filter((feature) => typeof feature === "string") : [],
+      ...startModes ? { startModes } : {},
+      ...status.externalAdapters !== undefined ? { externalAdapters: externalAdapterMetadata(status.externalAdapters) } : {},
+      ...typeof status.pidSignature === "string" && status.pidSignature ? { pidSignature: status.pidSignature } : {}
+    };
+  } catch {
+    return;
+  }
+}
+var instancePins = new Map;
+
+class ControlClient {
+  ws;
+  features = [];
+  welcomeInstanceId;
+  get instanceId() {
+    return this.welcomeInstanceId;
+  }
+  get isOpen() {
+    return this.ws.readyState === WebSocket.OPEN;
+  }
+  nextRid = 1;
+  pending = new Map;
+  onPush = () => {};
+  onClose = () => {};
+  constructor(ws) {
+    this.ws = ws;
+  }
+  static pinInstance(stateDir, instanceId) {
+    const key = resolve17(stateDir), pin = { instanceId };
+    if (!instanceId || instancePins.has(key))
+      throw new Error("control instance is already pinned or unavailable");
+    instancePins.set(key, pin);
+    return () => {
+      if (instancePins.get(key) === pin)
+        instancePins.delete(key);
+    };
+  }
+  static connect(stateDir, hello, timeoutMs = 3000, protocol = PROTOCOL) {
+    if (!RECOVERY_SOURCE_PROTOCOLS.includes(protocol))
+      return Promise.reject(new Error(`unsupported recovery source protocol ${protocol}`));
+    const control = readControl(stateDir);
+    if (!control)
+      return Promise.reject(new Error(`no hub running for ${stateDir} (run: ahub up)`));
+    const pin = instancePins.get(resolve17(stateDir));
+    if (pin && (control.instanceId !== pin.instanceId || hello.instanceId !== undefined && hello.instanceId !== pin.instanceId)) {
+      return Promise.reject(new Error("delegated audit consumer changed; refusing a connection to its replacement"));
+    }
+    if (control.protocol !== undefined && control.protocol !== protocol) {
+      return Promise.reject(Object.assign(new Error(`wire version mismatch: hub speaks ${control.protocol}, CLI speaks ${protocol}; stop it with its matching CLI, then upgrade and restart`), { code: 4426 }));
+    }
+    if (hello.projectId && hello.projectId !== control.projectId || hello.instanceId && hello.instanceId !== control.instanceId || hello.projectRoot && hello.projectRoot !== control.cwd) {
+      return Promise.reject(Object.assign(new Error("hub project or instance does not match the selected project"), { code: 4404 }));
+    }
+    const expected = {
+      projectId: hello.projectId ?? control.projectId,
+      instanceId: pin?.instanceId ?? hello.instanceId ?? control.instanceId,
+      projectRoot: hello.projectRoot ?? control.cwd
+    };
+    return new Promise((resolve, reject) => {
+      const ws = new WebSocket(control.url);
+      const client = new ControlClient(ws);
+      const timer = setTimeout(() => refuse(new Error(`hub connection timed out at ${control.url}`)), timeoutMs);
+      const refuse = (error) => {
+        clearTimeout(timer);
+        reject(error);
+        ws.close();
+      };
+      ws.onerror = () => refuse(new Error(`cannot reach hub at ${control.url}`));
+      ws.onclose = (ev) => {
+        clearTimeout(timer);
+        reject(Object.assign(new Error(`hub closed the connection: ${ev.reason || "stale token?"}`), { code: ev.code }));
+        for (const done of client.pending.values())
+          done({ ok: false, error: "hub connection closed" });
+        client.pending.clear();
+        client.onClose(ev.code, ev.reason);
+      };
+      ws.onmessage = (ev) => {
+        let msg;
+        try {
+          msg = JSON.parse(String(ev.data));
+        } catch {
+          return refuse(new Error("invalid hub response"));
+        }
+        if (!msg || typeof msg !== "object" || Array.isArray(msg))
+          return refuse(new Error("invalid hub response"));
+        const done = msg.rid !== undefined ? client.pending.get(msg.rid) : undefined;
+        if (!done)
+          return client.onPush(msg);
+        client.pending.delete(msg.rid);
+        done(msg);
+      };
+      ws.onopen = () => void client.request({ t: "hello", v: protocol, token: control.token, ...hello, ...expected }, timeoutMs).then((reply) => {
+        if (reply.t !== "welcome" || reply.ok === false)
+          return refuse(new Error(reply.error ?? "hub refused handshake"));
+        if (expected.projectId && reply.projectId !== expected.projectId || expected.instanceId && reply.instanceId !== expected.instanceId || expected.projectRoot && reply.cwd !== expected.projectRoot) {
+          return refuse(Object.assign(new Error("connected hub has a different project or instance"), { code: 4404 }));
+        }
+        client.features = Object.freeze(Array.isArray(reply.features) ? reply.features.filter((feature) => typeof feature === "string") : []);
+        client.welcomeInstanceId = typeof reply.instanceId === "string" && reply.instanceId ? reply.instanceId : undefined;
+        clearTimeout(timer);
+        resolve(client);
+      });
+    });
+  }
+  request(msg, timeoutMs = 30000) {
+    if (this.ws.readyState !== WebSocket.OPEN)
+      return Promise.resolve({ ok: false, error: "hub connection is not open" });
+    const rid = this.nextRid++;
+    return new Promise((resolve) => {
+      const timer = timeoutMs ? setTimeout(() => (this.pending.delete(rid), resolve({ ok: false, error: `no answer from the hub within ${Math.round(timeoutMs / 1000)} s` })), timeoutMs) : undefined;
+      this.pending.set(rid, (reply) => (clearTimeout(timer), resolve(reply)));
+      this.ws.send(JSON.stringify({ ...msg, rid }));
+    });
+  }
+  send(msg) {
+    this.ws.send(JSON.stringify(msg));
+  }
+  close() {
+    this.ws.close();
+  }
+}
 
 // src/hub/conductor.ts
 init_registry();
@@ -18998,6 +19323,10 @@ var package_default = {
   homepage: "https://github.com/STAIxBWLB/agent-hub",
   publishConfig: {
     access: "public"
+  },
+  exports: {
+    "./adapter": "./src/adapters/public.ts",
+    "./conformance": "./src/adapters/conformance/index.ts"
   }
 };
 
@@ -19189,34 +19518,34 @@ init_tool_refusal();
 // src/hub/instances.ts
 init_registry();
 init_permission_mode();
-import { types as types3 } from "util";
+import { types as types4 } from "util";
 var MAX_INSTANCES = 64;
 var FLOW_ROLES = new Set(["planner", "implementer", "verifier", "reviewer", "conductor"]);
 var PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 var RESERVED = new Set(["user", "hub", "digest"]);
-var fail2 = (field, reason) => {
+var fail4 = (field, reason) => {
   throw new Error(`${field}: ${reason}`);
 };
 function fields2(value, field) {
-  if (!value || typeof value !== "object" || types3.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length)
-    return fail2(field, "must be a plain own-data object");
+  if (!value || typeof value !== "object" || types4.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)) || Object.getOwnPropertySymbols(value).length)
+    return fail4(field, "must be a plain own-data object");
   const descriptors = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(value));
   if (Object.values(descriptors).some((entry) => !Object.hasOwn(entry, "value") || !entry.enumerable))
-    return fail2(field, "must contain enumerable data fields only");
+    return fail4(field, "must contain enumerable data fields only");
   return descriptors;
 }
 function roles(value, field) {
-  if (!Array.isArray(value) || types3.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype || Object.getOwnPropertySymbols(value).length)
-    return fail2(field, "must be a role array");
+  if (!Array.isArray(value) || types4.isProxy(value) || Object.getPrototypeOf(value) !== Array.prototype || Object.getOwnPropertySymbols(value).length)
+    return fail4(field, "must be a role array");
   const descriptors = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(value));
   const length = descriptors.length?.value;
   if (!Number.isSafeInteger(length) || length > FLOW_ROLES.size || Object.keys(descriptors).length !== length + 1)
-    return fail2(field, "invalid role array");
+    return fail4(field, "invalid role array");
   const out = [];
   for (let index = 0;index < length; index++) {
     const descriptor = descriptors[String(index)];
     if (!descriptor || !Object.hasOwn(descriptor, "value") || !descriptor.enumerable || typeof descriptor.value !== "string" || !FLOW_ROLES.has(descriptor.value) || out.includes(descriptor.value))
-      return fail2(field, "roles must be known and unique");
+      return fail4(field, "roles must be known and unique");
     out.push(descriptor.value);
   }
   return out;
@@ -19231,64 +19560,66 @@ function validateInstances(raw, catalog) {
     return Object.freeze(result);
   const declarations = fields2(raw, "instances");
   if (Object.keys(declarations).length > MAX_INSTANCES)
-    return fail2("instances", "at most 64 extra instances are supported");
+    return fail4("instances", "at most 64 extra instances are supported");
   for (const [id, descriptor] of Object.entries(declarations)) {
     if (!PEER_ID.test(id) || RESERVED.has(id) || resolve(id))
-      return fail2("instances", "ids must be nonreserved extra instance ids, not builtin ids");
+      return fail4("instances", "ids must be nonreserved extra instance ids, not builtin ids");
     const path = `instances.${id}`, entry = fields2(descriptor.value, path);
     if (Object.keys(entry).some((key) => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly"].includes(key)))
-      return fail2(path, "unsupported field");
+      return fail4(path, "unsupported field");
     const kind = entry.kind?.value;
     if (typeof kind !== "string")
-      return fail2(`${path}.kind`, "must name a native kind");
+      return fail4(`${path}.kind`, "must name a native kind");
     const definition = resolve(kind), prefix = `${kind}-`;
     if (!definition)
-      return fail2(`${path}.kind`, "unknown native kind");
+      return fail4(`${path}.kind`, "unknown native kind (external adapter instances are unsupported in A4)");
+    if (catalog.externalDefinitions.some((item) => item.kind === kind))
+      return fail4(`${path}.kind`, "external adapter instances are unsupported in A4");
     if (!id.startsWith(prefix) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length)))
-      return fail2(path, "id must be <kind>-<name>");
+      return fail4(path, "id must be <kind>-<name>");
     const declaredRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
     const reviewer = (definition.reviewerVariant ?? definition).reviewer;
     const reviewerOnly = entry.start_mode?.value === "headless" && declaredRoles.length === 1 && declaredRoles[0] === "reviewer";
     if (entry.review_mode && (entry.review_mode.value !== "fresh" || !reviewerOnly || !reviewer))
-      return fail2(`${path}.review_mode`, "fresh requires reviewer-only roles, headless mode and a declared fresh-review capability");
+      return fail4(`${path}.review_mode`, "fresh requires reviewer-only roles, headless mode and a declared fresh-review capability");
     const freshReviewer = reviewerOnly && !!reviewer && (reviewer.declaration === "automatic" || entry.review_mode?.value === "fresh");
     if (definition.routing?.reviewOnly && !freshReviewer)
-      return fail2(path, 'a review-only kind requires headless roles exactly ["reviewer"]');
+      return fail4(path, 'a review-only kind requires headless roles exactly ["reviewer"]');
     if (freshReviewer && entry.worktree)
-      return fail2(`${path}.worktree`, "a fresh reviewer reads the project checkout: worktree is not supported");
+      return fail4(`${path}.worktree`, "a fresh reviewer reads the project checkout: worktree is not supported");
     if (freshReviewer && entry.permission_mode)
-      return fail2(`${path}.permission_mode`, "a fresh reviewer has a fixed read-only policy");
+      return fail4(`${path}.permission_mode`, "a fresh reviewer has a fixed read-only policy");
     const external = definition.instances?.mode === "external";
     const runtime = freshReviewer ? definition.reviewerVariant ?? definition : definition;
     const unavailableReviewer = freshReviewer && !!(definition.reviewerVariant ?? definition).reviewer?.unavailable;
     if (!unavailableReviewer && runtime.instances?.mode !== "external" && !supportsHeadlessInstances(runtime))
-      return fail2(`${path}.kind`, definition.reviewerVariant ? 'unsupported; this kind only declares headless reviewer instances with roles exactly ["reviewer"]' : "unsupported; explicit external instance policy or a headless instance policy with a headless factory is required");
+      return fail4(`${path}.kind`, definition.reviewerVariant ? 'unsupported; this kind only declares headless reviewer instances with roles exactly ["reviewer"]' : "unsupported; explicit external instance policy or a headless instance policy with a headless factory is required");
     if (external) {
       const declared = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
       if (entry.start_mode && definition.reviewerVariant) {
         if (entry.worktree)
-          return fail2(path, "a headless reviewer reads the project checkout: worktree is not supported");
+          return fail4(path, "a headless reviewer reads the project checkout: worktree is not supported");
         if (declared.length !== 1 || declared[0] !== "reviewer")
-          return fail2(`${path}.roles`, 'a headless channel-kind instance is a reviewer: roles must be exactly ["reviewer"]');
+          return fail4(`${path}.roles`, 'a headless channel-kind instance is a reviewer: roles must be exactly ["reviewer"]');
       } else {
         if (entry.start_mode || entry.worktree)
-          return fail2(path, `a channel instance starts only from the person's terminal (ahub <kind> --as <id>): start_mode and worktree are not supported; a headless reviewer declares roles ["reviewer"] and start_mode "headless"`);
+          return fail4(path, `a channel instance starts only from the person's terminal (ahub <kind> --as <id>): start_mode and worktree are not supported; a headless reviewer declares roles ["reviewer"] and start_mode "headless"`);
         const allowed = definition.instances?.roles ?? definition.roles;
         if (!declared.length || declared.some((role) => !allowed.includes(role)))
-          return fail2(`${path}.roles`, "a channel instance must declare its roles: reviewer and/or planner");
+          return fail4(`${path}.roles`, "a channel instance must declare its roles: reviewer and/or planner");
       }
     } else {
       const allowed = runtime.instances?.roles;
       if (allowed && (declaredRoles.length ? declaredRoles : runtime.roles).some((role) => !allowed.includes(role)))
-        return fail2(`${path}.roles`, "roles must fit the definition's instance policy");
+        return fail4(`${path}.roles`, "roles must fit the definition's instance policy");
     }
     if (entry.readOnly) {
       if (typeof entry.readOnly.value !== "boolean")
-        return fail2(`${path}.readOnly`, "must be a boolean");
+        return fail4(`${path}.readOnly`, "must be a boolean");
       if (!runtime.permission.genericAcp?.readOnly)
-        return fail2(`${path}.readOnly`, "native adapter has no verified read-only mode");
+        return fail4(`${path}.readOnly`, "native adapter has no verified read-only mode");
       if (entry.readOnly.value && entry.permission_mode)
-        return fail2(`${path}.permission_mode`, "read-only instances cannot select a permission mode");
+        return fail4(`${path}.permission_mode`, "read-only instances cannot select a permission mode");
     }
     const value = { kind, ...entry.review_mode ? { review_mode: "fresh" } : {} };
     if (entry.readOnly)
@@ -19299,18 +19630,18 @@ function validateInstances(raw, catalog) {
     }
     if (entry.start_mode) {
       if (entry.start_mode.value !== "headless")
-        return fail2(`${path}.start_mode`, "I2 extra instances require headless mode");
+        return fail4(`${path}.start_mode`, "I2 extra instances require headless mode");
       value.start_mode = "headless";
     }
     if (entry.permission_mode) {
       if (!isPermissionMode(entry.permission_mode.value))
-        return fail2(`${path}.permission_mode`, "must be ask, ask-when-needed or never-ask");
+        return fail4(`${path}.permission_mode`, "must be ask, ask-when-needed or never-ask");
       value.permission_mode = entry.permission_mode.value;
     }
     if (entry.worktree) {
       const worktree = entry.worktree.value;
       if (typeof worktree !== "string" || !worktree.trim() || Buffer.byteLength(worktree) > 4096 || /\p{Cc}/u.test(worktree))
-        return fail2(`${path}.worktree`, "must be a nonempty control-free path of at most 4096 UTF-8 bytes");
+        return fail4(`${path}.worktree`, "must be a nonempty control-free path of at most 4096 UTF-8 bytes");
       value.worktree = worktree;
     }
     result[id] = Object.freeze(value);
@@ -19326,65 +19657,12 @@ function effectiveInstanceRoles(id, declarations, policyRoles, catalog) {
   return [...declaration?.roles ?? ownRoles(id) ?? ownRoles(definition.kind) ?? definition.roles];
 }
 
-// src/hub/config-trust.ts
-init_child_process();
-init_git();
-import { lstatSync as lstatSync10, statSync as statSync5 } from "fs";
-import { dirname as dirname10, join as join25 } from "path";
-var MACHINE_LOCAL = [
-  "kimi_cmd",
-  "permission_modes",
-  "codex_bin",
-  "pi.cmd",
-  "checks",
-  "mlx.bin",
-  "mlx.runtimeDir",
-  "mlx.modelPath",
-  "omniroute.urls",
-  "omniroute.access_hosts",
-  "omniroute.api_key_file",
-  "omniroute.cf_client_id_file",
-  "omniroute.cf_client_secret_file",
-  "memory.worker_url",
-  "local.read_allow",
-  "local.bash_network",
-  "local.network_allow",
-  "terminal.open"
-];
-var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "text_projection", "instances"];
-function configRefusal(cwd, name) {
-  const tracked = configTracked(cwd, name);
-  return tracked === undefined ? `git could not confirm that .agenthub/${name} is untracked` : tracked ? `.agenthub/${name} is committed to git` : undefined;
-}
-function configTracked(cwd, name) {
-  const r = memoryGitSync(["-C", cwd, "ls-files", "-s", "-z", "--", ":(icase).agenthub"], { encoding: "utf8", env: childEnv(process.env) });
-  if (r.status !== 0)
-    return;
-  let opened;
-  try {
-    opened = statSync5(join25(cwd, ".agenthub", name));
-  } catch {}
-  return r.stdout.split("\x00").filter(Boolean).some((row) => {
-    const path = row.slice(row.indexOf("\t") + 1);
-    if (path.toLowerCase() === ".agenthub")
-      return true;
-    if (!opened)
-      return path === `.agenthub/${name}`;
-    try {
-      const s = statSync5(join25(cwd, path));
-      return !!opened && s.dev === opened.dev && s.ino === opened.ino;
-    } catch {
-      return false;
-    }
-  });
-}
-
 // src/hub/instance-config.ts
 var INSTANCE_CONFIG_FILES = ["config.json", "config.local.json"];
 function readInstanceConfigLayers(cwd) {
   return INSTANCE_CONFIG_FILES.flatMap((name) => {
     try {
-      return [{ name, raw: JSON.parse(readFileSync12(join26(cwd, ".agenthub", name), "utf8")) }];
+      return [{ name, raw: JSON.parse(readFileSync13(join27(cwd, ".agenthub", name), "utf8")) }];
     } catch (error) {
       if (error.code === "ENOENT")
         return [];
@@ -19392,8 +19670,9 @@ function readInstanceConfigLayers(cwd) {
     }
   });
 }
-function readInstanceConfig(cwd, layers = readInstanceConfigLayers(cwd)) {
-  const ignored = [];
+function readInstanceConfig(cwd, layers = readInstanceConfigLayers(cwd), externalDefinitions) {
+  const moduleConfig = readAdapterModuleDeclarations(cwd, layers);
+  const ignored = [...moduleConfig.ignored];
   let adapters, rawInstances;
   for (const { name, raw } of layers) {
     const keys = ["adapters", "instances"].filter((key) => raw[key] !== undefined);
@@ -19409,155 +19688,10 @@ function readInstanceConfig(cwd, layers = readInstanceConfigLayers(cwd)) {
     if (raw.instances !== undefined)
       rawInstances = raw.instances;
   }
-  const catalog = createProjectAdapterCatalog(adapters);
+  const external = externalDefinitions ?? externalMetadataDefinitions(readControl(stateDirFor(cwd))?.externalAdapters);
+  const catalog = createProjectAdapterCatalog(adapters, external);
   const instances = validateInstances(rawInstances, catalog);
-  return { ...adapters !== undefined ? { adapters } : {}, ...Object.keys(instances).length ? { instances } : {}, catalog, ignored };
-}
-
-// src/hub/control-client.ts
-init_project();
-import { readFileSync as readFileSync13 } from "fs";
-import { join as join27, resolve as resolve17 } from "path";
-function stateDirFor(cwd) {
-  return projectContext(cwd).stateDir;
-}
-var PROTOCOL = 16;
-var RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, PROTOCOL];
-function readControl(stateDir) {
-  try {
-    const status = JSON.parse(readFileSync13(join27(stateDir, "status.json"), "utf8"));
-    const token = readFileSync13(join27(stateDir, "control-token"), "utf8").trim();
-    if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token)
-      return;
-    const startModes = status.startModes && typeof status.startModes === "object" && !Array.isArray(status.startModes) ? Object.fromEntries(Object.entries(status.startModes).filter((entry) => entry[1] === "tui" || entry[1] === "headless")) : undefined;
-    return {
-      url: `ws://127.0.0.1:${status.controlPort}`,
-      token,
-      projectId: status.projectId,
-      instanceId: status.instanceId,
-      cwd: status.cwd,
-      protocol: status.protocol,
-      pid: status.pid,
-      features: Array.isArray(status.features) ? status.features.filter((feature) => typeof feature === "string") : [],
-      ...startModes ? { startModes } : {},
-      ...typeof status.pidSignature === "string" && status.pidSignature ? { pidSignature: status.pidSignature } : {}
-    };
-  } catch {
-    return;
-  }
-}
-var instancePins = new Map;
-
-class ControlClient {
-  ws;
-  features = [];
-  welcomeInstanceId;
-  get instanceId() {
-    return this.welcomeInstanceId;
-  }
-  get isOpen() {
-    return this.ws.readyState === WebSocket.OPEN;
-  }
-  nextRid = 1;
-  pending = new Map;
-  onPush = () => {};
-  onClose = () => {};
-  constructor(ws) {
-    this.ws = ws;
-  }
-  static pinInstance(stateDir, instanceId) {
-    const key = resolve17(stateDir), pin = { instanceId };
-    if (!instanceId || instancePins.has(key))
-      throw new Error("control instance is already pinned or unavailable");
-    instancePins.set(key, pin);
-    return () => {
-      if (instancePins.get(key) === pin)
-        instancePins.delete(key);
-    };
-  }
-  static connect(stateDir, hello, timeoutMs = 3000, protocol = PROTOCOL) {
-    if (!RECOVERY_SOURCE_PROTOCOLS.includes(protocol))
-      return Promise.reject(new Error(`unsupported recovery source protocol ${protocol}`));
-    const control = readControl(stateDir);
-    if (!control)
-      return Promise.reject(new Error(`no hub running for ${stateDir} (run: ahub up)`));
-    const pin = instancePins.get(resolve17(stateDir));
-    if (pin && (control.instanceId !== pin.instanceId || hello.instanceId !== undefined && hello.instanceId !== pin.instanceId)) {
-      return Promise.reject(new Error("delegated audit consumer changed; refusing a connection to its replacement"));
-    }
-    if (control.protocol !== undefined && control.protocol !== protocol) {
-      return Promise.reject(Object.assign(new Error(`wire version mismatch: hub speaks ${control.protocol}, CLI speaks ${protocol}; stop it with its matching CLI, then upgrade and restart`), { code: 4426 }));
-    }
-    if (hello.projectId && hello.projectId !== control.projectId || hello.instanceId && hello.instanceId !== control.instanceId || hello.projectRoot && hello.projectRoot !== control.cwd) {
-      return Promise.reject(Object.assign(new Error("hub project or instance does not match the selected project"), { code: 4404 }));
-    }
-    const expected = {
-      projectId: hello.projectId ?? control.projectId,
-      instanceId: pin?.instanceId ?? hello.instanceId ?? control.instanceId,
-      projectRoot: hello.projectRoot ?? control.cwd
-    };
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(control.url);
-      const client = new ControlClient(ws);
-      const timer = setTimeout(() => refuse(new Error(`hub connection timed out at ${control.url}`)), timeoutMs);
-      const refuse = (error) => {
-        clearTimeout(timer);
-        reject(error);
-        ws.close();
-      };
-      ws.onerror = () => refuse(new Error(`cannot reach hub at ${control.url}`));
-      ws.onclose = (ev) => {
-        clearTimeout(timer);
-        reject(Object.assign(new Error(`hub closed the connection: ${ev.reason || "stale token?"}`), { code: ev.code }));
-        for (const done of client.pending.values())
-          done({ ok: false, error: "hub connection closed" });
-        client.pending.clear();
-        client.onClose(ev.code, ev.reason);
-      };
-      ws.onmessage = (ev) => {
-        let msg;
-        try {
-          msg = JSON.parse(String(ev.data));
-        } catch {
-          return refuse(new Error("invalid hub response"));
-        }
-        if (!msg || typeof msg !== "object" || Array.isArray(msg))
-          return refuse(new Error("invalid hub response"));
-        const done = msg.rid !== undefined ? client.pending.get(msg.rid) : undefined;
-        if (!done)
-          return client.onPush(msg);
-        client.pending.delete(msg.rid);
-        done(msg);
-      };
-      ws.onopen = () => void client.request({ t: "hello", v: protocol, token: control.token, ...hello, ...expected }, timeoutMs).then((reply) => {
-        if (reply.t !== "welcome" || reply.ok === false)
-          return refuse(new Error(reply.error ?? "hub refused handshake"));
-        if (expected.projectId && reply.projectId !== expected.projectId || expected.instanceId && reply.instanceId !== expected.instanceId || expected.projectRoot && reply.cwd !== expected.projectRoot) {
-          return refuse(Object.assign(new Error("connected hub has a different project or instance"), { code: 4404 }));
-        }
-        client.features = Object.freeze(Array.isArray(reply.features) ? reply.features.filter((feature) => typeof feature === "string") : []);
-        client.welcomeInstanceId = typeof reply.instanceId === "string" && reply.instanceId ? reply.instanceId : undefined;
-        clearTimeout(timer);
-        resolve(client);
-      });
-    });
-  }
-  request(msg, timeoutMs = 30000) {
-    if (this.ws.readyState !== WebSocket.OPEN)
-      return Promise.resolve({ ok: false, error: "hub connection is not open" });
-    const rid = this.nextRid++;
-    return new Promise((resolve) => {
-      const timer = timeoutMs ? setTimeout(() => (this.pending.delete(rid), resolve({ ok: false, error: `no answer from the hub within ${Math.round(timeoutMs / 1000)} s` })), timeoutMs) : undefined;
-      this.pending.set(rid, (reply) => (clearTimeout(timer), resolve(reply)));
-      this.ws.send(JSON.stringify({ ...msg, rid }));
-    });
-  }
-  send(msg) {
-    this.ws.send(JSON.stringify(msg));
-  }
-  close() {
-    this.ws.close();
-  }
+  return { ...moduleConfig.modules.length ? { adapter_modules: moduleConfig.modules } : {}, ...adapters !== undefined ? { adapters } : {}, ...Object.keys(instances).length ? { instances } : {}, catalog, ignored };
 }
 
 // src/hub/lifecycle-schema.ts
