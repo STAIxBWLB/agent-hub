@@ -54,9 +54,9 @@ test("custom native stage schemas remain isolated and preserve default profile t
 function rig(mode: SdlcMode) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-custom-lifecycle-")), board = new Board(join(dir, "hub.db")); cleanup.push(() => { board.close(); rmSync(dir, { recursive: true, force: true }); });
   let config = sdlcConfig(raw(mode)), head = A;
-  const gh: SdlcGh = async args => ({ code: 0, stdout: JSON.stringify(args[0] === "pr" ? { headRefOid: head, state: "OPEN", reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], files: [] } : { data: { repository: { pullRequest: { headRefOid: head, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) });
-  const tasks = new Tasks({ board, bus: new Bus({ batchMs: 0 }), cwd: dir, project: "fixture", notify: () => {}, routing: () => loadRouting(dir), roles: { codex: ["implementer"], kimi: ["reviewer"] }, sdlc: { config: () => config, gh } });
-  const task = board.propose(USER, { title: "fixture", class: "implement" }); board.update(task.id, USER, "fixture", { state: "in_progress", owner: "codex", reviewer: "kimi" });
+  const gh: SdlcGh = async args => ({ code: 0, stdout: JSON.stringify(args[0] === "pr" ? { headRefOid: head, state: "OPEN", reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], files: [], changedFiles: 0 } : { data: { repository: { pullRequest: { headRefOid: head, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) });
+  const tasks = new Tasks({ board, bus: new Bus({ batchMs: 0 }), cwd: dir, project: "fixture", repository: "owner/repo", notify: () => {}, routing: () => loadRouting(dir), roles: { codex: ["implementer"], kimi: ["reviewer"] }, sdlc: { config: () => config, gh } });
+  const task = board.propose(USER, { title: "fixture", class: "implement", plan: { paths: ["."] } }); board.update(task.id, USER, "fixture", { state: "in_progress", owner: "codex", reviewer: "kimi" });
   tasks.recordLifecycle(USER, task.id, { stage: "draft", repo: "owner/repo", issue: 1, pr: 2, localHead: A, localResult: "passed" });
   return { tasks, board, id: task.id, setHead: (v: string) => { head = v; }, setConfig: (v: typeof config) => { config = v; } };
 }

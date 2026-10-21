@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
-import { Tasks } from "../src/hub/tasks.ts";
+import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { sdlcConfig } from "../src/hub/sdlc.ts";
 const A = "a".repeat(40), B = "b".repeat(40), closes: (() => void)[] = [];
@@ -12,14 +12,15 @@ afterEach(() => { for (const close of closes.splice(0).reverse()) close(); });
 function rig(mode: "off" | "advise" | "enforce" = "enforce") {
  const cwd=mkdtempSync(join(tmpdir(),"ahub-plan-conformance-")),board=new Board(join(cwd,"hub.db")),bus=new Bus({batchMs:0}), routing=loadRouting(cwd);
  const state={mode,head:A,paths:["src/a.ts","src/extra.ts"],complete:true, calls:[] as string[][],gate:undefined as Promise<void>|undefined};
- const tasks=new Tasks({cwd,project:"fixture",repository:"o/r",board,bus,routing:()=>routing,notify:()=>{},sdlc:{config:()=>sdlcConfig({mode:state.mode,required_checks:["gate"]}),gh:async args=>{
+ const deps: TasksDeps={cwd,project:"fixture",repository:"o/r",board,bus,routing:()=>routing,notify:()=>{},sdlc:{config:()=>sdlcConfig({mode:state.mode,required_checks:["gate"]}),gh:async args=>{
  state.calls.push(args); await state.gate;
  return {code:0,stdout:JSON.stringify(args[0]==="pr"?{headRefOid:state.head,state:"OPEN",reviewDecision:"APPROVED",reviewRequests:[],statusCheckRollup:[{name:"gate",conclusion:"SUCCESS"}],files:state.paths.map(path=>({path})),changedFiles:state.paths.length+(state.complete?0:1)}:{data:{repository:{pullRequest:{headRefOid:state.head,reviewThreads:{nodes:[],pageInfo:{hasNextPage:false}}}}}})};
- }}});
+ }}};
+ const tasks=new Tasks(deps);
  const row=board.propose("user",{title:"conformance",class:"implement",plan:{paths:["src/a.ts","src/untouched.ts"]}});
  board.update(row.id,"user","accepted",{state:"in_progress",owner:"codex",reviewer:"claude"});
  board.update(row.id,"codex","done",{state:"in_review",refs:{commit:A},sdlc:{stage:"review",repo:"o/r",issue:1,pr:2,localHead:A,localResult:"passed"}});
- closes.push(()=>{bus.closeJournal();board.close();rmSync(cwd,{recursive:true,force:true});}); return {cwd,board,bus,tasks,state,id:row.id};
+ closes.push(()=>{bus.closeJournal();board.close();rmSync(cwd,{recursive:true,force:true});}); return {cwd,board,bus,tasks,deps,state,id:row.id};
 }
 test("S2 enforce refuses outside paths before verdict effects; amendment permits approval",async()=>{
  const r=rig(),before=r.board.get(r.id);
@@ -79,4 +80,47 @@ test("S2 a plan in another repository never covers identically named PR files",a
  expect((await r.tasks.lifecycleStatus(r.id) as any).planConformance.state).toBe("unknown");
  await expect(r.tasks.review("user",r.id,"approved",undefined,undefined,A)).rejects.toThrow(/plan conformance unknown/i);
  const report=await r.tasks.deliveryQueue("o/r");expect(report.rows.every(row=>!row.ready)).toBe(true);
+});
+
+test("S2 a changed plan cannot resurrect a departure receipt by reverting its text", async () => {
+ const r=rig(),original=r.board.get(r.id)!.plan!;
+ await r.tasks.acceptPlanDeparture("user",r.id,A,"bounded departure");
+ r.board.update(r.id,"codex","accepted",{plan:{paths:["src/"]}});
+ r.board.update(r.id,"codex","accepted",{plan:original});
+ await expect(r.tasks.review("user",r.id,"approved",undefined,undefined,A)).rejects.toThrow(/plan conformance/i);
+});
+test("S2 an observed head move away and back invalidates the previous acceptance", async () => {
+ const r=rig();await r.tasks.acceptPlanDeparture("user",r.id,A,"bounded departure");
+ r.state.head=B;await r.tasks.lifecycleStatus(r.id);r.state.head=A;
+ await expect(r.tasks.review("user",r.id,"approved",undefined,undefined,A)).rejects.toThrow(/plan conformance/i);
+ await r.tasks.acceptPlanDeparture("user",r.id,A,"accept current inventory again");
+ expect((await r.tasks.review("user",r.id,"approved",undefined,undefined,A)).state).toBe("approved");
+});
+test("S2 relinking away and back invalidates the previous acceptance", async () => {
+ const r=rig();await r.tasks.acceptPlanDeparture("user",r.id,A,"bounded departure");
+ r.tasks.recordLifecycle("user",r.id,{pr:3});r.tasks.recordLifecycle("user",r.id,{pr:2,localHead:A,localResult:"passed"});
+ await expect(r.tasks.review("user",r.id,"approved",undefined,undefined,A)).rejects.toThrow(/plan conformance/i);
+});
+test("S2 private acceptance refuses before any remote read and public view reveals only existence", async () => {
+ const r=rig();await r.tasks.acceptPlanDeparture("user",r.id,A,"PRIVATE_REASON_CANARY");
+ r.board.update(r.id,"user","private",{signals:["pii"]});r.state.calls=[];
+ await expect(r.tasks.acceptPlanDeparture("user",r.id,A,"another reason")).rejects.toThrow(/private/i);
+ expect(r.state.calls).toEqual([]);
+ const view=r.tasks.publicView(r.board.get(r.id)!,true);
+ expect(view.planDepartureAccepted).toBe(true);expect(JSON.stringify(view)).not.toContain("PRIVATE_REASON_CANARY");expect(JSON.stringify(view)).not.toContain("src/extra.ts");
+});
+
+test("S2 a positively observed inventory change cannot resurrect its old person receipt", async () => {
+ const r=rig();await r.tasks.acceptPlanDeparture("user",r.id,A,"bounded departure");
+ r.state.paths.push("src/new.ts");await r.tasks.lifecycleStatus(r.id);r.state.paths.pop();
+ await expect(r.tasks.review("user",r.id,"approved",undefined,undefined,A)).rejects.toThrow(/plan conformance/i);
+});
+
+test("S2 a restarted host cannot revive consent after an unpersisted refused-head observation", async () => {
+ const r=rig();await r.tasks.acceptPlanDeparture("user",r.id,A,"bounded departure");
+ r.state.head=B;await expect(r.tasks.review("user",r.id,"approved",undefined,undefined,A)).rejects.toThrow();
+ r.state.head=A;const restarted=new Tasks(r.deps);
+ await expect(restarted.review("user",r.id,"approved",undefined,undefined,A)).rejects.toThrow(/plan conformance/i);
+ await restarted.acceptPlanDeparture("user",r.id,A,"person accepts in the new host lifetime");
+ expect((await restarted.review("user",r.id,"approved",undefined,undefined,A)).state).toBe("approved");
 });

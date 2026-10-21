@@ -37,8 +37,8 @@ for (const profile of [...PROFILE_NAMES, custom()] as ProfileSelection[]) {
     tasks.accept("codex", task.id, { proof: ["x".repeat(512)], risks: ["y".repeat(512)] } as any);
     expect(board.get(task.id)?.plan).toMatchObject({ proof: ["x".repeat(512)], risks: ["y".repeat(512)] });
   });
-  test(`#481 S2 every ${label} exported plan schema advertises bounded proof and risks`, () => {
-    const tools = profileTaskTools(profile);
+  test(`#481 S2 every ${label} enabled plan schema advertises bounded proof and risks`, () => {
+    const tools = profileTaskTools(profile, undefined, true);
     for (const name of ["hub_task_propose", "hub_task_accept", "hub_backlog_split"]) {
       const properties = tools.find(tool => tool.name === name)!.inputSchema.properties as any;
       const plan = name === "hub_backlog_split" ? properties.parts.items.properties.plan : properties.plan;

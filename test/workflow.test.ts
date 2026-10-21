@@ -18,10 +18,10 @@ function rig(mode: SdlcMode = "enforce", privateTask = false, workflow: "none" |
   const dir = mkdtempSync(join(tmpdir(), "ahub-workflow-")), board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 }), notices: string[] = [];
   cleanups.push(() => { board.close(); rmSync(dir, { force: true, recursive: true }); });
   let head = A;
-  const gh: SdlcGh = async args => ({ code: 0, stdout: JSON.stringify(args[0] === "pr" ? { headRefOid: head, state: "OPEN", reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], files: [] } : { data: { repository: { pullRequest: { headRefOid: head, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) });
+  const gh: SdlcGh = async args => ({ code: 0, stdout: JSON.stringify(args[0] === "pr" ? { headRefOid: head, state: "OPEN", reviewDecision: "APPROVED", reviewRequests: [], statusCheckRollup: [{ name: "gate", conclusion: "SUCCESS" }], files: [], changedFiles: 0 } : { data: { repository: { pullRequest: { headRefOid: head, reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } }) });
   const config = sdlcConfig({ mode, workflow, required_checks: ["gate"] }, "0.12.35");
-  const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture", routing: () => loadRouting(dir), notify: text => notices.push(text), sdlc: { config: () => config, gh } });
-  const parent = board.propose(USER, { title: privateTask ? "private marker 900101-1234567" : "parent", class: "implement", ...(privateTask ? { signals: ["pii"] } : {}) });
+  const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture", repository: "owner/repo", routing: () => loadRouting(dir), notify: text => notices.push(text), sdlc: { config: () => config, gh } });
+  const parent = board.propose(USER, { title: privateTask ? "private marker 900101-1234567" : "parent", class: "implement", plan: { paths: ["."] }, ...(privateTask ? { signals: ["pii"] } : {}) });
   board.update(parent.id, USER, "accepted", { state: "in_progress", owner: "codex", reviewer: USER });
   tasks.recordLifecycle(USER, parent.id, { repo: "owner/repo", issue: 1, pr: 2, localHead: A, localResult: "passed", reviewedHead: A });
   return { board, tasks, parent: parent.id, config, notices, head: (v: string) => { head = v; } };
