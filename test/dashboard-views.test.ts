@@ -99,3 +99,46 @@ test("the key list names every key the page handles and the help control is labe
  for(const text of ["1","7","?","Esc","Switch view","Show this list","Close the open sheet"])expect(block).toContain(text);
  expect(html).toMatch(/id="keys-open"[^>]*aria-label="Keyboard shortcuts"/);expect(html).toMatch(/id="keys-close"[^>]*aria-label="Close shortcuts"/);
 });
+
+// #469 R2: the sprite is copied, capped, uniform and licensed; every icon sits beside text or carries a label.
+test("the icon sprite has at most 20 Tabler symbols, one stroke width, no external reference and a notice (#469 R2)",()=>{
+ const sprite=/<defs>([\s\S]*?)<\/defs>/.exec(html)![1]!;
+ const ids=[...sprite.matchAll(/<symbol id="([^"]+)" viewBox="0 0 24 24">/g)].map(match=>match[1]!);
+ expect(ids.length).toBeGreaterThan(0);expect(ids.length).toBeLessThanOrEqual(20);expect(new Set(ids).size).toBe(ids.length);
+ // Every symbol is path data only, so nothing in it can fetch, script or restyle (the CSP also forbids it).
+ expect(sprite.replace(/<symbol id="[^"]+" viewBox="0 0 24 24">|<\/symbol>|<path d="[^"]+" ?\/>|\s+/g,"")).toBe("");
+ // One stroke width, set once on .icon, not per symbol.
+ const widths=new Set([...html.matchAll(/stroke-width:([\d.]+)/g)].map(match=>match[1]));expect(sprite).not.toContain("stroke-width");
+ expect(html).toMatch(/\.icon\{[^}]*stroke-width:2;/);expect(widths.has("2")).toBe(true);
+ expect(sprite).not.toMatch(/href=|xlink|<image|<script|data:/);
+ const uses=[...html.matchAll(/<use href="#([^"]+)"/g)].map(match=>match[1]!);
+ expect(uses.filter(id=>!ids.includes(id))).toEqual([]);expect(ids.filter(id=>!uses.includes(id))).toEqual([]);
+ const notices=readFileSync(new URL("../THIRD_PARTY_NOTICES.md",import.meta.url),"utf8");
+ expect(notices).toContain("## Tabler Icons");expect(notices).toContain("MIT License");expect(notices).toContain("Paweł Kuna");
+ expect(html.match(/Tabler/g)).toHaveLength(1);expect(html).toContain("THIRD_PARTY_NOTICES.md");
+});
+test("every icon is hidden from assistive tech and sits beside a text label, or its button carries an aria-label (#469 R2)",()=>{
+ const markup=html.slice(html.indexOf('<div class="shell">'),html.indexOf("<main"));
+ for(const icon of markup.match(/<svg class="icon"[^>]*>/g)!)expect(icon).toContain('aria-hidden="true"');
+ for(const button of markup.matchAll(/<button\b([^>]*)>([\s\S]*?)<\/button>/g)){
+  const [,attributes,body]=button,withIcon=body!.includes('class="icon"');if(!withIcon)continue;
+  const text=body!.replace(/<svg[\s\S]*?<\/svg>/g,"").replace(/<[^>]+>/g,"").trim();
+  expect(text.length>0||/aria-label="[^"]+"/.test(attributes!),attributes).toBe(true);
+ }
+ const nav=/<nav id="dashboard-nav"[\s\S]*?<\/nav>/.exec(html)![0];
+ expect([...nav.matchAll(/data-view-target="([^"]+)"/g)].map(match=>match[1])).toEqual(["board","office","stream","agents","message","memory","settings"]);
+ for(const button of nav.matchAll(/<button\b[^>]*data-view-target[^>]*>([\s\S]*?)<\/button>/g))expect(button[1]).toMatch(/<span class="nav-label">[A-Za-z]+<\/span>/);
+});
+// AC3 on the markup and CSS side: below 1024px the nav scrolls inside itself, from 1024px it is a sidebar, and no rule needs a wide page.
+test("the shell uses a sidebar from 1024px, scrolling tabs below it, and keeps the sideways scroll inside the nav (#469 R2 AC3)",()=>{
+ const css=/<style>([\s\S]*?)<\/style>/.exec(html)![1]!.replace(/\/\*[\s\S]*?\*\//g,"");
+ const rule=(selector:string)=>[...css.matchAll(/([^{}]+)\{([^}]+)\}/g)].find(match=>match[1]!.split(",").some(item=>item.trim()===selector))?.[2]??"";
+ expect(rule(".view-nav")).toMatch(/overflow-x:auto/);expect(rule(".view-nav")).toMatch(/display:flex/);expect(rule(".view-nav button")).toMatch(/flex:none/);
+ const wide=/@media\(min-width:1024px\)\{([\s\S]*?)\n\}/.exec(css)![1]!;
+ expect(wide).toMatch(/\.shell\{[^}]*grid-template-columns:200px minmax\(0,1fr\)/);expect(wide).toMatch(/\.view-nav\{[^}]*flex-direction:column/);expect(wide).toMatch(/\.topbar\{[^}]*grid-column:1\/-1/);
+ expect(css).toMatch(/@media\(max-width:1023px\)/);expect(css).not.toMatch(/@media\(max-width:1024px\)/);
+ // Grid and flex children that could force the page wider than the viewport carry min-width:0.
+ for(const selector of [".shell-body","main",".topbar-end",".brand"])expect(rule(selector),selector).toMatch(/min-width:0/);
+ expect(rule(".shell")).toMatch(/grid-template-columns:minmax\(0,1fr\)/);
+ expect(html).toMatch(/<meta name="viewport" content="width=device-width,initial-scale=1">/);
+});
