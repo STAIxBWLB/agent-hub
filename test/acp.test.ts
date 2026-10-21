@@ -1197,9 +1197,47 @@ test("watchdog withdraws a pending ACP approval and fences a late person answer 
   expect(responses).toEqual([{ outcome: "cancelled" }]); expect(acp.state).toBe("offline");
 });
 
-test("ACP mode acknowledgement cannot outpace cancellation gate release",async()=>{
- class Peer extends AcpPeer{nativeActivity=false;protected override touch(){super.touch();if(this.state==="busy")this.nativeActivity=true}expire(){this.onWatchdog()}}
- const peer=new Peer("kimi",{cmd:[...FAKE,"--cancel-held","--mode-after-cancel","--batch-cancel-mode"],cwd:process.cwd(),cancelWaitMs:150});await peer.start();try{await peer.deliver([newEnvelope("user","CANCEL_WAIT",{to:["kimi"]})]);await until(()=>peer.nativeActivity);peer.expire();expect(peer.state).toBe("busy");await peer.setPermissionMode("ask");expect(peer.state).toBe("idle");}finally{await peer.stop()}
+test("ACP mode acknowledgement cannot outpace cancellation gate release", async () => {
+  class Peer extends AcpPeer {
+    nativeActivity = false;
+    protected override touch() { super.touch(); if (this.state === "busy") this.nativeActivity = true; }
+    expire() { this.onWatchdog(); }
+  }
+  const peer = new Peer("kimi", { cmd: [...FAKE, "--cancel-held", "--mode-after-cancel", "--batch-cancel-mode"], cwd: process.cwd(), cancelWaitMs: 150 });
+  let release!: () => void;
+  const heldRelease = new Promise<void>(resolve => { release = resolve; });
+  let entered!: () => void;
+  const awaitingRelease = new Promise<void>(resolve => { entered = resolve; });
+  const order: string[] = [];
+  let mode: Promise<void> | undefined;
+  await peer.start();
+  try {
+    await peer.deliver([newEnvelope("user", "CANCEL_WAIT", { to: ["kimi"] })]);
+    await until(() => peer.nativeActivity);
+    peer.expire();
+    expect(peer.state).toBe("busy");
+    const waiting = (peer as unknown as { cancelWait: { reported: boolean; released: PromiseLike<void> } }).cancelWait;
+    const nativeRelease = waiting.released;
+    // The fake batches the cancelled result before the mode ack. Hold the published release promise
+    // beyond native cleanup, so extra async hops cannot hide a mode completion that skipped this gate.
+    waiting.released = {
+      then(fulfilled, rejected) {
+        order.push("mode-awaits-cancel"); entered();
+        return heldRelease.then(fulfilled, rejected);
+      },
+    };
+    mode = peer.setPermissionMode("ask").then(() => { order.push("mode-complete"); });
+    const first = await Promise.race([awaitingRelease.then(() => "cancel-gate"), mode.then(() => "mode-complete")]);
+    expect(first).toBe("cancel-gate");
+    expect(waiting.reported).toBe(true);
+    await nativeRelease;
+    expect(peer.state).toBe("idle");
+    expect(order).toEqual(["mode-awaits-cancel"]);
+    order.push("release-cancel-gate"); release();
+    await mode;
+    expect(order).toEqual(["mode-awaits-cancel", "release-cancel-gate", "mode-complete"]);
+    expect(peer.state).toBe("idle");
+  } finally { release(); await mode?.catch(() => {}); await peer.stop(); }
 });
 
 // #542 D4/AC4: a started, unfinished tool call is running work, not silence; past its own ceiling the turn is cancelled.
