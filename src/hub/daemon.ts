@@ -113,7 +113,7 @@ import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
 import { crashPlan, lossNotice, readSessions, removeSessions, writeSessions, type SessionsFile } from "./crash.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
-import { soleWorktree, branchHeads, changedPaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
+import { soleWorktree, branchHeads, changedPaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, budgetNow, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContinuity } from "./recovery-continuity.ts";
 import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate } from "../cli/terminal-recovery.ts";
@@ -481,6 +481,8 @@ export interface DaemonOptions {
   /** Host-only snapshot/probe seams; never read from project config or tool arguments. */
   snapshot?: typeof snapshot;
   snapshotBurstMs?: number;
+  /** Host-only (#661): the clock the shared snapshot Git budget reads (default performance.now). A test holds it fixed so a slow runner cannot spend the 250 ms; production never sets it and no config key or tool reaches it. */
+  snapshotClock?: () => number;
   checkoutBranch?: typeof mainCheckoutBranch;
   /** Host-only admission transport; never selected by project config or tools. */
   releaseHostAdmission?: (cwd: string) => Promise<ReleaseHostAdmission>;
@@ -1217,8 +1219,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!peer || peer.state === "offline") return undefined;
     let token = checkConnections.get(peer);
     if (!token) { token = randomUUID(); checkConnections.set(peer, token); }
-    const native = isWsPeer(peer) || isCodexPeer(peer) || isPiPeer(peer) ? peer.sessionGeneration : peer.recoveryMetadata?.().sessionId;
-    if (isPiPeer(peer) && native === undefined) return undefined;
+    const hasGeneration = "sessionGeneration" in peer;
+    const native = hasGeneration ? peer.sessionGeneration : peer.recoveryMetadata?.().sessionId;
+    if (hasGeneration && native === undefined) return undefined;
     return `${instanceId}:${token}:${String(native ?? "")}`;
   };
   const currentCheck = (receipt: { task: number; owner: string; updated: number | string; generation: number | string; revision?: number }) => {
@@ -1696,8 +1699,9 @@ export async function startDaemon(opts: DaemonOptions) {
     const owner = bus.peers.get(peer);
     const state = bus.stateOf(peer);
     const session = contextSession(peer);
-    const generation = isWsPeer(owner) || isCodexPeer(owner) ? owner.sessionGeneration : undefined;
-    if (!owner || (isWsPeer(owner) && owner.claiming) || (state !== "idle" && state !== "busy") || (reason === "context" && (!session || turns.get(peer)?.private || contextPii(peer)))) return Promise.resolve(undefined);
+    const generationFenced = !!owner && owner.checkpointUsesSessionGeneration !== false && "sessionGeneration" in owner;
+    const generation = generationFenced ? owner.sessionGeneration : undefined;
+    if (!owner || (generationFenced && generation === undefined) || (isWsPeer(owner) && owner.claiming) || (state !== "idle" && state !== "busy") || (reason === "context" && (!session || turns.get(peer)?.private || contextPii(peer)))) return Promise.resolve(undefined);
     const openWork = board.list().some((t) => (["proposed", "in_progress", "changes_requested", "in_review"].includes(t.state) && t.owner === peer) || (t.state === "in_review" && t.reviewer === peer));
     if (!openWork && !bus.queued(peer) && !bus.hasInFlight(peer) && state !== "busy") {
       if (reason === "quota") log(`budget ${peer}: no open work, no checkpoint`);
@@ -1709,7 +1713,7 @@ export async function startDaemon(opts: DaemonOptions) {
       : `Checkpoint request: your native context window is near the configured threshold. Finish the step you are on and call hub_checkpoint {summary, request_id: "${requestId}"} with what you were doing, what is half done and what a fresh session would need. This only saves a checkpoint; keep your tasks and session. The operator decides whether to continue or restart. Do not include private task text.`;
     const ask = newEnvelope(HUB, body, { to: [peer], kind: "budget", priority: "important" });
     return new Promise((resolve) => {
-      const valid = () => !stopping && !recoveryActive() && bus.peers.get(peer) === owner && (!(isWsPeer(owner) || isCodexPeer(owner)) || owner.sessionGeneration === generation) && ["idle", "busy"].includes(bus.stateOf(peer)) && contextSession(peer) === session;
+      const valid = () => !stopping && !recoveryActive() && bus.peers.get(peer) === owner && (!generationFenced || owner.sessionGeneration === generation) && ["idle", "busy"].includes(bus.stateOf(peer)) && contextSession(peer) === session;
       const done = (summary: string | undefined) => {
         clearTimeout(timer);
         checkpointWaits.delete(peer);
@@ -1839,7 +1843,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!snapshotBudget) {
       const requested = opts.snapshotBurstMs ?? 250;
       const ms = Number.isFinite(requested) ? Math.max(1, Math.min(250, requested)) : 250;
-      snapshotBudget = { deadline: performance.now() + ms };
+      const now = opts.snapshotClock;
+      snapshotBudget = { deadline: (now ? now() : performance.now()) + ms, ...(now ? { now } : {}) };
       setImmediate(() => { snapshotBudget = undefined; snapshotBudgetNoticed = false; });
     }
     return snapshotBudget;
@@ -2708,13 +2713,14 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const permissionDisplay = (id: string, peer: PeerAdapter | undefined): string => {
     if (readOnlyPeer(id)) return "read-only";
-    if (isAcpPeer(peer) && ["unknown", "unmanaged"].includes(peer.permissionModeState)) return peer.permissionModeState;
-    if (starting.has(id) && (isAcpPeer(peer) || isCodexPeer(peer))) return peer.getPermissionMode();
     if (definitionOf(id)?.transport === "claude-channel" && isWsPeer(peer) && peer.state !== "offline") {
       const launch = claudePermissionLaunch(id);
       if (!launch || claudePermissionGenerations.get(id) !== peer.sessionGeneration) return "unverified";
     }
-    return permissionMode(id);
+    const native = peer?.permissionModeState;
+    // An offline ask clears the hub choice, not a stopped ACP runtime's retained native field.
+    if (peer?.state === "offline" && !starting.has(id) && isPermissionMode(native)) return permissionMode(id);
+    return native ?? permissionMode(id);
   };
   const permissionStatus = (id: string, peer: PeerAdapter | undefined): Record<string, unknown> => {
     const note = definitionOf(id)?.permission.unmanagedStatusNote;
@@ -3182,7 +3188,7 @@ export async function startDaemon(opts: DaemonOptions) {
                   if (!end.head) throw new Error("end HEAD evidence is unavailable");
                   const dirtyPaths = knownChangedPaths(turnRepo, end.head, end.tree, end.budget);
                   if (!dirtyPaths) throw new Error("end worktree diff evidence is unavailable");
-                  const checkBudget = () => { if (end.budget && performance.now() >= end.budget.deadline) throw new SnapshotBudgetExceeded(); };
+                  const checkBudget = () => { if (end.budget && budgetNow(end.budget) >= end.budget.deadline) throw new SnapshotBudgetExceeded(); };
                   const dirty = new Set(dirtyPaths), dirtyScope = new Set(dirtyPaths), incoming = new Set(paths);
                   for (const path of dirtyPaths) {
                     checkBudget();
@@ -5211,8 +5217,11 @@ export async function startDaemon(opts: DaemonOptions) {
       if (nativeUnattended(peer)) return { ok: false, error: "Codex started --unattended already skips prompts; run ahub permission codex ask after it stops to clear the hub choice, then restart without --unattended" };
     }
     const from = permissionMode(peer);
+    const runtime: PeerAdapter = owner;
+    const nativeMode = runtime.permissionModeState;
+    if (nativeMode === "unknown" || nativeMode === "unmanaged") return { ok: false, error: `${peer} permission mode ${nativeMode}; inspect its native policy before changing modes` };
     try {
-      if (isAcpPeer(owner) || isCodexPeer(owner)) await owner.setPermissionMode(mode);
+      if (runtime.setPermissionMode) await runtime.setPermissionMode(mode);
     } catch (error) { return { ok: false, error: (error as Error).message }; }
     if (bus.peers.get(peer) !== owner || bus.stateOf(peer) === "offline") return { ok: false, error: `${peer} session changed; inspect status and retry` };
     permissionModes.set(peer, mode);

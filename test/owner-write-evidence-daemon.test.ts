@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { budgetNow } from "../src/hub/snapshots.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { hubGitSync } from "../src/hub/git.ts";
@@ -28,7 +29,7 @@ class NativeFixturePeer extends BasePeer {
   finish() { this.setState("idle"); }
 }
 
-async function fixture(extra: boolean, options: { snapshots?: boolean; privateWindow?: boolean; shadow?: boolean } = {}) {
+async function fixture(extra: boolean, options: { snapshots?: boolean; privateWindow?: boolean; shadow?: boolean; clock?: () => number } = {}) {
   const base = realPath(mkdtempSync(join(tmpdir(), "ahub-write-evidence-daemon-"))), project = join(base, "project");
   mkdirSync(project); cleanup.push(() => rmSync(base, { recursive: true, force: true }));
   const git = (...args: string[]) => {
@@ -55,6 +56,9 @@ async function fixture(extra: boolean, options: { snapshots?: boolean; privateWi
   const binary = join(base, "fake-codex"), stateDir = join(project, ".agenthub/state");
   writeFileSync(binary, `#!${process.execPath}\nawait import(${JSON.stringify(pathToFileURL(join(import.meta.dir, "fakes/codex-bin.ts")).href)});\n`, { mode: 0o700 });
   const daemon = await startDaemon({ cwd: project, stateDir, boundedTools: emulatedBoundedTools(), controlPort: 0,
+    // #661: the snapshot budget reads a clock the test holds, so a slow runner cannot spend the 250 ms; a test of the exhausted case
+    // passes a clock that jumps past it.
+    snapshotClock: options.clock ?? (() => 0),
     codexAppPort: freePort(), codexProxyPort: freePort(),
     config: { ...DEFAULT_CONFIG, instances, codex_bin: binary, batch_ms: 0,
       roles: { ...DEFAULT_CONFIG.roles, ...(extra ? { [peer]: ["implementer"] } : {}) },
@@ -176,6 +180,40 @@ test("#498 native completion records empty-turn stalls and file changes clear th
   await f.runTurn(); expect(await f.stalls(id)).toEqual([]);
   await f.runTurn(); expect(await f.stalls(id)).toHaveLength(1);
 }, 20_000);
+
+// #661: a turn whose snapshot budget ran out records "unknown", and unknown resets the no-writes streak. That is the documented rule (#576:
+// never a stale baseline). It made the test above depend on runner speed: with the real clock the empty turns after a write could tip over
+// on a slow runner. The test now holds the budget clock, so both halves are deterministic.
+test("#661 an exhausted snapshot budget makes an empty turn unknown, which resets the streak instead of counting it", async () => {
+  let t = 0;
+  const f = await fixture(false, { clock: () => (t += 1000) }), id = await f.make(); // every read is a second later: the 250 ms is gone at once
+  for (let turn = 0; turn < 4; turn++) {
+    await io(); f.native!.begin(); await io(); f.native!.finish(); await io();
+    expect(await f.stalls(id), "turn " + (turn + 1)).toEqual([]);
+  }
+}, 20_000);
+
+test("#661 the same empty turns raise the stall when the budget clock does not move", async () => {
+  const f = await fixture(false), id = await f.make();
+  await f.runTurn(); expect(await f.stalls(id)).toEqual([]);
+  await f.runTurn(); expect(await f.stalls(id)).toEqual([expect.objectContaining({ cause: expect.objectContaining({ kind: "no-writes", turns: 2 }) })]);
+}, 20_000);
+
+test("#661 the budget clock is a host-only seam: production reads performance.now, the share stays 250 ms, no config key reaches it", () => {
+  const daemon = readFileSync(new URL("../src/hub/daemon.ts", import.meta.url), "utf8");
+  expect(daemon).toMatch(/snapshotClock\?: \(\) => number;/);
+  expect(daemon).toContain("const requested = opts.snapshotBurstMs ?? 250;"); // the whole statement: "?? 2500" would contain the shorter text
+  expect(daemon).toContain("Math.min(250, requested)"); // the clamp that keeps the share at 250 ms
+  expect(daemon).toContain("(now ? now() : performance.now()) + ms"); // unset means the real clock
+  expect(daemon.match(/snapshotClock/g)).toHaveLength(2); // the declaration and the one read that builds the budget
+  expect(daemon).not.toMatch(/config\.[a-z_.]*snapshotClock|config\.snapshots\.(clock|budget)/); // no configuration key chooses it
+  // Every deadline comparison goes through budgetNow: a stray performance.now() would mix the real clock with an injected deadline. The
+  // incoming-HEAD-move loop in the turn end is the one reader no test here reaches with a clock, so this is a pin, not a behaviour test.
+  const snapshots = readFileSync(new URL("../src/hub/snapshots.ts", import.meta.url), "utf8");
+  for (const [name, source] of [["daemon.ts", daemon], ["snapshots.ts", snapshots]] as const) expect(source, name).not.toMatch(/performance\.now\(\)\s*(>=|<=|>|<)\s*[\w.]*deadline|deadline\s*(>=|<=|>|<)\s*performance\.now\(\)|deadline\s*-\s*performance\.now\(\)/);
+  expect(budgetNow({ deadline: 5 })).toBeGreaterThan(0); // no clock: the real one
+  expect(budgetNow({ deadline: 5, now: () => 42 })).toBe(42);
+});
 
 test("#498 successful task-tool effects reset a native no-write streak while task-list reads do not", async () => {
   const f = await fixture(false), id = await f.make();
