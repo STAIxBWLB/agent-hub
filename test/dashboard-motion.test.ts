@@ -26,6 +26,10 @@ class Node {
   private drop(nodes: Node[]) { for (const node of nodes) { node.parent = null; } if (focus.active && !focus.active.isConnected) focus.active = null; }
   append(...nodes: Node[]) { for (const node of nodes) { node.parent?.children.splice(node.parent.children.indexOf(node), 1); node.parent = this; this.children.push(node); } }
   replaceChildren(...nodes: Node[]) { const old = this.children; this.children = []; this.drop(old); this.append(...nodes); }
+  /** As in a browser: leaves the parent, loses focus when it held it, and is a no-op on a node that has no parent. */
+  remove() { const parent = this.parent; if (!parent) return; parent.children.splice(parent.children.indexOf(this), 1); this.parent = null; if (focus.active && !focus.active.isConnected) focus.active = null; }
+  get childNodes(): Node[] { return this.children; }
+  cloneNode(deep = false): Node { const copy = new Node(this.tag); copy.className = this.className; copy.textContent = this.textContent; for (const name of this.classes) copy.classes.add(name); copy.attrs = { ...this.attrs }; if (deep) copy.append(...this.children.map(child => child.cloneNode(true))); return copy; }
   setAttribute(key: string, value: string) { this.attrs[key] = value; }
   getAttribute(key: string) { return this.attrs[key] ?? null; }
   addEventListener(name: string, fn: (event: any) => unknown) { this.handlers.set(name, [...(this.handlers.get(name) ?? []), fn]); }
@@ -266,4 +270,86 @@ test("notices are an aria-live toast stack: errors stay until dismissed, a succe
   // Under reduced motion a success stays.
   const still = run(true); still.notice("Action accepted."); still.advance(60_000);
   expect(still.stack.children.map(toast => toast.children[0]!.textContent)).toEqual(["Action accepted."]);
+});
+
+// #296: the first-load blocks come back on a project switch until THAT project's snapshot renders, and "No project selected" is only for
+// the case where no running project is selected. The blocks are the page's own shipped markup, cloned at load, so nothing is written twice.
+function resetHarness() {
+  const start = html.indexOf("const firstLoad ="), end = html.indexOf("function projectName(");
+  const nodes = new Map<string, Node>(), get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
+  // The two containers hold exactly the markup the page ships, built from the real HTML by a tiny parser of the skeleton shape.
+  const make = (tag: string, cls: string, ...kids: Node[]) => { const node = el(tag, undefined, cls); node.append(...kids); return node; };
+  const bars = (n: number, tall = 0) => Array.from({ length: n }, (_, i) => make("span", "skeleton-bar" + (i >= n - tall ? " skeleton-tall" : "")));
+  get("tasks").append(make("div", "skeleton skeleton-board", ...[3, 2, 2, 1, 2].map(n => make("div", "skeleton-col", ...bars(n, n - 1)))), el("p", "Loading the board...", "empty"));
+  get("peers").append(make("div", "skeleton", ...bars(3, 3)), el("p", "Loading peers...", "empty"));
+  const api = runInNewContext(`let selectedProjectId='',selectedInstanceId='',snapshotValid=true,cursor=1,eventCount=1,viewGeneration=0,streamFilter='',draftChoicesPending=false,officePrev=null,officeScene=null,lastSnapshot=null;
+    const officeDesks=new Map(),officeCards=new Map(),signatures=new Map(),managerMode=true,$=get;
+    const closeTaskDetail=()=>{},renderNeedsAttention=()=>{},applyDashboardView=()=>{},saveDraft=()=>{},restoreDraft=()=>{},syncMutationControls=()=>{},peerOptions=()=>{},notice=()=>{};
+    ${html.slice(start, end)}
+    ({reset:resetView})`, { get, empty: (target: Node, text: string) => target.append(el("p", text, "empty")) } as any) as { reset: (id: string, instance: string) => void };
+  return { api, get, columns: () => all(get("tasks")).filter(node => node.className === "skeleton-col").length, bars: () => all(get("peers")).filter(node => node.className.includes("skeleton-bar")).length, text: (id: string) => all(get(id)).map(node => node.textContent).filter(Boolean).join("|") };
+}
+
+test("a project switch keeps the board and peer skeletons until that project's snapshot renders (#296)", () => {
+  const f = resetHarness();
+  expect(f.columns()).toBe(5); expect(f.bars()).toBe(3); // the page as shipped
+  f.api.reset("project-a", "instance-a"); // a running project is selected and its first /snapshot has not arrived
+  expect(f.columns(), "board skeleton survives the reset").toBe(5); expect(f.bars(), "peer skeleton survives the reset").toBe(3);
+  expect(f.text("tasks")).toContain("Loading the board"); expect(f.text("peers")).toContain("Loading peers");
+  expect(f.text("tasks")).not.toContain("No project selected"); expect(f.text("peers")).not.toContain("No project selected");
+  // A second switch shows them again, as new nodes (a node can sit in the page once).
+  const before = all(f.get("tasks")).filter(node => node.className === "skeleton-col");
+  f.api.reset("project-b", "instance-b");
+  const after = all(f.get("tasks")).filter(node => node.className === "skeleton-col");
+  expect(after).toHaveLength(5); expect(after.some(node => before.includes(node))).toBe(false);
+});
+
+test("No project selected is only for the case where no running project is selected (#296)", () => {
+  const f = resetHarness();
+  f.api.reset("", ""); // nothing selected
+  expect(f.columns()).toBe(0); expect(f.text("tasks")).toBe("No project selected."); expect(f.text("peers")).toBe("No project selected.");
+  const g = resetHarness();
+  g.api.reset("project-a", ""); // a project that has no running instance never gets a snapshot, so it must not wait on a skeleton forever
+  expect(g.columns()).toBe(0); expect(g.text("tasks")).toBe("No project selected.");
+});
+
+test("a toast that is removed or expires does not take focus from a surviving toast's Dismiss button (#296)", () => {
+  const run = () => {
+    focus.active = null;
+    const stack = new Node(); stack.root = true;
+    let now = 0, seq = 0; const timers = new Map<number, { at: number; fn: () => void }>();
+    const advance = (ms: number) => { now += ms; for (const [id, timer] of [...timers].sort((a, b) => a[1].at - b[1].at)) if (timer.at <= now) { timers.delete(id); timer.fn(); } };
+    const code = /function notice\(text, error = false\) \{[\s\S]*?\n\}/.exec(html)![0];
+    const api = runInNewContext(`${code}; ({notice})`, { $: () => stack, el, setTimeout: (fn: () => void, ms: number) => { timers.set(++seq, { at: now + ms, fn }); return seq; }, globalThis: { matchMedia: () => ({ matches: false }) } } as any) as any;
+    const dismissOf = (index: number) => stack.children[index]!.children[1]!;
+    return { stack, notice: api.notice as (text: string, error?: boolean) => void, advance, dismissOf };
+  };
+  // 1. Another toast is dismissed by hand.
+  let r = run();
+  r.notice("first", true); r.notice("second", true);
+  const first = r.stack.children[0]!, firstDismiss = r.dismissOf(0); firstDismiss.focus(); expect(focus.active).toBe(firstDismiss);
+  r.dismissOf(1).emit("click");
+  expect(r.stack.children).toEqual([first]); expect(first.isConnected).toBe(true); expect(focus.active, "dismissing another toast").toBe(firstDismiss);
+  // 2. A new toast arrives: the survivors keep their nodes and focus.
+  r = run(); r.notice("kept", true);
+  const kept = r.stack.children[0]!, keptDismiss = r.dismissOf(0); keptDismiss.focus();
+  r.notice("newcomer", true);
+  expect(r.stack.children[0], "the survivor is the same node").toBe(kept); expect(focus.active, "a new toast arriving").toBe(keptDismiss);
+  // 3. A success toast expires while a surviving error toast's Dismiss is focused.
+  r = run(); r.notice("stays", true); r.notice("fades");
+  const stays = r.stack.children[0]!, staysDismiss = r.dismissOf(0); staysDismiss.focus();
+  r.advance(4000); r.advance(200); // the fade starts at 4 s and the removal follows it 160 ms later
+  expect(r.stack.children).toEqual([stays]); expect(focus.active, "an expiring toast").toBe(staysDismiss);
+  // 4. Over four toasts, only the oldest goes, with no rebuild of the others.
+  r = run(); for (const n of [1, 2, 3, 4]) r.notice("t" + n, true);
+  const survivors = r.stack.children.slice(1), thirdDismiss = r.dismissOf(2); thirdDismiss.focus();
+  r.notice("t5", true);
+  expect(r.stack.children).toHaveLength(4); expect(r.stack.children.slice(0, 3)).toEqual(survivors);
+  expect(r.stack.children.map(toast => toast.children[0]!.textContent)).toEqual(["t2", "t3", "t4", "t5"]); expect(focus.active, "overflow").toBe(thirdDismiss);
+  // 5. The same text again replaces its own toast and nothing else.
+  r = run(); r.notice("a", true); r.notice("b", true);
+  const b = r.stack.children[1]!, bDismiss = r.dismissOf(1); bDismiss.focus();
+  r.notice("a", true);
+  expect(r.stack.children[0], "b is untouched").toBe(b); expect(focus.active).toBe(bDismiss);
+  expect(r.stack.children.map(toast => toast.children[0]!.textContent)).toEqual(["b", "a"]);
 });
