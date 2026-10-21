@@ -241,8 +241,9 @@ export async function openManager(options: ManagerOptions = {}): Promise<string>
   const f = files(home);
   mkdirSync(f.dir, { recursive: true, mode: 0o700 });
   const log = openSync(join(f.dir, "manager.log"), "a");
+  let proc: ReturnType<typeof spawn>;
   try {
-    const proc = spawn(process.execPath, [options.cli ?? join(import.meta.dir, "../cli/main.ts"), "manager"], {
+    proc = spawn(process.execPath, [options.cli ?? join(import.meta.dir, "../cli/main.ts"), "manager"], {
       cwd: home, detached: true, stdio: ["ignore", log, log], env: { ...scrubEnv(process.env), AGENTHUB_HOME: home },
     });
     proc.on("error", () => {}); proc.unref();
@@ -250,7 +251,14 @@ export async function openManager(options: ManagerOptions = {}): Promise<string>
   const deadline = Date.now() + 8000;
   let error: unknown;
   while (Date.now() < deadline) {
-    try { return (await managerRequest(home, "/open", options.liveTest)).body.url; }
+    try {
+      const answered = await managerRequest(home, "/open", options.liveTest);
+      // #584: concurrent opens each spawn a manager and one wins the owner claim. A spawn that lost, or is still booting when
+      // another manager answers, would claim the owner row once that manager is stopped and then run with nobody to stop it.
+      // Only the manager that answered is wanted; stop the process this open started if it is a different one.
+      if (answered.status.pid !== proc.pid) proc.kill("SIGTERM");
+      return answered.body.url;
+    }
     catch (caught) { error = caught; await Bun.sleep(100); }
   }
   throw new Error(`manager readiness not confirmed: ${safeError(error)}; see ${join(f.dir, "manager.log")}`);
