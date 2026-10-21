@@ -1,5 +1,11 @@
 import { nonnegative, positive } from "../adapters/definitions/native-context.ts";
+import type { AdapterDefinition } from "../adapters/registry-types.ts";
 export { claudeContext, codexContext, acpContext } from "../adapters/definitions/native-context.ts";
+
+/** The host retains session/time/privacy fences; the declared reader owns normalization. */
+export function readNativeContext(definition: AdapterDefinition | undefined, value: unknown, sessionId: string, measuredAt: number): ContextReading | undefined {
+  return definition?.budget?.context?.read(value, sessionId, measuredAt);
+}
 
 /** Native active-context occupancy, separate from accumulated billable usage (#185). */
 export interface ContextReading {

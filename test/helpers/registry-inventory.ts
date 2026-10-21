@@ -10,7 +10,7 @@ export interface InventorySite {
   file: string;
   symbol: string;
   line: number;
-  pattern: "comparison" | "kind-aware-comparison" | "closed-list-import" | "vendor-literal";
+  pattern: "comparison" | "kind-aware-comparison" | "closed-list-import" | "vendor-literal" | "vendor-default" | "vendor-argument" | "peer-id-predicate" | "vendor-regex" | "native-instanceof";
   text: string;
 }
 export interface BaselineEntry { file: string; symbol: string; count: number }
@@ -21,6 +21,16 @@ const CLOSED_EXPORTS = new Set([
 ]);
 const CLOSED_MODULE = /(?:^|\/)(?:peer-catalog|start-mode|permission-mode)(?:\.ts)?$/;
 const equality = new Set([ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken]);
+const peerName = (name: string) => /^(?:peer(?:Id)?|kind|owner|reviewer|sender|recipient|targetPeer|sourcePeer|peerIds|peers)$/i.test(name);
+const peerValue = (value: string | undefined) => value !== undefined && (VENDORS.has(value) || value.endsWith("-") && VENDORS.has(value.slice(0, -1)));
+function vendorRegex(pattern: string): boolean {
+  // Exact native identities (including optional instance suffixes), never vendor prose or a filename prefix.
+  if (!pattern.startsWith("^") || !pattern.endsWith("$")) return false;
+  const body = pattern.slice(1, -1);
+  const alternatives = body.replace(/^\(\?:([^()]*)\)$/, "$1").split("|");
+  if (alternatives.every(value => VENDORS.has(value))) return true;
+  return [...VENDORS].some(kind => body === `${kind}(?:-[a-z0-9-]+)?`);
+}
 function unwrap(node: ts.Expression): ts.Expression {
   while (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isTypeAssertionExpression(node) || ts.isNonNullExpression(node) || ts.isSatisfiesExpression(node)) node = node.expression;
   return node;
@@ -64,7 +74,77 @@ function sourceBindings(inputs: Readonly<Record<string, string>>) {
       || !ts.isVariableDeclarationList(declaration.parent) || !(declaration.parent.flags & ts.NodeFlags.Const)) return undefined;
     return valueOf(declaration.initializer, seen);
   };
-  return { parsed: (file: string) => parsed.get(canonical(file))!, valueOf };
+  const member = (expression: ts.Expression): { owner: ts.Expression; name: string } | undefined => {
+    const node = unwrap(expression);
+    if (ts.isPropertyAccessExpression(node)) return { owner: unwrap(node.expression), name: node.name.text };
+    if (ts.isElementAccessExpression(node) && node.argumentExpression) {
+      const name = valueOf(node.argumentExpression);
+      if (name !== undefined) return { owner: unwrap(node.expression), name };
+    }
+    return undefined;
+  };
+  const peerBinding = (declaration: ts.Node | undefined): boolean => {
+    if (!declaration || !ts.isParameter(declaration) && !ts.isVariableDeclaration(declaration) && !ts.isBindingElement(declaration)) return false;
+    if (ts.isIdentifier(declaration.name) && peerName(declaration.name.text)) return true;
+    const type = "type" in declaration ? declaration.type as ts.TypeNode | undefined : undefined;
+    return !!type && /\b(?:PeerId|KnownPeer|StartablePeer|AdapterKind)\b/.test(type.getText());
+  };
+  const peerExpression = (expression: ts.Expression, seen = new Set<ts.Symbol>()): boolean => {
+    const node = unwrap(expression);
+    const access = member(node);
+    if (access) return peerName(access.name);
+    if (!ts.isIdentifier(node)) return false;
+    const symbol = checker.getSymbolAtLocation(node);
+    if (peerName(node.text) || symbol?.declarations?.some(peerBinding)) return true;
+    if (!symbol || seen.has(symbol) || seen.size >= 32) return false;
+    seen.add(symbol);
+    return !!symbol.declarations?.some(declaration => ts.isVariableDeclaration(declaration) && declaration.initializer
+      && ts.isVariableDeclarationList(declaration.parent) && !!(declaration.parent.flags & ts.NodeFlags.Const)
+      && peerExpression(declaration.initializer, seen));
+  };
+  const peerArgument = (call: ts.CallExpression | ts.NewExpression, index: number): boolean => {
+    const declaration = checker.getResolvedSignature(call)?.declaration;
+    if (!declaration?.parameters.length) return false;
+    const parameter = declaration.parameters[Math.min(index, declaration.parameters.length - 1)];
+    if (!parameter || !ts.isParameter(parameter) || index >= declaration.parameters.length && !parameter.dotDotDotToken) return false;
+    return peerBinding(parameter);
+  };
+  const adapterImport = (declaration: ts.Node): boolean => {
+    let node: ts.Node | undefined = declaration;
+    while (node && !ts.isImportDeclaration(node)) node = node.parent;
+    if (!node || !ts.isStringLiteral(node.moduleSpecifier)) return false;
+    const target = posix.normalize(posix.join(posix.dirname(node.getSourceFile().fileName), node.moduleSpecifier.text));
+    return target.startsWith("/src/adapters/");
+  };
+  const nativeConstructor = (expression: ts.Expression, seen = new Set<ts.Symbol>()): boolean => {
+    const node = unwrap(expression);
+    const access = member(node);
+    if (access && /Peer$/.test(access.name)) {
+      const owner = access.owner;
+      if (ts.isIdentifier(owner) && checker.getSymbolAtLocation(owner)?.declarations?.some(declaration => ts.isNamespaceImport(declaration) && adapterImport(declaration))) return true;
+    }
+    const symbol = checker.getSymbolAtLocation(ts.isPropertyAccessExpression(node) ? node.name : node);
+    if (!symbol || seen.has(symbol) || seen.size >= 32) return false;
+    seen.add(symbol);
+    const nativeClass = (declaration: ts.Declaration): boolean => {
+      if (!ts.isClassDeclaration(declaration) && !ts.isClassExpression(declaration)) return false;
+      if (declaration.getSourceFile().fileName.startsWith("/src/adapters/") && /Peer$/.test(declaration.name?.text ?? "")) return true;
+      return !!declaration.heritageClauses?.some(clause => clause.token === ts.SyntaxKind.ExtendsKeyword
+        && clause.types.some(type => nativeConstructor(type.expression, seen)));
+    };
+    for (const declaration of symbol.declarations ?? []) {
+      if (ts.isImportSpecifier(declaration) && !declaration.isTypeOnly && /Peer$/.test((declaration.propertyName ?? declaration.name).text) && adapterImport(declaration)) return true;
+      if (nativeClass(declaration)) return true;
+      if (ts.isVariableDeclaration(declaration) && declaration.initializer && ts.isVariableDeclarationList(declaration.parent)
+        && declaration.parent.flags & ts.NodeFlags.Const && nativeConstructor(declaration.initializer, seen)) return true;
+    }
+    if (symbol.flags & ts.SymbolFlags.Alias) {
+      const target = checker.getAliasedSymbol(symbol);
+      return target !== symbol && !!target.declarations?.some(nativeClass);
+    }
+    return false;
+  };
+  return { parsed: (file: string) => parsed.get(canonical(file))!, valueOf, member, peerBinding, peerExpression, peerArgument, nativeConstructor };
 }
 function propertyName(node: ts.PropertyName): string | undefined {
   if (ts.isComputedPropertyName(node)) return literal(node.expression);
@@ -178,8 +258,9 @@ function falsePositive(file: string, symbol: string, node: ts.Node, valueOf: (no
   }
   return false;
 }
-function scanScript(file: string, parsed: ts.SourceFile, prefix: string, lineOffset: number, valueOf: (node: ts.Expression) => string | undefined): InventorySite[] {
+function scanScript(file: string, parsed: ts.SourceFile, prefix: string, lineOffset: number, bindings: ReturnType<typeof sourceBindings>): InventorySite[] {
   const sites: InventorySite[] = [];
+  const { valueOf, member, peerBinding, peerExpression, peerArgument, nativeConstructor } = bindings;
   const resolver = trustedResolvers(file, parsed);
   const add = (node: ts.Node, pattern: InventorySite["pattern"]) => {
     const symbol = enclosingSymbol(node, prefix);
@@ -187,7 +268,36 @@ function scanScript(file: string, parsed: ts.SourceFile, prefix: string, lineOff
     sites.push({ file, symbol, line: lineOffset + parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1, pattern, text: node.getText(parsed) });
   };
   const visit = (node: ts.Node): void => {
-    if (ts.isBinaryExpression(node) && equality.has(node.operatorToken.kind)) {
+    if ((ts.isParameter(node) || ts.isBindingElement(node)) && node.initializer && peerBinding(node) && VENDORS.has(valueOf(node.initializer) ?? "")) {
+      add(node.initializer, "vendor-default");
+    } else if (ts.isBinaryExpression(node) && [ts.SyntaxKind.QuestionQuestionToken, ts.SyntaxKind.QuestionQuestionEqualsToken].includes(node.operatorToken.kind)
+      && VENDORS.has(valueOf(node.right) ?? "")) {
+      const parent = node.parent;
+      const inPeerPosition = peerExpression(node.left) || peerBinding(parent)
+        || (ts.isCallExpression(parent) || ts.isNewExpression(parent)) && peerArgument(parent, parent.arguments?.indexOf(node) ?? -1);
+      if (inPeerPosition) add(node.right, "vendor-default");
+    } else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.InstanceOfKeyword && nativeConstructor(node.right)) {
+      add(node, "native-instanceof");
+    } else if (ts.isRegularExpressionLiteral(node)) {
+      if (vendorRegex(node.text.slice(1, node.text.lastIndexOf("/")))) add(node, "vendor-regex");
+    } else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+      const callee = unwrap(node.expression), args = node.arguments ?? [];
+      if (ts.isIdentifier(callee) && callee.text === "RegExp" && args[0] && vendorRegex(valueOf(args[0]) ?? "")) add(args[0], "vendor-regex");
+      const access = member(callee), method = access?.name, receiver = access?.owner;
+      for (let index = 0; index < args.length; index++) {
+        const arg = args[index]!, value = valueOf(arg);
+        if (!peerValue(value)) continue;
+        const membership = method === "startsWith" && index === 0 && !!receiver && peerExpression(receiver)
+          || method === "includes" && index === 0 && !!receiver && peerExpression(receiver)
+          || method === "hasOwnProperty" && index === 0 && !!receiver && peerExpression(receiver)
+          || method === "hasOwn" && index === 1 && !!args[0] && peerExpression(args[0])
+          || method === "call" && index === 1 && !!receiver && member(receiver)?.name === "hasOwnProperty"
+            && !!args[0] && peerExpression(args[0]);
+        if (membership) add(arg, "peer-id-predicate");
+        else if (VENDORS.has(value!) && (peerArgument(node, index) || ts.isCallExpression(node) && index === 0 && !!resolver(node))) add(arg, "vendor-argument");
+      }
+      if (method === "includes" && receiver && VENDORS.has(valueOf(receiver) ?? "") && args[0] && peerExpression(args[0])) add(receiver, "peer-id-predicate");
+    } else if (ts.isBinaryExpression(node) && equality.has(node.operatorToken.kind)) {
       const left = valueOf(node.left), right = valueOf(node.right);
       if (left !== undefined && VENDORS.has(left) || right !== undefined && VENDORS.has(right)) add(node, kindAware(left !== undefined && VENDORS.has(left) ? node.right : node.left, resolver) ? "kind-aware-comparison" : "comparison");
     } else if (ts.isCaseClause(node) && VENDORS.has(valueOf(node.expression) ?? "")) {
@@ -229,7 +339,7 @@ export function scanRegistrySources(sources: Readonly<Record<string, string>>): 
   for (const script of scripts) {
     // Native definitions remain exempt from policy inventory, but their exported constants can bind imports.
     if (script.file.startsWith("src/adapters/")) continue;
-    sites.push(...scanScript(script.file, bindings.parsed(script.input), script.prefix, script.offset, bindings.valueOf));
+    sites.push(...scanScript(script.file, bindings.parsed(script.input), script.prefix, script.offset, bindings));
   }
   return sites;
 }

@@ -3432,6 +3432,14 @@
       "replacement": "const start = ((seed % kinds.length) + kinds.length) % kinds.length;",
       "testFile": "test/reviewer-pool.test.ts",
       "testName": "declared rotation gives two actual kinds three selections each across seeds zero through five"
+    },
+    {
+      "id": "registry-start-mode-literal-probe",
+      "file": "src/hub/start-mode.ts",
+      "search": "export const START_MODE_PEERS = [\"pi\", \"codex\", \"kimi\", \"jcode\"] as const;",
+      "replacement": "export const START_MODE_PEERS = REGISTRY_START_MODE_PEERS;",
+      "testFile": "test/registry-guard.test.ts",
+      "testName": "#451 registry guard matches every current source group to the reviewed frozen baseline"
     }
   ]
 }

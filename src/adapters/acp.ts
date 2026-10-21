@@ -667,3 +667,7 @@ export class AcpPeer extends BasePeer {
     if (this.proc?.stdin.writable) this.proc.stdin.write(`${JSON.stringify(msg)}\n`);
   }
 }
+
+export function isAcpPeer(value: unknown): value is AcpPeer {
+  return value instanceof AcpPeer;
+}

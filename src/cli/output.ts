@@ -246,6 +246,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     if (p.toolsOnly) out.push(...detail(definitionOf(id)?.attach?.pullOnlyForms?.includes("tui") && p.pullOnly ? "pull-only" : "tools-only", flat(p.toolsOnly).replace(/^(?:tools-only|pull-only):\s*/, ""), columns, "attention"));
     if (p.pullOnly && definitionOf(id)?.attach?.pullOnlyForms?.includes("tui")) out.push(...detail(`${id} last read`, typeof p.lastInboxAt === "number" ? relative(p.lastInboxAt, now) : "never", columns, "muted"));
     if (p.permissionNote) out.push(...detail("permission", p.permissionNote, columns, "muted"));
+    if (typeof p.statusNotice?.message === "string" && p.statusNotice.message) out.push(...detail("status notice", p.statusNotice.message, columns, "attention"));
     if (p.requestedModel && p.servedBy && p.requestedModel !== p.servedBy) out.push(...detail("requested model", p.requestedModel, columns));
     if (typeof p.importantWaitingSince === "number" && p.importantWaitingNote) out.push(...detail("important waiting", `${p.importantWaitingNote.replace(/^\d+ important messages? waiting/, "important messages waiting")}`, columns, "attention"));
     if (typeof p.oldestQueuedAt === "number") out.push(...detail(`${id} oldest queued`, relative(p.oldestQueuedAt, now), columns, "muted"));

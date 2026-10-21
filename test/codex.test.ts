@@ -7,6 +7,8 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { processTable } from "../src/hub/child-process.ts";
+import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
+import { ControlClient } from "../src/hub/control-client.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(() => {
@@ -45,6 +47,88 @@ test("offline until the TUI starts a thread, then idle", async () => {
   tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
   await until(() => peer.state === "idle");
   expect(seen.find((m) => m.id === 2).result.thread.id).toBe("th1"); // proxy is transparent
+});
+
+test("an unidentifiable cancellation exposes a fixed status notice until native reattachment", async () => {
+  class WatchdogPeer extends CodexPeer { expire() { this.onWatchdog(); } }
+  let send!: (method: string, params: unknown) => void;
+  const native = Bun.serve({ hostname: "127.0.0.1", port: 0,
+    fetch(request, server) { return server.upgrade(request) ? undefined : new Response("fixture"); },
+    websocket: { message(socket, raw) {
+      const message = JSON.parse(String(raw));
+      send = (method, params) => { socket.send(JSON.stringify({ method, params })); };
+      if (message.method === "thread/start") socket.send(JSON.stringify({ id: message.id, result: { thread: { id: "private-native-thread" } } }));
+    } },
+  });
+  const dir = mkdtempSync(join(tmpdir(), "ahub-codex-status-"));
+  const peer = new WatchdogPeer("codex", { proxyPort: 0, appPort: 0, upstreamUrl: `ws://127.0.0.1:${native.port}`, cwd: dir });
+  let tui: WebSocket | undefined;
+  let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined;
+  let console_: ControlClient | undefined;
+  try {
+    daemon = await startDaemon({ cwd: dir, stateDir: dir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+      config: { ...DEFAULT_CONFIG, batch_ms: 0,
+        memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
+        snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
+        inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false },
+        pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false },
+        mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
+        recovery: { ...DEFAULT_CONFIG.recovery, auto_resume_after_crash: false },
+      },
+    });
+    console_ = await ControlClient.connect(dir, { role: "console" });
+    daemon.bus.add(peer);
+    await peer.start();
+    tui = new WebSocket(peer.proxyUrl);
+    await new Promise<void>(resolve => { tui!.onopen = () => resolve(); });
+    tui.send(JSON.stringify({ id: 1, method: "thread/start", params: {} }));
+    await until(() => peer.state === "idle");
+    expect(peer.statusNotice).toBeUndefined();
+    send("turn/started", { threadId: "private-native-thread", turn: {} });
+    await until(() => peer.state === "busy");
+    peer.expire();
+    expect(peer.state).toBe("offline");
+    expect(peer.statusNotice).toEqual({ code: "unidentified-cancellation", message: "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery" });
+    expect((await console_.request({ t: "status" })).status.peers.codex).toMatchObject({ state: "offline", statusNotice: peer.statusNotice });
+    const lateConsumed = new Promise<void>(resolve => { tui!.onmessage = event => { if (JSON.parse(String(event.data)).method === "turn/completed") resolve(); }; });
+    send("turn/completed", { threadId: "private-native-thread", turn: { id: "late-native-id" } });
+    await lateConsumed;
+    expect(peer.state).toBe("offline");
+    expect(peer.statusNotice?.code).toBe("unidentified-cancellation");
+    tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+    await until(() => peer.state === "idle");
+    expect(peer.statusNotice).toBeUndefined();
+    expect((await console_.request({ t: "status" })).status.peers.codex.statusNotice).toBeUndefined();
+    send("turn/started", { threadId: "private-native-thread", turn: { id: "verified-native-id" } });
+    await until(() => peer.state === "busy");
+    peer.expire();
+    expect(peer.state).toBe("idle");
+    expect(peer.statusNotice).toBeUndefined();
+  } finally {
+    tui?.close(); console_?.close();
+    try { await daemon?.stop(); }
+    finally { try { await peer.stop(); } finally { native.stop(true); rmSync(dir, { recursive: true, force: true }); } }
+  }
+}, 20_000);
+
+test("Codex context dispatch uses its supplied definition reader", async () => {
+  const values: unknown[] = [];
+  const readings: { tokens: number | null; sessionId: string }[] = [];
+  const { peer, tui, said, bus } = await setup(1, undefined, {
+    contextReader: { source: "codex_token_usage", read(value, sessionId, measuredAt) {
+      values.push(value);
+      return { source: "codex_token_usage", sessionId, measuredAt, tokens: 321, window: 1000, used: 0.321 };
+    } },
+    onContext: reading => { readings.push(reading); },
+  });
+  tui.send(JSON.stringify({ id: 2, method: "thread/start", params: {} }));
+  await until(() => peer.state === "idle");
+  bus.publish(newEnvelope("claude", "context reader"));
+  await until(() => said.length === 1);
+  expect(values).toHaveLength(1);
+  expect(readings).toHaveLength(1);
+  expect(readings[0]!.tokens).toBe(321);
+  expect(readings[0]!.sessionId).toBe("th1");
 });
 
 test("#482 terminal ownership needs an adopted thread on the matching launch link and survives a refused second TUI", async () => {

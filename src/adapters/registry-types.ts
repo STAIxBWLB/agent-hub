@@ -90,17 +90,9 @@ export interface VersionContext {
   env: Readonly<Record<string, string>>;
 }
 
-export type NativeModeSpec =
-  | { kind: "acp-mode"; modeId: string }
-  | { kind: "codex-approval"; policy: string }
-  | { kind: "launch-flag"; argv: string[] }
-  | { kind: "hub-gate"; allow: readonly ("read" | "search" | "think")[] }
-  | { kind: "native-only"; note: string };
-
 export interface QuotaReader {
   source: string;
   read(value: unknown): UsageWindow[];
-  resetOnWindow?: boolean;
 }
 
 export interface ContextReader {
@@ -145,12 +137,7 @@ export interface NativeFactsPort {
 
 /** Only the frozen native seams are extensible; a definition cannot add an arbitrary daemon callback. */
 export interface NativeHooks {
-  agentIdentity(init: unknown): void;
-  onAttach(instance: string): void;
-  onDetach(instance: string): void;
   factsHook: NativeFactsPort;
-  conversationRevert(turnId: string): Promise<void>;
-  replaceSession(req: StartRequest): Promise<unknown>;
   pluginInventory(ctx: { home: string; cwd?: string; env: Readonly<Record<string, string | undefined>> }): Addon[];
   recallSource: string;
   recallInjected: boolean;
@@ -182,8 +169,8 @@ export interface AdapterDefinition {
   start: {
     forms: readonly StartForm[];
     defaultForm: StartForm;
-    ownsTerminal(form: StartForm): boolean;
-    launch(ctx: LaunchContext): LaunchPlan;
+    /** A real native argv planner; absent when startup belongs to a separate verified host port. */
+    launch?(ctx: LaunchContext): LaunchPlan;
     create?(ctx: CreateContext): PeerAdapter;
     daemonPort?: DaemonEngine;
     preflight?(ctx: StartRequest): string | undefined;
@@ -203,16 +190,18 @@ export interface AdapterDefinition {
     conductorStartArgs?(args: string[]): { mode?: StartForm } | Error;
   };
   identity: { mcp: "acp-session" | "project-file" | "env" | "channel-plugin" };
+  /** Declaration admission only; execution-root and runtime owner proof remain host responsibilities. */
+  instances?: { mode: "external" | "headless"; roles?: readonly string[] };
   attach?: {
+    /** The authenticated external hello may claim this id; independent of MCP configuration shape. */
+    externalHello?: boolean;
     pullOnlyForms?: readonly StartForm[];
     recoveryLaunch?(instance: string): Record<string, unknown>;
     pullOnlyNotice?: string;
     admission?: { reservedRefusal: string; watchRefusal: string };
   };
   permission: {
-    modes: Partial<Record<PermissionMode, NativeModeSpec>>;
     grants?: Partial<Record<PermissionMode, string>>;
-    readOnly?: NativeModeSpec;
     unmanaged?: string;
     unmanagedForms?: readonly StartForm[];
     unmanagedNote?: string;
@@ -273,12 +262,6 @@ export interface AdapterDefinition {
     validateEffective?(raw: Record<string, unknown>, fail: (key: string, reason: string) => never): void;
   };
   capabilities?: { manifest?(peer: PeerAdapter): Promise<CapabilityManifest>; watch?: boolean };
-  init?: {
-    templateFragment?: string;
-    mcpFile?: string;
-    /** Pure planner; the CLI host owns every write and cleanup. */
-    mcpPlan?(ctx: { projectRoot: string; stateDir: string; entrypoint: string; form: StartForm }): { file: string; tracked: boolean; changed: boolean; action: string };
-  };
   cli: {
     command: string;
     /** Configuration leaves that select this peer's next native launch command or provider profile. */

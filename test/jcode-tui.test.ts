@@ -14,8 +14,7 @@ test("Jcode defaults to TUI and accepts a configured headless override (#464)", 
   expect(definition.start.defaultForm).toBe("tui");
   expect(startModeOf(undefined, "jcode")).toBe("tui");
   expect(startModeOf(peerStartConfig({ jcode: { start_mode: "headless" } }), "jcode")).toBe("headless");
-  expect(definition.start.ownsTerminal("tui")).toBe(true);
-  expect(definition.start.ownsTerminal("headless")).toBe(false);
+  expect(definition.start).not.toHaveProperty("ownsTerminal");
 });
 
 test("Jcode dry preview describes top-level TUI without resolving a private socket or writing config (#464)", () => {

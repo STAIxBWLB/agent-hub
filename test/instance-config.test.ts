@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/hub/daemon.ts";
 import { hubGitSync } from "../src/hub/git.ts";
+import { supportsHeadlessInstances, validateInstances } from "../src/hub/instances.ts";
+import { definitionOf } from "../src/adapters/registry.ts";
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "ahub-instance-config-"));
@@ -14,6 +16,24 @@ function fixture() {
 }
 
 const declared = { "codex-2": { kind: "codex", roles: ["reviewer"], permission_mode: "ask-when-needed" } };
+
+test("instance admission follows explicit policy instead of MCP identity shape", () => {
+  const native = definitionOf("codex")!;
+  for (const mcp of ["env", "acp-session", "channel-plugin"] as const) {
+    expect(supportsHeadlessInstances({ ...native, instances: undefined, identity: { ...native.identity, mcp } })).toBe(false);
+  }
+  expect(supportsHeadlessInstances({ ...native, identity: { ...native.identity, mcp: "project-file" } })).toBe(true);
+  expect(supportsHeadlessInstances({ ...native, instances: { mode: "external" } })).toBe(false);
+  expect(supportsHeadlessInstances({ ...native, start: { ...native.start, create: undefined } })).toBe(false);
+  expect(supportsHeadlessInstances({ ...native, start: { ...native.start, forms: ["tui"] } })).toBe(false);
+});
+
+test("external instance policy preserves human terminal and role restrictions", () => {
+  expect(validateInstances({ "claude-plan": { kind: "claude", roles: ["planner", "reviewer"] } })["claude-plan"]?.roles).toEqual(["planner", "reviewer"]);
+  expect(() => validateInstances({ "claude-write": { kind: "claude", roles: ["implementer"] } })).toThrow("reviewer and/or planner");
+  expect(() => validateInstances({ "claude-plan": { kind: "claude", roles: ["planner"], worktree: ".worktrees/plan" } })).toThrow("person's terminal");
+  expect(() => validateInstances({ "agy-plan": { kind: "agy", roles: ["planner"] } })).toThrow("unsupported");
+});
 
 test("I2 local instance declarations project exact roles, permissions and headless defaults", () => {
   const f = fixture();

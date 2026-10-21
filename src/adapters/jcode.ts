@@ -286,3 +286,7 @@ export class JcodePeer extends AcpPeer {
     return { ...super.recoveryMetadata(), launch: { kind: "jcode", peer: "jcode", mode: "headless", ...(this.jcode.launchModel ? { model: this.jcode.launchModel } : {}), ...(this.jcode.providerProfile ? { providerProfile: this.jcode.providerProfile } : {}) } };
   }
 }
+
+export function isJcodePeer(value: unknown): value is JcodePeer {
+  return value instanceof JcodePeer;
+}
