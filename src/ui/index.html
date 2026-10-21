@@ -517,12 +517,13 @@ function refreshRelativeTimes(root) { for (const node of root.querySelectorAll('
 function notice(text, error = false) {
   const TOAST_MAX = 4, TOAST_MS = 4000, TOAST_FADE_MS = 160, stack = $('notice');
   if (!text) { stack.replaceChildren(); return; }
-  const gone = (node) => stack.replaceChildren(...[...stack.children].filter((child) => child !== node));
+  const gone = (node) => node.remove(); // only the toast that leaves: a rebuild would detach a focused Dismiss button of one that stays (#296)
   const toast = el('div', undefined, 'toast' + (error ? ' error' : '')), body = el('span', text, 'toast-text'), dismiss = el('button', 'Dismiss', 'toast-dismiss');
   dismiss.type = 'button'; dismiss.setAttribute('aria-label', 'Dismiss notice: ' + String(text).slice(0, 60)); dismiss.addEventListener('click', () => gone(toast));
   toast.append(body, dismiss); toast.dataset.key = (error ? 'error:' : 'ok:') + text;
-  const kept = [...stack.children].filter((child) => child.dataset.key !== toast.dataset.key).slice(-(TOAST_MAX - 1));
-  stack.replaceChildren(...kept, toast);
+  for (const child of [...stack.children]) if (child.dataset.key === toast.dataset.key) child.remove(); // the same text replaces its own toast
+  while (stack.children.length > TOAST_MAX - 1) stack.children[0].remove(); // over four: the oldest goes, nothing is rebuilt
+  stack.append(toast);
   if (!error && !(globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true)) setTimeout(() => { toast.className += ' toast-out'; setTimeout(() => gone(toast), TOAST_FADE_MS); }, TOAST_MS);
 }
 function expire() { stopped = true; clearTimeout(timer); clearTimeout(projectsTimer); setConnection('Session closed', 'down'); notice('Session missing or expired. Run ahub ui in your terminal to reopen the dashboard.', true); document.querySelectorAll('button').forEach((button) => { button.disabled = true; }); }
@@ -590,6 +591,9 @@ function restoreDraft(choices = false) {
   } else { $('message').value = draft.message || ''; $('title').value = draft.title || ''; $('detail').value = draft.detail || ''; $('class').value = draft.class || 'implement'; }
 }
 function syncMutationControls() { document.querySelectorAll('button[data-mutation="project"]').forEach((b) => { b.disabled = pendingButtons.has(b) || Boolean(b.dataset.startKey && pendingStarts.has(b.dataset.startKey)) || (managerMode && !snapshotValid); }); }
+// The first-load blocks the page ships in #tasks and #peers (#296): a project switch puts copies of them back and update() replaces them
+// when that project's first snapshot renders, so a slow or failed first /snapshot reads as loading, not as an empty project.
+const firstLoad = Object.fromEntries(['tasks', 'peers'].map((name) => [name, [...$(name).childNodes].map((node) => node.cloneNode(true))]));
 function resetView(id, instance) {
   saveDraft();
   selectedProjectId = id || ''; selectedInstanceId = instance || ''; snapshotValid = false; cursor = 0; eventCount = 0; viewGeneration++;
@@ -606,7 +610,13 @@ function resetView(id, instance) {
   $('split-titles').value='';$('split-reason').value='';$('split-sequential').checked=false;
   $('release-name').value='';$('release-goal').value='';$('release-order').value='0';
   $('delivery-report').textContent = ''; $('delivery-repo').value = ''; $('delivery-live').value = '';
-  for (const [id, text] of [['memory-list','No project selected.'],['memory-graph',''],['memory-detail',''],['peers','No project selected.'],['tasks','No project selected.'],['task-progress','No project selected.'],['permissions','No project selected.'],['budget','No project selected.'],['settings','No project selected.']]) { $(id).replaceChildren(); if (text) empty($(id), text); }
+  // A project with a running instance is polled next, so the board and the peers show loading; "No project selected" is for no project.
+  const loading = Boolean(id && instance) && typeof firstLoad !== 'undefined';
+  for (const [id, text] of [['memory-list','No project selected.'],['memory-graph',''],['memory-detail',''],['peers','No project selected.'],['tasks','No project selected.'],['task-progress','No project selected.'],['permissions','No project selected.'],['budget','No project selected.'],['settings','No project selected.']]) {
+    $(id).replaceChildren();
+    if (loading && firstLoad[id]?.length) $(id).replaceChildren(...firstLoad[id].map((node) => node.cloneNode(true)));
+    else if (text) empty($(id), text);
+  }
   $('settings-session').textContent = '';
   $('peer-count').textContent = ''; $('task-count').textContent = ''; $('permission-count').textContent = ''; $('project-context').textContent = '';
   notice('');
