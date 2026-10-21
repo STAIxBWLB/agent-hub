@@ -2,8 +2,10 @@ import { expect, test } from "bun:test";
 import { ADAPTERS, assertDaemonEngine, assertNativeCapabilityScope, definitionOf, type AdapterDefinition } from "../src/adapters/registry.ts";
 
 function external(): AdapterDefinition {
-  const base = definitionOf("qwen")!;
-  return { ...base, kind: "fixture", family: "fixture", start: { ...base.start }, session: { idField: base.session.idField, currentId: base.session.currentId } };
+  // A generic ACP fixture does not inherit the builtin-only catalog or native CLI projections.
+  const { projection: _projection, cli, ...base } = definitionOf("qwen")!;
+  const { entry: _entry, preview: _preview, usage: _usage, ...genericCli } = cli ?? {};
+  return { ...base, cli: genericCli, kind: "fixture", family: "fixture", start: { ...base.start }, session: { idField: base.session.idField, currentId: base.session.currentId } };
 }
 
 for (const [field, set] of [
