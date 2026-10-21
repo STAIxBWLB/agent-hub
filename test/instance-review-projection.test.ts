@@ -57,7 +57,7 @@ async function fixture(readCanonicalCanary = false, privateDocument = false) {
   writeFileSync(join(project, ".agenthub", "config.local.json"), JSON.stringify({ text_projection, ...(privateDocument ? { pii: { paths: ["paper.docx"] } } : {}), ...(readCanonicalCanary ? { local: { read_allow: [project] } } : {}) }));
   const bin = join(base, "fake-codex"), stateDir = join(project, ".agenthub", "state");
   writeFileSync(bin, `#!${process.execPath}\nawait import(${JSON.stringify(pathToFileURL(join(import.meta.dir, "fakes/codex-bin.ts")).href)});\n`, { mode: 0o700 });
-  const daemon = await startDaemon({ cwd: project, stateDir, controlPort: 0, codexAppPort: freePort(), codexProxyPort: freePort(),
+  const daemon = await startDaemon({ cwd: project, stateDir, controlPort: 0, codexAppPort: freePort(), codexProxyPort: freePort(), snapshotClock: () => 0, // #661: held, so a slow runner cannot spend the shared snapshot budget (#576) before the baseline tree is read
     config: { ...DEFAULT_CONFIG, instances: { [instance]: { kind: "codex", roles: ["implementer"], start_mode: "headless", worktree } }, codex_bin: bin, batch_ms: 0,
       text_projection, ...(privateDocument ? { pii: { paths: ["paper.docx"] } } : {}), local: { ...DEFAULT_CONFIG.local, ...(readCanonicalCanary ? { read_allow: [project] } : {}) }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true }, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
       approvals: { ...DEFAULT_CONFIG.approvals, notify: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false } } });
