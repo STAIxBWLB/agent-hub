@@ -144,6 +144,9 @@ for (const evidence of [
   const { canonicalWriteUnknown } = await import("../src/hub/no-writes.ts");
   expect(canonicalWriteUnknown(evidence)).toBe(true);
   expect(canonicalWriteUnknown({ refs: { paths: ["src/worktrees.ts"] } })).toBe(false);
+  // A case-insensitive disk opens .WORKTREES as .worktrees: the hint must match in any case.
+  expect(canonicalWriteUnknown({ refs: { paths: [".WORKTREES/owner/file.ts"] } })).toBe(true);
+  expect(canonicalWriteUnknown({ refs: {}, plan: { paths: ["a\\.Worktrees\\x"] } })).toBe(true);
 });
 
 test("#498 branch fingerprints cover shared local/remote refs and never expose names", async () => {
