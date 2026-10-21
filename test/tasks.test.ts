@@ -3701,3 +3701,59 @@ test("tasks.escalate_after is read at each verdict, so a live change applies to 
   expect(moved).toMatchObject({ owner: "codex", rejections: 0 });
   board.close();
 });
+
+// issue #655: readiness never puts a reserved owner over its planner WIP cap.
+test("dependents reserved for an owner at its WIP cap stay ready with the reason; a freed slot offers the next by priority (#655)", async () => {
+  const { tasks, board, peers, notices } = await setup(["claude", "codex"], undefined, undefined, 2);
+  const root = board.propose("claude", { title: "root", class: "implement" });
+  board.update(root.id, "codex", "accepted", { owner: "codex", state: "in_progress" }); // one open task for codex (limit 2)
+  const first = await tasks.propose("claude", { title: "gate task", class: "implement", owner: "claude" });
+  const mk = async (title: string) => tasks.propose("claude", { title, class: "implement", owner: "codex", after: [first.id] });
+  const low = await mk("low"), high = await mk("high"), mid = await mk("mid");
+  board.plan(low.id, "user", { priority: 3 }, 0, "p3");
+  board.plan(high.id, "user", { priority: 0 }, 0, "p0");
+  board.plan(mid.id, "user", { priority: 1 }, 0, "p1");
+  for (const t of [low, high, mid]) expect(board.get(t.id)).toMatchObject({ owner: null, reserved: "codex", state: "proposed" });
+  await tasks.done("claude", first.id, "done");
+  await tasks.review(board.get(first.id)!.reviewer!, first.id, "approved");
+  await tick();
+  // one slot: only the P0 dependent is assigned; the other two stay ready in To Do with the reservation and the reason
+  expect(board.get(high.id)).toMatchObject({ owner: "codex", state: "proposed" });
+  for (const t of [low, mid]) {
+    const row = board.get(t.id)!;
+    expect(row).toMatchObject({ owner: null, reserved: "codex", state: "proposed" });
+    expect(row.history.map((h) => h.event)).toEqual(expect.arrayContaining(["ready", "ready held"]));
+    expect(row.history.findLast((h) => h.event === "ready held")!.note).toContain("codex");
+    expect(row.history.findLast((h) => h.event === "ready held")!.note).toContain("WIP");
+    expect(peers.codex!.got.some((e) => e.kind === "task" && e.refs?.task === String(t.id))).toBe(false);
+  }
+  expect(notices.join("\n")).not.toContain("planner WIP capacity for codex");
+  // a repeated sweep adds no second held entry
+  await tasks.releaseReady();
+  expect(board.get(mid.id)!.history.filter((h) => h.event === "ready held")).toHaveLength(1);
+  // freeing a slot (root approved) offers the next by priority, never over the cap
+  board.update(root.id, "codex", "approved", { state: "approved" });
+  await tasks.releaseReady();
+  expect(board.get(mid.id)!.owner).toBe("codex");
+  expect(board.get(low.id)!.owner).toBeNull();
+  board.update(high.id, "codex", "accepted", { state: "in_progress" });
+  board.update(high.id, "codex", "done", { state: "in_review" });
+  board.update(high.id, "claude", "approved", { state: "approved" });
+  await tasks.releaseReady();
+  expect(board.get(low.id)!.owner).toBe("codex");
+});
+
+test("a cancelled owner task frees its slot for the next held ready task (#655)", async () => {
+  const { tasks, board } = await setup(["claude", "codex"], undefined, undefined, 1);
+  const gate = await tasks.propose("claude", { title: "gate", class: "implement", owner: "claude" });
+  const held = await tasks.propose("claude", { title: "held", class: "implement", owner: "codex", after: [gate.id] });
+  const busy = board.propose("claude", { title: "busy", class: "implement" });
+  board.update(busy.id, "codex", "accepted", { owner: "codex", state: "in_progress" });
+  await tasks.done("claude", gate.id, "done");
+  await tasks.review(board.get(gate.id)!.reviewer!, gate.id, "approved");
+  await tick();
+  expect(board.get(held.id)).toMatchObject({ owner: null, reserved: "codex" });
+  await tasks.cancel(busy.id, USER, { reason: "not needed" });
+  await tick();
+  expect(board.get(held.id)!.owner).toBe("codex");
+});
