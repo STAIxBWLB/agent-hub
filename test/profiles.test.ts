@@ -116,3 +116,10 @@ test("accept schemas retain both document and dev plan fields across profile cha
   const legacy = board.propose("codex", { title: "Legacy dev task", class: "implement", plan: { paths: ["a.ts"] } }); board.update(legacy.id, "codex", "assigned", { state: "in_progress", owner: "codex" });
   tasks.accept("codex", legacy.id, { symbols: ["LegacySymbol"], sections: ["ignored"] }); expect(board.get(legacy.id)!.plan).toEqual({ symbols: ["LegacySymbol"] });
 });
+
+test("#607 every profile's AGENTS block carries the agy first-turn guidance", () => {
+  for (const name of ["general", "research", "writing"]) {
+    const profile = JSON.parse(readFileSync(join(import.meta.dir, `../templates/profiles/${name}.json`), "utf8"));
+    expect(JSON.stringify(profile)).toContain("never report the hub as unavailable from the first turn alone");
+  }
+});
