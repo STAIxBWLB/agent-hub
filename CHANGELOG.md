@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add "Adding an AI Tool" guide (`docs/adding-an-ai-tool.md`) documenting Adapter API 1 definitions, transport selection, and the conformance test kit (#451 A5).
 - Adapter declarations now refuse ordinary agy extra instances at config load; they previously loaded as inert pull-only extras. Fresh-reviewer metadata remains unavailable (#451, #625).
 - Qwen context occupancy is now unknown until a native source is verified; it no longer inherits Kimi's usage parser (#451, #625).
 - When the hub itself starts headless Kimi or Qwen it also opens `ahub watch <peer>` through the terminal provider, a fixed command opened at most once per 30 s; with no provider or a failing one the start still succeeds and the watch command is reported (#286 AC10).
