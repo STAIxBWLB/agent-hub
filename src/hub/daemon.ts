@@ -2705,7 +2705,10 @@ export async function startDaemon(opts: DaemonOptions) {
       const launch = claudePermissionLaunch(id);
       if (!launch || claudePermissionGenerations.get(id) !== peer.sessionGeneration) return "unverified";
     }
-    return peer?.permissionModeState ?? permissionMode(id);
+    const native = peer?.permissionModeState;
+    // An offline ask clears the hub choice, not a stopped ACP runtime's retained native field.
+    if (peer?.state === "offline" && !starting.has(id) && isPermissionMode(native)) return permissionMode(id);
+    return native ?? permissionMode(id);
   };
   const permissionStatus = (id: string, peer: PeerAdapter | undefined): Record<string, unknown> => {
     const note = definitionOf(id)?.permission.unmanagedStatusNote;

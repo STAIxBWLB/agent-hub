@@ -177,3 +177,14 @@ test("#625 native Codex permission state aliases its existing selected mode", ()
   expect(peer.clearPermissionMode()).toBe(true);
   expect(peer.permissionModeState).toBe("ask");
 });
+
+test("#625 offline ask clears the hub choice without displaying a stale known native mode", async () => {
+  const peer = new PermissionPeer("local"), f = await fixture(peer);
+  expect((await f.mode("never-ask", true)).ok).toBe(true);
+  peer.offline();
+  expect((await f.mode("ask")).ok).toBe(true);
+  expect(peer.calls).toEqual(["never-ask"]);
+  expect((await f.client.request({ t: "status" })).status.peers.local.permissionMode ?? "ask").toBe("ask");
+  peer.mode = "unknown";
+  expect((await f.client.request({ t: "status" })).status.peers.local.permissionMode).toBe("unknown");
+});
