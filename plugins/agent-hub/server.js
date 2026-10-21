@@ -7222,6 +7222,9 @@ var init_runtime = __esm(() => {
   init_text();
 });
 
+// src/hub/plan-conformance.ts
+var init_plan_conformance = () => {};
+
 // src/hub/review-findings.ts
 var MAX_BYTES;
 var init_review_findings = __esm(() => {
@@ -7242,6 +7245,7 @@ var init_host_executable = __esm(() => {
 // src/hub/sdlc.ts
 var SDLC_STAGES, PLAYBOOK_STAGES, BASES, STAGE_GATES, GATES;
 var init_sdlc = __esm(() => {
+  init_plan_conformance();
   init_review_findings();
   init_workflow();
   init_child_process();
@@ -7411,12 +7415,13 @@ var init_planning = () => {};
 // src/hub/board.ts
 var CLASSES, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
 var init_board = __esm(() => {
+  init_plan_conformance();
   init_planning();
   init_envelope();
   init_review_findings();
   CLASSES = ["plan", "implement", "bulk_edit", "test", "review", "summarize", "triage"];
   PLAN_KEYS = ["paths", "symbols", "signatures", "insertion_points"];
-  ALL_PLAN_KEYS = [...PLAN_KEYS, "sections", "sources", "claims"];
+  ALL_PLAN_KEYS = [...PLAN_KEYS, "sections", "sources", "claims", "proof", "risks"];
   OUTCOMES_KEPT_MS = 7 * 24 * 3600000;
 });
 
@@ -8069,24 +8074,24 @@ function profileTaskTools(profile = "dev", stages, criteria = false) {
     if (customProfile && tool.name === "hub_task_propose")
       properties.class = { type: "string", enum: [...new Set([...Object.keys(data.classes), ...PROFILE_CLASS_NAMES.filter((v) => projectProfile("dev").classes[v])])] };
     if (customProfile && properties.plan && tool.name !== "hub_task_accept")
-      properties.plan = { ...plan, properties: Object.fromEntries(data.plan_keys.map((key) => [key, plan.properties[key] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) };
+      properties.plan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map((key) => [key, plan.properties[key] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) } };
     if (customProfile && tool.name === "hub_backlog_split") {
       const parts = properties.parts;
-      const selectedPlan = { ...plan, properties: Object.fromEntries(data.plan_keys.map((key) => [key, plan.properties[key] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) };
+      const selectedPlan = { ...plan, properties: { ...Object.fromEntries(data.plan_keys.map((key) => [key, plan.properties[key] ?? list(key === "sections" ? "document heading anchors, such as report.md#methods" : key === "sources" ? "citation ids, DOI or source URL ids" : "short claim ids to verify")])) } };
       properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: selectedPlan } } };
     }
     if (criteria && properties.plan) {
       const current = properties.plan;
-      properties.plan = { ...current, properties: { ...current.properties, ...costPlanProperties } };
+      properties.plan = { ...current, properties: { ...current.properties, ...costPlanProperties, ...evidencePlanProperties } };
     }
     if (criteria && tool.name === "hub_backlog_split") {
       const parts = properties.parts;
-      properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: { ...parts.items.properties.plan, properties: { ...parts.items.properties.plan.properties, ...costPlanProperties } } } } };
+      properties.parts = { ...parts, items: { ...parts.items, properties: { ...parts.items.properties, plan: { ...parts.items.properties.plan, properties: { ...parts.items.properties.plan.properties, ...costPlanProperties, ...evidencePlanProperties } } } } };
     }
     return { ...tool, ...customProfile && tool.name === "hub_task_propose" ? { description: tool.description + ` Selected profile ${data.name}: ${Object.keys(data.classes).join(", ")}. Routing uses their existing base classes.` } : {}, inputSchema: { ...tool.inputSchema, properties } };
   });
 }
-var ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submitted, ruling needed, blocker, or changed contract or path messages: each requires action from the recipient. Use [FYI] only for progress or information that needs no action. hub_task_done and hub_review already notify the assigned recipients; no duplicate hub_send chat is needed.", str2, id, refs, list = (description) => ({ type: "array", items: str2, description }), reviewFindings, costPlanProperties, plan, acceptPlan, tool = (name, description, properties, required = []) => ({
+var ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submitted, ruling needed, blocker, or changed contract or path messages: each requires action from the recipient. Use [FYI] only for progress or information that needs no action. hub_task_done and hub_review already notify the assigned recipients; no duplicate hub_send chat is needed.", str2, id, refs, list = (description) => ({ type: "array", items: str2, description }), reviewFindings, costPlanProperties, evidencePlanProperties, plan, acceptPlan, tool = (name, description, properties, required = []) => ({
   name,
   description,
   inputSchema: { type: "object", properties, required, additionalProperties: false }
@@ -8121,6 +8126,10 @@ var init_hub_tools = __esm(() => {
   costPlanProperties = {
     review: { type: "object", properties: { scope: { type: "string", enum: ["none", "delta", "full"] }, reviewers: { type: "integer", minimum: 0, maximum: 8 } }, required: ["scope", "reviewers"], additionalProperties: false },
     ci: { type: "string", enum: ["focused", "full", "reuse"] }
+  };
+  evidencePlanProperties = {
+    proof: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 }, description: "test paths or check names planned to prove the change" },
+    risks: { type: "array", maxItems: 32, items: { type: "string", maxLength: 512 }, description: "short risks to check during implementation and review" }
   };
   plan = {
     type: "object",
@@ -19300,6 +19309,9 @@ init_registry();
 init_hub_tools();
 init_envelope();
 
+// src/hub/tasks.ts
+init_plan_conformance();
+
 // src/hub/sdlc-release.ts
 init_child_process();
 init_git();
@@ -19375,6 +19387,7 @@ init_sdlc();
 init_planning();
 
 // src/hub/sdlc-queue.ts
+init_plan_conformance();
 init_review_findings();
 init_sdlc();
 
@@ -19544,6 +19557,7 @@ init_routing();
 var DEMOTION_HALF_LIFE_MS = 24 * 3600000;
 var CONTRADICTION_WINDOW_MS = 7 * 86400000;
 var QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep", "memory reference started"]);
+QUIET_EVENTS.add("plan observed");
 var OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassigned"]);
 
 // src/hub/conductor.ts
