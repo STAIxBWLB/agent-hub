@@ -42,7 +42,8 @@ project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
   running sessions across versions. Settings reload without a restart where their
   apply class allows; guarded values wait for a person's confirmed
   `ahub settings reload` in a terminal. The console supports revision-checked task
-  assignment/unassignment, delivery-queue resolution and per-peer planner WIP limits. Peers with independent
+  assignment/unassignment, delivery-queue resolution, per-peer planner WIP limits
+  and backlog management from the Tasks tab. Peers with independent
   tool turns can request one uncertain redelivery; the delivery-only local worker
   and headless ACP peers leave held deliveries for the person to resolve.
 
