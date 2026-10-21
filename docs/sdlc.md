@@ -16,7 +16,7 @@ The built-in lifecycle follows the [AI-Native SDLC Playbook](https://claude.com/
 | spec | Design | person/planner | issue identity and scope | spec acceptance/body drift checked at build entry |
 | plan | Build | planner/owner | plan, branch, existing predecessor gates | current planner review required at build admission; literal-path conformance gates approval in enforce |
 | build | Build | owner | PR identity/current head and local check on that head | entering review, when enabled |
-| test | Test | verifier/reviewer | required checks and local gate on the reviewed head | approval, when enabled; integrity/evals pending S4/S5 |
+| test | Test | verifier/reviewer | required checks and local gate on the reviewed head | approval, when enabled; bug test integrity below, evals pending S5 |
 | review | Deploy | assigned reviewer | current head-bound verdict, no pending change request/open thread; AC checklist under Compliance | approval, when enabled; open Important findings block in enforce |
 | merge | Deploy | person | current-head readiness, ordered touching PRs | shown; no mutation |
 | release | Deploy | person | merged commit, version/tag, docs freshness/live receipt checklist | shown; authorization pending S6 |
@@ -32,7 +32,7 @@ Stored `implement` and `verify` stage ids read as `build` and `test`. A write th
 | S1 | Accepted intent/spec and spec drift | Person-only `ahub sdlc accept`, bound to the issue's body edit time; build entry needs it in enforce (see Spec acceptance below) |
 | S2 | Accepted plan and diff conformance | Bounded proof/risks, metadata-only plan conformance and person-bound departure acceptance |
 | S3 | Bugs, Security and Compliance review passes | Head-bound findings, configured nit cap, Important approval gate and recurring-finding amendment proposals |
-| S4 | Red-first tests and test integrity | Pending receipts/gates; repository test-integrity rules still apply |
+| S4 | Red-first tests and test integrity | Bug-label metadata, source-labelled red-first proof and changed pre-existing test blockers |
 | S5 | Continuous evals for agent configuration | Pending gate, dependent on #251/#266; no eval pass claimed |
 | S6 | Production approval gate | Pending person-only release authorization; release report stays read-only |
 | S7 | Metrics, deterministic control bands and follow-up intent | Pending; no automated metric triage or security baseline claimed |
@@ -64,7 +64,7 @@ The acceptance-criteria checklist belongs to the Compliance pass over the same b
 
 ## Delivery and verification state
 
-Head-bound review/approval gates, bounded custom definitions, read-only merge/release reports, S0/S8 vocabulary/checklist migration, S1 spec acceptance and S9 planner admission and S10 cost governance are implemented in source. S11 release-train governance ships in 0.12.37. S4-S7 and the native advise-through-merge/release cycle remain pending. S2 plan conformance and S3 findings are implemented in source. Installation, native acceptance and release authorization require separate receipts.
+Head-bound review/approval gates, bounded custom definitions, read-only merge/release reports, S0/S8 vocabulary/checklist migration, S1 spec acceptance and S9 planner admission and S10 cost governance are implemented in source. S11 release-train governance ships in 0.12.37. S5-S7 and the native advise-through-merge/release cycle remain pending. S4 test integrity is implemented in source. S2 plan conformance and S3 findings are implemented in source. Installation, native acceptance and release authorization require separate receipts.
 
 ## Initial commands
 
@@ -278,3 +278,19 @@ Review/status use the same bounded PR file metadata reader as the merge queue; n
 The person may instead run `ahub sdlc accept-departure <task> <head> <reason...>`. Acceptance requires a currently known departure, never unknown or already covered conformance. The hub reads and captures the complete current repo/PR/head inventory, verified task repository scope and the plan fingerprint/revision; changing the plan, repository refs/scope, link, head or inventory invalidates that acceptance. Departure consent also expires on hub restart: amend the plan or accept again in the new host lifetime. This fail-closed ceiling prevents a rejected, unpersisted readback from reviving old consent; a durable host observation journal is the upgrade path. The reason is bounded to 2048 characters, sanitized and privacy-screened. There is no peer tool or live-test delegation for this person-only operation. Private PR inventories are unavailable to this remote readback; amend the private plan instead. Public private-task projections show only whether a departure acceptance exists.
 
 The report names "plan revisions after the first observed push". Host-authored content revisions live in task history, independently of backlog `planningRevision`. The first verified remote head records the current revision/fingerprint; earlier pushes are explicitly unknown. Pending observations persist only with successful owner/reviewer transitions; status and queue reads do not append board history. Off mode captures no S2 observation or content revision. Plan edits made while off therefore do not count in revisions after the first observed push when reporting resumes. Revoking an existing person acceptance on a plan change still persists its invalidation, including while reporting is off. If startup loses a pending observation, the earlier interval remains unknown. This observation boundary is a ceiling until a webhook or Actions push receipt provides a true push-event source.
+
+## Test integrity (#481 S4)
+
+When mode is enabled, the linked issue's complete label metadata decides applicability: `bug` (case-insensitive) requires S4, known non-bug labels exempt it, and unavailable labels are unknown. No issue title/body or patch is read. Enforce blocks entering review and approval for unknown applicability, missing/invalid proof, incomplete file metadata, or modified/deleted pre-existing test files. Advise exposes the same report without blocking; off adds no S4 receipt or readback.
+
+Record `redFirst` with two legs through `hub_sdlc_record` or `ahub sdlc record`. Both use the same bounded `check` name; `red` has `result: "failed"`, `green` has `result: "passed"`, each with `source: "local" | "container" | "ci"` and a full lowercase commit SHA. The red commit must occur in this PR, have one parent, and add only recognized test paths. The green SHA must equal the current PR head. Local/container results remain labelled claims, CI legs require the named failed/passed check observed on their exact commits. CI cancellation, timeout or skipped results do not prove red-first failure. Relinking the repo, issue or PR drops the proof unless it is explicitly supplied again.
+
+Example receipt (replace both SHAs):
+
+```json
+{"redFirst":{"red":{"source":"local","head":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","check":"bun test test/regression.test.ts","result":"failed"},"green":{"source":"local","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","check":"bun test test/regression.test.ts","result":"passed"}}}
+```
+
+Status/explain and merge-queue rows expose `testIntegrity` with applicability, red-first state, file-inventory state, source labels and modified/deleted test paths. Added tests are allowed. Test paths are under `test/`, `tests/` or `__tests__/`, or have a supported `.test`/`.spec` suffix. Renames/copies, unsafe paths, missing change types and truncated inventories stay unknown. Private tasks and metadata rejected by the current host privacy policy expose a neutral unknown report; receipt metadata is screened again on public output.
+
+Reads share the existing 20 s lifecycle/queue allowance and fixed argument/output caps. Labels and check contexts are bounded to 100 each, PR commits to 100, and the red commit to fewer than 100 changed files; larger proof is unknown rather than silently accepted. The queue revalidates every linked issue's applicability with its final PR snapshot (up to 32 distinct issues). These metadata/claim receipts do not prove a native/container run by themselves; no live advise-through-release receipt is claimed.

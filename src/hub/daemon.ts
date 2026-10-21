@@ -5788,7 +5788,11 @@ export async function startDaemon(opts: DaemonOptions) {
         if (msg.id !== undefined && (!Number.isSafeInteger(msg.id) || msg.id <= 0 || !selected.length)) return void reply({ ok: false, error: "invalid lifecycle task id" });
         void (async () => {
           const rows = [];
-          for (const task of selected.slice(0, 100)) rows.push({ id: task.id, title: tasks.publicTitle(task), ...(tasks.isPii(task) ? {} : { receipt: task.sdlc }), ...await tasks.lifecycleStatus(task.id, msg.id !== undefined) });
+          for (const task of selected.slice(0, 100)) {
+            const status = await tasks.lifecycleStatus(task.id, msg.id !== undefined);
+            const current = board.get(task.id) ?? task;
+            rows.push({ id: task.id, title: tasks.publicTitle(current), ...(tasks.isPii(current) ? {} : { receipt: tasks.publicView(current).sdlc }), ...status });
+          }
           reply({ ok: true, mode: lifecycleConfig.mode, rows, truncated: selected.length > 100 });
         })().catch(() => reply({ ok: false, error: "lifecycle readback unavailable" }));
         return;

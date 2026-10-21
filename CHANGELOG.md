@@ -2,6 +2,10 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
+## Unreleased
+
+- Bug-labelled tasks gain source-labelled red-first receipts and PR test-integrity readbacks. Enforce blocks review and approval when proof is missing/unknown or a pre-existing test is modified/deleted; advise shows the findings. Status and merge queues retain private metadata screening (#481 S4).
+
 ## 0.12.45
 
 The dashboard is redesigned (#469), a machine-local, content-pinned adapter module can add an ACP agent (#451 A4), the peer lists and the CLI surface come from the adapter definitions (#625), and reviews gain structured findings with an Important gate (#481 S3) and plan conformance with a person-only departure acceptance (#481 S2).

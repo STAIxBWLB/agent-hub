@@ -1,3 +1,4 @@
+import { redFirstSchema } from "./test-integrity.ts";
 import { SDLC_STAGES } from "./sdlc.ts";
 import { projectProfile, profileData, PROFILE_CLASS_NAMES, type ProfileName, type ProfileSelection } from "./profiles.ts";
 import { catalogSection, type CatalogRole } from "./roles.ts";
@@ -191,7 +192,7 @@ export function profileTaskTools(profile: ProfileSelection = "dev", stages?: rea
       if (criteria) {
         const { phase, ...current } = fields as { phase: { properties: Record<string, unknown> } } & Record<string, unknown>;
         const { tasks: _retiredImport, ...checklist } = phase.properties;
-        fields = { ...current, criteria: { ...phase, properties: checklist, required: ["id", "criteria"] } };
+        fields = { ...current, redFirst: redFirstSchema, criteria: { ...phase, properties: checklist, required: ["id", "criteria"] } };
       }
       properties.receipt = { ...receipt, properties: fields };
     }

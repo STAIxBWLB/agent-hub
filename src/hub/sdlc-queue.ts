@@ -1,9 +1,10 @@
+import { publicTestIntegrity, parseIssueLabels, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
 import { planConformance, planConformanceBlockers } from "./plan-conformance.ts";
 import { findingsForHead, findingHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
 import type { CriteriaView } from "./workflow.ts";
 import { parsePrEvidence, readSdlcPr, sdlcGh, sdlcStatus, type PrEvidence, type SdlcConfig, type SdlcGh, type SdlcReceipt } from "./sdlc.ts";
 export interface DeliveryTask { plan?: { paths?: string[]; revision: number; fingerprint: string; accepted: { repo: string; pr: number; head: string; revision: number; fingerprint: string; paths: string[] }[] }; findings?: readonly ReviewFindingSet[]; id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: CriteriaView; }
-export interface MergeQueueRow { planConformance?: { task?: number; state: string; outside: number; untouched: number; accepted: boolean }[]; findings?: ReviewFindingTally; pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
+export interface MergeQueueRow { testIntegrity?: (TestIntegrity & { task?: number })[]; planConformance?: { task?: number; state: string; outside: number; untouched: number; accepted: boolean }[]; findings?: ReviewFindingTally; pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
 export interface MergeConflict { left: number; right: number; files: number; order: "dependency" | "person_required"; }
 export interface MergeQueue { repo: string; rows: MergeQueueRow[]; order: number[]; unordered?: number[]; conflicts: MergeConflict[]; complete: boolean; truncated: boolean; }
 const validRepo = (value: string) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && !value.startsWith("-");
@@ -12,13 +13,20 @@ const parseSnapshot = (reply: { code: number; stdout: string }): { number: numbe
   try { const data = JSON.parse(reply.stdout); if (reply.code !== 0 || !Array.isArray(data) || data.length > 17 || data.some(p => !validId(p?.number) || typeof p.headRefOid !== "string" || !/^[0-9a-f]{40}$/.test(p.headRefOid) || typeof p.baseRefName !== "string" || !p.baseRefName || p.baseRefName.length > 200 || /[\x00-\x1f\x7f]/.test(p.baseRefName) || typeof p.baseRefOid !== "string" || !/^[0-9a-f]{40}$/.test(p.baseRefOid)) || new Set(data.map(p => p.number)).size !== data.length) return; return data.map(p => ({ number: p.number, head: p.headRefOid, base: p.baseRefName, baseHead: p.baseRefOid })).sort((a, b) => a.number - b.number); }
   catch { return; }
 };
-const gateIdentity = (p: PrEvidence) => JSON.stringify({ head: p.head, state: p.state, checks: [...p.checks].sort((a, b) => a.name.localeCompare(b.name) || a.state.localeCompare(b.state)), review: p.review, pending: p.pendingReviews, unresolved: p.unresolved, draft: p.draft, base: p.base, baseHead: p.baseHead, pathsComplete: p.pathsComplete });
+const gateIdentity = (p: PrEvidence) => JSON.stringify({ head: p.head, state: p.state, checks: [...p.checks].sort((a, b) => a.name.localeCompare(b.name) || a.state.localeCompare(b.state)), review: p.review, pending: p.pendingReviews, unresolved: p.unresolved, draft: p.draft, base: p.base, baseHead: p.baseHead, pathsComplete: p.pathsComplete, ...(p.issueLabels ? { issue: p.issueLabels.issue, bug: p.issueLabels.labels?.some(name => name.toLowerCase() === "bug") ?? "unknown" } : {}) });
 /** The last remote read gathers both open identities and mutable gates in one bounded request. */
-async function finalSnapshot(repo: string, evidence: Map<number, PrEvidence>, run: SdlcGh): Promise<{ gatesStable: boolean; prs?: ReturnType<typeof parseSnapshot> }> {
+async function finalSnapshot(repo: string, evidence: Map<number, PrEvidence>, run: SdlcGh, issues: Map<number, TestIntegrity["applicability"]>): Promise<{ gatesStable: boolean; prs?: ReturnType<typeof parseSnapshot> }> {
+  // ponytail: one snapshot verifies at most 32 linked issues; paginate within the same deadline if queues grow.
+  if (issues.size > 32) return { gatesStable: false };
   const [owner, name] = repo.split("/");
   const fields = "headRefOid state isDraft baseRefName baseRefOid changedFiles reviewDecision reviewRequests(first:100){nodes{requestedReviewer{__typename}} pageInfo{hasNextPage}} reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}} statusCheckRollup{contexts(first:100){nodes{... on CheckRun{name conclusion status} ... on StatusContext{context state}} pageInfo{hasNextPage}}}";
   const entries = [...evidence.entries()];
-  const query = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(first:17,states:OPEN){nodes{number headRefOid baseRefName baseRefOid} pageInfo{hasNextPage}} ${entries.map(([id]) => `queue_p${id}:pullRequest(number:${id}){${fields}}`).join(" ")}}}`;
+  const issueAlias = (issue: number) => {
+    const primary = entries.find(([, value]) => value.issueLabels?.issue === issue);
+    return primary ? `queue_i${primary[0]}` : `queue_issue${issue}`;
+  };
+  const extraIssues = [...issues.keys()].filter(issue => !entries.some(([, value]) => value.issueLabels?.issue === issue));
+  const query = `query($owner:String!,$name:String!){repository(owner:$owner,name:$name){pullRequests(first:17,states:OPEN){nodes{number headRefOid baseRefName baseRefOid} pageInfo{hasNextPage}} ${entries.map(([id, before]) => `queue_p${id}:pullRequest(number:${id}){${fields}}${before.issueLabels ? ` queue_i${id}:issue(number:${before.issueLabels.issue}){number labels(first:100){nodes{name} pageInfo{hasNextPage}}}` : ""}`).join(" ")} ${extraIssues.map(issue => `${issueAlias(issue)}:issue(number:${issue}){number labels(first:100){nodes{name} pageInfo{hasNextPage}}}`).join(" ")}}}`;
   try {
     const reply = await run(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`]);
     if (reply.code !== 0) return { gatesStable: false };
@@ -32,27 +40,34 @@ async function finalSnapshot(repo: string, evidence: Map<number, PrEvidence>, ru
       const threads = p?.reviewThreads, reviews = p?.reviewRequests, checks = p?.statusCheckRollup === null ? { nodes: [], pageInfo: { hasNextPage: false } } : p?.statusCheckRollup?.contexts;
       if (threads?.pageInfo?.hasNextPage !== false || reviews?.pageInfo?.hasNextPage !== false || checks?.pageInfo?.hasNextPage !== false || !Array.isArray(threads.nodes) || threads.nodes.length > 100 || threads.nodes.some((n: { isResolved?: unknown }) => typeof n?.isResolved !== "boolean") || !Array.isArray(reviews.nodes) || !Array.isArray(checks.nodes) || checks.nodes.length > 100) return { gatesStable: false, prs };
       const after = parsePrEvidence({ ...p, files: before.paths.map(path => ({ path })), statusCheckRollup: checks.nodes, reviewRequests: reviews.nodes, unresolvedThreads: threads.nodes.filter((n: { isResolved: boolean }) => !n.isResolved).length });
+      if (before.issueLabels) after.issueLabels = { issue: before.issueLabels.issue, labels: parseIssueLabels(data.data.repository[`queue_i${id}`], before.issueLabels.issue) ?? null };
       if (gateIdentity(before) !== gateIdentity(after)) return { gatesStable: false, prs };
+    }
+    for (const [issue, expected] of issues) {
+      const labels = parseIssueLabels(data.data.repository[issueAlias(issue)], issue);
+      const current = labels === undefined ? "unknown" : labels.some(name => name.toLowerCase() === "bug") ? "bug" : "not_bug";
+      if (current !== expected) return { gatesStable: false, prs };
     }
     return { gatesStable: true, prs };
   } catch { return { gatesStable: false }; }
 }
 /** Fixed metadata-only reads; local claims and unknown dependency evidence never become merge approval. */
-export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: DeliveryTask[], run: SdlcGh = sdlcGh): Promise<MergeQueue> {
+export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: DeliveryTask[], run: SdlcGh = sdlcGh, readableMetadata?: (path: string) => boolean): Promise<MergeQueue> {
   if (!validRepo(repo)) throw new Error("merge queue requires owner/repository");
   const result: MergeQueue = { repo, rows: [], order: [], conflicts: [], complete: false, truncated: false };
   const deadline = performance.now() + 20_000;
-  const bounded: SdlcGh = args => { const remaining = deadline - performance.now(); return remaining > 0 ? run(args, Math.min(10_000, remaining)) : Promise.resolve({ code: 1, stdout: "" }); };
+  const bounded: SdlcGh = (args, timeout, cwd, cap) => { const remaining = deadline - performance.now(); return remaining > 0 ? run(args, Math.min(timeout ?? 10_000, remaining), cwd, cap) : Promise.resolve({ code: 1, stdout: "" }); };
   const listArgs = ["pr", "list", "--repo", repo, "--state", "open", "--limit", "17", "--json", "number,headRefOid,baseRefName,baseRefOid"];
   const initialPrs = parseSnapshot(await bounded(listArgs)); if (!initialPrs) return result;
   result.truncated = initialPrs.length > 16; const ids = initialPrs.slice(0, 16).map(pr => pr.number);
   const sameRepo = (value: unknown) => typeof value === "string" && value.toLowerCase() === repo.toLowerCase();
   const evidence = new Map<number, PrEvidence>(), links = new Map<number, DeliveryTask[]>();
+  const issueApplicability = new Map<number, TestIntegrity["applicability"]>();
   for (const pr of ids) {
     const holders = tasks.filter(t => sameRepo(t.receipt?.repo) && t.receipt?.pr === pr); links.set(pr, holders);
     const row: MergeQueueRow = { pr, tasks: holders.some(t => t.private) ? [] : holders.map(t => t.id), ready: false, blockers: [], after: [] }; result.rows.push(row);
     if (holders.some(t => t.private)) { row.private = true; if (config.mode !== "off") row.planConformance = [{ state: "unknown", outside: 0, untouched: 0, accepted: false }]; row.blockers.push("private lifecycle evidence unavailable"); continue; }
-    const read = await readSdlcPr(holders[0]?.receipt ?? { stage: config.stages[0] ?? "spec", repo, pr }, bounded);
+    const read = await readSdlcPr(holders[0]?.receipt ?? { stage: config.stages[0] ?? "spec", repo, pr }, bounded, config.mode !== "off");
     if (!read || read.state !== "OPEN") { row.blockers.push("current PR evidence unknown or no longer open"); continue; }
     evidence.set(pr, read); row.head = read.head;
     for (const holder of holders) {
@@ -70,8 +85,15 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
     for (const holder of linked) {
       const conformance = holder?.plan ? { ...planConformance(holder.plan.paths, read), accepted: holder.plan.accepted.some(item => item.repo === holder.receipt?.repo && item.pr === holder.receipt?.pr && item.head === read.head && item.revision === holder.plan!.revision && item.fingerprint === holder.plan!.fingerprint && JSON.stringify([...item.paths].sort()) === JSON.stringify([...read.paths].sort())) } : undefined;
       if (holder && conformance && config.mode !== "off") (row.planConformance ??= []).push({ task: holder.id, state: conformance.state, outside: conformance.outside.length, untouched: conformance.untouched.length, accepted: conformance.accepted });
+      const rawIntegrity = config.mode !== "off" && holder?.receipt ? await readTestIntegrity(holder.receipt, read, bounded) : undefined;
+      if (rawIntegrity && holder?.receipt?.issue) {
+        const issue = holder.receipt.issue, before = issueApplicability.get(issue);
+        issueApplicability.set(issue, before !== undefined && before !== rawIntegrity.applicability ? "unknown" : rawIntegrity.applicability);
+      }
+      const integrity = rawIntegrity ? publicTestIntegrity(rawIntegrity, readableMetadata) : undefined;
+      if (integrity) (row.testIntegrity ??= []).push({ task: holder!.id, ...integrity });
       row.blockers.push(...sdlcStatus(config, holder?.receipt, read, holder?.phase).blockers);
-      if (config.mode === "enforce") row.blockers.push(...planConformanceBlockers(conformance));
+      if (config.mode === "enforce") row.blockers.push(...planConformanceBlockers(conformance), ...testIntegrityBlockers(integrity));
     }
   }
   const dependencyEvidence = new Map<number, PrEvidence | undefined>(); let dependencyReads = 0;
@@ -115,7 +137,7 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
   result.complete = !result.truncated && !remaining.size && !touchingCoverageUnknown && !personOrder.size;
   // Empty/private-only snapshots have no intervening remote reads and offer no private PR evidence.
   if (evidence.size) {
-    const finalRead = await finalSnapshot(repo, evidence, bounded);
+    const finalRead = await finalSnapshot(repo, evidence, bounded, issueApplicability);
     const gatesStable = finalRead.gatesStable;
     const finalPrs = finalRead.prs;
     if (!gatesStable || !finalPrs || JSON.stringify(finalPrs) !== JSON.stringify(initialPrs) || finalPrs.some(pr => evidence.has(pr.number) && (evidence.get(pr.number)?.head !== pr.head || evidence.get(pr.number)?.base !== pr.base || evidence.get(pr.number)?.baseHead !== pr.baseHead))) {

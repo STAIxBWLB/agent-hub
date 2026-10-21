@@ -140,7 +140,11 @@ function admissionRig(mode: "off" | "advise" | "enforce", ready = true, answered
   const gh: SdlcGh = async args => {
     reads++; hooks.onRead?.(args);
     if (args[0] === "pr") return { code: 0, stdout: JSON.stringify(hooks.prReply ?? { headRefOid: head, state: "OPEN", statusCheckRollup: [], reviewRequests: [], files: [], changedFiles: 0 }) };
-    return { code: 0, stdout: JSON.stringify(hooks.reply ?? readinessReply(ready ? "SUCCESS" : "PENDING", answered)) };
+    const reply = hooks.reply ?? readinessReply(ready ? "SUCCESS" : "PENDING", answered), issueArg = args.find(arg => arg.startsWith("issue="));
+    const data = (reply as ReturnType<typeof readinessReply>).data;
+    return { code: 0, stdout: JSON.stringify(issueArg ? { ...reply as object, data: { ...data, repository: { ...data.repository,
+      issue: { number: Number(issueArg.split("=")[1]), labels: { nodes: [], pageInfo: { hasNextPage: false } } },
+    } } } : reply) };
   };
   const tasks = new Tasks({ cwd, board, bus, roles, project: "fixture", routing: () => loadRouting(cwd), privateTurn: () => hooks.privateTurn === true, notify: text => notices.push(text), sdlc: { config: () => sdlcConfig({ mode }), gh } });
   const task = board.propose("user", { title: "finished implementation", class: "implement" });
@@ -544,7 +548,10 @@ for (const scenario of ["advise quiet", "reviewer change", "enforce quiet", "enf
         ...(scenario === "state change" ? { state: "cancelled" as const } : {}),
       });
     }
-    return { code: 0, stdout: JSON.stringify(readinessReply()) };
+    const reply = readinessReply(), issueArg = args.find(arg => arg.startsWith("issue="));
+    return { code: 0, stdout: JSON.stringify(issueArg ? { ...reply, data: { ...reply.data, repository: { ...reply.data.repository,
+      issue: { number: Number(issueArg.split("=")[1]), labels: { nodes: [], pageInfo: { hasNextPage: false } } },
+    } } } : reply) };
   }, { check: () => "fixture check", runCheck: () => { checkStarted(); return checked; } });
   const task = scopeTask(r);
   // Owners are registered but offline, so the real bus retains their retry notices for inspection.
