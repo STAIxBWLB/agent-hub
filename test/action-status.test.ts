@@ -18,9 +18,11 @@ test("slice1 status never claims adapter enforcement before its pre-tool gate is
     client = await ControlClient.connect(stateDir, { role: "console" });
     const { status } = await client.request({ t: "status" });
     expect(Object.keys(status.peers).length).toBeGreaterThan(0);
-    for (const row of Object.values(status.peers) as any[]) {
-      expect(row.actionPolicy).toMatchObject({ enabled: true, enforceable: false, sessionBound: false, limits: { publish: 1, destroy: 3, "external-write": 5, install: 2 } });
-      expect(row.actionPolicy.note).toContain("always-ask not enforceable");
+    expect(status.peers.claude).toEqual({ state: "idle", queued: 0 });
+    expect(Object.keys(status.actionPolicyInfo)).toEqual(Object.keys(status.peers));
+    for (const row of Object.values(status.actionPolicyInfo) as any[]) {
+      expect(row).toMatchObject({ enabled: true, enforceable: false, sessionBound: false, limits: { publish: 1, destroy: 3, "external-write": 5, install: 2 } });
+      expect(row.note).toContain("always-ask not enforceable");
     }
     const text = renderStatus(status, 160).map(line => paint(line, false)).join("\n");
     expect(text).toContain("always-ask not enforceable");
