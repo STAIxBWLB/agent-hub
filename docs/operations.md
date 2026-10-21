@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.42 and control protocol 16. Live verification
+This guide describes ahub 0.12.43 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -961,7 +961,12 @@ later. Your own `ahub task assign` is not blocked by those exclusions, and it
 drops the agent's reservation. The PII constraint and capability limits
 still apply, so a PII task goes to `local` or nobody whoever was reserved.
 `ahub task assign` on a task that waits changes its reserved owner instead of
-handing it over. `ahub route explain <id>` names the reserved owner; once the
+handing it over. On a task that does not wait, an assignment whose named owner cannot take
+the task now (offline or not attached, excluded, a capability or PII limit, or
+an enforce-mode SDLC gap) is refused with the reason and the task is unchanged;
+assign again once the peer is attached (#601). When a proposal names an owner,
+a self-claim included, and that owner did not get the task, the proposal's
+result says why and names `hub_task_assign`. `ahub route explain <id>` names the reserved owner; once the
 task is ready it also says whether routing would honor the reservation now, and
 why not.
 
@@ -1142,6 +1147,7 @@ ahub undo <turn> --yes --context  # Codex's latest turn: also drop it from Codex
   Nothing is restored then. It plans again right before restoring and stops if
   anything moved meanwhile. A turn that is already undone says so.
 - A file the turn created is deleted; a file it deleted comes back.
+- When HEAD moves during a turn, the hub reads the appended HEAD reflog (bounded to 64 moves and 128 KiB). The turn's own commits, amends, cherry-picks and rebase picks still count as its changes. Files brought in by a pull, merge, rebase start, branch checkout or fast-forward reset are left out, unless they are still dirty at the turn's end. An unreadable or ambiguous reflog, a rewinding reset, or a file touched by both kinds of move makes the turn's files unknown (#576).
 - `--context` asks Codex (`thread/revert`) to drop the turn, and every later one,
   from its thread's saved history before the files are restored; Codex receives
   nothing while that runs. It changes no file itself, works only on Codex's
@@ -1155,7 +1161,11 @@ ahub undo <turn> --yes --context  # Codex's latest turn: also drop it from Codex
   snapshotted by later turns like any other file. Keep PII files in an ignored
   directory.
 - A turn the hub stopped in the middle of shows the state `no end snapshot` and
-  cannot be undone.
+  cannot be undone. So does a turn whose boundary evidence is unknown: snapshot
+  Git calls made in one callback burst share a 250 ms budget, and a capture that
+  runs past it, fails, or sees HEAD move while it is taken is unknown, never a
+  stale baseline (hub.log says `snapshot unavailable` once per burst). A turn
+  whose diff or HEAD-move evidence cannot be read is unknown as well (#576).
 - Claude's turns are not recorded: its channel shows the hub no turn boundary.
   Claude Code's own checkpoints cover its edits, though not its shell commands.
 - The snapshots are unreferenced objects in the repository's own object store, so
@@ -2106,21 +2116,21 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.42), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.12.43), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
 project directory, without replacing the global CLI first:
 
 ```bash
-bunx --package @staix/agent-hub@0.12.42 ahub upgrade --to 0.12.42 --dry-run
-bunx --package @staix/agent-hub@0.12.42 ahub upgrade --to 0.12.42 --yes
+bunx --package @staix/agent-hub@0.12.43 ahub upgrade --to 0.12.43 --dry-run
+bunx --package @staix/agent-hub@0.12.43 ahub upgrade --to 0.12.43 --yes
 ```
 
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.42 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.12.43 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -2152,14 +2162,14 @@ projects first:
 
 ```bash
 ahub restart --dry-run
-ahub upgrade --to 0.12.42 --dry-run
+ahub upgrade --to 0.12.43 --dry-run
 ```
 
 Apply only after reviewing the plan:
 
 ```bash
 ahub restart --yes
-ahub upgrade --to 0.12.42 --yes
+ahub upgrade --to 0.12.43 --yes
 ahub recovery status [<operation-id>]
 ahub recovery resume [<operation-id>]
 ahub recovery abort [<operation-id>]
@@ -2236,7 +2246,7 @@ A lost commit or start reply is reconciled against the actual daemon identity,
 package digest, terminal binding, and phase receipt. An uncertain terminal
 creation is never repeated blindly. Recovery retains the exact-pinned first-party memory package with the preserved runtime, includes its identity and bytes in the digest, and refuses missing, symlinked or changed retained dependencies instead of resolving a mutable ancestor/global installation. It does not copy the full dependency tree.
 
-After creating a managed terminal, the coordinator saves its exact handle, incarnation and worktree before waiting up to 600 seconds (10 minutes) for authenticated attachment to the expected target hub and conversation. A pending or failed creation receipt also waits when the current target has a verified live launcher; its saved binding retains the pending/failed origin across interruption. An idle terminal alone is not attachment proof. Without a current launch record, a confirmed-ended row for another terminal and an attached session still reporting no id keep the chosen terminal waiting within the same bound; a late matching record continues that wait. Live replacement and unreadable records still block. Only non-offline session ids count, and older-instance launchers are checked before declaring a launch gone. Timeout retains the binding and diagnostic receipt; resume waits on that same binding rather than opening a duplicate.
+After creating a managed terminal, the coordinator saves its exact handle, incarnation and worktree before waiting up to 600 seconds (10 minutes) for authenticated attachment to the expected target hub and conversation. A pending or failed creation receipt also waits when the current target has a verified live launcher; its saved binding retains the pending/failed origin across interruption. An idle terminal alone is not attachment proof: after idle, the coordinator re-reads the launch record and Orca's identity every second within the same bound, until the terminal maps to the expected session or contradicts it (#599). Without a current launch record, a confirmed-ended row for another terminal and an attached session still reporting no id keep the chosen terminal waiting within the same bound; a late matching record continues that wait. Live replacement and unreadable records still block. Only non-offline session ids count, and older-instance launchers are checked before declaring a launch gone. Timeout retains the binding and diagnostic receipt; resume waits on that same binding rather than opening a duplicate.
 
 The wait checks the selected launcher's signed identity on each poll. When that exact launcher exits and the target confirms no session or other live launcher, a pending-origin wait (including a new terminal) records failure and offers the failed-restoration choices, including fresh-session for Codex or Claude. A failed-origin wait returns to its existing retry path. A replacement terminal, missing or unreadable launcher identity, unreadable target or different attached conversation blocks without treating unknown as gone. Success clears the waiting origin and preserves exact terminal/session revalidation. A launcher from an older target instance still blocks without another terminal. The 10-minute limit matches terminal creation readiness; terminal idle can precede native resume and MCP handshake completion. The zero-turn Claude exception still applies only when no original transcript exists. If Claude shows its development-channel confirmation screen, confirm it in
 the captured terminal, then run `ahub recovery resume <operation-id>`; resume must not open a duplicate terminal.
@@ -2546,9 +2556,11 @@ next actions").
   gone. One that dies before recording itself leaves no record to read, and
   what happens next depends on whether Orca reports the bare login shell it
   returned to as TUI-idle, which is not verified. If it does, the coordinator
-  stops at once with "original session restoration needs manual verification"
-  (the terminal cannot be mapped to the session). If it does not, it stops with
-  the same error after the 10-minute wait. Either way the receipt stays
+  re-reads the terminal's mapping every second (#599) and stops at once only when
+  Orca names another peer or session; otherwise it stops with "original session
+  restoration needs manual verification" (the terminal cannot be mapped to the
+  session) when the 10-minute wait ends. If it does not, it stops with the same
+  error after the 10-minute wait. Either way the receipt stays
   `pending`; close that terminal in Orca (or wait, if the session may still
   attach), then `resume`: with no live launcher and no attached session it
   records `restored:<peer>` `failed` and lists the failed-restoration choices.
@@ -3006,7 +3018,7 @@ PR or push check with the identical Git tree and all three successful jobs. An a
 unreadable result runs the main gate again and refuses release. A manual
 `prepare_bundle` dispatch builds reviewable plugin assets without publishing;
 it is never accepted as full-gate evidence. A `timing_runs=20` dispatch runs only the daemon, PII screen and ACP
-test files twenty times on macOS, in its own concurrency group; it does not replace the full gate.
+test files twenty times on macOS, in its own concurrency group; it does not replace the full gate. Each PR has its own CI concurrency group, so PRs run side by side; within a PR a newer pending run replaces the older pending one and an admitted run is never cancelled; main pushes and dispatches keep queueing every run. Two groups admitting the same tree at once may run it twice, never a false green (#609). `scripts/check.sh --changed [<base>]` runs every non-test step but only the affected test files, and the full suite when it cannot tell; the full gate stays CI's (#610).
 `scripts/check.sh` stops a suite still running after `AHUB_CHECK_HANG_S` seconds
 (960 by default); hosted CI sets 1080 on Linux and 1260 on macOS inside a 25-minute
 job limit (#378, #593).
@@ -3301,7 +3313,7 @@ Antigravity is optional and off roster by default. Use `ahub roster add agy`, th
 
 The launcher writes exactly `plugin.json`, `mcp_config.json` and `hooks.json` in `.agents/plugins/agent-hub/`, refusing linked or foreign entries before any write, and removes only its own matching files when the TUI ends. It never writes project-level `.agents/hooks.json` or the person's `~/.gemini` settings. Run `ahub init` afterwards to ignore the untracked plugin directory; a tracked plugin is written with a warning. The native model sees the hub tools under the server name `agent-hub_agent-hub`.
 
-Like Kimi's TUI, agy is pull-only: it reads `hub_inbox` and shares results with `hub_send`, messages do not interrupt it, and automatic routing never picks it. Its roles are capped at implementer and verifier; a plan or review assignment and PII work are refused. Native permissions are unmanaged, with no hub sandbox, hub permission mode, quota source or session resume. Plugin hooks bound to that launch carry the hub's turn facts and report each completed native turn. The live TUI/account leg is unverified ([T0 receipt](verification/2026-10-19-agy-p1-t0.md)).
+Like Kimi's TUI, agy is pull-only: it reads `hub_inbox` and shares results with `hub_send`, messages do not interrupt it, and automatic routing never picks it. Its roles are capped at implementer and verifier; a plan or review assignment and PII work are refused. Native permissions are unmanaged, with no hub sandbox, hub permission mode, quota source or session resume. Plugin hooks bound to that launch carry the hub's turn facts and report each completed native turn. A native read is recorded as a peer `Read` fact: `view_file` (`AbsolutePath`) in 1.4.2 and `read_file` (`Path`) in 1.4.3; a `StartLine`/`EndLine` range counts as a partial read, never a whole-file view (#555). The live TUI/account leg is unverified ([T0 receipt](verification/2026-10-19-agy-p1-t0.md)). The 1.4.3 T0 re-run keeps 1.4.3 unverified: its `call_mcp_tool` schema and native tool names changed, and the TUI attaches the hub tools only from the second model turn ([1.4.3 receipt](verification/2026-10-21-agy-1.4.3-t0.md), #607).
 
 # Headless ACP watch (#286)
 
@@ -3478,7 +3490,7 @@ unapproved dependencies, frozen scope and overriding person P0 order/reservation
 The person uses `ahub backlog pull-ready <id> <revision> <reason>` or Pull within
 WIP on a card. Explicit manual pull/assignment retain their existing authority.
 
-Capacity defaults to one per peer. `ahub settings set tasks.wip_limits.codex 2`
+Capacity defaults to one per peer. Each declared instance has its own `tasks.wip_limits.<instance>` key. `ahub settings set tasks.wip_limits.codex 2`
 uses the existing machine-local registry path; integers 0..32 apply live (the next
 admission reads the current value), with 0 disabling planner admission for that
 peer. Status and the agent legend count
