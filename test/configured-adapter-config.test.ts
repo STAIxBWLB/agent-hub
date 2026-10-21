@@ -1,3 +1,4 @@
+import { DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -5,7 +6,7 @@ import { join } from "node:path";
 import { createProjectAdapterCatalog, definitionOf } from "../src/adapters/registry.ts";
 import { readInstanceConfig, readInstanceRoleConfig } from "../src/hub/instance-config.ts";
 import { effectiveInstanceRoles, instanceCatalog, instanceDefaultRoles, validateInstances } from "../src/hub/instances.ts";
-import { configApply, validateRawConfig } from "../src/hub/config-apply.ts";
+import { configApply, configChanges, configIdentityScope, validateRawConfig } from "../src/hub/config-apply.ts";
 import { parseConfigSources, type ConfigSourceTexts } from "../src/hub/config-reload.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 
@@ -100,4 +101,56 @@ test("strict source parsing with provenance ignores tracked declarations before 
     expect(hubGitSync(["-C", f.root, "add", "-f", ".agenthub/config.local.json"], { encoding: "utf8" }).status).toBe(0);
     expect(() => parseConfigSources(texts({ adapters: { broken: "PRIVATE-COMMAND" } }), undefined, f.root)).not.toThrow();
   } finally { f.close(); }
+});
+
+test("Grok foreground contract is enforced by strict config loading", () => {
+  const declaration = { ...adapters.fixture, command: "grok", args: ["agent", "stdio"] };
+  expect(() => parseConfigSources(texts({ adapters: { grok: declaration } }))).toThrow(/explicit --no-leader/);
+  const foreground = { ...declaration, args: ["agent", "--no-leader", "stdio"] };
+  expect(() => parseConfigSources(texts({ adapters: { grok: foreground } }))).not.toThrow();
+  expect(() => parseConfigSources(texts({ adapters: { grok: { ...foreground, args: [...foreground.args, "--leader-socket=/tmp/leader.sock"] } } }))).toThrow(/attach\/leader/);
+});
+
+test("reload classification resolves configured and builtin extras only from bound declarations", () => {
+  const catalog = createProjectAdapterCatalog(adapters), declared = validateInstances({ ...instances, "codex-worker": { kind: "codex", roles: ["verifier"] } }, catalog);
+  expect(configApply("roster.fixture-check", [{ catalog, instances: declared }]).applies).toBe("live");
+  expect(configApply("roster.codex-worker", [{ catalog, instances: declared }]).applies).toBe("live");
+  for (const peer of ["fixture-ghost", "codex-ghost", "unknown"]) expect(() => configApply(`roster.${peer}`, [{ catalog, instances: declared }])).toThrow("unknown configuration key");
+});
+
+
+test("reload diff classifies bound instance roster changes and retained restart declarations", () => {
+  const declared = { ...instances, "codex-worker": { kind: "codex", roles: ["verifier"] } };
+  const before = { ...DEFAULT_CONFIG, adapters, instances: declared, roster: { "fixture-check": true, "codex-worker": true } };
+  const next = { ...before, roster: { "fixture-check": false, "codex-worker": false } };
+  const scope = { catalog: createProjectAdapterCatalog(adapters), instances: validateInstances(declared, createProjectAdapterCatalog(adapters)) };
+  expect(configChanges(before, next, [scope]).map(row => [row.key, row.applies])).toEqual([["roster.codex-worker", "live"], ["roster.fixture-check", "live"]]);
+  const sources = parseConfigSources(texts({ adapters, instances: declared }));
+  expect(configIdentityScope(sources.identity).catalog.definitionOf("fixture-check", sources.identity.instances)?.kind).toBe("fixture");
+  // Scoped restart staging can remove an adapter while retaining its old declaration until the next startup.
+  const staged = { ...next, adapters: {} };
+  expect(() => configChanges(before, staged, [scope, configIdentityScope(sources.identity)])).not.toThrow();
+  expect(() => configChanges(before, { ...next, roster: { "fixture-ghost": true } }, [scope])).toThrow("unknown configuration key");
+});
+
+
+test("scoped roster edits with a pending adapter role change preserve bound and removed identity classification", () => {
+  const declared = { "fixture-check": { kind: "fixture", roles: ["verifier"] } };
+  const runningScope = { catalog: createProjectAdapterCatalog(adapters), instances: validateInstances(declared, createProjectAdapterCatalog(adapters)) };
+  const pendingAdapters = { fixture: { ...adapters.fixture, roles: ["verifier"] } };
+  const sources = parseConfigSources(texts({ adapters: pendingAdapters, instances: declared, roster: { "fixture-check": false } }));
+  const before = { ...DEFAULT_CONFIG, adapters, instances: declared, roster: { "fixture-check": true } };
+  const next = { ...before, adapters: pendingAdapters, roster: { "fixture-check": false } };
+  const changes = configChanges(before, next, [runningScope, configIdentityScope(sources.identity)]);
+  expect(changes.find(row => row.key === "roster.fixture-check")).toMatchObject({ applies: "live", before: true, after: false });
+  expect(changes.find(row => row.key === "adapters.fixture.roles")).toMatchObject({ applies: "restart" });
+  const removed = { ...next, instances: {}, roster: {} };
+  expect(configChanges(before, removed, [runningScope, configIdentityScope(sources.identity)]).find(row => row.key === "roster.fixture-check")).toMatchObject({ applies: "live", before: true, after: undefined });
+});
+
+test("captured configuration identity remains cloneable without native definition callbacks", () => {
+  const sources = parseConfigSources(texts({ adapters, instances }));
+  const cloned = structuredClone(sources);
+  expect(configIdentityScope(cloned.identity).catalog.definitionOf("fixture-check", cloned.identity.instances)?.kind).toBe("fixture");
+  expect(cloned.identity).toEqual({ adapters, instances });
 });

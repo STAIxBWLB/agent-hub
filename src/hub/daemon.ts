@@ -31,8 +31,8 @@ import { KNOWN_PEERS, OPTIONAL_PEERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE
 import { RecoveryDeferredHubError } from "./deferred-hub.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS, QUOTA_HANDOFF_PLATFORMS, NATIVE_CONFIG_BLOCKS, nativeConfigurationDefaults, mergeNativeConfiguration, retainNativeRouting, DAEMON_PORTS, definitionOf, createProjectAdapterCatalog } from "../adapters/registry.ts";
-import { isSupportedPeer as registrySupportedPeer, definitionOf as instanceDefinitionOf, KNOWN_PEERS as BASE_KNOWN_PEERS, SUPPORTED_PEERS as BASE_SUPPORTED_PEERS, STARTABLE_PEERS as BASE_STARTABLE_PEERS } from "../adapters/registry.ts";
-import { effectiveInstanceRoles, instancePeerIds, validateInstances, type InstancesConfig } from "./instances.ts";
+import { isSupportedPeer as registrySupportedPeer, definitionOf as builtinDefinitionOf, KNOWN_PEERS as BASE_KNOWN_PEERS, SUPPORTED_PEERS as BASE_SUPPORTED_PEERS, STARTABLE_PEERS as BASE_STARTABLE_PEERS } from "../adapters/registry.ts";
+import { instanceDefinitionOf, effectiveInstanceRoles, instancePeerIds, validateInstances, type InstancesConfig } from "./instances.ts";
 import { INSTANCE_CONFIG_FILES, readInstanceConfig, readInstanceConfigLayers, readInstanceRoleConfig } from "./instance-config.ts";
 import { instanceBudgetHooks, projectBudgetHeadroom } from "./instance-budget.ts";
 import { resolveInstanceExecutionCwd } from "./instance-execution.ts";
@@ -47,7 +47,7 @@ import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
 import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
-import { authorizeConfigLeaf, configApply, configChanges, validateEffectiveConfig, validatePetConfig } from "./config-apply.ts";
+import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateEffectiveConfig, validatePetConfig } from "./config-apply.ts";
 import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSources } from "./config-reload.ts";
 import { eventLog, readEvents, tokenDeltas, type RoleIdentity } from "./events.ts";
@@ -537,7 +537,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // Preserve embedding-owned policy references, but never publish reloads into shared defaults.
   const ownedConfig = Object.fromEntries(Object.entries(loadedConfig).map(([key, value]) => [key, !opts.config || value === (DEFAULT_CONFIG as unknown as Record<string, unknown>)[key] ? structuredClone(value) : value])) as unknown as HubConfig;
   const adapterCatalog = createProjectAdapterCatalog(loadedConfig.adapters);
-  const configuredIds = adapterCatalog.definitions.filter(d => !instanceDefinitionOf(d.kind)).map(d => d.kind);
+  const configuredIds = adapterCatalog.definitions.filter(d => !builtinDefinitionOf(d.kind)).map(d => d.kind);
   const declarations = validateInstances(loadedConfig.instances, adapterCatalog);
   const extraIds = Object.keys(declarations);
   // #450 I3: channel extras (Claude) attach from the person's terminal; the hub never starts them and their hello is admitted.
@@ -2417,9 +2417,9 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!isCodexPeer(codex)) throw new Error("codex is not attached");
         const workspace = turnLog!.workspace(turn.id);
         if (workspace !== undefined) {
-          const current = readInstanceRoleConfig(opts.cwd), adapter = instanceDefinitionOf(turn.peer, current.instances);
+          const current = readInstanceRoleConfig(opts.cwd), adapter = instanceDefinitionOf(turn.peer, current.instances, current.catalog);
           if (!current.instances?.[turn.peer] || adapter?.kind !== definitionOf(turn.peer)?.kind) throw new Error("turn workspace declaration changed; inspect before reverting");
-          const validated = resolveInstanceExecutionCwd(opts.cwd, turn.peer, current.instances, effectiveInstanceRoles(turn.peer, current.instances, current.roles));
+          const validated = resolveInstanceExecutionCwd(opts.cwd, turn.peer, current.instances, effectiveInstanceRoles(turn.peer, current.instances, current.roles, current.catalog), current.catalog);
           const bound = executionOwners.get(turn.peer);
           if (validated !== workspace || executionRoot(turn.peer) !== workspace || bound?.owner !== codex || bound.cwd !== workspace) throw new Error("turn workspace differs from the current native owner; inspect before reverting");
         }
@@ -4412,7 +4412,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const prefix = layer.name.endsWith(".toml") ? "routing" : "";
       for (const path of declaredPaths(layer.raw, prefix)) paths.add(path);
     }
-    if (!opts.config) for (const change of configChanges(desiredConfig, fileConfig)) paths.add(change.key);
+    if (!opts.config) for (const change of configChanges(desiredConfig, fileConfig, [{ catalog: adapterCatalog, instances: declarations }, configIdentityScope(acceptedSources.identity), configIdentityScope(sources.identity)])) paths.add(change.key);
     for (const key of paths) {
       if (scope && key !== scope) continue;
       const route = key.startsWith("routing."), path = (route ? key.slice(8) : key).split(".");
@@ -4496,7 +4496,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     candidate.retired = fileConfig.retired;
     routing.retired = sources.routing.retired;
-    const changes = configChanges({ ...config, roles: policyRoles }, candidate);
+    const changes = configChanges({ ...config, roles: policyRoles }, candidate, [{ catalog: adapterCatalog, instances: declarations }, configIdentityScope(acceptedSources.identity), configIdentityScope(sources.identity)]);
     const running = structuredClone({ ...config, roles: policyRoles });
     for (const change of changes) if (change.applies !== "restart") putConfig(running, change.key, change.after);
     running.retired = fileConfig.retired;
@@ -4589,7 +4589,7 @@ export async function startDaemon(opts: DaemonOptions) {
       desiredRouting = structuredClone(prepared.routing);
       acknowledgeConfiguration(sources, prepared.accepted);
       if (priorDesired !== JSON.stringify([desiredConfig, desiredRouting, acceptedSources.trustLayers])) configRevision++;
-      pendingRestart = configChanges({ ...config, roles: policyRoles }, candidate).filter(change => change.applies === "restart").map(change => ({ key: change.key, reason: change.reason! }));
+      pendingRestart = configChanges({ ...config, roles: policyRoles }, candidate, [{ catalog: adapterCatalog, instances: declarations }, configIdentityScope(acceptedSources.identity), configIdentityScope(sources.identity)]).filter(change => change.applies === "restart").map(change => ({ key: change.key, reason: change.reason! }));
       pendingRestart.push(...routingChanges.filter(key => configApply(key).applies === "restart").map(key => ({ key, reason: configApply(key).reason! })));
       retainedConfig = retainedConfigAfterReload(sources, prepared.fileConfig, prepared.rejected, scope);
       storedConfigCache = undefined;
@@ -4701,7 +4701,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const terminalNotice = retainedTerminalNotice(peer);
     let handoff: Awaited<ReturnType<Tasks["reassignForRoster"]>> = [];
     try {
-      const next = rosterCandidate(def, value, undo), before = onRoster(peer), after = rosterAllows(next, peer, config.pi.enabled, declarations);
+      const next = rosterCandidate(def, value, undo), before = onRoster(peer), after = rosterAllows(next, peer, config.pi.enabled, declarations, adapterCatalog);
       if (!after) {
         const refusal = rosterRemovalRefusal(peer, now);
         if (refusal) return { ok: false, error: refusal };
@@ -4850,7 +4850,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const { def, value } = input;
     if (def.group === "Roster") {
       try {
-        const peer = def.path[1]!, next = rosterCandidate(def, value), on = rosterAllows(next, peer, config.pi.enabled, declarations);
+        const peer = def.path[1]!, next = rosterCandidate(def, value), on = rosterAllows(next, peer, config.pi.enabled, declarations, adapterCatalog);
         return { ok: true, lines: [`${peer}: ${onRoster(peer) ? "on" : "off"} -> ${on ? "on" : "off"} roster`, ...(on ? ["Admission, starts and new work become available; any existing pause or held delivery remains."] : [`${bus.queued(peer)} queued messages are retained until the peer returns.`, "Owned runtimes stop; native terminal sessions detach. Open tasks are offered to another eligible peer.", `For a busy peer, use ahub roster remove ${peer} --now explicitly; this stops its owned runtime or detaches its native session during the active turn.`, ...(retainedTerminalNotice(peer) ? [retainedTerminalNotice(peer)!] : []), ...tasks.rosterPreview(peer).map(move => sanitize(`task ${move.title}: ${move.to ? `${move.role} offered to ${move.to} if removed now` : `${move.role} stays with ${peer}; no eligible replacement`}`)), ...(rosterRemovalRefusal(peer, false) ? [rosterRemovalRefusal(peer, false)!] : [])])], ...(on ? {} : { confirm: peer }) };
       } catch (error) { return { ok: false, error: sanitize((error as Error).message) }; }
     }

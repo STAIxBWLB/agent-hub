@@ -182,12 +182,12 @@ test("#451 locked read-only ACP requires an explicit read-only mode id", async (
   expect(f.peer.state).toBe("offline"); expect(f.modes()).toEqual([]);
 }, 20_000);
 
-test("#451 locked read-only ACP auto-approves a read at most once", async () => {
-  let console_ = 0;
-  const f = await fixture({ permission: true, kind: "read" }, { nativePolicy: { readOnly: "read-only", lockedReadOnly: true }, autoApprove: () => true, onPermission: async () => { console_++; return "always"; } });
+test("#451 locked read-only configured ACP still asks the person for a read despite a matching tool title", async () => {
+  let console_ = 0, autoCalls = 0;
+  const f = await fixture({ permission: true, kind: "read" }, { nativePolicy: { readOnly: "read-only", lockedReadOnly: true }, autoApprove: () => { autoCalls++; return true; }, onPermission: async () => { console_++; return "once"; } });
   await f.peer.start();
   expect((await f.prompt()).outcome).toEqual({ outcome: "selected", optionId: "once" });
-  expect(console_).toBe(0);
+  expect(console_).toBe(1); expect(autoCalls).toBe(0);
 }, 20_000);
 
 

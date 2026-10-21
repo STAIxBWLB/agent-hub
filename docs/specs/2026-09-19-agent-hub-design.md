@@ -4009,7 +4009,7 @@ inherited authority and collisions with builtin or reserved identities refuse.
 Each declaration names `transport: "acp"`, `command`, optional `args`,
 `displayName` and `roles`, with optional `identity: { name, version }`,
 `permission` (hub-mode to native-mode mapping) and `readOnly` (native mode id).
-Other kind-meaning capabilities remain builtin-only. A project captures one
+Adapter role defaults cannot appoint a conductor; a person can still select one through explicit project role policy and its existing authority checks. Other kind-meaning capabilities remain builtin-only. A project captures one
 immutable catalog at startup; declared kinds and their explicitly declared
 instances resolve through that catalog, never a mutable global registry. Adapter
 changes, including removal and their derived defaults, require a restart.
@@ -4042,7 +4042,7 @@ protocol extension pretending to provide one. A native agent that delegates its
 responses to an unowned process is unsupported by this boundary.
 
 The Grok proof target is the config-only `grok agent stdio` command, with no
-leader or attach flags. Its T0 must run under isolated HOME and Grok home in a
+leader or attach flags and with explicit `--no-leader`. Config load refuses a Grok kind, Grok executable or Grok native-identity pin without that standalone opt-out before argv termination; valued forms such as `--no-leader=false` also refuse. Native `--leader` and `--leader-socket` remain refused even alongside the opt-out. This is necessary because the native default inherits `[cli] use_leader` from ambient config. Its T0 must record that default and run under isolated HOME and Grok home in a
 scratch project, preserve the person's config bytes, record the pinned build's
 process tree, and inspect sockets/IPC while a prompt runs for links to processes
 outside the owned group. It must separately record initialize identity, load echo,
@@ -4064,6 +4064,8 @@ acknowledged selection; no map remains unmanaged and grants no hub sandbox claim
 
 Configured ACP crash resume reads only a bounded, control-free session id and requires exact session/load echo; it never imports a model override from old launch metadata. Controlled recovery remains explicitly refused for configured ACP because no terminal/recovery driver has been verified. Recovery source and target capability checks require `configured_acp` before reinterpreting configured identities or taking recovery effects. The initial Grok 1.0.62 isolated receipt found no initialize agentInfo and a refused session/new, so it does not establish native readiness; see `docs/verification/2026-10-21-grok-config-acp-t0.md`.
 
-MCP publication appends project start targets only from authenticated daemon catalog metadata, preserving the builtin default enum. Read-only instances publish only the R2 read/review tool set; every mutation remains independently refused at the host boundary. Incomplete configured-project publication metadata narrows exposure until a complete current status is available. A malformed generic session/new identity refuses before admission, and failed spawns are released only on positive no-process/empty-group evidence.
+MCP publication appends project start targets only from authenticated daemon catalog metadata, preserving the builtin default enum. Read-only instances publish only the R2 read/review tool set; every mutation remains independently refused at the host boundary. Incomplete catalog metadata withholds configured start targets. If active lifecycle metadata is unavailable, tool discovery may retain the ordinary list until current status arrives; the host still independently refuses read-only mutations, and discovery never grants authority. A malformed generic session/new identity refuses before admission, and failed spawns are released only on positive no-process/empty-group evidence.
 
 Task/conductor MCP refusals retain their existing error text and also set the optional `isError: true` result flag, so SDK consumers observe an unsuccessful tool call instead of an ordinary text result.
+
+Configured ACP permission requests never use hub-tool titles for automatic approval. Requests use the ordinary person approval path unless the explicit permission-mode policy authorizes them, even when a title spells a known hub tool; builtin Kimi/Qwen title handling stays confined to those verified contracts. Owned-group identity across exec is the live child plus PID, parent, process group and start time; command/comm changes are evidence, not a new owner. Group teardown deliberately freezes, re-verifies and kills the original group; unreadable re-verification sends no further signal and retains the owner for an explicit retry.

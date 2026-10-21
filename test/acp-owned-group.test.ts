@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { AcpOwnedGroup, type AcpOwnedGroupPorts } from "../src/adapters/acp-owned-group.ts";
-import type { ProcRow } from "../src/hub/child-process.ts";
+import { peerChildEnv, readProcessTable, type ProcRow } from "../src/hub/child-process.ts";
 
 function fixture() {
   const pid = 12345;
@@ -48,12 +52,12 @@ test("owned ACP stop freezes and kills only the positively verified original gro
 });
 
 test("owned ACP stop refuses missing evidence, PID reuse and changed groups without signalling", async () => {
-  for (const mutation of ["unknown", "signature", "started", "command", "pgid", "exited", "leader-gone"] as const) {
+  for (const mutation of ["unknown", "missing-signature", "started", "ppid", "pgid", "exited", "leader-gone"] as const) {
     const f = fixture(), proof = await AcpOwnedGroup.capture(f.proc, f.ports);
     if (mutation === "unknown") f.rows(undefined);
-    if (mutation === "signature") f.signature("reused-signature");
+    if (mutation === "missing-signature") f.signature(undefined);
     if (mutation === "started") f.rows([{ ...f.leader, started: "start-2" }]);
-    if (mutation === "command") f.rows([{ ...f.leader, command: "other foreground" }]);
+    if (mutation === "ppid") f.rows([{ ...f.leader, ppid: 1 }]);
     if (mutation === "pgid") f.rows([{ ...f.leader, pgid: 67890 }]);
     if (mutation === "exited") f.child.exitCode = 0;
     if (mutation === "leader-gone") f.rows([{ ...f.leader, pid: 12346, ppid: 1 }]);
@@ -61,6 +65,61 @@ test("owned ACP stop refuses missing evidence, PID reuse and changed groups with
     expect(f.signals).toEqual([]);
   }
 });
+
+test("an exec shim keeps owned ACP identity when only its command and signature change", async () => {
+  const f = fixture(), proof = await AcpOwnedGroup.capture(f.proc, f.ports);
+  f.rows([{ ...f.leader, command: "native foreground after exec" }]);
+  f.signature("native-signature-after-exec");
+  await proof.verify();
+  await proof.stop();
+  expect(f.signals).toEqual([[-f.pid, "SIGSTOP"], [-f.pid, "SIGKILL"]]);
+});
+
+test("a real shell exec into a fake ACP server preserves verified ownership through stop", async () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-owned-acp-exec-"));
+  const script = join(root, "native.ts");
+  writeFileSync(script, `import { createInterface } from "node:readline";
+const send = (value: unknown) => process.stdout.write(JSON.stringify(value) + "\\n");
+send({ nativeReady: true });
+for await (const line of createInterface({ input: process.stdin })) {
+  const request = JSON.parse(line);
+  send({ jsonrpc: "2.0", id: request.id, result: request.method === "initialize"
+    ? { protocolVersion: 1, agentInfo: { name: "Owned Exec Fixture", version: "1" } }
+    : { sessionId: "owned-exec-session" } });
+}`);
+  // The shell remains alive until capture completes, then exec replaces it with the fake native process.
+  const proc = spawn("/bin/sh", ["-c", 'printf "shell-ready\\n"; IFS= read -r gate; exec "$@"', "owned-acp-exec", process.execPath, script], {
+    cwd: root, env: peerChildEnv("fixture"), detached: true, stdio: ["pipe", "pipe", "pipe"],
+  });
+  const exited = new Promise<void>(resolve => { proc.once("exit", () => resolve()); proc.once("error", () => resolve()); });
+  const lines: string[] = [];
+  const reader = createInterface({ input: proc.stdout }); reader.on("line", line => lines.push(line));
+  proc.stdin.on("error", () => {}); proc.stderr.resume();
+  const until = async (condition: () => boolean) => {
+    for (let attempt = 0; attempt < 300 && !condition(); attempt++) await Bun.sleep(10);
+    expect(condition()).toBe(true);
+  };
+  try {
+    await until(() => lines.includes("shell-ready"));
+    const proof = await AcpOwnedGroup.capture(proc);
+    proc.stdin.write("exec-now\n");
+    await until(() => lines.some(line => line.includes('"nativeReady":true')));
+    proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: 1 } }) + "\n");
+    await until(() => lines.some(line => line.includes('"name":"Owned Exec Fixture"')));
+    proc.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "session/new", params: {} }) + "\n");
+    await until(() => lines.some(line => line.includes('"sessionId":"owned-exec-session"')));
+    await proof.verify();
+    await proof.stop();
+    await exited;
+    const rows = await readProcessTable(); expect(rows).toBeDefined();
+    expect(rows!.some(row => row.pid === proc.pid || row.pgid === proc.pid)).toBe(false);
+  } finally {
+    // This fixture starts no child beneath its foreground shell/native process. Cleanup targets only its own group.
+    if (proc.pid && proc.exitCode === null && proc.signalCode === null) try { process.kill(-proc.pid, "SIGKILL"); } catch { /* the child may already have exited */ }
+    await exited; reader.close(); proc.stdin.destroy(); proc.stdout.destroy(); proc.stderr.destroy();
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 20_000);
 
 test("an already empty original ACP group is confirmed without signals", async () => {
   const f = fixture(), proof = await AcpOwnedGroup.capture(f.proc, f.ports);

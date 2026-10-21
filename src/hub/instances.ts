@@ -1,5 +1,5 @@
 import { types } from "node:util";
-import { ADAPTERS, defaultPeerRoles, definitionOf, type AdapterDefinition, type StartForm, type ProjectAdapterCatalog } from "../adapters/registry.ts";
+import { defaultPeerRoles, definitionOf, type AdapterDefinition, type StartForm, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { isPermissionMode, type PermissionMode } from "./permission-mode.ts";
 
 export interface InstanceConfig {
@@ -46,9 +46,14 @@ export function supportsHeadlessInstances(definition: AdapterDefinition): boolea
   return definition.instances?.mode === "headless" && !!definition.start.create && definition.start.forms.includes("headless");
 }
 
-/** Pure I2 declaration validation. Physical worktree and startup authority checks belong to the bound host. */
-export function validateInstances(raw: unknown, catalog?: ProjectAdapterCatalog): InstancesConfig {
-  const resolve = catalog?.definitionOf ?? definitionOf;
+/** Resolve project declarations only through their captured, explicit catalog. */
+export function instanceDefinitionOf(id: string, declarations: InstancesConfig | undefined, catalog: ProjectAdapterCatalog): AdapterDefinition | undefined {
+  return catalog.definitionOf(id, declarations);
+}
+
+/** Pure I2 validation; physical worktree and startup authority stay host-bound. */
+export function validateInstances(raw: unknown, catalog: ProjectAdapterCatalog): InstancesConfig {
+  const resolve = catalog.definitionOf;
   const result: Record<string, InstanceConfig> = Object.create(null);
   if (raw === undefined) return Object.freeze(result);
   const declarations = fields(raw, "instances");
@@ -117,25 +122,25 @@ export function validateInstances(raw: unknown, catalog?: ProjectAdapterCatalog)
 }
 
 /** Each call derives a fresh project-local projection, without registration or suffix discovery. */
-export function instanceCatalog(declarations?: InstancesConfig, catalog?: ProjectAdapterCatalog): readonly InstanceCatalogEntry[] {
+export function instanceCatalog(declarations: InstancesConfig | undefined, catalog: ProjectAdapterCatalog): readonly InstanceCatalogEntry[] {
   const instances = validateInstances(declarations, catalog);
   return Object.freeze([
-    ...(catalog?.definitions ?? ADAPTERS).map(definition => Object.freeze({ id: definition.kind, kind: definition.kind, definition })),
-    ...Object.entries(instances).map(([id, config]) => Object.freeze({ id, kind: config.kind, definition: (catalog?.definitionOf ?? definitionOf)(id, instances)!, config })),
+    ...catalog.definitions.map(definition => Object.freeze({ id: definition.kind, kind: definition.kind, definition })),
+    ...Object.entries(instances).map(([id, config]) => Object.freeze({ id, kind: config.kind, definition: catalog.definitionOf(id, instances)!, config })),
   ]);
 }
-export function instancePeerIds(declarations?: InstancesConfig, catalog?: ProjectAdapterCatalog): string[] { return instanceCatalog(declarations, catalog).map(entry => entry.id); }
-export function instanceDefaultRoles(declarations?: InstancesConfig, includeOptional = true, catalog?: ProjectAdapterCatalog): Record<string, string[]> {
+export function instancePeerIds(declarations: InstancesConfig | undefined, catalog: ProjectAdapterCatalog): string[] { return instanceCatalog(declarations, catalog).map(entry => entry.id); }
+export function instanceDefaultRoles(declarations: InstancesConfig | undefined, includeOptional: boolean, catalog: ProjectAdapterCatalog): Record<string, string[]> {
   const result = defaultPeerRoles(includeOptional);
-  for (const definition of catalog?.definitions ?? []) if (!definitionOf(definition.kind) && (includeOptional || !definition.optional)) result[definition.kind] = [...definition.roles];
+  for (const definition of catalog.definitions) if (!definitionOf(definition.kind) && (includeOptional || !definition.optional)) result[definition.kind] = [...definition.roles];
   const instances = validateInstances(declarations, catalog);
-  for (const [id, config] of Object.entries(instances)) result[id] = [...(config.roles ?? (catalog?.definitionOf ?? definitionOf)(id, instances)!.roles)];
+  for (const [id, config] of Object.entries(instances)) result[id] = [...(config.roles ?? catalog.definitionOf(id, instances)!.roles)];
   return result;
 }
 
 /** One precedence rule for startup, native launch and recovery; ordinary roles may use the instance id or its kind. */
-export function effectiveInstanceRoles(id: string, declarations: InstancesConfig | undefined, policyRoles: Readonly<Record<string, readonly string[]>>, catalog?: ProjectAdapterCatalog): string[] {
-  const definition = (catalog?.definitionOf ?? definitionOf)(id, declarations);
+export function effectiveInstanceRoles(id: string, declarations: InstancesConfig | undefined, policyRoles: Readonly<Record<string, readonly string[]>>, catalog: ProjectAdapterCatalog): string[] {
+  const definition = catalog.definitionOf(id, declarations);
   if (!definition) throw new Error(`${id}: no declared native instance`);
   const declaration = declarations && Object.hasOwn(declarations, id) ? declarations[id] : undefined;
   const ownRoles = (key: string): readonly string[] | undefined => Object.hasOwn(policyRoles, key) ? policyRoles[key] : undefined;

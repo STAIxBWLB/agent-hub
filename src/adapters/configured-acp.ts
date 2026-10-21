@@ -1,3 +1,4 @@
+import { basename } from "node:path";
 import { types } from "node:util";
 import { AcpPeer } from "./acp.ts";
 import type { AdapterDefinition } from "./registry-types.ts";
@@ -18,7 +19,7 @@ const fail = (field: string, reason: string): never => { throw new Error(`${fiel
 /** Core command namespace is reserved; configured kinds cannot shadow operational CLI actions. */
 export const CONFIGURED_ACP_RESERVED_COMMANDS = Object.freeze(["help", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "recovery-run", "upgrade", "restart", "recovery", "models", "say", "queue", "watch", "tail", "budget", "backlog", "release", "board", "sdlc", "task", "review", "remember", "ask", "route", "pause", "resume", "stop", "permission", "roster", "settings", "permit", "pet", "status", "logs", "export", "bench", "memory", "goal", "research", "report", "facts", "check-path", "turns", "undo", "kill", "reset", "role", "doctor"]);
 const MODES = ["ask", "ask-when-needed", "never-ask"];
-const ROLES = ["planner", "implementer", "verifier", "reviewer", "conductor"];
+const ROLES = ["planner", "implementer", "verifier", "reviewer"];
 function fields(raw: unknown, at: string): Record<string, PropertyDescriptor> {
   if (!raw || typeof raw !== "object" || types.isProxy(raw) || Array.isArray(raw) || ![Object.prototype, null].includes(Object.getPrototypeOf(raw)) || Object.getOwnPropertySymbols(raw).length) return fail(at, "must be a plain own-data object");
   const result: Record<string, PropertyDescriptor> = Object.assign(Object.create(null), Object.getOwnPropertyDescriptors(raw));
@@ -61,12 +62,18 @@ export function configuredAcpDefinitions(raw: unknown, builtinKinds: readonly st
     // The supported contract is a foreground owned stdio process, never an attachment/proxy selector.
     if ([command, ...args].some(arg => /^--(?:leader|attach|connect|remote)(?:-|=|$)/.test(arg))) return fail(`${at}.args`, "attach/leader selectors are unsupported; command must run foreground owned ACP stdio");
     const displayName = text(input.displayName?.value, `${at}.displayName`, 256), roles = list(input.roles?.value, `${at}.roles`, ROLES.length);
+    if (roles.includes("conductor")) return fail(`${at}.roles`, "conductor requires explicit project role policy, not adapter defaults");
     if (!roles.length || new Set(roles).size !== roles.length || roles.some(role => !ROLES.includes(role))) return fail(`${at}.roles`, "roles must be nonempty, known and unique");
     let identity: ConfiguredAcpAdapterConfig["identity"];
     if (input.identity) {
       const value = fields(input.identity.value, `${at}.identity`);
       if (Object.keys(value).some(key => !["name", "version"].includes(key))) return fail(`${at}.identity`, "unknown identity field");
       identity = { name: text(value.name?.value, `${at}.identity.name`, 256), version: text(value.version?.value, `${at}.identity.version`, 256) };
+    }
+    const grokContract = kind === "grok" || /^grok(?:\.exe)?$/i.test(basename(command)) || identity?.name.toLowerCase() === "grok";
+    const noLeader = args.indexOf("--no-leader"), endOptions = args.indexOf("--");
+    if (grokContract && (noLeader < 0 || (endOptions >= 0 && noLeader > endOptions) || args.some(arg => arg.startsWith("--no-leader=")))) {
+      return fail(`${at}.args`, "Grok requires explicit --no-leader before argv termination; valued opt-outs are unsupported");
     }
     let modes: ConfiguredAcpAdapterConfig["permission"];
     if (input.permission) {

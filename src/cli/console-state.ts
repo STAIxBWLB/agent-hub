@@ -2,7 +2,7 @@ import { consoleNeeds, characterAttentionLine, attentionCommand } from "./attent
 import { CHARACTERS, petFrame, petSize, petFooterRows, type CharacterId, type PetSize, type PetPose } from "../pet/frame.ts";
 import { PEER_PALETTE } from "../ui/peer-palette.ts";
 import { PERMISSION_MODES, permissionBoundary } from "../hub/permission-mode.ts";
-import { PLANNER_PEERS, definitionOf, nativeStreamTone } from "../adapters/registry.ts";
+import { PLANNER_PEERS, definitionOf, nativeStreamTone, createProjectAdapterCatalog } from "../adapters/registry.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import type { ProgressStage } from "../ui/task-progress.ts";
 import { sanitize } from "../hub/envelope.ts";
@@ -91,7 +91,7 @@ export function syncPermissionDefaults(s: ConsoleState, rows: unknown): boolean 
   return true;
 }
 export function permissionDefaultText(row: Pick<PermissionDefault, "peer" | "source">): string {
-  return `never-ask default for ${row.peer} from ${quoted(row.source)}\n${permissionBoundary(row.peer)}\nUntil you answer y, this default stays ask. y enables; n cancels for this hub; Esc defers.`;
+  return `never-ask default for ${row.peer} from ${quoted(row.source)}\n${permissionBoundary(row.peer, undefined, createProjectAdapterCatalog())}\nUntil you answer y, this default stays ask. y enables; n cancels for this hub; Esc defers.`;
 }
 /** Strip terminal controls before any daemon or child output reaches a terminal. Preserve printable Unicode. */
 export function terminalText(value: unknown): string {
@@ -993,7 +993,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   const neverPeer = s.confirm?.type === "permission_default" ? s.confirm.peer : s.confirm?.type === "command" && s.confirm.args[0] === "permission" && s.confirm.args[2] === "never-ask" ? s.confirm.args[1] : undefined;
   const defaultSource = s.confirm?.type === "permission_default" ? s.confirm.source : undefined;
   if (s.confirm?.type === "permission_default") prompt = `enable never-ask default for ${s.confirm.peer}? y/n Esc defer`;
-  const footer = [fitLine(neverPeer ? [span(permissionBoundary(neverPeer), "attention")] : summary, columns),
+  const footer = [fitLine(neverPeer ? [span(permissionBoundary(neverPeer, undefined, createProjectAdapterCatalog()), "attention")] : summary, columns),
     fitLine(defaultSource !== undefined ? [span(`source ${quoted(defaultSource.split(/[\\/]/).at(-1))}; stays ask until y`, "attention")] : approvals, columns),
     fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
   const rule = [span("-".repeat(Math.max(0, columns)), "muted")];
@@ -1011,7 +1011,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   const noticeLines = noticeShown && s.petEnabled && petSize(s.petSize, columns, rows) !== "line" ? wrap(`Notice: ${s.notice}`, columns).slice(0, Math.max(0, bodyHeight - 6)).map(text => [span(text, s.noticeTone ?? "failure")]) : [];
   const height = bodyHeight - noticeLines.length;
   const lines: Span[][] = [];
-  if (s.confirm?.type === "permission_default") lines.push(...fieldLines([["default", `${s.confirm.peer} never-ask`], ["source", s.confirm.source], ["bounds", permissionBoundary(s.confirm.peer)], ["decision", "y enables; n cancels for this hub; Esc defers; until then ask"]], columns, now).flat());
+  if (s.confirm?.type === "permission_default") lines.push(...fieldLines([["default", `${s.confirm.peer} never-ask`], ["source", s.confirm.source], ["bounds", permissionBoundary(s.confirm.peer, undefined, createProjectAdapterCatalog())], ["decision", "y enables; n cancels for this hub; Esc defers; until then ask"]], columns, now).flat());
   else if (s.settingsEdit) {
     const edit = s.settingsEdit;
     const row = s.settingsRows?.find(row => row.key === edit.key);

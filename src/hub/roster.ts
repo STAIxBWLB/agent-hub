@@ -17,9 +17,9 @@ export function peerRosterConfig(value: unknown, instances?: KindMap, catalog?: 
 }
 
 /** External ids keep their existing admission rules; Pi's legacy switch is only its default. */
-export function rosterAllows(roster: PeerRoster, peer: string, piEnabled: boolean, instances?: KindMap, catalog?: ProjectAdapterCatalog): boolean {
-  const definitionOf = catalog?.definitionOf ?? builtinDefinitionOf;
-  const defaultRosterEnabled = (id: string, enabled: boolean) => catalog && !builtinDefinitionOf(id) ? catalog.definitionOf(id)?.defaultOnRoster ?? false : builtinDefaultRosterEnabled(id, enabled);
+export function rosterAllows(roster: PeerRoster, peer: string, piEnabled: boolean, instances: KindMap | undefined, catalog: ProjectAdapterCatalog): boolean {
+  const definitionOf = catalog.definitionOf;
+  const defaultRosterEnabled = (id: string, enabled: boolean) => !builtinDefinitionOf(id) ? catalog.definitionOf(id)?.defaultOnRoster ?? false : builtinDefaultRosterEnabled(id, enabled);
   const definition = definitionOf(peer, instances);
   if (!definition) return true; // External clients do not acquire a native kind from a project declaration.
   return roster[peer] ?? (definition.kind === peer ? defaultRosterEnabled(peer, piEnabled) : true);

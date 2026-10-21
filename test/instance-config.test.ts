@@ -1,3 +1,4 @@
+import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,10 +30,10 @@ test("instance admission follows explicit policy instead of MCP identity shape",
 });
 
 test("external instance policy preserves human terminal and role restrictions", () => {
-  expect(validateInstances({ "claude-plan": { kind: "claude", roles: ["planner", "reviewer"] } })["claude-plan"]?.roles).toEqual(["planner", "reviewer"]);
-  expect(() => validateInstances({ "claude-write": { kind: "claude", roles: ["implementer"] } })).toThrow("reviewer and/or planner");
-  expect(() => validateInstances({ "claude-plan": { kind: "claude", roles: ["planner"], worktree: ".worktrees/plan" } })).toThrow("person's terminal");
-  expect(() => validateInstances({ "agy-plan": { kind: "agy", roles: ["planner"] } })).toThrow("unsupported");
+  expect(validateInstances({ "claude-plan": { kind: "claude", roles: ["planner", "reviewer"] } }, builtinProjectCatalog())["claude-plan"]?.roles).toEqual(["planner", "reviewer"]);
+  expect(() => validateInstances({ "claude-write": { kind: "claude", roles: ["implementer"] } }, builtinProjectCatalog())).toThrow("reviewer and/or planner");
+  expect(() => validateInstances({ "claude-plan": { kind: "claude", roles: ["planner"], worktree: ".worktrees/plan" } }, builtinProjectCatalog())).toThrow("person's terminal");
+  expect(() => validateInstances({ "agy-plan": { kind: "agy", roles: ["planner"] } }, builtinProjectCatalog())).toThrow("unsupported");
 });
 
 test("I2 local instance declarations project exact roles, permissions and headless defaults", () => {

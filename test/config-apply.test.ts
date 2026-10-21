@@ -1,3 +1,4 @@
+import { createProjectAdapterCatalog } from "../src/adapters/registry.ts";
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -118,7 +119,7 @@ test("#439 raw and effective config reject malformed entire candidates without m
   expect(() => validateRawConfig({ task_sweep: { interval_s: 1.5 }, approvals: { notify: false } })).not.toThrow();
   const before = structuredClone(DEFAULT_CONFIG), next = structuredClone(DEFAULT_CONFIG);
   next.approvals.notify = !before.approvals.notify; next.memory.native = !before.memory.native;
-  expect(configChanges(before, next).map(change => [change.key, change.applies])).toEqual([["approvals.notify", "live"], ["memory.native", "restart"]]);
+  expect(configChanges(before, next, [{ catalog: createProjectAdapterCatalog(), instances: {} }]).map(change => [change.key, change.applies])).toEqual([["approvals.notify", "live"], ["memory.native", "restart"]]);
   expect(before).toEqual(DEFAULT_CONFIG);
 });
 

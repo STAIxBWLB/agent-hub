@@ -2,7 +2,7 @@ import { ADAPTERS, createProjectAdapterCatalog } from "../adapters/registry.ts";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { validateRawConfig, type ConfigLayer } from "./config-apply.ts";
+import { validateRawConfig, type ConfigLayer, type ConfigIdentitySnapshot } from "./config-apply.ts";
 import { parseOverlay, parseRouting, type Routing } from "./routing.ts";
 import { CLASSES } from "./board.ts";
 import { readInstanceConfig } from "./instance-config.ts";
@@ -17,6 +17,8 @@ export interface ConfigSources {
   trustLayers: { name: ConfigSourceName; raw: Record<string, unknown> }[];
   routing: Routing;
   fingerprint: string;
+  /** Captured trusted declarations, never a peer-name prefix or a request value. */
+  identity: ConfigIdentitySnapshot;
 }
 const MAX_CONFIG_BYTES = 1024 * 1024;
 
@@ -100,18 +102,20 @@ export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: R
   }
   const localRaw = jsonLayers.find(layer => layer.name === "config.local.json")?.raw ?? {};
   let declared;
+  let identityAdapters: ConfigIdentitySnapshot["adapters"];
   let catalog = createProjectAdapterCatalog();
   try {
     if (cwd) {
       const accepted = readInstanceConfig(cwd, jsonLayers);
-      catalog = accepted.catalog; declared = accepted.instances;
+      catalog = accepted.catalog; declared = accepted.instances; identityAdapters = accepted.adapters;
     } else {
       catalog = createProjectAdapterCatalog(localRaw?.adapters);
+      identityAdapters = localRaw?.adapters as ConfigIdentitySnapshot["adapters"];
       declared = validateInstances(localRaw?.instances, catalog);
     }
   } catch (error) {
     if (!fallbackRouting) throw new Error(`.agenthub/config.local.json: ${(error as Error).message}`);
-    declared = validateInstances(undefined);
+    declared = validateInstances(undefined, catalog);
   }
   for (const name of CONFIG_SOURCE_FILES) {
     const text = texts[name];
@@ -149,5 +153,5 @@ export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: R
     try { routing = parseRouting(base, overlay); }
     catch { throw new Error(".agenthub/routing.toml / routing.local.toml: invalid effective routing"); }
   }
-  return { texts, layers, trustLayers, routing, fingerprint: configFingerprint(texts) };
+  return { texts, layers, trustLayers, routing, fingerprint: configFingerprint(texts), identity: { ...(identityAdapters ? { adapters: structuredClone(identityAdapters) } : {}), instances: declared ?? validateInstances(undefined, catalog) } };
 }

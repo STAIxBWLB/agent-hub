@@ -74,3 +74,7 @@ test("configured ACP identity is optional configuration but required for runtime
   expect(verified.start.preflight!({ instance: "fixture", form: "headless" })).toBeUndefined();
   expect(verified.start.preflight!({ instance: "fixture", form: "tui" })).toMatch(/headless/);
 });
+
+test("configured adapter defaults cannot appoint the project conductor", () => {
+  expect(() => createProjectAdapterCatalog({ fixture: { ...config(), roles: ["implementer", "conductor"] } })).toThrow(/conductor/);
+});

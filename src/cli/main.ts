@@ -2,7 +2,7 @@
 import { claudePeer as defaultChannelPeer } from "../hub/claude-state.ts";
 import { effectiveInstanceRoles } from "../hub/instances.ts";
 import { resolveInstanceExecutionCwd } from "../hub/instance-execution.ts";
-import { readInstanceConfig } from "../hub/instance-config.ts";
+import { readInstanceRoleConfig, readInstanceConfig } from "../hub/instance-config.ts";
 import { parseConfiguredAcpArguments, runConfiguredAcpEntry, requireActiveConfiguredAcp } from "./configured-acp-entry.ts";
 import type { NativeCliEntryContext } from "../adapters/definitions/native-cli-entry-types.ts";
 import { BUILTIN_CLI_ENTRIES, createProjectAdapterCatalog, definitionOf, DOCTOR_TOOL_PROBES, DOCTOR_MEMORY_CAPTURE_PEERS, DOCTOR_PLUGIN_PROBE, nativeDoctorCheck, nativeDoctorRecoveryIdentity, nativeDoctorOptionalProbes } from "../adapters/registry.ts";
@@ -122,9 +122,9 @@ try {
     const markedPeer = process.env.AGENTHUB_PEER_ID, markedRoot = process.env.AGENTHUB_PROJECT_DIR;
     const markedConfig = markedPeer && markedRoot && !definitionOf(markedPeer) ? readInstanceConfig(realPath(markedRoot)) : undefined;
     const declarations = markedConfig?.instances;
-    if (markedPeer && markedRoot && declarations && Object.hasOwn(declarations, markedPeer)) {
+    if (markedPeer && markedRoot && markedConfig && declarations && Object.hasOwn(declarations, markedPeer)) {
       const canonicalRoot = realPath(markedRoot), config = loadConfig(canonicalRoot);
-      const executionCwd = resolveInstanceExecutionCwd(canonicalRoot, markedPeer, declarations, effectiveInstanceRoles(markedPeer, declarations, config.roles, markedConfig?.catalog), markedConfig?.catalog);
+      const executionCwd = resolveInstanceExecutionCwd(canonicalRoot, markedPeer, declarations, effectiveInstanceRoles(markedPeer, declarations, config.roles, markedConfig.catalog), markedConfig.catalog);
       if (realPath(projectRoot(process.cwd())) !== realPath(executionCwd)) fail("native instance workspace does not match its declared checkout");
       selected = projectContext(canonicalRoot);
     } else selected = projectContext(process.cwd());
@@ -1362,7 +1362,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     const [peer, mode] = positional;
     if (positional.length > 2 || positional.some(arg => arg.startsWith("--")) || (mode !== undefined && !isPermissionMode(mode))) fail("usage: ahub permission [<peer> [ask|ask-when-needed|never-ask]] [--yes]");
     if (mode === "never-ask" && !args.includes("--yes")) fail("never-ask requires --yes; nothing was changed");
-    if (mode === "never-ask" && peer) console.error(`never-ask: ${permissionBoundary(peer)}; approval prompts are disabled`);
+    const permissionScope = readInstanceRoleConfig(cwd);
+    if (mode === "never-ask" && peer) console.error(`never-ask: ${permissionBoundary(peer, permissionScope.instances, permissionScope.catalog)}; approval prompts are disabled`);
     const hub = await connect();
     try {
       const reply = await hub.request({ t: "permission", ...(peer ? { peer } : {}), ...(mode ? { mode, confirmed: args.includes("--yes") } : {}) }, 35_000);
@@ -1411,14 +1412,15 @@ const commands: Record<string, () => Promise<void> | void> = {
     const allowed: Record<string, string[]> = { list: ["--json"], get: ["--json"], set: ["--yes", "--preview", "--now"], undo: [], reload: [] };
     if (!Object.hasOwn(allowed, sub) || flags.some((flag) => !allowed[sub]!.includes(flag)) || extra.length) fail(usage);
     if ((sub === "get" && (!key || text !== undefined)) || (sub === "set" && (!key || text === undefined)) || ((sub === "list" || sub === "undo" || sub === "reload") && key !== undefined)) fail(usage);
-    const def = key === undefined ? undefined : settingDef(key);
+    const settingScope = readInstanceRoleConfig(cwd);
+    const def = key === undefined ? undefined : settingDef(key, settingScope.instances, settingScope.catalog);
     if (typeof def === "string") fail(`${key}: ${def}`);
     if (flags.includes("--now") && (typeof def !== "object" || def.group !== "Roster")) fail(usage);
     const value = sub === "set" ? parseSettingText(def!, text!) : undefined;
     const peer = def?.group === "Permissions" || def?.group === "Roster" ? def.path.at(-1)! : undefined;
     if (sub === "set" && value === "never-ask" && !flags.includes("--preview")) {
       if (!flags.includes("--yes")) fail("never-ask requires --yes; nothing was changed");
-      console.error(`never-ask: ${permissionBoundary(peer!)}; approval prompts are disabled`);
+      console.error(`never-ask: ${permissionBoundary(peer!, settingScope.instances, settingScope.catalog)}; approval prompts are disabled`);
     }
     const hub = await connect();
     try {
@@ -1752,10 +1754,10 @@ const commands: Record<string, () => Promise<void> | void> = {
     const undoWorkspace = (): string => {
       // Old turns, including external peers and ids declared only later, belong to the canonical checkout.
       if (recordedWorkspace === undefined) return cwd;
-      const declarations = readInstanceConfig(cwd).instances;
+      const { instances: declarations, catalog } = readInstanceConfig(cwd);
       if (!declarations || !Object.hasOwn(declarations, turn.peer)) fail(`turn ${id}'s recorded instance is no longer declared; nothing was restored`);
       const config = projectConfig();
-      const current = resolveInstanceExecutionCwd(cwd, turn.peer, declarations, effectiveInstanceRoles(turn.peer, declarations, config.roles));
+      const current = resolveInstanceExecutionCwd(cwd, turn.peer, declarations, effectiveInstanceRoles(turn.peer, declarations, config.roles, catalog), catalog);
       if (realPath(current) !== realPath(recordedWorkspace)) fail(`turn ${id}'s recorded execution workspace changed; nothing was restored`);
       return current;
     };

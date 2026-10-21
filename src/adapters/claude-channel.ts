@@ -46,8 +46,8 @@ function roles(): Record<string, string[]> {
   };
   const configured = { ...DEFAULT_ROLES, ...read("config.json"), ...read("config.local.json") };
   try {
-    const declarations = readInstanceConfig(projectRoot).instances;
-    for (const id of Object.keys(declarations ?? {})) configured[id] = effectiveInstanceRoles(id, declarations, configured);
+    const { instances: declarations, catalog } = readInstanceConfig(projectRoot);
+    for (const id of Object.keys(declarations ?? {})) configured[id] = effectiveInstanceRoles(id, declarations, configured, catalog);
   } catch { /* Invalid declarations authorize no extra role; the daemon remains the write authority. */ }
   return configured;
 }

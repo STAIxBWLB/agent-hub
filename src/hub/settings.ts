@@ -449,7 +449,7 @@ export function settingRows(input: {
   cwd: string; routing: Routing;
   /** Captured trusted declarations for this daemon/project, never taken from a settings request. */
   instances?: KindMap;
-  adapterCatalog?: ProjectAdapterCatalog;
+  adapterCatalog: ProjectAdapterCatalog;
   running: (path: readonly string[]) => unknown;
   next: ((path: readonly string[]) => unknown) | undefined;
   mode: (peer: string) => { value?: string; note?: string };

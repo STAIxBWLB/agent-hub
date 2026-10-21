@@ -659,7 +659,9 @@ export class AcpPeer extends BasePeer {
     // `mcp__<server>__<tool>` name is the only derived candidate the exact-match whitelist ever sees, and
     // argument text is never one.
     const canonical = canonicalMcpToolName(announced, this.opts.mcpServers?.map((s) => s.name));
-    const identity = [typeof call.title === "string" ? call.title : undefined, canonical].find((candidate) => candidate !== undefined && this.opts.autoApprove?.(candidate));
+    // Configured ACP titles are not trusted MCP identity, even when they spell a hub tool exactly.
+    const identity = this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? undefined
+      : [typeof call.title === "string" ? call.title : undefined, canonical].find((candidate) => candidate !== undefined && this.opts.autoApprove?.(candidate));
     if (once && identity) {
       this.opts.log?.(`permission auto-approved for ${this.id}: ${identity}`); // the name only: arguments may quote a PII turn
       this.emitActivity("ask", `${String(msg.id)}: ${activityText(announced ?? call.title)} (automatic)`);

@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Add project-local config-only ACP adapters: optional headless kinds stay off roster by default, with pinned native identity, strict resume identity, owned-group admission and optional mapped or read-only native modes. Grok live verification remains pending; the generic path does not by itself verify Grok support (#451, #486).
+- Add project-local config-only ACP adapters: optional headless kinds stay off roster by default, with pinned native identity, strict resume identity, owned-group admission and optional mapped or read-only native modes. Grok live verification remains pending; the generic path does not by itself verify Grok support (#451, #486). Adapter role defaults cannot appoint a conductor; explicit project role policy remains available. Unknown fields in `peers.<id>` now refuse daemon startup as well as strict reload.
 
 - Adapter declarations now refuse ordinary agy extra instances at config load; they previously loaded as inert pull-only extras. Fresh-reviewer metadata remains unavailable (#451, #625).
 - Qwen context occupancy is now unknown until a native source is verified; it no longer inherits Kimi's usage parser (#451, #625).

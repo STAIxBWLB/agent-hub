@@ -24,8 +24,8 @@ export function permissionDefaults(value: unknown, instances?: KindMap, catalog?
   return result;
 }
 /** Approval frequency does not create a common sandbox across native peers. */
-export function permissionBoundary(peer: string, instances?: KindMap, catalog?: ProjectAdapterCatalog): string {
-  const definition = (catalog?.definitionOf ?? definitionOf)(peer, instances);
+export function permissionBoundary(peer: string, instances: KindMap | undefined, catalog: ProjectAdapterCatalog): string {
+  const definition = catalog.definitionOf(peer, instances);
   if (definition?.permission.unmanaged) return `${peer}: native policy unmanaged; NO hub sandbox; approvals belong to its native tools`;
   if (definition?.trust.hubSandboxed) return `${peer}: inside hub sandbox, path guard and denylist`;
   if (definition?.transport === "claude-channel" || definition?.transport === "codex-appserver") return `${peer}: native vendor bounds; no hub sandbox`;

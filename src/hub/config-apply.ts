@@ -16,6 +16,12 @@ import { petPalette } from "../pet/config.ts";
 
 export type ApplyClass = "live" | "next use" | "restart";
 export interface ApplyRule { applies: ApplyClass; reason?: string }
+export interface ConfigIdentityScope { catalog: ProjectAdapterCatalog; instances: InstancesConfig }
+/** Plain captured metadata stays cloneable with ConfigSources; native callbacks are compiled outside it. */
+export interface ConfigIdentitySnapshot { adapters?: HubConfig["adapters"]; instances: InstancesConfig }
+export function configIdentityScope(snapshot: ConfigIdentitySnapshot): ConfigIdentityScope {
+  return { catalog: createProjectAdapterCatalog(snapshot.adapters), instances: snapshot.instances };
+}
 export interface ConfigChange extends ApplyRule { key: string; before: unknown; after: unknown }
 export interface ConfigLayer { name: "config.json" | "config.local.json"; raw: Record<string, unknown> }
 export interface ReloadGuard { key: string; path: readonly string[]; risk: "safe" | "raises"; floor?: string | boolean | number; store: "runtime" | "config" | "routing" }
@@ -128,7 +134,7 @@ const schema: Record<string, Check> = {
   ...Object.assign({}, ...ADAPTERS.map(adapter => adapter.configuration?.schema?.(nativeValidators) ?? {})),
   watchdog_ms: number(1, 2_147_483_647), kimi_cmd: argv, qwen_cmd: argv, jcode_cmd: argv, codex_bin: text, jcode_home: text, jcode_provider_profile: text,
   permission_modes: v => { permissionDefaults(v); }, protect_instruction_files: bool,
-  adapters: v => { createProjectAdapterCatalog(v); }, instances: v => { validateInstances(v); }, pet: validatePetConfig,
+  adapters: v => { createProjectAdapterCatalog(v); }, instances: v => { validateInstances(v, createProjectAdapterCatalog()); }, pet: validatePetConfig,
   batch_max: number(1, 100_000, true), batch_ms: number(0, 2_147_483_647), queue_cap: number(1, 1_000_000, true),
   memory: block({ enabled: bool, worker_url: text, inject_tokens: number(0, 1_000_000, true), brief_items: number(0, 10_000, true), native: bool,
     short_ttl_days: number(1, 3650, true), sync_interval_min: number(0, 1440, true), suggest_edges: bool }),
@@ -194,7 +200,7 @@ const restart: Record<string, string> = {
 const live = new Set(["permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "research", "snapshots", "tasks.wip_limits", "tasks.escalate_after", "approvals.notify", "pet"]);
 const nextMemory = new Set(["memory.inject_tokens", "memory.brief_items", "memory.suggest_edges"]);
 /** Closed top-level schema; leaf overrides retain the existing session/runtime boundaries. */
-export function configApply(key: string, catalog?: ProjectAdapterCatalog): ApplyRule {
+export function configApply(key: string, scopes: readonly ConfigIdentityScope[] = []): ApplyRule {
   const top = key.split(".")[0]!;
   if (!(Object.hasOwn(schema, top) || top === "permission" || top === "routing")) return fail(key, "unknown configuration key");
   if (top !== "routing" && top !== "permission" && key.includes(".")) {
@@ -206,7 +212,7 @@ export function configApply(key: string, catalog?: ProjectAdapterCatalog): Apply
     for (const [index, part] of key.split(".").slice(1).entries()) {
       const shape = check && shapes.get(check);
       if (shape?.fields) { if (!Object.hasOwn(shape.fields, part)) return fail(key, "unknown configuration key"); check = shape.fields[part]; }
-      else if (shape?.item) { if (shape.keys && !shape.keys.includes(part) && !(top === "roster" && catalog?.definitionOf(part))) return fail(key, "unknown configuration key"); check = shape.item; }
+      else if (shape?.item) { if (shape.keys && !shape.keys.includes(part) && !(top === "roster" && scopes.some(scope => scope.catalog.definitionOf(part, scope.instances)))) return fail(key, "unknown configuration key"); check = shape.item; }
       else if (index === 0 && (special[top]?.includes(part) || top === "checks" && /^[a-z][a-z0-9_]{0,47}$/.test(part))) break;
       else if (["permission_modes", "catalog_roles", "profile_overrides", "text_projection", "peers", "instances", "adapters"].includes(top)) break;
       else return fail(key, "unknown configuration key");
@@ -223,16 +229,15 @@ export function configApply(key: string, catalog?: ProjectAdapterCatalog): Apply
 const canonical = (v: unknown): unknown => Array.isArray(v) ? v.map(canonical) : v && typeof v === "object" ? Object.fromEntries(Object.keys(v).sort().map(k => [k, canonical((v as Record<string, unknown>)[k])])) : v;
 const same = (a: unknown, b: unknown): boolean => JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 const at = (raw: unknown, path: readonly string[]): unknown => path.reduce<unknown>((v, k) => v && typeof v === "object" && Object.hasOwn(v, k) ? (v as Record<string, unknown>)[k] : undefined, raw);
-export function configChanges(running: HubConfig, next: HubConfig): ConfigChange[] {
+export function configChanges(running: HubConfig, next: HubConfig, scopes: readonly ConfigIdentityScope[]): ConfigChange[] {
   const changes: ConfigChange[] = [];
-  const beforeAdapters = (running as unknown as { adapters?: Record<string, unknown> }).adapters;
-  const afterAdapters = (next as unknown as { adapters?: Record<string, unknown> }).adapters;
-  const catalog = createProjectAdapterCatalog({ ...beforeAdapters, ...afterAdapters });
+  // Scopes are captured/validated by the host. Their union classifies removed/added keys only; it cannot
+  // authorize a declaration or turn a restart-retained hybrid into a fresh startup configuration.
   const walk = (before: unknown, after: unknown, key: string) => {
     if (same(before, after)) return;
     if (before && after && typeof before === "object" && typeof after === "object" && !Array.isArray(before) && !Array.isArray(after)) {
       for (const child of new Set([...Object.keys(before), ...Object.keys(after)])) walk(at(before, [child]), at(after, [child]), key ? `${key}.${child}` : child);
-    } else changes.push({ key, before, after, ...configApply(key, catalog) });
+    } else changes.push({ key, before, after, ...configApply(key, scopes) });
   };
   const clean = (v: HubConfig) => Object.fromEntries(Object.entries(v).filter(([key]) => !["ignored", "retired", "permission_default_sources"].includes(key)));
   walk(clean(running), clean(next), ""); return changes.sort((a, b) => a.key.localeCompare(b.key));

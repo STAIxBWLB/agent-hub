@@ -25,8 +25,7 @@ export class AcpOwnedGroup {
 
   private constructor(
     private readonly proc: ChildProcess,
-    private readonly leader: ProcRow,
-    private readonly signature: string,
+    private readonly leader: Pick<ProcRow, "pid" | "ppid" | "pgid" | "started">,
     private readonly ports: AcpOwnedGroupPorts,
   ) {}
 
@@ -38,7 +37,7 @@ export class AcpOwnedGroup {
     if (!leader || leader.pgid !== pid || leader.ppid !== process.pid) throw ownershipError();
     const signature = AcpOwnedGroup.identity(ports, pid);
     if (!signature || proc.pid !== pid || proc.exitCode !== null || proc.signalCode !== null) throw ownershipError();
-    return new AcpOwnedGroup(proc, { ...leader }, signature, ports);
+    return new AcpOwnedGroup(proc, { pid, ppid: leader.ppid, pgid: leader.pgid, started: leader.started }, ports);
   }
 
   /** Capture failure grants no signals. Only positive no-spawn or exit-and-empty proof releases its handle. */
@@ -88,13 +87,15 @@ export class AcpOwnedGroup {
     if (!leader && !members && allowGone) return false;
     if (!leader || !this.sameLeader(leader) || this.proc.pid !== this.leader.pid
       || this.proc.exitCode !== null || this.proc.signalCode !== null
-      || AcpOwnedGroup.identity(this.ports, this.leader.pid) !== this.signature) throw ownershipError();
+      || !AcpOwnedGroup.identity(this.ports, this.leader.pid)) throw ownershipError();
     return true;
   }
 
   private sameLeader(row: ProcRow): boolean {
-    return row.pid === this.leader.pid && row.pgid === this.leader.pid && row.ppid === process.pid
-      && row.started === this.leader.started && row.command === this.leader.command;
+    // exec keeps the child handle, parent, group and start time, but changes command/comm (and its
+    // shared signature). Require a readable signature, while binding ownership to the stable tuple.
+    return row.pid === this.leader.pid && row.pgid === this.leader.pgid && row.ppid === this.leader.ppid
+      && row.started === this.leader.started;
   }
 
   private signal(signal: NodeJS.Signals): void {

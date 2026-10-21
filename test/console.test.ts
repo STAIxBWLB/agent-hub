@@ -1,3 +1,4 @@
+import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 import { describe, expect, setSystemTime, test } from "bun:test";
 import { taskProgress } from "../src/ui/task-progress.ts";
 import { syncPermissionDefaults, permissionBoundary, initialConsoleState, cells, fitLine, reduceConsole, renderConsole, renderConsoleLines, paint, PALETTE, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, permissionText, parseConsoleCommand, wrap, fit, pruneApprovals, panelRows, duration, relative, quoted, selectedPanelRow, appendEvent } from "../src/cli/console-state.ts";
@@ -1199,7 +1200,7 @@ describe("human confirmation for never-ask config defaults (#242)", () => {
       const chosen = reduceConsole(s, "m", NOW).state;
       const pending = reduceConsole(chosen, "3", NOW).state;
       const view = renderConsole(pending, 80, 24, NOW);
-      expect(view.join("\n")).toContain(permissionBoundary(peer));
+      expect(view.join("\n")).toContain(permissionBoundary(peer, undefined, builtinProjectCatalog()));
       for (const line of view) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
       expect(reduceConsole(pending, "y", NOW).effects).toEqual([{ type: "command", args: ["permission", peer, "never-ask", "--yes"] }]);
     }
