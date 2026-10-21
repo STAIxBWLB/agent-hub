@@ -322,7 +322,7 @@ export class Bus {
       try {
         this.deferredHub.delete(env.id);
         this.publishNow(env);
-      } catch (error) {
+      } catch {
         // Only publication state is transactional. A live peer's preface, pauses, attempts and
         // recovery mode are independent state, not something a failed checkpoint may reload.
         this.deferredHub.clear(); for (const [id, pending] of beforeDeferred) this.deferredHub.set(id, pending);
@@ -673,7 +673,11 @@ export class Bus {
     this.prefaces.set(id, !now ? { ...env, body: uniqueMemoryLines(env.body) } : now.id === env.id ? { ...now, body: uniqueMemoryLines(now.body) } : { ...env, body: keepNotes(mergePrefaces(env.body, now.body), NOTES_KEPT) });
   }
 
-  /** Stopped-runtime reset only: audit every deferred recipient without publishing or releasing work. */
+  /**
+   * Reset only: audit every deferred recipient without publishing or releasing work. The guard below is what it
+   * checks: no attached peers, no flush or replay in progress and a readable journal. It cannot see a running
+   * daemon, so the caller (`resetRuntime`) must hold the stopped-hub proof; a bare Bus has none.
+   */
   discardDeferredHub(reason: string): string[] {
     if (this.peers.size || this.flushingHub || this.replayingHub || !this.journal || this.storageError) throw new Error("deferred reset requires a stopped, readable delivery journal");
     const pending = [...this.deferredHub];
