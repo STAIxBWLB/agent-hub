@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.44
+bun add -g github:STAIxBWLB/agent-hub#v0.12.45
 ahub setup
 ```
 
@@ -29,6 +29,10 @@ For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
+
+## Upgrading to 0.12.45
+
+The dashboard is redesigned (#469): from 1024px a top bar and a left sidebar (a row of tabs below that), keys `1`-`7` switch views, `?` lists the keys and `Esc` closes a sheet; a task opens as a side sheet, and the plan, split, releases, delivery evidence and propose forms sit in a Plan sheet opened from the board toolbar. View names, ids and the view cookie are unchanged. A person can load a bundled ACP adapter module declared under `adapter_modules` (a `path` and its `sha256`) in untracked `.agenthub/config.local.json`: only the daemon imports it, at startup, so a changed declaration needs a restart; Settings and hub tools cannot write it, and a declaration in the shared `.agenthub/config.json` is ignored. A project that declares modules can be upgraded or recovered only between releases that advertise `external_adapter_modules`. See [Adding an AI tool](adding-an-ai-tool.md#5-external-adapter-modules-451-a4) (#451). `hub_review` and `ahub review ... --findings '<json>'` take structured findings, `max_nits` in `.agenthub/sdlc.toml` caps the nits per report (default 5), and in enforce an open Important finding refuses approval (#481 S3). Plans take optional `proof` and `risks`. In enforce, approval also needs every changed PR file covered by a literal `plan.paths` entry; otherwise amend the plan through `hub_task_accept` and call done again, or the person runs `ahub sdlc accept-departure <task> <head> <reason...>`, which lapses when the hub restarts (#481 S2). An unresolved review thread now settles only by resolution or a later reply from a GitHub user; any other author kind counts as a pending bot comment (#481). `ahub roster remove <peer>` also deletes the roster key of an instance no longer declared (#225). When `ahub kimi` refuses a `kimi_cmd` with no TUI form, it now says the value is the running hub's, retained until `ahub settings reload` (#654). A Claude session no longer gets `hub_inbox` advice while a delivery hold refuses its pulls (#221). A same-size rewrite of a large file within one filesystem timestamp tick is now told apart by its bytes (#428). Restart Claude sessions so they load the 0.12.45 plugin. Coming from 0.12.43 or older, the notes below apply too.
 
 ## Upgrading to 0.12.44
 

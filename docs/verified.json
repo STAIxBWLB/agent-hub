@@ -224,7 +224,9 @@
         "src/hub/checks.ts",
         "src/hub/task-repository.ts",
         "src/hub/no-writes.ts",
-        "src/adapters/registry.ts"
+        "src/adapters/registry.ts",
+        "src/hub/review-findings.ts",
+        "src/hub/plan-conformance.ts"
       ]
     },
     "docs/agent-notes/tests.md": {
@@ -242,7 +244,8 @@
         "src/hub/child-process.ts",
         "src/local/sandbox.ts",
         "src/models/mlx.ts",
-        "src/cli/upgrade-interactive.ts"
+        "src/cli/upgrade-interactive.ts",
+        "src/adapters/conformance/"
       ]
     },
     "docs/agent-notes/README.md": {
