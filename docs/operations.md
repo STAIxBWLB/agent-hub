@@ -648,6 +648,19 @@ dark variant of one hue, generated from the registry's colour by `peerPaletteThe
 test (`test/office-view.test.ts`) covers the text pairs, the accent, the dots, disabled controls and every peer colour in both
 themes. The Office scene keeps its own rules until R5.
 
+### Dashboard app shell and keys (#469 R2)
+
+From 1024px up, a sticky top bar holds the project context, the connection status (a coloured dot and its text, green when live
+and red when disconnected or closed), the attention badge, the theme switch and a shortcuts button; the seven views sit in a
+left sidebar with an icon and a label, and the approval count still rides on Agents. Below 1024px the same nav is one row of
+tabs that scrolls sideways inside itself, so the page never scrolls sideways. The view names, their order, the
+`agent-hub-view` cookie and every id are unchanged.
+
+Keys: `1` to `7` switch to Board, Office, Stream, Agents, Message, Memory and Settings, `?` opens the key list, and `Esc` closes
+the key list or the task detail (both are native dialogs). View keys are ignored while you type in an input, a textarea or a
+select, with Ctrl, Alt or Cmd held, and while a dialog is open. Icons come from one inline SVG sprite of nine Tabler icons;
+the MIT notice is in `THIRD_PARTY_NOTICES.md`. Nothing is fetched and no package is added.
+
 ## Multiple projects and worktrees
 
 Version 0.4.0 adds one independent hub per repository or Git worktree.
