@@ -39,43 +39,11 @@ agent-hub supports five transport architectures (`transport` in `AdapterDefiniti
 
 ## 3. AdapterDefinition Fields Reference
 
-An adapter exports an object conforming to `AdapterDefinition` (`src/adapters/registry-types.ts`):
+An adapter exports an object conforming to `AdapterDefinition` in `src/adapters/registry-types.ts`. Read that type as the source of truth: most blocks are declared inline there, so there are no separate `Adapter*Definition` types to import, and some members are required. Its top-level fields are:
 
-```typescript
-export interface AdapterDefinition {
-  api: 1;
-  kind: string;                     // e.g. "agy", "kimi", "codex"
-  displayName: string;              // Human-readable title
-  family: string;                   // Family grouping (e.g. "kimi", "agy")
-  transport: "acp" | "codex-appserver" | "claude-channel" | "ws-pull" | "hub-native";
-  roles: readonly string[];          // Default roles: "implementer", "verifier", etc.
-  optional?: boolean;               // true if optional peer (OPTIONAL_PEERS)
-  defaultOnRoster?: boolean;        // Default roster membership
-  trust: {
-    onPrem: boolean;                // true = on-premises/local, safe for PII
-    hubSandboxed: boolean;          // true = executed under hub seatbelt sandbox
-  };
-  start: AdapterStartDefinition;
-  identity: {
-    mcp: "acp-session" | "project-file" | "env" | "channel-plugin";
-  };
-  instances?: {
-    mode: "external" | "headless";
-    roles?: readonly string[];
-  };
-  attach?: AdapterAttachDefinition;
-  permission: AdapterPermissionDefinition;
-  session: AdapterSessionDefinition;
-  turnEnd: "adapter" | "native-hook";
-  budget?: AdapterBudgetDefinition;
-  cli: AdapterCliDefinition;
-  display: {
-    palette: { fg: string; bg: string; tone?: string; ansi?: string };
-  };
-  hooks?: Partial<NativeHooks>;
-  reviewerVariant?: AdapterDefinition;
-}
-```
+- Required: `api` (always `1`), `kind`, `displayName`, `family`, `transport`, `roles`, `trust` (`onPrem`, `hubSandboxed`), `start`, `identity` (`mcp`), `permission`, `session`, `turnEnd`, `cli`, `display`.
+- Optional: `optional`, `defaultOnRoster`, `enabledSwitchStartOnly`, `instances`, `attach`, `reporting`, `routing`, `budget`, `configuration`, `capabilities`, `hooks`, `reviewerVariant`, `reviewer`.
+- Registry load runs `assertDefinitionCoherence` (`src/adapters/registry.ts`) on every definition and reviewer variant, so an incoherent combination fails at load, not at run time.
 
 ### Key Sub-Objects
 
@@ -147,7 +115,7 @@ bun test test/conformance/agy.test.ts
 ```
 
 ### Invariants Verified by the Kit:
-1. **Enrollment & Coherence (`enrollment.test.ts`)**: Every definition in `ADAPTERS` and reviewer variant must be enrolled. Unsupported features (e.g. headless execution for TUI-only peers) must have an explicit reason in `UNSUPPORTED_LEGS`.
+1. **Enrollment & Coherence (`enrollment.test.ts`)**: Every definition in `ADAPTERS` and reviewer variant must be enrolled. A kind without kit coverage needs a reason in `UNSUPPORTED` (`test/conformance/enrollment.ts`), and an ACP kind that skips one of the shared `ACP_LEGS` needs a reason per leg in `UNSUPPORTED_LEGS`.
 2. **Delivery Occupancy**: Sending messages updates driven peer state to `busy` synchronously, delivering digests reliably.
 3. **Recovery Metadata Hygiene**: No prompt text or credentials leaked into `recoveryMetadata`.
 4. **Watchdog Cancellation & Generation Fencing**: Expiry of the turn watchdog cancels prompts cleanly and generation fences prevent stale late answers from publishing.

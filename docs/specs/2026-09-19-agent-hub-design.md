@@ -4001,7 +4001,7 @@ Version line (#589, owner decision 2026-10-20): agy updates itself, so the launc
 - Human-oriented guide `docs/adding-an-ai-tool.md` documents today's builtin Adapter API 1 path (`AdapterDefinition` in `src/adapters/registry-types.ts` and `src/adapters/registry.ts`), covering:
   - Architecture and core independence: one frozen definition per kind; the core daemon, tasks, and routing inspect definition fields rather than hard-coded vendor name comparisons.
   - Transport selection: `acp` (stdio JSON-RPC), `codex-appserver`, `claude-channel`, `ws-pull` (pull-only workspace MCP plugin), and `hub-native`.
-  - Conformance kit (`test/conformance/`): enrollment invariants, delivery occupancy, watchdog expiry, process-group teardown, and explicit `UNSUPPORTED_LEGS` reasons for unsupported legs.
+  - Conformance kit (`test/conformance/`): enrollment invariants, delivery occupancy, watchdog expiry, process-group teardown, and explicit reasons in `UNSUPPORTED` (per kind) and `UNSUPPORTED_LEGS` (per ACP leg).
   - Review and verification checklist: T0 receipt, path protection (`AGENT_CONFIG_SEGMENTS`), PII safety (`trust.onPrem`), process isolation, and documentation freshness.
   - Planned config-only generic ACP adapters (#451 A3, board task #217) and external adapter modules (#451 A4, board task #135) are outlined as upcoming milestones; their configuration schemas, hash-pinning rules, and implementation details land with those respective PRs.
 - `docs/agent-notes/adapters.md` keeps only the per-adapter rules that bind code, pointing to `docs/adding-an-ai-tool.md` and `src/adapters/registry-types.ts` for conceptual architecture and definitions.
