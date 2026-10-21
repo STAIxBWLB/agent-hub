@@ -27,6 +27,8 @@ test("each Claude instance keeps its own launch, session and context files; the 
   expect(claudeStateFile("claude-session", "claude")).toBe("claude-session.json");
   expect(claudeStateFile("claude-context", "claude-review")).toBe("claude-context.claude-review.json");
   expect(claudeStateFile("claude-launch", "claude-review")).toBe("claude-launch.claude-review.json");
+  // #624: another kind never resolves to Claude's files, builtin (hyphen-free, like agy) or instance.
+  for (const peer of ["agy", "codex", "kimi", "agy-x", "codex-claude", "Claude", "claudex"]) expect(() => claudeStateFile("claude-context", peer)).toThrow("not a Claude peer");
   for (const value of [undefined, "", "Claude", "../x", "a/b", "x".repeat(40)]) expect(claudePeer(value)).toBe("claude");
   expect(claudePeer("claude-review")).toBe("claude-review");
 });

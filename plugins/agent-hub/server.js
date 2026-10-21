@@ -9326,11 +9326,14 @@ function retainedLaunchWarning(status, peer, definition) {
 
 // src/hub/claude-state.ts
 function claudeStateFile(base, peer) {
-  return peer.includes("-") && PEER2.test(peer) ? `${base}.${peer}.json` : `${base}.json`;
+  if (!CLAUDE_PEER.test(peer) || !PEER2.test(peer))
+    throw new Error(`${peer} is not a Claude peer; Claude state files belong to Claude peers only`);
+  return peer.includes("-") ? `${base}.${peer}.json` : `${base}.json`;
 }
-var PEER2;
+var PEER2, CLAUDE_PEER;
 var init_claude_state = __esm(() => {
   PEER2 = /^[a-z][a-z0-9-]{0,31}$/;
+  CLAUDE_PEER = /^claude(?:-[a-z0-9-]+)?$/;
 });
 
 // src/adapters/definitions/native-cli-entry-claude.ts

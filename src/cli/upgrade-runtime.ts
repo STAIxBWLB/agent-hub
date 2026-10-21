@@ -674,7 +674,7 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         // #215: check resume viability again right before the destructive effect (a planned fresh start has none to lose).
         const transcript = projectDefinition(binding.peer, binding.projectRoot)?.session.missingEvidence === "rollout" ? sessionState(binding) : "found";
         if (transcript === "unknown") throw new Error(`${unresumable(binding)}; no terminal was closed; make that store readable first`);
-        if (transcript === "missing" && !planned.freshStart?.includes("codex")) {
+        if (transcript === "missing" && !planned.freshStart?.includes(binding.peer)) {
           throw new Error(`${unresumable(binding)}; no terminal was closed. To continue without its conversation, end that Codex session and close its Orca terminal ${binding.handle} first, then resume`);
         }
         const idle = await waitForIdle(binding, 600_000, terminalOptions(run));
