@@ -24,12 +24,12 @@ export interface SnapshotBudget { deadline: number; }
 export class SnapshotBudgetExceeded extends Error {
   constructor() { super("snapshot burst budget exhausted; boundary evidence is unknown"); }
 }
-const git = (top: string | Repo, args: string[], env: Record<string, string> = {}, budget?: SnapshotBudget) => {
+const git = (top: string | Repo, args: string[], env: Record<string, string> = {}, budget?: SnapshotBudget, maxBuffer?: number) => {
   const argv = repoGitArgs(top, args);
   const remaining = budget ? budget.deadline - performance.now() : SNAPSHOT_TIMEOUT_MS;
   if (remaining <= 0) throw new SnapshotBudgetExceeded();
   const result = hubGitSync(argv, {
-    encoding: "utf8", env: { ...repoGitEnv(top), ...env },
+    encoding: "utf8", env: { ...repoGitEnv(top), ...env }, ...(maxBuffer === undefined ? {} : { maxBuffer }),
     timeout: Math.max(1, Math.min(SNAPSHOT_TIMEOUT_MS, Math.floor(remaining))),
   });
   if (budget && (performance.now() >= budget.deadline || (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT")) throw new SnapshotBudgetExceeded();
@@ -139,6 +139,28 @@ export function headState(repo: Repo, budget?: SnapshotBudget): { head: string |
   if (missing.status !== 1) return undefined;
   const current = git(repo, ["rev-parse", "--verify", "--quiet", "HEAD"], {}, budget);
   return current.status === 1 ? { head: null, tree: null } : undefined;
+}
+
+/** One bounded probe covers shared branch refs, including commits made in linked worktrees. Names never escape. */
+export function branchHeads(repo: Repo, budget?: SnapshotBudget): string | undefined {
+  const result = git(repo, ["for-each-ref", "--sort=refname", "--format=%(refname) %(objectname)", "refs/heads/"], {}, budget, 1024 * 1024);
+  if (result.status !== 0 || result.error) return undefined;
+  const digest = createHash("sha256").update(result.stdout).digest("hex");
+  if (budget && performance.now() >= budget.deadline) throw new SnapshotBudgetExceeded();
+  return digest;
+}
+
+/** Negative canonical evidence needs exclusive scope, including detached linked worktrees. Paths stay host-only. */
+export function soleWorktree(repo: Repo, budget?: SnapshotBudget): boolean | undefined {
+  const result = git(repo, ["worktree", "list", "--porcelain", "-z"], {}, budget, 1024 * 1024);
+  if (result.status !== 0 || result.error) return undefined;
+  let count = 0;
+  for (const field of result.stdout.split("\0")) {
+    if (budget && performance.now() >= budget.deadline) throw new SnapshotBudgetExceeded();
+    if (!field.startsWith("worktree ")) continue;
+    if (field.slice(9) !== repo.top || ++count > 1) return false;
+  }
+  return count === 1 ? true : undefined;
 }
 
 /** A bounded append cursor; raw reflog identities and messages never leave the reader. */

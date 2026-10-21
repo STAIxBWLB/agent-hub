@@ -145,7 +145,7 @@ const schema: Record<string, Check> = {
   mlx: block({ enabled: bool, provider: words(["legacy", "ollama"]), host: text, runtimeDir: text, modelPath: text, bin: text, port: number(1, 65535, true), model: text, sourceModel: text,
     contextWindow: number(1), maxInputTokens: number(1), maxTokens: number(1), maxConcurrency: number(1, 1024, true) }),
   approvals: block({ timeout_s: timerSeconds, notify: bool }), tasks: block({ release_after_min: number(0), wip_limits: map(number(0, 32, true)), escalate_after: number(1, 10, true) }),
-  task_sweep: (v, k) => { block({ enabled: bool, auto_reassign: bool, interval_s: timerSeconds, unaccepted_min: timerMinutes, idle_min: timerMinutes, review_min: timerMinutes, ready_min: timerMinutes, ladder_min: timerMinutes })(v, k); taskSweepConfig(v); },
+  task_sweep: (v, k) => { block({ enabled: bool, auto_reassign: bool, no_writes_turns: number(0, Number.MAX_SAFE_INTEGER, true), interval_s: timerSeconds, unaccepted_min: timerMinutes, idle_min: timerMinutes, review_min: timerMinutes, ready_min: timerMinutes, ladder_min: timerMinutes })(v, k); taskSweepConfig(v); },
   checks: (v, k) => { for (const [key, value] of Object.entries(object(v, k))) {
     if (value === undefined) continue;
     if (key === "timeout_s") timerSeconds(value, `${k}.${key}`);
@@ -195,7 +195,7 @@ export function configApply(key: string): ApplyRule {
   if (!(Object.hasOwn(schema, top) || top === "permission" || top === "routing")) return fail(key, "unknown configuration key");
   if (top !== "routing" && top !== "permission" && key.includes(".")) {
     const special: Record<string, readonly string[]> = {
-      task_sweep: ["enabled", "auto_reassign", "interval_s", "unaccepted_min", "idle_min", "review_min", "ready_min", "ladder_min"],
+      task_sweep: ["enabled", "auto_reassign", "no_writes_turns", "interval_s", "unaccepted_min", "idle_min", "review_min", "ready_min", "ladder_min"],
       checks: ["timeout_s", "runner", ...CLASSES], terminal: ["open"],
     };
     let check = schema[top];

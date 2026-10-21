@@ -1588,7 +1588,7 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | Routing | `routing.stay_switch`, `routing.classes.<class>.peers`, `.escalate_to`, `.route`, `.pi_backend` | `routing.local.toml` | at once |
 | Switches | `research.enabled`, `approvals.notify`, `snapshots.enabled` | `config.local.json` | live, without disturbing an active turn |
 | Switches | `coordination` | `config.local.json` | newly created tasks only |
-| Switches | `task_sweep.enabled`, `.auto_reassign`, `.interval_s`, `.unaccepted_min`, `.idle_min`, `.review_min`, `.ready_min`, `.ladder_min` | `config.local.json` | live; reschedules the sweep timer |
+| Switches | `task_sweep.enabled`, `.auto_reassign`, `.interval_s`, `.unaccepted_min`, `.idle_min`, `.review_min`, `.ready_min`, `.ladder_min`, `.no_writes_turns` | `config.local.json` | live; `.no_writes_turns` sets the turn threshold independently; other keys reschedule the sweep timer |
 | Routing | `tasks.wip_limits.<peer>` | `config.local.json` | live |
 | Routing | `tasks.escalate_after` (1-10, default 3: consecutive `changes_requested` before a task moves to the next `escalate_to` peer) | `config.local.json` | live; the next verdict uses it |
 | Roles | `planner` (the one peer that plans) | `config.local.json` | at once |
@@ -2898,6 +2898,8 @@ The console also offers cancellation with the selected task's flow revision. App
 The daemon advertises `task_cancel`; a current CLI refuses cancellation against older daemons. Recovery retains verified target features beside its immutable root/digest, reuses them on resume and on each lease renewal before a terminal is closed, and checks only sources not yet past commit; a legacy receipt without that evidence needs a target probe only before commit. Upgrade/restart refuses a target without this feature while cancelled rows exist and names their ids. No cancelled row is rewritten as approved. An old binary launched by hand remains unsupported: it can count cancelled work as open or fail to move it. Use a compatible coordinator instead. Live task cancellation and sweep enablement are separate post-release operations.
 
 ## Task idle sweep
+
+Writing-owner no-op detection (#498) is independent of the time sweep: `task_sweep.no_writes_turns` defaults to 2, and 0 disables its notices. Known file changes, HEAD/shared-branch ref movement and task-tool effects reset the streak. A canonical snapshot with recorded branch, worktree-path or PR/head evidence is unknown. Negative canonical evidence also needs exclusive worktree scope and no `.worktrees` directory, so uncommitted work in a separate checkout is not reported as empty. Done advisories use the first acceptance in the current ownership span; plan updates do not discard earlier touches.
 
 The between-turn task sweep (#186) is disabled by default. Set `task_sweep` in
 `.agenthub/config.json` (or its machine-local override) to enable it:

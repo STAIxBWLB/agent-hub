@@ -1,3 +1,4 @@
+import { ownerToolEffect, canonicalWriteUnknown } from "./no-writes.ts";
 import { NativeHookLaunches } from "./native-hook-launch.ts";
 import { readReleaseHostAdmission, type ReleaseHostAdmission } from "./release-admission.ts";
 import { ContainerRunner, type RunnerOptions, type RunReceipt } from "./check-runner.ts";
@@ -110,7 +111,7 @@ import { Facts, FACTS_PREFIX, type FactScope } from "./facts.ts";
 import { crashPlan, lossNotice, readSessions, removeSessions, writeSessions, type SessionsFile } from "./crash.ts";
 import type { JournalDelivery } from "./delivery-journal.ts";
 import { DEFAULT_LIMITS, Limiter, PROJECT_LIMITS, type LimitsConfig } from "./limits.ts";
-import { changedPaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
+import { soleWorktree, branchHeads, changedPaths, knownChangedPaths, hasTree, headState, headMoveCursor, incomingHeadPaths, repoOf, snapshot, SnapshotBudgetExceeded, Turns, type SnapshotBudget, type HeadMoveCursor, type Repo, type TurnRecord } from "./snapshots.ts";
 import { archiveRestartSnapshot, readRecoveryWaivers, readRestartSnapshot, removeRestartSnapshot, restartPath, writeRestartSnapshot, type RecoveryPhase, type RestartPeerSnapshot, type RestartSnapshot } from "./restart.ts";
 import { consumeRecoveryContinuity, readRecoveryContinuity, retireRecoveryContinuity } from "./recovery-continuity.ts";
 import { shellQuote, publishTerminalLaunch, terminalLaunchCandidate } from "../cli/terminal-recovery.ts";
@@ -960,7 +961,8 @@ export async function startDaemon(opts: DaemonOptions) {
   // silence without facts would leave overlapping owners blind. Facts and silence ask the same question, so both switch
   // together. Cached until the board changes: it is asked per recipient of every message.
   let turnFreeNow: boolean | undefined;
-  const turns = new Map<PeerId, { capture?: boolean; id: string; start: number; tokens: number; tree?: string; head?: string | null; reflog?: HeadMoveCursor; snapshotMs?: number; private?: boolean; deliveryTask?: number; attribution: TaskAttribution; preparedRoles: RoleIdentity[] | null }>();
+  const turns = new Map<PeerId, { capture?: boolean; id: string; start: number; tokens: number; tree?: string; head?: string | null; commit?: string | null; branches?: string; writeScope?: boolean; reflog?: HeadMoveCursor; snapshotMs?: number; private?: boolean; deliveryTask?: number; attribution: TaskAttribution; preparedRoles: RoleIdentity[] | null; writeTasks: { id: number; acceptance: number }[]; taskEffect?: boolean; effectsPending?: number }>();
+  const ownerWriteStarts = new Map<number, { owner: string; acceptance: number; at: number; root: string; tree: string }>();
   const turnFree = (): boolean => (config.coordination === "turn-free" || tasks.cohorts.list().some(cohort => cohort.silent)) && ![...turns.values()].some(turn => turn.private) && (turnFreeNow ??= !board.list().some((t) => !isClosedTaskState(t.state) && tasks.isPii(t)));
   /**
    * Why `to` does not get an agent's message (issue #107): sender and recipient are in one silent cohort, and the sender
@@ -1436,6 +1438,8 @@ export async function startDaemon(opts: DaemonOptions) {
     catalog,
     sessionRoles: peer => bus.peers.has(peer) && bus.stateOf(peer) !== "offline" ? preparedSessionRoles.get(peer) ?? [] : [],
     projectedReview: task => reviewProjection(task),
+    ownerWrites: (task, since) => ownerWriteEvidence(task, since),
+    ownerAccepted: task => captureOwnerWriteStart(task),
     reviewBrief: task => {
       const root = executionRoot(task.owner ?? "");
       return buildReviewBrief(root, task.refs.commit, { privatePath: path => isDenied(path, config.local.deny) || matchesPolicy(root, path, config.pii?.paths ?? [], true), nameable: tasks.nameable });
@@ -1739,6 +1743,7 @@ export async function startDaemon(opts: DaemonOptions) {
     scopes = new Map();
     progress.prune();
     factsOn(); // a PII task opening or closing switches tracking at once, not at the next boundary (issue #108)
+    if (t.state !== "in_progress" || ownerWriteStarts.get(t.id)?.owner !== t.owner) ownerWriteStarts.delete(t.id);
     if ((h.event === "integration requested" || h.event === "integration unresolved") && /has not stopped/.test(h.note ?? "")) {
       for (const m of tasks.cohorts.of(t.id)?.members.values() ?? []) if (m.task !== t.id) log(`turn-free: task #${t.id} waits on ${stopEvidence(m.owner)}`);
     }
@@ -1929,27 +1934,63 @@ export async function startDaemon(opts: DaemonOptions) {
       snapshotBudgetNoticed = true;
     } else log(`snapshot failed at ${what}: ${(error as Error).message}`);
   };
-  const snap = (what: string, capture = config.snapshots.enabled, peer?: string): { tree?: string; head?: string | null; reflog?: HeadMoveCursor; ms: number; budget?: SnapshotBudget; repo?: Repo } => {
+  const snap = (what: string, capture = config.snapshots.enabled, peer?: string): { tree?: string; head?: string | null; commit?: string | null; reflog?: HeadMoveCursor; ms: number; budget?: SnapshotBudget; repo?: Repo } => {
     if (!capture) return { ms: 0 };
     const t0 = performance.now(), budget = reserveSnapshotBudget();
-    let tree: string | undefined, head: string | null | undefined, repo: Repo | undefined, reflog: HeadMoveCursor | undefined;
+    let tree: string | undefined, head: string | null | undefined, commit: string | null | undefined, repo: Repo | undefined, reflog: HeadMoveCursor | undefined;
     try {
       repo = peer ? repoFor(peer, budget) : factsRepo;
       const before = repo && headState(repo, budget);
       tree = repo && (opts.snapshot ?? snapshot)(repo, budget);
       const after = repo && headState(repo, budget);
-      head = after?.tree;
+      head = after?.tree; commit = after?.head;
       if (!before || !after || before.tree !== after.tree) tree = undefined;
       if (tree && repo && head !== undefined && after) reflog = headMoveCursor(repo, head, budget, after.head);
       if (repo && !tree) log(`snapshot failed at ${what}`);
     } catch (error) {
-      tree = undefined; head = undefined; reflog = undefined;
+      tree = undefined; head = undefined; commit = undefined; reflog = undefined;
       snapshotFailure(what, error);
     }
-    return { tree, head, reflog, budget, repo, ms: Math.round(performance.now() - t0) };
+    return { tree, head, commit, reflog, budget, repo, ms: Math.round(performance.now() - t0) };
   };
   function privateSnapshotWindow(): boolean {
     return [...turns.values()].some(turn => turn.private) || board.list().some(task => !isClosedTaskState(task.state) && tasks.isPii(task));
+  }
+  function ownerWriteRoot(peer: string): string | undefined {
+    if (declarations[peer]) {
+      const bound = executionOwners.get(peer);
+      if (!bound || bound.owner !== bus.peers.get(peer) || bound.cwd !== executionRoots.get(peer)) return undefined;
+    }
+    return executionRoot(peer);
+  }
+  function canonicalWriteScope(repo: Repo, budget?: SnapshotBudget): boolean | undefined {
+    // The mandated ignored directory may contain a plain or still-uncommitted checkout, not just registered refs.
+    if (lstatSync(join(opts.cwd, ".worktrees"), { throwIfNoEntry: false })) return false;
+    return soleWorktree(repo, budget);
+  }
+  function captureOwnerWriteStart(task: Task): void {
+    const accepted = tasks.ownerWriteAcceptance(task), prior = ownerWriteStarts.get(task.id);
+    if (prior && prior.owner === task.owner && prior.acceptance === accepted?.index) return;
+    ownerWriteStarts.delete(task.id);
+    if (!accepted || accepted.index !== task.history.length - 1) return;
+    if (!task.owner || !["implement", "bulk_edit"].includes(task.class) || privateSnapshotWindow()) return;
+    const root = ownerWriteRoot(task.owner);
+    if (root === undefined) return;
+    const captured = snap(`task #${task.id} acceptance`, config.snapshots.enabled, task.owner);
+    if (captured.tree) ownerWriteStarts.set(task.id, { owner: task.owner, acceptance: accepted.index, at: accepted.at, root, tree: captured.tree });
+  }
+  function ownerWriteEvidence(task: Task, since: number): boolean | undefined {
+    if (!task.owner || !turnLog || !config.snapshots.enabled || privateSnapshotWindow()) return undefined;
+    const baseline = ownerWriteStarts.get(task.id);
+    const acceptance = tasks.ownerWriteAcceptance(task)?.index;
+    if (!baseline || baseline.owner !== task.owner || baseline.at !== since || baseline.acceptance !== acceptance || baseline.root !== ownerWriteRoot(task.owner)) return undefined;
+    try {
+      if (turnLog.touchesFor([task.id]).some(touch => touch.peer === task.owner && touch.at >= since)) return true;
+      const current = snap(`task #${task.id} done evidence`, true, task.owner);
+      if (!current.repo || !current.tree) return undefined;
+      const paths = knownChangedPaths(current.repo, baseline.tree, current.tree, current.budget);
+      return paths === undefined ? undefined : paths.length > 0;
+    } catch { return undefined; } // Unknown is never evidence of no writes, including a missing/pruned tree.
   }
   function reviewProjection(task: Task): string | undefined {
     const owner = task.owner ?? "", root = executionRoot(owner);
@@ -2115,6 +2156,9 @@ export async function startDaemon(opts: DaemonOptions) {
   const conductedMutations = new Set(["hub_task_propose", "hub_task_accept", "hub_task_decline", "hub_task_done", "hub_review", "hub_checkpoint", "hub_remember"]);
   const taskOp = async (...args: Parameters<typeof taskOpBody>): Promise<string> => {
     const [by, op, input] = args;
+    const nativeTurn = turns.get(by);
+    const effectful = ownerToolEffect(op, input);
+    if (nativeTurn && effectful) nativeTurn.effectsPending = (nativeTurn.effectsPending ?? 0) + 1;
     const conducted = conductorPeer(config.roles) === by && conductedMutations.has(op);
     const admittedId = typeof input?.id === "number" && Number.isSafeInteger(input.id) && input.id > 0 ? input.id : undefined;
     taskOpsInFlight++;
@@ -2122,6 +2166,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const readAuthority=op==="hub_task_show"?runningReviewAuthority(by,Number(input?.id)):undefined;
       const before=readAuthority?.();if(before)throw new PreEffectToolRefusal(before);
       const text = await taskOpBody(...args);
+      if (nativeTurn && effectful && turns.get(by) === nativeTurn) nativeTurn.taskEffect = true;
       const after=readAuthority?.();if(after)throw new PreEffectToolRefusal(after);
       if (conducted) {
         const proposed = op === "hub_task_propose" ? Number(text.match(/task #(\d+):/)?.[1]) : undefined;
@@ -2131,11 +2176,13 @@ export async function startDaemon(opts: DaemonOptions) {
       const hint = args[3] ? ownHeldHint(by) : "";
       return hint ? `${text}\n\n${hint}` : text;
     } catch (error) {
+      if (nativeTurn && effectful && !(error instanceof PreEffectToolRefusal) && turns.get(by) === nativeTurn) nativeTurn.taskEffect = true;
       // Keep proven pre-effect refusal identity/code for native receipts; only add body-free metadata.
       const hint = args[3] ? ownHeldHint(by) : "";
       if (hint && error instanceof Error) error.message += `\n\n${hint}`;
       throw error;
     } finally {
+      if (nativeTurn && effectful) nativeTurn.effectsPending = Math.max(0, (nativeTurn.effectsPending ?? 1) - 1);
       taskOpsInFlight--;
     }
   };
@@ -3165,13 +3212,20 @@ export async function startDaemon(opts: DaemonOptions) {
         const capture = config.snapshots.enabled && !!turnLog;
         const start = capture && !pii ? snap(`the start of ${id}`, config.snapshots.enabled, e.peer) : undefined; // before the peer is handed anything: the tap runs inside setState
         try { if (capture) turnLog?.begin(id, e.peer, start?.tree, declarations[e.peer] ? executionRoot(e.peer) : undefined); } catch (error) { log(`turn record ${id}: ${(error as Error).message}`); }
+        const writeTasks = tasks.ownerTurnTasks(e.peer);
+        let branches: string | undefined, writeScope: boolean | undefined;
+        if (writeTasks.length && start?.repo) try {
+          branches = branchHeads(start.repo, start.budget);
+          writeScope = ownerWriteRoot(e.peer) === opts.cwd ? canonicalWriteScope(start.repo, start.budget) : true;
+        } catch (error) { snapshotFailure(`the write scope of ${id}`, error); }
         const preparedRoles = preparedSessionRoleIdentities.get(e.peer)?.map(role => ({ ...role })) ?? null;
-        turns.set(e.peer, { id, capture, start: Date.now(), tokens: 0, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, head: start.head, reflog: start.reflog, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
+        turns.set(e.peer, { id, capture, start: Date.now(), tokens: 0, writeTasks, branches, writeScope, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, head: start.head, commit: start.commit, reflog: start.reflog, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
         event({ type: "turn_start", peer: e.peer, turn: id });
       } else if (!busy && open) {
         turns.delete(e.peer);
         let afterTurn: (() => void) | undefined;
         let files: number | undefined;
+        let writeProgress: boolean | undefined;
         let snapshotMs = open.snapshotMs;
         if (open.capture && turnLog && (open.private || holdsPii(e.peer))) {
           try { turnLog.end(open.id, undefined, [], Math.max(1, Number(config.snapshots.keep) || 20)); } catch (error) { log(`turn record ${open.id}: ${(error as Error).message}`); }
@@ -3220,6 +3274,21 @@ export async function startDaemon(opts: DaemonOptions) {
             }
           }
           if (open.tree && end.tree) files = changed.length; // unknown, not zero, when a snapshot failed
+          if (open.writeTasks.length) {
+            if ((files ?? 0) > 0 || open.commit !== undefined && end.commit !== undefined && open.commit !== end.commit) writeProgress = true;
+            else if (open.commit !== undefined && end.commit !== undefined && open.branches !== undefined && end.repo) {
+              try {
+                const branches = branchHeads(end.repo, end.budget);
+                if (branches !== undefined) {
+                  if (branches !== open.branches) writeProgress = true;
+                  else if (files === 0 && open.writeScope === true) {
+                    const scope = ownerWriteRoot(e.peer) === opts.cwd ? canonicalWriteScope(end.repo, end.budget) : true;
+                    if (scope === true) writeProgress = false;
+                  }
+                }
+              } catch (error) { snapshotFailure(`the branch refs of ${open.id}`, error); }
+            }
+          }
           snapshotMs = (snapshotMs ?? 0) + end.ms;
           try { turnLog.end(open.id, end.tree, changed, Math.max(1, Number(config.snapshots.keep) || 20)); } catch (error) { log(`turn record ${open.id}: ${(error as Error).message}`); }
           // After the turn_end event: a notice delivered at once starts the peer's next turn, which must come after it.
@@ -3233,6 +3302,12 @@ export async function startDaemon(opts: DaemonOptions) {
           tasks.cohorts.turnEnded(e.peer);
         }
         try { afterTurn?.(); } catch (error) { log(`conflict check after ${open.id}: ${(error as Error).message}`); }
+        if (definitionOf(e.peer)?.turnEnd !== "native-hook" || (nativeCompletedAt.get(e.peer) ?? -1) >= open.start) {
+          const root = ownerWriteRoot(e.peer);
+          const elsewhere = root === opts.cwd && open.writeTasks.some(binding => { const task = board.get(binding.id); return task && canonicalWriteUnknown(task); });
+          const changed = e.state === "idle" && !open.private && root !== undefined && !(writeProgress === false && elsewhere) ? writeProgress : undefined;
+          try { tasks.recordOwnerTurn(e.peer, open.writeTasks, changed, !!open.taskEffect || !!open.effectsPending); } catch { /* advisory cannot fail native completion */ }
+        }
       }
       if (e.state === "offline") { offlineSince.set(e.peer, offlineSince.get(e.peer) ?? Date.now()); supervision.peerOffline(e.peer); supervisionTurns.delete(e.peer); }
       else offlineSince.delete(e.peer);
