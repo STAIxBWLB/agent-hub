@@ -976,11 +976,14 @@ function ownerAvatar(peer) {
   avatar.setAttribute('role', 'img'); avatar.setAttribute('aria-label', 'owner: ' + name); avatar.title = 'owner: ' + name;
   return avatar;
 }
-// One badge per card: the state, with the priority folded into its text ("in review P1"). The tones match taskBadge (declared above
-// the board code, so a board-only slice cannot see it); a state with no tone gets the neutral badge.
+// One badge per card: the state, with the priority folded into its text ("in review P1"). Overdue and a running check fold into the
+// same text (#293: "in progress P2, overdue, check running"), never a second badge. The tones match taskBadge (declared above the
+// board code, so a board-only slice cannot see it); a state with no tone gets the neutral badge. A state that is already err keeps
+// it; otherwise overdue makes the badge warn, and a running check makes it info unless the state already has a tone.
 const CARD_BADGE_TONE = { in_progress: 'warn', in_review: 'info', approved: 'ok', changes_requested: 'err' };
-function cardBadge(task, card) {
-  return badge(String(task.state).replaceAll('_', ' ') + ' P' + card.priority, CARD_BADGE_TONE[task.state] || '');
+function cardBadge(task, card, overdue = false) {
+  const own = CARD_BADGE_TONE[task.state] || '', tone = own === 'err' ? own : overdue ? 'warn' : own || (task.checking ? 'info' : '');
+  return badge(String(task.state).replaceAll('_', ' ') + ' P' + card.priority + (overdue ? ', overdue' : '') + (task.checking ? ', check running' : ''), tone);
 }
 function boardContext() {
   const current=context(), snapshot=boardViewState?.snapshot || {};
@@ -1067,16 +1070,16 @@ function taskCard(task, card, stage, ids, overdue, compact = true) {
   if (compact) {
     row.setAttribute('role', 'button');
     row.setAttribute('aria-label', '#' + task.id + ' ' + task.title + ', ' + task.state.replaceAll('_', ' ') + ', owner ' + (task.owner || 'unassigned') + ', priority P' + card.priority);
+    if (overdue) row.setAttribute('aria-label', row.getAttribute('aria-label') + ', overdue');
+    if (task.checking) row.setAttribute('aria-label', row.getAttribute('aria-label') + ', check running');
     if (task.role) row.setAttribute('aria-label', row.getAttribute('aria-label') + ', Task guidance: ' + task.role + ' (grants no authority)');
     if (task.release != null) { const release=boardViewState?.snapshot.releases?.find(release=>release.id===task.release);row.setAttribute('aria-label',row.getAttribute('aria-label')+', Release #'+task.release+' '+(release?.name || '(label unavailable)')); }
     // Title (two lines at most, clamped in CSS), the owner avatar, one state/priority badge and the release. Everything else is in the detail.
     const head = el('div', undefined, 'row-head card-head'); head.append(ownerAvatar(task.owner), el('span', '#' + task.id + ' ' + task.title, 'label card-title'));
     if (card.starred) { const star = el('span', undefined, 'star'); star.title = 'starred'; star.append(icon('i-star', 'starred')); head.append(star); }
-    const meta = el('div', undefined, 'card-meta'); meta.append(cardBadge(task, card));
+    const meta = el('div', undefined, 'card-meta'); meta.append(cardBadge(task, card, overdue));
     if (task.release != null) { const release=boardViewState?.snapshot.releases?.find(release=>release.id===task.release); meta.append(el('span', 'Release #' + task.release + (release?.name ? ' ' + release.name : ''), 'release-chip')); }
     row.append(head, meta);
-    if (overdue) row.append(badge('Overdue','warn'));
-    if (task.checking) row.append(badge('Check running','info'));
     row.addEventListener('click', () => openTaskDetail(task.id));
     row.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openTaskDetail(task.id); } });
   }
