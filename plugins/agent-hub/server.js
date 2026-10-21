@@ -19574,7 +19574,8 @@ init_sdlc();
 init_routing();
 var DEMOTION_HALF_LIFE_MS = 24 * 3600000;
 var CONTRADICTION_WINDOW_MS = 7 * 86400000;
-var QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep", "memory reference started", "ready held"]);
+var QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep", "memory reference started"]);
+QUIET_EVENTS.add("ready held");
 QUIET_EVENTS.add("plan observed");
 var OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassigned"]);
 

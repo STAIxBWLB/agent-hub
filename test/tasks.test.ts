@@ -3757,3 +3757,20 @@ test("a cancelled owner task frees its slot for the next held ready task (#655)"
   await tick();
   expect(board.get(held.id)!.owner).toBe("codex");
 });
+
+test("a planner priority edit does not release held ready work; a freed slot still offers it (#655)", async () => {
+  const { tasks, board } = await setup(["claude", "codex"], undefined, undefined, 1);
+  const gate = await tasks.propose("claude", { title: "gate", class: "implement", owner: "claude" });
+  const held = await tasks.propose("claude", { title: "held", class: "implement", owner: "codex", after: [gate.id] });
+  const busy = board.propose("claude", { title: "busy", class: "implement" });
+  board.update(busy.id, "codex", "accepted", { owner: "codex", state: "in_progress" });
+  await tasks.done("claude", gate.id, "done");
+  await tasks.review(board.get(gate.id)!.reviewer!, gate.id, "approved");
+  await tick();
+  expect(board.get(held.id)!.history.at(-1)!.event).toBe("ready held");
+  board.plan(held.id, "user", { priority: 1 }, 0, "bump");
+  expect(board.get(held.id)!.owner).toBeNull();
+  await tasks.cancel(busy.id, USER, { reason: "not needed" });
+  await tick();
+  expect(board.get(held.id)!.owner).toBe("codex");
+});

@@ -175,7 +175,8 @@ const DEMOTE_AT = 1.5;
 const CONTRADICTION_WINDOW_MS = 7 * 86_400_000;
 const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
 /** Board events that leave a task where its completion check found it; any other event means it moved on meanwhile. */
-const QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep", "memory reference started", "ready held"]); // "ready held": the hub's note that a ready task waits for its reserved owner's WIP slot (#655)
+const QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep", "memory reference started"]);
+QUIET_EVENTS.add("ready held"); // #655: the hub's note that a ready task waits for its reserved owner's WIP slot.
 QUIET_EVENTS.add("plan observed"); // Host observation does not move the task or replace completion intent.
 
 /**
@@ -2103,7 +2104,8 @@ export class Tasks {
 
   /** Ready work the hub parked on its reserved owner's WIP cap (#655): its latest move-or-hold entry is `ready held`. */
   private isHeld(task: Task): boolean {
-    return task.history.findLast(entry => !QUIET_EVENTS.has(entry.event) || entry.event === "ready held")?.event === "ready held";
+    // A planner's priority or rank edit (`planned`) is no move: it must not make held work look released.
+    return task.history.findLast(entry => entry.event === "ready held" || !QUIET_EVENTS.has(entry.event) && entry.event !== "planned")?.event === "ready held";
   }
 
   /**
