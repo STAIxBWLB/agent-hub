@@ -50,6 +50,8 @@ export interface BudgetConfig {
 export const DEFAULT_BUDGET: BudgetConfig = { gate: 0.9, stale_min: 30, poll_min: 10, checkpoint_timeout_s: 90, kimi_tokens_5h: 0, wait_max_min: 0 };
 
 export interface BudgetHooks {
+  /** Startup-bound project resolver; undefined keeps builtin-only compatibility. */
+  definitionOf?(peer: PeerId): AdapterDefinition | undefined;
   /** Stable/idempotent for this Budget lifetime. All lifecycle hooks receive this canonical account id. */
   account?(peer: PeerId): PeerId;
   pause(peer: PeerId): void;
@@ -206,7 +208,8 @@ export class Budget {
     // Explicit quota exemption or absent budget metadata exempts registered kinds; external ids keep accounting.
     const reporter = peer;
     peer = this.account(peer);
-    const adapter = definitionOf(reporter) ?? definitionOf(peer);
+    const resolve = this.hooks.definitionOf ?? definitionOf;
+    const adapter = resolve(reporter) ?? resolve(peer);
     if (reporter === "user" || reporter === "hub" || peer === "user" || peer === "hub" || adapter && (!adapter.budget || adapter.budget.quotaExempt === true) || this.closed) return;
     // An override ignores soft readings, not a provider that has actually refused another turn.
     if (hard && this.ignoreUntil.delete(peer)) {

@@ -1,3 +1,4 @@
+import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 import { runInNewContext } from "node:vm";
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -36,7 +37,7 @@ test("planner WIP settings use bounded integers and the existing local registry 
   expect(writeConfigSetting(root,join(root,"state"),def,2,loadConfig)).toBe(true);
   expect(loadConfig(root).tasks.wip_limits?.codex).toBe(2);
   expect(readFileSync(join(root,".agenthub/config.json"),"utf8")).toBe(shared);
-  const rows=settingRows({cwd:root,routing:loadRouting(root),running:path=>path.join(".")==="tasks.wip_limits.codex"?1:undefined,next:path=>path.join(".")==="tasks.wip_limits.codex"?2:undefined,mode:()=>({value:"ask"})});
+  const rows=settingRows({ adapterCatalog: builtinProjectCatalog(),cwd:root,routing:loadRouting(root),running:path=>path.join(".")==="tasks.wip_limits.codex"?1:undefined,next:path=>path.join(".")==="tasks.wip_limits.codex"?2:undefined,mode:()=>({value:"ask"})});
   expect(rows.find(row=>row.key===def.key)).toMatchObject({value:1,pending:2,min:0,max:32});
   expect(writeConfigSetting(root,join(root,"state"),def,null,loadConfig)).toBe(true);
   expect(loadConfig(root).tasks.wip_limits?.codex).toBeUndefined();
@@ -78,7 +79,7 @@ test("#532 declared instance WIP settings retain builtin bounds, authority and e
   const config = loadConfig(root);
   expect(config.instances).toMatchObject(instances);
   expect(config.tasks.wip_limits).toEqual({ codex: 2, "codex-review": 4 });
-  const rows = settingRows({ cwd: root, instances, routing: loadRouting(root), running: path => path.join(".") === def.key ? 4 : undefined, next: path => path.join(".") === def.key ? 4 : undefined, mode: () => ({ value: "ask" }) });
+  const rows = settingRows({ adapterCatalog: builtinProjectCatalog(), cwd: root, instances, routing: loadRouting(root), running: path => path.join(".") === def.key ? 4 : undefined, next: path => path.join(".") === def.key ? 4 : undefined, mode: () => ({ value: "ask" }) });
   expect(rows.find(row => row.key === def.key)).toMatchObject({ value: 4, fileValue: 4, min: 0, max: 32, risk: "raises", applies: "live" });
 });
 

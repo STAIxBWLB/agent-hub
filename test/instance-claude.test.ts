@@ -1,3 +1,4 @@
+import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 import { afterEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -16,11 +17,11 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 const instances = { "claude-review": { kind: "claude", roles: ["reviewer"] } };
 
 test("a Claude instance declares reviewer or planner roles and no headless start or worktree", () => {
-  expect(validateInstances(instances)["claude-review"]).toEqual({ kind: "claude", roles: ["reviewer"] });
-  expect(validateInstances({ "claude-plan": { kind: "claude", roles: ["planner", "reviewer"] } })["claude-plan"]!.roles).toEqual(["planner", "reviewer"]);
-  for (const entry of [{ kind: "claude" }, { kind: "claude", roles: [] }, { kind: "claude", roles: ["implementer"] }, { kind: "claude", roles: ["reviewer", "verifier"] }]) expect(() => validateInstances({ "claude-x": entry })).toThrow("must declare its roles");
-  expect(() => validateInstances({ "claude-x": { kind: "claude", roles: ["reviewer", "planner"], start_mode: "headless" } })).toThrow('exactly ["reviewer"]'); // #223: reviewer-only may be headless
-  expect(() => validateInstances({ "claude-x": { kind: "claude", roles: ["reviewer"], worktree: "../wt" } })).toThrow("person's terminal");
+  expect(validateInstances(instances, builtinProjectCatalog())["claude-review"]).toEqual({ kind: "claude", roles: ["reviewer"] });
+  expect(validateInstances({ "claude-plan": { kind: "claude", roles: ["planner", "reviewer"] } }, builtinProjectCatalog())["claude-plan"]!.roles).toEqual(["planner", "reviewer"]);
+  for (const entry of [{ kind: "claude" }, { kind: "claude", roles: [] }, { kind: "claude", roles: ["implementer"] }, { kind: "claude", roles: ["reviewer", "verifier"] }]) expect(() => validateInstances({ "claude-x": entry }, builtinProjectCatalog())).toThrow("must declare its roles");
+  expect(() => validateInstances({ "claude-x": { kind: "claude", roles: ["reviewer", "planner"], start_mode: "headless" } }, builtinProjectCatalog())).toThrow('exactly ["reviewer"]'); // #223: reviewer-only may be headless
+  expect(() => validateInstances({ "claude-x": { kind: "claude", roles: ["reviewer"], worktree: "../wt" } }, builtinProjectCatalog())).toThrow("person's terminal");
 });
 
 test("each Claude instance keeps its own launch, session and context files; the builtin keeps the old names", () => {

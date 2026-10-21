@@ -86,3 +86,27 @@ test("I2 source refuses a recovery target lacking instance support before holdin
   expect(existsSync(join(f.stateDir, "restart.json"))).toBe(false);
   expect(f.daemon.bus.peers.get("codex-a")).toBe(f.owner); expect(f.owner.stops).toBe(0);
 }, 20_000);
+
+test("pending configured instance additions can be removed before restart without losing classification scope", async () => {
+  const f = await fixture();
+  const pending = { ...f.initial,
+    adapters: { fixture: { transport: "acp", command: "fixture-never-started", displayName: "Pending fixture", roles: ["verifier"] } },
+    instances: { ...f.initial.instances, "fixture-check": { kind: "fixture", roles: ["verifier"] } },
+    roster: { "fixture-check": true },
+  };
+  f.write(pending);
+  const added = await f.reload();
+  expect(added).toMatchObject({ ok: true });
+  expect(added.pendingRestart.some((row: { key: string }) => row.key.startsWith("instances.fixture-check") || row.key === "instances")).toBe(true);
+  expect(added.rejected).toContainEqual(expect.objectContaining({ key: "roster.fixture-check", reason: expect.stringContaining("full reload cannot bypass peer lifecycle") }));
+  expect((await f.status()).roleInfo["fixture-check"]).toBeUndefined();
+  expect(f.daemon.bus.peers.has("fixture-check")).toBe(false);
+  f.write(f.initial);
+  const removed = await f.reload();
+  expect(removed).toMatchObject({ ok: true });
+  expect(removed.pendingRestart.some((row: { key: string }) => row.key.startsWith("adapters") || row.key.startsWith("instances.fixture-check"))).toBe(false);
+  expect((await f.status()).roleInfo["fixture-check"]).toBeUndefined();
+  expect(f.daemon.bus.peers.has("fixture-check")).toBe(false);
+  expect(f.daemon.bus.peers.get("codex-a")).toBe(f.owner);
+  expect(f.owner.stops).toBe(0);
+}, 20_000);

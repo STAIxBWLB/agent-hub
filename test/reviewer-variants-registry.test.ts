@@ -1,3 +1,4 @@
+import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 import { expect, test } from "bun:test";
 import * as registry from "../src/adapters/registry.ts";
 import { validateInstances } from "../src/hub/instances.ts";
@@ -10,7 +11,7 @@ const declarations = {
   "agy-review": { kind: "agy", roles: ["reviewer"], start_mode: "headless" as const },
 };
 test("reviewer-only headless declarations resolve fixed fresh variants without changing implementer instances", () => {
-  const validated = validateInstances(declarations);
+  const validated = validateInstances(declarations, builtinProjectCatalog());
   for (const [id, declaration] of Object.entries(declarations)) {
     const variant = registry.definitionOf(id, validated)!;
     expect(variant.routing?.reviewOnly).toBe(true);
@@ -20,7 +21,7 @@ test("reviewer-only headless declarations resolve fixed fresh variants without c
     expect(variant.session.currentId({} as never)).toBeUndefined();
   }
   for (const kind of ["codex", "kimi"]) {
-    const instances = validateInstances({ [`${kind}-build`]: { kind, roles: ["implementer"], start_mode: "headless" } });
+    const instances = validateInstances({ [`${kind}-build`]: { kind, roles: ["implementer"], start_mode: "headless" } }, builtinProjectCatalog());
     expect(registry.definitionOf(`${kind}-build`, instances)).toBe(registry.definitionOf(kind));
     expect(registry.definitionOf(`${kind}-malformed`, { [`${kind}-malformed`]: { kind, start_mode: "headless" } })).toBe(registry.definitionOf(kind));
   }
@@ -28,10 +29,10 @@ test("reviewer-only headless declarations resolve fixed fresh variants without c
 
 test("fresh reviewer declarations refuse worktrees and permission overrides; ordinary implementer roots remain allowed", () => {
   for (const [id, entry] of Object.entries(declarations)) {
-    expect(() => validateInstances({ [id]: { ...entry, worktree: ".worktrees/private" } })).toThrow("worktree");
-    expect(() => validateInstances({ [id]: { ...entry, permission_mode: "never-ask" } })).toThrow("read-only");
+    expect(() => validateInstances({ [id]: { ...entry, worktree: ".worktrees/private" } }, builtinProjectCatalog())).toThrow("worktree");
+    expect(() => validateInstances({ [id]: { ...entry, permission_mode: "never-ask" } }, builtinProjectCatalog())).toThrow("read-only");
   }
-  expect(validateInstances({ "codex-build": { kind: "codex", roles: ["implementer"], start_mode: "headless", worktree: ".worktrees/build" } })["codex-build"]?.worktree).toBe(".worktrees/build");
+  expect(validateInstances({ "codex-build": { kind: "codex", roles: ["implementer"], start_mode: "headless", worktree: ".worktrees/build" } }, builtinProjectCatalog())["codex-build"]?.worktree).toBe(".worktrees/build");
 });
 
 test("default pool includes Kimi native-policy backend and excludes agy implementer metadata", () => {
@@ -57,13 +58,13 @@ test("agy reviewer declarations stay unavailable without a reviewer factory or l
 });
 
 test("agy and all declared reviewer variants cannot own any task class", () => {
-  const instances = validateInstances(declarations), roles = Object.fromEntries(Object.keys(declarations).map(id => [id, ["reviewer"]]));
+  const instances = validateInstances(declarations, builtinProjectCatalog()), roles = Object.fromEntries(Object.keys(declarations).map(id => [id, ["reviewer"]]));
   const routing = parseRouting('[local]\nfixed_model="fixture"\n');
   for (const id of ["agy-review", ...Object.keys(declarations)]) for (const taskClass of ["implement", "summarize", "review"] as const) {
     const result = assign({ class: taskClass, signals: [] }, { [id]: "idle" }, routing, { instances, roles, candidates: [id], namedOwner: id });
     expect(result.owner).toBeUndefined();
   }
-  expect(() => validateInstances({ "agy-build": { kind: "agy", roles: ["implementer"], start_mode: "headless" } })).toThrow("reviewer");
+  expect(() => validateInstances({ "agy-build": { kind: "agy", roles: ["implementer"], start_mode: "headless" } }, builtinProjectCatalog())).toThrow("reviewer");
 });
 
 test("variant selection requires explicit own reviewer-only roles without executing role getters", () => {
@@ -78,7 +79,7 @@ test("variant selection requires explicit own reviewer-only roles without execut
 test("legacy Codex and Kimi reviewer declarations retain native permission and worktree contracts", () => {
   for (const kind of ["codex", "kimi"]) {
     const id = `${kind}-legacy`;
-    const declared = validateInstances({ [id]: { kind, roles: ["reviewer"], start_mode: "headless", permission_mode: "never-ask", worktree: ".worktrees/legacy" } });
+    const declared = validateInstances({ [id]: { kind, roles: ["reviewer"], start_mode: "headless", permission_mode: "never-ask", worktree: ".worktrees/legacy" } }, builtinProjectCatalog());
     expect(registry.definitionOf(id, declared)).toBe(registry.definitionOf(kind));
     expect(declared[id]).toMatchObject({ permission_mode: "never-ask", worktree: ".worktrees/legacy" });
     expect(registry.definitionOf(id, { [id]: { kind, roles: ["reviewer"], start_mode: "headless" } })).toBe(registry.definitionOf(kind));
@@ -87,13 +88,13 @@ test("legacy Codex and Kimi reviewer declarations retain native permission and w
 
 test("fresh review mode is literal, explicit and restricted to reviewer-only headless declarations", () => {
   for (const review_mode of [null, false, "resume", undefined]) {
-    expect(() => validateInstances({ "codex-review": { ...declarations["codex-review"], review_mode } })).toThrow("review_mode");
+    expect(() => validateInstances({ "codex-review": { ...declarations["codex-review"], review_mode } }, builtinProjectCatalog())).toThrow("review_mode");
   }
   for (const patch of [{ roles: ["implementer"] }, { roles: ["reviewer", "planner"] }, { start_mode: "tui" }, { start_mode: undefined }]) {
-    expect(() => validateInstances({ "codex-review": { ...declarations["codex-review"], ...patch } })).toThrow("review_mode");
+    expect(() => validateInstances({ "codex-review": { ...declarations["codex-review"], ...patch } }, builtinProjectCatalog())).toThrow("review_mode");
   }
-  expect(() => validateInstances({ "pi-review": { kind: "pi", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } })).toThrow("review_mode");
-  expect(registry.definitionOf("claude-review", validateInstances({ "claude-review": declarations["claude-review"] }))?.reviewer?.declaration).toBe("automatic");
+  expect(() => validateInstances({ "pi-review": { kind: "pi", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } }, builtinProjectCatalog())).toThrow("review_mode");
+  expect(registry.definitionOf("claude-review", validateInstances({ "claude-review": declarations["claude-review"] }, builtinProjectCatalog()))?.reviewer?.declaration).toBe("automatic");
 });
 
 

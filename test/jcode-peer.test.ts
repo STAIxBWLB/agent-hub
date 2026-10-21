@@ -1,3 +1,4 @@
+import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 import { personEnv } from "../src/hub/child-process.ts";
 import { createServer, createConnection } from "node:net";
 import { basename, dirname } from "node:path";
@@ -44,8 +45,8 @@ test("Jcode project bridge preserves foreign values, supports both maps, refuses
 });
 
 test("Jcode is off by default, native policy unmanaged, protected from scoped writes and previewed without side effects (#332)", () => {
-  const dir = root(); expect(rosterAllows({}, "jcode", false)).toBe(false);
-  expect(classifyPeerCommand("jcode", [])).toBe("console"); expect(permissionBoundary("jcode")).toContain("unmanaged");
+  const dir = root(); expect(rosterAllows({}, "jcode", false, undefined, builtinProjectCatalog())).toBe(false);
+  expect(classifyPeerCommand("jcode", [])).toBe("console"); expect(permissionBoundary("jcode", undefined, builtinProjectCatalog())).toContain("unmanaged");
   expect(() => permissionDefaults({ jcode: "ask" })).toThrow("no hub");
   mkdirSync(join(dir, ".jcode")); expect(grantablePath(dir, join(dir, ".jcode"))).toBe(false);
   const preview = launcherPreview("jcode", ["--model", "private-model", "--provider-profile", "private-profile"], dir, "state", false);

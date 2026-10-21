@@ -97,3 +97,14 @@ test("legacy builtin native revert remains available without an extra workspace 
   expect(f.reverts()).toEqual([{ threadId: "th1", beforeTurnId: f.turn.native }]);
   expect(f.daemon.bus.stateOf(f.peer)).toBe("idle");
 }, 20_000);
+
+test("configured ACP declaration beside a Codex extra preserves native turn revert", async () => {
+  const f = await fixture();
+  const current = JSON.parse(readFileSync(f.declarationFile, "utf8"));
+  current.adapters = { fixture: { transport: "acp", command: "fixture-only", displayName: "Fixture", roles: ["verifier"] } };
+  current.instances["fixture-reader"] = { kind: "fixture", roles: ["verifier"] };
+  writeFileSync(f.declarationFile, JSON.stringify(current));
+  expect(await f.revert()).toMatchObject({ ok: true });
+  expect(f.reverts()).toEqual([{ threadId: "th1", beforeTurnId: f.turn.native }]);
+  expect(f.daemon.bus.stateOf(f.peer)).toBe("idle");
+}, 20_000);

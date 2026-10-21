@@ -32,3 +32,12 @@ export function launcherPreview(tool: "claude" | "codex" | "kimi" | "pi" | "qwen
     unresolved: [...result.unresolved, { field: "executionCwd", reason: "verified by the daemon at instance start; preview does not start or authorize a worktree" }],
   };
 }
+
+/** Configured commands are arbitrary machine-local argv; preview never displays their values or starts a child. */
+export function configuredAcpPreview(kind: string, peer: string, resumed: boolean) {
+  return { tool: kind, peer, mode: "headless", cmd: "[redacted]", args: ["[redacted]"],
+    ...(resumed ? { sessionId: "[redacted]" } : {}),
+    envNames: [], redaction: "Configured executable, argv and session values are withheld.",
+    unresolved: [{ field: "runtime", reason: "Native identity, owned process group, accounts and daemon catalog are checked at start; preview runs nothing." }],
+    needs: ["A trusted config.local.json declaration and a running hub with configured_acp support."] };
+}

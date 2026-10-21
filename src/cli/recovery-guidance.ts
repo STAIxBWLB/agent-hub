@@ -27,7 +27,7 @@ export interface RecoveryGuidanceOptions {
 
 const text = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 const argv = (...words: string[]): string => words.map(shellQuote).join(" ");
-const projectDefinition = (peer: string, root: string) => definitionOf(peer) ?? definitionOf(peer, readInstanceConfig(root).instances);
+const projectDefinition = (peer: string, root: string) => { const builtin = definitionOf(peer); if (builtin) return builtin; const bound = readInstanceConfig(root); return bound.catalog.definitionOf(peer, bound.instances); };
 const peers = (instances: KindMap | undefined): RecoveryNativePeer[] => [...ADAPTERS.map(adapter => adapter.kind), ...Object.keys(instances ?? {})]
   .filter(peer => definitionOf(peer, instances)?.session.launchRecord)
   .sort((a, b) => Number(definitionOf(a, instances)?.transport === "claude-channel") - Number(definitionOf(b, instances)?.transport === "claude-channel"));

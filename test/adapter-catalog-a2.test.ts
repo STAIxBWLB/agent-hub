@@ -1,3 +1,4 @@
+import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { ADAPTERS, KNOWN_PEERS as REGISTRY_KNOWN, OPTIONAL_PEERS as REGISTRY_OPTIONAL, SUPPORTED_PEERS as REGISTRY_SUPPORTED, START_MODE_PEERS as REGISTRY_DUAL, OFFICE_PEER_ORDER, defaultPeerRoles, definitionOf, PLANNER_PEERS } from "../src/adapters/registry.ts";
@@ -38,16 +39,16 @@ test("A2 start and roster projections preserve unknown ids and legacy defaults",
   for (const id of ["external", "codex-1", "__proto__", "constructor", ""]) {
     expect(isKnownPeer(id)).toBe(false); expect(isSupportedPeer(id)).toBe(false);
     expect(startModeOf({ [id]: { start_mode: "tui" } }, id)).toBe("headless");
-    expect(rosterAllows({ [id]: false }, id, false)).toBe(true);
+    expect(rosterAllows({ [id]: false }, id, false, undefined, builtinProjectCatalog())).toBe(true);
     expect(() => peerRosterConfig({ [id]: false })).toThrow("unsupported peer");
   }
   for (const value of [undefined, null, 1, {}, []]) { expect(isKnownPeer(value)).toBe(false); expect(isSupportedPeer(value)).toBe(false); }
   for (const enabled of [false, true]) {
-    for (const peer of ["claude", "codex", "kimi", "local"]) expect(rosterAllows({}, peer, enabled)).toBe(true);
-    for (const peer of ["qwen", "jcode"]) expect(rosterAllows({}, peer, enabled)).toBe(false);
-    expect(rosterAllows({}, "pi", enabled)).toBe(enabled);
-    expect(rosterAllows({ pi: false }, "pi", enabled)).toBe(false);
-    expect(rosterAllows({ pi: true }, "pi", enabled)).toBe(true);
+    for (const peer of ["claude", "codex", "kimi", "local"]) expect(rosterAllows({}, peer, enabled, undefined, builtinProjectCatalog())).toBe(true);
+    for (const peer of ["qwen", "jcode"]) expect(rosterAllows({}, peer, enabled, undefined, builtinProjectCatalog())).toBe(false);
+    expect(rosterAllows({}, "pi", enabled, undefined, builtinProjectCatalog())).toBe(enabled);
+    expect(rosterAllows({ pi: false }, "pi", enabled, undefined, builtinProjectCatalog())).toBe(false);
+    expect(rosterAllows({ pi: true }, "pi", enabled, undefined, builtinProjectCatalog())).toBe(true);
   }
   for (const peer of SUPPORTED_PEERS) {
     expect(isSupportedPeer(peer)).toBe(true); expect(isKnownPeer(peer)).toBe(!(OPTIONAL_PEERS as readonly string[]).includes(peer));

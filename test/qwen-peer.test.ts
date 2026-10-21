@@ -1,3 +1,4 @@
+import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 import { crashPlan, writeSessions } from "../src/hub/crash.ts";
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -49,9 +50,9 @@ test("production Qwen refuses wrong native identity/version while legacy benchma
 test("Qwen is optional on the roster, role-guided, previewed without execution and stopped as an owned ACP (#256)", async () => {
   const root = mkdtempSync(join(tmpdir(), "qwen-hub-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
   const stateDir = join(root, "state"); mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify({ memory: { enabled: false } }));
-  expect(rosterAllows(peerRosterConfig(undefined), "qwen", false)).toBe(false);
+  expect(rosterAllows(peerRosterConfig(undefined), "qwen", false, undefined, builtinProjectCatalog())).toBe(false);
   expect(DEFAULT_ROLES.qwen).toEqual(["implementer", "verifier"]); expect(roleContract("qwen", DEFAULT_ROLES)).toContain("qwen");
-  expect(classifyPeerCommand("qwen", [])).toBe("conductor"); expect(permissionBoundary("qwen")).toContain("NO hub sandbox");
+  expect(classifyPeerCommand("qwen", [])).toBe("conductor"); expect(permissionBoundary("qwen", undefined, builtinProjectCatalog())).toContain("NO hub sandbox");
   expect(permissionGrant("qwen", "never-ask")).toContain("every tool");
   const preview = launcherPreview("qwen", ["--print-command"], root, stateDir, false);
   expect(preview.cmd).toBe("qwen"); expect(preview.args).toEqual(["--acp"]);

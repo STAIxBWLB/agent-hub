@@ -105,6 +105,42 @@ export const CONDUCTOR_TOOLS: HubTool[] = [
 ];
 export const CONDUCTOR_TOOL_NAMES = new Set(CONDUCTOR_TOOLS.map((t) => t.name));
 
+/** Authenticated status metadata only; malformed values never add a tool target. */
+function projectPeerIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || value.length > 256 || value.some(id => typeof id !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(id) || ["user", "hub", "digest"].includes(id)) || new Set(value).size !== value.length) return undefined;
+  return [...value] as string[];
+}
+
+/** A project-local schema projection; released builtin arrays and all other tools keep their identity. */
+export function projectConductorTools(startPeers?: unknown): HubTool[] {
+  const peers = startPeers === undefined ? undefined : projectPeerIds(startPeers);
+  if (peers === undefined) return CONDUCTOR_TOOLS;
+  return CONDUCTOR_TOOLS.map(tool => tool.name !== "hub_peer_start" ? tool : {
+    ...tool, inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties,
+      peer: { ...(tool.inputSchema.properties.peer as Record<string, unknown>), enum: [...new Set([...CONDUCTOR_START_PEERS, ...peers])] },
+    } },
+  });
+}
+
+export interface ProjectToolContext { startPeers?: string[]; readOnly?: boolean }
+/** Ordinary projects retain their exact prior publication context; configured metadata is body-free and bounded. */
+export function configuredToolContext(status: unknown, peer: string): ProjectToolContext {
+  if (!status || typeof status !== "object" || Array.isArray(status)) return {};
+  const raw = status as Record<string, unknown>, configured = projectPeerIds(raw.configuredAdapters);
+  if (!configured?.length) return {};
+  const startPeers = projectPeerIds(raw.startablePeers), readOnlyPeers = projectPeerIds(raw.readOnlyPeers);
+  // With an incomplete configured-project reading, publish only R2 reads until authenticated status is complete.
+  if (!startPeers || !readOnlyPeers) return { readOnly: true };
+  return { startPeers, readOnly: readOnlyPeers.includes(peer) };
+}
+
+const READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_status"]);
+/** Publication restricts exposure only; server-side authority remains mandatory for every call. */
+export function projectToolList<T extends { name: string }>(tools: T[], readOnly = false): T[] {
+  return readOnly ? tools.filter(tool => READ_ONLY_PROJECT_TOOLS.includes(tool.name)) : tools;
+}
+
+
 /** Role contracts, by role name. Shown to each peer for the roles `.agenthub/config.json` gives it. */
 export const ROLE_TEXT: Record<string, string> = {
   conductor: "conductor: plan and split work into tasks with owners, watch the team with hub_status, move stalled work, and ensure every task is reviewed (review it yourself only if you also hold reviewer). Report results and open decisions to the person. Do not implement tasks you handed out. Never ask a peer to answer an approval; ask the person for human-only actions. You may release only holds you placed, never human holds or budget pauses.",
