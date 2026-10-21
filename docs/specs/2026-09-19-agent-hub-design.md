@@ -3996,11 +3996,10 @@ Version line (#589, owner decision 2026-10-20): agy updates itself, so the launc
 
 ## Adding an AI tool guide and adapter definitions (#451 A5)
 
-- Human-oriented guide `docs/adding-an-ai-tool.md` documents Adapter API 1 (`AdapterDefinition` in `src/adapters/registry-types.ts`), covering:
+- Human-oriented guide `docs/adding-an-ai-tool.md` documents today's builtin Adapter API 1 path (`AdapterDefinition` in `src/adapters/registry-types.ts` and `src/adapters/registry.ts`), covering:
   - Architecture and core independence: one frozen definition per kind; the core daemon, tasks, and routing inspect definition fields rather than hard-coded vendor name comparisons.
   - Transport selection: `acp` (stdio JSON-RPC), `codex-appserver`, `claude-channel`, `ws-pull` (pull-only workspace MCP plugin), and `hub-native`.
-  - Config-only generic ACP adapters: defining peers with zero TypeScript code via `adapters.<kind>` in `.agenthub/config.local.json`.
-  - External modules and trust rules: machine-local only, content-hash pinned (SHA-256), person-only enablement, and conformance verification before live roster admission.
   - Conformance kit (`test/conformance/`): enrollment invariants, delivery occupancy, watchdog expiry, process-group teardown, and explicit `UNSUPPORTED_LEGS` reasons for unsupported legs.
   - Review and verification checklist: T0 receipt, path protection (`AGENT_CONFIG_SEGMENTS`), PII safety (`trust.onPrem`), process isolation, and documentation freshness.
+  - Planned config-only generic ACP adapters (#451 A3, #217) and external adapter modules (#451 A4, #135) are outlined as upcoming milestones; their configuration schemas, hash-pinning rules, and implementation details land with those respective PRs.
 - `docs/agent-notes/adapters.md` keeps only the per-adapter rules that bind code, pointing to `docs/adding-an-ai-tool.md` and `src/adapters/registry-types.ts` for conceptual architecture and definitions.
