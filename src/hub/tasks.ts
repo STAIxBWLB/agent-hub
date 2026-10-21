@@ -3258,7 +3258,6 @@ export class Tasks {
     if (head !== undefined) {
       try { findingHead = sdlcReceipt({ reviewedHead: head }, initial.sdlc, this.d.sdlc?.config() ?? sdlcConfig(undefined)).reviewedHead; }
       catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid finding head"); }
-      if (resolvedHead && findingHead !== resolvedHead) throw new PreEffectToolRefusal("supplied review head differs from the task resolved head");
     }
     const report: ReviewFindingSet | undefined = suppliedFindings ? { ...(findingHead ? { head: findingHead } : {}), items: parsed } : undefined;
     const proposedSets = (task: Task) => [...this.reviewFindingSets(task), ...(report ? [report] : [])];
@@ -3301,6 +3300,7 @@ export class Tasks {
         if (gap.length) note = `${note ?? ""}\nCoverage gap (${gap.length}): ${list(gap)}`.trim();
       }
     }
+    if (head !== undefined && resolvedHead && findingHead !== resolvedHead) throw new PreEffectToolRefusal("supplied review head differs from the task resolved head");
     // The PII screen reads the note of a review that passes these checks (issue #198); they run again after it.
     const withheld = await this.withholds("review note", parsed.length ? JSON.stringify({ note, findings: parsed }) : note, valid())
       || parsed.length > 0 && !this.findingTextAllowed(initial, parsed);
