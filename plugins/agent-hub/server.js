@@ -9284,7 +9284,7 @@ async function runAgyEntry(ctx) {
     pluginWritten = written.changed;
     if (written.tracked)
       console.error("The managed agy plugin is tracked; review its local machine paths before committing");
-    console.error("Antigravity: pull-only TUI; native permissions unmanaged, no hub sandbox");
+    console.error(AGY_LAUNCH_NOTICE);
     const env = { ...ctx.helpers.nativeLaunchEnv("agy", ctx.helpers.childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
     delete env.AGENTHUB_CHANNEL;
     const code = await runAgyTui(argv, cwd, env);
@@ -9303,6 +9303,7 @@ async function runAgyEntry(ctx) {
     hub.close();
   }
 }
+var AGY_LAUNCH_NOTICE = "Antigravity: pull-only TUI; native permissions unmanaged, no hub sandbox; hub tools appear from the second turn (send any first prompt, then ask for hub work)";
 var init_entry = __esm(() => {
   init_agy_mcp();
   init_child_process();

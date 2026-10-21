@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agyTuiSpawnOptions, agyVersionGate, runAgyEntry } from "../src/adapters/agy/entry.ts";
+import { AGY_LAUNCH_NOTICE, agyTuiSpawnOptions, agyVersionGate, runAgyEntry } from "../src/adapters/agy/entry.ts";
 import type { NativeCliEntryContext } from "../src/adapters/definitions/native-cli-entry-types.ts";
 import { nativeLaunchEnv } from "../src/cli/launch.ts";
 
@@ -43,7 +43,13 @@ test("person launcher fences old daemons, scrubs channel identity, and cleans it
   try {
     await expect(runAgyEntry(context(root, [], []).ctx)).rejects.toThrow("running hub lacks");
     expect(existsSync(join(root, ".agents"))).toBe(false);
-    const { ctx, requests } = context(root, []); await runAgyEntry(ctx);
+    const errors: string[] = [], error = console.error;
+    console.error = (...args: unknown[]) => { errors.push(args.join(" ")); };
+    const { ctx, requests } = context(root, []);
+    try { await runAgyEntry(ctx); } finally { console.error = error; }
+    // #607: one notice line says the hub tools appear from the second TUI turn.
+    expect(errors.filter(line => line === AGY_LAUNCH_NOTICE)).toHaveLength(1);
+    expect(AGY_LAUNCH_NOTICE).toContain("hub tools appear from the second turn");
     expect(readFileSync(trace, "utf8")).toBe("agy\nunset\n");
     expect(requests.filter(msg => msg.t === "native_hook_launch").map(msg => msg.op)).toEqual(["begin", "end"]);
     for (const name of ["plugin.json", "mcp_config.json", "hooks.json"]) expect(existsSync(join(root, ".agents/plugins/agent-hub", name))).toBe(false);
