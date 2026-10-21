@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add "Adding an AI Tool" guide (`docs/adding-an-ai-tool.md`) documenting Adapter API 1 definitions, transport selection, generic ACP configuration, external module trust, and the conformance test kit (#451 A5).
 - When the hub itself starts headless Kimi or Qwen it also opens `ahub watch <peer>` through the terminal provider, a fixed command opened at most once per 30 s; with no provider or a failing one the start still succeeds and the watch command is reported (#286 AC10).
 - Incoming HEAD moves during open turns no longer produce false concurrent-edit warnings or attributed undo paths; bounded per-worktree reflog evidence distinguishes them from peer commits and sequencer replay changes, which stay attributed unless ambiguous. Rebase/pull --rebase start checkout is incoming; uncommitted edits carried through autostash or checkout -m are never excluded. Real concurrent change sets publish at most one notice per affected task; snapshot Git work shares a 250 ms burst budget and records unknown boundaries on exhaustion. Status reuses a checkout-branch probe only within the current synchronous burst. Pi terminal reconciliation uses the bounded existing owner monitor instead of spawning `ps` on every read; effect admission and teardown still verify fresh process identity (#576).
 
