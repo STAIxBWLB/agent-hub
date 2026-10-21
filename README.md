@@ -5,7 +5,7 @@ Codex, Kimi Code, Pi and a hub-owned local worker (Qwen Code, Jcode and Antigrav
 optional) share a message bus and a task board per project and one memory on the
 machine, each attached through its own native interface.
 
-Status: 0.12.43, control protocol 16. Bun + TypeScript, one loopback daemon per
+Status: 0.12.44, control protocol 16. Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## What it does today
@@ -95,7 +95,7 @@ advertising `cli_audit_delegated` and refuse with an upgrade remedy otherwise
 (#410). For local/Pi implementation, opt in to an available
 `checks.runner = "container"`; issue-backed owners also need authenticated
 spec access. PII work and designated reviewers retain their separate exemptions.
-See [release verification](docs/verification/2026-10-21-0.12.43.md) for the live legs
+See [release verification](docs/verification/2026-10-21-0.12.44.md) for the live legs
 still open, including #418 AC8, #438 AC7, the native console settings leg (#439 AC5),
 real upgrades with reattach (#463) and with a managed terminal and cancelled tasks
 (#478), a live headless Claude review (#223), a Claude session over 32 MiB (#517), a

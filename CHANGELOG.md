@@ -2,9 +2,12 @@
 
 Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
 
-## Unreleased
+## 0.12.44
+
+A standard ACP agent can join a project from config alone (#451 A3), adapter definitions become the single dispatch point (#451 A2b), agy stops reading Claude's state files (#624), and owner turns that write nothing are flagged (#498).
 
 - Add project-local config-only ACP adapters: optional headless kinds stay off roster by default, with pinned native identity, strict resume identity, owned-group admission and optional mapped or read-only native modes. Grok live verification remains pending; the generic path does not by itself verify Grok support (#451, #486). Adapter role defaults cannot appoint a conductor; explicit project role policy remains available. Unknown fields in `peers.<id>` now refuse daemon startup as well as strict reload.
+- `ahub permission` and `ahub settings` reach the running hub even when `.agenthub/config.local.json` does not parse, and `ahub settings undo` asks for the peer-id confirmation of a configured kind's roster undo (#638 follow-up).
 - agy no longer shows Claude's context reading, session or transcript usage as its own: Claude state files are read only for Claude peers, and the shared file-name helper refuses any other id (#624). An upgrade no longer refuses a planned fresh start of a `codex-<name>` instance, and native observation uses the sending peer's own roles.
 - Owner turns that write nothing are flagged: two completed `implement` or `bulk_edit` owner turns in a row with no recorded writes or task-tool effects raise a planner notice, and a done report with no writes since acceptance says so in its review request (`task_sweep.no_writes_turns`, default 2, 0 disables). Evidence that cannot be proven, such as private turns, work under `.worktrees` or a recorded branch, PR or head, stays unknown and never counts as empty (#498).
 - In the agy TUI the hub tools can be missing on the first turn: the launcher says so and the `AGENTS.md` block tells agents to use them from the next turn instead of reporting the hub unavailable; run `ahub init` to refresh the block (#607).
