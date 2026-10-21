@@ -41,6 +41,18 @@ export class AcpOwnedGroup {
     return new AcpOwnedGroup(proc, { ...leader }, signature, ports);
   }
 
+  /** Capture failure grants no signals. Only positive no-spawn or exit-and-empty proof releases its handle. */
+  static async confirmGone(proc: ChildProcess, ports: AcpOwnedGroupPorts = PORTS): Promise<boolean> {
+    const pid = proc.pid;
+    if (pid === undefined) return true;
+    if (!Number.isSafeInteger(pid) || pid <= 1 || !(typeof proc.exitCode === "number" || typeof proc.signalCode === "string")) return false;
+    try {
+      const rows = await AcpOwnedGroup.read(ports);
+      return proc.pid === pid && (typeof proc.exitCode === "number" || typeof proc.signalCode === "string")
+        && !rows.some(row => row.pid === pid || row.pgid === pid);
+    } catch { return false; }
+  }
+
   /** Verify before accepting the session, including after an awaited initialize handshake. */
   async verify(): Promise<void> {
     if (this.confirmedGone || !await this.inspect(false)) throw ownershipError();

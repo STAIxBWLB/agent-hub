@@ -6,11 +6,11 @@ const adapters = { fixture: { transport: "acp", command: "secret-executable", ar
 const catalog = createProjectAdapterCatalog(adapters);
 const declarations = { "fixture-one": { kind: "fixture", start_mode: "headless" as const } };
 const host = (raw: string[] = [], status: unknown = { configuredAdapters: ["fixture"], activeInstances: ["fixture-one"] }, features = ["configured_acp", "peer_instances"]) => {
-  const requests: any[] = [], output: string[] = [];
+  const requests: any[] = [], output: string[] = [], timeouts: (number | undefined)[] = [];
   let connected = 0, closed = 0;
-  return { requests, output, count: () => ({ connected, closed }), context: {
+  return { requests, output, timeouts, count: () => ({ connected, closed }), context: {
     kind: "fixture", raw, catalog, instances: declarations,
-    connect: async () => { connected++; return { features, request: async (request: any) => { requests.push(request); return request.t === "status" ? { status } : { ok: true }; }, close: () => { closed++; } }; },
+    connect: async () => { connected++; return { features, request: async (request: any, timeout?: number) => { requests.push(request); timeouts.push(timeout); return request.t === "status" ? { status } : { ok: true }; }, close: () => { closed++; } }; },
     print: (value: string) => { output.push(value); },
   } };
 };
@@ -37,6 +37,7 @@ test("configured ACP CLI checks daemon feature and active catalog before a headl
   await runConfiguredAcpEntry(h.context);
   expect(h.requests[0]).toEqual({ t: "status" });
   expect(h.requests[1]).toMatchObject({ t: "start", peer: "fixture-one", args: { mode: "headless", sessionId: "session-1" } });
+  expect(h.timeouts.at(-1)).toBe(70_000);
   expect(h.count()).toEqual({ connected: 1, closed: 1 });
 });
 for (const [status, features] of [[{ configuredAdapters: [] }, ["configured_acp"]], [{}, ["configured_acp"]], [{ configuredAdapters: ["fixture"] }, []], [{ configuredAdapters: ["fixture"], activeInstances: [] }, ["configured_acp", "peer_instances"]]] as const) test(`configured ACP CLI refuses stale/old daemon ${JSON.stringify(status)} ${features}`, async () => {
@@ -63,4 +64,27 @@ test("configured command classification retains tools/conductor authority and sa
 });
 for (const kind of ["status", "help", "task", "recovery-run", "stop", "backlog"]) test(`configured kind cannot shadow core CLI command ${kind}`, () => {
   expect(() => createProjectAdapterCatalog({ [kind]: adapters.fixture })).toThrow(/reserved|collides/);
+});
+
+for (const field of ["retainedConfig", "pendingRestart"] as const) test(`configured ACP warns before start about ${field} without exposing retained values`, async () => {
+  const h = host([], { configuredAdapters: ["fixture"], [field]: [{ key: "adapters.fixture.args", reason: "PRIVATE_RETAINED_REASON", before: ["PRIVATE_OLD_ARG"], after: ["PRIVATE_NEW_ARG"] }] });
+  const connect = h.context.connect;
+  h.context.connect = async () => {
+    const hub = await connect(), request = hub.request;
+    hub.request = async (message: any) => {
+      if (message.t === "start") {
+        expect(h.output).toHaveLength(1);
+        expect(h.output[0]).toContain("Restart the hub");
+        expect(h.output[0]).toContain("running definition");
+      }
+      return request(message);
+    };
+    return hub;
+  };
+  await runConfiguredAcpEntry(h.context);
+  const printed = h.output.join("\n");
+  expect(printed).not.toContain("PRIVATE_");
+  expect(printed).not.toContain("secret-executable");
+  expect(printed).not.toContain("secret-token");
+  expect(catalog.definitionOf("fixture")!.cli.launchConfigKeys).toEqual(["adapters.fixture.command", "adapters.fixture.args"]);
 });

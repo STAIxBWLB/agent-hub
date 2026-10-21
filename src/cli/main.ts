@@ -431,11 +431,11 @@ function fail(message: string): never {
   process.exit(1);
 }
 
-async function taskOp(op: string, a: Record<string, unknown>, throwOnError = false, connection?: ControlClient): Promise<string> {
+async function taskOp(op: string, a: Record<string, unknown>, throwOnError = false, connection?: ControlClient, timeoutMs?: number): Promise<string> {
   const hub = connection ?? await connect();
   try {
     if (op === "hub_task_cancel" && !hub.features.includes("task_cancel")) fail("this daemon does not support task cancellation; upgrade it first");
-    const res = await hub.request({ t: "task", op, args: a }, op === "github_import" ? 60_000 : 30_000);
+    const res = await hub.request({ t: "task", op, args: a }, timeoutMs ?? (op === "github_import" ? 60_000 : 30_000));
     if (!res.ok) { if (throwOnError) throw new Error(res.error); audit("refused"); fail(res.error); }
     return res.text;
   } finally { if (!connection) hub.close(); }
@@ -2091,8 +2091,8 @@ async function runConductorCommand(): Promise<void> {
       if (selection.sessionId) fail("conductor starts accept no session override; a person starts a configured ACP session");
       const hub = await connect();
       try {
-        await requireActiveConfiguredAcp(hub, cmd, selection.peer);
-        console.log(await taskOp("hub_peer_start", { peer: selection.peer, mode: "headless" }, false, hub));
+        await requireActiveConfiguredAcp(hub, cmd, selection.peer, text => console.error(text));
+        console.log(await taskOp("hub_peer_start", { peer: selection.peer, mode: "headless" }, false, hub, 70_000));
       } finally { hub.close(); }
       return;
     }

@@ -13,7 +13,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ControlClient, stateDirFor } from "../hub/control-client.ts";
 import { VERSION } from "../version.ts";
-import { ACTIONABLE_MESSAGE_INSTRUCTION, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
+import { ACTIONABLE_MESSAGE_INSTRUCTION, projectConductorTools, projectToolList, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
 import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, type Envelope } from "../hub/envelope.ts";
 import { renderHeldHint } from "../hub/delivery-hints.ts";
 
@@ -318,7 +318,7 @@ async function buildToolList() { return toolListFor(await activeLifecycle(stateD
 
 function toolListFor(lifecycle: Awaited<ReturnType<typeof activeLifecycle>>) {
   return {
-  tools: [
+  tools: projectToolList([
     {
       name: "hub_send",
       description:
@@ -355,8 +355,8 @@ function toolListFor(lifecycle: Awaited<ReturnType<typeof activeLifecycle>>) {
             : []),
         ]),
     ...profileTaskTools(profile, lifecycle?.stages, lifecycle?.criteria).filter(tool => (lifecycle !== undefined || tool.name !== "hub_sdlc_record") && (!deliveryOnly || tool.name !== "hub_delivery_retry")),
-    ...CONDUCTOR_TOOLS,
-  ],
+    ...projectConductorTools(lifecycle?.startPeers),
+  ], lifecycle?.readOnly),
   };
 }
 
@@ -406,7 +406,7 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
   if (TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name)) {
     if (!hub) return text(offline());
     const res = await hub.request({ t: "task", op: name, args: args ?? {} });
-    return text(res.ok ? res.text : `error: ${res.error}`);
+    return { ...text(res.ok ? res.text : `error: ${res.error}`), ...(res.ok ? {} : { isError: true }) };
   }
   return text(`unknown tool ${name}`);
 }

@@ -2738,6 +2738,8 @@ export async function startDaemon(opts: DaemonOptions) {
     protocol: PROTOCOL,
     features: DAEMON_FEATURES,
     configuredAdapters: configuredIds,
+    startablePeers: SUPPORTED_PEERS.filter(isStartablePeer),
+    readOnlyPeers: extraIds.filter(readOnlyPeer),
     // #450 I3: the instance ids this daemon bound at startup; a launcher selects only one of these.
     activeInstances: extraIds,
     stopping,

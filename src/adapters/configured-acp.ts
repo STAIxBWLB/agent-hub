@@ -104,8 +104,10 @@ export function configuredAcpDefinitions(raw: unknown, builtinKinds: readonly st
         conductorStartArgs: args => args.length ? new Error("configured ACP starts accept no launch overrides") : {},
       },
       permission: { genericAcp: nativePolicy, grants: Object.fromEntries(MODES.map(mode => [mode, modes?.[mode as PermissionMode] ? `${kind}: asks native ACP to select configured ${mode} mode; native tool policy applies; NO hub sandbox` : `${kind}: no configured native mapping for ${mode}; NO hub sandbox`])), ...(!modes || !Object.keys(modes).length ? { unmanaged: `${kind}: native policy unmanaged; no configured permission map; NO hub sandbox` } : {}) },
+      // ponytail: configured ACP has no verified controlled-recovery driver. Add catalog-bound restoration
+      // with native session/group receipts before enabling controlled recovery; explicit/crash load stays fenced.
       session: { idField: "sessionId", currentId: peer => { const id = peer.recoveryMetadata?.().sessionId; return typeof id === "string" ? id : undefined; }, launchKind: "acp", resumeById: true, recoveryRefusal: () => "configured ACP has no verified controlled-recovery driver; stop it explicitly and restart with its recorded native session id" },
-      turnEnd: "adapter", cli: { command: kind, startWords: () => [kind] },
+      turnEnd: "adapter", cli: { command: kind, launchConfigKeys: [`adapters.${kind}.command`, `adapters.${kind}.args`], startWords: () => [kind] },
       display: { palette: { fg: "white", bg: "black" } },
     };
     return freeze(definition);

@@ -4063,3 +4063,7 @@ Mapped ordinary modes likewise require advertised native support and an
 acknowledged selection; no map remains unmanaged and grants no hub sandbox claim.
 
 Configured ACP crash resume reads only a bounded, control-free session id and requires exact session/load echo; it never imports a model override from old launch metadata. Controlled recovery remains explicitly refused for configured ACP because no terminal/recovery driver has been verified. Recovery source and target capability checks require `configured_acp` before reinterpreting configured identities or taking recovery effects. The initial Grok 1.0.62 isolated receipt found no initialize agentInfo and a refused session/new, so it does not establish native readiness; see `docs/verification/2026-10-21-grok-config-acp-t0.md`.
+
+MCP publication appends project start targets only from authenticated daemon catalog metadata, preserving the builtin default enum. Read-only instances publish only the R2 read/review tool set; every mutation remains independently refused at the host boundary. Incomplete configured-project publication metadata narrows exposure until a complete current status is available. A malformed generic session/new identity refuses before admission, and failed spawns are released only on positive no-process/empty-group evidence.
+
+Task/conductor MCP refusals retain their existing error text and also set the optional `isError: true` result flag, so SDK consumers observe an unsuccessful tool call instead of an ordinary text result.

@@ -86,17 +86,23 @@ function validateRoutingRaw(value: unknown): void {
 /** Strict reloads never use routing's last-good fallback. Startup can retain its existing fallback explicitly. */
 export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: Routing, cwd?: string): ConfigSources {
   const layers: ConfigLayer[] = [], trustLayers: ConfigSources["trustLayers"] = [];
-  let localRaw: Record<string, unknown> = {};
-  try { localRaw = JSON.parse(texts["config.local.json"] ?? "{}"); }
-  catch { if (!fallbackRouting) throw new Error(".agenthub/config.local.json: invalid JSON object"); }
+  const jsonLayers: ConfigLayer[] = [];
+  for (const name of ["config.json", "config.local.json"] as const) {
+    const text = texts[name];
+    if (text === null) continue;
+    try {
+      const value: unknown = JSON.parse(text);
+      if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error();
+      jsonLayers.push({ name, raw: value as Record<string, unknown> });
+    } catch {
+      if (!fallbackRouting) throw new Error(`.agenthub/${name}: invalid JSON object`);
+    }
+  }
+  const localRaw = jsonLayers.find(layer => layer.name === "config.local.json")?.raw ?? {};
   let declared;
   let catalog = createProjectAdapterCatalog();
   try {
     if (cwd) {
-      const jsonLayers = (["config.json", "config.local.json"] as const).flatMap(name => {
-        const value = texts[name];
-        return value === null ? [] : [{ name, raw: JSON.parse(value) as Record<string, unknown> }];
-      });
       const accepted = readInstanceConfig(cwd, jsonLayers);
       catalog = accepted.catalog; declared = accepted.instances;
     } else {

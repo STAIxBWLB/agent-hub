@@ -101,3 +101,26 @@ test("a reused leader start after SIGKILL is never confirmed as the original gro
   await expect(proof.stop()).rejects.toThrow("ownership");
   expect(f.signals).toEqual([[-f.pid, "SIGSTOP"], [-f.pid, "SIGKILL"]]);
 });
+
+test("capture-failure cleanup confirms a missing PID without probing or signalling", async () => {
+  const f = fixture();
+  let reads = 0;
+  f.ports.table = () => { reads++; throw new Error("must not probe an unspawned child"); };
+  expect(await AcpOwnedGroup.confirmGone({ pid: undefined, exitCode: null, signalCode: null } as ChildProcess, f.ports)).toBe(true);
+  expect(reads).toBe(0); expect(f.signals).toEqual([]);
+});
+
+test("capture-failure cleanup requires observed exit and an empty original PID/group", async () => {
+  const f = fixture();
+  f.rows([]);
+  expect(await AcpOwnedGroup.confirmGone(f.proc, f.ports)).toBe(false);
+  f.child.exitCode = 0;
+  expect(await AcpOwnedGroup.confirmGone(f.proc, f.ports)).toBe(true);
+  for (const rows of [undefined, [{ ...f.leader, started: "foreign-reused-pid", pgid: 45678 }], [{ ...f.leader, pid: 45678, ppid: 1 }]]) {
+    f.rows(rows);
+    expect(await AcpOwnedGroup.confirmGone(f.proc, f.ports)).toBe(false);
+  }
+  f.ports.table = () => { throw new Error("unknown process table"); };
+  expect(await AcpOwnedGroup.confirmGone(f.proc, f.ports)).toBe(false);
+  expect(f.signals).toEqual([]);
+});

@@ -247,8 +247,8 @@ export class AcpPeer extends BasePeer {
     const proc = spawn(bin!, args, { cwd: this.opts.cwd, env: peerChildEnv(this.id, { ...process.env, ...(this.opts.env ?? {}) }), stdio: ["pipe", "pipe", "pipe"], detached: true });
     this.proc = proc;
     trackGroup(proc);
-    proc.on("error", (e) => this.down(`spawn failed: ${e.message}`));
-    proc.on("exit", (code) => this.down(`exited with code ${code}`));
+    proc.on("error", (e) => { if (!this.opts.requireOwnedGroup || this.proc === proc) this.down(`spawn failed: ${e.message}`); });
+    proc.on("exit", (code) => { if (!this.opts.requireOwnedGroup || this.proc === proc) this.down(`exited with code ${code}`); });
     proc.stdin.on("error", () => {}); // EPIPE from a child that died; `exit` / `error` already report it
     proc.stderr.on("data", (d) => this.opts.log?.(this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP stderr output withheld" : `[${this.id}] ${String(d).trimEnd()}`));
     createInterface({ input: proc.stdout }).on("line", (line) => this.onLine(line));
@@ -274,16 +274,20 @@ export class AcpPeer extends BasePeer {
       if ((loaded?.sessionId !== undefined && loaded.sessionId !== resume) || (this.opts.requireLoadSessionEcho && loaded?.sessionId !== resume)) throw new Error("native ACP load did not confirm the requested conversation; no restored session is claimed");
       return { ...loaded, sessionId: resume };
     };
-    const timeout = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(`${this.id} did not complete the ACP handshake within ${HANDSHAKE_MS / 1000} s`)), HANDSHAKE_MS).unref();
-    });
     try {
       if (this.opts.requireOwnedGroup) {
         const proof = await AcpOwnedGroup.capture(proc);
         this.ownedGroup = { proc, proof };
         if (this.proc !== proc || this.stopping) throw new Error("Configured ACP process ownership could not be verified");
       }
+      const timeout = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error(`${this.id} did not complete the ACP handshake within ${HANDSHAKE_MS / 1000} s`)), HANDSHAKE_MS).unref();
+      });
       const session = await Promise.race([handshake(), timeout]);
+      if (this.nativePolicy !== undefined && (typeof session?.sessionId !== "string" || !session.sessionId.trim()
+        || Buffer.byteLength(session.sessionId) > 4096 || /[\p{Cc}\p{Cf}]/u.test(session.sessionId))) {
+        throw new Error("Configured ACP did not provide a valid native session identity");
+      }
       this.sessionId = session.sessionId;
       const modes: unknown = session.modes?.availableModes;
       this.availableModes = new Set(Array.isArray(modes) ? modes.flatMap((mode) => typeof mode?.id === "string" ? [mode.id] : []) : []);
@@ -308,7 +312,8 @@ export class AcpPeer extends BasePeer {
             await owned.proof.stop().then(() => { if (this.proc === proc) { this.proc = undefined; this.ownedGroup = undefined; } }, () => this.opts.log?.("Configured ACP process group shutdown incomplete"));
           } else {
             proc.stdin.end(); // No ownership proof: only close our pipe, never fall back to signals or tree discovery.
-            this.opts.log?.("Configured ACP process ownership could not be verified; no process signals were sent");
+            if (await AcpOwnedGroup.confirmGone(proc) && this.proc === proc) { this.proc = undefined; this.ownedGroup = undefined; }
+            else this.opts.log?.("Configured ACP process ownership could not be verified; no process signals were sent");
           }
         } else await stopOwnedProcess(proc, { group: true }).then(() => { if (this.proc === proc) this.proc = undefined; }, (stop: Error) => this.opts.log?.(`[${this.id}] ${stop.message}`));
       }
@@ -374,7 +379,11 @@ export class AcpPeer extends BasePeer {
     if (this.opts.requireOwnedGroup) {
       this.setState("offline");
       const owned = this.ownedGroup;
-      if (!owned || owned.proc !== proc) throw new Error("Configured ACP process ownership could not be verified");
+      if (!owned) {
+        if (await AcpOwnedGroup.confirmGone(proc) && this.proc === proc) { this.proc = undefined; return; }
+        throw new Error("Configured ACP process ownership could not be verified");
+      }
+      if (owned.proc !== proc) throw new Error("Configured ACP process ownership could not be verified");
       await owned.proof.stop();
       if (this.ownedGroup === owned) this.ownedGroup = undefined;
     } else await stopOwnedProcess(proc, { group: true }); // Builtins keep their existing verified descendant-tree stop.

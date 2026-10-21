@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
+import { CONDUCTOR_TOOLS } from "../src/hub/hub-tools.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -156,4 +160,56 @@ test("configured ACP recovery target incompatibility refuses inspection without 
     expect(f.daemon.bus.isRecoveryHeld).toBe(false);
     expect((await f.client.request({ t: "status" })).status.recovery).toBeUndefined();
   } finally { await f.close(); }
+}, 20_000);
+
+
+test("the bundled MCP server publishes configured targets and enforces read-only tools over actual SDK transport", async () => {
+  const f = await fixture({ on: true, readOnly: true });
+  const sessions: Client[] = [];
+  const originalTools = structuredClone(CONDUCTOR_TOOLS);
+  const session = async (peer: "fixture" | "fixture-check") => {
+    const home = join(f.root, "home");
+    const env: Record<string, string> = {
+      PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home,
+      AGENTHUB_HOME: join(home, "hub"), AMEM_HOME: join(home, "memory"), CLAUDE_CONFIG_DIR: join(home, "claude"),
+      AGENTHUB_PROJECT_DIR: f.root, AGENTHUB_STATE_DIR: f.stateDir, AGENTHUB_PEER_ID: peer, AGENTHUB_MODE: "tools",
+    };
+    if (process.env.TMPDIR) env.TMPDIR = process.env.TMPDIR;
+    const sdk = new Client({ name: `configured-tools-${peer}`, version: "1" });
+    sessions.push(sdk); // Own it before connect, including a failed native MCP startup.
+    await sdk.connect(new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../plugins/agent-hub/server.js")], env, cwd: f.root, stderr: "ignore" }));
+    return sdk;
+  };
+  try {
+    const ordinary = await session("fixture");
+    const tools = (await ordinary.listTools()).tools;
+    const targets = (tools.find(tool => tool.name === "hub_peer_start")?.inputSchema.properties?.peer as { enum: string[] } | undefined)?.enum;
+    expect(targets).toContain("fixture"); expect(targets).toContain("fixture-check");
+    expect(CONDUCTOR_TOOLS).toEqual(originalTools);
+    await ordinary.close(); sessions.splice(sessions.indexOf(ordinary), 1);
+
+    const readOnly = await session("fixture-check");
+    const names = (await readOnly.listTools()).tools.map(tool => tool.name);
+    const allowed = ["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_status"];
+    expect(names.length).toBeGreaterThan(0);
+    expect(names.every(name => allowed.includes(name))).toBe(true);
+    expect(names).toContain("hub_review"); expect(names).toContain("hub_task_list");
+    expect(names).not.toContain("hub_task_propose"); expect(names).not.toContain("hub_peer_start");
+    // Existing tools-only publication excludes inbox/delivery_done regardless of read-only status.
+    expect(names).not.toContain("hub_inbox"); expect(names).not.toContain("hub_delivery_done");
+    const listed = await readOnly.callTool({ name: "hub_task_list", arguments: {} });
+    expect(listed.isError).not.toBe(true);
+    expect(listed.content).toContainEqual({ type: "text", text: "[]" });
+    const before = await f.client.request({ t: "task", op: "hub_task_list", args: {} });
+    // Bypass tool-list absence deliberately: the authenticated server/daemon must still refuse the mutation.
+    const refused = await readOnly.request({ method: "tools/call", params: { name: "hub_task_propose", arguments: { title: "raw SDK mutation must not be recorded", class: "implement" } } }, CallToolResultSchema);
+    expect(refused.isError).toBe(true);
+    expect(JSON.stringify(refused.content)).toContain("read-only");
+    const after = await f.client.request({ t: "task", op: "hub_task_list", args: {} });
+    expect(JSON.parse(after.text)).toEqual(JSON.parse(before.text));
+    expect(CONDUCTOR_TOOLS).toEqual(originalTools);
+  } finally {
+    try { await Promise.allSettled(sessions.reverse().map(sdk => sdk.close())); }
+    finally { await f.close(); }
+  }
 }, 20_000);

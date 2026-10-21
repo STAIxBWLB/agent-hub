@@ -2545,6 +2545,19 @@ class AcpOwnedGroup {
       throw ownershipError();
     return new AcpOwnedGroup(proc, { ...leader }, signature, ports);
   }
+  static async confirmGone(proc, ports = PORTS) {
+    const pid = proc.pid;
+    if (pid === undefined)
+      return true;
+    if (!Number.isSafeInteger(pid) || pid <= 1 || !(typeof proc.exitCode === "number" || typeof proc.signalCode === "string"))
+      return false;
+    try {
+      const rows = await AcpOwnedGroup.read(ports);
+      return proc.pid === pid && (typeof proc.exitCode === "number" || typeof proc.signalCode === "string") && !rows.some((row) => row.pid === pid || row.pgid === pid);
+    } catch {
+      return false;
+    }
+  }
   async verify() {
     if (this.confirmedGone || !await this.inspect(false))
       throw ownershipError();
@@ -2820,8 +2833,14 @@ var init_acp = __esm(() => {
       const proc = spawn5(bin, args, { cwd: this.opts.cwd, env: peerChildEnv(this.id, { ...process.env, ...this.opts.env ?? {} }), stdio: ["pipe", "pipe", "pipe"], detached: true });
       this.proc = proc;
       trackGroup(proc);
-      proc.on("error", (e) => this.down(`spawn failed: ${e.message}`));
-      proc.on("exit", (code) => this.down(`exited with code ${code}`));
+      proc.on("error", (e) => {
+        if (!this.opts.requireOwnedGroup || this.proc === proc)
+          this.down(`spawn failed: ${e.message}`);
+      });
+      proc.on("exit", (code) => {
+        if (!this.opts.requireOwnedGroup || this.proc === proc)
+          this.down(`exited with code ${code}`);
+      });
       proc.stdin.on("error", () => {});
       proc.stderr.on("data", (d) => this.opts.log?.(this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP stderr output withheld" : `[${this.id}] ${String(d).trimEnd()}`));
       createInterface({ input: proc.stdout }).on("line", (line) => this.onLine(line));
@@ -2846,9 +2865,6 @@ var init_acp = __esm(() => {
           throw new Error("native ACP load did not confirm the requested conversation; no restored session is claimed");
         return { ...loaded, sessionId: resume };
       };
-      const timeout = new Promise((_, reject) => {
-        setTimeout(() => reject(new Error(`${this.id} did not complete the ACP handshake within ${HANDSHAKE_MS / 1000} s`)), HANDSHAKE_MS).unref();
-      });
       try {
         if (this.opts.requireOwnedGroup) {
           const proof = await AcpOwnedGroup.capture(proc);
@@ -2856,7 +2872,13 @@ var init_acp = __esm(() => {
           if (this.proc !== proc || this.stopping)
             throw new Error("Configured ACP process ownership could not be verified");
         }
+        const timeout = new Promise((_, reject) => {
+          setTimeout(() => reject(new Error(`${this.id} did not complete the ACP handshake within ${HANDSHAKE_MS / 1000} s`)), HANDSHAKE_MS).unref();
+        });
         const session = await Promise.race([handshake(), timeout]);
+        if (this.nativePolicy !== undefined && (typeof session?.sessionId !== "string" || !session.sessionId.trim() || Buffer.byteLength(session.sessionId) > 4096 || /[\p{Cc}\p{Cf}]/u.test(session.sessionId))) {
+          throw new Error("Configured ACP did not provide a valid native session identity");
+        }
         this.sessionId = session.sessionId;
         const modes = session.modes?.availableModes;
         this.availableModes = new Set(Array.isArray(modes) ? modes.flatMap((mode) => typeof mode?.id === "string" ? [mode.id] : []) : []);
@@ -2887,7 +2909,11 @@ var init_acp = __esm(() => {
               }, () => this.opts.log?.("Configured ACP process group shutdown incomplete"));
             } else {
               proc.stdin.end();
-              this.opts.log?.("Configured ACP process ownership could not be verified; no process signals were sent");
+              if (await AcpOwnedGroup.confirmGone(proc) && this.proc === proc) {
+                this.proc = undefined;
+                this.ownedGroup = undefined;
+              } else
+                this.opts.log?.("Configured ACP process ownership could not be verified; no process signals were sent");
             }
           } else
             await stopOwnedProcess(proc, { group: true }).then(() => {
@@ -2963,7 +2989,14 @@ var init_acp = __esm(() => {
       if (this.opts.requireOwnedGroup) {
         this.setState("offline");
         const owned = this.ownedGroup;
-        if (!owned || owned.proc !== proc)
+        if (!owned) {
+          if (await AcpOwnedGroup.confirmGone(proc) && this.proc === proc) {
+            this.proc = undefined;
+            return;
+          }
+          throw new Error("Configured ACP process ownership could not be verified");
+        }
+        if (owned.proc !== proc)
           throw new Error("Configured ACP process ownership could not be verified");
         await owned.proof.stop();
         if (this.ownedGroup === owned)
@@ -7969,6 +8002,37 @@ var init_profiles = __esm(() => {
 });
 
 // src/hub/hub-tools.ts
+function projectPeerIds(value) {
+  if (!Array.isArray(value) || value.length > 256 || value.some((id) => typeof id !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(id) || ["user", "hub", "digest"].includes(id)) || new Set(value).size !== value.length)
+    return;
+  return [...value];
+}
+function projectConductorTools(startPeers) {
+  const peers = startPeers === undefined ? undefined : projectPeerIds(startPeers);
+  if (peers === undefined)
+    return CONDUCTOR_TOOLS;
+  return CONDUCTOR_TOOLS.map((tool) => tool.name !== "hub_peer_start" ? tool : {
+    ...tool,
+    inputSchema: { ...tool.inputSchema, properties: {
+      ...tool.inputSchema.properties,
+      peer: { ...tool.inputSchema.properties.peer, enum: [...new Set([...CONDUCTOR_START_PEERS, ...peers])] }
+    } }
+  });
+}
+function configuredToolContext(status, peer) {
+  if (!status || typeof status !== "object" || Array.isArray(status))
+    return {};
+  const raw = status, configured = projectPeerIds(raw.configuredAdapters);
+  if (!configured?.length)
+    return {};
+  const startPeers = projectPeerIds(raw.startablePeers), readOnlyPeers = projectPeerIds(raw.readOnlyPeers);
+  if (!startPeers || !readOnlyPeers)
+    return { readOnly: true };
+  return { startPeers, readOnly: readOnlyPeers.includes(peer) };
+}
+function projectToolList(tools, readOnly = false) {
+  return readOnly ? tools.filter((tool) => READ_ONLY_PROJECT_TOOLS.includes(tool.name)) : tools;
+}
 function roleContract(peer, roles = DEFAULT_ROLES, catalog = [], profile = "dev") {
   const data = profileData(profile);
   const mine = (roles[peer] ?? []).map((r) => data.role_text[r] ?? ROLE_TEXT[r]).filter(Boolean);
@@ -8019,7 +8083,7 @@ var ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submi
   name,
   description,
   inputSchema: { type: "object", properties, required, additionalProperties: false }
-}), BOUNDED_TASK_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, ROLE_TEXT, DEFAULT_ROLES;
+}), BOUNDED_TASK_TOOLS, TASK_TOOLS, PLANNER_REVIEW_TOOLS, TASK_TOOL_NAMES, CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, READ_ONLY_PROJECT_TOOLS, ROLE_TEXT, DEFAULT_ROLES;
 var init_hub_tools = __esm(() => {
   init_sdlc();
   init_profiles();
@@ -8101,6 +8165,7 @@ var init_hub_tools = __esm(() => {
     tool("hub_peer_release", "Release only the conductor hold you placed. Never lifts a person's hold or a budget pause.", { peer: str2 }, ["peer"])
   ];
   CONDUCTOR_TOOL_NAMES = new Set(CONDUCTOR_TOOLS.map((t) => t.name));
+  READ_ONLY_PROJECT_TOOLS = Object.freeze(["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_status"]);
   ROLE_TEXT = {
     conductor: "conductor: plan and split work into tasks with owners, watch the team with hub_status, move stalled work, and ensure every task is reviewed (review it yourself only if you also hold reviewer). Report results and open decisions to the person. Do not implement tasks you handed out. Never ask a peer to answer an approval; ask the person for human-only actions. You may release only holds you placed, never human holds or budget pauses.",
     planner: "planner: break work into tasks with hub_task_propose (one outcome each, the right class, paths in refs, and after: [ids] for work that must wait for other tasks) instead of doing everything yourself.",
@@ -11451,7 +11516,7 @@ function configuredAcpDefinitions(raw, builtinKinds) {
         return typeof id === "string" ? id : undefined;
       }, launchKind: "acp", resumeById: true, recoveryRefusal: () => "configured ACP has no verified controlled-recovery driver; stop it explicitly and restart with its recorded native session id" },
       turnEnd: "adapter",
-      cli: { command: kind, startWords: () => [kind] },
+      cli: { command: kind, launchConfigKeys: [`adapters.${kind}.command`, `adapters.${kind}.args`], startWords: () => [kind] },
       display: { palette: { fg: "white", bg: "black" } }
     };
     return freeze(definition);
@@ -19487,6 +19552,7 @@ class ControlClient {
 }
 
 // src/hub/lifecycle-schema.ts
+init_hub_tools();
 init_sdlc();
 async function activeLifecycle(stateDir, peer, projectRoot, active) {
   let client;
@@ -19495,12 +19561,13 @@ async function activeLifecycle(stateDir, peer, projectRoot, active) {
     const reply = await client.request({ t: "status" }, 1000);
     if (reply.t !== "status" || !reply.status || typeof reply.status !== "object" || Array.isArray(reply.status))
       return;
+    const projectTools = configuredToolContext(reply.status, peer);
     if (!Object.hasOwn(reply.status, "lifecycleStages"))
-      return { stages: [...SDLC_STAGES], criteria: false };
+      return { stages: [...SDLC_STAGES], criteria: false, ...projectTools };
     const stages = reply.status.lifecycleStages;
     if (!Array.isArray(stages) || !stages.length || stages.length > 32 || stages.some((s) => typeof s !== "string" || !/^[a-z][a-z0-9_-]{0,47}$/.test(s)) || new Set(stages).size !== stages.length)
       return;
-    return { stages: [...stages], criteria: reply.status.lifecycleCriteria === true };
+    return { stages: [...stages], criteria: reply.status.lifecycleCriteria === true, ...projectTools };
   } catch {
     return;
   } finally {
@@ -28132,7 +28199,7 @@ async function buildToolList() {
 }
 function toolListFor(lifecycle) {
   return {
-    tools: [
+    tools: projectToolList([
       {
         name: "hub_send",
         description: "Send a message to the other agent-hub peers (broadcast), or only to the peers listed in `to`. Conclusions only. Do not use [FYI] when the message requires action (PR ready, done, submitted, ruling needed, blocker, or changed contract/path). hub_task_done and hub_review notify recipients already; no duplicate chat is needed. Submission is not a delivery receipt: busy peers receive it when their turn ends.",
@@ -28162,8 +28229,8 @@ function toolListFor(lifecycle) {
         ] : []
       ],
       ...profileTaskTools(profile2, lifecycle?.stages, lifecycle?.criteria).filter((tool) => (lifecycle !== undefined || tool.name !== "hub_sdlc_record") && (!deliveryOnly || tool.name !== "hub_delivery_retry")),
-      ...CONDUCTOR_TOOLS
-    ]
+      ...projectConductorTools(lifecycle?.startPeers)
+    ], lifecycle?.readOnly)
   };
 }
 server.setRequestHandler(ListToolsRequestSchema, async () => {
@@ -28225,7 +28292,7 @@ async function callTool(req) {
     if (!hub)
       return text5(offline());
     const res = await hub.request({ t: "task", op: name, args: args ?? {} });
-    return text5(res.ok ? res.text : `error: ${res.error}`);
+    return { ...text5(res.ok ? res.text : `error: ${res.error}`), ...res.ok ? {} : { isError: true } };
   }
   return text5(`unknown tool ${name}`);
 }

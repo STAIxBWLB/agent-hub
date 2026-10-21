@@ -6,6 +6,7 @@ import { AcpOwnedGroup } from "../src/adapters/acp-owned-group.ts";
 import { AcpPeer, type AcpOptions, type PermissionRequest } from "../src/adapters/acp.ts";
 import { KIMI_2_1_1_5H_REFUSAL_PREFIX } from "../src/adapters/acp-quota.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
+import { readProcessTable } from "../src/hub/child-process.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -14,6 +15,9 @@ const until = async (condition: () => boolean) => {
   expect(condition()).toBe(true);
 };
 interface FakeConfig {
+  exitBeforeInitialize?: boolean;
+  newSessionId?: unknown;
+  omitNewSessionId?: boolean;
   agent?: string;
   modes?: string[];
   rejectMode?: string;
@@ -33,11 +37,12 @@ async function fixture(config: FakeConfig = {}, options: Partial<AcpOptions> = {
   const log = join(root, "requests.jsonl"), script = join(root, "fake.ts");
   writeFileSync(log, "");
   writeFileSync(script, `
-import {appendFileSync} from 'node:fs';
+import {appendFileSync,existsSync,writeFileSync} from 'node:fs';
 import {createInterface} from 'node:readline';
 const config=${JSON.stringify(config)}, log=${JSON.stringify(log)};
 const send=(message:any)=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',...message})+'\\n');
 if(config.stderr) process.stderr.write(config.stderr+'\\n');
+if(config.exitBeforeInitialize && !existsSync(log+'.exited')) { writeFileSync(log+'.exited','yes'); process.exit(0); }
 let permissionPrompt:any;
 for await(const line of createInterface({input:process.stdin})) {
   const msg=JSON.parse(line); appendFileSync(log,JSON.stringify(msg)+'\\n');
@@ -47,7 +52,7 @@ for await(const line of createInterface({input:process.stdin})) {
       send({id:permissionPrompt.id,result:{stopReason:'end_turn'}}); permissionPrompt=undefined;
     }
   } else if(msg.method==='initialize') send({id:msg.id,result:{protocolVersion:1,agentInfo:{name:config.agent??'Configured Fixture',version:'1.0'},agentCapabilities:{loadSession:true}}});
-  else if(msg.method==='session/new'||msg.method==='session/load') send({id:msg.id,result:{...(msg.method==='session/load'&&config.loadEcho===false?{}:{sessionId:msg.method==='session/load'&&typeof config.loadEcho==='string'?config.loadEcho:msg.params.sessionId??'configured-session'}),modes:{currentModeId:'unsafe-old',availableModes:(config.modes??['safe','auto-safe','unsafe','read-only']).map((id:string)=>({id,name:id}))}}});
+  else if(msg.method==='session/new'||msg.method==='session/load') send({id:msg.id,result:{...((msg.method==='session/load'&&config.loadEcho===false)||(msg.method==='session/new'&&config.omitNewSessionId)?{}:{sessionId:msg.method==='session/new'&&Object.hasOwn(config,'newSessionId')?config.newSessionId:msg.method==='session/load'&&typeof config.loadEcho==='string'?config.loadEcho:msg.params.sessionId??'configured-session'}),modes:{currentModeId:'unsafe-old',availableModes:(config.modes??['safe','auto-safe','unsafe','read-only']).map((id:string)=>({id,name:id}))}}});
   else if(msg.method==='session/set_mode') {
     if(config.holdMode || config.holdModeId===msg.params.modeId) continue;
     if(msg.params.modeId===config.rejectMode) send({id:msg.id,error:{code:-32000,message:config.modeError??'mode rejected by fixture'}});
@@ -238,4 +243,62 @@ test("#451 configured ACP retains an offline process handle after refused teardo
     await expect(f.peer.start()).rejects.toThrow(/still has a process/);
   } finally { stop.mockRestore(); }
   await f.peer.stop(); expect(f.peer.pendingOwnedProcess).toBe(false);
+}, 20_000);
+
+const invalidNewSessions: [string, FakeConfig][] = [
+  ["missing", { omitNewSessionId: true }],
+  ["nonstring", { newSessionId: 42 }],
+  ["null", { newSessionId: null }],
+  ["empty", { newSessionId: "" }],
+  ["whitespace", { newSessionId: "   " }],
+  ["oversize", { newSessionId: "x".repeat(4097) }],
+  ["control", { newSessionId: "bad\nidentity" }],
+];
+for (const [label, config] of invalidNewSessions) test(`#451 configured ACP rejects ${label} session/new identity before idle or prompt`, async () => {
+  const f = await fixture(config, { nativePolicy: {} });
+  const states: string[] = [];
+  f.peer.onState = state => { states.push(state); };
+  await expect(f.peer.start()).rejects.toThrow("valid native session identity");
+  expect(f.peer.state).toBe("offline");
+  expect(states).not.toContain("idle");
+  expect(f.requests().some(message => message.method === "session/prompt")).toBe(false);
+  expect(f.peer.recoveryMetadata().sessionId).toBeFalsy();
+}, 20_000);
+
+test("#451 valid legacy ACP startup retains its native session and permission behavior", async () => {
+  const f = await fixture();
+  await f.peer.start();
+  expect(f.peer.state).toBe("idle");
+  expect(f.peer.recoveryMetadata().sessionId).toBe("configured-session");
+  expect(f.peer.permissionModeState).toBe("unmanaged");
+  expect(f.modes()).toEqual([]);
+}, 20_000);
+
+test("#451 configured ACP missing executable clears its handle and permits same-object retry", async () => {
+  const command = [join(tmpdir(), "ahub-missing-acp-" + crypto.randomUUID())];
+  const f = await fixture({}, { cmd: command, nativePolicy: {}, requireOwnedGroup: true });
+  await expect(f.peer.start()).rejects.toThrow();
+  expect(f.peer.pendingOwnedProcess).toBe(false);
+  command.splice(0, command.length, process.execPath, join(f.root, "fake.ts"));
+  await f.peer.start();
+  await Bun.sleep(20); // A queued failed-spawn callback must not offline the new owner.
+  expect(f.peer.state).toBe("idle");
+  await f.peer.stop(); expect(f.peer.pendingOwnedProcess).toBe(false);
+}, 20_000);
+
+test("#451 configured ACP early exit is positively cleared and same-object retry succeeds", async () => {
+  const f = await fixture({ exitBeforeInitialize: true }, { nativePolicy: {}, requireOwnedGroup: true });
+  const capture = spyOn(AcpOwnedGroup, "capture");
+  try {
+    await expect(f.peer.start()).rejects.toThrow();
+    const child = capture.mock.calls[0]?.[0];
+    expect(child?.pid).toBeDefined();
+    expect(f.peer.pendingOwnedProcess).toBe(false);
+    const rows = await readProcessTable();
+    expect(rows).toBeDefined();
+    expect(rows!.some(row => row.pid === child!.pid || row.pgid === child!.pid)).toBe(false);
+    await f.peer.start();
+    expect(f.peer.state).toBe("idle");
+    await f.peer.stop(); expect(f.peer.pendingOwnedProcess).toBe(false);
+  } finally { capture.mockRestore(); }
 }, 20_000);

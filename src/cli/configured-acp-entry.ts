@@ -28,13 +28,19 @@ export interface ConfiguredAcpControl {
   request(message: Record<string, unknown>, timeout?: number): Promise<any>;
   close(): void;
 }
-export async function requireActiveConfiguredAcp(hub: ConfiguredAcpControl, kind: string, peer: string): Promise<void> {
+export async function requireActiveConfiguredAcp(hub: ConfiguredAcpControl, kind: string, peer: string, warn?: (text: string) => void): Promise<void> {
   if (!hub.features.includes("configured_acp")) throw new Error("running hub lacks configured_acp; upgrade and restart it first");
   if (peer !== kind) requirePeerInstances(hub.features);
   const reply = await hub.request({ t: "status" });
   const active = reply.status?.configuredAdapters;
   if (!Array.isArray(active) || !active.includes(kind)) throw new Error(`running hub has not loaded ${kind}; restart it after declaring the adapter`);
   if (peer !== kind) requireActiveInstance(reply.status, peer);
+  const namespace = `adapters.${kind}`;
+  const retained = [reply.status?.retainedConfig, reply.status?.pendingRestart].some(rows => Array.isArray(rows) && rows.some(row => {
+    const key = row && typeof row === "object" ? row.key : undefined;
+    return typeof key === "string" && (key === "adapters" || key === namespace || key.startsWith(`${namespace}.`));
+  }));
+  if (retained) warn?.(`${kind}: configured adapter changes are retained; this start uses the running definition. Restart the hub to apply the file's definition.`);
 }
 export async function runConfiguredAcpEntry(context: {
   kind: string; raw: readonly string[]; catalog: ProjectAdapterCatalog; instances?: InstancesConfig;
@@ -44,8 +50,8 @@ export async function runConfiguredAcpEntry(context: {
   if (selected.preview) { context.print(JSON.stringify(configuredAcpPreview(context.kind, selected.peer, selected.sessionId !== undefined), null, 2)); return; }
   const hub = await context.connect();
   try {
-    await requireActiveConfiguredAcp(hub, context.kind, selected.peer);
-    const reply = await hub.request({ t: "start", peer: selected.peer, args: { mode: "headless", ...(selected.sessionId ? { sessionId: selected.sessionId } : {}) }, ...(context.operationId ? { operationId: context.operationId } : {}) }, 35_000);
+    await requireActiveConfiguredAcp(hub, context.kind, selected.peer, context.print);
+    const reply = await hub.request({ t: "start", peer: selected.peer, args: { mode: "headless", ...(selected.sessionId ? { sessionId: selected.sessionId } : {}) }, ...(context.operationId ? { operationId: context.operationId } : {}) }, 70_000);
     if (!reply.ok) throw new Error(typeof reply.error === "string" ? reply.error : "configured ACP start refused");
     context.print(reply.already ? `${selected.peer} is already attached` : `${selected.peer} attached (headless); use ahub say @${selected.peer} and the console for approvals`);
   } finally { hub.close(); }
