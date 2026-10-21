@@ -390,6 +390,42 @@ test("a running check or unresolved bot follow-up cannot masquerade as review-re
   expect((await readReviewReadiness({ stage: "build", repo: "o/r", pr: 1 }, head, async () => ({ code: 0, stdout: JSON.stringify(resolved) }))).ready).toBe(true);
 });
 
+// #230 item 3: only a `User` comment answers a bot thread. Any other or missing author kind is a pending bot comment.
+const threadReply = (resolved: boolean, comments: { author?: { __typename?: string | null } | null; createdAt?: string }[]) => {
+  const reply = readinessReply();
+  reply.data.repository.pullRequest.reviewThreads.nodes = [{ isResolved: resolved, comments: { nodes: comments as never, pageInfo: { hasNextPage: false } } }] as never;
+  return reply;
+};
+const at = (hour: number) => `2026-10-18T0${hour}:00:00Z`;
+const kind = (typename: string | null | undefined, hour: number) => ({ author: typename === undefined ? null : { __typename: typename }, createdAt: at(hour) });
+test("review-thread authors other than User count as pending bot comments (#230 item 3)", async () => {
+  const calls: string[][] = [];
+  const read = (reply: unknown) => readReviewReadiness({ stage: "build", repo: "o/r", pr: 1 }, head, async args => { calls.push(args); return { code: 0, stdout: JSON.stringify(reply) }; });
+  const table: [string, boolean, ReturnType<typeof kind>[], { ready: boolean; blocker?: string }][] = [
+    ["T1 Bot then a null author is unanswered", false, [kind("Bot", 1), { author: null, createdAt: at(2) }], { ready: false, blocker: "bot review threads unanswered" }],
+    ["T2 Bot, Mannequin, then User is ready", false, [kind("Bot", 1), kind("Mannequin", 2), kind("User", 3)], { ready: true }],
+    ["T3 an Organization comment is unanswered", false, [kind("Organization", 1)], { ready: false, blocker: "bot review threads unanswered" }],
+    ["T4 a User comment followed by a Mannequin is unanswered", false, [kind("User", 1), kind("Mannequin", 2)], { ready: false, blocker: "bot review threads unanswered" }],
+    ["T5 a null author on a resolved thread is ready", true, [{ author: null, createdAt: at(1) }], { ready: true }],
+    ["T6 a Bot comment with a malformed createdAt is unavailable", false, [{ author: { __typename: "Bot" }, createdAt: "x" }], { ready: false, blocker: "bot review thread evidence unavailable" }],
+    ["T7 a lone User comment is ready", false, [kind("User", 1)], { ready: true }],
+    ["T8 EnterpriseUserAccount then User is ready", false, [kind("EnterpriseUserAccount", 1), kind("User", 2)], { ready: true }],
+  ];
+  for (const [label, resolved, comments, expected] of table) {
+    const result = await read(threadReply(resolved, comments));
+    expect(result.ready, label).toBe(expected.ready);
+    if (expected.blocker) expect(result.blockers, label).toContain(expected.blocker);
+    else expect(result.blockers, label).toEqual([]);
+  }
+  // A truncated comment page stays unavailable whatever the authors are.
+  const truncated = threadReply(false, [kind("User", 1)]);
+  (truncated.data.repository.pullRequest.reviewThreads.nodes[0] as { comments: { pageInfo: { hasNextPage: boolean } } }).comments.pageInfo.hasNextPage = true;
+  expect((await read(truncated)).blockers).toContain("bot review thread evidence unavailable");
+  // The query stays as it is: no comment body and no login.
+  expect(calls.length).toBeGreaterThan(0);
+  expect(calls.every(args => args.every(arg => !/\bbody\b|\blogin\b/.test(arg)))).toBe(true);
+});
+
 test("a privacy change during the reusable lifecycle snapshot stops its next external read (#481 S10)", async () => {
   const r = admissionRig("enforce");
   r.hooks.onRead = args => { if (args[0] === "pr") r.board.update(r.task.id, "user", "screened", { signals: ["pii"] }); };

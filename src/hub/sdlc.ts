@@ -434,13 +434,15 @@ export async function readReviewReadiness(receipt: SdlcReceipt, expected: string
       if (thread?.isResolved !== false) { blockers.push("bot review thread evidence unavailable"); continue; }
       const comments = thread?.comments;
       if (comments?.pageInfo?.hasNextPage !== false || !Array.isArray(comments.nodes) || comments.nodes.length > 100
-        || comments.nodes.some((comment: { author?: { __typename?: string }; createdAt?: string }) => !["Bot", "User"].includes(comment?.author?.__typename ?? "") || !Number.isFinite(Date.parse(comment.createdAt ?? "")))) {
+        || comments.nodes.some((comment: { createdAt?: string }) => !Number.isFinite(Date.parse(comment?.createdAt ?? "")))) {
         blockers.push("bot review thread evidence unavailable"); continue;
       }
+      // #230 item 3: only a `User` comment answers. Every other or missing author kind (Bot, null, Organization, Mannequin,
+      // EnterpriseUserAccount, a kind GitHub adds later) is a pending bot comment, so an unresolved thread settles by
+      // resolution or a later User comment. No weaker than before, and still no body or login is read.
       let unanswered = false;
-      for (const comment of comments.nodes) {
-        if (comment.author.__typename === "Bot") unanswered = true;
-        else if (comment.author.__typename === "User") unanswered = false;
+      for (const comment of comments.nodes as { author?: { __typename?: string | null } | null }[]) {
+        unanswered = comment?.author?.__typename !== "User";
       }
       if (unanswered) blockers.push("bot review threads unanswered");
     }

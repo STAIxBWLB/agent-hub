@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.43
+bun add -g github:STAIxBWLB/agent-hub#v0.12.44
 ahub setup
 ```
 
@@ -29,6 +29,10 @@ For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
+
+## Upgrading to 0.12.44
+
+Run `ahub init` once per project to refresh the hub block in `AGENTS.md`: it tells agents in the agy TUI not to report the hub missing when no `hub_*` tool is listed on the first turn (#607). agy no longer shows Claude's context reading or Claude's transcript usage as its own (#624). When the hub itself starts Kimi or Qwen headless, it also opens `ahub watch <peer>` through its terminal provider; with no provider, or a failing one, the start still succeeds and reports the command to run (#286). When an `implement` or `bulk_edit` owner completes two turns in a row with no recorded writes or task-tool effects, the planner gets a notice, and a done report with no writes since acceptance says so in the review request; set `task_sweep.no_writes_turns` to change the count, or 0 to turn it off (#498). A declared agy extra instance is refused when the config loads, and Qwen's context occupancy shows unknown until a native source is verified (#625). A standard ACP agent can now be declared as a config-only adapter (`adapters.<kind>` in untracked `.agenthub/config.local.json`); restart the hub, then run `ahub roster add <kind>` and `ahub <kind>` (see the operations guide, #451). A project that declares adapters can be upgraded or restarted only to a release that advertises `configured_acp`. A `peers.<id>` block now accepts only `start_mode`: any other field stops the config from loading at hub start, where 0.12.43 ignored it at startup. Restart Claude sessions so they load the 0.12.44 plugin. Coming from 0.12.42 or older, the notes below apply too.
 
 ## Upgrading to 0.12.43
 
@@ -44,7 +48,7 @@ A busy hub no longer stalls when the checkout's HEAD moves under open turns: sna
 
 ## Upgrading to 0.12.40
 
-Restart Claude sessions after upgrading: each keeps the plugin server it started with until restarted, so a restart loads the 0.12.43 plugin. That plugin asks Claude Code to list the hub tools again when a hub reconnect changes them (#490), and one from an older `ahub claude` launch is refused and stops reconnecting instead of reclaiming the peer (#551).
+Restart Claude sessions after upgrading: each keeps the plugin server it started with until restarted, so a restart loads the current plugin. That plugin asks Claude Code to list the hub tools again when a hub reconnect changes them (#490), and one from an older `ahub claude` launch is refused and stops reconnecting instead of reclaiming the peer (#551).
 
 `ahub jcode` opens its TUI again; on 0.12.39 it stopped after the first hub turn (#564). A busy Jcode now takes an `important` message into its running turn (#572), and `ahub doctor` lists the extra MCP servers the hub-owned Jcode loads from its config files. See [Jcode operations](operations.md#optional-jcode-peer).
 

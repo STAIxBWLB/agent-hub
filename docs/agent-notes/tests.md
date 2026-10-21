@@ -2,6 +2,7 @@
 
 Scope: tests, fakes and the test gate. Read before adding or changing a test or fake under `test/`, or editing `scripts/check.sh`, `scripts/hang-watch.sh`, `scripts/seeded-check.ts` or `scripts/seeds.json`.
 
+- A fake's gated action that never sees its gate skips the action; never fall through to a late, unsynchronized action. Owned-group tests inject `AcpOwnedGroupPorts`; a test never signals a process group it did not spawn.
 - When extracting production closures into a VM fixture, bind every referenced host port and actual imported policy helper. Keep native identity checks on real unstarted instances; never replace a policy predicate with an always-true stub or weaken existing assertions to accommodate a moved dependency.
 - Tests that are not about batching build the bus with `batchMs: 0`; with the default 15 s window a lone status envelope looks like a lost message.
 - In Bun 1.3.14 a test timeout that fires while `Bun.spawnSync` runs can start the next test inside spawnSync's own event loop, where another spawnSync then spins at full CPU for good (trigger not pinned down; see README). Bun 1.4.2 still runs the next test inside the outer spawnSync's event loop. `scripts/check.sh` runs tests with a 20 s timeout and under `scripts/hang-watch.sh`; a test that spawns and reads the process table gets a timeout of its own.
@@ -24,7 +25,7 @@ Scope: tests, fakes and the test gate. Read before adding or changing a test or 
 
 - Keep CI's Bun version sourced from `.bun-version` through the pinned setup-bun action; update the version file rather than adding per-job version literals.
 - Release verification requires both OS checks and the aggregate `seeded guards` success for an identical tree, a tag matching `package.json` on `origin/main`, and fresh ancestor-bound documentation stamps. Preserve the separate npm OIDC publish job and GitHub Release write job; neither job gets the other's credential authority.
-- `test/conformance/` runs real adapters against fake transports. Record a case that does not apply as an explicit unsupported outcome, never synthetic success, and never change native production behavior to satisfy a generic case.
+- `test/conformance/` runs real adapters against fake transports; `test/conformance/enrollment.ts` enrolls every `ADAPTERS` definition and each `:reviewer` variant. Record a case that does not apply in its `UNSUPPORTED` or `UNSUPPORTED_LEGS` map with a concrete reason naming the dedicated coverage, never `test.skip` or synthetic success, and never change native production behavior to satisfy a generic case.
 
 - Keep the CI admission lock around the whole controller workflow, not just its decision job, in its per-PR (`check-pr-<number>`, `queue: single`: a newer pending run replaces the older) or main (`check-main`, `queue: max`) group, never with `cancel-in-progress: true` beside `queue: max` (GitHub refuses it) (#609); two groups admitting one tree at once is an accepted duplicate run, never a reason to fail closed on another tree. Preserve successful identical-tree full proof and required job names; a skipped job, pending controller or unavailable active inventory is never a successful full gate. CI reuse tests use fixed metadata fixtures and never dispatch real duplicate workflows.
 
