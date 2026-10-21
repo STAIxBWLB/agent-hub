@@ -3074,7 +3074,7 @@ consumption, so no token total is counted from it; the adapter accepts the
 update whenever it names the current session, because 2.1.1's source text
 emits it after the turn settles (read from the source, not yet observed live
 through the hub; docs/smoke.md), so the peer may already be idle.
-Pi and other unsupported surfaces show unknown.
+Pi, Qwen (until a native source is verified, #625) and other unsupported surfaces show unknown.
 A stale or disconnected reading is unknown, not 0%. Codex's accumulated session
 usage is never used as context occupancy. In the tail (`ahub tail` and the
 console's stream) a reading prints once and repeats only when the line changes
@@ -3292,7 +3292,7 @@ Modes: ask maps to default, scoped frequency maps to auto-edit, never-ask maps t
 yolo. Qwen yolo approves every tool outside any hub sandbox; its own vendor bounds
 apply. Auto and plan are not hub mode mappings. Unknown quota refusals are not
 classified as authoritative quota; until a real pinned refusal is recorded, pause
-by hand. Occupancy is context with a source, never a consumption estimate. Roles
+by hand. Context occupancy shows unknown until a native source is verified; it no longer uses Kimi's usage parser (#625). Roles
 do not establish that Qwen can reliably replace Kimi before the live leg.
 
 Qwen controlled recovery and automatic crash resume load the recorded conversation with ACP session/load. The emitted launcher passes --session-id; a controlled plan with a missing or unsafe identity refuses before effects. Preview redacts the id. A custom executable argv keeps its wrapper arguments before appended model flags. Native recovery remains unverified.
@@ -3320,7 +3320,7 @@ Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or 
 
 ## Optional Antigravity (agy) peer
 
-Antigravity is optional and off roster by default. Use `ahub roster add agy`, then run `ahub agy` in a terminal: it runs the Antigravity CLI as a fresh pull-only TUI in that terminal. It accepts the 1.4.x line: 1.4.2 is the verified version, any other 1.4.x launches with a stderr warning (agy updates itself), and other versions are refused (#589). The running hub must advertise `native_hook_launch`; an older hub refuses before any write with an upgrade-or-restart remedy. Only the person's launcher starts it: conductor starts are refused, there is no controlled restore or resume, and extra agy instances are unavailable. Headless/print, resume (`--conversation`, `--continue`, `--new`), `--mode`, `--dangerously-skip-permissions` and `--unattended` are refused until their native mapping is verified; `--print-command` previews without writing.
+Antigravity is optional and off roster by default. Use `ahub roster add agy`, then run `ahub agy` in a terminal: it runs the Antigravity CLI as a fresh pull-only TUI in that terminal. It accepts the 1.4.x line: 1.4.2 is the verified version, any other 1.4.x launches with a stderr warning (agy updates itself), and other versions are refused (#589). The running hub must advertise `native_hook_launch`; an older hub refuses before any write with an upgrade-or-restart remedy. Only the person's launcher starts it: conductor starts are refused, there is no controlled restore or resume, and a declared agy extra instance is refused when the config loads (#625). Headless/print, resume (`--conversation`, `--continue`, `--new`), `--mode`, `--dangerously-skip-permissions` and `--unattended` are refused until their native mapping is verified; `--print-command` previews without writing.
 
 The launcher writes exactly `plugin.json`, `mcp_config.json` and `hooks.json` in `.agents/plugins/agent-hub/`, refusing linked or foreign entries before any write, and removes only its own matching files when the TUI ends. It never writes project-level `.agents/hooks.json` or the person's `~/.gemini` settings. Run `ahub init` afterwards to ignore the untracked plugin directory; a tracked plugin is written with a warning. The native model sees the hub tools under the server name `agent-hub_agent-hub`.
 
@@ -3331,7 +3331,7 @@ Like Kimi's TUI, agy is pull-only: it reads `hub_inbox` and shares results with 
 - A person opens `ahub watch kimi` or `ahub watch qwen` in a second terminal. `--no-thoughts` hides thought items; `--color=auto|always|never` controls colour. `q` or Ctrl+C leaves the view, keeping the peer running. Answer approvals in `ahub console` or with `ahub permit`.
 - Watch replays bounded memory history from this daemon, then displays live updates. It is the hub's read-only view, with no prompt input. It does not read native session files.
 - Kimi's default is its own pull-only TUI (#316). Watch requires `ahub kimi --mode headless`; its own TUI remains visible in its native terminal. Qwen requires roster participation and verified ACP 0.25.0. `ahub qwen --mode tui` remains refused.
-- Protocol stays 16; a same-protocol older daemon answers the new request as unknown, which the CLI reports. No automatic pane opening is included in this slice.
+- Protocol stays 16; a same-protocol older daemon answers the new request as unknown, which the CLI reports. Since 0.12.44 a headless start that the hub itself makes for Kimi or Qwen opens this view automatically through the terminal provider (see Start modes; #286).
 - Native T0 limits: [ACP watch verification](verification/2026-10-11-acp-watch-t0.md).
 
 # Acceptance-criteria checklist (#481)
