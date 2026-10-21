@@ -2007,6 +2007,18 @@ push `accepted` and show none of them.
   detach and pull-only attach remove that capability. Ordinary messages remain
   queued while busy. A notification write alone is not proof that the native
   model saw it; the earlier print-mode probe was inconclusive.
+- Known limit and hint behaviour (#221). Mid-turn consumption of an important
+  steer was proven only on Claude Code 2.1.302, yet push-capable `WsPeer` offers
+  steer to every push-capable Claude session. On an older client a dropped
+  mid-turn notification stays `accepted` until a person resolves it. No client
+  version gate is added: the hello does not carry the client version, and the
+  oldest version on which steer works was never probed, so a gate would be a
+  guess that could disable a working path. A gate needs a probe of the older
+  client and an optional hello field. A tool result that carries a held-delivery
+  hint keeps the queued and important counts but drops the advice to call
+  `hub_inbox`, because `Bus.pull` refuses under that hold. A `hub_inbox` result
+  that already states how many messages remain unread adds only the important
+  count.
 
 ## Amendment: owner and reviewer read their task (issue #208)
 

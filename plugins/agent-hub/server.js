@@ -28031,6 +28031,7 @@ var hub;
 var detached;
 var offline = () => detached ?? "hub is not running for this project (start it with: ahub up).";
 var pendingQueued;
+var QUEUED_COUNTED = Symbol("queuedCounted");
 async function withPendingHint(result, recommendInbox = true) {
   const r = result;
   const appendQueued = (hint) => {
@@ -28048,21 +28049,23 @@ ${hint}`;
   };
   if (hub && r.content) {
     let freshCounts = false;
+    let hint = "";
     try {
       const response = await hub.request({ t: "delivery_holds" }, 1000);
+      hint = response?.ok ? renderHeldHint(response.held, Date.now(), !deliveryOnly) : "";
       if (response?.ok && Number.isSafeInteger(response.queued) && response.queued >= 0 && Number.isSafeInteger(response.important) && response.important >= 0 && response.important <= response.queued) {
         freshCounts = true;
         pendingQueued = undefined;
         if (response.important > 0) {
-          const next = !recommendInbox ? "" : toolsMode ? ": use hub_inbox on a pull-capable peer session; otherwise finish the current turn to receive queued deliveries" : ": call hub_inbox before starting long local work";
-          appendQueued(`(${response.queued} queued hub message(s), ${response.important} important hub message(s) waiting${next})`);
+          const next = !recommendInbox || hint ? "" : toolsMode ? ": use hub_inbox on a pull-capable peer session; otherwise finish the current turn to receive queued deliveries" : ": call hub_inbox before starting long local work";
+          const counted = result[QUEUED_COUNTED] === true;
+          appendQueued(counted ? `(${response.important} important hub message(s) waiting${next})` : `(${response.queued} queued hub message(s), ${response.important} important hub message(s) waiting${next})`);
         }
       }
-      const hint = response?.ok ? renderHeldHint(response.held, Date.now(), !deliveryOnly) : "";
       if (hint)
         r.content.push({ type: "text", text: hint });
     } catch {}
-    if (!freshCounts && recommendInbox && !channel && !toolsMode && pendingQueued && pendingQueued.important > 0) {
+    if (!freshCounts && !hint && recommendInbox && !channel && !toolsMode && pendingQueued && pendingQueued.important > 0) {
       appendQueued(`(${pendingQueued.important} important hub message(s) waiting: call hub_inbox before starting long local work)`);
     }
   }
@@ -28279,9 +28282,12 @@ async function callTool(req) {
     const out = [...inbox.splice(0), ...remote];
     if (notice)
       out.push(notice);
-    return text5(out.length ? out.join(`
+    const result = text5(out.length ? out.join(`
 
 `) : "(no queued hub messages)");
+    if (notice.endsWith("remain unread)"))
+      Object.defineProperty(result, QUEUED_COUNTED, { value: true });
+    return result;
   }
   if (name === "hub_send") {
     const { text: body, to, reply_to } = args ?? {};
