@@ -130,6 +130,8 @@ test("only the removal of a stale instance roster key is classified, never its a
   expect(() => configChanges(before, { ...before, roster: { "codex-gone": false, "fixture-check": true } }, [scope])).toThrow("unknown configuration key"); // setting it
   expect(() => configChanges({ ...before, roster: { "fixture-check": true, "never-an-instance": true } }, { ...before, roster: { "fixture-check": true } }, [scope])).toThrow("unknown configuration key");
   expect(() => configApply("roster.codex-gone", [scope])).toThrow("unknown configuration key"); // the strict classifier itself is unchanged
+  // A kind that declares no instance support (jcode) never had an instance, so its key is a typo, not a stale key.
+  expect(() => configChanges({ ...before, roster: { "fixture-check": true, "jcode-worker": true } }, { ...before, roster: { "fixture-check": true } }, [scope])).toThrow("unknown configuration key");
 });
 
 test("reload diff classifies bound instance roster changes and retained restart declarations", () => {

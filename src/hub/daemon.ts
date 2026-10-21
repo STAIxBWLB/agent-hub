@@ -94,7 +94,7 @@ import { AssignmentUndeliveredError, ESCALATE_AFTER, Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig } from "./inference.ts";
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, loadRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
-import { projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
+import { projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
@@ -4725,6 +4725,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };
     const peer = def.path[1]!;
     let saved = false;
+    // #225: a stale key has no peer behind it. What changes is that the key is deleted, not whether the peer is on the roster.
+    const stale = staleRosterKey(def.key) !== undefined, previousKey = config.roster[peer], sharedCopy = stale && sharedValue(opts.cwd, def) !== undefined;
     const terminalNotice = retainedTerminalNotice(peer);
     let handoff: Awaited<ReturnType<Tasks["reassignForRoster"]>> = [];
     try {
@@ -4742,7 +4744,7 @@ export async function startDaemon(opts: DaemonOptions) {
       config.roster = next;
       settlePlanner(); // #455: an automatic planner follows the roster
       saved = true;
-      recordSetting(def.key, before, after, source, undo, reason);
+      recordSetting(def.key, stale ? previousKey ?? null : before, stale ? null : after, source, undo, reason);
       bus.rosterChanged(peer); // fence the queue before stopping or detaching the adapter
       if (!after) {
         for (const pending of permissions.values()) if (pending.peer === peer) pending.done(undefined);
@@ -4767,6 +4769,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const reloaded = await reloadConfig(authority, `roster.${peer}`);
       if (reloaded.ok !== true) return { ...reloaded, saved: true };
       writeStatus();
+      if (stale) return { ok: true, text: [`${peer}: stale roster key removed from .agenthub/config.local.json`, ...(sharedCopy ? [`still set in .agenthub/config.json: that copy decides nothing, and stays until you edit it there`] : [])].join("\n") };
       const stayed = !after ? board.list().filter(task => !isClosedTaskState(task.state) && (task.owner === peer || task.reviewer === peer)) : [];
       return { ok: true, text: [`${peer}: ${after ? "on" : "off"} roster (in force now)`, ...(!after && terminalNotice ? [terminalNotice] : []), ...(after && definitionOf(peer)?.cli.rosterReturnNotice ? [definitionOf(peer)!.cli.rosterReturnNotice!(codexResumeCommand(peer))] : []), ...(!after ? handoff.map(move => sanitize(`task ${move.title}: ${move.role} assignment moved to ${move.to}`)) : []), ...stayed.map(task => sanitize(`task ${tasks.publicTitle(task)} stays with ${peer} as ${[task.owner === peer ? "owner" : "", task.reviewer === peer ? "reviewer" : ""].filter(Boolean).join(" and ")} (${task.state})`)), ...(!after && !handoff.length && !stayed.length ? ["No open tasks to hand over."] : [])].join("\n"), ...(!after ? { handoff } : {}) };
     } catch (error) {
@@ -4780,6 +4783,11 @@ export async function startDaemon(opts: DaemonOptions) {
     if (typeof def === "string") return { error: def };
     const routing = activeRouting();
     if (staleRosterKey(def.key) && raw !== null) return { error: `${def.key} names an instance that is no longer declared: it can only be removed (ahub roster remove ${def.path[1]})` };
+    // A removal only edits the machine-local file. A key that lives only in the shared one would be "removed" and come back on reload.
+    if (staleRosterKey(def.key) && !storedLocally(opts.cwd, def)) return { error: `${def.key} is not in .agenthub/config.local.json, so removing it here changes nothing: edit .agenthub/config.json` };
+    // Removing the local copy would let a different shared value show through, which the reload refuses as setting a stale key, after the write.
+    const shared = staleRosterKey(def.key) ? sharedValue(opts.cwd, def) : undefined;
+    if (shared !== undefined && shared !== config.roster[def.path[1]!]) return { error: `${def.key} is also set to ${String(shared)} in .agenthub/config.json: edit .agenthub/config.json first; nothing was changed` };
     try { return { def, value: checkSettingValue(def, raw, def.type === "roles" ? compatibleRoles(def.path[1]!) : Object.keys(routing.hub_routes ?? {})) }; }
     catch (error) { return { error: (error as Error).message }; }
   }
@@ -4877,7 +4885,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if ("error" in input) return { ok: false, error: input.error };
     const { def, value } = input;
     if (def.group === "Roster" && staleRosterKey(def.key)) {
-      return { ok: true, lines: [`${def.path[1]}: no longer declared; its roster key decides nothing today.`, `Removing it deletes roster.${def.path[1]} from .agenthub/config.local.json and nothing else.`] };
+      return { ok: true, lines: [`${def.path[1]}: no longer declared; its roster key decides nothing today.`, `Removing it deletes roster.${def.path[1]} from .agenthub/config.local.json and nothing else.`, ...(sharedValue(opts.cwd, def) !== undefined ? [`.agenthub/config.json also holds roster.${def.path[1]}: that copy stays until you edit it there.`] : [])] };
     }
     if (def.group === "Roster") {
       try {

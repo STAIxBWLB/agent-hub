@@ -1,4 +1,5 @@
 import { definitionOf as builtinDefinitionOf, type ProjectAdapterCatalog, type KindMap } from "../adapters/registry.ts";
+import { validateInstances } from "./instances.ts";
 import { defaultRosterEnabled as builtinDefaultRosterEnabled, createProjectAdapterCatalog as builtinCatalog } from "../adapters/registry.ts";
 
 export type PeerRoster = Partial<Record<string, boolean>>;
@@ -11,7 +12,18 @@ export type PeerRoster = Partial<Record<string, boolean>>;
 export function staleInstanceKey(peer: string, catalog: ProjectAdapterCatalog | undefined): boolean {
   const definitionOf = catalog?.definitionOf ?? builtinDefinitionOf;
   if (!/^[a-z][a-z0-9-]{0,31}$/.test(peer) || definitionOf(peer)) return false; // a reserved id (user, hub, digest) never starts with a kind and a dash
-  return (catalog?.definitions ?? []).some(kind => peer.startsWith(`${kind.kind}-`) && /^[a-z0-9][a-z0-9-]*$/.test(peer.slice(kind.kind.length + 1)) && !catalog?.externalDefinitions.some(item => item.kind === kind.kind));
+  if (!catalog) return false;
+  return catalog.definitions.some(kind => peer.startsWith(`${kind.kind}-`) && /^[a-z0-9][a-z0-9-]*$/.test(peer.slice(kind.kind.length + 1)) && canDeclareInstance(peer, kind.kind, catalog) && !catalog.externalDefinitions.some(item => item.kind === kind.kind));
+}
+
+/** The declarations a person can write for an extra instance of a kind: validateInstances decides which of them its definition takes. */
+const DECLARATION_SHAPES: readonly Record<string, unknown>[] = [
+  { roles: ["implementer"], start_mode: "headless" }, { roles: ["reviewer"], start_mode: "headless" }, { roles: ["reviewer"] }, { roles: ["planner"] },
+];
+
+/** Whether validateInstances would take `<kind>-<name>` for this kind under any declaration, so the answer cannot drift from its policy. */
+function canDeclareInstance(id: string, kind: string, catalog: ProjectAdapterCatalog): boolean {
+  return DECLARATION_SHAPES.some(shape => { try { validateInstances({ [id]: { kind, ...shape } }, catalog); return true; } catch { return false; } });
 }
 
 export function peerRosterConfig(value: unknown, instances?: KindMap, catalog?: ProjectAdapterCatalog, inertUnknown = false): PeerRoster {
