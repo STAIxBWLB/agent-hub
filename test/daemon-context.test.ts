@@ -406,3 +406,16 @@ test("#624 agy attached beside Claude gets no Claude statusline context and no C
   expect(peers.agy.context?.source ?? null).toBeNull();
   expect(usage().map(e => (e as { peer?: string }).peer)).toEqual(["claude"]);
 }, 20_000);
+
+test("#624 Claude's transcript usage is never filed under agy when Claude's own session read is fenced", async () => {
+  const f = await fixture(0.8, false, undefined, { roster: { ...DEFAULT_CONFIG.roster, agy: true } });
+  const transcript = join(f.cwd, "native-1.jsonl");
+  writeFileSync(transcript, JSON.stringify({ type: "assistant", sessionId: "native-1", timestamp: new Date().toISOString(), message: { id: "msg-1", stop_reason: "end_turn", usage: { input_tokens: 7, output_tokens: 3 } } }) + "\n");
+  writeFileSync(join(f.cwd, "claude-session.json"), JSON.stringify({ instanceId: "context-instance", sessionId: "native-1", launchId: "launch-1", transcriptPath: transcript }));
+  // The field path: Claude's own recovery row names another launch, so claude's read is fenced; agy has no row of its own.
+  writeFileSync(join(f.cwd, "terminal-recovery.json"), JSON.stringify([{ peer: "claude", projectRoot: f.cwd, instanceId: "context-instance", launchId: "launch-other" }]));
+  const agy = await ControlClient.connect(f.cwd, { role: "peer", peer: "agy", channel: false }); cleanup.push(() => agy.close());
+  await until(() => f.daemon.bus.stateOf("agy") === "idle");
+  await Bun.sleep(2500); // more than one 2 s usage round
+  expect(readEvents(join(f.cwd, "events.jsonl")).filter(e => e.type === "usage")).toEqual([]);
+}, 20_000);
