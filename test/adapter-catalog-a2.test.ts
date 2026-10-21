@@ -40,7 +40,10 @@ test("A2 start and roster projections preserve unknown ids and legacy defaults",
     expect(isKnownPeer(id)).toBe(false); expect(isSupportedPeer(id)).toBe(false);
     expect(startModeOf({ [id]: { start_mode: "tui" } }, id)).toBe("headless");
     expect(rosterAllows({ [id]: false }, id, false, undefined, builtinProjectCatalog())).toBe(true);
-    expect(() => peerRosterConfig({ [id]: false })).toThrow("unsupported peer");
+    // #225 changes this one pin: "codex-1" has the shape of an instance id (<kind>-<name>), and nothing records that it was never
+    // declared, so a roster key of that shape loads as an inert stale key (test/roster.test.ts pins that, and that other shapes still throw).
+    if (id === "codex-1") expect(peerRosterConfig({ [id]: false })).toEqual({ [id]: false });
+    else expect(() => peerRosterConfig({ [id]: false })).toThrow("unsupported peer");
   }
   for (const value of [undefined, null, 1, {}, []]) { expect(isKnownPeer(value)).toBe(false); expect(isSupportedPeer(value)).toBe(false); }
   for (const enabled of [false, true]) {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PROTOCOL } from "../src/hub/control-client.ts";
@@ -102,6 +102,28 @@ test("old source can upgrade before it actually owns a declared instance, but a 
     expect(classify(f.projectRoot, [], { "codex-2": { state: "idle" } })).toContain("source lacks peer_instances");
     expect(classify(f.projectRoot, [], { "codex-not-declared": { state: "idle" } })).toBeUndefined();
     expect(classify(f.projectRoot, undefined)).toContain("source lacks peer_instances");
+  } finally { f.close(); }
+});
+
+// #225 N2: the refusal is conditional, and its text and the spec say so. It names the live-instance condition, asks for the cheap step
+// (end the extra sessions) first, and offers removing a declaration only as the last resort; the spec states the same rule.
+test("the peer_instances refusal text and the spec describe the conditional refusal the code applies (#225)", () => {
+  const f = fixture();
+  const classify = instanceRecoverySourceRefusal as (root: string, features: unknown, observed?: unknown) => string | undefined;
+  try {
+    f.declare();
+    const text = classify(f.projectRoot, [], { "codex-2": { state: "idle" } })!;
+    expect(text).toContain("source lacks peer_instances");
+    expect(text).toContain("a declared instance of this project may be live");
+    expect(text).toContain("end the extra native sessions first");
+    expect(text).toContain("all offline proceeds without further steps");
+    expect(text).toContain("only if one cannot be ended, temporarily remove its declaration");
+    expect(text).not.toContain("temporarily remove the instance declarations, upgrade"); // the old unconditional ask
+    expect(classify(f.projectRoot, [], { "codex-2": { state: "offline" } })).toBeUndefined(); // the behaviour the text now describes
+    const spec = readFileSync(new URL("../docs/specs/2026-09-19-agent-hub-design.md", import.meta.url), "utf8").replace(/\s+/g, " ");
+    expect(spec).toContain("but only while a declared instance is live or unreadable");
+    expect(spec).toContain("a source whose status shows every declared id offline proceeds");
+    expect(spec).toContain("A roster key left behind by an undeclared instance loads as inert");
   } finally { f.close(); }
 });
 

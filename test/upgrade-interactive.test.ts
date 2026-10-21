@@ -401,6 +401,30 @@ test("agents are ended by kind or by name, only after a confirmation, and only t
   expect(flow.out).toContain("  codex  offline  -         offline, left as it is");
   expect(flow.out.at(-1)).not.toBe("nothing was changed");
 });
+// #225 N1: an operation that holds a restore receipt for an extra instance whose declaration was later revoked must still be readable.
+// The recovery screen is the menu that offers abort and archive, so a receipt the current authority no longer accepts cannot make it throw.
+test("#225 the recovery screen and the verbose receipt render a restored extra whose declaration was revoked, and still offer abort", async () => {
+  const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js", argv: ["bun", "/pkg/main.js"], env: {} };
+  // codex-2 is declared nowhere: /alpha has no .agenthub at all, the state a revoked declaration or a malformed config.local.json leaves.
+  const binding = { peer: "codex-2", handle: "term_codex2", incarnationId: "inc", worktreeId: "wt", projectRoot: "/alpha", sessionId: "t2", launch, launchMetadata: launch };
+  const op = operation({ phase: "blocked", step: "restore-peers:alpha", plan: plan({ terminals: [binding] }),
+    projects: [{ id: "alpha", instanceId: "new-target", phase: "started", terminals: { "restored:codex-2": { state: "done", binding } } }] });
+  expect(() => operationLines(op, undefined, 0)).not.toThrow();
+  expect(operationLines(op, undefined, 0)).toContain("  alpha  started  (restored:codex-2 done)");
+  // "e", a reason, then "y": the screen's way to end (abort and archive) an operation it cannot resume.
+  const f = screen(["e", "y", "revoked declaration", "q"]);
+  await operationScreen(host({ read: () => op, live: async () => ({ alpha: source({ instanceId: "new-target" }) }) }), f.io, ID);
+  expect(f.out.join("\n")).toContain("restored:codex-2 done");
+  expect(f.out.join("\n")).toContain("[e] end: stop and archive (the upgrade is abandoned, not completed)"); // the menu that offers abort was reached
+  expect(f.ran.some(argv => argv.includes("dispose") && argv.includes("--stop-and-archive"))).toBe(true); // and choosing it runs the archive command
+  const { renderOperation } = await import("../src/cli/upgrade-presentation.ts");
+  const lines = renderOperation(op, undefined, { verbose: true, now: () => 0, color: "never", columns: 100 } as any).map((row: any) => Array.isArray(row) ? row.map((part: any) => part.text).join("") : String(row?.text ?? row)).join("\n");
+  expect(lines).toContain("restored:codex-2 done");
+  // The outcome sentence is the presentation's own read of the receipt: it must say what was recorded, not "recorded outcome unavailable".
+  expect(lines).toContain("codex-2: session restored");
+  expect(lines).not.toContain("recorded outcome unavailable");
+});
+
 test("#433 tagged failed-origin wait is shown as waiting and retains its fresh-session action", () => {
   const launch = { packageEntrypoint: "/pkg/main.js", command: "bun /pkg/main.js", argv: ["bun", "/pkg/main.js"], env: {} };
   const binding = { peer: "codex", handle: "term_codex", incarnationId: "inc", worktreeId: "wt", projectRoot: "/alpha", sessionId: "t1", launch, launchMetadata: launch };

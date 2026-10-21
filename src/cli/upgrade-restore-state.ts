@@ -66,8 +66,9 @@ export function decodeRestoreReceipt(value: unknown, options: { authority?: "cur
   return { state: "done", binding: terminalBinding(value, historical) };
 }
 
-export function restoreReceiptStatus(value: unknown): RestoreReceiptStatus {
-  const receipt = decodeRestoreReceipt(value);
+/** The authority is the caller's: a decision reads the current one, a screen that only shows what was recorded reads the historical one (#225). */
+export function restoreReceiptStatus(value: unknown, options: { authority?: "current" | "historical" } = {}): RestoreReceiptStatus {
+  const receipt = decodeRestoreReceipt(value, options);
   return !receipt ? "unstarted" : receipt.state === "waiting" ? `waiting:${receipt.origin}` : receipt.state;
 }
 export function canChooseFresh(value: unknown): boolean {

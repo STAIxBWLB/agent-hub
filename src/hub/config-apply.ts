@@ -12,7 +12,7 @@ import { resolveProfile } from "./profiles.ts";
 import { taskSweepConfig } from "./task-sweep.ts";
 import { projectionConfig } from "./text-projection.ts";
 import { validateInstances, type InstancesConfig } from "./instances.ts";
-import { peerRosterConfig } from "./roster.ts";
+import { peerRosterConfig, staleInstanceKey } from "./roster.ts";
 import { CHARACTER_IDS } from "../pet/characters.ts";
 import { petPalette } from "../pet/config.ts";
 
@@ -241,7 +241,11 @@ export function configChanges(running: HubConfig, next: HubConfig, scopes: reado
     if (same(before, after)) return;
     if (before && after && typeof before === "object" && typeof after === "object" && !Array.isArray(before) && !Array.isArray(after)) {
       for (const child of new Set([...Object.keys(before), ...Object.keys(after)])) walk(at(before, [child]), at(after, [child]), key ? `${key}.${child}` : child);
-    } else changes.push({ key, before, after, ...configApply(key, scopes) });
+    } else {
+      // #225: deleting a roster key whose instance was undeclared is live and needs no identity; adding or setting one stays an unknown key.
+      const stale = after === undefined && /^roster\.[^.]+$/.test(key) && scopes.some(scope => staleInstanceKey(key.slice("roster.".length), scope.catalog));
+      changes.push({ key, before, after, ...(stale ? { applies: "live" as const } : configApply(key, scopes)) });
+    }
   };
   const clean = (v: HubConfig) => Object.fromEntries(Object.entries(v).filter(([key]) => !["ignored", "retired", "permission_default_sources"].includes(key)));
   walk(clean(running), clean(next), ""); return changes.sort((a, b) => a.key.localeCompare(b.key));

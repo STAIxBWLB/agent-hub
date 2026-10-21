@@ -3,6 +3,7 @@ import { claudePeer as defaultChannelPeer } from "../hub/claude-state.ts";
 import { effectiveInstanceRoles } from "../hub/instances.ts";
 import { resolveInstanceExecutionCwd } from "../hub/instance-execution.ts";
 import { readInstanceRoleConfig, readInstanceConfig, type InstanceRoleConfig } from "../hub/instance-config.ts";
+import { staleInstanceKey } from "../hub/roster.ts";
 import { parseConfiguredAcpArguments, runConfiguredAcpEntry, requireActiveConfiguredAcp } from "./configured-acp-entry.ts";
 import type { NativeCliEntryContext } from "../adapters/definitions/native-cli-entry-types.ts";
 import { BUILTIN_CLI_ENTRIES, createProjectAdapterCatalog, definitionOf, DOCTOR_TOOL_PROBES, DOCTOR_MEMORY_CAPTURE_PEERS, DOCTOR_PLUGIN_PROBE, nativeDoctorCheck, nativeDoctorRecoveryIdentity, nativeDoctorOptionalProbes } from "../adapters/registry.ts";
@@ -1395,7 +1396,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   roster: async () => {
     const options = outputOptions(), flags = args.filter(arg => arg.startsWith("--")), positional = outputArguments().filter(arg => arg !== "--yes" && arg !== "--now");
     const [sub = "list", peer, ...extra] = positional;
-    if (!["list", "add", "remove"].includes(sub) || extra.length || (sub === "list" ? peer !== undefined : !peerDefinition(peer)) || flags.some(flag => !["--json", "--full", "--yes", "--now"].includes(flag) && !flag.startsWith("--color=")) || (sub !== "list" && options.json) || (sub !== "remove" && flags.some(flag => ["--yes", "--now"].includes(flag)))) fail("usage: ahub roster [--json] | add <peer> | remove <peer> [--yes] [--now]");
+    if (!["list", "add", "remove"].includes(sub) || extra.length || (sub === "list" ? peer !== undefined : !peerDefinition(peer) && !(sub === "remove" && typeof peer === "string" && staleInstanceKey(peer, projectCatalog))) || flags.some(flag => !["--json", "--full", "--yes", "--now"].includes(flag) && !flag.startsWith("--color=")) || (sub !== "list" && options.json) || (sub !== "remove" && flags.some(flag => ["--yes", "--now"].includes(flag)))) fail("usage: ahub roster [--json] | add <peer> | remove <peer> [--yes] [--now]");
     const hub = await connect();
     try {
       requireNamedPeerFeature(hub, peer);
@@ -1405,7 +1406,8 @@ const commands: Record<string, () => Promise<void> | void> = {
         if (!Array.isArray(view.roster)) fail("upgrade the running hub to use ahub roster");
         return options.json ? console.log(JSON.stringify(view.roster, null, 2)) : printOutput(renderRoster(view.roster, options.columns), options.color);
       }
-      const key = `roster.${peer}`, value = sub === "add";
+      // A key whose instance is no longer declared is deleted (null), never set to false: there is no peer left for it to switch off (#225).
+      const key = `roster.${peer}`, stale = sub === "remove" && !peerDefinition(peer) && staleInstanceKey(peer!, projectCatalog), value = stale ? null : sub === "add";
       const preview = await request({ t: "settings_preview", key, value });
       printOutput((preview.lines ?? []).map((text: string) => [{ text }]), options.color);
       if (sub === "remove" && !flags.includes("--yes")) {
