@@ -34,7 +34,7 @@ function page(options: { cached?: boolean; now?: () => number; focus?: string } 
     cookiePrefs:{get:()=>options.focus ?? "",set:(name:string,value:string)=>cookies.push([name,value])},
     Date: class extends Date { static override now() { return options.now?.() ?? Date.now(); } },
     location: { origin: "http://127.0.0.1:4000" }, context: () => ({ ...scope }), canMutate: () => true,
-    document: { createElement: (tag: string) => new Node(tag) }, $, boardColumns, taskProgress, peerPalette: PEER_PALETTE, badge: (text: string, cls = "") => el("span", text, "badge" + (cls ? " " + cls : "")),
+    document: { createElement: (tag: string) => new Node(tag), createElementNS: (_ns: string, tag: string) => new Node(tag) }, $, boardColumns, taskProgress, peerPalette: PEER_PALETTE, badge: (text: string, cls = "") => el("span", text, "badge" + (cls ? " " + cls : "")),
     renderTaskProgress: () => {}, renderTaskStage: (stage: { label: string }) => el("p", stage.label),
     empty: (target: Node, text: string) => target.append(el("p", text)),
     update: (id: string, _value: unknown, render: (node: Node) => void) => { get(id).replaceChildren(); render(get(id)); },
