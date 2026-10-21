@@ -8,6 +8,7 @@ import { NoWriteTurns } from "./no-writes.ts";
 import { readGitHubImport, type GitHubSource, type GitHubImportSelection } from "./github-import.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { readMergeQueue } from "./sdlc-queue.ts";
+import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
 import { readReleaseReadiness } from "./sdlc-release.ts";
 import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
 import { matchesPolicy } from "./path-policy.ts";
@@ -526,7 +527,47 @@ export class Tasks {
   /** What peers other than the owner, the console stream and the log may see of a task. */
   publicTitle = (task: Task) => (this.isPii(task) ? `#${task.id} [pii]` : `#${task.id} ${task.title}`);
 
+  private reviewFindingSets(task: Task): ReviewFindingSet[] { return task.history.flatMap(entry => entry.reviewFindings ? [entry.reviewFindings] : []); }
+
+  private findingHead(task: Task, reviewedHead?: string): string | undefined {
+    return resolveFindingHead(task.sdlc, reviewedHead ? { head: reviewedHead } : undefined, task.refs.commit);
+  }
+
+  private findingTextAllowed(task: Task, items: readonly ReviewFinding[]): boolean {
+    return this.candidateTextAllowed(JSON.stringify(items), task)
+      && items.every(item => !item.path || !matchesPolicy(this.d.cwd, item.path, this.d.piiPaths ?? [], true));
+  }
+
+  /** Host-authored proposals contain only cleared IDs, integer task references and fixed instruction targets. */
+  private proposeRecurringFindings(task: Task, by: PeerId, items: readonly ReviewFinding[], withheld: boolean): void {
+    if (withheld || this.isPii(task) || this.d.privateTurn?.(by) || !items.length || !this.findingTextAllowed(task, items)) return;
+    const rows = this.d.board.list(), keys = new Set(rows.flatMap(row => row.detail?.split("\n").filter(line => line.startsWith("Review finding key: ")) ?? []));
+    const created: number[] = [];
+    // No await separates the durable dedupe read from creation; concurrent verdicts see the first proposal.
+    for (const item of items.filter(item => item.disposition !== "false_positive")) {
+      const same = (finding: ReviewFinding) => finding.id === item.id && finding.pass === item.pass;
+      const holders = rows.filter(row => {
+        if (this.isPii(row)) return false;
+        const last = row.history.findLast(entry => entry.reviewFindings?.items.some(value => value.id === item.id));
+        const finding = last?.reviewFindings?.items.find(value => value.id === item.id);
+        return !last?.withheld && finding && same(finding) && finding.disposition !== "false_positive" && this.findingTextAllowed(row, [finding]);
+      });
+      if (new Set(holders.map(row => row.id)).size < 2) continue;
+      const key = `Review finding key: ${item.pass}:${item.id}`;
+      if (keys.has(key)) continue;
+      const title = `Review policy amendment for recurring finding ${item.pass}:${item.id}`;
+      const detail = `${key}\nFinding ${item.pass}:${item.id} recurred on tasks ${holders.slice(0, 8).map(row => `#${row.id}`).join(", ")}. Inspect their review histories and propose an AGENTS.md or relevant docs/agent-notes/ amendment. This backlog card is a proposal, not authorization to edit instruction files.`;
+      const draft = { title, detail, refs: { paths: ["AGENTS.md", "docs/agent-notes/"] } };
+      const signals = this.signalsFor(draft);
+      if (this.isPii({ signals }) || !this.candidateTextAllowed(`${title}\n${detail}`)) continue;
+      const proposal = this.d.board.propose(HUB, { ...draft, class: "plan", backlog: true, signals });
+      this.incomingBacklog.add(proposal.id); keys.add(key); created.push(proposal.id);
+    }
+    for (const id of created) this.releaseNotice(`task #${id}: recurring review finding amendment proposed in the backlog`);
+  }
+
   /** A task as a cloud peer may see it. */
+
   publicView(task: Task, fullHistory = false): Record<string, unknown> {
     const { title, detail, history, external, cancelled, ...rest } = task;
     if (this.isPii(task)) return { ...rest, actualDates: actualTaskDates(task), refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: stageDefinition(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc.stage)?.base ?? "unknown" } } : {}), title: "[pii]", detail: "[pii]" };
@@ -534,6 +575,8 @@ export class Tasks {
     const publicHistory = (fullHistory ? history : history.slice(-5)).map(h => ({
       at: h.at, by: h.by, event: h.event,
       ...(h.note === undefined ? {} : { note: screenHistoryText(h.note, "note", h.withheld) }),
+      ...(h.reviewFindings ? { reviewFindings: !h.withheld && this.findingTextAllowed(task, h.reviewFindings.items) ? h.reviewFindings
+        : { ...(h.reviewFindings.head ? { head: h.reviewFindings.head } : {}), tally: findingTally(h.reviewFindings.items), withheld: true } } : {}),
       ...(h.supersededBy === undefined ? {} : { supersededBy: screenHistoryText(h.supersededBy, "supersession", h.withheld) }),
       ...(h.profile === undefined ? {} : { profile: screenHistoryText(h.profile, "profile") }),
       ...(h.owner === undefined ? {} : { owner: h.owner }),
@@ -545,7 +588,8 @@ export class Tasks {
       ...(h.reason && TASK_MOVE_REASONS.includes(h.reason) ? { reason: h.reason } : {}),
       ...(h.sweep ? { sweep: { kind: h.sweep.kind, activity: h.sweep.activity, step: h.sweep.step, at: h.sweep.at } } : {}),
     }));
-    return { ...rest, ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task)) } : {}), title, detail, history: publicHistory };
+    const sets = this.reviewFindingSets(task), current = findingsForHead(sets, this.findingHead(task));
+    return { ...rest, ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets, task.refs.commit) } : {}), title, detail, history: publicHistory };
   }
 
   /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */
@@ -2414,7 +2458,7 @@ export class Tasks {
 
   async deliveryQueue(repo: string) {
     const before = workflowHash(this.d.board.list().map(t => ({ id: t.id, state: t.state, after: t.deps, sdlc: t.sdlc, history: t.history.length })));
-    const links = this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t) }));
+    const links = this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t) }));
     const report = await readMergeQueue(repo, this.d.sdlc?.config() ?? sdlcConfig(undefined), links, this.d.sdlc?.gh);
     // Policy can change across remote awaits without any board write. Never return its stale public projection.
     const currentPrivacy = this.d.board.list().map(task => ({ id: task.id, private: this.isPii(task) }));
@@ -2462,7 +2506,7 @@ export class Tasks {
     const evidence = task.sdlc && !this.isPii(task) && refresh && config.mode !== "off" ? await readSdlcPr(task.sdlc, this.d.sdlc?.gh) : undefined;
     const accepted = task.sdlc?.acceptance;
     const edit = accepted && !this.isPii(task) && refresh && config.mode !== "off" ? await readSpecEdit(accepted.repo, accepted.issue, this.d.sdlc?.gh) : undefined;
-    return sdlcStatus(config, task.sdlc, evidence, this.workflowView(task), edit);
+    return sdlcStatus(config, task.sdlc, evidence, this.workflowView(task), edit, this.isPii(task) ? [] : this.reviewFindingSets(task), task.refs.commit);
   }
 
   /** #481 S1: only build work starts from an accepted spec. */
@@ -2528,7 +2572,7 @@ export class Tasks {
     this.d.notify(this.specText(task, state, "advice"));
   }
 
-  private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string): Promise<PrEvidence | undefined> {
+  private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string, findings?: readonly ReviewFindingSet[]): Promise<PrEvidence | undefined> {
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     if (config.mode === "off") return;
     const receipt = task.sdlc && { ...task.sdlc, ...(reviewedHead ? { reviewedHead } : {}) };
@@ -2542,7 +2586,7 @@ export class Tasks {
     if (config.mode === "enforce" && (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state)) throw new PreEffectToolRefusal(`task #${task.id}: changed during lifecycle readback; retry on current work`);
     // Advise may continue on the current task, but evidence from its previous link cannot admit that task's review.
     if (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state || this.isPii(current) !== this.isPii(task)) return;
-    const status = sdlcStatus(config, receipt, evidence, this.workflowView(current));
+    const status = sdlcStatus(config, receipt, evidence, this.workflowView(current), undefined, this.isPii(current) ? [] : findings ?? this.reviewFindingSets(current), current.refs.commit);
     const blockers = transition === "review" ? [...new Set([...status.blockers.filter(blocker => ["lifecycle stage definition unknown", "issue identity missing", "PR identity missing", "current PR evidence unknown", "PR is not open", "local gate on current head missing or failed"].includes(blocker)), ...(status.entry ?? []), ...(status.exit ?? [])])] : status.blockers;
     if (config.mode === "enforce" && blockers.length) throw new PreEffectToolRefusal(`task #${task.id}: SDLC ${transition} blocked: ${blockers.join("; ")}`);
     if (config.mode === "advise" && blockers.length) this.d.notify(`task ${this.publicTitle(task)}: SDLC ${transition} advice: ${this.isPii(task) ? "private lifecycle evidence unknown" : blockers.join("; ")}`);
@@ -3122,6 +3166,9 @@ export class Tasks {
     const specRepo = task.sdlc?.repo ?? task.external?.repo, specIssue = task.sdlc?.issue ?? task.external?.issue;
     const spec = reviewOnly && specRepo && specIssue ? `Spec issue: ${specRepo}#${specIssue}\n` : "";
     const findings = reviewOnly ? task.history.filter(h => h.event === "changes_requested" && h.note).map(h => `- ${h.by}: ${this.screen(task, h.note!, "review note", reviewer, h.withheld)}`) : [];
+    const carried = findingsForHead(this.reviewFindingSets(task), this.findingHead(task)).filter(item => item.severity === "important" && item.disposition === "open");
+    const visible = this.isPii(task) ? [] : carried.filter(item => this.findingTextAllowed(task, [item]) && !task.history.some(entry => entry.withheld && entry.reviewFindings?.items.some(value => value.id === item.id)));
+    const carriedText = carried.length ? `Open Important findings carried until explicitly dispositioned: ${carried.length}\n${visible.map(({ id, pass, severity, path }) => JSON.stringify({ id, pass, severity, ...(path ? { path } : {}) })).join("\n")}${visible.length < carried.length ? "\nSome finding details withheld." : ""}\n` : "";
     const guidance = this.roleGuidance(task, reviewer, true);
     let projection = "";
     try { const text = this.d.projectedReview?.(task); if (text) projection = this.screen(task, sanitize(text), "document projection", reviewer); }
@@ -3129,7 +3176,7 @@ export class Tasks {
     const brief = this.briefText(task);
     // #572 AC3: advisory only, from git state never from task text, so it is safe for a PII task too.
     const checkout = mainCheckoutWarning(this.d.cwd, this.publicMetadataText);
-    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${last?.noWrites ? "no writes recorded since acceptance\n" : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
+    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${last?.noWrites ? "no writes recorded since acceptance\n" : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${carriedText}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet, findings: [{id, pass: "bugs" | "security" | "compliance", severity: "important" | "nit", path?, disposition: "open" | "fixed" | "false_positive"}]}. Reuse finding ids when updating their disposition; only the person may accept a finding with a rationale.`;
     this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, ...(this.reviewHead(task) ? { commit: this.reviewHead(task)! } : {}), task: String(task.id), reviewRevision: String(this.reviewRequestRevision(task)) }, ...(this.isPii(task) ? { private: true } : {}) }));
   }
 
@@ -3178,8 +3225,9 @@ export class Tasks {
     } catch { return "Review brief unavailable: it could not be built."; }
   }
 
-  async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown): Promise<Task> {
+  async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown, findings?: unknown): Promise<Task> {
     const authority = by === USER ? undefined : this.d.reviewAuthority?.(by, Number(id));
+    let findingGuard: ((task: Task) => void) | undefined;
     // #520: what the coverage was checked against, pinned through every await: the commit and the lifecycle receipt (the
     // inherited reviewedHead lives there).
     let covered: { commit: string | undefined; receipt: string } | undefined;
@@ -3191,6 +3239,7 @@ export class Tasks {
       this.mine(t, by, "reviewer", true);
       if (verdict !== "approved" && verdict !== "changes_requested") throw new PreEffectToolRefusal('verdict must be "approved" or "changes_requested"');
       if (t.state !== "in_review") throw new PreEffectToolRefusal(`task #${t.id} is ${t.state}: cannot move to ${verdict} before its owner calls hub_task_done`);
+      findingGuard?.(t);
       return t;
     };
     const items = textList(unmet);
@@ -3198,6 +3247,31 @@ export class Tasks {
     // #520: an approval accounts for every reviewable path of the brief. enforce refuses before any effect, advise records
     // the gap in the verdict note, off and a person's own verdict skip it.
     const mode = this.d.sdlc?.config().mode ?? "off";
+    const initial = valid(), suppliedFindings = findings !== undefined;
+    let parsed: ReviewFinding[];
+    try { parsed = parseReviewFindings(findings, { person: by === USER, maxNits: this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS }); }
+    catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid structured findings"); }
+    let findingHead = this.findingHead(initial);
+    if (head !== undefined && (suppliedFindings || this.reviewFindingSets(initial).length)) {
+      try { findingHead = sdlcReceipt({ reviewedHead: head }, initial.sdlc, this.d.sdlc?.config() ?? sdlcConfig(undefined)).reviewedHead; }
+      catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid finding head"); }
+    }
+    const report: ReviewFindingSet | undefined = suppliedFindings ? { ...(findingHead ? { head: findingHead } : {}), items: parsed } : undefined;
+    const proposedSets = (task: Task) => [...this.reviewFindingSets(task), ...(report ? [report] : [])];
+    if (suppliedFindings || this.reviewFindingSets(initial).length) {
+      const identity = (task: Task) => JSON.stringify({ owner: task.owner, reviewer: task.reviewer, commit: task.refs.commit, receipt: task.sdlc, private: this.isPii(task), findings: this.reviewFindingSets(task) });
+      const original = identity(initial);
+      findingGuard = task => {
+        if (identity(task) !== original) throw new PreEffectToolRefusal("task review identity, privacy or findings changed during the verdict; review current work again");
+        if (by !== USER && suppliedFindings && this.d.privateTurn?.(by) && !this.isPii(task)) throw new PreEffectToolRefusal("structured review of ordinary work is unavailable during a private turn");
+        if (parsed.filter(item => item.severity === "nit").length > (this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS)) throw new PreEffectToolRefusal("review nit cap exceeded");
+        if (report?.items.length && !report.head && this.d.sdlc?.config().mode === "enforce") throw new PreEffectToolRefusal("a finding report requires a resolvable full reviewed head in enforce");
+        const current = findingsForHead(proposedSets(task), findingHead);
+        if (current.length > 64) throw new PreEffectToolRefusal("one reviewed head supports at most 64 distinct finding IDs");
+        if (verdict === "approved" && this.d.sdlc?.config().mode === "enforce" && findingTally(current).openImportant) throw new PreEffectToolRefusal("approval blocked: open important review findings on this head");
+      };
+      findingGuard(initial);
+    }
     // A Tasks without a brief provider (library use; the daemon always has one) has no coverage gate.
     if (verdict === "approved" && by !== USER && mode !== "off" && this.d.reviewBrief) {
       const t = valid(), enforce = mode === "enforce", list = (paths: string[]) => `${paths.slice(0, 20).join(", ")}${paths.length > 20 ? ", ..." : ""}`;
@@ -3224,14 +3298,15 @@ export class Tasks {
       }
     }
     // The PII screen reads the note of a review that passes these checks (issue #198); they run again after it.
-    const withheld = await this.withholds("review note", note, valid());
+    const withheld = await this.withholds("review note", parsed.length ? JSON.stringify({ note, findings: parsed }) : note, valid())
+      || parsed.length > 0 && !this.findingTextAllowed(initial, parsed);
     let task = valid();
     let reviewedHead: string | undefined;
     if (head !== undefined) {
       const checked = sdlcReceipt({ reviewedHead: head }, task.sdlc, this.d.sdlc?.config() ?? sdlcConfig(undefined));
       reviewedHead = checked.reviewedHead;
     }
-    if (verdict === "approved" && this.d.sdlc && this.d.sdlc.config().mode !== "off") { await this.lifecycleGate(task, "approval", reviewedHead); task = valid(); }
+    if (verdict === "approved" && this.d.sdlc && this.d.sdlc.config().mode !== "off") { await this.lifecycleGate(task, "approval", reviewedHead, proposedSets(task)); task = valid(); }
     let candidate: Extract<CandidateInput, { kind: "fail" }> | undefined;
     if (verdict === "changes_requested" && items.length && this.d.candidates && !withheld && !this.isPii(task) && !this.d.privateTurn?.(by)) {
       const input: CandidateInput = { project: this.d.store?.project ?? this.d.project, kind: "fail", approach: this.publicTitle(task), symptom: items.join("\n"),
@@ -3249,7 +3324,7 @@ export class Tasks {
     const family = by === USER ? undefined : (this.d.adapterCatalog?.familyOf ?? familyOf)(by, this.d.instances?.());
     const reviewerFamily = poolRequest?.reviewerFamily === family ? family : undefined;
     const reviewerReason = reviewerFamily ? poolRequest?.reviewerReason : undefined;
-    const flag = { withheld: withheld || undefined, ...(reviewContext ? { reviewContext } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
+    const flag = { withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(reviewContext ? { reviewContext } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
     if (verdict === "approved") {
       const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0, ...(reviewedHead && task.sdlc ? { sdlc: { ...task.sdlc, reviewedHead, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), "merge") } } : {}) }, note, flag);
       if (next.owner) {
@@ -3265,9 +3340,12 @@ export class Tasks {
       this.releaseNotice(`task ${this.publicTitle(next)}: could not tell ${next.owner ?? "its owner"} it was approved`, () =>
         this.tell(next, `Task #${next.id} approved by ${by}.${note ? ` ${this.screen(next, note, "review note", next.owner, withheld)}` : ""}`, pii));
       await this.releaseDependents(next);
+      // A proposal storage failure cannot roll back the saved verdict; another matching verdict retries it.
+      this.releaseNotice(`task #${next.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(next, by, parsed, withheld));
       return next;
     }
     const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: task.rejections + 1 }, note, flag);
+    this.releaseNotice(`task #${rejected.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(rejected, by, parsed, withheld));
     if (candidate && !pii && !this.d.privateTurn?.(by) && this.candidateTextAllowed(JSON.stringify({ candidate, refs: rejected.refs, plan: rejected.plan }), rejected)) {
       try { this.d.memoryCheck?.(); this.d.candidates?.put({ ...candidate, evidenceRefs: [...candidate.evidenceRefs, `review:${rejected.id}:${rejected.history.length}`] }, "public"); } catch { /* a saved review remains authoritative if the optional sidecar fails */ }
     }

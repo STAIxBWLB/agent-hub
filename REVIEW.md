@@ -16,7 +16,7 @@ Reserve Important for findings that lose messages, break a peer's turn, leak dat
 
 ## Cap the nits
 
-Report at most 5 nits per review; summarize the rest as a count.
+Report at most the configured `sdlc.max_nits` nits per review (default 5); summarize the rest as a count. Use semantic finding ids shared across tasks, rather than positional labels such as B1 or nit-1, and structured pass, severity and disposition in `hub_review`. Only the person may mark a finding accepted, with a rationale.
 
 ## Do not report
 
