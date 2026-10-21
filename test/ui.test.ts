@@ -391,8 +391,11 @@ function startPageRuntime(fetch_: (path: string, options: any) => Promise<any>, 
     attrs: Record<string, string> = {};
     setAttribute(name: string, value: string) { this.attrs[name] = value; }
     classList = { toggle: (_name: string, value: boolean) => { this.error = value; } };
-    append(...nodes: Node[]) { this.children.push(...nodes); }
-    replaceChildren(...nodes: Node[]) { this.children = nodes; this.replacements++; }
+    parent: Node | null = null;
+    append(...nodes: Node[]) { for (const node of nodes) node.parent = this; this.children.push(...nodes); }
+    replaceChildren(...nodes: Node[]) { for (const node of nodes) node.parent = this; this.children = nodes; this.replacements++; }
+    // #296: notice() now removes only the toast that leaves, as a browser's remove() does; this fake only needed replaceChildren before.
+    remove() { const siblings = this.parent?.children; if (siblings && siblings.includes(this)) siblings.splice(siblings.indexOf(this), 1); this.parent = null; }
     addEventListener(name: string, listener: () => void) { this.listeners[name] = listener; }
     text(): string { return [this.textContent, ...this.children.map(node => node.text())].join(" "); }
   }
