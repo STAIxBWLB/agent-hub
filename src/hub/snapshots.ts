@@ -355,36 +355,31 @@ export function incomingHeadPaths(repo: Repo, start: HeadMoveCursor, end: HeadMo
   if (batchCandidates.size > 1) {
     const commitList = [...batchCandidates];
     const stdinInput = commitList.join("\n") + "\n";
-    const batchRes = git(repo, ["diff-tree", "--stdin", "--always", "-r", "--no-renames", "--name-only", "-z", "--", scope(repo)], {}, budget, undefined, stdinInput);
+    const batchRes = git(repo, ["diff-tree", "--stdin", "--always", "-r", "--no-renames", "--raw", "-z", "--", scope(repo)], {}, budget, undefined, stdinInput);
     if (batchRes.status === 0) {
       const parts = batchRes.stdout.split("\0");
       if (parts.length && parts[parts.length - 1] === "") parts.pop();
-      const commitSet = new Set(commitList);
-      let currentCommit: string | null = null;
-      let currentPaths: string[] = [];
-      const flush = () => {
-        if (currentCommit) {
-          for (const r of parsedRows) {
-            if (r && r.next === currentCommit && r.old !== r.next) {
-              const sep = r.action.indexOf(": ");
-              const act = sep < 0 ? "" : r.action.slice(0, sep);
-              if (/^.+ \(pick\)$/.test(act) || act === "commit") {
-                diffCache.set(`${r.old}..${r.next}`, [...currentPaths]);
-              }
+      let i = 0;
+      while (i < parts.length) {
+        const commit = parts[i++];
+        if (!commit) continue;
+        const paths: string[] = [];
+        while (i < parts.length && parts[i]?.startsWith(":")) {
+          i++; // skip raw metadata: :oldmode newmode oldsha newsha status
+          if (i < parts.length && parts[i]) {
+            paths.push(parts[i++]!);
+          }
+        }
+        for (const r of parsedRows) {
+          if (r && r.next === commit && r.old !== r.next) {
+            const sep = r.action.indexOf(": ");
+            const act = sep < 0 ? "" : r.action.slice(0, sep);
+            if (/^.+ \(pick\)$/.test(act) || act === "commit") {
+              diffCache.set(`${r.old}..${r.next}`, [...paths]);
             }
           }
         }
-      };
-      for (const part of parts) {
-        if (commitSet.has(part)) {
-          flush();
-          currentCommit = part;
-          currentPaths = [];
-        } else if (currentCommit && part) {
-          currentPaths.push(part);
-        }
       }
-      flush();
     }
   }
 
@@ -420,7 +415,7 @@ export function incomingHeadPaths(repo: Repo, start: HeadMoveCursor, end: HeadMo
       // #612: take incoming start paths as merge-base(old, upstream)..upstream instead of old..upstream,
       // so the peer's replayed own commits do not overlap and only true upstream paths are excluded.
       // Any remaining ambiguity (no merge base, criss-cross multiple merge bases) stays unknown.
-      const mb = git(repo, ["merge-base", row.old, row.next], {}, budget);
+      const mb = git(repo, ["merge-base", "--all", row.old, row.next], {}, budget);
       if (mb.status !== 0) return undefined;
       const bases = mb.stdout.trim().split("\n").map(s => s.trim()).filter(Boolean);
       const base = bases[0];

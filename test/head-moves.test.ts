@@ -337,3 +337,52 @@ test("#612 rebase -i fixup row cached diff equals exact old..next diff", () => {
   const diff = changedPaths(f.repo, before.tree!, after.tree!);
   expect(diff).toEqual(["own2.txt"]);
 }, 10_000);
+
+test("#612 batched pick rows separate commit headers from files named after commit IDs", () => {
+  const f = fixture();
+  f.incoming();
+  f.commit("file1.txt", "content1\n");
+  const commit1 = f.git("rev-parse", "HEAD");
+
+  // Commit 2: creates a file whose name equals commit1's hash
+  writeFileSync(join(f.root, commit1), "tricky filename\n");
+  f.git("add", commit1);
+  f.git("commit", "-m", "commit with hash-named file");
+
+  const before = f.capture();
+  f.git("rebase", "incoming");
+  const after = f.capture();
+
+  const incoming = incomingHeadPaths(f.repo, before, after);
+  expect(incoming).toEqual(["incoming.txt"]);
+}, 10_000);
+
+test("#612 rebase start with criss-cross multiple merge bases stays unknown", () => {
+  const f = fixture();
+  f.commit("root.txt", "root\n");
+  f.git("checkout", "-b", "branchA");
+  f.commit("a.txt", "a\n");
+  f.git("checkout", "main");
+  f.git("checkout", "-b", "branchB");
+  f.commit("b.txt", "b\n");
+
+  f.git("checkout", "branchA");
+  f.git("merge", "-m", "merge B into A", "branchB");
+  const m1 = f.git("rev-parse", "HEAD");
+
+  f.git("checkout", "branchB");
+  f.git("merge", "-m", "merge A into B", "branchA~1");
+  const m2 = f.git("rev-parse", "HEAD");
+
+  const bases = f.git("merge-base", "--all", m1, m2).trim().split("\n").filter(Boolean);
+  expect(bases.length).toBeGreaterThan(1);
+
+  f.git("checkout", "branchA");
+  const before = f.capture();
+  f.git("-c", `alias.phase=!GIT_REFLOG_ACTION='rebase (start): checkout ${m2}' git reset --hard ${m2}`, "phase");
+  const after = f.capture();
+
+  const incoming = incomingHeadPaths(f.repo, before, after);
+  expect(incoming).toBeUndefined();
+}, 10_000);
+
