@@ -216,7 +216,7 @@ export function configApply(key: string, scopes: readonly ConfigIdentityScope[] 
     for (const [index, part] of key.split(".").slice(1).entries()) {
       const shape = check && shapes.get(check);
       if (shape?.fields) { if (!Object.hasOwn(shape.fields, part)) return fail(key, "unknown configuration key"); check = shape.fields[part]; }
-      else if (shape?.item) { if (shape.keys && !shape.keys.includes(part) && !(top === "roster" && scopes.some(scope => scope.catalog.definitionOf(part, scope.instances) || staleInstanceKey(part, scope.catalog)))) return fail(key, "unknown configuration key"); check = shape.item; }
+      else if (shape?.item) { if (shape.keys && !shape.keys.includes(part) && !(top === "roster" && scopes.some(scope => scope.catalog.definitionOf(part, scope.instances)))) return fail(key, "unknown configuration key"); check = shape.item; }
       else if (index === 0 && (special[top]?.includes(part) || top === "checks" && /^[a-z][a-z0-9_]{0,47}$/.test(part))) break;
       else if (["permission_modes", "catalog_roles", "profile_overrides", "text_projection", "peers", "instances", "adapters", "adapter_modules"].includes(top)) break;
       else return fail(key, "unknown configuration key");
@@ -241,7 +241,11 @@ export function configChanges(running: HubConfig, next: HubConfig, scopes: reado
     if (same(before, after)) return;
     if (before && after && typeof before === "object" && typeof after === "object" && !Array.isArray(before) && !Array.isArray(after)) {
       for (const child of new Set([...Object.keys(before), ...Object.keys(after)])) walk(at(before, [child]), at(after, [child]), key ? `${key}.${child}` : child);
-    } else changes.push({ key, before, after, ...configApply(key, scopes) });
+    } else {
+      // #225: deleting a roster key whose instance was undeclared is live and needs no identity; adding or setting one stays an unknown key.
+      const stale = after === undefined && /^roster\.[^.]+$/.test(key) && scopes.some(scope => staleInstanceKey(key.slice("roster.".length), scope.catalog));
+      changes.push({ key, before, after, ...(stale ? { applies: "live" as const } : configApply(key, scopes)) });
+    }
   };
   const clean = (v: HubConfig) => Object.fromEntries(Object.entries(v).filter(([key]) => !["ignored", "retired", "permission_default_sources"].includes(key)));
   walk(clean(running), clean(next), ""); return changes.sort((a, b) => a.key.localeCompare(b.key));
