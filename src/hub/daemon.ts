@@ -477,10 +477,19 @@ function mlxPinProblem(routing: Routing, project: boolean): string | undefined {
   return conflict ? `${routing.sources?.[`classes.${conflict[0]}.pi_backend`] ?? "routing.toml"}: [classes.${conflict[0]}] pi_backend=mlx conflicts with mlx.enabled=false; remove the pin for hub/auto or select dgx` : undefined;
 }
 
+/** The length of the shared snapshot Git budget: `snapshotBudgetMs` when a host sets a usable one (#661), else `snapshotBurstMs` clamped to 250 ms, else 250 ms. */
+export function snapshotBudgetLength(opts: Pick<DaemonOptions, "snapshotBurstMs" | "snapshotBudgetMs">): number {
+  if (typeof opts.snapshotBudgetMs === "number" && Number.isFinite(opts.snapshotBudgetMs) && opts.snapshotBudgetMs >= 1) return opts.snapshotBudgetMs;
+  const requested = opts.snapshotBurstMs ?? 250;
+  return Number.isFinite(requested) ? Math.max(1, Math.min(250, requested)) : 250;
+}
+
 export interface DaemonOptions {
   /** Host-only snapshot/probe seams; never read from project config or tool arguments. */
   snapshot?: typeof snapshot;
   snapshotBurstMs?: number;
+  /** Host-only (#661): the length of the shared snapshot Git budget, uncapped, so a test states its own budget instead of inheriting its runner's speed. Production never sets it: the default stays `snapshotBurstMs` clamped to 250 ms. */
+  snapshotBudgetMs?: number;
   checkoutBranch?: typeof mainCheckoutBranch;
   /** Host-only admission transport; never selected by project config or tools. */
   releaseHostAdmission?: (cwd: string) => Promise<ReleaseHostAdmission>;
@@ -1828,8 +1837,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let snapshotBudget: SnapshotBudget | undefined, snapshotBudgetNoticed = false;
   const reserveSnapshotBudget = (): SnapshotBudget => {
     if (!snapshotBudget) {
-      const requested = opts.snapshotBurstMs ?? 250;
-      const ms = Number.isFinite(requested) ? Math.max(1, Math.min(250, requested)) : 250;
+      const ms = snapshotBudgetLength(opts);
       snapshotBudget = { deadline: performance.now() + ms };
       setImmediate(() => { snapshotBudget = undefined; snapshotBudgetNoticed = false; });
     }

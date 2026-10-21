@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { DEFAULT_CONFIG, snapshotBudgetLength, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { hubGitSync } from "../src/hub/git.ts";
@@ -28,7 +28,7 @@ class NativeFixturePeer extends BasePeer {
   finish() { this.setState("idle"); }
 }
 
-async function fixture(extra: boolean, options: { snapshots?: boolean; privateWindow?: boolean; shadow?: boolean } = {}) {
+async function fixture(extra: boolean, options: { snapshots?: boolean; privateWindow?: boolean; shadow?: boolean; budgetMs?: number } = {}) {
   const base = realPath(mkdtempSync(join(tmpdir(), "ahub-write-evidence-daemon-"))), project = join(base, "project");
   mkdirSync(project); cleanup.push(() => rmSync(base, { recursive: true, force: true }));
   const git = (...args: string[]) => {
@@ -55,6 +55,9 @@ async function fixture(extra: boolean, options: { snapshots?: boolean; privateWi
   const binary = join(base, "fake-codex"), stateDir = join(project, ".agenthub/state");
   writeFileSync(binary, `#!${process.execPath}\nawait import(${JSON.stringify(pathToFileURL(join(import.meta.dir, "fakes/codex-bin.ts")).href)});\n`, { mode: 0o700 });
   const daemon = await startDaemon({ cwd: project, stateDir, boundedTools: emulatedBoundedTools(), controlPort: 0,
+    // #661: the snapshot budget is stated, not left to the runner. 30 s is never reached by a healthy turn on any runner; a test of the
+    // exhausted case passes its own tiny budget.
+    snapshotBudgetMs: options.budgetMs ?? 30_000,
     codexAppPort: freePort(), codexProxyPort: freePort(),
     config: { ...DEFAULT_CONFIG, instances, codex_bin: binary, batch_ms: 0,
       roles: { ...DEFAULT_CONFIG.roles, ...(extra ? { [peer]: ["implementer"] } : {}) },
@@ -176,6 +179,35 @@ test("#498 native completion records empty-turn stalls and file changes clear th
   await f.runTurn(); expect(await f.stalls(id)).toEqual([]);
   await f.runTurn(); expect(await f.stalls(id)).toHaveLength(1);
 }, 20_000);
+
+// #661: a turn whose snapshot budget ran out records "unknown", and unknown resets the no-writes streak. That is the documented rule (#576:
+// never a stale baseline). It made the test above depend on runner speed: with the old shared 250 ms the empty turns after a write could
+// tip over on a slow runner. The budget is now stated by the test, so both halves are deterministic.
+test("#661 an exhausted snapshot budget makes an empty turn unknown, which resets the streak instead of counting it", async () => {
+  const f = await fixture(false, { budgetMs: 1 }), id = await f.make();
+  for (let turn = 0; turn < 4; turn++) {
+    await io(); f.native!.begin(); await io(); f.native!.finish(); await io();
+    expect(await f.stalls(id), "turn " + (turn + 1)).toEqual([]);
+  }
+}, 20_000);
+
+test("#661 the same empty turns raise the stall when the budget is not exhausted", async () => {
+  const f = await fixture(false, { budgetMs: 30_000 }), id = await f.make();
+  await f.runTurn(); expect(await f.stalls(id)).toEqual([]);
+  await f.runTurn(); expect(await f.stalls(id)).toEqual([expect.objectContaining({ cause: expect.objectContaining({ kind: "no-writes", turns: 2 }) })]);
+}, 20_000);
+
+test("#661 the shipped budget stays 250 ms: only a host's usable snapshotBudgetMs changes it, and snapshotBurstMs is still clamped", () => {
+  expect(snapshotBudgetLength({})).toBe(250); // production passes neither
+  expect(snapshotBudgetLength({ snapshotBurstMs: 500 })).toBe(250); // the existing option keeps its clamp (daemon-hot-paths relies on it)
+  expect(snapshotBudgetLength({ snapshotBurstMs: 100 })).toBe(100);
+  expect(snapshotBudgetLength({ snapshotBurstMs: Number.NaN })).toBe(250);
+  expect(snapshotBudgetLength({ snapshotBudgetMs: 30_000 })).toBe(30_000);
+  expect(snapshotBudgetLength({ snapshotBudgetMs: 1 })).toBe(1);
+  for (const unusable of [undefined, 0, -5, Number.NaN, Number.POSITIVE_INFINITY]) expect(snapshotBudgetLength({ snapshotBudgetMs: unusable, snapshotBurstMs: 80 }), String(unusable)).toBe(80); // never NaN, never unbounded
+  const source = readFileSync(new URL("../src/hub/daemon.ts", import.meta.url), "utf8");
+  expect(source).not.toMatch(/config\.snapshots\.budget/); // no configuration key chooses it
+});
 
 test("#498 successful task-tool effects reset a native no-write streak while task-list reads do not", async () => {
   const f = await fixture(false), id = await f.make();
