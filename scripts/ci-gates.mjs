@@ -1,18 +1,13 @@
 export const REUSE_MARKER = "Reuse verified identical-tree full gate";
 const reusedJob = job => Array.isArray(job.steps) && job.steps.some(step => step.name === REUSE_MARKER && step.conclusion === "success");
 
-export async function findVerifiedRun(api, tree) {
-  const { workflow_runs: runs } = await api("actions/workflows/check.yml/runs?status=success&per_page=100");
-  for (const run of runs) {
-    if (run.conclusion !== "success" || !["pull_request", "push"].includes(run.event)) continue;
-    const commit = await api(`git/commits/${run.head_sha}`);
-    if (commit.tree.sha !== tree) continue;
-    const { jobs } = await api(`actions/runs/${run.id}/jobs?per_page=100`);
-    if (["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].every(name => jobs.some(job => job.name === name && job.conclusion === "success" && !reusedJob(job)))) return run;
-  }
-}
-
 const FULL_GATES = ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"];
+class GateReadLimitError extends Error {}
+class MalformedGateProofError extends Error {}
+const lostProofError = error => !(error instanceof GateReadLimitError) && (
+  error instanceof MalformedGateProofError || error instanceof SyntaxError
+  || error?.status === 404 || error?.status === undefined && error?.name === "TimeoutError"
+);
 const ACTIVE_RUN = new Set(["in_progress", "queued", "waiting", "pending", "requested"]);
 const sameRun = (left, right) => right !== undefined && String(left) === String(right);
 const successfulFullGate = run => run.status === "completed" && run.conclusion === "success"
@@ -37,42 +32,61 @@ export function fullGateAdmission(tree, runs, { currentRunId, complete = false }
 }
 
 /**
- * Read-only bounded admission snapshot. Within one concurrency group (one PR, or main) the whole-controller lock makes
- * admission atomic; controllers of different groups may observe the same empty snapshot for one tree and run it twice
- * (#609: accepted as a duplicate run, never a false green).
+ * Read-only bounded admission snapshot under the whole-controller lock for this PR, or the separate main group.
+ * Different groups may observe the same empty snapshot and run a tree twice (#609: redundant work, never false green).
+ * Lost successful proof can require a fresh gate; incomplete active coverage and global read ceilings stay unknown.
  */
-export async function readFullGateAdmission(api, tree, { currentRunId } = {}) {
+export async function readFullGateAdmission(api, tree, { currentRunId, deadline = Date.now() + 60_000, now = Date.now } = {}) {
   const evidence = [], commits = new Map();
   let requests = 0;
+  const checkDeadline = () => {
+    const at = now();
+    if (!Number.isFinite(deadline) || !Number.isFinite(at) || at >= deadline) throw new GateReadLimitError("gate read deadline exhausted");
+  };
   const read = async path => {
-    if (++requests > 240) throw new Error("gate read budget exhausted");
-    return api(path);
+    checkDeadline();
+    if (requests >= 240) throw new GateReadLimitError("gate read budget exhausted");
+    requests++;
+    try { return await api(path); }
+    finally { checkDeadline(); } // A failed or late successful request cannot turn global exhaustion into lost proof.
   };
   const page = (value, key) => {
-    if (!value || !Array.isArray(value[key]) || value[key].length > 100 || !Number.isSafeInteger(value.total_count) || value.total_count < value[key].length) throw new Error("gate page unavailable");
+    if (!value || !Array.isArray(value[key]) || value[key].length > 100 || !Number.isSafeInteger(value.total_count) || value.total_count < value[key].length) throw new MalformedGateProofError("gate page unavailable");
     return { rows: value[key], complete: value.total_count === value[key].length };
   };
   const treeOf = async run => {
-    if (typeof run.head_sha !== "string" || !run.head_sha) throw new Error("run commit unavailable");
+    if (typeof run.head_sha !== "string" || !run.head_sha) throw new MalformedGateProofError("run commit unavailable");
     if (!commits.has(run.head_sha)) {
       const commit = await read(`git/commits/${encodeURIComponent(run.head_sha)}`);
-      if (typeof commit?.tree?.sha !== "string" || !commit.tree.sha) throw new Error("run tree unavailable");
+      if (typeof commit?.tree?.sha !== "string" || !commit.tree.sha) throw new MalformedGateProofError("run tree unavailable");
       commits.set(run.head_sha, commit.tree.sha);
     }
     return commits.get(run.head_sha);
   };
-  const jobsOf = async run => page(await read(`actions/runs/${run.id}/jobs?per_page=100`), "jobs");
+  const jobsOf = async run => {
+    const jobs = page(await read(`actions/runs/${run.id}/jobs?per_page=100`), "jobs");
+    if (jobs.rows.some(job => !job || typeof job.name !== "string" || !job.name
+      || job.steps !== undefined && (!Array.isArray(job.steps) || job.steps.some(step => !step || typeof step.name !== "string")))) {
+      throw new MalformedGateProofError("run jobs malformed");
+    }
+    return jobs;
+  };
   const gateJob = name => FULL_GATES.includes(name) || /^seeded-shard(?: \([1-4]\))?$/.test(name);
   try {
-    const successful = page(await read("actions/workflows/check.yml/runs?status=success&per_page=100"), "workflow_runs");
+    let successful;
+    try { successful = page(await read("actions/workflows/check.yml/runs?status=success&per_page=100"), "workflow_runs"); }
+    catch (error) { if (!lostProofError(error)) throw error; }
+    // Lost success inventory or one lost candidate is absence of reuse proof, never permission to skip active coverage.
     // Older successes outside this bounded page can cause redundant work, never a false green or duplicate admission.
-    for (const run of successful.rows) {
-      if (sameRun(run.id, currentRunId) || run.conclusion !== "success" || !["pull_request", "push"].includes(run.event)) continue;
-      if (await treeOf(run) !== tree) continue;
-      const jobs = await jobsOf(run);
-      const normalized = { ...run, tree, status: "completed", scope: "full", jobs: jobs.rows, jobsComplete: jobs.complete };
-      evidence.push(normalized);
-      if (successfulFullGate(normalized)) return { kind: "reuse", run: normalized };
+    for (const run of successful?.rows ?? []) {
+      try {
+        if (!run || !Number.isSafeInteger(run.id) || run.id < 1 || sameRun(run.id, currentRunId)
+          || run.conclusion !== "success" || !["pull_request", "push"].includes(run.event)) continue;
+        if (await treeOf(run) !== tree) continue;
+        const jobs = await jobsOf(run);
+        const normalized = { ...run, tree, status: "completed", scope: "full", jobs: jobs.rows, jobsComplete: jobs.complete };
+        if (successfulFullGate(normalized)) return { kind: "reuse", run: normalized };
+      } catch (error) { if (!lostProofError(error)) throw error; }
     }
     let complete = true;
     const visited = new Set();
@@ -81,11 +95,13 @@ export async function readFullGateAdmission(api, tree, { currentRunId } = {}) {
     for (const status of ["in_progress"]) {
       const active = page(await read(`actions/workflows/check.yml/runs?status=${status}&per_page=100`), "workflow_runs");
       complete &&= active.complete;
+      if (!active.complete) throw new Error("active gate inventory incomplete");
       for (const run of active.rows) {
         if (sameRun(run.id, currentRunId) || visited.has(run.id)) continue;
         visited.add(run.id);
         if (!Number.isSafeInteger(run.id) || run.id < 1) throw new Error("run identity unavailable");
         const jobs = await jobsOf(run);
+        if (!jobs.complete) throw new Error("active gate jobs incomplete");
         const gates = jobs.rows.filter(job => gateJob(job.name));
         const decisionDone = jobs.rows.some(job => job.name === "decision" && job.status === "completed" && job.conclusion === "success");
         const launched = gates.some(job => job.status === "in_progress" || decisionDone && job.status === "queued");

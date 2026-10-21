@@ -3,7 +3,7 @@ import { appendFileSync } from "node:fs";
 import { readFullGateAdmission } from "./ci-gates.mjs";
 
 // Reuse only a successful full check of the identical tree, including its workflow.
-// The workflow holds its whole full-gate controller lock while this decision and any admitted gate run.
+// This PR controller (or the separate main group) holds its lock through admission and any gate; other groups may run concurrently.
 const required = process.argv.includes("--require");
 const repository = process.env.GITHUB_REPOSITORY;
 const token = process.env.GITHUB_TOKEN;
@@ -17,12 +17,12 @@ async function api(path) {
     headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28" },
     signal: AbortSignal.timeout(Math.min(15_000, remaining)),
   });
-  if (!response.ok) throw new Error(`GitHub read failed (${response.status})`);
+  if (!response.ok) throw Object.assign(new Error(`GitHub read failed (${response.status})`), { status: response.status });
   const text = await response.text();
   if (Buffer.byteLength(text) > 2 * 1024 * 1024) throw new Error("CI admission response exceeded bound");
   return JSON.parse(text);
 }
-const decision = await readFullGateAdmission(api, tree, { currentRunId: process.env.GITHUB_RUN_ID });
+const decision = await readFullGateAdmission(api, tree, { currentRunId: process.env.GITHUB_RUN_ID, deadline, now: Date.now });
 const run = decision.kind === "reuse" ? decision.run : undefined;
 // Unknown is not permission to start a duplicate full gate. Publish fail-closed outputs before refusing the job.
 if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `run_gate=${decision.kind === "run" && !required ? "true" : "false"}\nverified_run=${run?.id ?? ""}\nadmission=${decision.kind}\n`);

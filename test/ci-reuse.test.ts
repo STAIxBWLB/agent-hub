@@ -1,26 +1,23 @@
 import { expect, test } from "bun:test";
-import { findVerifiedRun } from "../scripts/ci-gates.mjs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { hubGitSync } from "../src/hub/git.ts";
 
-test("CI reuse requires the exact tree and both platform gates plus seeded guards", async () => {
+test("CI reuse reader requires exact tree, eligible event and both platform gates plus seeded guards", async () => {
   const runs = [1, 2, 3, 4].map(id => ({ id, head_sha: String(id), conclusion: "success", event: id === 1 ? "workflow_dispatch" : "pull_request" }));
   const queried: string[] = [];
   const api = async (path: string) => {
     queried.push(path);
-    if (path.startsWith("actions/workflows/")) return { workflow_runs: runs };
+    if (path.includes("status=success")) return { total_count: runs.length, workflow_runs: runs };
+    if (path.includes("status=in_progress")) return { total_count: 0, workflow_runs: [] };
     if (path.startsWith("git/commits/")) return { tree: { sha: path.endsWith("2") ? "different" : "expected" } };
-    return { jobs: ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].map(name => ({ name, conclusion: path.includes("/3/") && name === "seeded guards" ? "skipped" : "success" })) };
+    return { total_count: 3, jobs: ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"].map(name => ({ name, conclusion: path.includes("/3/") && name === "seeded guards" ? "skipped" : "success" })) };
   };
-  expect((await findVerifiedRun(api, "expected"))?.id).toBe(4);
+  expect(await gates.readFullGateAdmission(api, "expected")).toMatchObject({ kind: "reuse", run: { id: 4 } });
   expect(queried).not.toContain("git/commits/1");
   expect(queried).not.toContain("actions/runs/2/jobs?per_page=100");
-});
-
-test("CI reuse refuses incomplete runs and propagates unavailable evidence", async () => {
-  const api = async (path: string) => path.startsWith("actions/workflows/")
-    ? { workflow_runs: [{ id: 1, head_sha: "1", conclusion: "success", event: "push" }] }
-    : path.startsWith("git/") ? { tree: { sha: "expected" } } : { jobs: [] };
-  expect(await findVerifiedRun(api, "expected")).toBeUndefined();
-  await expect(findVerifiedRun(async () => { throw new Error("API unavailable"); }, "expected")).rejects.toThrow("API unavailable");
 });
 
 import * as gates from "../scripts/ci-gates.mjs";
@@ -119,7 +116,6 @@ test("successful reused required checks cannot become a fresh full-gate proof", 
     if (path.startsWith("git/")) return { tree: { sha: "expected" } };
     return { jobs: path.includes("/1/") ? reused : genuine };
   };
-  expect((await findVerifiedRun(api, "expected"))?.id).toBe(2);
   const read = gates.readFullGateAdmission;
   const boundedApi = async (path: string) => {
     const value = await api(path);
@@ -136,3 +132,203 @@ test("#609 PR checks run in a group per PR where a newer pending run replaces th
   expect(workflow).toContain("inputs.timing_runs == '20' && 'macos-timing'");
   for (const job of ["check:", "seeded:", "decision:"]) expect(workflow).toContain(`\n  ${job}`);
 });
+
+type ProofLoss = "404" | "timeout" | "malformed" | "missing" | "invalid-json";
+const proofLosses: ProofLoss[] = ["404", "timeout", "malformed", "missing", "invalid-json"];
+function lostProof(kind: ProofLoss): unknown {
+  if (kind === "404") throw Object.assign(new Error("fixture unavailable"), { status: 404 });
+  if (kind === "timeout") throw Object.assign(new Error("fixture request elapsed"), { name: "TimeoutError" });
+  if (kind === "invalid-json") throw new SyntaxError("fixture unreadable JSON");
+  return kind === "missing" ? undefined : { unexpected: true };
+}
+const successRow = (id: number) => ({ id, head_sha: "success-" + id, status: "completed", conclusion: "success", event: "push" });
+const successPage = (rows: unknown[]) => ({ total_count: rows.length, workflow_runs: rows });
+const emptyRuns = () => successPage([]);
+const verifiedJobs = () => ({ total_count: 3, jobs: fullJobs() });
+
+for (const phase of ["commit", "jobs"] as const) for (const loss of proofLosses) test("F1a lost " + phase + " proof (" + loss + ") does not hide a later verified reusable run", async () => {
+  const calls: string[] = [];
+  const api = async (path: string) => {
+    calls.push(path);
+    if (path.includes("status=success")) return successPage([successRow(1), successRow(2)]);
+    if (path.includes("status=in_progress")) throw new Error("later verified proof should avoid active scan");
+    if (phase === "commit" && path === "git/commits/success-1" || phase === "jobs" && path.includes("actions/runs/1/")) return lostProof(loss);
+    return path.startsWith("git/") ? { tree: { sha: "expected" } } : verifiedJobs();
+  };
+  expect(await gates.readFullGateAdmission(api, "expected")).toMatchObject({ kind: "reuse", run: { id: 2 } });
+  expect(calls).toContain("actions/runs/2/jobs?per_page=100");
+  expect(calls.some(path => path.includes("status=in_progress"))).toBe(false);
+});
+
+for (const loss of proofLosses) test("F1b lost success list (" + loss + ") still reads active coverage and requests a fresh gate", async () => {
+  const calls: string[] = [];
+  const api = async (path: string) => {
+    calls.push(path);
+    if (path.includes("status=success")) return lostProof(loss);
+    if (path.includes("status=in_progress")) return emptyRuns();
+    throw new Error("lost success list must not invent a candidate");
+  };
+  expect(await gates.readFullGateAdmission(api, "expected")).toEqual({ kind: "run" });
+  expect(calls).toContain("actions/workflows/check.yml/runs?status=in_progress&per_page=100");
+});
+
+for (const phase of ["commit", "jobs"] as const) for (const loss of proofLosses) test("F1b only lost " + phase + " proof (" + loss + ") plus empty active coverage requests a fresh gate", async () => {
+  const calls: string[] = [];
+  const api = async (path: string) => {
+    calls.push(path);
+    if (path.includes("status=success")) return successPage([successRow(1)]);
+    if (path.includes("status=in_progress")) return emptyRuns();
+    if (phase === "commit" && path.startsWith("git/") || phase === "jobs" && path.startsWith("actions/runs/")) return lostProof(loss);
+    return { tree: { sha: "expected" } };
+  };
+  expect(await gates.readFullGateAdmission(api, "expected")).toEqual({ kind: "run" });
+  expect(calls.some(path => path.includes("status=in_progress"))).toBe(true);
+});
+
+test("F1a malformed successful rows are dropped individually rather than hiding later proof", async () => {
+  const api = async (path: string) => path.includes("status=success")
+    ? successPage([null, { ...successRow(1), id: "not-a-run-id" }, successRow(2)])
+    : path.startsWith("git/") ? { tree: { sha: "expected" } } : verifiedJobs();
+  expect(await gates.readFullGateAdmission(api, "expected")).toMatchObject({ kind: "reuse", run: { id: 2 } });
+});
+
+for (const phase of ["inventory", "jobs", "commit"] as const) for (const loss of ["404", "timeout", "malformed", "missing"] as const) test("F1c unreadable active " + phase + " (" + loss + ") stays unknown after lost success proof", async () => {
+  const calls: string[] = [];
+  const api = async (path: string) => {
+    calls.push(path);
+    if (path.includes("status=success")) return lostProof("404");
+    if (path.includes("status=in_progress")) return phase === "inventory" ? lostProof(loss) : successPage([{ id: 10, head_sha: "active", status: "in_progress" }]);
+    if (path.startsWith("actions/runs/")) return phase === "jobs" ? lostProof(loss) : { total_count: 1, jobs: [{ name: "check (ubuntu-latest)", status: "in_progress" }] };
+    return lostProof(loss);
+  };
+  expect(await gates.readFullGateAdmission(api, "expected")).toMatchObject({ kind: "unknown" });
+  expect(calls.some(path => path.includes("status=in_progress"))).toBe(true);
+});
+
+for (const kind of ["truncated", "unidentifiable"] as const) test("F1c " + kind + " active inventory stays unknown after a lost success list", async () => {
+  const api = async (path: string) => {
+    if (path.includes("status=success")) return lostProof("404");
+    if (path.includes("status=in_progress")) return kind === "truncated"
+      ? { total_count: 101, workflow_runs: [] }
+      : successPage([{ head_sha: "active", status: "in_progress" }]);
+    throw new Error("active inventory cannot be identified");
+  };
+  expect(await gates.readFullGateAdmission(api, "expected")).toMatchObject({ kind: "unknown" });
+});
+
+test("F1d global request budget remains unknown even when every unsuccessful proof read is lost", async () => {
+  const calls: string[] = [];
+  const api = async (path: string) => {
+    calls.push(path);
+    if (path.includes("status=success")) return successPage(Array.from({ length: 100 }, (_, index) => successRow(index + 1)));
+    if (path.includes("status=in_progress")) return successPage(Array.from({ length: 25 }, (_, index) => ({ id: 1000 + index, head_sha: "active-" + index, status: "in_progress" })));
+    if (path.startsWith("git/")) return { tree: { sha: path.includes("success-") ? "expected" : "different" } };
+    if (/actions\/runs\/[1-9][0-9]?\//.test(path) || path.includes("/100/")) return lostProof("404");
+    return { total_count: 1, jobs: [{ name: "check (ubuntu-latest)", status: "in_progress" }] };
+  };
+  expect(await gates.readFullGateAdmission(api, "expected")).toMatchObject({ kind: "unknown" });
+  expect(calls).toHaveLength(240);
+});
+
+for (const outcome of ["reject", "valid-proof"] as const) test("F1d shared deadline wins when an in-flight proof read ends at the global deadline: " + outcome, async () => {
+  let now = 0;
+  const calls: string[] = [];
+  const api = async (path: string) => {
+    calls.push(path);
+    if (path.includes("status=success")) return successPage([successRow(1)]);
+    if (path.startsWith("git/")) return { tree: { sha: "expected" } };
+    if (path.startsWith("actions/runs/")) { now = 100; return outcome === "reject" ? lostProof("timeout") : verifiedJobs(); }
+    return emptyRuns();
+  };
+  // Host-only clock/deadline ports make the global 60-second ceiling deterministic; no wall-clock sleep.
+  expect(await gates.readFullGateAdmission(api, "expected", { deadline: 100, now: () => now })).toMatchObject({ kind: "unknown" });
+  expect(calls.some(path => path.includes("status=in_progress"))).toBe(false);
+});
+
+test("F1c truncated active jobs remain unknown after lost proof", async () => {
+  const api = async (path: string) => {
+    if (path.includes("status=success")) return lostProof("404");
+    if (path.includes("status=in_progress")) return successPage([{ id: 10, head_sha: "active", status: "in_progress" }]);
+    if (path.startsWith("git/")) return { tree: { sha: "expected" } };
+    return { total_count: 101, jobs: [{ name: "check (ubuntu-latest)", status: "in_progress" }] };
+  };
+  expect(await gates.readFullGateAdmission(api, "expected")).toMatchObject({ kind: "unknown" });
+});
+
+test("F1d already-exhausted shared deadline grants no API reads", async () => {
+  let reads = 0;
+  const api = async () => { reads++; return emptyRuns(); };
+  expect(await gates.readFullGateAdmission(api, "expected", { deadline: 0, now: () => 1 })).toMatchObject({ kind: "unknown" });
+  expect(reads).toBe(0);
+});
+
+test("F1e --require still refuses release when lost proof allows only a fresh admission", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-ci-require-"));
+  try {
+    expect(hubGitSync(["init", "-q", root], { encoding: "utf8" }).status).toBe(0);
+    expect(hubGitSync(["-C", root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], { encoding: "utf8" }).status).toBe(0);
+    const preload = join(root, "github-fixture.mjs"), output = join(root, "github-output");
+    writeFileSync(preload, [
+      "globalThis.fetch = async (url) => {",
+      '  const value = String(url);',
+      '  if (value.includes("status=success")) return Response.json({total_count:1,workflow_runs:[{id:1,head_sha:"lost-proof",conclusion:"success",event:"push"}]});',
+      '  if (value.includes("git/commits/")) return new Response("fixture gone", {status:404});',
+      '  if (value.includes("status=in_progress")) return Response.json({total_count:0,workflow_runs:[]});',
+      '  throw new Error("unexpected fixture GitHub request");',
+      "};",
+    ].join("\n"));
+    const result = spawnSync(process.execPath, ["--preload", preload, join(import.meta.dir, "../scripts/ci-reuse.mjs"), "--require"], {
+      cwd: root, encoding: "utf8", timeout: 10_000,
+      env: { PATH: process.env.PATH, HOME: root, GITHUB_REPOSITORY: "fixture/repo", GITHUB_TOKEN: "fixture-token", GITHUB_RUN_ID: "99", GITHUB_OUTPUT: output },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("No successful full CI gate for this exact tree; release refused");
+    expect(readFileSync(output, "utf8")).toBe("run_gate=false\nverified_run=\nadmission=run\n");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
+
+const unknownProofFailures: [string, () => never][] = [
+  ...[403, 429, 500, 503].map(status => [String(status), () => { throw Object.assign(new Error("fixture HTTP failure"), { status }); }] as [string, () => never]),
+  ["response-size", () => { throw Object.assign(new Error("CI admission response exceeded bound"), { code: "CI_RESPONSE_SIZE" }); }],
+  ["authentication", () => { throw new Error("CI admission requires repository and scoped Actions read access"); }],
+  ["other", () => { throw new Error("fixture transport failure"); }],
+  ["type-error", () => { throw new TypeError("fixture transport implementation failed"); }],
+  ["limit-looking-error", () => { throw new Error("gate read budget exhausted"); }],
+];
+for (const phase of ["success-list", "commit", "jobs"] as const) for (const [failure, fail] of unknownProofFailures) test("bounded proof taxonomy keeps " + phase + " " + failure + " unknown even with later valid proof", async () => {
+  const calls: string[] = [];
+  const api = async (path: string) => {
+    calls.push(path);
+    if (path.includes("status=success")) return phase === "success-list" ? fail() : successPage([successRow(1), successRow(2)]);
+    if (path.includes("status=in_progress")) return emptyRuns();
+    if (phase === "commit" && path === "git/commits/success-1" || phase === "jobs" && path.includes("actions/runs/1/")) return fail();
+    return path.startsWith("git/") ? { tree: { sha: "expected" } } : verifiedJobs();
+  };
+  expect(await gates.readFullGateAdmission(api, "expected")).toMatchObject({ kind: "unknown" });
+  expect(calls).toHaveLength(phase === "success-list" ? 1 : phase === "commit" ? 2 : 3);
+});
+
+test("CLI HTTP failures retain their status: 503 proof failure refuses fresh admission", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-ci-status-"));
+  try {
+    expect(hubGitSync(["init", "-q", root], { encoding: "utf8" }).status).toBe(0);
+    expect(hubGitSync(["-C", root, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], { encoding: "utf8" }).status).toBe(0);
+    const preload = join(root, "github-fixture.mjs"), output = join(root, "github-output");
+    writeFileSync(preload, [
+      "globalThis.fetch = async (url) => {",
+      '  const value = String(url);',
+      '  if (value.includes("status=success")) return Response.json({total_count:1,workflow_runs:[{id:1,head_sha:"lost-proof",conclusion:"success",event:"push"}]});',
+      '  if (value.includes("git/commits/")) return new Response("fixture unavailable", {status:503});',
+      '  if (value.includes("status=in_progress")) return Response.json({total_count:0,workflow_runs:[]});',
+      '  throw new Error("unexpected fixture request");',
+      "};",
+    ].join("\n"));
+    const result = spawnSync(process.execPath, ["--preload", preload, join(import.meta.dir, "../scripts/ci-reuse.mjs")], {
+      cwd: root, encoding: "utf8", timeout: 10_000,
+      env: { PATH: process.env.PATH, HOME: root, GITHUB_REPOSITORY: "fixture/repo", GITHUB_TOKEN: "fixture-token", GITHUB_RUN_ID: "99", GITHUB_OUTPUT: output },
+    });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("CI admission refused");
+    expect(readFileSync(output, "utf8")).toBe("run_gate=false\nverified_run=\nadmission=unknown\n");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}, 20_000);
