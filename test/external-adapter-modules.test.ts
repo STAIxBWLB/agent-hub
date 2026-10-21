@@ -43,6 +43,10 @@ test("A4 a pinned local bundle loads once into an immutable project catalog", as
   expect(createProjectAdapterCatalog().definitionOf("fixture")).toBeUndefined();
   expect(() => createProjectAdapterCatalog(undefined, [...definitions, ...definitions])).toThrow(/collision/);
 });
+test("A4 builtin instance namespaces cannot be claimed by an external kind", async () => {
+  const f = fixture(`export const definition=${definitionSource().replaceAll('"fixture"', '"codex-helper"')};`);
+  await expect(loadExternalAdapterDefinitions(f.cwd, f.layers())).rejects.toThrow(/reserved/);
+});
 
 for (const name of ["config.json", "config.local.json"] as const) test(`A4 ${name} cannot load module code when shared or tracked`, async () => {
   const marker = "__a4_untrusted_" + name;

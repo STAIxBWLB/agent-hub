@@ -117,7 +117,8 @@ export function validateExternalDefinition(raw: unknown): AdapterDefinition {
   const definition = snapshot(raw) as AdapterDefinition;
   if (definition.api !== ADAPTER_API) return fail("adapter API mismatch");
   const reserved = [...ADAPTERS.map(item => item.kind), ...CONFIGURED_ACP_RESERVED_COMMANDS, "user", "hub", "digest", "constructor", "prototype", "__proto__"];
-  if (typeof definition.kind !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(definition.kind) || reserved.includes(definition.kind)) return fail("kind is reserved, invalid or collides with a builtin");
+  if (typeof definition.kind !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(definition.kind) || reserved.includes(definition.kind)
+    || ADAPTERS.some(builtin => definition.kind.startsWith(`${builtin.kind}-`))) return fail("kind is reserved, invalid or collides with a builtin");
   text(definition.displayName, 256);
   if (definition.family !== definition.kind || definition.trust?.onPrem !== false || definition.trust.hubSandboxed !== false
     || definition.defaultOnRoster !== false || definition.optional !== true) return fail("external kinds must retain their own family and optional off-roster cloud trust");
@@ -213,7 +214,7 @@ export async function loadExternalAdapterDefinitions(cwd: string, layers: readon
       if (digest(bytes) !== declaration.sha256 || configRefusal(cwd, "config.local.json")) return fail("module pin or provenance changed before import");
       const imported: unknown = await import(`data:text/javascript;nonce=${randomUUID()};base64,${Buffer.from(executable).toString("base64")}`);
       const definition = validateExternalDefinition((imported as { definition?: unknown }).definition);
-      if (existingKinds.has(definition.kind)) return fail("kind collides with a configured adapter");
+      if ([...existingKinds].some(kind => definition.kind === kind || definition.kind.startsWith(`${kind}-`))) return fail("kind collides with a configured adapter namespace");
       if (definitions.some(item => item.kind === definition.kind)) return fail("duplicate external kind");
       definitions.push(definition);
     } catch (error) {

@@ -19077,10 +19077,16 @@ function configTracked(cwd, name) {
 
 // src/adapters/external-modules.ts
 init_project();
+
+// src/adapters/external-module-scan.ts
+var forbiddenNames = new Set(["require", "createRequire", "eval", "Function"]);
+var globalNames = new Set(["globalThis", "global", "self", "window"]);
+var regexAfterWords = new Set(["return", "throw", "case", "delete", "typeof", "void", "yield", "await", "in", "of", "else", "do"]);
+var regexAfterPunctuation = new Set(["=", "(", "[", "{", ":", ",", ";", "!", "?", "&&", "||", "??", "=>", "+", "-", "*", "%", "&", "|", "^", "~", "<", ">"]);
+
+// src/adapters/external-modules.ts
 var MAX_MODULES2 = 16;
 var MAX_MODULE_BYTES = 2 * 1024 * 1024;
-var PUBLIC_IMPORTS = new Set(["@staix/agent-hub/adapter", "@staix/agent-hub/conformance"]);
-
 class ExternalAdapterRefusal extends Error {
 }
 var fail3 = (reason) => {

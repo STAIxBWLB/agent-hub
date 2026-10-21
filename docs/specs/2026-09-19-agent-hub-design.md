@@ -4133,7 +4133,8 @@ instance policies and other fixed-native fields are refused rather than
 advertised as usable extension points. A broader transport needs a reviewed
 kind-neutral host-port contract first (#625 phase 6). Builtin collisions, duplicate
 kinds, incompatible API and unsupported fields refuse the module. Never add
-a module to the process-global builtin registry.
+a module to the process-global builtin registry. Builtin and configured instance
+namespaces (`<kind>-*`) are reserved against external module kinds.
 
 The CLI receives external kinds only as bounded id/display metadata from the
 running daemon. That projection cannot grant permissions or register code.
