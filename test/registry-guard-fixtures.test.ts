@@ -295,3 +295,107 @@ test("registry guard A2b native instanceof requires adapter provenance rather th
   expect(sites).toHaveLength(2);
   expect(sites.map(site => site.symbol)).toEqual(["choose", "choose"]);
 });
+
+for (const [body, symbol] of [
+  [`function choose(peer?:string) { return peer || "claude"; }`, "choose"],
+  [`function choose(peer?:string) { peer ||= "codex"; return peer; }`, "choose"],
+  [`function choose(opts:any) { return opts.agentId ?? "kimi"; }`, "choose"],
+  [`function choose(opts:any) { return opts["agentId"] || "pi"; }`, "choose"],
+  [`function choose(peer?:string) { return peer ? peer : "qwen"; }`, "choose"],
+  [`function choose(peer?:string) { return peer ? "jcode" : peer; }`, "choose"],
+  [`function choose(opts:any) { const peer=opts.agentId ? opts.agentId : "agy"; return peer; }`, "choose.peer"],
+] as const) test(`registry guard follow-up detects peer defaults in logical and conditional syntax: ${body}`, () => {
+  const sites = scanRegistrySources(source(body));
+  expect(sites).toHaveLength(1);
+  expect(sites[0]?.symbol).toBe(symbol);
+});
+
+for (const expression of [
+  `active.get("codex")`,
+  `active.has("kimi")`,
+  `bus.peers.get("pi")`,
+  `bus["peers"]["has"]("qwen")`,
+  `active["get"]("jcode")`,
+]) test(`registry guard follow-up detects peer-keyed map dispatch: ${expression}`, () => {
+  const sites = scanRegistrySources(source(`declare const active: Map<PeerId,unknown>; declare const bus:any; function choose() { return ${expression}; }`));
+  expect(sites).toHaveLength(1);
+  expect(sites[0]?.symbol).toBe("choose");
+});
+
+for (const expression of [
+  `({peer:"codex"})`,
+  `({kind:"kimi"})`,
+  `({"peer":"pi"})`,
+  `({["kind"]:"qwen"})`,
+]) test(`registry guard follow-up detects peer/kind property values: ${expression}`, () => {
+  const sites = scanRegistrySources(source(`function choose() { return ${expression}; }`));
+  expect(sites).toHaveLength(1);
+  expect(sites[0]?.symbol).toBe("choose");
+});
+
+for (const expression of [`"kimi" in peers`, `"codex" in bus.peers`, `"pi" in bus["peers"]`]) test(`registry guard follow-up detects peer-key membership: ${expression}`, () => {
+  const sites = scanRegistrySources(source(`declare const peers:Record<PeerId,unknown>; declare const bus:any; function choose() { return ${expression}; }`));
+  expect(sites).toHaveLength(1);
+  expect(sites[0]?.symbol).toBe("choose");
+});
+
+test("registry guard follow-up resolves source-bound default, map, object and membership aliases", () => {
+  const sites = scanRegistrySources({
+    "src/adapters/peer-fixture.ts": `export const KIND="codex", FIELD="kind", ID_FIELD="agentId", METHOD="get"; export const active:Map<PeerId,unknown>=new Map();`,
+    "src/hub/example.ts": `import {KIND,FIELD,ID_FIELD,METHOD,active as entries} from '../adapters/peer-fixture.ts'; function choose(opts:any) { const peer=opts[ID_FIELD] || KIND; entries[METHOD](KIND); const row={[FIELD]:KIND}; return KIND in entries; }`,
+  });
+  expect(sites).toHaveLength(4);
+  expect(sites.map(site => site.symbol)).toEqual(["choose.peer", "choose", "choose.row", "choose"]);
+});
+
+test("registry guard follow-up detects shorthand peer values without counting their constant declarations", () => {
+  const sites = scanRegistrySources(source(`const peer="codex", kind="kimi"; function choose() { return {peer,kind}; }`));
+  expect(sites).toHaveLength(2);
+  expect(sites.map(site => site.symbol)).toEqual(["choose", "choose"]);
+});
+
+test("registry guard follow-up excludes generic enum defaults, model/file maps and prose", () => {
+  expect(inventory(`
+    // 'codex' in peers and bus.peers.get('pi') are examples, not dispatch.
+    const prose="opts.agentId || 'claude'";
+    declare const modelMap:Map<string,unknown>, files:Map<string,unknown>;
+    function choose(opts:any,mode?:string,model?:string) {
+      const role=mode || "local", provider=mode ?? "local", selected=model ? model : "claude";
+      modelMap.get("claude"); files.has("codex");
+      const flags={role:"local",mode:"local",label:"claude",file:"codex",provider:"local"};
+      return "local" in flags;
+    }
+  `)).toEqual([]);
+});
+
+test("registry guard follow-up honors dynamic keys and lexical alias shadowing", () => {
+  const sites = scanRegistrySources(source(`
+    const KIND="codex", FIELD="kind", METHOD="get";
+    function choose(opts:any, entries:Map<string,unknown>, KIND:string, FIELD:string, METHOD:string) {
+      const id=opts.agentId ?? KIND; entries[METHOD](KIND); const row={[FIELD]:KIND}; return KIND in entries;
+    }
+  `));
+  expect(sites).toEqual([]);
+});
+
+test("registry guard follow-up does not borrow peer map declarations from an unrelated script", () => {
+  expect(scanRegistrySources({
+    "src/hub/first.ts": `declare const active:Map<PeerId,unknown>;`,
+    "src/hub/second.ts": `function choose() { return active.get("codex") || ("kimi" in active); }`,
+  })).toEqual([]);
+});
+
+
+test("registry guard follow-up tracks native marker conditionals used by a peer fallback without treating model markers as peers", () => {
+  const sites = scanRegistrySources(source(`
+    function choose(claude:unknown,codex:unknown,hub?:string) {
+      const native=claude !== undefined ? "claude" : codex !== undefined ? "codex" : undefined;
+      const peer=hub ?? native;
+      const modelNative=claude !== undefined ? "claude" : codex !== undefined ? "codex" : undefined;
+      const model=hub ?? modelNative;
+      return {peer,model};
+    }
+  `));
+  expect(sites).toHaveLength(2);
+  expect(sites.map(site => site.symbol)).toEqual(["choose.native", "choose.native"]);
+});

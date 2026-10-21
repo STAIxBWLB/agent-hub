@@ -1,3 +1,4 @@
+import { nativeRestoreGroup } from "../adapters/definitions/native-identity-defaults.ts";
 import { definitionOf } from "../adapters/registry.ts";
 import { readInstanceConfig } from "../hub/instance-config.ts";
 import { LIVE_TEST_PERSON_REFUSAL } from "./identity.ts";
@@ -894,7 +895,7 @@ export async function reattachRecovery(id: string, peer: string, driver: Recover
     };
     await target();
     attempted = true;
-    await driver.restore(planned, progress, op, projectDefinition(native, planned.project.root)?.transport === "claude-channel" ? "claude" : "native", save, native);
+    await driver.restore(planned, progress, op, nativeRestoreGroup(projectDefinition(native, planned.project.root)?.transport), save, native);
     // A done receipt is written by the runtime only after authenticated attachment and exact settlement.
     // Inspection peers may be unavailable; do not invent an attachment from a test or a stale status projection.
     const restored = decodeRestoreReceipt(progress.terminals[`restored:${native}`]);

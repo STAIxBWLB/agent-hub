@@ -1,3 +1,4 @@
+import { defaultCapturePeer } from "../adapters/definitions/native-identity-defaults.ts";
 import { BOUNDED_TASK_TOOLS } from "../hub/hub-tools.ts";
 import { MEMORY_READ_TOOLS } from "../hub/read-tools.ts";
 import { readFileSync } from "node:fs";
@@ -40,7 +41,7 @@ export class Capture {
     private readonly opts: CaptureOptions,
   ) {
     this.platformSource = opts.platformSource ?? "agent-hub";
-    this.agentId = opts.agentId ?? "local";
+    this.agentId = opts.agentId ?? defaultCapturePeer();
   }
 
   init(sessionId: string, prompt: string): void {

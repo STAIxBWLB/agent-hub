@@ -161,3 +161,38 @@ test("#625 coherence validates telemetry structure without invoking native reade
   const definition: AdapterDefinition = { ...original, budget: { account: "fixture", reader: { source: "fixture-quota", read }, context: { source: "acp_usage_update", read } } };
   expect(() => validate(definition)).not.toThrow();
 });
+
+const EXPECTED_ACP_LEGS = ["native-approval-rpc", "native-mode-ack", "native-quota", "watchdog-generation"] as const;
+
+test("#625 follow-up: ACP enrollment exposes the stable catalog used by executable legs", async () => {
+  const { ACP_LEGS } = await enrollment();
+  expect(ACP_LEGS).toEqual([...EXPECTED_ACP_LEGS]);
+});
+
+for (const leg of EXPECTED_ACP_LEGS) test(`#625 follow-up: an owned ACP engine needs its explicit ${leg} skip reason`, async () => {
+  const { assertEnrollment, UNSUPPORTED, UNSUPPORTED_LEGS } = await enrollment();
+  const reasons = { ...UNSUPPORTED_LEGS }; delete reasons[`jcode:${leg}`];
+  expect(() => assertEnrollment(ADAPTERS, primary(), UNSUPPORTED, reasons)).toThrow(new RegExp(`jcode.*${leg}`));
+});
+
+for (const key of ["removed-kind:native-quota", "jcode:retired-leg", "codex:native-quota", "codex:reviewer:native-quota"]) test(`#625 follow-up: stale unsupported ACP leg key ${key} is refused`, async () => {
+  const { assertEnrollment, UNSUPPORTED, UNSUPPORTED_LEGS } = await enrollment();
+  expect(() => assertEnrollment(ADAPTERS, primary(), UNSUPPORTED, { ...UNSUPPORTED_LEGS, [key]: "old reason must not hide an unexecuted leg" })).toThrow(new RegExp(key));
+});
+
+test("#625 follow-up: a blank unsupported ACP leg reason is refused", async () => {
+  const { assertEnrollment, UNSUPPORTED, UNSUPPORTED_LEGS } = await enrollment();
+  expect(() => assertEnrollment(ADAPTERS, primary(), UNSUPPORTED, { ...UNSUPPORTED_LEGS, "jcode:native-approval-rpc": "  " })).toThrow(/jcode.*native-approval-rpc/);
+});
+
+test("#625 follow-up: removing an ACP definition invalidates its stale leg reasons", async () => {
+  const { assertEnrollment, UNSUPPORTED, UNSUPPORTED_LEGS } = await enrollment();
+  expect(() => assertEnrollment(ADAPTERS.filter(definition => definition.kind !== "jcode"), primary().filter(kind => kind !== "jcode"), UNSUPPORTED, UNSUPPORTED_LEGS)).toThrow(/jcode/);
+});
+
+test("#625 follow-up: a newly enrolled non-generic ACP engine cannot silently bypass the executable leg catalog", async () => {
+  const { assertEnrollment, UNSUPPORTED, UNSUPPORTED_LEGS } = await enrollment();
+  const original = ADAPTERS.find(definition => definition.transport === "acp" && definition.start.daemonPort === "acp")!;
+  const fake: AdapterDefinition = { ...original, kind: "fake-owned-acp", reviewerVariant: undefined, start: { ...original.start, daemonPort: "owned-acp" } };
+  expect(() => assertEnrollment([...ADAPTERS, fake], [...primary(), fake.kind], UNSUPPORTED, UNSUPPORTED_LEGS)).toThrow(/fake-owned-acp/);
+});

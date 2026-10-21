@@ -160,7 +160,7 @@ async function withClaudeLaunchRecord(stateDir: string, action: () => void): Pro
 }
 
 function writeClaudeLaunchRecord(stateDir: string, record: Record<string, unknown>): void {
-  const file = join(stateDir, claudeStateFile("claude-launch", typeof record.peer === "string" ? record.peer : "claude")), temp = `${file}.${randomUUID()}.tmp`;
+  const file = join(stateDir, claudeStateFile("claude-launch", typeof record.peer === "string" ? record.peer : defaultChannelPeer(undefined))), temp = `${file}.${randomUUID()}.tmp`;
   try { writeFileSync(temp, JSON.stringify(record), { mode: 0o600 }); renameSync(temp, file); }
   finally { try { unlinkSync(temp); } catch { /* the rename normally consumed it */ } }
 }

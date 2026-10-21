@@ -643,7 +643,8 @@ export class CodexPeer extends BasePeer {
     if (this.unidentifiedCancellation) return; // native traffic is still forwarded to its TUI; hub attribution is fenced
     const unknownTurn = () => [...this.activeTurns].some(id => id.startsWith("unknown:"));
     if (method === "thread/tokenUsage/updated") {
-      this.opts.onContext?.((this.opts.contextReader?.read ?? codexContext)(params.tokenUsage, this.threadId, Date.now()));
+      const reader = this.opts.contextReader;
+      this.opts.onContext?.(reader ? reader.read(params.tokenUsage, this.threadId, Date.now()) : codexContext(params.tokenUsage, this.threadId, Date.now()));
       const total = Number(params.tokenUsage?.total?.totalTokens);
       if (!Number.isFinite(total)) return;
       const added = this.tokenTotal === undefined ? (this.freshThread ? total : 0) : Math.max(0, total - this.tokenTotal);

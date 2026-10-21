@@ -131,6 +131,9 @@ export function assertDefinitionCoherence(definition: AdapterDefinition): void {
   const fail = (field: string, reason: string): never => { throw new Error(`${definition.kind}.${field}: ${reason}`); };
   const nonempty = (value: unknown): value is string => typeof value === "string" && value.trim().length > 0;
   assertDaemonEngine(definition);
+  if (definition.identity.mcp === "channel-plugin" && definition.transport !== "claude-channel" && definition.transport !== "ws-pull") {
+    fail("identity.mcp", "channel-plugin requires claude-channel or ws-pull transport");
+  }
   if (definition.turnEnd === "native-hook" && definition.transport !== "claude-channel" && !definition.hooks?.factsHook) {
     fail("turnEnd", "native-hook requires the Claude transport or a native factsHook");
   }

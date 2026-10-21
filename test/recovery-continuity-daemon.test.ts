@@ -146,7 +146,7 @@ function continuityRecorder() {
   const writes: unknown[] = [], calls: unknown[] = [], logs: string[] = [];
   const state: { disk: unknown; writeFails: boolean; settleFails: boolean; settleSucceeds: boolean; now: number; reads: number } = { disk: ready, writeFails: false, settleFails: false, settleSucceeds: false, now: 1000, reads: 0 };
   const context = { piContinuity: ready, stopping: false, recoveryActive: () => false,
-    bus: { peers }, isPiPeer, opts: { cwd: "/fixture", stateDir: "/fixture/state" }, projectId: "fixture", instanceId: "current",
+    bus: { peers }, isPiPeer, continuityKind: "pi", opts: { cwd: "/fixture", stateDir: "/fixture/state" }, projectId: "fixture", instanceId: "current",
     Date: { now: () => state.now },
     readRecoveryContinuity: () => { state.reads++; return state.disk; },
     writeSessions: (_directory: string, value: unknown) => { if (state.writeFails) throw new Error("write failed"); writes.push(value); },
