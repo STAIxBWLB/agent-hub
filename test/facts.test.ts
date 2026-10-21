@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -192,6 +192,75 @@ test("only regular files inside the project are read: no path out of it, no syml
   expect(o?.text ?? "").toContain("big.bin");
   expect(o?.text ?? "").toContain("too large to show; read the file");
   expect(o?.text ?? "").not.toContain("yyyy");
+});
+
+// issue #428: Linux before 6.13 stamps files from a coarse clock, so a same-size rewrite within one tick keeps size, mtime,
+// ctime and inode. utimes stands in for that tick here, so the case is the same on every filesystem.
+test("a large file rewritten at the same size and mtime just after it was seen is a change; once settled it is not", async () => {
+  const root = mkdtempSync(join(tmpdir(), "agenthub-facts-"));
+  dirs.push(root);
+  const big = join(root, "big.bin");
+  const tick = new Date(Math.floor(Date.now() / 1000) * 1000); // whole seconds: exact on every filesystem
+  writeFileSync(big, "x".repeat(300 * 1024));
+  utimesSync(big, tick, tick);
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: ["big.bin"], plans: [] }), peers: () => ["claude"], nameable: () => true });
+  const look = () => { const o = facts.due("claude"); if (o) facts.ack("claude", o.id); return o; };
+  look();
+  const seen = statSync(big);
+  writeFileSync(big, "y".repeat(300 * 1024));
+  utimesSync(big, tick, tick);
+  expect([statSync(big).size, statSync(big).mtimeMs]).toEqual([seen.size, seen.mtimeMs]); // the stat a tick leaves
+  const o = look();
+  expect(o?.text ?? "").toContain("big.bin");
+  expect(o?.text ?? "").toContain("too large to show; read the file");
+  // Seen while just written, seen again once settled: the same bytes, so no change and the same integration target.
+  const target = facts.tree(["big.bin"]);
+  await Bun.sleep(2100);
+  expect(look()).toBeUndefined();
+  expect(facts.tree(["big.bin"])).toBe(target);
+});
+
+// issue #428: racy hashing runs on the daemon's loop, so it is bounded: a file over the per-file cap keeps its stat-only
+// stamp (the documented ceiling: a same-tick rewrite of it is not seen), and one event-loop turn hashes 16 MiB at most.
+test("a racy large file over the per-file cap is not hashed, and one turn hashes racy files within its budget", async () => {
+  const root = mkdtempSync(join(tmpdir(), "agenthub-facts-"));
+  dirs.push(root);
+  const tick = new Date(Math.floor(Date.now() / 1000) * 1000);
+  const files = ["huge.bin", "b0.bin", "b1.bin", "b2.bin", "b3.bin", "b4.bin"];
+  const size = (f: string) => (f === "huge.bin" ? 5 : 3.5) * 1024 * 1024; // the cap is 4 MiB; five of 3.5 MiB pass 16 MiB
+  const put = (fill: string) => { for (const f of files) { writeFileSync(join(root, f), Buffer.alloc(size(f), fill)); utimesSync(join(root, f), tick, tick); } };
+  put("x");
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: files, plans: [] }), peers: () => ["claude"], nameable: () => true });
+  const look = () => { const o = facts.due("claude"); if (o) facts.ack("claude", o.id); return o; };
+  look();
+  await new Promise((r) => setImmediate(r)); // the next hook event: a new turn, a fresh budget
+  put("y"); // every file keeps its size and mtime
+  const o = look();
+  expect(o?.text ?? "").not.toContain("huge.bin");
+  expect(files.filter((f) => f !== "huge.bin" && (o?.text ?? "").includes(f))).toHaveLength(4);
+});
+
+// issue #428: the HEAD comparison keeps its own 64 MiB bound; the racy per-file cap and turn budget never weaken it, so a
+// HEAD-equal rewrite is no change while racy and the integration target does not move when it settles.
+test("a racy large file with HEAD's bytes under a named directory is not named, and the target holds when it settles", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-facts-")));
+  dirs.push(root);
+  mkdirSync(join(root, "src"));
+  const big = Buffer.alloc(5 * 1024 * 1024, 7); // over the 4 MiB racy cap
+  writeFileSync(join(root, "src", "big.bin"), big);
+  const git = (...a: string[]) => spawnSync("git", ["-C", root, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...a]);
+  git("init", "-q");
+  git("add", "-A");
+  git("commit", "-qm", "base");
+  const later = new Date(Date.now() + 60_000);
+  writeFileSync(join(root, "src", "big.bin"), big); // `sed -i` with no match: HEAD's bytes, new stat data
+  utimesSync(join(root, "src", "big.bin"), later, later);
+  expect(git("diff-index", "--name-only", "HEAD").stdout.toString()).toContain("src/big.bin");
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: ["src"], plans: [] }), peers: () => ["claude"], nameable: () => true });
+  expect(facts.due("claude")?.text ?? "").not.toContain("big.bin");
+  const target = facts.tree(["src"]);
+  await Bun.sleep(2100);
+  expect(facts.tree(["src"])).toBe(target);
 });
 
 test("reset (a PII task opened and closed) never shows a diff across it; work from before tracking is named as not covered", async () => {

@@ -1,7 +1,7 @@
 import { repoGitArgs, repoGitEnv, type Repo } from "./snapshots.ts";
 import { isHubWritePath } from "./permission-mode.ts";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, mkdirSync, openSync, readSync, rmSync, statSync, writeFileSync, type Stats } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { sanitize, type PeerId } from "./envelope.ts";
 import { isDenied } from "../local/deny.ts";
@@ -24,6 +24,22 @@ import { realPath } from "./project.ts";
 const MAX_BYTES = 256 * 1024;
 /** Larger files that are not read are hashed for the HEAD comparison while all of them in one comparison total this much or less; beyond it, none is compared. */
 const HASHED_BYTES = 64 * 1024 * 1024;
+/**
+ * A large file whose last change (ctime) is this recent may still be rewritten with the same stat: Linux before 6.13
+ * stamps files from a coarse clock, so a same-size rewrite within one tick keeps size, mtime, ctime and inode (#428).
+ * Such a file is named by its bytes, as git treats a racily clean entry: at most RACY_HASH_MAX_BYTES each, hashed once
+ * per version in a public entry point, RACY_BURST_BYTES in all per store (Facts instance) per event-loop turn (the hooks
+ * run on the daemon's loop). The HEAD comparison keeps its own bound (HASHED_BYTES) and is not limited by these.
+ * ponytail: ceilings, each falling back to the stat-only stamp (no claim either way): a racy file over the per-file cap,
+ * or past the turn's budget, misses a same-size rewrite within one timestamp tick; a racy file first seen past the
+ * budget (kept stat-only) reads as changed once when a later turn hashes it with the same bytes; a file written continuously never settles and is hashed at every look, within that budget; FAT's 2 s mtime
+ * is the widest covered; a settled file made racy with the same bytes (chmod, `cp -p`, touch) reads as changed once; a
+ * version first seen racy costs an open and a stat at every later look (largeBlob's cache answers). A per-file history
+ * of racy versions if any of these matters.
+ */
+const RACY_MS = 2000;
+const RACY_HASH_MAX_BYTES = 4 * 1024 * 1024;
+const RACY_BURST_BYTES = 16 * 1024 * 1024;
 /** Changed lines shown in one fact, all files together; the rest is counted and the files named. */
 export const MAX_LINES = 60;
 /** What Claude Code's Read returns by default: the first 2000 lines, each cut at 2000 characters. */
@@ -145,6 +161,10 @@ export class Facts {
   private readonly seenDropped = new Map<PeerId, Set<string>>();
   /** Git blob ids of large files, by path, with the stat they were taken at. */
   private readonly largeBlobs = new Map<string, { stamp: string; blob: string }>();
+  /** Blob ids of racy large files hashed in the current boundary, by path and stat (#428). */
+  private racyMemo = new Map<string, string>();
+  /** Bytes of racy large files left to hash in this event-loop turn. */
+  private racyLeft?: { bytes: number };
   /** Directories each peer acknowledged being told were cut: once per session, not at every boundary. */
   private readonly cutTold = new Map<PeerId, Set<string>>();
   /**
@@ -217,7 +237,7 @@ export class Facts {
    * ponytail: a directory swapped between the containment check and the open is followed once; an fd-relative walk
    * (openat per component) closes that if it matters.
    */
-  private load(file: string): Omit<Version, "seq"> {
+  private load(file: string, statOnly = false): Omit<Version, "seq"> {
     if (this.rel(join(this.root, file)) !== file) return { hash: "missing" };
     const projected = this.o.projection?.(join(this.root, file));
     if (projected) return { hash: projected.rawHash, blob: projected.rawBlob, text: projected.text, projected: true };
@@ -226,7 +246,10 @@ export class Facts {
       fd = openSync(join(this.root, file), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const st = fstatSync(fd);
       if (!st.isFile()) return { hash: "missing" }; // a directory, a device or a fifo: never read
-      if (st.size > MAX_BYTES) return { hash: `large:${st.size}:${st.mtimeMs}` };
+      if (st.size > MAX_BYTES) {
+        const blob = statOnly ? undefined : this.racyBlob(file, fd, st);
+        return blob ? { hash: `large:${st.size}:${st.mtimeMs}:${blob}`, blob } : { hash: `large:${st.size}:${st.mtimeMs}` };
+      }
       const buf = Buffer.alloc(st.size);
       let got = 0;
       while (got < buf.length) {
@@ -317,13 +340,17 @@ export class Facts {
     const seen = files.filter((f) => head.has(f)).map((f) => [f, version(f)] as const);
     const large = seen.reduce((n, [, v]) => n + (v?.hash.startsWith("large:") ? Number(v.hash.split(":")[1]) : 0), 0);
     return new Set(seen.filter(([f, v]) => {
-      const blob = v?.blob ?? (v?.hash.startsWith("large:") && large <= HASHED_BYTES ? this.largeBlob(f, v.hash) : undefined);
+      const blob = !v?.hash.startsWith("large:") ? v?.blob : large <= HASHED_BYTES ? v.blob ?? this.largeBlob(f, v.hash, true) : undefined;
       return blob !== undefined && blob === head.get(f);
     }).map(([f]) => f));
   }
 
   /** Git's blob id of a file too large to load, streamed; undefined for anything that is not a small enough regular file. */
-  private largeBlob(file: string, observed: string): string | undefined {
+  /**
+   * `head`: for the HEAD comparison, which bounds its own hashing (HASHED_BYTES): a racy file is streamed whatever the
+   * racy cap and the turn's budget, uncached. Otherwise a racy file goes through racyBlob's limits.
+   */
+  private largeBlob(file: string, observed: string, head = false): string | undefined {
     if (this.rel(join(this.root, file)) !== file) return undefined;
     let fd: number | undefined;
     try {
@@ -333,19 +360,32 @@ export class Facts {
       // A file that stays stat-dirty but equal to HEAD is looked at again at every boundary: hashed once per version.
       const stamp = `${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`, known = this.largeBlobs.get(file);
       if (known?.stamp === stamp) return known.blob;
-      const h = createHash("sha1").update(`blob ${st.size}\0`);
-      const buf = Buffer.alloc(1024 * 1024);
-      let got = 0;
-      for (let n = 0; got < st.size && (n = readSync(fd, buf, 0, buf.length, got)) > 0; got += n) h.update(buf.subarray(0, n));
-      if (got !== st.size) return undefined; // changed while read: no claim
-      const blob = h.digest("hex");
-      this.largeBlobs.set(file, { stamp, blob });
+      // A racy stamp may name other bytes later: never cached.
+      if (Date.now() - st.ctimeMs < RACY_MS) return head ? this.racyMemo.get(racyKey(file, st)) ?? streamBlob(fd, st.size) : this.racyBlob(file, fd, st);
+      const blob = streamBlob(fd, st.size);
+      if (blob) this.largeBlobs.set(file, { stamp, blob });
       return blob;
     } catch {
       return undefined;
     } finally {
       if (fd !== undefined) closeSync(fd);
     }
+  }
+
+  /** A racy large file's blob id (#428), or undefined when it is settled, over the per-file cap or past the turn's budget. */
+  private racyBlob(file: string, fd: number, st: Stats): string | undefined {
+    if (Date.now() - st.ctimeMs >= RACY_MS || st.size > RACY_HASH_MAX_BYTES) return undefined;
+    const key = racyKey(file, st), known = this.racyMemo.get(key);
+    if (known) return known;
+    if (!this.racyLeft) {
+      const turn = this.racyLeft = { bytes: RACY_BURST_BYTES };
+      setImmediate(() => { if (this.racyLeft === turn) this.racyLeft = undefined; });
+    }
+    if (st.size > this.racyLeft.bytes) return undefined;
+    this.racyLeft.bytes -= st.size;
+    const blob = streamBlob(fd, st.size);
+    if (blob) this.racyMemo.set(key, blob);
+    return blob;
   }
 
   /** `file` is covered again: an offer still unread that named it as dropped must not spend the notice of a later drop. */
@@ -357,6 +397,7 @@ export class Facts {
   private boundary(): void {
     this.expanded = new Map();
     this.expandedCut = new Set();
+    this.racyMemo = new Map(); // not per turn: a rewrite between two entry points of one turn is another version
   }
 
   /** `peer` worked on `file`; `seen` is the file as it was when it did, the baseline if it has no view of it yet. */
@@ -463,6 +504,12 @@ export class Facts {
     const now = this.load(file);
     const was = this.latest.get(file);
     if (was && was.hash === now.hash) return was;
+    // Seen while racy (named by its bytes), now with the same stat but no blob (settled, or past the turn's budget): the
+    // same version if the bytes are, or when they cannot be hashed now (no claim).
+    if (was?.blob && was.hash === `${now.hash}:${was.blob}`) {
+      const blob = this.largeBlob(file, now.hash);
+      if (blob === undefined || blob === was.blob) return was;
+    }
     const version = { ...now, seq: ++this.seq };
     this.latest.set(file, version);
     if (was) {
@@ -720,7 +767,9 @@ export class Facts {
     // does, nor what they wrote before or after (a member settling keeps its files in the set).
     const written = windows.flatMap((w) => [...(this.writes.get(w.peer) ?? [])].filter(([, times]) => times.some((t) => t >= w.since && (w.until === undefined || t <= w.until))).map(([file]) => file));
     const files = [...new Set([...this.expand(paths.flatMap((p) => { const r = this.rel(p); return r ? [r] : []; }), true), ...written])].sort();
-    for (const file of files) h.update(file).update("\0").update(this.load(file).hash).update("\0");
+    // ponytail: a large file counts by its stat, racy or not, so the target does not move when it settles; a same-size
+    // rewrite within one timestamp tick does not move it either (observe() sees that one).
+    for (const file of files) h.update(file).update("\0").update(this.load(file, true).hash).update("\0");
     return h.digest("hex");
   }
 
@@ -870,4 +919,18 @@ export function codexEffect(before: string | undefined, now: { hash: string; tex
   const reported = changedLines(patch.split("\n").filter((l) => !l.startsWith("+++ ") && !l.startsWith("--- ")));
   const observed = changedLines(diff(before, now.text));
   return reported.length > 0 && reported.length === observed.length && reported.every((l, i) => l === observed[i]);
+}
+
+/** Git's blob id of the `size` bytes `fd` reads, streamed; undefined when fewer were read (changed while read). */
+function streamBlob(fd: number, size: number): string | undefined {
+  const h = createHash("sha1").update(`blob ${size}\0`);
+  const buf = Buffer.alloc(1024 * 1024);
+  let got = 0;
+  for (let n = 0; got < size && (n = readSync(fd, buf, 0, buf.length, got)) > 0; got += n) h.update(buf.subarray(0, n));
+  return got === size ? h.digest("hex") : undefined;
+}
+
+/** A racy large file's version within one boundary: its path and every stat field. */
+function racyKey(file: string, st: Stats): string {
+  return `${file}\0${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}`;
 }

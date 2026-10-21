@@ -1301,7 +1301,10 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   file that falls out of the 64 a peer touched is named until the peer reads
   that back. Only regular files
   of 256 KB or less inside the project are read, re-resolved at every read and
-  opened without following links; larger ones are named without a diff. Facts never go through the bus or the delivery journal;
+  opened without following links; larger ones are named without a diff, compared
+  by size and modification time, or by their bytes while written in the last 2 s
+  (4 MiB or less each, 16 MiB per store per event-loop turn), since a same-size
+  rewrite within one filesystem timestamp tick keeps the stat. Facts never go through the bus or the delivery journal;
   `events.jsonl` records `fact`, `fact_ack` and `capability` events with bytes
   and latencies.
 - Integration. A member's `hub_task_done` is a completion intent. The member
