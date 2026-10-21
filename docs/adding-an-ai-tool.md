@@ -122,8 +122,8 @@ Runtime imports may use Node/Bun builtins except `bun:ffi` and `bun:test`, plus
 project packages. `/conformance` is available to module CI, not runtime modules.
 Relative or other package imports, dynamic imports, require (including
 `import.meta.require`), eval and Function-based loading
-are refused. The scan is conservative, not a sandbox. Authorized module code runs
-with daemon privileges; inspect the full bundle before recording its hash.
+are refused. The scanner also refuses any `require`, `eval` or `Function` word token, including non-loading uses such as `o.require` or `instanceof Function`. String literal contents are not word tokens. The scan is conservative, not a sandbox. Authorized module code runs
+with daemon privileges; inspect the full bundle before recording its hash. Each import must settle within two seconds or that module is refused while startup continues. This deadline stops waiting; it does not cancel module code or undo its side effects.
 Dependencies must be ESM-only. The loader verifies the captured original bytes,
 rewrites only scanned SDK imports to host-owned file URLs, and imports that result
 rather than reopening a mutable source path after the hash check. A refused
