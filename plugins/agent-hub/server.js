@@ -11464,6 +11464,8 @@ function configuredAcpDefinitions(raw, builtinKinds) {
           return fail(`${at}.permission.${mode}`, "unknown hub mode");
         modes[mode] = text3(d.value, `${at}.permission.${mode}`, 256);
       }
+      if (!Object.keys(modes).length)
+        modes = undefined;
     }
     const readOnly = input.readOnly ? text3(input.readOnly.value, `${at}.readOnly`, 256) : undefined;
     const nativePolicy = freeze({ ...modes ? { modes } : {}, ...readOnly ? { readOnly } : {} });

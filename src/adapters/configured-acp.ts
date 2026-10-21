@@ -83,6 +83,7 @@ export function configuredAcpDefinitions(raw: unknown, builtinKinds: readonly st
         if (!MODES.includes(mode)) return fail(`${at}.permission.${mode}`, "unknown hub mode");
         modes[mode as PermissionMode] = text(d.value, `${at}.permission.${mode}`, 256);
       }
+      if (!Object.keys(modes).length) modes = undefined; // `permission: {}` maps nothing: unmanaged, exactly like an omitted map
     }
     const readOnly = input.readOnly ? text(input.readOnly.value, `${at}.readOnly`, 256) : undefined;
     const nativePolicy = freeze({ ...(modes ? { modes } : {}), ...(readOnly ? { readOnly } : {}) });

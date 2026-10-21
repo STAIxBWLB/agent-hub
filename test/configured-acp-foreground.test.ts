@@ -20,3 +20,9 @@ for (const [label, kind, command, identity] of [
 for (const selector of ["--leader", "--leader=other", "--leader-socket", "--leader-socket=/tmp/leader.sock"]) test(`Grok refuses ${selector} even with --no-leader`, () => {
   expect(() => compile({ grok: { ...config(), command: "grok", args: ["agent", "--no-leader", selector, "stdio"] } })).toThrow(/attach\/leader/);
 });
+
+test("an empty permission map compiles exactly like an omitted one (unmanaged)", () => {
+  const [omitted] = compile({ fixture: config() }), [empty] = compile({ fixture: { ...config(), permission: {} } });
+  expect(empty!.permission.genericAcp).toEqual(omitted!.permission.genericAcp);
+  expect(empty!.permission.genericAcp).not.toHaveProperty("modes");
+});
