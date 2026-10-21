@@ -151,6 +151,5 @@ test("#625 phase5 projection metadata is unavailable to configured and external 
   const generic = r.createProjectAdapterCatalog({ fixture: raw }).definitionOf("fixture");
   expect(r.deriveAdapterLists([generic]).PLANNER_PEERS).toEqual([]);
   expect(() => r.assertNativeCapabilityScope({ ...generic, projection: { plannerEligible: true } })).toThrow("projection");
-  const { validateExternalDefinition } = await import("../src/adapters/external-modules.ts");
-  expect(() => validateExternalDefinition({ ...generic, projection: { plannerEligible: true } })).toThrow();
+
 });

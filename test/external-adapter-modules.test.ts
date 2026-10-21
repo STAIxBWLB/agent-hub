@@ -111,7 +111,7 @@ test("A4 declaration accessors and proxies are rejected without invoking them", 
   expect(ran).toBe(false);
 });
 
-for (const extra of ['api:999', 'kind:"codex"', 'family:"claude"', 'trust:{onPrem:true,hubSandboxed:false}', 'defaultOnRoster:true', 'roles:["conductor"]', 'instances:{mode:"headless"}', 'routing:{}', 'reviewer:{}', 'hooks:{factsHook:{}}', 'start:{daemonPort:"pi-rpc"}']) test(`A4 incompatible or privileged definition refuses ${extra}`, async () => {
+for (const extra of ['api:999', 'kind:"codex"', 'family:"claude"', 'trust:{onPrem:true,hubSandboxed:false}', 'defaultOnRoster:true', 'roles:["conductor"]', 'instances:{mode:"headless"}', 'routing:{}', 'reviewer:{}', 'hooks:{factsHook:{}}', 'projection:{plannerEligible:true}', 'start:{daemonPort:"pi-rpc"}']) test(`A4 incompatible or privileged definition refuses ${extra}`, async () => {
   const f = fixture(`export const definition=${definitionSource(extra)};`);
   await expect(loadExternalAdapterDefinitions(f.cwd, f.layers())).rejects.toThrow();
 });
