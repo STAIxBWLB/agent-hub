@@ -255,3 +255,43 @@ test("S3 R1 a reclassified false positive is not evidence for a recurring amendm
   await submit(r.tasks, r.create().id, [finding("reclassified", { pass: "bugs" })]);
   expect(r.board.list("backlog")).toHaveLength(0);
 });
+
+for (const mode of ["off", "advise", "enforce"] as const) for (const structured of [false, true]) test(`S3 follow-up refuses a supplied head outside current work (${mode}, findings=${structured})`, async () => {
+  const r = rig(mode), row = r.create(), before = r.board.get(row.id)!;
+  await expect(submit(r.tasks, row.id, structured ? [finding("wrong-head-nit", { severity: "nit" })] : undefined, "changes_requested", "claude", B)).rejects.toThrow(/head/i);
+  expect(r.board.get(row.id)).toEqual(before);
+});
+
+test("S3 follow-up permits an explicit head when no task head can resolve", async () => {
+  const r = rig(), row = r.create();
+  r.board.update(row.id, "user", "lifecycle", { refs: { commit: "short" }, sdlc: { stage: "review" } });
+  const next = await submit(r.tasks, row.id, [finding("explicit-nit", { severity: "nit" })], "changes_requested", "claude", B);
+  expect(next.history.findLast(entry => entry.reviewFindings)?.reviewFindings?.head).toBe(B);
+});
+
+test("S3 follow-up rechecks the resolved head after screening even without findings", async () => {
+  let enter!: () => void, release!: () => void;
+  let started = false;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), gate = new Promise<void>(resolve => { release = resolve; });
+  const r = rig("off", { piiScreen: async () => { started = true; enter(); await gate; return { label: "clear", ms: 0 }; } });
+  r.routing.signals.pii_screen = "local";
+  const row = r.create();
+  const pending = r.tasks.review("claude", row.id, "changes_requested", "reviewed original work", undefined, A).then(value => ({ value }), error => ({ error }));
+  try {
+    await Promise.race([entered, Bun.sleep(1000)]);
+    expect(started).toBe(true);
+    r.board.update(row.id, "user", "lifecycle", { refs: { commit: B }, sdlc: { ...row.sdlc!, head: B, localHead: B } });
+  } finally { release(); }
+  expect(await pending).toHaveProperty("error");
+  expect(r.board.get(row.id)?.state).toBe("in_review");
+});
+
+for (const [by, cls] of [["user", "plan"], ["hub", "implement"], ["user", "implement"]] as const) test(`S3 follow-up quoted markers on ${by}/${cls} cards cannot suppress a real amendment`, async () => {
+  const r = rig();
+  r.board.propose(by, { title: "Unrelated quoted marker", class: cls, backlog: true, detail: "Review finding key: security:missing-origin-check" });
+  await submit(r.tasks, r.create().id, [finding()]);
+  await submit(r.tasks, r.create().id, [finding()]);
+  const actual = r.board.list("backlog").filter(row => row.class === "plan" && row.history[0]?.by === "hub");
+  expect(actual).toHaveLength(1);
+  expect(actual[0]?.title).toContain("Review policy amendment");
+});
