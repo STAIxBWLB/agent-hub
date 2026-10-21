@@ -4077,5 +4077,51 @@ Configured ACP permission requests never use hub-tool titles for automatic appro
   - Transport selection: `acp` (stdio JSON-RPC), `codex-appserver`, `claude-channel`, `ws-pull` (pull-only workspace MCP plugin), and `hub-native`.
   - Conformance kit (`test/conformance/`): enrollment invariants, delivery occupancy, watchdog expiry, process-group teardown, and explicit reasons in `UNSUPPORTED` (per kind) and `UNSUPPORTED_LEGS` (per ACP leg).
   - Review and verification checklist: T0 receipt, path protection (`AGENT_CONFIG_SEGMENTS`), PII safety (`trust.onPrem`), process isolation, and documentation freshness.
-  - Config-only generic ACP adapters (#451 A3, board task #217) follow the A3 amendment above, including its isolated native-proof boundary. External adapter modules (#451 A4, board task #135) remain planned; their hash-pinning and module trust rules land with A4.
+  - Config-only generic ACP adapters (#451 A3, board task #217) follow the A3 amendment above, including its isolated native-proof boundary. External adapter modules (#451 A4, board task #135) follow the A4 trust boundary below.
 - `docs/agent-notes/adapters.md` keeps only the per-adapter rules that bind code, pointing to `docs/adding-an-ai-tool.md` and `src/adapters/registry-types.ts` for conceptual architecture and definitions.
+
+
+### A4 external module trust boundary (2026-10-21, #451)
+
+`adapter_modules: [{ path, sha256 }]` is accepted only from an untracked,
+machine-local `.agenthub/config.local.json`. Shared, tracked, cloned or unknown
+provenance never evaluates module code. The declaration is person-owned,
+never settings-editable, and restart-bound. The daemon imports modules at
+startup; a CLI read, preview, reload or watcher never imports them.
+
+Each pinned entry is a self-contained JavaScript bundle inside the canonical
+project root. Refuse symlink components, a file outside that root, a
+world-writable or nonregular entry, an unreadable/oversized entry and a SHA-256
+mismatch. A module bundles its own dependencies; core adds no third-party
+runtime dependency. Only static imports of Node/Bun builtins and the public
+`@staix/agent-hub/adapter` or `@staix/agent-hub/conformance` entries are allowed.
+Relative imports, other package imports, dynamic/nonliteral imports, require,
+eval and Function-based code loading that the loader can detect are refused.
+Use Bun.Transpiler's import scan before evaluation and re-hash the captured
+bytes immediately before import. Execute those captured bytes, never reopen
+the mutable source path after verification. A pin is code authorization, not
+a sandbox: approved module code runs with daemon privileges; scanner rejection
+is deliberately conservative and is not a proof against obfuscated code.
+
+A module exports `definition` with the current `ADAPTER_API`. Validate the
+accepted structural subset and fixed-builtin capability exclusions before
+publishing it in the immutable project catalog. The initial accepted executable
+subset is a headless ACP definition (`transport: "acp"`, `start.daemonPort:
+"acp"`), with a factory returning the public AcpPeer transport for its bound id.
+Its own family, optional/off-roster defaults and cloud/unsandboxed trust are
+mandatory. Native hooks, budgets, configuration callbacks, reviewer backends,
+instance policies and other fixed-native fields are refused rather than
+advertised as usable extension points. A broader transport needs a reviewed
+kind-neutral host-port contract first (#625 phase 6). Builtin collisions, duplicate
+kinds, incompatible API and unsupported fields refuse the module. Never add
+a module to the process-global builtin registry.
+
+The CLI receives external kinds only as bounded id/display metadata from the
+running daemon. That projection cannot grant permissions or register code.
+A4 refuses declared instances of external kinds with an explicit unsupported
+reason; their execution-root, recovery and CLI declaration contracts are a
+follow-up. The exported Bun conformance entry exposes callable transport
+registrations and packaged fake transports without executing those fakes on
+import. Builtins keep their existing applicable contract tests and explicit
+unsupported-leg reasons; an external module exercises the same contracts in
+its own CI.

@@ -11,14 +11,15 @@ import { DEFAULT_CONFIG, startDaemon } from "../../src/hub/daemon.ts";
 import { ControlClient } from "../../src/hub/control-client.ts";
 import { processTable } from "../../src/hub/child-process.ts";
 import { OmniRoute } from "../../src/omniroute/client.ts";
-import { startFakeAppServer } from "../fakes/app-server.ts";
-import { startFakeModelServer } from "../fakes/model-server.ts";
-import { registerConformance, until, type ConformanceFixture } from "./kit.ts";
+import { startFakeAppServer } from "../../src/adapters/conformance/fakes/app-server.ts";
+import { startFakeModelServer } from "../../src/adapters/conformance/fakes/model-server.ts";
+import { fakePaths } from "../../src/adapters/conformance/fake-paths.ts";
+import { registerConformance, registerExternalChannelConformance, until, type ConformanceFixture } from "./kit.ts";
 import { ADAPTERS, type AdapterDefinition } from "../../src/adapters/registry.ts";
 import { createFromDefinition } from "./factories.ts";
 import { assertEnrollment, UNSUPPORTED } from "./enrollment.ts";
 
-const fake = (name: string) => join(import.meta.dir, "../fakes", name);
+const fake = (name: "acp-server.ts" | "jcode-agent.ts" | "pi-rpc.ts") => ({ "acp-server.ts": fakePaths.acpServer, "jcode-agent.ts": fakePaths.jcodeAgent, "pi-rpc.ts": fakePaths.piRpc })[name];
 const root = () => mkdtempSync(join(tmpdir(), "ahub-conformance-"));
 const lines = (file: string): any[] => readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
 const qwen = ["--agent-name", "qwen-code", "--agent-version", "0.25.0", "--modes", "default,auto-edit,yolo"];
@@ -130,7 +131,7 @@ test("#451 all registry kinds and reviewer variants have explicit conformance en
 });
 for (const definition of ADAPTERS) {
   const create = fixtures[definition.kind];
-  if (create) registerConformance({ kind: definition.kind, create: () => create(definition) });
+  if (create) (definition.attach?.externalHello ? registerExternalChannelConformance : registerConformance)({ kind: definition.kind, create: () => create(definition) });
   else test(`P4 ${definition.kind}: explicitly unsupported generic driven legs`, () => {
     expect(UNSUPPORTED[definition.kind]?.trim()).not.toBeEmpty();
   });

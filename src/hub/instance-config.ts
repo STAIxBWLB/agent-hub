@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { createProjectAdapterCatalog, defaultPeerRoles, definitionOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
+import { createProjectAdapterCatalog, defaultPeerRoles, definitionOf, type ProjectAdapterCatalog, type AdapterDefinition } from "../adapters/registry.ts";
+import { readAdapterModuleDeclarations, type AdapterModuleDeclaration } from "../adapters/external-modules.ts";
+import { externalMetadataDefinitions } from "../adapters/external-metadata.ts";
+import { readControl, stateDirFor } from "./control-client.ts";
 import { conductorPeer } from "./conductor.ts";
 import { configRefusal } from "./config-trust.ts";
 import { validateInstances, type InstancesConfig } from "./instances.ts";
@@ -18,13 +21,15 @@ export function readInstanceConfigLayers(cwd: string): InstanceConfigLayer[] {
 
 /** Declaration authority is file provenance, never a suffix or a claim made by a native child. */
 export interface InstanceRoleConfig {
+  adapter_modules?: readonly AdapterModuleDeclaration[];
   adapters?: Readonly<Record<string, import("../adapters/configured-acp.ts").ConfiguredAcpAdapterConfig>>;
   instances?: InstancesConfig;
   catalog: ProjectAdapterCatalog;
   ignored: string[];
 }
-export function readInstanceConfig(cwd: string, layers: readonly InstanceConfigLayer[] = readInstanceConfigLayers(cwd)): InstanceRoleConfig {
-  const ignored: string[] = [];
+export function readInstanceConfig(cwd: string, layers: readonly InstanceConfigLayer[] = readInstanceConfigLayers(cwd), externalDefinitions?: readonly AdapterDefinition[]): InstanceRoleConfig {
+  const moduleConfig = readAdapterModuleDeclarations(cwd, layers);
+  const ignored: string[] = [...moduleConfig.ignored];
   let adapters: Readonly<Record<string, import("../adapters/configured-acp.ts").ConfiguredAcpAdapterConfig>> | undefined, rawInstances: unknown;
   for (const { name, raw } of layers) {
     const keys = ["adapters", "instances"].filter(key => raw[key] !== undefined);
@@ -34,9 +39,10 @@ export function readInstanceConfig(cwd: string, layers: readonly InstanceConfigL
     if (raw.adapters !== undefined) adapters = raw.adapters as Readonly<Record<string, import("../adapters/configured-acp.ts").ConfiguredAcpAdapterConfig>>;
     if (raw.instances !== undefined) rawInstances = raw.instances;
   }
-  const catalog = createProjectAdapterCatalog(adapters);
+  const external = externalDefinitions ?? externalMetadataDefinitions(readControl(stateDirFor(cwd))?.externalAdapters);
+  const catalog = createProjectAdapterCatalog(adapters, external);
   const instances = validateInstances(rawInstances, catalog);
-  return { ...(adapters !== undefined ? { adapters } : {}), ...(Object.keys(instances).length ? { instances } : {}), catalog, ignored };
+  return { ...(moduleConfig.modules.length ? { adapter_modules: moduleConfig.modules } : {}), ...(adapters !== undefined ? { adapters } : {}), ...(Object.keys(instances).length ? { instances } : {}), catalog, ignored };
 }
 
 /** Capture ordinary role policy and trusted instance declarations together, without loading daemon configuration. */

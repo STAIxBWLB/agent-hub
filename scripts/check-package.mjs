@@ -11,6 +11,8 @@ assert.deepEqual(Object.keys(manifest.dependencies ?? {}), ['@staix/agent-mem'],
 assert.match(manifest.dependencies['@staix/agent-mem'], /^\d+\.\d+\.\d+$/, 'The memory core must use an exact published version');
 assert.notEqual(manifest.private, true);
 assert.equal(manifest.publishConfig?.access, 'public');
+assert.equal(manifest.exports?.['./adapter'], './src/adapters/public.ts');
+assert.equal(manifest.exports?.['./conformance'], './src/adapters/conformance/index.ts');
 assert.deepEqual(manifest.bin, { ahub: 'src/cli/main.js', 'agent-hub': 'src/cli/main.js' });
 
 function tree(directory) {

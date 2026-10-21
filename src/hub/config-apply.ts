@@ -1,3 +1,5 @@
+import { adapterModuleDeclarations } from "../adapters/external-modules.ts";
+import { externalMetadataDefinitions, type ExternalAdapterMetadata } from "../adapters/external-metadata.ts";
 import { reviewerPoolConfig } from "./reviewer-pool-config.ts";
 import type { HubConfig } from "./daemon.ts";
 import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked } from "./config-trust.ts";
@@ -18,9 +20,9 @@ export type ApplyClass = "live" | "next use" | "restart";
 export interface ApplyRule { applies: ApplyClass; reason?: string }
 export interface ConfigIdentityScope { catalog: ProjectAdapterCatalog; instances: InstancesConfig }
 /** Plain captured metadata stays cloneable with ConfigSources; native callbacks are compiled outside it. */
-export interface ConfigIdentitySnapshot { adapters?: HubConfig["adapters"]; instances: InstancesConfig }
+export interface ConfigIdentitySnapshot { adapters?: HubConfig["adapters"]; externalAdapters?: readonly ExternalAdapterMetadata[]; instances: InstancesConfig }
 export function configIdentityScope(snapshot: ConfigIdentitySnapshot): ConfigIdentityScope {
-  return { catalog: createProjectAdapterCatalog(snapshot.adapters), instances: snapshot.instances };
+  return { catalog: createProjectAdapterCatalog(snapshot.adapters, externalMetadataDefinitions(snapshot.externalAdapters)), instances: snapshot.instances };
 }
 export interface ConfigChange extends ApplyRule { key: string; before: unknown; after: unknown }
 export interface ConfigLayer { name: "config.json" | "config.local.json"; raw: Record<string, unknown> }
@@ -134,6 +136,7 @@ const schema: Record<string, Check> = {
   ...Object.assign({}, ...ADAPTERS.map(adapter => adapter.configuration?.schema?.(nativeValidators) ?? {})),
   watchdog_ms: number(1, 2_147_483_647), kimi_cmd: argv, qwen_cmd: argv, jcode_cmd: argv, codex_bin: text, jcode_home: text, jcode_provider_profile: text,
   permission_modes: v => { permissionDefaults(v); }, protect_instruction_files: bool,
+  adapter_modules: v => { adapterModuleDeclarations(v); },
   adapters: v => { createProjectAdapterCatalog(v); }, instances: v => { validateInstances(v, createProjectAdapterCatalog()); }, pet: validatePetConfig,
   batch_max: number(1, 100_000, true), batch_ms: number(0, 2_147_483_647), queue_cap: number(1, 1_000_000, true),
   memory: block({ enabled: bool, worker_url: text, inject_tokens: number(0, 1_000_000, true), brief_items: number(0, 10_000, true), native: bool,
@@ -168,7 +171,7 @@ const schema: Record<string, Check> = {
 export const SCHEMA_KEYS: readonly string[] = Object.freeze(Object.keys(schema));
 export function validateRawConfig(raw: unknown, declarations?: InstancesConfig, context?: ProjectAdapterCatalog): asserts raw is Record<string, unknown> {
   const value = object(raw, "config");
-  const catalog = value.adapters !== undefined ? createProjectAdapterCatalog(value.adapters) : context ?? createProjectAdapterCatalog();
+  const catalog = value.adapters !== undefined ? createProjectAdapterCatalog(value.adapters, context?.externalDefinitions) : context ?? createProjectAdapterCatalog();
   const instances = validateInstances(value.instances ?? declarations, catalog);
   block({ ...schema,
     instances: v => { validateInstances(v, catalog); },
@@ -177,16 +180,17 @@ export function validateRawConfig(raw: unknown, declarations?: InstancesConfig, 
     peers: v => { peerStartConfig(v, instances, catalog); },
   })(raw, "config");
 }
-export function validateEffectiveConfig(value: unknown): asserts value is HubConfig {
+export function validateEffectiveConfig(value: unknown, catalog?: ProjectAdapterCatalog): asserts value is HubConfig {
   const raw = { ...object(value, "config") };
   delete raw.ignored; delete raw.retired; delete raw.permission_default_sources;
-  validateRawConfig(raw);
+  validateRawConfig(raw, undefined, catalog);
   const profile = resolveProfile(raw.profile, raw.profile_overrides);
   for (const key of Object.keys(object(raw.checks, "checks"))) if (!["timeout_s", "runner", ...CLASSES, ...Object.keys(profile.classes)].includes(key)) fail(`checks.${key}`, "unknown task class");
   for (const adapter of ADAPTERS) adapter.configuration?.validateEffective?.(raw, fail);
 }
 
 const restart: Record<string, string> = {
+  adapter_modules: "External adapter modules are verified and imported only at daemon startup",
   adapters: "Configured adapter identity, commands and capability policy are fixed at daemon startup",
   instances: "Native instance identity, worktree, ports and account bindings are fixed at daemon startup",
   ...Object.assign({}, ...ADAPTERS.map(adapter => adapter.configuration?.restartReasons ?? {})),
@@ -214,7 +218,7 @@ export function configApply(key: string, scopes: readonly ConfigIdentityScope[] 
       if (shape?.fields) { if (!Object.hasOwn(shape.fields, part)) return fail(key, "unknown configuration key"); check = shape.fields[part]; }
       else if (shape?.item) { if (shape.keys && !shape.keys.includes(part) && !(top === "roster" && scopes.some(scope => scope.catalog.definitionOf(part, scope.instances)))) return fail(key, "unknown configuration key"); check = shape.item; }
       else if (index === 0 && (special[top]?.includes(part) || top === "checks" && /^[a-z][a-z0-9_]{0,47}$/.test(part))) break;
-      else if (["permission_modes", "catalog_roles", "profile_overrides", "text_projection", "peers", "instances", "adapters"].includes(top)) break;
+      else if (["permission_modes", "catalog_roles", "profile_overrides", "text_projection", "peers", "instances", "adapters", "adapter_modules"].includes(top)) break;
       else return fail(key, "unknown configuration key");
     }
   }
