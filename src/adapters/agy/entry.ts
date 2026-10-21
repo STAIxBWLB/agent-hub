@@ -33,6 +33,9 @@ function runAgyTui(argv: string[], cwd: string, env: NodeJS.ProcessEnv): Promise
   });
 }
 
+/** #607: agy 1.4.x attaches the plugin MCP server at the first prompt, so the hub tools are listed from the second turn. */
+export const AGY_LAUNCH_NOTICE = "Antigravity: pull-only TUI; native permissions unmanaged, no hub sandbox; hub tools appear from the second turn (send any first prompt, then ask for hub work)";
+
 /** agy auto-updates, so the 1.4.x line launches; only 1.4.2 has a T0 receipt and other patches warn (#589). */
 export function agyVersionGate(stdout: string): { ok: true; message?: string } | { ok: false; message: string } {
   const version = stdout.trim();
@@ -70,7 +73,7 @@ export async function runAgyEntry(ctx: NativeCliEntryContext): Promise<void> {
     const written = ensureAgyMcp(options);
     pluginWritten = written.changed;
     if (written.tracked) console.error("The managed agy plugin is tracked; review its local machine paths before committing");
-    console.error("Antigravity: pull-only TUI; native permissions unmanaged, no hub sandbox");
+    console.error(AGY_LAUNCH_NOTICE);
     const env: NodeJS.ProcessEnv = { ...ctx.helpers.nativeLaunchEnv("agy", ctx.helpers.childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
     delete env.AGENTHUB_CHANNEL;
     const code = await runAgyTui(argv, cwd, env);

@@ -145,6 +145,8 @@ test("#493 actionable notices are not FYI in both session instruction modes, sen
   // #572 AC2: an implementer ends its turn after pushing; the reviewer, not the implementer, watches CI.
   expect(template).toContain("After pushing a PR, call `hub_task_done` stating the PR, its head commit and the CI state, then end your turn");
   expect(template).toContain("Do not wait for or poll CI");
+  // #607: the agy TUI lists the hub tools only from its second turn; the first turn must not report the hub unavailable.
+  expect(template).toContain("never report the hub as unavailable from the first turn alone");
   expect(TASK_TOOLS.find(tool => tool.name === "hub_task_done")?.description).toContain("no duplicate");
   expect(TASK_TOOLS.find(tool => tool.name === "hub_review")?.description).toContain("no duplicate");
 });
