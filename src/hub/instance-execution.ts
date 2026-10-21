@@ -1,6 +1,6 @@
 import { lstatSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { definitionOf } from "../adapters/registry.ts";
+import type { ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { hubGitSync } from "./git.ts";
 import { realPath } from "./project.ts";
 import { validateInstances, type InstancesConfig } from "./instances.ts";
@@ -15,9 +15,9 @@ function git(cwd: string, args: string[]): string {
 const commonDirectory = (cwd: string): string => realPath(git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).replace(/\n$/, ""));
 
 /** Point-in-time read only. No worktree is created, repaired or chosen implicitly. */
-export function resolveInstanceExecutionCwd(projectRoot: string, id: string, declarations: InstancesConfig | undefined, roles: readonly string[]): string {
-  if (definitionOf(id)) return projectRoot;
-  const declaration = validateInstances(declarations)[id];
+export function resolveInstanceExecutionCwd(projectRoot: string, id: string, declarations: InstancesConfig | undefined, roles: readonly string[], adapterCatalog: ProjectAdapterCatalog): string {
+  if (adapterCatalog.definitionOf(id)) return projectRoot;
+  const declaration = validateInstances(declarations, adapterCatalog)[id];
   if (!declaration) return refuse("extra instance is not declared");
   const implementer = roles.includes("implementer");
   if (!declaration.worktree) {

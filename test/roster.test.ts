@@ -1,3 +1,4 @@
+import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
 import { expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -86,12 +87,12 @@ test("roster validates the closed boolean catalog and explicit Pi membership win
   expect(peerRosterConfig(undefined)).toEqual({});
   for (const value of [null, [], true, { external: true }, { kimi: "false" }]) expect(() => peerRosterConfig(value)).toThrow();
   for (const enabled of [true, false]) {
-    expect(rosterAllows({}, "pi", enabled)).toBe(enabled);
-    expect(rosterAllows({ pi: true }, "pi", enabled)).toBe(true);
-    expect(rosterAllows({ pi: false }, "pi", enabled)).toBe(false);
-    for (const peer of KNOWN_PEERS.filter(p => p !== "pi")) expect(rosterAllows({}, peer, enabled)).toBe(true);
+    expect(rosterAllows({}, "pi", enabled, undefined, builtinProjectCatalog())).toBe(enabled);
+    expect(rosterAllows({ pi: true }, "pi", enabled, undefined, builtinProjectCatalog())).toBe(true);
+    expect(rosterAllows({ pi: false }, "pi", enabled, undefined, builtinProjectCatalog())).toBe(false);
+    for (const peer of KNOWN_PEERS.filter(p => p !== "pi")) expect(rosterAllows({}, peer, enabled, undefined, builtinProjectCatalog())).toBe(true);
   }
-  expect(rosterAllows({ claude: false }, "external", false)).toBe(true);
+  expect(rosterAllows({ claude: false }, "external", false, undefined, builtinProjectCatalog())).toBe(true);
 });
 
 test("a confirmed live removal fences Claude admission and retains its queue until return without applying file edits (#315)", async () => {

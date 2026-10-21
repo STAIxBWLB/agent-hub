@@ -9,6 +9,7 @@ import { QWEN_MODE_IDS, qwenNativeIdentity } from "./definitions/qwen-native.ts"
 export { QwenIdentityError } from "./definitions/qwen-native.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
+import { AcpOwnedGroup } from "./acp-owned-group.ts";
 
 export interface PermissionOption {
   optionId: string;
@@ -19,6 +20,8 @@ export interface PermissionRequest {
   peer: PeerId;
   title: string;
   options: PermissionOption[];
+  /** Native ACP tool kind, when the request reports it. Never inferred from its title. */
+  kind?: string;
   /** The tool's name alone, when the adapter knows it apart from the title (which can quote the payload). */
   tool?: string;
 }
@@ -65,6 +68,10 @@ export interface AcpOptions {
   /** Coordinator-visible selected model only; contains no prompts or command arguments. */
   launchModel?: string;
   permissionMode?: PermissionMode;
+  /** Presence replaces all identity-inferred native mode and quota policy. */
+  nativePolicy?: { modes?: Partial<Record<PermissionMode, string>>; readOnly?: string; lockedReadOnly?: boolean };
+  /** Configured ACP execution requires a host-captured process-group ownership proof. */
+  requireOwnedGroup?: boolean;
   /** Production Qwen only; legacy benchmark adapters retain their own native policy. */
   qwen025?: boolean;
   /** A production adapter's source-pinned identity; no table is inferred from it. */
@@ -139,11 +146,13 @@ function jsonObject(text: string | undefined): object | undefined {
 /** ACP client (JSON-RPC 2.0, newline-delimited, over the child's stdio). One session, one prompt in flight. */
 export class AcpPeer extends BasePeer {
   private permissionMode: PermissionMode;
+  private readonly nativePolicy: AcpOptions["nativePolicy"];
   private modeUnknown = false;
   private kimiAgent = false;
   private qwenAgent = false;
   private availableModes = new Set<string>();
   private proc: ChildProcessWithoutNullStreams | undefined;
+  private ownedGroup: { proc: ChildProcessWithoutNullStreams; proof: AcpOwnedGroup } | undefined;
   private sessionId = "";
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
@@ -222,7 +231,8 @@ export class AcpPeer extends BasePeer {
     private readonly opts: AcpOptions,
   ) {
     super(id, opts.watchdogMs);
-    this.permissionMode = opts.permissionMode ?? "ask";
+    this.nativePolicy = opts.nativePolicy === undefined ? undefined : { ...opts.nativePolicy, ...(opts.nativePolicy.modes === undefined ? {} : { modes: { ...opts.nativePolicy.modes } }) };
+    this.permissionMode = this.nativePolicy?.lockedReadOnly ? "ask" : opts.permissionMode ?? "ask";
   }
 
   recoveryMetadata(): Record<string, unknown> {
@@ -230,16 +240,17 @@ export class AcpPeer extends BasePeer {
   }
 
   async start(): Promise<void> {
+    if (this.opts.requireOwnedGroup && this.proc) throw new Error("Configured ACP still has a process; stop it before starting another");
     this.stopping = false;
     const [bin, ...args] = this.opts.cmd;
     // Its own process group, stopped as a whole (#115, as Codex's in #113): an agent CLI may be a launcher with a native child.
     const proc = spawn(bin!, args, { cwd: this.opts.cwd, env: peerChildEnv(this.id, { ...process.env, ...(this.opts.env ?? {}) }), stdio: ["pipe", "pipe", "pipe"], detached: true });
     this.proc = proc;
     trackGroup(proc);
-    proc.on("error", (e) => this.down(`spawn failed: ${e.message}`));
-    proc.on("exit", (code) => this.down(`exited with code ${code}`));
+    proc.on("error", (e) => { if (!this.opts.requireOwnedGroup || this.proc === proc) this.down(`spawn failed: ${e.message}`); });
+    proc.on("exit", (code) => { if (!this.opts.requireOwnedGroup || this.proc === proc) this.down(`exited with code ${code}`); });
     proc.stdin.on("error", () => {}); // EPIPE from a child that died; `exit` / `error` already report it
-    proc.stderr.on("data", (d) => this.opts.log?.(`[${this.id}] ${String(d).trimEnd()}`));
+    proc.stderr.on("data", (d) => this.opts.log?.(this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP stderr output withheld" : `[${this.id}] ${String(d).trimEnd()}`));
     createInterface({ input: proc.stdout }).on("line", (line) => this.onLine(line));
 
     const handshake = async () => {
@@ -249,10 +260,11 @@ export class AcpPeer extends BasePeer {
       });
       // The configured peer id and command are labels, not an agent-specific mode contract.
       // Installed Kimi Code CLI's ACP initialize advertises this exact name.
-      this.kimiAgent = init?.agentInfo?.name === "Kimi Code CLI";
+      this.kimiAgent = this.nativePolicy === undefined && init?.agentInfo?.name === "Kimi Code CLI";
       const expected = this.opts.expectedAgent, version = init?.agentInfo?.version;
       if (expected && (init?.agentInfo?.name !== expected.name || !(typeof expected.version === "function" ? expected.version(version) : version === expected.version))) throw new Error("native ACP identity is not verified for this production adapter");
-      this.qwenAgent = qwenNativeIdentity(this.id, this.opts.qwen025, init, this.opts.kind);
+      const qwen = qwenNativeIdentity(this.id, this.opts.qwen025, init, this.opts.kind);
+      this.qwenAgent = this.nativePolicy === undefined && qwen;
       const resume = this.opts.resumeSessionId;
       if (!resume) return this.request("session/new", { cwd: this.opts.cwd, mcpServers: this.opts.mcpServers ?? [] });
       // The agent replays the session as updates while it loads; they arrive before the peer is idle, so none of
@@ -262,11 +274,20 @@ export class AcpPeer extends BasePeer {
       if ((loaded?.sessionId !== undefined && loaded.sessionId !== resume) || (this.opts.requireLoadSessionEcho && loaded?.sessionId !== resume)) throw new Error("native ACP load did not confirm the requested conversation; no restored session is claimed");
       return { ...loaded, sessionId: resume };
     };
-    const timeout = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error(`${this.id} did not complete the ACP handshake within ${HANDSHAKE_MS / 1000} s`)), HANDSHAKE_MS).unref();
-    });
     try {
+      if (this.opts.requireOwnedGroup) {
+        const proof = await AcpOwnedGroup.capture(proc);
+        this.ownedGroup = { proc, proof };
+        if (this.proc !== proc || this.stopping) throw new Error("Configured ACP process ownership could not be verified");
+      }
+      const timeout = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error(`${this.id} did not complete the ACP handshake within ${HANDSHAKE_MS / 1000} s`)), HANDSHAKE_MS).unref();
+      });
       const session = await Promise.race([handshake(), timeout]);
+      if (this.nativePolicy !== undefined && (typeof session?.sessionId !== "string" || !session.sessionId.trim()
+        || Buffer.byteLength(session.sessionId) > 4096 || /[\p{Cc}\p{Cf}]/u.test(session.sessionId))) {
+        throw new Error("Configured ACP did not provide a valid native session identity");
+      }
       this.sessionId = session.sessionId;
       const modes: unknown = session.modes?.availableModes;
       this.availableModes = new Set(Array.isArray(modes) ? modes.flatMap((mode) => typeof mode?.id === "string" ? [mode.id] : []) : []);
@@ -274,11 +295,27 @@ export class AcpPeer extends BasePeer {
       // must be reset for the configured ask default before any prompt; a fresh ask session stays untouched.
       const resetResumed = this.opts.resumeSessionId && typeof session.modes?.currentModeId === "string" && session.modes.currentModeId !== KIMI_MODE_IDS.ask;
       // Other ACP vendors retain their native policy, including reported non-default modes on resume.
-      if (this.qwenAgent || (this.kimiAgent && (this.permissionMode !== "ask" || resetResumed))) await this.setPermissionMode(this.permissionMode);
+      if (this.nativePolicy?.lockedReadOnly) await this.applyNativeMode(this.nativePolicy.readOnly, "ask");
+      else if (this.nativePolicy?.modes !== undefined || this.qwenAgent || (this.kimiAgent && (this.permissionMode !== "ask" || resetResumed))) await this.setPermissionMode(this.permissionMode);
+      if (this.opts.requireOwnedGroup) {
+        const owned = this.ownedGroup;
+        if (!owned || owned.proc !== proc || this.proc !== proc || this.stopping) throw new Error("Configured ACP process ownership could not be verified");
+        await owned.proof.verify();
+        if (this.proc !== proc || this.stopping) throw new Error("Configured ACP process ownership could not be verified");
+      }
     } catch (e) {
       this.setState("offline");
       if (this.proc === proc) {
-        await stopOwnedProcess(proc, { group: true }).then(() => { if (this.proc === proc) this.proc = undefined; }, (stop: Error) => this.opts.log?.(`[${this.id}] ${stop.message}`));
+        if (this.opts.requireOwnedGroup) {
+          const owned = this.ownedGroup;
+          if (owned?.proc === proc) {
+            await owned.proof.stop().then(() => { if (this.proc === proc) { this.proc = undefined; this.ownedGroup = undefined; } }, () => this.opts.log?.("Configured ACP process group shutdown incomplete"));
+          } else {
+            proc.stdin.end(); // No ownership proof: only close our pipe, never fall back to signals or tree discovery.
+            if (await AcpOwnedGroup.confirmGone(proc) && this.proc === proc) { this.proc = undefined; this.ownedGroup = undefined; }
+            else this.opts.log?.("Configured ACP process ownership could not be verified; no process signals were sent");
+          }
+        } else await stopOwnedProcess(proc, { group: true }).then(() => { if (this.proc === proc) this.proc = undefined; }, (stop: Error) => this.opts.log?.(`[${this.id}] ${stop.message}`));
       }
       throw e;
     }
@@ -286,15 +323,23 @@ export class AcpPeer extends BasePeer {
   }
 
   getPermissionMode(): PermissionMode { return this.permissionMode; }
+  /** Offline does not certify shutdown: retain the original runtime until its owned group is confirmed gone. */
+  get pendingOwnedProcess(): boolean { return this.opts.requireOwnedGroup === true && this.proc !== undefined; }
   get permissionModeState(): PermissionMode | "unknown" | "unmanaged" {
-    return !this.kimiAgent && !this.qwenAgent ? "unmanaged" : this.modeUnknown ? "unknown" : this.permissionMode;
+    return this.nativePolicy?.lockedReadOnly || this.nativePolicy?.modes !== undefined || this.kimiAgent || this.qwenAgent
+      ? this.modeUnknown ? "unknown" : this.permissionMode : "unmanaged";
   }
 
   async setPermissionMode(mode: PermissionMode): Promise<void> {
-    if (!this.kimiAgent && !this.qwenAgent) throw new Error(`${this.id} permission mode ${mode} unmanaged: this ACP agent has no verified mode mapping; use Kimi Code CLI or add an agent-specific mapping`);
+    if (this.nativePolicy?.lockedReadOnly) throw new Error(`${this.id} permission mode is locked read-only; runtime changes are refused`);
+    const modes = this.nativePolicy !== undefined ? this.nativePolicy.modes : this.qwenAgent ? QWEN_MODE_IDS : this.kimiAgent ? KIMI_MODE_IDS : undefined;
+    if (modes === undefined) throw new Error(`${this.id} permission mode ${mode} unmanaged: this ACP agent has no verified mode mapping; use Kimi Code CLI or add an agent-specific mapping`);
+    await this.applyNativeMode(modes[mode], mode);
+  }
+
+  private async applyNativeMode(id: string | undefined, mode: PermissionMode): Promise<void> {
     if (this.modeUnknown) throw new Error(`${this.id} permission mode unknown after an unanswered change; restart the peer before changing modes`);
-    const id = (this.qwenAgent ? QWEN_MODE_IDS : KIMI_MODE_IDS)[mode];
-    if (!this.sessionId || !this.proc || !this.availableModes.has(id)) throw new Error(`${this.id} permission mode ${mode} unavailable: session does not offer ${id}`);
+    if (typeof id !== "string" || !id || !this.sessionId || !this.proc || !this.availableModes.has(id)) throw new Error(`${this.id} permission mode ${mode} unavailable: session does not offer ${id}`);
     try {
       await this.request("session/set_mode", { sessionId: this.sessionId, modeId: id }, this.opts.permissionModeTimeoutMs ?? HANDSHAKE_MS);
     } catch (error) {
@@ -305,9 +350,9 @@ export class AcpPeer extends BasePeer {
         this.turn++;
         this.setState("offline");
         await this.stop().catch((stop: Error) => this.opts.log?.(`[${this.id}] ${stop.message}`));
-        throw new Error(`${this.id} permission mode ${mode} unknown: ${error.message}; peer is offline, restart it before sending work`);
+        throw new Error(this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP native permission mode unknown; peer is offline, restart it before sending work" : `${this.id} permission mode ${mode} unknown: ${error.message}; peer is offline, restart it before sending work`);
       }
-      throw new Error(`${this.id} permission mode ${mode} refused: ${(error as Error).message}`);
+      throw new Error(this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP native permission mode refused" : `${this.id} permission mode ${mode} refused: ${(error as Error).message}`);
     }
     // A mode reply after a cancelled prompt must also observe its queued cleanup.
     if (this.cancelWait?.reported) await this.cancelWait.released;
@@ -331,7 +376,17 @@ export class AcpPeer extends BasePeer {
     this.activeDeliveryId = undefined;
     const proc = this.proc;
     if (!proc) { this.setState("offline"); return; }
-    await stopOwnedProcess(proc, { group: true }); // also when it exited: what it left in its group fails the stop
+    if (this.opts.requireOwnedGroup) {
+      this.setState("offline");
+      const owned = this.ownedGroup;
+      if (!owned) {
+        if (await AcpOwnedGroup.confirmGone(proc) && this.proc === proc) { this.proc = undefined; return; }
+        throw new Error("Configured ACP process ownership could not be verified");
+      }
+      if (owned.proc !== proc) throw new Error("Configured ACP process ownership could not be verified");
+      await owned.proof.stop();
+      if (this.ownedGroup === owned) this.ownedGroup = undefined;
+    } else await stopOwnedProcess(proc, { group: true }); // Builtins keep their existing verified descendant-tree stop.
     if (this.proc === proc) this.proc = undefined;
     this.setState("offline");
   }
@@ -384,13 +439,13 @@ export class AcpPeer extends BasePeer {
       })
       .catch((e: Error) => {
         if (turn !== this.turn) {
-          if (this.cancelWait?.turn === turn) this.opts.log?.(`[${this.id}] cancelled prompt rejected: ${sanitize(e.message)}`);
+          if (this.cancelWait?.turn === turn) this.opts.log?.(this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP cancelled prompt rejected; native details withheld" : `[${this.id}] cancelled prompt rejected: ${sanitize(e.message)}`);
           return; // cancelled prompt errors are discarded, like their late results
         }
         this.endActivity("failed", true);
-        const reason = sanitize(e.message);
+        const reason = this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP prompt failed" : sanitize(e.message);
         this.settleSteers("needs_review", reason);
-        this.opts.log?.(`[${this.id}] prompt failed: ${reason}`);
+        this.opts.log?.(this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP prompt failed; native details withheld" : `[${this.id}] prompt failed: ${reason}`);
         const quota = !this.stopping && this.kimiAgent ? acpQuotaRefusal(e.message) : undefined;
         if (quota) {
           let paused = false;
@@ -420,7 +475,7 @@ export class AcpPeer extends BasePeer {
 
   private reportTurnFailure(envs: Envelope[], reason: string): void {
     try {
-      const result = this.opts.onTurnFailure?.(envs, reason);
+      const result = this.opts.onTurnFailure?.(envs, this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? "Configured ACP prompt failed" : reason);
       if (result) void result.catch(() => this.opts.log?.("ACP failure handoff could not be completed"));
     } catch {
       this.opts.log?.("ACP failure handoff could not be completed");
@@ -514,6 +569,7 @@ export class AcpPeer extends BasePeer {
 
   private down(reason: string): void {
     this.clearCancelWait();
+    if (this.nativePolicy !== undefined || this.opts.requireOwnedGroup) reason = "Configured ACP transport stopped";
     this.opts.log?.(`[${this.id}] ${reason}`);
     for (const p of this.pending.values()) p.reject(new Error(reason));
     this.pending.clear();
@@ -589,6 +645,11 @@ export class AcpPeer extends BasePeer {
   private async answerPermission(msg: any): Promise<void> {
     this.flushActivity();
     const call = msg.params?.toolCall ?? {};
+    const kind = typeof call.kind === "string" ? call.kind : undefined;
+    if (this.nativePolicy?.lockedReadOnly && !["read", "search", "think"].includes(kind ?? "")) {
+      const rejected = (msg.params?.options ?? []).find((option: PermissionOption) => option.kind === "reject_once");
+      return this.send({ jsonrpc: "2.0", id: msg.id, result: { outcome: rejected ? { outcome: "selected", optionId: rejected.optionId } : { outcome: "cancelled" } } });
+    }
     const once = (msg.params?.options ?? []).find((o: PermissionOption) => o.kind === "allow_once");
     const id = typeof call.toolCallId === "string" ? call.toolCallId : undefined;
     const announced = id === undefined ? undefined : this.toolTitles.get(id);
@@ -598,7 +659,9 @@ export class AcpPeer extends BasePeer {
     // `mcp__<server>__<tool>` name is the only derived candidate the exact-match whitelist ever sees, and
     // argument text is never one.
     const canonical = canonicalMcpToolName(announced, this.opts.mcpServers?.map((s) => s.name));
-    const identity = [typeof call.title === "string" ? call.title : undefined, canonical].find((candidate) => candidate !== undefined && this.opts.autoApprove?.(candidate));
+    // Configured ACP titles are not trusted MCP identity, even when they spell a hub tool exactly.
+    const identity = this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? undefined
+      : [typeof call.title === "string" ? call.title : undefined, canonical].find((candidate) => candidate !== undefined && this.opts.autoApprove?.(candidate));
     if (once && identity) {
       this.opts.log?.(`permission auto-approved for ${this.id}: ${identity}`); // the name only: arguments may quote a PII turn
       this.emitActivity("ask", `${String(msg.id)}: ${activityText(announced ?? call.title)} (automatic)`);
@@ -618,7 +681,7 @@ export class AcpPeer extends BasePeer {
     // An unknown payload is never dressed up as a description, and it must not buy a blanket grant.
     const title: string = raw === undefined ? `${named ?? "tool call"} (payload not reported by the agent)` : `${named ?? "tool call"}${input}`;
     this.emitActivity("ask", `${String(msg.id)}: ${activityText(title)}; answer in ahub console`);
-    const options: PermissionOption[] = (msg.params?.options ?? []).filter((o: PermissionOption) => (raw !== undefined && !cut) || o.kind !== "allow_always");
+    const options: PermissionOption[] = (msg.params?.options ?? []).filter((o: PermissionOption) => o.kind !== "allow_always" || !this.nativePolicy?.lockedReadOnly && raw !== undefined && !cut);
     // Only a bare tool name travels on its own (a desktop notice shows it); anything prose-like stays in the title.
     const tool = typeof named === "string" && /^[\w.:@-]{1,80}$/.test(named) ? named : undefined;
     // Waiting for a person is not the agent going silent: keep the watchdog from cancelling the turn meanwhile.
@@ -629,7 +692,7 @@ export class AcpPeer extends BasePeer {
     let picked: string | undefined;
     try {
       const cancelled = new Promise<undefined>(resolve => controller.signal.addEventListener("abort", () => resolve(undefined), { once: true }));
-      picked = await Promise.race([this.opts.onPermission?.({ peer: this.id, title, options, ...(tool ? { tool } : {}) }, controller.signal).catch(() => undefined), cancelled]);
+      picked = await Promise.race([this.opts.onPermission?.({ peer: this.id, title, options, ...(tool ? { tool } : {}), ...(kind ? { kind } : {}) }, controller.signal).catch(() => undefined), cancelled]);
     } finally {
       clearInterval(alive); // also when there is no handler at all
       this.permissionWaits.delete(controller);

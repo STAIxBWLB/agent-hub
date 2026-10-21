@@ -1,3 +1,4 @@
+import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -35,19 +36,19 @@ const until = async (ok: () => boolean, ms = 5000) => { for (const end = Date.no
 const review = (task: number, body = `Review task #${task} fixture`): Envelope => newEnvelope(HUB, body, { to: ["claude-review"], kind: "review", refs: { task: String(task) } });
 
 test("a headless Claude instance is the reviewer variant only with roles exactly [reviewer]", () => {
-  expect(validateInstances(reviewer)["claude-review"]).toEqual({ kind: "claude", roles: ["reviewer"], start_mode: "headless" });
+  expect(validateInstances(reviewer, builtinProjectCatalog())["claude-review"]).toEqual({ kind: "claude", roles: ["reviewer"], start_mode: "headless" });
   const variant = definitionOf("claude-review", reviewer)!;
   expect([variant.transport, variant.start.daemonPort, variant.identity.mcp]).toEqual(["hub-native", "claude-print", "env"]);
   expect(definitionOf("claude")!.start.forms).toEqual(["tui"]);
   expect(definitionOf("claude")!.start.create).toBeUndefined();
   expect(definitionOf("claude-review", { "claude-review": { kind: "claude" } })!.transport).toBe("claude-channel");
-  for (const roles of [["planner"], ["reviewer", "planner"], []]) expect(() => validateInstances({ "claude-x": { kind: "claude", roles, start_mode: "headless" } })).toThrow('exactly ["reviewer"]');
-  expect(() => validateInstances({ "claude-x": { kind: "claude", roles: ["reviewer"], start_mode: "headless", worktree: "../wt" } })).toThrow("worktree is not supported");
+  for (const roles of [["planner"], ["reviewer", "planner"], []]) expect(() => validateInstances({ "claude-x": { kind: "claude", roles, start_mode: "headless" } }, builtinProjectCatalog())).toThrow('exactly ["reviewer"]');
+  expect(() => validateInstances({ "claude-x": { kind: "claude", roles: ["reviewer"], start_mode: "headless", worktree: "../wt" } }, builtinProjectCatalog())).toThrow("worktree is not supported");
   // `ahub claude --as <id>` hands a headless reviewer to the hub; it takes no launch arguments.
-  expect(instanceLaunchArguments("claude", ["--as", "claude-review"], validateInstances(reviewer))).toEqual({ instance: "claude-review", args: [], hubStarted: true });
-  expect(instanceLaunchArguments("claude", ["--as", "claude-review", "--print-command"], validateInstances(reviewer)).hubStarted).toBe(true);
-  expect(() => instanceLaunchArguments("claude", ["--as", "claude-review", "--model", "x"], validateInstances(reviewer))).toThrow("takes no launch arguments");
-  expect(instanceLaunchArguments("claude", ["--as", "claude-review"], validateInstances({ "claude-review": { kind: "claude", roles: ["reviewer"] } })).hubStarted).toBeUndefined();
+  expect(instanceLaunchArguments("claude", ["--as", "claude-review"], validateInstances(reviewer, builtinProjectCatalog()))).toEqual({ instance: "claude-review", args: [], hubStarted: true });
+  expect(instanceLaunchArguments("claude", ["--as", "claude-review", "--print-command"], validateInstances(reviewer, builtinProjectCatalog())).hubStarted).toBe(true);
+  expect(() => instanceLaunchArguments("claude", ["--as", "claude-review", "--model", "x"], validateInstances(reviewer, builtinProjectCatalog()))).toThrow("takes no launch arguments");
+  expect(instanceLaunchArguments("claude", ["--as", "claude-review"], validateInstances({ "claude-review": { kind: "claude", roles: ["reviewer"] } }, builtinProjectCatalog())).hubStarted).toBeUndefined();
 });
 
 test("each review runs a new unpersisted session with read-only tools, and settles by the verdict", async () => {
@@ -118,7 +119,7 @@ test("the daemon runs the headless reviewer: review-only delivery, a fresh verdi
   writeFileSync(join(bin, "claude"), `#!/bin/sh\nexec '${process.execPath}' '${FAKE}' "$@"\n`); chmodSync(join(bin, "claude"), 0o755);
   setEnv({ PATH: `${bin}:${process.env.PATH}`, FAKE_CLAUDE_LOG: log, FAKE_CLAUDE_ACTION: "approve" });
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, instances: validateInstances(reviewer), roles: { ...DEFAULT_CONFIG.roles, builder: ["implementer"] }, batch_ms: 0, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
+    config: { ...DEFAULT_CONFIG, instances: validateInstances(reviewer, builtinProjectCatalog()), roles: { ...DEFAULT_CONFIG.roles, builder: ["implementer"] }, batch_ms: 0, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
       pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, approvals: { ...DEFAULT_CONFIG.approvals, notify: false } } });
   cleanup.push(() => daemon.stop());

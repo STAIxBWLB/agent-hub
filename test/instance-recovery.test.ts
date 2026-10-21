@@ -93,3 +93,24 @@ test("#450 declared instances refuse unsupported or unknown running source featu
     expect(instanceRecoverySourceRefusal(f.root, undefined)).toBeUndefined();
   } finally { f.close(); }
 });
+
+test("configured ACP declarations do not break an unrelated Codex worktree terminal recovery", async () => {
+  const f = fixture(true), previous = Object.fromEntries(["ORCA_TERMINAL_HANDLE", "ORCA_WORKTREE_ID", "AGENTHUB_LAUNCH_ID", "AGENTHUB_INSTANCE_ID"].map(key => [key, process.env[key]]));
+  try {
+    const file = join(f.root, ".agenthub", "config.local.json"), config = JSON.parse(readFileSync(file, "utf8"));
+    config.adapters = { fixture: { transport: "acp", command: "fixture-only", displayName: "Fixture", roles: ["verifier"] } };
+    config.instances["fixture-reader"] = { kind: "fixture", roles: ["verifier"] };
+    writeFileSync(file, JSON.stringify(config));
+    process.env.ORCA_TERMINAL_HANDLE = f.binding.handle; process.env.ORCA_WORKTREE_ID = f.binding.worktreeId;
+    const terminal = { handle: f.binding.handle, incarnationId: f.binding.incarnationId, worktreeId: f.binding.worktreeId, worktreePath: f.root, agentIdentity: "codex", sessionId: f.binding.sessionId, connected: true, orphaned: false };
+    const options = { executionCwd: f.executionCwd, stateDir: f.stateDir, instanceId: "mixed-instance", processIdentity: () => "fixture-start", runner: async (args: readonly string[]) => args[1] === "list" ? { result: { terminals: [terminal] } } : { result: { terminal } } };
+    const recorded = await recordTerminalLaunch("codex-worker", f.root, f.stateDir, "mixed-instance", options, () => true);
+    expect(recorded?.executionCwd).toBe(f.executionCwd);
+    const inspected = await inspectTerminals(f.root, { "codex-worker": f.binding.sessionId }, options);
+    expect(inspected.manualRequired).toBe(false);
+    expect((await inspectSavedTerminal(inspected.byPeer["codex-worker"]!, options)).state).toBe("present");
+  } finally {
+    for (const [key, value] of Object.entries(previous)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    f.close();
+  }
+}, 20_000);

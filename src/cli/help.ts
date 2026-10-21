@@ -48,6 +48,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub recovery-run <operation-id>", "internal: the detached runner of an upgrade, restart or recovery resume"],
   ]],
   ["Agents", [
+    ["ahub <configured-kind> [--mode headless] [--as <instance>] [--session-id <id>] [--print-command | --dry-run]", "start a trusted config.local.json ACP kind (default off roster); native argv is withheld in previews"],
     ["ahub claude [--print-command] [--unattended] [args...]", "launch Claude Code with the hub channel"],
     ["ahub codex [--print-command] [--unattended] [args...]", "start the Codex adapter and attach the TUI"],
     ["ahub kimi [--print-command] [--mode tui|headless] [--model <alias>]", "default: Kimi's own TUI, pull-only via hub_inbox; no push, steer, watchdog, console approvals or automatic quota handoff. Select headless for ACP"],
@@ -177,4 +178,9 @@ export function renderHelp(columns: number, color: boolean, command?: string): s
     lines.push(first, ...usage.slice(1).map(text => [{ text: `    ${text}` }]), ...description.map(text => [{ text: " ".repeat(DESCRIPTION) + text }]));
   }
   return lines.map(line => paint(line, color)).join("\n");
+}
+
+/** Body-free configured command guidance; no native argv or environment values enter help. */
+export function configuredAcpHelp(kind: string): string {
+  return `ahub ${kind} [--mode headless] [--as <instance>] [--session-id <id>] [--print-command | --dry-run]\nConfigured ACP runs headless through the hub, with native permissions and NO hub sandbox.\nDeclare it in untracked .agenthub/config.local.json, restart the hub, then enable roster.${kind}.\nPreview withholds native argv and starts nothing. Native/model overrides and --unattended are refused.`;
 }

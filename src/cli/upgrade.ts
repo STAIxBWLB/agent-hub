@@ -19,7 +19,7 @@ import { RecoveryPresentationError, type RecoveryPresentationCause, type Recover
 const projectDefinition = (peer: string, root?: string) => {
   const builtin = definitionOf(peer);
   if (builtin || !root) return builtin;
-  try { return definitionOf(peer, readInstanceConfig(root).instances); } catch { return undefined; }
+  try { const bound = readInstanceConfig(root); return bound.catalog.definitionOf(peer, bound.instances); } catch { return undefined; }
 };
 
 

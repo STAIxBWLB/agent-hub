@@ -1,4 +1,4 @@
-import { definitionOf, type KindMap } from "../adapters/registry.ts";
+import { definitionOf, type KindMap, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { Database } from "bun:sqlite";
 import type { Task } from "./board.ts";
 import { CONDUCTOR_TOOL_NAMES } from "./hub-tools.ts";
@@ -110,10 +110,10 @@ export type ConductorStart = { peer: string; mode: "headless" } | { peer: "claud
  * What a conductor's start of `peer` is (#269): the peer's own start mode, which a person sets. A `mode` argument may
  * only repeat it. Preview commands come from the same launch planner the CLI uses, never caller-supplied shell text.
  */
-export function conductorStart(peer: unknown, mode: unknown, preview: (peer: "claude" | "codex" | "pi") => string, preEffect: boolean, startMode: (peer: string) => StartMode, instances?: KindMap): ConductorStart {
+export function conductorStart(peer: unknown, mode: unknown, preview: (peer: "claude" | "codex" | "pi") => string, preEffect: boolean, startMode: (peer: string) => StartMode, instances?: KindMap, adapterCatalog?: ProjectAdapterCatalog): ConductorStart {
   const refuse = (text: string) => new (preEffect ? PreEffectToolRefusal : Error)(text);
   if (mode !== undefined && mode !== "headless" && mode !== "tui") throw refuse("mode must be headless or tui");
-  const adapter = typeof peer === "string" ? definitionOf(peer, instances) : undefined;
+  const adapter = typeof peer === "string" ? (adapterCatalog?.definitionOf ?? definitionOf)(peer, instances) : undefined;
   if (typeof peer !== "string" || !adapter?.start.conductorStartable) throw refuse("only claude, codex, kimi, pi and local, plus opt-in qwen/jcode, may be started by the conductor");
   const selected = peer;
   const extra = adapter.kind !== selected;
@@ -157,6 +157,7 @@ export interface ConductEvent {
   kind: "conduct"; actor: string; action: string; task?: number; peer?: string;
 }
 export interface ConductorHooks {
+  adapterCatalog?: ProjectAdapterCatalog;
   roles(): unknown;
   capabilities(): Record<string, unknown>;
   status(): ConductorStatusInput;
@@ -237,8 +238,8 @@ export class Conductor {
     }
     if (tool === "hub_peer_start") {
       const instances = this.hooks.instances?.();
-      const start = conductorStart(args.peer, args.mode, this.hooks.preview, true, this.hooks.startMode, instances);
-      if (definitionOf(start.peer, instances)?.kind !== start.peer && !this.hooks.known(start.peer)) throw new PreEffectToolRefusal(`unknown peer: ${start.peer}`);
+      const start = conductorStart(args.peer, args.mode, this.hooks.preview, true, this.hooks.startMode, instances, this.hooks.adapterCatalog);
+      if ((this.hooks.adapterCatalog?.definitionOf ?? definitionOf)(start.peer, instances)?.kind !== start.peer && !this.hooks.known(start.peer)) throw new PreEffectToolRefusal(`unknown peer: ${start.peer}`);
       const result = await this.hooks.start(start.peer);
       const opened = result && typeof result === "object" && typeof (result as { opened?: unknown }).opened === "string" ? { opened: (result as { opened: string }).opened } : {};
       const already = result && typeof result === "object" && (result as { already?: unknown }).already === true ? { already: true } : {};

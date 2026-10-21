@@ -1,3 +1,4 @@
+import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -46,9 +47,9 @@ test("#450 lookup and row rendering share the same instance setting definitions"
   const cwd = mkdtempSync(join(tmpdir(), "ahub-instance-setting-rows-"));
   try {
     const input = { cwd, routing: parseRouting('[local]\nfixed_model = "fixture"\n'), running: () => undefined, next: () => undefined, mode: () => ({ value: "ask" }) };
-    const legacy = settingRows(input);
-    expect(settingRows({ ...input, instances: {} })).toEqual(legacy);
-    const rows = settingRows({ ...input, instances }), expected = projectSettings(instances).filter(entry => !SETTINGS.includes(entry));
+    const legacy = settingRows({ ...input, adapterCatalog: builtinProjectCatalog() });
+    expect(settingRows({ adapterCatalog: builtinProjectCatalog(), ...input, instances: {} })).toEqual(legacy);
+    const rows = settingRows({ adapterCatalog: builtinProjectCatalog(), ...input, instances }), expected = projectSettings(instances).filter(entry => !SETTINGS.includes(entry));
     expect(rows.slice(0, legacy.length)).toEqual(legacy);
     expect(rows.slice(legacy.length).map(row => row.key)).toEqual(expected.map(entry => entry.key));
     for (const row of rows.slice(legacy.length)) {

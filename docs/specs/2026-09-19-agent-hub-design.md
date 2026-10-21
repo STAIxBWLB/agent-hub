@@ -3996,6 +3996,80 @@ Version line (#589, owner decision 2026-10-20): agy updates itself, so the launc
 - The first explicit acceptance/self-claim of the ownership span captures its baseline through the guarded host `ownerAccepted` callback; later re-acceptance cannot move it. An acceptance manufactured by done has no pre-work baseline and leaves D2 unknown; it adds no capture ahead of the existing review projection. Acceptance and done snapshots use the existing hardened snapshot machinery and shared 250 ms burst budget. Declared instances require their current execution adapter/root binding; canonical-checkout dirtiness cannot substitute for an instance's evidence. Unknown, disabled, private, missing/pruned or restart-lost captures never become empty evidence. Native writing-turn boundaries hash shared branch refs with one budgeted `for-each-ref` probe, without exposing names. HEAD or any shared branch-ref movement is progress, including commit-only turns in ignored worktrees. A canonical-root turn with recorded branch/commit, `.worktrees` paths or SDLC PR/head evidence remains unknown when its visible tree/refs are empty; a canonical tree cannot disprove work elsewhere. Even without recorded hints, negative canonical evidence additionally requires a bounded `git worktree list --porcelain -z` proof of a sole worktree at both boundaries and no ignored `.worktrees` directory. Uncommitted/detached work elsewhere therefore remains unknown before its first ref movement. The shadow repository compares its own private Git directory as the registered bare main-worktree path, preserving the same metadata validation and unknown-on-failure rules. Builtin-owner D1 is deliberately inert while `.worktrees` exists; the upgrade path is binding each owner to its actual execution worktree. Both probes cap output at 1 MiB and share the same snapshot deadline; no raw ref names or worktree paths escape. Check start/cancel, escalation and memory correction are task-tool effects alongside existing mutations; read-only check results are not. No snapshot is added during a private snapshot window; a PII notice, if trusted evidence is available, uses only `publicTitle`. Capturing private evidence and restoring acceptance baselines across daemon restarts remain outside this advisory.
 - Structured `no-writes` stalls feed the S9 grooming digest and status. S7 consumers receive additive `stalls.noWrites` and `stalls.doneWithoutWrites` counts from cost reporting over that report's existing bounded, public, repository/PR-scoped tasks; they are not a count of every board row. No model call, automatic reassignment, done gate or new write endpoint is added.
 
+## Amendment: config-only ACP adapters, A3 (#451, #486)
+
+A3 adds declarative ACP definitions. It does not add A4 module loading, executable
+callbacks or config-selected imports. `adapters.<kind>` is accepted only from a
+Git-confirmed untracked `.agenthub/config.local.json`; the entire declaration is
+machine-local authority, not just its command and arguments. A tracked local file
+or a shared `config.json` cannot introduce one. Validate plain own-data objects
+and bounded arrays before constructing definitions. Unknown fields, accessors,
+inherited authority and collisions with builtin or reserved identities refuse.
+
+Each declaration names `transport: "acp"`, `command`, optional `args`,
+`displayName` and `roles`, with optional `identity: { name, version }`,
+`permission` (hub-mode to native-mode mapping) and `readOnly` (native mode id).
+Adapter role defaults cannot appoint a conductor; a person can still select one through explicit project role policy and its existing authority checks. Other kind-meaning capabilities remain builtin-only. A project captures one
+immutable catalog at startup; declared kinds and their explicitly declared
+instances resolve through that catalog, never a mutable global registry. Adapter
+changes, including removal and their derived defaults, require a restart.
+
+Configured kinds are optional, cloud and headless-only, off roster by default.
+They do not change default routing or inherit another kind's identity, quota,
+context parser or privileged capability. A configured kind may join the roster
+through the existing person-controlled path. Roles, exact nominations and
+reservations, family independence, instance execution-root admission and PII
+refusal use the same host routing rules as builtin definitions. Kind preferences
+may expand to declared instances; an explicit instance or canonical id remains
+exact. Absence of a permission map means unmanaged native policy. Absence of a
+budget block exempts the registered kind from quota accounting; it is not a zero
+reading, while unknown external ids retain existing manual accounting.
+
+The identity pin is optional in the declaration schema so an unverified adapter
+can be described, but a start without it refuses before a prompt. Initialize must
+return the pinned agentInfo name and version. A resumed `session/load` must echo
+the requested sessionId; a missing or different echo refuses before a prompt.
+No implicit fresh-session fallback repairs an identity failure. Explicit session selectors must be nonblank, bounded and control-free. A configured start in progress refuses another start rather than joining its result; an attached peer accepts an already-running result only for the same requested native session (or no selector). Config argv that
+selects a leader or attaches to another native process is refused at load.
+
+Owned-process admission has a deliberately bounded proof. The pinned native
+foreground contract must be supported by a T0 receipt; the spawned pid, original
+process group and process signature must have positive current evidence before
+admission and before stop. Unknown ownership refuses. Stop signals only that
+original verified owned group, never a pre-existing leader or any process outside
+it. ACP provides no generic kernel-bound responder attestation, and A3 adds no
+protocol extension pretending to provide one. A native agent that delegates its
+responses to an unowned process is unsupported by this boundary.
+
+The Grok proof target is the config-only `grok agent stdio` command, with no
+leader or attach flags and with explicit `--no-leader`. Config load refuses a Grok kind, Grok executable or Grok native-identity pin without that standalone opt-out before argv termination; valued forms such as `--no-leader=false` also refuse. Native `--leader` and `--leader-socket` remain refused even alongside the opt-out. This is necessary because the native default inherits `[cli] use_leader` from ambient config. Its T0 must record that default and run under isolated HOME and Grok home in a
+scratch project, preserve the person's config bytes, record the pinned build's
+process tree, and inspect sockets/IPC while a prompt runs for links to processes
+outside the owned group. It must separately record initialize identity, load echo,
+native mode support or absence, usage unknowns and an actual hub tool receipt.
+If in-process service and the no-external-IPC boundary cannot be established,
+Grok remains explicitly unsupported; the generic ACP path may still ship with a
+fake ACP transport receipt. This amendment describes the implementation contract,
+not completed Grok live verification. Fixture results are not a native T0 receipt.
+
+The optional definition `readOnly` capability names a native mode; it does not
+select that mode for every instance. An instance selects it explicitly with
+`readOnly: true`. Admission requires the native mode to be advertised and its
+selection acknowledged before a prompt, plus the host's read-only kind/tool gate
+and MCP mutation refusal. The selection is non-raisable: runtime and stored
+permission changes cannot lift it. A missing mode, failed acknowledgement or
+unknown policy refuses rather than falling back to an ordinary permission mode.
+Mapped ordinary modes likewise require advertised native support and an
+acknowledged selection; no map remains unmanaged and grants no hub sandbox claim.
+
+Configured ACP crash resume reads only a bounded, control-free session id and requires exact session/load echo; it never imports a model override from old launch metadata. Controlled recovery remains explicitly refused for configured ACP because no terminal/recovery driver has been verified. Recovery source and target capability checks require `configured_acp` before reinterpreting configured identities or taking recovery effects. The initial Grok 1.0.62 isolated receipt found no initialize agentInfo and a refused session/new, so it does not establish native readiness; see `docs/verification/2026-10-21-grok-config-acp-t0.md`.
+
+MCP publication appends project start targets only from authenticated daemon catalog metadata, preserving the builtin default enum. Read-only instances publish only the R2 read/review tool set; every mutation remains independently refused at the host boundary. Incomplete catalog metadata withholds configured start targets. If active lifecycle metadata is unavailable, tool discovery may retain the ordinary list until current status arrives; the host still independently refuses read-only mutations, and discovery never grants authority. A malformed generic session/new identity refuses before admission, and failed spawns are released only on positive no-process/empty-group evidence.
+
+Task/conductor MCP refusals retain their existing error text and also set the optional `isError: true` result flag, so SDK consumers observe an unsuccessful tool call instead of an ordinary text result.
+
+Configured ACP permission requests never use hub-tool titles for automatic approval. Requests use the ordinary person approval path unless the explicit permission-mode policy authorizes them, even when a title spells a known hub tool; builtin Kimi/Qwen title handling stays confined to those verified contracts. Owned-group identity across exec is the live child plus PID, parent, process group and start time; command/comm changes are evidence, not a new owner. Group teardown deliberately freezes, re-verifies and kills the original group; unreadable re-verification sends no further signal and retains the owner for an explicit retry.
+
 ## Adding an AI tool guide and adapter definitions (#451 A5)
 
 - Human-oriented guide `docs/adding-an-ai-tool.md` documents today's builtin Adapter API 1 path (`AdapterDefinition` in `src/adapters/registry-types.ts` and `src/adapters/registry.ts`), covering:
@@ -4003,5 +4077,5 @@ Version line (#589, owner decision 2026-10-20): agy updates itself, so the launc
   - Transport selection: `acp` (stdio JSON-RPC), `codex-appserver`, `claude-channel`, `ws-pull` (pull-only workspace MCP plugin), and `hub-native`.
   - Conformance kit (`test/conformance/`): enrollment invariants, delivery occupancy, watchdog expiry, process-group teardown, and explicit reasons in `UNSUPPORTED` (per kind) and `UNSUPPORTED_LEGS` (per ACP leg).
   - Review and verification checklist: T0 receipt, path protection (`AGENT_CONFIG_SEGMENTS`), PII safety (`trust.onPrem`), process isolation, and documentation freshness.
-  - Planned config-only generic ACP adapters (#451 A3, board task #217) and external adapter modules (#451 A4, board task #135) are outlined as upcoming milestones; their configuration schemas, hash-pinning rules, and implementation details land with those respective PRs.
+  - Config-only generic ACP adapters (#451 A3, board task #217) follow the A3 amendment above, including its isolated native-proof boundary. External adapter modules (#451 A4, board task #135) remain planned; their hash-pinning and module trust rules land with A4.
 - `docs/agent-notes/adapters.md` keeps only the per-adapter rules that bind code, pointing to `docs/adding-an-ai-tool.md` and `src/adapters/registry-types.ts` for conceptual architecture and definitions.
