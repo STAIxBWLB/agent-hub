@@ -2946,10 +2946,7 @@ export class Tasks {
     let reviewer = selection?.reviewer ?? task.reviewer, reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off" && gated !== (reviewer ? "review" : "approval")) {
       reviewEvidence = await this.lifecycleGate(task, reviewer ? "review" : "approval");
-      task = this.need(task.id, false, true);
-      this.mine(task, by, "owner", true);
-      // In every mode: another done may have landed during the readback.
-      if (task.state === "in_review" || isClosedTaskState(task.state)) throw new Error(`task #${task.id} is already ${task.state}`);
+      task = this.completionCurrent(task.id, by, false);
       selection = this.poolReview(task, refs);
       reviewer = selection?.reviewer ?? task.reviewer;
     }
@@ -3066,7 +3063,7 @@ export class Tasks {
       const current = this.need(task.id, false, preEffect);
       const changed = current.history.length !== task.history.length;
       const quiet = current.history.length > task.history.length && current.history.slice(task.history.length).every(entry => QUIET_EVENTS.has(entry.event));
-      const sameHistory = !changed || (mode === "advise" ? quiet : sameRequest?.());
+      const sameHistory = !changed || (mode === "advise" && quiet) || !!sameRequest?.();
       if ((this.d.sdlc?.config().mode ?? "off") !== mode || !sameHistory || current.owner !== task.owner || mode !== "advise" && current.reviewer !== task.reviewer
         || this.isPii(current) !== this.isPii(task) || JSON.stringify(current.sdlc ?? null) !== JSON.stringify(task.sdlc ?? null)
         || mode === "advise" && (current.state !== task.state || current.refs.commit !== task.refs.commit)

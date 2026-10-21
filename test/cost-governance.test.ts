@@ -84,7 +84,7 @@ import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0)) close(); });
-function scopeRig(mode: "off" | "advise" | "enforce", gh?: SdlcGh, checks: Pick<TasksDeps, "check" | "runCheck"> = {}) {
+function scopeRig(mode: "off" | "advise" | "enforce", gh?: SdlcGh, checks: Pick<TasksDeps, "check" | "runCheck" | "instances" | "review" | "reviewOnly"> = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-cost-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   const notices: string[] = [];
   const roles: Record<string, string[]> = { claude: ["planner"], codex: ["implementer"] }, privacy = { active: false }, policy = { mode };
@@ -544,4 +544,57 @@ for (const scenario of ["advise quiet", "reviewer change", "enforce quiet", "enf
     expect(JSON.stringify(retries)).not.toContain("PRIVATE_SUMMARY_CANARY");
     expect(JSON.stringify(retries)).not.toContain("PRIVATE_TITLE_CANARY");
   }
+});
+
+
+test("F4 retryReviewer advise retains a same-request fallback across non-quiet bookkeeping", async () => {
+  let drift = false, calls = 0;
+  const r = scopeRig("advise", async args => {
+    if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ headRefOid: head, state: "OPEN", statusCheckRollup: [], reviewRequests: [], files: [], changedFiles: 0 }) };
+    if (drift) { calls++; r.board.update(task.id, "hub", "checkpoint", {}); }
+    return { code: 0, stdout: JSON.stringify(readinessReply()) };
+  }, {
+    instances: () => ({ "claude-review": { kind: "claude", roles: ["reviewer"], start_mode: "headless" }, "claude-two": { kind: "claude", roles: ["reviewer"], start_mode: "headless" } }),
+    review: { adaptive: false, min_reviews: 5, pool: ["claude"] }, reviewOnly: () => true,
+  });
+  for (const id of ["codex", "claude-review", "claude-two"]) {
+    r.roles[id] = id === "codex" ? ["implementer"] : ["reviewer"];
+    const peer = new ReadyReviewer(id); r.bus.add(peer); await peer.start();
+  }
+  const task = scopeTask(r), done = await r.tasks.done("codex", task.id, "ready");
+  expect(done.reviewer).toBe("claude-review");
+  drift = true;
+  const moved = await r.tasks.retryReviewer(task.id, "claude-review", { head, flowRevision: done.history.length, cause: "no_verdict" }, () => true);
+  expect(calls).toBe(1);
+  expect(moved).toMatchObject({ state: "in_review", owner: "codex", reviewer: "claude-two" });
+  expect(moved.history.at(-1)?.reviewerFailure?.peer).toBe("claude-review");
+});
+
+test("F4 reviewer unassign during delayed lifecycle read cannot approve past changed readiness", async () => {
+  let finish!: (result: { code: number; timedOut: boolean; tail: string }) => void;
+  const checked = new Promise<{ code: number; timedOut: boolean; tail: string }>(resolve => { finish = resolve; });
+  let checkStarted!: () => void;
+  const started = new Promise<void>(resolve => { checkStarted = resolve; });
+  let afterCheck = false, mutated = false;
+  const r = scopeRig("advise", async args => {
+    if (args[0] === "pr") {
+      if (afterCheck) {
+        await r.tasks.unassign(task.id, "user", true, "reviewer");
+        r.board.plan(task.id, "user", { deps: [blocker.id] }, 0);
+        mutated = true;
+      }
+      return { code: 0, stdout: JSON.stringify({ headRefOid: head, state: "OPEN", statusCheckRollup: [], reviewRequests: [], files: [], changedFiles: 0 }) };
+    }
+    return { code: 0, stdout: JSON.stringify(readinessReply()) };
+  }, { check: () => "fixture check", runCheck: () => { checkStarted(); return checked; } });
+  const blocker = r.board.propose("user", { title: "prerequisite", class: "summarize" });
+  const task = scopeTask(r);
+  await r.tasks.done("codex", task.id, "ready");
+  await started; afterCheck = true; finish({ code: 0, timedOut: false, tail: "passed" });
+  await waitCheck(() => r.tasks.checksPending() === 0);
+  expect(mutated).toBe(true);
+  const current = r.board.get(task.id)!;
+  expect(current).toMatchObject({ reviewer: null, state: "in_progress", deps: [blocker.id] });
+  expect(current.history.some(entry => entry.event === "done")).toBe(false);
+  expect(r.notices.join("\n")).toContain("not approved yet");
 });
