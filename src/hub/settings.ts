@@ -48,6 +48,7 @@ const perClass = (name: TaskClass): SettingDef[] => [
 ];
 export const SETTINGS: readonly SettingDef[] = [
   ...["enabled", "auto_reassign"].map((key): SettingDef => ({ key: `task_sweep.${key}`, group: "Switches", label: `Task sweep: ${key}`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["task_sweep", key] })),
+  { key: "task_sweep.no_writes_turns", group: "Switches", label: "Consecutive owner turns without writes (0 disables)", type: "integer", min: 0, max: Number.MAX_SAFE_INTEGER, store: "config", applies: "live", risk: "raises", path: ["task_sweep", "no_writes_turns"] },
   ...["interval_s", "unaccepted_min", "idle_min", "review_min", "ready_min", "ladder_min"].map((key): SettingDef => ({ key: `task_sweep.${key}`, group: "Switches", label: `Task sweep: ${key}`, type: "number", min: 1, max: 2_147_483_647 / (key === "interval_s" ? 1000 : 60_000), store: "config", applies: "live", risk: "raises", path: ["task_sweep", key] })),
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `tasks.wip_limits.${peer}`, group: "Routing", label: `${peer}: planner WIP limit`, type: "integer", min: 0, max: 32, store: "config", applies: "live", risk: "raises", floor: 0, path: ["tasks", "wip_limits", peer] })),
   { key: "tasks.escalate_after", group: "Routing", label: "Escalate after N consecutive changes_requested", type: "integer", min: 1, max: 10, store: "config", applies: "live", risk: "raises", path: ["tasks", "escalate_after"] },

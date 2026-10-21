@@ -10,6 +10,7 @@ export interface SweepRecord {
 }
 export interface TaskSweepConfig {
   enabled: boolean;
+  no_writes_turns?: number;
   interval_s: number;
   unaccepted_min: number;
   idle_min: number;
@@ -19,7 +20,7 @@ export interface TaskSweepConfig {
   auto_reassign: boolean;
 }
 export const DEFAULT_TASK_SWEEP: TaskSweepConfig = {
-  enabled: false, ready_min: 60, interval_s: 300, unaccepted_min: 60, idle_min: 120, review_min: 120, ladder_min: 30, auto_reassign: false,
+  enabled: false, no_writes_turns: 2, ready_min: 60, interval_s: 300, unaccepted_min: 60, idle_min: 120, review_min: 120, ladder_min: 30, auto_reassign: false,
 };
 
 /** Config cannot silently enable a sweep or reassignment through a truthy string. */
@@ -32,6 +33,11 @@ export function taskSweepConfig(input: unknown): TaskSweepConfig {
     if (values[key] === undefined) continue;
     if (typeof values[key] !== "boolean") throw new Error(`task_sweep.${key} must be a boolean`);
     out[key] = values[key];
+  }
+  if (values.no_writes_turns !== undefined) {
+    const limit = values.no_writes_turns;
+    if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 0) throw new Error("task_sweep.no_writes_turns must be a safe nonnegative integer");
+    out.no_writes_turns = limit;
   }
   for (const key of ["interval_s", "unaccepted_min", "idle_min", "review_min", "ready_min", "ladder_min"] as const) {
     if (values[key] === undefined) continue;
@@ -77,7 +83,7 @@ export interface PlannerGroomingOptions {
   acceptedIssues?: ReadonlyMap<number, { repo: string; issue: number; lastEditedAt: string | null }>;
 }
 const GROOMING_TASK_LIMIT = 500, GROOMING_ITEM_LIMIT = 256;
-const GROOMING_CODES = new Set(["tests", "spec", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable", "runner", "approvals", "quota", "dependency"]);
+const GROOMING_CODES = new Set(["tests", "spec", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable", "runner", "approvals", "quota", "dependency", "no-writes"]);
 const groomingRepo = (value: unknown): string | undefined => {
   if (typeof value !== "string") return undefined;
   if (value.startsWith("path:/") && value.length <= 4096 && !/\p{Cc}/u.test(value)) return value;

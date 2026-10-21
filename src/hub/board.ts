@@ -15,9 +15,9 @@ export type TaskState = "backlog" | "proposed" | "in_progress" | "in_review" | "
 export const isClosedTaskState = (state: string): boolean => state === "approved" || state === "cancelled";
 export interface TaskOffer { envelopeId: string; owner: PeerId; assignmentFlowRevision: number; pullOnly?: boolean }
 export interface TaskCancellation { reason: string; supersededBy?: string; flowRevision: number; withheld?: true }
-export const TASK_STALL_CODES = ["tests", "spec", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable"] as const;
+export const TASK_STALL_CODES = ["tests", "spec", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable", "no-writes"] as const;
 export type TaskStallCode = (typeof TASK_STALL_CODES)[number];
-export interface TaskStall { task: number; signature: string; replanRevision: number; cause: { kind: "reservation" | "no-eligible-peer" | "cancelled-dependency"; peer?: string; dependency?: number; code: TaskStallCode; refusals?: { peer: string; code: TaskStallCode }[] }; at: number }
+export interface TaskStall { task: number; signature: string; replanRevision: number; cause: { kind: "reservation" | "no-eligible-peer" | "cancelled-dependency" | "no-writes"; peer?: string; dependency?: number; code: TaskStallCode; turns?: number; acceptance?: number; refusals?: { peer: string; code: TaskStallCode }[] }; at: number }
 
 export interface TaskRefs {
   repo?: string;
@@ -55,6 +55,8 @@ export interface HistoryEntry {
   sweep?: SweepRecord;
   /** The PII screen did not clear this entry's note (#198): only the console reads it. */
   withheld?: true;
+  /** Host evidence at done, never inferred from the owner's summary. */
+  noWrites?: true;
   /** Host-recorded expected cost and exact review head, never narrative. */
   reviewCost?: ReviewCost;
   /** #223 R4: on a verdict, whether the reviewer's context was new for it; set by the hub, never by the reviewer. */
@@ -287,10 +289,11 @@ export class Board {
         const value = JSON.parse(row.payload) as TaskStall, cause = value.cause;
         const peer = (id: unknown) => typeof id === "string" && /^[a-z][a-z0-9_-]{0,63}$/i.test(id);
         if (Object.keys(value).some(key => !["task", "signature", "replanRevision", "cause", "at"].includes(key)) || !Number.isSafeInteger(value.task) || value.task < 1 || !Number.isSafeInteger(value.replanRevision) || value.replanRevision < 0 || !Number.isFinite(value.at)
-          || !cause || !["reservation", "no-eligible-peer", "cancelled-dependency"].includes(cause.kind) || !TASK_STALL_CODES.includes(cause.code)
+          || !cause || !["reservation", "no-eligible-peer", "cancelled-dependency", "no-writes"].includes(cause.kind) || !TASK_STALL_CODES.includes(cause.code)
+          || cause.kind === "no-writes" && (cause.code !== "no-writes" || !peer(cause.peer) || !Number.isSafeInteger(cause.turns) || cause.turns! < 1 || !Number.isSafeInteger(cause.acceptance) || cause.acceptance! < 0)
           || cause.peer !== undefined && !peer(cause.peer) || cause.dependency !== undefined && (!Number.isSafeInteger(cause.dependency) || cause.dependency < 1)
           || cause.refusals !== undefined && (!Array.isArray(cause.refusals) || cause.refusals.length > 64 || cause.refusals.some(row => Object.keys(row).some(key => !["peer", "code"].includes(key)) || !peer(row.peer) || !TASK_STALL_CODES.includes(row.code)))
-          || Object.keys(cause).some(key => !["kind", "peer", "dependency", "code", "refusals"].includes(key)) || value.signature !== JSON.stringify(cause)) return [];
+          || Object.keys(cause).some(key => !["kind", "peer", "dependency", "code", "refusals", ...(cause.kind === "no-writes" ? ["turns", "acceptance"] : [])].includes(key)) || value.signature !== JSON.stringify(cause)) return [];
         return [value];
       } catch { return []; }
     });
@@ -304,7 +307,7 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "capacity" | "withheld" | "reviewCost" | "reviewContext" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "capacity" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
@@ -320,7 +323,7 @@ export class Board {
     }
     if (patch.state === "backlog" && taskHasStarted(task) && !untouchedReturn) throw new Error(`task #${id}: started work cannot return to backlog`);
     const reviewMetadata = reviewerHistory(extra);
-    const history = [...task.history, { at: Date.now(), by, event, ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.withheld && note ? { withheld: true as const } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}) }];
+    const history = [...task.history, { at: Date.now(), by, event, ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.withheld && note ? { withheld: true as const } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}) }];
     this.taskWrite(() => this.db
       .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ? WHERE id = ?")
       .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), id));

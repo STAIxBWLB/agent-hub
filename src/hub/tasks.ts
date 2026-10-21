@@ -4,6 +4,7 @@ import { specRefs } from "./spec-read.ts";
 import type { InstancesConfig } from "./instances.ts";
 import { composeRememberText } from "./memory-fail.ts";
 import { VERSION } from "../version.ts";
+import { NoWriteTurns } from "./no-writes.ts";
 import { readGitHubImport, type GitHubSource, type GitHubImportSelection } from "./github-import.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { readMergeQueue } from "./sdlc-queue.ts";
@@ -62,6 +63,10 @@ export interface TasksDeps {
   sessionRoles?: (peer: PeerId) => string[];
   /** Optional bounded snapshot presentation; never stored in task history or memory. */
   projectedReview?: (task: Task) => string | undefined;
+  /** Closed host evidence since the current acceptance: false means proven no writes; undefined is unknown. */
+  ownerWrites?: (task: Task, since: number) => boolean | undefined;
+  /** Explicit acceptance/self-claim only; implicit done has no pre-work baseline. */
+  ownerAccepted?: (task: Task) => void;
   /** #520: the review brief for a task's commit (git only, bounded); undefined when the task names no commit. */
   reviewBrief?: (task: Task) => ReviewBrief | { unavailable: string } | undefined;
   sdlc?: { config: () => SdlcConfig; gh?: SdlcGh };
@@ -269,6 +274,7 @@ export class Tasks {
   readonly cohorts: Cohorts;
   private readonly coordinationModes = new Map<number, boolean>();
   private sweepConfig: TaskSweepConfig;
+  private readonly noWriteTurns = new NoWriteTurns();
   private sweeping = false;
 
   constructor(private readonly d: TasksDeps) {
@@ -428,6 +434,53 @@ export class Tasks {
   /** A validated snapshot takes effect on the next sweep, never halfway through one. */
   configureSweep(config: TaskSweepConfig): void {
     this.sweepConfig = taskSweepConfig(config);
+    if (this.sweepConfig.no_writes_turns === 0) {
+      this.noWriteTurns.retain([]);
+      for (const stall of this.d.board.stalls()) if (stall.cause.kind === "no-writes") this.d.board.clearStall(stall.task);
+    }
+  }
+
+  private ownerAcceptance(task: Task): { index: number; at: number } | undefined {
+    if (!task.owner) return undefined;
+    const boundary = task.history.findLastIndex(entry => OWNERSHIP_EVENTS.has(entry.event) || entry.owner !== undefined && entry.owner !== task.owner);
+    const index = task.history.findLastIndex(entry => entry.event === "accepted" && (entry.by === task.owner || entry.by === USER));
+    return index > boundary && index >= 0 ? { index, at: task.history[index]!.at } : undefined;
+  }
+
+  /** Captured at native turn start, not supplied by a model. */
+  ownerTurnTasks(peer: PeerId): { id: number; acceptance: number }[] {
+    return this.d.board.list("in_progress").flatMap(task => {
+      const accepted = task.owner === peer && ["implement", "bulk_edit"].includes(task.class) ? this.ownerAcceptance(task) : undefined;
+      return accepted ? [{ id: task.id, acceptance: accepted.index }] : [];
+    });
+  }
+
+  recordOwnerTurn(peer: PeerId, bindings: readonly { id: number; acceptance: number }[], changed: boolean | undefined, effect: boolean): void {
+    this.noWriteTurns.retain(this.d.board.list("in_progress").filter(task => ["implement", "bulk_edit"].includes(task.class)).map(task => task.id));
+    const current = new Map(this.ownerTurnTasks(peer).map(binding => [binding.id, binding.acceptance]));
+    for (const binding of bindings) {
+      if (current.get(binding.id) !== binding.acceptance) continue;
+      const task = this.d.board.get(binding.id)!;
+      const limit = this.sweepConfig.no_writes_turns ?? 2;
+      if (changed !== false || effect || limit === 0) {
+        if (this.d.board.stalls().some(stall => stall.task === task.id && stall.cause.kind === "no-writes")) this.d.board.clearStall(task.id);
+      }
+      const count = this.noWriteTurns.observe({ task: task.id, generation: `${task.created}:${peer}:${binding.acceptance}`, limit, changed, effect });
+      if (count === undefined) continue;
+      this.reportStall(task, { kind: "no-writes", code: "no-writes", peer, turns: count, acceptance: binding.acceptance }, Date.now(),
+        `Task ${this.publicTitle(task)} stalled: ${count} consecutive owner turns with no writes or task tool effects recorded.`);
+    }
+  }
+
+  private captureOwnerAcceptance(task: Task): void {
+    try { this.d.ownerAccepted?.(task); } catch { /* advisory capture cannot fail a saved acceptance */ }
+  }
+
+  private noWritesRecorded(task: Task): boolean {
+    if (!["implement", "bulk_edit"].includes(task.class) || task.refs.branch || task.refs.commit) return false;
+    const accepted = this.ownerAcceptance(task);
+    if (!accepted) return false;
+    try { return this.d.ownerWrites?.(task, accepted.at) === false; } catch { return false; }
   }
 
   private sweepAvailable(peer: PeerId): boolean {
@@ -1888,6 +1941,7 @@ export class Tasks {
       }
       if (stagedClaimGap) return next; // An explicit claim may reserve its owner, but no offer or acceptance bypasses review.
       const claimed = this.d.board.update(next.id, by, "accepted", { state: "in_progress" });
+      this.captureOwnerAcceptance(claimed);
       this.releaseNotice(`task ${this.publicTitle(claimed)} claimed by ${by}`);
       return claimed;
     }
@@ -2042,6 +2096,7 @@ export class Tasks {
     const revision = this.d.board.statusRevision();
     if (this.stallCandidates?.revision !== revision) this.stallCandidates = { revision, rows: this.d.board.stalls().flatMap(stall => {
       const task = this.d.board.get(stall.task);
+      if (stall.cause.kind === "no-writes") return (this.sweepConfig.no_writes_turns ?? 2) > 0 && task?.state === "in_progress" && ["implement", "bulk_edit"].includes(task.class) && task.owner === stall.cause.peer && this.ownerAcceptance(task)?.index === stall.cause.acceptance ? [{ stall, task, planned: false }] : [];
       if (task?.state !== "proposed" || task.owner || (task.planningRevision ?? 0) !== stall.replanRevision) return [];
       if (stall.cause.kind === "cancelled-dependency") return task.deps?.includes(stall.cause.dependency!) === true && this.d.board.get(stall.cause.dependency!)?.state === "cancelled" ? [{ stall, task, planned: false }] : [];
       return this.waitsFor(task).length ? [] : [{ stall, task, planned: this.plannerPullRecord(task)?.pull === true }];
@@ -2051,7 +2106,7 @@ export class Tasks {
       const queue = this.d.bus.queueSummary(peer);
       return [peer, this.wipLimit(peer), queue.heldBy, queue.needsReview];
     })]);
-    if (this.stallView?.key !== key) this.stallView = { key, stalls: this.stallCandidates.rows.filter(({ stall, task, planned }) => stall.cause.kind === "cancelled-dependency" || !(planned ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.health() })).owner).map(({ stall }) => stall) };
+    if (this.stallView?.key !== key) this.stallView = { key, stalls: this.stallCandidates.rows.filter(({ stall, task, planned }) => stall.cause.kind === "no-writes" || stall.cause.kind === "cancelled-dependency" || !(planned ? this.plannerAssignment(task, true) : assign(task, this.states(), this.d.routing(), { exclude: this.excluded(task), ...this.health() })).owner).map(({ stall }) => stall) };
     return structuredClone(this.stallView.stalls);
   }
   /** Why a proposal's named owner (a self-claim included) did not get it, from the stall its proposal recorded (#601); undefined when it did. */
@@ -2068,10 +2123,10 @@ export class Tasks {
     const persisted = (code: NonNullable<Assignment["refusals"]>[number]["code"]): TaskStall["cause"]["code"] => code === "instance" || code === "family" ? "policy" : code;
     return refusal ? { kind: "reservation", peer: refusal.peer, code: persisted(refusal.code) } : { kind: "no-eligible-peer", code: "unavailable", refusals: admission.refusals?.filter(row => row.role === "owner").map(({ peer, code }) => ({ peer, code: persisted(code) })).sort((a, b) => a.peer.localeCompare(b.peer)) ?? [] };
   }
-  private reportStall(task: Task, cause: TaskStall["cause"], now = Date.now()): void {
+  private reportStall(task: Task, cause: TaskStall["cause"], now = Date.now(), description?: string): void {
     const stall: TaskStall = { task: task.id, cause, signature: JSON.stringify(cause), replanRevision: task.planningRevision ?? 0, at: now };
     if (!this.d.board.recordStall(stall)) return;
-    const text = `Task #${task.id} stalled: ${cause.kind}${cause.peer ? ` ${cause.peer}` : ""}${cause.dependency ? ` #${cause.dependency}` : ""} (${cause.code}); configure the runner or peer, ahub task assign ${task.id} <peer>, re-plan dependencies, or cancel it.`;
+    const text = description ?? `Task #${task.id} stalled: ${cause.kind}${cause.peer ? ` ${cause.peer}` : ""}${cause.dependency ? ` #${cause.dependency}` : ""} (${cause.code}); configure the runner or peer, ahub task assign ${task.id} <peer>, re-plan dependencies, or cancel it.`;
     this.releaseNotice(text);
     try { this.d.stallNotice?.(stall); } catch { /* advisory never changes task authority */ }
     // Advice joins the planner's next delivery; it must not manufacture a turn beside a withheld backlog batch.
@@ -2203,7 +2258,8 @@ export class Tasks {
     const peers = [...new Set([...Object.keys(this.states()), ...current.flatMap(task => task.owner ? [task.owner] : [])])];
     const reviewedIssues = new Map(visible.flatMap(task => task.sdlc?.planReview?.issue ? [[task.id, task.sdlc.planReview.issue] as const] : []));
     const acceptedIssues = new Map(visible.flatMap(task => task.sdlc?.acceptance ? [[task.id, task.sdlc.acceptance] as const] : []));
-    const blockers: { task: number; code: string }[] = this.d.board.stalls().map(stall => ({ task: stall.task, code: stall.cause.code }));
+    const currentNoWrites = new Set(this.stalled().filter(stall => stall.cause.kind === "no-writes").map(stall => stall.task));
+    const blockers: { task: number; code: string }[] = this.d.board.stalls().filter(stall => stall.cause.kind !== "no-writes" || currentNoWrites.has(stall.task)).map(stall => ({ task: stall.task, code: stall.cause.code }));
     const health = this.health(), states = this.states(), routing = this.d.routing(), hostBlocks = this.d.plannerBlocks?.() ?? {};
     for (const task of visible.filter(task => !isClosedTaskState(task.state)).slice(0, 500)) {
       const owner = task.owner ?? task.reserved;
@@ -2254,7 +2310,10 @@ export class Tasks {
     for (const task of current) if (this.isPii(task)) visiblePrs.delete(task.sdlc!.pr!);
     if (JSON.stringify([...visiblePrs].sort((a, b) => a - b)) !== JSON.stringify(ids)) incomplete = true;
     const report = costMetrics(current.map(task => ({ repo, pr: task.sdlc!.pr!, private: this.isPii(task), history: task.history })), observations.filter(pr => visiblePrs.has(pr.pr)));
-    return { ...report, truncated: report.truncated || incomplete, ...(current.some(task => this.isPii(task)) ? { privateTasks: "withheld" } : {}), bands: "S7 pending" };
+    const scoped = current.filter(task => visiblePrs.has(task.sdlc!.pr!) && !this.isPii(task));
+    const scopedIds = new Set(scoped.map(task => task.id));
+    const stalls = { noWrites: this.stalled().filter(stall => stall.cause.kind === "no-writes" && scopedIds.has(stall.task)).length, doneWithoutWrites: scoped.filter(task => task.history.findLast(entry => entry.event === "done")?.noWrites).length };
+    return { ...report, stalls, truncated: report.truncated || incomplete, ...(current.some(task => this.isPii(task)) ? { privateTasks: "withheld" } : {}), bands: "S7 pending" };
   }
 
   async planReviewGap(task: Task): Promise<string | undefined> {
@@ -2593,6 +2652,7 @@ export class Tasks {
     const repositoryChanged = this.repositories.scope(task.refs).key !== this.repositories.scope(draft.refs).key;
     const before = new Set(this.overlapHits(task).map((h) => h.task.id));
     const next = this.d.board.update(task.id, by, "accepted", { state: "in_progress", ...(cleaned ? { plan: cleaned } : {}), ...(metadata ? { refs: metadata } : {}) });
+    this.captureOwnerAcceptance(next);
     this.d.notify(`task ${this.publicTitle(next)} accepted by ${by}`);
     if (repositoryChanged) this.cohorts.leave(next.id);
     if (cleaned || metadata) {
@@ -2893,7 +2953,8 @@ export class Tasks {
     const routedSummary = selection?.reviewSelection?.blocked ? `${summary ?? ""}\nReview routing: ${this.assignmentNote("pool unavailable", selection)}`.trim() : summary;
     const completedRefs = cleanRefs(refs);
     this.warmRepository({ ...task, refs: { ...task.refs, ...completedRefs } });
-    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", ...(selection ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { withheld: withheld || undefined, ...this.reviewMetadata(selection), ...(reviewCost ? { reviewCost } : {}) });
+    const noWrites = this.noWritesRecorded({ ...task, refs: { ...task.refs, ...completedRefs } });
+    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", ...(selection ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { withheld: withheld || undefined, ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection), ...(reviewCost ? { reviewCost } : {}) });
     this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`, withheld);
     this.tellCompleted(next, summary, withheld);
@@ -3044,7 +3105,7 @@ export class Tasks {
     const brief = this.briefText(task);
     // #572 AC3: advisory only, from git state never from task text, so it is safe for a PII task too.
     const checkout = mainCheckoutWarning(this.d.cwd, this.publicMetadataText);
-    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
+    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${last?.noWrites ? "no writes recorded since acceptance\n" : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet}.`;
     this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, ...(this.reviewHead(task) ? { commit: this.reviewHead(task)! } : {}), task: String(task.id), reviewRevision: String(this.reviewRequestRevision(task)) }, ...(this.isPii(task) ? { private: true } : {}) }));
   }
 
