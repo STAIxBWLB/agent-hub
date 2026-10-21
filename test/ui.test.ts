@@ -399,6 +399,11 @@ function startPageRuntime(fetch_: (path: string, options: any) => Promise<any>, 
   const nodes = new Map<string, Node>();
   const get = (id: string) => { if (!nodes.has(id)) nodes.set(id, new Node()); return nodes.get(id)!; };
   const root = get("peers"), notice = get("notice");
+  // #469 R6: #notice is a stack of toasts. These tests read the notice as "the newest toast": its text and whether it is an error.
+  // Every assertion below is unchanged; only where the two values come from moved.
+  const newest = () => notice.children.at(-1);
+  Object.defineProperty(notice, "textContent", { get: () => newest()?.children[0]?.textContent ?? "", set: () => {} });
+  Object.defineProperty(notice, "error", { get: () => / error\b/.test(" " + (newest()?.className ?? "")), set: () => {} });
   const buttons = () => {
     const result: Node[] = [];
     const visit = (node: Node) => { if (node.type === "button") result.push(node); node.children.forEach(visit); };

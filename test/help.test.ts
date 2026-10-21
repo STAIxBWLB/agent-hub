@@ -197,7 +197,7 @@ describe("wrap breaks at word boundaries (#212, #213)", () => {
 });
 
 test("every builtin agent launcher appears in the Agents help section (#564)", async () => {
-  const { builtinCliEntries } = await import("../src/adapters/definitions/native-cli-entry.ts");
+  const { BUILTIN_CLI_ENTRIES: builtinCliEntries } = await import("../src/adapters/registry.ts");
   const agents = HELP.filter(entry => entry.section === "Agents").map(entry => entry.usage);
   for (const { command } of builtinCliEntries) expect(agents.some(usage => usage === `ahub ${command}` || usage.startsWith(`ahub ${command} `))).toBe(true);
 });

@@ -1,3 +1,4 @@
+import { ADAPTERS, deriveAdapterLists, type AdapterDefinition } from "../adapters/registry.ts";
 import { VERSION } from "../version.ts";
 import { paint, wrap, type Span } from "./console-state.ts";
 
@@ -50,15 +51,6 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
   ]],
   ["Agents", [
     ["ahub <configured-kind> [--mode headless] [--as <instance>] [--session-id <id>] [--print-command | --dry-run]", "start a trusted config.local.json ACP kind (default off roster); native argv is withheld in previews"],
-    ["ahub claude [--print-command] [--unattended] [args...]", "launch Claude Code with the hub channel"],
-    ["ahub codex [--print-command] [--unattended] [args...]", "start the Codex adapter and attach the TUI"],
-    ["ahub kimi [--print-command] [--mode tui|headless] [--model <alias>]", "default: Kimi's own TUI, pull-only via hub_inbox; no push, steer, watchdog, console approvals or automatic quota handoff. Select headless for ACP"],
-    ["ahub jcode [--mode tui|headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>] [--print-command]", "optional Jcode (roster.jcode, default off): its TUI on the hub-owned ACP session, opened once that session is saved; --mode headless for ACP only; native policy unmanaged, no hub sandbox"],
-    ["ahub agy [--print-command | --dry-run] [args...]", "optional Antigravity CLI 1.4.x TUI (1.4.2 verified) in this terminal (roster.agy, default off): pull-only via hub_inbox, implementer/verifier only; native permissions unmanaged, no hub sandbox"],
-    ["ahub qwen [--mode headless] [--model <alias>] [--session-id <id>] [--print-command]", "start optional Qwen Code 0.25.0 ACP (roster.qwen, default off)"],
-    ["ahub pi [--print-command] [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--model <alias>] [--session-id <id>] [--session-file <path>] [--replace-session]", "start Pi: its TUI in this terminal unless --headless or the start mode setting (peers.pi.start_mode) says headless; without a terminal the hub opens one or says how"],
-    ["ahub local [--route <id> | --model <id>]", "start the hub-native worker on the self-hosted models (routing.toml)"],
-    ["ahub claude|codex|kimi|qwen|pi|local --as <instance> [options...]", "start an extra instance of that kind declared under instances in .agenthub/config.local.json"],
     ["ahub role list [--group <group>] | show <id>", "read bounded catalog guidance with layer and content hash"],
     ["ahub role assign <peer> <id> | clear <peer> [<id>]", "person only: add or clear catalog guidance, applied at the next peer start"],
     ["ahub stop <peer>", "human only: stop a hub-owned headless peer; end TUI agents in their terminals"],
@@ -146,7 +138,18 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub manager", "internal: the dashboard manager process that ahub ui --all starts"],
   ]],
 ];
-export const HELP: readonly HelpEntry[] = SECTIONS.flatMap(([section, rows]) => rows.map(([usage, description]) => ({ section, usage, description })));
+export function helpEntries(definitions: readonly AdapterDefinition[] = ADAPTERS): readonly HelpEntry[] {
+  const byKind = new Map(definitions.map(definition => [definition.kind, definition]));
+  const order = deriveAdapterLists(definitions).HELP_ORDER;
+  const native = order.flatMap(kind => byKind.get(kind)?.cli.usage ?? []);
+  const instanceKinds = order.filter(kind => byKind.get(kind)?.instances !== undefined);
+  const instances: readonly [string, string] = [`ahub ${instanceKinds.join("|")} --as <instance> [options...]`, "start an extra instance of that kind declared under instances in .agenthub/config.local.json"];
+  return SECTIONS.flatMap(([section, rows]) => {
+    const entries: readonly (readonly [string, string])[] = section === "Agents" ? [rows[0]!, ...native, ...(instanceKinds.length ? [instances] : []), ...rows.slice(1)] : rows;
+    return entries.map(([usage, description]) => ({ section, usage, description }));
+  });
+}
+export const HELP = helpEntries();
 
 const COMMAND = /^ahub (-{0,2}[a-z][a-z-]*(?: ?\| ?-{0,2}[a-z][a-z-]*)*)/;
 /** The command words a usage documents: `ahub pause|resume <peer>` documents pause and resume. */
@@ -160,9 +163,10 @@ const DESCRIPTION = 34;
  * (80 to 100 columns). A usage too long for that column puts its description on the next line.
  * With a command, only its entries; an unknown command renders nothing.
  */
-export function renderHelp(columns: number, color: boolean, command?: string): string {
+export function renderHelp(columns: number, color: boolean, command?: string, definitions?: readonly AdapterDefinition[]): string {
   const width = Math.min(100, Math.max(80, columns || 80));
-  const entries = command === undefined ? HELP : HELP.filter(entry => helpCommands(entry).includes(command));
+  const model = definitions === undefined ? HELP : helpEntries(definitions);
+  const entries = command === undefined ? model : model.filter(entry => helpCommands(entry).includes(command));
   const lines: Span[][] = command === undefined ? wrap(`agent-hub ${VERSION}: Claude Code, Codex and Kimi as peers in one project directory`, width, 0).map(text => [{ text }]) : [];
   let section = "";
   for (const entry of entries) {

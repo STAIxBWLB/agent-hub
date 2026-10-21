@@ -44,6 +44,604 @@ var __esm = (fn, res, err) => () => {
   return res;
 };
 
+// src/adapters/definitions/native-cli-preview-common.ts
+function publicArg(arg) {
+  const flags = new Set(["--settings", "--model", "--mcp-config", "--session-id", "--session-file", "--resume", "--continue", "--print", "--safe", "--new"]);
+  const key = arg.split("=", 1)[0];
+  return flags.has(key) ? arg.includes("=") ? key + "=" + REDACTED : key : REDACTED;
+}
+function nativeCommand(command, trusted) {
+  return command.map((value, i) => value === trusted[i] ? value : REDACTED);
+}
+function previewState(args, baseEnvNames) {
+  const unresolved = [];
+  const envNames = [...baseEnvNames];
+  const value = (flag) => {
+    const at = args.indexOf(flag);
+    if (at < 0)
+      return;
+    const next = args[at + 1];
+    if (!next || next.startsWith("--"))
+      throw new Error("missing option value");
+    return next;
+  };
+  return { unresolved, envNames, value };
+}
+function finishPreview(ctx, launch, envNames, unresolved, metadata, settings) {
+  return { tool: ctx.tool, ...metadata ?? {}, cmd: launch.cmd, args: launch.args, settings, envNames: [...new Set(envNames)].sort(), ...launch.warning ? { warning: launch.warning } : {}, unresolved, redaction: "Arbitrary user arguments, settings, commands and configured executable overrides are redacted. Environment values are never displayed.", needs: ["Native executable, accounts and runtime readiness are not checked."] };
+}
+var REDACTED = "[redacted]", UNRESOLVED = "[unresolved]";
+
+// src/hub/status-roster.ts
+function rosterInStatus(status, peer) {
+  const rows = status?.roster;
+  if (!Array.isArray(rows))
+    return;
+  const row = rows.find((r) => !!r && typeof r === "object" && r.peer === peer);
+  return typeof row?.on === "boolean" ? row.on : undefined;
+}
+function bundleInStatus(status) {
+  const value = status?.pluginBundle;
+  return typeof value === "string" && value.startsWith("/") && /[\\/]plugins[\\/]agent-hub[\\/]server\.js$/.test(value) ? value : undefined;
+}
+
+// node_modules/@staix/agent-mem/src/memory/platform.ts
+import { realpathSync } from "fs";
+import { basename, dirname, join, resolve, sep } from "path";
+import { spawnSync, execFileSync } from "child_process";
+import { createHash } from "crypto";
+function canonicalPath(path) {
+  return canonical(path);
+}
+function realPath(path) {
+  try {
+    return realpathSync(path);
+  } catch (error) {
+    if (!resolve(path).includes("\\"))
+      throw error;
+    const argv = process.platform === "darwin" ? ["/bin/realpath", "--", path] : ["realpath", "-e", "--", path];
+    const r = spawnSync(argv[0], argv.slice(1), { encoding: "utf8" });
+    if (r.status !== 0 || !r.stdout.endsWith(`
+`))
+      throw error;
+    return r.stdout.slice(0, -1);
+  }
+}
+function isDenied(path, extra = []) {
+  const norm = path.split(sep).join("/");
+  return DENY_SEGMENTS.some((s) => hasSegment(norm, s)) || DENY_NAMES.some((re) => new RegExp(re).test(basename(norm))) || extra.some((e) => e && norm.includes(e));
+}
+function memoryGitEnv(env = process.env, options = {}) {
+  const result = { ...env, GIT_TERMINAL_PROMPT: "0" };
+  if (options.repositoryIsolation) {
+    for (const key of Object.keys(result))
+      if (["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE", "GIT_REPLACE_REF_BASE", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"].includes(key) || /^GIT_CONFIG_(KEY|VALUE)_/.test(key))
+        delete result[key];
+    result.GIT_NO_REPLACE_OBJECTS = "1";
+  }
+  return result;
+}
+function memoryGitSync(args, options) {
+  const argv = memoryGitArgv(args);
+  return spawnSync(argv[0], argv.slice(1), { ...options, env: memoryGitEnv(options.env ?? process.env) });
+}
+function processSignature(pid) {
+  try {
+    const text = execFileSync("ps", ["-p", String(pid), "-o", "lstart=,comm="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).trim();
+    return text ? createHash("sha256").update(text).digest("hex") : undefined;
+  } catch {
+    return;
+  }
+}
+function processLiveness(pid, signature, identity = processSignature) {
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0)
+    return "unknown";
+  if (signature) {
+    let current;
+    try {
+      current = identity(pid);
+    } catch {}
+    if (current)
+      return current === signature ? "live" : "gone";
+  }
+  try {
+    process.kill(pid, 0);
+    return signature ? "unknown" : "live";
+  } catch (error) {
+    return error.code === "ESRCH" ? "gone" : "unknown";
+  }
+}
+var canonical = (path) => {
+  const absolute = resolve(path);
+  try {
+    return realpathSync(absolute);
+  } catch {
+    const parent = dirname(absolute);
+    return parent === absolute ? absolute : join(canonical(parent), basename(absolute));
+  }
+}, DENY_SEGMENTS, DENY_NAMES, hasSegment = (rel, seg) => `/${rel}/`.includes(`/${seg}/`), SAFE_CONFIG, CREDENTIAL_KEYS, memoryGitArgv = (args, opts = {}) => ["git", "--no-pager", ...SAFE_CONFIG.filter((c) => !opts.credentials || !CREDENTIAL_KEYS.has(c)).flatMap((c) => ["-c", c]), ...args];
+var init_platform = __esm(() => {
+  DENY_SEGMENTS = [".maru/secrets", ".agenthub/state", ".agenthub/archive"];
+  DENY_NAMES = ["^\\.env", "\\.pem$", "\\.key$", "^id_rsa", "^id_ed25519", "^credentials(\\.|$)", "^auth\\.json$", "^\\.netrc$", "^\\.npmrc$", "^\\.pypirc$"];
+  SAFE_CONFIG = ["core.fsmonitor=false", "core.hooksPath=/dev/null", "diff.external=", "core.pager=cat", "credential.helper=", "core.askpass="];
+  CREDENTIAL_KEYS = new Set(["credential.helper=", "core.askpass="]);
+});
+
+// src/hub/git.ts
+var init_git = __esm(() => {
+  init_platform();
+});
+
+// src/hub/project.ts
+import { existsSync, lstatSync, readFileSync } from "fs";
+import { dirname as dirname2, isAbsolute, join as join2, resolve as resolve2 } from "path";
+function gitRoot(dir) {
+  const result = memoryGitSync(["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
+  if (result.status !== 0)
+    return;
+  const root = result.stdout.trim();
+  return root ? canonicalPath(root) : undefined;
+}
+function hasConfig(dir) {
+  return existsSync(join2(dir, ".agenthub", "config.json"));
+}
+function projectRoot(cwd) {
+  const input = isAbsolute(cwd) ? cwd : resolve2(cwd);
+  let dir;
+  try {
+    dir = canonicalPath(input);
+    if (!lstatSync(dir).isDirectory())
+      throw new Error(`${cwd} is not a directory`);
+  } catch (error) {
+    throw new Error(`cannot resolve project directory ${cwd}: ${error.message}`);
+  }
+  const boundary = gitRoot(dir);
+  const stop = boundary ?? parseRoot(dir);
+  for (let current = dir;; current = dirname2(current)) {
+    if (hasConfig(current))
+      return canonicalPath(current);
+    if (current === stop || current === dirname2(current))
+      break;
+  }
+  return boundary ?? dir;
+}
+function parseRoot(dir) {
+  let current = dir;
+  while (dirname2(current) !== current)
+    current = dirname2(current);
+  return current;
+}
+function stateMarker(stateDir) {
+  for (const file of [join2(stateDir, "project.json"), join2(stateDir, "status.json")]) {
+    try {
+      const value = JSON.parse(readFileSync(file, "utf8"));
+      const root = value.root ?? value.cwd;
+      if (typeof root === "string")
+        return canonicalPath(root);
+    } catch {}
+  }
+  return;
+}
+function projectContext(cwd, env = process.env) {
+  const root = projectRoot(cwd);
+  const override = env.AGENTHUB_STATE_DIR?.trim();
+  if (!override)
+    return { root, stateDir: canonicalPath(join2(root, ".agenthub", "state")) };
+  const declared = env.AGENTHUB_PROJECT_DIR?.trim();
+  const stateDir = canonicalPath(override);
+  const recorded = stateMarker(stateDir);
+  if (recorded === root)
+    return { root, stateDir };
+  if (!recorded && declared && canonicalPath(declared) === root)
+    return { root, stateDir };
+  return { root, stateDir: canonicalPath(join2(root, ".agenthub", "state")) };
+}
+var init_project = __esm(() => {
+  init_git();
+  init_platform();
+  init_platform();
+});
+
+// src/cli/agy-mcp.ts
+import { randomUUID } from "crypto";
+import { closeSync, fstatSync, lstatSync as lstatSync2, mkdirSync, openSync, readFileSync as readFileSync2, renameSync, rmdirSync, unlinkSync, writeFileSync } from "fs";
+import { isAbsolute as isAbsolute2, join as join3, resolve as resolve3 } from "path";
+import { isDeepStrictEqual } from "util";
+function object(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function jsonFile(value, name) {
+  if (!object(value))
+    throw new Error(`${name} must be a JSON object`);
+  return value;
+}
+function parseJson(bytes, name) {
+  try {
+    return jsonFile(JSON.parse(bytes.toString("utf8")), name);
+  } catch (error) {
+    if (error instanceof SyntaxError)
+      throw new Error(`${name} is invalid JSON`);
+    throw error;
+  }
+}
+function shellQuote(value) {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+function shellUnquote(value) {
+  if (!value.startsWith("'") || !value.endsWith("'"))
+    return;
+  let out = "";
+  for (let index = 1;index < value.length - 1; ) {
+    if (value.startsWith("'\\''", index)) {
+      out += "'";
+      index += 4;
+    } else if (value[index] === "'")
+      return;
+    else
+      out += value[index++];
+  }
+  return out;
+}
+function validateOptions(options) {
+  const peer = options.peer ?? AGY_DEFINITION.kind;
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(peer))
+    throw new Error("agy peer id is invalid");
+  for (const [name, value] of Object.entries({ projectRoot: options.projectRoot, stateDir: options.stateDir, serverJs: options.serverJs, hookScript: options.hookScript })) {
+    if (typeof value !== "string" || !isAbsolute2(value) || value.length > 4096 || /[\u0000-\u001f\u007f]/.test(value))
+      throw new Error(`${name} must be an absolute control-free path`);
+  }
+  for (const [name, value] of Object.entries({ instanceId: options.instanceId, launchId: options.launchId })) {
+    if (typeof value !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(value))
+      throw new Error(`${name} is invalid`);
+  }
+  const root = resolve3(options.projectRoot);
+  return { root, peer };
+}
+function safeDirectory(path) {
+  const stat = lstatSync2(path, { throwIfNoEntry: false });
+  if (stat && (!stat.isDirectory() || stat.isSymbolicLink()))
+    throw new Error(`${path} must be a project directory, not a link`);
+  return stat;
+}
+function safeFile(path) {
+  const stat = lstatSync2(path, { throwIfNoEntry: false });
+  if (!stat)
+    return;
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > MAX_CONFIG_BYTES)
+    throw new Error(`${path} must be a bounded regular file, not a link`);
+  const bytes = readFileSync2(path);
+  if (bytes.length > MAX_CONFIG_BYTES)
+    throw new Error(`${path} exceeds the configuration size limit`);
+  return { stat, bytes };
+}
+function pluginDirectories(root) {
+  const directories = [];
+  for (const relative of [".", ".agents", ".agents/plugins", PLUGIN_DIR]) {
+    const path = relative === "." ? root : join3(root, relative);
+    const stat = safeDirectory(path);
+    if (!stat)
+      throw new Error(`${path} must be an existing project directory`);
+    directories.push({ path, stat });
+  }
+  return directories;
+}
+function verifyPluginDirectory(plan, target) {
+  if (!plan.canonicalPluginDir || !plan.directories)
+    throw new Error("managed agy plugin directory identity is unavailable");
+  if (realPath(plan.root) !== plan.canonicalRoot || realPath(plan.pluginDir) !== plan.canonicalPluginDir || plan.canonicalPluginDir !== join3(plan.canonicalRoot, PLUGIN_DIR)) {
+    throw new Error("managed agy plugin path changed; inspect it before writing");
+  }
+  for (const expected of plan.directories) {
+    const current = safeDirectory(expected.path);
+    if (!current || current.dev !== expected.stat.dev || current.ino !== expected.stat.ino)
+      throw new Error("managed agy plugin directory changed; inspect it before writing");
+  }
+  if (!FILES.some((file) => join3(plan.root, file) === target)) {
+    throw new Error("atomic write target is outside the managed agy plugin files");
+  }
+}
+function hookCommand(phase, options, peer) {
+  return `AGENTHUB_HOOK_EVENT='${phase}' AGENTHUB_INSTANCE_ID='${options.instanceId}' AGENTHUB_LAUNCH_ID='${options.launchId}' AGENTHUB_HOOK_PURPOSE='facts' AGENTHUB_PEER_ID=${shellQuote(peer)} AGENTHUB_STATE_DIR=${shellQuote(options.stateDir)} AGENTHUB_PROJECT_DIR=${shellQuote(resolve3(options.projectRoot))} bun ${shellQuote(options.hookScript)}`;
+}
+function desired(options, root, peer) {
+  const events = {};
+  for (const phase of EVENTS) {
+    if (phase === "PostInvocation") {
+      events[phase] = [];
+      continue;
+    }
+    const command = { type: "command", command: hookCommand(phase, options, peer), timeout: 5 };
+    events[phase] = phase === "PreToolUse" || phase === "PostToolUse" ? [{ matcher: ".*", hooks: [command] }] : [command];
+  }
+  return {
+    [MANIFEST_FILE]: { name: PLUGIN_KEY, description: MANAGED_DESCRIPTION },
+    [MCP_FILE]: { mcpServers: { [PLUGIN_KEY]: { command: "bun", args: ["run", options.serverJs], env: { AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: options.stateDir, AGENTHUB_PROJECT_DIR: root } } } },
+    [HOOKS_FILE]: { [PLUGIN_KEY]: events }
+  };
+}
+function parseManagedHookCommand(command, phase, options, peer) {
+  if (typeof command !== "string")
+    return;
+  const prefix = `AGENTHUB_HOOK_EVENT='${phase}' AGENTHUB_INSTANCE_ID='`;
+  const middle = `' AGENTHUB_LAUNCH_ID='`;
+  const suffix = `' AGENTHUB_HOOK_PURPOSE='facts' AGENTHUB_PEER_ID=${shellQuote(peer)} AGENTHUB_STATE_DIR=${shellQuote(options.stateDir)} AGENTHUB_PROJECT_DIR=${shellQuote(resolve3(options.projectRoot))} bun `;
+  if (!command.startsWith(prefix))
+    return;
+  const rest = command.slice(prefix.length);
+  const launchSplit = rest.indexOf(middle);
+  if (launchSplit < 1)
+    return;
+  const instanceId = rest.slice(0, launchSplit);
+  const afterInstance = rest.slice(launchSplit + middle.length);
+  const pathSplit = afterInstance.indexOf(suffix);
+  if (pathSplit < 1)
+    return;
+  const launchId = afterInstance.slice(0, pathSplit);
+  const hookScript = shellUnquote(afterInstance.slice(pathSplit + suffix.length));
+  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(instanceId) || !/^[A-Za-z0-9._:-]{1,128}$/.test(launchId) || !hookScript || !isAbsolute2(hookScript) || !hookScript.endsWith("/src/cli/facts-hook.ts"))
+    return;
+  return { instanceId, launchId };
+}
+function managedHookLaunch(value, options, peer) {
+  if (Object.keys(value).length !== 1 || !Object.hasOwn(value, PLUGIN_KEY))
+    return;
+  const events = value[PLUGIN_KEY];
+  if (!object(events) || Object.keys(events).length !== EVENTS.length || EVENTS.some((phase) => !Object.hasOwn(events, phase)))
+    return;
+  let identity;
+  for (const phase of EVENTS) {
+    const rows = events[phase];
+    if (phase === "PostInvocation") {
+      if (!Array.isArray(rows) || rows.length !== 0)
+        return;
+      continue;
+    }
+    if (!Array.isArray(rows) || rows.length !== 1 || !object(rows[0]))
+      return;
+    let command;
+    if (phase === "PreToolUse" || phase === "PostToolUse") {
+      const row = rows[0];
+      if (Object.keys(row).sort().join(",") !== "hooks,matcher" || row.matcher !== ".*" || !Array.isArray(row.hooks) || row.hooks.length !== 1 || !object(row.hooks[0]))
+        return;
+      command = row.hooks[0];
+    } else
+      command = rows[0];
+    if (!object(command) || Object.keys(command).sort().join(",") !== "command,timeout,type" || command.type !== "command" || command.timeout !== 5)
+      return;
+    const found = parseManagedHookCommand(command.command, phase, options, peer);
+    if (!found || identity && (identity.instanceId !== found.instanceId || identity.launchId !== found.launchId))
+      return;
+    identity = found;
+  }
+  return identity;
+}
+function nextDocuments(current, wanted) {
+  const nextMcp = current[MCP_FILE] ? { ...current[MCP_FILE] } : {};
+  const currentServers = nextMcp.mcpServers;
+  const servers = currentServers === undefined ? {} : currentServers;
+  if (!object(servers))
+    throw new Error(`${MCP_FILE} mcpServers must be an object`);
+  nextMcp.mcpServers = { ...servers, [PLUGIN_KEY]: wanted[MCP_FILE].mcpServers[PLUGIN_KEY] };
+  return { [MANIFEST_FILE]: wanted[MANIFEST_FILE], [MCP_FILE]: nextMcp, [HOOKS_FILE]: wanted[HOOKS_FILE] };
+}
+function internalPlan(options) {
+  const { root, peer } = validateOptions(options);
+  const rootStat = safeDirectory(root);
+  if (!rootStat)
+    throw new Error("project root must be an existing directory");
+  const canonicalRoot = realPath(root);
+  const pluginDir = join3(root, PLUGIN_DIR);
+  let parentsPresent = true;
+  for (const relative of [".agents", ".agents/plugins", PLUGIN_DIR]) {
+    if (!parentsPresent)
+      break;
+    parentsPresent = !!safeDirectory(join3(root, relative));
+  }
+  let directories;
+  let canonicalPluginDir;
+  if (parentsPresent) {
+    directories = pluginDirectories(root);
+    canonicalPluginDir = realPath(pluginDir);
+    if (canonicalPluginDir !== join3(canonicalRoot, PLUGIN_DIR))
+      throw new Error("managed agy plugin path traverses a symlink");
+  }
+  const snapshots = Object.fromEntries(FILES.map((relative) => {
+    const path = join3(root, relative);
+    const found = parentsPresent ? safeFile(path) : undefined;
+    return [relative, found];
+  }));
+  const current = {};
+  for (const relative of FILES) {
+    const found = snapshots[relative];
+    current[relative] = found ? parseJson(found.bytes, relative) : undefined;
+  }
+  const manifest = current[MANIFEST_FILE];
+  if (manifest && (Object.keys(manifest).sort().join(",") !== "description,name" || manifest.name !== PLUGIN_KEY || manifest.description !== MANAGED_DESCRIPTION)) {
+    throw new Error(`${MANIFEST_FILE} is a foreign agent-hub plugin manifest; it was not changed`);
+  }
+  const mcp = current[MCP_FILE];
+  if (mcp) {
+    if (Object.hasOwn(mcp, "mcpServers") && !object(mcp.mcpServers))
+      throw new Error(`${MCP_FILE} mcpServers must be an object`);
+    const entry = mcp.mcpServers?.[PLUGIN_KEY];
+    if (entry !== undefined && (!object(entry) || Object.keys(entry).sort().join(",") !== "args,command,env" || entry.command !== "bun" || !Array.isArray(entry.args) || entry.args.length !== 2 || entry.args[0] !== "run" || typeof entry.args[1] !== "string" || !isAbsolute2(entry.args[1]) || !object(entry.env) || Object.keys(entry.env).sort().join(",") !== "AGENTHUB_PEER_ID,AGENTHUB_PROJECT_DIR,AGENTHUB_STATE_DIR" || entry.env.AGENTHUB_PEER_ID !== peer || entry.env.AGENTHUB_PROJECT_DIR !== root || entry.env.AGENTHUB_STATE_DIR !== options.stateDir)) {
+      throw new Error(`${MCP_FILE} agent-hub is a foreign MCP entry; it was not changed`);
+    }
+  }
+  const hooks = current[HOOKS_FILE];
+  const oldLaunch = hooks ? managedHookLaunch(hooks, options, peer) : undefined;
+  if (hooks && !oldLaunch)
+    throw new Error(`${HOOKS_FILE} agent-hub is a foreign hooks entry; it was not changed`);
+  const wanted = desired(options, root, peer);
+  const docs = nextDocuments(current, wanted);
+  const targets = FILES.map((relative) => {
+    const old = snapshots[relative];
+    const next = Buffer.from(`${JSON.stringify(docs[relative], null, 2)}
+`);
+    return { path: join3(root, relative), relative, ...old ? { current: old.bytes, stat: old.stat } : {}, next, changed: !old || !isDeepStrictEqual(current[relative], docs[relative]) };
+  });
+  const git = memoryGitSync(["ls-files", "--", ...FILES], { cwd: root, encoding: "utf8", timeout: 3000 });
+  const tracked = git.status === 0 && !!git.stdout.trim();
+  const changed = targets.some((target) => target.changed);
+  return { file: pluginDir, tracked, changed, action: changed ? "create or update the managed agent-hub plugin" : "keep the managed agent-hub plugin", root, pluginDir, canonicalRoot, ...canonicalPluginDir ? { canonicalPluginDir } : {}, ...directories ? { directories } : {}, targets };
+}
+function identityMatches(path, before) {
+  const now = lstatSync2(path, { throwIfNoEntry: false });
+  return before ? !!now && now.dev === before.dev && now.ino === before.ino : !now;
+}
+function atomicWrite(path, bytes, expected, plan) {
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  let fd;
+  let tempIdentity;
+  try {
+    verifyPluginDirectory(plan, path);
+    fd = openSync(temporary, "wx", 384);
+    const tempStat = fstatSync(fd);
+    tempIdentity = { dev: tempStat.dev, ino: tempStat.ino };
+    writeFileSync(fd, bytes);
+    closeSync(fd);
+    fd = undefined;
+    verifyPluginDirectory(plan, path);
+    if (!identityMatches(path, expected))
+      throw new Error(`${path} changed while the managed plugin was being written`);
+    renameSync(temporary, path);
+    const stat = lstatSync2(path);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)
+      throw new Error(`${path} changed while the managed plugin was written`);
+    return { dev: stat.dev, ino: stat.ino };
+  } finally {
+    if (fd !== undefined)
+      closeSync(fd);
+    try {
+      const current = lstatSync2(temporary, { throwIfNoEntry: false });
+      if (current && tempIdentity && current.dev === tempIdentity.dev && current.ino === tempIdentity.ino)
+        unlinkSync(temporary);
+    } catch {}
+  }
+}
+function rollback(plan, written, createdDirs) {
+  for (const { target, own } of written.reverse()) {
+    try {
+      const now = lstatSync2(target.path, { throwIfNoEntry: false });
+      if (!now || now.dev !== own.dev || now.ino !== own.ino)
+        continue;
+      if (target.current)
+        atomicWrite(target.path, target.current, now, plan);
+      else
+        unlinkSync(target.path);
+    } catch {}
+  }
+  for (const { path, dev, ino } of createdDirs.reverse()) {
+    try {
+      const now = lstatSync2(path);
+      if (now.isDirectory() && !now.isSymbolicLink() && now.dev === dev && now.ino === ino)
+        rmdirSync(path);
+    } catch {}
+  }
+}
+function ensureAgyMcp(options) {
+  const plan = internalPlan(options);
+  if (!plan.changed)
+    return { changed: false, tracked: plan.tracked };
+  const createdDirs = [];
+  const written = [];
+  try {
+    for (const relative of [".agents", ".agents/plugins", PLUGIN_DIR]) {
+      const path = join3(plan.root, relative);
+      const prior = safeDirectory(path);
+      if (prior)
+        continue;
+      mkdirSync(path, { mode: 448 });
+      const stat = safeDirectory(path);
+      createdDirs.push({ path, dev: stat.dev, ino: stat.ino });
+    }
+    plan.directories = pluginDirectories(plan.root);
+    plan.canonicalPluginDir = realPath(plan.pluginDir);
+    if (plan.canonicalRoot !== realPath(plan.root) || plan.canonicalPluginDir !== join3(plan.canonicalRoot, PLUGIN_DIR))
+      throw new Error("managed agy plugin path changed; inspect it before writing");
+    for (const target of plan.targets) {
+      if (!target.changed)
+        continue;
+      if (!identityMatches(target.path, target.stat))
+        throw new Error(`${target.path} changed while the managed plugin was being prepared`);
+      const own = atomicWrite(target.path, target.next, target.stat, plan);
+      written.push({ target, own });
+    }
+  } catch (error) {
+    rollback(plan, written, createdDirs);
+    throw error;
+  }
+  return { changed: true, tracked: plan.tracked };
+}
+function cleanupAgyMcp(options) {
+  const plan = internalPlan(options);
+  const present = plan.targets.filter((target) => target.current !== undefined);
+  if (!present.length)
+    return;
+  if (present.length !== FILES.length)
+    throw new Error("managed agy plugin is incomplete; inspect it before cleanup");
+  const currentHooks = parseJson(readFileSync2(join3(plan.root, HOOKS_FILE)), HOOKS_FILE);
+  const launch = managedHookLaunch(currentHooks, options, options.peer ?? AGY_DEFINITION.kind);
+  if (!launch || launch.instanceId !== options.instanceId || launch.launchId !== options.launchId)
+    return;
+  if (plan.changed)
+    return;
+  const deleted = [];
+  try {
+    for (const target of plan.targets) {
+      const stat = lstatSync2(target.path);
+      if (!target.stat || stat.dev !== target.stat.dev || stat.ino !== target.stat.ino)
+        throw new Error(`${target.path} changed before agy plugin cleanup`);
+    }
+    for (const target of plan.targets) {
+      if (!identityMatches(target.path, target.stat))
+        throw new Error(`${target.path} changed before agy plugin cleanup`);
+      if (target.relative === MCP_FILE) {
+        const currentMcp = parseJson(target.current, MCP_FILE);
+        const servers = { ...currentMcp.mcpServers };
+        delete servers[PLUGIN_KEY];
+        const nextMcp = { ...currentMcp, mcpServers: servers };
+        const retain = Object.keys(servers).length > 0 || Object.keys(currentMcp).some((key) => key !== "mcpServers");
+        if (retain) {
+          const own = atomicWrite(target.path, Buffer.from(`${JSON.stringify(nextMcp, null, 2)}
+`), target.stat, plan);
+          deleted.push({ path: target.path, bytes: target.current, own });
+        } else {
+          unlinkSync(target.path);
+          deleted.push({ path: target.path, bytes: target.current });
+        }
+      } else {
+        unlinkSync(target.path);
+        deleted.push({ path: target.path, bytes: target.current });
+      }
+    }
+  } catch (error) {
+    for (const item of deleted.reverse()) {
+      try {
+        const current = lstatSync2(item.path, { throwIfNoEntry: false });
+        if (item.own) {
+          if (current?.dev === item.own.dev && current.ino === item.own.ino)
+            atomicWrite(item.path, item.bytes, current, plan);
+        } else if (!current)
+          atomicWrite(item.path, item.bytes, undefined, plan);
+      } catch {}
+    }
+    throw error;
+  }
+}
+var PLUGIN_DIR = ".agents/plugins/agent-hub", PLUGIN_KEY = "agent-hub", MANIFEST_FILE, MCP_FILE, HOOKS_FILE, FILES, EVENTS, MANAGED_DESCRIPTION = "Managed by ahub agy launcher.", MAX_CONFIG_BYTES;
+var init_agy_mcp = __esm(() => {
+  init_definition();
+  init_git();
+  init_project();
+  MANIFEST_FILE = `${PLUGIN_DIR}/plugin.json`;
+  MCP_FILE = `${PLUGIN_DIR}/mcp_config.json`;
+  HOOKS_FILE = `${PLUGIN_DIR}/hooks.json`;
+  FILES = [MANIFEST_FILE, MCP_FILE, HOOKS_FILE];
+  EVENTS = ["SessionStart", "PreInvocation", "PostInvocation", "PreToolUse", "PostToolUse", "Stop"];
+  MAX_CONFIG_BYTES = 256 * 1024;
+});
+
 // src/hub/child-process.ts
 function childEnv(source = process.env) {
   const env = { ...source };
@@ -296,91 +894,121 @@ var init_child_process = __esm(() => {
   emptied = new WeakSet;
 });
 
-// node_modules/@staix/agent-mem/src/memory/platform.ts
-import { realpathSync } from "fs";
-import { basename, dirname, join, resolve, sep } from "path";
-import { spawnSync, execFileSync } from "child_process";
-import { createHash } from "crypto";
-function canonicalPath(path) {
-  return canonical(path);
+// src/adapters/agy/entry.ts
+import { spawn, spawnSync as spawnSync2 } from "child_process";
+import { resolve as resolve4 } from "path";
+function agyTuiSpawnOptions(cwd, env) {
+  return { cwd, env, stdio: "inherit" };
 }
-function realPath(path) {
-  try {
-    return realpathSync(path);
-  } catch (error) {
-    if (!resolve(path).includes("\\"))
-      throw error;
-    const argv = process.platform === "darwin" ? ["/bin/realpath", "--", path] : ["realpath", "-e", "--", path];
-    const r = spawnSync(argv[0], argv.slice(1), { encoding: "utf8" });
-    if (r.status !== 0 || !r.stdout.endsWith(`
-`))
-      throw error;
-    return r.stdout.slice(0, -1);
-  }
+function runAgyTui(argv, cwd, env) {
+  const child = spawn("agy", argv, agyTuiSpawnOptions(cwd, env));
+  return new Promise((resolveExit, reject) => {
+    const forward = (signal) => {
+      if (child.exitCode !== null || child.signalCode !== null)
+        return;
+      try {
+        child.kill(signal);
+      } catch {}
+    };
+    const onInterrupt = () => forward("SIGINT");
+    const onTerminate = () => forward("SIGTERM");
+    const onHangup = () => forward("SIGHUP");
+    const cleanup = () => {
+      process.off("SIGINT", onInterrupt);
+      process.off("SIGTERM", onTerminate);
+      process.off("SIGHUP", onHangup);
+    };
+    process.on("SIGINT", onInterrupt);
+    process.on("SIGTERM", onTerminate);
+    process.on("SIGHUP", onHangup);
+    child.once("error", (error) => {
+      cleanup();
+      reject(error);
+    });
+    child.once("close", (code) => {
+      cleanup();
+      resolveExit(code ?? 1);
+    });
+  });
 }
-function isDenied(path, extra = []) {
-  const norm = path.split(sep).join("/");
-  return DENY_SEGMENTS.some((s) => hasSegment(norm, s)) || DENY_NAMES.some((re) => new RegExp(re).test(basename(norm))) || extra.some((e) => e && norm.includes(e));
+function agyVersionGate(stdout) {
+  const version = stdout.trim();
+  if (version === "1.4.2")
+    return { ok: true };
+  if (/^1\.4\.\d+$/.test(version))
+    return { ok: true, message: `agy ${version}: only 1.4.2 is T0-verified; launching on the 1.4.x line unverified` };
+  return { ok: false, message: "agy P1 requires the Antigravity CLI 1.4.x line (1.4.2 verified)" };
 }
-function memoryGitEnv(env = process.env, options = {}) {
-  const result = { ...env, GIT_TERMINAL_PROMPT: "0" };
-  if (options.repositoryIsolation) {
-    for (const key of Object.keys(result))
-      if (["GIT_DIR", "GIT_COMMON_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_NAMESPACE", "GIT_PREFIX", "GIT_SHALLOW_FILE", "GIT_GRAFT_FILE", "GIT_REPLACE_REF_BASE", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"].includes(key) || /^GIT_CONFIG_(KEY|VALUE)_/.test(key))
-        delete result[key];
-    result.GIT_NO_REPLACE_OBJECTS = "1";
-  }
-  return result;
-}
-function memoryGitSync(args, options) {
-  const argv = memoryGitArgv(args);
-  return spawnSync(argv[0], argv.slice(1), { ...options, env: memoryGitEnv(options.env ?? process.env) });
-}
-function processSignature(pid) {
-  try {
-    const text = execFileSync("ps", ["-p", String(pid), "-o", "lstart=,comm="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).trim();
-    return text ? createHash("sha256").update(text).digest("hex") : undefined;
-  } catch {
+async function runAgyEntry(ctx) {
+  const { args, cwd, stateDir, cliDir, connect, fail } = ctx;
+  if (ctx.instance)
+    fail("extra Antigravity TUI instances are not verified in P1");
+  const preview = args.includes("--print-command") || args.includes("--dry-run");
+  const unattended = ctx.unattendedEnv || args.includes("--unattended");
+  const nativeArgs = args.filter((arg) => !["--print-command", "--dry-run", "--unattended"].includes(arg));
+  if (nativeArgs.some((arg) => ["--print", "-p", "--prompt", "--input-format", "--output-format", "--conversation", "--continue", "-c", "--new", "--mode", "--dangerously-skip-permissions"].some((flag) => arg === flag || arg.startsWith(`${flag}=`))))
+    fail("agy P1 supports a fresh TUI only; headless, resume and permission flags need a verified mapping");
+  if (unattended)
+    fail("agy P1 native permissions are unmanaged; unattended mode has no verified prompt mapping");
+  const argv = nativeArgs;
+  if (preview) {
+    console.log(JSON.stringify({ command: "agy", args: argv.map(publicArg), mode: "tui", permission: "unmanaged", mcp: ".agents/plugins/agent-hub/", writes: false }));
     return;
   }
-}
-function processLiveness(pid, signature, identity = processSignature) {
-  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0)
-    return "unknown";
-  if (signature) {
-    let current;
-    try {
-      current = identity(pid);
-    } catch {}
-    if (current)
-      return current === signature ? "live" : "gone";
-  }
+  const version = spawnSync2("agy", ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: peerChildEnv("agy") });
+  const gate = agyVersionGate(version.status === 0 ? version.stdout : "");
+  if (!gate.ok)
+    fail(gate.message);
+  if (gate.message)
+    console.error(gate.message);
+  const hub = await connect();
+  let options;
+  let pluginWritten = false;
   try {
-    process.kill(pid, 0);
-    return signature ? "unknown" : "live";
-  } catch (error) {
-    return error.code === "ESRCH" ? "gone" : "unknown";
+    if (!hub.features.includes("native_hook_launch"))
+      fail("running hub lacks the verified native hook launcher; upgrade or restart it before launching agy");
+    const status = (await hub.request({ t: "status" })).status;
+    if (rosterInStatus(status, "agy") !== true)
+      fail("agy is off roster; add it with ahub roster add agy");
+    const admitted = await hub.request({ t: "native_hook_launch", op: "begin", peer: "agy" });
+    if (!admitted.ok || typeof admitted.launchId !== "string" || typeof admitted.instanceId !== "string")
+      fail(admitted.error ?? "native hook launch was not admitted");
+    options = {
+      projectRoot: cwd,
+      stateDir,
+      serverJs: bundleInStatus(status) ?? resolve4(cliDir, "../../plugins/agent-hub/server.js"),
+      hookScript: resolve4(cliDir, "facts-hook.ts"),
+      peer: "agy",
+      launchId: admitted.launchId,
+      instanceId: admitted.instanceId
+    };
+    const written = ensureAgyMcp(options);
+    pluginWritten = written.changed;
+    if (written.tracked)
+      console.error("The managed agy plugin is tracked; review its local machine paths before committing");
+    console.error(AGY_LAUNCH_NOTICE);
+    const env = { ...ctx.helpers.nativeLaunchEnv("agy", ctx.helpers.childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
+    delete env.AGENTHUB_CHANNEL;
+    const code = await runAgyTui(argv, cwd, env);
+    if (code !== 0)
+      process.exitCode = code;
+  } finally {
+    if (options) {
+      await hub.request({ t: "native_hook_launch", op: "end", peer: "agy", launchId: options.launchId }).catch(() => {});
+      if (pluginWritten)
+        try {
+          cleanupAgyMcp(options);
+        } catch {
+          console.error("Managed agy plugin cleanup refused: files changed or ownership could not be verified");
+        }
+    }
+    hub.close();
   }
 }
-var canonical = (path) => {
-  const absolute = resolve(path);
-  try {
-    return realpathSync(absolute);
-  } catch {
-    const parent = dirname(absolute);
-    return parent === absolute ? absolute : join(canonical(parent), basename(absolute));
-  }
-}, DENY_SEGMENTS, DENY_NAMES, hasSegment = (rel, seg) => `/${rel}/`.includes(`/${seg}/`), SAFE_CONFIG, CREDENTIAL_KEYS, memoryGitArgv = (args, opts = {}) => ["git", "--no-pager", ...SAFE_CONFIG.filter((c) => !opts.credentials || !CREDENTIAL_KEYS.has(c)).flatMap((c) => ["-c", c]), ...args];
-var init_platform = __esm(() => {
-  DENY_SEGMENTS = [".maru/secrets", ".agenthub/state", ".agenthub/archive"];
-  DENY_NAMES = ["^\\.env", "\\.pem$", "\\.key$", "^id_rsa", "^id_ed25519", "^credentials(\\.|$)", "^auth\\.json$", "^\\.netrc$", "^\\.npmrc$", "^\\.pypirc$"];
-  SAFE_CONFIG = ["core.fsmonitor=false", "core.hooksPath=/dev/null", "diff.external=", "core.pager=cat", "credential.helper=", "core.askpass="];
-  CREDENTIAL_KEYS = new Set(["credential.helper=", "core.askpass="]);
-});
-
-// src/hub/git.ts
-var init_git = __esm(() => {
-  init_platform();
+var AGY_LAUNCH_NOTICE = "Antigravity: pull-only TUI; native permissions unmanaged, no hub sandbox; hub tools appear from the second turn (send any first prompt, then ask for hub work)";
+var init_entry = __esm(() => {
+  init_agy_mcp();
+  init_child_process();
 });
 
 // src/hub/review-brief.ts
@@ -479,8 +1107,8 @@ class BasePeer {
 var DEFAULT_WATCHDOG_MS = 300000;
 
 // src/adapters/reviewer-print.ts
-import { spawn } from "child_process";
-import { randomUUID } from "crypto";
+import { spawn as spawn2 } from "child_process";
+import { randomUUID as randomUUID2 } from "crypto";
 var MAX_REVIEW_FRAME_BYTES, MAX_REVIEW_OUTPUT_BYTES, GroupCleanupError, reviewTarget = (env) => {
   const task = reviewTask(env);
   if (task === undefined || env.private)
@@ -551,7 +1179,7 @@ var init_reviewer_print = __esm(() => {
       this.receipt = undefined;
       const generation = ++this.generation;
       try {
-        const launch = await this.prepare(randomUUID());
+        const launch = await this.prepare(randomUUID2());
         try {
           if (generation !== this.generation || launch.current?.() === false)
             throw new Error("reviewer isolation changed before startup");
@@ -780,14 +1408,14 @@ ${facts}` : ""}`;
       let policyTimer;
       const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
       try {
-        launch = await this.prepare(randomUUID(), input, task, mcp?.config);
+        launch = await this.prepare(randomUUID2(), input, task, mcp?.config);
         if (generation !== this.generation || this.opts.admit?.(env) === false || launch.current?.() === false)
           throw new Error("reviewer isolation or admission changed before child spawn");
         this.receipt = launch.isolation;
         const [cmd, ...prefix] = launch.command;
         let quota = false;
         return await new Promise((resolve, reject) => {
-          const child = spawn(cmd, [...prefix, ...launch.args], {
+          const child = spawn2(cmd, [...prefix, ...launch.args], {
             cwd: launch.cwd ?? this.opts.cwd,
             detached: true,
             env: peerChildEnv(this.id, launch.envMode === "replace" ? launch.env : { ...process.env, ...launch.env }),
@@ -980,83 +1608,13 @@ var init_claude_print = __esm(() => {
   };
 });
 
-// src/hub/project.ts
-import { existsSync, lstatSync, readFileSync } from "fs";
-import { dirname as dirname2, isAbsolute, join as join2, resolve as resolve2 } from "path";
-function gitRoot(dir) {
-  const result = memoryGitSync(["-C", dir, "rev-parse", "--show-toplevel"], { encoding: "utf8" });
-  if (result.status !== 0)
-    return;
-  const root = result.stdout.trim();
-  return root ? canonicalPath(root) : undefined;
-}
-function hasConfig(dir) {
-  return existsSync(join2(dir, ".agenthub", "config.json"));
-}
-function projectRoot(cwd) {
-  const input = isAbsolute(cwd) ? cwd : resolve2(cwd);
-  let dir;
-  try {
-    dir = canonicalPath(input);
-    if (!lstatSync(dir).isDirectory())
-      throw new Error(`${cwd} is not a directory`);
-  } catch (error) {
-    throw new Error(`cannot resolve project directory ${cwd}: ${error.message}`);
-  }
-  const boundary = gitRoot(dir);
-  const stop = boundary ?? parseRoot(dir);
-  for (let current = dir;; current = dirname2(current)) {
-    if (hasConfig(current))
-      return canonicalPath(current);
-    if (current === stop || current === dirname2(current))
-      break;
-  }
-  return boundary ?? dir;
-}
-function parseRoot(dir) {
-  let current = dir;
-  while (dirname2(current) !== current)
-    current = dirname2(current);
-  return current;
-}
-function stateMarker(stateDir) {
-  for (const file of [join2(stateDir, "project.json"), join2(stateDir, "status.json")]) {
-    try {
-      const value = JSON.parse(readFileSync(file, "utf8"));
-      const root = value.root ?? value.cwd;
-      if (typeof root === "string")
-        return canonicalPath(root);
-    } catch {}
-  }
-  return;
-}
-function projectContext(cwd, env = process.env) {
-  const root = projectRoot(cwd);
-  const override = env.AGENTHUB_STATE_DIR?.trim();
-  if (!override)
-    return { root, stateDir: canonicalPath(join2(root, ".agenthub", "state")) };
-  const declared = env.AGENTHUB_PROJECT_DIR?.trim();
-  const stateDir = canonicalPath(override);
-  const recorded = stateMarker(stateDir);
-  if (recorded === root)
-    return { root, stateDir };
-  if (!recorded && declared && canonicalPath(declared) === root)
-    return { root, stateDir };
-  return { root, stateDir: canonicalPath(join2(root, ".agenthub", "state")) };
-}
-var init_project = __esm(() => {
-  init_git();
-  init_platform();
-  init_platform();
-});
-
 // src/adapters/codex-review-isolation.ts
 import { createHash as createHash2 } from "crypto";
-import { spawn as spawn2 } from "child_process";
-import { existsSync as existsSync2, lstatSync as lstatSync2, mkdirSync, mkdtempSync, readFileSync as readFileSync2, rmSync, statSync, symlinkSync, writeFileSync } from "fs";
+import { spawn as spawn3 } from "child_process";
+import { existsSync as existsSync2, lstatSync as lstatSync3, mkdirSync as mkdirSync2, mkdtempSync, readFileSync as readFileSync3, rmSync, statSync, symlinkSync, writeFileSync as writeFileSync2 } from "fs";
 import { createRequire } from "module";
 import { homedir, tmpdir } from "os";
-import { basename as basename2, delimiter, dirname as dirname3, isAbsolute as isAbsolute2, join as join3, relative, resolve as resolve3 } from "path";
+import { basename as basename2, delimiter, dirname as dirname3, isAbsolute as isAbsolute3, join as join4, relative, resolve as resolve5 } from "path";
 function codexCoreDenyGlobs(names = DENY_NAMES, segments = DENY_SEGMENTS) {
   if (names.length > 64 || segments.length > 64)
     throw new Error("core deny policy bound exceeded");
@@ -1102,11 +1660,11 @@ function toml(value) {
     return JSON.stringify(value);
   if (Array.isArray(value))
     return `[${value.map(toml).join(",")}]`;
-  return `{${Object.entries(object(value)).map(([key, item]) => `${JSON.stringify(key)}=${toml(item)}`).join(",")}}`;
+  return `{${Object.entries(object2(value)).map(([key, item]) => `${JSON.stringify(key)}=${toml(item)}`).join(",")}}`;
 }
 function metadata(file) {
   try {
-    const link = lstatSync2(file), stat = statSync(file);
+    const link = lstatSync3(file), stat = statSync(file);
     return [link.dev, link.ino, link.mtimeMs, stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
   } catch (error) {
     if (error.code === "ENOENT")
@@ -1115,19 +1673,19 @@ function metadata(file) {
   }
 }
 function configFiles(cwd, env) {
-  const home = resolve3(env.CODEX_HOME ?? join3(homedir(), ".codex"));
-  const files = [join3(home, "config.toml"), join3(home, "cloud-config-bundle-cache.json"), "/etc/codex/config.toml", "/etc/codex/requirements.toml", "/etc/codex/managed_config.toml"];
+  const home = resolve5(env.CODEX_HOME ?? join4(homedir(), ".codex"));
+  const files = [join4(home, "config.toml"), join4(home, "cloud-config-bundle-cache.json"), "/etc/codex/config.toml", "/etc/codex/requirements.toml", "/etc/codex/managed_config.toml"];
   for (let dir = cwd;; dir = dirname3(dir)) {
-    files.push(join3(dir, ".codex", "config.toml"));
+    files.push(join4(dir, ".codex", "config.toml"));
     if (dirname3(dir) === dir)
       break;
   }
   return files;
 }
 function hostCredentialRoots(env, cwd) {
-  const home = resolve3(cwd, env.HOME || homedir());
+  const home = resolve5(cwd, env.HOME || homedir());
   const homes = [...new Set([home, canonicalLabelled(home, "HOME")])];
-  const roots = homes.flatMap((base) => HOST_CREDENTIAL_PATHS.map((entry) => ({ path: join3(base, entry), label: `~/${entry}` })));
+  const roots = homes.flatMap((base) => HOST_CREDENTIAL_PATHS.map((entry) => ({ path: join4(base, entry), label: `~/${entry}` })));
   const configured = HOST_CREDENTIAL_ENV.flatMap((key) => env[key] ? [{ path: env[key], label: `$${key}` }] : []);
   if (env.KUBECONFIG)
     configured.push(...env.KUBECONFIG.split(delimiter).filter(Boolean).map((path) => ({ path, label: "$KUBECONFIG" })));
@@ -1136,7 +1694,7 @@ function hostCredentialRoots(env, cwd) {
   for (const { path: entry, label } of configured) {
     if (Buffer.byteLength(entry) > 4096 || /\p{Cc}/u.test(entry))
       throw new CredentialRootError(label, "unsupported");
-    roots.push({ path: entry.startsWith("~/") ? resolve3(home, entry.slice(2)) : resolve3(cwd, entry), label });
+    roots.push({ path: entry.startsWith("~/") ? resolve5(home, entry.slice(2)) : resolve5(cwd, entry), label });
   }
   const seen = new Set;
   return roots.filter((root) => !seen.has(root.path) && seen.add(root.path));
@@ -1152,7 +1710,7 @@ function credentialCanonicalPath(lexical) {
   let ancestor = lexical;
   for (;; ) {
     try {
-      lstatSync2(ancestor);
+      lstatSync3(ancestor);
       break;
     } catch (error) {
       if (error.code !== "ENOENT" || dirname3(ancestor) === ancestor)
@@ -1160,7 +1718,7 @@ function credentialCanonicalPath(lexical) {
       ancestor = dirname3(ancestor);
     }
   }
-  return join3(realPath(ancestor), relative(ancestor, lexical));
+  return join4(realPath(ancestor), relative(ancestor, lexical));
 }
 function denyCredentialRoots(filesystem, roots, cwd) {
   for (const { path: lexical, label } of roots) {
@@ -1177,7 +1735,7 @@ function denyCredentialRoots(filesystem, roots, cwd) {
 }
 function resolveCommand(ctx, cwd) {
   const [name = "codex", ...prefix] = ctx.command ?? [];
-  const found = isAbsolute2(name) ? name : Bun.which(name);
+  const found = isAbsolute3(name) ? name : Bun.which(name);
   if (!found)
     throw new Error("host executable unavailable");
   let binary = realPath(found);
@@ -1187,13 +1745,13 @@ function resolveCommand(ctx, cwd) {
       throw new Error("unverified native platform");
     const suffix = `${process.platform}-${process.arch === "x64" ? "x64" : "arm64"}`;
     const manifest = createRequire(binary).resolve(`@openai/codex-${suffix}/package.json`);
-    binary = realPath(join3(dirname3(manifest), "vendor", target, "bin", "codex"));
+    binary = realPath(join4(dirname3(manifest), "vendor", target, "bin", "codex"));
   }
   const files = [binary];
   if (inside(binary, cwd))
     throw new Error("project executable refused");
   for (const [index, arg] of prefix.entries()) {
-    if (isAbsolute2(arg) && (index === 0 || /\.(?:js|ts|mjs|cjs|sh)$/.test(arg)) && existsSync2(arg) && statSync(arg).isFile()) {
+    if (isAbsolute3(arg) && (index === 0 || /\.(?:js|ts|mjs|cjs|sh)$/.test(arg)) && existsSync2(arg) && statSync(arg).isFile()) {
       const file = realPath(arg);
       if (inside(file, cwd))
         throw new Error("project command prefix refused");
@@ -1209,7 +1767,7 @@ function inventory(text) {
     throw new Error("inventory bound exceeded");
   const seen = new Set;
   return raw.map((value) => {
-    const row = object(value), transport = object(row.transport);
+    const row = object2(value), transport = object2(row.transport);
     if (typeof row.name !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(row.name) || seen.has(row.name) || typeof row.enabled !== "boolean")
       throw new Error("invalid inventory identity");
     seen.add(row.name);
@@ -1230,13 +1788,13 @@ function proveDisabledFeatures(text) {
   }
 }
 function ownServer(text) {
-  const config = object(JSON.parse(text)), servers = object(config.mcpServers);
+  const config = object2(JSON.parse(text)), servers = object2(config.mcpServers);
   if (Object.keys(servers).length !== 1 || !Object.hasOwn(servers, "agent-hub"))
     throw new Error("fixed hub MCP required");
-  const hub = object(servers["agent-hub"]);
+  const hub = object2(servers["agent-hub"]);
   if (Object.keys(hub).some((key) => !["command", "args", "env"].includes(key)) || typeof hub.command !== "string" || !hub.command || hub.args !== undefined && (!Array.isArray(hub.args) || hub.args.some((arg) => typeof arg !== "string")))
     throw new Error("invalid hub transport");
-  const env = hub.env === undefined ? {} : object(hub.env);
+  const env = hub.env === undefined ? {} : object2(hub.env);
   if (Object.values(env).some((value) => typeof value !== "string"))
     throw new Error("invalid hub environment");
   return { command: hub.command, args: hub.args ?? [], env, enabled: true, required: true, enabled_tools: TOOLS };
@@ -1246,7 +1804,7 @@ async function prepare(ctx) {
   try {
     const cwd = realPath(ctx.cwd), env = peerChildEnv(ctx.peer), bound = resolveCommand(ctx, cwd);
     const initialBinaryMetadata = bound.files.map(metadata).join(";");
-    const binaryHash = digest(bound.files.map((file) => digest(readFileSync2(file))).join(";"));
+    const binaryHash = digest(bound.files.map((file) => digest(readFileSync3(file))).join(";"));
     if (bound.files.map(metadata).join(";") !== initialBinaryMetadata)
       throw new Error("binary changed while hashing");
     const watched = configFiles(cwd, env), initialConfig = watched.map(metadata).join(";");
@@ -1262,7 +1820,7 @@ async function prepare(ctx) {
         return;
       }
       const [cmd, ...prefix] = bound.command;
-      const child = spawn2(cmd, [...prefix, ...args], { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn3(cmd, [...prefix, ...args], { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
       let output = "", bytes = 0, failed = false, settled = false;
       const stop = () => {
         failed = true;
@@ -1329,33 +1887,33 @@ async function prepare(ctx) {
     const after = inventory(await run(["mcp", "list", "--json", ...policy, ...mcp]));
     if (after.length !== before.length + 1 || after.some((row) => row.name !== "agent-hub" && !before.some((old) => old.name === row.name)) || after.filter((row) => row.enabled).map((row) => row.name).join(",") !== "agent-hub")
       throw new Error("MCP inventory changed or is not strict");
-    const observed = object(JSON.parse(await run(["mcp", "get", "agent-hub", "--json", ...policy, ...mcp])));
+    const observed = object2(JSON.parse(await run(["mcp", "get", "agent-hub", "--json", ...policy, ...mcp])));
     if (observed.name !== "agent-hub" || observed.enabled !== true || !Array.isArray(observed.enabled_tools) || JSON.stringify(observed.enabled_tools) !== JSON.stringify(TOOLS))
       throw new Error("hub tool allowlist unverified");
-    const observedTransport = object(observed.transport);
-    const observedEnv = object(observedTransport.env ?? {}), intendedEnv = object(hub.env);
+    const observedTransport = object2(observed.transport);
+    const observedEnv = object2(observedTransport.env ?? {}), intendedEnv = object2(hub.env);
     if (observedTransport.type !== "stdio" || observedTransport.command !== hub.command || JSON.stringify(observedTransport.args ?? []) !== JSON.stringify(hub.args) || Object.keys(observedEnv).length !== Object.keys(intendedEnv).length || Object.entries(intendedEnv).some(([key, value]) => observedEnv[key] !== value))
       throw new Error("hub transport changed");
-    root = realPath(mkdtempSync(join3(tmpdir(), "ahub-codex-review-isolation-")));
-    const privateFile = join3(root, "private.env"), publicFile = join3(root, "public.txt"), writeFile = join3(root, "write-proof");
-    const coreName = join3(root, ".env"), coreStateDir = join3(root, ".agenthub", "state"), coreState = join3(coreStateDir, "private.txt");
-    const fixtureHome = join3(root, "host-home"), hostConfig = join3(fixtureHome, ".config", "gh", "hosts.yml"), hostKube = join3(fixtureHome, ".kube", "config"), hostDocker = join3(fixtureHome, ".docker", "config.json"), hostAlias = join3(root, "host-alias.yml");
+    root = realPath(mkdtempSync(join4(tmpdir(), "ahub-codex-review-isolation-")));
+    const privateFile = join4(root, "private.env"), publicFile = join4(root, "public.txt"), writeFile = join4(root, "write-proof");
+    const coreName = join4(root, ".env"), coreStateDir = join4(root, ".agenthub", "state"), coreState = join4(coreStateDir, "private.txt");
+    const fixtureHome = join4(root, "host-home"), hostConfig = join4(fixtureHome, ".config", "gh", "hosts.yml"), hostKube = join4(fixtureHome, ".kube", "config"), hostDocker = join4(fixtureHome, ".docker", "config.json"), hostAlias = join4(root, "host-alias.yml");
     for (const file of [hostConfig, hostKube, hostDocker]) {
-      mkdirSync(dirname3(file), { recursive: true });
-      writeFileSync(file, "synthetic host credential fixture");
+      mkdirSync2(dirname3(file), { recursive: true });
+      writeFileSync2(file, "synthetic host credential fixture");
     }
     symlinkSync(hostConfig, hostAlias);
-    mkdirSync(coreStateDir, { recursive: true });
-    writeFileSync(coreName, "core name fixture");
-    writeFileSync(coreState, "core state fixture");
-    const globRoot = join3(root, "glob"), nested = join3(globRoot, "nested"), globFile = join3(nested, "private.env"), alias = join3(root, "alias.env");
-    mkdirSync(globRoot);
-    mkdirSync(nested);
-    writeFileSync(privateFile, "private fixture");
-    writeFileSync(publicFile, "public fixture");
-    writeFileSync(globFile, "glob private fixture");
+    mkdirSync2(coreStateDir, { recursive: true });
+    writeFileSync2(coreName, "core name fixture");
+    writeFileSync2(coreState, "core state fixture");
+    const globRoot = join4(root, "glob"), nested = join4(globRoot, "nested"), globFile = join4(nested, "private.env"), alias = join4(root, "alias.env");
+    mkdirSync2(globRoot);
+    mkdirSync2(nested);
+    writeFileSync2(privateFile, "private fixture");
+    writeFileSync2(publicFile, "public fixture");
+    writeFileSync2(globFile, "glob private fixture");
     symlinkSync(globFile, alias);
-    const filesystem = { "/": "read", [privateFile]: "deny", [join3(globRoot, "**", "*.env")]: "deny" };
+    const filesystem = { "/": "read", [privateFile]: "deny", [join4(globRoot, "**", "*.env")]: "deny" };
     for (const glob of codexCoreDenyGlobs())
       filesystem[glob] = "deny";
     denyCredentialRoots(filesystem, [...hostCredentialRoots(env, cwd), ...hostCredentialRoots({ HOME: fixtureHome }, cwd)], cwd);
@@ -1365,14 +1923,14 @@ async function prepare(ctx) {
       if (/[{}]/.test(entry))
         throw new Error("unverified private path pattern");
       const homePath = entry === "~" || entry.startsWith("~/");
-      const absolute = homePath ? resolve3(homedir(), entry.slice(2)) : isAbsolute2(entry) ? entry : resolve3(cwd, entry);
+      const absolute = homePath ? resolve5(homedir(), entry.slice(2)) : isAbsolute3(entry) ? entry : resolve5(cwd, entry);
       const patterns = new Set([absolute]);
       if (!/[?*\[\]]/.test(absolute) && existsSync2(absolute))
         patterns.add(realPath(absolute));
-      if (!isAbsolute2(entry) && !homePath && entry !== "." && entry !== "..") {
-        patterns.add(join3(cwd, "**", entry));
+      if (!isAbsolute3(entry) && !homePath && entry !== "." && entry !== "..") {
+        patterns.add(join4(cwd, "**", entry));
         if (!/[?*\[\]]/.test(entry))
-          patterns.add(join3(cwd, "**", `*${entry.replace(/^\.\//, "").replace(/\/$/, "")}*`));
+          patterns.add(join4(cwd, "**", `*${entry.replace(/^\.\//, "").replace(/\/$/, "")}*`));
       }
       for (const pattern of patterns) {
         filesystem[pattern] = "deny";
@@ -1437,8 +1995,8 @@ AHUB_CODEX_HOST_ALIAS_DENIED` || existsSync2(writeFile))
 }
 var VERSION = "0.146.0", TOOLS, CAP, MAX_SERVERS = 64, digest = (value) => createHash2("sha256").update(value).digest("hex"), inside = (file, root) => {
   const part = relative(root, file);
-  return part === "" || part !== ".." && !part.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute2(part);
-}, object = (value) => {
+  return part === "" || part !== ".." && !part.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !isAbsolute3(part);
+}, object2 = (value) => {
   if (!value || typeof value !== "object" || Array.isArray(value))
     throw new Error("invalid metadata");
   return value;
@@ -1471,20 +2029,20 @@ var init_codex_review_isolation = __esm(() => {
 });
 
 // src/adapters/kimi-review.ts
-import { spawn as spawn3 } from "child_process";
+import { spawn as spawn4 } from "child_process";
 import { createHash as createHash3 } from "crypto";
-import { existsSync as existsSync3, lstatSync as lstatSync3, mkdirSync as mkdirSync2, mkdtempSync as mkdtempSync2, readFileSync as readFileSync3, rmSync as rmSync2, symlinkSync as symlinkSync2, writeFileSync as writeFileSync2 } from "fs";
+import { existsSync as existsSync3, lstatSync as lstatSync4, mkdirSync as mkdirSync3, mkdtempSync as mkdtempSync2, readFileSync as readFileSync4, rmSync as rmSync2, symlinkSync as symlinkSync2, writeFileSync as writeFileSync3 } from "fs";
 import { homedir as homedir2, tmpdir as tmpdir2 } from "os";
-import { basename as basename3, dirname as dirname4, join as join4, resolve as resolve4 } from "path";
+import { basename as basename3, dirname as dirname4, join as join5, resolve as resolve6 } from "path";
 function assertCleanCwdAncestors(...candidates) {
   const seen = new Set;
   for (const candidate of candidates) {
-    let ancestor = resolve4(candidate);
+    let ancestor = resolve6(candidate);
     for (;; ) {
       if (!seen.has(ancestor)) {
         seen.add(ancestor);
         for (const marker of [".git", ".kimi-code", "AGENTS.md"]) {
-          if (lstatSync3(join4(ancestor, marker), { throwIfNoEntry: false }) !== undefined) {
+          if (lstatSync4(join5(ancestor, marker), { throwIfNoEntry: false }) !== undefined) {
             throw new Error("private cwd ancestor contains ambient configuration");
           }
         }
@@ -1498,10 +2056,10 @@ function assertCleanCwdAncestors(...candidates) {
 }
 function managedConfig(raw) {
   const config = Bun.TOML.parse(raw);
-  if (!object2(config.providers) || !object2(config.models) || typeof config.default_model !== "string")
+  if (!object3(config.providers) || !object3(config.models) || typeof config.default_model !== "string")
     throw new Error("managed Kimi configuration required");
   const provider = config.providers[MANAGED], model = config.models[config.default_model];
-  if (!object2(provider) || provider.type !== "kimi" || provider.api_key && provider.api_key !== "" || !object2(provider.oauth) || provider.oauth.storage !== "file" || !object2(model) || model.provider !== MANAGED)
+  if (!object3(provider) || provider.type !== "kimi" || provider.api_key && provider.api_key !== "" || !object3(provider.oauth) || provider.oauth.storage !== "file" || !object3(model) || model.provider !== MANAGED)
     throw new Error("managed file-backed Kimi OAuth required");
   const oauth = provider.oauth;
   const key = oauth.key;
@@ -1535,7 +2093,7 @@ function managedConfig(raw) {
   const modelFields = ["provider", "model", "protocol", "max_context_size", "max_input_size", "capabilities", "display_name", "support_efforts", "default_effort", "beta_api", "adaptive_thinking", "overrides"];
   if (Object.keys(model).some((name) => !modelFields.includes(name)))
     throw new Error("unsupported managed model setting");
-  if (model.overrides !== undefined && (!object2(model.overrides) || Object.keys(model.overrides).some((name) => !modelFields.includes(name) || ["provider", "overrides"].includes(name))))
+  if (model.overrides !== undefined && (!object3(model.overrides) || Object.keys(model.overrides).some((name) => !modelFields.includes(name) || ["provider", "overrides"].includes(name))))
     throw new Error("unsupported managed model override");
   for (const name of modelFields)
     if (model[name] !== undefined)
@@ -1546,14 +2104,14 @@ function managedConfig(raw) {
 }
 function mcpConfig(context) {
   const config = JSON.parse(context.mcpConfig);
-  if (!object2(config) || !object2(config.mcpServers))
+  if (!object3(config) || !object3(config.mcpServers))
     throw new Error("review MCP unavailable");
   if (context.task === undefined && Object.keys(config.mcpServers).length === 0)
     return context.mcpConfig;
   if (Object.keys(config.mcpServers).join() !== "agent-hub")
     throw new Error("ambient MCP refused");
   const server = config.mcpServers["agent-hub"];
-  if (!object2(server) || Object.keys(server).some((k) => !["transport", "url", "headers"].includes(k)) || server.transport !== "http" || typeof server.url !== "string" || !object2(server.headers) || Object.keys(server.headers).join() !== "Authorization" || typeof server.headers.Authorization !== "string" || !server.headers.Authorization.startsWith("Bearer "))
+  if (!object3(server) || Object.keys(server).some((k) => !["transport", "url", "headers"].includes(k)) || server.transport !== "http" || typeof server.url !== "string" || !object3(server.headers) || Object.keys(server.headers).join() !== "Authorization" || typeof server.headers.Authorization !== "string" || !server.headers.Authorization.startsWith("Bearer "))
     throw new Error("task-bound HTTP MCP required");
   const url = new URL(server.url);
   if (url.protocol !== "http:" || url.hostname !== "127.0.0.1" || !url.port || url.pathname !== "/mcp" || url.username || url.password || url.search || url.hash)
@@ -1562,7 +2120,7 @@ function mcpConfig(context) {
 }
 async function version(command, cwd, env, signal) {
   return await new Promise((accept, reject) => {
-    const child = spawn3(command[0], [...command.slice(1), "--version"], { cwd, env, detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn4(command[0], [...command.slice(1), "--version"], { cwd, env, detached: true, stdio: ["ignore", "pipe", "ignore"] });
     let text = "", done = false;
     const finish = async (code) => {
       if (done)
@@ -1614,11 +2172,11 @@ async function stopKimiReview(child, locks, graceMs = 1e4) {
   }
   await stopOwnedProcess(child, { group: true });
 }
-var VERSION2 = "2.2.0", MANAGED = "managed:kimi-code", object2 = (v) => !!v && typeof v === "object" && !Array.isArray(v), hash = (text) => createHash3("sha256").update(text).digest("hex"), read = (file, limit = 262144) => {
-  const stat = lstatSync3(file);
+var VERSION2 = "2.2.0", MANAGED = "managed:kimi-code", object3 = (v) => !!v && typeof v === "object" && !Array.isArray(v), hash = (text) => createHash3("sha256").update(text).digest("hex"), read = (file, limit = 262144) => {
+  const stat = lstatSync4(file);
   if (!stat.isFile() || stat.size > limit)
     throw new Error("unsupported reviewer file");
-  return readFileSync3(file, "utf8");
+  return readFileSync4(file, "utf8");
 }, scalar = (value, depth = 0) => {
   if (depth > 4)
     throw new Error("managed model setting too deeply nested");
@@ -1626,7 +2184,7 @@ var VERSION2 = "2.2.0", MANAGED = "managed:kimi-code", object2 = (v) => !!v && t
     return JSON.stringify(value);
   if (Array.isArray(value) && value.every((v) => typeof v === "string"))
     return JSON.stringify(value);
-  if (object2(value) && Object.keys(value).length <= 32)
+  if (object3(value) && Object.keys(value).length <= 32)
     return `{ ${Object.entries(value).map(([key, item]) => `${JSON.stringify(key)} = ${scalar(item, depth + 1)}`).join(", ")} }`;
   throw new Error("unsupported managed model setting");
 }, kimiReviewerBackend;
@@ -1642,25 +2200,25 @@ var init_kimi_review = __esm(() => {
       try {
         if (context.signal.aborted)
           throw new Error("cancelled");
-        const sourcePath = process.env.KIMI_CODE_HOME ?? join4(process.env.HOME ?? homedir2(), ".kimi-code"), source = realPath(sourcePath);
-        const sourceConfig = join4(source, "config.toml"), original = read(sourceConfig), selected = managedConfig(original);
-        const sources = ["credentials", "oauth", "device_id"].map((name) => realPath(join4(source, name)));
-        if (!sources.every((file, index) => index < 2 ? lstatSync3(file).isDirectory() : lstatSync3(file).isFile()))
+        const sourcePath = process.env.KIMI_CODE_HOME ?? join5(process.env.HOME ?? homedir2(), ".kimi-code"), source = realPath(sourcePath);
+        const sourceConfig = join5(source, "config.toml"), original = read(sourceConfig), selected = managedConfig(original);
+        const sources = ["credentials", "oauth", "device_id"].map((name) => realPath(join5(source, name)));
+        if (!sources.every((file, index) => index < 2 ? lstatSync4(file).isDirectory() : lstatSync4(file).isFile()))
           throw new Error("native OAuth directories and device identity required");
         const mcp = mcpConfig(context);
         if (Buffer.byteLength(context.input ?? "") > 1048576)
           throw new Error("review facts exceed limit");
-        const lexicalRoot = mkdtempSync2(join4(process.env.TMPDIR ?? tmpdir2(), "ahub-kimi-review-"));
+        const lexicalRoot = mkdtempSync2(join5(process.env.TMPDIR ?? tmpdir2(), "ahub-kimi-review-"));
         own = realPath(lexicalRoot);
-        assertCleanCwdAncestors(join4(lexicalRoot, "workspace"), join4(own, "workspace"));
-        const root = own, home = join4(root, "home"), tool = join4(root, "tool"), cwd = join4(root, "workspace"), skills = join4(root, "empty-skills"), temporary = join4(root, "tmp");
+        assertCleanCwdAncestors(join5(lexicalRoot, "workspace"), join5(own, "workspace"));
+        const root = own, home = join5(root, "home"), tool = join5(root, "tool"), cwd = join5(root, "workspace"), skills = join5(root, "empty-skills"), temporary = join5(root, "tmp");
         for (const dir of [home, tool, cwd, skills, temporary])
-          mkdirSync2(dir, { mode: 448 });
-        ["credentials", "oauth", "device_id"].forEach((name, index) => symlinkSync2(sources[index], join4(tool, name), index < 2 ? "dir" : "file"));
-        const agentFile = join4(cwd, "reviewer.md"), configFile = join4(tool, "config.toml"), mcpFile = join4(tool, "mcp.json");
-        writeFileSync2(configFile, selected.config, { mode: 384 });
-        writeFileSync2(mcpFile, mcp, { mode: 384 });
-        writeFileSync2(agentFile, `---
+          mkdirSync3(dir, { mode: 448 });
+        ["credentials", "oauth", "device_id"].forEach((name, index) => symlinkSync2(sources[index], join5(tool, name), index < 2 ? "dir" : "file"));
+        const agentFile = join5(cwd, "reviewer.md"), configFile = join5(tool, "config.toml"), mcpFile = join5(tool, "mcp.json");
+        writeFileSync3(configFile, selected.config, { mode: 384 });
+        writeFileSync3(mcpFile, mcp, { mode: 384 });
+        writeFileSync3(agentFile, `---
 name: hub-reviewer
 description: Fresh agent-hub reviewer
 tools:
@@ -1675,11 +2233,11 @@ Use only the supplied public facts and hub_task_show. Never claim to have read e
 
 ${context.input ?? "No review is active; startup self-check only."}
 `, { mode: 384 });
-        const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, KIMI_CODE_HOME: tool, TMPDIR: `${temporary}/`, XDG_CONFIG_HOME: join4(home, ".config"), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...process.env.USER ? { USER: process.env.USER } : {} };
+        const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, KIMI_CODE_HOME: tool, TMPDIR: `${temporary}/`, XDG_CONFIG_HOME: join5(home, ".config"), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...process.env.USER ? { USER: process.env.USER } : {} };
         const native = context.command ?? [Bun.which("kimi", { PATH: process.env.PATH }) ?? "kimi"];
-        const executable = realPath(Bun.which(native[0], { PATH: process.env.PATH }) ?? resolve4(native[0]));
+        const executable = realPath(Bun.which(native[0], { PATH: process.env.PATH }) ?? resolve6(native[0]));
         const command = [executable, ...native.slice(1)];
-        const executableStat = lstatSync3(executable);
+        const executableStat = lstatSync4(executable);
         if (await version(command, cwd, env, context.signal) !== VERSION2)
           throw new Error("unsupported Kimi version; receipt covers 2.2.0");
         const fingerprints = [configFile, mcpFile, agentFile].map((file) => hash(read(file, 2097152)));
@@ -1698,12 +2256,12 @@ ${context.input ?? "No review is active; startup self-check only."}
           envMode: "replace",
           cleanup,
           watchCurrent: true,
-          stop: (child) => stopKimiReview(child, [join4(sources[1], "kimi-code.lock"), join4(sources[1], `${selected.lock}.lock`)]),
+          stop: (child) => stopKimiReview(child, [join5(sources[1], "kimi-code.lock"), join5(sources[1], `${selected.lock}.lock`)]),
           current: () => {
             try {
-              assertCleanCwdAncestors(join4(lexicalRoot, "workspace"), cwd);
-              const now = lstatSync3(executable);
-              return !cleaned && !context.signal.aborted && realPath(sourcePath) === source && now.dev === executableStat.dev && now.ino === executableStat.ino && now.size === executableStat.size && now.mtimeMs === executableStat.mtimeMs && now.ctimeMs === executableStat.ctimeMs && hash(read(sourceConfig)) === hash(original) && [configFile, mcpFile, agentFile].every((file, index) => hash(read(file, 2097152)) === fingerprints[index]) && ["credentials", "oauth", "device_id"].every((name, index) => realPath(join4(source, name)) === sources[index] && realPath(join4(tool, name)) === sources[index]);
+              assertCleanCwdAncestors(join5(lexicalRoot, "workspace"), cwd);
+              const now = lstatSync4(executable);
+              return !cleaned && !context.signal.aborted && realPath(sourcePath) === source && now.dev === executableStat.dev && now.ino === executableStat.ino && now.size === executableStat.size && now.mtimeMs === executableStat.mtimeMs && now.ctimeMs === executableStat.ctimeMs && hash(read(sourceConfig)) === hash(original) && [configFile, mcpFile, agentFile].every((file, index) => hash(read(file, 2097152)) === fingerprints[index]) && ["credentials", "oauth", "device_id"].every((name, index) => realPath(join5(source, name)) === sources[index] && realPath(join5(tool, name)) === sources[index]);
             } catch {
               return false;
             }
@@ -1733,8 +2291,8 @@ ${context.input ?? "No review is active; startup self-check only."}
 
 // src/adapters/definitions/native-context.ts
 function claudeContext(value, sessionId, measuredAt) {
-  const c = object3(value);
-  const current = object3(c.current_usage);
+  const c = object4(value);
+  const current = object4(c.current_usage);
   const parts = [current.input_tokens, current.cache_creation_input_tokens, current.cache_read_input_tokens];
   const window = positive(c.context_window_size) ? c.context_window_size : null;
   const sum = c.current_usage != null && parts.every(nonnegative) ? parts.reduce((sum, n) => sum + n, 0) : null;
@@ -1743,7 +2301,7 @@ function claudeContext(value, sessionId, measuredAt) {
   return { source: "claude_statusline", sessionId, measuredAt, tokens, window, used };
 }
 function codexContext(value, sessionId, measuredAt) {
-  const c = object3(value), last = object3(c.last);
+  const c = object4(value), last = object4(c.last);
   const window = positive(c.modelContextWindow) ? c.modelContextWindow : null;
   const tokens = nonnegative(last.totalTokens) ? last.totalTokens : null;
   return { source: "codex_token_usage", sessionId, measuredAt, tokens, window, used: tokens !== null && window !== null ? Math.min(1, tokens / window) : null };
@@ -1754,16 +2312,16 @@ function acpContext(usage, sessionId, measuredAt) {
   return { source: "acp_usage_update", sessionId, measuredAt, tokens, window, used: tokens !== null && window !== null ? Math.min(1, tokens / window) : null };
 }
 function acpContextValue(value, sessionId, measuredAt) {
-  const raw = object3(value);
+  const raw = object4(value);
   return acpContext({ used: raw.used, size: raw.size }, sessionId, measuredAt);
 }
-var nonnegative = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0, positive = (n) => nonnegative(n) && n > 0, record = (v) => v !== null && typeof v === "object" && !Array.isArray(v), object3 = (v) => record(v) ? v : {};
+var nonnegative = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0, positive = (n) => nonnegative(n) && n > 0, record = (v) => v !== null && typeof v === "object" && !Array.isArray(v), object4 = (v) => record(v) ? v : {};
 
 // src/hub/context-window.ts
 var init_context_window = () => {};
 
 // src/adapters/codex-appserver.ts
-import { spawn as spawn4 } from "child_process";
+import { spawn as spawn5 } from "child_process";
 function parse(raw) {
   try {
     return JSON.parse(raw);
@@ -2119,7 +2677,7 @@ ${renderDigest(envs, false)}`;
       }
       let gone = "";
       const env = peerChildEnv(this.id, { ...process.env, ...this.opts.env ?? {} });
-      this.proc = spawn4(this.opts.bin ?? "codex", ["app-server", "--listen", `ws://127.0.0.1:${port}`, ...this.opts.extraArgs ?? []], {
+      this.proc = spawn5(this.opts.bin ?? "codex", ["app-server", "--listen", `ws://127.0.0.1:${port}`, ...this.opts.extraArgs ?? []], {
         cwd: this.opts.cwd,
         env,
         stdio: ["ignore", "ignore", "pipe"],
@@ -2655,7 +3213,7 @@ var init_acp_owned_group = __esm(() => {
 });
 
 // src/adapters/acp.ts
-import { spawn as spawn5 } from "child_process";
+import { spawn as spawn6 } from "child_process";
 import { createInterface } from "readline";
 function normalizeACPUsage(value, source = "usage_update") {
   const unknown = { source, availability: "unsupported", shape: "none" };
@@ -2828,7 +3386,7 @@ var init_acp = __esm(() => {
         throw new Error("Configured ACP still has a process; stop it before starting another");
       this.stopping = false;
       const [bin, ...args] = this.opts.cmd;
-      const proc = spawn5(bin, args, { cwd: this.opts.cwd, env: peerChildEnv(this.id, { ...process.env, ...this.opts.env ?? {} }), stdio: ["pipe", "pipe", "pipe"], detached: true });
+      const proc = spawn6(bin, args, { cwd: this.opts.cwd, env: peerChildEnv(this.id, { ...process.env, ...this.opts.env ?? {} }), stdio: ["pipe", "pipe", "pipe"], detached: true });
       this.proc = proc;
       trackGroup(proc);
       proc.on("error", (e) => {
@@ -3383,11 +3941,11 @@ ${renderDigest(envs, false)}` }] });
 });
 
 // src/adapters/jcode.ts
-import { spawn as spawn6, spawnSync as spawnSync2 } from "child_process";
+import { spawn as spawn7, spawnSync as spawnSync3 } from "child_process";
 import { createConnection } from "net";
-import { closeSync, constants, existsSync as existsSync4, fstatSync, lstatSync as lstatSync4, mkdtempSync as mkdtempSync3, openSync, readSync, rmSync as rmSync3 } from "fs";
+import { closeSync as closeSync2, constants, existsSync as existsSync4, fstatSync as fstatSync2, lstatSync as lstatSync5, mkdtempSync as mkdtempSync3, openSync as openSync2, readSync, rmSync as rmSync3 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
-import { isAbsolute as isAbsolute3, join as join5 } from "path";
+import { isAbsolute as isAbsolute4, join as join6 } from "path";
 function jcodeCommand(command, kind, socket, cwd, model, profile) {
   if (!command.length || command.some((word) => typeof word !== "string" || !word))
     throw new Error("jcode_cmd must name an executable argv");
@@ -3423,26 +3981,26 @@ function jcodeTuiCommand(command, socket, sessionId, model, profile) {
 function savedSession(home, id) {
   if (!/^[A-Za-z0-9_-]{1,128}$/.test(id))
     throw new Error("invalid native session identity");
-  const directory = join5(home, "sessions"), info = lstatSync4(directory, { throwIfNoEntry: false });
+  const directory = join6(home, "sessions"), info = lstatSync5(directory, { throwIfNoEntry: false });
   if (!info)
     return false;
   if (!info.isDirectory() || info.isSymbolicLink())
     throw new Error("unsafe native session directory");
-  const file = join5(directory, `${id}.json`), entry = lstatSync4(file, { throwIfNoEntry: false });
+  const file = join6(directory, `${id}.json`), entry = lstatSync5(file, { throwIfNoEntry: false });
   if (!entry)
     return false;
   if (!entry.isFile() || entry.isSymbolicLink())
     throw new Error("unsafe native session proof");
   let fd;
   try {
-    fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    fd = openSync2(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch (error) {
     if (error.code === "ENOENT")
       return false;
     throw error;
   }
   try {
-    const before = fstatSync(fd);
+    const before = fstatSync2(fd);
     if (!before.isFile() || before.nlink !== 1 || before.size > 32 * 1024 * 1024)
       throw new Error("unsafe native session proof");
     if (!before.size)
@@ -3455,7 +4013,7 @@ function savedSession(home, id) {
         return false;
       offset += n;
     }
-    const after = fstatSync(fd);
+    const after = fstatSync2(fd);
     if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs)
       return false;
     let data;
@@ -3468,7 +4026,7 @@ function savedSession(home, id) {
       throw new Error("native saved session identity is unproven");
     return true;
   } finally {
-    closeSync(fd);
+    closeSync2(fd);
   }
 }
 function jcodeVersionSupported(version) {
@@ -3567,10 +4125,10 @@ var init_jcode = __esm(() => {
     preserveRoot = false;
     stopPromise;
     constructor(jcode) {
-      if (!isAbsolute3(jcode.home))
+      if (!isAbsolute4(jcode.home))
         throw new Error("jcode_home must be an absolute native data path");
       jcodeCommand(jcode.command, "acp", "preview", jcode.cwd);
-      const root = mkdtempSync3(join5(tmpdir3(), "ahub-jcode-")), socket = join5(root, "j.sock");
+      const root = mkdtempSync3(join6(tmpdir3(), "ahub-jcode-")), socket = join6(root, "j.sock");
       const cmd = jcodeCommand(jcode.command, "acp", socket, jcode.cwd, jcode.launchModel, jcode.providerProfile);
       super("jcode", { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, ...JCODE_OWNED_ENV }, mcpServers: [], requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
       this.jcode = jcode;
@@ -3578,7 +4136,7 @@ var init_jcode = __esm(() => {
       this.socket = socket;
     }
     async start() {
-      if (!existsSync4(join5(this.jcode.home, "mcp.json")))
+      if (!existsSync4(join6(this.jcode.home, "mcp.json")))
         throw new Error("initialize Jcode's global MCP store with its native client before enabling this peer; the hub never initializes or copies it");
       if (existsSync4(this.socket)) {
         this.preserveRoot = true;
@@ -3586,7 +4144,7 @@ var init_jcode = __esm(() => {
       }
       this.ending = false;
       const [bin, ...args] = jcodeCommand(this.jcode.command, "serve", this.socket, this.jcode.cwd, this.jcode.launchModel, this.jcode.providerProfile);
-      const server = spawn6(bin, args, { cwd: this.jcode.cwd, detached: true, env: { ...peerChildEnv("jcode"), JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, JCODE_READY_FD: "3", ...JCODE_OWNED_ENV }, stdio: ["ignore", "ignore", "ignore", "pipe"] });
+      const server = spawn7(bin, args, { cwd: this.jcode.cwd, detached: true, env: { ...peerChildEnv("jcode"), JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, JCODE_READY_FD: "3", ...JCODE_OWNED_ENV }, stdio: ["ignore", "ignore", "ignore", "pipe"] });
       this.server = server;
       trackGroup(server);
       try {
@@ -3602,7 +4160,7 @@ var init_jcode = __esm(() => {
           ready.once("data", () => {
             clearTimeout(timer);
             server.off("exit", fail);
-            if (lstatSync4(this.socket, { throwIfNoEntry: false })?.isSocket())
+            if (lstatSync5(this.socket, { throwIfNoEntry: false })?.isSocket())
               resolve();
             else
               reject(new Error("Jcode readiness has no private socket"));
@@ -3612,7 +4170,7 @@ var init_jcode = __esm(() => {
           if (!this.ending && this.server === server)
             this.stop("Jcode owned daemon disconnected").catch(() => {});
         });
-        const identity = lstatSync4(this.socket);
+        const identity = lstatSync5(this.socket);
         this.socketIdentity = { dev: identity.dev, ino: identity.ino };
         await super.start();
       } catch (error) {
@@ -3686,7 +4244,7 @@ var init_jcode = __esm(() => {
         throw new Error(reason);
       };
       const sessionId = super.recoveryMetadata().sessionId;
-      const socket = lstatSync4(this.socket, { throwIfNoEntry: false });
+      const socket = lstatSync5(this.socket, { throwIfNoEntry: false });
       if (this.state !== "busy")
         refuse(`jcode is ${this.state}`);
       if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null || !socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino || typeof sessionId !== "string")
@@ -3699,7 +4257,7 @@ var init_jcode = __esm(() => {
           return "owned Jcode server changed before the steer was sent";
         if (super.recoveryMetadata().sessionId !== sessionId)
           return "jcode's session changed before the steer was sent";
-        const now = lstatSync4(this.socket, { throwIfNoEntry: false });
+        const now = lstatSync5(this.socket, { throwIfNoEntry: false });
         if (!now?.isSocket() || now.dev !== identity?.dev || now.ino !== identity.ino)
           return "owned Jcode socket changed before the steer was sent";
         return;
@@ -3724,7 +4282,7 @@ var init_jcode = __esm(() => {
     }
     tuiLaunch(expected, options = {}) {
       const sessionId = super.recoveryMetadata().sessionId;
-      const socket = lstatSync4(this.socket, { throwIfNoEntry: false });
+      const socket = lstatSync5(this.socket, { throwIfNoEntry: false });
       if (this.ending || !this.server || this.server.exitCode !== null || this.server.signalCode !== null || this.state === "offline" || !socket?.isSocket() || socket.dev !== this.socketIdentity?.dev || socket.ino !== this.socketIdentity.ino || typeof sessionId !== "string")
         throw new Error("owned Jcode launch is unavailable");
       const binding = { launchId: this.launchId, sessionId };
@@ -3745,11 +4303,11 @@ var init_jcode = __esm(() => {
 });
 
 // src/pi/launch.ts
-import { join as join6 } from "path";
+import { join as join7 } from "path";
 function buildPiLaunch(opts, inherited, extension, bridgePort, bridgeToken) {
   const adapter = ADAPTERS.find((adapter) => adapter.start.daemonPort === "pi-rpc");
-  const env = { ...peerChildEnv(opts.instance ?? adapter.kind, inherited), ...opts.hubStateDir !== undefined ? { AGENTHUB_STATE_DIR: opts.hubStateDir } : {}, PI_CODING_AGENT_DIR: join6(opts.stateDir, "pi"), AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`, AGENTHUB_PI_BRIDGE_TOKEN: bridgeToken, AGENTHUB_PI_OWNER_TOKEN: bridgeToken, AGENTHUB_PI_RELAY_URL: opts.relay.url, AGENTHUB_PI_RELAY_TOKEN: opts.relay.token, AGENTHUB_PI_MODELS: JSON.stringify(opts.relay.models), AGENTHUB_PI_TOOLS: JSON.stringify(opts.tools), AGENTHUB_PI_MAX_STEPS: String(opts.maxSteps ?? 30) };
-  const args = [...opts.mode === "headless" ? ["--mode", "rpc"] : [], "--provider", "agent-hub-local", "--model", opts.model ?? modelFor(opts.backend, opts.relay.models), "--models", opts.relay.models.map((model) => `agent-hub-local/${model.id}`).join(","), "--no-builtin-tools", "--no-skills", "--no-prompt-templates", "--no-extensions", "--extension", extension, ...opts.preamble ? ["--append-system-prompt", opts.preamble] : [], "--session-dir", join6(opts.stateDir, "pi-sessions")];
+  const env = { ...peerChildEnv(opts.instance ?? adapter.kind, inherited), ...opts.hubStateDir !== undefined ? { AGENTHUB_STATE_DIR: opts.hubStateDir } : {}, PI_CODING_AGENT_DIR: join7(opts.stateDir, "pi"), AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`, AGENTHUB_PI_BRIDGE_TOKEN: bridgeToken, AGENTHUB_PI_OWNER_TOKEN: bridgeToken, AGENTHUB_PI_RELAY_URL: opts.relay.url, AGENTHUB_PI_RELAY_TOKEN: opts.relay.token, AGENTHUB_PI_MODELS: JSON.stringify(opts.relay.models), AGENTHUB_PI_TOOLS: JSON.stringify(opts.tools), AGENTHUB_PI_MAX_STEPS: String(opts.maxSteps ?? 30) };
+  const args = [...opts.mode === "headless" ? ["--mode", "rpc"] : [], "--provider", "agent-hub-local", "--model", opts.model ?? modelFor(opts.backend, opts.relay.models), "--models", opts.relay.models.map((model) => `agent-hub-local/${model.id}`).join(","), "--no-builtin-tools", "--no-skills", "--no-prompt-templates", "--no-extensions", "--extension", extension, ...opts.preamble ? ["--append-system-prompt", opts.preamble] : [], "--session-dir", join7(opts.stateDir, "pi-sessions")];
   if (opts.sessionFile)
     args.push("--session", opts.sessionFile);
   else if (opts.sessionId)
@@ -3785,8 +4343,8 @@ var init_recovery_store = __esm(() => {
 });
 
 // src/pi/session.ts
-import { readFileSync as readFileSync4, openSync as openSync2, closeSync as closeSync2, fsyncSync, mkdirSync as mkdirSync3 } from "fs";
-import { join as join7, relative as relative2, resolve as resolve5, dirname as dirname5 } from "path";
+import { readFileSync as readFileSync5, openSync as openSync3, closeSync as closeSync3, fsyncSync, mkdirSync as mkdirSync4 } from "fs";
+import { join as join8, relative as relative2, resolve as resolve7, dirname as dirname5 } from "path";
 function sessionReadFailure(error) {
   if (error.code === "ENOENT")
     throw new PiSessionUnresumable("missing", error.message, { cause: error });
@@ -3796,16 +4354,16 @@ function validatePiSession(stateDir, cwd, sessionFile, sessionId) {
   let file, sessions;
   try {
     file = realPath(sessionFile);
-    sessions = realPath(join7(stateDir, "pi-sessions"));
+    sessions = realPath(join8(stateDir, "pi-sessions"));
   } catch (error) {
     return sessionReadFailure(error);
   }
   const rel = relative2(sessions, file);
-  if (!rel || rel.startsWith("..") || resolve5(sessions, rel) !== file)
+  if (!rel || rel.startsWith("..") || resolve7(sessions, rel) !== file)
     throw new PiSessionUnresumable("outside_managed", "Pi session file is outside the managed project session directory");
   let first;
   try {
-    first = readFileSync4(file, "utf8").split(`
+    first = readFileSync5(file, "utf8").split(`
 `, 1)[0];
   } catch (error) {
     return sessionReadFailure(error);
@@ -3854,11 +4412,11 @@ var init_permission_mode = __esm(() => {
 });
 
 // src/hub/path-policy.ts
-import { accessSync, constants as constants2, lstatSync as lstatSync5, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
-import { dirname as dirname6, isAbsolute as isAbsolute4, join as join8, relative as relative3, resolve as resolve6, sep as sep2 } from "path";
+import { accessSync, constants as constants2, lstatSync as lstatSync6, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
+import { dirname as dirname6, isAbsolute as isAbsolute5, join as join9, relative as relative3, resolve as resolve8, sep as sep2 } from "path";
 function existing(path) {
   try {
-    lstatSync5(path);
+    lstatSync6(path);
     return true;
   } catch (error) {
     if (error.code === "ENOENT")
@@ -3874,12 +4432,12 @@ function policyRealPath(path) {
       throw new Error("path cannot be resolved");
     ancestor = parent;
   }
-  return join8(realPath(ancestor), relative3(ancestor, path));
+  return join9(realPath(ancestor), relative3(ancestor, path));
 }
 function policyTargets(cwd, paths) {
   const root = realPath(cwd);
   return [...new Set(paths.flatMap((path) => {
-    const lexical = resolve6(root, path);
+    const lexical = resolve8(root, path);
     return [lexical, policyRealPath(lexical)];
   }))];
 }
@@ -3902,9 +4460,9 @@ function directAliasTarget(path) {
         return;
       ancestor = parent;
     }
-    if (!lstatSync5(ancestor).isSymbolicLink())
+    if (!lstatSync6(ancestor).isSymbolicLink())
       return;
-    target = resolve6(dirname6(ancestor), readlinkSync(ancestor), relative3(ancestor, target));
+    target = resolve8(dirname6(ancestor), readlinkSync(ancestor), relative3(ancestor, target));
   }
   return;
 }
@@ -3921,7 +4479,7 @@ function aliasScope(dir, lexical, actual, includeParents, budget) {
       budget.entries++;
       if (!entry.isSymbolicLink())
         continue;
-      const target = directAliasTarget(join8(dir, entry.name));
+      const target = directAliasTarget(join9(dir, entry.name));
       if (target !== undefined && (beneath(lexical, target) || beneath(actual, target) || includeParents && (beneath(target, lexical) || beneath(target, actual))))
         matched = true;
     }
@@ -3964,7 +4522,7 @@ function advance(pattern, states, name) {
   return closure(pattern, next);
 }
 function patternScope(pattern, states, path, includeParents) {
-  if (isAbsolute4(path) || path === ".." || path.startsWith("../"))
+  if (isAbsolute5(path) || path === ".." || path.startsWith("../"))
     return false;
   states = closure(pattern, states);
   if (states.has(pattern.length))
@@ -4017,7 +4575,7 @@ function globScope(root, lexical, actual, path, includeParents, budget, roots, a
         if (++budget.entries > 4096)
           throw new Error("policy glob discovery unavailable");
         const next = advance(pattern, states, entry.name);
-        if (next.size && visit(join8(dir, entry.name), next, depth + 1, chain))
+        if (next.size && visit(join9(dir, entry.name), next, depth + 1, chain))
           return true;
       }
     } finally {
@@ -4033,7 +4591,7 @@ function matchesPolicy(cwd, path, paths, includeParents = false) {
   try {
     if (path.length > 4096)
       return true;
-    const root = realPath(cwd), lexical = resolve6(root, path), actual = policyRealPath(lexical);
+    const root = realPath(cwd), lexical = resolve8(root, path), actual = policyRealPath(lexical);
     includeParents &&= !existing(lexical) || statSync2(lexical).isDirectory();
     const budget = { entries: 0 }, roots = new Set, exact = [];
     if (paths.some((entry) => {
@@ -4112,12 +4670,12 @@ var init_deny = __esm(() => {
 });
 
 // src/local/sandbox.ts
-import { spawn as spawn7, spawnSync as spawnSync3 } from "child_process";
+import { spawn as spawn8, spawnSync as spawnSync4 } from "child_process";
 import { existsSync as existsSync5, mkdtempSync as mkdtempSync4, readdirSync, rmSync as rmSync4 } from "fs";
 import { homedir as homedir3, tmpdir as tmpdir4 } from "os";
-import { dirname as dirname8, join as join9, resolve as resolve7 } from "path";
+import { dirname as dirname8, join as join10, resolve as resolve9 } from "path";
 function developerDir() {
-  const out = spawnSync3("xcode-select", ["-p"], { encoding: "utf8" });
+  const out = spawnSync4("xcode-select", ["-p"], { encoding: "utf8" });
   let dir = out.status === 0 ? out.stdout.trim() : "";
   try {
     dir = dir && realPath(dir);
@@ -4129,14 +4687,14 @@ function externalGitDirs(root) {
   if (out.status !== 0)
     return [];
   const dirs = out.stdout.trim().split(`
-`).map((d) => resolve7(root, d));
+`).map((d) => resolve9(root, d));
   return [...new Set(dirs)].filter((d) => !d.startsWith(`${root}/`));
 }
 function moduleGitDirs(root) {
   const out = memoryGitSync(["-C", root, "rev-parse", "--git-common-dir"], { encoding: "utf8" });
   if (out.status !== 0)
     return;
-  const modulesRoot = join9(resolve7(root, out.stdout.trim()), "modules");
+  const modulesRoot = join10(resolve9(root, out.stdout.trim()), "modules");
   const dirs = [];
   const walk = (dir, depth) => {
     if (depth > 8)
@@ -4150,14 +4708,14 @@ function moduleGitDirs(root) {
     const names = new Set(entries.map((e) => e.name));
     if (names.has("HEAD") && names.has("config")) {
       dirs.push(dir);
-      const nested = join9(dir, "modules");
+      const nested = join10(dir, "modules");
       if (names.has("modules"))
         walk(nested, depth + 1);
       return;
     }
     for (const e of entries)
       if (e.isDirectory())
-        walk(join9(dir, e.name), depth + 1);
+        walk(join10(dir, e.name), depth + 1);
   };
   walk(modulesRoot, 0);
   const entries = new Set([modulesRoot]);
@@ -4168,13 +4726,13 @@ function moduleGitDirs(root) {
 }
 function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
   const home = homedir3();
-  const inHome = (p) => p.startsWith("~/") ? join9(home, p.slice(2)) : p;
+  const inHome = (p) => p.startsWith("~/") ? join10(home, p.slice(2)) : p;
   const root = realPath(cwd);
   const gitDirs = externalGitDirs(root);
   const moduleGit = moduleGitDirs(root);
   const creds = [".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube", ".docker", ".netrc", ".npmrc", ".omniroute", ".claude", ".codex", ".kimi-code", "Library/Keychains"];
   const dev = developerDir();
-  const readable = [root, ...HOME_READABLE.map((p) => join9(home, p)), ...readAllow.map(inHome), ...gitDirs, ...dev ? [dev] : []];
+  const readable = [root, ...HOME_READABLE.map((p) => join10(home, p)), ...readAllow.map(inHome), ...gitDirs, ...dev ? [dev] : []];
   const subpaths = (paths) => paths.map((p) => `(subpath ${q(p)})`).join(" ");
   const globals = (names) => names.map((n) => `(global-name ${q(n)})`).join(" ");
   const proxy = typeof network === "object" ? `(allow network-outbound (remote ip ${q(`localhost:${network.proxyPort}`)}))` : undefined;
@@ -4192,14 +4750,14 @@ function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
     '(allow file-ioctl (regex #"^/dev/"))',
     ...proxy ? [proxy] : network ? ["(allow network*)"] : []
   ];
-  const places = `${creds.map((c) => `(subpath ${q(join9(home, c))})`).join(" ")} ${denyRegexes(root, deny, false).join(" ")}`;
+  const places = `${creds.map((c) => `(subpath ${q(join10(home, c))})`).join(" ")} ${denyRegexes(root, deny, false).join(" ")}`;
   return [
     "(version 1)",
     ...start,
     "(deny file-write*)",
     ...readOnly.length ? ['(allow file-write* (literal "/dev/null"))'] : [`(allow file-write* (subpath ${q(root)}) (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`],
     `(deny file-write* ${hubWriteRegexes(root, gitDirs, moduleGit).join(" ")})`,
-    `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join9(home, c))})`).join(" ")})`,
+    `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join10(home, c))})`).join(" ")})`,
     `(deny file-read* file-write* ${denyRegexes(root, deny).join(" ")})`,
     ...network ? [`(allow file-read* ${CA_BUNDLES.map((p) => `(literal ${q(p)})`).join(" ")} (regex ${q("/certifi/cacert\\.pem$")}))`, `(deny file-read* file-write* ${places})`] : []
   ].join(`
@@ -4213,11 +4771,11 @@ function sandboxedExec(argv, opts) {
   if (opts.signal?.aborted)
     return Promise.resolve({ code: null, output: "error: command cancelled before execution" });
   return new Promise((resolve) => {
-    const own = realPath(mkdtempSync4(join9(tmpdir4(), "ahub-cmd-")));
+    const own = realPath(mkdtempSync4(join10(tmpdir4(), "ahub-cmd-")));
     const sandbox = `${opts.profile}
 (allow file-read* ${opts.readOnlyData ? "" : "file-write* "}process-exec (subpath ${q(own)}))`;
     const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir3(), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...opts.env, TMPDIR: `${own}/` };
-    const child = spawn7(SANDBOX_EXEC, ["-p", sandbox, ...argv], { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+    const child = spawn8(SANDBOX_EXEC, ["-p", sandbox, ...argv], { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let output = "";
     const take = (d) => {
       if (output.length < OUTPUT_CAP)
@@ -4239,7 +4797,7 @@ function sandboxedExec(argv, opts) {
         rmSync4(own, { recursive: true, force: true });
       } catch {
         try {
-          spawnSync3("chflags", ["-R", "nouchg", own]);
+          spawnSync4("chflags", ["-R", "nouchg", own]);
           rmSync4(own, { recursive: true, force: true });
         } catch {}
       }
@@ -4284,11 +4842,11 @@ var init_sandbox = __esm(() => {
 });
 
 // src/local/tools.ts
-import { lstatSync as lstatSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync5, statSync as statSync3, writeFileSync as writeFileSync3 } from "fs";
-import { dirname as dirname9, join as join10, relative as relative4, resolve as resolve8 } from "path";
+import { lstatSync as lstatSync7, mkdirSync as mkdirSync5, readFileSync as readFileSync6, statSync as statSync3, writeFileSync as writeFileSync4 } from "fs";
+import { dirname as dirname9, join as join11, relative as relative4, resolve as resolve10 } from "path";
 function guardPath(ctx, path, mode) {
   const root = realPath(ctx.cwd);
-  const abs = resolve8(root, path);
+  const abs = resolve10(root, path);
   let existing = abs;
   while (!lexists(existing))
     existing = dirname9(existing);
@@ -4298,15 +4856,15 @@ function guardPath(ctx, path, mode) {
   } catch {
     throw new Error(`${path} goes through a dangling symlink`);
   }
-  const real = join10(realExisting, relative4(existing, abs));
+  const real = join11(realExisting, relative4(existing, abs));
   const rel = relative4(root, real);
-  if (rel.startsWith("..") || resolve8(root, rel) !== real)
+  if (rel.startsWith("..") || resolve10(root, rel) !== real)
     throw new Error(`${path} is outside the project directory`);
   if (isDenied(rel, ctx.deny))
     throw new Error(`${path} is on the secrets denylist`);
   if (mode === "write" && isHubWritePath(rel))
     throw new Error(`${path} is not writable by the local worker`);
-  if (mode === "write" && ctx.readOnly?.length && (lstatSync6(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
+  if (mode === "write" && ctx.readOnly?.length && (lstatSync7(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
     throw new Error("hardlinked write target cannot be verified with data.readonly");
   if (mode === "write" && matchesPolicy(root, path, ctx.readOnly ?? []))
     throw new Error("target is protected by data.readonly");
@@ -4356,7 +4914,7 @@ async function runTool(name, rawArgs, ctx) {
         const file = guardPath(ctx, String(a.path), "read");
         if (statSync3(file).size > 5000000)
           return "error: file is larger than 5 MB; use bash (head, grep, sed -n) to look at parts of it";
-        const lines = readFileSync5(file, "utf8").split(`
+        const lines = readFileSync6(file, "utf8").split(`
 `);
         const from = Math.max(1, Number(a.offset) || 1);
         const out = lines.slice(from - 1, from - 1 + (Number(a.limit) || 2000)).map((l, i) => `${from + i}	${l}`).join(`
@@ -4377,14 +4935,14 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path)), "er
         file = guardPath(ctx, String(a.path), "write");
         if (file !== approvedTarget)
           return "error: path target changed during approval; inspect before retrying";
-        mkdirSync4(dirname9(file), { recursive: true });
-        writeFileSync3(file, content);
+        mkdirSync5(dirname9(file), { recursive: true });
+        writeFileSync4(file, content);
         return `wrote ${a.path}`;
       }
       case "edit": {
         let file = guardPath(ctx, String(a.path), "write");
         const approvedTarget = file;
-        let text = readFileSync5(file, "utf8");
+        let text = readFileSync6(file, "utf8");
         let count = text.split(String(a.old)).length - 1;
         if (!a.old || count !== 1)
           return `error: \`old\` must match exactly once, it matched ${count} times`;
@@ -4398,11 +4956,11 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path)), "er
         file = guardPath(ctx, String(a.path), "write");
         if (file !== approvedTarget)
           return "error: path target changed during approval; inspect before retrying";
-        text = readFileSync5(file, "utf8");
+        text = readFileSync6(file, "utf8");
         count = text.split(String(a.old)).length - 1;
         if (count !== 1)
           return `error: file changed during approval; \`old\` must match exactly once, it matched ${count} times`;
-        writeFileSync3(file, text.replace(String(a.old), () => String(a.new ?? "")));
+        writeFileSync4(file, text.replace(String(a.old), () => String(a.new ?? "")));
         return `edited ${a.path}`;
       }
       case "bash": {
@@ -4452,7 +5010,7 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path)), "er
 }
 var APPROVAL_EXPIRED_TEXT = "error: approval expired: no person answered; do not retry this call; hand the task off or stop", ApprovalWaitStop, approvalError = (picked, denied) => picked === true ? undefined : picked === "expired" ? APPROVAL_EXPIRED_TEXT : picked === "aborted" ? "error: approval withdrawn because the turn ended; no operation was executed" : denied, lexists = (p) => {
   try {
-    lstatSync6(p);
+    lstatSync7(p);
     return true;
   } catch {
     return false;
@@ -4505,10 +5063,10 @@ function piToolStepCeiling(value) {
 var PI_CEILING_KIND = "tool-step-ceiling", PI_CEILING_UNIT = "tool-step";
 
 // src/adapters/pi.ts
-import { randomUUID as randomUUID2 } from "crypto";
-import { existsSync as existsSync6, mkdirSync as mkdirSync5 } from "fs";
-import { join as join11, resolve as resolve9 } from "path";
-import { spawn as spawn8 } from "child_process";
+import { randomUUID as randomUUID3 } from "crypto";
+import { existsSync as existsSync6, mkdirSync as mkdirSync6 } from "fs";
+import { join as join12, resolve as resolve11 } from "path";
+import { spawn as spawn9 } from "child_process";
 function ownerStillAlive(pid, signature) {
   const current = processSignature(pid);
   if (current !== undefined)
@@ -4561,7 +5119,7 @@ var init_pi = __esm(() => {
     idleBashReservations = new Map;
     budgetGeneration = 0;
     modelStep = 0;
-    observationScope = randomUUID2();
+    observationScope = randomUUID3();
     emptyResumeVerified = false;
     verifiedEmptyResume;
     activityObserved = false;
@@ -4579,7 +5137,7 @@ var init_pi = __esm(() => {
     approvalAbortSent = false;
     approvalStopReason = "";
     requestedStopReason;
-    owner = randomUUID2();
+    owner = randomUUID3();
     _tuiLaunch;
     requestedModel = "";
     starting;
@@ -4835,7 +5393,7 @@ var init_pi = __esm(() => {
         for (const [key, value] of this.idleBashReservations)
           if (value.expiresAt < Date.now())
             this.idleBashReservations.delete(key);
-        reservation = randomUUID2();
+        reservation = randomUUID3();
         this.idleBashReservations.set(reservation, { generation: body.generation, expiresAt: Date.now() + 30000, ...remaining === undefined ? {} : { deadlineAt: Date.now() + remaining } });
       }
       clearTimeout(this.executionBudgetTimer);
@@ -4872,9 +5430,9 @@ var init_pi = __esm(() => {
       this.approvalAnswerEpoch = undefined;
       this.approvalStopReason = "";
       this.approvalAbortSent = false;
-      mkdirSync5(this.opts.stateDir, { recursive: true });
-      const sessions = join11(this.opts.stateDir, "pi-sessions");
-      mkdirSync5(sessions, { recursive: true, mode: 448 });
+      mkdirSync6(this.opts.stateDir, { recursive: true });
+      const sessions = join12(this.opts.stateDir, "pi-sessions");
+      mkdirSync6(sessions, { recursive: true, mode: 448 });
       if (this.opts.sessionFile) {
         try {
           validatePiSession(this.opts.stateDir, this.opts.cwd, this.opts.sessionFile, this.opts.sessionId);
@@ -4884,7 +5442,7 @@ var init_pi = __esm(() => {
           throw error;
         }
       }
-      const token = randomUUID2();
+      const token = randomUUID3();
       this.tuiExit = new Promise((resolvePromise) => {
         this.resolveTuiExit = resolvePromise;
       });
@@ -4931,7 +5489,7 @@ var init_pi = __esm(() => {
         return new Response("not found", { status: 404 });
       } });
       this.server = bridge;
-      const extension = resolve9(join11(import.meta.dir, "../pi/extension.ts"));
+      const extension = resolve11(join12(import.meta.dir, "../pi/extension.ts"));
       const inherited = {};
       for (const key of ["PATH", "HOME", "USER", "SHELL", "TMPDIR", "TERM", "TERM_PROGRAM", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "CODEX_HOME"])
         if (process.env[key])
@@ -4941,7 +5499,7 @@ var init_pi = __esm(() => {
       if (this.opts.mode === "tui") {
         return;
       }
-      this.proc = spawn8(bin, args, { cwd: this.opts.cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
+      this.proc = spawn9(bin, args, { cwd: this.opts.cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
       trackGroup(this.proc);
       this.proc.stdout.on("data", (chunk) => this.onOutput(String(chunk)));
       this.proc.stderr.on("data", (chunk) => this.opts.log?.(`[${this.id}] ${String(chunk).trimEnd()}`));
@@ -6753,7 +7311,7 @@ var init_signals = __esm(() => {
 });
 
 // src/models/route/labels.ts
-import { createHash as createHash4, randomUUID as randomUUID3 } from "crypto";
+import { createHash as createHash4, randomUUID as randomUUID4 } from "crypto";
 
 class RouteLabelTracker {
   sink;
@@ -6777,7 +7335,7 @@ class RouteLabelTracker {
   addDecision(turn, dimensions, priorMessages = []) {
     if (!turn || turn.closed || this.turns.get(turn.context.turn) !== turn)
       return;
-    const id = randomUUID3();
+    const id = randomUUID4();
     turn.decisions.set(id, { id, dimensions: { ...dimensions }, baselineFingerprints: batchFingerprints(priorMessages) });
     this.decisionOwners.set(id, turn);
     return id;
@@ -7786,8 +8344,8 @@ var init_shipped_roles = __esm(() => {
 
 // src/hub/roles.ts
 import { createHash as createHash5 } from "crypto";
-import { constants as constants3, closeSync as closeSync3, fstatSync as fstatSync2, lstatSync as lstatSync7, openSync as openSync3, readSync as readSync2, readdirSync as readdirSync2 } from "fs";
-import { join as join12 } from "path";
+import { constants as constants3, closeSync as closeSync4, fstatSync as fstatSync3, lstatSync as lstatSync8, openSync as openSync4, readSync as readSync2, readdirSync as readdirSync2 } from "fs";
+import { join as join13 } from "path";
 function parseRole(text, stem, layer) {
   if (Buffer.byteLength(text) > 8192 || text.includes("\r") || !ID.test(stem))
     throw new Error("invalid role size, encoding or file id");
@@ -7834,9 +8392,9 @@ function parseRole(text, stem, layer) {
   return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES2), classes: list("classes", CLASSES2), body, review, layer, hash: createHash5("sha256").update(text).digest("hex") };
 }
 function projectRole(file) {
-  const fd = openSync3(file, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
+  const fd = openSync4(file, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
   try {
-    const before = fstatSync2(fd);
+    const before = fstatSync3(fd);
     if (!before.isFile() || before.nlink !== 1 || before.size > 8192)
       throw new Error("role must be a bounded regular file");
     const bytes = Buffer.alloc(8193);
@@ -7846,12 +8404,12 @@ function projectRole(file) {
       if (length > 8192)
         throw new Error("role exceeds file cap");
     }
-    const after = fstatSync2(fd);
+    const after = fstatSync3(fd);
     if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || length !== after.size)
       throw new Error("role changed during read");
     return bytes.subarray(0, length).toString("utf8");
   } finally {
-    closeSync3(fd);
+    closeSync4(fd);
   }
 }
 function loadRoleCatalog(cwd) {
@@ -7866,9 +8424,9 @@ function loadRoleCatalog(cwd) {
   if (!cwd)
     return { roles, errors };
   try {
-    const config = join12(cwd, ".agenthub"), dir = join12(config, "roles");
+    const config = join13(cwd, ".agenthub"), dir = join13(config, "roles");
     for (const path of [config, dir]) {
-      const stat = lstatSync7(path);
+      const stat = lstatSync8(path);
       if (!stat.isDirectory() || stat.isSymbolicLink())
         throw new Error("unsafe role directory");
     }
@@ -7878,7 +8436,7 @@ function loadRoleCatalog(cwd) {
     for (const file of files) {
       const id = file.slice(0, -3);
       try {
-        roles.set(id, parseRole(projectRole(join12(dir, file)), id, "project"));
+        roles.set(id, parseRole(projectRole(join13(dir, file)), id, "project"));
       } catch {
         errors.push({ id: ID.test(id) ? id : "invalid-file-id", reason: "invalid or unsafe project role" });
       }
@@ -8233,7 +8791,7 @@ var init_config = __esm(() => {
 });
 
 // src/hub/routing.ts
-import { join as join13, resolve as resolve10 } from "path";
+import { join as join14, resolve as resolve12 } from "path";
 function effectiveLocalRoute(defaultRoute, classRoute, classFixedModel) {
   return classRoute ?? (classFixedModel === undefined ? defaultRoute : undefined);
 }
@@ -8244,12 +8802,12 @@ var init_routing = __esm(() => {
   init_spec_read();
   init_config();
   init_stage();
-  TEMPLATE = join13(import.meta.dir, "..", "..", "templates", "routing.toml");
+  TEMPLATE = join14(import.meta.dir, "..", "..", "templates", "routing.toml");
   cache = new Map;
 });
 
 // src/adapters/local-worker.ts
-import { randomUUID as randomUUID4 } from "crypto";
+import { randomUUID as randomUUID5 } from "crypto";
 function safeParse(json) {
   try {
     return JSON.parse(json) ?? {};
@@ -8282,7 +8840,7 @@ var init_local_worker = __esm(() => {
     opts;
     hubNative = true;
     history = [];
-    sessionId = `agent-hub-local-${randomUUID4()}`;
+    sessionId = `agent-hub-local-${randomUUID5()}`;
     routes;
     warnedLegacyRoutes = new Set;
     routeEnvs = [];
@@ -8697,7 +9255,7 @@ var init_local_worker = __esm(() => {
     recordUsage(res, requestedModel, task) {
       try {
         this.opts.onUsage?.({
-          id: randomUUID4(),
+          id: randomUUID5(),
           at: new Date().toISOString(),
           ...res.usage ? { usage: res.usage } : {},
           requestedModel: safeModelLabel(requestedModel) ?? "unknown",
@@ -8865,12 +9423,12 @@ var init_reviewer_variants = __esm(() => {
 });
 
 // src/adapters/agy/hooks.ts
-import { closeSync as closeSync4, constants as constants4, fstatSync as fstatSync3, lstatSync as lstatSync8, openSync as openSync4, readSync as readSync3 } from "fs";
+import { closeSync as closeSync5, constants as constants4, fstatSync as fstatSync4, lstatSync as lstatSync9, openSync as openSync5, readSync as readSync3 } from "fs";
 import { homedir as homedir4 } from "os";
-import { isAbsolute as isAbsolute5, join as join14, relative as relative5 } from "path";
+import { isAbsolute as isAbsolute6, join as join15, relative as relative5 } from "path";
 import { createHash as createHash6 } from "crypto";
 function decodeAgyHook(event, value) {
-  if (!EVENTS.includes(event) || !record3(value) || typeof value.conversationId !== "string" || !UUID.test(value.conversationId) || typeof value.transcriptPath !== "string" || !isAbsolute5(value.transcriptPath) || value.transcriptPath.length > 4096 || !Array.isArray(value.workspacePaths) || !value.workspacePaths.length || value.workspacePaths.length > 32 || !value.workspacePaths.every((path) => typeof path === "string" && path.length <= 4096 && isAbsolute5(path)))
+  if (!EVENTS2.includes(event) || !record3(value) || typeof value.conversationId !== "string" || !UUID.test(value.conversationId) || typeof value.transcriptPath !== "string" || !isAbsolute6(value.transcriptPath) || value.transcriptPath.length > 4096 || !Array.isArray(value.workspacePaths) || !value.workspacePaths.length || value.workspacePaths.length > 32 || !value.workspacePaths.every((path) => typeof path === "string" && path.length <= 4096 && isAbsolute6(path)))
     return;
   if (event === "Stop" && typeof value.fullyIdle !== "boolean")
     return;
@@ -8905,19 +9463,19 @@ function readAgyTranscript(session, transcript) {
   if (!UUID.test(session))
     return empty;
   const home = process.env.HOME ?? homedir4();
-  const candidates = ["antigravity-cli", "antigravity", "antigravity-ide"].map((surface) => join14(home, ".gemini", surface, "brain", session, ".system_generated/logs/transcript_full.jsonl"));
+  const candidates = ["antigravity-cli", "antigravity", "antigravity-ide"].map((surface) => join15(home, ".gemini", surface, "brain", session, ".system_generated/logs/transcript_full.jsonl"));
   if (!candidates.includes(transcript))
     return empty;
   let fd;
   try {
     let cursor = home;
     for (const name of relative5(home, transcript).split("/")) {
-      cursor = join14(cursor, name);
-      if (lstatSync8(cursor).isSymbolicLink())
+      cursor = join15(cursor, name);
+      if (lstatSync9(cursor).isSymbolicLink())
         return empty;
     }
-    fd = openSync4(transcript, constants4.O_RDONLY | constants4.O_NOFOLLOW);
-    const stat = fstatSync3(fd);
+    fd = openSync5(transcript, constants4.O_RDONLY | constants4.O_NOFOLLOW);
+    const stat = fstatSync4(fd);
     if (!stat.isFile() || stat.nlink !== 1)
       return empty;
     const cap = 4 * 1024 * 1024;
@@ -8959,30 +9517,32 @@ function readAgyTranscript(session, transcript) {
     return empty;
   } finally {
     if (fd !== undefined)
-      closeSync4(fd);
+      closeSync5(fd);
   }
 }
-var EVENTS, UUID, record3 = (value) => !!value && typeof value === "object" && !Array.isArray(value), AGY_FACTS_HOOK;
+var EVENTS2, UUID, record3 = (value) => !!value && typeof value === "object" && !Array.isArray(value), AGY_FACTS_HOOK;
 var init_hooks = __esm(() => {
-  EVENTS = ["SessionStart", "PreInvocation", "PostInvocation", "PreToolUse", "PostToolUse", "Stop"];
+  EVENTS2 = ["SessionStart", "PreInvocation", "PostInvocation", "PreToolUse", "PostToolUse", "Stop"];
   UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   AGY_FACTS_HOOK = { decode: decodeAgyHook, encode: encodeAgyHook, read: readAgyTranscript };
 });
 
 // src/adapters/agy/definition.ts
 function agyLaunch(ctx) {
-  const argv = ["agy", ...ctx.userArgs], command = argv.map(shellQuote).join(" ");
+  const argv = ["agy", ...ctx.userArgs], command = argv.map(shellQuote2).join(" ");
   const metadata = { packageEntrypoint: ctx.entrypoint, command, argv, env: {}, kind: "agy", peer: ctx.instance };
   return { cmd: "agy", args: ctx.userArgs, metadata };
 }
-var DISPLAY, shellQuote = (value) => `'${value.replace(/'/g, `'\\''`)}'`, AGY_DEFINITION;
+var DISPLAY, shellQuote2 = (value) => `'${value.replace(/'/g, `'\\''`)}'`, AGY_DEFINITION;
 var init_definition = __esm(() => {
+  init_entry();
   init_reviewer_variants();
   init_hooks();
   DISPLAY = { palette: { fg: "#6558a6", bg: "#f1effa" } };
   AGY_DEFINITION = {
     api: 1,
     kind: "agy",
+    projection: { roleRank: 7, helpRank: 4, plannerEligible: false },
     displayName: "Antigravity",
     family: "agy",
     transport: "ws-pull",
@@ -9021,7 +9581,7 @@ var init_definition = __esm(() => {
       recoveryRefusal: () => "Antigravity session continuity and resume are unavailable until native behavior is verified"
     },
     turnEnd: "native-hook",
-    cli: { command: "agy", authority: "person", startWords: () => ["agy"] },
+    cli: { command: "agy", entry: { lifecycleAdmission: true, execute: runAgyEntry }, usage: [["ahub agy [--print-command | --dry-run] [args...]", "optional Antigravity CLI 1.4.x TUI (1.4.2 verified) in this terminal (roster.agy, default off): pull-only via hub_inbox, implementer/verifier only; native permissions unmanaged, no hub sandbox"]], authority: "person", startWords: () => ["agy"] },
     display: DISPLAY,
     routing: { allowedRoles: ["implementer", "verifier"] },
     reviewer: { defaultPool: false, declaration: "automatic", unavailable: "agy is an implementer peer (#485)" },
@@ -9030,564 +9590,10 @@ var init_definition = __esm(() => {
   };
 });
 
-// src/adapters/definitions/native-cli-preview-common.ts
-function publicArg(arg) {
-  const flags = new Set(["--settings", "--model", "--mcp-config", "--session-id", "--session-file", "--resume", "--continue", "--print", "--safe", "--new"]);
-  const key = arg.split("=", 1)[0];
-  return flags.has(key) ? arg.includes("=") ? key + "=" + REDACTED : key : REDACTED;
+// src/adapters/definitions/native-cli-entry.ts
+function builtinCliEntries(definitions) {
+  return Object.freeze(definitions.flatMap((definition) => definition.cli.entry ? [Object.freeze({ ...definition.cli.entry, command: definition.cli.command })] : []));
 }
-function nativeCommand(command, trusted) {
-  return command.map((value, i) => value === trusted[i] ? value : REDACTED);
-}
-function previewState(args, baseEnvNames) {
-  const unresolved = [];
-  const envNames = [...baseEnvNames];
-  const value = (flag) => {
-    const at = args.indexOf(flag);
-    if (at < 0)
-      return;
-    const next = args[at + 1];
-    if (!next || next.startsWith("--"))
-      throw new Error("missing option value");
-    return next;
-  };
-  return { unresolved, envNames, value };
-}
-function finishPreview(ctx, launch, envNames, unresolved, metadata, settings) {
-  return { tool: ctx.tool, ...metadata ?? {}, cmd: launch.cmd, args: launch.args, settings, envNames: [...new Set(envNames)].sort(), ...launch.warning ? { warning: launch.warning } : {}, unresolved, redaction: "Arbitrary user arguments, settings, commands and configured executable overrides are redacted. Environment values are never displayed.", needs: ["Native executable, accounts and runtime readiness are not checked."] };
-}
-var REDACTED = "[redacted]", UNRESOLVED = "[unresolved]";
-
-// src/hub/status-roster.ts
-function rosterInStatus(status, peer) {
-  const rows = status?.roster;
-  if (!Array.isArray(rows))
-    return;
-  const row = rows.find((r) => !!r && typeof r === "object" && r.peer === peer);
-  return typeof row?.on === "boolean" ? row.on : undefined;
-}
-function bundleInStatus(status) {
-  const value = status?.pluginBundle;
-  return typeof value === "string" && value.startsWith("/") && /[\\/]plugins[\\/]agent-hub[\\/]server\.js$/.test(value) ? value : undefined;
-}
-
-// src/cli/agy-mcp.ts
-import { randomUUID as randomUUID5 } from "crypto";
-import { closeSync as closeSync5, fstatSync as fstatSync4, lstatSync as lstatSync9, mkdirSync as mkdirSync6, openSync as openSync5, readFileSync as readFileSync6, renameSync, rmdirSync, unlinkSync, writeFileSync as writeFileSync4 } from "fs";
-import { isAbsolute as isAbsolute6, join as join15, resolve as resolve11 } from "path";
-import { isDeepStrictEqual } from "util";
-function object4(value) {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-function jsonFile(value, name) {
-  if (!object4(value))
-    throw new Error(`${name} must be a JSON object`);
-  return value;
-}
-function parseJson(bytes, name) {
-  try {
-    return jsonFile(JSON.parse(bytes.toString("utf8")), name);
-  } catch (error) {
-    if (error instanceof SyntaxError)
-      throw new Error(`${name} is invalid JSON`);
-    throw error;
-  }
-}
-function shellQuote2(value) {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
-function shellUnquote(value) {
-  if (!value.startsWith("'") || !value.endsWith("'"))
-    return;
-  let out = "";
-  for (let index = 1;index < value.length - 1; ) {
-    if (value.startsWith("'\\''", index)) {
-      out += "'";
-      index += 4;
-    } else if (value[index] === "'")
-      return;
-    else
-      out += value[index++];
-  }
-  return out;
-}
-function validateOptions(options) {
-  const peer = options.peer ?? AGY_DEFINITION.kind;
-  if (!/^[a-z][a-z0-9-]{0,31}$/.test(peer))
-    throw new Error("agy peer id is invalid");
-  for (const [name, value] of Object.entries({ projectRoot: options.projectRoot, stateDir: options.stateDir, serverJs: options.serverJs, hookScript: options.hookScript })) {
-    if (typeof value !== "string" || !isAbsolute6(value) || value.length > 4096 || /[\u0000-\u001f\u007f]/.test(value))
-      throw new Error(`${name} must be an absolute control-free path`);
-  }
-  for (const [name, value] of Object.entries({ instanceId: options.instanceId, launchId: options.launchId })) {
-    if (typeof value !== "string" || !/^[A-Za-z0-9._:-]{1,128}$/.test(value))
-      throw new Error(`${name} is invalid`);
-  }
-  const root = resolve11(options.projectRoot);
-  return { root, peer };
-}
-function safeDirectory(path) {
-  const stat = lstatSync9(path, { throwIfNoEntry: false });
-  if (stat && (!stat.isDirectory() || stat.isSymbolicLink()))
-    throw new Error(`${path} must be a project directory, not a link`);
-  return stat;
-}
-function safeFile(path) {
-  const stat = lstatSync9(path, { throwIfNoEntry: false });
-  if (!stat)
-    return;
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || stat.size > MAX_CONFIG_BYTES)
-    throw new Error(`${path} must be a bounded regular file, not a link`);
-  const bytes = readFileSync6(path);
-  if (bytes.length > MAX_CONFIG_BYTES)
-    throw new Error(`${path} exceeds the configuration size limit`);
-  return { stat, bytes };
-}
-function pluginDirectories(root) {
-  const directories = [];
-  for (const relative of [".", ".agents", ".agents/plugins", PLUGIN_DIR]) {
-    const path = relative === "." ? root : join15(root, relative);
-    const stat = safeDirectory(path);
-    if (!stat)
-      throw new Error(`${path} must be an existing project directory`);
-    directories.push({ path, stat });
-  }
-  return directories;
-}
-function verifyPluginDirectory(plan, target) {
-  if (!plan.canonicalPluginDir || !plan.directories)
-    throw new Error("managed agy plugin directory identity is unavailable");
-  if (realPath(plan.root) !== plan.canonicalRoot || realPath(plan.pluginDir) !== plan.canonicalPluginDir || plan.canonicalPluginDir !== join15(plan.canonicalRoot, PLUGIN_DIR)) {
-    throw new Error("managed agy plugin path changed; inspect it before writing");
-  }
-  for (const expected of plan.directories) {
-    const current = safeDirectory(expected.path);
-    if (!current || current.dev !== expected.stat.dev || current.ino !== expected.stat.ino)
-      throw new Error("managed agy plugin directory changed; inspect it before writing");
-  }
-  if (!FILES.some((file) => join15(plan.root, file) === target)) {
-    throw new Error("atomic write target is outside the managed agy plugin files");
-  }
-}
-function hookCommand(phase, options, peer) {
-  return `AGENTHUB_HOOK_EVENT='${phase}' AGENTHUB_INSTANCE_ID='${options.instanceId}' AGENTHUB_LAUNCH_ID='${options.launchId}' AGENTHUB_HOOK_PURPOSE='facts' AGENTHUB_PEER_ID=${shellQuote2(peer)} AGENTHUB_STATE_DIR=${shellQuote2(options.stateDir)} AGENTHUB_PROJECT_DIR=${shellQuote2(resolve11(options.projectRoot))} bun ${shellQuote2(options.hookScript)}`;
-}
-function desired(options, root, peer) {
-  const events = {};
-  for (const phase of EVENTS2) {
-    if (phase === "PostInvocation") {
-      events[phase] = [];
-      continue;
-    }
-    const command = { type: "command", command: hookCommand(phase, options, peer), timeout: 5 };
-    events[phase] = phase === "PreToolUse" || phase === "PostToolUse" ? [{ matcher: ".*", hooks: [command] }] : [command];
-  }
-  return {
-    [MANIFEST_FILE]: { name: PLUGIN_KEY, description: MANAGED_DESCRIPTION },
-    [MCP_FILE]: { mcpServers: { [PLUGIN_KEY]: { command: "bun", args: ["run", options.serverJs], env: { AGENTHUB_PEER_ID: peer, AGENTHUB_STATE_DIR: options.stateDir, AGENTHUB_PROJECT_DIR: root } } } },
-    [HOOKS_FILE]: { [PLUGIN_KEY]: events }
-  };
-}
-function parseManagedHookCommand(command, phase, options, peer) {
-  if (typeof command !== "string")
-    return;
-  const prefix = `AGENTHUB_HOOK_EVENT='${phase}' AGENTHUB_INSTANCE_ID='`;
-  const middle = `' AGENTHUB_LAUNCH_ID='`;
-  const suffix = `' AGENTHUB_HOOK_PURPOSE='facts' AGENTHUB_PEER_ID=${shellQuote2(peer)} AGENTHUB_STATE_DIR=${shellQuote2(options.stateDir)} AGENTHUB_PROJECT_DIR=${shellQuote2(resolve11(options.projectRoot))} bun `;
-  if (!command.startsWith(prefix))
-    return;
-  const rest = command.slice(prefix.length);
-  const launchSplit = rest.indexOf(middle);
-  if (launchSplit < 1)
-    return;
-  const instanceId = rest.slice(0, launchSplit);
-  const afterInstance = rest.slice(launchSplit + middle.length);
-  const pathSplit = afterInstance.indexOf(suffix);
-  if (pathSplit < 1)
-    return;
-  const launchId = afterInstance.slice(0, pathSplit);
-  const hookScript = shellUnquote(afterInstance.slice(pathSplit + suffix.length));
-  if (!/^[A-Za-z0-9._:-]{1,128}$/.test(instanceId) || !/^[A-Za-z0-9._:-]{1,128}$/.test(launchId) || !hookScript || !isAbsolute6(hookScript) || !hookScript.endsWith("/src/cli/facts-hook.ts"))
-    return;
-  return { instanceId, launchId };
-}
-function managedHookLaunch(value, options, peer) {
-  if (Object.keys(value).length !== 1 || !Object.hasOwn(value, PLUGIN_KEY))
-    return;
-  const events = value[PLUGIN_KEY];
-  if (!object4(events) || Object.keys(events).length !== EVENTS2.length || EVENTS2.some((phase) => !Object.hasOwn(events, phase)))
-    return;
-  let identity;
-  for (const phase of EVENTS2) {
-    const rows = events[phase];
-    if (phase === "PostInvocation") {
-      if (!Array.isArray(rows) || rows.length !== 0)
-        return;
-      continue;
-    }
-    if (!Array.isArray(rows) || rows.length !== 1 || !object4(rows[0]))
-      return;
-    let command;
-    if (phase === "PreToolUse" || phase === "PostToolUse") {
-      const row = rows[0];
-      if (Object.keys(row).sort().join(",") !== "hooks,matcher" || row.matcher !== ".*" || !Array.isArray(row.hooks) || row.hooks.length !== 1 || !object4(row.hooks[0]))
-        return;
-      command = row.hooks[0];
-    } else
-      command = rows[0];
-    if (!object4(command) || Object.keys(command).sort().join(",") !== "command,timeout,type" || command.type !== "command" || command.timeout !== 5)
-      return;
-    const found = parseManagedHookCommand(command.command, phase, options, peer);
-    if (!found || identity && (identity.instanceId !== found.instanceId || identity.launchId !== found.launchId))
-      return;
-    identity = found;
-  }
-  return identity;
-}
-function nextDocuments(current, wanted) {
-  const nextMcp = current[MCP_FILE] ? { ...current[MCP_FILE] } : {};
-  const currentServers = nextMcp.mcpServers;
-  const servers = currentServers === undefined ? {} : currentServers;
-  if (!object4(servers))
-    throw new Error(`${MCP_FILE} mcpServers must be an object`);
-  nextMcp.mcpServers = { ...servers, [PLUGIN_KEY]: wanted[MCP_FILE].mcpServers[PLUGIN_KEY] };
-  return { [MANIFEST_FILE]: wanted[MANIFEST_FILE], [MCP_FILE]: nextMcp, [HOOKS_FILE]: wanted[HOOKS_FILE] };
-}
-function internalPlan(options) {
-  const { root, peer } = validateOptions(options);
-  const rootStat = safeDirectory(root);
-  if (!rootStat)
-    throw new Error("project root must be an existing directory");
-  const canonicalRoot = realPath(root);
-  const pluginDir = join15(root, PLUGIN_DIR);
-  let parentsPresent = true;
-  for (const relative of [".agents", ".agents/plugins", PLUGIN_DIR]) {
-    if (!parentsPresent)
-      break;
-    parentsPresent = !!safeDirectory(join15(root, relative));
-  }
-  let directories;
-  let canonicalPluginDir;
-  if (parentsPresent) {
-    directories = pluginDirectories(root);
-    canonicalPluginDir = realPath(pluginDir);
-    if (canonicalPluginDir !== join15(canonicalRoot, PLUGIN_DIR))
-      throw new Error("managed agy plugin path traverses a symlink");
-  }
-  const snapshots = Object.fromEntries(FILES.map((relative) => {
-    const path = join15(root, relative);
-    const found = parentsPresent ? safeFile(path) : undefined;
-    return [relative, found];
-  }));
-  const current = {};
-  for (const relative of FILES) {
-    const found = snapshots[relative];
-    current[relative] = found ? parseJson(found.bytes, relative) : undefined;
-  }
-  const manifest = current[MANIFEST_FILE];
-  if (manifest && (Object.keys(manifest).sort().join(",") !== "description,name" || manifest.name !== PLUGIN_KEY || manifest.description !== MANAGED_DESCRIPTION)) {
-    throw new Error(`${MANIFEST_FILE} is a foreign agent-hub plugin manifest; it was not changed`);
-  }
-  const mcp = current[MCP_FILE];
-  if (mcp) {
-    if (Object.hasOwn(mcp, "mcpServers") && !object4(mcp.mcpServers))
-      throw new Error(`${MCP_FILE} mcpServers must be an object`);
-    const entry = mcp.mcpServers?.[PLUGIN_KEY];
-    if (entry !== undefined && (!object4(entry) || Object.keys(entry).sort().join(",") !== "args,command,env" || entry.command !== "bun" || !Array.isArray(entry.args) || entry.args.length !== 2 || entry.args[0] !== "run" || typeof entry.args[1] !== "string" || !isAbsolute6(entry.args[1]) || !object4(entry.env) || Object.keys(entry.env).sort().join(",") !== "AGENTHUB_PEER_ID,AGENTHUB_PROJECT_DIR,AGENTHUB_STATE_DIR" || entry.env.AGENTHUB_PEER_ID !== peer || entry.env.AGENTHUB_PROJECT_DIR !== root || entry.env.AGENTHUB_STATE_DIR !== options.stateDir)) {
-      throw new Error(`${MCP_FILE} agent-hub is a foreign MCP entry; it was not changed`);
-    }
-  }
-  const hooks = current[HOOKS_FILE];
-  const oldLaunch = hooks ? managedHookLaunch(hooks, options, peer) : undefined;
-  if (hooks && !oldLaunch)
-    throw new Error(`${HOOKS_FILE} agent-hub is a foreign hooks entry; it was not changed`);
-  const wanted = desired(options, root, peer);
-  const docs = nextDocuments(current, wanted);
-  const targets = FILES.map((relative) => {
-    const old = snapshots[relative];
-    const next = Buffer.from(`${JSON.stringify(docs[relative], null, 2)}
-`);
-    return { path: join15(root, relative), relative, ...old ? { current: old.bytes, stat: old.stat } : {}, next, changed: !old || !isDeepStrictEqual(current[relative], docs[relative]) };
-  });
-  const git = memoryGitSync(["ls-files", "--", ...FILES], { cwd: root, encoding: "utf8", timeout: 3000 });
-  const tracked = git.status === 0 && !!git.stdout.trim();
-  const changed = targets.some((target) => target.changed);
-  return { file: pluginDir, tracked, changed, action: changed ? "create or update the managed agent-hub plugin" : "keep the managed agent-hub plugin", root, pluginDir, canonicalRoot, ...canonicalPluginDir ? { canonicalPluginDir } : {}, ...directories ? { directories } : {}, targets };
-}
-function identityMatches(path, before) {
-  const now = lstatSync9(path, { throwIfNoEntry: false });
-  return before ? !!now && now.dev === before.dev && now.ino === before.ino : !now;
-}
-function atomicWrite(path, bytes, expected, plan) {
-  const temporary = `${path}.${randomUUID5()}.tmp`;
-  let fd;
-  let tempIdentity;
-  try {
-    verifyPluginDirectory(plan, path);
-    fd = openSync5(temporary, "wx", 384);
-    const tempStat = fstatSync4(fd);
-    tempIdentity = { dev: tempStat.dev, ino: tempStat.ino };
-    writeFileSync4(fd, bytes);
-    closeSync5(fd);
-    fd = undefined;
-    verifyPluginDirectory(plan, path);
-    if (!identityMatches(path, expected))
-      throw new Error(`${path} changed while the managed plugin was being written`);
-    renameSync(temporary, path);
-    const stat = lstatSync9(path);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)
-      throw new Error(`${path} changed while the managed plugin was written`);
-    return { dev: stat.dev, ino: stat.ino };
-  } finally {
-    if (fd !== undefined)
-      closeSync5(fd);
-    try {
-      const current = lstatSync9(temporary, { throwIfNoEntry: false });
-      if (current && tempIdentity && current.dev === tempIdentity.dev && current.ino === tempIdentity.ino)
-        unlinkSync(temporary);
-    } catch {}
-  }
-}
-function rollback(plan, written, createdDirs) {
-  for (const { target, own } of written.reverse()) {
-    try {
-      const now = lstatSync9(target.path, { throwIfNoEntry: false });
-      if (!now || now.dev !== own.dev || now.ino !== own.ino)
-        continue;
-      if (target.current)
-        atomicWrite(target.path, target.current, now, plan);
-      else
-        unlinkSync(target.path);
-    } catch {}
-  }
-  for (const { path, dev, ino } of createdDirs.reverse()) {
-    try {
-      const now = lstatSync9(path);
-      if (now.isDirectory() && !now.isSymbolicLink() && now.dev === dev && now.ino === ino)
-        rmdirSync(path);
-    } catch {}
-  }
-}
-function ensureAgyMcp(options) {
-  const plan = internalPlan(options);
-  if (!plan.changed)
-    return { changed: false, tracked: plan.tracked };
-  const createdDirs = [];
-  const written = [];
-  try {
-    for (const relative of [".agents", ".agents/plugins", PLUGIN_DIR]) {
-      const path = join15(plan.root, relative);
-      const prior = safeDirectory(path);
-      if (prior)
-        continue;
-      mkdirSync6(path, { mode: 448 });
-      const stat = safeDirectory(path);
-      createdDirs.push({ path, dev: stat.dev, ino: stat.ino });
-    }
-    plan.directories = pluginDirectories(plan.root);
-    plan.canonicalPluginDir = realPath(plan.pluginDir);
-    if (plan.canonicalRoot !== realPath(plan.root) || plan.canonicalPluginDir !== join15(plan.canonicalRoot, PLUGIN_DIR))
-      throw new Error("managed agy plugin path changed; inspect it before writing");
-    for (const target of plan.targets) {
-      if (!target.changed)
-        continue;
-      if (!identityMatches(target.path, target.stat))
-        throw new Error(`${target.path} changed while the managed plugin was being prepared`);
-      const own = atomicWrite(target.path, target.next, target.stat, plan);
-      written.push({ target, own });
-    }
-  } catch (error) {
-    rollback(plan, written, createdDirs);
-    throw error;
-  }
-  return { changed: true, tracked: plan.tracked };
-}
-function cleanupAgyMcp(options) {
-  const plan = internalPlan(options);
-  const present = plan.targets.filter((target) => target.current !== undefined);
-  if (!present.length)
-    return;
-  if (present.length !== FILES.length)
-    throw new Error("managed agy plugin is incomplete; inspect it before cleanup");
-  const currentHooks = parseJson(readFileSync6(join15(plan.root, HOOKS_FILE)), HOOKS_FILE);
-  const launch = managedHookLaunch(currentHooks, options, options.peer ?? AGY_DEFINITION.kind);
-  if (!launch || launch.instanceId !== options.instanceId || launch.launchId !== options.launchId)
-    return;
-  if (plan.changed)
-    return;
-  const deleted = [];
-  try {
-    for (const target of plan.targets) {
-      const stat = lstatSync9(target.path);
-      if (!target.stat || stat.dev !== target.stat.dev || stat.ino !== target.stat.ino)
-        throw new Error(`${target.path} changed before agy plugin cleanup`);
-    }
-    for (const target of plan.targets) {
-      if (!identityMatches(target.path, target.stat))
-        throw new Error(`${target.path} changed before agy plugin cleanup`);
-      if (target.relative === MCP_FILE) {
-        const currentMcp = parseJson(target.current, MCP_FILE);
-        const servers = { ...currentMcp.mcpServers };
-        delete servers[PLUGIN_KEY];
-        const nextMcp = { ...currentMcp, mcpServers: servers };
-        const retain = Object.keys(servers).length > 0 || Object.keys(currentMcp).some((key) => key !== "mcpServers");
-        if (retain) {
-          const own = atomicWrite(target.path, Buffer.from(`${JSON.stringify(nextMcp, null, 2)}
-`), target.stat, plan);
-          deleted.push({ path: target.path, bytes: target.current, own });
-        } else {
-          unlinkSync(target.path);
-          deleted.push({ path: target.path, bytes: target.current });
-        }
-      } else {
-        unlinkSync(target.path);
-        deleted.push({ path: target.path, bytes: target.current });
-      }
-    }
-  } catch (error) {
-    for (const item of deleted.reverse()) {
-      try {
-        const current = lstatSync9(item.path, { throwIfNoEntry: false });
-        if (item.own) {
-          if (current?.dev === item.own.dev && current.ino === item.own.ino)
-            atomicWrite(item.path, item.bytes, current, plan);
-        } else if (!current)
-          atomicWrite(item.path, item.bytes, undefined, plan);
-      } catch {}
-    }
-    throw error;
-  }
-}
-var PLUGIN_DIR = ".agents/plugins/agent-hub", PLUGIN_KEY = "agent-hub", MANIFEST_FILE, MCP_FILE, HOOKS_FILE, FILES, EVENTS2, MANAGED_DESCRIPTION = "Managed by ahub agy launcher.", MAX_CONFIG_BYTES;
-var init_agy_mcp = __esm(() => {
-  init_definition();
-  init_git();
-  init_project();
-  MANIFEST_FILE = `${PLUGIN_DIR}/plugin.json`;
-  MCP_FILE = `${PLUGIN_DIR}/mcp_config.json`;
-  HOOKS_FILE = `${PLUGIN_DIR}/hooks.json`;
-  FILES = [MANIFEST_FILE, MCP_FILE, HOOKS_FILE];
-  EVENTS2 = ["SessionStart", "PreInvocation", "PostInvocation", "PreToolUse", "PostToolUse", "Stop"];
-  MAX_CONFIG_BYTES = 256 * 1024;
-});
-
-// src/adapters/agy/entry.ts
-import { spawn as spawn9, spawnSync as spawnSync4 } from "child_process";
-import { resolve as resolve12 } from "path";
-function agyTuiSpawnOptions(cwd, env) {
-  return { cwd, env, stdio: "inherit" };
-}
-function runAgyTui(argv, cwd, env) {
-  const child = spawn9("agy", argv, agyTuiSpawnOptions(cwd, env));
-  return new Promise((resolveExit, reject) => {
-    const forward = (signal) => {
-      if (child.exitCode !== null || child.signalCode !== null)
-        return;
-      try {
-        child.kill(signal);
-      } catch {}
-    };
-    const onInterrupt = () => forward("SIGINT");
-    const onTerminate = () => forward("SIGTERM");
-    const onHangup = () => forward("SIGHUP");
-    const cleanup = () => {
-      process.off("SIGINT", onInterrupt);
-      process.off("SIGTERM", onTerminate);
-      process.off("SIGHUP", onHangup);
-    };
-    process.on("SIGINT", onInterrupt);
-    process.on("SIGTERM", onTerminate);
-    process.on("SIGHUP", onHangup);
-    child.once("error", (error) => {
-      cleanup();
-      reject(error);
-    });
-    child.once("close", (code) => {
-      cleanup();
-      resolveExit(code ?? 1);
-    });
-  });
-}
-function agyVersionGate(stdout) {
-  const version = stdout.trim();
-  if (version === "1.4.2")
-    return { ok: true };
-  if (/^1\.4\.\d+$/.test(version))
-    return { ok: true, message: `agy ${version}: only 1.4.2 is T0-verified; launching on the 1.4.x line unverified` };
-  return { ok: false, message: "agy P1 requires the Antigravity CLI 1.4.x line (1.4.2 verified)" };
-}
-async function runAgyEntry(ctx) {
-  const { args, cwd, stateDir, cliDir, connect, fail } = ctx;
-  if (ctx.instance)
-    fail("extra Antigravity TUI instances are not verified in P1");
-  const preview = args.includes("--print-command") || args.includes("--dry-run");
-  const unattended = ctx.unattendedEnv || args.includes("--unattended");
-  const nativeArgs = args.filter((arg) => !["--print-command", "--dry-run", "--unattended"].includes(arg));
-  if (nativeArgs.some((arg) => ["--print", "-p", "--prompt", "--input-format", "--output-format", "--conversation", "--continue", "-c", "--new", "--mode", "--dangerously-skip-permissions"].some((flag) => arg === flag || arg.startsWith(`${flag}=`))))
-    fail("agy P1 supports a fresh TUI only; headless, resume and permission flags need a verified mapping");
-  if (unattended)
-    fail("agy P1 native permissions are unmanaged; unattended mode has no verified prompt mapping");
-  const argv = nativeArgs;
-  if (preview) {
-    console.log(JSON.stringify({ command: "agy", args: argv.map(publicArg), mode: "tui", permission: "unmanaged", mcp: ".agents/plugins/agent-hub/", writes: false }));
-    return;
-  }
-  const version = spawnSync4("agy", ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: peerChildEnv("agy") });
-  const gate = agyVersionGate(version.status === 0 ? version.stdout : "");
-  if (!gate.ok)
-    fail(gate.message);
-  if (gate.message)
-    console.error(gate.message);
-  const hub = await connect();
-  let options;
-  let pluginWritten = false;
-  try {
-    if (!hub.features.includes("native_hook_launch"))
-      fail("running hub lacks the verified native hook launcher; upgrade or restart it before launching agy");
-    const status = (await hub.request({ t: "status" })).status;
-    if (rosterInStatus(status, "agy") !== true)
-      fail("agy is off roster; add it with ahub roster add agy");
-    const admitted = await hub.request({ t: "native_hook_launch", op: "begin", peer: "agy" });
-    if (!admitted.ok || typeof admitted.launchId !== "string" || typeof admitted.instanceId !== "string")
-      fail(admitted.error ?? "native hook launch was not admitted");
-    options = {
-      projectRoot: cwd,
-      stateDir,
-      serverJs: bundleInStatus(status) ?? resolve12(cliDir, "../../plugins/agent-hub/server.js"),
-      hookScript: resolve12(cliDir, "facts-hook.ts"),
-      peer: "agy",
-      launchId: admitted.launchId,
-      instanceId: admitted.instanceId
-    };
-    const written = ensureAgyMcp(options);
-    pluginWritten = written.changed;
-    if (written.tracked)
-      console.error("The managed agy plugin is tracked; review its local machine paths before committing");
-    console.error(AGY_LAUNCH_NOTICE);
-    const env = { ...ctx.helpers.nativeLaunchEnv("agy", ctx.helpers.childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd };
-    delete env.AGENTHUB_CHANNEL;
-    const code = await runAgyTui(argv, cwd, env);
-    if (code !== 0)
-      process.exitCode = code;
-  } finally {
-    if (options) {
-      await hub.request({ t: "native_hook_launch", op: "end", peer: "agy", launchId: options.launchId }).catch(() => {});
-      if (pluginWritten)
-        try {
-          cleanupAgyMcp(options);
-        } catch {
-          console.error("Managed agy plugin cleanup refused: files changed or ownership could not be verified");
-        }
-    }
-    hub.close();
-  }
-}
-var AGY_LAUNCH_NOTICE = "Antigravity: pull-only TUI; native permissions unmanaged, no hub sandbox; hub tools appear from the second turn (send any first prompt, then ask for hub work)";
-var init_entry = __esm(() => {
-  init_agy_mcp();
-  init_child_process();
-});
-
 // src/adapters/definitions/native-cli-retained.ts
 function retainedLaunchWarning(status, peer, definition) {
   const keys = definition.cli.launchConfigKeys;
@@ -9754,195 +9760,8 @@ async function runCodexEntry(ctx) {
 }
 var init_native_cli_entry_codex = () => {};
 
-// src/adapters/definitions/native-cli-entry-jcode.ts
-import { resolve as resolve13 } from "path";
-function refuseNamedOption(reply, fail) {
-  if (!reply.ok && typeof reply.option === "string" && ["--session-id", "--model", "--provider-profile"].includes(reply.option))
-    fail(`Jcode is already running with a different ${reply.option}; run ahub jcode without it, or stop jcode first`);
-}
-async function waitForJcodeTui(hub, fail, signal, options, first) {
-  let binding = first?.binding, announced = false, current = first;
-  while (!signal.aborted) {
-    if (!current) {
-      const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", binding, args: options });
-      if (signal.aborted)
-        return;
-      refuseNamedOption(reply, fail);
-      if (!reply.ok || !reply.binding || !["waiting", "ready"].includes(reply.state))
-        fail("Jcode launch changed or its native saved session is unavailable; retry from a terminal");
-      current = reply;
-    }
-    if (binding && (binding.launchId !== current.binding.launchId || binding.sessionId !== current.binding.sessionId))
-      fail("Jcode launch changed while waiting");
-    binding = current.binding;
-    if (current.state === "ready")
-      return current;
-    if (!announced) {
-      console.log(WAITING);
-      announced = true;
-    }
-    await new Promise((resolve) => {
-      const finish = () => {
-        clearTimeout(timer);
-        signal.removeEventListener("abort", finish);
-        resolve();
-      };
-      const timer = setTimeout(finish, 200);
-      signal.addEventListener("abort", finish, { once: true });
-      if (signal.aborted)
-        finish();
-    });
-    current = undefined;
-  }
-}
-async function runJcodeEntry(ctx) {
-  const { args, cwd, stateDir, cliDir, unattendedEnv, connect, fail, takeFlags } = ctx;
-  const { launcherPreview, qwenSessionId, configureJcodeMcp, readControl, startModeOf } = ctx.helpers;
-  const print = args.includes("--print-command");
-  if (args.includes("--dry-run") || print) {
-    if (!print || args.includes("--dry-run") || !ctx.person) {
-      try {
-        return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2));
-      } catch {
-        fail("cannot preview Jcode launch: invalid arguments or configuration (details withheld)");
-      }
-    }
-  }
-  const { one, rest } = takeFlags(args.filter((arg) => arg !== "--print-command"), ["--mode", "--model", "--provider-profile", "--session-id"], []);
-  if (rest.length || one["--mode"] !== undefined && !["headless", "tui"].includes(one["--mode"]))
-    fail("usage: ahub jcode [--mode tui|headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>]");
-  if (one["--session-id"] !== undefined && !qwenSessionId(one["--session-id"]))
-    fail("invalid Jcode session identity");
-  const control = readControl(stateDir);
-  const mode = one["--mode"] ?? (ctx.instance ? "headless" : control?.startModes?.jcode ?? startModeOf(ctx.projectConfig().peers, "jcode"));
-  if (print && (mode === "headless" || !control?.features?.includes("native_tui_launch"))) {
-    try {
-      return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2));
-    } catch {
-      return fail("cannot preview Jcode launch: invalid arguments or configuration (details withheld)");
-    }
-  }
-  if (mode === "tui" && !ctx.person)
-    fail("Jcode's private TUI is person-only; run ahub jcode in your terminal");
-  const hub = await connect(), abort = new AbortController;
-  let interrupted = false;
-  const interruptedWait = () => {
-    if (abort.signal.aborted && !interrupted)
-      fail("hub connection closed while waiting for Jcode; retry from a terminal");
-    return abort.signal.aborted;
-  };
-  const interrupt = () => {
-    interrupted = true;
-    abort.abort();
-    hub.close();
-    process.exitCode = 130;
-  };
-  process.once("SIGINT", interrupt);
-  const oldClose = hub.onClose;
-  hub.onClose = (code, reason) => {
-    if (!abort.signal.aborted)
-      abort.abort();
-    oldClose?.(code, reason);
-  };
-  try {
-    const snapshot = (await hub.request({ t: "status" })).status;
-    const rostered = rosterInStatus(snapshot, "jcode");
-    if (rostered === undefined)
-      fail("cannot read jcode's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
-    if (!rostered)
-      fail("jcode is off roster; add it with ahub roster add jcode");
-    const warning = retainedLaunchWarning(snapshot, "jcode", ctx.definition);
-    if (warning)
-      console.error(warning);
-    const options = { model: one["--model"], providerProfile: one["--provider-profile"], sessionId: one["--session-id"] };
-    if (print) {
-      if (!hub.features.includes("native_tui_launch") || mode !== "tui")
-        return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2));
-      const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", args: options });
-      refuseNamedOption(reply, fail);
-      if (!reply.ok || reply.state !== "ready")
-        fail("Jcode's selected native session is not saved and ready; run ahub jcode to wait for its first hub turn");
-      return console.log(JSON.stringify(reply.launch, null, 2));
-    }
-    if (mode === "tui") {
-      if (!hub.features.includes("native_tui_launch"))
-        fail("the running hub does not support Jcode TUI launch; upgrade it before retrying");
-      if (!process.stdin.isTTY || !process.stdout.isTTY) {
-        if (one["--mode"] || Object.values(options).some((value) => value !== undefined))
-          fail("run ahub jcode with these options in a terminal");
-        const reply = await hub.request({ t: "peer_start", peer: "jcode" });
-        if (!reply.ok)
-          fail(reply.error);
-        console.log(reply.command ?? "Jcode terminal requested");
-        return;
-      }
-    }
-    const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve13(cliDir, "../../plugins/agent-hub/server.js"));
-    if (written.tracked)
-      console.error(".jcode/mcp.json is tracked; review this local machine-path change before committing it");
-    const reply = await hub.request({ t: "start", peer: "jcode", args: { mode, ...options }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 65000);
-    if (interruptedWait())
-      return;
-    if (!reply.ok)
-      fail(reply.error);
-    if (mode === "headless") {
-      console.log(reply.already ? "jcode is already attached" : "jcode attached (headless); native policy unmanaged, NO hub sandbox");
-      return;
-    }
-    const ready = await waitForJcodeTui(hub, fail, abort.signal, options);
-    if (interruptedWait() || !ready)
-      return;
-    const confirmed = await hub.request({ t: "native_tui_launch", peer: "jcode", binding: ready.binding, args: options });
-    if (interruptedWait())
-      return;
-    if (!confirmed.ok || confirmed.state !== "ready")
-      fail("Jcode launch changed before its terminal opened");
-    ctx.execWithEnv(confirmed.launch.cmd, confirmed.launch.args, { ...ctx.helpers.childEnv(), ...confirmed.launch.env });
-  } finally {
-    process.removeListener("SIGINT", interrupt);
-    hub.onClose = oldClose;
-    hub.close();
-  }
-}
-var WAITING = "jcode's TUI opens after its first hub turn; send it work, or Ctrl-C";
-var init_native_cli_entry_jcode = () => {};
-
-// src/adapters/definitions/native-cli-entry-qwen.ts
-async function runQwenEntry(ctx) {
-  const peer = ctx.instance ?? "qwen";
-  const { args, cwd, stateDir, unattendedEnv, connect, fail, takeFlags } = ctx;
-  const { launcherPreview } = ctx.helpers;
-  if (args.includes("--print-command") || args.includes("--dry-run")) {
-    try {
-      return console.log(JSON.stringify(launcherPreview("qwen", args, cwd, stateDir, unattendedEnv), null, 2));
-    } catch {
-      fail("cannot preview Qwen launch: invalid arguments or configuration (details withheld)");
-    }
-  }
-  const { one, rest } = takeFlags(args, ["--mode", "--model", "--session-id"], []);
-  const adapter = ctx.definition;
-  if (one["--session-id"] !== undefined && !adapter.session.crashIdentity?.({ sessionId: one["--session-id"] }).sessionId)
-    fail("invalid Qwen session identity");
-  if (rest.length || one["--mode"] !== undefined && !adapter.start.forms.includes(one["--mode"]))
-    fail("Qwen TUI is not offered before verification; usage: ahub qwen [--mode headless] [--model <alias>] [--session-id <id>]");
-  const hub = await connect();
-  try {
-    const snapshot = (await hub.request({ t: "status" })).status;
-    const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
-    if (warning)
-      console.error(warning);
-    const reply = await hub.request({ t: "start", peer, args: { mode: "headless", ...one["--model"] ? { model: one["--model"] } : {}, ...one["--session-id"] ? { sessionId: one["--session-id"] } : {} }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35000);
-    if (!reply.ok)
-      fail(reply.error);
-    console.log(reply.already ? `${peer} is already attached` : `${peer} attached (headless); use ahub say @${peer} and the console for approvals`);
-  } finally {
-    hub.close();
-  }
-}
-var init_native_cli_entry_qwen = () => {};
-
 // src/adapters/definitions/native-cli-entry-kimi.ts
-import { resolve as resolve14 } from "path";
+import { resolve as resolve13 } from "path";
 import { spawnSync as spawnSync5 } from "child_process";
 async function runKimiEntry(ctx) {
   const peer = ctx.instance ?? "kimi";
@@ -10007,7 +9826,7 @@ async function runKimiEntry(ctx) {
         } catch (error) {
           throw running ? new Error(`${error.message} (the command is the running hub's kimi_cmd: the value in the config file is retained until ahub settings reload)`) : error;
         }
-        const written = configureKimiMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve14(cliDir, "../../plugins/agent-hub/server.js"), "tui");
+        const written = configureKimiMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve13(cliDir, "../../plugins/agent-hub/server.js"), "tui");
         if (written.tracked)
           console.error(".kimi-code/mcp.json is tracked; the agent-hub entry contains machine paths. Review this local change before committing it.");
         result = spawnSync5(launch.cmd, launch.args, { cwd, stdio: "inherit", env: { ...nativeLaunchEnv("kimi", childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
@@ -10027,7 +9846,7 @@ async function runKimiEntry(ctx) {
     if (owner?.pullOnly && owner.state !== "offline")
       fail("Kimi runs in a terminal; end it there before starting a headless one");
     if (!ctx.instance)
-      configureKimiMcp(cwd, stateDir, resolve14(cliDir, "../../plugins/agent-hub/server.js"), "headless");
+      configureKimiMcp(cwd, stateDir, resolve13(cliDir, "../../plugins/agent-hub/server.js"), "headless");
     const res = await hub.request({ t: "start", peer, args: { mode: "headless", model }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
     if (!res.ok)
       fail(res.error);
@@ -10176,28 +9995,158 @@ async function runLocalEntry(ctx) {
 }
 var init_native_cli_entry_local = () => {};
 
-// src/adapters/definitions/native-cli-entry.ts
-var builtinCliEntries;
-var init_native_cli_entry = __esm(() => {
-  init_entry();
-  init_native_cli_entry_claude();
-  init_native_cli_entry_codex();
-  init_native_cli_entry_jcode();
-  init_native_cli_entry_qwen();
-  init_native_cli_entry_kimi();
-  init_native_cli_entry_pi();
-  init_native_cli_entry_local();
-  builtinCliEntries = Object.freeze([
-    { command: "agy", lifecycleAdmission: true, execute: runAgyEntry },
-    { command: "claude", lifecycleAdmission: true, execute: runClaudeEntry },
-    { command: "codex", lifecycleAdmission: true, execute: runCodexEntry },
-    { command: "jcode", lifecycleAdmission: true, execute: runJcodeEntry },
-    { command: "qwen", lifecycleAdmission: true, execute: runQwenEntry },
-    { command: "kimi", lifecycleAdmission: true, execute: runKimiEntry },
-    { command: "pi", lifecycleAdmission: false, execute: runPiEntry },
-    { command: "local", lifecycleAdmission: false, execute: runLocalEntry }
-  ]);
-});
+// src/adapters/definitions/native-cli-entry-jcode.ts
+import { resolve as resolve14 } from "path";
+function refuseNamedOption(reply, fail) {
+  if (!reply.ok && typeof reply.option === "string" && ["--session-id", "--model", "--provider-profile"].includes(reply.option))
+    fail(`Jcode is already running with a different ${reply.option}; run ahub jcode without it, or stop jcode first`);
+}
+async function waitForJcodeTui(hub, fail, signal, options, first) {
+  let binding = first?.binding, announced = false, current = first;
+  while (!signal.aborted) {
+    if (!current) {
+      const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", binding, args: options });
+      if (signal.aborted)
+        return;
+      refuseNamedOption(reply, fail);
+      if (!reply.ok || !reply.binding || !["waiting", "ready"].includes(reply.state))
+        fail("Jcode launch changed or its native saved session is unavailable; retry from a terminal");
+      current = reply;
+    }
+    if (binding && (binding.launchId !== current.binding.launchId || binding.sessionId !== current.binding.sessionId))
+      fail("Jcode launch changed while waiting");
+    binding = current.binding;
+    if (current.state === "ready")
+      return current;
+    if (!announced) {
+      console.log(WAITING);
+      announced = true;
+    }
+    await new Promise((resolve) => {
+      const finish = () => {
+        clearTimeout(timer);
+        signal.removeEventListener("abort", finish);
+        resolve();
+      };
+      const timer = setTimeout(finish, 200);
+      signal.addEventListener("abort", finish, { once: true });
+      if (signal.aborted)
+        finish();
+    });
+    current = undefined;
+  }
+}
+async function runJcodeEntry(ctx) {
+  const { args, cwd, stateDir, cliDir, unattendedEnv, connect, fail, takeFlags } = ctx;
+  const { launcherPreview, qwenSessionId, configureJcodeMcp, readControl, startModeOf } = ctx.helpers;
+  const print = args.includes("--print-command");
+  if (args.includes("--dry-run") || print) {
+    if (!print || args.includes("--dry-run") || !ctx.person) {
+      try {
+        return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2));
+      } catch {
+        fail("cannot preview Jcode launch: invalid arguments or configuration (details withheld)");
+      }
+    }
+  }
+  const { one, rest } = takeFlags(args.filter((arg) => arg !== "--print-command"), ["--mode", "--model", "--provider-profile", "--session-id"], []);
+  if (rest.length || one["--mode"] !== undefined && !["headless", "tui"].includes(one["--mode"]))
+    fail("usage: ahub jcode [--mode tui|headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>]");
+  if (one["--session-id"] !== undefined && !qwenSessionId(one["--session-id"]))
+    fail("invalid Jcode session identity");
+  const control = readControl(stateDir);
+  const mode = one["--mode"] ?? (ctx.instance ? "headless" : control?.startModes?.jcode ?? startModeOf(ctx.projectConfig().peers, "jcode"));
+  if (print && (mode === "headless" || !control?.features?.includes("native_tui_launch"))) {
+    try {
+      return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2));
+    } catch {
+      return fail("cannot preview Jcode launch: invalid arguments or configuration (details withheld)");
+    }
+  }
+  if (mode === "tui" && !ctx.person)
+    fail("Jcode's private TUI is person-only; run ahub jcode in your terminal");
+  const hub = await connect(), abort = new AbortController;
+  let interrupted = false;
+  const interruptedWait = () => {
+    if (abort.signal.aborted && !interrupted)
+      fail("hub connection closed while waiting for Jcode; retry from a terminal");
+    return abort.signal.aborted;
+  };
+  const interrupt = () => {
+    interrupted = true;
+    abort.abort();
+    hub.close();
+    process.exitCode = 130;
+  };
+  process.once("SIGINT", interrupt);
+  const oldClose = hub.onClose;
+  hub.onClose = (code, reason) => {
+    if (!abort.signal.aborted)
+      abort.abort();
+    oldClose?.(code, reason);
+  };
+  try {
+    const snapshot = (await hub.request({ t: "status" })).status;
+    const rostered = rosterInStatus(snapshot, "jcode");
+    if (rostered === undefined)
+      fail("cannot read jcode's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
+    if (!rostered)
+      fail("jcode is off roster; add it with ahub roster add jcode");
+    const warning = retainedLaunchWarning(snapshot, "jcode", ctx.definition);
+    if (warning)
+      console.error(warning);
+    const options = { model: one["--model"], providerProfile: one["--provider-profile"], sessionId: one["--session-id"] };
+    if (print) {
+      if (!hub.features.includes("native_tui_launch") || mode !== "tui")
+        return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2));
+      const reply = await hub.request({ t: "native_tui_launch", peer: "jcode", args: options });
+      refuseNamedOption(reply, fail);
+      if (!reply.ok || reply.state !== "ready")
+        fail("Jcode's selected native session is not saved and ready; run ahub jcode to wait for its first hub turn");
+      return console.log(JSON.stringify(reply.launch, null, 2));
+    }
+    if (mode === "tui") {
+      if (!hub.features.includes("native_tui_launch"))
+        fail("the running hub does not support Jcode TUI launch; upgrade it before retrying");
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        if (one["--mode"] || Object.values(options).some((value) => value !== undefined))
+          fail("run ahub jcode with these options in a terminal");
+        const reply = await hub.request({ t: "peer_start", peer: "jcode" });
+        if (!reply.ok)
+          fail(reply.error);
+        console.log(reply.command ?? "Jcode terminal requested");
+        return;
+      }
+    }
+    const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve14(cliDir, "../../plugins/agent-hub/server.js"));
+    if (written.tracked)
+      console.error(".jcode/mcp.json is tracked; review this local machine-path change before committing it");
+    const reply = await hub.request({ t: "start", peer: "jcode", args: { mode, ...options }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 65000);
+    if (interruptedWait())
+      return;
+    if (!reply.ok)
+      fail(reply.error);
+    if (mode === "headless") {
+      console.log(reply.already ? "jcode is already attached" : "jcode attached (headless); native policy unmanaged, NO hub sandbox");
+      return;
+    }
+    const ready = await waitForJcodeTui(hub, fail, abort.signal, options);
+    if (interruptedWait() || !ready)
+      return;
+    const confirmed = await hub.request({ t: "native_tui_launch", peer: "jcode", binding: ready.binding, args: options });
+    if (interruptedWait())
+      return;
+    if (!confirmed.ok || confirmed.state !== "ready")
+      fail("Jcode launch changed before its terminal opened");
+    ctx.execWithEnv(confirmed.launch.cmd, confirmed.launch.args, { ...ctx.helpers.childEnv(), ...confirmed.launch.env });
+  } finally {
+    process.removeListener("SIGINT", interrupt);
+    hub.onClose = oldClose;
+    hub.close();
+  }
+}
+var WAITING = "jcode's TUI opens after its first hub turn; send it work, or Ctrl-C";
+var init_native_cli_entry_jcode = () => {};
 
 // src/adapters/definitions/native-cli-preview-claude.ts
 import { readFileSync as readFileSync8 } from "fs";
@@ -10336,43 +10285,6 @@ function previewPi(ctx) {
 }
 var init_native_cli_preview_pi = () => {};
 
-// src/adapters/definitions/native-cli-preview-qwen.ts
-import { join as join20 } from "path";
-function previewQwen(ctx) {
-  const { tool, args, cwd, stateDir, cliDir, config } = ctx;
-  const state = previewState(args, ctx.baseEnvNames), { unresolved, value } = state;
-  let envNames = state.envNames;
-  let launch;
-  const mode = value("--mode") ?? "headless", model = value("--model");
-  const adapter = ctx.definition;
-  if (!adapter.start.forms.includes(mode))
-    throw new Error("Qwen TUI is not offered before verification");
-  for (let i = 0;i < args.length; i += 2)
-    if (!["--model", "--mode", "--session-id"].includes(args[i]) || !args[i + 1])
-      throw new Error("unknown Qwen option");
-  const sessionId = value("--session-id");
-  if (sessionId !== undefined && !adapter.session.crashIdentity?.({ sessionId }).sessionId)
-    throw new Error("invalid Qwen session identity");
-  if (sessionId)
-    unresolved.push({ field: "sessionId", reason: "requested through ACP session/load at start; preview does not load or expose it" });
-  launch = adapter.start.launch({
-    instance: tool,
-    form: "headless",
-    projectRoot: cwd,
-    stateDir,
-    entrypoint: join20(cliDir, "main.js"),
-    userArgs: [],
-    unattended: false,
-    env: {},
-    preview: true,
-    nativeCommand: nativeCommand(config.qwen_cmd, ["qwen", "--acp"]),
-    model: model ? REDACTED : undefined
-  });
-  unresolved.push({ field: "nativeIdentity", reason: "Qwen Code 0.25.0 identity and permission modes are checked at ACP initialization; preview starts nothing" });
-  return finishPreview(ctx, launch, envNames, unresolved, undefined);
-}
-var init_native_cli_preview_qwen = () => {};
-
 // src/adapters/definitions/native-cli-preview-jcode.ts
 function previewJcode(ctx) {
   const { args, config } = ctx;
@@ -10395,25 +10307,6 @@ function previewJcode(ctx) {
   return { ...finishPreview(ctx, launch, envNames, unresolved), mode };
 }
 var init_native_cli_preview_jcode = () => {};
-
-// src/adapters/definitions/native-cli-preview.ts
-var previews;
-var init_native_cli_preview = __esm(() => {
-  init_native_cli_preview_claude();
-  init_native_cli_preview_codex();
-  init_native_cli_preview_kimi();
-  init_native_cli_preview_pi();
-  init_native_cli_preview_qwen();
-  init_native_cli_preview_jcode();
-  previews = Object.freeze({
-    claude: previewClaude,
-    codex: previewCodex,
-    kimi: previewKimi,
-    pi: previewPi,
-    qwen: previewQwen,
-    jcode: previewJcode
-  });
-});
 
 // src/adapters/definitions/native-daemon-kimi.ts
 function kimiAcpCommand(command, model) {
@@ -10469,7 +10362,7 @@ var init_native_config_policy = __esm(() => {
 
 // src/adapters/definitions/native-policy-aux.ts
 import { closeSync as closeSync6, constants as constants5, fstatSync as fstatSync5, openSync as openSync6, readdirSync as readdirSync3, readFileSync as readFileSync9 } from "fs";
-import { isAbsolute as isAbsolute7, join as join21, normalize } from "path";
+import { isAbsolute as isAbsolute7, join as join20, normalize } from "path";
 function claudeCrashPlan(_meta) {
   return { how: "claude: the Claude Code plugin reconnects by itself while that session is still open" };
 }
@@ -10514,13 +10407,13 @@ function localCrashPlan(meta) {
 }
 function claudePlugins(root, cwd) {
   const enabled = new Map;
-  for (const file of [join21(root, "settings.json"), ...cwd ? [join21(cwd, ".claude", "settings.json"), join21(cwd, ".claude", "settings.local.json")] : []]) {
+  for (const file of [join20(root, "settings.json"), ...cwd ? [join20(cwd, ".claude", "settings.json"), join20(cwd, ".claude", "settings.local.json")] : []]) {
     const map = json(file)?.enabledPlugins;
     if (map && typeof map === "object")
       for (const [key, on] of Object.entries(map))
         enabled.set(key, on === true);
   }
-  const installed = json(join21(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
+  const installed = json(join20(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
   const out = [];
   for (const [key, on] of enabled) {
     if (!on)
@@ -10534,7 +10427,7 @@ function claudePlugins(root, cwd) {
   return out;
 }
 function codexPlugins(root) {
-  const config = text(join21(root, "config.toml"));
+  const config = text(join20(root, "config.toml"));
   if (config === undefined)
     return [];
   const found = new Map, disabled = new Set;
@@ -10553,7 +10446,7 @@ function codexPlugins(root) {
       continue;
     let versions = [];
     try {
-      versions = readdirSync3(join21(root, "plugins", "cache", market, plugin));
+      versions = readdirSync3(join20(root, "plugins", "cache", market, plugin));
     } catch {}
     out.push({ name, version: versions.length === 1 ? version2(versions[0]) : null });
   }
@@ -10591,7 +10484,7 @@ var str3 = (value) => typeof value === "string" && value ? value : undefined, PL
   } catch {
     return;
   }
-}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join21(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join21(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
+}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join20(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join20(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
 var init_native_policy_aux = __esm(() => {
   PLUGINS = new Map([["claude-mem", "claude-mem"], ["ponytail", "ponytail"], ["open-code-review", "open-code-review"]]);
   CLAUDE_ONLY = new Map([["codex@openai-codex", "codex-plugin"]]);
@@ -10662,7 +10555,7 @@ var init_native_cli_launch_common = __esm(() => {
 // src/adapters/definitions/native-cli-claude-launch.ts
 import { mkdirSync as mkdirSync7, writeFileSync as writeFileSync5, renameSync as renameSync2, unlinkSync as unlinkSync2, readFileSync as readFileSync10 } from "fs";
 import { randomUUID as randomUUID7 } from "crypto";
-import { resolve as resolve16, join as join22 } from "path";
+import { resolve as resolve16, join as join21 } from "path";
 function claudeChannel(userArgs) {
   const bundle = resolve16(import.meta.dir, "../../../plugins/agent-hub/server.js");
   for (let i = 0;i < userArgs.length; i++) {
@@ -10724,7 +10617,7 @@ function claudeNativeLaunch(ctx) {
       const stateDir = ctx.facts?.stateDir ?? ctx.statusLine?.stateDir;
       if (!stateDir)
         throw new Error("Claude session settings require the hub state directory");
-      const file = join22(stateDir, `claude-settings-${randomUUID7()}.json`);
+      const file = join21(stateDir, `claude-settings-${randomUUID7()}.json`);
       try {
         mkdirSync7(stateDir, { recursive: true, mode: 448 });
         writeFileSync5(`${file}.tmp`, settingsArgs[1], { mode: 384, flag: "wx" });
@@ -10803,13 +10696,13 @@ var init_events = () => {};
 // src/cli/recovery-session-file.ts
 import { statSync as statSync4 } from "fs";
 import { homedir as homedir5 } from "os";
-import { join as join23 } from "path";
+import { join as join22 } from "path";
 function checkedSessionPath(binding, kind) {
   if (kind === "rollout")
-    return join23(binding.launch.env.CODEX_HOME ?? join23(homedir5(), ".codex"), "sessions");
-  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join23(homedir5(), ".claude");
+    return join22(binding.launch.env.CODEX_HOME ?? join22(homedir5(), ".codex"), "sessions");
+  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join22(homedir5(), ".claude");
   const slug = binding.projectRoot.replace(/[^a-zA-Z0-9]/g, "-");
-  return join23(config, "projects", slug, `${binding.sessionId}.jsonl`);
+  return join22(config, "projects", slug, `${binding.sessionId}.jsonl`);
 }
 function recordedFileState(file) {
   try {
@@ -10822,7 +10715,7 @@ var init_recovery_session_file = () => {};
 
 // src/adapters/definitions/native-recovery.ts
 import { readdirSync as readdirSync4 } from "fs";
-import { basename as basename5, join as join24 } from "path";
+import { basename as basename5, join as join23 } from "path";
 var rolloutState = (binding) => {
   try {
     return readdirSync4(checkedSessionPath(binding, "rollout"), { recursive: true }).some((name) => String(name).endsWith(".jsonl") && basename5(String(name)).includes(binding.sessionId));
@@ -10846,7 +10739,7 @@ var init_native_recovery = __esm(() => {
       if (phase !== "plan")
         return false;
       let current, started = false, turned = false;
-      for (const e of readEvents(join24(stateDir, "events.jsonl"))) {
+      for (const e of readEvents(join23(stateDir, "events.jsonl"))) {
         if (e.type === "native_thread" && e.peer === binding.peer) {
           current = e.thread;
           if (e.thread === binding.sessionId && e.fresh)
@@ -10977,6 +10870,17 @@ function sessionId(field) {
 }
 var switches, implementerRoles, dualForms, headlessForms, hubGrants, CLAUDE_REVIEWER_VARIANT, NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, terminal = (form) => form === "tui", headless = () => false, palette = (fg) => ({ palette: { fg, bg: "transparent" } }), BUILTIN_DEFINITIONS_WITHOUT_QWEN;
 var init_builtin_metadata = __esm(() => {
+  init_native_cli_entry_claude();
+  init_native_cli_entry_codex();
+  init_native_cli_entry_kimi();
+  init_native_cli_entry_pi();
+  init_native_cli_entry_local();
+  init_native_cli_entry_jcode();
+  init_native_cli_preview_claude();
+  init_native_cli_preview_codex();
+  init_native_cli_preview_kimi();
+  init_native_cli_preview_pi();
+  init_native_cli_preview_jcode();
   init_reviewer_variants();
   init_native_config_policy();
   init_native_policy_aux();
@@ -11019,6 +10923,7 @@ var init_builtin_metadata = __esm(() => {
   };
   NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN = Object.freeze([
     {
+      projection: { roleRank: 0, helpRank: 0, plannerEligible: true },
       api: 1,
       kind: "claude",
       displayName: "Claude Code",
@@ -11049,13 +10954,14 @@ var init_builtin_metadata = __esm(() => {
       session: { idField: "sessionId", currentId: sessionId("sessionId"), configDirEnv: "CLAUDE_CONFIG_DIR", zeroTurnFresh: true, launchKind: "claude-channel", launchRecord: true, ...CLAUDE_RECOVERY_SESSION, crashPlan: claudeCrashPlan, unrecordedTerminal: "always" },
       turnEnd: "native-hook",
       budget: { account: "claude", checkpoint: true, reader: { source: "claude status line", read: claudeWindows }, context: { source: "claude_statusline", read: claudeContext } },
-      cli: { command: "claude", retainedTerminalNotice: claudeRetainedTerminalNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["claude"] },
+      cli: { command: "claude", entry: { lifecycleAdmission: true, execute: runClaudeEntry }, preview: previewClaude, usage: [["ahub claude [--print-command] [--unattended] [args...]", "launch Claude Code with the hub channel"]], retainedTerminalNotice: claudeRetainedTerminalNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["claude"] },
       display: CLAUDE_DISPLAY,
       hooks: { recallPlatform: "claude", recallSource: "claude", recallInjected: true, pluginInventory: claudePluginInventory },
       reviewerVariant: CLAUDE_REVIEWER_VARIANT
     },
     {
       reviewerVariant: CODEX_REVIEWER_VARIANT,
+      projection: { roleRank: 1, startRank: 1, helpRank: 1, plannerEligible: true },
       api: 1,
       kind: "codex",
       displayName: "Codex",
@@ -11083,12 +10989,13 @@ var init_builtin_metadata = __esm(() => {
       session: { nativeRevert: true, idField: "threadId", currentId: sessionId("threadId"), configDirEnv: "CODEX_HOME", zeroTurnFresh: true, launchKind: "codex", launchRecord: true, ...CODEX_RECOVERY_SESSION, crashPlan: codexCrashPlan, unrecordedTerminal: "always" },
       turnEnd: "adapter",
       budget: { account: "codex", checkpoint: true, reader: { source: "codex rateLimits", read: codexWindows }, context: { source: "codex_token_usage", read: codexContext } },
-      cli: { command: "codex", launchConfigKeys: ["codex_bin"], retainedTerminalNotice: codexRetainedTerminalNotice, rosterReturnNotice: codexRosterReturnNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["codex"] },
+      cli: { command: "codex", entry: { lifecycleAdmission: true, execute: runCodexEntry }, preview: previewCodex, usage: [["ahub codex [--print-command] [--unattended] [args...]", "start the Codex adapter and attach the TUI"]], launchConfigKeys: ["codex_bin"], retainedTerminalNotice: codexRetainedTerminalNotice, rosterReturnNotice: codexRosterReturnNotice, stopNotice: () => "this peer belongs to a native terminal; end it in its terminal", startWords: () => ["codex"] },
       display: CODEX_DISPLAY,
       hooks: { recallPlatform: "codex", recallSource: "codex", recallInjected: true, pluginInventory: codexPluginInventory, classifyTool: codexToolSemantic }
     },
     {
       reviewerVariant: KIMI_REVIEWER_VARIANT,
+      projection: { roleRank: 2, startRank: 2, helpRank: 2, plannerEligible: true },
       api: 1,
       kind: "kimi",
       displayName: "Kimi Code",
@@ -11117,10 +11024,11 @@ var init_builtin_metadata = __esm(() => {
       budget: { account: "kimi", resetSoftTokensOnResume: true, context: { source: "acp_usage_update", read: acpContextValue } },
       capabilities: { watch: true },
       hooks: { recallPlatform: "kimi", recallSource: "kimi" },
-      cli: { command: "kimi", launchConfigKeys: ["kimi_cmd", "peers.kimi.start_mode"], stopNotice: (form) => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: (form) => ["kimi", "--mode", form] },
+      cli: { command: "kimi", entry: { lifecycleAdmission: true, execute: runKimiEntry }, preview: previewKimi, usage: [["ahub kimi [--print-command] [--mode tui|headless] [--model <alias>]", "default: Kimi's own TUI, pull-only via hub_inbox; no push, steer, watchdog, console approvals or automatic quota handoff. Select headless for ACP"]], launchConfigKeys: ["kimi_cmd", "peers.kimi.start_mode"], stopNotice: (form) => form === "tui" ? "Kimi belongs to its own TUI terminal; end it in that terminal" : "", startWords: (form) => ["kimi", "--mode", form] },
       display: KIMI_DISPLAY
     },
     {
+      projection: { roleRank: 4, startRank: 0, helpRank: 6, plannerEligible: false },
       api: 1,
       kind: "pi",
       enabledSwitchStartOnly: true,
@@ -11140,10 +11048,11 @@ var init_builtin_metadata = __esm(() => {
       reporting: { tokensNotReported: true },
       configuration: { schema: piConfigSchema, routingSchema: piRoutingSchema, settings: PI_SETTINGS, restartReasons: PI_RESTART_REASONS, validateEffective: piEffectiveConfig },
       routing: { localAllowedRefusal: "local_allowed = false also excludes pi for this class", longContext: "backend-limit", preferredTier: true, handoffPriority: 0, trace: "backend", backendLabel: "pi" },
-      cli: { command: "pi", launchConfigKeys: ["pi.cmd", "pi.backend", "pi.dgx_coding", "pi.dgx_fast", "pi.max_steps", "routing.pi", "peers.pi.start_mode"], previewArgs: ["--mode", "tui"], retainedTerminalNotice: piRetainedTerminalNotice, personOnlyFlags: ["--replace-session"], startWords: (form) => ["pi", "--mode", form] },
+      cli: { command: "pi", entry: { lifecycleAdmission: false, execute: runPiEntry }, preview: previewPi, usage: [["ahub pi [--print-command] [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--model <alias>] [--session-id <id>] [--session-file <path>] [--replace-session]", "start Pi: its TUI in this terminal unless --headless or the start mode setting (peers.pi.start_mode) says headless; without a terminal the hub opens one or says how"]], launchConfigKeys: ["pi.cmd", "pi.backend", "pi.dgx_coding", "pi.dgx_fast", "pi.max_steps", "routing.pi", "peers.pi.start_mode"], previewArgs: ["--mode", "tui"], retainedTerminalNotice: piRetainedTerminalNotice, personOnlyFlags: ["--replace-session"], startWords: (form) => ["pi", "--mode", form] },
       display: PI_DISPLAY
     },
     {
+      projection: { roleRank: 3, helpRank: 7, plannerEligible: false },
       api: 1,
       kind: "local",
       displayName: "Local worker",
@@ -11161,10 +11070,11 @@ var init_builtin_metadata = __esm(() => {
       budget: { account: "local", quotaExempt: true, instrumented: true },
       configuration: { schema: localConfigSchema, routingSchema: localRoutingSchema, restartReasons: LOCAL_RESTART_REASONS },
       routing: { localAllowedRefusal: "local_allowed = false for this class", longContext: "skip-owner", preferredTier: true, handoffPriority: 1, trace: "route" },
-      cli: { command: "local", launchConfigKeys: ["local.deny", "local.bash_network", "local.network_allow", "local.max_steps", "local.read_allow", "routing.local"], startWords: () => ["local"] },
+      cli: { command: "local", entry: { lifecycleAdmission: false, execute: runLocalEntry }, usage: [["ahub local [--route <id> | --model <id>]", "start the hub-native worker on the self-hosted models (routing.toml)"]], launchConfigKeys: ["local.deny", "local.bash_network", "local.network_allow", "local.max_steps", "local.read_allow", "routing.local"], startWords: () => ["local"] },
       display: LOCAL_DISPLAY
     },
     {
+      projection: { roleRank: 6, startRank: 3, helpRank: 3, plannerEligible: true },
       api: 1,
       kind: "jcode",
       displayName: "Jcode",
@@ -11184,7 +11094,7 @@ var init_builtin_metadata = __esm(() => {
       session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "jcode", ...JCODE_RECOVERY_SESSION, crashPlan: jcodeCrashPlan },
       turnEnd: "adapter",
       budget: { account: "jcode" },
-      cli: { command: "jcode", authority: "person", launchConfigKeys: ["jcode_cmd", "jcode_home", "jcode_provider_profile"], startWords: (mode) => ["jcode", "--mode", mode] },
+      cli: { command: "jcode", entry: { lifecycleAdmission: true, execute: runJcodeEntry }, preview: previewJcode, usage: [["ahub jcode [--mode tui|headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>] [--print-command]", "optional Jcode (roster.jcode, default off): its TUI on the hub-owned ACP session, opened once that session is saved; --mode headless for ACP only; native policy unmanaged, no hub sandbox"]], authority: "person", launchConfigKeys: ["jcode_cmd", "jcode_home", "jcode_provider_profile"], startWords: (mode) => ["jcode", "--mode", mode] },
       display: JCODE_DISPLAY,
       hooks: { recallPlatform: "jcode" }
     }
@@ -11344,9 +11254,82 @@ var init_builtin_metadata = __esm(() => {
   ]);
 });
 
+// src/adapters/definitions/native-cli-entry-qwen.ts
+async function runQwenEntry(ctx) {
+  const peer = ctx.instance ?? "qwen";
+  const { args, cwd, stateDir, unattendedEnv, connect, fail, takeFlags } = ctx;
+  const { launcherPreview } = ctx.helpers;
+  if (args.includes("--print-command") || args.includes("--dry-run")) {
+    try {
+      return console.log(JSON.stringify(launcherPreview("qwen", args, cwd, stateDir, unattendedEnv), null, 2));
+    } catch {
+      fail("cannot preview Qwen launch: invalid arguments or configuration (details withheld)");
+    }
+  }
+  const { one, rest } = takeFlags(args, ["--mode", "--model", "--session-id"], []);
+  const adapter = ctx.definition;
+  if (one["--session-id"] !== undefined && !adapter.session.crashIdentity?.({ sessionId: one["--session-id"] }).sessionId)
+    fail("invalid Qwen session identity");
+  if (rest.length || one["--mode"] !== undefined && !adapter.start.forms.includes(one["--mode"]))
+    fail("Qwen TUI is not offered before verification; usage: ahub qwen [--mode headless] [--model <alias>] [--session-id <id>]");
+  const hub = await connect();
+  try {
+    const snapshot = (await hub.request({ t: "status" })).status;
+    const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
+    if (warning)
+      console.error(warning);
+    const reply = await hub.request({ t: "start", peer, args: { mode: "headless", ...one["--model"] ? { model: one["--model"] } : {}, ...one["--session-id"] ? { sessionId: one["--session-id"] } : {} }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35000);
+    if (!reply.ok)
+      fail(reply.error);
+    console.log(reply.already ? `${peer} is already attached` : `${peer} attached (headless); use ahub say @${peer} and the console for approvals`);
+  } finally {
+    hub.close();
+  }
+}
+var init_native_cli_entry_qwen = () => {};
+
+// src/adapters/definitions/native-cli-preview-qwen.ts
+import { join as join24 } from "path";
+function previewQwen(ctx) {
+  const { tool, args, cwd, stateDir, cliDir, config } = ctx;
+  const state = previewState(args, ctx.baseEnvNames), { unresolved, value } = state;
+  let envNames = state.envNames;
+  let launch;
+  const mode = value("--mode") ?? "headless", model = value("--model");
+  const adapter = ctx.definition;
+  if (!adapter.start.forms.includes(mode))
+    throw new Error("Qwen TUI is not offered before verification");
+  for (let i = 0;i < args.length; i += 2)
+    if (!["--model", "--mode", "--session-id"].includes(args[i]) || !args[i + 1])
+      throw new Error("unknown Qwen option");
+  const sessionId = value("--session-id");
+  if (sessionId !== undefined && !adapter.session.crashIdentity?.({ sessionId }).sessionId)
+    throw new Error("invalid Qwen session identity");
+  if (sessionId)
+    unresolved.push({ field: "sessionId", reason: "requested through ACP session/load at start; preview does not load or expose it" });
+  launch = adapter.start.launch({
+    instance: tool,
+    form: "headless",
+    projectRoot: cwd,
+    stateDir,
+    entrypoint: join24(cliDir, "main.js"),
+    userArgs: [],
+    unattended: false,
+    env: {},
+    preview: true,
+    nativeCommand: nativeCommand(config.qwen_cmd, ["qwen", "--acp"]),
+    model: model ? REDACTED : undefined
+  });
+  unresolved.push({ field: "nativeIdentity", reason: "Qwen Code 0.25.0 identity and permission modes are checked at ACP initialization; preview starts nothing" });
+  return finishPreview(ctx, launch, envNames, unresolved, undefined);
+}
+var init_native_cli_preview_qwen = () => {};
+
 // src/adapters/definitions/qwen.ts
 var QWEN_DEFINITION;
 var init_qwen = __esm(() => {
+  init_native_cli_entry_qwen();
+  init_native_cli_preview_qwen();
   init_native_display();
   init_native_recovery();
   init_acp();
@@ -11354,6 +11337,7 @@ var init_qwen = __esm(() => {
   QWEN_DEFINITION = {
     api: 1,
     kind: "qwen",
+    projection: { roleRank: 5, helpRank: 5, plannerEligible: true },
     displayName: "Qwen Code",
     family: "qwen",
     transport: "acp",
@@ -11411,7 +11395,7 @@ var init_qwen = __esm(() => {
     turnEnd: "adapter",
     budget: { account: "qwen" },
     capabilities: { watch: true },
-    cli: { command: "qwen", launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
+    cli: { command: "qwen", entry: { lifecycleAdmission: true, execute: runQwenEntry }, preview: previewQwen, usage: [["ahub qwen [--mode headless] [--model <alias>] [--session-id <id>] [--print-command]", "start optional Qwen Code 0.25.0 ACP (roster.qwen, default off)"]], launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
     display: QWEN_DISPLAY,
     hooks: { recallPlatform: "qwen" }
   };
@@ -11608,6 +11592,27 @@ function immutable(value, seen = new WeakSet) {
     immutable(member, seen);
   return Object.freeze(value);
 }
+function deriveAdapterLists(definitions) {
+  const ordered = (field, eligible = (_definition) => true) => definitions.map((definition, index) => ({ definition, index })).filter(({ definition }) => eligible(definition)).sort((left, right) => {
+    const a = left.definition.projection?.[field], b = right.definition.projection?.[field];
+    if (a === undefined)
+      return b === undefined ? left.index - right.index : 1;
+    if (b === undefined)
+      return -1;
+    return a - b || left.index - right.index;
+  }).map(({ definition }) => definition.kind);
+  const KNOWN_PEERS = definitions.filter((definition) => !definition.optional).map((definition) => definition.kind);
+  const OPTIONAL_PEERS = definitions.filter((definition) => definition.optional).map((definition) => definition.kind);
+  return immutable({
+    KNOWN_PEERS,
+    OPTIONAL_PEERS,
+    SUPPORTED_PEERS: [...KNOWN_PEERS, ...OPTIONAL_PEERS],
+    START_MODE_PEERS: ordered("startRank", (definition) => definition.start.forms.includes("tui") && definition.start.forms.includes("headless")),
+    ROLE_ORDER: ordered("roleRank"),
+    HELP_ORDER: ordered("helpRank"),
+    PLANNER_PEERS: definitions.filter((definition) => definition.projection?.plannerEligible === true).map((definition) => definition.kind)
+  });
+}
 function ownField(value, key) {
   if (!value || typeof value !== "object" || types2.isProxy(value) || Array.isArray(value) || ![Object.prototype, null].includes(Object.getPrototypeOf(value)))
     return;
@@ -11697,6 +11702,16 @@ function assertDefinitionCoherence(definition) {
   if (definition.turnEnd === "native-hook" && definition.transport !== "claude-channel" && !definition.hooks?.factsHook) {
     fail("turnEnd", "native-hook requires the Claude transport or a native factsHook");
   }
+  const projection = definition.projection;
+  if (projection !== undefined) {
+    if (!projection || typeof projection !== "object" || Array.isArray(projection) || Object.keys(projection).some((key) => !["roleRank", "startRank", "helpRank", "plannerEligible"].includes(key)))
+      fail("projection", "invalid projection metadata");
+    for (const field of ["roleRank", "startRank", "helpRank"])
+      if (projection[field] !== undefined && (typeof projection[field] !== "number" || !Number.isFinite(projection[field])))
+        fail(`projection.${field}`, "rank must be finite");
+    if (projection.plannerEligible !== undefined && typeof projection.plannerEligible !== "boolean")
+      fail("projection.plannerEligible", "boolean required");
+  }
   const attach = definition.attach, pullOnly = attach?.pullOnlyForms;
   if (pullOnly !== undefined) {
     if (!Array.isArray(pullOnly) || pullOnly.some((form) => !definition.start.forms.includes(form)))
@@ -11749,20 +11764,22 @@ function assertNativeCapabilityScope(definition) {
     ["session.crashIdentity", declared(definition.session, "crashIdentity")],
     ["start.daemonPort pi-rpc", definition.start.daemonPort === "pi-rpc"],
     ["routing", definition.routing !== undefined],
+    ["projection", definition.projection !== undefined],
     ["reviewerVariant", definition.reviewerVariant !== undefined],
     ["reviewer", definition.reviewer !== undefined],
-    ["hooks.factsHook", declared(definition.hooks, "factsHook")]
+    ["hooks.factsHook", declared(definition.hooks, "factsHook")],
+    ["cli.entry", declared(definition.cli, "entry")],
+    ["cli.preview", declared(definition.cli, "preview")],
+    ["cli.usage", declared(definition.cli, "usage")]
   ];
   const field = restricted.find(([, present]) => present)?.[0];
   if (field)
     throw new Error(`${field} is restricted to fixed builtin adapter definitions`);
 }
-var KNOWN_PEERS, OPTIONAL_PEERS, SUPPORTED_PEERS, fixedBuiltinDefinitions, ADAPTERS, declarationOnlyDefinitions, definitions, REVIEW_POOL_KINDS, DEFAULT_REVIEW_POOL, QUOTA_HANDOFF_PLATFORMS, ROLE_ORDER, CONDUCTOR_START_PRIORITY, CONDUCTOR_START_PEERS, ADAPTER_DISPLAY, BUILTIN_CLI_ENTRIES;
+var fixedBuiltinDefinitions, ADAPTERS, KNOWN_PEERS, OPTIONAL_PEERS, SUPPORTED_PEERS, START_MODE_PEERS, ROLE_ORDER, PLANNER_PEERS, declarationOnlyDefinitions, definitions, REVIEW_POOL_KINDS, DEFAULT_REVIEW_POOL, QUOTA_HANDOFF_PLATFORMS, CONDUCTOR_START_PRIORITY, CONDUCTOR_START_PEERS, ADAPTER_DISPLAY, BUILTIN_CLI_ENTRIES;
 var init_registry = __esm(() => {
   init_definition();
   init_reviewer_variants();
-  init_native_cli_entry();
-  init_native_cli_preview();
   init_native_factories();
   init_builtin_metadata();
   init_qwen();
@@ -11770,9 +11787,6 @@ var init_registry = __esm(() => {
   init_native_config_defaults();
   init_native_cli_doctor();
   init_native_display();
-  KNOWN_PEERS = ["claude", "codex", "kimi", "pi", "local"];
-  OPTIONAL_PEERS = ["qwen", "jcode", "agy"];
-  SUPPORTED_PEERS = [...KNOWN_PEERS, ...OPTIONAL_PEERS];
   fixedBuiltinDefinitions = new Set([...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, QWEN_DEFINITION, AGY_DEFINITION, AGY_REVIEWER_VARIANT]);
   for (const definition of [...fixedBuiltinDefinitions])
     if (definition.reviewerVariant)
@@ -11783,6 +11797,7 @@ var init_registry = __esm(() => {
     ...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN.filter((definition) => definition.kind === "jcode"),
     AGY_DEFINITION
   ]);
+  ({ KNOWN_PEERS, OPTIONAL_PEERS, SUPPORTED_PEERS, START_MODE_PEERS, ROLE_ORDER, PLANNER_PEERS } = deriveAdapterLists(ADAPTERS));
   declarationOnlyDefinitions = immutable([]);
   definitions = new Map;
   for (const definition of [...ADAPTERS, ...declarationOnlyDefinitions]) {
@@ -11799,7 +11814,6 @@ var init_registry = __esm(() => {
   REVIEW_POOL_KINDS = Object.freeze([...definitions.values()].filter((definition) => !!(definition.reviewerVariant ?? definition).reviewer).map((definition) => definition.kind));
   DEFAULT_REVIEW_POOL = Object.freeze(ADAPTERS.filter((definition) => (definition.reviewerVariant ?? definition).reviewer?.defaultPool === true).map((definition) => definition.kind));
   QUOTA_HANDOFF_PLATFORMS = Object.freeze(Object.fromEntries(ADAPTERS.flatMap((adapter) => adapter.hooks?.recallPlatform ? [[adapter.kind, adapter.hooks.recallPlatform]] : [])));
-  ROLE_ORDER = ["claude", "codex", "kimi", "local", "pi", "qwen", "jcode", "agy"];
   CONDUCTOR_START_PRIORITY = ["local", "kimi", "pi"];
   CONDUCTOR_START_PEERS = [
     ...CONDUCTOR_START_PRIORITY,
@@ -11809,7 +11823,7 @@ var init_registry = __esm(() => {
     pullOnlyRead: adapter.attach?.pullOnlyForms?.includes("tui") === true,
     terminalApproval: adapter.trust.hubSandboxed
   }]));
-  BUILTIN_CLI_ENTRIES = Object.freeze(builtinCliEntries.map((entry) => {
+  BUILTIN_CLI_ENTRIES = Object.freeze(builtinCliEntries(ADAPTERS).map((entry) => {
     const definition = definitionOf(entry.command);
     if (!definition)
       throw new Error("builtin CLI entry has no adapter definition");

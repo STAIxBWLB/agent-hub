@@ -689,6 +689,25 @@ in all), and the Office draws each condition (idle, busy, offline, paused, waiti
 next to its words. Condition names are unchanged. The Office scene names its colours only through the same tokens as the rest of the page, and the
 contrast test checks every token an Office rule uses, in both themes.
 
+### Dashboard keyed rendering, motion and states (#469 R6)
+
+The page still polls `/snapshot` once a second and still skips a redraw when a container's JSON did not change. What changed is how
+a changed container is redrawn: task cards, peer rows and memory rows are kept per id. A card, row or memory entry whose own data
+did not change keeps its DOM node, so hover, an open "Details" fold and a focused card survive a poll that changed something
+else. One that changed is replaced by a fresh node, and if it held focus the focus moves to the replacement. A card that moves to
+another column fades in; one that disappears is simply removed.
+
+Motion moves `transform` and `opacity` only, 120 to 200 ms, ease-out: button press, a short fade when you switch views, a card
+arriving in a column, the toast, and the side sheets. The Office keeps its own motion. Nothing new loops. With the system setting
+"reduce motion" every transition and animation in the page is off.
+
+States: until the first snapshot arrives the board and the peer list show grey blocks shaped like them. Each empty view says what
+fills it and the command that does it (`ahub task propose`, `ahub claude` or `ahub codex`, `ahub say`, `ahub permit`, `ahub
+remember`, `ahub goal new`). When a poll fails the connection status turns red, the content dims to 60 percent but stays readable,
+and a line at the top gives the time of the last snapshot and says polling continues. Notices are a stack of up to four toasts in
+the bottom corner (`aria-live="polite"`): a success fades after 4 seconds (and stays under reduce motion), an error stays until
+you press Dismiss.
+
 ## Multiple projects and worktrees
 
 Version 0.4.0 adds one independent hub per repository or Git worktree.

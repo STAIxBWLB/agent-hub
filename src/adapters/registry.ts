@@ -14,12 +14,6 @@ export type * from "./registry-types.ts";
 import { ADAPTER_API } from "./adapter-api.ts";
 export { ADAPTER_API };
 
-/** Ordered compatibility projections stay typed independently of definition implementation inference. */
-export const KNOWN_PEERS = ["claude", "codex", "kimi", "pi", "local"] as const;
-export const OPTIONAL_PEERS = ["qwen", "jcode", "agy"] as const;
-export const SUPPORTED_PEERS = [...KNOWN_PEERS, ...OPTIONAL_PEERS] as const;
-export const START_MODE_PEERS = ["pi", "codex", "kimi", "jcode"] as const;
-export const OFFICE_PEER_ORDER: readonly string[] = KNOWN_PEERS;
 
 
 function immutable<T>(value: T, seen = new WeakSet<object>()): T {
@@ -39,6 +33,31 @@ export const ADAPTERS: readonly AdapterDefinition[] = immutable([
   ...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN.filter(definition => definition.kind === "jcode"),
   AGY_DEFINITION,
 ]);
+export interface AdapterLists {
+  readonly KNOWN_PEERS: readonly string[]; readonly OPTIONAL_PEERS: readonly string[]; readonly SUPPORTED_PEERS: readonly string[];
+  readonly START_MODE_PEERS: readonly string[]; readonly ROLE_ORDER: readonly string[]; readonly HELP_ORDER: readonly string[]; readonly PLANNER_PEERS: readonly string[];
+}
+/** Pure builtin projections. Unranked definitions retain their source order after ranked definitions. */
+export function deriveAdapterLists(definitions: readonly AdapterDefinition[]): AdapterLists {
+  const ordered = (field: "roleRank" | "startRank" | "helpRank", eligible = (_definition: AdapterDefinition) => true) => definitions
+    .map((definition, index) => ({ definition, index })).filter(({ definition }) => eligible(definition))
+    .sort((left, right) => {
+      const a = left.definition.projection?.[field], b = right.definition.projection?.[field];
+      if (a === undefined) return b === undefined ? left.index - right.index : 1;
+      if (b === undefined) return -1;
+      return a - b || left.index - right.index;
+    }).map(({ definition }) => definition.kind);
+  const KNOWN_PEERS = definitions.filter(definition => !definition.optional).map(definition => definition.kind);
+  const OPTIONAL_PEERS = definitions.filter(definition => definition.optional).map(definition => definition.kind);
+  return immutable({ KNOWN_PEERS, OPTIONAL_PEERS, SUPPORTED_PEERS: [...KNOWN_PEERS, ...OPTIONAL_PEERS],
+    START_MODE_PEERS: ordered("startRank", definition => definition.start.forms.includes("tui") && definition.start.forms.includes("headless")),
+    ROLE_ORDER: ordered("roleRank"), HELP_ORDER: ordered("helpRank"),
+    PLANNER_PEERS: definitions.filter(definition => definition.projection?.plannerEligible === true).map(definition => definition.kind),
+  });
+}
+export const { KNOWN_PEERS, OPTIONAL_PEERS, SUPPORTED_PEERS, START_MODE_PEERS, ROLE_ORDER, PLANNER_PEERS } = deriveAdapterLists(ADAPTERS);
+export const OFFICE_PEER_ORDER: readonly string[] = KNOWN_PEERS;
+
 // Unavailable declarations are metadata, not supported native peers or launchers.
 const declarationOnlyDefinitions: readonly AdapterDefinition[] = immutable([]);
 const definitions = new Map<string, AdapterDefinition>();
@@ -127,8 +146,7 @@ export function createProjectAdapterCatalog(rawAdapters?: unknown, externalDefin
 }
 
 /** Compatibility projection order is observable in default role maps and planner selection. */
-const ROLE_ORDER = ["claude", "codex", "kimi", "local", "pi", "qwen", "jcode", "agy"] as const;
-export const PLANNER_PEERS = ["claude", "codex", "kimi", "qwen", "jcode"] as const;
+
 
 /** Callers own their role arrays, independent of immutable native policy. */
 export function defaultPeerRoles(includeOptional = false): Record<string, string[]> {
@@ -166,6 +184,12 @@ export function assertDefinitionCoherence(definition: AdapterDefinition): void {
   }
   if (definition.turnEnd === "native-hook" && definition.transport !== "claude-channel" && !definition.hooks?.factsHook) {
     fail("turnEnd", "native-hook requires the Claude transport or a native factsHook");
+  }
+  const projection = definition.projection;
+  if (projection !== undefined) {
+    if (!projection || typeof projection !== "object" || Array.isArray(projection) || Object.keys(projection).some(key => !["roleRank", "startRank", "helpRank", "plannerEligible"].includes(key))) fail("projection", "invalid projection metadata");
+    for (const field of ["roleRank", "startRank", "helpRank"] as const) if (projection[field] !== undefined && (typeof projection[field] !== "number" || !Number.isFinite(projection[field]))) fail(`projection.${field}`, "rank must be finite");
+    if (projection.plannerEligible !== undefined && typeof projection.plannerEligible !== "boolean") fail("projection.plannerEligible", "boolean required");
   }
   const attach = definition.attach, pullOnly = attach?.pullOnlyForms;
   if (pullOnly !== undefined) {
@@ -207,9 +231,13 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
     ["session.crashIdentity", declared(definition.session, "crashIdentity")],
     ["start.daemonPort pi-rpc", definition.start.daemonPort === "pi-rpc"],
     ["routing", definition.routing !== undefined],
+    ["projection", definition.projection !== undefined],
     ["reviewerVariant", definition.reviewerVariant !== undefined],
     ["reviewer", definition.reviewer !== undefined],
     ["hooks.factsHook", declared(definition.hooks, "factsHook")],
+    ["cli.entry", declared(definition.cli, "entry")],
+    ["cli.preview", declared(definition.cli, "preview")],
+    ["cli.usage", declared(definition.cli, "usage")],
   ];
   const field = restricted.find(([, present]) => present)?.[0];
   if (field) throw new Error(`${field} is restricted to fixed builtin adapter definitions`);
@@ -244,8 +272,8 @@ export function builtinPreviewOf(id: string) {
 /** Fixed builtin doctor metadata and pure observed-value projections; the CLI retains all probe effects. */
 export { DOCTOR_TOOL_PROBES, DOCTOR_MEMORY_CAPTURE_PEERS, DOCTOR_PLUGIN_PROBE, nativeDoctorCheck, nativeDoctorRecoveryIdentity, nativeDoctorOptionalProbes } from "./definitions/native-cli-doctor.ts";
 
-/** Internal fixed builtin CLI entries; public AdapterDefinition and NativeHooks expose no execution extension. */
-export const BUILTIN_CLI_ENTRIES = Object.freeze(builtinCliEntries.map(entry => {
+/** Definition-owned CLI entries are restricted to fixed builtins, never config or external execution extensions. */
+export const BUILTIN_CLI_ENTRIES = Object.freeze(builtinCliEntries(ADAPTERS).map(entry => {
   const definition = definitionOf(entry.command);
   if (!definition) throw new Error("builtin CLI entry has no adapter definition");
   return Object.freeze({ ...entry, definition });

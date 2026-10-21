@@ -79,9 +79,6 @@ section{border:1px solid var(--line);background:var(--panel);border-radius:var(-
 .stream{height:360px;overflow:auto}
 .event{padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--line)}
 .event .body{font:var(--text-sm)/1.55 var(--font-mono)}
-.notice{margin:0;border:1px solid var(--line);border-radius:var(--radius-control);padding:var(--space-3);background:var(--panel);overflow-wrap:anywhere}
-.notice.error{color:var(--red);border-color:var(--red)}
-.notice:empty{display:none}
 
 /* Badges, dots, chips */
 .badge{display:inline-block;font:var(--text-xs) var(--font-mono);font-variant-numeric:tabular-nums;padding:2px var(--space-2);background:var(--panel-soft);color:var(--muted);border-radius:var(--radius-full);white-space:nowrap}
@@ -237,7 +234,8 @@ details.settings-group .row:last-child{border-bottom:0}
 @media(max-width:1100px){.board-columns{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:900px){.stack{gap:var(--space-4)}.stream{height:300px}footer{padding:var(--space-4)}}
 @media(max-width:600px){.split{grid-template-columns:minmax(0,1fr)}.board-columns{grid-template-columns:1fr;padding:var(--space-3)}.board-toolbar{align-items:stretch}.board-toolbar select{max-width:none;width:100%}.board-toolbar label{width:100%}}
-@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+/* Reduced motion (#469 R6): one rule for the whole page. Every transition and animation is off, whatever rule declares it. */
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{transition:none!important;animation:none!important;scroll-behavior:auto!important}}
 
 .office-scene{display:block;max-width:100%;height:auto;margin-inline:auto;font-family:system-ui,sans-serif;font-size:1px}.office-scene :is(rect,path,line,polygon,circle){vector-effect:non-scaling-stroke;stroke-width:1px}.office-room{fill:var(--panel-soft);stroke:var(--line)}.office-room-title{fill:var(--ink);font-size:1.083333px;font-weight:600}.office-room-count{fill:var(--ink);font-size:1px;font-family:ui-monospace,monospace;font-variant-numeric:tabular-nums}.office-header-surface{fill:var(--panel);stroke:var(--line)}.office-count-pill{fill:var(--panel);stroke:var(--line)}.office-desk-surface{fill:var(--panel);stroke:var(--line)}.office-desk.office-dimmed .office-avatar{opacity:.55}.office-name{fill:var(--ink);font-size:1.083333px;font-weight:600}.office-state,.office-meta,.office-empty{fill:var(--muted);font-size:1px}.office-glyph,.office-hand{font-size:1px}.office-idle .office-glyph{fill:var(--green)}.office-busy .office-glyph{fill:var(--amber)}.office-offline .office-glyph,.office-unknown .office-glyph{fill:var(--muted)}.office-paused .office-glyph{fill:var(--amber)}.office-waiting .office-glyph{fill:var(--red)}.office-hand{fill:var(--red)}.office-bubble{fill:var(--panel);stroke:var(--blue)}.office-bubble-text{fill:var(--ink);font-size:1px}.office-mode{fill:var(--muted);font-size:1px;font-family:ui-monospace,monospace}.office-card{fill:var(--control);stroke:var(--control-border)}.office-card-text{fill:var(--ink);font-size:1px}.office-card-id{font-family:ui-monospace,monospace}.office-card-accent{fill:var(--line)}.office-waiting-card .office-card-accent{fill:var(--waiting)}.office-rework-card .office-card-accent{fill:var(--red)}.office-card-checking .office-card-accent{fill:var(--blue)}.office-more{fill:var(--blue);font-size:1px}.office-scene .office-spotlight .office-desk-surface,.office-scene .office-spotlight .office-card,.office-scene [role="button"]:focus-visible > .office-card{stroke:var(--focus);stroke-width:2px}.office-card-hit{fill:transparent;stroke:none;pointer-events:all}.office-card-focus:focus-visible{outline:none}.row.spotlight{background:var(--hover)}
 
@@ -297,7 +295,7 @@ kbd{display:inline-block;min-width:24px;padding:1px var(--space-2);border:1px so
 @media(max-width:1023px){.topbar{position:static;flex-wrap:wrap;gap:var(--space-1) var(--space-3);padding-block:var(--space-2)}.topbar #project-context{order:3;flex-basis:100%}.topbar-end{margin-left:0;flex-wrap:wrap;width:100%;gap:var(--space-2) var(--space-3)}.topbar-end .connection{flex:1 0 100%;white-space:normal}.topbar-end .theme-field{margin-left:auto}main{padding:var(--space-4)}.brand h1 span{display:none}}
 @media(max-width:600px){main{padding:var(--space-3)}.topbar{padding:var(--space-2) var(--space-3)}.theme-field label{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}}
 main>.stack{margin-top:var(--space-6)}
-.task-card.compact{cursor:pointer;min-height:44px;transition:transform .15s ease-out,box-shadow .15s ease-out}
+.task-card.compact{cursor:pointer;min-height:44px;transition:transform .15s ease-out}
 .task-card.compact:hover,.task-card.compact:focus-visible{border-color:var(--focus);box-shadow:var(--shadow-1);transform:translateY(-1px)}
 .task-card.compact[draggable="true"]:active{box-shadow:var(--shadow-2);transform:translateY(-2px)}
 .task-card.compact .card-head{display:flex;justify-content:flex-start;align-items:flex-start;gap:var(--space-2)}
@@ -332,6 +330,33 @@ main>.stack{margin-top:var(--space-6)}
 .dialog-head{display:flex;justify-content:space-between;align-items:center;gap:var(--space-3);margin-bottom:var(--space-4)}
 .dialog-head button{min-height:44px}
 @media(max-width:600px){.board-focus{grid-template-columns:minmax(0,1fr)}}
+
+/* Quiet motion (#469 R6). Only transform and opacity move, 120 to 200 ms, ease-out. The Office keeps its own pinned motion above. */
+button{transition:transform .12s ease-out}
+button:active:not(:disabled){transform:translateY(1px)}
+main section[data-view]:not([hidden]){animation:view-in .16s ease-out}
+.task-card.is-new{animation:card-in .16s ease-out}
+@keyframes view-in{from{opacity:0}}
+@keyframes card-in{from{opacity:0;transform:translateY(4px)}}
+@keyframes toast-in{from{opacity:0;transform:translateY(8px)}}
+/* Toasts: a stack in the bottom corner, newest last. An error is dismissed by hand; a success fades. */
+.notice{position:fixed;right:var(--space-4);bottom:var(--space-4);z-index:20;display:flex;flex-direction:column;gap:var(--space-2);width:min(420px,calc(100vw - 2 * var(--space-4)));margin:0;pointer-events:none}
+.notice:empty{display:none}
+.toast{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--space-3);border:1px solid var(--line);border-radius:var(--radius-surface);padding:var(--space-3) var(--space-4);background:var(--raised);box-shadow:var(--shadow-2);overflow-wrap:anywhere;pointer-events:auto;animation:toast-in .16s ease-out}
+.toast.error{color:var(--red);border-color:var(--red)}
+.toast-out{opacity:0;transition:opacity .16s ease-out}
+.toast-text{flex:1 1 auto;min-width:0}
+.toast-dismiss{flex:none;min-height:32px;padding:var(--space-1) var(--space-2);font-size:var(--text-xs)}
+/* Disconnected: the connection status is already err; the content dims, stays readable, and one line says when the last snapshot came. */
+.disconnected{margin:0 0 var(--space-4);padding:var(--space-2) var(--space-4);border:1px solid var(--red);border-radius:var(--radius-control);color:var(--red);background:var(--panel);font-size:var(--text-sm)}
+main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity .16s ease-out}
+/* First load: blocks shaped like the board columns and the peer rows, until the first snapshot replaces them. They do not animate. */
+.skeleton{display:flex;flex-direction:column;gap:var(--space-3);padding:var(--space-4)}
+.skeleton-board{flex-direction:row;align-items:flex-start}
+.skeleton-col{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:var(--space-3);padding:var(--space-3);border:1px solid var(--line);border-radius:var(--radius-surface);background:var(--panel-soft)}
+.skeleton-bar{display:block;height:var(--space-4);border-radius:var(--radius-control);background:var(--line)}
+.skeleton-tall{height:var(--space-8)}
+@media(max-width:600px){.skeleton-board{flex-direction:column}}
 </style>
 </head>
 <body>
@@ -364,8 +389,9 @@ main>.stack{margin-top:var(--space-6)}
 </nav>
 <div class="shell-body">
 <main id="main-content" tabindex="-1">
-<p id="notice" class="notice" role="status" aria-live="polite"></p>
-<section class="task-board-section" aria-labelledby="tasks-title" data-view="board"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="backlog">Backlog</option><option value="proposed">To Do</option><option value="work">Work (including rework)</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="cancelled">Cancelled</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div class="board-toolbar"><button id="plan-open" type="button" class="primary" aria-haspopup="dialog">Plan</button><button id="board-back" type="button" hidden>Back to board</button><span id="board-focus-title" class="meta" hidden></span><label for="task-peer-filter">Agent<select id="task-peer-filter"><option value="">All agents</option></select></label><label for="task-release-filter">Release<select id="task-release-filter"><option value="">All releases</option></select></label><label for="task-lanes">View<select id="task-lanes"><option value="columns">By state</option><option value="agents">By agent</option><option value="releases">By release</option></select></label></div><div id="task-legend" class="agent-legend" role="group" aria-label="Agent legend and assignment targets"></div><div id="tasks" class="task-list"></div></section>
+<p id="disconnected" class="disconnected" role="status" hidden></p>
+<div id="notice" class="notice" role="status" aria-live="polite" aria-label="Notices"></div>
+<section class="task-board-section" aria-labelledby="tasks-title" data-view="board"><div class="section-head"><h2 id="tasks-title">Task board</h2><div class="filters"><select id="task-filter" aria-label="Filter tasks by state"><option value="">All states</option><option value="backlog">Backlog</option><option value="proposed">To Do</option><option value="work">Work (including rework)</option><option value="in_progress">In progress</option><option value="in_review">In review</option><option value="approved">Approved</option><option value="cancelled">Cancelled</option><option value="changes_requested">Changes requested</option></select><span id="task-count" class="meta"></span></div></div><div id="task-progress" class="task-progress" aria-live="polite"></div><div class="board-toolbar"><button id="plan-open" type="button" class="primary" aria-haspopup="dialog">Plan</button><button id="board-back" type="button" hidden>Back to board</button><span id="board-focus-title" class="meta" hidden></span><label for="task-peer-filter">Agent<select id="task-peer-filter"><option value="">All agents</option></select></label><label for="task-release-filter">Release<select id="task-release-filter"><option value="">All releases</option></select></label><label for="task-lanes">View<select id="task-lanes"><option value="columns">By state</option><option value="agents">By agent</option><option value="releases">By release</option></select></label></div><div id="task-legend" class="agent-legend" role="group" aria-label="Agent legend and assignment targets"></div><div id="tasks" class="task-list"><div class="skeleton skeleton-board" aria-hidden="true"><div class="skeleton-col"><span class="skeleton-bar"></span><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span></div><div class="skeleton-col"><span class="skeleton-bar"></span><span class="skeleton-bar skeleton-tall"></span></div><div class="skeleton-col"><span class="skeleton-bar"></span><span class="skeleton-bar skeleton-tall"></span></div><div class="skeleton-col"><span class="skeleton-bar"></span></div><div class="skeleton-col"><span class="skeleton-bar"></span><span class="skeleton-bar skeleton-tall"></span></div></div><p class="empty">Loading the board...</p></div></section>
 <div class="stack">
 <section id="office-section" aria-labelledby="office-title" data-view="office" hidden><div class="section-head"><h2 id="office-title">Office</h2><div class="filters"><label for="office-view">Office mode</label><select id="office-view"><option value="off">Off</option><option value="flat">Flat</option><option value="isometric">Isometric</option></select></div></div><div id="office" class="content"></div></section>
 <section aria-labelledby="stream-title" data-view="stream" hidden><div class="section-head"><h2 id="stream-title">Live stream</h2><div class="filters"><div id="stream-filters" class="chips" role="group" aria-label="Filter events by kind"></div><label><input id="follow" type="checkbox" checked> Follow latest</label></div></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div><p id="stream-empty" class="empty" hidden>No events match this filter.</p></section>
@@ -376,7 +402,7 @@ main>.stack{margin-top:var(--space-6)}
 </div>
 <div class="stack">
 <section id="projects-panel" aria-labelledby="projects-title" data-view="agents" hidden><div class="section-head"><h2 id="projects-title">Projects</h2><span id="project-count" class="meta"></span></div><div id="projects"></div></section>
-<section aria-labelledby="peers-title" data-view="agents" hidden><div class="section-head"><h2 id="peers-title">Peers &amp; queues</h2><span id="peer-count" class="meta"></span></div><div id="peers"></div></section>
+<section aria-labelledby="peers-title" data-view="agents" hidden><div class="section-head"><h2 id="peers-title">Peers &amp; queues</h2><span id="peer-count" class="meta"></span></div><div id="peers"><div class="skeleton" aria-hidden="true"><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span></div><p class="empty">Loading peers...</p></div></section>
 <section aria-labelledby="permissions-title" data-view="agents" hidden><div class="section-head"><h2 id="permissions-title">Pending approvals</h2><span id="permission-count" class="meta"></span></div><div id="permissions"></div></section>
 <section aria-labelledby="budget-title" data-view="agents" hidden><div class="section-head"><h2 id="budget-title">Usage budgets</h2></div><div id="budget"></div></section>
 <section aria-labelledby="bench-title" data-view="agents" hidden><div class="section-head"><h2 id="bench-title">Benchmarks</h2><span id="bench-count" class="meta"></span></div><div id="bench"></div></section>
@@ -455,6 +481,13 @@ const $ = (id) => document.getElementById(id);
 const el = (tag, text, cls) => { const node = document.createElement(tag); if (text !== undefined) node.textContent = String(text); if (cls) node.className = cls; return node; };
 let stopped = false, cursor = 0, timer, projectsTimer, eventCount = 0;
 const setConnection = (text, state) => { const node = $('connection'); node.textContent = text; node.dataset.state = state; };
+// Disconnected (#469 R6): the content dims (opacity only) but stays readable, and one line says when the last snapshot arrived.
+let lastSnapshotAt = 0;
+function setDisconnected(down) {
+  const main = $('main-content'), line = $('disconnected');
+  if (down) { main.dataset.stale = 'true'; line.hidden = false; setText(line, (lastSnapshotAt ? 'Last snapshot at ' + new Date(lastSnapshotAt).toLocaleTimeString() : 'No snapshot received yet') + '. Polling continues every second.'); }
+  else { delete main.dataset.stale; line.hidden = true; setText(line, ''); }
+}
 let managerMode = false, projectList = [], selectedProjectId = '', selectedInstanceId = '', snapshotValid = false, viewGeneration = 0, projectRequest = 0;
 let lastSnapshot = null;
 let officePrev = null;
@@ -479,7 +512,19 @@ const taskBadge = { proposed: '', in_progress: 'warn', in_review: 'info', approv
 const peerDot = { idle: 'ok', busy: 'warn', paused: 'warn', offline: '' };
 const projectBadge = { running: 'ok', starting: 'warn', stopping: 'warn', stopped: '', unavailable: 'err', incompatible: 'err', missing: 'err' };
 function refreshRelativeTimes(root) { for (const node of root.querySelectorAll('[data-ts]')) node.textContent = rel(Number(node.dataset.ts)); }
-function notice(text, error = false) { $('notice').textContent = text; $('notice').classList.toggle('error', error); }
+// Toasts (#469 R6): #notice is a stack of at most four. An empty text clears it. The same text again replaces its toast. An error stays
+// until it is dismissed; a success fades out after 4 s (opacity only) and stays when the system asks for reduced motion.
+function notice(text, error = false) {
+  const TOAST_MAX = 4, TOAST_MS = 4000, TOAST_FADE_MS = 160, stack = $('notice');
+  if (!text) { stack.replaceChildren(); return; }
+  const gone = (node) => stack.replaceChildren(...[...stack.children].filter((child) => child !== node));
+  const toast = el('div', undefined, 'toast' + (error ? ' error' : '')), body = el('span', text, 'toast-text'), dismiss = el('button', 'Dismiss', 'toast-dismiss');
+  dismiss.type = 'button'; dismiss.setAttribute('aria-label', 'Dismiss notice: ' + String(text).slice(0, 60)); dismiss.addEventListener('click', () => gone(toast));
+  toast.append(body, dismiss); toast.dataset.key = (error ? 'error:' : 'ok:') + text;
+  const kept = [...stack.children].filter((child) => child.dataset.key !== toast.dataset.key).slice(-(TOAST_MAX - 1));
+  stack.replaceChildren(...kept, toast);
+  if (!error && !(globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches === true)) setTimeout(() => { toast.className += ' toast-out'; setTimeout(() => gone(toast), TOAST_FADE_MS); }, TOAST_MS);
+}
 function expire() { stopped = true; clearTimeout(timer); clearTimeout(projectsTimer); setConnection('Session closed', 'down'); notice('Session missing or expired. Run ahub ui in your terminal to reopen the dashboard.', true); document.querySelectorAll('button').forEach((button) => { button.disabled = true; }); }
 async function post(path, body) {
   const response = await fetch(path, {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
@@ -527,7 +572,7 @@ async function action(payload, button, managerAction = false) {
   finally { if (button) { pendingButtons.delete(button); if (!stopped) button.disabled = Boolean(key && pendingStarts.has(key)) || (!managerAction && managerMode && !snapshotValid); } if (key) redrawStartControls(); }
 }
 function button(text, payload, cls, managerAction = false) { const node = el('button', text, cls); node.type = 'button'; node.dataset.mutation = managerAction ? 'manager' : 'project'; if (payload.action === 'start_peer') node.dataset.startKey = startKey(payload.peer); node.disabled = Boolean(node.dataset.startKey && pendingStarts.has(node.dataset.startKey)) || (!managerAction && managerMode && !snapshotValid); node.addEventListener('click', () => void action(payload, node, managerAction)); return node; }
-function update(id, data, render) { const signature = JSON.stringify(data); if (signatures.get(id) === signature) return; signatures.set(id, signature); const target = $(id); target.replaceChildren(); render(target); }
+function update(id, data, render) { const signature = JSON.stringify(data); if (signatures.get(id) === signature) return; signatures.set(id, signature); const target = $(id); update.keep = {node: (typeof document === 'undefined' ? null : document.activeElement) || null, to: null}; target.replaceChildren(); render(target); const kept = update.keep; update.keep = null; const back = kept.to || kept.node; if (back && back.isConnected && typeof document !== 'undefined' && document.activeElement !== back) back.focus({preventScroll: true}); }
 function empty(target, text) { target.append(el('p', text, 'empty')); }
 function count(value) { return Array.isArray(value) ? value.length : value && typeof value === 'object' ? Object.keys(value).length : value; }
 function taskCount(value) { return Array.isArray(value) ? value.length : value && typeof value === 'object' ? Object.values(value).reduce((total, item) => total + (typeof item === 'number' ? item : 0), 0) : value; }
@@ -552,7 +597,7 @@ function resetView(id, instance) {
   officePrev = null; officeDesks.clear(); officeCards.clear(); officeScene = null;
   $('office').replaceChildren(); $('office-section').hidden = true;
   closeTaskDetail(); renderNeedsAttention(null); applyDashboardView();
-  signatures.clear(); $('stream').replaceChildren(); empty($('stream'), managerMode ? 'Select a running project...' : 'Waiting for hub activity...');
+  signatures.clear(); if (typeof keyedCaches !== 'undefined') keyedCaches.clear(); $('stream').replaceChildren(); empty($('stream'), managerMode ? 'Select a running project...' : 'No events yet. Messages, task changes and peer states appear here. Send one with ahub say <text>.');
   if (streamFilter) { streamFilter = ''; for (const child of $('stream-filters').children) child.setAttribute('aria-pressed', 'false'); }
   $('stream-empty').hidden = true; $('task-filter').value = '';
   if(typeof loadedPlanningDates!=='undefined')loadedPlanningDates.clear();
@@ -634,7 +679,7 @@ function renderApprovals(permissions) {
   const terminalWaiting = permissions.filter((permission) => adapterDisplay[permission.peer]?.terminalApproval).length;
   $('permission-count').textContent = permissions.length + ' waiting' + (terminalWaiting ? ', ' + terminalWaiting + ' Pi/local: answer in the console or ahub tail / ahub permit' : '');
   update('permissions', permissions, (target) => {
-    if (!permissions.length) return empty(target, 'No approvals waiting.');
+    if (!permissions.length) return empty(target, 'No approvals waiting. A peer that asks for a permission appears here; answer with ahub permit.');
     for (const permission of permissions) {
       const row = el('div', undefined, 'row'); row.dataset.permissionId=permission.id;row.tabIndex=0;row.append(el('div', permission.peer, 'label'), el('p', permission.title, 'body'));
       if (permission.terminalOnly) row.append(el('p', 'Review in the console or ahub tail; answer with ahub permit. You can deny here.', 'meta'));
@@ -821,6 +866,26 @@ function renderStarts(target, starts) {
   }
 }
 let boardViewState = null, showAllDone = false;
+// Keyed rendering (#469 R6). A pass hands out one node per key: the cached node when its signature is unchanged (so it keeps its
+// DOM node, an open <details>, hover and, with update(), focus), a fresh node when it changed or is new, and end() drops the keys
+// that are gone. A changed item is replaced by a fresh node, not patched: its listeners close over its data. The focused node of
+// update() is carried to the fresh one. With enter, an item that is new after the first pass, or has moved to another group (a
+// column), fades in (class is-new, removed on animationend). A card that disappears is removed at once: there is no leave animation.
+const keyedCaches = new Map();
+function keyedStart(name, enter = false) {
+  let cache = keyedCaches.get(name); if (!cache) keyedCaches.set(name, cache = {nodes: new Map(), primed: false});
+  const used = new Set();
+  const get = (key, signature, build, group = '') => {
+    used.add(key); const hit = cache.nodes.get(key);
+    if (hit && hit.signature === signature && hit.group === group) return hit.node;
+    const node = build(), keep = update.keep;
+    if (hit && keep && keep.node && (hit.node === keep.node)) keep.to = node;
+    if (enter && cache.primed && (!hit || hit.group !== group) && node.classList?.add) { node.classList.add('is-new'); node.addEventListener('animationend', () => node.classList.remove('is-new'), {once: true}); }
+    cache.nodes.set(key, {signature, node, group}); return node;
+  };
+  get.end = () => { for (const key of [...cache.nodes.keys()]) if (!used.has(key)) cache.nodes.delete(key); cache.primed = true; };
+  return get;
+}
 const BOARD_FOCUS_COLUMNS = ['backlog','todo','progress','review','done'];
 let columnFocus, taskDetailId = null;
 let planningEdit = null, releaseEdit = null;
@@ -911,11 +976,14 @@ function ownerAvatar(peer) {
   avatar.setAttribute('role', 'img'); avatar.setAttribute('aria-label', 'owner: ' + name); avatar.title = 'owner: ' + name;
   return avatar;
 }
-// One badge per card: the state, with the priority folded into its text ("in review P1"). The tones match taskBadge (declared above
-// the board code, so a board-only slice cannot see it); a state with no tone gets the neutral badge.
+// One badge per card: the state, with the priority folded into its text ("in review P1"). Overdue and a running check fold into the
+// same text (#293: "in progress P2, overdue, check running"), never a second badge. The tones match taskBadge (declared above the
+// board code, so a board-only slice cannot see it); a state with no tone gets the neutral badge. A state that is already err keeps
+// it; otherwise overdue makes the badge warn, and a running check makes it info unless the state already has a tone.
 const CARD_BADGE_TONE = { in_progress: 'warn', in_review: 'info', approved: 'ok', changes_requested: 'err' };
-function cardBadge(task, card) {
-  return badge(String(task.state).replaceAll('_', ' ') + ' P' + card.priority, CARD_BADGE_TONE[task.state] || '');
+function cardBadge(task, card, overdue = false) {
+  const own = CARD_BADGE_TONE[task.state] || '', tone = own === 'err' ? own : overdue ? 'warn' : own || (task.checking ? 'info' : '');
+  return badge(String(task.state).replaceAll('_', ' ') + ' P' + card.priority + (overdue ? ', overdue' : '') + (task.checking ? ', check running' : ''), tone);
 }
 function boardContext() {
   const current=context(), snapshot=boardViewState?.snapshot || {};
@@ -1002,16 +1070,16 @@ function taskCard(task, card, stage, ids, overdue, compact = true) {
   if (compact) {
     row.setAttribute('role', 'button');
     row.setAttribute('aria-label', '#' + task.id + ' ' + task.title + ', ' + task.state.replaceAll('_', ' ') + ', owner ' + (task.owner || 'unassigned') + ', priority P' + card.priority);
+    if (overdue) row.setAttribute('aria-label', row.getAttribute('aria-label') + ', overdue');
+    if (task.checking) row.setAttribute('aria-label', row.getAttribute('aria-label') + ', check running');
     if (task.role) row.setAttribute('aria-label', row.getAttribute('aria-label') + ', Task guidance: ' + task.role + ' (grants no authority)');
     if (task.release != null) { const release=boardViewState?.snapshot.releases?.find(release=>release.id===task.release);row.setAttribute('aria-label',row.getAttribute('aria-label')+', Release #'+task.release+' '+(release?.name || '(label unavailable)')); }
     // Title (two lines at most, clamped in CSS), the owner avatar, one state/priority badge and the release. Everything else is in the detail.
     const head = el('div', undefined, 'row-head card-head'); head.append(ownerAvatar(task.owner), el('span', '#' + task.id + ' ' + task.title, 'label card-title'));
     if (card.starred) { const star = el('span', undefined, 'star'); star.title = 'starred'; star.append(icon('i-star', 'starred')); head.append(star); }
-    const meta = el('div', undefined, 'card-meta'); meta.append(cardBadge(task, card));
+    const meta = el('div', undefined, 'card-meta'); meta.append(cardBadge(task, card, overdue));
     if (task.release != null) { const release=boardViewState?.snapshot.releases?.find(release=>release.id===task.release); meta.append(el('span', 'Release #' + task.release + (release?.name ? ' ' + release.name : ''), 'release-chip')); }
     row.append(head, meta);
-    if (overdue) row.append(badge('Overdue','warn'));
-    if (task.checking) row.append(badge('Check running','info'));
     row.addEventListener('click', () => openTaskDetail(task.id));
     row.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openTaskDetail(task.id); } });
   }
@@ -1084,7 +1152,8 @@ function renderBoard(snapshot, peers, ids) {
     if (!ids.length) empty(target,'No peer status available.');
   });
   update('tasks',[snapshot.tasks,peers,snapshot.boardCapabilities,taskFilter,ownerFilter,releaseFilter,lanes,showAllDone,[...overdue],columnFocus],target=>{
-    taskRows.clear();
+    taskRows.clear(); const keyed=keyedStart('cards',true);
+    if(!snapshot.tasks.length)target.append(el('p','No tasks yet. Plan one with the Plan button, or run ahub task propose <title>.','empty'));
     const visible=snapshot.tasks.filter(task=>(!taskFilter || (taskFilter==='work' ? ['in_progress','changes_requested'].includes(task.state) : task.state===taskFilter)) && (!ownerFilter || task.owner===ownerFilter || task.reviewer===ownerFilter) && (!releaseFilter || task.release===Number(releaseFilter)));
     const visibleIds=new Set(visible.map(task=>task.id));
     const owners=columnFocus ? [null] : lanes==='agents' ? [...new Set(visible.map(task=>task.owner || ''))] : lanes==='releases' ? [...new Set(visible.map(task=>task.release ?? 0))] : [null];
@@ -1111,7 +1180,7 @@ function renderBoard(snapshot, peers, ids) {
         if(hidden) ready=ready.slice(0,10);
         for(const [label,list] of [['Ready',ready],['Waiting',waiting]]) {
           if(column.id==='todo') box.append(el('h4',label+' ('+list.length+')'));
-          for(const card of list) box.append(taskCard(byId.get(card.id),card,stages.get(card.id),eligible,overdue.has(card.id),columnFocus === null));
+          for(const card of list){const task=byId.get(card.id),compact=columnFocus === null,release=snapshot.releases?.find(release=>release.id===task.release)?.name,node=keyed(card.id,JSON.stringify([task,card,stages.get(card.id),card.assignable?eligible:null,overdue.has(card.id),compact,release,boardContext(),snapshot.boardCapabilities,snapshot.planningCapabilities]),()=>taskCard(task,card,stages.get(card.id),eligible,overdue.has(card.id),compact),column.id);taskRows.set(card.id,node);box.append(node)}
         }
         if(!ready.length && !waiting.length) empty(box,'No tasks');
         if(hidden){const more=el('button','Show '+hidden+' older Done tasks');more.type='button';more.addEventListener('click',()=>{if(!boardViewState)return;showAllDone=true;renderBoard(boardViewState.snapshot,boardViewState.peers,boardViewState.ids)});box.append(more)}
@@ -1119,7 +1188,7 @@ function renderBoard(snapshot, peers, ids) {
       }
       lane.append(grid);target.append(lane);
     }
-    const unknown=model.unknown.filter(id=>visibleIds.has(id));if(unknown.length) target.append(el('p','Unsupported task states: '+unknown.map(id=>'#'+id).join(', '),'board-unknown'));
+    keyed.end();const unknown=model.unknown.filter(id=>visibleIds.has(id));if(unknown.length) target.append(el('p','Unsupported task states: '+unknown.map(id=>'#'+id).join(', '),'board-unknown'));
   });
   refreshTaskDetail();
 }
@@ -1156,8 +1225,10 @@ function render(snapshot) {
   syncStarts(snapshot);
   update('peers', [peers, starts, starts.map(start => { const pending = pendingStarts.get(startKey(start.peer)); return pending ? [pending.phase, pending.retryAt || null] : null; })], (target) => {
     peerRows.clear();
-    if (!ids.length) { empty(target, 'No peers connected. Start one below, or from your terminal.'); return renderStarts(target, starts); }
+    if (!ids.length) { empty(target, 'No peers connected. Start one below, or run ahub claude or ahub codex in a terminal.'); return renderStarts(target, starts); }
+    const keyed = keyedStart('peers');
     for (const [id, peer] of Object.entries(peers)) {
+      const row = keyed(id, JSON.stringify([peer, (snapshot.boardLegend || []).find(item => item.peer === id)?.activeTasks]), () => {
       const row = el('div', undefined, 'row'), head = el('div', undefined, 'row-head'), name = el('div', undefined, 'peername');
       name.append(dot(peerDot[peer.state] || ''), el('span', id, 'label'));
       head.append(name, badge(peer.rostered === false ? peer.state + ' off roster' : peer.state, peerDot[peer.state] || ''));
@@ -1188,9 +1259,11 @@ function render(snapshot) {
       const trackDesk = (on) => { const desk = officeDesks.get(id); if (desk) desk.classList.toggle('office-spotlight', on); };
       row.addEventListener('mouseenter', () => trackDesk(true)); row.addEventListener('mouseleave', () => trackDesk(false));
       row.addEventListener('focus', () => trackDesk(true)); row.addEventListener('blur', () => trackDesk(false));
-      row.append(button(paused ? 'Resume' : 'Pause', {action:paused ? 'resume' : 'pause', peer:id})); target.append(row);
+      row.append(button(paused ? 'Resume' : 'Pause', {action:paused ? 'resume' : 'pause', peer:id})); return row;
+      });
+      peerRows.set(id, row); target.append(row);
     }
-    renderStarts(target, starts);
+    keyed.end(); renderStarts(target, starts);
   });
   renderOffice(snapshot);
   const assignable = ids.filter((id) => peers[id].state !== 'offline' && peers[id].attached !== false);
@@ -1252,10 +1325,10 @@ async function poll() {
     const input = {after:cursor, memory:memoryInput()}; if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
     const result = await post('/snapshot', input);
     if (!managerMode || (result.projectId === captured.projectId && result.instanceId === captured.instanceId && captured.generation === viewGeneration)) {
-      snapshotValid = true; lastSnapshot = result; render(result); setConnection('Live / updated ' + new Date().toLocaleTimeString(), 'live');
+      snapshotValid = true; lastSnapshot = result; lastSnapshotAt = Date.now(); render(result); setConnection('Live / updated ' + new Date().toLocaleTimeString(), 'live'); setDisconnected(false);
     }
   }
-  catch (error) { if (!stopped) setConnection('Disconnected / retrying: ' + error.message, 'down'); }
+  catch (error) { if (!stopped) { setConnection('Disconnected / retrying: ' + error.message, 'down'); setDisconnected(true); } }
   if (!stopped) timer = setTimeout(poll, 1000);
 }
 // office-scene-begin (issue 264): the office, drawn Flat or Isometric from the shared officeModel as inline
@@ -1802,14 +1875,16 @@ function renderMemory(memory) {
     tiers.append(chip);
   }
   for (const chip of tiers.children) chip.setAttribute('aria-pressed', String(chip.dataset.tier === memoryQuery.tier));
-  if (!memory) { $('memory-count').textContent = ''; update('memory-list', null, (target) => empty(target, 'Hub memory is off for this project, or nothing is stored yet.')); update('memory-graph', null, () => {}); update('memory-detail', null, () => {}); return; }
+  if (!memory) { $('memory-count').textContent = ''; update('memory-list', null, (target) => empty(target, 'Hub memory is off for this project, or nothing is stored yet. Save a note with ahub remember <text>.')); update('memory-graph', null, () => {}); update('memory-detail', null, () => {}); return; }
   $('memory-count').textContent = memory.counts.long + ' long-term / ' + memory.counts.short + ' short-term / ' + (memory.counts.goals || 0) + ' open tasks';
   if (memory.goals) {
     // Long-term tasks: state, who holds the lease and until when (a conflict when two machines claimed it), linked board tasks.
     const who = (m) => m === memory.machine ? 'this machine' : 'machine ' + m.slice(0, 8);
     update('memory-list', {goals: memory.goals, node: memoryQuery.node}, (target) => {
       if (!memory.goals.length) return empty(target, 'No long-term tasks. A person creates one with ahub goal new <title>.');
+      const keyed = keyedStart('memory');
       for (const g of memory.goals) {
+        const row = keyed('goal:' + g.id, JSON.stringify([g, memoryQuery.node === 'goal:' + g.id]), () => {
         const row = el('button', undefined, 'memory-row'); row.type = 'button'; row.setAttribute('aria-pressed', String(memoryQuery.node === 'goal:' + g.id));
         const head = el('div', undefined, 'row-head');
         head.append(el('span', g.title, 'label'), badge(g.state, g.state === 'done' ? 'ok' : g.state === 'blocked' ? 'err' : g.state === 'active' ? 'info' : ''));
@@ -1817,22 +1892,30 @@ function renderMemory(memory) {
         row.append(head, el('div', g.id.slice(0, 8) + ' / ' + lease + ' / ' + g.links.length + ' board task' + (g.links.length === 1 ? '' : 's') + (g.milestones.length ? ' / milestones: ' + g.milestones.join('; ') : ''), 'meta'));
         if (g.lease.conflict.length) row.append(badge('lease conflict', 'warn'));
         row.addEventListener('click', () => selectMemoryNode('goal:' + g.id));
+        return row;
+        });
         target.append(row);
       }
+      keyed.end();
     });
   }
   memoryOptions('memory-peer', memory.peers, 'All peers', 'peer');
   memoryOptions('memory-machine', memory.machines, 'All machines', 'machine');
   if (!memory.goals) update('memory-list', {entries: memory.entries, node: memoryQuery.node}, (target) => {
-    if (!memory.entries.length) return empty(target, 'No ' + memory.tier + '-term entries match.');
+    if (!memory.entries.length) return empty(target, 'No ' + memory.tier + '-term entries match. Save one with ahub remember <text>.');
+    const keyed = keyedStart('memory');
     for (const entry of memory.entries) {
+      const row = keyed('mem:' + entry.id, JSON.stringify([entry, memoryQuery.node === 'mem:' + entry.id]), () => {
       const row = el('button', undefined, 'memory-row'); row.type = 'button'; row.setAttribute('aria-pressed', String(memoryQuery.node === 'mem:' + entry.id));
       const head = el('div', undefined, 'row-head');
       head.append(el('span', (entry.title ? entry.title + ': ' : '') + entry.text.split('\n')[0].slice(0, 140), 'label'), badge(entry.kind, entry.kind === 'fail' ? 'err' : entry.kind === 'decision' ? 'ok' : entry.kind === 'contract' ? 'warn' : ''));
       row.append(head, el('div', entry.id.slice(0, 8) + ' / ' + entry.peer + ' / ' + time(entry.at) + (entry.scope === 'shared' ? ' / shared' : '') + (entry.supersededBy ? ' / superseded' : '') + (entry.machine !== memory.machine ? ' / from machine ' + entry.machine.slice(0, 6) : ''), 'meta'));
       row.addEventListener('click', () => selectMemoryNode('mem:' + entry.id));
+      return row;
+      });
       target.append(row);
     }
+    keyed.end();
   });
   update('memory-graph', memory.graph || null, (target) => {
     const graph = memory.graph;

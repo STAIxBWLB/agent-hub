@@ -10,10 +10,10 @@ test("A2 catalog projections retain exact legacy orders and source-probe compati
   expect(REGISTRY_KNOWN).toEqual(["claude", "codex", "kimi", "pi", "local"]);
   expect(REGISTRY_OPTIONAL).toEqual(["qwen", "jcode", "agy"]);
   expect(REGISTRY_SUPPORTED).toEqual(["claude", "codex", "kimi", "pi", "local", "qwen", "jcode", "agy"]);
-  expect(KNOWN_PEERS).toEqual(REGISTRY_KNOWN); expect(OPTIONAL_PEERS).toEqual(REGISTRY_OPTIONAL);
+  expect(REGISTRY_KNOWN).toEqual(KNOWN_PEERS); expect(REGISTRY_OPTIONAL).toEqual(OPTIONAL_PEERS);
   expect(SUPPORTED_PEERS).toEqual(REGISTRY_SUPPORTED); expect(STARTABLE_PEERS).toEqual(REGISTRY_SUPPORTED);
   expect(ADAPTERS.map(definition => definition.kind)).toEqual([...REGISTRY_SUPPORTED]);
-  expect(REGISTRY_DUAL).toEqual(["pi", "codex", "kimi", "jcode"]); expect(START_MODE_PEERS).toEqual(REGISTRY_DUAL);
+  expect(REGISTRY_DUAL).toEqual(["pi", "codex", "kimi", "jcode"]); expect(REGISTRY_DUAL).toEqual(START_MODE_PEERS);
   expect(PLANNER_PEERS).toEqual(["claude", "codex", "kimi", "qwen", "jcode"]);
   expect(OFFICE_PEER_ORDER).toEqual(REGISTRY_KNOWN);
   const catalog = readFileSync(new URL("../src/hub/peer-catalog.ts", import.meta.url), "utf8");
