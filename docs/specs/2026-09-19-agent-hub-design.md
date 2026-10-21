@@ -4188,3 +4188,37 @@ its own CI.
 ### S2 plan conformance boundary (#481)
 
 Optional proof/risks lists are bounded to 32 strings of 512 characters. Literal file/directory-prefix coverage uses complete current PR file metadata, never patches or glob execution. Root plan entries never cover all files; renamed/copied files whose old identity is unavailable make the inventory unknown. Untouched paths are advisory; uncovered changed paths block enforce approval until plan amendment or person acceptance. Host content revisions are separate from backlog planningRevision. "Plan revisions after the first observed push" binds the first observed remote head to plan fingerprint/revision; earlier pushes are unknown. Pending observations persist only at successful owner/reviewer transitions; status and queue reads never append history, and off mode captures no S2 observations or content revisions. Lost pending intervals remain unknown. The ceiling is no true push-event source; the upgrade path is a webhook or Actions push receipt. Person-only `ahub sdlc accept-departure <task> <head> <reason...>` records complete current repo/PR/head inventory and plan fingerprint/revision, with bounded sanitized privacy-screened rationale; changed identity, plan or inventory invalidates it, including plan edits while reporting is off. Departure consent expires on host restart to prevent unpersisted invalidations from reviving; the upgrade path is a durable host observation journal. Private projections reveal only existence, and unavailable private inventories stay unknown.
+
+## Amendment: general-purpose intake, sources, drafts, schedules and deliverables (#516)
+
+The owner gave the #516 track its go-ahead on 2026-10-22. This section closes the design gaps that blocked coding #508, #509, #511 and #512. Each child issue keeps its own ACs; where this section is stricter, it wins.
+
+### Sources (#508)
+
+- `ahub source add <path|url>` is person-only, refused in agent shells like the other console commands. The id is `src:` plus the first 16 hex digits of the snapshot's SHA-256, so adding the same bytes twice returns the existing id.
+- The snapshot lives in the hub state directory under `sources/<id>/`: `meta.json` (`{id, kind, origin, sha256, bytes, added_at, private}`), the raw bytes, and the projected text. The raw cap is the text-projection input cap (`MAX_PROJECTION_INPUT`, 16 MiB), and the text comes from the existing text_projection converters with their caps and sandbox. Larger inputs are refused with the cap in the reason; nothing is truncated silently.
+- A URL is fetched once, by the person's CLI process, over https only, following at most 5 redirects, within the same 16 MiB cap. No agent, sandbox or hub tool fetches a URL. Because the person issues the fetch, a PII project does not refuse it; the snapshot is screened like any file.
+- A path under `pii.paths`, or a snapshot whose text the PII screen flags, is stored with `private: true`. `hub_source_read` returns the text of a private source only to the on-prem worker inside a PII task. Every other caller gets `{id, kind, private: true}` with no text, origin or excerpt.
+- `hub_source_read {id, range?}` returns at most 32 KiB of text per call (`range: {offset, length}` in characters), passed through `sanitize()` and the PII screen, and is excluded from capture.
+- The plan's `sources` field is validated against the registry: an unknown id is refused at propose, accept and plan. Overlap notices name registry ids, never origins.
+
+### Intake drafts (#511)
+
+- A draft is a backlog card carrying `draft: true`. Backlog work is never offered, `hub_backlog_pull` refuses a draft, and the draft's children inherit the mark, so AC3 holds by construction.
+- `ahub intake "<text>" [--source <id>...]` (person-only) creates one parent draft holding the request, with its sources validated as above.
+  - With a planner, the hub sends it a `task` envelope of class `plan` that names the draft id. The request text goes through `publicView`. The planner answers with `hub_backlog_split` on the draft, giving each child a profile class, its sources, dependencies (`after`/`afterParts`) and acceptance criteria in the #507 criteria-id format.
+  - Without a planner, the hub model (`inference.ts`) proposes the same split as JSON. The hub validates it against the `hub_backlog_split` schema and writes it; invalid output leaves the parent draft unsplit, with the reason.
+  - PII in the request routes to the on-prem model under the existing triage screen. Without one, the draft stays unsplit for the person.
+- `ahub intake approve <id>` (person-only) clears `draft` on the parent and its children, which then follow the normal backlog pull. `ahub intake discard <id>` cancels them through `Tasks.cancel`.
+
+### Schedules and folder triggers (#512)
+
+- `schedules` is a machine-local key: add it to `MACHINE_LOCAL` in `config-trust.ts`, so only `config.local.json` can set it. A committed config that creates tasks is refused, like the other machine-local keys.
+- Entry: `{id, every, class, title, detail?, sources?, owner?, queue?: "backlog" | "ready"}`. `every` is `<n>m|h|d` with a 15-minute minimum. `cron` is accepted by the schema but refused with "cron not supported yet; use every", because a cron parser is a new runtime dependency or new code; it is a later slice.
+- Due checks run on the existing sweep timer. `queue` defaults to `backlog`. Missed runs coalesce: a schedule proposes at most one task per tick, and none while its previous task is still open. A global pause or hold skips the tick and coalesces it. Last and next run times live in `hub.db`, and status and the dashboard show the next run.
+- Folder trigger: `{id, folder, glob?, class, title, ...}`. `folder` is resolved with `realPath`, must lie inside the project or a declared data path, and is polled on the sweep timer, not watched. Symlinks that leave the folder are skipped. A new file (by `realPath`, size, mtime and SHA-256 recorded in `hub.db`) is registered as a source (#508) and proposes one task that names it. The trigger therefore lands after the source registry.
+- `ahub schedule list|run <id>|pause <id>|resume <id>` is person-only.
+
+### Deliverables (#509)
+
+- In a PII task, or for a deliverable under `pii.paths`, the record keeps the id, format, version and SHA-256 only, never a path or an excerpt, in every view, log and memory call. Hashing still runs on the real path under the existing path guard.
