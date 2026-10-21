@@ -4227,7 +4227,7 @@ The owner gave the #516 track its go-ahead on 2026-10-22. This section closes th
 ### Knowledge corpus (#510), owner decision 2026-10-22
 
 - The hub indexes plain notes folders only, read-only. `corpus.paths` is a machine-local key.
-- A folder that is, or contains, an Obsidian vault (a `.obsidian/` directory at or below the path, checked with `realPath`) is refused as a corpus path. The reason names MCP: a vault is reached only through the Obsidian MCP tools, never read by the hub from disk.
+- A corpus path that lies in, is, or contains an Obsidian vault is refused. The check runs on the `realPath` of the configured root, so a symlink into a vault is caught. It looks for a `.obsidian/` directory in every ancestor of that real path (a root inside a vault, such as `/vault/notes` when `/vault/.obsidian` exists), at the root itself, and below it. The index walk also skips no `.obsidian/` it meets; it refuses the root instead. Evidence it cannot read (an unreadable ancestor or subdirectory, or a realPath failure) refuses the path; it never certifies a plain folder. The reason names MCP: a vault is reached only through the Obsidian MCP tools, never read by the hub from disk.
 - AC3 (vault candidates) stays with agent-mem (tasks 112 and 122); the hub adds no vault reader.
 
 ### On-prem web reading (#515), owner decision 2026-10-22
