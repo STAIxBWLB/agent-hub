@@ -26,12 +26,13 @@ export const budgetNow = (budget: SnapshotBudget): number => budget.now ? budget
 export class SnapshotBudgetExceeded extends Error {
   constructor() { super("snapshot burst budget exhausted; boundary evidence is unknown"); }
 }
-const git = (top: string | Repo, args: string[], env: Record<string, string> = {}, budget?: SnapshotBudget, maxBuffer?: number) => {
+const git = (top: string | Repo, args: string[], env: Record<string, string> = {}, budget?: SnapshotBudget, maxBuffer?: number, input?: string | Buffer) => {
   const argv = repoGitArgs(top, args);
   const remaining = budget ? budget.deadline - budgetNow(budget) : SNAPSHOT_TIMEOUT_MS;
   if (remaining <= 0) throw new SnapshotBudgetExceeded();
   const result = hubGitSync(argv, {
     encoding: "utf8", env: { ...repoGitEnv(top), ...env }, ...(maxBuffer === undefined ? {} : { maxBuffer }),
+    ...(input === undefined ? {} : { input }),
     timeout: Math.max(1, Math.min(SNAPSHOT_TIMEOUT_MS, Math.floor(remaining))),
   });
   if (budget && (budgetNow(budget) >= budget.deadline || (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT")) throw new SnapshotBudgetExceeded();
@@ -311,11 +312,81 @@ export function incomingHeadPaths(repo: Repo, start: HeadMoveCursor, end: HeadMo
   if (appended[appended.length - 1] !== 10) return undefined;
   const lines = appended.toString("utf8").slice(0, -1).split("\n");
   if (lines.length > HEAD_LOG_MAX_MOVES) return undefined;
+
+  const diffCache = new Map<string, string[] | undefined>();
+  const ancestorCache = new Map<string, boolean>();
+  const diffOf = (from: string, to: string): string[] | undefined => {
+    if (from === to) return [];
+    const key = `${from}..${to}`;
+    if (diffCache.has(key)) return diffCache.get(key);
+    const res = knownChangedPaths(repo, from, to, budget);
+    diffCache.set(key, res);
+    return res;
+  };
+  const isAncestor = (oldCommit: string, nextCommit: string): boolean => {
+    if (oldCommit === nextCommit) return true;
+    const key = `${oldCommit}..${nextCommit}`;
+    if (ancestorCache.has(key)) return ancestorCache.get(key)!;
+    const ancestor = git(repo, ["merge-base", "--is-ancestor", oldCommit, nextCommit], {}, budget);
+    const ok = ancestor.status === 0;
+    ancestorCache.set(key, ok);
+    return ok;
+  };
+
+  const parsedRows: Array<ReturnType<typeof headLogRow>> = [];
+  const batchCandidates = new Set<string>();
+  for (const line of lines) {
+    const row = headLogRow(line);
+    parsedRows.push(row);
+    if (!row) continue;
+    const separator = row.action.indexOf(": ");
+    const action = separator < 0 ? "" : row.action.slice(0, separator);
+    // #612: diff-tree --stdin compares a commit to its first parent. In git sequencer, only pick
+    // and initial/regular commits have row.old as the parent of row.next. Sequencer squash, fixup,
+    // reword and edit amend the commit, so row.next's parent is row.old's parent. Only batch rows
+    // where row.old is the parent (pick and commit); other rows are diffed individually.
+    const isPickOrCommit = /^.+ \(pick\)$/.test(action) || action === "commit";
+    if (isPickOrCommit && row.old !== row.next && !/^0+$/.test(row.old)) {
+      batchCandidates.add(row.next);
+    }
+  }
+
+  // Batch single-parent pick/commit diffs across the boundary to stay within burst budget (#612).
+  if (batchCandidates.size > 1) {
+    const commitList = [...batchCandidates];
+    const stdinInput = commitList.join("\n") + "\n";
+    const batchRes = git(repo, ["diff-tree", "--stdin", "--always", "-r", "--no-renames", "--raw", "-z", "--", scope(repo)], {}, budget, undefined, stdinInput);
+    if (batchRes.status === 0) {
+      const parts = batchRes.stdout.split("\0");
+      if (parts.length && parts[parts.length - 1] === "") parts.pop();
+      let i = 0;
+      while (i < parts.length) {
+        const commit = parts[i++];
+        if (!commit) continue;
+        const paths: string[] = [];
+        while (i < parts.length && parts[i]?.startsWith(":")) {
+          i++; // skip raw metadata: :oldmode newmode oldsha newsha status
+          if (i < parts.length && parts[i]) {
+            paths.push(parts[i++]!);
+          }
+        }
+        for (const r of parsedRows) {
+          if (r && r.next === commit && r.old !== r.next) {
+            const sep = r.action.indexOf(": ");
+            const act = sep < 0 ? "" : r.action.slice(0, sep);
+            if (/^.+ \(pick\)$/.test(act) || act === "commit") {
+              diffCache.set(`${r.old}..${r.next}`, [...paths]);
+            }
+          }
+        }
+      }
+    }
+  }
+
   const own = new Set<string>(), incoming = new Set<string>();
   let previous = start.head;
-  for (const line of lines) {
+  for (const row of parsedRows) {
     checkSnapshotBudget(budget);
-    const row = headLogRow(line);
     if (!row || (previous === null ? !/^0+$/.test(row.old) : row.old !== previous)) return undefined;
     // Git preserves the invoking command in sequencer actions (for example pull -q --rebase (pick)).
     // Classify the native phase before considering ordinary command-shaped incoming actions.
@@ -328,10 +399,11 @@ export function incomingHeadPaths(repo: Repo, start: HeadMoveCursor, end: HeadMo
     const incomingCommand = !action.includes("(") && /^(?:merge|pull)(?: [^:]+)?$/.test(action) && !!detail;
     let incomingMove = !ownMove && (incomingStart || incomingCommand || action === "checkout" && /^moving from .+ to .+$/.test(detail));
     if (action === "reset" && /^moving to .+/.test(detail)) {
-      // Policy: a positively fast-forward reset is incoming, even when its target contains the peer's own
-      // descendant commit; reflog ancestry alone cannot distinguish that intent. Rewinds/unknown resets refuse.
-      const ancestor = git(repo, ["merge-base", "--is-ancestor", row.old, row.next], {}, budget);
-      if (ancestor.status !== 0) return undefined;
+      // Policy: a positively fast-forward reset stays incoming, even when its target contains the peer's own
+      // descendant commit made in another worktree during the turn. Reflog ancestry alone cannot distinguish
+      // local worktree coordination from external branch fast-forwards; classifying it as incoming safely
+      // excludes external commits from local turn attribution and undo. Rewinds/unknown resets refuse.
+      if (!isAncestor(row.old, row.next)) return undefined;
       incomingMove = true;
     }
     if (!ownMove && !incomingMove) return undefined;
@@ -339,7 +411,19 @@ export function incomingHeadPaths(repo: Repo, start: HeadMoveCursor, end: HeadMo
     if (/^0+$/.test(row.old)) {
       const root = git(repo, ["diff-tree", "--root", "--no-commit-id", "-r", "--no-renames", "--name-only", "-z", row.next, "--", scope(repo)], {}, budget);
       paths = root.status === 0 ? root.stdout.split("\0").filter(Boolean) : undefined;
-    } else paths = knownChangedPaths(repo, row.old, row.next, budget);
+    } else if (incomingStart) {
+      // #612: take incoming start paths as merge-base(old, upstream)..upstream instead of old..upstream,
+      // so the peer's replayed own commits do not overlap and only true upstream paths are excluded.
+      // Any remaining ambiguity (no merge base, criss-cross multiple merge bases) stays unknown.
+      const mb = git(repo, ["merge-base", "--all", row.old, row.next], {}, budget);
+      if (mb.status !== 0) return undefined;
+      const bases = mb.stdout.trim().split("\n").map(s => s.trim()).filter(Boolean);
+      const base = bases[0];
+      if (bases.length !== 1 || !base || !/^[0-9a-f]{40,64}$/.test(base)) return undefined;
+      paths = base === row.next ? [] : diffOf(base, row.next);
+    } else {
+      paths = diffOf(row.old, row.next);
+    }
     if (!paths) return undefined;
     for (const path of paths) { checkSnapshotBudget(budget); (ownMove ? own : incoming).add(path); }
     previous = row.next;
@@ -394,6 +478,7 @@ export function snapshot(repo: Repo, budget?: SnapshotBudget): string | undefine
 
 /** Project paths (relative to the top level) that differ between two trees. */
 export function knownChangedPaths(repo: Repo, from: string, to: string, budget?: SnapshotBudget): string[] | undefined {
+  if (from === to) return [];
   const r = git(repo, ["diff-tree", "-r", "--no-renames", "--name-only", "-z", from, to, "--", scope(repo)], {}, budget);
   return r.status === 0 ? r.stdout.split("\0").filter(Boolean) : undefined;
 }
