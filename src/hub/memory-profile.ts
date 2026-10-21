@@ -117,6 +117,14 @@ export function memoryProjectFor(cwd: string, opts: Pick<StoreOptions, "home"> =
   return resolveAlias(homeFor(opts), memoryProjectKey(cwd));
 }
 
+/**
+ * #240: the project key for a caller-injected store. Its alias log is the one in its own bound home (`profile.home`),
+ * never the ambient memory home's: a different alias log could hide that store's rows or refuse its writes.
+ */
+export function memoryProjectForStore(store: MemoryStore, cwd: string): string {
+  return resolveAlias(canonicalHome(store.profile.home), memoryProjectKey(cwd));
+}
+
 /** Inspect selection without constructing a store, index, or candidate sidecar. */
 export function selectedMemoryProfile(opts: StoreOptions = {}): MemoryProfileReceipt {
   assertLoadedAgentMem();

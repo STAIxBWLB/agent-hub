@@ -7,7 +7,7 @@ import { MemoryStore, appendAlias, memoryProjectKey, migrateShards, openShardSto
 import { realPath } from "../src/hub/project.ts";
 import { MEMORY_PROFILE_UNAVAILABLE, MEMORY_SPLIT_INCOMPLETE, bindProfileMemory, memoryProjectFor, openProfileMemory, selectedMemoryProfile } from "../src/hub/memory-profile.ts";
 import { evaluateMemoryProfileCheck, type ProfileEvidence } from "../src/hub/memory-profile-check.ts";
-import { memoryCommand } from "../src/cli/memory.ts";
+import { goalCommand, memoryCommand } from "../src/cli/memory.ts";
 
 const A = "github.com/example/hub-a", B = "github.com/example/hub-b", C = "github.com/example/hub-new";
 const homes: string[] = [];
@@ -152,6 +152,28 @@ test("ahub memory reads the alias-resolved project the amem CLI binds", async ()
   process.env.AMEM_HOME = memory;
   try { expect(await memoryCommand(["list"], cwd, { person: true })).toContain("alpha private contract"); }
   finally { if (previous === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previous; }
+});
+
+// #240: an injected store is bound to its own home, so its alias log, not the ambient home's, names the project.
+for (const sharded of [false, true]) test(`ahub memory and goal resolve the alias against an injected store's own home (${sharded ? "split" : "unsplit"} home)`, async () => {
+  const { home, memory } = seeded();
+  const machine = (() => { const s = new MemoryStore({ home }); try { return s.machine.id; } finally { s.close(); } })();
+  if (sharded) await split(memory);
+  const { cwd } = aliasedCwd(memory, machine);
+  const ambient = realPath(mkdtempSync(join(tmpdir(), "hub-memory-ambient-")));
+  homes.push(ambient);
+  expect(memoryProjectFor(cwd, { home: ambient })).not.toBe(A); // the ambient home has no such alias
+  const previous = process.env.AMEM_HOME;
+  process.env.AMEM_HOME = join(ambient, "memory");
+  const { store } = openProfileMemory({ home, project: A });
+  try {
+    expect(await memoryCommand(["list"], cwd, { store, person: true })).toContain("alpha private contract");
+    // A goal written through the injected store lands under the injected home's canonical key, not the raw one.
+    const created = await goalCommand(["new", "injected goal", "--milestone", "m1"], cwd, { store, person: true });
+    expect(created).toContain("injected goal");
+    expect(store.goals(A).some(goal => goal.title === "injected goal")).toBe(true);
+    expect(await goalCommand(["list"], cwd, { store, person: true })).toContain("injected goal");
+  } finally { store.close(); if (previous === undefined) delete process.env.AMEM_HOME; else process.env.AMEM_HOME = previous; }
 });
 
 test("a dangling split marker refuses new opens with the resume remedy and latches an open unsplit binding", () => {
