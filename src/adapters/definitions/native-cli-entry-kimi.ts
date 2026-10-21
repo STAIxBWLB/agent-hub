@@ -41,9 +41,11 @@ export async function runKimiEntry(ctx: NativeCliEntryContext): Promise<void> {
       const admission = await hub.request({ t: "start", peer, args: { mode: "tui" }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
       if (!admission.ok) fail(admission.error);
       const runningCommand = admission.retainedLaunchConfig?.kimi_cmd;
-      const launch = buildKimiTuiLaunch(Array.isArray(runningCommand) && runningCommand.every((arg: unknown) => typeof arg === "string") ? runningCommand : projectConfig().kimi_cmd, model);
+      let launch: ReturnType<typeof buildKimiTuiLaunch>;
       let result: ReturnType<typeof spawnSync>;
       try {
+        // Inside the try: a kimi_cmd with no TUI form throws here, and the admission must still be released (#549).
+        launch = buildKimiTuiLaunch(Array.isArray(runningCommand) && runningCommand.every((arg: unknown) => typeof arg === "string") ? runningCommand : projectConfig().kimi_cmd, model);
         // The daemon's own bundle, so the MCP server matches the hub it talks to (#502); this CLI's copy only for an older hub.
         const written = configureKimiMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve(cliDir, "../../plugins/agent-hub/server.js"), "tui");
         if (written.tracked) console.error(".kimi-code/mcp.json is tracked; the agent-hub entry contains machine paths. Review this local change before committing it.");
