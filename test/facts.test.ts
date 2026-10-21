@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -192,6 +192,32 @@ test("only regular files inside the project are read: no path out of it, no syml
   expect(o?.text ?? "").toContain("big.bin");
   expect(o?.text ?? "").toContain("too large to show; read the file");
   expect(o?.text ?? "").not.toContain("yyyy");
+});
+
+// issue #428: Linux before 6.13 stamps files from a coarse clock, so a same-size rewrite within one tick keeps size, mtime,
+// ctime and inode. utimes stands in for that tick here, so the case is the same on every filesystem.
+test("a large file rewritten at the same size and mtime just after it was seen is a change; once settled it is not", async () => {
+  const root = mkdtempSync(join(tmpdir(), "agenthub-facts-"));
+  dirs.push(root);
+  const big = join(root, "big.bin");
+  const tick = new Date(Math.floor(Date.now() / 1000) * 1000); // whole seconds: exact on every filesystem
+  writeFileSync(big, "x".repeat(300 * 1024));
+  utimesSync(big, tick, tick);
+  const facts = new Facts({ root, tmp: join(root, ".facts"), instance: "i1", scope: () => ({ paths: ["big.bin"], plans: [] }), peers: () => ["claude"], nameable: () => true });
+  const look = () => { const o = facts.due("claude"); if (o) facts.ack("claude", o.id); return o; };
+  look();
+  const seen = statSync(big);
+  writeFileSync(big, "y".repeat(300 * 1024));
+  utimesSync(big, tick, tick);
+  expect([statSync(big).size, statSync(big).mtimeMs]).toEqual([seen.size, seen.mtimeMs]); // the stat a tick leaves
+  const o = look();
+  expect(o?.text ?? "").toContain("big.bin");
+  expect(o?.text ?? "").toContain("too large to show; read the file");
+  // Seen while just written, seen again once settled: the same bytes, so no change and the same integration target.
+  const target = facts.tree(["big.bin"]);
+  await Bun.sleep(2100);
+  expect(look()).toBeUndefined();
+  expect(facts.tree(["big.bin"])).toBe(target);
 });
 
 test("reset (a PII task opened and closed) never shows a diff across it; work from before tracking is named as not covered", async () => {
