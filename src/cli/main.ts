@@ -1369,8 +1369,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     const [peer, mode] = positional;
     if (positional.length > 2 || positional.some(arg => arg.startsWith("--")) || (mode !== undefined && !isPermissionMode(mode))) fail("usage: ahub permission [<peer> [ask|ask-when-needed|never-ask]] [--yes]");
     if (mode === "never-ask" && !args.includes("--yes")) fail("never-ask requires --yes; nothing was changed");
-    const { scope: permissionScope } = localDeclarations();
-    if (mode === "never-ask" && peer) console.error(`never-ask: ${permissionBoundary(peer, permissionScope.instances, permissionScope.catalog)}; approval prompts are disabled`);
+    const { scope: permissionScope, error: permissionScopeError } = localDeclarations();
+    if (mode === "never-ask" && peer) console.error(`never-ask: ${permissionBoundary(peer, permissionScope.instances, permissionScope.catalog)}; approval prompts are disabled${permissionScopeError ? ` (project config unreadable: ${permissionScopeError})` : ""}`);
     const hub = await connect();
     try {
       const reply = await hub.request({ t: "permission", ...(peer ? { peer } : {}), ...(mode ? { mode, confirmed: args.includes("--yes") } : {}) }, 35_000);
@@ -1421,7 +1421,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if ((sub === "get" && (!key || text !== undefined)) || (sub === "set" && (!key || text === undefined)) || ((sub === "list" || sub === "undo" || sub === "reload") && key !== undefined)) fail(usage);
     const { scope: settingScope, error: settingScopeError } = localDeclarations();
     const def = key === undefined ? undefined : settingDef(key, settingScope.instances, settingScope.catalog);
-    if (typeof def === "string") fail(settingScopeError ? `${key}: ${def}; the project config could not be read: ${settingScopeError}` : `${key}: ${def}`);
+    if (typeof def === "string") fail(settingScopeError && def.startsWith("unknown setting") ? `${key}: ${def}; the project config could not be read: ${settingScopeError}` : `${key}: ${def}`);
     if (flags.includes("--now") && (typeof def !== "object" || def.group !== "Roster")) fail(usage);
     const value = sub === "set" ? parseSettingText(def!, text!) : undefined;
     const peer = def?.group === "Permissions" || def?.group === "Roster" ? def.path.at(-1)! : undefined;
@@ -1478,6 +1478,8 @@ const commands: Record<string, () => Promise<void> | void> = {
       }
       if (sub === "undo") {
         const view = await request({ t: "settings_get" }), undoDef = settingDef(view.undo, settingScope.instances, settingScope.catalog);
+        // A roster undo of a declared peer needs its confirmation prompt; without readable declarations, refuse rather than skip it.
+        if (typeof undoDef === "string" && settingScopeError) fail(`pending undo ${String(view.undo)}: ${undoDef}; the project config could not be read: ${settingScopeError}`);
         const rosterPeer = typeof undoDef !== "string" && undoDef.group === "Roster" ? undoDef.path[1] : undefined;
         let confirm: string | undefined;
         if (rosterPeer) {

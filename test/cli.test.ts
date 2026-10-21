@@ -288,7 +288,7 @@ test("permission and settings reach the daemon even when config.local.json does 
   mkdirSync(join(cwd, ".agenthub"));
   writeFileSync(join(cwd, ".agenthub", "config.local.json"), '{ "adapters": { broken');
   Bun.spawnSync(["git", "init", "-q"], { cwd });
-  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(AGENTHUB_|CLAUDECODE|CLAUDE_CODE_SESSION_ID|CODEX_THREAD_ID)/.test(key)));
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(AGENTHUB_(?!HOME$)|CLAUDECODE|CLAUDE_CODE_SESSION_ID|CODEX_THREAD_ID)/.test(key)));
   const run = (...args: string[]) => Bun.spawnSync(["bun", join(process.cwd(), "src/cli/main.ts"), ...args], { cwd, env }).stderr.toString();
   try {
     for (const args of [["permission"], ["permission", "kimi", "ask"], ["settings", "list"], ["settings", "reload"]]) {
@@ -297,6 +297,7 @@ test("permission and settings reach the daemon even when config.local.json does 
       expect(stderr).toContain("no hub running");
     }
     // A key only a declaration could define names the unreadable file instead of a bare "unknown".
-    expect(run("settings", "get", "roster.fixture")).toContain("the project config could not be read");
+    const unknown = run("settings", "get", "roster.fixture");
+    expect(unknown).toContain("the project config could not be read"); expect(unknown).not.toContain("no hub running");
   } finally { rmSync(cwd, { recursive: true, force: true }); }
 });
