@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openManager, startManager, stopManager, type Lifecycle, type ProjectRecord } from "../src/hub/manager.ts";
 
-import { PROTOCOL } from "../src/hub/control-client.ts";
+import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { MAX_COMMAND_MS } from "../src/cli/terminal-recovery.ts";
 
 const dirs: string[] = [];
@@ -98,12 +98,13 @@ test("the manager stops when its state directory vanishes", async () => {
 });
 
 
-async function scriptedAction(refusal?: Record<string, unknown>) {
+async function scriptedAction(refusal?: Record<string, unknown>, manualDeadlines = false) {
   const fixture = setup();
   const project = fixture.registry.get("p1") as ProjectRecord;
   const requests: any[] = [], limits: [string, number][] = [];
   const replies = new Map<string, (result: Record<string, unknown>) => void>();
   const observed = new Map<string, () => void>();
+  const deadlines = new Map<string, () => void>();
   const hub = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { if (server.upgrade(req)) return; return new Response("no", { status: 400 }); }, websocket: {
     message(ws, data) {
       const message = JSON.parse(String(data)); requests.push(message);
@@ -121,10 +122,24 @@ async function scriptedAction(refusal?: Record<string, unknown>) {
   const url = await openManager(fixture), origin = new URL(url).origin;
   const session = await fetch(`${origin}/session`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify({ ticket: new URL(url).hash.slice(1) }) });
   const cookie = session.headers.get("set-cookie")!;
+  const request = ControlClient.prototype.request;
+  // Drive only action deadlines after wire arrival. Handshake/HTTP I/O keeps its real watchdog.
+  const requestSpy = manualDeadlines ? spyOn(ControlClient.prototype, "request").mockImplementation(function(this: ControlClient, message, ms = 30000) {
+    if (message.t !== "ui_action") return request.call(this, message, ms);
+    const schedule = globalThis.setTimeout;
+    const timerSpy = spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
+      if (delay !== ms) return schedule(callback, delay, ...args);
+      deadlines.set(String((message.action as {action: string}).action), () => callback(...args));
+      return schedule(() => {}, 0);
+    }) as typeof setTimeout);
+    try { return request.call(this, message, ms); } finally { timerSpy.mockRestore(); }
+  }) : undefined;
   const action = async (kind: string, extra: Record<string, unknown> = {}) => (await fetch(`${origin}/action`, { method: "POST", headers: { origin, cookie, "content-type": "application/json" }, body: JSON.stringify({ action: kind, projectId: project.id, instanceId: "i1", peer: "pi", ...extra }) })).json() as Promise<any>;
   const arrived = (kind: string) => replies.has(kind) ? Promise.resolve() : new Promise<void>(resolve => observed.set(kind, resolve));
   const reply = (kind: string, result: Record<string, unknown>) => replies.get(kind)!(result);
-  return { ...fixture, hub, action, requests, limits, arrived, reply };
+  return { ...fixture, hub, action, requests, limits, arrived, reply,
+    expire: (kind: string) => { const deadline = deadlines.get(kind); expect(deadline, `${kind} deadline armed`).toBeDefined(); deadlines.delete(kind); deadline!(); },
+    restore: () => requestSpy?.mockRestore() };
 }
 
 test("manager forwards scoped delivery evidence reads beyond ordinary deadlines and rejects stale targets (#257)", async () => {
@@ -202,10 +217,15 @@ test("a hub refusal of start_peer remains a known failure with its command", asy
 });
 
 test("unified split accepts a confirmed response beyond the generic action deadline",async()=>{
- const f=await scriptedAction();try{
+ const f=await scriptedAction(undefined,true);try{
   const split=f.action("backlog_split");await f.arrived("backlog_split");
-  expect(f.requests.some(r=>r.action?.action==="backlog_split")).toBe(true);const ordinary=f.action("pause");await f.arrived("pause");expect((await ordinary).ok).toBe(false);f.reply("backlog_split",{ok:true,text:"children committed"});expect(await split).toMatchObject({ok:true,text:"children committed"});
- }finally{await stopManager({home:f.home});f.hub.stop(true)}
+  expect(f.requests.some(r=>r.action?.action==="backlog_split")).toBe(true);
+  const ordinary=f.action("pause");await f.arrived("pause");
+  // Both requests are in flight before the ordinary deadline advances; split's later deadline stays pending.
+  expect(f.limits).toEqual([["backlog_split",16000],["pause",10000]]);
+  f.expire("pause");expect((await ordinary).ok).toBe(false);
+  f.reply("backlog_split",{ok:true,text:"children committed"});expect(await split).toMatchObject({ok:true,text:"children committed"});
+ }finally{f.restore();await stopManager({home:f.home});f.hub.stop(true)}
 });
 test("unified split missed reply is unconfirmed and requires task readback before retry",async()=>{
  const f=await scriptedAction();try{const result=await f.action("backlog_split");expect(result.unconfirmed).toBe(true);expect(result).toMatchObject({ok:false,unconfirmed:true});expect(result.text).toContain("Reload the task");}finally{await stopManager({home:f.home});f.hub.stop(true)}
