@@ -4853,3 +4853,17 @@ Native CLIs update often: Codex 0.146.0 → 0.163.0, and Kimi 2.2.0 → 2.3.0 by
   - A weekly workflow compares the npm-published versions of the npm-distributed kinds with `verified` and keeps one `agent-compat` issue current.
   - Jcode and agy have no public registry and are not watched; their launcher verdict is the signal.
 - **Moving a verified set.** A receipt in `docs/verification/` adds the version to `verified` in the same PR.
+
+## Amendment: lifecycle identity linked by the hub (#694)
+
+Lifecycle status read the issue and the PR only from `hub_sdlc_record`, which agents rarely call, so every task showed `issue identity missing` and `PR identity missing` while its title, refs and PR named both. The hub already trusted the same source for plan review.
+
+- **Issue.** When the receipt has no issue and `planIssueIdentity` resolves exactly one, the hub writes `repo` and `issue` at plan review, at done, and in a groom backfill that runs after every authority check with its own bound (32 per call, separate from the metadata-read budget), so later tasks are reached on later calls.
+- **PR.** When the receipt has no PR, the hub links it at done. It reads the open PRs once and takes the one whose head equals the done's full `refs.commit`, or, with no commit, whose branch equals `refs.branch`. Zero or several matches link nothing. A full page of 100 (possibly truncated) or any malformed row makes the inventory unknown, so nothing is linked. Agent text is never parsed.
+- **Staged at done.** The done's identities are staged in memory: the lifecycle and review gates read them, and only the admitted done update (or its `done (checking)` record) persists them, so a refused done stays a pre-effect refusal (#254). The missing-issue `next` step says how to supply one; the blocker text stays exact for gate matching.
+- **Safety.**
+  - A first link keeps every other receipt field, so red-first and local-gate records survive.
+  - An existing or foreign identity is never relinked.
+  - PII tasks are skipped before any read.
+  - A task that turned private during the read gets no link, and a PR read for one commit or branch is never linked to a task whose head changed meanwhile.
+  - Plan-review and groom links record `lifecycle linked` with the ids only; a done link is part of the done's own record.

@@ -38,7 +38,7 @@ import { coverageGap, renderReviewBrief, type ReviewBrief } from "./review-brief
 import { definitionOf as builtinDefinitionOf } from "../adapters/registry.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
-import { readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
+import { linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
 
 export type TaskAssignmentRole = "owner" | "reviewer";
 
@@ -279,6 +279,9 @@ const RESCREEN_MAX = 10;
  * The task flow. Adapters and tools never touch the board: every change comes through here, where assignment,
  * PII handling, envelopes, briefs and memory notes are decided in one place.
  */
+/** #694: a PR staged at done with the commit or branch it was read for. */
+interface IdentityLink { repo: string; pr: number; basis: { commit?: string; branch?: string } }
+
 export class Tasks {
   private readonly repositories: TaskRepositories;
   private readonly incomingBacklog = new Set<number>();
@@ -2343,6 +2346,48 @@ export class Tasks {
     if (by !== USER && task[role] !== by) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id}: only its ${role} (${task[role] ?? "none"}) or the console user can do that`);
   }
 
+  /** #694: write the one issue the task itself names (the plan-review source) into its lifecycle receipt, once; never relinks. */
+  private linkIssue(task: Task): Task {
+    if (this.isPii(task) || task.sdlc?.issue) return task;
+    let identity: { repo: string; issue: number } | undefined;
+    try { identity = this.planIssueIdentity(task); } catch { return task; }
+    const next = identity && linkedReceipt(task.sdlc, identity, this.d.sdlc?.config() ?? sdlcConfig(undefined));
+    return next ? this.d.board.update(task.id, HUB, "lifecycle linked", { sdlc: next }, `issue #${identity!.issue}`) : task;
+  }
+
+  /**
+   * #694: the PR the hub can verify for a done, without writing it: the one open PR whose head is the done's full commit
+   * (or, with no commit, its branch). The read's basis travels with it, so a task whose commit or branch changed while the
+   * read was awaited never receives a PR found for another head. The done persists it only after its gates admit it, so a
+   * refused done stays effect-free (#254).
+   */
+  private async identityLink(task: Task, refs?: TaskRefs): Promise<IdentityLink | undefined> {
+    if (this.isPii(task) || task.sdlc?.pr) return undefined;
+    const repository = task.sdlc?.repo ?? task.refs.repo ?? this.d.repository;
+    const commit = refs?.commit ?? task.refs.commit, branch = refs?.branch ?? task.refs.branch;
+    if (!repository || !commit && !branch) return undefined;
+    const pr = await openPrFor(repository, commit ? { commit } : { branch }, this.d.sdlc?.gh ?? sdlcGh);
+    return pr ? { repo: repository, pr, basis: { commit, branch } } : undefined;
+  }
+
+  /**
+   * The task as the done's gates see it: the issue the current task names (re-resolved now, so a changed title or refs
+   * counts) and the staged PR only while the done's effective commit and branch are still the ones it was read for.
+   */
+  private withLink(task: Task, link: IdentityLink | undefined, refs?: TaskRefs): Task {
+    if ((this.d.sdlc?.config().mode ?? "off") === "off" || this.isPii(task)) return task;
+    const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
+    let issue: { repo: string; issue: number } | undefined;
+    if (!task.sdlc?.issue) { try { issue = this.planIssueIdentity(task); } catch { issue = undefined; } }
+    const commit = refs?.commit ?? task.refs.commit, branch = refs?.branch ?? task.refs.branch;
+    const repository = task.sdlc?.repo ?? task.refs.repo ?? this.d.repository;
+    const pr = link && !task.sdlc?.pr && repository?.toLowerCase() === link.repo.toLowerCase() && link.basis.commit === commit && (commit !== undefined || link.basis.branch === branch) ? link : undefined;
+    let next = task.sdlc;
+    if (issue) next = linkedReceipt(next, issue, config) ?? next;
+    if (pr) next = linkedReceipt(next, { repo: pr.repo, pr: pr.pr }, config) ?? next;
+    return next === task.sdlc ? task : { ...task, sdlc: next };
+  }
+
   private planIssueIdentity(task: Task): { repo: string; issue: number } | undefined {
     const source = task.external ?? task.sdlc;
     if (source?.repo && source.issue) return { repo: source.repo, issue: source.issue };
@@ -2395,6 +2440,16 @@ export class Tasks {
     const digest = plannerGrooming(visible, { repository: this.d.repository ?? `path:${realPath(this.d.cwd)}`,
       limits: Object.fromEntries(peers.map(peer => [peer, this.wipLimit(peer)])), wip: Object.fromEntries(peers.map(peer => [peer, this.wip(peer)])),
       states, issues, reviewedIssues, acceptedIssues, blockers });
+    // #694: backfill lifecycle issue links after every authority check, with their own bound (not the metadata-read
+    // budget): each call links up to 32 open tasks that still lack one, so later tasks are reached on later calls.
+    if ((this.d.sdlc?.config().mode ?? "off") !== "off") {
+      let linked = 0;
+      for (const task of this.d.board.list()) {
+        if (linked >= 32) break;
+        if (isClosedTaskState(task.state) || task.sdlc?.issue || this.isPii(task)) continue;
+        if (this.linkIssue(task) !== task) linked++;
+      }
+    }
     return { ...digest, truncated: digest.truncated || incomplete, ...(current.some(task => this.isPii(task)) ? { privateTasks: "withheld" } : {}) };
   }
 
@@ -2491,8 +2546,9 @@ export class Tasks {
     const current = this.need(task.id, false, true, true);
     if (current.history.length !== flow || (current.planningRevision ?? 0) !== revision) throw new PreEffectToolRefusal("plan review changed during readback");
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
-    const updated = this.d.board.update(current.id, by, "plan reviewed", { ...(Object.keys(scope).length ? { plan: { ...current.plan, ...scope } } : {}), sdlc: { ...current.sdlc, stage: current.sdlc?.stage ?? lifecycleStage(config, "plan"),
+    let updated = this.d.board.update(current.id, by, "plan reviewed", { ...(Object.keys(scope).length ? { plan: { ...current.plan, ...scope } } : {}), sdlc: { ...current.sdlc, stage: current.sdlc?.stage ?? lifecycleStage(config, "plan"),
       planReview: { planner: by, planningRevision: revision, recordedAt: Date.now(), ...(Object.keys(scope).length ? { scope } : {}), ...(issue ? { issue } : {}) } } }, raw.reason.trim(), { ...(withheld ? { withheld: true } : {}) }, flow);
+    if (config.mode !== "off") updated = this.linkIssue(updated); // #694
     if (updated.state === "proposed" && !updated.owner) {
       this.offered.delete(updated.id);
       try { await this.offerReady(updated, "planner review recorded"); }
@@ -3025,10 +3081,14 @@ export class Tasks {
       await this.planEntryGate(by, admission);
       task = valid();
     }
+    // #694: stage the identities the hub can verify; the gates read them, and only the admitted done persists them.
+    const link = this.d.sdlc && this.d.sdlc.config().mode !== "off" ? await this.identityLink(task, refs) : undefined;
+    const current = () => this.withLink(valid(), link, refs);
+    task = current();
     let reviewEvidence: PrEvidence | undefined;
-    if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { reviewEvidence = await this.lifecycleGate(task, "review"); task = valid(); }
-    const reviewAdmission = task.reviewer ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence) : undefined;
-    task = valid();
+    if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { reviewEvidence = await this.lifecycleGate(task, "review"); task = current(); }
+    const reviewAdmission = task.reviewer ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.withLink(staged, link, refs)) : undefined;
+    task = current();
     // A member of a silent cohort (issue #107): its done is an intent, and the last of them integrates first.
     const cohort = this.cohorts.of(task.id);
     const silentMember = !!cohort?.silent && this.turnFree() && !!task.owner && !this.isPii(task);
@@ -3048,8 +3108,8 @@ export class Tasks {
       if (r.action === "request") return this.d.board.update(task.id, HUB, "integration requested", {}, this.integrationRequest(task, r));
       if (r.action === "unresolved") {
         this.d.notify(`task ${this.publicTitle(task)}: turn-free integration unresolved after ${MAX_REQUESTS} requests (${r.why}); its done is recorded, check the overlapping work by hand`);
-        task = this.d.board.update(task.id, HUB, "integration unresolved", {}, r.why);
-      } else if (r.integrated) task = this.d.board.update(task.id, HUB, "integrated", {}, `cohort #${cohort!.id}, revision ${cohort!.revision}`);
+        task = this.withLink(this.d.board.update(task.id, HUB, "integration unresolved", {}, r.why), link, refs);
+      } else if (r.integrated) task = this.withLink(this.d.board.update(task.id, HUB, "integrated", {}, `cohort #${cohort!.id}, revision ${cohort!.revision}`), link, refs);
     } else if (cohort?.held.size && !this.isPii(task)) {
       // No integration step for this member (silence lifted, a PII task open): the notices the silence held stand in
       // for it (issue #107, AC4).
@@ -3057,14 +3117,14 @@ export class Tasks {
       if (evidence && by === USER) this.d.notify(`task ${this.publicTitle(task)} done by the console; overlapping work finished meanwhile:\n${evidence}`);
       else if (evidence) this.doneNotes.set(task.id, `Overlapping work finished while you worked (no turn-free integration step ran):\n${evidence}`);
     }
-    if (task.state === "proposed" || task.state === "changes_requested") task = this.d.board.update(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE); // done without a separate accept
+    if (task.state === "proposed" || task.state === "changes_requested") task = this.withLink(this.d.board.update(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE), link, refs); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class, task) : undefined;
-    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission);
+    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
     this.checking.set(task.id, task.owner);
     const checkedRefs = cleanRefs(refs);
     this.warmRepository({ ...task, refs: { ...task.refs, ...checkedRefs } });
-    const pending = this.d.board.update(task.id, by, "done (checking)", { refs: checkedRefs }, summary, { withheld: withheld || undefined });
+    const pending = this.d.board.update(task.id, by, "done (checking)", { refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined });
     this.releaseNotice(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
     const seen = { events: pending.history.length, owner: pending.owner };
     this.pendingChecks++;
@@ -3195,19 +3255,19 @@ export class Tasks {
   }
 
   /** `gated`: the transition `done()` already gated with no await since, so it is not read back twice (#382). */
-  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness): Promise<Task> {
+  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness, link?: IdentityLink): Promise<Task> {
     let selection = this.poolReview(task, refs);
     let reviewer = selection?.reviewer ?? task.reviewer, reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off" && gated !== (reviewer ? "review" : "approval")) {
       reviewEvidence = await this.lifecycleGate(task, reviewer ? "review" : "approval");
-      task = this.completionCurrent(task.id, by, false);
+      task = this.withLink(this.completionCurrent(task.id, by, false), link, refs);
       selection = this.poolReview(task, refs);
       reviewer = selection?.reviewer ?? task.reviewer;
     }
     // A delayed local check needs a new readback; the immediate done path already admitted before effects.
     if (reviewer && !admission && (this.d.sdlc?.config().mode ?? "off") !== "off") {
-      admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence);
-      task = this.completionCurrent(task.id, by, false);
+      admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence, undefined, staged => this.withLink(staged, link, refs));
+      task = this.withLink(this.completionCurrent(task.id, by, false), link, refs);
     }
     selection = this.poolReview(task, refs);
     reviewer = selection?.reviewer ?? task.reviewer;
@@ -3305,7 +3365,7 @@ export class Tasks {
 
   /** The one place a review request is written: the first reviewer and a replacement get the same text, refs and privacy. */
   /** Review admission is separate from brief construction (#228). All refusals precede the requesting done's writes. */
-  private async reviewRequestAdmission(task: Task, refs?: TaskRefs, preEffect = true, actor: PeerId = task.owner ?? USER, previous?: PrEvidence, sameRequest?: () => boolean): Promise<ReviewReadiness | undefined> {
+  private async reviewRequestAdmission(task: Task, refs?: TaskRefs, preEffect = true, actor: PeerId = task.owner ?? USER, previous?: PrEvidence, sameRequest?: () => boolean, stage: (task: Task) => Task = task => task): Promise<ReviewReadiness | undefined> {
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
     if (mode === "off") return undefined;
     let quietDrift = false;
@@ -3314,7 +3374,8 @@ export class Tasks {
         const holders = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([peer]) => peer);
         if (holders.length !== 1 || holders[0] !== actor) throw new (preEffect ? PreEffectToolRefusal : Error)("review admission authority changed");
       }
-      const current = this.need(task.id, false, preEffect);
+      // #694: the board copy seen through the same staged identity link the caller's task carries.
+      const current = stage(this.need(task.id, false, preEffect));
       const changed = current.history.length !== task.history.length;
       const quiet = current.history.length > task.history.length && current.history.slice(task.history.length).every(entry => QUIET_EVENTS.has(entry.event));
       const sameHistory = !changed || (mode === "advise" && quiet) || !!sameRequest?.();

@@ -292,7 +292,8 @@ export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined,
   const spec = config.mode !== "off" && receipt?.issue ? { spec: { issue: receipt.issue, state: specState(receipt, specEdit) } } : {};
   return { ...spec, ...(config.mode !== "off" && integrity ? { testIntegrity: integrity } : {}), ...(config.mode !== "off" && plan ? { planConformance: plan } : {}), ...(findings ? { findings } : {}), ...(config.mode !== "off" && definition && playbookStage(definition.base) ? { playbook: playbookStage(definition.base) } : {}), ...(shown ? { criteria } : {}), ...(custom ? { definition, ...custom } : {}), mode: config.mode, stage, blockers, ready: blockers.length === 0,
     actor: !definition ? "person" : shown && criteria.blockers.length ? "reviewer/person" : config.definitions ? definition.actor : baseActor(definition.base),
-    next: blockers[0] ?? "person may inspect merge readiness; no automatic merge" };
+    // #694: the identity blocker keeps its exact text for gate matching; the next step says how to supply it.
+    next: blockers[0] === "issue identity missing" ? "issue identity missing: name one issue (title #N, refs or hub_sdlc_record)" : blockers[0] ?? "person may inspect merge readiness; no automatic merge" };
 }
 
 function stageGates(def: StageDefinition, blockers: string[], checklist: string[]): { entry: string[]; exit: string[] } {
@@ -342,6 +343,31 @@ export async function readSpecEdit(repoName: string, issue: number, run: SdlcGh 
     if (found?.number !== issue || !stamp(found.updatedAt) || (found.lastEditedAt !== null && !stamp(found.lastEditedAt))) return undefined;
     return { lastEditedAt: found.lastEditedAt, updatedAt: found.updatedAt };
   } catch { return undefined; }
+}
+
+/**
+ * #694: the one open PR whose head is `commit`, or, with no commit, whose branch is `branch`. Zero or several matches, a
+ * failed read or malformed output give undefined: the hub links only what it verified, never text an agent wrote.
+ */
+export async function openPrFor(repository: string, head: { commit?: string; branch?: string }, run: SdlcGh = sdlcGh): Promise<number | undefined> {
+  if (!repo(repository) || head.commit !== undefined && !sha(head.commit) || !head.commit && !head.branch) return undefined;
+  try {
+    const listed = await run(["pr", "list", "--repo", repository, "--state", "open", "--limit", "100", "--json", "number,headRefOid,headRefName"], 10_000, undefined, 256 * 1024);
+    if (listed.code !== 0) return undefined;
+    const rows: unknown = JSON.parse(listed.stdout);
+    // A full page may be truncated: uniqueness is unknown, so nothing is linked. Every row must be well formed.
+    if (!Array.isArray(rows) || rows.length >= 100) return undefined;
+    if (!rows.every((row: { number?: unknown; headRefOid?: unknown; headRefName?: unknown }) => id(row?.number) && sha(row.headRefOid) && typeof row.headRefName === "string")) return undefined;
+    const hits = rows.filter((row: { headRefOid: string; headRefName: string }) => head.commit ? row.headRefOid === head.commit : row.headRefName === head.branch);
+    return hits.length === 1 ? (hits[0] as { number: number }).number : undefined;
+  } catch { return undefined; }
+}
+/** #694: the first link of an issue or PR is not a relink: it keeps everything the receipt already holds. */
+export function linkedReceipt(previous: SdlcReceipt | undefined, link: { repo: string; issue?: number; pr?: number }, config: SdlcConfig): SdlcReceipt | undefined {
+  if (!repo(link.repo) || link.issue !== undefined && !id(link.issue) || link.pr !== undefined && !id(link.pr)) return undefined;
+  if (previous?.repo && previous.repo.toLowerCase() !== link.repo.toLowerCase()) return undefined;
+  if (link.issue !== undefined && previous?.issue !== undefined || link.pr !== undefined && previous?.pr !== undefined) return undefined;
+  return { ...(previous ?? { stage: config.stages[0] ?? "spec" }), repo: previous?.repo ?? link.repo, ...(link.issue !== undefined ? { issue: link.issue } : {}), ...(link.pr !== undefined ? { pr: link.pr } : {}) };
 }
 
 export async function readSdlcPr(receipt: SdlcReceipt, run: SdlcGh = sdlcGh, withIntegrity = false): Promise<PrEvidence | undefined> {

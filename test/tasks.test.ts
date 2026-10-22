@@ -1,3 +1,4 @@
+import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { supersededDeliveryReason } from "../src/hub/delivery-superseded.ts";
 import { Database } from "bun:sqlite";
 import { MemoryStore, migrate, taskKey } from "@staix/agent-mem";
@@ -1628,6 +1629,21 @@ test("the member whose done completes the set integrates: one request with its f
   expect(recorded.history.slice(-2).map((h) => h.event)).toEqual(["integrated", "done"]);
   expect(state.acked).toEqual(["codex:f1"]); // the second done is the proof the request arrived
   expect(board.get(second.id)!.history.filter((h) => h.event === "integration requested")).toHaveLength(1);
+});
+
+test("an integrating cohort member's done keeps the staged lifecycle link through the integration write (#694)", async () => {
+  const head = "a".repeat(40);
+  const gh = async (args: string[]) => args[0] === "pr" && args[1] === "list" ? { code: 0, stdout: JSON.stringify([{ number: 692, headRefOid: head, headRefName: "feat/691" }]) } : { code: 1, stdout: "" };
+  const { tasks, board, stop, later } = await turnFreeRig({ repository: "STAIxBWLB/agent-hub", sdlc: { config: () => sdlcConfig({ mode: "advise" }), gh } });
+  const first = await tasks.propose("kimi", { title: "multi-file edit", class: "implement", owner: "kimi", refs: { paths: ["src/click/termui.py"] } });
+  const second = await tasks.propose("codex", { title: "Fix #691: priority", class: "implement", owner: "codex", refs: { paths: ["src/click/termui.py"] } });
+  await tasks.done("kimi", first.id, "edit");
+  stop("kimi");
+  expect((await tasks.done("codex", second.id, "first try", { commit: head })).history.at(-1)!.event).toBe("integration requested");
+  later();
+  const recorded = await tasks.done("codex", second.id, "checked against #1", { commit: head });
+  expect(recorded.history.slice(-2).map((h) => h.event)).toEqual(["integrated", "done"]);
+  expect(board.get(second.id)!.sdlc).toMatchObject({ repo: "STAIxBWLB/agent-hub", issue: 691, pr: 692 });
 });
 
 test("the next done acknowledges the facts sent with the request before the target is judged", async () => {

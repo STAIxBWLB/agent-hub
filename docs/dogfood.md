@@ -24,6 +24,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | --- | --- | --- |
 | Review brief, review findings, Important gate (#481 S3) | advise | Important findings per PR, rounds to approval |
 | Spec acceptance (#481 S1) | advise | build entries without acceptance |
+| Lifecycle identity linked by the hub (#694) | on in advise | tasks still showing `issue identity missing` or `PR identity missing` at review |
 | Planner plan review (#481 S9) | advise | plans reviewed before build |
 | Plan conformance (#481 S2) | advise | PRs with files outside the plan |
 | Test integrity for bug fixes (#481 S4) | advise | bug PRs without a red-first receipt, modified pre-existing tests |
