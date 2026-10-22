@@ -2483,7 +2483,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!task) return JSON.stringify(`no task #${a.id}`);
         const { codeSymbols: _storedCodeSymbols, ...detail } = task;
         const codeSymbols = tasks.publicView(task).codeSymbols;
-        return JSON.stringify({ ...detail, ...(codeSymbols ? { codeSymbols } : {}), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
+        return JSON.stringify({ ...detail, ...(codeSymbols ? { codeSymbols } : {}), symbolOverlaps: tasks.symbolOverlaps(task), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
       }
       case "task_assign":
       case "task_assign_checked": {
