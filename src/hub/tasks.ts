@@ -3516,9 +3516,11 @@ export class Tasks {
   }
 
   private codeSymbolsRepository(task: Task) {
-    const repository = this.repositories.scope(task.refs);
-    if (task.sdlc?.repo && this.repositories.scope({ repo: task.sdlc.repo }).key !== repository.key) return undefined;
-    return repository;
+    try {
+      const repository = this.repositories.scope(task.refs);
+      if (task.sdlc?.repo && this.repositories.scope({ repo: task.sdlc.repo }).key !== repository.key) return undefined;
+      return repository;
+    } catch { return undefined; }
   }
 
   /** Host observations are saved only with an admitted transition, never by an optional read. */
