@@ -140,3 +140,17 @@ test("planner grooming reports reserved peer runtime blockers and directory or r
   for (const id of [1, 2, 3]) expect(result.items).toContainEqual({ kind: "overlap", task: id, related: [4] });
   expect(result.items.some(item => item.task === 5 || item.related?.includes(5))).toBe(false);
 });
+
+test("planner grooming detects normalized symbol overlap (#682 phase 1b)", () => {
+  const rows = [
+    task(1, { refs: { repo: "owner/repo", paths: ["src/a.ts"] }, plan: { symbols: ["Tasks.offerReady"] } }),
+    task(2, { refs: { repo: "owner/repo", paths: ["src/b.ts"] }, plan: { symbols: ["offerReady()"] } }),
+    task(3, { refs: { repo: "owner/repo", paths: ["src/c.ts"] }, plan: { symbols: ["A.run"] } }),
+    task(4, { refs: { repo: "owner/repo", paths: ["src/d.ts"] }, plan: { symbols: ["B.run"] } }),
+  ];
+  const result = groom(rows);
+  // task 1 and 2 overlap on Tasks.offerReady vs offerReady():
+  expect(result.items).toContainEqual({ kind: "overlap", task: 1, related: [2] });
+  // task 3 and 4 do NOT overlap on A.run vs B.run:
+  expect(result.items.some(item => item.task === 3 && item.related?.includes(4))).toBe(false);
+});

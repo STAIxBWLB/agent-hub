@@ -1,4 +1,5 @@
 import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, HOST_CODE_SYMBOLS } from "./task-code-symbols.ts";
+import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
 import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
 import { completePlanInventory, planConformance, planConformanceBlockers, planFingerprint, type PlanConformance } from "./plan-conformance.ts";
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
@@ -831,7 +832,7 @@ export class Tasks {
       // were stored as written, so both sides are compared in one spelling.
       if (mine.repositoryKey !== theirs.repositoryKey) continue;
       const file = (p: string) => normPath(p) !== "." && theirs.paths.some((q) => normPath(q) === normPath(p));
-      const same = mine.paths.some(file) || mine.symbols.some((x) => theirs.symbols.includes(x));
+      const same = mine.paths.some(file) || mine.symbols.some((x) => theirs.symbols.some((y) => symbolsOverlap(x, y)));
       if (!same || this.d.board.reviews({ task: t.id }).some((r) => r.kind === "contradicted")) continue;
       this.d.board.recordReview({ implementer: t.owner, reviewer: approval.by, class: t.class, kind: "contradicted", task: t.id });
     }
@@ -1755,7 +1756,12 @@ export class Tasks {
   private places(task: Task): { repositoryKey: string; paths: string[]; symbols: string[] } {
     const scope = this.repositories.scope(task.refs);
     const paths = [...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])].map((p) => scope === this.repositories.project ? this.projectPath(p) : normPath(this.repositories.relativePath(scope, p)));
-    return { repositoryKey: scope.key, paths: [...new Set(paths)], symbols: [...(task.plan?.symbols ?? []), ...(task.plan?.sections ?? []).map(v => `section ${v}`), ...(task.plan?.sources ?? []).map(v => `source ${v}`)] };
+    const symbols = [
+      ...(task.plan?.symbols ?? []).map(normalizePlanSymbol),
+      ...(task.plan?.sections ?? []).map(v => `section ${v}`),
+      ...(task.plan?.sources ?? []).map(v => `source ${v}`),
+    ];
+    return { repositoryKey: scope.key, paths: [...new Set(paths)], symbols: [...new Set(symbols)] };
   }
 
   private roots?: string[];
@@ -1781,7 +1787,7 @@ export class Tasks {
       const theirs = this.places(t);
       if (mine.repositoryKey !== theirs.repositoryKey) return [];
       const paths = task.profile && t.profile && (task.plan?.sections?.length && t.plan?.sections?.length) ? [] : mine.paths.filter((p) => theirs.paths.some((q) => samePlace(p, q)));
-      const symbols = mine.symbols.filter((x) => theirs.symbols.includes(x));
+      const symbols = mine.symbols.filter((x) => theirs.symbols.some((y) => symbolsOverlap(x, y)));
       return paths.length || symbols.length ? [{ task: t, paths, symbols }] : [];
     });
   }
@@ -3199,7 +3205,7 @@ export class Tasks {
         const theirs = this.places(u);
         if (mine.repositoryKey !== theirs.repositoryKey) return [];
         const paths = t.profile && u.profile && (t.plan?.sections?.length && u.plan?.sections?.length) ? [] : mine.paths.filter((p) => theirs.paths.some((q) => samePlace(p, q)));
-        const symbols = mine.symbols.filter((x) => theirs.symbols.includes(x));
+        const symbols = mine.symbols.filter((x) => theirs.symbols.some((y) => symbolsOverlap(x, y)));
         return paths.length || symbols.length ? [this.completedNotice(u, { task: t, paths, symbols }, at.note, at.withheld)] : [];
       });
       if (!open.length && !done.length) continue;
