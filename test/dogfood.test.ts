@@ -274,3 +274,28 @@ test("CI refuses more than eight or incomplete recorded heads without querying a
     expect(queries).toBe(0);expect(result.complete).toBe(false);expect(result.data[0]?.firstPassCi).toBeUndefined();expect(result.data[0]?.sameHeadReruns).toBeUndefined();
   }
 });
+
+
+test("same-head manual dispatch runs never count as pull-request CI",async()=>{
+  const sha="a".repeat(40),at=(n:number)=>new Date(n).toISOString();
+  let leak=false,projection="";
+  const gh:SdlcGh=async(args)=>{
+    if(args[0]==="pr")return{code:0,stdout:JSON.stringify([{number:6,createdAt:at(1000),mergedAt:at(9000)}])};
+    if(args[1]?.includes("actions/workflows")){
+      const query=new URL(`https://example.test/${args[1]}`).searchParams;
+      const rows=[{id:71,event:"workflow_dispatch",run_attempt:3,head_sha:sha,pull_requests:[],created_at:at(2000),conclusion:"success"},
+        {id:72,event:"pull_request",run_attempt:1,head_sha:sha,pull_requests:[],created_at:at(3000),conclusion:"failure"}]
+        .filter(row=>leak||query.get("event")===null||row.event===query.get("event"));
+      projection=args[args.indexOf("--jq")+1]!;
+      return{code:0,stdout:JSON.stringify({total_count:rows.length,workflow_runs:rows})};
+    }
+    const page=(nodes:unknown[])=>({nodes,pageInfo:{hasNextPage:false}});
+    return{code:0,stdout:JSON.stringify({data:{repository:{pullRequest:{number:6,state:"MERGED",headRefOid:sha,mergedAt:at(9000),commits:page([{commit:{oid:sha}}]),reviews:page([]),reviewThreads:page([]),timelineItems:page([])}}}})};
+  };
+  const collect=()=>dogfoodPrs("o/r",source([]),1000,10000,gh);
+  expect((await collect()).data[0]).toMatchObject({complete:true,firstPassCi:false,sameHeadReruns:0,ciRuns:[{id:72,attempt:1}]});
+  expect(projection).toContain("event");
+  leak=true;const i=input();i.since=1000;i.until=10000;i.prs=await collect();
+  expect(i.prs.complete).toBe(false);
+  expect(dogfoodScorecard(i).flow.prs[0]).toMatchObject({ciRuns:null,ciReruns:null,firstPassCi:null,sameHeadReruns:null});
+});
