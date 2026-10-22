@@ -122,7 +122,7 @@ test("dogfood CI metadata stays useful without a board link; a rerun does not in
 test("GitHub complete metadata computes first CI result, same-head reruns and explicit bug references",async()=>{
   const at=(n:number)=>new Date(n).toISOString(), sha="a".repeat(40);
   const gh:SdlcGh=async(args)=>{
-    if(args[0]==="pr")return{code:0,stdout:JSON.stringify([{number:2,mergedAt:at(8000)}])};
+    if(args[0]==="pr")return{code:0,stdout:JSON.stringify([{number:2,createdAt:at(0),mergedAt:at(8000)}])};
     if(args[1]?.includes("actions/workflows"))return{code:0,stdout:JSON.stringify({total_count:2,workflow_runs:[{id:1,run_attempt:1,head_sha:sha,pull_requests:[{number:2}],created_at:at(1000),conclusion:"failure"},{id:2,run_attempt:2,head_sha:sha,pull_requests:[{number:2}],created_at:at(2000),conclusion:"success"}]})};
     const page=(nodes:unknown[])=>({nodes,pageInfo:{hasNextPage:false}});
     return{code:0,stdout:JSON.stringify({data:{repository:{pullRequest:{number:2,state:"MERGED",headRefOid:sha,mergedAt:at(8000),commits:page([{commit:{oid:sha}}]),reviews:page([]),reviewThreads:page([{comments:{nodes:[{createdAt:at(7000),author:{login:"chatgpt-codex-connector"}}]}}]),timelineItems:page([{source:{number:8,createdAt:at(9000),labels:page([{name:"bug"}])}}])}}}})};
@@ -185,5 +185,43 @@ test("oversized private receipts make privacy inventory incomplete before GitHub
     const tasks=dogfoodTasks(file);expect(tasks.complete).toBe(false);
     let calls=0;const r=await dogfoodPrs("o/r",tasks,0,10000,async()=>{calls++;return{code:1,stdout:""};});
     expect(r.available).toBe(false);expect(calls).toBe(0);
+  }finally{f.close();}
+});
+
+test("CI reads a complete reporting window despite more than 100 lifetime workflow runs",async()=>{
+  const since=1000,until=10000,at=(n:number)=>new Date(n).toISOString(),sha="b".repeat(40);
+  const endpoints:string[]=[];
+  let truncated=false,created=1500;
+  const gh:SdlcGh=async(args)=>{
+    if(args[0]==="pr")return{code:0,stdout:JSON.stringify([{number:3,createdAt:at(created),mergedAt:at(9000)}])};
+    if(args[1]?.includes("actions/workflows")) {
+      const endpoint=args[1];endpoints.push(endpoint);
+      const scoped=endpoint.includes(`created=${at(since)}..${at(until)}`);
+      return{code:0,stdout:JSON.stringify({total_count:scoped&&!truncated?1:1001,workflow_runs:[{id:11,run_attempt:1,head_sha:sha,pull_requests:[{number:3}],created_at:at(2000),conclusion:"success"}]})};
+    }
+    const page=(nodes:unknown[])=>({nodes,pageInfo:{hasNextPage:false}});
+    return{code:0,stdout:JSON.stringify({data:{repository:{pullRequest:{number:3,state:"MERGED",headRefOid:sha,mergedAt:at(9000),commits:page([{commit:{oid:sha}}]),reviews:page([]),reviewThreads:page([]),timelineItems:page([])}}}})};
+  };
+  const prs=await dogfoodPrs("o/r",source([]),since,until,gh);
+  expect(prs.data[0]).toMatchObject({complete:true,firstPassCi:true,sameHeadReruns:0,ciRuns:[{id:11,attempt:1}]});
+  const i=input();i.since=since;i.until=until;i.prs=prs;
+  expect(dogfoodScorecard(i).flow.prs[0]).toMatchObject({firstPassCi:1,ciRuns:1,ciReruns:0,sameHeadReruns:0});
+  expect(endpoints).toHaveLength(1);expect(endpoints[0]).toContain("per_page=100");
+  truncated=true;i.prs=await dogfoodPrs("o/r",source([]),since,until,gh);
+  expect(dogfoodScorecard(i).flow.prs[0]).toMatchObject({firstPassCi:null,ciRuns:null,ciReruns:null,sameHeadReruns:null});
+  truncated=false;created=500;
+  expect((await dogfoodPrs("o/r",source([]),since,until,gh)).data[0]?.firstPassCi).toBeUndefined();
+});
+
+test("malformed log timestamps make counts unknown while out-of-window timestamps stay complete",async()=>{
+  const f=fixture();try {
+    const gh:SdlcGh=async()=>({code:1,stdout:""});
+    writeFileSync(join(f.root,"hub.log"),"legacy undated evidence\n1970-01-01T00:00:20.000Z valid outside window\n");
+    const r=await readDogfood(f.root,f.root,1000,10000,gh);
+    expect(r.sources.log!.available).toBe(true);expect(r.sources.log!.complete).toBe(false);
+    expect(r.delivery.emptyInboxPollingStreaks.value).toBeNull();expect(r.quality.adviseBlockers.S9?.value).toBeNull();
+    writeFileSync(join(f.root,"hub.log"),"1970-01-01T00:00:20.000Z valid outside window\n");
+    const clean=await readDogfood(f.root,f.root,1000,10000,gh);
+    expect(clean.sources.log!.complete).toBe(true);expect(clean.delivery.emptyInboxPollingStreaks.value).toBe(0);
   }finally{f.close();}
 });

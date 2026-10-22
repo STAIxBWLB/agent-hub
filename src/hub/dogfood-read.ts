@@ -103,12 +103,12 @@ export async function dogfoodPrs(repo: string, tasks: Source<DogfoodTask[]>, sin
   const gh: SdlcGh = (args, timeout, cwd, cap) => performance.now() < deadline
     ? run(args, Math.max(1,Math.min(timeout ?? 5000,deadline-performance.now())),cwd,Math.min(cap ?? 128*1024,128*1024)) : Promise.resolve({code:1,stdout:""});
   const parse = async (args: string[]) => { try { const r = await gh(args); return r.code === 0 ? JSON.parse(r.stdout) : undefined; } catch { return undefined; } };
-  const list = await parse(["pr","list","--repo",repo,"--state","merged","--search",`merged:>=${new Date(since).toISOString()}`,"--limit","100","--json","number,mergedAt"]);
+  const list = await parse(["pr","list","--repo",repo,"--state","merged","--search",`merged:>=${new Date(since).toISOString()}`,"--limit","100","--json","number,mergedAt,createdAt"]);
   if (!Array.isArray(list)) return missing([]);
   const hidden = new Set(tasks.data.filter(t => t.pii && (!t.repo || t.repo.toLowerCase() === repo.toLowerCase())).map(t => t.pr));
   const visible = list.filter(p => id(p?.number) && date(p.mergedAt) !== undefined && date(p.mergedAt)! <= until && !hidden.has(p.number));
   let complete = list.length < 100 && list.every(p => id(p?.number) && date(p.mergedAt) !== undefined) && visible.length <= MAX_PRS;
-  const runs = await parse(["api",`repos/${repo}/actions/workflows/check.yml/runs?per_page=100`,"--jq","{total_count,workflow_runs:[.workflow_runs[]|{id,run_attempt,head_sha,created_at,conclusion,pull_requests:[.pull_requests[]|{number}]}]}"]);
+  const runs = await parse(["api",`repos/${repo}/actions/workflows/check.yml/runs?per_page=100&created=${new Date(since).toISOString()}..${new Date(until).toISOString()}`,"--jq","{total_count,workflow_runs:[.workflow_runs[]|{id,run_attempt,head_sha,created_at,conclusion,pull_requests:[.pull_requests[]|{number}]}]}"]);
   const runsComplete = runs && Number.isSafeInteger(runs.total_count) && Array.isArray(runs.workflow_runs) && runs.total_count === runs.workflow_runs.length && runs.workflow_runs.length <= 100 && runs.workflow_runs.every((r:any)=>id(r?.id) && id(r?.run_attempt) && typeof r?.head_sha === "string" && /^[a-f0-9]{40}$/.test(r.head_sha) && date(r.created_at) !== undefined && (r.conclusion === null || typeof r.conclusion === "string") && Array.isArray(r.pull_requests) && r.pull_requests.every((p:any)=>id(p?.number)));
   const rows: DogfoodPr[] = [];
   for (const item of visible.slice(0,MAX_PRS)) {
@@ -118,7 +118,7 @@ export async function dogfoodPrs(repo: string, tasks: Source<DogfoodTask[]>, sin
     const linked = runsComplete ? runs.workflow_runs.filter((r:any) => r.pull_requests?.some((p:any)=>p.number===item.number) && date(r.created_at)! <= row.mergedAt!) : [];
     if (runsComplete && linked.every((r:any)=>id(r.id) && id(r.run_attempt) && typeof r.head_sha === "string")) {
       const earliest = [...linked].sort((a:any,b:any)=>date(a.created_at)!-date(b.created_at)!)[0];
-      if (earliest?.run_attempt === 1 && ["success","failure","cancelled","timed_out"].includes(earliest.conclusion)) row.firstPassCi = earliest.conclusion === "success";
+      if (date(item.createdAt) !== undefined && date(item.createdAt)! >= since && earliest?.run_attempt === 1 && ["success","failure","cancelled","timed_out"].includes(earliest.conclusion)) row.firstPassCi = earliest.conclusion === "success";
       if (linked.length) row.sameHeadReruns = linked.reduce((n:number,r:any)=>n+r.run_attempt-1,0);
     }
     const [owner,name] = repo.split("/");
@@ -152,6 +152,10 @@ export async function readDogfood(root: string, stateDir: string, since: number,
   try { const r = await run(["repo","view","--json","nameWithOwner"],5000,root,8192); if (r.code === 0) repo = JSON.parse(r.stdout).nameWithOwner; } catch { /* unknown */ }
   const events = dogfoodEvents(dogfoodLines(join(stateDir,"events.jsonl")),since,until);
   const log = dogfoodLines(join(stateDir,"hub.log"));
-  log.data = log.data.filter(line => {const at=date(line.slice(0,24));return at !== undefined && at >= since && at <= until;});
+  log.data = log.data.filter(line => {
+    const at=date(line.slice(0,24));
+    if (at === undefined) { log.complete = false; return false; }
+    return at >= since && at <= until;
+  });
   return dogfoodScorecard({since,until,tasks,events,log,journal:dogfoodJournal(join(stateDir,"hub.db"),since,until),prs:await dogfoodPrs(repo,tasks,since,until,run),features:dogfoodFeatures(join(root,"docs/dogfood.md"))});
 }
