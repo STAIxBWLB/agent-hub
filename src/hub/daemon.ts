@@ -6109,7 +6109,9 @@ export async function startDaemon(opts: DaemonOptions) {
         try {
           // Fold what the log has now, within a time budget: a hub that has just started is still behind a large log, and an answer built from the
           // part folded so far would read as "no records" for a peer that did use tokens. `behind` says so when the budget ran out (#683 U3).
-          const behind = !usageRollup.catchUp(1500);
+          // ponytail: catchUp runs synchronously on the daemon loop, so a request on a log far behind stalls it for up to this budget (about 250 ms
+          // folds the real 47 MB log). Ceiling: a log several times larger answers `behind` and finishes over the 10 s polls; move the fold to a worker if a stall is felt.
+          const behind = !usageRollup.catchUp(250);
           const reply_ = (body: Record<string, unknown>) => reply({ ...body, ...(behind ? { behind: true } : {}) });
           if (op === "limits") {
             if (msg.peer !== undefined && (typeof msg.peer !== "string" || !PEER_ID.test(msg.peer))) return void reply({ t: "usage", ok: false, error: "peer must be a peer id" });

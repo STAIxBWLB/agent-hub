@@ -103,6 +103,40 @@ test("the panel says when usage is loading or unavailable, and stays within 80 c
   expect(out).toContain("agent-hub");                                                         // the project name survives seven tabs
 });
 
+test("pressing 7 with nothing selected in Tasks clears the old task instead of keeping it (#683 U3, review)", () => {
+  let s = usageState({ panel: 3, tasks: [{ id: 42, state: "in_progress", title: "t", class: "implement" }] });
+  s = reduceConsole(s, "7", NOW).state; expect(s.usageTask).toBe(42);
+  s = reduceConsole(s, "3", NOW).state;
+  s.tasks = [];                                                                               // the task left the panel: no selected row
+  s = reduceConsole(s, "7", NOW).state;
+  expect(s.usageTask).toBeUndefined();
+  expect(screen(s)).toContain("task: none selected");
+  expect(screen(s)).not.toContain("task #42");
+  // from another panel the selection is not read at all, so it is kept: only leaving Tasks with no row clears it
+  s.usageTask = 9; s = reduceConsole(reduceConsole(s, "1", NOW).state, "7", NOW).state; expect(s.usageTask).toBe(9);
+});
+
+test("the selected-task lines stay on screen at 24 rows with 16 or more peers, and the table scrolls instead (#683 U3, review)", () => {
+  const peers = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`peer${String(i).padStart(2, "0")}`, { state: "online" }]));
+  const base = usageState({ peers, budget: {} });
+  // only these peers: the fixture's own usage rows (codex, jcode, claude) would add peers to the list and move every index
+  base.usage = { at: NOW, today: result([]) as any, week: result([]) as any, life: result([]) as any, taskId: 42, task: result([row("peer03", c(5000), c(5000, "count")), row("peer07", unknown, unknown)], { task: 42 }) as any };
+  for (const count of [3, 15, 16, 20]) {
+    const s = { ...base, peers: Object.fromEntries(Object.entries(peers).slice(0, count)), usageTask: 42 };
+    for (const selection of [0, count - 1]) {
+      const lines = renderConsole({ ...s, selection }, 100, 24, NOW);
+      expect(lines).toHaveLength(24);
+      const out = strip(lines);
+      expect(out).toContain("task #42: tokens per peer, all time");                         // the heading and both rows, whatever the peer count
+      expect(out).toMatch(/peer03\s+5000 native/); expect(out).toMatch(/peer07\s+unknown/);
+      expect(out).toContain(`peer${String(selection === 0 ? 0 : count - 1).padStart(2, "0")}`);   // the selected peer row is still on screen
+    }
+  }
+  // a very short terminal still keeps at least one table row and the task heading
+  const tiny = strip(renderConsole({ ...base, usageTask: 42, selection: 5 }, 100, 12, NOW));
+  expect(tiny).toContain("task #42: tokens per peer"); expect(tiny).toContain("peer05");
+});
+
 test("a roll-up that is still behind the event log says the numbers are partial (#683 U3)", () => {
   const s = usageState(); s.usage = { ...s.usage!, behind: true };
   const out = screen(s);

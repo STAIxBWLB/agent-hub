@@ -621,7 +621,8 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   if (key === ":") { s.editing = true; return done(); }
   const switchPanel = (panel: number) => {
     // The task selected in Tasks is the one the Usage panel shows; switchPanel clears that selection, so it is read first (#683 U3).
-    if (panel === 7 && s.panel === 3) { const task = selectedPanelRow(s); if (task && Number.isSafeInteger(Number(task.id)) && Number(task.id) > 0) s.usageTask = Number(task.id); }
+    // With no valid selected row (an empty Tasks panel) the old task is cleared, never kept: the panel must not show a task that is no longer the selection.
+    if (panel === 7 && s.panel === 3) { const task = selectedPanelRow(s); s.usageTask = task && Number.isSafeInteger(Number(task.id)) && Number(task.id) > 0 ? Number(task.id) : undefined; }
     s.panel = panel; s.selection = panel === 5 ? newestEvent(s) : 0; s.taskSelection = undefined; s.queueSelection = undefined; s.detail = undefined; s.requestDetail = undefined; return done(); };
   if (s.mode === "panels" && /^[1-7]$/.test(key) && !s.optionChoice) return switchPanel(Number(key));
   // Right and Left are the digit of the next or previous tab, wrapping at both ends (#309); the same guards as the
@@ -1055,7 +1056,12 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     const fits = Math.max(1, height - 5); // table header, one row, rule, one title line, deny
     if (allow.length > fits) allow.splice(fits - 1, Infinity, more(allow[0]!, `${plural(allow.length - fits + 1, "more option")}: Enter shows them all`));
     const tail = [...allow, ...deny];
-    const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : height - (s.panel === 3 ? 2 : 1)); const start = Math.max(0, at - capacity + 1);
+    // The Usage panel's selected-task lines are reserved before the peer table is sized, so many peers can never push them off a short terminal (#683 U3).
+    // At most half the body goes to them; a longer list is cut with a count. The status line and the table header take the other two rows.
+    let taskLines = s.panel === 7 ? usageTaskLines(s.usage, s.usageTask) : [];
+    const taskRoom = Math.max(1, Math.floor(height / 2));
+    if (taskLines.length > taskRoom) taskLines = [...taskLines.slice(0, taskRoom - 1), { text: `  ... ${taskLines.length - taskRoom + 1} more`, tone: "muted" as const }];
+    const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : s.panel === 7 ? height - 2 - taskLines.length : height - (s.panel === 3 ? 2 : 1)); const start = Math.max(0, at - capacity + 1);
     const stages = new Map(progress.stages.map(stage => [stage.id, stage]));
     const cellRows = head ? data.map((row, i) => cells(s, row, i === at, now, stages)) : [];
     const rowsOf = head ? s.panel === 7 ? optionalTable(head, cellRows, columns, USAGE_DROP) : s.panel === 1 ? optionalTable(head, cellRows, columns) : s.panel === 3 && s.backlogView ? optionalTable(head, cellRows, columns, ["AGE", "CLASS", "DEPS", "PRI"]) : table(head, cellRows, columns) : undefined;
@@ -1094,7 +1100,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
       lines.push(fitLine([span(selected ? "> " : "  ", selected ? "strong" : undefined), ...(rowsOf?.[i + 1] ?? cells(s, data[i], selected, now))], columns));
     }
     if (!data.length) lines.push([span("  (empty)")]);
-    if (s.panel === 7) for (const line of usageTaskLines(s.usage, s.usageTask)) lines.push(fitLine([span("  " + line.text, line.tone)], columns));
+    if (s.panel === 7) for (const line of taskLines) lines.push(fitLine([span("  " + line.text, line.tone)], columns));
     if (title.length) {
       const room = Math.max(1, height - lines.length - 1 - tail.length);
       if (title.length > room) { title.length = room; title[room - 1] = more(title[room - 1]!); }
