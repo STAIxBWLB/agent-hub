@@ -5444,12 +5444,12 @@ export async function startDaemon(opts: DaemonOptions) {
           const envs = bus.pull(peer.id);
           if (!envs) return void reply({ ok: false, error: queueHold(peer.id) ?? (bus.isRecoveryHeld ? "recovery is holding deliveries" : pauseReason(peer.id)) });
           peer.lastInboxAt = Date.now();
-          const assigned = peer.pullOnly && board.statusTasks().some(task => !isClosedTaskState(task.state) && task.state !== "backlog" && (task.owner === peer.id || task.reviewer === peer.id));
-          const polling = peer.pullOnly ? inboxPolling.read(peer.id, envs.length === 0, assigned, peer.lastInboxAt) : undefined;
-          if (polling?.notice) {
-            try { notify(`${peer.id} is polling an empty inbox with no task (${polling.count} empty reads in ${polling.minutes} min)`); }
-            catch { /* advice never prevents an inbox read */ }
-          }
+          let polling: ReturnType<InboxPolling["read"]>;
+          try {
+            const assigned = peer.pullOnly && board.statusTasks().some(task => !isClosedTaskState(task.state) && task.state !== "backlog" && (task.owner === peer.id || task.reviewer === peer.id));
+            polling = peer.pullOnly ? inboxPolling.read(peer.id, envs.length === 0, assigned, peer.lastInboxAt) : undefined;
+            if (polling?.notice) notify(`${peer.id} is polling an empty inbox with no task (${polling.count} empty reads in ${polling.minutes} min)`);
+          } catch { polling = undefined; } // The pull already completed: advice must never discard its envelopes.
           writeStatus();
           if (envs.length) log(`${peer.id} read ${envs.length} queued message(s) through hub_inbox`);
           return void reply({ ok: true, envs, waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id), ...(polling ? { pollingAdvice: { count: polling.count, minutes: polling.minutes } } : {}) });
