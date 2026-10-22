@@ -1819,6 +1819,9 @@ export async function startDaemon(opts: DaemonOptions) {
     notify: (line) => { notify(line); feedBudgetPauses(); },
   }, accountMembers, accountOf));
   budget.setRecoveryHold(recoveryActive());
+  // ponytail: a third full read of events.jsonl at startup (after nativeStopsSeen and claudeNativeUsageSeen). Measured at about 70 ms on the real
+  // 46 MB, 238k-line log, so it is not folded into one pass across startup. Ceiling: the log is never rotated, so the cost grows with it; when a
+  // read passes a few hundred ms, make one `readEvents` pass feed all three sets (or keep the resets in hub.db, the #683 U2 roll-up).
   budget.seedResets(readEvents(join(opts.stateDir, "events.jsonl")).flatMap(e => e.type === "quota_reset" ? [{ peer: e.peer, window: e.window, ...(e.resetsAt !== undefined ? { resetsAt: e.resetsAt } : {}) }] : []));
   const kimiTokens: { at: number; n: number }[] = [];
   startupCleanup.push(() => budget.close());
