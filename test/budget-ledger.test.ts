@@ -127,3 +127,36 @@ test("the first reading after a restart is only a baseline, so a reset while the
   expect(second.ledger).toEqual([]);
   second.budget.close();
 });
+
+// Found by replaying the hub's real quota log (177k readings): a provider's resetsAt wobbles by seconds inside one window while `used` is
+// unchanged, and a real reset moves it by hours. The first cut recorded the wobble as a reset (25 of 85 entries).
+test("a resetsAt that wobbles by seconds inside one window is not a reset, and a move of hours is (#683 U1)", () => {
+  const { budget, ledger, reading } = setup();
+  budget.report("codex", reading("week", 0.92, T0 + 5_000 * MIN));
+  for (const wobble of [1, 2, 3, 9]) budget.report("codex", reading("week", 0.92, T0 + 5_000 * MIN + wobble * 1000)); // seconds forward
+  budget.report("codex", reading("week", 0.92, T0 + 5_000 * MIN + 10 * MIN));                                       // ten minutes: still the same window
+  expect(ledger).toEqual([]);
+  budget.report("codex", reading("week", 0.03, T0 + 5_000 * MIN + 15 * 60 * MIN));                                  // fifteen hours: a new window
+  expect(ledger.map(e => e.type)).toEqual(["quota_reset"]);
+  expect(ledger[0]).toMatchObject({ cause: "resets_at_moved", used: 0.03 });
+  budget.close();
+});
+
+test("a window the provider reset early (resetsAt moved only 39 minutes, used 0.99 to 0) is recorded once (#683 U1)", () => {
+  // Real log, 2026-10-19: codex week 0.99 -> 0 while resetsAt moved 39 minutes. That is past the jitter tolerance, so its cause is the move.
+  const { budget, ledger, reading } = setup();
+  budget.report("codex", reading("week", 0.99, T0 + 5_000 * MIN));
+  budget.report("codex", reading("week", 0, T0 + 5_000 * MIN + 39 * MIN));
+  expect(ledger).toHaveLength(1);
+  expect(ledger[0]).toMatchObject({ type: "quota_reset", cause: "resets_at_moved", used: 0, previousUsed: 0.99 });
+  budget.close();
+});
+
+test("the same window with no resetsAt change and used falling by 0.5 or more is a reset by the used drop (#683 U1)", () => {
+  const { budget, ledger, reading } = setup();
+  budget.report("codex", reading("week", 0.8, T0 + 5_000 * MIN));
+  budget.report("codex", reading("week", 0.1, T0 + 5_000 * MIN + 5_000)); // 5 s of jitter, used fell by 0.7
+  expect(ledger).toHaveLength(1);
+  expect(ledger[0]).toMatchObject({ type: "quota_reset", cause: "used_dropped", previousUsed: 0.8, used: 0.1 });
+  budget.close();
+});

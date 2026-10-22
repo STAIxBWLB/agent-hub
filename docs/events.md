@@ -51,7 +51,7 @@ marked `private: true`, and PII tasks `pii: true`.
 | `quota` | `peer`, `windows` (`id`, `used`, `resetsAt`), `hard`, `measuredAt` (when the reading was taken, if not when it arrived: Claude's numbers come through a file) |
 | `budget_pause` | `peer` (the account), `reason` (the coordinator's own text: window id, percent and source), `window` (`5h`, `week`, `tokens` or `unknown`), `resetsAt` (epoch ms), `by` (`hub`). Written where the pause record is written (#683). |
 | `budget_resume` | the same fields; `reason` says why it ended and `by` is `hub` (the window reset, or usage fell back under the gate) or `person` (an `ahub budget resume` override). |
-| `quota_reset` | `peer`, `window`, `cause` (`resets_at_moved`: the window's `resetsAt` moved forward; `used_dropped`: `used` fell by 0.5 or more inside one window id), `resetsAt`, `previousResetsAt`, `used`, `previousUsed`, optional `measuredAt`. Derived from two readings, one entry per peer, window and `resetsAt`, also across a restart. |
+| `quota_reset` | `peer`, `window`, `cause` (`resets_at_moved`: the window's `resetsAt` moved forward by more than 15 minutes, since a provider's `resetsAt` wobbles by seconds inside one window; `used_dropped`: `used` fell by 0.5 or more inside one window id), `resetsAt`, `previousResetsAt`, `used`, `previousUsed`, optional `measuredAt`. Derived from two readings, one entry per peer, window and `resetsAt`, also across a restart. |
 | `conflict` | `peer`, `task` (its task in progress, when it had one), `other` (the other owner's open task), `owner`, `paths` (names that match a PII pattern left out, so it can be empty), `concurrent` (another peer worked during the turn), `turns` (the two turn ids, when two overlapping turns' snapshots both hold the change) |
 
 Token usage by adapter:
@@ -70,7 +70,7 @@ Token usage by adapter:
   event: `inputTokens`, `cacheReadTokens` (cached input), `outputTokens` and `reasoningTokens` are the growth of
   Codex's own counters, with the same baseline rule, and `totalTokens` is the growth of `totalTokens`. Codex counts
   cached input inside input and reasoning inside output, so `inputTokens + outputTokens` equals `totalTokens` and the
-  other two are shares of those, never added again. The id is unique per hub run, peer and sequence and never carries the native thread, since usage telemetry has no session id. The ledger events
+  other two are shares of those, never added again. Replaying 55 real updates of a recorded Codex 0.163.0 session through the proxy handler gave the same totals as the recorded counters, with 98 percent of the input cached. Codex 0.163.0 also reports `cacheWriteInputTokens` (0 in every update of that session); the hub does not read it yet, so a nonzero value would be missing from the breakdown until a later slice adds it. The id is unique per hub run, peer and sequence and never carries the native thread, since usage telemetry has no session id. The ledger events
   carry ids, windows and numbers only: no checkpoint text, summary or task title.
 - Pi: the assistant usage its extension forwards at each `message_end`, tool-loop messages included, is recorded as
   increments, each usage id once; a message without a usable count adds nothing.

@@ -88,6 +88,12 @@ export interface BudgetHooks {
 const HYSTERESIS = 0.1;
 /** A window whose `used` falls by this much inside one window id has been reset (#683 U1). */
 const RESET_DROP = 0.5;
+/**
+ * A provider's `resetsAt` for one window wobbles by seconds between readings (observed on the real log: 25 of 85 first-cut resets were jumps
+ * of 1 to 9 s with `used` unchanged, five more of about 10 min) while a real reset moves it by hours (the smallest of the 53 real ones: 2.4 h).
+ * A forward move of this much or less is the same window, not a reset (#683 U1).
+ */
+const RESET_JITTER_MS = 15 * 60_000;
 /** Mark a pause whose handoff was a wait, and one whose wait was undone, in its reason (issue #36). */
 const WAIT_NOTE = "; keeps its work:";
 const WAITED_NOTE = "; waited, then the reset moved to";
@@ -251,7 +257,7 @@ export class Budget {
 
   /**
    * `quota_reset` (#683 U1), derived from two readings of one window id of the account: the window's `resetsAt` moved forward (a new
-   * window began), or `used` fell by RESET_DROP or more inside one window id (the provider emptied it before its stated reset). The
+   * window began, by more than RESET_JITTER_MS), or `used` fell by RESET_DROP or more inside one window id (the provider emptied it before its stated reset). The
    * baseline is the last reading seen, kept apart from `readings` (a resume clears those) so a reset that ended a pause is still seen.
    * One entry per peer, window and `resetsAt`: a repeated reading, a replay after a restart of the same value, or a second member of the
    * account adds none. A stale file reading (`at` older than the baseline) never counts: it describes an earlier window.
@@ -262,8 +268,9 @@ export class Budget {
     for (const w of windows) {
       const used = Math.max(0, Math.min(1, w.used)), before = last.get(w.id);
       if (before && at >= before.at) {
-        const moved = w.resetsAt !== undefined && before.resetsAt !== undefined && w.resetsAt > before.resetsAt;
-        const dropped = !moved && before.used - used >= RESET_DROP && (w.resetsAt === undefined || before.resetsAt === undefined || w.resetsAt === before.resetsAt);
+        const moved = w.resetsAt !== undefined && before.resetsAt !== undefined && w.resetsAt - before.resetsAt > RESET_JITTER_MS;
+        const sameWindow = w.resetsAt === undefined || before.resetsAt === undefined || Math.abs(w.resetsAt - before.resetsAt) <= RESET_JITTER_MS;
+        const dropped = !moved && before.used - used >= RESET_DROP && sameWindow;
         if (moved || dropped) {
           const key = `${peer}|${w.id}|${w.resetsAt ?? "none"}`;
           if (!this.resetsRecorded.has(key)) {
