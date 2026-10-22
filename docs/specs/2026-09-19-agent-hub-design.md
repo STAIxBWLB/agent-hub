@@ -4552,8 +4552,8 @@ Common acceptance criteria:
      - The table equals today's counts (the inventory above).
      - An inline fixture with one extra predicate call fails, and so does a row with an empty reason.
      - A configured definition that declares `session.nativeRevert` is refused.
-     - Kit leg: every ACP-transport definition's `start.create` product reports `deliveryOnly`, `hubOwned` and `form: "headless"`.
-     - Kit leg: a non-fixed-builtin definition whose product has `frontendProxy`, `statusNotice` or `revertTurn` fails the kit.
+     - Kit leg: a non-fixed-builtin definition whose product has `frontendProxy`, `statusNotice` or `revertTurn` fails the kit. (Today no product has these members, so the leg passes at 2a and starts biting from 2d.)
+     - The ACP ports leg (`deliveryOnly`, `hubOwned`, `form: "headless"`) is not part of 2a: no ACP product exposes those members until 2b adds them, so 2a cannot assert them. 2a only reserves the leg in `UNSUPPORTED_LEGS` with the reason "ports added in 2b".
      - Builtins that do not apply name their reason in `UNSUPPORTED_LEGS`.
 2. **2b: Delivery-only, owned stop, form and roster detach.** Area note: `adapters.md` (Spawned processes; Turns). Size M.
    - Paths: `src/hub/peers.ts`, `src/adapters/acp.ts`, `src/adapters/local-worker.ts`, `src/adapters/pi.ts`, `src/adapters/reviewer-print.ts`, `src/adapters/channel-peer.ts`, `src/adapters/codex-appserver.ts` (`detachForRoster` signature only), `src/hub/daemon.ts`, tests.
@@ -4564,6 +4564,7 @@ Common acceptance criteria:
      - A plain `hubOwned` peer is admitted by `peer_stop`; a `form: "tui"` one is refused with the `displayName` text.
      - A plain peer with `detachForRoster` is detached, not stopped, on roster removal.
      - ACP factory admission refuses an `AcpPeer` subclass that overrides `deliveryOnly` to false.
+     - The conformance kit's ACP ports leg moves from `UNSUPPORTED_LEGS` to active: every ACP-transport definition's `start.create` product reports `deliveryOnly`, `hubOwned` and `form: "headless"`, and 2b's own ports land in the same PR as that leg.
      - `test/kimi-tui.test.ts`, `test/roster-pi.test.ts`, the `peer_stop` and configured ACP tests stay unchanged.
 3. **2c: Session binding and recovery settlement.** Area note: `daemon.md` (recovery), with the budget.md context rules unchanged. Size M.
    - Paths: `src/hub/peers.ts`, `src/adapters/codex-appserver.ts`, `src/adapters/acp.ts`, `src/adapters/pi.ts`, `src/hub/daemon.ts` (`contextSession`, `codexResumeCommand`, `recoveryReady`, `recoveryView`, `recoveryOp`), `scripts/seeds.json` (`roster-detached-pi-recovery`), tests.
