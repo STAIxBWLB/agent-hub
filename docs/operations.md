@@ -3978,3 +3978,11 @@ If Codex is offline with `statusNotice.code = unidentified-cancellation`, the hu
 could not identify a cancelled native turn. Reattach the native session before
 further hub delivery. A late completion keeps this hold; verified native
 reattachment or TUI detachment clears it. The notice contains fixed guidance, without native ids.
+
+## Roles per SDLC stage (#525, planned)
+
+The design for planner, implementer and reviewer instances per stage is in the spec section "Amendment: roles per SDLC stage (#525)". Nothing in it is available yet. Each implementation slice (525-1 to 525-6) adds its operator steps here when it ships. Until then, the instance rules in "Additional headless peer instances" above are current. The planned changes an operator will see:
+
+- A Claude instance with `["implementer"]` and a `worktree`, as a terminal instance (started with `ahub claude --as <id>`) or as `start_mode: "headless"` (`permission_mode` `ask` or `ask-when-needed`; `never-ask` refused).
+- The `planner` setting accepts a list of peers or instance ids; each task records its own planner, and only that planner or the person runs planner tools on it.
+- A reviewer is never a peer that implemented the task, and a plan's author does not record its own plan review while another planner is available.
