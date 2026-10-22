@@ -17,7 +17,7 @@ const [mode, calls, ...a] = process.argv.slice(2);
 appendFileSync(calls!, JSON.stringify(a) + "\\n");
 if(a[0] === "--version") { console.log(mode === "version" ? "codex-cli 0.164.0" : mode === "modern" ? "codex-cli 0.163.0" : "codex-cli 0.146.0"); process.exit(0); }
 if(a[0] === "exec") { throw new Error("model must not run in isolation prepare"); }
-if(mode === "abort") await new Promise(() => {});
+if(mode === "abort" || mode === "hang") await new Promise(() => {});
 if(mode === "overflow") { console.log("x".repeat(140000)); process.exit(0); }
 if(a[0] === "features" && a[1] === "list") {
  const rows = mode === "featuresmissing" ? "plugins stable false" : mode === "featuresduplicate" ? "apps stable false\\napps stable false" : mode === "featuresmalformed" ? "apps stable unknown" : "apps stable " + (mode === "apps" ? "true" : "false") + "\\nplugins stable false\\nhooks stable false";
@@ -321,4 +321,78 @@ test("Codex 0.163.0 retains all proofs and disables legacy notify in proofs and 
       expect(result.current?.()).toBe(true);
     } finally { await result.cleanup?.(); }
   } finally { f.close(); }
+});
+
+// #722: a refusal names a closed cause class, never a path, native text or token.
+type Refused = { unavailable: string; causeClass?: string; detail?: string };
+const refusalOf = async (mode: string, tweak?: (f: ReturnType<typeof fixture>) => void) => {
+  const f = fixture(mode);
+  try { tweak?.(f); return (await codexReviewerBackend.prepare(f.ctx)) as Refused; } finally { f.close(); }
+};
+
+test("#722 each refused proof leg names its cause class", async () => {
+  const cases: [string, string][] = [
+    ["version", "version"],
+    ["featuresmissing", "plugins_hooks_apps"], ["featuresduplicate", "plugins_hooks_apps"], ["featuresmalformed", "plugins_hooks_apps"], ["apps", "plugins_hooks_apps"],
+    ["collision", "mcp_inventory"], ["drift", "mcp_inventory"], ["transport", "mcp_inventory"], ["tools", "mcp_inventory"], ["hubcommand", "mcp_inventory"],
+    ["sandbox", "sandbox_proof"], ["glob", "sandbox_proof"], ["core", "sandbox_proof"], ["host", "sandbox_proof"],
+    ["catalogoverflow", "sandbox_proof"],
+  ];
+  for (const [mode, cause] of cases) {
+    const refused = await refusalOf(mode);
+    expect(refused, mode).toHaveProperty("unavailable");
+    expect(refused.causeClass, mode).toBe(cause);
+  }
+});
+
+test("#722 an unusable credential root is the credential_root class, with the path class only", async () => {
+  const previous = process.env.DOCKER_CONFIG;
+  try {
+    const f = fixture();
+    try {
+      process.env.DOCKER_CONFIG = join(f.root, "docker[unsupported]");
+      const refused = (await codexReviewerBackend.prepare(f.ctx)) as Refused;
+      expect(refused.causeClass).toBe("credential_root");
+      expect(refused.detail).toContain("$DOCKER_CONFIG");
+      expect(refused.detail).not.toContain(f.root);
+      expect(refused.unavailable).not.toContain(f.root);
+    } finally { f.close(); }
+  } finally { if (previous === undefined) delete process.env.DOCKER_CONFIG; else process.env.DOCKER_CONFIG = previous; }
+});
+
+test("#722 a proof command that never answers is the timeout class, an abort is not", async () => {
+  const f = fixture("hang");
+  try {
+    // The fake blocks every metadata call after --version; the 2 s per-command cap ends it.
+    const started = performance.now();
+    const refused = (await codexReviewerBackend.prepare(f.ctx)) as Refused;
+    expect(refused.causeClass).toBe("timeout");
+    expect(performance.now() - started).toBeLessThan(6000);
+  } finally { f.close(); }
+  const aborted = fixture("abort"), controller = new AbortController();
+  try {
+    const pending = codexReviewerBackend.prepare({ ...aborted.ctx, signal: controller.signal }) as Promise<Refused>;
+    setTimeout(() => controller.abort(), 150);
+    expect((await pending).causeClass).not.toBe("timeout");
+  } finally { aborted.close(); }
+});
+
+test("#722 a binary that cannot be bound or an unreadable executable is the binary class", async () => {
+  const f = fixture();
+  try {
+    const refused = (await codexReviewerBackend.prepare({ ...f.ctx, command: [join(f.root, "no-such-codex")] })) as Refused;
+    expect(refused.causeClass).toBe("binary");
+    expect(refused.unavailable).not.toContain(f.root);
+  } finally { f.close(); }
+});
+
+test("#722 the reason text for every class is a fixed sentence with no path, version output or token", async () => {
+  const { REVIEWER_CAUSE_CLASSES, reviewerUnavailableReason } = await import("../src/adapters/reviewer-print.ts");
+  expect(REVIEWER_CAUSE_CLASSES).toEqual(["version", "binary", "mcp_inventory", "plugins_hooks_apps", "sandbox_proof", "credential_root", "timeout", "unknown"]);
+  for (const cause of REVIEWER_CAUSE_CLASSES) {
+    const text = reviewerUnavailableReason(cause);
+    expect(text).toContain(`[cause: ${cause}]`);
+    expect(text).not.toMatch(/\/Users\/|\/tmp\/|token|secret/i);
+  }
+  expect(reviewerUnavailableReason("credential_root", "~/.docker: a dangling link")).toContain("(~/.docker: a dangling link)");
 });

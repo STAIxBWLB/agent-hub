@@ -1224,13 +1224,13 @@ var DEFAULT_WATCHDOG_MS = 300000;
 // src/adapters/reviewer-print.ts
 import { spawn as spawn2 } from "child_process";
 import { randomUUID as randomUUID2 } from "crypto";
-var MAX_REVIEW_FRAME_BYTES, MAX_REVIEW_OUTPUT_BYTES, GroupCleanupError, reviewTarget = (env) => {
+var ReviewerUnavailableError, MAX_REVIEW_FRAME_BYTES, MAX_REVIEW_OUTPUT_BYTES, GroupCleanupError, reviewTarget = (env) => {
   const task = reviewTask(env);
   if (task === undefined || env.private)
     return;
   const revision = Number(env.refs?.reviewRevision);
   return { task, ...typeof env.refs?.commit === "string" ? { head: env.refs.commit } : {}, ...Number.isSafeInteger(revision) && revision > 0 ? { flowRevision: revision } : {} };
-}, remainingFailures = (batch, start, cause) => batch.targets.slice(start).flatMap((target) => target ? [{ ...target, cause }] : []), reviewTask = (env) => {
+}, remainingFailures = (batch, start, cause, why) => batch.targets.slice(start).flatMap((target) => target ? [{ ...target, cause, ...why ? { causeClass: why.causeClass, ...why.causeDetail ? { causeDetail: why.causeDetail } : {} } : {} }] : []), reviewTask = (env) => {
   if (env.from !== HUB || env.kind !== "review")
     return;
   const id = Number(env.refs?.task);
@@ -1239,6 +1239,15 @@ var MAX_REVIEW_FRAME_BYTES, MAX_REVIEW_OUTPUT_BYTES, GroupCleanupError, reviewTa
 var init_reviewer_print = __esm(() => {
   init_child_process();
   init_envelope();
+  ReviewerUnavailableError = class ReviewerUnavailableError extends Error {
+    causeClass;
+    detail;
+    constructor(message, causeClass, detail) {
+      super(message);
+      this.causeClass = causeClass;
+      this.detail = detail;
+    }
+  };
   MAX_REVIEW_FRAME_BYTES = 256 * 1024;
   MAX_REVIEW_OUTPUT_BYTES = 4 * 1024 * 1024;
   GroupCleanupError = class GroupCleanupError extends Error {
@@ -1404,7 +1413,9 @@ var init_reviewer_print = __esm(() => {
             return;
           }
           failure = { state: started ? "needs_review" : "failed_safe", reason: `reviewer could not start: ${error.message}` };
-          reroute.push(...remainingFailures(batch, index, "start_failed"));
+          const why = error instanceof ReviewerUnavailableError ? { causeClass: error.causeClass, causeDetail: error.detail } : { causeClass: "unknown" };
+          this.opts.log?.(`[${this.id}] review of task #${task} could not start [cause: ${why.causeClass}]`);
+          reroute.push(...remainingFailures(batch, index, "start_failed", why));
           batch.next = envs.length;
           break;
         }
@@ -1476,12 +1487,12 @@ var init_reviewer_print = __esm(() => {
           ...task === undefined ? {} : { task }
         });
         if ("unavailable" in launch)
-          throw new Error(launch.unavailable);
+          throw new ReviewerUnavailableError(launch.unavailable, launch.causeClass ?? "unknown", launch.detail);
         const proof = launch.isolation;
         const policy = this.opts.backend.nativePolicy ? proof?.enforcement === "native-policy" && proof.freshSession === true && proof.hubToolsOnly === true : proof?.strictMcp === true && proof.ephemeral === true;
         if (abort.signal.aborted || !proof || proof.backend !== this.opts.backend.id || proof.readOnly !== true || !policy || !proof.binary || !proof.version || !proof.profile || !proof.evidence.length || !launch.command.length) {
           await launch.cleanup?.();
-          throw new Error("reviewer isolation is unavailable or preparation was cancelled");
+          throw new ReviewerUnavailableError("reviewer isolation is unavailable or preparation was cancelled", "unknown");
         }
         return launch;
       })();
@@ -1525,7 +1536,7 @@ ${facts}` : ""}`;
       try {
         launch = await this.prepare(randomUUID2(), input, task, mcp?.config);
         if (generation !== this.generation || this.opts.admit?.(env) === false || launch.current?.() === false)
-          throw new Error("reviewer isolation or admission changed before child spawn");
+          throw new ReviewerUnavailableError("reviewer isolation or admission changed before child spawn", launch.current?.() === false ? "binary" : "unknown");
         this.receipt = launch.isolation;
         const [cmd, ...prefix] = launch.command;
         let quota = false;
@@ -1916,6 +1927,7 @@ function ownServer(text) {
 }
 async function prepare(ctx) {
   let root;
+  let leg = "binary", timedOut = false;
   try {
     const cwd = realPath(ctx.cwd), env = peerChildEnv(ctx.peer), bound = resolveCommand(ctx, cwd);
     const initialBinaryMetadata = bound.files.map(metadata).join(";");
@@ -1931,6 +1943,8 @@ async function prepare(ctx) {
     };
     const run = (args, capture = true, maxBytes = CAP) => new Promise((resolveOutput, reject) => {
       if (ctx.signal.aborted || performance.now() >= deadline) {
+        if (!ctx.signal.aborted)
+          timedOut = true;
         reject(new Error("metadata deadline"));
         return;
       }
@@ -1941,7 +1955,11 @@ async function prepare(ctx) {
         failed = true;
         finish(null);
       };
-      const timer = setTimeout(stop, Math.max(1, Math.min(2000, deadline - performance.now())));
+      const timer = setTimeout(() => {
+        if (!ctx.signal.aborted)
+          timedOut = true;
+        stop();
+      }, Math.max(1, Math.min(2000, deadline - performance.now())));
       ctx.signal.addEventListener("abort", stop, { once: true });
       const finish = async (code) => {
         if (settled)
@@ -1985,15 +2003,19 @@ async function prepare(ctx) {
         finish(code);
       });
     });
+    leg = "version";
     const verdict = assessVersion("codex-review", COMPAT["codex-review"].parse(await run(["--version"])));
     if (!verdict.ok)
       throw new VersionRefusal(verdict.reason);
     const version = verdict.version;
+    leg = "mcp_inventory";
     if (Buffer.byteLength(ctx.mcpConfig) > CAP || ctx.privatePaths.length > 128)
       throw new Error("policy bounds exceeded");
     const hub = ownServer(ctx.mcpConfig);
     const policy = ["-c", "notify=[]", "--disable", "plugins", "--disable", "hooks", "--disable", "apps", "-c", 'web_search="disabled"', "-c", `projects=${toml({ [cwd]: { trust_level: "untrusted" } })}`];
+    leg = "plugins_hooks_apps";
     proveDisabledFeatures(await run(["features", "list", ...policy]));
+    leg = "mcp_inventory";
     const before = inventory(await run(["mcp", "list", "--json", ...policy]));
     if (before.some((row) => row.name === "agent-hub"))
       throw new Error("ambient hub MCP collision");
@@ -2011,6 +2033,7 @@ async function prepare(ctx) {
     const observedEnv = object2(observedTransport.env ?? {}), intendedEnv = object2(hub.env);
     if (observedTransport.type !== "stdio" || observedTransport.command !== hub.command || JSON.stringify(observedTransport.args ?? []) !== JSON.stringify(hub.args) || Object.keys(observedEnv).length !== Object.keys(intendedEnv).length || Object.entries(intendedEnv).some(([key, value]) => observedEnv[key] !== value))
       throw new Error("hub transport changed");
+    leg = "sandbox_proof";
     root = realPath(mkdtempSync(join5(tmpdir(), "ahub-codex-review-isolation-")));
     const privateFile = join5(root, "private.env"), publicFile = join5(root, "public.txt"), writeFile = join5(root, "write-proof");
     const coreName = join5(root, ".env"), coreStateDir = join5(root, ".agenthub", "state"), coreState = join5(coreStateDir, "private.txt");
@@ -2031,9 +2054,11 @@ async function prepare(ctx) {
     writeFileSync3(globFile, "glob private fixture");
     symlinkSync(globFile, alias);
     const filesystem = { "/": "read", [privateFile]: "deny", [join5(globRoot, "**", "*.env")]: "deny" };
+    leg = "credential_root";
     for (const glob of codexCoreDenyGlobs())
       filesystem[glob] = "deny";
     denyCredentialRoots(filesystem, [...hostCredentialRoots(env, cwd), ...hostCredentialRoots({ HOME: fixtureHome }, cwd)], cwd);
+    leg = "sandbox_proof";
     for (const entry of ctx.privatePaths) {
       if (typeof entry !== "string" || !entry || Buffer.byteLength(entry) > 4096 || /\p{Cc}/u.test(entry))
         throw new Error("invalid private path policy");
@@ -2070,6 +2095,7 @@ AHUB_CODEX_HOST_KUBE_DENIED
 AHUB_CODEX_HOST_DOCKER_DENIED
 AHUB_CODEX_HOST_ALIAS_DENIED` || existsSync2(writeFile))
       throw new Error("native sandbox isolation unverified");
+    leg = "binary";
     if (!current())
       throw new Error("binary or config changed during proof");
     const cleanupRoot = root;
@@ -2104,12 +2130,12 @@ AHUB_CODEX_HOST_ALIAS_DENIED` || existsSync2(writeFile))
       } catch {}
     }
     if (error instanceof VersionRefusal)
-      return { unavailable: error.message };
+      return { unavailable: error.message, causeClass: "version" };
     if (error instanceof CredentialRootError) {
       const why = { dangling: "a dangling link", unreadable: "an unreadable path", unsupported: "unsupported syntax or overlapping the checkout" }[error.kind];
-      return { unavailable: `Codex reviewer isolation receipt unavailable (credential root ${error.label} is ${why}; remove or repair it)` };
+      return { unavailable: `Codex reviewer isolation receipt unavailable (credential root ${error.label} is ${why}; remove or repair it)`, causeClass: "credential_root", detail: `${error.label}: ${why}` };
     }
-    return { unavailable: "Codex reviewer isolation receipt unavailable (version, MCP inventory, sandbox, configuration or process proof)" };
+    return { unavailable: "Codex reviewer isolation receipt unavailable (version, MCP inventory, sandbox, configuration or process proof)", causeClass: timedOut ? "timeout" : leg };
   }
 }
 var TOOLS, VersionRefusal, CAP, MAX_SERVERS = 64, digest = (value) => createHash2("sha256").update(value).digest("hex"), inside = (file, root) => {

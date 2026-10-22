@@ -75,7 +75,7 @@ import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
 import { runTool, toolResultFailed, TOOL_SCHEMAS, type ToolApproval, type ApprovalObserver, type ToolContext } from "../local/tools.ts";
 import { isLocalPeer, type LocalPeer } from "../adapters/local-worker.ts";
-import { isReviewerPrintPeer, type ReviewerPrintPeer } from "../adapters/reviewer-print.ts";
+import { isReviewerPrintPeer, reviewerUnavailableReason, ReviewerUnavailableError, type ReviewerPrintPeer } from "../adapters/reviewer-print.ts";
 import { createReviewerMcpSession } from "../adapters/reviewer-mcp.ts";
 import { reviewerPoolConfig } from "./reviewer-pool-config.ts";
 import { reviewDiff } from "../adapters/claude-print.ts";
@@ -2886,7 +2886,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(isCodexPeer(p) && p.statusNotice ? { statusNotice: p.statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...jcodeModelSource(id), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) && p.claiming ? { claiming: true } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
+      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(isCodexPeer(p) && p.statusNotice ? { statusNotice: p.statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) && p.claiming ? { claiming: true } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
     ),
     taskWip: Object.fromEntries(peerIds.map(id => [id, { wip: tasks.wip(id), wipLimit: tasks.wipLimit(id) }])),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
@@ -4263,7 +4263,12 @@ export async function startDaemon(opts: DaemonOptions) {
         onUnavailable: (failure, current) => {
           const attached = () => current() && bus.peers.get(peer) === reviewer;
           if (!attached()) return;
-          if (failure.cause === "start_failed") reviewerUnavailable.set(peer, "reviewer isolation unavailable; restart after checking the verified CLI and isolation requirements");
+          if (failure.cause === "start_failed") {
+            // #722: the class (a closed list) is the only detail; never a path, native text or token.
+            const reason = reviewerUnavailableReason(failure.causeClass ?? "unknown", failure.causeDetail);
+            log(`reviewer ${peer} unavailable for task #${failure.task}: ${sanitize(reason).slice(0, 300)}`);
+            reviewerUnavailable.set(peer, sanitize(reason).slice(0, 1000));
+          }
           return tasks.retryReviewer(failure.task, peer, failure, attached).then(() => undefined);
         },
         log,
@@ -4273,7 +4278,8 @@ export async function startDaemon(opts: DaemonOptions) {
         await reviewer.stop().catch(() => {});
         // #691: a version refusal names only versions and the trust command, so it is shown for every backend.
         const reason = error instanceof Error && (backend.nativePolicy || error.message.startsWith(VERSION_REFUSAL)) ? sanitize(error.message).slice(0, 1000)
-          : "reviewer isolation unavailable; inspect the verified CLI version and isolation requirements";
+          : reviewerUnavailableReason(error instanceof ReviewerUnavailableError ? error.causeClass : "unknown", error instanceof ReviewerUnavailableError ? error.detail : undefined);
+        log(`start ${peer} failed [cause: ${error instanceof ReviewerUnavailableError ? error.causeClass : "unknown"}]`);
         reviewerUnavailable.set(peer, reason);
         return { ok: false, error: reason };
       }

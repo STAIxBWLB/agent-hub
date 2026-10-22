@@ -6,6 +6,28 @@ import { BasePeer } from "../hub/peers.ts";
 import type { Envelope } from "../hub/envelope.ts";
 import type { ReviewerMcpSession } from "./reviewer-mcp.ts";
 
+/** #722: the closed list of legs a reviewer's per-review start can fail on. A class names a leg, never a path, content or token. */
+export const REVIEWER_CAUSE_CLASSES = ["version", "binary", "mcp_inventory", "plugins_hooks_apps", "sandbox_proof", "credential_root", "timeout", "unknown"] as const;
+export type ReviewerCauseClass = typeof REVIEWER_CAUSE_CLASSES[number];
+const REVIEWER_CAUSE_HINT: Record<ReviewerCauseClass, string> = {
+  version: "the CLI version is neither verified nor trusted; see ahub agents",
+  binary: "the CLI binary or a watched config file could not be bound, or changed during the proof; check the configured binary and retry",
+  mcp_inventory: "the MCP server inventory or the hub server entry did not match the proof",
+  plugins_hooks_apps: "plugins, hooks or apps could not be proven disabled",
+  sandbox_proof: "the native sandbox proof did not pass",
+  credential_root: "a host credential root is unusable; remove or repair it",
+  timeout: "a proof command timed out",
+  unknown: "unclassified; inspect hub.log",
+};
+/** The one wording for the unavailable reason, the log and `ahub status`. `detail` is only ever a credential-root path class. */
+export function reviewerUnavailableReason(cause: ReviewerCauseClass, detail?: string): string {
+  return `reviewer isolation unavailable [cause: ${cause}]: ${REVIEWER_CAUSE_HINT[cause]}${detail ? ` (${detail})` : ""}`;
+}
+/** A prepare refusal that carries its class to the host; the message stays the backend's own text. */
+export class ReviewerUnavailableError extends Error {
+  constructor(message: string, readonly causeClass: ReviewerCauseClass, readonly detail?: string) { super(message); }
+}
+
 export interface ReviewerPrintUsage { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
 export interface ReviewerIsolationReceipt {
   backend: string;
@@ -51,7 +73,7 @@ export interface ReviewerBackend {
   id: string;
   taskMcp?: true;
   nativePolicy?: true;
-  prepare(context: ReviewerPrepareContext): Promise<ReviewerLaunch | { unavailable: string }>;
+  prepare(context: ReviewerPrepareContext): Promise<ReviewerLaunch | { unavailable: string; causeClass?: ReviewerCauseClass; detail?: string }>;
   usage?(event: unknown): ReviewerPrintUsage | undefined;
   failure?(event: unknown): "quota" | undefined;
 }
@@ -60,6 +82,9 @@ export interface ReviewerFailure {
   head?: string;
   flowRevision?: number;
   cause: "start_failed" | "quota" | "no_verdict";
+  /** Only for `start_failed`: the leg that refused (#722). */
+  causeClass?: ReviewerCauseClass;
+  causeDetail?: string;
 }
 
 export interface ReviewerReviewBinding { readonly head?: string; readonly flowRevision?: number }
@@ -93,8 +118,8 @@ const reviewTarget = (env: Envelope): ReviewTarget | undefined => {
   const revision = Number(env.refs?.reviewRevision);
   return { task, ...(typeof env.refs?.commit === "string" ? { head: env.refs.commit } : {}), ...(Number.isSafeInteger(revision) && revision > 0 ? { flowRevision: revision } : {}) };
 };
-const remainingFailures = (batch: ReviewBatch, start: number, cause: ReviewerFailure["cause"]): ReviewerFailure[] =>
-  batch.targets.slice(start).flatMap(target => target ? [{ ...target, cause }] : []);
+const remainingFailures = (batch: ReviewBatch, start: number, cause: ReviewerFailure["cause"], why?: { causeClass: ReviewerCauseClass; causeDetail?: string }): ReviewerFailure[] =>
+  batch.targets.slice(start).flatMap(target => target ? [{ ...target, cause, ...(why ? { causeClass: why.causeClass, ...(why.causeDetail ? { causeDetail: why.causeDetail } : {}) } : {}) }] : []);
 const reviewTask = (env: Envelope): number | undefined => {
   if (env.from !== HUB || env.kind !== "review") return undefined;
   const id = Number(env.refs?.task);
@@ -225,7 +250,9 @@ export class ReviewerPrintPeer extends BasePeer {
         }
         // Once an earlier review in this batch ran, the batch had effects: hold it for a person, never requeue it.
         failure = { state: started ? "needs_review" : "failed_safe", reason: `reviewer could not start: ${(error as Error).message}` };
-        reroute.push(...remainingFailures(batch, index, "start_failed"));
+        const why = error instanceof ReviewerUnavailableError ? { causeClass: error.causeClass, causeDetail: error.detail } : { causeClass: "unknown" as const };
+        this.opts.log?.(`[${this.id}] review of task #${task} could not start [cause: ${why.causeClass}]`);
+        reroute.push(...remainingFailures(batch, index, "start_failed", why));
         batch.next = envs.length;
         break;
       }
@@ -273,14 +300,14 @@ export class ReviewerPrintPeer extends BasePeer {
         mcpConfig: this.opts.backend.taskMcp ? (mcpConfig ?? '{"mcpServers":{}}') : this.opts.mcpConfig,
         systemPrompt: this.opts.systemPrompt, privatePaths: this.opts.privatePaths ?? [], command: this.opts.command, signal: abort.signal,
         ...(input === undefined ? {} : { input }), ...(task === undefined ? {} : { task }) });
-      if ("unavailable" in launch) throw new Error(launch.unavailable);
+      if ("unavailable" in launch) throw new ReviewerUnavailableError(launch.unavailable, launch.causeClass ?? "unknown", launch.detail);
       const proof = launch.isolation;
       const policy = this.opts.backend.nativePolicy
         ? proof?.enforcement === "native-policy" && proof.freshSession === true && proof.hubToolsOnly === true
         : proof?.strictMcp === true && proof.ephemeral === true;
       if (abort.signal.aborted || !proof || proof.backend !== this.opts.backend.id || proof.readOnly !== true || !policy || !proof.binary || !proof.version || !proof.profile || !proof.evidence.length || !launch.command.length) {
         await launch.cleanup?.();
-        throw new Error("reviewer isolation is unavailable or preparation was cancelled");
+        throw new ReviewerUnavailableError("reviewer isolation is unavailable or preparation was cancelled", "unknown");
       }
       return launch;
     })();
@@ -307,7 +334,7 @@ export class ReviewerPrintPeer extends BasePeer {
     const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
     try {
     launch = await this.prepare(randomUUID(), input, task, mcp?.config);
-    if (generation !== this.generation || this.opts.admit?.(env) === false || launch.current?.() === false) throw new Error("reviewer isolation or admission changed before child spawn");
+    if (generation !== this.generation || this.opts.admit?.(env) === false || launch.current?.() === false) throw new ReviewerUnavailableError("reviewer isolation or admission changed before child spawn", launch.current?.() === false ? "binary" : "unknown");
     this.receipt = launch.isolation;
     const [cmd, ...prefix] = launch.command;
     let quota = false;

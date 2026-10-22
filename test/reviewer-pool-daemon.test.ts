@@ -113,6 +113,14 @@ test("per-review isolation failure excludes the reviewer until a verified restar
     // One startup proof and one failed proof; later tasks skip it without launching more probes.
     expect(readFileSync(probes, "utf8").trim().split("\n")).toHaveLength(2);
   }
+  // #722: the failed per-review proof names its cause class in the unavailable reason, hub.log and the status peer row, and nothing else.
+  const status = ((await console_.request({ t: "status" })).status as { peers: Record<string, { reviewerUnavailable?: string }> }).peers["codex-review"]!;
+  expect(status.reviewerUnavailable).toContain("[cause: version]");
+  expect(status.reviewerUnavailable).not.toContain(home);
+  const hubLog = readFileSync(join(stateDir, "hub.log"), "utf8");
+  expect(hubLog).toContain("reviewer codex-review unavailable for task #");
+  expect(hubLog).toContain("[cause: version]");
+  expect(hubLog).not.toContain(executable);
   rmSync(fail);
   expect(await console_.request({ t: "peer_stop", peer: "codex-review" })).toMatchObject({ ok: true, state: "offline" });
   for (const held of daemon.bus.queueList("codex-review").filter(row => row.state === "needs_review")) {
