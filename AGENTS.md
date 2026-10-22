@@ -1,6 +1,6 @@
 # agent-hub
 
-Bun + TypeScript daemon that lets Claude Code, Codex, Kimi Code (and later a local-LLM worker) exchange messages as peers in one project directory. It is a message bus with native adapters, not a fork of agent-bridge and not a memory store. Spec and milestone status: `docs/specs/2026-09-19-agent-hub-design.md`.
+Bun + TypeScript daemon that lets Claude Code, Codex, Kimi Code (and later a local-LLM worker) exchange messages as peers in one project directory. It is a message bus with native adapters. Spec and milestone status: `docs/specs/2026-09-19-agent-hub-design.md`.
 
 ## Commands
 
