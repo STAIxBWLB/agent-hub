@@ -1802,6 +1802,8 @@ with the headless command rather than guessed. The launcher uses the running
 hub's `kimi_cmd`; when that value has no TUI form, the refusal says so, since an
 edited file value waits for `ahub settings reload`.
 
+After three empty inbox reads within ten minutes by a pull-only peer with no assigned task or review, the hub adds polling advice and one console notice per streak (peer id and counts only); a delivery or assignment resets it, and restart clears the in-memory counters.
+
 The TUI is pull-only. Its model reads `hub_inbox` at the start of work, between
 steps of longer work and before reporting, and shares results, and mid-work
 blockers or changed contracts, explicitly with `hub_send` addressed with `to`

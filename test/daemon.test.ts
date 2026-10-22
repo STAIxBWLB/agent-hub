@@ -233,7 +233,7 @@ test("claude without channel evidence attaches tools-only: nothing is pushed or 
   expect(read.content[0].text).toContain("review task #3");
   expect((await console_.request({ t: "status" })).status.peers.claude.queued).toBe(0);
   expect(daemon.bus.queueList("claude").map((row) => row.state)).toEqual(["completed"]);
-  expect(((await plain.client.callTool({ name: "hub_inbox", arguments: {} })) as any).content[0].text).toBe("(no queued hub messages)");
+  expect(((await plain.client.callTool({ name: "hub_inbox", arguments: {} })) as any).content[0].text).toBe("(no queued hub messages)\nNothing is waiting. Do not poll: if you have no assigned task, report and end your turn; new work waits here for your next boundary.");
 
   // The next channel-enabled session takes the peer and gets what waited, pushed as before.
   await console_.request({ t: "send", body: "still waiting", to: ["claude"] });
@@ -2260,3 +2260,62 @@ test("AC1: a push-capable session cannot return a possibly visible push as faile
   expect((await peer.request({ t: "delivery_receipt", deliveryId: delivery.deliveryId, generation: delivery.generation, state: "failed_safe" })).ok).toBe(false);
   expect(daemon.bus.queueShow(delivery.deliveryId)?.state).toBe("dispatching");
 });
+
+test("pull-only empty inbox advice and console notice reset on delivery and assigned work (#681)", async () => {
+  const { stateDir, daemon, console_ } = await hub({ snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false } });
+  const plain = await fakeClaude(stateDir, "0");
+  const read = async () => ((await plain.client.callTool({ name: "hub_inbox", arguments: {} })) as any).content[0].text as string;
+  const notices = () => readFileSync(join(stateDir, "hub.log"), "utf8").split("\n").filter(line => line.includes("is polling an empty inbox with no task"));
+  expect(await read()).not.toContain("[polling detected]");
+  expect(await read()).not.toContain("[polling detected]");
+  expect(await read()).toContain("[polling detected] 3 empty reads in 0 min with no assigned work: end your turn");
+  expect(await read()).toContain("[polling detected] 4 empty reads");
+  expect(notices()).toHaveLength(1);
+  daemon.bus.publish(newEnvelope("user", "non-empty reset barrier", { to: ["claude"] }));
+  expect(await read()).toContain("non-empty reset barrier");
+  expect(await read()).not.toContain("[polling detected]");
+  expect(await read()).not.toContain("[polling detected]");
+  expect(await read()).toContain("[polling detected] 3 empty reads");
+  expect(notices()).toHaveLength(2);
+
+  const proposed = await console_.request({ t: "task", op: "hub_task_propose", args: { title: "assigned reader work", class: "implement", owner: "claude" } });
+  expect(proposed.ok).toBe(true);
+  const row = JSON.parse((await console_.request({ t: "task", op: "hub_task_list", args: {} })).text).find((t: any) => t.title === "assigned reader work");
+  expect(row.owner).toBe("claude");
+  const accepted = await plain.client.callTool({ name: "hub_task_accept", arguments: { id: row.id } });
+  expect((accepted as any).isError).not.toBe(true);
+  const current = JSON.parse((await console_.request({ t: "task", op: "hub_task_list", args: {} })).text).find((t: any) => t.id === row.id);
+  expect(current.state).toBe("in_progress");
+  for (let i = 0; i < 5; i++) expect(await read()).not.toContain("[polling detected]");
+  expect(notices()).toHaveLength(2);
+}, 20_000);
+
+test("a review assignment suppresses empty-inbox advice and closing starts a fresh streak (#681)", async () => {
+  const { stateDir, daemon, console_ } = await hub({ snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false } });
+  const plain = await fakeClaude(stateDir, "0");
+  const read = async () => ((await plain.client.callTool({ name: "hub_inbox", arguments: {} })) as any).content[0].text as string;
+  await read(); await read();
+  const proposed = await console_.request({ t: "task", op: "hub_task_propose", args: { title: "review assignment reset", class: "implement", owner: "kimi", reviewer: "claude" } });
+  expect(proposed.ok).toBe(true);
+  const row = JSON.parse((await console_.request({ t: "task", op: "hub_task_list", args: {} })).text).find((t: any) => t.title === "review assignment reset");
+  expect((await console_.request({ t: "task", op: "task_assign", args: { id: row.id, peer: "claude", role: "reviewer" } })).ok).toBe(true);
+  const assigned = JSON.parse((await console_.request({ t: "task", op: "hub_task_list", args: {} })).text).find((t: any) => t.id === row.id);
+  expect(assigned.reviewer).toBe("claude");
+  for (let i = 0; i < 4; i++) expect(await read()).not.toContain("[polling detected]");
+  expect((await console_.request({ t: "task", op: "hub_task_cancel", args: { id: row.id, reason: "review reset fixture complete" } })).ok).toBe(true);
+  // Drain any cancellation notice before measuring the next empty streak.
+  daemon.bus.pull("claude");
+  expect(await read()).not.toContain("[polling detected]");
+  expect(await read()).not.toContain("[polling detected]");
+  expect(await read()).toContain("[polling detected] 3 empty reads");
+}, 20_000);
+
+test("push-capable peers never receive empty-inbox polling advice (#681)", async () => {
+  const { stateDir } = await hub();
+  const channel = await fakeClaude(stateDir);
+  for (let i = 0; i < 4; i++) {
+    const result: any = await channel.client.callTool({ name: "hub_inbox", arguments: {} });
+    expect(result.content[0].text).not.toContain("[polling detected]");
+  }
+  expect(readFileSync(join(stateDir, "hub.log"), "utf8")).not.toContain("is polling an empty inbox with no task");
+}, 20_000);

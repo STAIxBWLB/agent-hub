@@ -382,7 +382,7 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     return text(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }
   if (name === "hub_inbox" && !toolsMode) {
-    let remote: string[] = [], notice = "";
+    let remote: string[] = [], notice = "", polling = "";
     if (hub) {
       try {
         const res = await hub.request({ t: "inbox" });
@@ -391,6 +391,7 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
         else {
           pendingQueued = { queued: typeof res.waiting === "number" ? res.waiting : 0, important: typeof res.waitingImportant === "number" ? res.waitingImportant : 0 };
           remote = (res.envs as Envelope[]).map(frame);
+          if (Number.isSafeInteger(res.pollingAdvice?.count) && res.pollingAdvice.count >= 3 && Number.isSafeInteger(res.pollingAdvice?.minutes) && res.pollingAdvice.minutes >= 0 && res.pollingAdvice.minutes <= 10) polling = `[polling detected] ${res.pollingAdvice.count} empty reads in ${res.pollingAdvice.minutes} min with no assigned work: end your turn`;
           if (res.waiting) notice = `(${res.waiting} queued hub message(s) remain unread)`;
         }
       } catch { notice = "not read: daemon inbox unavailable; inspect the connection before another read"; }
@@ -398,7 +399,8 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     // Only pushes without a journal delivery id enter this buffer. Pull completion belongs to the daemon.
     const out = [...inbox.splice(0), ...remote];
     if (notice) out.push(notice);
-    const result = text(out.length ? out.join("\n\n") : "(no queued hub messages)");
+    const body = out.length ? out.join("\n\n") : "(no queued hub messages)\nNothing is waiting. Do not poll: if you have no assigned task, report and end your turn; new work waits here for your next boundary.";
+    const result = text(polling ? `${body}\n${polling}` : body);
     if (notice.endsWith("remain unread)")) Object.defineProperty(result, QUEUED_COUNTED, { value: true });
     return result;
   }
