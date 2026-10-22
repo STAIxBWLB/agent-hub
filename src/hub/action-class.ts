@@ -146,22 +146,56 @@ function unwrapped(input: string[]): string[] {
   return [];
 }
 
-function curlWords(input: string[]): string[] {
-  const words: string[] = [];
+/** Scan curl options once: data, headers and other option values never become options. */
+function curlWrites(input: string[]): boolean {
+  const longValues = new Set([
+    "request", "data", "data-ascii", "data-binary", "data-raw", "data-urlencode", "json", "form", "form-string", "upload-file",
+    "header", "proxy-header", "output", "output-dir", "user-agent", "user", "proxy-user", "cookie", "cookie-jar", "referer", "url",
+    "resolve", "connect-to", "config", "cacert", "capath", "cert", "cert-type", "key", "key-type", "pass", "proxy", "preproxy",
+    "interface", "max-time", "connect-timeout", "limit-rate", "range", "request-target", "unix-socket", "abstract-unix-socket",
+    "write-out", "trace", "trace-ascii", "dump-header", "stderr", "netrc-file", "ftp-method", "ftp-port", "oauth2-bearer",
+    "proxy-cacert", "proxy-cert", "proxy-key", "socks5", "socks5-hostname", "retry", "retry-delay", "retry-max-time", "local-port",
+  ]);
+  let method: string | undefined, data = false, upload = false, get = false, head = false;
+  const writes = () => method !== undefined ? !["GET", "HEAD"].includes(method.toUpperCase()) : !head && (upload || data && !get);
   for (let i = 0; i < input.length; i++) {
     const arg = input[i]!;
-    if (!/^-[^-]/.test(arg)) { words.push(arg); continue; }
+    if (arg === "--") break;
+    if (arg === "--next" || arg === "-:") {
+      if (writes()) return true;
+      method = undefined; data = upload = get = head = false;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      const equal = arg.indexOf("=");
+      const name = arg.slice(2, equal < 0 ? undefined : equal);
+      if (name === "get" || name === "no-get") get = name === "get";
+      else if (name === "head" || name === "no-head") head = name === "head";
+      if (!longValues.has(name)) continue;
+      const value = equal < 0 ? input[++i] : arg.slice(equal + 1);
+      if (value === undefined) continue;
+      if (name === "request") method = value;
+      else if (name === "upload-file") upload = true;
+      else if (name === "json" || name.startsWith("data") || name === "form" || name === "form-string") data = true;
+      continue;
+    }
+    if (!/^-[^-]/.test(arg)) continue;
     for (let at = 1; at < arg.length; at++) {
       const flag = arg[at]!;
-      words.push(`-${flag}`);
-      if ("XdFT".includes(flag)) {
-        const value = arg.slice(at + 1) || input[++i];
-        if (value !== undefined) words.push(value);
-        break;
+      if (flag === "G") get = true;
+      if (flag === "I") head = true;
+      // These short options consume the rest of this word, or the next whole word.
+      if (!"XdFTHoAuUbecrxEKPmCwDQztYy".includes(flag)) continue;
+      const value = arg.slice(at + 1) || input[++i];
+      if (value !== undefined) {
+        if (flag === "X") method = value;
+        else if (flag === "d" || flag === "F") data = true;
+        else if (flag === "T") upload = true;
       }
+      break;
     }
   }
-  return words;
+  return writes();
 }
 
 function sequence(parsed: Command[], root: string, initial: string[], found: Set<ActionClass>, depth = 0): void {
@@ -232,11 +266,7 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
       if (method ? !["GET", "HEAD"].includes(method.toUpperCase()) : field) found.add("external-write");
     }
   }
-  if (program === "curl") {
-    const args = curlWords(words);
-    const method = option(args, "-X", "--request");
-    if (method ? !["GET", "HEAD"].includes(method.toUpperCase()) : !args.includes("--get") && !args.includes("-G") && args.some(w => /^--(?:data|json|form|upload-file)(?:[=-]|$)/.test(w) || /^-[dFT].*/.test(w))) found.add("external-write");
-  }
+  if (program === "curl" && curlWrites(words)) found.add("external-write");
   if (["http", "https"].includes(program) && words.some(w => /^(?:POST|PUT|PATCH|DELETE|OPTIONS|TRACE|CONNECT)$/.test(w))) found.add("external-write");
   if (["mail", "mailx", "sendmail"].includes(program) && operands(words).length > 0) found.add("external-write");
   if (["slack", "telegram", "discord"].includes(program) && words.some(w => ["send", "post", "chat.postMessage"].includes(w))) found.add("external-write");

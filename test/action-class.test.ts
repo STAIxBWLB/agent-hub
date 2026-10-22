@@ -221,6 +221,13 @@ test("#636 R2 home uncertainty survives a saturated cwd candidate set", () => {
 });
 
 const curlValueCases: Array<[string, ActionClass[]]> = [
+  ["curl -XGET -XPOST https://example.test", ["external-write"]],
+  ["curl -XPOST -XGET https://example.test", []],
+  ["curl -G --no-get -d payload https://example.test", ["external-write"]],
+  ["curl -o '-XGET' -d payload https://example.test", ["external-write"]],
+  ["curl -A '-G' --data payload https://example.test", ["external-write"]],
+  ["curl --header=-XGET --data=-G https://example.test", ["external-write"]],
+  ["curl -d payload https://example.test --next -XGET https://example.test", ["external-write"]],
   ["curl -d '-XGET' https://example.test", ["external-write"]],
   ["curl -d '-G' https://example.test", ["external-write"]],
   ["curl --data '-XGET' https://example.test", ["external-write"]],
