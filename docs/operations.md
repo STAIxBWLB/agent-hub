@@ -969,6 +969,14 @@ ahub board
 ahub task show <task-id>
 ```
 
+At a terminal width `ahub board` prints one line per task (#724): TITLE is cut
+with `...`, dependencies are an AFTER column (`#113,+2`), and STAGE is the
+progress meter with the stage and a short next-step code (`intent: issue?`,
+`review: CI?`, `ready`), explained by a legend line. At 80 columns REVIEWER,
+CLASS and AGE give way first, then STAGE drops the stage name.
+`ahub board --full`, `ahub task show <id>` and piped output without `COLUMNS`
+keep the whole title and the full SDLC advice.
+
 The owner accepts with `hub_task_accept`, makes the change, and reports with
 `hub_task_done` including a summary and refs. The reviewer receives a review
 request and responds with `hub_review`. A console review uses:

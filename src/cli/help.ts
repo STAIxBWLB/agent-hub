@@ -81,7 +81,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
   ]],
   ["Tasks and review", [
     ["ahub board import github --label <label> [--milestone <milestone>] [--repo <owner/repo>]", "person only: read bounded open issues into deduplicated Backlog; never writes GitHub"],
-    ["ahub board [state | --ready] [--columns] [--release <name> | --release-id <id>] [--json] [--full] [--color=auto|always|never]", "the task board; --ready: proposed tasks with nothing left to wait for"],
+    ["ahub board [state | --ready] [--columns] [--release <name> | --release-id <id>] [--json] [--full] [--color=auto|always|never]", "the task board, one line per task at a terminal width; --full: whole titles and SDLC advice; --ready: proposed tasks with nothing left to wait for"],
     ["ahub task propose [--class <c> | <class>] <title...> [--owner <peer>] [--path <p>]... [--after <id>]... [--urgent] [--backlog] [--detail <text>]", "put a task on the board; a first word that names a class is taken as the class; while a task named by --after is not approved yet, --owner reserves the task for that peer, offered to it first once it is ready; otherwise --owner assigns it now"],
     ["ahub backlog list | add <class> <title...> | plan <id> <revision> <fields-json> <reason...> | pin <id> <revision> true|false <reason...> | undo <id> <revision>", "person only: stage and plan work, preserve pins/frozen scope and refuse stale edits"],
     ["ahub release new <name> <goal> <order> | list | show <name> | plan <name> <revision> <dates-json> | activate|freeze|ship|drop <name> <revision>", "person only: planned UTC millisecond dates and phased scope; ship records a time after approval, never tags or publishes"],
