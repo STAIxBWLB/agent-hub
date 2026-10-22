@@ -31,7 +31,8 @@ export const COMPAT = {
   "codex-review": { label: "Codex reviewer (codex-cli)", verified: ["0.146.0", "0.163.0"], gate: "isolation", probe: ["codex", "--version"], config: "codex_bin",
     parse: out => plain(out.trim().replace(/^codex-cli /, "")),
     trustNote: "Every launch still proves the MCP inventory, Apps/plugins/hooks disabled, sandbox read/write denial and the binary fence; a failed leg still refuses. Trust covers only the source-level claims those probes cannot see (docs/verification/2026-10-19-reviewer-isolation.md)." },
-  "kimi-review": { label: "Kimi reviewer (kimi-code)", verified: ["2.2.0"], gate: "isolation", probe: ["kimi", "--version"],
+  // Kimi 2.3.0 / Qwen 0.26.0 receipt: docs/verification/2026-10-22-kimi-qwen-compat.md
+  "kimi-review": { label: "Kimi reviewer (kimi-code)", verified: ["2.2.0", "2.3.0"], gate: "isolation", probe: ["kimi", "--version"],
     parse: out => plain(out.trim()),
     trustNote: "Every launch still builds the private config, exact two-tool agent file and task-bound MCP; the native tool allowlist behaviour of an untested version is not re-proven." },
   jcode: { label: "Jcode", verified: ["0.98.1", "0.99.0"], line: { min: "0.98.0", below: "1.0.0" }, gate: "contract", probe: ["jcode", "--quiet", "version", "--json"], config: "jcode_cmd",
@@ -40,9 +41,9 @@ export const COMPAT = {
   agy: { label: "agy", verified: ["1.4.2"], line: { min: "1.4.0", below: "1.5.0" }, gate: "contract", probe: ["agy", "--version"],
     parse: out => plain(out.trim()),
     trustNote: "Only 1.4.2 is T0-verified; the plugin MCP and hook contract of another version is unverified." },
-  qwen: { label: "Qwen Code", verified: ["0.25.0"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
+  qwen: { label: "Qwen Code", verified: ["0.25.0", "0.26.0"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
     parse: out => plain(out.trim()),
-    trustNote: "Native ACP identity and mode ids were verified on 0.25.0; another version may rename or drop them." },
+    trustNote: "Native ACP identity and mode ids have dated receipts; 0.26.0 permission callbacks were checked without inference. Another version may change those contracts." },
 } as const satisfies Record<string, CompatPolicy>;
 export type CompatId = keyof typeof COMPAT;
 type CommandConfig = { codex_bin: string; jcode_cmd: string[]; qwen_cmd: string[] };

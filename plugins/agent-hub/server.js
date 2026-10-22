@@ -301,7 +301,7 @@ var init_compat = __esm(() => {
     },
     "kimi-review": {
       label: "Kimi reviewer (kimi-code)",
-      verified: ["2.2.0"],
+      verified: ["2.2.0", "2.3.0"],
       gate: "isolation",
       probe: ["kimi", "--version"],
       parse: (out) => plain(out.trim()),
@@ -335,12 +335,12 @@ var init_compat = __esm(() => {
     },
     qwen: {
       label: "Qwen Code",
-      verified: ["0.25.0"],
+      verified: ["0.25.0", "0.26.0"],
       gate: "contract",
       probe: ["qwen", "--version"],
       config: "qwen_cmd",
       parse: (out) => plain(out.trim()),
-      trustNote: "Native ACP identity and mode ids were verified on 0.25.0; another version may rename or drop them."
+      trustNote: "Native ACP identity and mode ids have dated receipts; 0.26.0 permission callbacks were checked without inference. Another version may change those contracts."
     }
   };
   MAX_BYTES = 64 * 1024;

@@ -19,7 +19,7 @@ test("a verified version passes, a contract gate admits its line as untested, an
     expect(refused.reason).toContain("ahub agents trust codex-review 0.164.0");
   }
   // An isolation gate has no line: a newer minor is refused, not assumed compatible.
-  expect(assessVersion("kimi-review", "2.3.0", []).ok).toBe(false);
+  expect(assessVersion("kimi-review", "2.4.0", []).ok).toBe(false);
   const line = assessVersion("agy", "1.4.4", []);
   expect(line).toMatchObject({ ok: true, state: "in-line", version: "1.4.4" });
   for (const v of ["1.5.0", "1.3.9", "1.4.3-beta", "agy 1.4.2", "", undefined, 142]) expect(assessVersion("agy", v, []).ok).toBe(false);
@@ -195,7 +195,7 @@ test("the agent-compat step accepts only a clean run or a reported drift; a cras
 
 test("a refused Qwen version names itself and the trust command, keeping the identity contract text (#691)", async () => {
   const { qwenNativeIdentity } = await import("../src/adapters/definitions/qwen-native.ts");
-  expect(() => qwenNativeIdentity("qwen", true, { agentInfo: { name: "qwen-code", version: "0.26.0" } })).toThrow(/native identity is not verified: Version not verified: Qwen Code 0\.26\.0 .*ahub agents trust qwen 0\.26\.0/);
+  expect(() => qwenNativeIdentity("qwen", true, { agentInfo: { name: "qwen-code", version: "0.27.0" } })).toThrow(/native identity is not verified: Version not verified: Qwen Code 0\.27\.0 .*ahub agents trust qwen 0\.27\.0/);
   expect(qwenNativeIdentity("qwen", true, { agentInfo: { name: "qwen-code", version: "0.25.0" } })).toBe(true);
 });
 
@@ -215,4 +215,10 @@ test("the probe's output collector never keeps more than its cap, and refuses ev
 
 test("Codex reviewer 0.163.0 is receipt-verified without machine trust (#371)", () => {
   expect(assessVersion("codex-review", "0.163.0", [])).toMatchObject({ ok: true, state: "verified", version: "0.163.0" });
+});
+
+
+test("Kimi 2.3.0 and Qwen 0.26.0 are receipt-verified without machine trust (#373)", () => {
+  expect(assessVersion("kimi-review", "2.3.0", [])).toEqual({ ok: true, state: "verified", version: "2.3.0" });
+  expect(assessVersion("qwen", "0.26.0", [])).toEqual({ ok: true, state: "verified", version: "0.26.0" });
 });
