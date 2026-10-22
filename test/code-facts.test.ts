@@ -3,6 +3,11 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Board } from "../src/hub/board.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { BasePeer } from "../src/hub/peers.ts";
+import { Tasks } from "../src/hub/tasks.ts";
+import { parseRouting } from "../src/hub/routing.ts";
 import { CodeFacts } from "../src/hub/code-facts.ts";
 import { buildReviewBrief, withCodeSymbols, renderReviewBrief, type ReviewBrief } from "../src/hub/review-brief.ts";
 
@@ -142,3 +147,32 @@ test("a failing optional metadata projection preserves the authoritative file br
   expect(projected.reviewable).toEqual(brief.reviewable);expect(projected.rules).toEqual(brief.rules);expect(renderReviewBrief(projected)).toContain("Changed symbols: unknown");
  }finally{f.close();}
 });
+
+
+test("off-mode completion-selected reviewer receives prepared fake-ripwire symbols", async () => {
+ const f=fixture(),facts=f.facts(),board=new Board(join(f.root,"hub.db")),bus=new Bus({batchMs:0});
+ const received:string[]=[];
+ class Peer extends BasePeer {
+  async start(){this.setState("idle");}
+  async stop(){this.setState("offline");}
+  async deliver(envs:{body:string}[]){received.push(...envs.map(env=>env.body));}
+ }
+ let symbols:Awaited<ReturnType<CodeFacts["changedSymbols"]>>={state:"unknown"};
+ try {
+  for(const id of ["codex","claude-review"]){const peer=new Peer(id,60000);bus.add(peer);await peer.start();}
+  const tasks=new Tasks({board,bus,cwd:f.repo,project:"fixture",notify:()=>{},
+   instances:()=>({"claude-review":{kind:"claude",roles:["reviewer"],start_mode:"headless"}}),roles:{"claude-review":["reviewer"]},
+   review:{adaptive:false,min_reviews:5,pool:["claude"]},reviewOnly:()=>true,
+   routing:()=>parseRouting('[local]\nfixed_model="fixture"\n[classes.summarize]\npeers=["codex"]\n[classes.review]\npeers=["claude", "codex"]\n'),
+   prepareReviewBrief:async task=>{symbols=await facts.changedSymbols(f.repo,f.base,task.refs.commit!);},
+   reviewBrief:task=>{const brief=buildReviewBrief(f.repo,task.refs.commit,{privatePath:()=>false,nameable:()=>true});return "unavailable" in brief?brief:withCodeSymbols(brief,symbols,task.plan?.symbols,()=>true);}});
+  const task=board.propose("user",{title:"fixture",class:"summarize",refs:{commit:f.head}});
+  board.update(task.id,"codex","accepted",{owner:"codex",state:"in_progress"});
+  expect(board.get(task.id)!.reviewer).toBeNull();
+  const done=await tasks.done("codex",task.id,"done");
+  expect(done).toMatchObject({state:"in_review",reviewer:"claude-review"});
+  for(let i=0;i<100&&!received.some(body=>body.startsWith("Review task"));i++)await Bun.sleep(10);
+  const request=received.find(body=>body.startsWith("Review task"));
+  expect(request).toContain("retained (fn");expect(request).toContain("added (fn");expect(symbols.state).toBe("known");
+ } finally {await facts.close();bus.closeJournal();board.close();f.close();}
+},20000);
