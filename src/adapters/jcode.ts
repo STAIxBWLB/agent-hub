@@ -13,21 +13,25 @@ export interface JcodeOptions extends Omit<AcpOptions, "cmd" | "qwen025" | "expe
   command: string[];
   home: string;
   providerProfile?: string;
+  /** The hub peer id this Jcode acts for: "jcode" for the base peer, an instance id for an extra one (#685). */
+  peer?: string;
+  /** Initial native provider (`-p`), passed exactly as the person wrote it (#685). The hub never handles model credentials. */
+  provider?: string;
   /** How long a native steer may take to be acknowledged (#572); default 5 s. */
   steerTimeoutMs?: number;
 }
-export function jcodeCommand(command: string[], kind: "serve" | "acp", socket: string, cwd: string, model?: string, profile?: string): string[] {
+export function jcodeCommand(command: string[], kind: "serve" | "acp", socket: string, cwd: string, model?: string, profile?: string, provider?: string, peer = "jcode"): string[] {
   if (!command.length || command.some(word => typeof word !== "string" || !word)) throw new Error("jcode_cmd must name an executable argv");
-  return [...command, kind, "--socket", socket, "--cwd", cwd, "--no-update", "--no-selfdev", ...(model ? ["--model", model] : []), ...(profile ? ["--provider-profile", profile] : []),
-    ...(kind === "serve" ? ["--temporary-server", "--owner-pid", String(process.pid), "--server-name", "agent-hub-jcode"] : ["--mcp-tools", "eager"])];
+  return [...command, kind, "--socket", socket, "--cwd", cwd, "--no-update", "--no-selfdev", ...(provider ? ["-p", provider] : []), ...(model ? ["--model", model] : []), ...(profile ? ["--provider-profile", profile] : []),
+    ...(kind === "serve" ? ["--temporary-server", "--owner-pid", String(process.pid), "--server-name", `agent-hub-${peer}`] : ["--mcp-tools", "eager"])];
 }
 export interface JcodeTuiBinding { launchId: string; sessionId: string }
 export type JcodeTuiState = { state: "waiting"; binding: JcodeTuiBinding } |
   { state: "ready"; binding: JcodeTuiBinding; launch: { cmd: string; args: string[]; env: NodeJS.ProcessEnv } };
 
-export function jcodeTuiCommand(command: string[], socket: string, sessionId: string, model?: string, profile?: string): string[] {
+export function jcodeTuiCommand(command: string[], socket: string, sessionId: string, model?: string, profile?: string, provider?: string): string[] {
   if (!command.length || command.some(word => typeof word !== "string" || !word)) throw new Error("jcode_cmd must name an executable argv");
-  return [...command, "--socket", socket, "--resume", sessionId, "--no-update", "--no-selfdev",
+  return [...command, "--socket", socket, "--resume", sessionId, "--no-update", "--no-selfdev", ...(provider ? ["-p", provider] : []),
     ...(model ? ["--model", model] : []), ...(profile ? ["--provider-profile", profile] : [])];
 }
 
@@ -178,7 +182,7 @@ export function jcodeVersionAsync(command: string[], cwd: string, timeoutMs = 10
 
 /** Both processes are ours. The user's global daemon and its sockets are never stopped. */
 export class JcodePeer extends AcpPeer {
-  private readonly launchId = crypto.randomUUID();
+  private readonly launchId: string;
   private socketIdentity: { dev: number; ino: number } | undefined;
   private readonly root: string;
   private readonly socket: string;
@@ -189,21 +193,28 @@ export class JcodePeer extends AcpPeer {
 
   constructor(private readonly jcode: JcodeOptions) {
     if (!isAbsolute(jcode.home)) throw new Error("jcode_home must be an absolute native data path");
+    const peer = jcode.peer ?? "jcode";
     jcodeCommand(jcode.command, "acp", "preview", jcode.cwd);
     // The name must end in ".sock": jcode names its debug socket by replacing that suffix, so "s" binds one path twice.
     const root = mkdtempSync(join(tmpdir(), "ahub-jcode-")), socket = join(root, "j.sock");
-    const cmd = jcodeCommand(jcode.command, "acp", socket, jcode.cwd, jcode.launchModel, jcode.providerProfile);
-    super("jcode", { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, ...JCODE_OWNED_ENV }, mcpServers: [], requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
-    this.root = root; this.socket = socket;
+    const cmd = jcodeCommand(jcode.command, "acp", socket, jcode.cwd, jcode.launchModel, jcode.providerProfile, jcode.provider, peer);
+    const launchId = crypto.randomUUID();
+    // The ACP child gets peerChildEnv(this.id): the instance id, so its hub tools act as this peer and never as the base Jcode. The launch id
+    // goes with it: the daemon admits a hub-tools hello for this peer only when it carries the id of this peer's current owned launch (#368).
+    super(peer, { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, AGENTHUB_LAUNCH_ID: launchId, ...JCODE_OWNED_ENV }, mcpServers: [], requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
+    this.root = root; this.socket = socket; this.launchId = launchId;
   }
+
+  /** True only for the id of this peer's current owned launch, while it is not ending: the proof a hub-tools hello must carry (#368). */
+  ownsLaunch(launchId: unknown): boolean { return !this.ending && typeof launchId === "string" && launchId === this.launchId; }
 
   override async start(): Promise<void> {
     // The native loader otherwise imports Codex MCP into the user's store on first use.
     if (!existsSync(join(this.jcode.home, "mcp.json"))) throw new Error("initialize Jcode's global MCP store with its native client before enabling this peer; the hub never initializes or copies it");
     if (existsSync(this.socket)) { this.preserveRoot = true; throw new Error("Jcode private socket is occupied; no daemon was adopted or removed"); }
     this.ending = false;
-    const [bin, ...args] = jcodeCommand(this.jcode.command, "serve", this.socket, this.jcode.cwd, this.jcode.launchModel, this.jcode.providerProfile);
-    const server = spawn(bin!, args, { cwd: this.jcode.cwd, detached: true, env: { ...peerChildEnv("jcode"), JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, JCODE_READY_FD: "3", ...JCODE_OWNED_ENV }, stdio: ["ignore", "ignore", "ignore", "pipe"] });
+    const [bin, ...args] = jcodeCommand(this.jcode.command, "serve", this.socket, this.jcode.cwd, this.jcode.launchModel, this.jcode.providerProfile, this.jcode.provider, this.id);
+    const server = spawn(bin!, args, { cwd: this.jcode.cwd, detached: true, env: { ...peerChildEnv(this.id), JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, JCODE_READY_FD: "3", AGENTHUB_LAUNCH_ID: this.launchId, ...JCODE_OWNED_ENV }, stdio: ["ignore", "ignore", "ignore", "pipe"] });
     this.server = server; trackGroup(server);
     try {
       await new Promise<void>((resolve, reject) => {
@@ -307,11 +318,13 @@ export class JcodePeer extends AcpPeer {
       : options.providerProfile !== undefined && options.providerProfile !== this.jcode.providerProfile ? "--provider-profile" : undefined;
     if (differs) throw new JcodeOptionMismatch(differs);
     if (!savedSession(this.jcode.home, sessionId)) return { state: "waiting", binding };
-    const [cmd, ...args] = jcodeTuiCommand(this.jcode.command, this.socket, sessionId, this.jcode.launchModel, this.jcode.providerProfile);
-    return { state: "ready", binding, launch: { cmd: cmd!, args, env: { JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, ...JCODE_OWNED_ENV } } };
+    const [cmd, ...args] = jcodeTuiCommand(this.jcode.command, this.socket, sessionId, this.jcode.launchModel, this.jcode.providerProfile, this.jcode.provider);
+    // The TUI is the person's own client of this peer's server. The shared project MCP entry names no peer (#685), so every launch
+    // path supplies its own id: the base Jcode's too, or its MCP child would fall back to the channel default.
+    return { state: "ready", binding, launch: { cmd: cmd!, args, env: { JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, AGENTHUB_PEER_ID: this.id, AGENTHUB_LAUNCH_ID: this.launchId, ...JCODE_OWNED_ENV } } };
   }
   override recoveryMetadata(): Record<string, unknown> {
-    return { ...super.recoveryMetadata(), launch: { kind: "jcode", peer: "jcode", mode: "headless", ...(this.jcode.launchModel ? { model: this.jcode.launchModel } : {}), ...(this.jcode.providerProfile ? { providerProfile: this.jcode.providerProfile } : {}) } };
+    return { ...super.recoveryMetadata(), launch: { kind: "jcode", peer: this.id, mode: "headless", ...(this.jcode.launchModel ? { model: this.jcode.launchModel } : {}), ...(this.jcode.providerProfile ? { providerProfile: this.jcode.providerProfile } : {}) } };
   }
 }
 

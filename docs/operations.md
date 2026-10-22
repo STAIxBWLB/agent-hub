@@ -3907,7 +3907,61 @@ restart the hub. For example, a reviewer can use:
 Start them with `ahub codex --as codex-review` and
 `ahub kimi --as kimi-review`. Codex keeps its native TUI and its own hub-owned
 app-server proxy; extra Kimi, Qwen, Pi and local instances use headless starts.
-Extra Jcode instances are unavailable. An extra Claude instance is a reviewer or
+Extra Jcode instances are supported (#685), in `.agenthub/config.local.json` only:
+
+```json
+{
+  "instances": {
+    "jcode-claude": { "kind": "jcode", "roles": ["verifier"], "jcode_home": "/Users/you/.agenthub/jcode/claude",
+                      "provider": "claude", "model": "claude-sonnet-5-5" },
+    "jcode-local":  { "kind": "jcode", "roles": ["verifier"], "jcode_home": "/Users/you/.agenthub/jcode/local",
+                      "provider_profile": "onprem" }
+  }
+}
+```
+
+`jcode_home` is required, absolute, and must differ from the base `jcode_home`, from
+every other instance's and from any directory inside or around them, however it is
+spelled: a symlink, a system alias such as `/tmp` and `/private/tmp`, or a case-only
+alias is the same home (the hub refuses the configuration at startup otherwise). At most 8 Jcode instances are accepted per
+project. `provider`, `model` and `provider_profile` are optional and passed to Jcode
+as `-p`, `--model` and `--provider-profile` exactly as written; any other field is
+refused, and these fields are never editable from settings.
+
+You authenticate inside Jcode, never in the hub. Run Jcode's own setup against each
+home (provider login, API key, an OpenAI-compatible base URL such as the on-prem
+gateway, a provider profile), and initialize that home's MCP store with Jcode's own
+client, as for the base peer. The hub never reads, writes, copies or injects a model
+credential, a key, a token or a provider URL, and never creates the home. Its only
+start preflight is read-only: the home must exist as a directory you own, otherwise
+the start is refused and nothing runs. A Jcode sign-in failure appears as the start
+or turn error, with bounded text. An instance reports tokens only if Jcode itself
+does; until then they show `unknown`, never 0.
+
+Each instance owns its private `jcode serve` and `jcode acp` pair, socket, roster row
+and launch record, and acts as its own peer id (for example `jcode-local`), never as
+`jcode`. Start it with `ahub jcode --as jcode-local` (headless; an instance has no
+TUI) and stop it with `ahub stop jcode-local`: the base Jcode and every other instance
+keep running. An extra implementer needs the same managed worktree as every extra
+implementer (`worktree: ".worktrees/jcode-local"`). Every instance is a cloud peer
+(`trust.onPrem` is false), whatever provider you configured: it never receives PII
+work. `ahub status` and the dashboard show the provider, model and profile as
+declared, and `ahub doctor` lists the MCP servers each rostered instance's home would
+load.
+
+Upgrade note (#368): the project's `.jcode/mcp.json` entry for Jcode no longer names
+`AGENTHUB_PEER_ID`, because the file is shared by every Jcode in the project and Jcode
+gives an entry's own env precedence over the process env. Each hub-started Jcode now
+supplies its own peer id and a launch id, and the hub admits a hub-tools connection
+for Jcode only with the launch id of that peer's current owned launch. After
+upgrading, `ahub status` and `ahub doctor` report the Jcode MCP entry as not ready
+once (`jcodeMcpReady` is false for the old entry): run `ahub jcode` once and it
+rewrites its own entry, or follow the remedy text the start refusal shows. A Jcode you
+run yourself in this project outside the hub has no peer id: its hub tools refuse
+every call with that reason and never default to `jcode`, and a process that only
+sets `AGENTHUB_PEER_ID` without an owned launch is refused by the hub.
+
+An extra Claude instance is a reviewer or
 planner you start yourself: declare it with `roles` only (for example
 `"claude-review": { "kind": "claude", "roles": ["reviewer"] }`, no `start_mode` or
 `worktree`) and run `ahub claude --as claude-review` in a terminal. It keeps its own

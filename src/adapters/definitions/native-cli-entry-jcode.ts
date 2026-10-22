@@ -51,7 +51,10 @@ export async function runJcodeEntry(ctx: NativeCliEntryContext): Promise<void> {
   if (rest.length || (one["--mode"] !== undefined && !["headless", "tui"].includes(one["--mode"]))) fail("usage: ahub jcode [--mode tui|headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>]");
   if (one["--session-id"] !== undefined && !qwenSessionId(one["--session-id"])) fail("invalid Jcode session identity");
   const control = readControl(stateDir);
+  // #685: `--as <id>` selects an extra Jcode instance; every request below names it, never the base peer.
+  const peer = ctx.instance ?? "jcode";
   const mode = one["--mode"] ?? (ctx.instance ? "headless" : control?.startModes?.jcode ?? startModeOf(ctx.projectConfig().peers, "jcode"));
+  if (ctx.instance && mode === "tui") fail(`${peer} is an extra Jcode instance: it runs headless on its own private server (ahub jcode --as ${peer}); the TUI belongs to the base jcode`);
   if (print && (mode === "headless" || !control?.features?.includes("native_tui_launch"))) {
     try { return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2)); }
     catch { return fail("cannot preview Jcode launch: invalid arguments or configuration (details withheld)"); }
@@ -66,10 +69,10 @@ export async function runJcodeEntry(ctx: NativeCliEntryContext): Promise<void> {
   hub.onClose = (code, reason) => { if (!abort.signal.aborted) abort.abort(); oldClose?.(code, reason); };
   try {
     const snapshot = (await hub.request({ t: "status" })).status;
-    const rostered = rosterInStatus(snapshot, "jcode");
-    if (rostered === undefined) fail("cannot read jcode's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
-    if (!rostered) fail("jcode is off roster; add it with ahub roster add jcode");
-    const warning = retainedLaunchWarning(snapshot, "jcode", ctx.definition); if (warning) console.error(warning);
+    const rostered = rosterInStatus(snapshot, peer);
+    if (rostered === undefined) fail(`cannot read ${peer}'s roster membership from the running hub; upgrade or restart it, then retry (nothing was started)`);
+    if (!rostered) fail(`${peer} is off roster; add it with ahub roster add ${peer}`);
+    const warning = retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
     const options = { model: one["--model"], providerProfile: one["--provider-profile"], sessionId: one["--session-id"] };
     if (print) {
       if (!hub.features.includes("native_tui_launch") || mode !== "tui") return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2));
@@ -89,10 +92,10 @@ export async function runJcodeEntry(ctx: NativeCliEntryContext): Promise<void> {
     }
     const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve(cliDir, "../../plugins/agent-hub/server.js"));
     if (written.tracked) console.error(".jcode/mcp.json is tracked; review this local machine-path change before committing it");
-    const reply = await hub.request({ t: "start", peer: "jcode", args: { mode, ...options }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 65_000);
+    const reply = await hub.request({ t: "start", peer, args: { mode, ...options }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 65_000);
     if (interruptedWait()) return;
     if (!reply.ok) fail(reply.error);
-    if (mode === "headless") { console.log(reply.already ? "jcode is already attached" : "jcode attached (headless); native policy unmanaged, NO hub sandbox"); return; }
+    if (mode === "headless") { console.log(reply.already ? `${peer} is already attached` : `${peer} attached (headless); native policy unmanaged, NO hub sandbox`); return; }
     const ready = await waitForJcodeTui(hub, fail, abort.signal, options);
     if (interruptedWait() || !ready) return;
     // No managed terminal record: Jcode's controlled recovery is refused at plan time, so, like Kimi's TUI, it has

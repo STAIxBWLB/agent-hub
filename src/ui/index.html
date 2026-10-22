@@ -1260,6 +1260,7 @@ function render(snapshot) {
       if (peer.pullOnly && adapterDisplay[id]?.pullOnlyRead) more.append(el('p', 'Last hub_inbox read: ' + (typeof peer.lastInboxAt === 'number' ? Math.max(0, Math.floor((Date.now() - peer.lastInboxAt) / 1000)) + 's ago' : 'never'), 'meta'));
       if (peer.paused) more.append(el('p', peer.paused, 'meta'));
       if (peer.requestedModel) more.append(el('p', 'Requested: ' + peer.requestedModel, 'meta'));
+      if (typeof peer.modelSource === 'string' && peer.modelSource) more.append(el('p', 'Model source: ' + peer.modelSource, 'meta'));
       for (const backend of peer.backends || []) {
         if (backend.requestedModel) more.append(el('p', backend.kind.toUpperCase() + ': ' + (backend.actualModel || 'model not reported') + ' (' + backend.state + ')', 'meta'));
       }

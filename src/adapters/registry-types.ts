@@ -202,7 +202,9 @@ export interface AdapterDefinition {
   };
   identity: { mcp: "acp-session" | "project-file" | "env" | "channel-plugin" };
   /** Declaration admission only; execution-root and runtime owner proof remain host responsibilities. */
-  instances?: { mode: "external" | "headless"; roles?: readonly string[] };
+  instances?: { mode: "external" | "headless"; roles?: readonly string[];
+    /** Each declared instance runs its own native data home (`jcode_home`) and may pass its own provider, model and profile names (#685). Fixed builtins only. */
+    nativeHome?: true };
   attach?: {
     /** The authenticated external hello may claim this id; independent of MCP configuration shape. */
     externalHello?: boolean;

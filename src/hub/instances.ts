@@ -1,4 +1,7 @@
 import { types } from "node:util";
+import { statSync } from "node:fs";
+import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { canonicalPath, realPath } from "./project.ts";
 import { defaultPeerRoles, definitionOf, type AdapterDefinition, type StartForm, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { isPermissionMode, type PermissionMode } from "./permission-mode.ts";
 
@@ -10,7 +13,17 @@ export interface InstanceConfig {
   review_mode?: "fresh";
   worktree?: string;
   readOnly?: boolean;
+  /** Jcode instances only (#685): their own native data home, and optional model selection. Machine-local, never editable from settings. */
+  jcode_home?: string;
+  provider?: string;
+  model?: string;
+  provider_profile?: string;
 }
+const JCODE_FIELDS = ["jcode_home", "provider", "model", "provider_profile"] as const;
+/** At most this many extra Jcode instances per project (#685). */
+export const MAX_JCODE_INSTANCES = 8;
+/** A flag value jcode takes as one argv word: bounded, printable, no spaces. */
+const NATIVE_WORD = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
 export type InstancesConfig = Readonly<Record<string, InstanceConfig>>;
 export interface InstanceCatalogEntry { id: string; kind: string; definition: AdapterDefinition; config?: InstanceConfig }
 const MAX_INSTANCES = 64;
@@ -41,6 +54,58 @@ function roles(value: unknown, field: string): string[] {
   return out;
 }
 
+/** The Jcode-only fields of one declaration (#685). Only the validated values are copied; nothing is read twice. */
+function jcodeInstanceFields(entry: Record<string, PropertyDescriptor>, path: string): Partial<InstanceConfig> {
+  const home: unknown = entry.jcode_home?.value;
+  if (typeof home !== "string" || !isAbsolute(home) || !home.trim() || Buffer.byteLength(home) > 4096 || /\p{Cc}/u.test(home)) return fail(`${path}.jcode_home`, "is required: a nonempty control-free absolute path of at most 4096 UTF-8 bytes, other than the base Jcode's home");
+  const out: Partial<InstanceConfig> = { jcode_home: home };
+  for (const key of ["provider", "model", "provider_profile"] as const) {
+    const present = entry[key];
+    if (!present) continue;
+    const word: unknown = present.value;
+    if (typeof word !== "string" || !NATIVE_WORD.test(word)) return fail(`${path}.${key}`, "must be one bounded printable word without spaces");
+    out[key] = word;
+  }
+  if (entry.start_mode && entry.start_mode.value !== "headless") return fail(`${path}.start_mode`, "a Jcode instance starts headless");
+  return out;
+}
+
+/**
+ * The directory a home names, as the disk sees it (#685 review): symlinks and system aliases (`/tmp` and `/private/tmp`) resolved with
+ * `realPath` (never `realpathSync`, which Bun fails on a backslash path), and for a home that does not exist yet the nearest existing
+ * ancestor resolved the same way. Compared case-folded when the volume folds case, so a case-only alias is the same home.
+ */
+function canonicalHome(home: string): { path: string; key: string; identity?: string } {
+  let path: string;
+  try { path = realPath(home); } catch { path = canonicalPath(home); }
+  const stat = (target: string) => { try { return statSync(target); } catch { return undefined; } };
+  let existing = path;
+  while (!stat(existing) && dirname(existing) !== existing) existing = dirname(existing);
+  const info = stat(path), anchor = stat(existing);
+  const swapped = existing.replace(/[A-Za-z]/g, letter => letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase());
+  const alias = swapped !== existing ? stat(swapped) : undefined;
+  const folds = !!anchor && !!alias && alias.ino === anchor.ino && alias.dev === anchor.dev;
+  return { path, key: folds ? path.toLowerCase() : path, ...(info ? { identity: `${info.dev}:${info.ino}` } : {}) };
+}
+/**
+ * One native data home per Jcode (#685): an instance may not use the base Jcode's home, another instance's, or one nested
+ * inside either (their stores would overlap), however the path is spelled: a symlink, a system alias or a case-only alias of one
+ * is the same home. Run once with the loaded base `jcode_home`.
+ */
+export function checkJcodeInstanceHomes(declarations: InstancesConfig | undefined, baseHome: string): void {
+  const homes: { id: string; key: string; identity?: string }[] = [{ id: "the base Jcode", ...canonicalHome(baseHome) }];
+  for (const [id, config] of Object.entries(declarations ?? {})) {
+    if (config.jcode_home === undefined) continue; // only a native-home kind carries one
+    const home = canonicalHome(config.jcode_home);
+    for (const other of homes) {
+      const label = other.id === "the base Jcode" ? "base" : other.id;
+      if (home.key === other.key || (home.identity !== undefined && home.identity === other.identity)) return fail(`instances.${id}.jcode_home`, other.id === "the base Jcode" ? "must differ from the base Jcode's home" : `is the same home as ${label}`);
+      if (home.key.startsWith(`${other.key}${sep}`) || other.key.startsWith(`${home.key}${sep}`)) return fail(`instances.${id}.jcode_home`, `is nested inside or around ${other.id === "the base Jcode" ? "the base Jcode's home" : `${label}'s home`}`);
+    }
+    homes.push({ id, ...home });
+  }
+}
+
 /** Declaration support is explicit policy, independent of the native MCP binding mechanism. */
 export function supportsHeadlessInstances(definition: AdapterDefinition): boolean {
   return definition.instances?.mode === "headless" && !!definition.start.create && definition.start.forms.includes("headless");
@@ -57,11 +122,14 @@ export function validateInstances(raw: unknown, catalog: ProjectAdapterCatalog):
   const result: Record<string, InstanceConfig> = Object.create(null);
   if (raw === undefined) return Object.freeze(result);
   const declarations = fields(raw, "instances");
+  let jcodeCount = 0;
   if (Object.keys(declarations).length > MAX_INSTANCES) return fail("instances", "at most 64 extra instances are supported");
   for (const [id, descriptor] of Object.entries(declarations)) {
     if (!PEER_ID.test(id) || RESERVED.has(id) || resolve(id)) return fail("instances", "ids must be nonreserved extra instance ids, not builtin ids");
     const path = `instances.${id}`, entry = fields(descriptor.value, path);
-    if (Object.keys(entry).some(key => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly"].includes(key))) return fail(path, "unsupported field");
+    const declaredKind: unknown = entry.kind?.value;
+    const jcodeFields = typeof declaredKind === "string" && resolve(declaredKind)?.instances?.nativeHome === true;
+    if (Object.keys(entry).some(key => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly", ...(jcodeFields ? JCODE_FIELDS : [])].includes(key))) return fail(path, "unsupported field");
     const kind: unknown = entry.kind?.value;
     if (typeof kind !== "string") return fail(`${path}.kind`, "must name a native kind");
     const definition = resolve(kind), prefix = `${kind}-`;
@@ -102,6 +170,10 @@ export function validateInstances(raw: unknown, catalog: ProjectAdapterCatalog):
       if (entry.readOnly.value && entry.permission_mode) return fail(`${path}.permission_mode`, "read-only instances cannot select a permission mode");
     }
     const value: InstanceConfig = { kind, ...(entry.review_mode ? { review_mode: "fresh" as const } : {}) };
+    if (jcodeFields) {
+      if (++jcodeCount > MAX_JCODE_INSTANCES) return fail("instances", `at most ${MAX_JCODE_INSTANCES} extra Jcode instances are supported per project`);
+      Object.assign(value, jcodeInstanceFields(entry, path));
+    }
     if (entry.readOnly) value.readOnly = entry.readOnly.value as boolean;
     if (entry.roles) { value.roles = roles(entry.roles.value, `${path}.roles`); Object.freeze(value.roles); }
     if (entry.start_mode) {

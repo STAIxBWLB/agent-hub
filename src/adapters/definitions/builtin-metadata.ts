@@ -159,7 +159,8 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     api: 1, kind: "jcode", displayName: "Jcode", family: "jcode", transport: "acp",
     roles: implementerRoles, optional: true, defaultOnRoster: false, trust: { onPrem: false, hubSandboxed: false },
     start: { create: createJcode, preflight: jcodeStartPreflight, daemonPort: "owned-acp", forms: dualForms, defaultForm: "tui", explicitHeadlessMode: true, conductorStartable: true, hubSwitches: [], ownedFlags: [] },
-    identity: { mcp: "project-file" },
+    // #685: an extra Jcode is a headless instance with its own native home, socket and state (instances.<id>.jcode_home).
+    identity: { mcp: "project-file" }, instances: { mode: "headless", nativeHome: true },
     permission: { unmanaged: "Jcode native policy is unmanaged; no hub mode mapping", grants: {
       ask: "no verified hub mode mapping; native policy only", "ask-when-needed": "no verified hub mode mapping; native policy only", "never-ask": "no verified hub mode mapping; native policy only" } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "jcode", ...JCODE_RECOVERY_SESSION, crashPlan: jcodeCrashPlan }, turnEnd: "adapter", budget: { account: "jcode" },

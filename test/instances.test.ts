@@ -64,13 +64,15 @@ test("#450 prototype, getter and proxy declarations never execute caller code", 
   expect(validateInstances(nullPrototype, builtinProjectCatalog())["codex-worker"]?.kind).toBe("codex");
 });
 
-test("#450 I2 permits only explicit headless native instances and retains the Claude/Jcode ceilings", () => {
+test("#450 I2 permits only explicit headless native instances and retains the Claude ceiling; a Jcode instance needs its own home (#685)", () => {
   for (const kind of ["codex", "kimi", "qwen", "pi", "local"]) {
     const declarations = validateInstances({ [`${kind}-worker`]: { kind, start_mode: "headless", permission_mode: "never-ask" } }, builtinProjectCatalog());
     expect(kindOf(`${kind}-worker`, declarations)).toBe(kind);
   }
   expect(() => validateInstances({ "claude-review": { kind: "claude" } }, builtinProjectCatalog())).toThrow(/I2|headless|channel/);
-  expect(() => validateInstances({ "jcode-worker": { kind: "jcode" } }, builtinProjectCatalog())).toThrow(/I2|project.file|unsupported/);
+  // #685: Jcode now declares instances, but only with a native home of its own (test/jcode-instances.test.ts).
+  expect(() => validateInstances({ "jcode-worker": { kind: "jcode" } }, builtinProjectCatalog())).toThrow(/jcode_home/);
+  expect(kindOf("jcode-worker", validateInstances({ "jcode-worker": { kind: "jcode", jcode_home: "/h/worker" } }, builtinProjectCatalog()))).toBe("jcode");
 });
 
 test("#450 catalog and role projections preserve builtin order and isolate caller-owned arrays", () => {

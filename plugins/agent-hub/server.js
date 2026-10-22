@@ -4077,7 +4077,7 @@ import { createConnection } from "net";
 import { closeSync as closeSync3, constants as constants2, existsSync as existsSync4, fstatSync as fstatSync3, lstatSync as lstatSync6, mkdtempSync as mkdtempSync3, openSync as openSync3, readSync as readSync2, rmSync as rmSync3 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
 import { isAbsolute as isAbsolute4, join as join7 } from "path";
-function jcodeCommand(command, kind, socket, cwd, model, profile) {
+function jcodeCommand(command, kind, socket, cwd, model, profile, provider, peer = "jcode") {
   if (!command.length || command.some((word) => typeof word !== "string" || !word))
     throw new Error("jcode_cmd must name an executable argv");
   return [
@@ -4089,12 +4089,13 @@ function jcodeCommand(command, kind, socket, cwd, model, profile) {
     cwd,
     "--no-update",
     "--no-selfdev",
+    ...provider ? ["-p", provider] : [],
     ...model ? ["--model", model] : [],
     ...profile ? ["--provider-profile", profile] : [],
-    ...kind === "serve" ? ["--temporary-server", "--owner-pid", String(process.pid), "--server-name", "agent-hub-jcode"] : ["--mcp-tools", "eager"]
+    ...kind === "serve" ? ["--temporary-server", "--owner-pid", String(process.pid), "--server-name", `agent-hub-${peer}`] : ["--mcp-tools", "eager"]
   ];
 }
-function jcodeTuiCommand(command, socket, sessionId, model, profile) {
+function jcodeTuiCommand(command, socket, sessionId, model, profile, provider) {
   if (!command.length || command.some((word) => typeof word !== "string" || !word))
     throw new Error("jcode_cmd must name an executable argv");
   return [
@@ -4105,6 +4106,7 @@ function jcodeTuiCommand(command, socket, sessionId, model, profile) {
     sessionId,
     "--no-update",
     "--no-selfdev",
+    ...provider ? ["-p", provider] : [],
     ...model ? ["--model", model] : [],
     ...profile ? ["--provider-profile", profile] : []
   ];
@@ -4244,7 +4246,7 @@ var init_jcode = __esm(() => {
   };
   JcodePeer = class JcodePeer extends AcpPeer {
     jcode;
-    launchId = crypto.randomUUID();
+    launchId;
     socketIdentity;
     root;
     socket;
@@ -4255,13 +4257,19 @@ var init_jcode = __esm(() => {
     constructor(jcode) {
       if (!isAbsolute4(jcode.home))
         throw new Error("jcode_home must be an absolute native data path");
+      const peer = jcode.peer ?? "jcode";
       jcodeCommand(jcode.command, "acp", "preview", jcode.cwd);
       const root = mkdtempSync3(join7(tmpdir3(), "ahub-jcode-")), socket = join7(root, "j.sock");
-      const cmd = jcodeCommand(jcode.command, "acp", socket, jcode.cwd, jcode.launchModel, jcode.providerProfile);
-      super("jcode", { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, ...JCODE_OWNED_ENV }, mcpServers: [], requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
+      const cmd = jcodeCommand(jcode.command, "acp", socket, jcode.cwd, jcode.launchModel, jcode.providerProfile, jcode.provider, peer);
+      const launchId = crypto.randomUUID();
+      super(peer, { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, AGENTHUB_LAUNCH_ID: launchId, ...JCODE_OWNED_ENV }, mcpServers: [], requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
       this.jcode = jcode;
       this.root = root;
       this.socket = socket;
+      this.launchId = launchId;
+    }
+    ownsLaunch(launchId) {
+      return !this.ending && typeof launchId === "string" && launchId === this.launchId;
     }
     async start() {
       if (!existsSync4(join7(this.jcode.home, "mcp.json")))
@@ -4271,8 +4279,8 @@ var init_jcode = __esm(() => {
         throw new Error("Jcode private socket is occupied; no daemon was adopted or removed");
       }
       this.ending = false;
-      const [bin, ...args] = jcodeCommand(this.jcode.command, "serve", this.socket, this.jcode.cwd, this.jcode.launchModel, this.jcode.providerProfile);
-      const server = spawn7(bin, args, { cwd: this.jcode.cwd, detached: true, env: { ...peerChildEnv("jcode"), JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, JCODE_READY_FD: "3", ...JCODE_OWNED_ENV }, stdio: ["ignore", "ignore", "ignore", "pipe"] });
+      const [bin, ...args] = jcodeCommand(this.jcode.command, "serve", this.socket, this.jcode.cwd, this.jcode.launchModel, this.jcode.providerProfile, this.jcode.provider, this.id);
+      const server = spawn7(bin, args, { cwd: this.jcode.cwd, detached: true, env: { ...peerChildEnv(this.id), JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, JCODE_READY_FD: "3", AGENTHUB_LAUNCH_ID: this.launchId, ...JCODE_OWNED_ENV }, stdio: ["ignore", "ignore", "ignore", "pipe"] });
       this.server = server;
       trackGroup(server);
       try {
@@ -4421,11 +4429,11 @@ var init_jcode = __esm(() => {
         throw new JcodeOptionMismatch(differs);
       if (!savedSession(this.jcode.home, sessionId))
         return { state: "waiting", binding };
-      const [cmd, ...args] = jcodeTuiCommand(this.jcode.command, this.socket, sessionId, this.jcode.launchModel, this.jcode.providerProfile);
-      return { state: "ready", binding, launch: { cmd, args, env: { JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, ...JCODE_OWNED_ENV } } };
+      const [cmd, ...args] = jcodeTuiCommand(this.jcode.command, this.socket, sessionId, this.jcode.launchModel, this.jcode.providerProfile, this.jcode.provider);
+      return { state: "ready", binding, launch: { cmd, args, env: { JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, AGENTHUB_PEER_ID: this.id, AGENTHUB_LAUNCH_ID: this.launchId, ...JCODE_OWNED_ENV } } };
     }
     recoveryMetadata() {
-      return { ...super.recoveryMetadata(), launch: { kind: "jcode", peer: "jcode", mode: "headless", ...this.jcode.launchModel ? { model: this.jcode.launchModel } : {}, ...this.jcode.providerProfile ? { providerProfile: this.jcode.providerProfile } : {} } };
+      return { ...super.recoveryMetadata(), launch: { kind: "jcode", peer: this.id, mode: "headless", ...this.jcode.launchModel ? { model: this.jcode.launchModel } : {}, ...this.jcode.providerProfile ? { providerProfile: this.jcode.providerProfile } : {} } };
     }
   };
 });
@@ -10244,7 +10252,10 @@ async function runJcodeEntry(ctx) {
   if (one["--session-id"] !== undefined && !qwenSessionId(one["--session-id"]))
     fail("invalid Jcode session identity");
   const control = readControl(stateDir);
+  const peer = ctx.instance ?? "jcode";
   const mode = one["--mode"] ?? (ctx.instance ? "headless" : control?.startModes?.jcode ?? startModeOf(ctx.projectConfig().peers, "jcode"));
+  if (ctx.instance && mode === "tui")
+    fail(`${peer} is an extra Jcode instance: it runs headless on its own private server (ahub jcode --as ${peer}); the TUI belongs to the base jcode`);
   if (print && (mode === "headless" || !control?.features?.includes("native_tui_launch"))) {
     try {
       return console.log(JSON.stringify(launcherPreview("jcode", args, cwd, stateDir, unattendedEnv), null, 2));
@@ -10276,12 +10287,12 @@ async function runJcodeEntry(ctx) {
   };
   try {
     const snapshot = (await hub.request({ t: "status" })).status;
-    const rostered = rosterInStatus(snapshot, "jcode");
+    const rostered = rosterInStatus(snapshot, peer);
     if (rostered === undefined)
-      fail("cannot read jcode's roster membership from the running hub; upgrade or restart it, then retry (nothing was started)");
+      fail(`cannot read ${peer}'s roster membership from the running hub; upgrade or restart it, then retry (nothing was started)`);
     if (!rostered)
-      fail("jcode is off roster; add it with ahub roster add jcode");
-    const warning = retainedLaunchWarning(snapshot, "jcode", ctx.definition);
+      fail(`${peer} is off roster; add it with ahub roster add ${peer}`);
+    const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
     if (warning)
       console.error(warning);
     const options = { model: one["--model"], providerProfile: one["--provider-profile"], sessionId: one["--session-id"] };
@@ -10310,13 +10321,13 @@ async function runJcodeEntry(ctx) {
     const written = configureJcodeMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve14(cliDir, "../../plugins/agent-hub/server.js"));
     if (written.tracked)
       console.error(".jcode/mcp.json is tracked; review this local machine-path change before committing it");
-    const reply = await hub.request({ t: "start", peer: "jcode", args: { mode, ...options }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 65000);
+    const reply = await hub.request({ t: "start", peer, args: { mode, ...options }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 65000);
     if (interruptedWait())
       return;
     if (!reply.ok)
       fail(reply.error);
     if (mode === "headless") {
-      console.log(reply.already ? "jcode is already attached" : "jcode attached (headless); native policy unmanaged, NO hub sandbox");
+      console.log(reply.already ? `${peer} is already attached` : `${peer} attached (headless); native policy unmanaged, NO hub sandbox`);
       return;
     }
     const ready = await waitForJcodeTui(hub, fail, abort.signal, options);
@@ -10476,7 +10487,7 @@ var init_native_cli_preview_pi = () => {};
 
 // src/adapters/definitions/native-cli-preview-jcode.ts
 function previewJcode(ctx) {
-  const { args, config } = ctx;
+  const { args, config, instance } = ctx;
   const { jcodeCommand, jcodeTuiCommand, qwenSessionId, startModeOf } = ctx.helpers;
   const state = previewState(args, ctx.baseEnvNames), { unresolved, value } = state;
   let envNames = state.envNames;
@@ -10489,7 +10500,10 @@ function previewJcode(ctx) {
       throw new Error("unknown Jcode option");
   if (session !== undefined && !qwenSessionId(session))
     throw new Error("invalid Jcode session identity");
-  const cmd = mode === "tui" ? jcodeTuiCommand(nativeCommand(config.jcode_cmd, ["jcode"]), UNRESOLVED, UNRESOLVED, model ? REDACTED : undefined, profile || config.jcode_provider_profile ? REDACTED : undefined) : jcodeCommand(nativeCommand(config.jcode_cmd, ["jcode"]), "acp", UNRESOLVED, UNRESOLVED, model ? REDACTED : undefined, profile || config.jcode_provider_profile ? REDACTED : undefined);
+  const declared = instance ? config.instances?.[instance] : undefined;
+  const provider = declared?.provider ? REDACTED : undefined, modelWord = model || declared?.model ? REDACTED : undefined;
+  const profileWord = profile || declared?.provider_profile || config.jcode_provider_profile ? REDACTED : undefined;
+  const cmd = mode === "tui" ? jcodeTuiCommand(nativeCommand(config.jcode_cmd, ["jcode"]), UNRESOLVED, UNRESOLVED, modelWord, profileWord, provider) : jcodeCommand(nativeCommand(config.jcode_cmd, ["jcode"]), "acp", UNRESOLVED, UNRESOLVED, modelWord, profileWord, provider, instance ?? "jcode");
   launch = { cmd: cmd[0], args: cmd.slice(1) };
   unresolved.push({ field: "ownedDaemon", reason: "private daemon/socket and source-pinned native identity verified at start; preview starts nothing" });
   unresolved.push({ field: "hubTools", reason: "project MCP bridge required; native tool-call receipt remains unverified" });
@@ -11275,6 +11289,7 @@ var init_builtin_metadata = __esm(() => {
       trust: { onPrem: false, hubSandboxed: false },
       start: { create: createJcode, preflight: jcodeStartPreflight, daemonPort: "owned-acp", forms: dualForms, defaultForm: "tui", explicitHeadlessMode: true, conductorStartable: true, hubSwitches: [], ownedFlags: [] },
       identity: { mcp: "project-file" },
+      instances: { mode: "headless", nativeHome: true },
       permission: { unmanaged: "Jcode native policy is unmanaged; no hub mode mapping", grants: {
         ask: "no verified hub mode mapping; native policy only",
         "ask-when-needed": "no verified hub mode mapping; native policy only",
@@ -11954,6 +11969,7 @@ function assertNativeCapabilityScope(definition) {
     ["start.daemonPort pi-rpc", definition.start.daemonPort === "pi-rpc"],
     ["routing", definition.routing !== undefined],
     ["projection", definition.projection !== undefined],
+    ["instances.nativeHome", declared(definition.instances, "nativeHome")],
     ["reviewerVariant", definition.reviewerVariant !== undefined],
     ["reviewer", definition.reviewer !== undefined],
     ["hooks.factsHook", declared(definition.hooks, "factsHook")],
@@ -19770,9 +19786,14 @@ var OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassign
 init_tool_refusal();
 
 // src/hub/instances.ts
+import { types as types4 } from "util";
+init_project();
 init_registry();
 init_permission_mode();
-import { types as types4 } from "util";
+import { dirname as dirname12, isAbsolute as isAbsolute8, sep as sep3 } from "path";
+var JCODE_FIELDS = ["jcode_home", "provider", "model", "provider_profile"];
+var MAX_JCODE_INSTANCES = 8;
+var NATIVE_WORD = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
 var MAX_INSTANCES = 64;
 var FLOW_ROLES = new Set(["planner", "implementer", "verifier", "reviewer", "conductor"]);
 var PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
@@ -19804,6 +19825,24 @@ function roles(value, field) {
   }
   return out;
 }
+function jcodeInstanceFields(entry, path) {
+  const home = entry.jcode_home?.value;
+  if (typeof home !== "string" || !isAbsolute8(home) || !home.trim() || Buffer.byteLength(home) > 4096 || /\p{Cc}/u.test(home))
+    return fail4(`${path}.jcode_home`, "is required: a nonempty control-free absolute path of at most 4096 UTF-8 bytes, other than the base Jcode's home");
+  const out = { jcode_home: home };
+  for (const key of ["provider", "model", "provider_profile"]) {
+    const present = entry[key];
+    if (!present)
+      continue;
+    const word = present.value;
+    if (typeof word !== "string" || !NATIVE_WORD.test(word))
+      return fail4(`${path}.${key}`, "must be one bounded printable word without spaces");
+    out[key] = word;
+  }
+  if (entry.start_mode && entry.start_mode.value !== "headless")
+    return fail4(`${path}.start_mode`, "a Jcode instance starts headless");
+  return out;
+}
 function supportsHeadlessInstances(definition) {
   return definition.instances?.mode === "headless" && !!definition.start.create && definition.start.forms.includes("headless");
 }
@@ -19813,13 +19852,16 @@ function validateInstances(raw, catalog) {
   if (raw === undefined)
     return Object.freeze(result);
   const declarations = fields2(raw, "instances");
+  let jcodeCount = 0;
   if (Object.keys(declarations).length > MAX_INSTANCES)
     return fail4("instances", "at most 64 extra instances are supported");
   for (const [id, descriptor] of Object.entries(declarations)) {
     if (!PEER_ID.test(id) || RESERVED.has(id) || resolve(id))
       return fail4("instances", "ids must be nonreserved extra instance ids, not builtin ids");
     const path = `instances.${id}`, entry = fields2(descriptor.value, path);
-    if (Object.keys(entry).some((key) => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly"].includes(key)))
+    const declaredKind = entry.kind?.value;
+    const jcodeFields = typeof declaredKind === "string" && resolve(declaredKind)?.instances?.nativeHome === true;
+    if (Object.keys(entry).some((key) => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly", ...jcodeFields ? JCODE_FIELDS : []].includes(key)))
       return fail4(path, "unsupported field");
     const kind = entry.kind?.value;
     if (typeof kind !== "string")
@@ -19876,6 +19918,11 @@ function validateInstances(raw, catalog) {
         return fail4(`${path}.permission_mode`, "read-only instances cannot select a permission mode");
     }
     const value = { kind, ...entry.review_mode ? { review_mode: "fresh" } : {} };
+    if (jcodeFields) {
+      if (++jcodeCount > MAX_JCODE_INSTANCES)
+        return fail4("instances", `at most ${MAX_JCODE_INSTANCES} extra Jcode instances are supported per project`);
+      Object.assign(value, jcodeInstanceFields(entry, path));
+    }
     if (entry.readOnly)
       value.readOnly = entry.readOnly.value;
     if (entry.roles) {
@@ -28302,8 +28349,10 @@ ${action}`;
 // src/adapters/claude-channel.ts
 var stateDir = process.env.AGENTHUB_STATE_DIR ?? stateDirFor(process.cwd());
 var projectRoot2 = process.env.AGENTHUB_PROJECT_DIR ?? process.cwd();
-var peerId = process.env.AGENTHUB_PEER_ID ?? "claude";
 var toolsMode = process.env.AGENTHUB_MODE === "tools";
+var unidentified = toolsMode && !process.env.AGENTHUB_PEER_ID;
+var peerId = process.env.AGENTHUB_PEER_ID ?? (toolsMode ? "" : "claude");
+var UNIDENTIFIED = "agent-hub tools refused: this process was not started by the hub (no AGENTHUB_PEER_ID), so it has no peer identity. Start the agent with ahub jcode (or the hub's own start) to use hub tools.";
 var deliveryOnly = process.env.AGENTHUB_DELIVERY_ONLY === "true";
 var channel = !toolsMode && process.env.AGENTHUB_CHANNEL === "1";
 function roles2() {
@@ -28375,7 +28424,7 @@ var MAX_RECONNECT_DELAY_MS = 30000;
 var TERMINAL_CLOSES = {
   4401: "the hub refused the control token",
   4404: "the hub belongs to a different project or instance; restart this session from the intended project",
-  4403: `the hub refused the peer id "${peerId}" (reserved or malformed)`,
+  4403: `the hub refused "${peerId}": the id is reserved or malformed, or this process is not an owned launch of that peer (start it with ahub jcode)`,
   4409: `the peer id "${peerId}" is taken by a hub-managed adapter`,
   4430: "this Claude launch ended; start a new session with ahub claude, or use a plain session with hub_inbox",
   4426: "wire version mismatch with the running hub: update the agent-hub plugin (ahub setup) and restart this session"
@@ -28525,7 +28574,7 @@ async function connectLoop() {
         role: toolsMode ? "tools" : "peer",
         peer: peerId,
         ...toolsMode ? {} : { channel },
-        ...!toolsMode && process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {},
+        ...process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {},
         ...!toolsMode && standingBy ? { standby: true } : {},
         ...process.env.AGENTHUB_PROJECT_DIR ? { projectRoot: projectRoot2 } : {}
       });
@@ -28647,6 +28696,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 });
 async function callTool(req) {
   const { name, arguments: args } = req.params;
+  if (unidentified)
+    return { ...text5(UNIDENTIFIED), isError: true };
   if (name === "hub_delivery_done" && channel) {
     if (!hub)
       return text5(offline());
@@ -28710,4 +28761,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => withPendingHint(a
 await server.connect(new StdioServerTransport);
 process.stdin.on("end", () => process.exit(0));
 process.stdin.on("close", () => process.exit(0));
-connectLoop();
+if (unidentified)
+  log(UNIDENTIFIED);
+else
+  connectLoop();

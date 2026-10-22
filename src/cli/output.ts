@@ -250,6 +250,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     if (p.permissionNote) out.push(...detail("permission", p.permissionNote, columns, "muted"));
     if (typeof p.statusNotice?.message === "string" && p.statusNotice.message) out.push(...detail("status notice", p.statusNotice.message, columns, "attention"));
     if (p.requestedModel && p.servedBy && p.requestedModel !== p.servedBy) out.push(...detail("requested model", p.requestedModel, columns));
+    if (typeof p.modelSource === "string" && p.modelSource) out.push(...detail("model source", flat(p.modelSource), columns, "muted")); // an extra Jcode instance (#685): names only, never a URL or token
     if (typeof p.importantWaitingSince === "number" && p.importantWaitingNote) out.push(...detail("important waiting", `${p.importantWaitingNote.replace(/^\d+ important messages? waiting/, "important messages waiting")}`, columns, "attention"));
     if (typeof p.oldestQueuedAt === "number") out.push(...detail(`${id} oldest queued`, relative(p.oldestQueuedAt, now), columns, "muted"));
     return out;

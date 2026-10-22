@@ -627,8 +627,9 @@ test("a roster key of an undeclared instance loads as inert, a key that never na
   expect(() => peerRosterConfig({ "codex-2": "false" }, undefined, catalog)).toThrow("must be a boolean");
 });
 
-// #225 review: eligibility is the policy validateInstances applies, not "starts with a builtin kind and a dash". jcode declares no
-// instance support at all, so `roster.jcode-worker` can never have been a declared instance and stays an unsupported peer (a typo).
+// #225 review: eligibility is the policy validateInstances applies, not "starts with a builtin kind and a dash". A Jcode instance
+// (#685) cannot be declared without its own `jcode_home`, and the fixed declaration shapes carry none, so `roster.jcode-worker`
+// is still an unsupported peer (a typo) unless the person declared it: a declared one is a declared instance, not a stale key.
 test("only a kind that can declare an extra instance makes a stale roster key (#225)", () => {
   const catalog = builtinProjectCatalog();
   for (const kind of ["codex", "kimi", "pi", "local", "qwen", "claude", "agy"]) expect(peerRosterConfig({ [`${kind}-worker`]: true }, undefined, catalog), kind).toEqual({ [`${kind}-worker`]: true });
