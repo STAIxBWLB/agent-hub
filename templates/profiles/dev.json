@@ -18,5 +18,10 @@
   "role_text": {},
   "catalog_roles": {},
   "agents": "",
-  "example_checks": []
+  "example_checks": [],
+  "review_checklist": [
+    "Map the changed signatures and call sites to {target}, and name each one that does not match.",
+    "{check}",
+    "List what is unmet in hub_review's unmet, one item each."
+  ]
 }
