@@ -6105,24 +6105,30 @@ export async function startDaemon(opts: DaemonOptions) {
         const num = (v: unknown): number | undefined | null => v === undefined ? undefined : typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
         const since = num(msg.since), until = num(msg.until);
         if (since === null || until === null) return void reply({ t: "usage", ok: false, error: "since and until are epoch milliseconds" });
+        if (msg.task !== undefined && !(Number.isSafeInteger(msg.task) && (msg.task as number) > 0)) return void reply({ t: "usage", ok: false, error: "task is a positive task id" });
         try {
-          usageRollup.poll();
+          // Fold what the log has now, within a time budget: a hub that has just started is still behind a large log, and an answer built from the
+          // part folded so far would read as "no records" for a peer that did use tokens. `behind` says so when the budget ran out (#683 U3).
+          // ponytail: catchUp runs synchronously on the daemon loop, so a request on a log far behind stalls it for up to this budget (about 250 ms
+          // folds the real 47 MB log). Ceiling: a log several times larger answers `behind` and finishes over the 10 s polls; move the fold to a worker if a stall is felt.
+          const behind = !usageRollup.catchUp(250);
+          const reply_ = (body: Record<string, unknown>) => reply({ ...body, ...(behind ? { behind: true } : {}) });
           if (op === "limits") {
             if (msg.peer !== undefined && (typeof msg.peer !== "string" || !PEER_ID.test(msg.peer))) return void reply({ t: "usage", ok: false, error: "peer must be a peer id" });
             if (msg.limit !== undefined && !(Number.isInteger(msg.limit) && (msg.limit as number) >= 1 && (msg.limit as number) <= LIMITS_MAX)) return void reply({ t: "usage", ok: false, error: `limit is an integer from 1 to ${LIMITS_MAX}` });
             const status = budget.status();
             // The pauses the hub holds now: an event-open pause it no longer holds (an `ahub reset` cleared it) is reported as ended, not open.
             const live = new Set(Object.entries(status).filter(([, v]) => v.paused).map(([peer]) => peer));
-            return void reply({ t: "usage", ok: true, op, limits: usageRollup.limits(msg.peer, { ...(msg.limit !== undefined ? { limit: msg.limit as number } : {}), live }), current: publicPeerBudget(status, text => tasks.nameable(text)) });
+            return void reply_({ t: "usage", ok: true, op, limits: usageRollup.limits(msg.peer, { ...(msg.limit !== undefined ? { limit: msg.limit as number } : {}), live }), current: publicPeerBudget(status, text => tasks.nameable(text)) });
           }
-          if (op === "total") return void reply({ t: "usage", ok: true, op, total: usageRollup.total() });
+          if (op === "total") return void reply_({ t: "usage", ok: true, op, total: usageRollup.total() });
           if (op !== "query") return void reply({ t: "usage", ok: false, error: "op is query, limits or total" });
           const by = (msg.by ?? "peer") as UsageGroup;
           if (!USAGE_GROUPS.includes(by)) return void reply({ t: "usage", ok: false, error: `by is one of ${USAGE_GROUPS.join(", ")}` });
           // issue, pr and release are the board's current links of each task (ids only, never a title).
           const board_ = new Map(board.list().map(t => [t.id, t]));
           const links = (id: number) => { const t = board_.get(id); return t ? { ...(t.sdlc?.issue ? { issue: t.sdlc.issue } : {}), ...(t.sdlc?.pr ? { pr: t.sdlc.pr } : {}), ...(t.release ? { release: t.release } : {}) } : undefined; };
-          return void reply({ t: "usage", ok: true, op, usage: usageRollup.query({ by, ...(since !== undefined ? { since } : {}), ...(until !== undefined ? { until } : {}) }, links) });
+          return void reply_({ t: "usage", ok: true, op, usage: usageRollup.query({ by, ...(since !== undefined ? { since } : {}), ...(until !== undefined ? { until } : {}), ...(msg.task !== undefined ? { task: msg.task as number } : {}) }, links) });
         } catch (error) { return void reply({ t: "usage", ok: false, error: `usage unavailable: ${(error as Error).message.slice(0, 120)}` }); }
       }
       case "permit":

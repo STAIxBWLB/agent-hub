@@ -192,6 +192,15 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
         ...(panels ? [client.request({ t: "task", op: "hub_task_list", args: {} }, 3000), client.request({ t: "queue", op: "list" }, 3000), client.request({ t: "task", op: "hub_task_list", args: { ready: true } }, 3000)] : []),
         ...(panels && (state.panel === 1 || state.panel === 6) ? [client.request({ t: "settings_get" }, 3000)] : []),
       ]);
+      // #683 U3: the Usage panel asks the hub's roll-up only while it is open (UTC day, 7 UTC days, lifetime, the limits history and the selected task).
+      // The task is read at the time of the request, so a reply for a task that is no longer selected is dropped below.
+      const usageTask = panels && state.panel === 7 ? state.usageTask : undefined;
+      const usageReplies = panels && state.panel === 7 ? await (async () => {
+        const startOfDay = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
+        return Promise.all([client.request({ t: "usage", by: "peer", since: startOfDay }, 5000), client.request({ t: "usage", by: "peer", since: startOfDay - 6 * 86_400_000 }, 5000),
+          client.request({ t: "usage", by: "peer" }, 5000), client.request({ t: "usage", op: "limits", limit: 1000 }, 5000),
+          ...(usageTask !== undefined ? [client.request({ t: "usage", by: "peer", task: usageTask }, 5000)] : [])]);
+      })() : undefined;
       if (!active) return;
       const [status, budget, tasks, queue, ready, settings] = replies;
       captureConsoleSelection(state);
@@ -217,6 +226,12 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       }
       if (syncPermissionDefaults(state, status.status?.permissionDefaults) && state.confirm?.type === "permission_default") stream({ text: permissionDefaultText(state.confirm), kind: "permission_default", peer: state.confirm.peer, tone: "attention" });
       if (budget.budget) state.budget = budget.budget;
+      if (usageReplies) {
+        const [today, week, life, limits, task] = usageReplies, failed = usageReplies.find(reply => reply?.ok === false);
+        if (failed || !today?.usage || !week?.usage || !life?.usage || !limits?.limits) state.usage = { ...state.usage, problem: String(failed?.error ?? "usage is unavailable") };
+        else state.usage = { today: today.usage, week: week.usage, life: life.usage, limits: limits.limits, at: Date.now(), ...(usageReplies.some(reply => reply?.behind) ? { behind: true } : {}),
+          ...(usageTask !== undefined && task?.usage && state.usageTask === usageTask ? { task: task.usage, taskId: usageTask } : {}) };
+      }
       if (tasks?.ok) { const parsed = JSON.parse(tasks.text); if (Array.isArray(parsed)) {
           const readyIds = new Set(ready?.ok ? JSON.parse(ready.text).map((task: any) => task.id) : []);
           state.tasks = parsed.map(task => ({ ...task, ready: readyIds.has(task.id) }));

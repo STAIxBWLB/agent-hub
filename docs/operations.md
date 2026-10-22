@@ -141,6 +141,15 @@ its footer. The active tab is bracketed, as in `[2 Approvals]`, so it reads
 without color. The Approvals tab counts pending requests and the Queue tab
 counts `needs_review` deliveries, in the attention and failure tones.
 
+Tab `7 Usage` (#683 U3, key `7`; Left and Right wrap as Settings does, so the `1`..`5` cycle is unchanged) lists each peer with the tokens of today (the UTC day),
+the last seven UTC days and its lifetime, the current budget pause, its quota windows with their reset time, and its last reset. Every number names its
+source (`native`: the provider's own total, `hub`: what the hub counted for a peer that reports none, `at least`: a partial sum); a counter nobody reported
+is `unknown` and a period with no records is `no records`, never 0. Enter opens a peer: today, 7 days and lifetime with input, output, cache read, cache
+write and the hub count each on its own, and the last three resets. The task selected in Tasks when you press `7` is shown below the table with its tokens
+per peer (`#id [pii]` for a private task, never a title). The panel asks the hub's `usage` op only while it is open, and a refusal shows as
+`usage unavailable`. The numbers come from the roll-up of `ahub usage`, so the console and the CLI agree. A request folds the event log first, within 250 ms;
+when a very large log is not folded yet the answer carries `behind: true`, the panel says `still catching up` and `ahub usage` prints a warning on stderr, so a partial number is never shown as the whole.
+
 The console attention companion (#280) shows waiting, blocked, review, working,
 idle or asleep with separate action/watch counts. Outside the Tasks table, `n` selects the exact approval,
 held queue or review row, or prints applicable guidance; it never answers a

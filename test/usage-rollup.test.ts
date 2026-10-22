@@ -298,3 +298,30 @@ test("limits never drops rows silently: a cut says how many are omitted, a bigge
   for (const bad of [0, -1, 1.5, r.limits().maxLimit + 1]) expect(() => r.limits(undefined, { limit: bad })).toThrow(/limit is an integer/);
   r.close();
 });
+
+test("a task filter returns that task's tokens per peer, marks a private task, and an unknown task is empty, not zero (#683 U3)", () => {
+  const f = fixture(); sample(f);
+  const r = f.open(); r.catchUp();
+  const one = r.query({ by: "peer", task: 1 });
+  expect(one.task).toBe(1); expect(one.taskPii).toBeUndefined();
+  expect(one.rows.map(row => row.key)).toEqual(["codex"]);
+  expect(one.rows[0]!.total).toEqual({ value: 1050, source: "native" }); expect(one.rows[0]!.counted).toEqual({ value: 1050, source: "count" });
+  const pii = r.query({ by: "peer", task: 2 });
+  expect(pii.taskPii).toBe(true); expect(pii.rows.map(row => row.key)).toEqual(["codex"]);    // task 2 is private: ids and numbers only
+  const none = r.query({ by: "peer", task: 999 });
+  expect(none.rows).toEqual([]); expect(none.taskPii).toBeUndefined();
+  expect(r.query({ by: "peer", task: 1, since: Date.UTC(2026, 9, 10) }).rows).toEqual([]);   // the filter combines with the period
+  r.close();
+});
+
+test("catchUp with a time budget says when the roll-up is still behind the log, and finishes when it is not (#683 U3)", () => {
+  const f = fixture();
+  f.write(Array.from({ length: 400 }, () => [tokens("codex", 4)] as [HubEvent]));
+  const r = f.open({ maxBytesPerPass: 2_000 });
+  expect(r.catchUp(0)).toBe(false);                                                         // one pass, no time left: behind, and it says so
+  expect(r.query({ by: "peer" }).rows[0]!.counted.value).toBeLessThan(1600);
+  expect(r.catchUp(5_000)).toBe(true);
+  expect(r.query({ by: "peer" }).rows[0]!.counted.value).toBe(1600);
+  expect(r.catchUp(0)).toBe(true);                                                          // nothing left to fold: not behind
+  r.close();
+});
