@@ -14,7 +14,7 @@ export const LIVE_TEST_PERSON_REFUSAL = "live-test cannot write person-attribute
 
 /** Person verdicts and user-authored workflow content are never delegated. */
 export function liveTestRefusal(command: string, args: readonly string[], context: { repairedFresh?: boolean } = {}): boolean {
-  if (command === "sdlc" && (args[0] === "plan-review" || args[0] === "release-assign" || args[0] === "train" && args[1] !== "report")) return true;
+  if (command === "sdlc" && (args[0] === "authorize-release" || args[0] === "plan-review" || args[0] === "release-assign" || args[0] === "train" && args[1] !== "report")) return true;
   if (args.some(arg => arg === "--as-user" || arg.startsWith("--as-user="))) return true;
   const sub = command === "recovery" ? recoveryAction(args) : args.find(arg => arg !== "--json");
   return ["task", "role", "goal"].includes(command)
@@ -59,6 +59,7 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   if (command === "pet" && args.includes("--window")) return "console";
   if (command === "permission" || command === "stop" || command === "watch") return "console";
   if (args.some((arg) => arg === "--as-user" || arg.startsWith("--as-user="))) return "console";
+  if (command === "sdlc" && ["release-guard", "release-guard-hook"].includes(args[0] ?? "")) return "allowed";
   if (command === "role") return ["list", "show"].includes(args[0] ?? "") ? "allowed" : "console";
   if (command === "task") {
     if (["propose", "show"].includes(args[0] ?? "")) return "allowed";

@@ -1,4 +1,7 @@
 #!/usr/bin/env bun
+import { hubGitSync, hubGitEnv } from "../hub/git.ts";
+import { parseReleaseGuardArgv, parseReleasePushUpdates } from "./sdlc-release-guard.ts";
+import { validReleaseVersion } from "../hub/sdlc-release-authorization.ts";
 import { claudePeer as defaultChannelPeer } from "../hub/claude-state.ts";
 import { effectiveInstanceRoles } from "../hub/instances.ts";
 import { resolveInstanceExecutionCwd } from "../hub/instance-execution.ts";
@@ -885,15 +888,15 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   init: () => {
-    const flags = takeFlags(args.filter(arg => arg !== "--dry-run" && arg !== "--json" && arg !== "--shadow"), ["--profile"], []);
-    if (flags.rest.length) fail("usage: ahub init [--profile dev|research|writing|general] [--shadow] [--dry-run --json]");
+    const flags = takeFlags(args.filter(arg => arg !== "--dry-run" && arg !== "--json" && arg !== "--shadow" && arg !== "--release-guard"), ["--profile"], []);
+    if (flags.rest.length) fail("usage: ahub init [--profile dev|research|writing|general] [--shadow] [--release-guard] [--dry-run --json]");
     const requestedProfile = flags.one["--profile"] === undefined ? undefined : profileName(flags.one["--profile"]);
     if (args.includes("--dry-run")) {
-      const plan = planInit(cwd, requestedProfile, args.includes("--shadow"));
+      const plan = planInit(cwd, requestedProfile, args.includes("--shadow"), args.includes("--release-guard"));
       return console.log(args.includes("--json") ? JSON.stringify(plan, null, 2) : plan.map(change => `${change.action} ${change.path}: ${change.reason}${change.managedBlock ? ` (managed block: ${change.managedBlock})` : ""}`).join("\n") || "already up to date");
     }
     assertLifecycleAvailable();
-    const changed = init(cwd, requestedProfile, args.includes("--shadow"));
+    const changed = init(cwd, requestedProfile, args.includes("--shadow"), args.includes("--release-guard"));
     registeredProject();
     console.log(changed.length ? changed.map((p) => `${existsSync(p) ? "wrote" : "removed"} ${p}`).join("\n") : "already up to date");
     const config = projectConfig(), examples = resolveProfile(config.profile, config.profile_overrides).example_checks;
@@ -1192,6 +1195,50 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   sdlc: async () => {
     const sub = args[0], id = args[1] === undefined ? undefined : Number(args[1]);
+    if (sub === "authorize-release") {
+      if (args.length !== 2 || !validReleaseVersion(args[1])) fail("usage: ahub sdlc authorize-release <version>");
+      const result = hubGitSync(["rev-parse", "--verify", "HEAD"], { cwd, env: hubGitEnv(process.env, { repositoryIsolation: true }), encoding: "utf8", timeout: 2000 });
+      const commit = result.stdout?.trim();
+      if (result.status !== 0 || !commit || !/^[a-f0-9]{40}$/.test(commit)) fail("candidate commit unavailable");
+      const hub = await connect();
+      try { const reply = await hub.request({ t: "sdlc", op: sub, version: args[1], commit }, 30_000); if (!reply.ok) fail(reply.error); console.log(JSON.stringify(reply.authorization, null, 2)); }
+      finally { hub.close(); }
+      return;
+    }
+    if (sub === "release-guard" || sub === "release-guard-hook") {
+      let original: Buffer | undefined;
+      let request: Record<string, unknown>;
+      if (sub === "release-guard-hook") {
+        if (args.length !== 3) fail("release hook needs its remote name and URL");
+        const chunks: Buffer[] = []; let size = 0;
+        for await (const chunk of process.stdin) { const bytes = Buffer.from(chunk); size += bytes.length; if (size > 128 * 1024) fail("release push inventory exceeds the guard bound"); chunks.push(bytes); }
+        original = Buffer.concat(chunks);
+        let input: string;
+        try { input = new TextDecoder("utf-8", { fatal: true }).decode(original); } catch { fail("release push inventory is not UTF-8"); }
+        const parsed = parseReleasePushUpdates(args[1]!, args[2]!, input);
+        if (!parsed.ok) fail(parsed.reason);
+        // Ordinary branch pushes keep working with the daemon offline.
+        if (!parsed.updates.length) { process.stdout.write(original); return; }
+        request = { t: "sdlc", op: sub, remoteName: parsed.remoteName, remoteUrl: parsed.remoteUrl, stdin: input };
+      } else {
+        if (args[1] !== "--") fail("usage: ahub sdlc release-guard -- git push origin v<version> | gh release create v<version> | npm publish");
+        const argv = args.slice(2), parsed = parseReleaseGuardArgv(argv);
+        if (!parsed.ok) fail(parsed.reason);
+        // Literal preflights cannot attest a command redirected by ambient target selectors.
+        const selectors = ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", ...(parsed.request.kind === "gh-release" ? ["GH_REPO", "GH_HOST"] : []), ...(parsed.request.kind === "npm-publish" ? Object.keys(process.env).filter(key => /^npm_config_(?:prefix|workspace|workspaces|userconfig|globalconfig|registry)$/i.test(key)) : [])];
+        if (selectors.some(key => process.env[key] !== undefined)) fail("release guard refuses ambient target selectors");
+        request = { t: "sdlc", op: sub, argv };
+      }
+      let hub: ControlClient | undefined;
+      try {
+        hub = await connect();
+        const reply = await hub.request(request, 30_000);
+        if (!reply.ok) fail(reply.error ?? "release authorization refused");
+        if (original) process.stdout.write(original); else console.log("release authorization matched");
+      } catch { fail("release authorization unavailable; the daemon must be reachable with a matching person approval"); }
+      finally { hub?.close(); }
+      return;
+    }
     if (sub === "queue" || sub === "release") {
       const repo = args[1], liveIssues = args.slice(2).map(Number);
       if (!repo || args.length > 34 || (sub === "queue" && args.length !== 2) || liveIssues.some(id => !Number.isSafeInteger(id) || id <= 0)) fail("usage: ahub sdlc queue <owner/repository> | release <owner/repository> [live-issue...]");

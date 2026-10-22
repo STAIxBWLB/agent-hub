@@ -1,9 +1,13 @@
+import { randomUUID } from "node:crypto";
 import { initShadow, repoOf } from "../hub/snapshots.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "../hub/profiles.ts";
 import { JCODE_MCP_FILE } from "./jcode-mcp.ts";
-import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { hubGitSync } from "../hub/git.ts";
+import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync, renameSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import type { Stats } from "node:fs";
+import { realPath } from "../hub/project.ts";
+import { hubGitArgv, hubGitEnv, hubGitSync } from "../hub/git.ts";
 import { KIMI_MCP_FILE } from "./kimi-mcp.ts";
 import { AGY_PLUGIN_FILES } from "./agy-mcp.ts";
 
@@ -36,8 +40,70 @@ export interface InitChange {
   managedBlock?: "insert" | "replace" | "remove";
 }
 /** Content is internal to apply, never included in a public preview. */
-interface PlannedWrite extends InitChange { next?: string; shadow?: true; }
-function changes(cwd: string, requested?: ProfileName, shadow = false): PlannedWrite[] {
+interface PlannedWrite extends InitChange { next?: string; shadow?: true; directory?: true; executable?: true; moveFrom?: string; expected?: { dev: number; ino: number }; }
+const RELEASE_BEGIN = "<!-- AGENT_HUB_RELEASE_GUARD:BEGIN (managed by `ahub init --release-guard`) -->";
+const RELEASE_END = "<!-- AGENT_HUB_RELEASE_GUARD:END -->";
+const HOOK_MARKER = "# agent-hub managed release pre-push guard";
+const shellQuote = (value: string) => "'" + value.replace(/'/g, "'\"'\"'") + "'";
+
+function releaseBlock(existing: string): string {
+  const block = `${RELEASE_BEGIN}\n${readFileSync(join(TEMPLATES, "release-guard.block.md"), "utf8").trim()}\n${RELEASE_END}`;
+  const start = existing.indexOf("<!-- AGENT_HUB_RELEASE_GUARD:BEGIN"), end = existing.indexOf(RELEASE_END, Math.max(start, 0));
+  if (start >= 0 && end > start) return existing.slice(0, start) + block + existing.slice(end + RELEASE_END.length);
+  if (start >= 0 || existing.includes(RELEASE_END)) throw new Error("release guard instruction markers are incomplete");
+  return `${existing.trimEnd()}\n\n${block}\n`;
+}
+function regularHook(file: string): Stats | undefined {
+  const info = lstatSync(file, { throwIfNoEntry: false });
+  if (info && (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1)) throw new Error("release guard hook must be an unlinked regular file");
+  return info;
+}
+function releaseHookPlan(cwd: string): PlannedWrite[] {
+  for (const scope of [["--local"], ["--global"], []]) {
+    // Read the actual hooksPath without the hardened override masking it. All
+    // other portable Git hardening stays; `git config --get` executes no hook.
+    const argv = hubGitArgv(["config", ...scope, "--get", "core.hooksPath"]);
+    const override = argv.indexOf("core.hooksPath=/dev/null");
+    if (override < 1 || argv[override - 1] !== "-c") throw new Error("release guard Git hardening unavailable");
+    argv.splice(override - 1, 2);
+    const configured = spawnSync(argv[0]!, argv.slice(1), { cwd, env: hubGitEnv(process.env, { repositoryIsolation: true }), encoding: "utf8", timeout: 3000, maxBuffer: 16 * 1024 });
+    if (configured.status !== 1) throw new Error(configured.status === 0 ? "release guard refuses custom core.hooksPath; no files changed" : "release guard cannot verify core.hooksPath");
+  }
+  const common = hubGitSync(["rev-parse", "--git-common-dir"], { cwd, env: hubGitEnv(process.env, { repositoryIsolation: true }), encoding: "utf8", timeout: 3000 });
+  if (common.status !== 0 || !common.stdout.trim()) throw new Error("release guard requires a Git repository");
+  const raw = isAbsolute(common.stdout.trim()) ? common.stdout.trim() : resolve(cwd, common.stdout.trim());
+  const own = lstatSync(raw);
+  if (!own.isDirectory() || own.isSymbolicLink()) throw new Error("release guard Git directory must not be a link");
+  const commonDir = realPath(raw), hooks = join(commonDir, "hooks");
+  const parent = lstatSync(hooks, { throwIfNoEntry: false });
+  if (parent && (!parent.isDirectory() || parent.isSymbolicLink())) throw new Error("release guard hooks directory must not be a link");
+  const hook = join(hooks, "pre-push"), backup = join(hooks, "pre-push.agent-hub-original");
+  const original = regularHook(hook), saved = regularHook(backup);
+  const current = original ? readFileSync(hook, "utf8") : "";
+  const managed = current.startsWith(`#!/bin/sh\n${HOOK_MARKER}\n`);
+  if (!managed && saved) throw new Error("release guard backup is occupied; no files changed");
+  const wrapper = `#!/bin/sh
+${HOOK_MARKER}
+guard_input=$(umask 077; mktemp "\${TMPDIR:-/tmp}/ahub-release-guard.XXXXXX") || exit 1
+trap 'rm -f "$guard_input"' 0
+trap 'exit 1' 1 2 15
+${shellQuote(process.execPath)} ${shellQuote(join(import.meta.dir, "main.ts"))} sdlc release-guard-hook "$1" "$2" >"$guard_input" || exit "$?"
+if [ -x ${shellQuote(backup)} ]; then
+  ${shellQuote(backup)} "$@" <"$guard_input"
+else
+  exit 0
+fi
+`;
+  const plan: PlannedWrite[] = [];
+  if (!parent) plan.push({ action: "create", path: hooks, reason: "create default Git hooks directory", directory: true });
+  if (original && !managed) plan.push({ action: "create", path: backup, reason: "preserve original pre-push hook inode and mode", moveFrom: hook, expected: { dev: original.dev, ino: original.ino } });
+  if (current !== wrapper || original && !(original.mode & 0o111)) plan.push({ action: original ? "modify" : "create", path: hook, reason: "install release authorization pre-push guard", next: wrapper, executable: true });
+  return plan;
+}
+function changes(cwd: string, requested?: ProfileName, shadow = false, releaseGuard = false): PlannedWrite[] {
+  const originalAgents = existsSync(join(cwd, "AGENTS.md")) ? readFileSync(join(cwd, "AGENTS.md"), "utf8") : "";
+  const guarded = releaseGuard || originalAgents.includes("<!-- AGENT_HUB_RELEASE_GUARD:BEGIN");
+  const hooks = guarded ? releaseHookPlan(cwd) : [];
   const repository = shadow ? repoOf(cwd) : undefined;
   if (shadow && repository && !repository.shadow) throw new Error("project already has a Git work tree; shadow mode is for non-git folders");
   if (shadow) {
@@ -80,7 +146,8 @@ function changes(cwd: string, requested?: ProfileName, shadow = false): PlannedW
   }
   const agents = join(cwd, "AGENTS.md");
   const existing = existsSync(agents) ? readFileSync(agents, "utf8") : "";
-  write(agents, upsertBlock(existing, overrides && Object.hasOwn(overrides as object, "agents") ? profile.agents : profile.agents || readFileSync(join(TEMPLATES, "AGENTS.block.md"), "utf8")), "refresh hub instructions; preserve surrounding text", existing.includes("<!-- AGENT_HUB:BEGIN") ? "replace" : "insert");
+  const instructions = upsertBlock(existing, overrides && Object.hasOwn(overrides as object, "agents") ? profile.agents : profile.agents || readFileSync(join(TEMPLATES, "AGENTS.block.md"), "utf8"));
+  write(agents, guarded ? releaseBlock(instructions) : instructions, "refresh hub instructions; preserve surrounding text", existing.includes("<!-- AGENT_HUB:BEGIN") ? "replace" : "insert");
   const claude = join(cwd, "CLAUDE.md");
   const own = lstatSync(claude, { throwIfNoEntry: false });
   // The write preserves an existing inode, including AGENTS.md -> CLAUDE.md and hard links.
@@ -105,19 +172,50 @@ function changes(cwd: string, requested?: ProfileName, shadow = false): PlannedW
   }
   if (existsSync(join(cwd, JCODE_MCP_FILE)) && hubGitSync(["ls-files", "--error-unmatch", "--", JCODE_MCP_FILE], { cwd, encoding: "utf8", timeout: 3000 }).status !== 0 && !lines.split("\n").includes(JCODE_MCP_FILE)) lines = `${lines}${lines && !lines.endsWith("\n") ? "\n" : ""}${JCODE_MCP_FILE}\n`;
   write(ignore, lines, "ignore runtime state and machine-local configuration");
-  return changed;
+  return [...hooks, ...changed];
 }
 /** Read-only metadata, deliberately omitting project/user file contents. */
-export function planInit(cwd: string, profile?: ProfileName, shadow = false): InitChange[] {
-  return changes(cwd, profile, shadow).map(({ next, shadow: _shadow, ...change }) => change);
+export function planInit(cwd: string, profile?: ProfileName, shadow = false, releaseGuard = false): InitChange[] {
+  return changes(cwd, profile, shadow, releaseGuard).map(({ next, shadow: _shadow, directory, executable, moveFrom, expected, ...change }) => change);
 }
 /** Returns the paths it changed, applying the same plan as the preview. */
-export function init(cwd: string, profile?: ProfileName, shadow = false): string[] {
-  const plan = changes(cwd, profile, shadow);
+export function init(cwd: string, profile?: ProfileName, shadow = false, releaseGuard = false): string[] {
+  const plan = changes(cwd, profile, shadow, releaseGuard);
+  // Recheck hook parents and rename identities before any project write.
+  for (const change of plan.filter(change => change.executable || change.moveFrom)) {
+    const parent = lstatSync(dirname(change.path), { throwIfNoEntry: false });
+    if (parent && (!parent.isDirectory() || parent.isSymbolicLink())) throw new Error("release guard hook parent changed before installation");
+    if (change.moveFrom) {
+      const source = regularHook(change.moveFrom);
+      if (!source || source.dev !== change.expected?.dev || source.ino !== change.expected.ino || lstatSync(change.path, { throwIfNoEntry: false })) throw new Error("release guard hook changed before installation");
+    } else regularHook(change.path);
+  }
   mkdirSync(join(cwd, ".agenthub"), { recursive: true });
   for (const change of plan) {
     if (change.shadow) initShadow(cwd);
+    else if (change.directory) mkdirSync(change.path);
+    else if (change.moveFrom) continue; // Applied atomically with its prepared wrapper below.
     else if (change.action === "delete") unlinkSync(change.path);
+    else if (change.executable) {
+      const parent = lstatSync(dirname(change.path));
+      if (!parent.isDirectory() || parent.isSymbolicLink()) throw new Error("release guard hook parent changed before installation");
+      const current = regularHook(change.path), move = plan.find(row => row.moveFrom === change.path);
+      const temporary = join(dirname(change.path), `.pre-push.${randomUUID()}.tmp`);
+      let moved = false;
+      try {
+        // Prepare bytes before disturbing any existing gate. Refreshing our own
+        // managed hook is one atomic rename, so a failed write leaves it intact.
+        writeFileSync(temporary, change.next!, { mode: 0o755, flag: "wx" });
+        if (move) {
+          if (!current || current.dev !== move.expected?.dev || current.ino !== move.expected.ino || lstatSync(move.path, { throwIfNoEntry: false })) throw new Error("release guard hook changed before installation");
+          renameSync(change.path, move.path); moved = true;
+        }
+        renameSync(temporary, change.path);
+      } catch (error) {
+        if (moved && !lstatSync(change.path, { throwIfNoEntry: false })) renameSync(move!.path, change.path);
+        throw error;
+      } finally { if (lstatSync(temporary, { throwIfNoEntry: false })) unlinkSync(temporary); }
+    }
     else writeFileSync(change.path, change.next!);
   }
   return plan.map(change => change.path);

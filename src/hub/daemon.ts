@@ -1,4 +1,7 @@
 import { ActionBudgets, actionPolicyConfig, type ActionPolicyConfig } from "./action-policy.ts";
+import { ReleaseAuthorizations, releaseAuthorizationError } from "./sdlc-release-authorization.ts";
+import { parseReleaseGuardArgv, parseReleasePushUpdates } from "../cli/sdlc-release-guard.ts";
+import type { DocEvidence } from "./sdlc-release.ts";
 import { loadExternalAdapterDefinitions, readAdapterModuleDeclarations, type AdapterModuleDeclaration } from "../adapters/external-modules.ts";
 import { WsPeer, isWsPeer } from "../adapters/channel-peer.ts";
 import { ownerToolEffect, canonicalWriteUnknown } from "./no-writes.ts";
@@ -491,6 +494,8 @@ export interface DaemonOptions {
   checkoutBranch?: typeof mainCheckoutBranch;
   /** Host-only admission transport; never selected by project config or tools. */
   releaseHostAdmission?: (cwd: string) => Promise<ReleaseHostAdmission>;
+  /** Host-only evidence seam; never supplied by project config or control messages. */
+  releaseDocEvidence?: (root: string) => Promise<DocEvidence | undefined>;
   projectId?: string;
   instanceId?: string;
   cwd: string;
@@ -2510,6 +2515,12 @@ export async function startDaemon(opts: DaemonOptions) {
   const claudePermissionGenerations = new Map<string, string>();
   const permissions = new Map<string, { push: string; peer: string; tool?: string; createdAt: number; expiresAt: number; done: (optionId: string | undefined, surface?: "console" | "dashboard" | "terminal", reason?: "expired" | "cancelled") => boolean }>();
   let stopping = false;
+  const releaseAuthorizations = new ReleaseAuthorizations(opts.cwd, {
+    docs: opts.releaseDocEvidence,
+    gh: (args, timeout) => sdlcGh(args, timeout, opts.cwd),
+    current: () => !stopping && !recoveryActive() && !bus.isRecoveryHeld,
+    record: receipt => event({ type: "release_authorization", by: "user", authorization: receipt.id, commit: receipt.commit, version: receipt.version, docsDigest: receipt.docs.digest, documents: receipt.docs.documents }),
+  });
   const terminalReads = terminalOwnerReads();
   const terminalLaunches = new TerminalLaunches({
     owner: row => {
@@ -4944,7 +4955,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (a.action === "sdlc_queue" || a.action === "sdlc_release") {
       const liveIssues = a.liveIssues ?? [];
       if (typeof a.repo !== "string" || !Array.isArray(liveIssues) || liveIssues.length > 32) return bad;
-      const report = a.action === "sdlc_queue" ? await tasks.deliveryQueue(a.repo) : await tasks.releaseReadiness(a.repo, liveIssues);
+      const report = a.action === "sdlc_queue" ? await tasks.deliveryQueue(a.repo) : releaseAuthorizations.report(await tasks.releaseReadiness(a.repo, liveIssues));
       return { ok: true, report };
     }
     switch (a.action) {
@@ -5757,11 +5768,31 @@ export async function startDaemon(opts: DaemonOptions) {
           return void reply({ t: "ui", ok: false, error: "could not start the dashboard" });
         }
       case "sdlc": {
+        if (msg.op === "release-guard" || msg.op === "release-guard-hook") {
+          if (c.role !== "console" && c.role !== "tools" && c.role !== "peer" || c.peer && (!!turns.get(c.peer)?.private || contextPii(c.peer))) return void reply({ ok: false, error: "release guard unavailable for this caller" });
+          if (msg.op === "release-guard") {
+            const parsed = parseReleaseGuardArgv(msg.argv);
+            if (!parsed.ok) return void reply({ ok: false, error: parsed.reason });
+            void releaseAuthorizations.guardRequest(parsed.request).then(reply, () => reply({ ok: false, error: "release guard evidence unavailable" }));
+          } else {
+            const parsed = parseReleasePushUpdates(msg.remoteName, msg.remoteUrl, msg.stdin);
+            if (!parsed.ok) return void reply({ ok: false, error: parsed.reason });
+            reply(releaseAuthorizations.guardPush(parsed.remoteName, parsed.remoteUrl, parsed.updates));
+          }
+          return;
+        }
         if (c.role !== "console") return void reply({ ok: false, error: "SDLC readback is console only; task owners record ids through hub_sdlc_record" });
+        if (msg.op === "authorize-release") {
+          void releaseAuthorizations.authorize(USER, msg.version, msg.commit).then(
+            authorization => reply({ ok: true, authorization }),
+            error => reply({ ok: false, error: releaseAuthorizationError(error) }),
+          );
+          return;
+        }
         if (msg.op === "queue" || msg.op === "release") {
           if (typeof msg.repo !== "string" || !Array.isArray(msg.liveIssues ?? []) || (msg.liveIssues ?? []).length > 32) return void reply({ ok: false, error: "invalid delivery readback arguments" });
           const read = msg.op === "queue" ? tasks.deliveryQueue(msg.repo) : tasks.releaseReadiness(msg.repo, msg.liveIssues ?? []);
-          void read.then(report => reply({ ok: true, report }), () => reply({ ok: false, error: "delivery readback unavailable" }));
+          void read.then(report => reply({ ok: true, report: msg.op === "release" ? releaseAuthorizations.report(report as Awaited<ReturnType<typeof tasks.releaseReadiness>>) : report }), () => reply({ ok: false, error: "delivery readback unavailable" }));
           return;
         }
         if (msg.op === "export") {
