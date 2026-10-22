@@ -2480,7 +2480,10 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "task_show": {
         const task = board.get(Number(a.id));
-        return JSON.stringify(task ? { ...task, flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) } : `no task #${a.id}`, null, 2);
+        if (!task) return JSON.stringify(`no task #${a.id}`);
+        const { codeSymbols: _storedCodeSymbols, ...detail } = task;
+        const codeSymbols = tasks.publicView(task).codeSymbols;
+        return JSON.stringify({ ...detail, ...(codeSymbols ? { codeSymbols } : {}), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
       }
       case "task_assign":
       case "task_assign_checked": {
@@ -4467,7 +4470,7 @@ export async function startDaemon(opts: DaemonOptions) {
       tasks: boardTasks.map((task) => {
         const view = tasks.publicView(task);
         // Refs and history can themselves quote private text. The dashboard needs neither.
-        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, ...(view.cancelled ? { cancelled: view.cancelled } : {}), ...(view.external ? { external: view.external } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
+        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, ...(view.codeSymbols ? { codeSymbols: view.codeSymbols } : {}), ...(view.cancelled ? { cancelled: view.cancelled } : {}), ...(view.external ? { external: view.external } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
       }),
       links: links.filter(link => link.tasks.every(id => { const task = board.get(id); return task && !tasks.isPii(task); })),
       budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[accountOf(id)] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),

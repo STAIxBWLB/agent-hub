@@ -1,3 +1,4 @@
+import { HOST_CODE_SYMBOLS, parseTaskCodeSymbols, type TaskCodeSymbols } from "./task-code-symbols.ts";
 import { planFingerprint } from "./plan-conformance.ts";
 import type { ReviewerPoolReason } from "./reviewer-pool.ts";
 import type { GitHubSource } from "./github-import.ts";
@@ -105,6 +106,8 @@ export interface Task extends PlanningFields {
   plan?: TaskPlan;
   /** Artifact identities and bounded evidence, owned by Tasks (#257). */
   sdlc?: SdlcReceipt;
+  /** Host-derived observation for one head, never accepted from task tool arguments. */
+  codeSymbols?: TaskCodeSymbols;
   /** Tasks that must be approved before this one is offered; planning edits are limited to unstarted backlog. */
   deps?: number[];
   /** Who routing offers the task first once nothing is left to wait for (issue #207); null when nobody was named. */
@@ -155,6 +158,8 @@ const MOVES: Record<TaskState, TaskState[]> = {
 };
 
 const JSON_COLS = ["refs", "plan", "deps", "signals", "history", "sdlc"] as const;
+// Separate storage keeps older SELECT * readers from exporting unscreened derived metadata.
+const TASK_SELECT = "SELECT tasks.*, (SELECT CASE WHEN length(CAST(payload AS BLOB)) <= 65536 THEN payload END FROM task_code_symbols WHERE task=tasks.id) AS code_symbols FROM tasks";
 
 /** Task board in `.agenthub/state/hub.db`. It outlives the hub process: `ahub kill` leaves the file. */
 export class Board {
@@ -225,6 +230,8 @@ export class Board {
     if (!have.has("external_issue")) this.db.run("ALTER TABLE tasks ADD COLUMN external_issue INTEGER");
     this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS tasks_external_issue ON tasks(external_repo,external_issue) WHERE external_repo IS NOT NULL AND external_issue IS NOT NULL");
     if (!have.has("sdlc")) this.db.run("ALTER TABLE tasks ADD COLUMN sdlc TEXT");
+    this.db.run("CREATE TABLE IF NOT EXISTS task_code_symbols (task INTEGER PRIMARY KEY, payload TEXT NOT NULL)");
+    this.db.run("DELETE FROM task_code_symbols WHERE task NOT IN (SELECT id FROM tasks) OR task IN (SELECT id FROM tasks WHERE json_valid(signals) AND EXISTS (SELECT 1 FROM json_each(signals) WHERE value IN ('pii','pii_path')))");
     if (!have.has("task_role")) this.db.run("ALTER TABLE tasks ADD COLUMN task_role TEXT");
     if (!have.has("project_profile")) this.db.run("ALTER TABLE tasks ADD COLUMN project_profile TEXT");
     for (const col of ["rank", "priority", "release", "planned_start", "due"]) {
@@ -253,17 +260,17 @@ export class Board {
   }
 
   imported(repo: string, issue: number): Task | undefined {
-    const row = this.db.query("SELECT * FROM tasks WHERE external_repo=? AND external_issue=?").get(repo.toLowerCase(), issue) as Record<string, unknown> | null;
+    const row = this.db.query(`${TASK_SELECT} WHERE external_repo=? AND external_issue=?`).get(repo.toLowerCase(), issue) as Record<string, unknown> | null;
     return row ? parse(row) : undefined;
   }
 
   get(id: number): Task | undefined {
-    const row = this.db.query("SELECT * FROM tasks WHERE id = ?").get(id) as Record<string, unknown> | null;
+    const row = this.db.query(`${TASK_SELECT} WHERE id = ?`).get(id) as Record<string, unknown> | null;
     return row ? parse(row) : undefined;
   }
 
   list(state?: TaskState): Task[] {
-    const rows = state ? this.db.query("SELECT * FROM tasks WHERE state = ? ORDER BY id").all(state) : this.db.query("SELECT * FROM tasks ORDER BY id").all();
+    const rows = state ? this.db.query(`${TASK_SELECT} WHERE state = ? ORDER BY id`).all(state) : this.db.query(`${TASK_SELECT} ORDER BY id`).all();
     return (rows as Record<string, unknown>[]).map(parse);
   }
 
@@ -318,7 +325,7 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "capacity" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | "reviewFindings" | "planObservation" | "planDeparture" | "planDepartureInvalidated" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled" | "codeSymbols">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "capacity" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | "reviewFindings" | "planObservation" | "planDeparture" | "planDepartureInvalidated" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number, codeSymbolsAuthority?: typeof HOST_CODE_SYMBOLS): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
@@ -328,6 +335,17 @@ export class Board {
       throw new Error(`task #${id} is ${task.state}: cannot move to ${patch.state}`);
     }
     const next = { ...task, ...patch, refs: { ...task.refs, ...patch.refs } };
+    const headOf = (row: Task) => row.refs.commit ?? row.sdlc?.head ?? row.sdlc?.localHead;
+    const privateSymbols = next.signals.includes("pii") || next.signals.includes("pii_path");
+    if (Object.hasOwn(patch, "codeSymbols")) {
+      if (codeSymbolsAuthority !== HOST_CODE_SYMBOLS) throw new Error("code symbols require host authority");
+      const observation = patch.codeSymbols === undefined ? undefined : parseTaskCodeSymbols(patch.codeSymbols);
+      if (patch.codeSymbols !== undefined && !observation) throw new Error("invalid task code symbols");
+      if (observation && (privateSymbols || observation.head !== headOf(next))) throw new Error("code symbol head or privacy differs from task");
+      next.codeSymbols = observation;
+    } else if (privateSymbols || headOf(task) !== headOf(next) || task.refs.repo !== next.refs.repo || JSON.stringify(task.refs.paths) !== JSON.stringify(next.refs.paths) || task.sdlc?.repo !== next.sdlc?.repo) {
+      next.codeSymbols = undefined;
+    }
     if (next.state === "backlog" && (next.owner || next.reviewer)) throw new Error(`task #${id}: backlog cannot have an owner or reviewer`);
     if (!untouchedReturn) {
       if (patch.state === "backlog" && task.owner) throw new Error(`task #${id}: owned work cannot return to backlog`);
@@ -350,9 +368,15 @@ export class Board {
     const repositoryRefsChanged = patch.refs !== undefined && JSON.stringify([task.refs.repo, task.refs.paths]) !== JSON.stringify([next.refs.repo, next.refs.paths]);
     const departureInvalidated = extra.planDepartureInvalidated === true || hasDeparture && (planChanged || repositoryRefsChanged);
     const history = [...task.history, { at: Date.now(), by, event, ...(planRevision ? { planRevision } : {}), ...(extra.planObservation ? { planObservation: extra.planObservation } : {}), ...(extra.planDeparture ? { planDeparture: extra.planDeparture } : {}), ...(departureInvalidated ? { planDepartureInvalidated: true as const } : {}), ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.withheld && (note || reviewFindings) ? { withheld: true as const } : {}), ...(reviewFindings ? { reviewFindings } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}) }];
-    this.taskWrite(() => this.db
-      .query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ? WHERE id = ?")
-      .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), id));
+    this.taskWrite(() => {
+      const result = this.db.query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ? WHERE id = ?")
+        .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), id);
+      if (result.changes) {
+        if (next.codeSymbols) this.db.query("INSERT INTO task_code_symbols(task,payload) VALUES(?,?) ON CONFLICT(task) DO UPDATE SET payload=excluded.payload").run(id, JSON.stringify(next.codeSymbols));
+        else this.db.query("DELETE FROM task_code_symbols WHERE task=?").run(id);
+      }
+      return result;
+    });
     const updated = this.get(id)!;
     this.changed(updated, history.at(-1)!);
     return updated;
@@ -431,7 +455,10 @@ export class Board {
       }
       if (this.list().some(task => task.id !== id && !ids.has(task.id) && (task.deps?.some(dep => ids.has(dep)) || task.sdlc?.phase?.tasks.some(ref => ids.has(ref.id) || ref.after.some(dep => ids.has(dep)))))) throw new Error("split children are referenced by other work");
       const restored = this.plan(id, by, { deps: entry!.planning!.previous.deps ?? [] }, revision, `undo split revision ${revision}`);
-      for (const child of ids) this.taskWrite(() => this.db.query("DELETE FROM tasks WHERE id=?").run(child));
+      for (const child of ids) this.taskWrite(() => {
+        this.db.query("DELETE FROM task_code_symbols WHERE task=?").run(child);
+        return this.db.query("DELETE FROM tasks WHERE id=?").run(child);
+      });
       return restored;
     });
   }
@@ -517,6 +544,14 @@ function parse(row: Record<string, unknown>): Task {
     if (col === "sdlc" && row[col] == null) delete out[col];
     else out[col] = JSON.parse(String(row[col]));
   }
+  try {
+    const rawSymbols = row.code_symbols == null ? undefined : String(row.code_symbols);
+    const symbols = rawSymbols === undefined || Buffer.byteLength(rawSymbols) > 64 * 1024 ? undefined : parseTaskCodeSymbols(JSON.parse(rawSymbols));
+    const head = (out.refs as TaskRefs).commit ?? (out.sdlc as SdlcReceipt | undefined)?.head ?? (out.sdlc as SdlcReceipt | undefined)?.localHead;
+    const privateSymbols = (out.signals as string[]).some(signal => signal === "pii" || signal === "pii_path");
+    if (symbols && symbols.head === head && !privateSymbols) out.codeSymbols = symbols;
+  } catch { /* Malformed optional derived evidence stays unavailable. */ }
+  delete out.code_symbols;
   if (out.project_profile != null) Object.assign(out, JSON.parse(String(out.project_profile)));
   delete out.project_profile;
   if (out.external_repo != null && out.external_issue != null) out.external = { provider: "github", repo: String(out.external_repo), issue: Number(out.external_issue), url: `https://github.com/${out.external_repo}/issues/${out.external_issue}` };

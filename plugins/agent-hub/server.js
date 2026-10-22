@@ -8168,11 +8168,18 @@ var init_general = __esm(() => {
   };
 });
 
+// src/hub/task-code-symbols.ts
+var HOST_CODE_SYMBOLS;
+var init_task_code_symbols = __esm(() => {
+  HOST_CODE_SYMBOLS = Symbol("host task code symbols");
+});
+
 // src/hub/planning.ts
 var init_planning = () => {};
 // src/hub/board.ts
 var CLASSES, PLAN_KEYS, ALL_PLAN_KEYS, OUTCOMES_KEPT_MS;
 var init_board = __esm(() => {
+  init_task_code_symbols();
   init_plan_conformance();
   init_planning();
   init_envelope();
@@ -19555,6 +19562,7 @@ init_hub_tools();
 init_envelope();
 
 // src/hub/tasks.ts
+init_task_code_symbols();
 init_test_integrity();
 init_plan_conformance();
 

@@ -993,6 +993,22 @@ change. Graph name-only matches are hidden as ambiguous, and graph count floors
 remain explicit. The file-based coverage gate is unchanged. A future both-tree
 inventory or bounded base/head probes can improve this advice after dogfooding.
 
+At completion, optional symbol advice also becomes a head-bound task observation
+(`#684` phase 2a). Console task detail and the UI task snapshot expose the
+screened IDs, paths, names and kinds, without source/spans or internal repository
+keys. Public reads re-screen current policy; PII stores nothing. Unknown or
+stale evidence remains unavailable. Completion prepares this optional data even
+without a reviewer, without adding a review gate. Foreign-repository tasks stay
+unknown until the brief can independently bind its analysis repository.
+
+When both tasks have complete public observations and non-empty disjoint sets
+for every exact shared file, a completed-change notice says "same file, different
+symbols" with the observed-name/deleted-definition ceiling. It still tells the
+recipient to check the completed work. Missing or partial evidence keeps the
+ordinary notice; plan-time overlap and coverage gates are unchanged. The receipt
+keeps one current head, with at most 500 entries and 64 KiB total. This is the
+data slice; the formatted Code panel and memory links follow separately.
+
 `hub_review` takes `coverage {reviewed, skipped}`: in enforce an approval that leaves
 a reviewable path unaccounted is refused, and advise notes the gap in the verdict
 (#520). The hub

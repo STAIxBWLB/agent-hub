@@ -23,6 +23,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Feature | State here | Measured by |
 | --- | --- | --- |
 | Optional changed-symbol advice (#682, #684 phase 1a) | on after release when ripwire 0.6.7 is installed; change kinds unknown | review brief symbol observations/unknowns; deleted definitions not covered, no gate |
+| Head-bound task symbol observations (#684 phase 2a) | on after release with optional code facts; observed names only | task/UI receipts and completed-change labels; unknown/filtered evidence keeps ordinary overlap, deleted definitions not covered |
 | Review brief, review findings, Important gate (#481 S3) | advise | Important findings per PR, rounds to approval |
 | Spec acceptance (#481 S1) | advise | build entries without acceptance |
 | Lifecycle identity linked by the hub (#694) | on in advise | tasks still showing `issue identity missing` or `PR identity missing` at review |

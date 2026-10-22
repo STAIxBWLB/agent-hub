@@ -171,6 +171,8 @@ test("off-mode completion-selected reviewer receives prepared fake-ripwire symbo
   expect(board.get(task.id)!.reviewer).toBeNull();
   const done=await tasks.done("codex",task.id,"done");
   expect(done).toMatchObject({state:"in_review",reviewer:"claude-review"});
+  expect(done.codeSymbols).toMatchObject({head:f.head,state:"known",symbols:[{name:"retained"},{name:"added"}]});
+  expect(JSON.stringify(done.codeSymbols)).not.toContain("endLine");
   for(let i=0;i<100&&!received.some(body=>body.startsWith("Review task"));i++)await Bun.sleep(10);
   const request=received.find(body=>body.startsWith("Review task"));
   expect(request).toContain("retained (fn");expect(request).toContain("added (fn");expect(symbols).toMatchObject({state:"known"});
