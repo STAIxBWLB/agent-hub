@@ -38,7 +38,7 @@ The producer required unique effective Apps/plugins/hooks rows with value false,
 | Symlink alias into synthetic credential root | Read denied |
 | New file creation | Write denied; file absent |
 
-Admission retains the exact bounded allowlist 0.146.0 and 0.163.0, reports the observed version in the receipt, and refuses other versions with a bounded observed/required-version diagnostic. Malformed output is reported as unknown without echoing native text. The daemon preserves only this closed version-metadata diagnostic; ordinary isolation failures remain generic.
+Central compatibility policy marks 0.146.0 and 0.163.0 as verified. Other versions are refused unless the person explicitly trusts that exact version on this machine; every runtime isolation proof still runs after trust. The receipt reports the observed version. Refusals name the observed and verified versions in a bounded diagnostic; malformed version output becomes unknown without echoing native text. The daemon preserves the centralized compatibility refusal, while ordinary isolation failures remain generic.
 
 ## Evidence boundaries
 
