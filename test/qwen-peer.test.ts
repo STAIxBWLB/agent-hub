@@ -1,3 +1,5 @@
+import { COMPAT } from "../src/adapters/compat.ts";
+import { QWEN_DEFINITION } from "../src/adapters/definitions/qwen.ts";
 import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 import { crashPlan, writeSessions } from "../src/hub/crash.ts";
 import { afterEach, expect, test, spyOn } from "bun:test";
@@ -117,4 +119,23 @@ test("Qwen 0.26.0 native permission shape maps offered once, cancellation and un
     expect(asked[0]!.title).toContain('{"task":373}');
     expect(asked[0]!.options.find(option => option.kind === "allow_once")?.optionId).toBe("proceed_once");
   } finally { writer.mockRestore(); }
+});
+
+
+test("Qwen help, preview and startup failure name every receipt-verified version (#373)", async () => {
+  const root = mkdtempSync(join(tmpdir(), "qwen-guidance-")); cleanups.push(() => rmSync(root, { recursive: true, force: true }));
+  const stateDir = join(root, "state");
+  const preview = launcherPreview("qwen", ["--print-command"], root, stateDir, false);
+  const help = JSON.stringify(QWEN_DEFINITION.cli?.usage);
+  const identity = preview.unresolved.find(row => row.field === "nativeIdentity")?.reason;
+  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, qwen_cmd: [join(root, "missing-qwen")], roster: { qwen: true },
+      memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } }); cleanups.push(() => daemon.stop());
+  const client = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => client.close());
+  const result = await client.request({ t: "start", peer: "qwen" });
+  expect(result.ok).toBe(false); expect(result.error).toContain("startup handshake");
+  expect(result.error).toContain("details withheld"); expect(result.error).not.toContain(root);
+  for (const version of COMPAT.qwen.verified) {
+    expect(help).toContain(version); expect(identity).toContain(version); expect(result.error).toContain(version);
+  }
 });

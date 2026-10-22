@@ -30,7 +30,7 @@ import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, typ
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
 import { ActivityRing } from "./activity.ts";
 import { JcodeOptionMismatch, isJcodePeer, jcodeVersionAsync, type JcodePeer } from "../adapters/jcode.ts";
-import { VERSION_REFUSAL } from "../adapters/compat.ts";
+import { VERSION_REFUSAL, describe, isCompatId } from "../adapters/compat.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc, readSpecEdit, sdlcGh } from "./sdlc.ts";
 import { claudePeer as defaultChannelPeer, claudeStateFile, ownTerminalRow, pathEvidence, transcriptPersisted } from "./claude-state.ts";
@@ -3887,7 +3887,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (configuredIds.includes(adapter.kind) && owner.pendingOwnedProcess) bus.add(owner); // Retain the failed owner for explicit stop retry; never replace its live child.
         if (configuredIds.includes(adapter.kind)) throw new Error(`${peer}: ACP startup identity, session, permission or owned-group verification failed (details withheld)`);
         if (error instanceof QwenIdentityError) throw error;
-        throw new Error("Qwen could not reach its provider or complete its startup handshake; verify the provider connection and Qwen Code 0.25.0 (details withheld)");
+        throw new Error(`${adapter.displayName} could not reach its provider or complete its startup handshake; verify the provider connection and native CLI${isCompatId(adapter.kind) ? ` (${describe(adapter.kind)})` : ""}; see ahub agents (details withheld)`);
       }
       return { ok: true };
     }
