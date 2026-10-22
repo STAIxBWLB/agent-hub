@@ -122,7 +122,8 @@ test("console task detail and UI snapshot carry only public head-bound symbol me
   client=await ControlClient.connect(stateDir,{role:"console",projectRoot:cwd});
   const snapshot=await client.request({t:"ui_snapshot",after:0});
   expect(snapshot.tasks.find((t:Task)=>t.id===task.id).codeSymbols).toMatchObject({head:HEAD,symbols:[{name:"Alpha.first"}]});
-  const detail=await client.request({t:"task",op:"hub_task_show",args:{id:task.id}});
+  const detail=await client.request({t:"task",op:"task_show",args:{id:task.id}});
+  expect(detail.ok).toBe(true);
   expect(detail.text).toContain("Alpha.first");expect(detail.text).not.toContain("repositoryKey");expect(JSON.stringify(snapshot.tasks)).not.toContain("repositoryKey");
  } finally {client?.close();await daemon.stop();rmSync(cwd,{recursive:true,force:true});}
 },20000);

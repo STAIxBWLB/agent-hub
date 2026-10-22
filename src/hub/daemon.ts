@@ -2480,7 +2480,10 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "task_show": {
         const task = board.get(Number(a.id));
-        return JSON.stringify(task ? { ...task, flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) } : `no task #${a.id}`, null, 2);
+        if (!task) return JSON.stringify(`no task #${a.id}`);
+        const { codeSymbols: _storedCodeSymbols, ...detail } = task;
+        const codeSymbols = tasks.publicView(task).codeSymbols;
+        return JSON.stringify({ ...detail, ...(codeSymbols ? { codeSymbols } : {}), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
       }
       case "task_assign":
       case "task_assign_checked": {
