@@ -7,6 +7,7 @@ import { taskProgress } from "../ui/task-progress.ts";
 import type { ProgressStage } from "../ui/task-progress.ts";
 import { sanitize } from "../hub/envelope.ts";
 import type { SettingRow, SettingValue } from "../hub/settings.ts";
+import { symbolFields } from "./console-symbols.ts";
 import { USAGE_DROP, USAGE_HEAD, usageCells, usageDetail, usagePeers, usageTaskLines, type UsageState } from "./console-usage.ts";
 
 export interface Approval {
@@ -313,8 +314,19 @@ function fieldLines(fields: [string, unknown][], columns: number, now: number): 
     });
   });
 }
-const detailLines = (detail: Detail, columns: number, now: number): Span[][] =>
-  typeof detail === "string" ? wrap(detail, columns).map(text => [span(text)]) : fieldLines(Object.entries(detail), columns, now).flat();
+/**
+ * A task opened from Tasks also gets its "changed symbols" (#684 2b), after its plan so the two read together; a private task gets none. `codeSymbols` is the hub's
+ * raw observation and is not shown as a field of its own: the block replaces it.
+ */
+function taskFields(detail: Record<string, unknown>): [string, unknown][] {
+  const fields = Object.entries(detail).filter(([key]) => key !== "codeSymbols");
+  const block = symbolFields(detail);
+  if (!block.length) return fields;
+  const at = fields.findIndex(([key]) => key === "plan");
+  return at < 0 ? [...fields, ...block] : [...fields.slice(0, at + 1), ...block, ...fields.slice(at + 1)];
+}
+const detailLines = (detail: Detail, columns: number, now: number, task = false): Span[][] =>
+  typeof detail === "string" ? wrap(detail, columns).map(text => [span(text)]) : fieldLines(task ? taskFields(detail) : Object.entries(detail), columns, now).flat();
 const allowOptions = (a: Approval) => a.options.filter(o => o.kind.startsWith("allow"));
 /** A pushed request as the console keeps it: every agent-supplied field a string, so no draw can throw on one. */
 export function approvalFrom(msg: any): Approval {
@@ -1045,7 +1057,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   else if (s.detail !== undefined || (s.requestDetail && permission)) {
     const usagePeer = s.panel === 7 && s.detail && typeof s.detail === "object" ? (s.detail as { usagePeer?: unknown }).usagePeer : undefined;
     const detail = typeof usagePeer === "string" ? fieldLines(Object.entries(usageDetail(s.usage, usagePeer, s.budget[usagePeer], at => relative(at, now))), columns, now).flat()
-      : s.detail !== undefined ? detailLines(s.detail, columns, now) : fieldLines(approvalFields(permission!), columns, now).flat();
+      : s.detail !== undefined ? detailLines(s.detail, columns, now, s.panel === 3) : fieldLines(approvalFields(permission!), columns, now).flat();
     lines.push(...detail.slice(Math.min(s.detailOffset, Math.max(0, detail.length - height))));
   }
   else {
