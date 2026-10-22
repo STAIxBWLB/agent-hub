@@ -134,3 +134,77 @@ test("#636 literal shell cwd/workdir and direct git argv use their actual shape"
   expect(classifyAction("git", { args: ["reset", "--hard"] }, root)).toEqual(["destroy"]);
   expect(classifyAction("git", { args: ["status"] }, root)).toEqual([]);
 });
+
+const reviewCases: Array<[string, ActionClass[]]> = [
+  ["git push 2>&1", ["publish"]],
+  ["git push >&2", ["publish"]],
+  ["git push 1>&2 2>&1", ["publish"]],
+  ["git push <input", ["publish"]],
+  ["git push 0< 'input file'", ["publish"]],
+  ["printf hello 2>&1", []],
+  ["printf hello >> ../output 2>&1", []],
+  ["git push; printf $UNKNOWN", ["publish"]],
+  ["npm publish && printf `unsupported`", ["publish"]],
+  ["git push; cat << EOF\nunknown\nEOF", ["publish"]],
+  ["git push; printf 'unterminated", ["publish"]],
+  ["git push; printf ending\\", ["publish"]],
+  ["git push; printf >", ["publish"]],
+  ["git push $UNKNOWN; npm publish", []],
+  ["sudo git push", ["publish"]],
+  ["sudo -u root -- npm install -g tool", ["install"]],
+  ["sudo -n git push", ["publish"]],
+  ["time git push", ["publish"]],
+  ["/usr/bin/time -p git push", ["publish"]],
+  ["timeout 10 git push", ["publish"]],
+  ["timeout --signal TERM 10 git push", ["publish"]],
+  ["nohup git push", ["publish"]],
+  ["exec git push", ["publish"]],
+  ["exec -- git push", ["publish"]],
+  ["printf main | xargs git push origin", ["publish"]],
+  ["xargs -n 1 git push", ["publish"]],
+  ["xargs -I '{}' git push origin '{}'", ["publish"]],
+  ["nice git push", ["publish"]],
+  ["nice -n 10 git push", ["publish"]],
+  ["! git push", ["publish"]],
+  ["if true; then git push; fi", ["publish"]],
+  ["if git push; then printf ok; fi", ["publish"]],
+  ["if true; then printf 'git push'; fi", []],
+  ["/usr/bin/env -i git push", ["publish"]],
+  ["env -i TOKEN=placeholder git push", ["publish"]],
+  ["env -- git push", ["publish"]],
+  ["bash -lic 'git push'", ["publish"]],
+  ["zsh -fc 'npm publish'", ["publish"]],
+  ["sh -c -- 'git push'", ["publish"]],
+  ["bash --noprofile -lc 'git push'", ["publish"]],
+  ["(git push)", ["publish"]],
+  ["{ git push; }", ["publish"]],
+  ["(git push) && npm install -g tool", ["publish", "install"]],
+  ["npm --registry https://registry.example.test publish", ["publish"]],
+  ["pnpm --filter package publish", ["publish"]],
+  ["yarn npm publish", ["publish"]],
+  ["git -P push", ["publish"]],
+  ["curl -sXPOST https://example.test", ["external-write"]],
+  ["curl -sd'payload' https://example.test", ["external-write"]],
+  ["curl -sXGET https://example.test", []],
+  ["curl -sGd'query' https://example.test", []],
+  ["rm -rf ~/archive", ["destroy"]],
+  ["printf replacement > ~/archive", ["destroy"]],
+  ["printf append >> ~/archive", []],
+  ["cd; rm -rf target", ["destroy"]],
+  ["cd ~ && rm -rf target", ["destroy"]],
+  ["sudo -n timeout 5 nice -n 1 /usr/bin/env -i git push", ["publish"]],
+  ["time printf 'npm publish'", []],
+  ["xargs printf 'git push'", []],
+];
+
+for (const [command, expected] of reviewCases) {
+  test(`#636 R2 transparent literal forms: ${command}`, () => {
+    expect(classifyAction("Bash", { command }, root)).toEqual(expected);
+  });
+}
+
+test("#636 R2 an explicit home cwd is conservatively outside for relative destruction", () => {
+  expect(classifyAction("bash", { command: "rm -rf target", cwd: "~" }, root)).toEqual(["destroy"]);
+  expect(classifyAction("exec_command", { cmd: "cp -f input target", workdir: "~/archive" }, root)).toEqual(["destroy"]);
+  expect(classifyAction("bash", { command: "rm target", cwd: "~" }, root)).toEqual([]);
+});

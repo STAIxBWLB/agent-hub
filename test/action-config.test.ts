@@ -2,7 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, loadConfig } from "../src/hub/daemon.ts";
+import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
+import { ControlClient } from "../src/hub/control-client.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { ALL_MACHINE_LOCAL } from "../src/hub/config-trust.ts";
 import { authorizeConfigLeaf, configApply, validateRawConfig } from "../src/hub/config-apply.ts";
@@ -45,4 +46,28 @@ test("action settings validate all configured leaves and require person confirma
   expect(() => validateRawConfig({ action_policy: { budgets: { publish: 1001 } } })).toThrow();
   expect(() => validateRawConfig({ action_policy: { always_ask: ["unknown"] } })).toThrow();
   expect(configApply("action_policy.always_ask").applies).toBe("live");
+});
+
+
+test("R2 action policy refuses shared reloads without offering confirmation or adopting their source", async () => {
+  const f = fixture();
+  const shared = { memory: { enabled: false, native: false }, inference: { enabled: false }, mlx: { enabled: false },
+    research: { enabled: false }, snapshots: { enabled: false }, pi: { enabled: false, auto_start: false }, approvals: { notify: false }, task_sweep: { enabled: false } };
+  f.write("config.json", shared);
+  const stateDir = join(f.dir, "state");
+  const daemon = await startDaemon({ cwd: f.dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0 });
+  let client: ControlClient | undefined;
+  try {
+    client = await ControlClient.connect(stateDir, { role: "console" });
+    f.write("config.json", { ...shared, action_policy: { enabled: false, budgets: { publish: 9 } } });
+    const reply = await client.request({ t: "settings_reload" });
+    expect(reply.ok).toBe(true);
+    expect(reply.confirmation).toBeUndefined();
+    expect(reply.rejected).toEqual(expect.arrayContaining([expect.objectContaining({ key: "action_policy.enabled", reason: expect.stringContaining("config.local.json") })]));
+    const { rows } = await client.request({ t: "settings_get" });
+    const row = rows.find((item: { key: string }) => item.key === "action_policy.enabled");
+    expect(row.source).toBe("default");
+    expect(row.value).toBe(true);
+    expect(row.hint).toBe("not enforced yet: adapter integration pending");
+  } finally { client?.close(); await daemon.stop(); }
 });
