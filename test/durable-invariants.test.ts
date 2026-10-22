@@ -275,14 +275,21 @@ test("a failed retry-warning read after condensation keeps queued work and lets 
   durable.close();
 });
 
-test("one pull takes what one push delivery would, and the rest keep waiting (#205)", () => {
+test("a pull is one completed delivery: a pull-only peer drains within the byte budget, a push-style peer takes one push's worth and the rest keep waiting (#205, #713)", () => {
   const { bus, durable } = setupBus();
   bus.add(Object.assign(new FakePeer("claude"), { pullOnly: true }));
   for (let i = 0; i < 12; i++) bus.publish(newEnvelope("user", `m${i}`, { to: ["claude"], priority: "status" }));
-  expect(bus.pull("claude")).toHaveLength(10);
-  expect(bus.queued("claude")).toBe(2);
-  expect(bus.pull("claude")!.map((e) => e.body)).toEqual(["m10", "m11"]);
-  expect(durable.list("claude").map((r) => r.state)).toEqual(["completed", "completed"]);
+  // #713: a pull-only peer reads its whole queue (12 small messages fit the 64 KiB budget) in one pull, oldest first, as one `completed` delivery.
+  expect(bus.pull("claude")!.map((e) => e.body)).toEqual(Array.from({ length: 12 }, (_, i) => `m${i}`));
+  expect(bus.queued("claude")).toBe(0);
+  expect(durable.list("claude").map((r) => r.state)).toEqual(["completed"]);
+  // The original #205 rule still holds for a peer that is not pull-only (an attached channel session pulling while busy): one push's worth, the rest wait.
+  const codex = new FakePeer("codex"); bus.add(codex); codex.setState("busy");                  // not pull-only: a channel session pulling its own queue while busy (#493)
+  for (let i = 0; i < 12; i++) bus.publish(newEnvelope("user", `c${i}`, { to: ["codex"], priority: "status" }));
+  expect(bus.pull("codex")).toHaveLength(10);
+  expect(bus.queued("codex")).toBe(2);
+  expect(bus.pull("codex")!.map((e) => e.body)).toEqual(["c10", "c11"]);
+  expect(durable.list("codex").map((r) => r.state)).toEqual(["completed", "completed"]);
   durable.close();
 });
 
