@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { DEFAULT_CONFIG, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
 import { SUPPORTED_PEERS } from "../src/adapters/registry.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
+import { readEvents } from "../src/hub/events.ts";
 import type { InstancesConfig } from "../src/hub/instances.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
 
@@ -88,6 +89,12 @@ test("I2 daemon never infers or starts an undeclared suffix", async () => {
 
 test("I2 daemon account quota override is shared across sibling instances", async () => {
   const f = await fixture(); await f.start("codex-a"); await f.start("codex-b");
+  // Both native polls must be consumed before the manual set: the shared snapshot cannot distinguish siblings.
+  await until(() => {
+    const reporters = new Set(readEvents(join(f.stateDir, "events.jsonl")).flatMap(event =>
+      event.type === "quota" && event.windows.some(window => window.id === "5h" && window.used === 0.5) ? [event.peer] : []));
+    return ["codex-a", "codex-b"].every(peer => reporters.has(peer));
+  }, "both initial native quota readings");
   const result = await f.console_.request({ t: "budget", set: { peer: "codex-a", used: 0.37, window: "5h", resetsInMs: 60_000 } });
   expect(result.ok).toBe(true);
   const snapshot = await f.console_.request({ t: "ui_snapshot" });
