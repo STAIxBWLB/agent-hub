@@ -79,3 +79,55 @@ test("an extra Jcode implementer needs a managed worktree like every extra imple
   expect(reply.ok).toBe(false); expect(String(reply.error)).toContain("managed worktree");
   expect(() => readFileSync(record, "utf8")).toThrow();
 });
+
+test("the instance's relay needs its per-launch token, forwards to the gateway with the gateway's own key, and records a usage event for the instance (#685)", async () => {
+  const gw = gateway();
+  const { console_, record, stateDir } = await hub({}, gw.url);
+  expect((await console_.request({ t: "start", peer: "jcode-local", args: { mode: "headless" } })).ok).toBe(true);
+  const launch = rows(record).find(entry => entry.kind === "launch" && entry.role === "acp");
+  const ask = (token: string | undefined) => fetch(`${launch.compatBase}/chat/completions`, { method: "POST",
+    headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify({ model: "dgx/fast", stream: true, stream_options: { include_usage: true }, messages: [{ role: "user", content: "hello" }] }) });
+  // A caller without the token, or with the gateway key itself, is refused by the relay and never reaches the gateway.
+  expect((await ask(undefined)).status).toBe(401);
+  expect((await ask("gateway-key-stays-in-the-hub")).status).toBe(401);
+  expect(gw.seen.filter(request => request.path.endsWith("/chat/completions"))).toHaveLength(0);
+  const answer = await ask(launch.compatKey);
+  expect(answer.status).toBe(200); await answer.text();
+  // The gateway sees exactly one completion, authenticated with the hub's own gateway key, never the per-launch token.
+  const upstream = gw.seen.filter(request => request.path.endsWith("/chat/completions"));
+  expect(upstream).toHaveLength(1); expect(upstream[0]!.auth).toBe("Bearer gateway-key-stays-in-the-hub"); expect(upstream[0]!.auth).not.toContain(launch.compatKey);
+  // One usage event, for this instance, from the gateway's own counters.
+  const file = join(stateDir, "events.jsonl");
+  await until(() => { try { return readFileSync(file, "utf8").includes('"type":"usage"'); } catch { return false; } });
+  const usage = readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(entry => entry.type === "usage");
+  expect(usage).toHaveLength(1);
+  // The relay records the physical model it asked the gateway for (the allowedDGXmodels target of dgx/fast), not the alias.
+  expect(usage[0]).toMatchObject({ peer: "jcode-local", source: "omniroute", requestedModel: "fast", servedModel: "dgx-fast-served", provider: "dgx", inputTokens: 11, outputTokens: 5, totalTokens: 16, attribution: "unattributed" });
+  expect(JSON.stringify(usage[0])).not.toContain("gateway-key-stays-in-the-hub");
+});
+
+test("a relay request made while the instance owns one open task is attributed to that task (#685)", async () => {
+  const gw = gateway();
+  const { console_, record, stateDir } = await hub({}, gw.url, { roles: ["verifier"] });
+  expect((await console_.request({ t: "start", peer: "jcode-local", args: { mode: "headless" } })).ok).toBe(true);
+  // `summarize` is not a write class, so a verifier instance may own it without a managed worktree.
+  const proposed = await console_.request({ t: "task", op: "hub_task_propose", args: { title: "summarize the relay leg", class: "summarize", owner: "jcode-local" } });
+  expect(proposed.ok, JSON.stringify(proposed)).toBe(true);
+  const taskId = Number(String(proposed.text).match(/task #(\d+)/)?.[1]);
+  const assigned = await console_.request({ t: "task", op: "task_assign", args: { id: taskId, peer: "jcode-local", role: "owner" } });
+  expect(assigned.ok, JSON.stringify(assigned)).toBe(true);
+  // The instance's own tools client accepts it; only then does the board show one open task owned by this peer.
+  const tools = await ControlClient.connect(stateDir, { role: "tools", peer: "jcode-local" }); cleanups.push(() => tools.close());
+  const accepted = await tools.request({ t: "task", op: "hub_task_accept", args: { id: taskId } });
+  expect(accepted.ok, JSON.stringify(accepted)).toBe(true);
+  const launch = rows(record).find(entry => entry.kind === "launch" && entry.role === "acp");
+  const answer = await fetch(`${launch.compatBase}/chat/completions`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${launch.compatKey}` },
+    body: JSON.stringify({ model: "dgx/fast", stream: true, stream_options: { include_usage: true }, messages: [{ role: "user", content: "hello" }] }) });
+  await answer.text();
+  const file = join(stateDir, "events.jsonl");
+  await until(() => { try { return readFileSync(file, "utf8").includes('"type":"usage"'); } catch { return false; } });
+  const usage = readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line)).filter(entry => entry.type === "usage");
+  expect(usage).toHaveLength(1);
+  expect(usage[0]).toMatchObject({ peer: "jcode-local", task: taskId, attribution: "single_open" });
+});
