@@ -150,20 +150,22 @@ function unwrapped(input: string[]): string[] {
 function curlWrites(input: string[]): boolean {
   const longValues = new Set([
     "request", "data", "data-ascii", "data-binary", "data-raw", "data-urlencode", "json", "form", "form-string", "upload-file",
-    "header", "proxy-header", "output", "output-dir", "user-agent", "user", "proxy-user", "cookie", "cookie-jar", "referer", "url",
+    "url-query", "header", "proxy-header", "output", "output-dir", "user-agent", "user", "proxy-user", "cookie", "cookie-jar", "referer", "url",
     "resolve", "connect-to", "config", "cacert", "capath", "cert", "cert-type", "key", "key-type", "pass", "proxy", "preproxy",
     "interface", "max-time", "connect-timeout", "limit-rate", "range", "request-target", "unix-socket", "abstract-unix-socket",
     "write-out", "trace", "trace-ascii", "dump-header", "stderr", "netrc-file", "ftp-method", "ftp-port", "oauth2-bearer",
     "proxy-cacert", "proxy-cert", "proxy-key", "socks5", "socks5-hostname", "retry", "retry-delay", "retry-max-time", "local-port",
   ]);
-  let method: string | undefined, data = false, upload = false, get = false, head = false;
-  const writes = () => method !== undefined ? !["GET", "HEAD"].includes(method.toUpperCase()) : !head && (upload || data && !get);
+  let method: string | undefined, data = false, upload = false, get = false, head = false, uncertain = false, writeMethod = false;
+  const booleanOptions = new Set(["get", "head", "compressed", "location", "insecure", "silent", "show-error", "fail", "fail-with-body", "globoff", "verbose", "include", "remote-name", "path-as-is", "create-dirs", "progress-meter", "progress-bar", "http1.1", "http2", "http3"]);
+  // An unknown option may consume a following read-looking token. It cannot erase known write evidence.
+  const writes = () => uncertain && (data || upload || writeMethod) || (method !== undefined ? !["GET", "HEAD"].includes(method.toUpperCase()) : !head && (upload || data && !get));
   for (let i = 0; i < input.length; i++) {
     const arg = input[i]!;
     if (arg === "--") break;
     if (arg === "--next" || arg === "-:") {
       if (writes()) return true;
-      method = undefined; data = upload = get = head = false;
+      method = undefined; data = upload = get = head = uncertain = writeMethod = false;
       continue;
     }
     if (arg.startsWith("--")) {
@@ -171,10 +173,10 @@ function curlWrites(input: string[]): boolean {
       const name = arg.slice(2, equal < 0 ? undefined : equal);
       if (name === "get" || name === "no-get") get = name === "get";
       else if (name === "head" || name === "no-head") head = name === "head";
-      if (!longValues.has(name)) continue;
+      if (!longValues.has(name)) { if (!booleanOptions.has(name.replace(/^no-/, ""))) uncertain = true; continue; }
       const value = equal < 0 ? input[++i] : arg.slice(equal + 1);
       if (value === undefined) continue;
-      if (name === "request") method = value;
+      if (name === "request") { method = value; writeMethod ||= !["GET", "HEAD"].includes(value.toUpperCase()); }
       else if (name === "upload-file") upload = true;
       else if (name === "json" || name.startsWith("data") || name === "form" || name === "form-string") data = true;
       continue;
@@ -188,7 +190,7 @@ function curlWrites(input: string[]): boolean {
       if (!"XdFTHoAuUbecrxEKPmCwDQztYy".includes(flag)) continue;
       const value = arg.slice(at + 1) || input[++i];
       if (value !== undefined) {
-        if (flag === "X") method = value;
+        if (flag === "X") { method = value; writeMethod ||= !["GET", "HEAD"].includes(value.toUpperCase()); }
         else if (flag === "d" || flag === "F") data = true;
         else if (flag === "T") upload = true;
       }

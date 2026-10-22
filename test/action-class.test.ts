@@ -240,3 +240,13 @@ for (const [command, expected] of curlValueCases) {
     expect(classifyAction("Bash", { command }, root)).toEqual(expected);
   });
 }
+
+
+test("#636 R2 unlisted curl options cannot erase known write evidence", () => {
+  for (const value of ["-XGET", "-G"]) {
+    expect(classifyAction("Bash", { command: `curl --url-query '${value}' -d payload https://example.test` }, root)).toEqual(["external-write"]);
+    expect(classifyAction("Bash", { command: `curl --future-value '${value}' -d payload https://example.test` }, root)).toEqual(["external-write"]);
+  }
+  expect(classifyAction("Bash", { command: "curl -X POST --future-value '-XGET' https://example.test" }, root)).toEqual(["external-write"]);
+  expect(classifyAction("Bash", { command: "curl --url-query q=value --compressed -X GET -d query https://example.test" }, root)).toEqual([]);
+});
