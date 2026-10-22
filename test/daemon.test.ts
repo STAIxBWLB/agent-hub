@@ -10,6 +10,7 @@ import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { HUB, newEnvelope } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
+import { Board } from "../src/hub/board.ts";
 import { Turns } from "../src/hub/snapshots.ts";
 import { readEvents, EVENTS_SCHEMA } from "../src/hub/events.ts";
 import { summarize } from "../src/hub/report.ts";
@@ -2318,4 +2319,38 @@ test("push-capable peers never receive empty-inbox polling advice (#681)", async
     expect(result.content[0].text).not.toContain("[polling detected]");
   }
   expect(readFileSync(join(stateDir, "hub.log"), "utf8")).not.toContain("is polling an empty inbox with no task");
+}, 20_000);
+
+
+test("a failing inbox advisory lookup cannot discard an already-pulled batch (#681)", async () => {
+  const { stateDir, daemon } = await hub({ snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false } });
+  const peer = await ControlClient.connect(stateDir, { role: "peer", peer: "claude", channel: false });
+  cleanup.push(() => peer.close());
+  await until(() => daemon.bus.peers.get("claude")?.state === "idle", "pull-only attach");
+  const envelope = newEnvelope("user", "keep this pulled envelope", { to: ["claude"] });
+  daemon.bus.publish(envelope);
+  const pull = daemon.bus.pull, statusTasks = Board.prototype.statusTasks;
+  let pulled = false, failures = 0;
+  daemon.bus.pull = function (id) {
+    const envs = pull.call(this, id);
+    pulled ||= !!envs?.some(env => env.id === envelope.id);
+    return envs;
+  };
+  Board.prototype.statusTasks = function () {
+    if (pulled) { failures++; throw new Error("fixture advisory lookup unavailable"); }
+    return statusTasks.call(this);
+  };
+  try {
+    const result = await peer.request({ t: "inbox" });
+    expect(pulled).toBe(true);
+    expect(failures).toBeGreaterThan(0);
+    expect(result.ok).toBe(true);
+    expect(result.envs).toEqual(expect.arrayContaining([expect.objectContaining({ id: envelope.id, body: envelope.body })]));
+    expect(result.pollingAdvice).toBeUndefined();
+    expect(daemon.bus.queued("claude")).toBe(0);
+    expect(daemon.bus.queueList("claude").some(row => row.state === "completed" && row.originals.some(env => env.id === envelope.id))).toBe(true);
+  } finally {
+    Board.prototype.statusTasks = statusTasks;
+    daemon.bus.pull = pull;
+  }
 }, 20_000);
