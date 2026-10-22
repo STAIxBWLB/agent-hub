@@ -258,7 +258,7 @@
       ]
     },
     "src/cli/help.ts": {
-      "verifiedAgainst": "864dc1db576c21909bfe403897248756f8825a5b",
+      "verifiedAgainst": "7f282970792ed1acad08cf60bcadb8b1bc5cfd53",
       "paths": [
         "src/cli/main.ts",
         "src/cli/launch.ts",
