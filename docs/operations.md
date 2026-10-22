@@ -1118,6 +1118,29 @@ falls by 0.5 or more inside one window id, once per peer, window and `resetsAt`.
 numbers only, add no protocol version and are ignored by a reader that does not know them. `ahub report`
 and the console do not show them yet (usage view slices #683 U2 to U4).
 
+`ahub usage` reads the same events from an incremental roll-up in `hub.db` instead of rescanning the log (#683):
+
+```bash
+ahub usage [--since 7d|<iso>] [--by peer|task|issue|pr|release|day|model] [--json]
+ahub usage limits [--peer <id>] [--json]   # current quota windows, plus every pause, resume and reset
+ahub usage total [--json]                  # lifetime development tokens since the first event, per peer and overall
+```
+
+The daemon folds `events.jsonl` into `usage_rollup`, `token_rollup` and `limit_events` from a stored byte offset, at most 8 MiB per pass and
+only whole lines, and each pass commits its rows and the new offset together, so a crash repeats a pass and never half-applies one. A rebuild
+from byte 0 gives the same rows (tested). A log that was replaced by a shorter one is folded again from the start. On this project's 47 MB,
+238k-line log the first fold took about 170 ms and a `usage` command about 95 ms, against about 150 ms for `ahub report --by task`, which
+rescans the whole file on each call.
+`issue`, `pr` and `release` are the board's current links of each task, read when you ask, so a task linked later is counted under its issue
+for the history it already spent. A task with no link, and a record with no task, are `unattributed`.
+
+Every number names its source: `native` (the provider's own counter), `hub count` (the hub's own `tokens` increments, which cover peers that
+report no usage record, such as Jcode and Kimi), or `unknown`. Unknown is never shown as 0. `TOTAL` includes cache reads and `WITHOUT CACHE`
+removes them; Claude's total is the sum of its four reported counters because its transcript carries none (`ahub report` still shows it as unknown), and a source whose input already
+contains the cached part (Codex, the gateway) gets no derived total. A lifetime total that mixes a native and a hub-counted peer is labelled
+`hub count`, and the overall `WITHOUT CACHE` is unknown unless every peer's cache split is known. A private task shows its id and `[pii]`, never
+a title. The person and a configured planner may read usage, in the console, the dashboard control link or the CLI; every other agent is refused.
+
 `ahub report` counts the same overlap warnings as `scripts/overlaps.ts`, from the
 structured events instead of log lines. `--by task` uses the task each usage and
 token record was attributed to when it was written: the delivery that started the

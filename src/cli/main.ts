@@ -81,6 +81,7 @@ import { addonReport, appendRecords, formatAddons, formatResearch, LABELS, label
 import { summarize, summarizeByTask } from "../hub/report.ts";
 import { readDogfood } from "../hub/dogfood-read.ts";
 import { dogfoodSince, formatDogfood } from "../hub/dogfood.ts";
+import { USAGE_GROUPS } from "../hub/usage-rollup.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 import { pathWarnings } from "../hub/conflicts.ts";
 import { COMPLETION_SHELLS, completionScript } from "./completion.ts";
@@ -88,7 +89,7 @@ import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, LIVE_TEST_PERS
 import { recordCliAudit, recordDelegatedCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
-import { outputWidth, renderRoster, renderStatus, renderBoard, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, type DoctorCheck } from "./output.ts";
+import { outputWidth, renderRoster, renderStatus, renderBoard, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
 import { renderHelp, configuredAcpHelp } from "./help.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
@@ -1769,6 +1770,29 @@ const commands: Record<string, () => Promise<void> | void> = {
     const data = by >= 0 ? summarizeByTask(events) : summarize(events);
     if (options.json) return console.log(JSON.stringify(data, null, 2));
     printOutput(renderReport(data, options.columns, Date.now(), by >= 0), options.color);
+  },
+  usage: async () => {
+    const options = outputOptions();
+    const rest = outputArguments();
+    const sub = rest[0] !== undefined && !rest[0].startsWith("--") ? rest[0] : undefined;
+    if (sub !== undefined && !["limits", "total"].includes(sub)) fail("usage: ahub usage [--since 7d|<iso>] [--by peer|task|issue|pr|release|day|model] [--json] | limits [--peer <id>] [--json] | total [--json]");
+    const flags = sub === undefined ? rest : rest.slice(1);
+    const valueFlags = sub === "limits" ? ["--peer"] : sub === undefined ? ["--since", "--by"] : [];
+    for (let i = 0; i < flags.length; i++) {
+      if (!valueFlags.includes(flags[i]!)) fail(`unknown argument ${JSON.stringify(flags[i]!.slice(0, 40))}; run ahub help`);
+      if (flags[++i] === undefined || flags[i]!.startsWith("--")) fail(`${flags[i - 1]} needs a value`);
+    }
+    const value = (flag: string) => { const at = args.indexOf(flag); return at >= 0 ? args[at + 1] : undefined; };
+    const by = value("--by"), peer = value("--peer");
+    if (by !== undefined && !(USAGE_GROUPS as readonly string[]).includes(by)) fail(`--by takes ${USAGE_GROUPS.join(", ")}`);
+    const from = since();
+    const hub = await connect();
+    const reply = await hub.request(sub === "limits" ? { t: "usage", op: "limits", ...(peer ? { peer } : {}) } : sub === "total" ? { t: "usage", op: "total" }
+      : { t: "usage", op: "query", by: by ?? "peer", ...(from ? { since: from } : {}) }, 35_000);
+    hub.close();
+    if (!reply.ok) return fail(String(reply.error ?? "usage refused"));
+    if (options.json) return console.log(JSON.stringify(sub === "limits" ? { limits: reply.limits, current: reply.current } : sub === "total" ? reply.total : reply.usage, null, 2));
+    printOutput(sub === "limits" ? renderLimits(reply.limits, reply.current, options.columns) : sub === "total" ? renderTotal(reply.total, options.columns) : renderUsage(reply.usage, options.columns), options.color);
   },
   facts: async () => {
     if (!args.includes("--hook")) return fail("usage: ahub facts --hook (a Claude Code PreToolUse, PostToolUse and Stop hook)");
