@@ -19,9 +19,11 @@ const instances = { "claude-review": { kind: "claude", roles: ["reviewer"] } };
 test("a Claude instance declares reviewer or planner roles and no headless start or worktree", () => {
   expect(validateInstances(instances, builtinProjectCatalog())["claude-review"]).toEqual({ kind: "claude", roles: ["reviewer"] });
   expect(validateInstances({ "claude-plan": { kind: "claude", roles: ["planner", "reviewer"] } }, builtinProjectCatalog())["claude-plan"]!.roles).toEqual(["planner", "reviewer"]);
-  for (const entry of [{ kind: "claude" }, { kind: "claude", roles: [] }, { kind: "claude", roles: ["implementer"] }, { kind: "claude", roles: ["reviewer", "verifier"] }]) expect(() => validateInstances({ "claude-x": entry }, builtinProjectCatalog())).toThrow("must declare its roles");
+  for (const entry of [{ kind: "claude" }, { kind: "claude", roles: [] }]) expect(() => validateInstances({ "claude-x": entry }, builtinProjectCatalog())).toThrow("must declare its roles");
+  // #525 R1: an implementer or verifier channel instance is allowed, but only in its own worktree.
+  for (const entry of [{ kind: "claude", roles: ["implementer"] }, { kind: "claude", roles: ["reviewer", "verifier"] }]) expect(() => validateInstances({ "claude-x": entry }, builtinProjectCatalog())).toThrow("needs its own worktree");
   expect(() => validateInstances({ "claude-x": { kind: "claude", roles: ["reviewer", "planner"], start_mode: "headless" } }, builtinProjectCatalog())).toThrow('exactly ["reviewer"]'); // #223: reviewer-only may be headless
-  expect(() => validateInstances({ "claude-x": { kind: "claude", roles: ["reviewer"], worktree: "../wt" } }, builtinProjectCatalog())).toThrow("person's terminal");
+  expect(() => validateInstances({ "claude-x": { kind: "claude", roles: ["reviewer"], worktree: "../wt" } }, builtinProjectCatalog())).toThrow("reads the project checkout");
 });
 
 test("each Claude instance keeps its own launch, session and context files; the builtin keeps the old names", () => {
