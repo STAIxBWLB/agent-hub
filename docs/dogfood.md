@@ -59,6 +59,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 
 | Feature | State here | Measured by |
 | --- | --- | --- |
+| Dogfood scorecard (#687) | on after release; read-only weekly receipt | `ahub report --dogfood --since 7d --json`; bounded evidence and explicit unknowns |
 | Console and dashboard | on | control-request latency, connection timeouts in `hub.log` |
 | Usage view (#683) | pending | its own panels |
 | Settings reload | on | reloads applied, pending restarts |
@@ -70,3 +71,16 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 ## Decisions
 
 - 2026-10-22: SDLC mode `advise` (`.agenthub/sdlc.toml`, machine-local). Move to `enforce` after one week of advise data, when the person decides that the false-blocker rate is low. Record the decision here.
+
+## Weekly scorecard
+
+Run `ahub report --dogfood --since 7d --json` against this repository's own hub before the weekly review and each release. It has the same read-only authority as `ahub report`, so the planner can produce the receipt. Save the result and its source commit under `docs/verification/dogfood/YYYY-MM-DD.md`. Run it once at the work boundary; do not create a polling loop.
+
+- The scorecard exports ids, timestamps, counts and coverage only. PII tasks are counted without titles. GitHub reads exclude their known PRs. It never runs a model or creates an issue or task.
+- `null` in JSON means unknown; the text format prints `unknown`. Source availability and completeness are separate. Partial event data is an observed subset, not a complete token bill; event, usage and attribution coverage are separate.
+- Flow is scoped to at most 16 merged PRs found by a capped GitHub read. PR lead time runs from the earliest linked task proposal to the last linked task approval. Missing task links remain unknown. Review rounds reuse `costMetrics`' board handoff definition. CI reads use `created=<since>..<until>` so lifetime history does not consume the 100-run page. A still-truncated window stays unknown. First-pass CI needs the first run's original conclusion and a PR opened within the window; older or unknown PR opening times stay unknown because earlier runs may be outside the window. A later rerun's success does not certify the first result. Same-head reruns count actual `run_attempt - 1`, not duplicate workflows.
+- Connector counts are review threads first opened by that bot after all linked tasks were approved, not a severity classification. Bug counts use explicit cross-references and the `bug` label; they show association, not proven causality, and include the observation age up to 14 days.
+- Each input event/log file has a 16 MiB read cap. The board has row, per-cell and total bounds. GitHub has a 20 s deadline, a 16-PR cap, 100-node pages and 128 KiB responses. Missing, malformed or truncated evidence remains incomplete; the report does not silently call it zero.
+- Digest and held counts describe retained journal rows created in the window. The journal prunes terminal rows, so these are not historical totals. It does not record the first delivery timestamp: `updatedAt` must not be used as delivery latency.
+- Control latency, connection timeouts, CPU/RSS history, actual snapshot exhaustion totals and the adjudicated real-blocker rate currently have no durable source and remain unknown. Snapshot budget notices count one log diagnostic per affected burst. Error classes and advise-gate matches are fixed-pattern log counts; no raw line is exported.
+- Adoption row ids are the 1-based table-row order in this document at the feature-table source commit recorded in the receipt. A matching event is evidence of that leg's use, not proof that the entire feature was enabled or correct. Rows without a dedicated observable leg stay unknown.

@@ -79,6 +79,8 @@ import { selectedMemoryProfile } from "../hub/memory-profile.ts";
 import { checkMemoryProfiles, formatMemoryProfileCheck } from "../hub/memory-profile-check.ts";
 import { addonReport, appendRecords, formatAddons, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
 import { summarize, summarizeByTask } from "../hub/report.ts";
+import { readDogfood } from "../hub/dogfood-read.ts";
+import { dogfoodSince, formatDogfood } from "../hub/dogfood.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 import { pathWarnings } from "../hub/conflicts.ts";
 import { COMPLETION_SHELLS, completionScript } from "./completion.ts";
@@ -1752,8 +1754,15 @@ const commands: Record<string, () => Promise<void> | void> = {
     const r = researchReport(records, from);
     console.log(args.includes("--json") ? JSON.stringify(r, null, 2) : formatResearch(r).join("\n"));
   },
-  report: () => {
+  report: async () => {
     const options = outputOptions();
+    if (args.includes("--dogfood")) {
+      let from: number;
+      try { from = dogfoodSince(args.filter(arg => !arg.startsWith("--color="))); }
+      catch { return fail("usage: ahub report --dogfood [--since 7d|<iso>] [--json]"); }
+      const scorecard = await readDogfood(cwd, stateDir, from);
+      return console.log(options.json ? JSON.stringify(scorecard, null, 2) : formatDogfood(scorecard).join("\n"));
+    }
     const by = args.indexOf("--by");
     if (by >= 0 && args[by + 1] !== "task") return fail("--by takes task");
     const events = readEvents(join(stateDir, "events.jsonl"), since());
