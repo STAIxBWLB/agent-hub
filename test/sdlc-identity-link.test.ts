@@ -153,3 +153,30 @@ test("a PR read for one head is never linked to a task whose commit changed duri
   expect(done.sdlc?.pr).toBeUndefined();
   expect(done.sdlc).toMatchObject({ repo: REPO, issue: 691 });
 });
+
+test("a PR staged for one repository is never linked after the task's repository changed during the read (#694)", async () => {
+  let board!: Board, task = 0;
+  const gh: SdlcGh = async args => {
+    if (args[0] === "pr" && args[1] === "list") {
+      if (task) board.update(task, "codex", "repo moved", { refs: { repo: "other/repo", commit: HEAD } });
+      return { code: 0, stdout: JSON.stringify([{ number: 692, headRefOid: HEAD, headRefName: "feat/691" }]) };
+    }
+    return { code: 1, stdout: "" };
+  };
+  const made = rig(gh); board = made.board;
+  const moving = board.propose("claude", { title: "no issue named here", class: "implement" });
+  board.update(moving.id, "codex", "accepted", { state: "in_progress", owner: "codex", refs: { commit: HEAD } });
+  task = moving.id;
+  const done = await made.tasks.done("codex", moving.id, "PR up");
+  expect(done.sdlc?.pr).toBeUndefined();
+});
+
+test("an assigned reviewer's done admits the staged link and persists it with the review request (#694)", async () => {
+  const gh: SdlcGh = async args => args[0] === "pr" && args[1] === "list" ? { code: 0, stdout: JSON.stringify([{ number: 692, headRefOid: HEAD, headRefName: "feat/691" }]) } : { code: 1, stdout: "" };
+  const { board, tasks } = rig(gh);
+  const reviewed = board.propose("claude", { title: "Fix #691: reviewed", class: "implement" });
+  board.update(reviewed.id, "codex", "accepted", { state: "in_progress", owner: "codex", reviewer: "claude" });
+  const done = await tasks.done("codex", reviewed.id, "PR up", { commit: HEAD });
+  expect(done.state).toBe("in_review");
+  expect(done.sdlc).toMatchObject({ repo: REPO, issue: 691, pr: 692 });
+});

@@ -2380,7 +2380,8 @@ export class Tasks {
     let issue: { repo: string; issue: number } | undefined;
     if (!task.sdlc?.issue) { try { issue = this.planIssueIdentity(task); } catch { issue = undefined; } }
     const commit = refs?.commit ?? task.refs.commit, branch = refs?.branch ?? task.refs.branch;
-    const pr = link && !task.sdlc?.pr && link.basis.commit === commit && (commit !== undefined || link.basis.branch === branch) ? link : undefined;
+    const repository = task.sdlc?.repo ?? task.refs.repo ?? this.d.repository;
+    const pr = link && !task.sdlc?.pr && repository?.toLowerCase() === link.repo.toLowerCase() && link.basis.commit === commit && (commit !== undefined || link.basis.branch === branch) ? link : undefined;
     let next = task.sdlc;
     if (issue) next = linkedReceipt(next, issue, config) ?? next;
     if (pr) next = linkedReceipt(next, { repo: pr.repo, pr: pr.pr }, config) ?? next;
@@ -3086,7 +3087,7 @@ export class Tasks {
     task = current();
     let reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { reviewEvidence = await this.lifecycleGate(task, "review"); task = current(); }
-    const reviewAdmission = task.reviewer ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence) : undefined;
+    const reviewAdmission = task.reviewer ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.withLink(staged, link, refs)) : undefined;
     task = current();
     // A member of a silent cohort (issue #107): its done is an intent, and the last of them integrates first.
     const cohort = this.cohorts.of(task.id);
@@ -3265,7 +3266,7 @@ export class Tasks {
     }
     // A delayed local check needs a new readback; the immediate done path already admitted before effects.
     if (reviewer && !admission && (this.d.sdlc?.config().mode ?? "off") !== "off") {
-      admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence);
+      admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence, undefined, staged => this.withLink(staged, link, refs));
       task = this.withLink(this.completionCurrent(task.id, by, false), link, refs);
     }
     selection = this.poolReview(task, refs);
@@ -3364,7 +3365,7 @@ export class Tasks {
 
   /** The one place a review request is written: the first reviewer and a replacement get the same text, refs and privacy. */
   /** Review admission is separate from brief construction (#228). All refusals precede the requesting done's writes. */
-  private async reviewRequestAdmission(task: Task, refs?: TaskRefs, preEffect = true, actor: PeerId = task.owner ?? USER, previous?: PrEvidence, sameRequest?: () => boolean): Promise<ReviewReadiness | undefined> {
+  private async reviewRequestAdmission(task: Task, refs?: TaskRefs, preEffect = true, actor: PeerId = task.owner ?? USER, previous?: PrEvidence, sameRequest?: () => boolean, stage: (task: Task) => Task = task => task): Promise<ReviewReadiness | undefined> {
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
     if (mode === "off") return undefined;
     let quietDrift = false;
@@ -3373,7 +3374,8 @@ export class Tasks {
         const holders = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([peer]) => peer);
         if (holders.length !== 1 || holders[0] !== actor) throw new (preEffect ? PreEffectToolRefusal : Error)("review admission authority changed");
       }
-      const current = this.need(task.id, false, preEffect);
+      // #694: the board copy seen through the same staged identity link the caller's task carries.
+      const current = stage(this.need(task.id, false, preEffect));
       const changed = current.history.length !== task.history.length;
       const quiet = current.history.length > task.history.length && current.history.slice(task.history.length).every(entry => QUIET_EVENTS.has(entry.event));
       const sameHistory = !changed || (mode === "advise" && quiet) || !!sameRequest?.();
