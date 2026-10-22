@@ -92,7 +92,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub task unassign <id> [--role owner|reviewer] [--revision N]", "person only: remove the owner/reservation or reviewer without routing a replacement or stopping native work"],
     ["ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N]", "person only: close obsolete work with a reason; retain its history without stopping native work or releasing dependents"],
     ["ahub task label <id> ok|regressed|reverted|incomplete|wrong|abandoned [--created <time>]", "your later verdict on an approved task, kept in the research records (research must be on)"],
-    ["ahub review <id> approved|changes_requested [note...] [--unmet <item>]... [--head <sha>] [--findings <json>]", "give a review verdict on a task"],
+    ["ahub review <id> approved|changes_requested [note...] [--unmet <item>]... [--head <sha>] [--findings <json>]", "give a review verdict on a task; the person can do the same in ahub console: Tasks, select the task, r, then a (approve) or c (request changes, with a note)"],
     ["ahub review brief <id>", "print the review brief of a task's commit: reviewable and excluded files, rules, coverage to account for"],
     ["ahub route explain <id>", "why a task went where it went, its reserved owner included"],
     ["ahub route explain --class <c> <title...>", "what would happen to such a task now"],

@@ -85,7 +85,7 @@ import { USAGE_GROUPS, LIMITS_MAX } from "../hub/usage-rollup.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 import { pathWarnings } from "../hub/conflicts.ts";
 import { COMPLETION_SHELLS, completionScript } from "./completion.ts";
-import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, LIVE_TEST_PERSON_REFUSAL, liveTestRefusal, peerCommandRefusal } from "./identity.ts";
+import { agentShellCause, classifyPeerCommand, cliCommandLabel, detectCliIdentity, LIVE_TEST_PERSON_REFUSAL, liveTestRefusal, peerCommandRefusal } from "./identity.ts";
 import { recordCliAudit, recordDelegatedCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
@@ -452,7 +452,14 @@ async function taskOp(op: string, a: Record<string, unknown>, throwOnError = fal
   try {
     if (op === "hub_task_cancel" && !hub.features.includes("task_cancel")) fail("this daemon does not support task cancellation; upgrade it first");
     const res = await hub.request({ t: "task", op, args: a }, timeoutMs ?? (op === "github_import" ? 60_000 : 30_000));
-    if (!res.ok) { if (throwOnError) throw new Error(res.error); audit("refused"); fail(res.error); }
+    if (!res.ok) {
+      if (throwOnError) throw new Error(res.error);
+      audit("refused");
+      // #711: an agent shell refused something only the person may do is told why it counts as an agent. The refusal and the authority stay as they were.
+      const cause = agentShellCause(identity, String(res.error));
+      if (cause) console.error(`ahub: ${res.error}\n${cause}`), process.exit(1);
+      fail(res.error);
+    }
     return res.text;
   } finally { if (!connection) hub.close(); }
 }

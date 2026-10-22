@@ -8,6 +8,7 @@ import type { ProgressStage } from "../ui/task-progress.ts";
 import { sanitize } from "../hub/envelope.ts";
 import type { SettingRow, SettingValue } from "../hub/settings.ts";
 import { symbolFields, overlapFields } from "./console-symbols.ts";
+import { choicePrompt, reviewChoiceFor, reviewHint, reviewRefusal, verdictGuide, verdictInput, type ReviewChoice, type Verdict } from "./console-review.ts";
 import { USAGE_DROP, USAGE_HEAD, usageCells, usageDetail, usagePeers, usageTaskLines, type UsageState } from "./console-usage.ts";
 
 export interface Approval {
@@ -53,6 +54,10 @@ export interface ConsoleState {
   confirm?: { type: "permission"; id: string; option: string; peer: string } | { type: "command"; args: string[]; prompt?: string; lock?: ConsoleState["actionLock"] } | { type: "permission_default"; peer: string; source: string };
   optionChoice?: string;
   modeChoice?: string;
+  /** #711: `r` on a task in review opens this choice (a approve, c request changes) the way `m` opens the permission-mode choice. */
+  reviewChoice?: ReviewChoice;
+  /** The guide line above the input after a verdict was chosen; it goes with the input line. */
+  reviewGuide?: string;
   permissionDefaults: PermissionDefault[];
   permissionDefaultsHandled: string[];
 }
@@ -88,7 +93,7 @@ export function syncPermissionDefaults(s: ConsoleState, rows: unknown): boolean 
   s.permissionDefaultsHandled = s.permissionDefaultsHandled.filter(fingerprint => current.has(fingerprint));
   const pending = s.confirm;
   if (pending?.type === "permission_default" && !s.permissionDefaults.some(row => row.peer === pending.peer && row.source === pending.source)) s.confirm = undefined;
-  if (s.settingsEdit || s.confirm || s.editing || s.input || s.modeChoice || s.optionChoice || s.help) return false;
+  if (s.settingsEdit || s.confirm || s.editing || s.input || s.modeChoice || s.reviewChoice || s.optionChoice || s.help) return false;
   const next = s.permissionDefaults.find(row => !s.permissionDefaultsHandled.includes(permissionDefaultFingerprint(s, row)));
   if (!next) return false;
   s.confirm = { type: "permission_default", peer: next.peer, source: next.source };
@@ -356,7 +361,7 @@ const KEYS: [string, string[]][] = [
   ["Panels", ["1-5 panel", "Left/Right panel", "j/k or Up/Down move", "Home/< first, End/> last", "Enter view", "j/k scroll a view", "w web UI (outside Peers)", "o pet window"]],
   ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
   ["Peers", ["p pause", "r resume", "m permission mode", "w WIP limit", "l make planner (then y)"]],
-  ["Tasks", ["b backlog/open", "n add backlog", "a assign/reserve (then y)", "u unassign (then y)", "r review (in review)", "p pull, e plan (backlog)", "R return to backlog", "c cancel (then y)"]],
+  ["Tasks", ["b backlog/open", "n add backlog", "a assign/reserve (then y)", "u unassign (then y)", "r approve or request changes (in review; a or c, then a note)", "p pull, e plan (backlog)", "R return to backlog", "c cancel (then y)"]],
   ["Queue", ["r resolve (reason, then y)", "queued=discard, needs_review=retry"]],
   ["Events", ["f peer filter", "g kind filter"]],
   ["Settings", ["6 Settings panel", "e edit", "u undo", "preview, reason, then y"]],
@@ -479,7 +484,7 @@ function lockedCommandPrompt(lock: NonNullable<ConsoleState["actionLock"]>, args
   return `unassign ${role} ${affected} on task #${lock.id} at revision ${lock.revision} -> ${resulting}${guidance}; native work and uncertain deliveries are not stopped or resolved`;
 }
 export function reduceConsole(state: ConsoleState, key: string, now = Date.now()): { state: ConsoleState; effects: ConsoleEffect[] } {
-  const attentionKeyBlocked = !!(state.settingsEdit || state.confirm || state.optionChoice || state.modeChoice || state.help || state.editing || state.input);
+  const attentionKeyBlocked = !!(state.settingsEdit || state.confirm || state.optionChoice || state.modeChoice || state.reviewChoice || state.help || state.editing || state.input);
   // A notice answers the key before this one; one that pruning raises now stays.
   let s = pruneApprovals({ ...state, notice: "" }, now); const effects: ConsoleEffect[] = [];
   const done = () => ({ state: bound(s), effects });
@@ -550,19 +555,34 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     }
     return done();
   }
+  if (s.reviewChoice) {
+    const choice = s.reviewChoice;
+    if (key === "\x1b") { s.reviewChoice = undefined; return done(); }
+    const verdict: Verdict | undefined = key === "a" ? "approved" : key === "c" ? "changes_requested" : undefined;
+    if (verdict) {
+      s.reviewChoice = undefined;
+      // The task may have left review while the choice was open: say so instead of prefilling a command the hub will refuse.
+      const current = s.tasks.find(task => task.id === choice.id);
+      if (current && current.state !== "in_review") notify(s, `#${choice.id} is no longer in review (${current.state})`, now);
+      else { s.input = verdictInput(choice.id, verdict); s.reviewGuide = verdictGuide(choice.id, verdict); s.editing = true; }
+    }
+    return done();                                                                            // any other key leaves the choice open
+  }
   if (s.help && s.mode === "panels" && !["?", "\x1b", "q"].includes(key)) return done(); // the key table is modal
   if (s.editing || s.input) {
-    if (key === "\x1b") { s.input = ""; s.editing = false; s.actionLock = undefined; }
+    if (key === "\x1b") { s.input = ""; s.editing = false; s.actionLock = undefined; s.reviewGuide = undefined; }
     else if (key === "\x7f" || key === "\b") s.input = Array.from(s.input).slice(0, -1).join("");
     else if (key === "\x15") s.input = "";
     else if (key === "\x1b[A" || key === "\x1b[B") {
       s.historyIndex = Math.max(0, Math.min(s.history.length, s.historyIndex + (key === "\x1b[A" ? -1 : 1)));
       s.input = s.history[s.historyIndex] ?? "";
     } else if (key === "\r" || key === "\n") {
-      const input = s.input, lock = s.actionLock; s.input = ""; s.editing = false; s.actionLock = undefined;
+      const input = s.input, lock = s.actionLock; s.input = ""; s.editing = false; s.actionLock = undefined; s.reviewGuide = undefined;
       if (!input.trim()) return done();
       try {
         const parsed = parseConsoleCommand(input);
+        const reviewProblem = reviewRefusal(parsed);                                           // an empty changes note never reaches the hub (#711)
+        if (reviewProblem) throw new Error(reviewProblem);
         const args = parsed[0] === "permission" ? [...parsed.filter(arg => arg !== "--yes"), ...(parsed.includes("--yes") ? ["--yes"] : [])] : parsed;
         if (args[0] === "queue" && args[1] === "resolve") {
           const reason = args.indexOf("--reason"), action = commandFlag(args, "--action");
@@ -754,8 +774,13 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       else s.confirm = { type: "command", args: ["settings", "set", "planner", peer], prompt: `make ${peer} the planner` };
       return done();
     }
-    const prefill = s.panel === 1 && key === "p" ? `pause ${item}` : s.panel === 1 && key === "r" ? `resume ${item}` :
-      s.panel === 3 && key === "r" && selected.state === "in_review" ? `review ${item} ` : undefined;
+    // #711: `r` on a task in review asks which verdict first, from the row or from the open detail, so the person is never left to guess the next word.
+    if (s.panel === 3 && key === "r" && selected.state === "in_review") {
+      const choice = reviewChoiceFor({ ...selected, reviewer: selected.reviewer ?? s.tasks.find(task => task.id === item)?.reviewer, signals: selected.signals ?? s.tasks.find(task => task.id === item)?.signals });
+      if (choice) s.reviewChoice = choice;
+      return done();
+    }
+    const prefill = s.panel === 1 && key === "p" ? `pause ${item}` : s.panel === 1 && key === "r" ? `resume ${item}` : undefined;
     if (prefill) { s.input = prefill; s.editing = true; return done(); }
     if (s.panel === 3 && key === "c") {
       if (!s.features?.includes("task_cancel")) { notify(s, "task cancellation requires a newer hub", now); return done(); }
@@ -911,7 +936,7 @@ function taskHints(row: any): string[] {
   const review = row.state === "in_review";
   const hints = [review ? "a reviewer" : "a assign"];
   if (review ? row.reviewer : row.owner || row.reserved) hints.push("u unassign");
-  if (review) hints.push("r review");
+  if (review) hints.push(reviewHint(row.reviewer));
   if (["proposed", "in_progress"].includes(row.state)) hints.push("R return");
   return hints;
 }
@@ -930,7 +955,9 @@ function hint(s: ConsoleState, columns: number): string {
   if (s.mode === "stream") return [...pending, ...(pending.length ? ["v view"] : []), ...(s.approvals.length > (pending.length ? 1 : 0) ? ["[ ] select"] : []), "Tab panels", ": command", "? keys", "q quit"].join("  ");
   if (s.help) return "? or Esc close  q quit";
   const approvals = s.panel === 2 ? pending : [];
-  if (s.detail !== undefined || s.requestDetail) return [...approvals, "j/k scroll", "Esc back", "? keys", "q quit"].join("  ");
+  // An open task detail names the review action too (#711): the detail is where the person reads the task, so it is where they decide.
+  const shown = s.panel === 3 && s.detail && typeof s.detail === "object" && (s.detail as { state?: unknown }).state === "in_review" ? reviewHint((s.detail as { reviewer?: unknown }).reviewer) : undefined;
+  if (s.detail !== undefined || s.requestDetail) return [...approvals, ...(shown ? [shown] : []), "j/k scroll", "Esc back", "? keys", "q quit"].join("  ");
   const rows = panelRows(s); const row = selectedPanelRow(s);
   const text = [...approvals, ...panelContext(s, row), ...(s.panel === 5 ? ["f peer", "g kind"] : []), ...(rows.length ? ["j/k move"] : []), ...(row ? ["Enter view"] : []), "? keys", ": command", "Tab stream", "q quit"].join("  ");
   if (s.panel === 3 && Bun.stringWidth(text) > columns) {
@@ -1003,6 +1030,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     prompt = edit.phase === "value" ? `value for ${edit.key} (inherit removes): ${edit.text}` : edit.phase === "preview" ? "checking setting preview; Esc cancels" : edit.phase === "reason" ? `reason: ${edit.text}` : `${edit.undo ? "undo last setting" : `set ${edit.key}`} (${edit.reason})? y/N`;
   }
   if (s.modeChoice) prompt = `permission ${s.modeChoice}: 1 ask  2 ask-when-needed  3 never-ask  Esc cancel`;
+  if (s.reviewChoice) prompt = choicePrompt(s.reviewChoice);
   const choice = s.optionChoice ? s.approvals.find(a => a.id === s.optionChoice) : undefined;
   if (choice) prompt = `allow request ${choice.id} (${choice.peer}) with: ${allowOptions(choice).map((o, i) => `${i + 1} ${quoted(o.name)}`).join("  ")}  Esc cancel`;
   const summary: Span[] = [];
@@ -1029,7 +1057,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   const defaultSource = s.confirm?.type === "permission_default" ? s.confirm.source : undefined;
   if (s.confirm?.type === "permission_default") prompt = `enable never-ask default for ${s.confirm.peer}? y/n Esc defer`;
   const footer = [fitLine(neverPeer ? [span(permissionBoundary(neverPeer, undefined, createProjectAdapterCatalog()), "attention")] : summary, columns),
-    fitLine(defaultSource !== undefined ? [span(`source ${quoted(defaultSource.split(/[\\/]/).at(-1))}; stays ask until y`, "attention")] : approvals, columns),
+    fitLine(defaultSource !== undefined ? [span(`source ${quoted(defaultSource.split(/[\\/]/).at(-1))}; stays ask until y`, "attention")] : s.editing && s.reviewGuide ? [span(s.reviewGuide, "info")] : approvals, columns),
     fitLine([span(prompt, s.confirm || s.optionChoice ? "attention" : undefined)], columns)];
   const rule = [span("-".repeat(Math.max(0, columns)), "muted")];
   if (s.mode === "stream") {

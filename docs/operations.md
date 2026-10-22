@@ -150,6 +150,21 @@ per peer (`#id [pii]` for a private task, never a title). The panel asks the hub
 `usage unavailable`. The numbers come from the roll-up of `ahub usage`, so the console and the CLI agree. A request folds the event log first, within 250 ms;
 when a very large log is not folded yet the answer carries `behind: true`, the panel says `still catching up` and `ahub usage` prints a warning on stderr, so a partial number is never shown as the whole.
 
+Reviewing from the console (#711): on a task in review in Tasks (a selected row, or the open task detail), `r` asks which verdict first on the prompt line,
+`review #372 "<title>": a approve  c request changes  Esc cancel` (the title is quoted and cut, a private task shows `[pii]`). `a` puts `review 372 approved ` on
+the input line with a guide line above it (`Enter approves #372. You can type a note first. Esc cancels.`); `c` puts `review 372 changes_requested ` there and
+asks for what to fix (`Say what to fix, then Enter. Esc cancels.`): Enter with no note is refused in the console with `say what to fix before requesting
+changes`, and nothing reaches the hub. The footer says `r approve or request changes`, and `your review: r approve or request changes` when the reviewer is
+`user`, also while the task detail is open. When the command finishes the console shows `#372 approved` or `#372 changes requested`, or the CLI's refusal verbatim
+as a failure notice, in panels mode too. A task that left review while the choice was open says `#372 is no longer in review (<state>)` and nothing is
+prefilled. The console runs `ahub review` as the person; the hub still decides who may review, and nothing about authority changed.
+
+An agent shell (a `!` command inside a Claude or Codex session, or any shell with `AGENTHUB_PEER_ID`, `CLAUDECODE` or `CODEX_THREAD_ID` set) runs as that agent, not as
+you. When the hub refuses it something only the person or the task's own reviewer may do, stderr adds one line: `This shell runs as agent "claude" (AGENTHUB_PEER_ID
+and CLAUDECODE are set), not as you. Run the command in your own terminal, or use the ahub console: Tasks, select #372, r.` The refusal and the authority are the
+same as before, and the console identity never gets the line. The hub's notice that a task waits for your review now names the console path as well as
+`ahub review N approved|changes_requested [note]`.
+
 The console attention companion (#280) shows waiting, blocked, review, working,
 idle or asleep with separate action/watch counts. Outside the Tasks table, `n` selects the exact approval,
 held queue or review row, or prints applicable guidance; it never answers a

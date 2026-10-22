@@ -4,6 +4,7 @@ import { StringDecoder } from "node:string_decoder";
 import type { ControlClient } from "../hub/control-client.ts";
 import { contextLine } from "./status-lines.ts";
 import { renderTailEvent } from "./tail-render.ts";
+import { reviewResult } from "./console-review.ts";
 import { syncPermissionDefaults, permissionDefaultText, approvalFrom, initialConsoleState, keyTable, notify, paint, permissionText, plural, pruneApprovals, reduceConsole, renderConsoleLines, resolveColor, stateTone, streamTokens, wrapStreamTokens, terminalText, wrap, captureConsoleSelection, selectedPanelRow, appendEvent, FIRST_KEYS, LAST_KEYS } from "./console-state.ts";
 import type { ConsoleEffect, ConsoleEvent, Detail, Tone } from "./console-state.ts";
 import type { BusEvent } from "../hub/bus.ts";
@@ -319,7 +320,16 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       let diagnostic = "";
       // Output lines sit at column 4, as message bodies do: what a command prints can carry peer text, and columns 0 and 2 are the hub's.
       const output = (text: string) => { if (active) { diagnostic = (diagnostic + terminalText(text)).slice(-2000); stream({ text: terminalText(text).replace(/\t/g, " ").replace(/\n$/, "").replace(/^/gm, "    "), kind: "command" }); draw(); } };
-      cancelChild = run(action.args, output, (code = 0) => { childRunning = false; cancelChild = undefined; if (active) { if (code) notice(diagnostic.trim() || `command exited ${code}`); void refresh(); } }, Math.max(1, columns - 4));
+      cancelChild = run(action.args, output, (code = 0) => {
+        childRunning = false; cancelChild = undefined;
+        if (active) {
+          // #711: a review's result is a notice in panels mode too (where the stream is not on screen): `#372 approved`, or the CLI's own refusal verbatim.
+          const review = reviewResult(action.args, code, diagnostic.trim());
+          if (review) notify(state, review.text, Date.now(), review.tone === "success" ? "success" : "failure");
+          else if (code) notice(diagnostic.trim() || `command exited ${code}`);
+          void refresh(); draw();
+        }
+      }, Math.max(1, columns - 4));
     } catch (error) { childRunning = false; notice(String((error as Error).message)); draw(); }
   };
   const handle = (key: string) => {

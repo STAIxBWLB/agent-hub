@@ -3303,7 +3303,7 @@ export class Tasks {
       this.releaseNotice(`task ${this.publicTitle(next)} done by ${by}, no reviewer: approved`);
       await this.releaseDependents(next);
     }
-    else if (reviewer === USER) this.releaseNotice(`task ${this.publicTitle(next)} done by ${by}: review it with ahub task show ${next.id}, then ahub review ${next.id} approved|changes_requested [note]`);
+    else if (reviewer === USER) this.releaseNotice(`task ${this.publicTitle(next)} done by ${by}: review it in the ahub console (Tasks, select #${next.id}, press r) or with ahub review ${next.id} approved|changes_requested [note]`);
     else this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${reviewer}`, () => this.sendReview(next, reviewer, "", admission));
     return next;
   }
