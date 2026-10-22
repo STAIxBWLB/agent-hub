@@ -37,12 +37,18 @@ export type NativeDoctorOptionalProbe =
   | { kind: "pinned-version"; name: string; command: string[]; compat: CompatId; confirmed: string; unconfirmed: string };
 
 /** The host runs these existing checks in order; no process, filesystem or caller callback enters this planner. */
-export function nativeDoctorOptionalProbes(config: { roster: Readonly<Record<string, boolean | undefined>>; jcode_cmd: string[]; qwen_cmd: string[]; jcode_home?: string }): NativeDoctorOptionalProbe[] {
+export function nativeDoctorOptionalProbes(config: { roster: Readonly<Record<string, boolean | undefined>>; jcode_cmd: string[]; qwen_cmd: string[]; jcode_home?: string;
+  /** Declared extra instances (#685): a rostered Jcode instance's own home is inventoried like the base home. */
+  instances?: Readonly<Record<string, { kind: string; jcode_home?: string }>> }): NativeDoctorOptionalProbe[] {
   const probes: NativeDoctorOptionalProbe[] = [];
   if (config.roster.jcode === true) probes.push({ kind: "source-identity", name: "jcode", command: config.jcode_cmd,
     detail: "CLI/source identity only; provider, project MCP and native teardown require separate receipts; native policy unmanaged" });
   // #572 AC4: jcode cannot be told which MCP servers to load, so the host lists the ones its config files name.
   if (config.roster.jcode === true && config.jcode_home) probes.push({ kind: "jcode-mcp", name: "jcode MCP servers", home: config.jcode_home });
+  // #685: each extra instance has its own home, hence its own inventory. Names and homes only: no model source, URL or token.
+  for (const [id, declaration] of Object.entries(config.instances ?? {})) {
+    if (declaration.kind === "jcode" && declaration.jcode_home && config.roster[id] === true) probes.push({ kind: "jcode-mcp", name: `${id} MCP servers`, home: declaration.jcode_home });
+  }
   if (config.roster.qwen === true) probes.push({ kind: "pinned-version", name: "qwen", command: config.qwen_cmd, compat: "qwen",
     confirmed: "CLI version verified; native ACP identity/modes and provider access require a separate live check",
     unconfirmed: "Qwen Code executable not confirmed; provider and ACP readiness unknown" });

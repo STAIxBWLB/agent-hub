@@ -69,8 +69,14 @@ test("an on-campus relay instance starts with its own home, the relay's loopback
     expect(row.gatewayKey).toBeUndefined();
   }
   expect(daemon.bus.stateOf("jcode-local")).not.toBe("offline");
-  // The instance is a cloud peer: the relay never makes it on-prem.
-  expect(JSON.stringify(daemon.status?.() ?? {})).not.toContain("gateway-key-stays-in-the-hub");
+  // Status lists the instance with its model source, as a cloud peer, and carries no URL, token, key or native home.
+  const status = (await console_.request({ t: "status" })).status;
+  expect(status.activeInstances).toContain("jcode-local");
+  expect(status.peers["jcode-local"].modelSource).toBe("hub relay dgx/fast (cloud peer, not on-prem)");
+  expect(status.peers.jcode?.modelSource).toBeUndefined(); // the base Jcode has no instance model source
+  const text = JSON.stringify(status);
+  const token = rows(record).find(entry => entry.kind === "launch" && entry.role === "acp").compatKey as string;
+  for (const secret of ["gateway-key-stays-in-the-hub", token, localHome]) expect(text).not.toContain(secret);
 });
 
 test("an extra Jcode implementer needs a managed worktree like every extra implementer; the refusal starts nothing (#685)", async () => {

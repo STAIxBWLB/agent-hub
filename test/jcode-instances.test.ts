@@ -69,3 +69,10 @@ test("a Jcode instance in a tracked config file is ignored with a reason; only c
   expect(tracked.instances).toBeUndefined();
   expect(tracked.ignored.join("\n")).toContain("machine-local config.local.json");
 });
+
+test("a declared Jcode instance is a known roster peer, while an undeclared jcode-<name> key stays an unsupported typo (#685)", async () => {
+  const { peerRosterConfig } = await import("../src/hub/roster.ts");
+  const declared = validateInstances({ "jcode-local": { kind: "jcode", jcode_home: home } }, catalog);
+  expect(peerRosterConfig({ "jcode-local": true }, declared, catalog)).toEqual({ "jcode-local": true });
+  expect(() => peerRosterConfig({ "jcode-local": true }, undefined, catalog)).toThrow("unsupported peer");
+});

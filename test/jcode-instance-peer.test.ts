@@ -70,3 +70,68 @@ test("a provider and a relay change only the instance's own native arguments and
   await plain.start();
   for (const role of ["serve", "acp"] as const) { const row = launch(join(dir, "p.jsonl"), role); expect(row.compatBase).toBeUndefined(); expect(row.compatKey).toBeUndefined(); }
 });
+
+// ahub jcode --as <id> (#685): the launcher names the instance in every hub request, and starts it headless by default.
+import { runJcodeEntry } from "../src/adapters/definitions/native-cli-entry-jcode.ts";
+import { definitionOf } from "../src/adapters/registry.ts";
+import { startModeOf } from "../src/hub/start-mode.ts";
+import type { NativeCliEntryContext } from "../src/adapters/definitions/native-cli-entry-types.ts";
+
+function launcher(instance: string | undefined, args: string[] = []) {
+  const requests: Record<string, unknown>[] = [];
+  let configured = 0;
+  const context = {
+    person: true, args, cwd: "/project", stateDir: "/state", cliDir: "/package/src/cli", unattendedEnv: false, ...(instance ? { instance } : {}),
+    definition: definitionOf("jcode"), projectConfig: () => ({}),
+    fail: (message: string): never => { throw new Error(message); },
+    connect: async () => ({ features: ["native_tui_launch"], request: async (message: Record<string, unknown>) => {
+      requests.push(message);
+      return message.t === "status" ? { status: { roster: [{ peer: "jcode", on: true }, { peer: "jcode-local", on: true }] } } : { ok: true };
+    }, close() {} }),
+    takeFlags: (argv: string[]) => ({ one: Object.fromEntries(argv.reduce<string[][]>((pairs, value, index) => index % 2 ? pairs : [...pairs, [value, argv[index + 1]!]], [])), rest: [], many: {} }),
+    execWithEnv: (): never => { throw new Error("headless must not open a terminal"); },
+    helpers: { startModeOf, readControl: () => undefined, qwenSessionId: () => true, configureJcodeMcp: () => { configured++; return { changed: false, tracked: false }; } },
+  } as unknown as NativeCliEntryContext;
+  return { context, requests, configured: () => configured };
+}
+
+test("ahub jcode --as <id> starts that instance headless by default and names it in the roster check and the start request (#685)", async () => {
+  const f = launcher("jcode-local");
+  await runJcodeEntry(f.context);
+  expect(f.requests.find(row => row.t === "start")).toMatchObject({ peer: "jcode-local", args: { mode: "headless" } });
+  expect(f.requests.some(row => row.t === "start" && row.peer === "jcode")).toBe(false);
+});
+
+test("ahub jcode --as <id> refuses an instance that is off roster, naming the instance (#685)", async () => {
+  const f = launcher("jcode-missing");
+  await expect(runJcodeEntry(f.context)).rejects.toThrow(/jcode-missing/);
+  expect(f.requests.some(row => row.t === "start")).toBe(false);
+});
+
+test("the base ahub jcode still names jcode (#685)", async () => {
+  const f = launcher(undefined, ["--mode", "headless"]);
+  await runJcodeEntry(f.context);
+  expect(f.requests.find(row => row.t === "start")).toMatchObject({ peer: "jcode" });
+});
+
+// Doctor (#685): one MCP inventory per rostered instance home, named for the instance, optional like the base Jcode's checks.
+import { nativeDoctorCheck, nativeDoctorOptionalProbes } from "../src/adapters/definitions/native-cli-doctor.ts";
+
+test("doctor inventories the MCP servers of each rostered Jcode instance's own home, named for it (#685)", () => {
+  const base = { jcode_cmd: ["jcode"], qwen_cmd: ["qwen"], jcode_home: "/h/base" };
+  const instances = { "jcode-local": { kind: "jcode", jcode_home: "/h/local", model_relay: "dgx/fast" as const }, "jcode-off": { kind: "jcode", jcode_home: "/h/off" } };
+  const probes = nativeDoctorOptionalProbes({ roster: { jcode: true, "jcode-local": true, "jcode-off": false }, instances, ...base });
+  expect(probes.filter(probe => probe.kind === "jcode-mcp")).toEqual([
+    { kind: "jcode-mcp", name: "jcode MCP servers", home: "/h/base" },
+    { kind: "jcode-mcp", name: "jcode-local MCP servers", home: "/h/local" },
+  ]);
+  // Nothing about an instance's relay, token or URL is in a probe.
+  expect(JSON.stringify(probes)).not.toMatch(/dgx|relay|token/);
+  expect(nativeDoctorOptionalProbes({ roster: { jcode: true }, ...base }).filter(probe => probe.kind === "jcode-mcp")).toHaveLength(1);
+});
+
+test("a Jcode instance's MCP doctor row has the same severity as the base Jcode's, and its tool row is optional (#685)", () => {
+  // The base row's severity is existing behavior (a Hub check): the instance row neither softens nor hardens it.
+  expect(nativeDoctorCheck(false, "jcode-local MCP servers", "2 extra").level).toBe(nativeDoctorCheck(false, "jcode MCP servers", "2 extra").level);
+  expect(nativeDoctorCheck(false, "jcode-local MCP servers", "2 extra").section).toBe(nativeDoctorCheck(false, "jcode MCP servers", "2 extra").section);
+});
