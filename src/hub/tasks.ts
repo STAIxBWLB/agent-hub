@@ -3532,7 +3532,9 @@ export class Tasks {
     if (!repository || repository.key !== this.repositories.project.key) return undefined;
     try {
       const brief = this.d.reviewBrief?.(task);
-      return brief && !("unavailable" in brief) ? buildTaskCodeSymbols(brief, repository.key, this.publicMetadataText) : undefined;
+      const observation = brief && !("unavailable" in brief) ? buildTaskCodeSymbols(brief, repository.key, this.publicMetadataText) : undefined;
+      // A resolved short ref or a stale provider result is unknown advice, never a reason to refuse done.
+      return observation?.head === task.refs.commit ? observation : undefined;
     } catch { return undefined; } // Optional metadata never costs the admitted result.
   }
 

@@ -53,6 +53,7 @@ export function buildTaskCodeSymbols(brief: ReviewBrief | undefined, repositoryK
         ids.add(id); symbols.push({ id, path: file.path, name: symbol.name, kind: symbol.kind });
       }
     }
+    if (files.size !== reviewable.size) complete = false;
     const result: TaskCodeSymbols = { ...unknown, state: "known", complete, symbols };
     return bounded(result) ? result : unknown;
   } catch { return unknown; }
