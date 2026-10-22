@@ -17,6 +17,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Console review guidance (#711): `r` on a task in review asks `a approve` or `c request changes`, shows a guide line, refuses an empty changes note and shows the result; an agent shell refused a person-only action is told why; the user-reviewed done notice names the console path.
 - Pull-only peers catch up (#713): `hub_inbox` drains up to 64 KiB oldest first and says how many are waiting; completed-change notices are one per recipient per done, a newer one supersedes the queued one, and none go to unaccepted work; a queued delivery can be discarded while its peer is busy; refusals name their cause; the person's `ahub queue discard --peer <id> --reason <text> [--yes]` and the console Queue `D` clear a backlog. Empty pull-only polling is detected (#681).
 - Fixes: a check's exit and pipes are read through Bun.spawn so an early exit is not lost (#558); snapshot attribution survives own-commit rebases and long reflogs (#612); readiness respects the reserved owner's WIP cap (#655); host timeout kill markers are preserved in the sandbox (#700); the Codex reviewer disables legacy notify (#697).
+- Retired as announced (#481): `sdlc.workflow` (gsd-lite) no longer loads, and the `phase` receipt name is refused; record a `criteria` checklist with `hub_sdlc_record` instead. `local.bash_network: "direct"` still works and still warns; its removal moves to a later release.
 - Releases: a release with any feature bumps the minor version; a fix-only release bumps the patch.
 
 ## 0.12.45
