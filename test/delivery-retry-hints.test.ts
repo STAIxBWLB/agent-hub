@@ -1,14 +1,15 @@
 import { expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
-import { jcodeMcpEntry } from "../src/cli/jcode-mcp.ts";
+import { configureJcodeMcp, jcodeMcpEntry } from "../src/cli/jcode-mcp.ts";
+import { ControlClient } from "../src/hub/control-client.ts";
 import { renderHeldHint } from "../src/hub/delivery-hints.ts";
 
 async function rig(peer: string, mode: "channel" | "pull" | "tools", deliveryOnly = false) {
@@ -16,10 +17,19 @@ async function rig(peer: string, mode: "channel" | "pull" | "tools", deliveryOnl
   const journal = new DeliveryJournal({ file: join(dir, "hub.db"), projectRoot: dir, projectId: "hint", instanceId: "old" });
   const env = newEnvelope("user", "DO NOT EXPOSE PRIVATE CONTENT", { private: true });
   journal.createDelivery({ id: "my-private-held", peer, state: "needs_review", createdAt: env.ts, originals: [env], out: [env] }); journal.close();
-  const daemon = await startDaemon({ cwd: dir, stateDir: dir, projectId: "hint", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, ...(peer === "jcode" ? { roster: { ...DEFAULT_CONFIG.roster, jcode: true } } : {}), batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
+  const jcodeHome = join(dir, "jcode-home"), jcodeRecord = join(dir, "jcode-launch.jsonl");
+  if (peer === "jcode") { mkdirSync(jcodeHome); writeFileSync(join(jcodeHome, "mcp.json"), "{}"); }
+  const daemon = await startDaemon({ cwd: dir, stateDir: dir, projectId: "hint", controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config: { ...DEFAULT_CONFIG, ...(peer === "jcode" ? { roster: { ...DEFAULT_CONFIG.roster, jcode: true }, jcode_home: jcodeHome, jcode_cmd: [process.execPath, join(import.meta.dir, "fakes/jcode-instance-agent.ts"), "--record", jcodeRecord] } : {}), batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false } } });
   const client = new Client({ name: "retry-hint-fixture", version: "0" }, { capabilities: {} });
   const envs: Record<string, string> = { ...process.env as Record<string, string>, AGENTHUB_STATE_DIR: dir, AGENTHUB_PROJECT_DIR: dir, AGENTHUB_PEER_ID: peer, AGENTHUB_MODE: mode === "tools" ? "tools" : "", AGENTHUB_CHANNEL: mode === "channel" ? "1" : "", AGENTHUB_DELIVERY_ONLY: deliveryOnly ? "true" : "" };
-  if (peer === "jcode") Object.assign(envs, jcodeMcpEntry(dir, dir, join(import.meta.dir, "../src/adapters/claude-channel.ts")).env);
+  if (peer === "jcode") {
+    Object.assign(envs, jcodeMcpEntry(dir, dir, join(import.meta.dir, "../src/adapters/claude-channel.ts")).env);
+    // #368: the real entry names no peer; a hub-started Jcode's owned process env supplies the id and its launch id.
+    configureJcodeMcp(dir, dir, join(import.meta.dir, "../plugins/agent-hub/server.js"));
+    const console_ = await ControlClient.connect(dir, { role: "console" });
+    try { expect((await console_.request({ t: "start", peer: "jcode", args: { mode: "headless" } })).ok).toBe(true); } finally { console_.close(); }
+    envs.AGENTHUB_LAUNCH_ID = readFileSync(jcodeRecord, "utf8").trim().split("\n").map(line => JSON.parse(line)).find(row => row.kind === "launch" && row.role === "acp").launch;
+  }
   const transport = new StdioClientTransport({ command: process.execPath, args: [join(import.meta.dir, "../src/adapters/claude-channel.ts")], env: envs, stderr: "pipe" });
   let diagnostics = ""; transport.stderr!.on("data", chunk => { diagnostics += chunk.toString(); });
   await client.connect(transport);

@@ -22,9 +22,16 @@ import { renderHeldHint } from "../hub/delivery-hints.ts";
 // ControlClient verifies the manifest identity on every connection.
 const stateDir = process.env.AGENTHUB_STATE_DIR ?? stateDirFor(process.cwd());
 const projectRoot = process.env.AGENTHUB_PROJECT_DIR ?? process.cwd();
-const peerId = process.env.AGENTHUB_PEER_ID ?? "claude";
-/** tools mode: the same server, run by Kimi (ACP mcpServers) or Codex (mcp_servers override). Their messages arrive through their own adapters, so no channel here. Not the "tools-only" Claude below. */
+/** tools mode: the same server, run by Kimi (ACP mcpServers), Codex (mcp_servers override) or Jcode. Their messages arrive through their own adapters, so no channel here. Not the "tools-only" Claude below. */
 const toolsMode = process.env.AGENTHUB_MODE === "tools";
+/**
+ * #368: a tools-mode server acts as exactly the peer whose owned launch started it, and the project's Jcode MCP entry names none, so the
+ * id comes from the owned process env alone. With none (a person's own `jcode` run in this project outside the hub) it connects as nobody,
+ * refuses every tool with a reason, and never defaults to "jcode" or any other id. Only a plain Claude session defaults to "claude".
+ */
+const unidentified = toolsMode && !process.env.AGENTHUB_PEER_ID;
+const peerId = process.env.AGENTHUB_PEER_ID ?? (toolsMode ? "" : "claude");
+const UNIDENTIFIED = "agent-hub tools refused: this process was not started by the hub (no AGENTHUB_PEER_ID), so it has no peer identity. Start the agent with ahub jcode (or the hub's own start) to use hub tools.";
 // Exposure hint only; the daemon verifies the actual adapter before any retry mutation.
 const deliveryOnly = process.env.AGENTHUB_DELIVERY_ONLY === "true";
 /**
@@ -84,7 +91,7 @@ const MAX_RECONNECT_DELAY_MS = 30_000;
 const TERMINAL_CLOSES: Record<number, string> = {
   4401: "the hub refused the control token",
   4404: "the hub belongs to a different project or instance; restart this session from the intended project",
-  4403: `the hub refused the peer id "${peerId}" (reserved or malformed)`,
+  4403: `the hub refused "${peerId}": the id is reserved or malformed, or this process is not an owned launch of that peer (start it with ahub jcode)`,
   4409: `the peer id "${peerId}" is taken by a hub-managed adapter`,
   4430: "this Claude launch ended; start a new session with ahub claude, or use a plain session with hub_inbox",
   4426: "wire version mismatch with the running hub: update the agent-hub plugin (ahub setup) and restart this session",
@@ -251,7 +258,7 @@ async function connectLoop(): Promise<void> {
     let closeReason: string | undefined;
     try {
       const client = await ControlClient.connect(stateDir, { role: toolsMode ? "tools" : "peer", peer: peerId, ...(toolsMode ? {} : { channel }),
-        ...(!toolsMode && process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {}),
+        ...(process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {}),
         ...(!toolsMode && standingBy ? { standby: true } : {}),
         ...(process.env.AGENTHUB_PROJECT_DIR ? { projectRoot } : {}) });
       client.onPush = (msg) => {
@@ -375,6 +382,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 
 async function callTool(req: { params: { name: string; arguments?: Record<string, unknown> } }) {
   const { name, arguments: args } = req.params;
+  if (unidentified) return { ...text(UNIDENTIFIED), isError: true };
   if (name === "hub_delivery_done" && channel) {
     if (!hub) return text(offline());
     const a = args ?? {};
@@ -427,4 +435,4 @@ await server.connect(new StdioServerTransport());
 // The host (Claude Code, Codex, Kimi) talks over stdin; once it is gone nothing can use this server, and a leftover would keep reconnecting.
 process.stdin.on("end", () => process.exit(0));
 process.stdin.on("close", () => process.exit(0));
-void connectLoop();
+if (unidentified) log(UNIDENTIFIED); else void connectLoop();

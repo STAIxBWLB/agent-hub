@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
@@ -9,6 +9,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { realPath } from "../src/hub/project.ts";
+import { configureJcodeMcp } from "../src/cli/jcode-mcp.ts";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -29,9 +30,9 @@ function fixture() {
   const close = () => { journal.close(); board.close(); };
   return { dir, file, board, journal, make, held, close };
 }
-async function start(f: ReturnType<typeof fixture>) {
+async function start(f: ReturnType<typeof fixture>, extra: Record<string, unknown> = {}) {
   const daemon = await startDaemon({ cwd: f.dir, stateDir: f.dir, projectId: "accepted-offer", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, batch_ms: 0, roster: { ...DEFAULT_CONFIG.roster, jcode: true }, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, roster: { ...DEFAULT_CONFIG.roster, jcode: true }, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, ...extra } });
   cleanups.push(() => daemon.stop());
   return daemon;
 }
@@ -70,13 +71,18 @@ test("#434 a restarted Jcode's accepted offer settles on restore, but mixed, una
 test("#434 actual task acceptance clears its held offer through board.onChange without a recipient session", async () => {
   const f = fixture(), pending = f.make(false);
   f.held("waiting-for-accept", [pending.env]); f.close();
-  const daemon = await start(f), client = await ControlClient.connect(f.dir, { role: "console" });
+  // #368: Jcode's tools socket proves an owned launch, so this peer runs as the fixture's own fake Jcode.
+  const home = join(f.dir, "jcode-home"), record = join(f.dir, "launch.jsonl"); mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");
+  configureJcodeMcp(f.dir, f.dir, join(import.meta.dir, "../plugins/agent-hub/server.js"));
+  const daemon = await start(f, { jcode_cmd: [process.execPath, join(import.meta.dir, "fakes/jcode-instance-agent.ts"), "--record", record], jcode_home: home }), client = await ControlClient.connect(f.dir, { role: "console" });
   cleanups.push(() => client.close());
   expect(daemon.bus.queueShow("waiting-for-accept")?.state).toBe("needs_review");
   const accepted = await client.request({ t: "task", op: "hub_task_accept", args: { id: pending.task.id } });
   expect(accepted.ok).toBe(true);
   expect(daemon.bus.queueShow("waiting-for-accept")?.state).toBe("needs_review"); // A person's acceptance is not this peer reading its brief.
-  const owner = await ControlClient.connect(f.dir, { role: "tools", peer: "jcode" }); cleanups.push(() => owner.close());
+  expect((await client.request({ t: "start", peer: "jcode", args: { mode: "headless" } })).ok).toBe(true);
+  const launchId = readFileSync(record, "utf8").trim().split("\n").map(line => JSON.parse(line)).find(row => row.kind === "launch" && row.role === "acp").launch;
+  const owner = await ControlClient.connect(f.dir, { role: "tools", peer: "jcode", launchId }); cleanups.push(() => owner.close());
   expect((await owner.request({ t: "task", op: "hub_task_accept", args: { id: pending.task.id } })).ok).toBe(true);
   expect(daemon.bus.queueShow("waiting-for-accept")?.state).toBe("completed");
   const shown = await client.request({ t: "task", op: "task_show", args: { id: pending.task.id } });

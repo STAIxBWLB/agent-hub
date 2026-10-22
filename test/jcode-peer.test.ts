@@ -137,13 +137,15 @@ test("a Jcode ACP transport exit closes its owned daemon and leaves no private s
 test("the configured Jcode MCP SDK bridge reaches this project's tools as jcode (#332)", async () => {
   const dir = root(), stateDir = join(dir, "state"), home = join(dir, "home"); mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");
   const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, jcode_cmd: fake, jcode_home: home, roster: { jcode: true }, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } }); cleanups.push(() => daemon.stop());
+    config: { ...DEFAULT_CONFIG, jcode_cmd: [process.execPath, join(import.meta.dir, "fakes/jcode-instance-agent.ts"), "--record", join(dir, "launch.jsonl")], jcode_home: home, roster: { jcode: true }, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } }); cleanups.push(() => daemon.stop());
   configureJcodeMcp(dir, stateDir, join(import.meta.dir, "../plugins/agent-hub/server.js"));
   const console_ = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => console_.close());
   expect((await console_.request({ t: "start", peer: "jcode" })).ok).toBe(true);
+  // #368: the owned ACP child's env carries the peer id and this launch's id; the hub admits the tools socket only with both.
+  const owned = readFileSync(join(dir, "launch.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line)).find(row => row.kind === "launch" && row.role === "acp");
   const entry = JSON.parse(readFileSync(join(dir, JCODE_MCP_FILE), "utf8")).mcpServers[JCODE_MCP_NAME];
   // #685: the shared entry names no peer; the owned ACP child's process env supplies it (peerChildEnv), and jcode merges the two.
-  const transport = new StdioClientTransport({ command: entry.command, args: entry.args, env: { ...process.env, AGENTHUB_PEER_ID: "jcode", ...entry.env }, stderr: "pipe" });
+  const transport = new StdioClientTransport({ command: entry.command, args: entry.args, env: { ...process.env, AGENTHUB_PEER_ID: "jcode", AGENTHUB_LAUNCH_ID: owned.launch, ...entry.env }, stderr: "pipe" });
   let diagnostics = ""; transport.stderr?.on("data", data => { diagnostics += String(data); });
   const client = new Client({ name: "fixture", version: "1" }); cleanups.push(() => client.close());
   await client.connect(transport);
@@ -211,7 +213,7 @@ test("only a console can resolve the same owned Jcode launch, and a new session 
   mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");
   configureJcodeMcp(dir, stateDir, join(import.meta.dir, "../plugins/agent-hub/server.js"));
   const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
-    config: { ...DEFAULT_CONFIG, jcode_cmd: [...fake, "--save-native-session"], jcode_home: home, roster: { jcode: true },
+    config: { ...DEFAULT_CONFIG, jcode_cmd: [process.execPath, join(import.meta.dir, "fakes/jcode-instance-agent.ts"), "--record", join(dir, "launch.jsonl"), "--save-native-session"], jcode_home: home, roster: { jcode: true },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
   cleanups.push(() => daemon.stop());
   const consoleClient = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => consoleClient.close());
@@ -222,7 +224,9 @@ test("only a console can resolve the same owned Jcode launch, and a new session 
   expect(waiting.binding).toMatchObject({ sessionId: "jcode-s1" });
   expect(waiting.launch).toBeUndefined();
   expect(existsSync(join(home, "sessions", "jcode-s1.json"))).toBe(false);
-  const toolsClient = await ControlClient.connect(stateDir, { role: "tools", peer: "jcode" }); cleanups.push(() => toolsClient.close());
+  // #368: a tools socket for Jcode proves the current owned launch (its MCP child inherits the id from the owned process env).
+  const launchId = readFileSync(join(dir, "launch.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line)).find(row => row.kind === "launch" && row.role === "acp").launch;
+  const toolsClient = await ControlClient.connect(stateDir, { role: "tools", peer: "jcode", launchId }); cleanups.push(() => toolsClient.close());
   const denied = await toolsClient.request({ t: "native_tui_launch", peer: "jcode" });
   expect(denied.ok).toBe(false); expect(denied.launch).toBeUndefined(); expect(denied.binding).toBeUndefined();
   const stale = await consoleClient.request({ t: "native_tui_launch", peer: "jcode", binding: { ...waiting.binding as object, launchId: "stale" } });
@@ -233,7 +237,7 @@ test("only a console can resolve the same owned Jcode launch, and a new session 
   const ready = await consoleClient.request({ t: "native_tui_launch", peer: "jcode", binding: waiting.binding });
   expect(ready.ok).toBe(true); expect(ready.state).toBe("ready"); expect(ready.binding).toEqual(waiting.binding);
   expect(ready.launch.args).toContain("--resume"); expect(ready.launch.args).not.toContain("acp"); expect(ready.launch.args).not.toContain("connect");
-  expect(ready.launch.env).toEqual({ JCODE_HOME: home, JCODE_SOCKET: ready.launch.env.JCODE_SOCKET, AGENTHUB_PEER_ID: "jcode", JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" }); // #685: the shared MCP entry names no peer, so the launch does
+  expect(ready.launch.env).toEqual({ JCODE_HOME: home, JCODE_SOCKET: ready.launch.env.JCODE_SOCKET, AGENTHUB_PEER_ID: "jcode", AGENTHUB_LAUNCH_ID: launchId, JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" }); // #685: the shared MCP entry names no peer, so the launch does
   expect(JSON.stringify((await consoleClient.request({ t: "status" })).status)).not.toContain(ready.launch.env.JCODE_SOCKET);
   const frontend = await consoleClient.request({ t: "peer_start", peer: "jcode" });
   expect(frontend.ok).toBe(false); expect(frontend.command).toBe("ahub jcode --mode tui");
@@ -377,7 +381,7 @@ test("a conductor start of an attached Jcode answers already and opens no termin
   configureJcodeMcp(dir, stateDir, join(import.meta.dir, "../plugins/agent-hub/server.js"));
   const terminal = () => ({ available: () => ({ ok: true as const, via: "fixture" }), open: async (_title: string, argv: readonly string[]) => { opened.push([...argv]); return { ok: true as const, via: "fixture" }; } });
   const daemon = await startDaemon({ cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, terminal,
-    config: { ...DEFAULT_CONFIG, jcode_cmd: [...fake, "--save-native-session"], jcode_home: home, roster: { jcode: true }, roles: { ...DEFAULT_CONFIG.roles, claude: ["conductor"] },
+    config: { ...DEFAULT_CONFIG, jcode_cmd: [process.execPath, join(import.meta.dir, "fakes/jcode-instance-agent.ts"), "--record", join(dir, "launch.jsonl"), "--save-native-session"], jcode_home: home, roster: { jcode: true }, roles: { ...DEFAULT_CONFIG.roles, claude: ["conductor"] },
       memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } });
   cleanups.push(() => daemon.stop());
   const consoleClient = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => consoleClient.close());

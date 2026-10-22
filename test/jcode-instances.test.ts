@@ -13,11 +13,9 @@ const catalog = builtinProjectCatalog();
 const home = "/Users/person/.jcode-local";
 
 test("a Jcode instance declares its own home and optional model fields, and keeps them frozen (#685)", () => {
-  const native = validateInstances({ "jcode-local": { kind: "jcode", jcode_home: home, provider: "openai-compatible", model: "dgx/fast", provider_profile: "gateway", start_mode: "headless", roles: ["implementer"] } }, catalog);
-  expect(native["jcode-local"]).toEqual({ kind: "jcode", jcode_home: home, provider: "openai-compatible", model: "dgx/fast", provider_profile: "gateway", start_mode: "headless", roles: ["implementer"] });
+  const native = validateInstances({ "jcode-local": { kind: "jcode", jcode_home: home, provider: "claude", model: "claude-sonnet-5-5", provider_profile: "work", start_mode: "headless", roles: ["implementer"] } }, catalog);
+  expect(native["jcode-local"]).toEqual({ kind: "jcode", jcode_home: home, provider: "claude", model: "claude-sonnet-5-5", provider_profile: "work", start_mode: "headless", roles: ["implementer"] });
   expect(Object.isFrozen(native["jcode-local"])).toBe(true);
-  const relayed = validateInstances({ "jcode-relay": { kind: "jcode", jcode_home: home, model_relay: "dgx/fast", start_mode: "headless" } }, catalog);
-  expect(relayed["jcode-relay"]).toEqual({ kind: "jcode", jcode_home: home, model_relay: "dgx/fast", start_mode: "headless" });
   expect(validateInstances({ "jcode-plain": { kind: "jcode", jcode_home: home } }, catalog)["jcode-plain"]).toEqual({ kind: "jcode", jcode_home: home });
 });
 
@@ -28,8 +26,9 @@ test("a Jcode instance without a usable home, or with a malformed field, is refu
   refused({ jcode_home: "" }, /jcode_home/);
   refused({ jcode_home: `${home}\nx` }, /jcode_home/);
   refused({ jcode_home: 4 }, /jcode_home/);
-  refused({ jcode_home: home, model_relay: "dgx/slow" }, /model_relay/);
-  refused({ jcode_home: home, model_relay: "mlx/fast" }, /model_relay/);
+  refused({ jcode_home: home, model_relay: "dgx/fast" }, /unsupported field/); // the hub has no model relay for Jcode (#685, scope update 2)
+  refused({ jcode_home: home, model_source: { kind: "native" } }, /unsupported field/);
+  refused({ jcode_home: home, api_key: "x" }, /unsupported field/); // the hub handles no model credential
   refused({ jcode_home: home, model: "" }, /model/);
   refused({ jcode_home: home, model: 3 }, /model/);
   refused({ jcode_home: home, provider: "bad provider" }, /provider/);
@@ -39,16 +38,16 @@ test("a Jcode instance without a usable home, or with a malformed field, is refu
 });
 
 test("the Jcode-only fields belong to Jcode instances alone (#685)", () => {
-  for (const kind of ["codex", "kimi", "pi", "local", "qwen"]) for (const field of ["jcode_home", "model_relay", "provider", "model", "provider_profile"]) {
-    expect(() => validateInstances({ [`${kind}-worker`]: { kind, [field]: field === "model_relay" ? "dgx/fast" : "x" } }, catalog), `${kind} ${field}`).toThrow(/unsupported field/);
+  for (const kind of ["codex", "kimi", "pi", "local", "qwen"]) for (const field of ["jcode_home", "provider", "model", "provider_profile"]) {
+    expect(() => validateInstances({ [`${kind}-worker`]: { kind, [field]: "x" } }, catalog), `${kind} ${field}`).toThrow(/unsupported field/);
   }
 });
 
-test("a relay-backed instance picks its model from the relay: provider, model and profile cannot also be set to something else (#685)", () => {
-  expect(() => validateInstances({ "jcode-local": { kind: "jcode", jcode_home: home, model_relay: "dgx/fast", provider: "openai" } }, catalog)).toThrow(/model_relay/);
-  expect(() => validateInstances({ "jcode-local": { kind: "jcode", jcode_home: home, model_relay: "dgx/fast", provider_profile: "gateway" } }, catalog)).toThrow(/model_relay/);
-  expect(() => validateInstances({ "jcode-local": { kind: "jcode", jcode_home: home, model_relay: "dgx/fast", model: "dgx/coding" } }, catalog)).toThrow(/model_relay/);
-  expect(validateInstances({ "jcode-local": { kind: "jcode", jcode_home: home, model_relay: "dgx/coding", model: "dgx/coding" } }, catalog)["jcode-local"]?.model_relay).toBe("dgx/coding");
+test("at most 8 Jcode instances are declared per project, and other kinds do not count toward it (#685)", () => {
+  const declare = (count: number) => Object.fromEntries(Array.from({ length: count }, (_, i) => [`jcode-n${i}`, { kind: "jcode", jcode_home: `/h/n${i}` }]));
+  expect(Object.keys(validateInstances(declare(8), catalog))).toHaveLength(8);
+  expect(() => validateInstances(declare(9), catalog)).toThrow(/at most 8 extra Jcode instances/);
+  expect(Object.keys(validateInstances({ ...declare(8), "codex-worker": { kind: "codex" } }, catalog))).toHaveLength(9);
 });
 
 test("a Jcode instance may not share a home with the base Jcode or with another instance (#685)", () => {

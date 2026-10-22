@@ -927,14 +927,24 @@ export async function startDaemon(opts: DaemonOptions) {
     return refused;
   };
   /**
-   * #685: where an extra Jcode instance gets its model, for status, doctor and the dashboard. Aliases and declared names only:
-   * never a URL, a token or the native home path.
+   * #685: the provider, model and profile names an extra Jcode instance was declared with, for status, doctor and the dashboard,
+   * exactly as the person wrote them (they authenticate inside Jcode). Never a URL, a token or the native home path.
    */
   const jcodeModelSource = (id: string): { modelSource?: string } => {
     const instance = declarations[id];
-    if (instance?.kind !== "jcode") return {};
-    if (instance.model_relay) return { modelSource: `hub relay ${instance.model_relay} (cloud peer, not on-prem)` };
+    if (!instance || definitionOf(id)?.instances?.nativeHome !== true) return {};
     return { modelSource: [instance.provider, instance.model, instance.provider_profile && `profile ${instance.provider_profile}`].filter(Boolean).join(" ") || "native default" };
+  };
+  /**
+   * #685 scope update 2: the read-only start preflight for an extra Jcode instance. The declared home must exist as a directory the
+   * person owns (the hub never creates it, and reads or writes nothing inside it). The reason names the instance, never the path.
+   */
+  const jcodeHomeRefusal = (id: string, home: string): string | undefined => {
+    let info: ReturnType<typeof statSync> | undefined;
+    try { info = statSync(home); } catch { /* reported below */ }
+    if (!info?.isDirectory()) return `${id}: its jcode_home is not an existing directory; the person creates it and signs in to Jcode against it first`;
+    if (typeof process.getuid === "function" && info.uid !== process.getuid()) return `${id}: its jcode_home is not owned by the person running the hub`;
+    return undefined;
   };
   /** This hub run's start: offline owners count from it (issue #6), split predictions read tasks since (issue #109). */
   const hubStartedAt = Date.now();
@@ -1141,6 +1151,8 @@ export async function startDaemon(opts: DaemonOptions) {
   let modelRelay: ModelRelay | undefined;
   const piReceiptLedgers = new Map<string, PiToolReceipts>();
   const modelRelays = new Map<string, ModelRelay>();
+  /** #368: the owned Jcode launch of each Jcode peer, from creation (its MCP child connects while `start()` runs, before the bus has the peer). */
+  const jcodeLaunches = new Map<string, JcodePeer>();
   const globalModelRelay = (relay: ModelRelay) => { modelRelay = relay; };
   const nativeStateDir = (peer: string) => declarations[peer] ? join(opts.stateDir, "instances", peer) : opts.stateDir;
   const instanceAppPorts = new Map<string, number>();
@@ -3742,29 +3754,18 @@ export async function startDaemon(opts: DaemonOptions) {
       if (jcodeVerdict.note) log(jcodeVerdict.note);
       // #685: an extra instance runs its own native home and model fields; the base peer keeps jcode_home and the global provider profile.
       const instance = declarations[peer];
-      let relay: ModelRelay | undefined;
-      if (instance?.model_relay) {
-        // The relay is the model source: refuse before anything starts if the gateway is not positively on campus (never `!offCampus()`).
-        if (!(await onCampus())) return { ok: false, error: `${peer} uses the on-prem model through the hub's relay, which needs a campus gateway: none is confirmed reachable on campus` };
-        relay = modelRelays.get(peer) ?? await startModelRelay({ omni, allowedDGXmodels: { "dgx/coding": config.pi.dgx_coding, "dgx/fast": config.pi.dgx_fast }, fallbackDGXAlias: instance.model_relay, defaultBackend: { kind: "dgx", alias: instance.model_relay }, dgxMaxInputTokens: activeRouting().pi.dgx_max_context_tokens,
-          // Every served request is one usage event for this instance, attributed to the task its current turn works on.
-          observeRequestMetadata: true,
-          onRequest: record => {
-            const usage = record.requestUsage;
-            event({ type: "usage", peer, source: "omniroute", id: record.id, requestedModel: record.requestedModel ?? record.alias, measuredAt: record.at,
-              ...(usage?.promptTokens !== undefined ? { inputTokens: usage.promptTokens } : {}), ...(usage?.completionTokens !== undefined ? { outputTokens: usage.completionTokens } : {}), ...(usage?.totalTokens !== undefined ? { totalTokens: usage.totalTokens } : {}),
-              ...(record.actualModel ? { servedModel: record.actualModel } : {}), ...(record.provider ? { provider: record.provider } : {}), ...taskAttribution(peer) });
-          } });
-        modelRelays.set(peer, relay);
-      }
+      // #685 scope update 2: the person authenticates inside Jcode against that home. The hub passes -p, -m and --provider-profile as
+      // written and reads or writes no credential; the only preflight is that the declared home is a directory the person owns.
+      if (instance?.jcode_home) { const refusal = jcodeHomeRefusal(peer, instance.jcode_home); if (refusal) return { ok: false, error: refusal }; }
       const jcode: JcodePeer = adapter!.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["owned-acp"]({ peer, command: config.jcode_cmd, home: instance?.jcode_home ?? config.jcode_home,
         providerProfile: (args.providerProfile ?? instance?.provider_profile ?? config.jcode_provider_profile) || undefined,
-        ...(instance?.provider || relay ? { provider: instance?.provider ?? "openai-compatible" } : {}), ...(relay ? { relay: { url: relay.url, token: relay.token } } : {}),
-        ...(args.model ?? instance?.model ?? instance?.model_relay ? { launchModel: (args.model ?? instance?.model ?? instance?.model_relay)! } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}), cwd: executionCwd, watchdogMs: config.watchdog_ms,
+        ...(instance?.provider ? { provider: instance.provider } : {}),
+        ...(args.model ?? instance?.model ? { launchModel: (args.model ?? instance?.model)! } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}), cwd: executionCwd, watchdogMs: config.watchdog_ms,
         preamble: sessionRoleContract(peer), log: () => log("Jcode native diagnostic: details withheld") }) }) as JcodePeer;
+      jcodeLaunches.set(peer, jcode);
       recoveryTaskPreface(peer); await ensurePreface(peer);
       try { await jcode.start(); await reconcileNativeStart(peer, jcode); }
-      catch { await jcode.stop().catch(() => {}); await relay?.close().catch(() => {}); modelRelays.delete(peer); throw new Error("Jcode startup not verified; check native version, provider profile, MCP store and owned daemon (details withheld)"); }
+      catch { await jcode.stop().catch(() => {}); if (jcodeLaunches.get(peer) === jcode) jcodeLaunches.delete(peer); throw new Error("Jcode startup not verified; check native version, provider profile, MCP store and owned daemon (details withheld)"); }
       return { ok: true, policy: "unmanaged" };
     }
     if (adapter?.start.acpCommand) {
@@ -5368,6 +5369,12 @@ export async function startDaemon(opts: DaemonOptions) {
         c.peer = String(msg.peer ?? "");
         if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === "hub") return sock.close(4403, "peer id is reserved or malformed");
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
+        // #368: a hub-tools socket for an owned Jcode (a project-file MCP entry, which names no peer) is admitted only with the launch id of that
+        // peer's current owned launch. A forged AGENTHUB_PEER_ID in some other process has no such id, so it never acts as that peer.
+        if (definitionOf(c.peer)?.start.daemonPort === "owned-acp") {
+          const owner = jcodeLaunches.get(c.peer);
+          if (!owner || !owner.ownsLaunch(msg.launchId)) return sock.close(4403, "this process is not an owned launch of that peer; start it with ahub jcode");
+        }
       } else {
         c.peer = String(msg.peer ?? defaultChannelPeer(undefined));
         if (definitionOf(c.peer)?.transport === "ws-pull" && msg.channel !== false) return sock.close(4403, "this native peer supports pull-only attachment; use hub_inbox");

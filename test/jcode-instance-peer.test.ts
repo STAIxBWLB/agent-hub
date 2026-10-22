@@ -50,25 +50,28 @@ test("an instance's launch metadata and server name name the instance, so recove
   expect(jcodeCommand(["jcode"], "serve", "/s/j.sock", dir)).not.toContain("agent-hub-jcode-local");
 });
 
-test("a provider and a relay change only the instance's own native arguments and environment, and the gateway key never reaches it (#685)", async () => {
+test("a provider, model and profile change only the instance's own native arguments; the hub adds no credential or URL (#685)", async () => {
   const dir = root(), record = join(dir, "r.jsonl");
-  expect(jcodeCommand(["jcode"], "acp", "/s/j.sock", dir, "dgx/fast", undefined, "openai-compatible")).toEqual(expect.arrayContaining(["-p", "openai-compatible", "--model", "dgx/fast"]));
+  expect(jcodeCommand(["jcode"], "acp", "/s/j.sock", dir, "claude-sonnet-5-5", "onprem", "claude")).toEqual(expect.arrayContaining(["-p", "claude", "--model", "claude-sonnet-5-5", "--provider-profile", "onprem"]));
   expect(jcodeCommand(["jcode"], "acp", "/s/j.sock", dir)).not.toContain("-p");
-  const priorKey = process.env.OMNIROUTE_API_KEY; process.env.OMNIROUTE_API_KEY = "gateway-secret-never-forwarded";
-  cleanups.push(() => { if (priorKey === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = priorKey; });
-  const peer = new JcodePeer({ peer: "jcode-local", command: [...fake, "--record", record], cwd: dir, home: home(dir, "h"), provider: "openai-compatible", launchModel: "dgx/fast", relay: { url: "http://127.0.0.1:9/v1", token: "per-launch-token" } });
+  // The argv is the base argv plus the instance's own three values, nothing else.
+  const base = jcodeCommand(["jcode"], "serve", "/s/j.sock", dir, undefined, undefined, undefined, "jcode-local");
+  expect(jcodeCommand(["jcode"], "serve", "/s/j.sock", dir, "m", "p", "prov", "jcode-local")).toEqual([...base.slice(0, base.indexOf("--no-selfdev") + 1), "-p", "prov", "--model", "m", "--provider-profile", "p", ...base.slice(base.indexOf("--no-selfdev") + 1)]);
+  const peer = new JcodePeer({ peer: "jcode-local", command: [...fake, "--record", record], cwd: dir, home: home(dir, "h"), provider: "claude", launchModel: "claude-sonnet-5-5", providerProfile: "onprem" });
   cleanups.push(() => peer.stop());
   await peer.start();
   for (const role of ["serve", "acp"] as const) {
     const row = launch(record, role);
-    expect(row.compatBase).toBe("http://127.0.0.1:9/v1"); expect(row.compatKey).toBe("per-launch-token");
-    expect(row.argv).toEqual(expect.arrayContaining(["-p", "openai-compatible", "--model", "dgx/fast"]));
-    expect(row.gatewayKey).toBeUndefined();
+    expect(row.argv).toEqual(expect.arrayContaining(["-p", "claude", "--model", "claude-sonnet-5-5", "--provider-profile", "onprem"]));
+    // No model URL or key is set by the hub for an instance.
+    expect(row.compatBase).toBeUndefined(); expect(row.compatKey).toBeUndefined();
   }
-  // Without a relay no compatibility variable is set at all.
-  const plain = new JcodePeer({ command: [...fake, "--record", join(dir, "p.jsonl")], cwd: dir, home: home(dir, "h2") }); cleanups.push(() => plain.stop());
-  await plain.start();
-  for (const role of ["serve", "acp"] as const) { const row = launch(join(dir, "p.jsonl"), role); expect(row.compatBase).toBeUndefined(); expect(row.compatKey).toBeUndefined(); }
+  // Every owned process of one peer carries that peer's own launch id, and the peer vouches for exactly that one (#368).
+  const ids = new Set(["serve", "acp"].map(role => launch(record, role as "serve" | "acp").launch));
+  expect(ids.size).toBe(1);
+  const [id] = [...ids] as string[];
+  expect(peer.ownsLaunch(id)).toBe(true); expect(peer.ownsLaunch("forged")).toBe(false); expect(peer.ownsLaunch(undefined)).toBe(false);
+  await peer.stop(); expect(peer.ownsLaunch(id)).toBe(false);
 });
 
 // ahub jcode --as <id> (#685): the launcher names the instance in every hub request, and starts it headless by default.
@@ -119,14 +122,14 @@ import { nativeDoctorCheck, nativeDoctorOptionalProbes } from "../src/adapters/d
 
 test("doctor inventories the MCP servers of each rostered Jcode instance's own home, named for it (#685)", () => {
   const base = { jcode_cmd: ["jcode"], qwen_cmd: ["qwen"], jcode_home: "/h/base" };
-  const instances = { "jcode-local": { kind: "jcode", jcode_home: "/h/local", model_relay: "dgx/fast" as const }, "jcode-off": { kind: "jcode", jcode_home: "/h/off" } };
+  const instances = { "jcode-local": { kind: "jcode", jcode_home: "/h/local", provider: "claude", model: "claude-sonnet-5-5" }, "jcode-off": { kind: "jcode", jcode_home: "/h/off" } };
   const probes = nativeDoctorOptionalProbes({ roster: { jcode: true, "jcode-local": true, "jcode-off": false }, instances, ...base });
   expect(probes.filter(probe => probe.kind === "jcode-mcp")).toEqual([
     { kind: "jcode-mcp", name: "jcode MCP servers", home: "/h/base" },
     { kind: "jcode-mcp", name: "jcode-local MCP servers", home: "/h/local" },
   ]);
-  // Nothing about an instance's relay, token or URL is in a probe.
-  expect(JSON.stringify(probes)).not.toMatch(/dgx|relay|token/);
+  // Nothing about an instance's provider, model, token or URL is in a probe.
+  expect(JSON.stringify(probes)).not.toMatch(/claude-sonnet|token|url/i);
   expect(nativeDoctorOptionalProbes({ roster: { jcode: true }, ...base }).filter(probe => probe.kind === "jcode-mcp")).toHaveLength(1);
 });
 
@@ -140,7 +143,7 @@ test("a Jcode instance's MCP doctor row has the same severity as the base Jcode'
 // tools would act as the base `jcode`. Probed on 0.99.0: an entry's env wins over the process env, so a hardcoded id wins.
 import { configureJcodeMcp, jcodeMcpEntry, jcodeMcpReady, JCODE_MCP_FILE, JCODE_MCP_NAME } from "../src/cli/jcode-mcp.ts";
 
-test("the shared Jcode MCP entry names no peer, each owned launch path supplies its own id, and an old entry stays stale (#685)", () => {
+test("the shared Jcode MCP entry names no peer, each owned launch path supplies its own id, and an old entry stays stale (#685, #368)", () => {
   const dir = root(), state = join(dir, "state"), bundle = "bundle";
   const entry = jcodeMcpEntry(dir, state, bundle);
   expect(entry.env).not.toHaveProperty("AGENTHUB_PEER_ID");
@@ -158,11 +161,11 @@ test("the shared Jcode MCP entry names no peer, each owned launch path supplies 
   expect(() => configureJcodeMcp(dir, state, bundle)).toThrow("foreign");
 });
 
-test("a base and an instance TUI launch each carry their own peer id, the same provider and the relay, and never the gateway key (#685)", async () => {
+test("a base and an instance TUI launch each carry their own peer id, and the instance's own provider (#685)", async () => {
   const dir = root();
   for (const peer of [undefined, "jcode-local"] as const) {
     const h = home(dir, `h-${peer ?? "base"}`), record = join(dir, `t-${peer ?? "base"}.jsonl`);
-    const jcode = new JcodePeer({ ...(peer ? { peer, provider: "openai-compatible", launchModel: "dgx/fast", relay: { url: "http://127.0.0.1:9/v1", token: "tok" } } : {}),
+    const jcode = new JcodePeer({ ...(peer ? { peer, provider: "claude", launchModel: "claude-sonnet-5-5" } : {}),
       command: [...fake, "--save-native-session", "--record", record], cwd: dir, home: h });
     cleanups.push(() => jcode.stop());
     await jcode.start();
@@ -173,13 +176,12 @@ test("a base and an instance TUI launch each carry their own peer id, the same p
     if (state.state !== "ready") continue;
     expect(state.launch.env.JCODE_HOME).toBe(h);
     expect(state.launch.env.AGENTHUB_PEER_ID).toBe(peer ?? "jcode");
+    expect(state.launch.env.AGENTHUB_LAUNCH_ID).toBe(launch(record, "acp").launch); // the TUI's MCP child proves the same owned launch (#368)
     if (peer) {
-      expect(state.launch.args).toEqual(expect.arrayContaining(["-p", "openai-compatible", "--model", "dgx/fast"]));
-      expect(state.launch.env.JCODE_OPENAI_COMPAT_API_BASE).toBe("http://127.0.0.1:9/v1"); expect(state.launch.env.OPENAI_COMPAT_API_KEY).toBe("tok");
-      expect(JSON.stringify(state.launch)).not.toContain("OMNIROUTE");
+      expect(state.launch.args).toEqual(expect.arrayContaining(["-p", "claude", "--model", "claude-sonnet-5-5"]));
+      expect(Object.keys(state.launch.env).filter(key => /KEY|TOKEN|COMPAT|OMNIROUTE/.test(key))).toEqual([]);
     } else {
-      // The base Jcode's launch adds nothing else: no provider flag, no relay variable.
-      expect(state.launch.env).not.toHaveProperty("JCODE_OPENAI_COMPAT_API_BASE");
+      // The base Jcode's launch adds nothing else: no provider flag.
       expect(state.launch.args).not.toContain("-p");
     }
   }
@@ -190,10 +192,10 @@ import { renderStatus } from "../src/cli/output.ts";
 import { paint } from "../src/cli/console-state.ts";
 
 test("ahub status lists an extra Jcode instance's model source and shows nothing for a peer without one (#685)", () => {
-  const peers = { jcode: { state: "idle", queued: 0 }, "jcode-local": { state: "idle", queued: 0, modelSource: "hub relay dgx/fast (cloud peer, not on-prem)" } };
+  const peers = { jcode: { state: "idle", queued: 0 }, "jcode-local": { state: "idle", queued: 0, modelSource: "claude claude-sonnet-5-5" } };
   const out = renderStatus({ peers }, 160, 1_800_000_000_000).map(line => paint(line, false)).join("\n");
   expect(out).toContain("model source");
-  expect(out).toContain("hub relay dgx/fast (cloud peer, not on-prem)");
+  expect(out).toContain("claude claude-sonnet-5-5");
   const base = renderStatus({ peers: { jcode: peers.jcode } }, 160, 1_800_000_000_000).map(line => paint(line, false)).join("\n");
   expect(base).not.toContain("model source");
 });

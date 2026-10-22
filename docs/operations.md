@@ -3912,41 +3912,53 @@ Extra Jcode instances are supported (#685), in `.agenthub/config.local.json` onl
 ```json
 {
   "instances": {
-    "jcode-local": {
-      "kind": "jcode",
-      "jcode_home": "/Users/you/.jcode-local",
-      "model_relay": "dgx/fast",
-      "roles": ["verifier"]
-    }
+    "jcode-claude": { "kind": "jcode", "roles": ["verifier"], "jcode_home": "/Users/you/.agenthub/jcode/claude",
+                      "provider": "claude", "model": "claude-sonnet-5-5" },
+    "jcode-local":  { "kind": "jcode", "roles": ["verifier"], "jcode_home": "/Users/you/.agenthub/jcode/local",
+                      "provider_profile": "onprem" }
   }
 }
 ```
 
 `jcode_home` is required, absolute, and must differ from the base `jcode_home`, from
 every other instance's and from any directory inside or around them (the hub refuses
-the configuration at startup otherwise). Initialize that home's MCP store with
-Jcode's own client first, as for the base peer: the hub never creates or copies it.
-`provider`, `model` and `provider_profile` are optional and passed as `-p`, `--model`
-and `--provider-profile`. `model_relay` (`dgx/coding` or `dgx/fast`) takes the model
-from the hub's own relay instead, so it cannot be combined with `provider`,
-`provider_profile` or a different `model`. These fields belong to Jcode instances and
-are never editable from settings. Each instance owns its private `jcode serve` and
-`jcode acp` pair, socket, roster row and launch record, and acts as its own peer id
-(for example `jcode-local`), never as `jcode`. Start it with `ahub jcode --as jcode-local`
-(headless; an instance has no TUI) and stop it with `ahub stop jcode-local`: the base
-Jcode and every other instance keep running. An extra implementer needs the same
-managed worktree as every extra implementer (`worktree: ".worktrees/jcode-local"`).
+the configuration at startup otherwise). At most 8 Jcode instances are accepted per
+project. `provider`, `model` and `provider_profile` are optional and passed to Jcode
+as `-p`, `--model` and `--provider-profile` exactly as written; any other field is
+refused, and these fields are never editable from settings.
 
-With `model_relay` the hub starts a loopback model relay for that instance, as for Pi,
-and hands Jcode only `-p openai-compatible`, the relay's URL and a per-launch token. The
-gateway key and Access headers stay in the hub: they are removed from the instance's
-environment. The start is refused unless the gateway is positively confirmed on campus
-(`ahub doctor` shows the gateway). Every request the relay serves is recorded as a
-`usage` event with source `omniroute`, the instance id and the task its turn works on.
-The instance stays a cloud peer (`trust.onPrem` is false): it never receives PII work,
-and `ahub status` and the dashboard show its model source as `hub relay dgx/fast (cloud
-peer, not on-prem)`. `ahub doctor` lists the MCP servers its home would load. The
-on-campus live smoke is a person's check (`docs/smoke.md`) and stays unverified until run.
+You authenticate inside Jcode, never in the hub. Run Jcode's own setup against each
+home (provider login, API key, an OpenAI-compatible base URL such as the on-prem
+gateway, a provider profile), and initialize that home's MCP store with Jcode's own
+client, as for the base peer. The hub never reads, writes, copies or injects a model
+credential, a key, a token or a provider URL, and never creates the home. Its only
+start preflight is read-only: the home must exist as a directory you own, otherwise
+the start is refused and nothing runs. A Jcode sign-in failure appears as the start
+or turn error, with bounded text. An instance reports tokens only if Jcode itself
+does; until then they show `unknown`, never 0.
+
+Each instance owns its private `jcode serve` and `jcode acp` pair, socket, roster row
+and launch record, and acts as its own peer id (for example `jcode-local`), never as
+`jcode`. Start it with `ahub jcode --as jcode-local` (headless; an instance has no
+TUI) and stop it with `ahub stop jcode-local`: the base Jcode and every other instance
+keep running. An extra implementer needs the same managed worktree as every extra
+implementer (`worktree: ".worktrees/jcode-local"`). Every instance is a cloud peer
+(`trust.onPrem` is false), whatever provider you configured: it never receives PII
+work. `ahub status` and the dashboard show the provider, model and profile as
+declared, and `ahub doctor` lists the MCP servers each rostered instance's home would
+load.
+
+Upgrade note (#368): the project's `.jcode/mcp.json` entry for Jcode no longer names
+`AGENTHUB_PEER_ID`, because the file is shared by every Jcode in the project and Jcode
+gives an entry's own env precedence over the process env. Each hub-started Jcode now
+supplies its own peer id and a launch id, and the hub admits a hub-tools connection
+for Jcode only with the launch id of that peer's current owned launch. After
+upgrading, `ahub status` and `ahub doctor` report the Jcode MCP entry as not ready
+once (`jcodeMcpReady` is false for the old entry): run `ahub jcode` once and it
+rewrites its own entry, or follow the remedy text the start refusal shows. A Jcode you
+run yourself in this project outside the hub has no peer id: its hub tools refuse
+every call with that reason and never default to `jcode`, and a process that only
+sets `AGENTHUB_PEER_ID` without an owned launch is refused by the hub.
 
 An extra Claude instance is a reviewer or
 planner you start yourself: declare it with `roles` only (for example
