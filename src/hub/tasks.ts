@@ -73,6 +73,7 @@ export interface TasksDeps {
   /** Explicit acceptance/self-claim only; implicit done has no pre-work baseline. */
   ownerAccepted?: (task: Task) => void;
   /** #520: the review brief for a task's commit (git only, bounded); undefined when the task names no commit. */
+  prepareReviewBrief?: (task: Task) => Promise<void>;
   reviewBrief?: (task: Task) => ReviewBrief | { unavailable: string } | undefined;
   sdlc?: { config: () => SdlcConfig; gh?: SdlcGh };
   briefs?: Briefs;
@@ -3264,8 +3265,8 @@ export class Tasks {
       selection = this.poolReview(task, refs);
       reviewer = selection?.reviewer ?? task.reviewer;
     }
-    // A delayed local check needs a new readback; the immediate done path already admitted before effects.
-    if (reviewer && !admission && (this.d.sdlc?.config().mode ?? "off") !== "off") {
+    // A delayed local check needs a new readback; a completion-selected reviewer also needs optional facts in off mode.
+    if (reviewer && !admission && ((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.prepareReviewBrief)) {
       admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence, undefined, staged => this.withLink(staged, link, refs));
       task = this.withLink(this.completionCurrent(task.id, by, false), link, refs);
     }
@@ -3367,7 +3368,7 @@ export class Tasks {
   /** Review admission is separate from brief construction (#228). All refusals precede the requesting done's writes. */
   private async reviewRequestAdmission(task: Task, refs?: TaskRefs, preEffect = true, actor: PeerId = task.owner ?? USER, previous?: PrEvidence, sameRequest?: () => boolean, stage: (task: Task) => Task = task => task): Promise<ReviewReadiness | undefined> {
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
-    if (mode === "off") return undefined;
+    if (mode === "off" && !this.d.prepareReviewBrief) return undefined;
     let quietDrift = false;
     const guard = () => {
       if (actor !== USER && actor !== task.owner) {
@@ -3387,6 +3388,12 @@ export class Tasks {
       return current;
     };
     guard();
+    if (!this.isPii(task) && this.d.prepareReviewBrief) {
+      try { await this.d.prepareReviewBrief({ ...task, refs: { ...task.refs, ...cleanRefs(refs) } }); }
+      catch { /* Optional code facts must not refuse a review. */ }
+      guard();
+    }
+    if (mode === "off") return undefined;
     const expected = cleanRefs(refs).commit ?? task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead;
     const read: SdlcGh = (args, timeout, cwd, cap) => {
       guard();
