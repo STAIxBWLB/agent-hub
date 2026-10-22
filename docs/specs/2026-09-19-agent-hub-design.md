@@ -4261,3 +4261,353 @@ The owner gave the #516 track its go-ahead on 2026-10-22. This section closes th
 - `web_fetch` is refused for the whole turn of a PII task, whatever the host. The outbound URL or query could carry PII to the web, and `pii.paths` and `sanitize()` do not cover outbound requests.
 - Outside PII turns it runs only through the egress proxy, to hosts in a machine-local per-project allowlist, and returns bounded text only.
 - `doc_read` is unaffected by this rule; it keeps its own `pii.paths` and `data.readonly` checks.
+
+## Amendment: typed host ports for the remaining native branches (#625 phase 6, slice 2+)
+
+Audited against `main` @ `bab87cb2` (2026-10-22). Every `file:line` below is at that commit. Line numbers in `src/hub/daemon.ts` move with each slice; a slice cites the enclosing function, not the line.
+
+### Scope and decisions
+
+- Slice 1 (#667, `src/hub/peers.ts:15-22`) made `sessionGeneration`, `checkpointUsesSessionGeneration`, `permissionModeState` and `setPermissionMode` optional `PeerAdapter` ports. This amendment ports the rest of the native-class dispatch in `src/hub/daemon.ts`, or names each remaining site as an intentional native branch.
+- Port semantics, as in slice 1: an absent port keeps today's non-native path. A port that is present but `undefined` is unknown and refuses wherever it gates a safety check. Presence is tested with `in`, as `requestCheckpoint` already does (`daemon.ts:1702`).
+- **Proofs stay with their evidence.** A port exposes state, never a verdict. The daemon keeps every refusal.
+  - Host-held evidence stays in the daemon: launch records in the state dir checked against `instanceId`, the daemon-owned socket claim generation, transcripts, Orca rows.
+  - In-protocol evidence stays in the adapter: Codex `turn/start` and `thread/resume` frames, captured native approval policies (`codex-appserver.ts:73-76`, `:521-537`).
+  - Why: a port that answered "proven" would make the adapter the authority. A configured or external adapter could then claim a proof it cannot hold.
+- **Generic `PeerAdapter` engine: not in scope.** A kind-neutral driver that runs any transport from a definition is a separate design.
+  - Reasons:
+    - A4 admits only headless ACP that returns the public `AcpPeer` (spec §A4; `daemon.ts:3791`), so an engine would have no second consumer.
+    - The branches that remain are proofs or fixed-builtin native lifecycles (pi-rpc relay, Kimi TUI admission, Jcode TUI tuple). An engine would not remove them.
+    - Running external code behind an engine needs an isolated host-port boundary that does not exist yet (`external-modules.ts:200` ponytail).
+  - Ceiling:
+    - External modules stay headless ACP only.
+    - A new non-ACP transport needs a fixed-builtin adapter class plus its definition.
+    - Every remaining native branch is listed in a committed ratchet table (slice 2a).
+  - Upgrade path: an engine issue when a second non-ACP external transport is requested, starting from the port set below.
+- No slice changes persisted or recovery shape (restart snapshot, receipts, `claude-launch*.json`, `status.json` fields read by older coordinators, control messages). So no new `DAEMON_FEATURES` entry (`control-client.ts:12`). A slice that has to change one of these first adds a floor to `incompatibleRecoveryTarget` and `DAEMON_FEATURES` (daemon.md floor rule) and amends this section.
+
+### Ports
+
+`src/hub/peers.ts`, added to `PeerAdapter` after the slice-1 members. `StartForm` is a type-only import from `src/adapters/registry-types.ts:22`. `PermissionMode` is already imported (`peers.ts:2`).
+
+```ts
+// #625 phase 6 slice 2+. Absent: today's non-native path. Present but undefined: unknown, refuses.
+/** Never offered hub_delivery_retry or its hint; the person resolves held deliveries. */
+readonly deliveryOnly?: boolean;
+/** The hub spawned this runtime and stops it itself; peer_stop admits only these. */
+readonly hubOwned?: boolean;
+/** A stop or failed start left an owned process whose exit is unconfirmed. */
+readonly pendingOwnedProcess?: boolean;
+/** The native form running now. */
+readonly form?: StartForm;
+/** Session persistence settled enough for a recovery prepare. */
+readonly recoveryReady?: boolean;
+/** Record live resume evidence before a requested stop or a recovery inspect/prepare/commit; throws when unavailable. */
+captureResume?(): Promise<Record<string, unknown>>;
+/** The native session that context readings, supervision receipts and memory provenance bind to. */
+readonly nativeSession?: string;
+/** Leave the roster without stopping a person's terminal; resetMode is the hub's next mode choice. */
+detachForRoster?(resetMode: PermissionMode): void | Promise<void>;
+/** Back on the roster after detachForRoster. */
+resumeFromRoster?(): Promise<void>;
+/** Fixed builtins only: a person's frontend attaches to the native session through this hub proxy. */
+readonly frontendProxy?: FrontendProxyPort;
+/** Fixed builtins only: a fixed operator notice; never native ids or provider text. */
+readonly statusNotice?: { code: "unidentified-cancellation"; message: string };
+/** Fixed builtins only, and only with session.nativeRevert: roll the native conversation back to before this native turn. */
+revertTurn?(nativeTurn: string): Promise<void>;
+```
+
+```ts
+export interface FrontendProxyPort {
+  /** Loopback URL the person's frontend attaches to. */
+  readonly url: string;
+  /** A frontend link owns the thread and its upstream socket is open. */
+  readonly attached: boolean;
+  /** The daemon's choice before any frontend attaches. Throws unless fresh: no link, offline, no restoration debt. */
+  setStartupPermissionMode(mode: PermissionMode): void;
+  /** Clear to ask while detached. Never refused; false when an overridden thread has no captured native baseline. */
+  clearPermissionMode(): boolean;
+}
+```
+
+Who sets what (parity by construction; each value is today's member, renamed at most):
+
+| Port | Set by | Today's source |
+|---|---|---|
+| `deliveryOnly = true` | `AcpPeer`, `LocalPeer` | the `isLocalPeer \|\| isAcpPeer` pair, `daemon.ts:2123`, `:2257` |
+| `hubOwned = true` | `AcpPeer`, `PiPeer`, `LocalPeer`, `ReviewerPrintPeer` | the four-way predicate, `daemon.ts:3555` |
+| `pendingOwnedProcess` | `AcpPeer` | `acp.ts:327` |
+| `form` | `PiPeer` (its `mode`, `pi.ts:468`), `WsPeer` (`"tui"`), `AcpPeer` (`"headless"`) | `daemon.ts:3553` (WsPeer means tui), `:4727` (Pi mode) |
+| `recoveryReady` | `PiPeer` | `pi.ts:143` |
+| `captureResume` | `PiPeer` | `pi.ts:172` |
+| `nativeSession` | `CodexPeer` (`threadId \|\| undefined`), `AcpPeer` and `PiPeer` (`recoveryMetadata().sessionId` when it is a string) | `daemon.ts:1690-1691` |
+| `detachForRoster` | `WsPeer` (ignores the mode, `channel-peer.ts:91`), `CodexPeer` (`codex-appserver.ts:473`), `PiPeer` (`pi.ts:471`) | `daemon.ts:4758-4760` |
+| `resumeFromRoster` | `PiPeer` (`pi.ts:496`) | `daemon.ts:4773` |
+| `frontendProxy` | `CodexPeer`: `url` = `proxyUrl` (`:137`), `attached` = `proxyAttached` (`:488`), the two methods as at `:494`, `:500` | `daemon.ts:3701`, `:5198-5280` |
+| `statusNotice` | `CodexPeer` (`codex-appserver.ts:99`), unchanged | `daemon.ts:2791` |
+| `revertTurn` | `CodexPeer.revert` (`codex-appserver.ts:610`) | `daemon.ts:2446`, `:2459` |
+
+Per-port absent and undefined semantics:
+
+- `deliveryOnly`:
+  - Absent or false: retry allowed (today's WsPeer, Codex and Pi path).
+  - Undefined: retry refused, and the hint is withheld.
+- `hubOwned`:
+  - Absent: `peer_stop` refuses with today's "unknown or non-owned peer" text.
+  - Undefined: refused the same way.
+- `form`:
+  - Absent: each site keeps its default (`"headless"` at the stop notice, `undefined` at the retained-terminal notice).
+  - Undefined: `peer_stop` and the unmanaged-TUI permission refusal refuse. Display-only uses pass `undefined`.
+- `recoveryReady`:
+  - Absent: settled.
+  - False or undefined: not settled.
+- `nativeSession`:
+  - Absent or undefined: unbound. Context checkpoints already refuse without a session (`daemon.ts:1704`), and the context view reads unknown (`context-window.ts:58`).
+- `detachForRoster`:
+  - Absent, or `form === "headless"`: the roster-removal stop path.
+- `frontendProxy`:
+  - Absent: no proxy, today's non-Codex path.
+  - Undefined: permission changes, startup reconcile and the `already` start reply refuse with "frontend proxy state unknown".
+
+Why `nativeSession` is an adapter getter and not `definition.session.currentId`: `currentId` returns the local worker's `sessionId` (`builtin-metadata.ts:52-56`, `:152`), but today `contextSession(local)` is `undefined`. Routing through `currentId` would add a session to local memory provenance (`daemon.ts:1832`). Ponytail: two session readers. Converge them when that difference is settled by test.
+
+### Trust gate (A4)
+
+- Export `isFixedBuiltinDefinition(definition): boolean` from `src/adapters/registry.ts`, the boolean twin of `assertNativeCapabilityScope`'s object-identity check (`registry.ts:26-27`, `:224-225`).
+- The daemon reads `frontendProxy`, `statusNotice` and `revertTurn` only when `isFixedBuiltinDefinition(definitionOf(peer))` holds for the resolved definition (instances included). Otherwise it treats them as absent.
+  - So an external or configured adapter that declares them changes nothing: it cannot claim a native proof port.
+- The Claude launch proof (below) admits an owner only under the same gate.
+- `session.nativeRevert` joins the `assertNativeCapabilityScope` restricted list.
+  - External definitions already cannot set it (`external-modules.ts:146` whitelist), and configured ACP does not set it (`configured-acp.ts:118`). The scope test makes that explicit.
+- At the ACP factory admission (`daemon.ts:3791`), the daemon also refuses an owner unless `deliveryOnly === true`, `hubOwned === true` and `form === "headless"`.
+  - A module that returns an `AcpPeer` subclass therefore cannot widen delivery authority by overriding a restrictive port.
+  - Unchanged ceiling: a pin authorizes code with daemon privileges and is not a sandbox (spec §A4).
+- `deliveryOnly`, `hubOwned`, `pendingOwnedProcess`, `form`, `recoveryReady`, `captureResume`, `nativeSession`, `detachForRoster` and `resumeFromRoster` are generic. They are read from any adapter, configured and external `AcpPeer`s included, as their `isAcpPeer` branches are today.
+- The public `/adapter` entry exports no new value. The port types reach module authors through the existing `export type *` (`src/adapters/public.ts:5-7`).
+
+### Claude launch-generation and unattended-hook proof
+
+- The proof logic stays in the host; the typed port is host-side. Extract the existing reads unchanged into `src/hub/claude-launch-proof.ts`, bound once in `startDaemon`:
+  - `claudePermissionLaunch` (`daemon.ts:5180-5186`);
+  - the `claudePermissionGenerations` map (`:2504`);
+  - the hello launch check that closes 4430 (`:5323-5330`);
+  - the facts expected-launch read (`:5571-5591`).
+- The adapter side contributes only `sessionGeneration` (slice 1; `WsPeer` sets it from the daemon's own claim, `channel-peer.ts:18`, `:43`).
+
+```ts
+export interface ClaudeLaunchProof {
+  /** This instance's claude-launch record when permissionHook is true; undefined when absent, foreign or unreadable. */
+  permissionLaunch(peer: string): { launchId: string; unattended: boolean; hookPurpose?: string } | undefined;
+  /** #551: "refuse" closes the hello with 4430; no record or no launchId admits, as today. */
+  helloLaunch(peer: string, launchId: unknown): "admit" | "refuse";
+  /** Facts: the launch a native hook must name (Orca terminal row, then launch record); undefined admits legacy hooks, as today. */
+  expectedLaunch(peer: string): string | undefined;
+  /** The daemon-owned channel object of a fixed-builtin claude-channel peer. Holds the one remaining isWsPeer guard. */
+  owner(peer: string): WsPeer | undefined;
+  /** Record the generation a permission-bearing facts reply was issued for. */
+  bindGeneration(peer: string, generation: string): void;
+  /** True only while the bound generation equals owner(peer).sessionGeneration. */
+  verified(peer: string): boolean;
+}
+```
+
+- Keyed by `transport === "claude-channel"`, as phase 1 chose (daemon.md Claude state files rule), plus the fixed-builtin gate.
+- `owner()` stays class-checked because the proof binds the launch record to the daemon's own socket claim. An adapter-reported generation must never satisfy it.
+- Native-hook turn driving (`nativeStarted` and `nativeStopped`, `channel-peer.ts:113`, `:119`) is reached through `owner()`, never through a generic port.
+- A second owner class (#677's headless Claude implementer, 525-4) is admitted only by an explicit edit to `owner()` with its own test, never by a generic port.
+- Unchanged:
+  - `--unattended` refusal;
+  - `hookPurpose` permission-only hooks that never drive busy state;
+  - `readClaudeTranscriptCompletion` bounds;
+  - `facts-hook.ts` decisions;
+  - the `claude-launch.json` / `claude-native-*.json` split (daemon.md).
+
+### Call-site inventory
+
+Counts are call occurrences in `src/hub/daemon.ts` (`grep -o`). `ripwire . --callers=<predicate>` lists the same functions and lines.
+
+| Predicate | Count | Ported | Intentional |
+|---|---|---|---|
+| `isCodexPeer` | 12 | 12 | 0 |
+| `isPiPeer` | 20 | 11 | 9 |
+| `isWsPeer` | 25 | 12 | 13 |
+| `isAcpPeer` | 12 | 8 | 4 |
+| `isLocalPeer` | 6 | 3 | 3 |
+| `isJcodePeer` | 1 | 0 | 1 |
+| `isReviewerPrintPeer` | 2 | 1 | 1 |
+
+The brief cited 19 `isPiPeer` and 24 `isWsPeer`. The extra calls are second calls on the same line: `:5036` for Pi, and the `claiming` and `pullOnly` reads at `:2791` for Ws. `isReviewerPrintPeer` is included because `peer_stop` combines it with the others.
+
+`isCodexPeer` (all ported):
+
+| Line | Function | Assignment | Slice |
+|---|---|---|---|
+| 1690 | `contextSession` | `nativeSession` | 2c |
+| 2446 | `taskOpBody` turn_revert | `revertTurn` (gated), error text unchanged when absent | 2d |
+| 2791 | `status` | `statusNotice` (gated) | 2d |
+| 3701 | `startPeerBody` already | `frontendProxy.url` | 2d |
+| 4721 | `codexResumeCommand` | `owner?.nativeSession ?? lastCodexThreads.get(peer)`. Only Codex's notice uses the command (`native-daemon-policy.ts:6-12`), so other kinds' output is unchanged. | 2c |
+| 4759 | `changeRosterSetting` | `detachForRoster(resetMode)` | 2b |
+| 5198 | `changePermission` offline ask | `frontendProxy.clearPermissionMode()` | 2d |
+| 5206, 5215 | `changePermission` | `frontendProxy.attached` / present | 2d |
+| 5247 | `confirmPermissionDefault` | `frontendProxy` present and offline | 2d |
+| 5278 | `reconcileNativeStart` | `definitionOf(peer).permission.trackUnattended` (Codex only, `builtin-metadata.ts:110`), as `:5246` already does; no port | 2d |
+| 5280 | `reconcileNativeStart` | `frontendProxy` not attached → `setStartupPermissionMode` | 2d |
+
+`isPiPeer`:
+
+| Line | Function | Assignment | Slice |
+|---|---|---|---|
+| 1691 | `contextSession` | `nativeSession` | 2c |
+| 2549 | `recoveryReady` | `recoveryReady` port; update seed `roster-detached-pi-recovery` (`scripts/seeds.json:325-330`) in the same PR | 2c |
+| 3555, 3556 | `stopPeer` | `hubOwned`; `form === "tui"` refuses with `${displayName} belongs to a native TUI terminal; end it in its terminal` ("Pi", `builtin-metadata.ts:133`) | 2b |
+| 3565 | `stopPeer` | `captureResume` when idle | 2b |
+| 4727 | `retainedTerminalNotice` | `owner?.form`. Only Claude, Codex and Pi define the notice, and Claude and Codex ignore the form (`native-daemon-policy.ts:6-11`). | 2b |
+| 4760, 4773 | `changeRosterSetting` | `detachForRoster` / `resumeFromRoster` when `form !== "headless"` | 2b |
+| 5036 (x2) | `recoveryView` | `recoveryReady`, `form`; text uses `displayName` | 2c |
+| 5070 | `recoveryOp` | `captureResume` on idle peers | 2c |
+| 2791 | `status` | **Intentional.** `requestedModel` and relay backends come from the daemon-owned pi-rpc `modelRelays` (spec §A2b ceiling: pi-rpc owns the verified relay). | n/a |
+| 3038, 3068 | `settlePiContinuity`, `recordSessions` | **Intentional.** The persisted continuity bookmark is Pi-shaped (`{ pi }`, `native-recovery-continuity.ts:6-12`). Generalizing it changes recovery shape and needs a floor. | n/a |
+| 3519 | `hubStart` headless | **Intentional.** A generic `form === "tui"` would also catch an attached Claude or Kimi `WsPeer`, which today reaches `startPeer`. Existing ponytail at `:3516`. | n/a |
+| 3657, 3665, 3704 | `startPeerBody` | **Intentional.** Pi replacement and handover (`--replace-session` is a person-only flag, `stopPiForReplacement`). | n/a |
+| 3886, 4172 | pi-rpc port wiring, `admitPiRequest` | **Intentional.** Bridge `/budget` admission for the verified owner (adapters.md Pi). | n/a |
+
+`isWsPeer`:
+
+| Line | Function | Assignment | Slice |
+|---|---|---|---|
+| 1418 | `offerPullOnly` | `peer?.pullOnly === true` (existing port, `peers.ts:26`; only `WsPeer` sets it) | 2b |
+| 2727 | `permissionStatus` | `pullOnly` | 2b |
+| 3553 | `stopPeer` stop notice | `owner?.form ?? (owner ? "headless" : startMode(peer))` | 2b |
+| 4758 | `changeRosterSetting` | `detachForRoster`; the Kimi admission clear stays in that branch under `attach.admission` | 2b |
+| 5191 | `changePermission` | `owner?.form === "tui"`, or no owner and a tui start mode | 2b |
+| 2716, 5213, 5597, 5605, 5628, 5637, 5643 | `permissionDisplay`, `changePermission`, facts | `ClaudeLaunchProof.owner` / `verified` / `bindGeneration` | 2e |
+| 802, 5335, 5401, 5411, 5423 | socket close, hello, `delivery_receipt`, `inbox`, `delivery_complete` | **Intentional.** Host channel transport: the daemon constructs this `WsPeer` (`:5334`) and owns socket authentication (daemon.md line 3). | n/a |
+| 925 | bus `onImportantQueued` | **Intentional.** Pull-only nudge on the host channel (#398). | n/a |
+| 1688, 1704, 2791 (x2) | `contextSession`, `requestCheckpoint`, `status` | **Intentional.** `claiming` and `lastInboxAt` are the daemon's claim window and channel telemetry. | n/a |
+| 3642 | `startPeerBody` | **Intentional.** Inside `attach.admission`, Kimi's native TUI receipt, fixed builtin (spec §A2b ceiling). | n/a |
+| 5499 | `native_facts` | **Intentional.** The agy managed-hook proof binds to the daemon's socket generation (adapters.md native facts). | n/a |
+| 5724 | `watch` | **Intentional.** `attach.admission`; seed `kimi-watch-live-owner` (`scripts/seeds.json:3157-3162`) stays. | n/a |
+
+`isAcpPeer`:
+
+| Line | Function | Assignment | Slice |
+|---|---|---|---|
+| 1691 | `contextSession` | `nativeSession` | 2c |
+| 2123, 2257 | `ownHeldHint`, `hub_delivery_retry` | `deliveryOnly` | 2b |
+| 2536 | `importantWaitingStatus` | `definitionOf(id)?.transport === "acp"` with no `steer` while busy. The Kimi TUI `WsPeer` under an acp id is never busy (adapters.md). | 2b |
+| 3555, 3557 | `stopPeer` | `hubOwned`, `pendingOwnedProcess` | 2b |
+| 3624 | `startPeerBody` | `pendingOwnedProcess` (still under `permission.genericAcp`) | 2b |
+| 5279 | `reconcileNativeStart` | `owner.permissionModeState === "unmanaged"` (slice-1 port; Codex never returns unmanaged, `codex-appserver.ts:491`). `getPermissionMode()` stays on the typed `AcpPeer \| CodexPeer` parameter: `AcpPeer.permissionModeState` reads `"unknown"` where `getPermissionMode()` does not (`acp.ts:325-330`). | 2d |
+| 3634, 5333, 5724 | Kimi admission, hello `kimiPull`, `watch` | **Intentional.** `attach.admission`. | n/a |
+| 3791 | ACP factory admission | **Intentional.** The A4 trust boundary: the factory must return the public `AcpPeer`. It gains the port checks above. | n/a |
+
+`isLocalPeer`:
+
+| Line | Function | Assignment | Slice |
+|---|---|---|---|
+| 2123, 2257 | `ownHeldHint`, `hub_delivery_retry` | `deliveryOnly` | 2b |
+| 3555 | `stopPeer` | `hubOwned` | 2b |
+| 2791 | `status` `servedBy` | **Intentional.** Local relay telemetry, hub-native. | n/a |
+| 4205, 4259 | `holdPeer`, `validateRelease` | **Intentional.** `validateLocalChoice` over the local route and model. | n/a |
+
+`isJcodePeer`:
+
+| Line | Function | Assignment | Slice |
+|---|---|---|---|
+| 5858 | `native_tui_launch` | **Intentional.** The owned-acp TUI tuple; only a person's launcher gets it (daemon.md). | n/a |
+
+`isReviewerPrintPeer`:
+
+| Line | Function | Assignment | Slice |
+|---|---|---|---|
+| 3555 | `stopPeer` | `hubOwned` | 2b |
+| 1324 | review authority | **Intentional.** `reviewAuthority` compares `reviewToken`; never widen it (adapters.md Reviewers). | n/a |
+
+After all slices, `daemon.ts` keeps 31 intentional calls (Pi 9, Ws 13, Acp 4, Local 3, Jcode 1, ReviewerPrint 1), plus one `isWsPeer` inside `claude-launch-proof.ts`.
+
+### Slices
+
+Every slice:
+
+- `scripts/check.sh --changed` ends with `check: OK (changed)`.
+- No safety default is lowered. A4 holds: no new public export, no external module import path, no field leaves the restricted list.
+- Moved lines that `scripts/seeds.json` searches update their seed in the same PR (tests.md).
+- An implementation that has to differ from this text amends it first.
+
+Common acceptance criteria:
+
+- **No-branch test:** a plain `BasePeer` subclass with no native class, exposing the port, gets the behaviour in a real daemon. This is the pattern of `test/peer-capabilities.test.ts:61-181`.
+- **Parity tests:** the existing native tests for those sites stay green unchanged, and byte-identical error and status text is asserted where text moved to `displayName`.
+- **Ratchet:** the table loses exactly the slice's rows.
+
+1. **2a: Ratchet and trust gate.** Area note: `tests.md`. Size S.
+   - Paths:
+     - new `test/daemon-native-branches.test.ts` and `test/daemon-native-branches.json` (rows `{predicate, function, count, reason}`; TypeScript AST over `src/hub/daemon.ts` and `src/hub/claude-launch-proof.ts`, reusing the source walk in `test/helpers/registry-inventory.ts`; never imports daemon code);
+     - `src/adapters/registry.ts` (`isFixedBuiltinDefinition`; `session.nativeRevert` restricted);
+     - `test/adapter-capability-scope.test.ts`;
+     - `src/adapters/conformance/kit.ts` and `enrollment.ts`, with a ports leg.
+   - ACs:
+     - The table equals today's counts (the inventory above).
+     - An inline fixture with one extra predicate call fails, and so does a row with an empty reason.
+     - A configured definition that declares `session.nativeRevert` is refused.
+     - Kit leg: every ACP-transport definition's `start.create` product reports `deliveryOnly`, `hubOwned` and `form: "headless"`.
+     - Kit leg: a non-fixed-builtin definition whose product has `frontendProxy`, `statusNotice` or `revertTurn` fails the kit.
+     - Builtins that do not apply name their reason in `UNSUPPORTED_LEGS`.
+2. **2b: Delivery-only, owned stop, form and roster detach.** Area note: `adapters.md` (Spawned processes; Turns). Size M.
+   - Paths: `src/hub/peers.ts`, `src/adapters/acp.ts`, `src/adapters/local-worker.ts`, `src/adapters/pi.ts`, `src/adapters/reviewer-print.ts`, `src/adapters/channel-peer.ts`, `src/adapters/codex-appserver.ts` (`detachForRoster` signature only), `src/hub/daemon.ts`, tests.
+   - Ports: `deliveryOnly`, `hubOwned`, `pendingOwnedProcess`, `form`, `captureResume` (stop use), `detachForRoster`, `resumeFromRoster`, plus the generic `pullOnly` reads.
+   - ACs:
+     - A plain peer with `deliveryOnly: true` is refused `hub_delivery_retry` and gets no retry hint.
+     - With `deliveryOnly` undefined it is refused too.
+     - A plain `hubOwned` peer is admitted by `peer_stop`; a `form: "tui"` one is refused with the `displayName` text.
+     - A plain peer with `detachForRoster` is detached, not stopped, on roster removal.
+     - ACP factory admission refuses an `AcpPeer` subclass that overrides `deliveryOnly` to false.
+     - `test/kimi-tui.test.ts`, `test/roster-pi.test.ts`, the `peer_stop` and configured ACP tests stay unchanged.
+3. **2c: Session binding and recovery settlement.** Area note: `daemon.md` (recovery), with the budget.md context rules unchanged. Size M.
+   - Paths: `src/hub/peers.ts`, `src/adapters/codex-appserver.ts`, `src/adapters/acp.ts`, `src/adapters/pi.ts`, `src/hub/daemon.ts` (`contextSession`, `codexResumeCommand`, `recoveryReady`, `recoveryView`, `recoveryOp`), `scripts/seeds.json` (`roster-detached-pi-recovery`), tests.
+   - ACs:
+     - For every builtin, `contextSession` equals today's value: the local worker and reviewer print stay `undefined`, and an ACP empty string stays `""`.
+     - A plain peer with `recoveryReady: false` blocks `recoveryReady()` and is named in `recoveryView`.
+     - Undefined blocks too.
+     - Memory provenance `session` (`daemon.ts:1832`) is unchanged for local.
+     - Seed runner: green, then the named assertion fails, after the reanchor.
+4. **2d: Codex frontend proxy.** Area note: `adapters.md` (Permissions, modes and approvals). Size M.
+   - Paths: `src/hub/peers.ts`, `src/adapters/codex-appserver.ts`, `src/hub/daemon.ts` (`changePermission`, `confirmPermissionDefault`, `reconcileNativeStart`, `startPeerBody`, `status`, `taskOpBody` turn_revert), `test/peer-capabilities.test.ts`, the Codex permission and revert tests.
+   - The restoration debt stays inside `CodexPeer` (`nativeApprovalPolicies`, `overriddenApprovals`, `settlePermissionRestore`). The port changes no frame handling.
+   - ACs:
+     - A plain fixed-builtin-gated test peer (built in a test catalog that marks it builtin by identity) with `frontendProxy` gets the proxy refusals and startup reconcile.
+     - The same peer under a configured definition is treated as absent.
+     - `frontendProxy` undefined refuses permission changes and `already`.
+     - The `unidentified-cancellation` notice shows only from a fixed builtin.
+     - The Codex sticky-override, restoring-turn, detached-clear and attached-refusal tests stay unchanged.
+     - `isCodexPeer` rows leave the table.
+5. **2e: Claude launch proof extraction.** Area note: `daemon.md` (Claude launch and hook rules). Size M.
+   - Paths: new `src/hub/claude-launch-proof.ts`, `src/hub/daemon.ts` (hello, `permissionDisplay`, `changePermission`, facts), tests.
+   - No change to `src/cli/launch.ts`, `src/cli/facts-hook.ts`, `src/adapters/claude-channel.ts` or the plugin bundle.
+   - ACs:
+     - The existing #242, #551, #517 and #624 daemon tests pass unchanged.
+     - `daemon.ts` has no `isWsPeer` row for these functions.
+     - A non-`WsPeer` adapter under a claude-channel id never verifies a permission generation, even when it reports `sessionGeneration`.
+     - A foreign `instanceId` record and a 4430 mismatch behave as today.
+
+Order: 2a first (it measures everything else). 2b and 2c are independent. 2d after 2b (roster detach). 2e is independent. Run one slice at a time per repo (resource policy).
+
+### Interactions
+
+- **A4.** Covered by the trust gate. An external module cannot reach `frontendProxy`, `statusNotice`, `revertTurn` or `ClaudeLaunchProof.owner`. Its restrictive ports are checked at factory admission, and its CI sees the new kit leg through `/conformance`.
+- **Recovery floors.** None added: ports are in memory, the restart snapshot still reads `recoveryMetadata()` (`daemon.ts:3073`, `restart.ts:15-27`), and `lastCodexThreads` stays daemon memory (`daemon.ts:2731`). The floor rule above applies to any slice that has to change this.
+- **#525 / PR #677** (open, head `8525ad00`):
+  - **525-1** adds a `headlessVariant`. It must join `fixedBuiltinDefinitions` (`registry.ts:26-27` adds only `reviewerVariant`), or the gate treats the variant as non-builtin and ignores its ports. That fails closed, but it breaks 525-4.
+  - **525-4**'s headless Claude implementer needs the facts permission proof for a child launch id. It extends `ClaudeLaunchProof.owner` explicitly with its own test (above), and never reads a generic port.
+  - **525-5** adds `executionCwd` to `claude-launch.<id>.json` and an attach admission. `claude-launch-proof.ts` is the one reader: whichever of 2e and 525-5 lands second rebases onto the other. 2e changes no record fields.
+  - **525-6** adds read-only thread sandbox confirmation in `codex-appserver.ts`. The confirmation is in-protocol evidence, so it stays in `CodexPeer`. If the daemon must refuse on it, add a readonly state member to `FrontendProxyPort` (`threadSandbox?: "read-only" | "workspace-write" | "unknown"`; unknown refuses), never a daemon `isCodexPeer`.
+  - The `role_stages` floor belongs to #525. This amendment adds no floor.
+
+### Unverified
+
+- Total parity of `codexResumeCommand` and the retained-terminal notice after `form` and `nativeSession` widen to ACP and `WsPeer` owners. It rests on only Claude, Codex and Pi defining the notices (`builtin-metadata.ts:99`, `:113`, `:142`); 2b and 2c must test it.
+- That the Kimi TUI `WsPeer` is never `busy` (the `importantWaitingStatus` move). This is stated in adapters.md, not checked in source here.
+- Whether `exactOptionalPropertyTypes` is relevant: `tsconfig.json` does not set it. Presence is tested with `in`, as in slice 1.
+- PR #677 line references are from its diff at `8525ad00`, which is not merged.
