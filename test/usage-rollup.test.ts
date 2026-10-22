@@ -170,7 +170,9 @@ test("lifetime totals name their source: native where the provider reported, a h
   expect(by.get("jcode")!.tokens).toEqual({ value: 77, source: "count" });
   expect(by.get("jcode")!.withoutCache).toEqual({ value: null, source: "unknown" });     // a count has no cache split
   expect(by.get("pi")!.tokens).toEqual({ value: null, source: "unknown" });
-  expect(total.overall.tokens).toEqual({ value: 1580 + 77, source: "count" });          // a sum is as weak as its weakest part
+  // local (usage with no total) and pi are unknown, so the overall figure is a lower bound: partial, with both named, never a sum that counts them as 0.
+  expect(total.overall.tokens).toEqual({ value: 1580 + 77, source: "partial" });
+  expect(total.unknownPeers.tokens).toEqual(["local", "pi"]); expect(total.unknownPeers.withoutCache).toEqual(["jcode", "local", "pi"]);
   expect(total.overall.withoutCache).toEqual({ value: null, source: "unknown" });       // one peer has no split, so no understated figure
   expect(total.since).toMatch(/^2026-10-09T/);
   r.close();
@@ -255,4 +257,44 @@ test("a pass that dies inside its transaction leaves nothing half applied, and t
   r2.catchUp(); const fresh = new UsageRollup(join(f.dir, "ref.db"), f.log); fresh.catchUp();
   expect(JSON.stringify(r2.dump())).toBe(JSON.stringify(fresh.dump())); expect(fresh.query({ by: "peer" }).rows[0]!.counted.value).toBe(800);
   r2.close(); fresh.close();
+});
+
+test("the overall total is a lower bound when a peer is unknown, and unknown when every peer is (#683 U2, review)", () => {
+  const f = fixture(); f.write([[usage("pi", "p1", { inputTokens: 3 })], [usage("kimi", "k1", { outputTokens: 4 })]]);
+  const r = f.open(); r.catchUp();
+  const none = r.total();
+  expect(none.overall.tokens).toEqual({ value: null, source: "unknown" }); expect(none.unknownPeers.tokens).toEqual(["kimi", "pi"]);
+  f.write([[tokens("jcode", 10)]]); r.catchUp();
+  const some = r.total();
+  expect(some.overall.tokens).toEqual({ value: 10, source: "partial" }); expect(some.unknownPeers.tokens).toEqual(["kimi", "pi"]);
+  f.write([[usage("kimi", "k2", { totalTokens: 5 })], [usage("pi", "p2", { totalTokens: 6 })]]); r.catchUp();
+  const all = r.total();
+  expect(all.unknownPeers.tokens).toEqual([]); expect(all.overall.tokens.source).not.toBe("partial");
+  r.close();
+});
+
+test("limits: a pause the hub no longer holds is ended with an unknown end, not open forever; a held one stays open (#683 U2, review)", () => {
+  const f = fixture(); sample(f);
+  f.write([[{ type: "budget_pause", peer: "gemini", reason: "x", window: "5h", resetsAt: 1_900_000_000_000, by: "hub" } as HubEvent]]);
+  const r = f.open(); r.catchUp();
+  expect(r.limits().open.map(o => o.peer)).toEqual(["claude", "gemini"]);                           // no live set: every event-open pause is open
+  const withLive = r.limits(undefined, { live: new Set(["gemini"]) });
+  expect(withLive.open.map(o => o.peer)).toEqual(["gemini"]);
+  expect(withLive.endedUnknown.map(o => o.peer)).toEqual(["claude"]);                                // ahub reset cleared claude's record and wrote no resume
+  expect(r.limits(undefined, { live: new Set() }).open).toEqual([]);
+  r.close();
+});
+
+test("limits never drops rows silently: a cut says how many are omitted, a bigger limit shows them, and the limit is bounded (#683 U2, review)", () => {
+  const f = fixture();
+  f.write(Array.from({ length: 30 }, (_, i) => [{ type: "quota_reset", peer: "codex", window: "week", cause: "resets_at_moved", resetsAt: 1_900_000_000_000 + i * 1e9 } as HubEvent] as [HubEvent]));
+  const r = f.open(); r.catchUp();
+  const cut = r.limits(undefined, { limit: 10 });
+  expect(cut).toMatchObject({ total: 30, shown: 10, truncated: true, omitted: 20, limit: 10 }); expect(cut.history).toHaveLength(10);
+  expect(cut.history.at(-1)!.detail.resetsAt).toBe(1_900_000_000_000 + 29 * 1e9);                    // the newest are kept
+  const all = r.limits(undefined, { limit: 30 });
+  expect(all).toMatchObject({ total: 30, shown: 30, truncated: false, omitted: 0 });
+  expect(r.limits("nobody")).toMatchObject({ total: 0, shown: 0, truncated: false });
+  for (const bad of [0, -1, 1.5, r.limits().maxLimit + 1]) expect(() => r.limits(undefined, { limit: bad })).toThrow(/limit is an integer/);
+  r.close();
 });

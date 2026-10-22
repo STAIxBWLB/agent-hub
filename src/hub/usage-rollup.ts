@@ -24,7 +24,8 @@ import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 export type UsageGroup = "peer" | "task" | "issue" | "pr" | "release" | "day" | "model";
 export const USAGE_GROUPS: readonly UsageGroup[] = ["peer", "task", "issue", "pr", "release", "day", "model"];
 /** Where a number comes from (#285): the provider's own counter, a hub count, a person's entry, or nothing known. */
-export type UsageSource = "native" | "count" | "manual" | "unknown";
+/** `partial`: a sum over several peers where at least one is unknown, so the value is a lower bound and never the whole. */
+export type UsageSource = "native" | "count" | "manual" | "partial" | "unknown";
 export interface Counter { value: number | null; source: UsageSource }
 
 const KINDS = ["input", "output", "cache_read", "cache_write", "reasoning", "total"] as const;
@@ -53,9 +54,14 @@ export interface UsageRow {
 export interface UsageResult { by: UsageGroup; since?: number; until?: number; rows: UsageRow[]; unattributed?: UsageRow; coverage: { records: number; withUsage: number; withoutUsage: number }; throughOffset: number }
 
 export interface LimitRow { at: string; type: "budget_pause" | "budget_resume" | "quota_reset"; peer: string; window: string; detail: Record<string, string | number> }
-export interface LimitsResult { history: LimitRow[]; open: { peer: string; window: string; since: string; resetsAt: number }[] }
+export interface OpenPause { peer: string; window: string; since: string; resetsAt: number }
+/** `history` is the newest `shown` of `total` events: `truncated` says so, and `omitted` is how many older ones are not in it. `open` is held by the hub now;
+ *  `endedUnknown` is a pause the events never closed and the hub no longer holds (cleared by `ahub reset`, which keeps the log byte for byte). */
+export interface LimitsResult { history: LimitRow[]; total: number; shown: number; truncated: boolean; omitted: number; limit: number; maxLimit: number; open: OpenPause[]; endedUnknown: OpenPause[] }
+export const LIMITS_DEFAULT = 200, LIMITS_MAX = 5000;
 export interface TotalRow { peer: string; tokens: Counter; withoutCache: Counter; cacheRead: Counter; records: number; firstAt: string | null }
-export interface TotalResult { since: string | null; peers: TotalRow[]; overall: { tokens: Counter; withoutCache: Counter; cacheRead: Counter } }
+/** `unknownPeers`: the peers whose figure is unknown, which the overall figure then leaves out (so it is `partial`, a lower bound, never a sum that treats them as 0). */
+export interface TotalResult { since: string | null; peers: TotalRow[]; overall: { tokens: Counter; withoutCache: Counter; cacheRead: Counter }; unknownPeers: { tokens: string[]; withoutCache: string[]; cacheRead: string[] } }
 
 const sum = (a: number | null, b: number | null): number | null => a === null ? b : b === null ? a : a + b;
 const counter = (value: number | null, n: number, source: UsageSource = "native"): Counter => n > 0 && value !== null ? { value, source } : { value: null, source: "unknown" };
@@ -276,23 +282,35 @@ export class UsageRollup {
       coverage: { ...cover, withoutUsage: cover.records - cover.withUsage }, throughOffset: this.state().offset };
   }
 
-  limits(peer?: string, limit = 200): LimitsResult {
-    const rows = this.db.query(`SELECT at, type, peer, window, detail FROM limit_events ${peer ? "WHERE peer = ?" : ""} ORDER BY seq DESC LIMIT ?`).all(...(peer ? [peer, limit] : [limit])) as any[];
+  /**
+   * `live`: the peers whose pause the hub holds right now. An event-open pause for any other peer is not open: `ahub reset` clears the pause record
+   * and leaves `events.jsonl` unchanged, so no `budget_resume` follows, and it is listed as `endedUnknown` instead of staying open forever.
+   * Without `live` every event-open pause is open. History is the newest `limit` events (at most LIMITS_MAX) and says when it is cut.
+   */
+  limits(peer?: string, opts: { limit?: number; live?: ReadonlySet<string> } = {}): LimitsResult {
+    const limit = opts.limit ?? LIMITS_DEFAULT;
+    if (!Number.isInteger(limit) || limit < 1 || limit > LIMITS_MAX) throw new Error(`limit is an integer from 1 to ${LIMITS_MAX}`);
+    const where = peer ? "WHERE peer = ?" : "";
+    const total = (this.db.query(`SELECT COUNT(*) AS n FROM limit_events ${where}`).get(...(peer ? [peer] : [])) as { n: number }).n;
+    const rows = this.db.query(`SELECT at, type, peer, window, detail FROM limit_events ${where} ORDER BY seq DESC LIMIT ?`).all(...(peer ? [peer, limit] : [limit])) as any[];
     const history = rows.reverse().map(r => ({ at: r.at, type: r.type, peer: r.peer, window: r.window, detail: JSON.parse(r.detail) as Record<string, string | number> }));
     // A pause with no later resume for its peer is still open, unless a later pause of the same peer replaced it.
-    const open = new Map<string, { peer: string; window: string; since: string; resetsAt: number }>();
+    const pending = new Map<string, OpenPause>();
     for (const r of this.db.query(`SELECT at, type, peer, window, detail FROM limit_events WHERE type IN ('budget_pause','budget_resume') ${peer ? "AND peer = ?" : ""} ORDER BY seq`).all(...(peer ? [peer] : [])) as any[]) {
-      if (r.type === "budget_pause") open.set(r.peer, { peer: r.peer, window: r.window, since: r.at, resetsAt: JSON.parse(r.detail).resetsAt ?? 0 });
-      else open.delete(r.peer);
+      if (r.type === "budget_pause") pending.set(r.peer, { peer: r.peer, window: r.window, since: r.at, resetsAt: JSON.parse(r.detail).resetsAt ?? 0 });
+      else pending.delete(r.peer);
     }
-    return { history, open: [...open.values()] };
+    const open: OpenPause[] = [], endedUnknown: OpenPause[] = [];
+    for (const p of pending.values()) (opts.live && !opts.live.has(p.peer) ? endedUnknown : open).push(p);
+    return { history, total, shown: history.length, truncated: total > history.length, omitted: total - history.length, limit, maxLimit: LIMITS_MAX, open, endedUnknown };
   }
 
   /**
    * Lifetime development tokens since the first event, per peer and overall. A peer's number is the provider's own `totalTokens` when it reported
    * any (`native`), otherwise the hub's own token increments (`count`: what the hub counted, never claimed as the provider's), otherwise unknown.
    * "Without cache reads" is known only where the cache reads are: a `count` number carries no breakdown, so it has no such figure.
-   * The overall number is `native` only when every contributing peer is; one `count` peer makes it `count`, since a sum is as weak as its weakest part.
+   * The overall number is `native` only when every peer is; one `count` peer makes it `count`, since a sum is as weak as its weakest part; an unknown peer makes it
+   * `partial` (a lower bound) with that peer listed, never a figure that counts it as 0.
    */
   total(): TotalResult {
     const peers = this.db.query(`SELECT peer, SUM(records) AS records, SUM(total) AS total, SUM(total_n) AS total_n, SUM(cache_read) AS cr, SUM(cache_read_n) AS cr_n FROM usage_rollup GROUP BY peer ORDER BY peer`).all() as any[];
@@ -309,13 +327,16 @@ export class UsageRollup {
         : tokens.source === "native" && tokens.value !== null && p && p.cr_n === 0 ? { value: tokens.value, source: "native" } : unknown;
       out.push({ peer, tokens, withoutCache, cacheRead, records: p?.records ?? 0, firstAt: this.state().firstAt });
     }
+    const unknownPeers = (pick: (r: TotalRow) => Counter) => out.filter(r => pick(r).value === null).map(r => r.peer);
+    // The overall figure never treats an unknown peer as 0: when any peer is unknown the sum is `partial` (a lower bound, the unknown peers listed in
+    // `unknownPeers`); with nobody known it is unknown. A without-cache figure needs every peer's cache split, so one unknown peer makes it unknown.
     const fold = (pick: (r: TotalRow) => Counter, strict: boolean): Counter => {
       const known = out.map(pick).filter(c => c.value !== null);
       if (!known.length || (strict && known.length !== out.length)) return unknown;
-      return { value: known.reduce((a, c) => a + c.value!, 0), source: known.every(c => c.source === "native") ? "native" : "count" };
+      return { value: known.reduce((a, c) => a + c.value!, 0), source: known.length !== out.length ? "partial" : known.every(c => c.source === "native") ? "native" : "count" };
     };
-    // The overall without-cache figure needs every peer's cache split, so one unknown peer makes it unknown rather than understated.
-    return { since: this.state().firstAt, peers: out, overall: { tokens: fold(r => r.tokens, false), withoutCache: fold(r => r.withoutCache, true), cacheRead: fold(r => r.cacheRead, false) } };
+    return { since: this.state().firstAt, peers: out, overall: { tokens: fold(r => r.tokens, false), withoutCache: fold(r => r.withoutCache, true), cacheRead: fold(r => r.cacheRead, false) },
+      unknownPeers: { tokens: unknownPeers(r => r.tokens), withoutCache: unknownPeers(r => r.withoutCache), cacheRead: unknownPeers(r => r.cacheRead) } };
   }
 
   /** Every roll-up row, in key order, for the rebuild-equals-incremental test. */

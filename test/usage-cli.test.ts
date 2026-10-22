@@ -73,13 +73,16 @@ test("usage limits and usage total print the history and the lifetime numbers, a
   const { run } = await rig();
   const limits = await run("usage", "limits", "--color=never");
   expect(limits.code, limits.stderr).toBe(0);
-  expect(limits.stdout).toContain("open pause: claude 5h");
+  expect(limits.stdout).toContain("pause ended, end unknown: claude 5h");                                   // the hub holds no record of it: not open forever
   expect(limits.stdout).toMatch(/pause\s+claude\s+5h/);
   expect(JSON.parse((await run("usage", "limits", "--peer", "claude", "--json")).stdout).limits.history).toHaveLength(1);
   const total = await run("usage", "total", "--color=never");
   expect(total.code, total.stderr).toBe(0);
   expect(total.stdout).toContain("ALL PEERS"); expect(total.stdout).toContain("lifetime development tokens since 2026-10-09");
   expect(JSON.parse((await run("usage", "total", "--json")).stdout).overall.tokens.source).toBe("count");
+  const cut = await run("usage", "limits", "--limit", "1", "--json"); expect(cut.code, cut.stderr).toBe(0);
+  expect(JSON.parse(cut.stdout).limits).toMatchObject({ total: 1, shown: 1, truncated: false, limit: 1 });
+  for (const bad of ["0", "x", "99999", "1.5"]) expect((await run("usage", "limits", "--limit", bad)).code).not.toBe(0);
 });
 
 test("a wrong argument is refused with a usage line, not a stack trace, and nothing is asked of the hub (#683 U2)", async () => {

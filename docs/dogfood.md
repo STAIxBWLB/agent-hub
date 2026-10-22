@@ -47,7 +47,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Feature | State here | Measured by |
 | --- | --- | --- |
 | Quota budgets and pauses | on | pauses, resets, time paused (#683) |
-| Token usage per peer and task | partial: `ahub report`; unified view pending (#683) | tokens per merged PR |
+| Token usage per peer and task | `ahub report` and, from the roll-up in `hub.db`, `ahub usage [--by peer\|task\|issue\|pr\|release\|day\|model]`, `usage limits` and `usage total` (#683 U2); console and dashboard views pending (U3, U4) | tokens per merged PR |
 | Context gate | off: `context.gate = 0` | context-pressure events |
 | Always-ask action classes (#636) | foundation only; enforcement pending (#312, #313) | classed calls asked, budget refusals |
 | Permission modes | on, person-chosen | approval prompts and their wait times |
@@ -61,7 +61,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | --- | --- | --- |
 | Dogfood scorecard (#687) | on after release; read-only weekly receipt | `ahub report --dogfood --since 7d --json`; bounded evidence and explicit unknowns |
 | Console and dashboard | on | control-request latency, connection timeouts in `hub.log` |
-| Usage view (#683) | pending | its own panels |
+| Usage view (#683) | CLI shipped (`ahub usage`, U2); console and dashboard panels pending (U3, U4) | its own panels |
 | Settings reload | on | reloads applied, pending restarts |
 | Config editing from the console and dashboard (#689) | pending; hand edits of `config.local.json` meanwhile | edits applied, refused by validation, pending restarts |
 | Upgrade and recovery | on, per release | upgrade receipts in `docs/verification/` |

@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +15,7 @@ afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn()
 const ev = (s: number, e: Record<string, unknown>, day = 9) => JSON.stringify({ v: 1, at: new Date(Date.UTC(2026, 9, day, 0, 0, s)).toISOString(), ...e }) + "\n";
 const SECRET_TITLE = "PRIVATE-TITLE-USAGE-FIXTURE";
 
-async function rig(roles: Record<string, string[]> = {}) {
+async function rig(roles: Record<string, string[]> = {}, seed?: (stateDir: string) => void) {
   const root = mkdtempSync(join(tmpdir(), "ahub-usage-op-")), stateDir = join(root, ".agenthub", "state");
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(stateDir, { recursive: true });
@@ -31,6 +32,7 @@ async function rig(roles: Record<string, string[]> = {}) {
     ev(7, { type: "budget_pause", peer: "claude", reason: "5h window at 95% (claude status line)", window: "5h", resetsAt: 1_900_000_000_000, by: "hub" }),
     ev(8, { type: "quota_reset", peer: "codex", window: "week", cause: "resets_at_moved", resetsAt: 1_900_100_000_000, previousResetsAt: 1_899_000_000_000, used: 0.03, previousUsed: 0.9 }),
   ].join(""));
+  seed?.(stateDir);
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, ...(Object.keys(roles).length ? { roles: { ...DEFAULT_CONFIG.roles, ...roles } } : {}), batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
       inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false } } });
@@ -60,11 +62,14 @@ test("limits returns the history and the open pause, total returns lifetime per 
   const limits = await console_.request({ t: "usage", op: "limits" });
   expect(limits.ok).toBe(true);
   expect(limits.limits.history.map((h: any) => h.type)).toEqual(["budget_pause", "quota_reset"]);
-  expect(limits.limits.open).toMatchObject([{ peer: "claude", window: "5h" }]);
+  // The fixture's `budget_pause` event has no record in hub.db (as after `ahub reset`), so it is ended with an unknown end, not open.
+  expect(limits.limits.open).toEqual([]); expect(limits.limits.endedUnknown).toMatchObject([{ peer: "claude", window: "5h" }]);
+  expect(limits.limits).toMatchObject({ total: 2, shown: 2, truncated: false, omitted: 0 });
   expect(limits.current).toBeDefined();
   expect((await console_.request({ t: "usage", op: "limits", peer: "codex" })).limits.history.map((h: any) => h.type)).toEqual(["quota_reset"]);
   const total = await console_.request({ t: "usage", op: "total" });
-  expect(total.total.overall.tokens).toEqual({ value: 1050 + 42 + 77, source: "count" });
+  expect(total.total.overall.tokens).toEqual({ value: 1050 + 42 + 77, source: "count" });   // no peer is unknown here
+  expect(total.total.unknownPeers.tokens).toEqual([]);
   expect(JSON.stringify([limits, total, await console_.request({ t: "usage", by: "task" })])).not.toContain(SECRET_TITLE);
 });
 
@@ -112,4 +117,17 @@ test("ahub usage is an allowed agent command like report, its three forms are in
   expect(forms.some(f => f.includes("--by peer|task|issue|pr|release|day|model"))).toBe(true);
   expect(forms.some(f => f.startsWith("ahub usage limits"))).toBe(true);
   expect(forms.some(f => f.startsWith("ahub usage total"))).toBe(true);
+});
+
+test("limits: a pause the hub holds is open, a bad limit is refused and answered, and --limit cuts with a count (#683 U2, review)", async () => {
+  const { console_ } = await rig({}, stateDir => {
+    const db = new Database(join(stateDir, "hub.db"), { create: true });
+    db.run(`CREATE TABLE IF NOT EXISTS budget_pauses (peer TEXT PRIMARY KEY, since INTEGER NOT NULL, resets_at INTEGER NOT NULL, reason TEXT NOT NULL, summary TEXT, handed_off INTEGER NOT NULL DEFAULT 0, moved TEXT NOT NULL DEFAULT '[]')`);
+    db.run("INSERT INTO budget_pauses (peer, since, resets_at, reason) VALUES ('claude', ?, 1900000000000, 'quota')", [Date.now()]); db.close();
+  });
+  const held = await console_.request({ t: "usage", op: "limits" });
+  expect(held.ok, JSON.stringify(held)).toBe(true);
+  expect(held.limits.open).toMatchObject([{ peer: "claude", window: "5h" }]); expect(held.limits.endedUnknown).toEqual([]);
+  expect(await console_.request({ t: "usage", op: "limits", limit: 1 })).toMatchObject({ ok: true, limits: { total: 2, shown: 1, truncated: true, omitted: 1 } });
+  for (const limit of [0, -3, 1.5, "10", 1e9]) expect(await console_.request({ t: "usage", op: "limits", limit })).toMatchObject({ ok: false, error: expect.stringContaining("limit is an integer") });
 });

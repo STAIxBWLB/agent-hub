@@ -1122,7 +1122,7 @@ and the console do not show them yet (usage view slices #683 U2 to U4).
 
 ```bash
 ahub usage [--since 7d|<iso>] [--by peer|task|issue|pr|release|day|model] [--json]
-ahub usage limits [--peer <id>] [--json]   # current quota windows, plus every pause, resume and reset
+ahub usage limits [--peer <id>] [--limit <n>] [--json]   # current quota windows, plus the newest 200 (up to 5000) pauses, resumes and resets
 ahub usage total [--json]                  # lifetime development tokens since the first event, per peer and overall
 ```
 
@@ -1138,7 +1138,10 @@ Every number names its source: `native` (the provider's own counter), `hub count
 report no usage record, such as Jcode and Kimi), or `unknown`. Unknown is never shown as 0. `TOTAL` includes cache reads and `WITHOUT CACHE`
 removes them; Claude's total is the sum of its four reported counters because its transcript carries none (`ahub report` still shows it as unknown), and a source whose input already
 contains the cached part (Codex, the gateway) gets no derived total. A lifetime total that mixes a native and a hub-counted peer is labelled
-`hub count`, and the overall `WITHOUT CACHE` is unknown unless every peer's cache split is known. A private task shows its id and `[pii]`, never
+`hub count`. When a peer is unknown the overall figure is `partial, at least`: a lower bound that leaves the named peers out, never a sum that counts them
+as 0 (it is `unknown` when no peer is known). The overall `WITHOUT CACHE` is unknown unless every peer's cache split is known.
+`usage limits` shows the newest 200 events and says `N older events are not shown` when it cuts (`--limit <n>`, up to 5000, shows more). A pause that the events
+never ended and the hub no longer holds (cleared by `ahub reset`, which keeps the log as it was) shows as `pause ended, end unknown`, not as open. A private task shows its id and `[pii]`, never
 a title. The person and a configured planner may read usage, in the console, the dashboard control link or the CLI; every other agent is refused.
 
 `ahub report` counts the same overlap warnings as `scripts/overlaps.ts`, from the

@@ -112,7 +112,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub report [--since 7d|<iso>] [--by task] [--json] [--color=auto|always|never]", "turns, tokens, messages, overlaps and task events per period"],
     ["ahub report --dogfood [--since 7d|<iso>] [--json]", "read-only scorecard: flow, quality, cost, delivery, performance and adoption; missing evidence is unknown"],
     ["ahub usage [--since 7d|<iso>] [--by peer|task|issue|pr|release|day|model] [--json] [--color=auto|always|never]", "tokens per group from the incremental roll-up: the provider's total with and without cache reads, input, output, reasoning and the hub's own count; each number names its source, unknown is never 0"],
-    ["ahub usage limits [--peer <id>] [--json] [--color=auto|always|never]", "current quota windows and the history of pauses, resumes and resets"],
+    ["ahub usage limits [--peer <id>] [--limit <n>] [--json] [--color=auto|always|never]", "current quota windows and the history of pauses, resumes and resets"],
     ["ahub usage total [--json] [--color=auto|always|never]", "lifetime development tokens since the first event, per peer and overall"],
     ["ahub export [--since 7d|<iso>]", "structured events (events.jsonl) as JSON lines; never message bodies"],
     ["ahub research [--since 30d] [--all] [--json]", "success, first-pass, rework and check-failure rates, tokens and wall time per approved task, from the opt-in research records"],

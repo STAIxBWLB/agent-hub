@@ -81,7 +81,7 @@ import { addonReport, appendRecords, formatAddons, formatResearch, LABELS, label
 import { summarize, summarizeByTask } from "../hub/report.ts";
 import { readDogfood } from "../hub/dogfood-read.ts";
 import { dogfoodSince, formatDogfood } from "../hub/dogfood.ts";
-import { USAGE_GROUPS } from "../hub/usage-rollup.ts";
+import { USAGE_GROUPS, LIMITS_MAX } from "../hub/usage-rollup.ts";
 import { hasTree, planUndo, repoOf, restore, Turns } from "../hub/snapshots.ts";
 import { pathWarnings } from "../hub/conflicts.ts";
 import { COMPLETION_SHELLS, completionScript } from "./completion.ts";
@@ -1775,19 +1775,21 @@ const commands: Record<string, () => Promise<void> | void> = {
     const options = outputOptions();
     const rest = outputArguments();
     const sub = rest[0] !== undefined && !rest[0].startsWith("--") ? rest[0] : undefined;
-    if (sub !== undefined && !["limits", "total"].includes(sub)) fail("usage: ahub usage [--since 7d|<iso>] [--by peer|task|issue|pr|release|day|model] [--json] | limits [--peer <id>] [--json] | total [--json]");
+    if (sub !== undefined && !["limits", "total"].includes(sub)) fail("usage: ahub usage [--since 7d|<iso>] [--by peer|task|issue|pr|release|day|model] [--json] | limits [--peer <id>] [--limit <n>] [--json] | total [--json]");
     const flags = sub === undefined ? rest : rest.slice(1);
-    const valueFlags = sub === "limits" ? ["--peer"] : sub === undefined ? ["--since", "--by"] : [];
+    const valueFlags = sub === "limits" ? ["--peer", "--limit"] : sub === undefined ? ["--since", "--by"] : [];
     for (let i = 0; i < flags.length; i++) {
       if (!valueFlags.includes(flags[i]!)) fail(`unknown argument ${JSON.stringify(flags[i]!.slice(0, 40))}; run ahub help`);
       if (flags[++i] === undefined || flags[i]!.startsWith("--")) fail(`${flags[i - 1]} needs a value`);
     }
     const value = (flag: string) => { const at = args.indexOf(flag); return at >= 0 ? args[at + 1] : undefined; };
-    const by = value("--by"), peer = value("--peer");
+    const by = value("--by"), peer = value("--peer"), limitText = value("--limit");
+    const limit = limitText === undefined ? undefined : /^\d+$/.test(limitText) ? Number(limitText) : NaN;
+    if (limit !== undefined && !(limit >= 1 && limit <= LIMITS_MAX)) fail(`--limit takes a whole number from 1 to ${LIMITS_MAX}`);
     if (by !== undefined && !(USAGE_GROUPS as readonly string[]).includes(by)) fail(`--by takes ${USAGE_GROUPS.join(", ")}`);
     const from = since();
     const hub = await connect();
-    const reply = await hub.request(sub === "limits" ? { t: "usage", op: "limits", ...(peer ? { peer } : {}) } : sub === "total" ? { t: "usage", op: "total" }
+    const reply = await hub.request(sub === "limits" ? { t: "usage", op: "limits", ...(peer ? { peer } : {}), ...(limit !== undefined ? { limit } : {}) } : sub === "total" ? { t: "usage", op: "total" }
       : { t: "usage", op: "query", by: by ?? "peer", ...(from ? { since: from } : {}) }, 35_000);
     hub.close();
     if (!reply.ok) return fail(String(reply.error ?? "usage refused"));

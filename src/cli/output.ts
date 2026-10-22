@@ -437,7 +437,7 @@ export function renderReport(report: Report | TaskReport, columns?: number, now 
 }
 
 // ---- ahub usage (#683 U2): every number names its source; an unknown number prints `unknown`, never 0 ----------------------------------------------
-const SOURCE_NAME: Record<Counter["source"], string> = { native: "native", count: "hub count", manual: "manual", unknown: "unknown" };
+const SOURCE_NAME: Record<Counter["source"], string> = { native: "native", count: "hub count", manual: "manual", partial: "partial, at least", unknown: "unknown" };
 /** `1234 (native)`, `1234 (hub count)`, or `unknown`: a missing counter is never shown as zero. */
 export const usageNumber = (c: Counter): string => c.value === null ? "unknown" : `${c.value} (${SOURCE_NAME[c.source]})`;
 const usageCell = (c: Counter): OutputCell => c.value === null ? span("unknown", "muted") : span(usageNumber(c), "number");
@@ -453,8 +453,10 @@ export function renderUsage(result: UsageResult, columns?: number): Span[][] {
 }
 
 export function renderLimits(result: LimitsResult, current: unknown, columns?: number): Span[][] {
-  const out = lines(`limit history: ${result.history.length} events, ${result.open.length} open pause${result.open.length === 1 ? "" : "s"}`, columns, "muted");
+  const out = lines(`limit history: ${result.truncated ? `the newest ${result.shown} of ${result.total}` : `${result.total}`} events, ${result.open.length} open pause${result.open.length === 1 ? "" : "s"}`, columns, "muted");
+  if (result.truncated) out.push(...lines(`${result.omitted} older events are not shown: use --limit <n> (up to ${result.maxLimit}) for more`, columns, "attention"));
   for (const o of result.open) out.push(...lines(`open pause: ${o.peer} ${o.window} since ${o.since}, resets ${new Date(o.resetsAt).toISOString()}`, columns, "attention"));
+  for (const o of result.endedUnknown) out.push(...lines(`pause ended, end unknown: ${o.peer} ${o.window} since ${o.since} (the hub no longer holds it, for example after ahub reset; no resume was recorded)`, columns, "muted"));
   const windows = current && typeof current === "object" ? Object.entries(current as Record<string, { windows?: { id: string; used: number; resetsAt?: number }[] }>) : [];
   const live = windows.flatMap(([peer, b]) => (b?.windows ?? []).map(w => [span(peer), span(w.id), span(`${Math.round(w.used * 100)}%`, "number"), span(w.resetsAt ? new Date(w.resetsAt).toISOString() : "unknown", w.resetsAt ? undefined : "muted")]));
   if (live.length) out.push([], ...lines("current windows", columns, "strong"), ...rows(["PEER", "WINDOW", "USED", "RESETS"], live, columns, undefined, true));
@@ -467,6 +469,8 @@ export function renderTotal(result: TotalResult, columns?: number): Span[][] {
   const out = lines(`lifetime development tokens since ${result.since ?? "the first event"}`, columns, "muted");
   const table = result.peers.map(p => [span(p.peer), usageCell(p.tokens), usageCell(p.withoutCache), usageCell(p.cacheRead)]);
   table.push([span("ALL PEERS", "strong"), usageCell(result.overall.tokens), usageCell(result.overall.withoutCache), usageCell(result.overall.cacheRead)]);
+  const left = (label: string, peers: string[]) => peers.length ? lines(`${label} leaves out ${peers.join(", ")} (unknown, not counted as 0): a lower bound`, columns, "attention") : [];
   return [...out, [], ...rows(["PEER", "TOTAL", "WITHOUT CACHE", "CACHE READ"], table, columns, undefined, true),
+    ...left("ALL PEERS TOTAL", result.overall.tokens.source === "partial" ? result.unknownPeers.tokens : []), ...left("ALL PEERS CACHE READ", result.overall.cacheRead.source === "partial" ? result.unknownPeers.cacheRead : []),
     ...lines("A peer with no provider counters (for example jcode, kimi) shows the hub's own count where one exists, otherwise unknown. The overall WITHOUT CACHE is unknown unless every peer's cache split is known.", columns, "muted")];
 }

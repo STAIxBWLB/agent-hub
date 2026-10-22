@@ -82,7 +82,7 @@ import { Capture, skipTools } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
 import { Briefs } from "../memory/brief.ts";
 import { Board, isClosedTaskState, taskProposalAt, taskHasStarted, CLASSES, type Task, type TaskClass } from "./board.ts";
-import { UsageRollup, USAGE_GROUPS, type UsageGroup } from "./usage-rollup.ts";
+import { UsageRollup, USAGE_GROUPS, LIMITS_MAX, type UsageGroup } from "./usage-rollup.ts";
 import { Budget, readNativeQuota, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
 import { HUB } from "./envelope.ts";
 import { recallMemoryLines, trimToTokens } from "../memory/recall.ts";
@@ -6095,7 +6095,11 @@ export async function startDaemon(opts: DaemonOptions) {
           usageRollup.poll();
           if (op === "limits") {
             if (msg.peer !== undefined && (typeof msg.peer !== "string" || !PEER_ID.test(msg.peer))) return void reply({ t: "usage", ok: false, error: "peer must be a peer id" });
-            return void reply({ t: "usage", ok: true, op, limits: usageRollup.limits(msg.peer), current: publicPeerBudget(budget.status(), text => tasks.nameable(text)) });
+            if (msg.limit !== undefined && !(Number.isInteger(msg.limit) && (msg.limit as number) >= 1 && (msg.limit as number) <= LIMITS_MAX)) return void reply({ t: "usage", ok: false, error: `limit is an integer from 1 to ${LIMITS_MAX}` });
+            const status = budget.status();
+            // The pauses the hub holds now: an event-open pause it no longer holds (an `ahub reset` cleared it) is reported as ended, not open.
+            const live = new Set(Object.entries(status).filter(([, v]) => v.paused).map(([peer]) => peer));
+            return void reply({ t: "usage", ok: true, op, limits: usageRollup.limits(msg.peer, { ...(msg.limit !== undefined ? { limit: msg.limit as number } : {}), live }), current: publicPeerBudget(status, text => tasks.nameable(text)) });
           }
           if (op === "total") return void reply({ t: "usage", ok: true, op, total: usageRollup.total() });
           if (op !== "query") return void reply({ t: "usage", ok: false, error: "op is query, limits or total" });
