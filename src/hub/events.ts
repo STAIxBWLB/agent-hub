@@ -51,7 +51,7 @@ export type HubEvent =
   | { type: "hook_stats"; peer: string; n: number; startupMs: number; hubMs: number; maxStartupMs: number }
   | { type: "cohort"; id: number; event: "formed" | "joined" | "lifted"; silent: boolean; tasks: number[]; owners: string[] }
   | ({ type: "tokens"; peer: string; n: number } & Partial<TaskAttribution>)
-  | ({ type: "usage"; peer: string; source: "omniroute" | "claude_transcript"; id: string; measuredAt?: string; requestedModel?: string; servedModel?: string; provider?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; totalTokens?: number } & Partial<TaskAttribution>)
+  | ({ type: "usage"; peer: string; source: "omniroute" | "claude_transcript" | "codex_appserver"; id: string; reasoningTokens?: number; measuredAt?: string; requestedModel?: string; servedModel?: string; provider?: string; inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number; totalTokens?: number } & Partial<TaskAttribution>)
   | { type: "planning"; by: string; task?: number; release?: number; fields: string[]; revision: number }
   | { type: "task"; id: number; event: string; by: string; state: string; owner: string | null; reviewer: string | null; class: string; profile?: string; profileClass?: string; role?: string; roleIdentity?: { id: string; layer: "shipped" | "project"; hash: string }; pii: boolean; reason?: string; release?: number | null; priority?: number | null; plannedStart?: number | null; due?: number | null }
   | { type: "overlap"; task: number; owner: string; others: { task: number; owner: string; paths: string[]; symbols?: string[] }[] }
@@ -59,7 +59,15 @@ export type HubEvent =
   | ({ type: "pii_screen" } & ScreenRecord)
   | { type: "conflict"; peer: string; task?: number; other: number; owner: string; paths: string[]; concurrent: boolean; turns?: [string, string] }
   | { type: "context_pressure"; peer: string; source: string; measuredAt: number; used: number; window: number | null }
-  | { type: "quota"; peer: string; windows: { id: string; used: number; resetsAt?: number }[]; hard: boolean; measuredAt?: string };
+  | { type: "quota"; peer: string; windows: { id: string; used: number; resetsAt?: number }[]; hard: boolean; measuredAt?: string }
+  /**
+   * The limit ledger (#683 U1): additive, ids and numbers only, no PROTOCOL bump (a reader that does not know a type ignores it).
+   * `by` is who ended or began the pause: the coordinator (`hub`) or the console user (`person`, an override).
+   */
+  | { type: "budget_pause"; peer: string; reason: string; window: string; resetsAt: number; by: "hub" | "person" }
+  | { type: "budget_resume"; peer: string; reason: string; window: string; resetsAt: number; by: "hub" | "person" }
+  /** A window's reset, derived from two readings of one window id: `resetsAt` moved forward, or `used` fell by 0.5 or more. */
+  | { type: "quota_reset"; peer: string; window: string; cause: "resets_at_moved" | "used_dropped"; resetsAt?: number; previousResetsAt?: number; used: number; previousUsed: number; measuredAt?: string };
 
 export type StampedEvent = HubEvent & { v: number; at: string };
 

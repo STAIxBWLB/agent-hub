@@ -4867,3 +4867,12 @@ Lifecycle status read the issue and the PR only from `hub_sdlc_record`, which ag
   - PII tasks are skipped before any read.
   - A task that turned private during the read gets no link, and a PR read for one commit or branch is never linked to a task whose head changed meanwhile.
   - Plan-review and groom links record `lifecycle linked` with the ids only; a done link is part of the done's own record.
+
+## Amendment: the limit ledger (#683 U1)
+
+- Additive events in `events.jsonl`, no `PROTOCOL` bump, ignored by a reader that does not know them:
+  - `usage` with `source: "codex_appserver"` (`reasoningTokens` is new on `usage`): written beside the unchanged `tokens` event from `thread/tokenUsage/updated`, as the growth of Codex's `input`, `cachedInput`, `output` and `reasoningOutput` counters since the previous update, under the existing baseline rule (a fresh thread counts from zero, a resumed one from its replayed total). Cached input is part of input and reasoning part of output, so `inputTokens + outputTokens` equals the `totalTokens` growth. Task attribution is the one `tokens` uses.
+  - `budget_pause` and `budget_resume` (`peer`, `reason`, `window`, `resetsAt`, `by: "hub" | "person"`), written at the single pause INSERT and the single resume DELETE in `budget.ts`; an override is `by: "person"`. The pause window is the worst window that crossed the gate.
+  - `quota_reset` (`peer`, `window`, `cause`, `resetsAt`, `previousResetsAt`, `used`, `previousUsed`), derived from two readings of one window id: `resetsAt` moved forward, or `used` fell by 0.5 or more with the same `resetsAt`. One entry per peer, window and `resetsAt`, also across a restart (the daemon seeds the dedupe set from the log). A reading older than the last one never counts.
+- Ids, windows and numbers only: no checkpoint text, summary, task title or agent-written text. A ledger failure never costs a pause, a resume or a reading.
+- Ceiling: a first reading after a restart is a baseline, so a window that rolled while the hub was down is not recorded as a reset (the pause record's own restore note covers a pause). The roll-up, the `usage` query op, the CLI and the console and dashboard views are slices U2 to U4.
