@@ -38,7 +38,8 @@ const NO_TASK = 0;
 /** The board's current links of a task, supplied by the host at query time. 0 or undefined means none. */
 export type TaskLinks = (task: number) => { issue?: number; pr?: number; release?: number } | undefined;
 
-export interface UsageQuery { by: UsageGroup; since?: number; until?: number }
+/** `task`: only the records of this task (a positive task id); with `by: "peer"` it is that task's tokens per peer. */
+export interface UsageQuery { by: UsageGroup; since?: number; until?: number; task?: number }
 export interface UsageRow {
   key: string;
   /** `[pii]` for a private task: its id and numbers only, never a title. */
@@ -51,7 +52,8 @@ export interface UsageRow {
   /** Total with the cache reads left out (`total` minus `cacheRead`, only when both are known). */
   totalWithoutCache: Counter;
 }
-export interface UsageResult { by: UsageGroup; since?: number; until?: number; rows: UsageRow[]; unattributed?: UsageRow; coverage: { records: number; withUsage: number; withoutUsage: number }; throughOffset: number }
+/** `taskPii`: the filtered task is private, so the console shows `[pii]` for it (ids and numbers only). */
+export interface UsageResult { by: UsageGroup; since?: number; until?: number; task?: number; taskPii?: true; rows: UsageRow[]; unattributed?: UsageRow; coverage: { records: number; withUsage: number; withoutUsage: number }; throughOffset: number }
 
 export interface LimitRow { at: string; type: "budget_pause" | "budget_resume" | "quota_reset"; peer: string; window: string; detail: Record<string, string | number> }
 export interface OpenPause { peer: string; window: string; since: string; resetsAt: number }
@@ -225,8 +227,9 @@ export class UsageRollup {
 
   // ---- views ---------------------------------------------------------------------------------------------------------------------------
 
-  private bounds(q: { since?: number; until?: number }): { clause: string; params: string[] } {
-    const parts: string[] = [], params: string[] = [];
+  private bounds(q: { since?: number; until?: number; task?: number }): { clause: string; params: (string | number)[] } {
+    const parts: string[] = [], params: (string | number)[] = [];
+    if (q.task !== undefined) { parts.push("task = ?"); params.push(q.task); }
     if (q.since !== undefined) { parts.push("day >= ?"); params.push(new Date(q.since).toISOString().slice(0, 10)); }
     if (q.until !== undefined) { parts.push("day <= ?"); params.push(new Date(q.until).toISOString().slice(0, 10)); }
     return { clause: parts.length ? `WHERE ${parts.join(" AND ")}` : "", params };
@@ -278,7 +281,8 @@ export class UsageRollup {
       if (byTask && key === "0") { row.key = "unattributed"; delete (row as { label?: string }).label; unattributed = row; } else rows.push(row);
     }
     const cover = raw.reduce((a, r) => ({ records: a.records + r.records, withUsage: a.withUsage + r.with_usage }), { records: 0, withUsage: 0 });
-    return { by: q.by, ...(q.since !== undefined ? { since: q.since } : {}), ...(q.until !== undefined ? { until: q.until } : {}), rows, ...(unattributed ? { unattributed } : {}),
+    const taskPii = q.task !== undefined && (privateTasks.has(q.task) || raw.some(r => r.pii === 1) || countedRows.some(r => r.pii === 1));
+    return { by: q.by, ...(q.since !== undefined ? { since: q.since } : {}), ...(q.until !== undefined ? { until: q.until } : {}), ...(q.task !== undefined ? { task: q.task } : {}), ...(taskPii ? { taskPii: true as const } : {}), rows, ...(unattributed ? { unattributed } : {}),
       coverage: { ...cover, withoutUsage: cover.records - cover.withUsage }, throughOffset: this.state().offset };
   }
 

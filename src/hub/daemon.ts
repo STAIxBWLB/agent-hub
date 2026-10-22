@@ -6105,6 +6105,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const num = (v: unknown): number | undefined | null => v === undefined ? undefined : typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
         const since = num(msg.since), until = num(msg.until);
         if (since === null || until === null) return void reply({ t: "usage", ok: false, error: "since and until are epoch milliseconds" });
+        if (msg.task !== undefined && !(Number.isSafeInteger(msg.task) && (msg.task as number) > 0)) return void reply({ t: "usage", ok: false, error: "task is a positive task id" });
         try {
           usageRollup.poll();
           if (op === "limits") {
@@ -6122,7 +6123,7 @@ export async function startDaemon(opts: DaemonOptions) {
           // issue, pr and release are the board's current links of each task (ids only, never a title).
           const board_ = new Map(board.list().map(t => [t.id, t]));
           const links = (id: number) => { const t = board_.get(id); return t ? { ...(t.sdlc?.issue ? { issue: t.sdlc.issue } : {}), ...(t.sdlc?.pr ? { pr: t.sdlc.pr } : {}), ...(t.release ? { release: t.release } : {}) } : undefined; };
-          return void reply({ t: "usage", ok: true, op, usage: usageRollup.query({ by, ...(since !== undefined ? { since } : {}), ...(until !== undefined ? { until } : {}) }, links) });
+          return void reply({ t: "usage", ok: true, op, usage: usageRollup.query({ by, ...(since !== undefined ? { since } : {}), ...(until !== undefined ? { until } : {}), ...(msg.task !== undefined ? { task: msg.task as number } : {}) }, links) });
         } catch (error) { return void reply({ t: "usage", ok: false, error: `usage unavailable: ${(error as Error).message.slice(0, 120)}` }); }
       }
       case "permit":

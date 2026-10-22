@@ -131,3 +131,13 @@ test("limits: a pause the hub holds is open, a bad limit is refused and answered
   expect(await console_.request({ t: "usage", op: "limits", limit: 1 })).toMatchObject({ ok: true, limits: { total: 2, shown: 1, truncated: true, omitted: 1 } });
   for (const limit of [0, -3, 1.5, "10", 1e9]) expect(await console_.request({ t: "usage", op: "limits", limit })).toMatchObject({ ok: false, error: expect.stringContaining("limit is an integer") });
 });
+
+test("the usage op takes a task filter, marks a private task, and refuses a bad task id with an answer (#683 U3)", async () => {
+  const { console_ } = await rig();
+  const one = await console_.request({ t: "usage", by: "peer", task: 1 });
+  expect(one.ok, JSON.stringify(one)).toBe(true);
+  expect(one.usage.task).toBe(1); expect(one.usage.rows.map((r: any) => r.key)).toEqual(["codex"]);
+  const pii = await console_.request({ t: "usage", by: "peer", task: 2 });
+  expect(pii.usage.taskPii).toBe(true); expect(JSON.stringify(pii)).not.toContain(SECRET_TITLE);
+  for (const task of [0, -1, 1.5, "1", null, 1e20]) expect(await console_.request({ t: "usage", by: "peer", task })).toMatchObject({ ok: false, error: "task is a positive task id" });
+});
