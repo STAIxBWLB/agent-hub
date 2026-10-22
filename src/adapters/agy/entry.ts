@@ -1,4 +1,5 @@
 import { publicArg } from "../definitions/native-cli-preview-common.ts";
+import { assessVersion, COMPAT } from "../compat.ts";
 import { spawn, spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import type { NativeCliEntryContext } from "../definitions/native-cli-entry-types.ts";
@@ -38,10 +39,10 @@ export const AGY_LAUNCH_NOTICE = "Antigravity: pull-only TUI; native permissions
 
 /** agy auto-updates, so the 1.4.x line launches; only 1.4.2 has a T0 receipt and other patches warn (#589). */
 export function agyVersionGate(stdout: string): { ok: true; message?: string } | { ok: false; message: string } {
-  const version = stdout.trim();
-  if (version === "1.4.2") return { ok: true };
-  if (/^1\.4\.\d+$/.test(version)) return { ok: true, message: `agy ${version}: only 1.4.2 is T0-verified; launching on the 1.4.x line unverified` };
-  return { ok: false, message: "agy P1 requires the Antigravity CLI 1.4.x line (1.4.2 verified)" };
+  // #691: the verified versions, the compatible line and the person's trust live in compat.ts.
+  const verdict = assessVersion("agy", COMPAT.agy.parse(stdout));
+  if (!verdict.ok) return { ok: false, message: verdict.reason };
+  return verdict.note ? { ok: true, message: verdict.note } : { ok: true };
 }
 
 export async function runAgyEntry(ctx: NativeCliEntryContext): Promise<void> {

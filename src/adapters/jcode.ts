@@ -1,4 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { assessVersion, COMPAT, type CompatVerdict } from "./compat.ts";
 import { createConnection } from "node:net";
 import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdtempSync, openSync, readSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -65,17 +66,8 @@ export class JcodeOptionMismatch extends Error {
   constructor(readonly option: "--session-id" | "--model" | "--provider-profile") { super("Jcode launch options differ from its running session"); }
 }
 const JCODE_OWNED_ENV = { JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" } as const;
-/** The oldest native release accepted; its ACP, serve and MCP contract was verified live on 0.98.1 (docs/verification). */
-export const JCODE_MIN_VERSION = "0.98.0";
-/** The first native release assumed to break that contract: the next major. Lower it when a release is shown to break. */
-export const JCODE_BREAKING_VERSION = "1.0.0";
-const release = (version: string) => /^(\d+)\.(\d+)\.(\d+)$/.exec(version)?.slice(1).map(Number);
-const compare = (a: number[], b: number[]) => a[0]! - b[0]! || a[1]! - b[1]! || a[2]! - b[2]!;
-/** A plain release from JCODE_MIN_VERSION up to, not including, JCODE_BREAKING_VERSION; the minor is not pinned (#529). */
-export function jcodeVersionSupported(version: unknown): boolean {
-  const v = typeof version === "string" ? release(version) : undefined;
-  return !!v && compare(v, release(JCODE_MIN_VERSION)!) >= 0 && compare(v, release(JCODE_BREAKING_VERSION)!) < 0;
-}
+/** #691: the verdict lives in `src/adapters/compat.ts` (line, verified versions, the person's trust); never pin here. */
+export const jcodeVersionSupported = (version: unknown): boolean => assessVersion("jcode", version).ok;
 
 /** A native steer the server did not take, with nothing sent: the message may safely stay queued. */
 class SteerRefused extends Error {}
@@ -137,15 +129,51 @@ function nativeSteer(socket: string, cwd: string, sessionId: string, text: strin
 }
 
 /** The wrapper contract preserves every configured prefix argument before the native probe. */
-export function verifiedJcodeCommand(command: string[], cwd: string): boolean {
+export function jcodeVersion(command: string[], cwd: string): CompatVerdict {
   const [bin, ...prefix] = command;
-  if (!bin) return false;
+  if (!bin) return assessVersion("jcode", undefined);
   try {
     const result = spawnSync(bin, [...prefix, "--quiet", "version", "--json"], { cwd, env: { ...peerChildEnv("jcode"), ...JCODE_OWNED_ENV }, encoding: "utf8", timeout: 10_000, maxBuffer: 64 * 1024 });
-    if (result.status !== 0) return false;
-    const version = JSON.parse(result.stdout);
-    return jcodeVersionSupported(version.semver);
-  } catch { return false; }
+    return assessVersion("jcode", result.status === 0 ? COMPAT.jcode.parse(result.stdout) : undefined);
+  } catch { return assessVersion("jcode", undefined); }
+}
+export const verifiedJcodeCommand = (command: string[], cwd: string): boolean => jcodeVersion(command, cwd).ok;
+/** Collects at most `cap` bytes; the chunk that would pass it, and every later one, is refused and not kept. */
+export function boundedOutput(cap: number): { push(chunk: Buffer): boolean; text(): string; readonly size: number; readonly overflowed: boolean } {
+  const chunks: Buffer[] = [];
+  let size = 0, overflowed = false;
+  return {
+    push(chunk) { if (overflowed || size + chunk.length > cap) { overflowed = true; return false; } chunks.push(chunk); size += chunk.length; return true; },
+    text: () => Buffer.concat(chunks).toString("utf8"),
+    get size() { return size; },
+    get overflowed() { return overflowed; },
+  };
+}
+/**
+ * The daemon's preflight: the same probe without blocking the event loop (a slow wrapper must not stall peers). The probe owns its
+ * process group: at the deadline, or once stdout passes 64 KiB, the whole group is stopped, descendants included (kimi-review's pattern).
+ */
+export function jcodeVersionAsync(command: string[], cwd: string, timeoutMs = 10_000): Promise<CompatVerdict> {
+  const [bin, ...prefix] = command;
+  if (!bin) return Promise.resolve(assessVersion("jcode", undefined));
+  return new Promise(resolve => {
+    let child: ChildProcess;
+    try { child = spawn(bin, [...prefix, "--quiet", "version", "--json"], { cwd, env: { ...peerChildEnv("jcode"), ...JCODE_OWNED_ENV }, detached: true, stdio: ["ignore", "pipe", "ignore"] }); }
+    catch { resolve(assessVersion("jcode", undefined)); return; }
+    const output = boundedOutput(64 * 1024);
+    let done = false;
+    const finish = async (code: number | null) => {
+      if (done) return; done = true; clearTimeout(timer);
+      try { await stopOwnedProcess(child, { group: true }); } catch { resolve(assessVersion("jcode", undefined)); return; }
+      resolve(assessVersion("jcode", code === 0 && !output.overflowed ? COMPAT.jcode.parse(output.text()) : undefined));
+    };
+    const timer = setTimeout(() => { void finish(null); }, timeoutMs);
+    child.once("spawn", () => trackGroup(child));
+    // Chunks after the cap or after settling are drained and discarded, never buffered.
+    child.stdout!.on("data", (bytes: Buffer) => { if (!done && !output.push(bytes)) void finish(null); });
+    child.once("error", () => { void finish(null); });
+    child.once("close", code => { void finish(code); });
+  });
 }
 
 /** Both processes are ours. The user's global daemon and its sockets are never stopped. */

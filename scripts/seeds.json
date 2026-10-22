@@ -516,8 +516,8 @@
     {
       "id": "qwen-native-identity",
       "file": "src/adapters/definitions/qwen-native.ts",
-      "search": "if (production && !verified) throw new QwenIdentityError();",
-      "replacement": "if (false && production && !verified) throw new QwenIdentityError();",
+      "search": "if (production && !version?.ok) throw new QwenIdentityError(version && !version.ok ? version.reason : undefined);",
+      "replacement": "if (false && production && !version?.ok) throw new QwenIdentityError(version && !version.ok ? version.reason : undefined);",
       "testFile": "test/qwen-peer.test.ts",
       "testName": "production Qwen refuses wrong native identity/version while legacy benchmark ACP stays unmanaged (#256)"
     },
@@ -555,8 +555,8 @@
     },
     {
       "id": "jcode-breaking-version",
-      "file": "src/adapters/jcode.ts",
-      "search": "compare(v, release(JCODE_BREAKING_VERSION)!) < 0",
+      "file": "src/adapters/compat.ts",
+      "search": "compare(v, parts(line.below)!) < 0",
       "replacement": "true",
       "testFile": "test/jcode-peer.test.ts",
       "testName": "Jcode native identity outside the supported range refuses the peer and cleans its owned daemon (#332, #529)"

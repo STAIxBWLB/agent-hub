@@ -1,16 +1,20 @@
+import { assessVersion } from "../compat.ts";
 import type { PermissionMode } from "../../hub/permission-mode.ts";
 import type { Launch } from "../../cli/launch.ts";
 
 export const QWEN_MODE_IDS: Readonly<Record<PermissionMode, string>> = { ask: "default", "ask-when-needed": "auto-edit", "never-ask": "yolo" };
 
 export class QwenIdentityError extends Error {
-  constructor() { super("Qwen Code 0.25.0 native identity is not verified; check the executable and its advertised ACP version"); }
+  constructor(reason?: string) { super(reason ? `Qwen Code native identity is not verified: ${reason}` : "Qwen Code native identity is not verified; check the executable and its advertised ACP version"); }
 }
 
 export function qwenNativeIdentity(instance: string, production: boolean | undefined, init: unknown, kind?: string): boolean {
   const native = init as { agentInfo?: { name?: unknown; version?: unknown } } | null | undefined;
-  const verified = production === true && (kind ?? instance) === "qwen" && native?.agentInfo?.name === "qwen-code" && native?.agentInfo?.version === "0.25.0";
-  if (production && !verified) throw new QwenIdentityError();
+  const identity = production === true && (kind ?? instance) === "qwen" && native?.agentInfo?.name === "qwen-code";
+  // #691: a version refusal carries the compat reason (observed and verified versions, the trust command).
+  const version = identity ? assessVersion("qwen", native?.agentInfo?.version) : undefined;
+  if (production && !version?.ok) throw new QwenIdentityError(version && !version.ok ? version.reason : undefined);
+  const verified = !!version?.ok;
   return verified;
 }
 

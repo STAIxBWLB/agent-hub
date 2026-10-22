@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { assessVersion, COMPAT } from "./compat.ts";
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -7,7 +8,7 @@ import { stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { realPath } from "../hub/project.ts";
 import type { ReviewerBackend, ReviewerPrepareContext } from "./reviewer-print.ts";
 
-const VERSION = "2.2.0", MANAGED = "managed:kimi-code";
+const MANAGED = "managed:kimi-code";
 const object = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 /** Native discovery can walk above cwd; check lexical aliases as well as the physical temporary root. */
@@ -133,7 +134,9 @@ export const kimiReviewerBackend: ReviewerBackend = {
       const executable = realPath(Bun.which(native[0]!, { PATH: process.env.PATH }) ?? resolve(native[0]!));
       const command = [executable, ...native.slice(1)];
       const executableStat = lstatSync(executable);
-      if (await version(command, cwd, env, context.signal) !== VERSION) throw new Error("unsupported Kimi version; receipt covers 2.2.0");
+      // #691: the verified versions and the person's trust live in compat.ts.
+      const verdict = assessVersion("kimi-review", COMPAT["kimi-review"].parse(await version(command, cwd, env, context.signal)));
+      if (!verdict.ok) throw new Error(verdict.reason);
       const fingerprints = [configFile, mcpFile, agentFile].map(file => hash(read(file, 2_097_152)));
       let cleaned = false;
       const cleanup = () => { if (cleaned) return; rmSync(root, { recursive: true, force: true }); cleaned = true; };
@@ -149,7 +152,7 @@ export const kimiReviewerBackend: ReviewerBackend = {
               && ["credentials", "oauth", "device_id"].every((name, index) => realPath(join(source, name)) === sources[index] && realPath(join(tool, name)) === sources[index]);
           } catch { return false; }
         },
-        isolation: { backend: "kimi", version: VERSION, binary: executable, profile: "private-config-exact-two-tools-shared-native-oauth", readOnly: true, strictMcp: true, ephemeral: true,
+        isolation: { backend: "kimi", version: verdict.version, binary: executable, profile: "private-config-exact-two-tools-shared-native-oauth", readOnly: true, strictMcp: true, ephemeral: true,
           enforcement: "native-policy", freshSession: true, hubToolsOnly: true,
           evidence: ["#533 person ruling2026-10-19: native execution-time exact tool allowlist, no kernel sandbox", "private config/cwd/empty skills; shared OAuth directory symlinks and native lock/atomic rename", "task-bound in-process hub MCP; no full control token", "residual: interruption mid-refresh may require native re-login"] },
       };

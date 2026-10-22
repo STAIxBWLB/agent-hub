@@ -1,0 +1,36 @@
+name: agent-compat
+
+# #691: weekly, compare published agent CLI versions with the verified sets and keep one issue current.
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version-file: .bun-version
+      - name: Compare published versions
+        id: watch
+        run: scripts/agent-compat-step.sh report.md bun scripts/agent-compat-watch.ts
+      - name: Keep the agent-compat issue current
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AHEAD: ${{ steps.watch.outputs.ahead }}
+        run: |
+          number=$(gh issue list --label agent-compat --state open --json number -q '.[0].number' 2>/dev/null || true)
+          if [ "$AHEAD" = "true" ]; then
+            gh label create agent-compat --color FBCA04 --description "agent CLI version drift (#691)" 2>/dev/null || true
+            if [ -n "$number" ]; then gh issue edit "$number" --body-file report.md
+            else gh issue create --title "agent CLI versions ahead of the verified set" --label agent-compat --body-file report.md; fi
+          elif [ -n "$number" ]; then
+            gh issue close "$number" --comment "$(cat report.md)"
+          fi
