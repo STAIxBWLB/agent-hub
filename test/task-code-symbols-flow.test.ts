@@ -127,3 +127,12 @@ test("console task detail and UI snapshot carry only public head-bound symbol me
   expect(detail.text).toContain("Alpha.first");expect(detail.text).not.toContain("repositoryKey");expect(JSON.stringify(snapshot.tasks)).not.toContain("repositoryKey");
  } finally {client?.close();await daemon.stop();rmSync(cwd,{recursive:true,force:true});}
 },20000);
+
+
+test("short or mismatched brief heads stay optional instead of refusing completion",async()=>{
+ for(const [requested,observed] of [[HEAD.slice(0,7),HEAD],[HEAD,OTHER]] as const){
+  const f=await rig({reviewBrief:()=>brief(observed)}),task=f.add("codex",requested);
+  const done=await f.tasks.done("codex",task.id,"done");
+  expect(done.state).toBe("in_review");expect(done.codeSymbols).toBeUndefined();
+ }
+});

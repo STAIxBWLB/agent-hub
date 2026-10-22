@@ -163,3 +163,9 @@ test("startup discards observations of tasks made private by an older writer",()
   f.reopen();expect(f.board.get(f.task.id)!.codeSymbols).toBeUndefined();
   const check=new Database(f.file);try{expect(check.query("SELECT COUNT(*) AS n FROM task_code_symbols WHERE task=?").get(f.task.id)).toEqual({n:0});}finally{check.close();}
 });
+
+
+test("an omitted reviewable file cannot certify a complete observed envelope",()=>{
+ const partial=brief();partial.reviewable.push({path:"b.ts",status:"M"});
+ expect(buildTaskCodeSymbols(partial,REPO,accept)).toMatchObject({state:"known",complete:false});
+});
