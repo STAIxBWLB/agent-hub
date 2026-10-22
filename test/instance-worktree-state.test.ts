@@ -62,7 +62,7 @@ test("instance native cwd and completed turn snapshots follow its validated work
     await until(() => mutated && turns!.latest(instance)?.ended != null, "the worktree turn completed with a durable receipt");
     const latest = turns.latest(instance)!;
     expect(latest.peer).toBe(instance);
-    expect(latest.start_tree).not.toBeNull(); expect(latest.end_tree).not.toBeNull(); expect(latest.end_tree).not.toBe(latest.start_tree);
+    expect(latest.start_tree, readFileSync(join(stateDir,"hub.log"),"utf8")).not.toBeNull(); expect(latest.end_tree).not.toBeNull(); expect(latest.end_tree).not.toBe(latest.start_tree);
     expect(latest.changed).toEqual(["owned.txt"]);
     expect(readFileSync(join(project, "owned.txt"), "utf8")).toBe("canonical old\n");
     expect(readFileSync(join(worktree, "owned.txt"), "utf8")).toBe("worktree new\n");
