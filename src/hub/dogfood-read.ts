@@ -111,8 +111,8 @@ export async function dogfoodPrs(repo: string, tasks: Source<DogfoodTask[]>, sin
   // Read recent PRs first: their complete recorded head sets usually fit before
   // the shared deadline. Repository-wide CI volume never consumes this budget.
   visible.sort((a,b)=>date(b.mergedAt)!-date(a.mergedAt)!);
-  const projection = "{total_count,workflow_runs:[.workflow_runs[]|{id,run_attempt,head_sha,created_at,conclusion,pull_requests:[.pull_requests[]|{number}]}]}";
-  const validRun = (r:any) => id(r?.id) && id(r?.run_attempt) && typeof r?.head_sha === "string" && /^[a-f0-9]{40}$/.test(r.head_sha)
+  const projection = "{total_count,workflow_runs:[.workflow_runs[]|{id,run_attempt,event,head_sha,created_at,conclusion,pull_requests:[.pull_requests[]|{number}]}]}";
+  const validRun = (r:any) => r?.event === "pull_request" && id(r?.id) && id(r?.run_attempt) && typeof r?.head_sha === "string" && /^[a-f0-9]{40}$/.test(r.head_sha)
     && date(r.created_at) !== undefined && (r.conclusion === null || typeof r.conclusion === "string")
     && Array.isArray(r.pull_requests) && r.pull_requests.length <= 100 && r.pull_requests.every((p:any)=>id(p?.number));
   const sha = (v:unknown):v is string => typeof v === "string" && /^[a-f0-9]{40}$/.test(v);
@@ -126,7 +126,7 @@ export async function dogfoodPrs(repo: string, tasks: Source<DogfoodTask[]>, sin
         const collected:any[] = [], seen = new Set<number>();
         for (const head of heads) {
           ciReads++;
-          const endpoint=`repos/${repo}/actions/workflows/check.yml/runs?per_page=100&head_sha=${head}&created=${new Date(since).toISOString()}..${new Date(until).toISOString()}`;
+          const endpoint=`repos/${repo}/actions/workflows/check.yml/runs?per_page=100&event=pull_request&head_sha=${head}&created=${new Date(since).toISOString()}..${new Date(until).toISOString()}`;
           const part = await parse(["api",endpoint,"--jq",projection]);
           if (!part || !Number.isSafeInteger(part.total_count) || part.total_count<0 || !Array.isArray(part.workflow_runs)
             || part.total_count!==part.workflow_runs.length || part.workflow_runs.length>100

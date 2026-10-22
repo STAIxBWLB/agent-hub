@@ -123,7 +123,7 @@ test("GitHub complete metadata computes first CI result, same-head reruns and ex
   const at=(n:number)=>new Date(n).toISOString(), sha="a".repeat(40);
   const gh:SdlcGh=async(args)=>{
     if(args[0]==="pr")return{code:0,stdout:JSON.stringify([{number:2,createdAt:at(0),mergedAt:at(8000)}])};
-    if(args[1]?.includes("actions/workflows"))return{code:0,stdout:JSON.stringify({total_count:2,workflow_runs:[{id:1,run_attempt:1,head_sha:sha,pull_requests:[{number:2}],created_at:at(1000),conclusion:"failure"},{id:2,run_attempt:2,head_sha:sha,pull_requests:[{number:2}],created_at:at(2000),conclusion:"success"}]})};
+    if(args[1]?.includes("actions/workflows"))return{code:0,stdout:JSON.stringify({total_count:2,workflow_runs:[{id:1,run_attempt:1,event:"pull_request",head_sha:sha,pull_requests:[{number:2}],created_at:at(1000),conclusion:"failure"},{id:2,run_attempt:2,event:"pull_request",head_sha:sha,pull_requests:[{number:2}],created_at:at(2000),conclusion:"success"}]})};
     const page=(nodes:unknown[])=>({nodes,pageInfo:{hasNextPage:false}});
     return{code:0,stdout:JSON.stringify({data:{repository:{pullRequest:{number:2,state:"MERGED",headRefOid:sha,mergedAt:at(8000),commits:page([{commit:{oid:sha}}]),reviews:page([]),reviewThreads:page([{comments:{nodes:[{createdAt:at(7000),author:{login:"chatgpt-codex-connector"}}]}}]),timelineItems:page([{source:{number:8,createdAt:at(9000),labels:page([{name:"bug"}])}}])}}}})};
   };
@@ -197,7 +197,7 @@ test("CI reads a complete reporting window despite more than 100 lifetime workfl
     if(args[1]?.includes("actions/workflows")) {
       const endpoint=args[1];endpoints.push(endpoint);
       const scoped=endpoint.includes(`created=${at(since)}..${at(until)}`);
-      return{code:0,stdout:JSON.stringify({total_count:scoped&&!truncated?1:1001,workflow_runs:[{id:11,run_attempt:1,head_sha:sha,pull_requests:[{number:3}],created_at:at(2000),conclusion:"success"}]})};
+      return{code:0,stdout:JSON.stringify({total_count:scoped&&!truncated?1:1001,workflow_runs:[{id:11,run_attempt:1,event:"pull_request",head_sha:sha,pull_requests:[{number:3}],created_at:at(2000),conclusion:"success"}]})};
     }
     const page=(nodes:unknown[])=>({nodes,pageInfo:{hasNextPage:false}});
     return{code:0,stdout:JSON.stringify({data:{repository:{pullRequest:{number:3,state:"MERGED",headRefOid:sha,mergedAt:at(9000),commits:page([{commit:{oid:sha}}]),reviews:page([]),reviewThreads:page([]),timelineItems:page([])}}}})};
@@ -229,8 +229,8 @@ test("malformed log timestamps make counts unknown while out-of-window timestamp
 test("busy CI windows read only complete recorded PR heads including empty REST associations",async()=>{
   const since=1000,until=10000,at=(n:number)=>new Date(n).toISOString(),head="c".repeat(40),reviewHead="f".repeat(40),other="d".repeat(40);
   const workflowCalls:string[]=[];
-  const all=Array.from({length:205},(_,index)=>({id:index+1,run_attempt:index===204?2:1,head_sha:index===0||index===204?head:other,pull_requests:[],created_at:at(index===0?2000:3000),conclusion:index===0?"failure":"success"}));
-  all.push({id:206,run_attempt:1,head_sha:reviewHead,pull_requests:[],created_at:at(4000),conclusion:"success"});
+  const all=Array.from({length:205},(_,index)=>({id:index+1,run_attempt:index===204?2:1,event:"pull_request",head_sha:index===0||index===204?head:other,pull_requests:[],created_at:at(index===0?2000:3000),conclusion:index===0?"failure":"success"}));
+  all.push({id:206,run_attempt:1,event:"pull_request",head_sha:reviewHead,pull_requests:[],created_at:at(4000),conclusion:"success"});
   let failure:"none"|"last"|"duplicate"|"truncated"="none";
   const gh:SdlcGh=async(args,_t,_c,cap)=>{
     expect(cap).toBeLessThanOrEqual(128*1024);
