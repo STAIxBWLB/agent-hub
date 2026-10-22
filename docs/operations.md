@@ -967,6 +967,23 @@ conductor sees it, and only a stub for a PII task. Other peers are refused. Each
 request also carries the hub's review brief for the task's commit: reviewable and
 excluded files with reasons, the `REVIEW.md` and `ahub-review-rules` rules read at
 the merge base, and a cross-check list; `ahub review brief <id>` prints it.
+Optional code facts (#682) add per-file observed symbol names, kinds and spans,
+plus changed/planned, changed/not-planned and planned/not-seen lists. Install
+ripwire 0.6.7 on the daemon's host PATH to enable them; missing, unsupported,
+failed, busy or timed-out reads show `unknown` and never stop the review request.
+Each native call is capped at 5 s, output is capped, and successful values are
+cached by repo, commit and query. PII tasks never query it; displayed names use
+the hub's public metadata screen. It always analyzes a disposable raw-blob
+snapshot, never main or a dirty/untracked owner tree, and removes that worktree
+after the owned process stops. No heavy slot is acquired. Trees beyond the
+regular-file/4096-file/32-MiB bounds remain unknown.
+
+Ripwire 0.6.7 omits deleted definitions and does not classify change kinds, so
+all symbol rows say `change: unknown`; planned/not-seen is not proof of no
+change. Graph name-only matches are hidden as ambiguous, and graph count floors
+remain explicit. The file-based coverage gate is unchanged. A future both-tree
+inventory or bounded base/head probes can improve this advice after dogfooding.
+
 `hub_review` takes `coverage {reviewed, skipped}`: in enforce an approval that leaves
 a reviewable path unaccounted is refused, and advise notes the gap in the verdict
 (#520). The hub

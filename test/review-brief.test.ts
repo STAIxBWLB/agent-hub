@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildReviewBrief, coverageGap, renderReviewBrief, type ReviewBrief } from "../src/hub/review-brief.ts";
+import { buildReviewBrief, coverageGap, renderReviewBrief, withCodeSymbols, type ReviewBrief } from "../src/hub/review-brief.ts";
 import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { BasePeer } from "../src/hub/peers.ts";
@@ -213,4 +213,34 @@ test("an inherited head that moves during the verdict's awaits writes nothing", 
   await expect(tasks.review("claude", t.id, "approved", "covered", undefined, undefined, all)).rejects.toThrow("commit or lifecycle receipt changed during the verdict");
   expect(board.get(t.id)!.history.length).toBe(before + 1); // the screen's own receipt write only, no verdict
   expect(board.get(t.id)!.state).toBe("in_review");
+});
+
+test("optional symbol preparation failure never costs the review request", async () => {
+  const {dir,head}=fixture(),board=new Board(join(scratch("ahub-symbol-send-"),"hub.db"));cleanup.push(()=>board.close());
+  const bus=new Bus({batchMs:0}),got:string[]=[];
+  class Seen extends BasePeer {async deliver(envs:{body:string}[]){got.push(...envs.map(e=>e.body));}async start(){this.setState("idle");}async stop(){}}
+  for(const id of ["codex","claude"]){const peer=id==="claude"?new Seen(id,60000):new Idle(id,60000);bus.add(peer);await peer.start();}
+  let calls=0;
+  const tasks=new Tasks({board,bus,cwd:dir,project:"fixture",routing:()=>loadRouting(dir),notify:()=>{},prepareReviewBrief:async()=>{calls++;throw Error("optional failed");},
+    reviewBrief:task=>{const brief=buildReviewBrief(dir,task.refs.commit,policy);return "unavailable" in brief?brief:withCodeSymbols(brief,{state:"unknown"},task.plan?.symbols,()=>true);}});
+  const t=board.propose("codex",{title:"fixture",class:"implement",refs:{commit:head}});board.update(t.id,"codex","accepted",{state:"in_progress",owner:"codex",reviewer:"claude"});
+  await tasks.done("codex",t.id,"done",{commit:head});
+  for(let i=0;i<100&&!got.some(b=>b.startsWith("Review task"));i++)await Bun.sleep(10);
+  expect(calls).toBeGreaterThan(0);expect(got.find(b=>b.startsWith("Review task"))).toContain("Changed symbols: unknown");expect(board.get(t.id)!.state).toBe("in_review");
+});
+
+test("PII tasks never prepare or render symbol queries",async()=>{
+  const {dir,head}=fixture(),board=new Board(join(scratch("ahub-symbol-private-"),"hub.db"));cleanup.push(()=>board.close());
+  const bus=new Bus({batchMs:0});let calls=0;
+  const tasks=new Tasks({board,bus,cwd:dir,project:"fixture",routing:()=>loadRouting(dir),notify:()=>{},prepareReviewBrief:async()=>{calls++;},reviewBrief:()=>{calls++;throw Error();}});
+  const t=board.propose("local",{title:"private fixture",class:"implement",signals:["pii_path"],refs:{commit:head}});board.update(t.id,"local","accepted",{state:"in_progress",owner:"local",reviewer:"user"});
+  await tasks.done("local",t.id,"private done",{commit:head});expect(calls).toBe(0);expect(tasks.briefText(board.get(t.id)!)).toBe("");expect(board.get(t.id)!.state).toBe("in_review");
+});
+
+test("a task changed while optional symbols load is refused before the done write",async()=>{
+  const {dir,head}=fixture(),board=new Board(join(scratch("ahub-symbol-drift-"),"hub.db"));cleanup.push(()=>board.close());
+  const bus=new Bus({batchMs:0});let id=0;
+  const tasks=new Tasks({board,bus,cwd:dir,project:"fixture",routing:()=>loadRouting(dir),notify:()=>{},prepareReviewBrief:async()=>{board.update(id,"codex","relinked",{refs:{commit:"f".repeat(40)}});}});
+  const t=board.propose("codex",{title:"fixture",class:"implement",refs:{commit:head}});id=t.id;board.update(t.id,"codex","accepted",{state:"in_progress",owner:"codex",reviewer:"claude"});
+  await expect(tasks.done("codex",t.id,"done",{commit:head})).rejects.toThrow("changed during review admission");expect(board.get(t.id)!.state).toBe("in_progress");expect(board.get(t.id)!.history.some(h=>h.event==="done")).toBe(false);
 });

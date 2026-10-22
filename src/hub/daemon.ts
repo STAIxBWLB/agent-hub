@@ -24,7 +24,8 @@ import { needs, type NeedsInput } from "../ui/needs.ts";
 import { loadPetConfig } from "../pet/config.ts";
 import { projectionConfig, TextProjections, type ProjectionConfig } from "./text-projection.ts";
 import { policyPaths, matchesPolicy } from "./path-policy.ts";
-import { buildReviewBrief } from "./review-brief.ts";
+import { CodeFacts, type CodeFactResult, type CodeSymbol } from "./code-facts.ts";
+import { buildReviewBrief, withCodeSymbols } from "./review-brief.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
 import { ActivityRing } from "./activity.ts";
@@ -547,7 +548,7 @@ type Sock = ServerWebSocket<Client>;
 export async function startDaemon(opts: DaemonOptions) {
   const projectId = opts.projectId ?? randomUUID();
   const instanceId = opts.instanceId ?? randomUUID();
-  const startupCleanup: (() => void)[] = [];
+  const startupCleanup: (() => void | Promise<void>)[] = [];
   let ready = false;
   try {
   let startupLayers: ReturnType<typeof readInstanceConfigLayers>;
@@ -1195,7 +1196,10 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const inboxPolling = new InboxPolling();
   const board = new Board(join(opts.stateDir, "hub.db"));
+  const codeFacts = new CodeFacts();
+  const reviewSymbols = new Map<string, CodeFactResult<CodeSymbol[]>>();
   startupCleanup.push(() => board.close());
+  startupCleanup.push(() => codeFacts.close());
   const supervision = new SupervisionFeed({
     conductor: () => conductorPeer(config.roles) ?? undefined,
     scope: () => config.conductor?.feed ?? "own",
@@ -1394,9 +1398,19 @@ export async function startDaemon(opts: DaemonOptions) {
     projectedReview: task => reviewProjection(task),
     ownerWrites: (task, since) => ownerWriteEvidence(task, since),
     ownerAccepted: task => captureOwnerWriteStart(task),
+    prepareReviewBrief: async task => {
+      if (tasks.isPii(task) || !task.refs.commit) return;
+      const root = executionRoot(task.owner ?? "");
+      const brief = buildReviewBrief(root, task.refs.commit, { privatePath: path => isDenied(path, config.local.deny) || matchesPolicy(root, path, config.pii?.paths ?? [], true), nameable: tasks.nameable });
+      if ("unavailable" in brief) return;
+      const key = JSON.stringify([root, brief.head, brief.mergeBase]);
+      reviewSymbols.set(key, await codeFacts.changedSymbols(root, brief.mergeBase, brief.head));
+      if (reviewSymbols.size > 64) reviewSymbols.delete(reviewSymbols.keys().next().value!);
+    },
     reviewBrief: task => {
       const root = executionRoot(task.owner ?? "");
-      return buildReviewBrief(root, task.refs.commit, { privatePath: path => isDenied(path, config.local.deny) || matchesPolicy(root, path, config.pii?.paths ?? [], true), nameable: tasks.nameable });
+      const brief = buildReviewBrief(root, task.refs.commit, { privatePath: path => isDenied(path, config.local.deny) || matchesPolicy(root, path, config.pii?.paths ?? [], true), nameable: tasks.nameable });
+      return "unavailable" in brief ? brief : withCodeSymbols(brief, reviewSymbols.get(JSON.stringify([root, brief.head, brief.mergeBase])) ?? { state: "unknown" }, task.plan?.symbols, tasks.publicMetadataText);
     },
     sdlc: { config: () => lifecycleConfig, gh: (args, timeout, _cwd, bound) => sdlcGh(args, timeout, opts.cwd, bound) },
     board,
@@ -6103,6 +6117,7 @@ export async function startDaemon(opts: DaemonOptions) {
     stopping = true;
     terminalLaunches.clear();
     // Start cancellation immediately; a failed read cleanup must not strand the other owned peers or finalization.
+    const codeFactsStopped = codeFacts.close().catch(() => { log("code facts cleanup failed during shutdown"); });
     const terminalReadsStopped = terminalReads.stop().catch(() => { log("terminal owner query cleanup failed during shutdown"); });
     runnerRefreshAbort.abort();
     // A stop someone asked for is not a crash, even if it then runs past the shutdown deadline: forget the sessions now.
@@ -6118,7 +6133,7 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const pending of checkpointWaits.values()) pending.done(undefined);
     for (const p of permissions.values()) p.done(undefined);
     try {
-      await terminalReadsStopped;
+      await Promise.all([terminalReadsStopped, codeFactsStopped]);
       await terminalLaunches.settled();
       // A peer can still be inside memory recall or its native handshake when kill arrives.
       // Drain those starts before taking the final owned-process snapshot.
@@ -6221,6 +6236,6 @@ export async function startDaemon(opts: DaemonOptions) {
   if (piAutoStart() && !recoveryActive() && !piRecovered) autoStartPi();
   return { bus, token, port: server.port as number, stop, stopped: new Promise<void>((r) => (onStop = r)) };
   } finally {
-    if (!ready) for (const cleanup of startupCleanup.reverse()) { try { cleanup(); } catch { /* preserve startup error */ } }
+    if (!ready) for (const cleanup of startupCleanup.reverse()) { try { await cleanup(); } catch { /* preserve startup error */ } }
   }
 }

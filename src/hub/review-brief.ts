@@ -1,3 +1,4 @@
+import type { CodeFactResult, CodeSymbol } from "./code-facts.ts";
 import { childEnv } from "./child-process.ts";
 import { hubGitSync } from "./git.ts";
 
@@ -10,6 +11,7 @@ import { hubGitSync } from "./git.ts";
 export interface BriefFile { path: string; status: string; oldPath?: string; insertions?: number; deletions?: number }
 export interface BriefExcluded { path: string; status: string; oldPath?: string; reason: string }
 export interface ReviewBrief {
+  symbols?: { state: "known" | "unknown"; files: {path:string; symbols:CodeSymbol[]}[]; planned: string[]; unplanned: string[]; unseen: string[] };
   head: string;
   /** The default branch the head is compared with: origin/HEAD, origin/main or origin/master. */
   base: string;
@@ -149,6 +151,35 @@ function attributes(cwd: string, source: string, paths: string[]): Map<string, {
   return out;
 }
 
+/** Project derived names through the host metadata screen before comparing or rendering them. */
+export function withCodeSymbols(brief:ReviewBrief,result:CodeFactResult<CodeSymbol[]>,plan:readonly string[]|undefined,publicMetadataText:(text:string)=>boolean):ReviewBrief {
+  const unknown={...brief,symbols:{state:"unknown" as const,files:[],planned:[],unplanned:[],unseen:[]}};
+  if(result.state!=="known")return unknown;
+  const paths=new Set(brief.reviewable.map(file=>file.path));
+  const changed=result.value.filter(s=>!s.ambiguous && paths.has(s.path) && publicMetadataText(s.path) && publicMetadataText(s.name) && publicMetadataText(s.kind));
+  const planned=(plan??[]).filter(name=>publicMetadataText(name));
+  const normalize=(name:string)=>name.replace(/\(.*$/," ").trim();
+  const matches=(left:string,right:string)=>{const a=normalize(left),b=normalize(right);return a.includes(".")&&b.includes(".")?a===b:a.split(".").at(-1)===b.split(".").at(-1);};
+  const names=[...new Set(changed.map(s=>s.name))];
+  return {...brief,symbols:{state:"known",files:[...paths].map(path=>({path,symbols:changed.filter(s=>s.path===path)})),
+    planned:names.filter(name=>planned.some(p=>matches(p,name))),unplanned:names.filter(name=>!planned.some(p=>matches(p,name))),unseen:planned.filter(p=>!names.some(name=>matches(p,name)))}};
+}
+
+function renderCodeSymbols(brief:ReviewBrief):string[] {
+  const symbols=brief.symbols;
+  if(!symbols)return [];
+  if(symbols.state === "unknown")return ["Changed symbols: unknown (optional code facts unavailable)."];
+  const lines=[
+    "Changed symbols (advisory; change: unknown):",
+    ...symbols.files.flatMap(file=>file.symbols.length ? file.symbols.map(symbol=>`- ${file.path}: ${symbol.name} (${symbol.kind}, lines ${symbol.line}${symbol.endLine === undefined ? "..unknown" : `..${symbol.endLine}`}; change: unknown)`) : [`- ${file.path}: no changed symbol observed`]),
+    `Changed and planned: ${symbols.planned.join(", ") || "none observed"}`,
+    `Changed, not planned: ${symbols.unplanned.join(", ") || "none observed"}`,
+    `Planned, not seen as changed: ${symbols.unseen.join(", ") || "none observed"}`,
+    "Ceiling: ripwire 0.6.7 does not report deleted symbols; these lists never establish plan conformance.",
+  ];
+  return Buffer.byteLength(lines.join("\n"))<=16000 ? lines : ["Changed symbols: unknown (advice exceeds 16000 bytes)."];
+}
+
 /** The brief as review text: what every reviewer reads and how it accounts for its coverage. */
 export function renderReviewBrief(brief: ReviewBrief): string {
   const file = (f: BriefFile) => `- ${f.oldPath ? `${f.oldPath} -> ` : ""}${f.path} (${f.status}${f.insertions !== undefined ? `, +${f.insertions} -${f.deletions}` : ""})`;
@@ -156,6 +187,7 @@ export function renderReviewBrief(brief: ReviewBrief): string {
     `Review brief: head ${brief.head} against ${brief.base} (merge base ${brief.mergeBase.slice(0, 12)}); ${brief.reviewable.length} reviewable, ${brief.excluded.length} excluded${brief.withheld ? `, ${brief.withheld} withheld by the privacy policy` : ""}.`,
     ...(brief.reviewable.length ? ["Reviewable:", ...brief.reviewable.map(file)] : ["Reviewable: none (record why in the note)."]),
     ...(brief.excluded.length ? ["Excluded (still read their diff when it matters):", ...brief.excluded.map(e => `- ${e.oldPath ? `${e.oldPath} -> ` : ""}${e.path} (${e.status}): ${e.reason}`)] : []),
+    ...renderCodeSymbols(brief),
     ...(brief.unlisted.length ? ["Not in the brief's list, read directly:", ...brief.unlisted.map(path => `- ${path}`)] : []),
     ...brief.ruleGroups.filter(g => g.sources.length).map(g => `Rules ${g.sources.join(" + ")} apply to: ${brief.ruleGroups.length === 1 ? "every reviewable file" : g.paths.join(", ")}`),
     ...(brief.rulesMissing.length ? ["Configured rules not loaded (read them in the repository):", ...brief.rulesMissing.map(m => `- ${m.source}: ${m.reason}`)] : []),
