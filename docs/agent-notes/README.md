@@ -29,3 +29,9 @@ Background moved out of the area notes for 0.12.45:
 - Process-tree stops (adapters.md): three review rounds of #113 found snapshot gaps while the tree ran (groups of its own, an unreadable first read, a child started during the grace period).
 - Local worker (local-worker.md): a bare `private/` deny entry once denied all of `/private/var`; `existsSync` made a dangling link look like a new file, so a write landed at its target.
 - Suite watchdog (tests.md): macOS CI hit `AHUB_CHECK_HANG_S` while tests still passed (#378, #593).
+
+Background moved out of the area notes for 0.13.0:
+
+- Jcode MCP entry (#685, adapters.md): jcode gives an MCP entry's own env precedence over the process env (probed on 0.99.0), so a peer id in the shared `.jcode/mcp.json` entry would make every extra instance act as `jcode`.
+- Bulk queue discard (#713, bus.md): a queued row with no journal record of its own carries the journal's global revision, which every discard moves, so a revision read once at the start goes stale after the first discard.
+- Usage roll-up (#683 U2, budget.md): a pass cap smaller than one log line once hung the fold.

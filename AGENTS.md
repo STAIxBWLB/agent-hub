@@ -59,7 +59,7 @@ Run this before pushing a PR or reporting a task complete, and paste the output.
 - **Head SHA:** `hub_task_done` names the full head SHA exactly as `git rev-parse HEAD` prints it; after any later push, call it again. The review binds to that SHA, and a mistyped or stale one makes the hub refuse approval of the real head. Seen on tasks #302 and #339, 2026-10-22.
 - **Verified stamps:** never restamp `docs/verified.json` in a PR that is squash-merged. The squash drops the branch commit the stamp names, and `check-docs` then fails on main for every later PR. A stale stamp is allowed; restamp only in the release PR (step 2 below). Seen on PR #702, 2026-10-22.
 - **Releasing:**
-  1. Bump `version` in `package.json`, update the README `Status:` line, run `bun run build`, and update `CHANGELOG.md`.
+  1. Pick the version: a release with any `feat` change bumps the minor (0.13.0), a fix-only release bumps the patch (0.13.1). Bump `version` in `package.json`, update the README `Status:` line, run `bun run build`, and update `CHANGELOG.md`.
   2. Run `node scripts/check-docs.mjs --require-fresh`. Recheck and restamp every stale document in `docs/verified.json`, or record why it is deferred in the release verification report. That includes `src/cli/help.ts`: every command, subcommand and flag in `ahub help` must match `src/cli/main.ts`, `src/cli/launch.ts` and the native entries.
   3. Merge the release PR with a merge commit, never squash or rebase: the stamps in `docs/verified.json` name a commit of the release branch.
   4. Tag `v<version>`. The release workflow refuses a tag that does not match, stale stamps, and stamps that are not ancestors of the tagged commit.

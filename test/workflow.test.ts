@@ -45,7 +45,8 @@ test("checklist task import is retired: a task list is refused before any write,
   const r = rig(), first = r.board.propose(USER, { title: "first", class: "implement" });
   const before = JSON.stringify(r.board.list());
   expect(() => r.tasks.recordLifecycle(USER, r.parent, { criteria: { ...checklist(), tasks: [{ id: first.id, after: [] }] } })).toThrow("task import was retired");
-  expect(() => r.tasks.recordLifecycle(USER, r.parent, { phase: { ...checklist(), tasks: [{ id: first.id, after: [] }] } })).toThrow("task import was retired");
+  // From 0.13.0 the retired `phase` name is refused outright (#481), still before any write.
+  expect(() => r.tasks.recordLifecycle(USER, r.parent, { phase: { ...checklist(), tasks: [{ id: first.id, after: [] }] } })).toThrow("retired in");
   expect(JSON.stringify(r.board.list())).toBe(before);
   // A receipt stored before #481 keeps its criteria; its task list is shown as ignored and never gates readiness.
   r.board.update(r.parent, USER, "lifecycle", { sdlc: { ...r.board.get(r.parent)!.sdlc!, phase: { ...criteriaReceipt(checklist("verified")), tasks: [{ id: first.id, after: [] }] } } });
@@ -56,12 +57,13 @@ test("checklist task import is retired: a task list is refused before any write,
 test("only the phase reviewer/person records checklists; required unknown verdicts block approval in enforce (#257)", async () => {
   const r = rig();
   expect(() => r.tasks.recordLifecycle("codex", r.parent, { criteria: checklist("verified") })).toThrow("only its reviewer");
-  expect(() => r.tasks.recordLifecycle("codex", r.parent, { phase: checklist("verified") })).toThrow("only its reviewer");
+  expect(() => r.tasks.recordLifecycle("codex", r.parent, { phase: checklist("verified") })).toThrow("retired in"); // the retired name is refused from 0.13.0
   expect(() => r.tasks.recordLifecycle(USER, r.parent, { criteria: { ...checklist(), criteria: [{ ...checklist().criteria[0], id: "claim-900101-1234567" }] } })).toThrow("PII pattern");
   r.tasks.recordLifecycle(USER, r.parent, { criteria: checklist() });
   await r.tasks.done("codex", r.parent, "done");
   await expect(r.tasks.review(USER, r.parent, "approved", undefined, undefined, A)).rejects.toThrow("criterion criterion-one: unverified");
-  r.tasks.recordLifecycle(USER, r.parent, { phase: checklist("verified") }); // the retired name still writes during the window
+  expect(() => r.tasks.recordLifecycle(USER, r.parent, { phase: checklist("verified") })).toThrow("retired in"); // the window closed in 0.13.0 (#481)
+  r.tasks.recordLifecycle(USER, r.parent, { criteria: checklist("verified") });
   expect(r.board.get(r.parent)!.sdlc!.criteria?.criteria[0]?.result).toBe("verified");
   expect((await r.tasks.review(USER, r.parent, "approved", undefined, undefined, A)).state).toBe("approved");
   r.head(B); expect((await r.tasks.lifecycleStatus(r.parent)).blockers).toContain("criteria checklist head missing or stale");
@@ -117,7 +119,8 @@ test("a checklist with a PII-pattern id is refused in every mode, including the 
   for (const [mode, workflow, key] of [["off", "none", "phase"], ["off", "none", "criteria"], ["advise", "none", "criteria"], ["advise", "none", "phase"], ["off", "gsd-lite", "phase"]] as const) {
     const r = rig(mode, false, workflow), before = JSON.stringify(r.board.get(r.parent));
     const leaked = { ...checklist(), criteria: [{ ...checklist().criteria[0], id: "claim-900101-1234567" }] };
-    expect(() => r.tasks.recordLifecycle(USER, r.parent, { [key]: leaked })).toThrow("PII pattern");
+    // The retired `phase` name is refused from 0.13.0 (#481) before the PII screen; either way nothing is stored or exposed.
+    expect(() => r.tasks.recordLifecycle(USER, r.parent, { [key]: leaked })).toThrow(key === "phase" ? "retired in" : "PII pattern");
     expect(JSON.stringify(r.board.get(r.parent))).toBe(before);
     expect(JSON.stringify(r.tasks.publicView(r.board.get(r.parent)!))).not.toContain("900101");
   }
