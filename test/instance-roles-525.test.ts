@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 import { loadConductorPolicy } from "../src/hub/daemon.ts";
-import { validateInstances } from "../src/hub/instances.ts";
+import { effectiveInstanceRoles, validateInstances } from "../src/hub/instances.ts";
 
 // #525-1 (R1): roles capability per kind and form.
 const validate = (raw: object) => validateInstances(raw, builtinProjectCatalog());
@@ -41,4 +41,11 @@ test("loadConductorPolicy drops a planner role on a kind that cannot plan with a
     expect(policy.roles.claude).toEqual(["planner", "reviewer", "implementer"]);
     expect(policy.notices).toContain("roles.pi: ignored roles outside the adapter ceiling");
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("a roles entry keyed by an instance id cannot give a non-planning kind the planner role (#525 R1)", () => {
+  const catalog = builtinProjectCatalog();
+  const declarations = validateInstances({ "local-x": { kind: "local", start_mode: "headless" }, "codex-plan": { kind: "codex", start_mode: "headless" } }, catalog);
+  expect(effectiveInstanceRoles("local-x", declarations, { "local-x": ["planner", "implementer"] }, catalog)).toEqual(["implementer"]);
+  expect(effectiveInstanceRoles("codex-plan", declarations, { "codex-plan": ["planner"] }, catalog)).toEqual(["planner"]);
 });

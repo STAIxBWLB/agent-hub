@@ -225,5 +225,7 @@ export function effectiveInstanceRoles(id: string, declarations: InstancesConfig
   if (!definition) throw new Error(`${id}: no declared native instance`);
   const declaration = declarations && Object.hasOwn(declarations, id) ? declarations[id] : undefined;
   const ownRoles = (key: string): readonly string[] | undefined => Object.hasOwn(policyRoles, key) ? policyRoles[key] : undefined;
-  return [...(declaration?.roles ?? ownRoles(id) ?? ownRoles(definition.kind) ?? definition.roles)];
+  const roles = declaration?.roles ?? ownRoles(id) ?? ownRoles(definition.kind) ?? definition.roles;
+  // #525 R1: a roles entry keyed by an instance id skips loadConductorPolicy's kind check, so planner is gated here too.
+  return roles.filter(role => role !== "planner" || definition.projection?.plannerEligible === true);
 }
