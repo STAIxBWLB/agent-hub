@@ -18,6 +18,7 @@ import { newEnvelope } from "../src/hub/envelope.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { realPath } from "../src/hub/project.ts";
+import { assign, loadRouting } from "../src/hub/routing.ts";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -450,4 +451,206 @@ test("a stop, a cancel or a replaced launch before the send also refuses the ste
   expect(rig.rows().some(row => row.kind === "soft_interrupt")).toBe(false);
   const states = rig.receipts.filter(r => r.id === "d-steer").map(r => r.state);
   expect(states).not.toContain("accepted"); expect(states).not.toContain("completed");
+});
+
+test("Jcode configuration is refused from scoped grants under symlink aliases and case variants (#332 AC5)", () => {
+  const dir = realPath(root());
+  const canonical = join(dir, ".jcode");
+  mkdirSync(canonical, { recursive: true });
+  writeFileSync(join(canonical, "mcp.json"), "{}");
+  writeFileSync(join(canonical, "config.json"), "{}");
+
+  // Case variants: upper, title, mixed case, nested paths
+  for (const variant of [".JCODE", ".Jcode", ".jCode"]) {
+    const vdir = join(dir, variant);
+    mkdirSync(vdir, { recursive: true });
+    writeFileSync(join(vdir, "mcp.json"), "{}");
+    expect(grantablePath(dir, vdir)).toBe(false);
+    expect(grantablePath(dir, join(vdir, "mcp.json"))).toBe(false);
+    expect(grantablePath(dir, join(dir, "nested", variant, "config.json"))).toBe(false);
+  }
+
+  // Symlink alias to .jcode directory
+  const aliasDir = join(dir, "jcode-alias");
+  symlinkSync(canonical, aliasDir);
+  expect(grantablePath(dir, realPath(aliasDir))).toBe(false);
+  expect(grantablePath(dir, realPath(join(aliasDir, "mcp.json")))).toBe(false);
+  expect(grantablePath(dir, realPath(join(aliasDir, "config.json")), join(aliasDir, "config.json"))).toBe(false);
+
+  // Symlink file pointing into .jcode
+  const fileAlias = join(dir, "alias-mcp.json");
+  symlinkSync(join(canonical, "mcp.json"), fileAlias);
+  expect(grantablePath(dir, realPath(fileAlias))).toBe(false);
+  expect(grantablePath(dir, realPath(fileAlias), fileAlias)).toBe(false);
+
+  // Symlink inside .jcode pointing outside to an ordinary file
+  const ordinaryFile = join(dir, "ordinary.txt");
+  writeFileSync(ordinaryFile, "hello");
+  const linkInJcode = join(canonical, "link-to-ordinary.txt");
+  symlinkSync(ordinaryFile, linkInJcode);
+  expect(grantablePath(dir, realPath(linkInJcode), linkInJcode)).toBe(false);
+});
+
+// Observe the actual fake child argv/env without changing the shared conformance fake.
+function recordedJcode(dir: string) {
+  const record = join(dir, "native.jsonl"), launches = join(dir, "launches.jsonl"), wrapper = join(dir, "record-native.ts");
+  writeFileSync(wrapper, `import { appendFileSync } from "node:fs";
+appendFileSync(${JSON.stringify(launches)}, JSON.stringify({ args: process.argv.slice(2), launchId: process.env.AGENTHUB_LAUNCH_ID }) + "\\n");
+await import(${JSON.stringify(fake[1])});
+`);
+  return { record, command: [process.execPath, wrapper, "--record", record],
+    launches: (): { args: string[]; launchId?: string }[] => readFileSync(launches, "utf8").trim().split("\n").map(line => JSON.parse(line)) };
+}
+
+test("Jcode PII routing withholds confidential tasks from jcode and applies public markers (#332 AC5)", async () => {
+  const dir = realPath(root()), stateDir = join(dir, "state"), home = join(dir, "home");
+  mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");
+  configureJcodeMcp(dir, stateDir, join(import.meta.dir, "../plugins/agent-hub/server.js"));
+
+  const native = recordedJcode(dir);
+
+  // 1. assign() refuses jcode for PII tasks because trust.onPrem is false
+  const routing = loadRouting(process.cwd());
+  const jcodeRouting = { ...routing, classes: { ...routing.classes, implement: { ...routing.classes.implement, peers: ["jcode"] } } };
+  const assignment = assign({ id: 1, class: "implement", signals: ["pii"] }, { jcode: "idle" }, jcodeRouting, {});
+  expect(assignment.owner).toBeUndefined();
+  expect(assignment.refusals).toEqual([
+    expect.objectContaining({ peer: "jcode", role: "owner", code: "pii", reason: "pii: on-prem peers only" }),
+  ]);
+
+  // 2. Daemon live flow: propose a PII task and verify withholding and public markers
+  const daemon = await startDaemon({
+    cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: {
+      ...DEFAULT_CONFIG,
+      jcode_cmd: native.command,
+      jcode_home: home,
+      roster: { jcode: true },
+      roles: { ...DEFAULT_CONFIG.roles, jcode: ["implementer"] },
+      batch_ms: 0,
+      memory: { ...DEFAULT_CONFIG.memory, enabled: false },
+      inference: { ...DEFAULT_CONFIG.inference, enabled: false },
+    },
+  });
+  cleanups.push(() => daemon.stop());
+  const consoleClient = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => consoleClient.close());
+  expect((await consoleClient.request({ t: "start", peer: "jcode", args: { mode: "headless" } })).ok).toBe(true);
+
+  daemon.bus.pause("jcode"); // A withheld task cannot be confused with a prompt that was delivered and drained.
+  const SECRET = "patient-900101-1234567";
+  const title = `update record ${SECRET}`;
+  const prop = await consoleClient.request({
+    t: "task", op: "hub_task_propose",
+    args: { title, detail: "confidential medical file", class: "implement", signals: ["pii"] },
+  });
+  expect(prop.ok).toBe(true);
+
+  // Tools client as jcode: verify public view and markers
+  const ownedLaunch = native.launches().find(row => row.args.includes("acp"));
+  expect(ownedLaunch).toBeDefined();
+  const jcodeClient = await ControlClient.connect(stateDir, { role: "tools", peer: "jcode", ...(ownedLaunch?.launchId ? { launchId: ownedLaunch.launchId } : {}) }); cleanups.push(() => jcodeClient.close());
+  const jcodeList = await jcodeClient.request({ t: "task", op: "hub_task_list", args: {} });
+  expect(jcodeList.ok).toBe(true);
+  const rows = JSON.parse(jcodeList.text);
+  expect(rows).toHaveLength(1);
+  expect(rows[0].title).toBe("[pii]");
+  expect(rows[0].detail).toBe("[pii]");
+  expect(jcodeList.text).not.toContain(SECRET);
+
+  // Jcode cannot claim or accept the PII task
+  const accept = await jcodeClient.request({ t: "task", op: "hub_task_accept", args: { id: 1, plan: { paths: ["src/a.ts"] } } });
+  expect(accept.ok).toBe(false);
+
+  // The queue is checked while paused, then an ordinary prompt acts as a consuming barrier.
+  expect(daemon.bus.queued("jcode")).toBe(0);
+  const barrier = "PII_NATIVE_BARRIER";
+  daemon.bus.publish(newEnvelope("user", barrier, { to: ["jcode"] }));
+  expect(daemon.bus.queued("jcode")).toBe(1);
+  daemon.bus.resume("jcode");
+  await until(() => readFileSync(native.record, "utf8").includes(barrier));
+  await until(() => daemon.bus.peers.get("jcode")!.state === "idle");
+  const received = readFileSync(native.record, "utf8");
+  expect(received).toContain("session/prompt");
+  expect(received).toContain(barrier);
+  expect(received).not.toContain(title);
+  expect(received).not.toContain(SECRET);
+});
+
+test("no raw native payload or credential from Jcode reaches hub.log or events (#332 AC5)", async () => {
+  const dir = realPath(root()), stateDir = join(dir, "state"), home = join(dir, "home");
+  const native = recordedJcode(dir), record = native.record;
+  mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");
+  configureJcodeMcp(dir, stateDir, join(import.meta.dir, "../plugins/agent-hub/server.js"));
+
+  const SECRET_PROFILE = "secret-provider-credential-987";
+  const SECRET_MODEL = "secret-model-credential-654";
+  const SECRET_PII = "confidential-pii-payload-321";
+
+  // Launcher preview redacts model and provider profile credentials
+  const preview = launcherPreview("jcode", ["--model", SECRET_MODEL, "--provider-profile", SECRET_PROFILE], dir, stateDir, false);
+  expect(JSON.stringify(preview)).not.toContain(SECRET_MODEL);
+  expect(JSON.stringify(preview)).not.toContain(SECRET_PROFILE);
+
+  const daemon = await startDaemon({
+    cwd: dir, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: {
+      ...DEFAULT_CONFIG,
+      jcode_cmd: native.command,
+      jcode_home: home,
+      jcode_provider_profile: SECRET_PROFILE,
+      roster: { jcode: true },
+      batch_ms: 0,
+      memory: { ...DEFAULT_CONFIG.memory, enabled: false },
+      inference: { ...DEFAULT_CONFIG.inference, enabled: false },
+    },
+  });
+  cleanups.push(() => daemon.stop());
+  const consoleClient = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => consoleClient.close());
+  expect((await consoleClient.request({ t: "start", peer: "jcode", args: { mode: "headless", model: SECRET_MODEL, providerProfile: SECRET_PROFILE } })).ok).toBe(true);
+
+  const actualLaunches = native.launches().filter(row => row.args.includes("serve") || row.args.includes("acp"));
+  expect(actualLaunches).toHaveLength(2);
+  for (const launch of actualLaunches) {
+    expect(launch.args).toContain("--model"); expect(launch.args).toContain(SECRET_MODEL);
+    expect(launch.args).toContain("--provider-profile"); expect(launch.args).toContain(SECRET_PROFILE);
+  }
+  const readEvents = (): { type: string; id?: string; peer?: string }[] => readFileSync(join(stateDir, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+
+  // Deliver turn with normal message
+  const normal = newEnvelope("user", "normal turn message", { to: ["jcode"] });
+  daemon.bus.publish(normal);
+  await until(() => existsSync(record) && readFileSync(record, "utf8").includes("normal turn message"));
+  await until(() => daemon.bus.queued("jcode") === 0 && daemon.bus.peers.get("jcode")!.state === "idle");
+
+  await until(() => readEvents().some(row => row.type === "turn_end" && row.peer === "jcode"));
+  const normalEnds = readEvents().filter(row => row.type === "turn_end" && row.peer === "jcode").length;
+
+  // Publish a private envelope
+  daemon.bus.publish(newEnvelope("hub", `private work ${SECRET_PII}`, { to: ["jcode"], private: true, priority: "important" }));
+  await until(() => readFileSync(record, "utf8").includes(SECRET_PII));
+  await until(() => readEvents().filter(row => row.type === "turn_end" && row.peer === "jcode").length > normalEnds);
+
+  const log = existsSync(join(stateDir, "hub.log")) ? readFileSync(join(stateDir, "hub.log"), "utf8") : "";
+  const events = existsSync(join(stateDir, "events.jsonl")) ? readFileSync(join(stateDir, "events.jsonl"), "utf8") : "";
+
+  // Positive controls: real native prompts and this normal turn's public event exist.
+  expect(readFileSync(record, "utf8")).toContain("session/prompt");
+  expect(readFileSync(record, "utf8")).toContain(SECRET_PII);
+  expect(readEvents()).toContainEqual(expect.objectContaining({ type: "envelope", id: normal.id }));
+
+  // Proves credentials never reach hub.log or events
+  expect(log).not.toContain(SECRET_PROFILE);
+  expect(events).not.toContain(SECRET_PROFILE);
+  expect(log).not.toContain(SECRET_MODEL);
+  expect(events).not.toContain(SECRET_MODEL);
+
+  // Proves raw native JSON-RPC payloads (session/prompt, jsonrpc wire frames) never reach hub.log or events
+  expect(log).not.toContain("session/prompt");
+  expect(log).not.toContain('"jsonrpc":"2.0"');
+  expect(events).not.toContain("session/prompt");
+  expect(events).not.toContain('"jsonrpc":"2.0"');
+
+  // Proves private PII text is not leaked into hub.log or events
+  expect(log).not.toContain(SECRET_PII);
+  expect(events).not.toContain(SECRET_PII);
 });
