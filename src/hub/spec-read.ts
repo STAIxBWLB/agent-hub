@@ -48,6 +48,37 @@ export function specRefs(task: Pick<Task, "title" | "detail" | "refs"> & Partial
   return [...issues];
 }
 
+/**
+ * #723: issue numbers a title names as a sibling repository (`agent-mem#13`) when the task's `refs.repo` is that repository.
+ * The bare name must equal the repository part of `refs.repo`; nothing else is guessed, and nothing is read. A bare
+ * `#N` and an `owner/repo#N` form are specRefs' business, never this function's.
+ */
+export function siblingTitleRefs(title: string, repo: string | undefined): number[] {
+  if (!repo || !isGitHubRepository(repo)) return [];
+  const name = repo.split("/")[1]!.toLowerCase(), found = new Set<number>();
+  for (const match of title.matchAll(/(?<![A-Za-z0-9_./-])([A-Za-z0-9_.-]+)#([1-9][0-9]*)\b/g)) {
+    if (match[1]!.toLowerCase() === name) found.add(Number(match[2]));
+  }
+  return [...found].slice(0, 4);
+}
+
+/** Words that precede `#N` without naming a repository (`PR#12`); never worth a refs.repo suggestion. */
+const NOT_A_REPOSITORY = new Set(["pr", "pull", "issue", "issues", "task", "tasks", "bug", "fix", "phase", "step", "item", "ticket", "gh", "id", "no", "nr", "p", "s", "t", "u"]);
+/**
+ * #723: the qualified repository names a title carries (`owner/repo#N` as `owner/repo`, `agent-mem#13` as `agent-mem`), so
+ * propose can suggest `refs.repo`. Advice only: a hit is a hint, never an identity.
+ */
+export function qualifiedTitleRepos(title: string): string[] {
+  const found = new Set<string>();
+  for (const match of title.matchAll(/(?<![A-Za-z0-9_./-])(?:([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)|([A-Za-z0-9_.-]*[A-Za-z][A-Za-z0-9_.-]*))#[1-9][0-9]*\b/g)) {
+    const name = match[1] ?? match[2]!;
+    if (match[1] ? !isGitHubRepository(name) : NOT_A_REPOSITORY.has(name.toLowerCase())) continue;
+    found.add(name);
+    if (found.size >= 4) break;
+  }
+  return [...found];
+}
+
 interface GhResult { code: number; stdout: string; }
 /** One fixed-argv authenticated boundary, no shell, no retries and no retained stderr. */
 function gh(args: string[], opts: SpecOptions): Promise<GhResult> {
