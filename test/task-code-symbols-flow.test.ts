@@ -114,8 +114,12 @@ test("foreign repository and private task observations remain absent",async()=>{
 const freePort=()=>{const server=Bun.serve({hostname:"127.0.0.1",port:0,fetch:()=>new Response()}),port=server.port!;server.stop(true);return port;};
 test("console task detail and UI snapshot carry only public head-bound symbol metadata",async()=>{
  const cwd=realPath(mkdtempSync(join(tmpdir(),"ahub-code-symbol-snapshot-"))),stateDir=join(cwd,".agenthub/state");mkdirSync(stateDir,{recursive:true});
- const board=new Board(join(stateDir,"hub.db")),task=board.propose("user",{title:"public fixture",class:"implement",refs:{commit:HEAD}});
- board.update(task.id,"user","fixture",{codeSymbols:buildTaskCodeSymbols(brief(),`path:${cwd}`,()=>true)},undefined,{},undefined,HOST_CODE_SYMBOLS);board.close();
+ const board=new Board(join(stateDir,"hub.db")),task=board.propose("user",{title:"public fixture",class:"implement",refs:{commit:HEAD,paths:["a.ts"]}});
+ const other=board.propose("user",{title:"other public fixture",class:"implement",refs:{commit:OTHER,paths:["a.ts"]}});
+ board.update(other.id,"user","fixture",{owner:"kimi",state:"in_progress",codeSymbols:buildTaskCodeSymbols(brief(OTHER,"Beta.second"),`path:${cwd}`,()=>true)},undefined,{},undefined,HOST_CODE_SYMBOLS);
+ const privateOther=board.propose("user",{title:"private fixture",class:"implement",signals:["pii_path"],refs:{commit:BASE,paths:["a.ts"]}});
+ board.update(privateOther.id,"user","fixture",{owner:"local",state:"in_progress"});
+ board.update(task.id,"user","fixture",{owner:"codex",state:"in_progress",codeSymbols:buildTaskCodeSymbols(brief(),`path:${cwd}`,()=>true)},undefined,{},undefined,HOST_CODE_SYMBOLS);board.close();
  const daemon=await startDaemon({cwd,stateDir,controlPort:0,codexAppPort:freePort(),codexProxyPort:freePort(),config:{...DEFAULT_CONFIG,memory:{...DEFAULT_CONFIG.memory,enabled:false,native:false},inference:{...DEFAULT_CONFIG.inference,enabled:false},snapshots:{...DEFAULT_CONFIG.snapshots,enabled:false},task_sweep:{...DEFAULT_CONFIG.task_sweep,enabled:false},pi:{...DEFAULT_CONFIG.pi,enabled:false,auto_start:false},mlx:{...DEFAULT_CONFIG.mlx,enabled:false}}});
  let client:ControlClient|undefined;
  try {
@@ -124,6 +128,9 @@ test("console task detail and UI snapshot carry only public head-bound symbol me
   expect(snapshot.tasks.find((t:Task)=>t.id===task.id).codeSymbols).toMatchObject({head:HEAD,symbols:[{name:"Alpha.first"}]});
   const detail=await client.request({t:"task",op:"task_show",args:{id:task.id}});
   expect(detail.ok).toBe(true);
+  expect(JSON.parse(detail.text).symbolOverlaps).toEqual([{task:other.id,files:["a.ts"],sameFileDifferentSymbols:true}]);
+  const privateDetail=await client.request({t:"task",op:"task_show",args:{id:privateOther.id}});
+  expect(JSON.parse(privateDetail.text).symbolOverlaps).toEqual([]);
   expect(detail.text).toContain("Alpha.first");expect(detail.text).not.toContain("repositoryKey");expect(JSON.stringify(snapshot.tasks)).not.toContain("repositoryKey");
  } finally {client?.close();await daemon.stop();rmSync(cwd,{recursive:true,force:true});}
 },20000);
