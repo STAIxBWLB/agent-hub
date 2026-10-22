@@ -1,3 +1,4 @@
+import { parseIssueLabels, parseRedFirst, testIntegrityBlockers, type RedFirstReceipt, type TestIntegrity } from "./test-integrity.ts";
 import { planConformanceBlockers, type PlanConformance } from "./plan-conformance.ts";
 import { DEFAULT_MAX_NITS, findingsForHead, findingHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
 import type { CostPlan } from "./cost-governance.ts";
@@ -55,6 +56,7 @@ export interface SdlcReceipt {
   localHead?: string;
   localResult?: "passed" | "failed" | "unknown";
   observed?: number;
+  redFirst?: RedFirstReceipt;
 }
 export interface PrEvidence {
   head: string;
@@ -64,6 +66,8 @@ export interface PrEvidence {
   unresolved: number | null;
   pendingReviews: number | null;
   paths: string[];
+  fileChanges?: { path: string; change: string }[];
+  issueLabels?: { issue: number; labels: string[] | null };
   pathsComplete?: boolean;
   /** All affected path identities are represented; rename/copy destinations alone cannot certify S2. */
   typesComplete?: boolean;
@@ -178,7 +182,7 @@ export function loadSdlc(cwd: string, version?: string): SdlcConfig {
 export function sdlcReceipt(value: unknown, previous: SdlcReceipt | undefined = undefined, config: SdlcConfig = sdlcConfig(undefined), version?: string): SdlcReceipt {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("sdlc receipt: expected an object");
   const raw = value as Record<string, unknown>;
-  for (const key of Object.keys(raw)) if (!["stage", "repo", "issue", "pr", "reviewedHead", "localHead", "localResult", "criteria", "phase"].includes(key)) throw new Error(`sdlc receipt.${key}: unsupported or externally observed field`);
+  for (const key of Object.keys(raw)) if (!["stage", "repo", "issue", "pr", "reviewedHead", "localHead", "localResult", "criteria", "phase", ...(config.mode !== "off" ? ["redFirst"] : [])].includes(key)) throw new Error(`sdlc receipt.${key}: unsupported or externally observed field`);
   if (raw.criteria !== undefined && raw.phase !== undefined) throw new Error("sdlc receipt: give criteria only; phase is its retired name");
   if (raw.phase !== undefined && version !== undefined && !olderThan(version, RETIRED_WORKFLOW_FROM)) throw new Error(`sdlc receipt.phase: retired in ${RETIRED_WORKFLOW_FROM} (#481); use criteria`);
   previous ??= { stage: config.stages[0] ?? "spec" };
@@ -199,6 +203,9 @@ export function sdlcReceipt(value: unknown, previous: SdlcReceipt | undefined = 
     if (!["passed", "failed", "unknown"].includes(String(raw.localResult))) throw new Error("sdlc receipt.localResult: expected passed, failed or unknown");
     next.localResult = raw.localResult as SdlcReceipt["localResult"];
   }
+  if (raw.redFirst !== undefined) next.redFirst = parseRedFirst(raw.redFirst);
+  // A test receipt never carries across a different linked issue or artifact.
+  if (raw.redFirst === undefined && (next.repo !== previous.repo || next.issue !== previous.issue || next.pr !== previous.pr)) delete next.redFirst;
   // An acceptance names one spec issue; relinking the receipt to another drops it (#481 S1).
   if (next.repo !== previous.repo || next.issue !== previous.issue) delete next.acceptance;
   // A new artifact cannot inherit another PR's review or local gate.
@@ -225,7 +232,7 @@ export function parsePrEvidence(value: unknown): PrEvidence {
   const paths = p.files.map((f: Record<string, unknown>) => { if (typeof f.path !== "string" || !f.path || f.path.length > 1000) throw new Error("PR readback: invalid file identity"); return f.path; });
   const completeTypes = p.files.every((file: Record<string, unknown>) => typeof file.changeType === "string" && ["ADDED", "DELETED", "MODIFIED", "CHANGED"].includes(file.changeType));
   // Rename/copy metadata exposes only its destination, never a complete inventory of affected identities.
-  return { head: p.headRefOid, state: p.state, checks, paths, pathsComplete: Number.isSafeInteger(p.changedFiles) && p.changedFiles >= 0 && p.changedFiles === paths.length, typesComplete: completeTypes, ...(typeof p.isDraft === "boolean" ? { draft: p.isDraft } : {}), ...(typeof p.baseRefName === "string" && p.baseRefName && p.baseRefName.length <= 200 && !/[\x00-\x1f\x7f]/.test(p.baseRefName) ? { base: p.baseRefName } : {}), ...(sha(p.baseRefOid) ? { baseHead: p.baseRefOid } : {}),
+  return { head: p.headRefOid, state: p.state, checks, paths, fileChanges: p.files.map((file: Record<string, unknown>) => ({ path: file.path as string, change: typeof file.changeType === "string" ? file.changeType : "UNKNOWN" })), pathsComplete: Number.isSafeInteger(p.changedFiles) && p.changedFiles >= 0 && p.changedFiles === paths.length, typesComplete: completeTypes, ...(typeof p.isDraft === "boolean" ? { draft: p.isDraft } : {}), ...(typeof p.baseRefName === "string" && p.baseRefName && p.baseRefName.length <= 200 && !/[\x00-\x1f\x7f]/.test(p.baseRefName) ? { base: p.baseRefName } : {}), ...(sha(p.baseRefOid) ? { baseHead: p.baseRefOid } : {}),
     review: p.reviewDecision === "APPROVED" ? "approved" : p.reviewDecision === "CHANGES_REQUESTED" ? "changes_requested" : "unknown",
     pendingReviews: Array.isArray(p.reviewRequests) && p.reviewRequests.length <= 100 && p.reviewRequests.every((r: unknown) => !!r && typeof r === "object") ? p.reviewRequests.length : null,
     unresolved: Number.isSafeInteger(p.unresolvedThreads) && p.unresolvedThreads >= 0 ? p.unresolvedThreads : null,
@@ -248,16 +255,16 @@ export const SPEC_STATE_TEXT: Record<Exclude<SpecState, "current">, string> = {
   changed: "spec changed after acceptance: the person re-accepts with ahub sdlc accept <task> --issue <n>",
   unknown: "spec edit time unknown: the issue could not be read",
 };
-export interface SdlcStatus { planConformance?: PlanConformance & { accepted?: boolean; earlierPushes?: "unknown"; revisionsAfterFirstObservedPush?: number }; findings?: ReviewFindingTally; spec?: { issue: number; state: SpecState }; playbook?: string; criteria?: CriteriaView; mode: SdlcMode; stage: SdlcStage; definition?: StageDefinition; entry?: string[]; exit?: string[]; blockers: string[]; ready: boolean; actor: string; next: string; }
+export interface SdlcStatus { testIntegrity?: TestIntegrity; planConformance?: PlanConformance & { accepted?: boolean; earlierPushes?: "unknown"; revisionsAfterFirstObservedPush?: number }; findings?: ReviewFindingTally; spec?: { issue: number; state: SpecState }; playbook?: string; criteria?: CriteriaView; mode: SdlcMode; stage: SdlcStage; definition?: StageDefinition; entry?: string[]; exit?: string[]; blockers: string[]; ready: boolean; actor: string; next: string; }
 /** The acceptance-criteria checklist (#481 S8, Compliance pass) counts once recorded, and on every task under the retired gsd-lite setting. Off keeps #257's output. */
 export const criteriaRequired = (config: SdlcConfig, receipt: SdlcReceipt | undefined): boolean => config.workflow === "gsd-lite" || (config.mode !== "off" && !!checklistOf(receipt));
-export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined, evidence?: PrEvidence, criteria?: CriteriaView, specEdit?: SpecEdit, sets: readonly ReviewFindingSet[] = [], commit?: string, plan?: SdlcStatus["planConformance"]): SdlcStatus {
+export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined, evidence?: PrEvidence, criteria?: CriteriaView, specEdit?: SpecEdit, sets: readonly ReviewFindingSet[] = [], commit?: string, plan?: SdlcStatus["planConformance"], integrity?: TestIntegrity): SdlcStatus {
   const stage = receipt?.stage ?? config.stages[0] ?? "spec", blockers: string[] = [];
   const definition = stageDefinition(config, stage);
   const items = findingsForHead(sets, findingHead(receipt, evidence, commit));
   const findings = items.length ? findingTally(items) : undefined;
   if (config.mode === "enforce" && findings?.openImportant) blockers.push("open important review findings: " + findings.openImportant);
-  if (config.mode === "enforce") blockers.push(...planConformanceBlockers(plan));
+  if (config.mode === "enforce") blockers.push(...planConformanceBlockers(plan), ...testIntegrityBlockers(integrity));
   if (!definition) blockers.push("lifecycle stage definition unknown");
   if (!receipt?.repo || !receipt.issue) blockers.push("issue identity missing");
   if (!receipt?.pr) blockers.push("PR identity missing");
@@ -283,7 +290,7 @@ export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined,
   const shown = criteria && (criteriaRequired(config, receipt) || definition && [...definition.entry_gates, ...definition.exit_gates].includes("criteria"));
   // Shown, not counted as a readiness blocker: the spec gate is build entry (#481 S1).
   const spec = config.mode !== "off" && receipt?.issue ? { spec: { issue: receipt.issue, state: specState(receipt, specEdit) } } : {};
-  return { ...spec, ...(config.mode !== "off" && plan ? { planConformance: plan } : {}), ...(findings ? { findings } : {}), ...(config.mode !== "off" && definition && playbookStage(definition.base) ? { playbook: playbookStage(definition.base) } : {}), ...(shown ? { criteria } : {}), ...(custom ? { definition, ...custom } : {}), mode: config.mode, stage, blockers, ready: blockers.length === 0,
+  return { ...spec, ...(config.mode !== "off" && integrity ? { testIntegrity: integrity } : {}), ...(config.mode !== "off" && plan ? { planConformance: plan } : {}), ...(findings ? { findings } : {}), ...(config.mode !== "off" && definition && playbookStage(definition.base) ? { playbook: playbookStage(definition.base) } : {}), ...(shown ? { criteria } : {}), ...(custom ? { definition, ...custom } : {}), mode: config.mode, stage, blockers, ready: blockers.length === 0,
     actor: !definition ? "person" : shown && criteria.blockers.length ? "reviewer/person" : config.definitions ? definition.actor : baseActor(definition.base),
     next: blockers[0] ?? "person may inspect merge readiness; no automatic merge" };
 }
@@ -337,23 +344,28 @@ export async function readSpecEdit(repoName: string, issue: number, run: SdlcGh 
   } catch { return undefined; }
 }
 
-export async function readSdlcPr(receipt: SdlcReceipt, run: SdlcGh = sdlcGh): Promise<PrEvidence | undefined> {
+export async function readSdlcPr(receipt: SdlcReceipt, run: SdlcGh = sdlcGh, withIntegrity = false): Promise<PrEvidence | undefined> {
   if (!repo(receipt.repo) || !id(receipt.pr)) return undefined;
   try {
     const view = await run(["pr", "view", String(receipt.pr), "--repo", receipt.repo, "--json", "headRefOid,state,statusCheckRollup,reviewDecision,reviewRequests,files,changedFiles,mergeCommit,isDraft,baseRefName,baseRefOid"]);
     if (view.code !== 0) return undefined;
     const [owner, name] = receipt.repo.split("/");
-    const threads = await run(["api", "graphql", "-f", "query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}}}}}", "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `number=${receipt.pr}`]);
+    // The enabled S4 label read shares the existing thread snapshot, never a second readback for a known non-bug.
+    const labels = withIntegrity && id(receipt.issue) ? { issue: receipt.issue, labels: null as string[] | null } : undefined;
+    const query = `query($owner:String!,$name:String!,$number:Int!${labels ? ",$issue:Int!" : ""}){repository(owner:$owner,name:$name){pullRequest(number:$number){headRefOid reviewThreads(first:100){nodes{isResolved} pageInfo{hasNextPage}}}${labels ? " issue(number:$issue){number labels(first:100){nodes{name} pageInfo{hasNextPage}}}" : ""}}}`;
+    const threads = await run(["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`, ...(labels ? ["-F", `issue=${labels.issue}`] : []), "-F", `number=${receipt.pr}`]);
     const p = JSON.parse(view.stdout);
     delete p.unresolvedThreads; // only the complete thread query can establish this fact
     if (threads.code === 0) {
-      const current = JSON.parse(threads.stdout)?.data?.repository?.pullRequest;
+      const response = JSON.parse(threads.stdout);
+      const current = response?.data?.repository?.pullRequest;
+      if (labels && response.errors === undefined) labels.labels = parseIssueLabels(response?.data?.repository?.issue, labels.issue) ?? null;
       const nodes = current?.reviewThreads?.nodes;
       // Paginated or malformed thread data is unknown, never a clean review.
       if (current?.headRefOid === p.headRefOid && current?.reviewThreads?.pageInfo?.hasNextPage === false && Array.isArray(nodes) && nodes.every(n => typeof n?.isResolved === "boolean")) p.unresolvedThreads = nodes.filter(n => !n.isResolved).length;
       else if (current?.headRefOid && current.headRefOid !== p.headRefOid) return undefined;
     }
-    return parsePrEvidence(p);
+    return { ...parsePrEvidence(p), ...(labels ? { issueLabels: labels } : {}) };
   } catch { return undefined; }
 }
 

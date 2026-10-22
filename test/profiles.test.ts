@@ -22,13 +22,13 @@ const root = () => { const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-profi
 class Peer extends BasePeer {
   async start() { this.setState("idle"); } async stop() {} async deliver() {}
 }
-async function rig(profile?: ProfileName, check?: { resolve: boolean }) {
+async function rig(profile?: ProfileName, check?: { resolve: boolean }, profileDataOverride?: any) {
   const dir = root(), board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 }), notices: string[] = [];
   cleanup.push(() => board.close());
   for (const name of ["claude", "codex", "kimi", "local"]) { const peer = new Peer(name); bus.add(peer); await peer.start(); }
-  const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture", profile, roles: DEFAULT_ROLES, routing: () => loadRouting(dir), notify: text => notices.push(text),
+  const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture", profile, profileData: profileDataOverride, roles: DEFAULT_ROLES, routing: () => loadRouting(dir), notify: text => notices.push(text),
     ...(check ? { check: (_base, task) => task?.profileClass === "fact_check" ? "citations" : undefined, runCheck: async () => ({ code: citationKeys("Claim [@source]", check.resolve ? "@article{source, title={Evidence}}" : "").missing.length ? 1 : 0, timedOut: false, tail: "citation check" }) } : {}) });
-  return { tasks, board, dir, notices };
+  return { tasks, board, bus, dir, notices };
 }
 test("profile init preserves dev bytes and surrounding instructions; explicit conflicts are pre-write (#259)", () => {
   const dir = root(); init(dir);
@@ -122,4 +122,88 @@ test("#607 every profile's AGENTS block carries the agy first-turn guidance", ()
     const profile = JSON.parse(readFileSync(join(import.meta.dir, `../templates/profiles/${name}.json`), "utf8"));
     expect(JSON.stringify(profile)).toContain("never report the hub as unavailable from the first turn alone");
   }
+});
+
+test("#507 AC1/AC2 dev profile review/done descriptions and checklist remain byte-identical; other profiles adapt", () => {
+  const devTools = profileTaskTools("dev");
+  expect(devTools).toBe(TASK_TOOLS);
+  const devReview = devTools.find(t => t.name === "hub_review")!;
+  const devDone = devTools.find(t => t.name === "hub_task_done")!;
+  expect(devReview.description).toContain("map the changed signatures and call sites");
+  expect((devDone.inputSchema.properties.summary as any).description).toBe("what changed, why, and the check you ran with its result");
+
+  for (const profileName of ["research", "writing", "general"] as const) {
+    const tools = profileTaskTools(profileName);
+    const review = tools.find(t => t.name === "hub_review")!;
+    const done = tools.find(t => t.name === "hub_task_done")!;
+    expect(review.description).not.toContain("signatures and call sites");
+    expect((done.inputSchema.properties.summary as any).description).not.toContain("check you ran");
+    if (profileName === "research" || profileName === "writing") {
+      expect(review.description).toContain("assess scope, provenance and unsupported claims");
+      expect((done.inputSchema.properties.summary as any).description).toBe("changed deliverables, provenance, checks and unknowns");
+    } else {
+      expect(review.description).toContain("assess the deliverables against the task's plan or detail");
+    }
+  }
+});
+
+test("#507 AC4 research-profile review request contains no signature or test wording and uses research checklist", async () => {
+  const { tasks, bus } = await rig("research");
+  const published: any[] = [];
+  const origPublish = bus.publish.bind(bus);
+  bus.publish = (env: any) => { published.push(env); return origPublish(env); };
+
+  const task = await tasks.propose("codex", {
+    title: "Synthesize literature",
+    class: "draft",
+    owner: "codex",
+    plan: { paths: ["summary.md"], sections: ["summary.md#intro"], sources: ["doi:example"], claims: ["claim-1"] },
+  });
+  await tasks.done("codex", task.id, "Drafted synthesis deliverable", { branch: "main", paths: ["summary.md"] });
+
+  const reviewEnv = published.find(e => e.kind === "review");
+  expect(reviewEnv).toBeDefined();
+  const body = reviewEnv.body;
+
+  // AC4: research review request must not contain signature or test wording
+  expect(body.toLowerCase()).not.toContain("signature");
+  expect(body.toLowerCase()).not.toContain("test");
+
+  // Research checklist content
+  expect(body).toContain("Assess scope, provenance and unsupported claims against");
+  expect(body).toContain("No check ran for this class: verify the claims and sources yourself.");
+  expect(body).toContain("List what is unmet in hub_review's unmet, one item each.");
+});
+
+test("#507 AC1 review_checklist from profile_overrides customizes the review request checklist", async () => {
+  const { resolveProfile } = await import("../src/hub/profiles.ts");
+  const customProfile = resolveProfile("research", {
+    review_checklist: [
+      "Verify all mathematical proofs against {target}.",
+      "{check}",
+      "Confirm dataset licensing and citations.",
+    ],
+  });
+
+  const { tasks, bus } = await rig("research", undefined, customProfile);
+  const published: any[] = [];
+  const origPublish = bus.publish.bind(bus);
+  bus.publish = (env: any) => { published.push(env); return origPublish(env); };
+
+  const task = await tasks.propose("codex", {
+    title: "Proof analysis",
+    class: "draft",
+    owner: "codex",
+    plan: { paths: ["proof.md"], sections: ["proof.md#thm1"] },
+  });
+  await tasks.done("codex", task.id, "Formal proof written", { branch: "main", paths: ["proof.md"] });
+
+  const reviewEnv = published.find(e => e.kind === "review");
+  expect(reviewEnv).toBeDefined();
+  const body = reviewEnv.body;
+
+  expect(body).toContain("Verify all mathematical proofs against the plan");
+  expect(body).toContain("No check ran for this class: verify the claims and sources yourself.");
+  expect(body).toContain("Confirm dataset licensing and citations.");
+  expect(body).not.toContain("Assess scope, provenance and unsupported claims");
 });
