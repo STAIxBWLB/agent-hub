@@ -65,8 +65,11 @@ for (const change of ["head", "revision", "lifecycle"] as const) test(`running r
   // Explicit person assignment survives later done while the same peer remains busy.
   expect(await op(person, "task_assign", { id, peer: "kimi-review", role: "reviewer" })).toMatchObject({ ok: true });
   expect(await op(builder, "hub_task_done", { id, summary: "Fixture head A ready", refs: change === "lifecycle" ? {} : { commit: A } })).toMatchObject({ ok: true });
-  await until(() => existsSync(log) && reviewer.reviewing === id);
-  const started = JSON.parse(readFileSync(log, "utf8").trim().split("\n")[0]!) as { home: string; task: number; peer: string };
+  // The fixture creates its log and then writes the first line, so existence is not readiness: an empty file is a read
+  // between the two (#558, seen as `Unexpected EOF`). Wait for that complete line, and keep every assertion below.
+  const firstLine = () => existsSync(log) ? readFileSync(log, "utf8").split("\n")[0] ?? "" : "";
+  await until(() => firstLine().length > 0 && readFileSync(log, "utf8").includes("\n") && reviewer.reviewing === id);
+  const started = JSON.parse(firstLine()) as { home: string; task: number; peer: string };
   expect(started.task).toBe(id); expect(started.peer).toBe("kimi-review");
   expect(daemon.bus.peers.get("kimi-review")).toBe(reviewer);
   expect(reviewer.state).toBe("busy"); expect(reviewer.reviewToken(id)).toBeDefined();
