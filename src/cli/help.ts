@@ -110,6 +110,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub turns [peer] [--limit N] [--json] [--color=auto|always|never]", "recent turns and the files each changed (a git work tree only)"],
     ["ahub undo <turn> [--yes] [--context]", "put back the files a turn changed; refuses files changed since. Without --yes it only lists them; --context also drops a Codex turn from its conversation"],
     ["ahub report [--since 7d|<iso>] [--by task] [--json] [--color=auto|always|never]", "turns, tokens, messages, overlaps and task events per period"],
+    ["ahub report --dogfood [--since 7d|<iso>] [--json]", "read-only scorecard: flow, quality, cost, delivery, performance and adoption; missing evidence is unknown"],
     ["ahub export [--since 7d|<iso>]", "structured events (events.jsonl) as JSON lines; never message bodies"],
     ["ahub research [--since 30d] [--all] [--json]", "success, first-pass, rework and check-failure rates, tokens and wall time per approved task, from the opt-in research records"],
     ["ahub research addons [--since 30d] [--all] [--json]", "approved tasks with each add-on (claude-mem, ponytail, ripwire, ...) on against off, with intervals; association, not cause"],
