@@ -12,7 +12,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | --- | --- | --- |
 | Message bus, digests, priorities | on | `ahub report`: messages, digests, overflow, undeliverable; delivery latency from events |
 | Task board, routing, roles | on (claude planner and reviewer; codex, jcode, agy implementers) | board history: lead time from propose to approve, review rounds, escalations |
-| Overlap notices | on | `ahub report`: overlap warnings, task pairs; false-overlap rate (#682) |
+| Overlap notices | on; plan symbols match by normalized name (arguments stripped, a bare name matches the last segment, two qualified names must be equal; #682 phase 1b) | `ahub report`: overlap warnings, task pairs; false-overlap rate, and symbol-only matches on bare common names (#682) |
 | Planner WIP caps and backlog pull (#655) | on (`tasks.wip_limits.codex = 2`) | held-ready entries, offers refused for capacity |
 | Task sweep (stalls, idle owners) | on | stall and sweep events per week |
 | Turn-free coordination | off: experimental; needs a separate measured trial | coordination events, conflict notices |

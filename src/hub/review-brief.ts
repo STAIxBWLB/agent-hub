@@ -1,6 +1,7 @@
 import type { CodeFactResult, CodeSymbol } from "./code-facts.ts";
 import { childEnv } from "./child-process.ts";
 import { hubGitSync } from "./git.ts";
+import { symbolsOverlap } from "./symbol-normalizer.ts";
 
 /**
  * #520: the review brief ahub builds itself, in place of `ocr delegate preview` and `rule`. Every reviewer gets the same
@@ -150,8 +151,6 @@ function attributes(cwd: string, source: string, paths: string[]): Map<string, {
   }
   return out;
 }
-
-import { symbolsOverlap } from "./symbol-normalizer.ts";
 
 /** One plan name against one changed name: a qualified pair must be equal, otherwise the last segments are. Shared with the console's task detail (#684 2b). */
 export const planSymbolMatches = (left: string, right: string): boolean => symbolsOverlap(left, right);
