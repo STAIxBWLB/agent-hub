@@ -4913,6 +4913,7 @@ function sandboxedExec(argv, opts) {
     const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir4(), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...opts.env, TMPDIR: `${own}/` };
     const child = spawn8(SANDBOX_EXEC, ["-p", sandbox, ...argv], { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let output = "";
+    let killRequested = false;
     const take = (d) => {
       if (output.length < OUTPUT_CAP)
         output += d.toString();
@@ -4926,7 +4927,10 @@ function sandboxedExec(argv, opts) {
         child.kill("SIGKILL");
       }
     };
-    const abort = () => killGroup();
+    const abort = () => {
+      killRequested = true;
+      killGroup();
+    };
     opts.signal?.addEventListener("abort", abort, { once: true });
     const dropOwn = () => {
       try {
@@ -4938,7 +4942,7 @@ function sandboxedExec(argv, opts) {
         } catch {}
       }
     };
-    const timer = setTimeout(killGroup, opts.timeoutMs ?? 120000);
+    const timer = setTimeout(abort, opts.timeoutMs ?? 120000);
     let done = false;
     const finish = (code, signal) => {
       if (done)
@@ -4949,8 +4953,8 @@ function sandboxedExec(argv, opts) {
       dropOwn();
       const clipped = output.length >= OUTPUT_CAP ? `${output.slice(0, OUTPUT_CAP)}
 (output truncated)` : output;
-      resolve({ code, output: signal ? `${clipped}
-(killed: ${signal}, timeout?)` : clipped });
+      resolve({ code, output: signal || killRequested ? `${clipped}
+(killed: ${signal ?? "SIGKILL"}, timeout?)` : clipped });
     };
     child.on("error", (e) => done || (done = true, clearTimeout(timer), opts.signal?.removeEventListener("abort", abort), dropOwn(), resolve({ code: null, output: `error: ${e.message}` })));
     child.on("close", finish);
