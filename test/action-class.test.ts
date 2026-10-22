@@ -250,3 +250,45 @@ test("#636 R2 unlisted curl options cannot erase known write evidence", () => {
   expect(classifyAction("Bash", { command: "curl -X POST --future-value '-XGET' https://example.test" }, root)).toEqual(["external-write"]);
   expect(classifyAction("Bash", { command: "curl --url-query q=value --compressed -X GET -d query https://example.test" }, root)).toEqual([]);
 });
+
+
+const r3Cases: Array<[string, ActionClass[]]> = [
+  ["git clean -fd", ["destroy"]],
+  ["git clean -f", ["destroy"]],
+  ["git clean --force", ["destroy"]],
+  ["git clean --force -d", ["destroy"]],
+  ["git clean -fdx", ["destroy"]],
+  ["git clean -fdn", []],
+  ["git clean -n -fdx", []],
+  ["git clean --dry-run --force", []],
+  ["git clean -f -e '-n'", ["destroy"]],
+  ["git clean -n -e '-f'", []],
+  ["git clean -eforce", []],
+  ["git clean -- -f", []],
+  ["git clean -f -- -n", ["destroy"]],
+  ["npm --prefix /tmp/p publish", ["publish"]],
+  ["npm -C dir publish", ["publish"]],
+  ["npm -Cdir publish", ["publish"]],
+  ["pnpm --dir x publish", ["publish"]],
+  ["yarn --cwd x npm publish", ["publish"]],
+  ["git -C dir push", ["publish"]],
+  ["git -c k=v push", ["publish"]],
+  ["git -Cdir push", ["publish"]],
+  ["git -ck=v push", ["publish"]],
+  ["npm --future-option value publish", ["publish"]],
+  ["pnpm --future-option value publish", ["publish"]],
+  ["yarn --future-option value npm publish", ["publish"]],
+  ["git --future-option value push", ["publish"]],
+  ["git --future-option value reset --hard", ["destroy"]],
+  ["npm --future-option value install -g tool", ["install"]],
+  ["git -C push status", []],
+  ["git -c push status", []],
+  ["npm --prefix publish test", []],
+  ["npm -C publish test", []],
+  ["npm test publish", []],
+];
+for (const [command, expected] of r3Cases) {
+  test(`#636 R3 clean and global options: ${command}`, () => {
+    expect(classifyAction("Bash", { command }, root)).toEqual(expected);
+  });
+}
