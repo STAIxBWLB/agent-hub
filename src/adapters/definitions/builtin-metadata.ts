@@ -89,7 +89,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     roles: Object.freeze(["planner", "reviewer"]), defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
     start: { forms: Object.freeze(["tui"] as const), defaultForm: "tui", launch: claudeNativeLaunch, version: claudeObservedVersion, ...CLAUDE_LAUNCH_POLICY, conductorStartable: true,
       unattended: true, hubSwitches: switches, ownedFlags: Object.freeze(["--dangerously-load-development-channels", "--dangerously-skip-permissions"]) },
-    identity: { mcp: "channel-plugin" }, instances: { mode: "external", roles: ["reviewer", "planner"] }, attach: { externalHello: true, recoveryLaunch: claudeRecoveryLaunch },
+    identity: { mcp: "channel-plugin" }, instances: { mode: "external", roles: ["planner", "implementer", "verifier", "reviewer"] }, attach: { externalHello: true, recoveryLaunch: claudeRecoveryLaunch },
     // Approval enforcement belongs to the verified native transport and host permission gate.
     permission: { grants: { ask: "Claude's own permission rules decide",
       "ask-when-needed": "file tools on project files run without asking, outside .agenthub, .git and agent configuration; other tools keep Claude's own rules",

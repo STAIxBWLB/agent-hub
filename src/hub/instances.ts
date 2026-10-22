@@ -149,16 +149,24 @@ export function validateInstances(raw: unknown, catalog: ProjectAdapterCatalog):
     const runtime = freshReviewer ? definition.reviewerVariant ?? definition : definition;
     const unavailableReviewer = freshReviewer && !!(definition.reviewerVariant ?? definition).reviewer?.unavailable;
     if (!unavailableReviewer && runtime.instances?.mode !== "external" && !supportsHeadlessInstances(runtime)) return fail(`${path}.kind`, definition.reviewerVariant ? 'unsupported; this kind only declares headless reviewer instances with roles exactly ["reviewer"]' : "unsupported; explicit external instance policy or a headless instance policy with a headless factory is required");
+    if (declaredRoles.includes("planner") && definition.projection?.plannerEligible !== true) return fail(`${path}.roles`, "this kind cannot plan");
     if (external) {
       const declared = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
       // #223: a headless one is the kind's reviewer variant, one fresh hub-run session per review request.
       if (entry.start_mode && definition.reviewerVariant) {
+        const reviewerRoles = declared.length === 1 && declared[0] === "reviewer";
+        // #525 R1: a headless writer is the kind's implementer variant, which arrives with slice 525-4; until then it is refused.
+        if (!reviewerRoles && declared.includes("implementer") && declared.every(role => role === "implementer" || role === "verifier")) return fail(`${path}.start_mode`, "headless Claude implementer is not available in this release");
+        if (!reviewerRoles) return fail(`${path}.roles`, "a headless channel-kind instance is a reviewer: roles must be exactly [\"reviewer\"]");
         if (entry.worktree) return fail(path, "a headless reviewer reads the project checkout: worktree is not supported");
-        if (declared.length !== 1 || declared[0] !== "reviewer") return fail(`${path}.roles`, "a headless channel-kind instance is a reviewer: roles must be exactly [\"reviewer\"]");
       } else {
-        if (entry.start_mode || entry.worktree) return fail(path, "a channel instance starts only from the person's terminal (ahub <kind> --as <id>): start_mode and worktree are not supported; a headless reviewer declares roles [\"reviewer\"] and start_mode \"headless\"");
+        if (entry.start_mode) return fail(`${path}.start_mode`, "a channel instance starts only from the person's terminal (ahub <kind> --as <id>); a headless reviewer declares roles [\"reviewer\"] and start_mode \"headless\"");
         const allowed = definition.instances?.roles ?? definition.roles;
-        if (!declared.length || declared.some(role => !allowed.includes(role))) return fail(`${path}.roles`, "a channel instance must declare its roles: reviewer and/or planner");
+        if (!declared.length || declared.some(role => !allowed.includes(role))) return fail(`${path}.roles`, `a channel instance must declare its roles within: ${allowed.join(", ")}`);
+        // #525 R1: an implementer or verifier writes, so it needs its own worktree; a planner or reviewer reads the project checkout.
+        const writes = declared.includes("implementer") || declared.includes("verifier");
+        if (writes && !entry.worktree) return fail(`${path}.worktree`, "an implementer or verifier channel instance needs its own worktree");
+        if (!writes && entry.worktree) return fail(`${path}.worktree`, "a planner or reviewer channel instance reads the project checkout: worktree is not supported");
       }
     } else {
       const allowed = runtime.instances?.roles;
@@ -217,5 +225,7 @@ export function effectiveInstanceRoles(id: string, declarations: InstancesConfig
   if (!definition) throw new Error(`${id}: no declared native instance`);
   const declaration = declarations && Object.hasOwn(declarations, id) ? declarations[id] : undefined;
   const ownRoles = (key: string): readonly string[] | undefined => Object.hasOwn(policyRoles, key) ? policyRoles[key] : undefined;
-  return [...(declaration?.roles ?? ownRoles(id) ?? ownRoles(definition.kind) ?? definition.roles)];
+  const roles = declaration?.roles ?? ownRoles(id) ?? ownRoles(definition.kind) ?? definition.roles;
+  // #525 R1: a roles entry keyed by an instance id skips loadConductorPolicy's kind check, so planner is gated here too.
+  return roles.filter(role => role !== "planner" || definition.projection?.plannerEligible === true);
 }

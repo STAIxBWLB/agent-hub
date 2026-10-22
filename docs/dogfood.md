@@ -11,7 +11,8 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Feature | State here | Measured by |
 | --- | --- | --- |
 | Message bus, digests, priorities | on | `ahub report`: messages, digests, overflow, undeliverable; delivery latency from events |
-| Task board, routing, roles | on (claude planner and reviewer; codex, jcode, agy implementers) | board history: lead time from propose to approve, review rounds, escalations |
+| Task board, routing, roles | on (claude planner, reviewer and implementer; codex, jcode, agy implementers) | board history: lead time from propose to approve, review rounds, escalations |
+| Roles per kind and form (#525-1) | on: claude holds the implementer role in the project checkout; Claude implementer instances in their own worktree are off (none declared here) | tasks claude implements (`ahub status` flow roles, board owner history); refusals naming `this kind cannot plan` or `needs its own worktree` |
 | Overlap notices | on; plan symbols match by normalized name (arguments stripped, a bare name matches the last segment, two qualified names must be equal; #682 phase 1b) | `ahub report`: overlap warnings, task pairs; false-overlap rate, and symbol-only matches on bare common names (#682) |
 | Planner WIP caps and backlog pull (#655) | on (`tasks.wip_limits.codex = 2`) | held-ready entries, offers refused for capacity |
 | Task sweep (stalls, idle owners) | on | stall and sweep events per week |
