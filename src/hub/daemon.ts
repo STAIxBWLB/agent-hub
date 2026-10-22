@@ -1,3 +1,4 @@
+import { InboxPolling } from "./inbox-polling.ts";
 import { ActionBudgets, actionPolicyConfig, type ActionPolicyConfig } from "./action-policy.ts";
 import { ReleaseAuthorizations, releaseAuthorizationError } from "./sdlc-release-authorization.ts";
 import { parseReleaseGuardArgv, parseReleasePushUpdates } from "../cli/sdlc-release-guard.ts";
@@ -1192,6 +1193,7 @@ export async function startDaemon(opts: DaemonOptions) {
     event({ type: "conduct", peer: action.actor, action: action.action, ...(action.task === undefined ? {} : { task: action.task }), ...(action.peer ? { target: action.peer } : {}) });
     try { notify(`conductor ${action.actor}: ${action.action}${action.task === undefined ? "" : ` #${action.task}`}${action.peer ? ` ${action.peer}` : ""}`); } catch { /* never throw after a task/hold write */ }
   };
+  const inboxPolling = new InboxPolling();
   const board = new Board(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => board.close());
   const supervision = new SupervisionFeed({
@@ -1691,6 +1693,10 @@ export async function startDaemon(opts: DaemonOptions) {
   /** What quiescence was judged on, for the log when an integration waits on it. */
   const stopEvidence = (peer: PeerId) => `${peer}: turn end ${turnEnded.has(peer) ? new Date(turnEnded.get(peer)!).toISOString() : "none"}, last tool call ${activeAt.has(peer) ? new Date(activeAt.get(peer)!).toISOString() : "none"}, ${bus.peers.get(peer)?.state ?? "offline"}`;
   board.onChange = (t, h) => {
+    if (!isClosedTaskState(t.state) && t.state !== "backlog") {
+      if (t.owner) inboxPolling.reset(t.owner);
+      if (t.reviewer) inboxPolling.reset(t.reviewer);
+    }
     turnFreeNow = undefined;
     scopes = new Map();
     progress.prune();
@@ -5475,9 +5481,15 @@ export async function startDaemon(opts: DaemonOptions) {
           const envs = bus.pull(peer.id);
           if (!envs) return void reply({ ok: false, error: queueHold(peer.id) ?? (bus.isRecoveryHeld ? "recovery is holding deliveries" : pauseReason(peer.id)) });
           peer.lastInboxAt = Date.now();
+          let polling: ReturnType<InboxPolling["read"]>;
+          try {
+            const assigned = peer.pullOnly && board.statusTasks().some(task => !isClosedTaskState(task.state) && task.state !== "backlog" && (task.owner === peer.id || task.reviewer === peer.id));
+            polling = peer.pullOnly ? inboxPolling.read(peer.id, envs.length === 0, assigned, peer.lastInboxAt) : undefined;
+            if (polling?.notice) notify(`${peer.id} is polling an empty inbox with no task (${polling.count} empty reads in ${polling.minutes} min)`);
+          } catch { polling = undefined; } // The pull already completed: advice must never discard its envelopes.
           writeStatus();
           if (envs.length) log(`${peer.id} read ${envs.length} queued message(s) through hub_inbox`);
-          return void reply({ ok: true, envs, waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id) });
+          return void reply({ ok: true, envs, waiting: bus.queued(peer.id), waitingImportant: bus.queuedImportant(peer.id), ...(polling ? { pollingAdvice: { count: polling.count, minutes: polling.minutes } } : {}) });
         } catch { return void reply({ ok: false, error: "delivery journal unavailable" }); }
       }
       case "delivery_complete": {
