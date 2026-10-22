@@ -7,7 +7,7 @@ import { taskProgress } from "../ui/task-progress.ts";
 import type { ProgressStage } from "../ui/task-progress.ts";
 import { sanitize } from "../hub/envelope.ts";
 import type { SettingRow, SettingValue } from "../hub/settings.ts";
-import { symbolFields } from "./console-symbols.ts";
+import { symbolFields, overlapFields } from "./console-symbols.ts";
 import { USAGE_DROP, USAGE_HEAD, usageCells, usageDetail, usagePeers, usageTaskLines, type UsageState } from "./console-usage.ts";
 
 export interface Approval {
@@ -316,11 +316,11 @@ function fieldLines(fields: [string, unknown][], columns: number, now: number): 
 }
 /**
  * A task opened from Tasks also gets its "changed symbols" (#684 2b), after its plan so the two read together; a private task gets none. `codeSymbols` is the hub's
- * raw observation and is not shown as a field of its own: the block replaces it.
+ * raw observation and `symbolOverlaps` is the hub pair projection; formatted blocks replace both raw fields.
  */
 function taskFields(detail: Record<string, unknown>): [string, unknown][] {
-  const fields = Object.entries(detail).filter(([key]) => key !== "codeSymbols");
-  const block = symbolFields(detail);
+  const fields = Object.entries(detail).filter(([key]) => key !== "codeSymbols" && key !== "symbolOverlaps");
+  const block = [...symbolFields(detail), ...overlapFields(detail)];
   if (!block.length) return fields;
   const at = fields.findIndex(([key]) => key === "plan");
   return at < 0 ? [...fields, ...block] : [...fields.slice(0, at + 1), ...block, ...fields.slice(at + 1)];

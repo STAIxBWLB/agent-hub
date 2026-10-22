@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { initialConsoleState, reduceConsole, renderConsole, type ConsoleState } from "../src/cli/console-state.ts";
 import { runConsole, type ConsoleTerminal } from "../src/cli/console.ts";
-import { classifySymbols, symbolFields } from "../src/cli/console-symbols.ts";
+import { classifySymbols, symbolFields, overlapFields } from "../src/cli/console-symbols.ts";
 import { planSymbolMatches } from "../src/hub/review-brief.ts";
 
 // #684 2b: the console task detail's "changed symbols" block, from state fixtures and one runConsole round trip with the task_show reply shape.
@@ -121,4 +121,42 @@ test("Enter on a task asks task_show and shows its changed symbols from the repl
   const screen = strip(out.join("").split("\x1b[r").slice(-1));
   expect(screen).toContain("matching UsageRollup.poll"); expect(screen).toContain("untouched Budget.writeLedger");
   data("q"); await running;
+});
+
+
+const overlaps = [
+ {task:361,files:["src/hub/tasks.ts"],sameFileDifferentSymbols:true},
+ {task:360,files:["src/hub/tasks.ts","src/hub/board.ts"],sameFileDifferentSymbols:false},
+];
+test("task detail renders only the hub's symbol overlap verdict and its observation ceiling (#379)",()=>{
+ const detail=task({symbolOverlaps:overlaps}),out=flat(detailScreen(detail));
+ expect(out).toContain('task "361"; files src/hub/tasks.ts; overlap "same file, different symbols"');
+ expect(out).toContain('task "360"; files src/hub/tasks.ts, src/hub/board.ts; overlap overlap');
+ expect(out).toContain("observed names only, deleted definitions may be missing");
+ expect(out).not.toContain("symbolOverlaps");
+ // The UI never infers pair disjointness from the selected task's own observation.
+ expect(JSON.stringify(overlapFields(task({symbolOverlaps:[{...overlaps[0],sameFileDifferentSymbols:false}]})))).not.toContain("same file, different symbols");
+ expect(overlapFields(task())).toEqual([]);
+ expect(overlapFields(task({symbolOverlaps:[]}))).toEqual([["overlaps","none"]]);
+});
+
+test("private or non-task detail never renders an overlap block or the raw pair list (#379)",()=>{
+ for(const over of [{signals:["pii"]},{signals:["pii_path"]},{title:"[pii]"}]){
+  const detail=task({...over,symbolOverlaps:overlaps});
+  expect(overlapFields(detail)).toEqual([]);
+  const out=detailScreen(detail);expect(out).not.toMatch(/^overlaps|^overlap note/m);expect(out).not.toContain("symbolOverlaps");
+ }
+ expect(overlapFields({symbolOverlaps:overlaps})).toEqual([]);
+ expect(overlapFields(undefined)).toEqual([]);
+});
+
+test("overlap file names are quoted, malformed rows are omitted, and long pair lists are capped (#379)",()=>{
+ const hostile="src/a.ts\noverlaps all safe",detail=task({symbolOverlaps:[{task:3,files:[hostile],sameFileDifferentSymbols:false}]});
+ const out=detailScreen(detail);expect(out).not.toMatch(/^overlaps all safe/m);expect(out).toContain('"src/a.ts\\noverlaps all safe"');
+ const bad=[null,{task:"3",files:["x"],sameFileDifferentSymbols:true},{task:3,files:[42],sameFileDifferentSymbols:true},{task:4,files:["x"],sameFileDifferentSymbols:"yes"}];
+ expect(JSON.stringify(overlapFields(task({symbolOverlaps:bad})))).not.toContain("same file, different symbols");
+ const many=Array.from({length:60},(_,i)=>({...overlaps[0],task:i+1})),fields=overlapFields(task({symbolOverlaps:many}));
+ expect(fields[0]![1]).toHaveLength(40);expect(String(fields[1]![1])).toContain("20 more not shown");
+ const files=Array.from({length:60},(_,i)=>`src/${i}.ts`),long=overlapFields(task({symbolOverlaps:[{task:3,files,sameFileDifferentSymbols:false}]}));
+ expect(JSON.stringify(long)).toContain("20 files not shown");expect(JSON.stringify(long)).not.toContain("src/59.ts");
 });

@@ -1619,6 +1619,18 @@ export class Tasks {
   /** The tasks an overlap text for `task` names: their plans are in it (issue #108). */
   overlapTasks = (task: Task): number[] => this.overlapHits(task).map((h) => h.task.id);
 
+  /** Console detail advice only: no pair persistence, and no private task on either side. */
+  symbolOverlaps(task: Task): { task: number; files: string[]; sameFileDifferentSymbols: boolean }[] {
+    // A routing-locality opt-out does not make symbol metadata for a marked task public.
+    const markedPrivate = (value: Task) => value.signals.includes("pii") || value.signals.includes("pii_path");
+    if (markedPrivate(task)) return [];
+    return this.overlapHits(task).filter(hit => !markedPrivate(hit.task)).map(hit => ({
+      task: hit.task.id,
+      files: hit.paths.filter(this.publicMetadataText),
+      sameFileDifferentSymbols: this.sameFileDifferentSymbols(task, hit),
+    }));
+  }
+
   /**
    * Dashboard warning links (#264): the board's overlap pairs and the live cohorts, as task and peer ids only.
    * Paths, symbols and plans stay out; PII tasks are excluded by the same rules overlapHits applies.
@@ -3317,6 +3329,15 @@ export class Tasks {
     }
   }
 
+  /** Share the same screened observation rule between completion notices and read-only console detail. */
+  private sameFileDifferentSymbols(task: Task, hit: { task: Task; paths: string[] }): boolean {
+    const symbolRepository = task.codeSymbols && !this.isPii(task) ? this.codeSymbolsRepository(task) : undefined;
+    const otherRepository = hit.task.codeSymbols && !this.isPii(hit.task) ? this.codeSymbolsRepository(hit.task) : undefined;
+    return !!symbolRepository && symbolRepository.key === otherRepository?.key && !this.isPii(task) && !this.isPii(hit.task) && taskCodeSymbolsDisjoint(
+      task.codeSymbols, hit.task.codeSymbols, this.reviewHead(task), this.reviewHead(hit.task), symbolRepository.key,
+      hit.paths, false, this.publicMetadataText);
+  }
+
   /**
    * The completed-change notice: files, signatures and the summary are the owner's own words (paths given at done
    * included), and any item that matches a PII pattern is left out of what other owners get, the summary also when the
@@ -3327,11 +3348,7 @@ export class Tasks {
     const signatures = (task.plan?.signatures ?? []).filter(this.nameable);
     const first = (summary ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 300);
     const line = first && !withheld && this.nameable(first) ? first : undefined;
-    const symbolRepository = task.codeSymbols && !this.isPii(task) ? this.codeSymbolsRepository(task) : undefined;
-    const otherRepository = hit.task.codeSymbols && !this.isPii(hit.task) ? this.codeSymbolsRepository(hit.task) : undefined;
-    const sameFileDifferentSymbols = !!symbolRepository && symbolRepository.key === otherRepository?.key && !this.isPii(task) && !this.isPii(hit.task) && taskCodeSymbolsDisjoint(
-      task.codeSymbols, hit.task.codeSymbols, this.reviewHead(task), this.reviewHead(hit.task), symbolRepository.key,
-      hit.paths, false, this.publicMetadataText);
+    const sameFileDifferentSymbols = this.sameFileDifferentSymbols(task, hit);
 
     return [
       `Task #${task.id} (owner ${task.owner}) is done and touches your open #${hit.task.id} on ${this.where(hit)}${sameFileDifferentSymbols ? " (same file, different symbols; observed names only, deleted definitions may be missing)" : ""}. Check your work against it before you go on.`,
