@@ -79,6 +79,10 @@ Token usage by adapter:
 - `ahub report` deduplicates usage records by peer, source and id. Coverage counts distinguish calls with provider usage from calls where usage was absent. Token counters are provider-reported values; the report never derives a price or treats missing spend as zero. Estimated price and measured provider spend remain unknown unless a future source reports them.
 - Usage telemetry has no prompt, completion, task text, credential, Access header, session id or transcript path.
 
+## The usage roll-up (#683)
+
+`ahub usage` does not read `events.jsonl` on each call. The daemon folds it into `hub.db`: `usage_rollup` (day, peer, model, source, task and the private mark, with the sum of each provider counter and how many records carried it), `token_rollup` (the hub's own `tokens` increments), `limit_events` (every `budget_pause`, `budget_resume` and `quota_reset`, without the reason text) and `rollup_state` (the byte offset and the first event's time). Each `usage` record is counted once by peer, source and id, as `ahub report` counts it. The roll-up holds ids and numbers only, so a title cannot reach it. A sum is shown only where at least one record carried the counter, otherwise it is unknown.
+
 ## Per-task usage reports
 
 `ahub report --by task` (also `--json` and `--since`) reads only `events.jsonl`.

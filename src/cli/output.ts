@@ -5,6 +5,7 @@ import { cells, TABLES, table, fitLine, wrap, duration, relative, plural, termin
 import { taskProgress } from "../ui/task-progress.ts";
 import { backendLabel } from "./status-lines.ts";
 import { formatReport, formatTaskReport, type Report, type TaskReport } from "../hub/report.ts";
+import type { Counter, LimitsResult, TotalResult, UsageResult } from "../hub/usage-rollup.ts";
 
 export interface DoctorCheck { section: "Tools" | "Hub" | "Config" | "Models" | "Memory"; level: "ok" | "warn" | "fail" | "unknown"; name: string; detail: string }
 export interface StatusOutput {
@@ -433,4 +434,43 @@ export function renderReport(report: Report | TaskReport, columns?: number, now 
     out.push(...lines(sentence, columns, undefined, "  "));
   }
   return out;
+}
+
+// ---- ahub usage (#683 U2): every number names its source; an unknown number prints `unknown`, never 0 ----------------------------------------------
+const SOURCE_NAME: Record<Counter["source"], string> = { native: "native", count: "hub count", manual: "manual", partial: "partial, at least", unknown: "unknown" };
+/** `1234 (native)`, `1234 (hub count)`, or `unknown`: a missing counter is never shown as zero. */
+export const usageNumber = (c: Counter): string => c.value === null ? "unknown" : `${c.value} (${SOURCE_NAME[c.source]})`;
+const usageCell = (c: Counter): OutputCell => c.value === null ? span("unknown", "muted") : span(usageNumber(c), "number");
+
+export function renderUsage(result: UsageResult, columns?: number): Span[][] {
+  const out = lines(`usage by ${result.by}: ${result.coverage.records} records, ${result.coverage.withUsage} with provider counters, ${result.coverage.withoutUsage} without`, columns, "muted");
+  const header = ["KEY", "TOTAL", "WITHOUT CACHE", "CACHE READ", "INPUT", "OUTPUT", "REASONING", "HUB COUNT"];
+  const row = (r: UsageResult["rows"][number]) => [span(r.pii ? `${r.key} [pii]` : r.key), usageCell(r.total), usageCell(r.totalWithoutCache), usageCell(r.cacheRead), usageCell(r.input), usageCell(r.output), usageCell(r.reasoning), usageCell(r.counted)];
+  const all = [...result.rows, ...(result.unattributed ? [result.unattributed] : [])];
+  if (!all.length) return [...out, ...lines("no usage recorded in this period", columns)];
+  return [...out, [], ...rows(header, all.map(row), columns, undefined, true),
+    ...lines("TOTAL is the provider's own total, cache reads included; WITHOUT CACHE removes them. HUB COUNT is what the hub counted itself and covers peers that report no usage record. unknown is never zero.", columns, "muted")];
+}
+
+export function renderLimits(result: LimitsResult, current: unknown, columns?: number): Span[][] {
+  const out = lines(`limit history: ${result.truncated ? `the newest ${result.shown} of ${result.total}` : `${result.total}`} events, ${result.open.length} open pause${result.open.length === 1 ? "" : "s"}`, columns, "muted");
+  if (result.truncated) out.push(...lines(`${result.omitted} older events are not shown: use --limit <n> (up to ${result.maxLimit}) for more`, columns, "attention"));
+  for (const o of result.open) out.push(...lines(`open pause: ${o.peer} ${o.window} since ${o.since}, resets ${new Date(o.resetsAt).toISOString()}`, columns, "attention"));
+  for (const o of result.endedUnknown) out.push(...lines(`pause ended, end unknown: ${o.peer} ${o.window} since ${o.since} (the hub no longer holds it, for example after ahub reset; no resume was recorded)`, columns, "muted"));
+  const windows = current && typeof current === "object" ? Object.entries(current as Record<string, { windows?: { id: string; used: number; resetsAt?: number }[] }>) : [];
+  const live = windows.flatMap(([peer, b]) => (b?.windows ?? []).map(w => [span(peer), span(w.id), span(`${Math.round(w.used * 100)}%`, "number"), span(w.resetsAt ? new Date(w.resetsAt).toISOString() : "unknown", w.resetsAt ? undefined : "muted")]));
+  if (live.length) out.push([], ...lines("current windows", columns, "strong"), ...rows(["PEER", "WINDOW", "USED", "RESETS"], live, columns, undefined, true));
+  const hist = result.history.map(h => [span(h.at), span(h.type.replace("budget_", "").replace("quota_reset", "reset")), span(h.peer), span(h.window), span(Object.entries(h.detail).map(([k, v]) => `${k} ${v}`).join(", "), "muted")]);
+  if (hist.length) out.push([], ...lines("history", columns, "strong"), ...rows(["AT", "EVENT", "PEER", "WINDOW", "DETAIL"], hist, columns, undefined, true));
+  return out;
+}
+
+export function renderTotal(result: TotalResult, columns?: number): Span[][] {
+  const out = lines(`lifetime development tokens since ${result.since ?? "the first event"}`, columns, "muted");
+  const table = result.peers.map(p => [span(p.peer), usageCell(p.tokens), usageCell(p.withoutCache), usageCell(p.cacheRead)]);
+  table.push([span("ALL PEERS", "strong"), usageCell(result.overall.tokens), usageCell(result.overall.withoutCache), usageCell(result.overall.cacheRead)]);
+  const left = (label: string, peers: string[]) => peers.length ? lines(`${label} leaves out ${peers.join(", ")} (unknown, not counted as 0): a lower bound`, columns, "attention") : [];
+  return [...out, [], ...rows(["PEER", "TOTAL", "WITHOUT CACHE", "CACHE READ"], table, columns, undefined, true),
+    ...left("ALL PEERS TOTAL", result.overall.tokens.source === "partial" ? result.unknownPeers.tokens : []), ...left("ALL PEERS CACHE READ", result.overall.cacheRead.source === "partial" ? result.unknownPeers.cacheRead : []),
+    ...lines("A peer with no provider counters (for example jcode, kimi) shows the hub's own count where one exists, otherwise unknown. The overall WITHOUT CACHE is unknown unless every peer's cache split is known.", columns, "muted")];
 }

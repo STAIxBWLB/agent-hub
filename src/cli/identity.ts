@@ -83,7 +83,7 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   if (native?.cli.authority === "person") return "console";
   if (native || ["pause", "resume"].includes(command)) return "conductor";
   if (command === "board" && args[0] === "import") return "console";
-  if (["help", "version", "--version", "completion", "say", "status", "pet", "board", "report", "turns", "review", "remember", "facts", "check-path"].includes(command)) return "allowed";
+  if (["help", "version", "--version", "completion", "say", "status", "pet", "board", "report", "usage", "turns", "review", "remember", "facts", "check-path"].includes(command)) return "allowed";
   return "console";
 }
 

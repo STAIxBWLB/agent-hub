@@ -83,6 +83,7 @@ import { Capture, skipTools } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
 import { Briefs } from "../memory/brief.ts";
 import { Board, isClosedTaskState, taskProposalAt, taskHasStarted, CLASSES, type Task, type TaskClass } from "./board.ts";
+import { UsageRollup, USAGE_GROUPS, LIMITS_MAX, type UsageGroup } from "./usage-rollup.ts";
 import { Budget, readNativeQuota, DEFAULT_BUDGET, type BudgetConfig } from "./budget.ts";
 import { HUB } from "./envelope.ts";
 import { recallMemoryLines, trimToTokens } from "../memory/recall.ts";
@@ -1845,6 +1846,11 @@ export async function startDaemon(opts: DaemonOptions) {
   budget.seedResets(readEvents(join(opts.stateDir, "events.jsonl")).flatMap(e => e.type === "quota_reset" ? [{ peer: e.peer, window: e.window, ...(e.resetsAt !== undefined ? { resetsAt: e.resetsAt } : {}) }] : []));
   const kimiTokens: { at: number; n: number }[] = [];
   startupCleanup.push(() => budget.close());
+  // #683 U2: events.jsonl folded into hub.db, a bounded pass at a time, so `usage` never rescans the log.
+  const usageRollup = new UsageRollup(join(opts.stateDir, "hub.db"), join(opts.stateDir, "events.jsonl"));
+  startupCleanup.push(() => usageRollup.close());
+  const pollUsageRollup = () => { try { usageRollup.poll(); } catch (error) { log(`usage roll-up pass failed: ${(error as Error).message.slice(0, 120)}`); } };
+  pollUsageRollup();
   // Turns and their tokens for telemetry (issue #40). Turn ids carry the hub run, so they stay unique across restarts.
   const runId = Date.now().toString(36);
   let turnSeq = 0;
@@ -2083,6 +2089,7 @@ export async function startDaemon(opts: DaemonOptions) {
       } catch { /* absent or unreadable native telemetry is unknown */ }
     }, 1000),
     setInterval(() => budget.tick(), 30_000),
+    setInterval(pollUsageRollup, 10_000),
     setInterval(() => {
       if (!ready || !memoryBinding) return;
       const before = memoryProblem;
@@ -6089,6 +6096,35 @@ export async function startDaemon(opts: DaemonOptions) {
           budget.report(String(msg.set.peer), [{ id: msg.set.window === "week" ? "week" : "5h", used, ...(msg.set.resetsInMs ? { resetsAt: Date.now() + Number(msg.set.resetsInMs) } : {}), source: "ahub budget set" }]);
         }
         return void reply({ t: "budget", ok: true, budget: budget.status(), gate: config.budget.gate });
+      case "usage": {
+        // #683 U2: the console, the person and a configured planner read usage; every other agent is refused. Always answered (rid).
+        const planner = c.role === "tools" && !!c.peer && !!config.roles[c.peer]?.includes("planner");
+        if (c.role !== "console" && !planner) return void reply({ t: "usage", ok: false, error: "usage is read by the person and a configured planner" });
+        if (planner && c.peer && turns.get(c.peer)?.private) return void reply({ t: "usage", ok: false, error: "usage is unavailable during a private turn" });
+        const op = msg.op === undefined ? "query" : msg.op;
+        const num = (v: unknown): number | undefined | null => v === undefined ? undefined : typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
+        const since = num(msg.since), until = num(msg.until);
+        if (since === null || until === null) return void reply({ t: "usage", ok: false, error: "since and until are epoch milliseconds" });
+        try {
+          usageRollup.poll();
+          if (op === "limits") {
+            if (msg.peer !== undefined && (typeof msg.peer !== "string" || !PEER_ID.test(msg.peer))) return void reply({ t: "usage", ok: false, error: "peer must be a peer id" });
+            if (msg.limit !== undefined && !(Number.isInteger(msg.limit) && (msg.limit as number) >= 1 && (msg.limit as number) <= LIMITS_MAX)) return void reply({ t: "usage", ok: false, error: `limit is an integer from 1 to ${LIMITS_MAX}` });
+            const status = budget.status();
+            // The pauses the hub holds now: an event-open pause it no longer holds (an `ahub reset` cleared it) is reported as ended, not open.
+            const live = new Set(Object.entries(status).filter(([, v]) => v.paused).map(([peer]) => peer));
+            return void reply({ t: "usage", ok: true, op, limits: usageRollup.limits(msg.peer, { ...(msg.limit !== undefined ? { limit: msg.limit as number } : {}), live }), current: publicPeerBudget(status, text => tasks.nameable(text)) });
+          }
+          if (op === "total") return void reply({ t: "usage", ok: true, op, total: usageRollup.total() });
+          if (op !== "query") return void reply({ t: "usage", ok: false, error: "op is query, limits or total" });
+          const by = (msg.by ?? "peer") as UsageGroup;
+          if (!USAGE_GROUPS.includes(by)) return void reply({ t: "usage", ok: false, error: `by is one of ${USAGE_GROUPS.join(", ")}` });
+          // issue, pr and release are the board's current links of each task (ids only, never a title).
+          const board_ = new Map(board.list().map(t => [t.id, t]));
+          const links = (id: number) => { const t = board_.get(id); return t ? { ...(t.sdlc?.issue ? { issue: t.sdlc.issue } : {}), ...(t.sdlc?.pr ? { pr: t.sdlc.pr } : {}), ...(t.release ? { release: t.release } : {}) } : undefined; };
+          return void reply({ t: "usage", ok: true, op, usage: usageRollup.query({ by, ...(since !== undefined ? { since } : {}), ...(until !== undefined ? { until } : {}) }, links) });
+        } catch (error) { return void reply({ t: "usage", ok: false, error: `usage unavailable: ${(error as Error).message.slice(0, 120)}` }); }
+      }
       case "permit":
         if (c.role !== "console") return void reply({ t: "permit", ok: false, error: "permit is a console command" });
         return void reply({ t: "permit", ok: permissions.get(String(msg.id))?.done(msg.option ? String(msg.option) : undefined, msg.surface === "console" ? "console" : "terminal") === true });
