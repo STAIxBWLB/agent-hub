@@ -166,3 +166,11 @@ test("Kimi current fence refuses an ambient ancestor created after preparation",
   writeFileSync(join(f.project,"AGENTS.md"),"synthetic ambient instruction");
   expect(result.current?.()).toBe(false);
 });
+
+
+test("receipt-covered Kimi 2.3.0 still requires the private runtime preparation (#373)", async () => {
+  const f = fixture("2.3.0"), launch = await kimiReviewerBackend.prepare(f.context);
+  expect("unavailable" in launch).toBe(false); if ("unavailable" in launch) return;
+  try { expect(launch.isolation.version).toBe("2.3.0"); expect(launch.current?.()).toBe(true); }
+  finally { await launch.cleanup?.(); }
+});

@@ -301,7 +301,7 @@ var init_compat = __esm(() => {
     },
     "kimi-review": {
       label: "Kimi reviewer (kimi-code)",
-      verified: ["2.2.0"],
+      verified: ["2.2.0", "2.3.0"],
       gate: "isolation",
       probe: ["kimi", "--version"],
       parse: (out) => plain(out.trim()),
@@ -335,12 +335,12 @@ var init_compat = __esm(() => {
     },
     qwen: {
       label: "Qwen Code",
-      verified: ["0.25.0"],
+      verified: ["0.25.0", "0.26.0"],
       gate: "contract",
       probe: ["qwen", "--version"],
       config: "qwen_cmd",
       parse: (out) => plain(out.trim()),
-      trustNote: "Native ACP identity and mode ids were verified on 0.25.0; another version may rename or drop them."
+      trustNote: "Native ACP identity and mode ids have dated receipts; 0.26.0 permission callbacks were checked without inference. Another version may change those contracts."
     }
   };
   MAX_BYTES = 64 * 1024;
@@ -11557,14 +11557,17 @@ function previewQwen(ctx) {
     nativeCommand: nativeCommand(config.qwen_cmd, ["qwen", "--acp"]),
     model: model ? REDACTED : undefined
   });
-  unresolved.push({ field: "nativeIdentity", reason: "Qwen Code 0.25.0 identity and permission modes are checked at ACP initialization; preview starts nothing" });
+  unresolved.push({ field: "nativeIdentity", reason: `Qwen Code (${describe("qwen")}) identity and permission modes are checked at ACP initialization; preview starts nothing` });
   return finishPreview(ctx, launch, envNames, unresolved, undefined);
 }
-var init_native_cli_preview_qwen = () => {};
+var init_native_cli_preview_qwen = __esm(() => {
+  init_compat();
+});
 
 // src/adapters/definitions/qwen.ts
 var QWEN_DEFINITION;
 var init_qwen = __esm(() => {
+  init_compat();
   init_native_cli_entry_qwen();
   init_native_cli_preview_qwen();
   init_native_display();
@@ -11632,7 +11635,7 @@ var init_qwen = __esm(() => {
     turnEnd: "adapter",
     budget: { account: "qwen" },
     capabilities: { watch: true },
-    cli: { command: "qwen", entry: { lifecycleAdmission: true, execute: runQwenEntry }, preview: previewQwen, usage: [["ahub qwen [--mode headless] [--model <alias>] [--session-id <id>] [--print-command]", "start optional Qwen Code 0.25.0 ACP (roster.qwen, default off)"]], launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
+    cli: { command: "qwen", entry: { lifecycleAdmission: true, execute: runQwenEntry }, preview: previewQwen, usage: [["ahub qwen [--mode headless] [--model <alias>] [--session-id <id>] [--print-command]", `start optional Qwen Code ACP (${describe("qwen")}; roster.qwen, default off)`]], launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
     display: QWEN_DISPLAY,
     hooks: { recallPlatform: "qwen" }
   };
