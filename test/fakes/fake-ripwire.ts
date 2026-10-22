@@ -20,5 +20,5 @@ else {
  const flag=args.find(a=>a.startsWith("--callers=")||a.startsWith("--callees="))!,kind=flag.startsWith("--callers=")?"callers":"callees",name=flag.split("=")[1]!;
  if((name === "missing" || name === "untracked" && !existsSync("untracked.ts"))){console.log(`<callers schema="ripwire.callers/v1" of="${name}" found="0"/>`);process.exit(1);}
  if(!args.includes("--json")){console.log(`<callers schema="ripwire.callers/v1" of="${name}" defs="1" count="0"/>`);}
- else console.log(JSON.stringify({of:name,defs:1,count:1,root:process.cwd(),hop_tested:0,hop_untested:1,graph_ambiguous:0,graph_unresolved:0,counts_floor:true,[kind]:[{t:"fn",n:kind === "callers"?"caller":"callee",p:"a.ts:1",...(mode === "name"?{via:"name"}:{})}]}));
+ else console.log(JSON.stringify({of:name,defs:1,count:1,root:process.cwd(),...(mode === "json-schema"?{}:{hop_tested:0}),hop_untested:1,graph_ambiguous:0,graph_unresolved:0,counts_floor:true,[kind]:[{t:"fn",n:kind === "callers"?"caller":"callee",p:"a.ts:1",...(mode === "name"?{via:"name"}:{})}]}));
 }

@@ -77,6 +77,7 @@ test("at, existence and callers/callees use their schema and distinguish missing
   expect(await facts.exists(f.repo,f.head,"retained")).toEqual({state:"known",value:{exists:true,ambiguous:false}});
   expect(await facts.exists(f.repo,f.head,"missing")).toEqual({state:"known",value:{exists:false,ambiguous:false}});
   expect(await facts.neighbours(f.repo,f.head,"retained")).toMatchObject({state:"known",value:{callers:[{name:"caller",ambiguous:false}],callees:[{name:"callee"}]}});
+  expect(await f.facts("json-schema").neighbours(f.repo,f.head,"retained")).toEqual({state:"unknown"});
   expect(await f.facts("name").neighbours(f.repo,f.head,"retained")).toMatchObject({state:"known",value:{callers:[],callees:[],hiddenAmbiguous:2}});
  }finally{f.close();}
 },20000);
@@ -132,3 +133,12 @@ test("closing the reader cancels and awaits its active analysis and tree cleanup
   const before=readFileSync(f.record,"utf8");expect(await facts.exists(f.repo,f.head,"retained")).toEqual({state:"unknown"});expect(readFileSync(f.record,"utf8")).toBe(before);
  }finally{f.close();}
 },20000);
+
+
+test("a failing optional metadata projection preserves the authoritative file brief",()=>{
+ const f=fixture();try{
+  const brief=buildReviewBrief(f.repo,f.head,{privatePath:()=>false,nameable:()=>true}) as ReviewBrief;
+  const projected=withCodeSymbols(brief,{state:"known",value:[{name:"retained",kind:"fn",path:"a.ts",line:1,ambiguous:false,change:"unknown"}]},[],()=>{throw Error("metadata unavailable");});
+  expect(projected.reviewable).toEqual(brief.reviewable);expect(projected.rules).toEqual(brief.rules);expect(renderReviewBrief(projected)).toContain("Changed symbols: unknown");
+ }finally{f.close();}
+});

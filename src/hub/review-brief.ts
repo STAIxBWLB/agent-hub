@@ -155,14 +155,16 @@ function attributes(cwd: string, source: string, paths: string[]): Map<string, {
 export function withCodeSymbols(brief:ReviewBrief,result:CodeFactResult<CodeSymbol[]>,plan:readonly string[]|undefined,publicMetadataText:(text:string)=>boolean):ReviewBrief {
   const unknown={...brief,symbols:{state:"unknown" as const,files:[],planned:[],unplanned:[],unseen:[]}};
   if(result.state!=="known")return unknown;
-  const paths=new Set(brief.reviewable.map(file=>file.path));
-  const changed=result.value.filter(s=>!s.ambiguous && paths.has(s.path) && publicMetadataText(s.path) && publicMetadataText(s.name) && publicMetadataText(s.kind));
-  const planned=(plan??[]).filter(name=>publicMetadataText(name));
-  const normalize=(name:string)=>name.replace(/\(.*$/," ").trim();
-  const matches=(left:string,right:string)=>{const a=normalize(left),b=normalize(right);return a.includes(".")&&b.includes(".")?a===b:a.split(".").at(-1)===b.split(".").at(-1);};
-  const names=[...new Set(changed.map(s=>s.name))];
-  return {...brief,symbols:{state:"known",files:[...paths].map(path=>({path,symbols:changed.filter(s=>s.path===path)})),
-    planned:names.filter(name=>planned.some(p=>matches(p,name))),unplanned:names.filter(name=>!planned.some(p=>matches(p,name))),unseen:planned.filter(p=>!names.some(name=>matches(p,name)))}};
+  try {
+    const paths=new Set(brief.reviewable.map(file=>file.path));
+    const changed=result.value.filter(s=>!s.ambiguous && paths.has(s.path) && publicMetadataText(s.path) && publicMetadataText(s.name) && publicMetadataText(s.kind));
+    const planned=(plan??[]).filter(name=>publicMetadataText(name));
+    const normalize=(name:string)=>name.replace(/\(.*$/," ").trim();
+    const matches=(left:string,right:string)=>{const a=normalize(left),b=normalize(right);return a.includes(".")&&b.includes(".")?a===b:a.split(".").at(-1)===b.split(".").at(-1);};
+    const names=[...new Set(changed.map(s=>s.name))];
+    return {...brief,symbols:{state:"known",files:[...paths].map(path=>({path,symbols:changed.filter(s=>s.path===path)})),
+      planned:names.filter(name=>planned.some(p=>matches(p,name))),unplanned:names.filter(name=>!planned.some(p=>matches(p,name))),unseen:planned.filter(p=>!names.some(name=>matches(p,name)))}};
+  } catch { return unknown; }
 }
 
 function renderCodeSymbols(brief:ReviewBrief):string[] {

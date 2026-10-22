@@ -50,6 +50,7 @@ function xml(raw:string): Xml {
   if(!root || stack.length)throw Error();return root;
 }
 function cleanSymbol(name:unknown,kind:unknown,position:unknown,via?:unknown): CodeSymbol {
+  if(via!==undefined && via!=="name" && via!=="resolved")throw Error();
   if(!text(name) || !text(kind,32) || !/^[a-z_]+$/.test(kind) || !text(position,2100))throw Error();
   const p=/^(.*):(\d+)$/.exec(position);if(!p || !pathName(p[1]) || !integer(p[2]) || Number(p[2])<1)throw Error();
   return {name,kind,path:p[1],line:Number(p[2]),ambiguous:via === "name",change:"unknown"};
@@ -202,7 +203,8 @@ export class CodeFacts {
   private async relations(cwd:string,bin:string,symbol:string,kind:"callers"|"callees"):Promise<{defs:number;items:CodeSymbol[];countsFloor:boolean}> {
     const r=await this.run(bin,[cwd,`--${kind}=${symbol}`,"--json","--no-cache"],cwd);if(r.code!==0)throw Error();const v=JSON.parse(r.out);
     if(v.of!==symbol || !Number.isSafeInteger(v.defs)||v.defs<1 || !Number.isSafeInteger(v.count)||v.count<0 || !Array.isArray(v[kind])||v.count!==v[kind].length || v.count>MAX_SYMBOLS || realPath(v.root)!==realPath(cwd) || ![0,1,false,true].includes(v.counts_floor)
-      || !Number.isSafeInteger(v.graph_ambiguous)||!Number.isSafeInteger(v.graph_unresolved))throw Error();
+      || !Number.isSafeInteger(v.hop_tested)||v.hop_tested<0||!Number.isSafeInteger(v.hop_untested)||v.hop_untested<0
+      || !Number.isSafeInteger(v.graph_ambiguous)||v.graph_ambiguous<0||!Number.isSafeInteger(v.graph_unresolved)||v.graph_unresolved<0)throw Error();
     return {defs:v.defs,countsFloor:!!v.counts_floor,items:v[kind].map((s:Record<string,unknown>)=>({...cleanSymbol(s.n,s.t,s.p,s.via),ambiguous:s.via==="name" || v.defs>1 || v.graph_ambiguous>0}))};
   }
   exists(repo:string,head:string,symbol:string,options:Omit<CodeLocation,"repo"|"head">={}):Promise<CodeFactResult<{exists:boolean;ambiguous:boolean}>> {
