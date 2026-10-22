@@ -724,7 +724,7 @@
     {
       "id": "profile-cli-dry-flags",
       "file": "src/cli/main.ts",
-      "search": "takeFlags(args.filter(arg => arg !== \"--dry-run\" && arg !== \"--json\" && arg !== \"--shadow\"), [\"--profile\"], [])",
+      "search": "takeFlags(args.filter(arg => arg !== \"--dry-run\" && arg !== \"--json\" && arg !== \"--shadow\" && arg !== \"--release-guard\"), [\"--profile\"], [])",
       "replacement": "takeFlags(args, [\"--profile\"], [])",
       "testFile": "test/profiles.test.ts",
       "testName": "profile CLI dry-run/JSON switches are valueless and positional aliases reach Tasks (#259)"
