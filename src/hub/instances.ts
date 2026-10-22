@@ -1,5 +1,7 @@
 import { types } from "node:util";
-import { isAbsolute, resolve, sep } from "node:path";
+import { statSync } from "node:fs";
+import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { canonicalPath, realPath } from "./project.ts";
 import { defaultPeerRoles, definitionOf, type AdapterDefinition, type StartForm, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { isPermissionMode, type PermissionMode } from "./permission-mode.ts";
 
@@ -68,23 +70,39 @@ function jcodeInstanceFields(entry: Record<string, PropertyDescriptor>, path: st
   return out;
 }
 
-/** A trailing slash or a `.` segment does not make a different home. */
-const normalHome = (home: string): string => resolve(home);
+/**
+ * The directory a home names, as the disk sees it (#685 review): symlinks and system aliases (`/tmp` and `/private/tmp`) resolved with
+ * `realPath` (never `realpathSync`, which Bun fails on a backslash path), and for a home that does not exist yet the nearest existing
+ * ancestor resolved the same way. Compared case-folded when the volume folds case, so a case-only alias is the same home.
+ */
+function canonicalHome(home: string): { path: string; key: string; identity?: string } {
+  let path: string;
+  try { path = realPath(home); } catch { path = canonicalPath(home); }
+  const stat = (target: string) => { try { return statSync(target); } catch { return undefined; } };
+  let existing = path;
+  while (!stat(existing) && dirname(existing) !== existing) existing = dirname(existing);
+  const info = stat(path), anchor = stat(existing);
+  const swapped = existing.replace(/[A-Za-z]/g, letter => letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase());
+  const alias = swapped !== existing ? stat(swapped) : undefined;
+  const folds = !!anchor && !!alias && alias.ino === anchor.ino && alias.dev === anchor.dev;
+  return { path, key: folds ? path.toLowerCase() : path, ...(info ? { identity: `${info.dev}:${info.ino}` } : {}) };
+}
 /**
  * One native data home per Jcode (#685): an instance may not use the base Jcode's home, another instance's, or one nested
- * inside either (their stores would overlap). Run once with the loaded base `jcode_home`.
+ * inside either (their stores would overlap), however the path is spelled: a symlink, a system alias or a case-only alias of one
+ * is the same home. Run once with the loaded base `jcode_home`.
  */
 export function checkJcodeInstanceHomes(declarations: InstancesConfig | undefined, baseHome: string): void {
-  const homes: { id: string; home: string }[] = [{ id: "the base Jcode", home: normalHome(baseHome) }];
+  const homes: { id: string; key: string; identity?: string }[] = [{ id: "the base Jcode", ...canonicalHome(baseHome) }];
   for (const [id, config] of Object.entries(declarations ?? {})) {
     if (config.jcode_home === undefined) continue; // only a native-home kind carries one
-    const home = normalHome(config.jcode_home);
+    const home = canonicalHome(config.jcode_home);
     for (const other of homes) {
       const label = other.id === "the base Jcode" ? "base" : other.id;
-      if (home === other.home) return fail(`instances.${id}.jcode_home`, other.id === "the base Jcode" ? "must differ from the base Jcode's home" : `is the same home as ${label}`);
-      if (home.startsWith(`${other.home}${sep}`) || other.home.startsWith(`${home}${sep}`)) return fail(`instances.${id}.jcode_home`, `is nested inside or around ${other.id === "the base Jcode" ? "the base Jcode's home" : `${label}'s home`}`);
+      if (home.key === other.key || (home.identity !== undefined && home.identity === other.identity)) return fail(`instances.${id}.jcode_home`, other.id === "the base Jcode" ? "must differ from the base Jcode's home" : `is the same home as ${label}`);
+      if (home.key.startsWith(`${other.key}${sep}`) || other.key.startsWith(`${home.key}${sep}`)) return fail(`instances.${id}.jcode_home`, `is nested inside or around ${other.id === "the base Jcode" ? "the base Jcode's home" : `${label}'s home`}`);
     }
-    homes.push({ id, home });
+    homes.push({ id, ...home });
   }
 }
 

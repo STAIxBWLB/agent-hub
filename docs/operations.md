@@ -3921,8 +3921,9 @@ Extra Jcode instances are supported (#685), in `.agenthub/config.local.json` onl
 ```
 
 `jcode_home` is required, absolute, and must differ from the base `jcode_home`, from
-every other instance's and from any directory inside or around them (the hub refuses
-the configuration at startup otherwise). At most 8 Jcode instances are accepted per
+every other instance's and from any directory inside or around them, however it is
+spelled: a symlink, a system alias such as `/tmp` and `/private/tmp`, or a case-only
+alias is the same home (the hub refuses the configuration at startup otherwise). At most 8 Jcode instances are accepted per
 project. `provider`, `model` and `provider_profile` are optional and passed to Jcode
 as `-p`, `--model` and `--provider-profile` exactly as written; any other field is
 refused, and these fields are never editable from settings.

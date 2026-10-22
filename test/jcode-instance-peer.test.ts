@@ -199,3 +199,25 @@ test("ahub status lists an extra Jcode instance's model source and shows nothing
   const base = renderStatus({ peers: { jcode: peers.jcode } }, 160, 1_800_000_000_000).map(line => paint(line, false)).join("\n");
   expect(base).not.toContain("model source");
 });
+
+// A preview must show the argv the daemon starts (#685 review): for `--as <id>`, the instance's own provider, model and profile flags.
+import { launcherPreview } from "../src/cli/preview.ts";
+
+test("--print-command and --dry-run with --as preview the instance's own -p, --model and --provider-profile, redacted, and start nothing (#685 review)", () => {
+  const dir = root();
+  expect(Bun.spawnSync(["git", "init", "-q", dir]).exitCode).toBe(0); // the hub confirms the local declaration file is untracked
+  mkdirSync(join(dir, ".agenthub"));
+  writeFileSync(join(dir, ".agenthub", "config.local.json"), JSON.stringify({ instances: { "jcode-claude": { kind: "jcode", jcode_home: join(dir, "home-claude"), provider: "claude", model: "claude-sonnet-5-5", provider_profile: "work" },
+    "jcode-bare": { kind: "jcode", jcode_home: join(dir, "home-bare") } } }));
+  const claude = launcherPreview("jcode", ["--as", "jcode-claude", "--print-command"], dir, join(dir, "state"), false);
+  expect(claude.args).toEqual(expect.arrayContaining(["-p", "[redacted]", "--model", "[redacted]", "--provider-profile", "[redacted]"]));
+  expect(JSON.stringify(claude)).not.toMatch(/claude-sonnet|"work"|home-claude/);
+  expect(claude.mode).toBe("headless"); expect((claude as { instance?: string }).instance).toBe("jcode-claude");
+  // The preview names the same flags the daemon passes for that instance: an instance with no declared model adds none.
+  const bare = launcherPreview("jcode", ["--as", "jcode-bare", "--dry-run"], dir, join(dir, "state"), false);
+  for (const flag of ["-p", "--model", "--provider-profile"]) expect(bare.args).not.toContain(flag);
+  // The base Jcode's preview is unchanged by an instance declaration.
+  const base = launcherPreview("jcode", ["--dry-run"], dir, join(dir, "state"), false);
+  for (const flag of ["-p", "--model"]) expect(base.args).not.toContain(flag);
+  expect(existsSync(join(dir, "state"))).toBe(false); // nothing was created
+});

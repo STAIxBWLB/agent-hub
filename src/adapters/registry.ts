@@ -232,6 +232,7 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
     ["start.daemonPort pi-rpc", definition.start.daemonPort === "pi-rpc"],
     ["routing", definition.routing !== undefined],
     ["projection", definition.projection !== undefined],
+    ["instances.nativeHome", declared(definition.instances, "nativeHome")], // #685: a fixed-builtin assumption, one native data home per declared instance
     ["reviewerVariant", definition.reviewerVariant !== undefined],
     ["reviewer", definition.reviewer !== undefined],
     ["hooks.factsHook", declared(definition.hooks, "factsHook")],

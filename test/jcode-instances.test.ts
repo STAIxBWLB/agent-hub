@@ -1,6 +1,7 @@
 import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkJcodeInstanceHomes, validateInstances } from "../src/hub/instances.ts";
@@ -57,6 +58,30 @@ test("a Jcode instance may not share a home with the base Jcode or with another 
   expect(() => checkJcodeInstanceHomes(validateInstances({ "jcode-a": { kind: "jcode", jcode_home: "/h/a" }, "jcode-b": { kind: "jcode", jcode_home: "/h/a/" } }, catalog), "/h/base")).toThrow(/jcode-b.*jcode-a|jcode-a.*jcode-b/);
   expect(() => checkJcodeInstanceHomes(validateInstances({ "jcode-a": { kind: "jcode", jcode_home: "/h/a" }, "jcode-b": { kind: "jcode", jcode_home: "/h/a/inner" } }, catalog), "/h/base")).toThrow(/nested|inside/);
   expect(() => checkJcodeInstanceHomes(validateInstances({ "jcode-a": { kind: "jcode", jcode_home: "/h/base/inner" } }, catalog), "/h/base")).toThrow(/nested|inside/);
+});
+
+test("a symlink, a system alias or a case-only alias of another Jcode home is the same home and is refused (#685 review)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-jcode-home-")); cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  const base = join(dir, "Base"), other = join(dir, "other"); mkdirSync(base); mkdirSync(other);
+  const declare = (...homes: string[]) => validateInstances(Object.fromEntries(homes.map((jcode_home, i) => [`jcode-n${i}`, { kind: "jcode", jcode_home }])), catalog);
+  // A symlink to the base home, and a symlink to an instance's home.
+  symlinkSync(base, join(dir, "link-to-base")); symlinkSync(other, join(dir, "link-to-other"));
+  expect(() => checkJcodeInstanceHomes(declare(join(dir, "link-to-base")), base)).toThrow(/jcode-n0.*base/);
+  expect(() => checkJcodeInstanceHomes(declare(other, join(dir, "link-to-other")), base)).toThrow(/jcode-n1.*jcode-n0|same home/);
+  // A symlinked ancestor makes a nested home too.
+  expect(() => checkJcodeInstanceHomes(declare(join(dir, "link-to-base", "inner")), base)).toThrow(/nested|inside/);
+  // A system alias: /var and /private/var (and /tmp and /private/tmp) name one directory on macOS. Both spellings of this directory are tried.
+  const real = realpathSync(dir), spelled = real.startsWith("/private/") ? real.slice("/private".length) : `/private${real}`;
+  mkdirSync(join(real, "x"));
+  if (statSync(spelled, { throwIfNoEntry: false })?.ino === statSync(real).ino) expect(() => checkJcodeInstanceHomes(declare(join(spelled, "x")), join(real, "x"))).toThrow(/jcode-n0.*base/);
+  // A case-only alias on a volume that folds case (macOS APFS by default); a case-sensitive volume has distinct directories.
+  const swapped = base.replace(/Base$/, "bASE");
+  let folds = false; try { folds = statSync(swapped).ino === statSync(base).ino; } catch { /* distinct on a case-sensitive volume */ }
+  if (folds) expect(() => checkJcodeInstanceHomes(declare(swapped), base)).toThrow(/jcode-n0.*base/);
+  else expect(() => checkJcodeInstanceHomes(declare(join(dir, "other2")), base)).not.toThrow();
+  // A home that does not exist yet is judged through its nearest existing ancestor.
+  expect(() => checkJcodeInstanceHomes(declare(join(dir, "link-to-base", "new-home")), base)).toThrow(/nested|inside/);
+  expect(() => checkJcodeInstanceHomes(declare(join(dir, "fresh")), base)).not.toThrow();
 });
 
 test("a Jcode instance in a tracked config file is ignored with a reason; only config.local.json declares it (#685)", () => {

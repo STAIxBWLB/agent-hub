@@ -23,6 +23,8 @@ export interface NativePreviewHelpers {
 export interface NativePreviewContext {
   tool: string; args: string[]; cwd: string; stateDir: string; cliDir: string; unattended: boolean;
   config: ReturnType<typeof loadConfig>; definition: AdapterDefinition; baseEnvNames: string[]; helpers: NativePreviewHelpers;
+  /** The declared extra instance a `--as <id>` launch selected; its own model fields belong in the preview (#685). */
+  instance?: string;
 }
 export interface NativePreviewMetadata { mode: "tui" | "headless"; mcp: { file: string; action: string; changed: boolean; tracked: boolean } }
 export type NativePreviewBuilder = (ctx: NativePreviewContext) => NativePreview;
