@@ -38,7 +38,7 @@ import { RecoveryDeferredHubError } from "./deferred-hub.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS, QUOTA_HANDOFF_PLATFORMS, NATIVE_CONFIG_BLOCKS, nativeConfigurationDefaults, mergeNativeConfiguration, retainNativeRouting, DAEMON_PORTS, definitionOf, createProjectAdapterCatalog } from "../adapters/registry.ts";
 import { isSupportedPeer as registrySupportedPeer, definitionOf as builtinDefinitionOf, KNOWN_PEERS as BASE_KNOWN_PEERS, SUPPORTED_PEERS as BASE_SUPPORTED_PEERS, STARTABLE_PEERS as BASE_STARTABLE_PEERS } from "../adapters/registry.ts";
-import { instanceDefinitionOf, effectiveInstanceRoles, instancePeerIds, validateInstances, type InstancesConfig } from "./instances.ts";
+import { checkJcodeInstanceHomes, instanceDefinitionOf, effectiveInstanceRoles, instancePeerIds, validateInstances, type InstancesConfig } from "./instances.ts";
 import { INSTANCE_CONFIG_FILES, readInstanceConfig, readInstanceConfigLayers, readInstanceRoleConfig } from "./instance-config.ts";
 import { instanceBudgetHooks, projectBudgetHeadroom } from "./instance-budget.ts";
 import { resolveInstanceExecutionCwd } from "./instance-execution.ts";
@@ -566,6 +566,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const adapterCatalog = createProjectAdapterCatalog(loadedConfig.adapters, externalDefinitions);
   const configuredIds = adapterCatalog.definitions.filter(d => !builtinDefinitionOf(d.kind)).map(d => d.kind);
   const declarations = validateInstances(loadedConfig.instances, adapterCatalog);
+  checkJcodeInstanceHomes(declarations, loadedConfig.jcode_home); // #685: one native home per Jcode, at startup and never partially
   const extraIds = Object.keys(declarations);
   // #450 I3: channel extras (Claude) attach from the person's terminal; the hub never starts them and their hello is admitted.
   const channelExtras = extraIds.filter(id => adapterCatalog.definitionOf(id, declarations)?.attach?.externalHello === true);
@@ -3729,12 +3730,31 @@ export async function startDaemon(opts: DaemonOptions) {
       const jcodeVerdict = await jcodeVersionAsync(config.jcode_cmd, executionCwd);
       if (!jcodeVerdict.ok) return { ok: false, error: jcodeVerdict.reason };
       if (jcodeVerdict.note) log(jcodeVerdict.note);
-      const jcode: JcodePeer = adapter!.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["owned-acp"]({ command: config.jcode_cmd, home: config.jcode_home, providerProfile: (args.providerProfile ?? config.jcode_provider_profile) || undefined,
-        ...(args.model ? { launchModel: args.model } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}), cwd: executionCwd, watchdogMs: config.watchdog_ms,
+      // #685: an extra instance runs its own native home and model fields; the base peer keeps jcode_home and the global provider profile.
+      const instance = declarations[peer];
+      let relay: ModelRelay | undefined;
+      if (instance?.model_relay) {
+        // The relay is the model source: refuse before anything starts if the gateway is not positively on campus (never `!offCampus()`).
+        if (!(await onCampus())) return { ok: false, error: `${peer} uses the on-prem model through the hub's relay, which needs a campus gateway: none is confirmed reachable on campus` };
+        relay = modelRelays.get(peer) ?? await startModelRelay({ omni, allowedDGXmodels: { "dgx/coding": config.pi.dgx_coding, "dgx/fast": config.pi.dgx_fast }, fallbackDGXAlias: instance.model_relay, defaultBackend: { kind: "dgx", alias: instance.model_relay }, dgxMaxInputTokens: activeRouting().pi.dgx_max_context_tokens,
+          // Every served request is one usage event for this instance, attributed to the task its current turn works on.
+          observeRequestMetadata: true,
+          onRequest: record => {
+            const usage = record.requestUsage;
+            event({ type: "usage", peer, source: "omniroute", id: record.id, requestedModel: record.requestedModel ?? record.alias, measuredAt: record.at,
+              ...(usage?.promptTokens !== undefined ? { inputTokens: usage.promptTokens } : {}), ...(usage?.completionTokens !== undefined ? { outputTokens: usage.completionTokens } : {}), ...(usage?.totalTokens !== undefined ? { totalTokens: usage.totalTokens } : {}),
+              ...(record.actualModel ? { servedModel: record.actualModel } : {}), ...(record.provider ? { provider: record.provider } : {}), ...taskAttribution(peer) });
+          } });
+        modelRelays.set(peer, relay);
+      }
+      const jcode: JcodePeer = adapter!.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["owned-acp"]({ peer, command: config.jcode_cmd, home: instance?.jcode_home ?? config.jcode_home,
+        providerProfile: (args.providerProfile ?? instance?.provider_profile ?? config.jcode_provider_profile) || undefined,
+        ...(instance?.provider || relay ? { provider: instance?.provider ?? "openai-compatible" } : {}), ...(relay ? { relay: { url: relay.url, token: relay.token } } : {}),
+        ...(args.model ?? instance?.model ?? instance?.model_relay ? { launchModel: (args.model ?? instance?.model ?? instance?.model_relay)! } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}), cwd: executionCwd, watchdogMs: config.watchdog_ms,
         preamble: sessionRoleContract(peer), log: () => log("Jcode native diagnostic: details withheld") }) }) as JcodePeer;
       recoveryTaskPreface(peer); await ensurePreface(peer);
       try { await jcode.start(); await reconcileNativeStart(peer, jcode); }
-      catch { await jcode.stop().catch(() => {}); throw new Error("Jcode startup not verified; check native version, provider profile, MCP store and owned daemon (details withheld)"); }
+      catch { await jcode.stop().catch(() => {}); await relay?.close().catch(() => {}); modelRelays.delete(peer); throw new Error("Jcode startup not verified; check native version, provider profile, MCP store and owned daemon (details withheld)"); }
       return { ok: true, policy: "unmanaged" };
     }
     if (adapter?.start.acpCommand) {
