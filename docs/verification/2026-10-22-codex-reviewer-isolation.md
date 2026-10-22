@@ -25,6 +25,8 @@ Runs:
 - Final policy including `notify=[]`, 0.163.0 with synthetic ambient servers: passed again.
 - Retained 0.146.0 executable with final policy and empty temporary homes: passed. Its receipt binary identity is `sha256:4a6398187165c5bd75ad92c9a6fba6df6d401a59b62f7e1ecf9218a8196852a6`.
 
+After the centralized compatibility change (#691) merged, both final production preparations were repeated from the rebased source: 0.163.0 with synthetic ambient MCP entries and 0.146.0 with empty homes. Both passed again, retaining the binary identities above and the `legacy-notify-disabled` evidence.
+
 The producer required unique effective Apps/plugins/hooks rows with value false, exact MCP transport/tool readback, bounded bundled-model catalog validation, stable binary/config metadata, public read success and all native sandbox canaries below. Every successful launch returned `readOnly: true`, `strictMcp: true`, `ephemeral: true` and `current(): true`.
 
 | Native canary | Required observed result |
