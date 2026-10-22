@@ -1,4 +1,5 @@
 import type { Task } from "./board.ts";
+import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
 
 export type SweepKind = "unaccepted-assignment" | "idle-owner" | "review-pending" | "ready-unassigned";
 export interface SweepRecord {
@@ -187,7 +188,7 @@ export function plannerGrooming(tasks: readonly Task[], options: PlannerGrooming
       if (!reviewed && !accepted) unknown.add(task.id);
     }
   }
-  const places = (task: Task) => ({ paths: new Set([...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])].map(groomingPath).filter((path): path is string => path !== undefined)), symbols: new Set(task.plan?.symbols ?? []) });
+  const places = (task: Task) => ({ paths: new Set([...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])].map(groomingPath).filter((path): path is string => path !== undefined)), symbols: new Set((task.plan?.symbols ?? []).map(normalizePlanSymbol)) });
   const open = scoped.filter(task => task.state !== "cancelled");
   const positions = new Map(open.map(task => [task.id, places(task)]));
   const overlaps = (left: string, right: string): boolean => left === right || left === "." || right === "."
@@ -196,7 +197,7 @@ export function plannerGrooming(tasks: readonly Task[], options: PlannerGrooming
     const task = open[left]!;
     if (repositories.get(task.id) !== repositories.get(right.id)) continue;
     const a = positions.get(task.id)!, b = positions.get(right.id)!;
-    if ([...a.paths].some(path => [...b.paths].some(other => overlaps(path, other))) || [...a.symbols].some(symbol => b.symbols.has(symbol))) add({ kind: "overlap", task: task.id, related: [right.id] });
+    if ([...a.paths].some(path => [...b.paths].some(other => overlaps(path, other))) || [...a.symbols].some(symbol => [...b.symbols].some(other => symbolsOverlap(symbol, other)))) add({ kind: "overlap", task: task.id, related: [right.id] });
     if ([...issueIds.get(task.id)!].some(issue => issueIds.get(right.id)!.has(issue))) add({ kind: "duplicate", task: task.id, related: [right.id] });
   }
   for (const blocker of (options.blockers ?? []).slice(0, GROOMING_TASK_LIMIT)) {

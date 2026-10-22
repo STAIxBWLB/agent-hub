@@ -3833,3 +3833,30 @@ test("two ready offers for one reserved owner with one slot assign exactly one w
   expect(other.history.at(-1)!.event).toBe("ready held");
   expect(other.reserved).toBe("codex");
 });
+
+test("normalized symbol overlap: Tasks.offerReady matches offerReady(), and A.run does not match B.run (#682 phase 1b)", async () => {
+  const { tasks } = await setup();
+  await tasks.propose("kimi", {
+    title: "task 1", class: "implement", owner: "kimi",
+    plan: { paths: ["src/a.ts"], symbols: ["Tasks.offerReady"] },
+  });
+  const offered = await tasks.propose("claude", { title: "task 2", class: "implement", owner: "codex" });
+  await tick();
+  // Tasks.offerReady matches offerReady():
+  const accepted = tasks.accept("codex", offered.id, {
+    paths: ["src/b.ts"], symbols: ["offerReady()"],
+  });
+  expect(tasks.overlaps(accepted)).toContain("Overlaps #1 (owner kimi) on symbol offerReady");
+
+  // Qualified A.run vs B.run do not match:
+  const r2 = await setup();
+  const t3 = await r2.tasks.propose("kimi", {
+    title: "task 3", class: "implement", owner: "kimi",
+    plan: { paths: ["src/c.ts"], symbols: ["A.run"] },
+  });
+  const t4 = await r2.tasks.propose("claude", { title: "task 4", class: "implement", owner: "codex" });
+  const acc4 = r2.tasks.accept("codex", t4.id, {
+    paths: ["src/d.ts"], symbols: ["B.run"],
+  });
+  expect(r2.tasks.overlaps(acc4)).toBe("");
+});
