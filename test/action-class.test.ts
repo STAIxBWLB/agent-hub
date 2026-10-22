@@ -253,6 +253,17 @@ test("#636 R2 unlisted curl options cannot erase known write evidence", () => {
 
 
 const r3Cases: Array<[string, ActionClass[]]> = [
+  ["git clean -eforce -f", ["destroy"]],
+  ["git clean -e -fn", []],
+  ["git --future-option '-C' push", ["publish"]],
+  ["git --future-option '--help' push", ["publish"]],
+  ["npm --future-option '--prefix' publish", ["publish"]],
+  ["npm --color publish", ["publish"]],
+  ["cargo --color always publish", ["publish"]],
+  ["cargo --color publish test", []],
+  ["git --future-option push clean -f", ["publish", "destroy"]],
+  ["npm --help publish", []],
+  ["git --no-pager status push", []],
   ["git clean -fd", ["destroy"]],
   ["git clean -f", ["destroy"]],
   ["git clean --force", ["destroy"]],

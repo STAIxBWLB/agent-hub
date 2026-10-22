@@ -115,6 +115,48 @@ function option(words: string[], short: string, long: string): string | undefine
   }
   return;
 }
+/** Known option values are opaque. Unknown prefix options retain every plausible action head. */
+function commandHeads(words: string[], values: readonly string[], booleans: readonly string[], actions: readonly string[]): Array<{ name: string; args: string[] }> {
+  const heads: Array<{ name: string; args: string[] }> = [];
+  let uncertain = false, literal = false;
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i]!;
+    if (!literal && word === "--") { literal = true; continue; }
+    if (!literal && word.startsWith("-")) {
+      if (!uncertain && ["--help", "--version", "-h", "-V"].includes(word)) return [];
+      if (values.includes(word)) { if (!uncertain) i++; continue; }
+      if (values.some(key => key.startsWith("--") ? word.startsWith(`${key}=`) : word.startsWith(key) && word.length > key.length)) continue;
+      if (!booleans.includes(word)) uncertain = true;
+      continue;
+    }
+    if (!uncertain) return [{ name: word, args: words.slice(i + 1) }];
+    if (actions.includes(word)) heads.push({ name: word, args: words.slice(i + 1) });
+  }
+  return heads;
+}
+
+/** Exclude patterns and path operands cannot impersonate clean's force/dry-run options. */
+function forcedClean(words: string[]): boolean {
+  let force = false, dry = false;
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i]!;
+    if (word === "--") break;
+    if (word === "--exclude") { i++; continue; }
+    if (word.startsWith("--exclude=")) continue;
+    if (word === "--force") force = true;
+    else if (word === "--dry-run") dry = true;
+    else if (/^-[^-]/.test(word)) {
+      for (let at = 1; at < word.length; at++) {
+        const flag = word[at]!;
+        if (flag === "e") { if (at === word.length - 1) i++; break; }
+        if (flag === "f") force = true;
+        if (flag === "n") dry = true;
+      }
+    }
+  }
+  return force && !dry;
+}
+
 /** Peel only known transparent argv wrappers; no aliases or executable discovery. */
 function unwrapped(input: string[]): string[] {
   const words = [...input];
@@ -234,29 +276,35 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
   }
   if (command.outputs.some(p => cwd.some(at => outside(p, root, at)))) found.add("destroy");
   if (program === "git") {
-    while (words[0]?.startsWith("-")) {
-      const flag = words.shift();
-      if (flag === "-C" || flag === "-c" || flag === "--git-dir" || flag === "--work-tree") words.shift();
-      else if (!flag?.startsWith("--git-dir=") && !flag?.startsWith("--work-tree=") && flag !== "--no-pager" && flag !== "-P" && flag !== "--literal-pathspecs") return;
+    const heads = commandHeads(words, ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"],
+      ["-P", "-p", "--no-pager", "--paginate", "--literal-pathspecs", "--bare", "--no-optional-locks", "--no-replace-objects"], ["push", "reset", "clean", "branch"]);
+    for (const { name: sub, args } of heads) {
+      if (sub === "push") found.add("publish");
+      if (sub === "reset" && args.some(w => w === "--hard" || w.startsWith("--hard="))) found.add("destroy");
+      if (sub === "clean" && forcedClean(args)) found.add("destroy");
+      if (sub === "branch" && (flags(args, "D") || args.includes("--delete") && args.includes("--force"))) found.add("destroy");
     }
-    const sub = words.shift();
-    if (sub === "push") found.add("publish");
-    if (sub === "reset" && words.some(w => w === "--hard" || w.startsWith("--hard="))) found.add("destroy");
-    if (sub === "clean" && flags(words, "f") && flags(words, "d") && flags(words, "x")) found.add("destroy");
-    if (sub === "branch" && (flags(words, "D") || words.includes("--delete") && words.includes("--force"))) found.add("destroy");
   }
   if (["npm", "cargo", "pnpm", "yarn", "bun"].includes(program)) {
-    const args = [...words];
-    while (args[0]?.startsWith("-")) {
-      const flag = args.shift()!;
-      if (["--registry", "--filter", "--prefix", "--cwd", "--dir"].includes(flag)) args.shift();
-      if (flag === "--") break;
+    const valuesByProgram: Record<string, string[]> = {
+      npm: ["--registry", "--prefix", "-C", "--cache", "--userconfig", "--globalconfig", "--loglevel", "--workspace", "-w"],
+      pnpm: ["--registry", "--dir", "-C", "--filter", "-F", "--store-dir", "--reporter", "--loglevel"],
+      yarn: ["--registry", "--cwd", "--cache-folder", "--mutex", "--use-yarnrc", "--modules-folder", "--network-concurrency", "--network-timeout"],
+      cargo: ["--color", "--config", "--manifest-path", "--target-dir"],
+      bun: ["--registry", "--cwd", "-C", "--filter", "-F", "--env-file", "--config", "-c", "--cache-dir"],
+    };
+    const values = valuesByProgram[program]!;
+    const booleans = ["--global", "-g", "--offline", "--locked", "--frozen", "--silent", "--quiet", "-q", "--verbose", "-v"];
+    const actions = ["publish", "install", "i", "add", "global", "npm"];
+    const heads = commandHeads(words, values, booleans, actions);
+    for (const head of heads) {
+      const candidates = program === "yarn" && head.name === "npm" ? commandHeads(head.args, values, booleans, actions) : [head];
+      for (const { name: sub, args } of candidates) {
+        if (sub === "publish") found.add("publish");
+        const global = words.includes("--global") || flags(words, "g");
+        if ((program === "cargo" && sub === "install") || (["install", "i", "add"].includes(sub) && global) || (program === "yarn" && sub === "global" && args[0] === "add")) found.add("install");
+      }
     }
-    if (program === "yarn" && args[0] === "npm") args.shift();
-    const sub = args[0];
-    if (sub === "publish") found.add("publish");
-    const global = words.includes("--global") || flags(words, "g");
-    if ((program === "cargo" && sub === "install") || (["install", "i", "add"].includes(sub ?? "") && global) || (program === "yarn" && words[0] === "global" && words[1] === "add")) found.add("install");
   }
   if (program === "pipx" && words[0] === "install" || program === "brew" && ["install", "reinstall"].includes(words[0] ?? "") || ["pip", "pip3"].includes(program) && words[0] === "install" && words.includes("--user")) found.add("install");
   if (program === "gh") {
