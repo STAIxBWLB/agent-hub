@@ -160,3 +160,19 @@ test("the same window with no resetsAt change and used falling by 0.5 or more is
   expect(ledger[0]).toMatchObject({ type: "quota_reset", cause: "used_dropped", previousUsed: 0.8, used: 0.1 });
   budget.close();
 });
+
+// Found by reading the pause code for every budget_pauses write: INSERT OR REPLACE over an expired record that nobody was attached to resume
+// ended the old pause silently, so the ledger held two open pauses for one peer.
+test("a new pause that replaces an expired record closes the old pause first, so the ledger never holds two open pauses (#683 U1)", async () => {
+  const { budget, clock, ledger, settle, reading } = setup();
+  const sink = (budget as unknown as { hooks: BudgetHooks }).hooks; sink.attached = () => false; // nobody to receive the resume notice
+  budget.report("codex", reading("5h", 0.95, T0 + 60 * MIN)); await settle();
+  clock.now = T0 + 90 * MIN; budget.tick();                                          // the window reset, but the record stays: no peer to tell
+  budget.report("codex", reading("5h", 0.97, T0 + 400 * MIN), true); await settle(); // a hard refusal starts a new pause at once
+  const trail = ledger.filter(entry => entry.type !== "quota_reset");
+  expect(trail.map(entry => entry.type)).toEqual(["budget_pause", "budget_resume", "budget_pause"]);
+  expect(trail[1]).toMatchObject({ by: "hub", window: "5h", resetsAt: T0 + 60 * MIN, reason: "replaced by a new pause after its window reset" });
+  let open = 0; for (const entry of trail) { open += entry.type === "budget_pause" ? 1 : -1; expect(open).toBeLessThanOrEqual(1); expect(open).toBeGreaterThanOrEqual(0); }
+  expect(open).toBe(1);
+  budget.close();
+});

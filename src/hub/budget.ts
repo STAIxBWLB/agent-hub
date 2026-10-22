@@ -362,6 +362,9 @@ export class Budget {
       if (this.recoveryHeld) { this.deferred = true; return; }
       if (this.closed) return; // the hub is shutting down: nothing is recorded, the next run sees the reading again
       this.db.query("INSERT OR REPLACE INTO budget_pauses (peer, since, resets_at, reason, summary, moved) VALUES (?, ?, ?, ?, ?, ?)").run(peer, this.now(), resetsAt, reason, summary ?? null, JSON.stringify(open?.moved ?? []));
+      // A new pause that replaces an expired record (its window reset while nobody was attached to be resumed) ends that pause: without this
+      // the ledger would hold two open pauses for one peer, and a pause-duration timeline would be wrong (#683 U1).
+      if (open) this.writeLedger({ type: "budget_resume", peer, reason: "replaced by a new pause after its window reset", window: reasonWindow(open.reason), resetsAt: open.resetsAt, by: "hub" });
       this.writeLedger({ type: "budget_pause", peer, reason, window: worst.id, resetsAt, by: "hub" });
       this.hooks.pause(peer);
       this.hooks.notify(`budget: ${peer} paused, ${reason}; resumes ${new Date(resetsAt).toLocaleTimeString()}${summary ? "; checkpoint received" : hard ? "; hard limit, no checkpoint" : "; no checkpoint"}`);
