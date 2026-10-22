@@ -1451,6 +1451,14 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
   turns the stale-notice drop off, for a controlled comparison only (the #106
   ablation in `docs/cooperbench.md`); the hub logs it at start.
 
+## Always-ask action policy foundation (#636)
+
+The classifier, local configuration and session budget counter are available in source. Adapter enforcement is pending: each peer's `ahub status` row says `always-ask not enforceable: adapter integration pending`. A default-on policy does not add a pre-tool check to a native CLI by itself.
+
+Only ignored, untracked `.agenthub/config.local.json` can hold `action_policy`. Its optional keys are `enabled` (default true), `always_ask` (a distinct subset of publish, external-write, destroy, install; default all), and `budgets` (per-class integers 0..1000; defaults 1, 5, 3, 2 respectively). Shared `config.json` cannot set this policy and gets no confirmation offer. A tracked or unknown-trust local file is ignored. Use `ahub settings set action_policy.enabled <true|false>` or `ahub settings set action_policy.budgets.<class> <n>` for registered settings; change `always_ask` in the local file and use the existing confirmed terminal reload. Policy publication invalidates cached grants and pending approval challenges. Startup currently reads the untracked local policy without a retained confirmation; this ceiling must be addressed before the adapter gates ship (#312/#313).
+
+The ledger asks first and after the approved class budget is spent. Adapter integrations must request that class allowance explicitly; an ordinary one-time answer does not seed the cache, and a cached budget never suppresses a prompt required by the native mode. One approval includes its own invocation; budget zero asks for every invocation. A fresh native session resets counters, and status polls do not bind sessions. Unknown command syntax retains native permission handling. This foundation never changes a sandbox or bypasses a denied permission; per-adapter enforcement tests land with their integrations.
+
 ## Permission modes for running peers
 
 Use a plain terminal to inspect or change a running peer:

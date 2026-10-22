@@ -1,3 +1,4 @@
+import { ACTION_CLASSES } from "./action-class.ts";
 import { definitionOf, type KindMap, type ProjectAdapterCatalog, ADAPTERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS } from "../adapters/registry.ts";
 import { createHash } from "node:crypto";
 import { types } from "node:util";
@@ -59,6 +60,8 @@ export const SETTINGS: readonly SettingDef[] = [
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `catalog_roles.${peer}`, group: "Roles", label: `${peer}: catalog guidance`, type: "roles", store: "config", applies: "next use", risk: "safe", path: ["catalog_roles", peer] })),
   { key: "scoped_grants.protect_instructions", group: "Permissions", label: "Ask before writing instruction files", type: "boolean", store: "config", applies: "live", risk: "raises", floor: true, path: ["protect_instruction_files"] },
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `roster.${peer}`, group: "Roster", label: `${peer}: participates`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", peer] })),
+  { key: "action_policy.enabled", group: "Permissions", label: "Always-ask action policy", type: "boolean", store: "config", applies: "live", risk: "raises", floor: true, path: ["action_policy", "enabled"] },
+  ...ACTION_CLASSES.map((kind): SettingDef => ({ key: `action_policy.budgets.${kind}`, group: "Permissions", label: `${kind}: approved session budget`, type: "integer", min: 0, max: 1000, store: "config", applies: "live", risk: "raises", floor: 0, path: ["action_policy", "budgets", kind] })),
   ...SETTING_PEERS.filter(peer => !definitionOf(peer)?.permission.unmanaged).map((peer): SettingDef => ({ key: `permission.${peer}`, group: "Permissions", label: `${peer}: mode now`, type: "enum", values: PERMISSION_MODES, store: "runtime", applies: "live", risk: "raises", floor: "ask", path: [peer] })),
   ...SETTING_PEERS.filter(peer => !definitionOf(peer)?.permission.unmanaged).map((peer): SettingDef => ({ key: `permission_modes.${peer}`, group: "Permissions", label: `${peer}: mode at next peer start`, type: "enum", values: PERMISSION_MODES, store: "config", applies: "next use", risk: "raises", floor: "ask", path: ["permission_modes", peer] })),
   ...START_MODE_PEERS.map((peer): SettingDef => ({ key: `peers.${peer}.start_mode`, group: "Start", label: `${peer}: start mode (tui unless set)`, type: "enum", values: START_MODES, store: "config", applies: "next use", risk: "raises", floor: "tui", path: ["peers", peer, "start_mode"] })),
@@ -470,7 +473,7 @@ export function settingRows(input: {
   const scalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" || typeof value === "number" ? value : Array.isArray(value) ? value.map(String) : null;
   return projectSettings(input.instances, input.adapterCatalog).map((def): SettingRow => {
     const base = { key: def.key, group: def.group, label: def.label, type: def.type, ...(["integer", "number"].includes(def.type) ? { min: def.min, max: def.max } : {}), applies: def.applies, ...(def.restartReason ? { restartReason: def.restartReason } : {}), risk: def.risk, ...(def.floor === undefined ? {} : { floor: def.floor }),
-      ...(def.key === "scoped_grants.protect_instructions" ? { hint: "AGENTS.md, CLAUDE.md and QWEN.md remain grantable by default; enabling this asks before scoped writes and edits" } : def.group === "Permissions" ? { hint: permissionBoundary(def.path.at(-1)!, input.instances, input.adapterCatalog) } : {}) };
+      ...(def.key === "scoped_grants.protect_instructions" ? { hint: "AGENTS.md, CLAUDE.md and QWEN.md remain grantable by default; enabling this asks before scoped writes and edits" } : def.key.startsWith("action_policy.") ? { hint: "not enforced yet: adapter integration pending" } : def.group === "Permissions" ? { hint: permissionBoundary(def.path.at(-1)!, input.instances, input.adapterCatalog) } : {}) };
     if (def.locked) return { ...base, values: def.values, file: def.store === "runtime" ? "this hub run" : CONFIG_LOCAL,
       source: "instance declaration", value: "read-only", fileValue: "read-only", locked: def.locked, note: def.locked };
     if (def.store === "runtime") {
@@ -485,7 +488,7 @@ export function settingRows(input: {
     if (def.type === "roles" && input.roles) { const roles = input.roles(def.path[1]!); return { ...base, ...roles, fileValue: roles.pending !== undefined ? roles.pending : roles.value, file: CONFIG_LOCAL, source: valueAt(local, def.path) !== undefined ? CONFIG_LOCAL : valueAt(shared, def.path) !== undefined ? "config.json" : "profile/default", hint: "Guidance only; grants no tool or permission. At most two roles, applied at the next peer start." }; }
     const value = scalar(input.running(def.path));
     const stored = input.next ? scalar(input.next(def.path)) : value;
-    const source = valueAt(local, def.path) !== undefined ? CONFIG_LOCAL : valueAt(shared, def.path) !== undefined ? "config.json" : "default";
+    const source = valueAt(local, def.path) !== undefined ? CONFIG_LOCAL : !def.key.startsWith("action_policy.") && valueAt(shared, def.path) !== undefined ? "config.json" : "default";
     const dropped = ignoredLine(input.ignored, def);
     return { ...base, ...(def.values ? { values: def.values } : {}), file: CONFIG_LOCAL, value, fileValue: stored, source, ...(same(value, stored) ? {} : { pending: stored }),
       ...(!input.next ? { note: "the config files do not load; fix them in your editor" } : dropped ? { note: `the hub does not read this value: ${dropped}` } : {}) };

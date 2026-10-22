@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add the #636 action-policy foundation: a pure classifier, machine-local always-ask configuration, session-bound approval budgets and explicit per-peer enforcement status. Adapter pre-tool gates remain pending; status reports that limit instead of claiming protection.
 - Bug-labelled tasks gain source-labelled red-first receipts and PR test-integrity readbacks. Enforce blocks review and approval when proof is missing/unknown or a pre-existing test is modified/deleted; advise shows the findings. Status and merge queues retain private metadata screening (#481 S4).
 
 ## 0.12.45
