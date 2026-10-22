@@ -1,3 +1,4 @@
+import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, HOST_CODE_SYMBOLS } from "./task-code-symbols.ts";
 import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
 import { completePlanInventory, planConformance, planConformanceBlockers, planFingerprint, type PlanConformance } from "./plan-conformance.ts";
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
@@ -588,7 +589,7 @@ export class Tasks {
   /** A task as a cloud peer may see it. */
 
   publicView(task: Task, fullHistory = false): Record<string, unknown> {
-    const { title, detail, history, external, cancelled, ...taskRest } = task;
+    const { title, detail, history, external, cancelled, codeSymbols, ...taskRest } = task;
     const rest = { ...taskRest, ...(history.some(h => h.by === USER && h.planDeparture) ? { planDepartureAccepted: true } : {}) };
     if (this.isPii(task)) return { ...rest, actualDates: actualTaskDates(task), refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: stageDefinition(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc.stage)?.base ?? "unknown" } } : {}), title: "[pii]", detail: "[pii]" };
     if (rest.sdlc?.redFirst && !this.publicMetadataText(JSON.stringify(rest.sdlc.redFirst))) {
@@ -612,7 +613,9 @@ export class Tasks {
       ...(h.sweep ? { sweep: { kind: h.sweep.kind, activity: h.sweep.activity, step: h.sweep.step, at: h.sweep.at } } : {}),
     }));
     const sets = this.reviewFindingSets(task), current = findingsForHead(sets, this.findingHead(task));
-    return { ...rest, ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets, task.refs.commit) } : {}), title, detail, history: publicHistory };
+    const symbolRepository = codeSymbols && this.codeSymbolsRepository(task);
+    const publicSymbols = codeSymbols && symbolRepository ? publicTaskCodeSymbols(codeSymbols, this.reviewHead(task), symbolRepository.key, this.publicMetadataText) : undefined;
+    return { ...rest, ...(publicSymbols ? { codeSymbols: publicSymbols } : {}), ...(current.length ? { findings: findingTally(current) } : {}), ...(cancelled ? { cancelled: { ...cancelled, reason: screenHistoryText(cancelled.reason, "cancellation", cancelled.withheld), ...(cancelled.supersededBy ? { supersededBy: screenHistoryText(cancelled.supersededBy, "supersession", cancelled.withheld) } : {}) } } : {}), ...(external && this.nameable(external.url) ? { external } : {}), actualDates: actualTaskDates(task), ...(((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.sdlc?.config().workflow === "gsd-lite") ? { lifecycle: sdlcStatus(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc, undefined, this.workflowView(task), undefined, sets, task.refs.commit) } : {}), title, detail, history: publicHistory };
   }
 
   /** Console results expose direct approval and delivery holds, not just the chosen peer ids. */
@@ -3088,7 +3091,7 @@ export class Tasks {
     task = current();
     let reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off") { reviewEvidence = await this.lifecycleGate(task, "review"); task = current(); }
-    const reviewAdmission = task.reviewer ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.withLink(staged, link, refs)) : undefined;
+    const reviewAdmission = task.reviewer || this.d.prepareReviewBrief ? await this.reviewRequestAdmission(task, refs, true, by, reviewEvidence, undefined, staged => this.withLink(staged, link, refs), !task.reviewer) : undefined;
     task = current();
     // A member of a silent cohort (issue #107): its done is an intent, and the last of them integrates first.
     const cohort = this.cohorts.of(task.id);
@@ -3125,7 +3128,7 @@ export class Tasks {
     this.checking.set(task.id, task.owner);
     const checkedRefs = cleanRefs(refs);
     this.warmRepository({ ...task, refs: { ...task.refs, ...checkedRefs } });
-    const pending = this.d.board.update(task.id, by, "done (checking)", { refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined });
+    const pending = this.d.board.update(task.id, by, "done (checking)", { codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...checkedRefs } }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined }, task.history.length, HOST_CODE_SYMBOLS);
     this.releaseNotice(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
     const seen = { events: pending.history.length, owner: pending.owner };
     this.pendingChecks++;
@@ -3266,8 +3269,8 @@ export class Tasks {
       reviewer = selection?.reviewer ?? task.reviewer;
     }
     // A delayed local check needs a new readback; a completion-selected reviewer also needs optional facts in off mode.
-    if (reviewer && !admission && ((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.prepareReviewBrief)) {
-      admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence, undefined, staged => this.withLink(staged, link, refs));
+    if (!admission && ((reviewer && (this.d.sdlc?.config().mode ?? "off") !== "off") || this.d.prepareReviewBrief)) {
+      admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence, undefined, staged => this.withLink(staged, link, refs), !reviewer);
       task = this.withLink(this.completionCurrent(task.id, by, false), link, refs);
     }
     selection = this.poolReview(task, refs);
@@ -3278,7 +3281,7 @@ export class Tasks {
     const completedRefs = cleanRefs(refs);
     this.warmRepository({ ...task, refs: { ...task.refs, ...completedRefs } });
     const noWrites = this.noWritesRecorded({ ...task, refs: { ...task.refs, ...completedRefs } });
-    const next = this.d.board.update(task.id, by, "done", { state: reviewer ? "in_review" : "approved", ...(selection ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...this.planObservation(task), withheld: withheld || undefined, ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection), ...(reviewCost ? { reviewCost } : {}) });
+    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...completedRefs } }), state: reviewer ? "in_review" : "approved", ...(selection ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...this.planObservation(task), withheld: withheld || undefined, ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection), ...(reviewCost ? { reviewCost } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`, withheld);
     this.tellCompleted(next, summary, withheld);
@@ -3324,8 +3327,14 @@ export class Tasks {
     const signatures = (task.plan?.signatures ?? []).filter(this.nameable);
     const first = (summary ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 300);
     const line = first && !withheld && this.nameable(first) ? first : undefined;
+    const symbolRepository = task.codeSymbols && !this.isPii(task) ? this.codeSymbolsRepository(task) : undefined;
+    const otherRepository = hit.task.codeSymbols && !this.isPii(hit.task) ? this.codeSymbolsRepository(hit.task) : undefined;
+    const sameFileDifferentSymbols = !!symbolRepository && symbolRepository.key === otherRepository?.key && !this.isPii(task) && !this.isPii(hit.task) && taskCodeSymbolsDisjoint(
+      task.codeSymbols, hit.task.codeSymbols, this.reviewHead(task), this.reviewHead(hit.task), symbolRepository.key,
+      hit.paths, false, this.publicMetadataText);
+
     return [
-      `Task #${task.id} (owner ${task.owner}) is done and touches your open #${hit.task.id} on ${this.where(hit)}. Check your work against it before you go on.`,
+      `Task #${task.id} (owner ${task.owner}) is done and touches your open #${hit.task.id} on ${this.where(hit)}${sameFileDifferentSymbols ? " (same file, different symbols; observed names only, deleted definitions may be missing)" : ""}. Check your work against it before you go on.`,
       paths.length ? `Changed files: ${paths.join(", ")}` : "",
       signatures.length ? `New or changed signatures: ${signatures.join("; ")}` : "",
       line ? `Summary: ${line}` : "",
@@ -3366,7 +3375,7 @@ export class Tasks {
 
   /** The one place a review request is written: the first reviewer and a replacement get the same text, refs and privacy. */
   /** Review admission is separate from brief construction (#228). All refusals precede the requesting done's writes. */
-  private async reviewRequestAdmission(task: Task, refs?: TaskRefs, preEffect = true, actor: PeerId = task.owner ?? USER, previous?: PrEvidence, sameRequest?: () => boolean, stage: (task: Task) => Task = task => task): Promise<ReviewReadiness | undefined> {
+  private async reviewRequestAdmission(task: Task, refs?: TaskRefs, preEffect = true, actor: PeerId = task.owner ?? USER, previous?: PrEvidence, sameRequest?: () => boolean, stage: (task: Task) => Task = task => task, prepareOnly = false): Promise<ReviewReadiness | undefined> {
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
     if (mode === "off" && !this.d.prepareReviewBrief) return undefined;
     let quietDrift = false;
@@ -3393,7 +3402,7 @@ export class Tasks {
       catch { /* Optional code facts must not refuse a review. */ }
       guard();
     }
-    if (mode === "off") return undefined;
+    if (mode === "off" || prepareOnly) return undefined;
     const expected = cleanRefs(refs).commit ?? task.refs.commit ?? task.sdlc?.head ?? task.sdlc?.localHead;
     const read: SdlcGh = (args, timeout, cwd, cap) => {
       guard();
@@ -3504,6 +3513,25 @@ export class Tasks {
     if (reviewer === USER) this.releaseNotice(`task ${this.publicTitle(next)}: blocked: no reviewer can run; the planner or person must review`);
     else this.releaseNotice(`task ${this.publicTitle(next)}: fallback review request unavailable`, () => this.sendReview(next, reviewer, "", admission));
     return next;
+  }
+
+  private codeSymbolsRepository(task: Task) {
+    const repository = this.repositories.scope(task.refs);
+    if (task.sdlc?.repo && this.repositories.scope({ repo: task.sdlc.repo }).key !== repository.key) return undefined;
+    return repository;
+  }
+
+  /** Host observations are saved only with an admitted transition, never by an optional read. */
+  private observedCodeSymbols(task: Task) {
+    if (this.isPii(task) || !task.refs.commit) return undefined;
+    const repository = this.codeSymbolsRepository(task);
+    // ponytail: the brief analyzes the validated project execution root. Foreign repositories stay unknown
+    // until the brief carries independent repository provenance; a model's refs.repo cannot supply that proof.
+    if (!repository || repository.key !== this.repositories.project.key) return undefined;
+    try {
+      const brief = this.d.reviewBrief?.(task);
+      return brief && !("unavailable" in brief) ? buildTaskCodeSymbols(brief, repository.key, this.publicMetadataText) : undefined;
+    } catch { return undefined; } // Optional metadata never costs the admitted result.
   }
 
   /** #520: the rendered review brief of a non-PII task's commit, or why there is none; empty without a commit. */

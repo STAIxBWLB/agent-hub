@@ -11,7 +11,7 @@ import { hubGitSync } from "./git.ts";
 export interface BriefFile { path: string; status: string; oldPath?: string; insertions?: number; deletions?: number }
 export interface BriefExcluded { path: string; status: string; oldPath?: string; reason: string }
 export interface ReviewBrief {
-  symbols?: { state: "known" | "unknown"; files: {path:string; symbols:CodeSymbol[]}[]; planned: string[]; unplanned: string[]; unseen: string[] };
+  symbols?: { state: "known" | "unknown"; complete?: boolean; files: {path:string; symbols:CodeSymbol[]}[]; planned: string[]; unplanned: string[]; unseen: string[] };
   head: string;
   /** The default branch the head is compared with: origin/HEAD, origin/main or origin/master. */
   base: string;
@@ -162,7 +162,7 @@ export function withCodeSymbols(brief:ReviewBrief,result:CodeFactResult<CodeSymb
     const normalize=(name:string)=>name.replace(/\(.*$/," ").trim();
     const matches=(left:string,right:string)=>{const a=normalize(left),b=normalize(right);return a.includes(".")&&b.includes(".")?a===b:a.split(".").at(-1)===b.split(".").at(-1);};
     const names=[...new Set(changed.map(s=>s.name))];
-    return {...brief,symbols:{state:"known",files:[...paths].map(path=>({path,symbols:changed.filter(s=>s.path===path)})),
+    return {...brief,symbols:{state:"known",complete:changed.length===result.value.length && brief.withheld===0,files:[...paths].map(path=>({path,symbols:changed.filter(s=>s.path===path)})),
       planned:names.filter(name=>planned.some(p=>matches(p,name))),unplanned:names.filter(name=>!planned.some(p=>matches(p,name))),unseen:planned.filter(p=>!names.some(name=>matches(p,name)))}};
   } catch { return unknown; }
 }
