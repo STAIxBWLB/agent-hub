@@ -3265,8 +3265,8 @@ export class Tasks {
       selection = this.poolReview(task, refs);
       reviewer = selection?.reviewer ?? task.reviewer;
     }
-    // A delayed local check needs a new readback; the immediate done path already admitted before effects.
-    if (reviewer && !admission && (this.d.sdlc?.config().mode ?? "off") !== "off") {
+    // A delayed local check needs a new readback; a completion-selected reviewer also needs optional facts in off mode.
+    if (reviewer && !admission && ((this.d.sdlc?.config().mode ?? "off") !== "off" || this.d.prepareReviewBrief)) {
       admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence, undefined, staged => this.withLink(staged, link, refs));
       task = this.withLink(this.completionCurrent(task.id, by, false), link, refs);
     }

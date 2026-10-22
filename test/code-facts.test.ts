@@ -173,6 +173,6 @@ test("off-mode completion-selected reviewer receives prepared fake-ripwire symbo
   expect(done).toMatchObject({state:"in_review",reviewer:"claude-review"});
   for(let i=0;i<100&&!received.some(body=>body.startsWith("Review task"));i++)await Bun.sleep(10);
   const request=received.find(body=>body.startsWith("Review task"));
-  expect(request).toContain("retained (fn");expect(request).toContain("added (fn");expect(symbols.state).toBe("known");
+  expect(request).toContain("retained (fn");expect(request).toContain("added (fn");expect(symbols).toMatchObject({state:"known"});
  } finally {await facts.close();bus.closeJournal();board.close();f.close();}
 },20000);
