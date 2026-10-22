@@ -61,6 +61,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Console and dashboard | on | control-request latency, connection timeouts in `hub.log` |
 | Usage view (#683) | pending | its own panels |
 | Settings reload | on | reloads applied, pending restarts |
+| Config editing from the console and dashboard (#689) | pending; hand edits of `config.local.json` meanwhile | edits applied, refused by validation, pending restarts |
 | Upgrade and recovery | on, per release | upgrade receipts in `docs/verification/` |
 | Benchmarks (#251, #637) | off: `bench.enabled = false`; routing gate pending | bench receipts |
 
