@@ -142,8 +142,10 @@ test("the usage op takes a task filter, marks a private task, and refuses a bad 
   for (const task of [0, -1, 1.5, "1", null, 1e20]) expect(await console_.request({ t: "usage", by: "peer", task })).toMatchObject({ ok: false, error: "task is a positive task id" });
 });
 
-test("a hub that starts on a log larger than one pass answers the first usage request from the whole log, not the first pass (#683 U3)", async () => {
-  // 110k events is about 25 MB: more than three 8 MiB passes (the daemon's start poll and the op's one poll cover two). Before the fix the op polled once and a peer's recent usage read as missing.
+// The contract of the usage op on a log larger than one pass (spec, operations.md): an answer either covers the whole log or carries `behind: true`, and
+// repeated requests reach `behind` undefined with the totals of the whole log. It must not depend on how fast the machine folds within the 250 ms budget.
+test("on a log larger than one pass a usage answer is either complete or behind, and repeated requests converge on the whole log (#683 U3)", async () => {
+  // 110k events is about 25 MB: more than three 8 MiB passes. Before the fix the op polled once and answered from the first pass without saying so.
   const big = (stateDir: string) => {
     const lines: string[] = [];
     for (let i = 0; i < 110_000; i++) lines.push(JSON.stringify({ v: 1, at: new Date(Date.UTC(2026, 9, 1, 0, 0, 0) + i * 1000).toISOString(), type: "tokens", peer: "codex", n: 1, attribution: "unattributed", pad: "x".repeat(120) }));
@@ -151,11 +153,33 @@ test("a hub that starts on a log larger than one pass answers the first usage re
     appendFileSync(join(stateDir, "events.jsonl"), lines.join("\n") + "\n");
   };
   const { console_, log } = await rig({}, big);
-  expect(statSync(log).size).toBeGreaterThan(3 * 8 * 1024 * 1024);
-  const peers = await console_.request({ t: "usage", by: "peer" });
-  expect(peers.ok, JSON.stringify(peers)).toBe(true);
-  expect(peers.behind).toBeUndefined();
-  const rows = new Map(peers.usage.rows.map((r: any) => [r.key, r]));
-  expect((rows.get("late") as any).counted).toEqual({ value: 7, source: "count" });        // the last line of the log, past the first pass
-  expect((rows.get("codex") as any).counted.value).toBe(1050 + 110_000);
+  const size = statSync(log).size;
+  expect(size).toBeGreaterThan(3 * 8 * 1024 * 1024);
+  const answers: any[] = [];
+  const deadline = Date.now() + 15_000;                                                       // bounded: well under the 20 s test cap
+  do {
+    const reply = await console_.request({ t: "usage", by: "peer" });
+    expect(reply.ok, JSON.stringify(reply)).toBe(true);
+    answers.push(reply);
+    // Never complete-looking but partial: an answer without `behind` has folded the whole log, and a behind one has not.
+    if (reply.behind === undefined) expect(reply.usage.throughOffset).toBe(size);
+    else { expect(reply.behind).toBe(true); expect(reply.usage.throughOffset).toBeLessThan(size); }
+  } while (answers.at(-1).behind !== undefined ? Date.now() < deadline : false);
+  const last = answers.at(-1);
+  expect(last.behind, `still behind after ${answers.length} requests`).toBeUndefined();   // repeated requests converge
+  const rows = new Map(last.usage.rows.map((r: any) => [r.key, r]));
+  expect((rows.get("late") as any).counted).toEqual({ value: 7, source: "count" });        // the last line of the log, past the first passes
+  expect((rows.get("codex") as any).counted.value).toBe(1050 + 110_000);                   // the totals of the whole log
+  // once converged, a further request is complete at once
+  const again = await console_.request({ t: "usage", by: "peer" });
+  expect(again.behind).toBeUndefined(); expect(again.usage.throughOffset).toBe(size);
+});
+
+test("a log of ordinary size answers the first usage request complete, with no behind flag (#683 U3)", async () => {
+  const { console_, log } = await rig();
+  const first = await console_.request({ t: "usage", by: "peer" });
+  expect(first.ok, JSON.stringify(first)).toBe(true);
+  expect(first.behind).toBeUndefined();
+  expect(first.usage.throughOffset).toBe(statSync(log).size);
+  expect((first.usage.rows.find((r: any) => r.key === "codex")).counted).toEqual({ value: 1050, source: "count" });
 });
