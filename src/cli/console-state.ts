@@ -1070,8 +1070,9 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
       }
     }
     if (s.panel === 7) {
-      const note = s.usage?.problem ? `usage unavailable: ${s.usage.problem}` : !s.usage?.life ? "usage loading..." : `usage through ${s.usage.at ? relative(s.usage.at, now) : "now"}: today is the UTC day, 7d the last seven UTC days`;
-      lines.push(fitLine([span(note, s.usage?.problem ? "failure" : s.usage?.life ? "info" : "attention")], columns));
+      const note = s.usage?.problem ? `usage unavailable: ${s.usage.problem}` : !s.usage?.life ? "usage loading..." : s.usage.behind ? "usage still catching up with the event log: numbers are partial and refresh in a few seconds"
+        : `usage through ${s.usage.at ? relative(s.usage.at, now) : "now"}: today is the UTC day, 7d the last seven UTC days`;
+      lines.push(fitLine([span(note, s.usage?.problem ? "failure" : !s.usage?.life || s.usage.behind ? "attention" : "info")], columns));
     }
     if (s.panel === 3 && s.backlogView) {
       lines.push(fitLine([span(s.tasksKnown === false ? "backlog loading..." : `backlog ${data.length}`, s.tasksKnown === false ? "attention" : "info")], columns));

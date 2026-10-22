@@ -229,7 +229,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
       if (usageReplies) {
         const [today, week, life, limits, task] = usageReplies, failed = usageReplies.find(reply => reply?.ok === false);
         if (failed || !today?.usage || !week?.usage || !life?.usage || !limits?.limits) state.usage = { ...state.usage, problem: String(failed?.error ?? "usage is unavailable") };
-        else state.usage = { today: today.usage, week: week.usage, life: life.usage, limits: limits.limits, at: Date.now(),
+        else state.usage = { today: today.usage, week: week.usage, life: life.usage, limits: limits.limits, at: Date.now(), ...(usageReplies.some(reply => reply?.behind) ? { behind: true } : {}),
           ...(usageTask !== undefined && task?.usage && state.usageTask === usageTask ? { task: task.usage, taskId: usageTask } : {}) };
       }
       if (tasks?.ok) { const parsed = JSON.parse(tasks.text); if (Array.isArray(parsed)) {

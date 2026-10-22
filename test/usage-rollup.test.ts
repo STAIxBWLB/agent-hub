@@ -313,3 +313,15 @@ test("a task filter returns that task's tokens per peer, marks a private task, a
   expect(r.query({ by: "peer", task: 1, since: Date.UTC(2026, 9, 10) }).rows).toEqual([]);   // the filter combines with the period
   r.close();
 });
+
+test("catchUp with a time budget says when the roll-up is still behind the log, and finishes when it is not (#683 U3)", () => {
+  const f = fixture();
+  f.write(Array.from({ length: 400 }, () => [tokens("codex", 4)] as [HubEvent]));
+  const r = f.open({ maxBytesPerPass: 2_000 });
+  expect(r.catchUp(0)).toBe(false);                                                         // one pass, no time left: behind, and it says so
+  expect(r.query({ by: "peer" }).rows[0]!.counted.value).toBeLessThan(1600);
+  expect(r.catchUp(5_000)).toBe(true);
+  expect(r.query({ by: "peer" }).rows[0]!.counted.value).toBe(1600);
+  expect(r.catchUp(0)).toBe(true);                                                          // nothing left to fold: not behind
+  r.close();
+});

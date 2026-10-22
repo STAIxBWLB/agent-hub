@@ -147,7 +147,8 @@ source (`native`: the provider's own total, `hub`: what the hub counted for a pe
 is `unknown` and a period with no records is `no records`, never 0. Enter opens a peer: today, 7 days and lifetime with input, output, cache read, cache
 write and the hub count each on its own, and the last three resets. The task selected in Tasks when you press `7` is shown below the table with its tokens
 per peer (`#id [pii]` for a private task, never a title). The panel asks the hub's `usage` op only while it is open, and a refusal shows as
-`usage unavailable`. The numbers come from the roll-up of `ahub usage`, so the console and the CLI agree.
+`usage unavailable`. The numbers come from the roll-up of `ahub usage`, so the console and the CLI agree. A request folds the event log first, within 1.5 s;
+when a very large log is not folded yet the answer carries `behind: true`, the panel says `still catching up` and `ahub usage` prints a warning on stderr, so a partial number is never shown as the whole.
 
 The console attention companion (#280) shows waiting, blocked, review, working,
 idle or asleep with separate action/watch counts. Outside the Tasks table, `n` selects the exact approval,

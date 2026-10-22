@@ -1793,6 +1793,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       : { t: "usage", op: "query", by: by ?? "peer", ...(from ? { since: from } : {}) }, 35_000);
     hub.close();
     if (!reply.ok) return fail(String(reply.error ?? "usage refused"));
+    if (reply.behind) process.stderr.write("ahub: the usage roll-up is still catching up with the event log: these numbers are partial; run it again in a few seconds\n");
     if (options.json) return console.log(JSON.stringify(sub === "limits" ? { limits: reply.limits, current: reply.current } : sub === "total" ? reply.total : reply.usage, null, 2));
     printOutput(sub === "limits" ? renderLimits(reply.limits, reply.current, options.columns) : sub === "total" ? renderTotal(reply.total, options.columns) : renderUsage(reply.usage, options.columns), options.color);
   },

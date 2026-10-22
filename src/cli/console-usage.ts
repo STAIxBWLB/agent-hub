@@ -9,6 +9,8 @@ export interface UsageState {
   /** The selected task's tokens per peer, with the task id it was asked for. */
   task?: UsageResult; taskId?: number;
   at?: number; problem?: string;
+  /** The hub's roll-up was still behind the event log when it answered: the numbers are partial (a later poll catches up). */
+  behind?: boolean;
 }
 export interface UsagePeerRow { id: string }
 

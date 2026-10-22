@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
@@ -140,4 +140,22 @@ test("the usage op takes a task filter, marks a private task, and refuses a bad 
   const pii = await console_.request({ t: "usage", by: "peer", task: 2 });
   expect(pii.usage.taskPii).toBe(true); expect(JSON.stringify(pii)).not.toContain(SECRET_TITLE);
   for (const task of [0, -1, 1.5, "1", null, 1e20]) expect(await console_.request({ t: "usage", by: "peer", task })).toMatchObject({ ok: false, error: "task is a positive task id" });
+});
+
+test("a hub that starts on a log larger than one pass answers the first usage request from the whole log, not the first pass (#683 U3)", async () => {
+  // 110k events is about 25 MB: more than three 8 MiB passes (the daemon's start poll and the op's one poll cover two). Before the fix the op polled once and a peer's recent usage read as missing.
+  const big = (stateDir: string) => {
+    const lines: string[] = [];
+    for (let i = 0; i < 110_000; i++) lines.push(JSON.stringify({ v: 1, at: new Date(Date.UTC(2026, 9, 1, 0, 0, 0) + i * 1000).toISOString(), type: "tokens", peer: "codex", n: 1, attribution: "unattributed", pad: "x".repeat(120) }));
+    lines.push(JSON.stringify({ v: 1, at: new Date().toISOString(), type: "tokens", peer: "late", n: 7, attribution: "unattributed" }));
+    appendFileSync(join(stateDir, "events.jsonl"), lines.join("\n") + "\n");
+  };
+  const { console_, log } = await rig({}, big);
+  expect(statSync(log).size).toBeGreaterThan(3 * 8 * 1024 * 1024);
+  const peers = await console_.request({ t: "usage", by: "peer" });
+  expect(peers.ok, JSON.stringify(peers)).toBe(true);
+  expect(peers.behind).toBeUndefined();
+  const rows = new Map(peers.usage.rows.map((r: any) => [r.key, r]));
+  expect((rows.get("late") as any).counted).toEqual({ value: 7, source: "count" });        // the last line of the log, past the first pass
+  expect((rows.get("codex") as any).counted.value).toBe(1050 + 110_000);
 });

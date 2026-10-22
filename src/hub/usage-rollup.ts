@@ -150,8 +150,15 @@ export class UsageRollup {
     return undefined;
   }
 
-  /** Fold everything now, in passes, the way a poll loop would. */
-  catchUp(): void { for (let i = 0; i < 100_000; i++) if (this.poll().done) return; }
+  /**
+   * Fold everything now, in passes, the way a poll loop would. With `maxMs` it stops after that long and returns false: the roll-up is then behind the
+   * log, and a caller must say so rather than present the folded part as the whole (on this project's 47 MB log a first full fold takes about 180 ms).
+   */
+  catchUp(maxMs?: number): boolean {
+    const until = maxMs === undefined ? Infinity : Date.now() + maxMs;
+    for (let i = 0; i < 100_000; i++) { if (this.poll().done) return true; if (Date.now() >= until) return false; }
+    return true;
+  }
 
   /** Forget the roll-up and fold the log again from byte 0: the result must equal the incremental one. */
   rebuild(): void { this.reset(); this.catchUp(); }

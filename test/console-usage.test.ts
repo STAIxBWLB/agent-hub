@@ -103,6 +103,13 @@ test("the panel says when usage is loading or unavailable, and stays within 80 c
   expect(out).toContain("agent-hub");                                                         // the project name survives seven tabs
 });
 
+test("a roll-up that is still behind the event log says the numbers are partial (#683 U3)", () => {
+  const s = usageState(); s.usage = { ...s.usage!, behind: true };
+  const out = screen(s);
+  expect(out).toContain("still catching up with the event log"); expect(out).not.toContain("usage through");
+  expect(screen(usageState())).toContain("usage through");
+});
+
 test("usagePeers lists peers with usage or a quota even when they are not connected (#683 U3)", () => {
   expect(usagePeers(usageState().usage, {}, { codex: {} }).map(p => p.id)).toEqual(["claude", "codex", "jcode"]);
 });
