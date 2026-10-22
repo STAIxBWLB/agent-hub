@@ -136,6 +136,11 @@ test("#636 literal shell cwd/workdir and direct git argv use their actual shape"
 });
 
 const reviewCases: Array<[string, ActionClass[]]> = [
+  ["git push </dev/null>/tmp/out", ["publish", "destroy"]],
+  ["git push >file<in", ["publish"]],
+  ["git push >../out; printf done", ["publish", "destroy"]],
+  ["(git push >/tmp/out)", ["publish", "destroy"]],
+  ["git push >", []],
   ["git push 2>&1", ["publish"]],
   ["git push >&2", ["publish"]],
   ["git push 1>&2 2>&1", ["publish"]],
@@ -207,4 +212,10 @@ test("#636 R2 an explicit home cwd is conservatively outside for relative destru
   expect(classifyAction("bash", { command: "rm -rf target", cwd: "~" }, root)).toEqual(["destroy"]);
   expect(classifyAction("exec_command", { cmd: "cp -f input target", workdir: "~/archive" }, root)).toEqual(["destroy"]);
   expect(classifyAction("bash", { command: "rm target", cwd: "~" }, root)).toEqual([]);
+});
+
+
+test("#636 R2 home uncertainty survives a saturated cwd candidate set", () => {
+  const command = [...Array.from({ length: 8 }, (_, i) => `cd d${i}`), "cd", "rm -rf target"].join(";");
+  expect(classifyAction("bash", { command }, root)).toEqual(["destroy"]);
 });

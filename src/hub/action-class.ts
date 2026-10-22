@@ -7,12 +7,33 @@ const SHELL_TOOLS = new Set(["bash", "shell", "shell_command", "exec_command", "
 const LIMIT = 16_384;
 type Command = { words: string[]; outputs: string[] };
 
-/** Literal shell words only. No evaluation, expansion, or filesystem access. */
+/** Bound the whole input before accepting any prefix, including unsupported suffixes. */
+function segmentLimit(text: string): boolean {
+  let quote = "", count = 0;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === "\\" && quote !== "'") { i++; continue; }
+    if (quote) { if (quote === c) quote = ""; continue; }
+    if (c === "'" || c === '"') { quote = c; continue; }
+    if (c === "#" && (i === 0 || /[ \t\r\n;]/.test(text[i - 1]!))) {
+      while (i < text.length && text[i] !== "\n") i++;
+    }
+    if (i < text.length && ";|&\n".includes(text[i]!)) {
+      // FD duplication is an operator, not another command.
+      if (text[i] === "&" && [">", "<"].includes(text[i - 1] ?? "")) continue;
+      if (++count > 64) return false;
+      if ((c === "|" || c === "&") && text[i + 1] === c) i++;
+    }
+  }
+  return true;
+}
+
+/** Literal shell words only; unsupported syntax discards only its unfinished segment. */
 function commands(text: string): Command[] | undefined {
-  if (text.length > LIMIT || text.includes("\0")) return;
+  if (text.length > LIMIT || text.includes("\0") || !segmentLimit(text)) return;
   const result: Command[] = [];
   let words: string[] = [], outputs: string[] = [], word = "", active = false, quote = "";
-  let redirect: false | "overwrite" | "append" = false;
+  let redirect: false | "overwrite" | "skip" = false;
   const flush = () => {
     if (!active) return;
     if (redirect === "overwrite") outputs.push(word);
@@ -20,41 +41,49 @@ function commands(text: string): Command[] | undefined {
     word = ""; active = false; redirect = false;
   };
   const finish = () => { flush(); if (words.length || outputs.length) result.push({ words, outputs }); words = []; outputs = []; };
-  let count = 0;
   for (let i = 0; i < text.length; i++) {
     const c = text[i]!;
     if (quote === "'") { if (c === "'") quote = ""; else word += c; continue; }
     if (c === "\\") {
       const next = text[++i];
-      if (next === undefined) return;
+      if (next === undefined) return result;
       if (quote === '"' && !['$', '`', '"', "\\", "\n"].includes(next)) word += "\\";
       if (next !== "\n") word += next;
       active = true; continue;
     }
-    if (c === "$" || c === "`") return;
+    if (c === "$" || c === "`") return result;
     if (quote) { if (c === quote) quote = ""; else word += c; continue; }
     if (c === "'" || c === '"') { quote = c; active = true; continue; }
     if (c === "#" && !active) { while (i < text.length && text[i] !== "\n") i++; finish(); continue; }
-    if ("(){}<>".includes(c)) {
-      // ponytail: only plain output redirection; expansion/heredoc/control syntax needs a shell AST before support.
-      if (c !== ">" || text[i + 1] === "&") return;
+    if ("(){}".includes(c)) {
+      if (redirect && !active) return result;
+      finish(); continue;
+    }
+    if (c === ">" || c === "<") {
+      if (redirect && !active) return result;
+      if (redirect) flush();
+      if (c === "<" && text[i + 1] === "<") return result;
       if (active && /^\d+$/.test(word)) { word = ""; active = false; } else flush();
-      redirect = text[i + 1] === ">" ? "append" : "overwrite";
-      if (redirect === "append") i++;
-      if (text[i + 1] === "|") i++; continue;
+      if (text[i + 1] === "&") {
+        const duplicate = text.slice(i + 2).match(/^(?:\d+|-)(?=$|[ \t\r\n;|&(){}<>])/);
+        if (!duplicate) return result;
+        i += 1 + duplicate[0].length; continue;
+      }
+      redirect = c === "<" || text[i + 1] === ">" ? "skip" : "overwrite";
+      if (text[i + 1] === ">" || text[i + 1] === "|") i++;
+      continue;
     }
     if (/[ \t\r]/.test(c)) { flush(); continue; }
     if (";|&\n".includes(c)) {
-      if (redirect) return;
+      if (redirect && !active) return result;
       finish();
       if (text[i + 1] === c && (c === "|" || c === "&")) i++;
-      if (++count > 64) return;
       continue;
     }
     word += c; active = true;
-    if (words.length + outputs.length > 256) return;
+    if (words.length + outputs.length > 256) return result;
   }
-  if (quote || (redirect && !active)) return;
+  if (quote || (redirect && !active)) return result;
   finish();
   return result;
 }
@@ -63,7 +92,8 @@ function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 function outside(target: string, root: string, cwd: string): boolean {
-  if (!isAbsolute(root) || !target || /[$`~]/.test(target)) return false;
+  if (!isAbsolute(root) || !target || /[$`]/.test(target)) return false;
+  if (target.startsWith("~") || !cwd && !isAbsolute(target)) return true;
   const rel = relative(resolve(root), resolve(cwd, target));
   return rel === ".." || rel.startsWith("../") || isAbsolute(rel);
 }
@@ -85,36 +115,93 @@ function option(words: string[], short: string, long: string): string | undefine
   }
   return;
 }
+/** Peel only known transparent argv wrappers; no aliases or executable discovery. */
+function unwrapped(input: string[]): string[] {
+  const words = [...input];
+  for (let step = 0; step < 32; step++) {
+    while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0] ?? "")) words.shift();
+    const name = basename(words[0] ?? "");
+    if (["!", "if", "then", "elif", "else"].includes(name)) { words.shift(); continue; }
+    if (["fi", "do", "done"].includes(name)) return [];
+    if (!["sudo", "time", "timeout", "nohup", "exec", "xargs", "nice", "env", "command"].includes(name)) return words;
+    words.shift();
+    const values: Record<string, string[]> = {
+      sudo: ["-u", "-g", "-h", "-p", "-C", "-T", "--user", "--group", "--host", "--prompt"],
+      time: ["-f", "-o", "--format", "--output"],
+      timeout: ["-s", "-k", "--signal", "--kill-after"],
+      exec: ["-a"], xargs: ["-n", "-P", "-I", "-L", "-s", "-E", "-d", "--max-args", "--max-procs", "--replace", "--delimiter"],
+      nice: ["-n", "--adjustment"], env: ["-u", "--unset"],
+    };
+    while (words[0]?.startsWith("-")) {
+      const flag = words.shift()!;
+      if (flag === "--") break;
+      if (name === "command" && (flag === "-v" || flag === "-V")) return [];
+      if ((values[name] ?? []).includes(flag)) { if (!words.length) return []; words.shift(); }
+      else if (flag.startsWith("--") && !flag.includes("=") && !["--ignore-environment", "--foreground", "--preserve-status", "--no-run-if-empty", "--verbose"].includes(flag)) return [];
+    }
+    if (name === "timeout") {
+      if (!/^\d+(?:\.\d+)?[smhd]?$/.test(words.shift() ?? "")) return [];
+    }
+  }
+  return [];
+}
+
+function curlWords(input: string[]): string[] {
+  const words: string[] = [];
+  for (let i = 0; i < input.length; i++) {
+    const arg = input[i]!;
+    if (!/^-[^-]/.test(arg)) { words.push(arg); continue; }
+    for (let at = 1; at < arg.length; at++) {
+      const flag = arg[at]!;
+      words.push(`-${flag}`);
+      if ("XdFT".includes(flag)) {
+        const value = arg.slice(at + 1) || input[++i];
+        if (value !== undefined) words.push(value);
+        break;
+      }
+    }
+  }
+  return words;
+}
+
 function sequence(parsed: Command[], root: string, initial: string[], found: Set<ActionClass>, depth = 0): void {
   const cwd = new Set(initial);
   for (const command of parsed) {
     classify(command, root, [...cwd], found, depth);
-    const [program, ...args] = command.words;
+    const [program, ...args] = unwrapped(command.words);
     const target = args[0] === "--" ? args[1] : args[0];
     // Retain both outcomes: cd may fail, or be in a pipeline/conditional branch.
-    if (program === "cd" && target && !target.startsWith("-") && !"$`~*?[]".split("").some(c => target.includes(c))) {
+    if (program === "cd" && (!target || target.startsWith("~"))) {
+      if (!cwd.has("") && cwd.size >= 128) cwd.delete(cwd.values().next().value!);
+      cwd.add("");
+    }
+    else if (program === "cd" && target && !target.startsWith("-") && !"$`*?[]".split("").some(c => target.includes(c))) {
       for (const current of [...cwd]) {
         if (cwd.size >= 128) break;
-        cwd.add(resolve(current, target));
+        cwd.add(current || isAbsolute(target) ? resolve(current, target) : "");
       }
     }
   }
 }
 function classify(command: Command, root: string, cwd: string[], found: Set<ActionClass>, depth = 0): void {
-  let words = [...command.words];
-  while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0] ?? "")) words.shift();
-  if (words[0] === "env" || words[0] === "command") { words.shift(); while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0] ?? "")) words.shift(); }
+  const words = unwrapped(command.words);
   const program = basename(words.shift() ?? "");
-  if (["sh", "bash", "zsh"].includes(program) && ["-c", "-lc"].includes(words[0] ?? "") && words[1] && depth < 2) {
-    const nested = commands(words[1]);
-    if (nested) sequence(nested, root, cwd, found, depth + 1);
+  if (["sh", "bash", "zsh"].includes(program) && depth < 2) {
+    const shell = [...words];
+    while (["--noprofile", "--norc"].includes(shell[0] ?? "")) shell.shift();
+    const mode = shell.shift();
+    if (mode && /^-[A-Za-z]*c[A-Za-z]*$/.test(mode)) {
+      if (shell[0] === "--") shell.shift();
+      const nested = shell[0] === undefined ? undefined : commands(shell[0]);
+      if (nested) sequence(nested, root, cwd, found, depth + 1);
+    }
   }
   if (command.outputs.some(p => cwd.some(at => outside(p, root, at)))) found.add("destroy");
   if (program === "git") {
     while (words[0]?.startsWith("-")) {
       const flag = words.shift();
       if (flag === "-C" || flag === "-c" || flag === "--git-dir" || flag === "--work-tree") words.shift();
-      else if (!flag?.startsWith("--git-dir=") && !flag?.startsWith("--work-tree=") && flag !== "--no-pager" && flag !== "--literal-pathspecs") return;
+      else if (!flag?.startsWith("--git-dir=") && !flag?.startsWith("--work-tree=") && flag !== "--no-pager" && flag !== "-P" && flag !== "--literal-pathspecs") return;
     }
     const sub = words.shift();
     if (sub === "push") found.add("publish");
@@ -123,7 +210,14 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
     if (sub === "branch" && (flags(words, "D") || words.includes("--delete") && words.includes("--force"))) found.add("destroy");
   }
   if (["npm", "cargo", "pnpm", "yarn", "bun"].includes(program)) {
-    const sub = words.find(w => !w.startsWith("-"));
+    const args = [...words];
+    while (args[0]?.startsWith("-")) {
+      const flag = args.shift()!;
+      if (["--registry", "--filter", "--prefix", "--cwd", "--dir"].includes(flag)) args.shift();
+      if (flag === "--") break;
+    }
+    if (program === "yarn" && args[0] === "npm") args.shift();
+    const sub = args[0];
     if (sub === "publish") found.add("publish");
     const global = words.includes("--global") || flags(words, "g");
     if ((program === "cargo" && sub === "install") || (["install", "i", "add"].includes(sub ?? "") && global) || (program === "yarn" && words[0] === "global" && words[1] === "add")) found.add("install");
@@ -139,8 +233,9 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
     }
   }
   if (program === "curl") {
-    const method = option(words, "-X", "--request");
-    if (method ? !["GET", "HEAD"].includes(method.toUpperCase()) : !words.includes("--get") && !words.includes("-G") && words.some(w => /^--(?:data|json|form|upload-file)(?:[=-]|$)/.test(w) || /^-[dFT].*/.test(w))) found.add("external-write");
+    const args = curlWords(words);
+    const method = option(args, "-X", "--request");
+    if (method ? !["GET", "HEAD"].includes(method.toUpperCase()) : !args.includes("--get") && !args.includes("-G") && args.some(w => /^--(?:data|json|form|upload-file)(?:[=-]|$)/.test(w) || /^-[dFT].*/.test(w))) found.add("external-write");
   }
   if (["http", "https"].includes(program) && words.some(w => /^(?:POST|PUT|PATCH|DELETE|OPTIONS|TRACE|CONNECT)$/.test(w))) found.add("external-write");
   if (["mail", "mailx", "sendmail"].includes(program) && operands(words).length > 0) found.add("external-write");
@@ -155,6 +250,8 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
 /** Adds information only; an empty result always retains the native permission policy.
  * ponytail: literal bounded shell/argv forms only; aliases, functions, expansion,
  * interpreter programs and symlink targets need a richer observed contract.
+ * Home targets are conservatively outside without resolving a personal home.
+ * Unsupported segments retain only preceding complete commands.
  * Literal cd retains both success/failure cwd candidates (at most 128); it may
  * overclassify a later relative write and is not a shell control-flow proof.
  */
@@ -170,7 +267,7 @@ export function classifyAction(tool: string, args: unknown, executionRoot: strin
   if (["http", "http_request", "fetch"].includes(tool.toLowerCase()) && typeof input.method === "string" && /^[A-Za-z]+$/.test(input.method) && !["GET", "HEAD"].includes(input.method.toUpperCase())) found.add("external-write");
   const boundedArgv = (value: unknown): value is string[] => Array.isArray(value) && value.length <= 256 && value.every(w => typeof w === "string" && w.length <= LIMIT) && value.join("").length <= LIMIT;
   const location = input.cwd ?? input.workdir;
-  const cwd = typeof location === "string" && location.length <= LIMIT && !/[$`~]/.test(location) ? resolve(executionRoot, location) : executionRoot;
+  const cwd = typeof location === "string" && location.startsWith("~") ? "" : typeof location === "string" && location.length <= LIMIT && !/[$`]/.test(location) ? resolve(executionRoot, location) : executionRoot;
   if (tool.toLowerCase() === "git" && boundedArgv(input.args)) classify({ words: ["git", ...input.args], outputs: [] }, executionRoot, [cwd], found);
   if (SHELL_TOOLS.has(tool.toLowerCase())) {
     const raw = input.command ?? input.cmd;

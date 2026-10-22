@@ -3,7 +3,11 @@ import { sanitize } from "./envelope.ts";
 
 export interface ActionPolicyConfig { enabled: boolean; always_ask: ActionClass[]; budgets: Record<ActionClass, number> }
 const DEFAULT_BUDGETS: Record<ActionClass, number> = { publish: 1, destroy: 3, "external-write": 5, install: 2 };
-/** Defaults are host policy; overrides belong only in untracked config.local.json. */
+/** Defaults are host policy; overrides belong only in untracked config.local.json.
+ * ponytail: startup adopts that local policy without a retained person confirmation.
+ * Before adapter enforcement (#312/#313), bind weakened startup policy to person
+ * confirmation or surface it as attention; slice 1 never enforces these grants.
+ */
 export function actionPolicyConfig(value?: unknown): ActionPolicyConfig {
   const fail = (): never => { throw new Error("action_policy: expected enabled, always_ask and class budgets (integers 0..1000)"); };
   if (value === undefined) return { enabled: true, always_ask: [...ACTION_CLASSES], budgets: { ...DEFAULT_BUDGETS } };

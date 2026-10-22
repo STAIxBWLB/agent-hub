@@ -473,7 +473,7 @@ export function settingRows(input: {
   const scalar = (value: unknown): SettingValue => typeof value === "string" || typeof value === "boolean" || typeof value === "number" ? value : Array.isArray(value) ? value.map(String) : null;
   return projectSettings(input.instances, input.adapterCatalog).map((def): SettingRow => {
     const base = { key: def.key, group: def.group, label: def.label, type: def.type, ...(["integer", "number"].includes(def.type) ? { min: def.min, max: def.max } : {}), applies: def.applies, ...(def.restartReason ? { restartReason: def.restartReason } : {}), risk: def.risk, ...(def.floor === undefined ? {} : { floor: def.floor }),
-      ...(def.key === "scoped_grants.protect_instructions" ? { hint: "AGENTS.md, CLAUDE.md and QWEN.md remain grantable by default; enabling this asks before scoped writes and edits" } : def.group === "Permissions" ? { hint: permissionBoundary(def.path.at(-1)!, input.instances, input.adapterCatalog) } : {}) };
+      ...(def.key === "scoped_grants.protect_instructions" ? { hint: "AGENTS.md, CLAUDE.md and QWEN.md remain grantable by default; enabling this asks before scoped writes and edits" } : def.key.startsWith("action_policy.") ? { hint: "not enforced yet: adapter integration pending" } : def.group === "Permissions" ? { hint: permissionBoundary(def.path.at(-1)!, input.instances, input.adapterCatalog) } : {}) };
     if (def.locked) return { ...base, values: def.values, file: def.store === "runtime" ? "this hub run" : CONFIG_LOCAL,
       source: "instance declaration", value: "read-only", fileValue: "read-only", locked: def.locked, note: def.locked };
     if (def.store === "runtime") {
@@ -488,7 +488,7 @@ export function settingRows(input: {
     if (def.type === "roles" && input.roles) { const roles = input.roles(def.path[1]!); return { ...base, ...roles, fileValue: roles.pending !== undefined ? roles.pending : roles.value, file: CONFIG_LOCAL, source: valueAt(local, def.path) !== undefined ? CONFIG_LOCAL : valueAt(shared, def.path) !== undefined ? "config.json" : "profile/default", hint: "Guidance only; grants no tool or permission. At most two roles, applied at the next peer start." }; }
     const value = scalar(input.running(def.path));
     const stored = input.next ? scalar(input.next(def.path)) : value;
-    const source = valueAt(local, def.path) !== undefined ? CONFIG_LOCAL : valueAt(shared, def.path) !== undefined ? "config.json" : "default";
+    const source = valueAt(local, def.path) !== undefined ? CONFIG_LOCAL : !def.key.startsWith("action_policy.") && valueAt(shared, def.path) !== undefined ? "config.json" : "default";
     const dropped = ignoredLine(input.ignored, def);
     return { ...base, ...(def.values ? { values: def.values } : {}), file: CONFIG_LOCAL, value, fileValue: stored, source, ...(same(value, stored) ? {} : { pending: stored }),
       ...(!input.next ? { note: "the config files do not load; fix them in your editor" } : dropped ? { note: `the hub does not read this value: ${dropped}` } : {}) };

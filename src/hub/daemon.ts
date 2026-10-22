@@ -4494,7 +4494,7 @@ export async function startDaemon(opts: DaemonOptions) {
         settledHolderChange = JSON.stringify(oldHolders) !== JSON.stringify(newHolders);
         if (settledHolderChange) effect = `planner ${JSON.stringify(oldHolders.planners)} -> ${JSON.stringify(newHolders.planners)}; conductor ${JSON.stringify(oldHolders.conductors)} -> ${JSON.stringify(newHolders.conductors)}`;
       }
-      const input = { key, before, acceptedFallback, settledHolderChange, after: machine && rawChanged ? rawAfter : after, source: route ? "routing" as const : "config" as const, tracked, authority, guard, confirmed: !!scope || confirmed.includes(key) };
+      const input = { key, before, acceptedFallback, settledHolderChange, after: machine && rawChanged ? rawAfter : after, source: route ? "routing" as const : "config" as const, sourceFile: origin?.name, tracked, authority, guard, confirmed: !!scope || confirmed.includes(key) };
       const decision = authorizeConfigLeaf(input);
       if (!decision.allowed) {
         const next = `${decision.reason}; review and run ahub settings reload, or revert this key${machine && tracked !== false ? "; move machine-local declarations to an untracked local file first" : ""}`;

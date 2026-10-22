@@ -34,6 +34,8 @@ export interface ConfigAuthorizationInput {
   before: unknown;
   after: unknown;
   source: "config" | "routing";
+  /** Captured host filename, not the requested setting or a caller-provided authority. */
+  sourceFile?: string;
   tracked: boolean | undefined;
   authority: "ordinary" | "settings" | "terminal";
   /** The daemon supplies this only for the selected setting or an explicitly confirmed reload key. */
@@ -50,7 +52,10 @@ export interface ConfigAuthorizationDecision { key: string; allowed: boolean; gu
 export function authorizeConfigLeaf(input: ConfigAuthorizationInput): ConfigAuthorizationDecision {
   const { key, before, after } = input;
   const result = (allowed: boolean, guarded: boolean, reason: string): ConfigAuthorizationDecision => ({ key, allowed, guarded, reason });
-  if ((key === "action_policy" || key.startsWith("action_policy.")) && input.tracked !== false) return result(false, true, "action policy requires an untracked machine-local source");
+  if (key === "action_policy" || key.startsWith("action_policy.")) {
+    if (input.sourceFile !== "config.local.json") return result(false, true, "action policy requires .agenthub/config.local.json");
+    if (input.tracked !== false) return result(false, true, "action policy requires an untracked machine-local source");
+  }
   if (same(before, after)) return result(true, false, "unchanged");
   const supplied = input.guard;
   const guard = supplied && (key === supplied.key || key === `${supplied.store === "routing" ? "routing." : ""}${supplied.path.join(".")}`) ? supplied : undefined;

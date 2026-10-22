@@ -39,9 +39,9 @@ test("action settings validate all configured leaves and require person confirma
     expect(() => checkSettingValue(def, def.type === "boolean" ? "no" : -1)).toThrow();
     const guard = { ...def };
     const before = def.type === "boolean" ? true : 1, after = def.type === "boolean" ? false : 2;
-    expect(authorizeConfigLeaf({ key: def.key, before, after, source: "config", tracked: false, authority: "ordinary", guard }).allowed).toBe(false);
-    expect(authorizeConfigLeaf({ key: def.key, before, after, source: "config", tracked: false, authority: "settings", confirmed: true, guard }).allowed).toBe(true);
-    expect(authorizeConfigLeaf({ key: def.key, before, after: def.floor, source: "config", tracked: true, authority: "settings", confirmed: true, guard }).allowed).toBe(false);
+    expect(authorizeConfigLeaf({ key: def.key, before, after, source: "config", sourceFile: "config.local.json", tracked: false, authority: "ordinary", guard }).allowed).toBe(false);
+    expect(authorizeConfigLeaf({ key: def.key, before, after, source: "config", sourceFile: "config.local.json", tracked: false, authority: "settings", confirmed: true, guard }).allowed).toBe(true);
+    expect(authorizeConfigLeaf({ key: def.key, before, after: def.floor, source: "config", sourceFile: "config.local.json", tracked: true, authority: "settings", confirmed: true, guard }).allowed).toBe(false);
   }
   expect(() => validateRawConfig({ action_policy: { budgets: { publish: 1001 } } })).toThrow();
   expect(() => validateRawConfig({ action_policy: { always_ask: ["unknown"] } })).toThrow();
@@ -70,4 +70,13 @@ test("R2 action policy refuses shared reloads without offering confirmation or a
     expect(row.value).toBe(true);
     expect(row.hint).toBe("not enforced yet: adapter integration pending");
   } finally { client?.close(); await daemon.stop(); }
+});
+
+
+test("R2 action policy authorization requires the captured local filename before no-op or confirmation", () => {
+  for (const sourceFile of [undefined, "config.json", "routing.local.toml"]) {
+    const input = { key: "action_policy.enabled", before: true, after: true, source: "config" as const, sourceFile, tracked: false, authority: "terminal" as const, confirmed: true };
+    expect(authorizeConfigLeaf(input)).toMatchObject({ allowed: false, reason: expect.stringContaining("config.local.json") });
+    expect(authorizeConfigLeaf({ ...input, after: false }).allowed).toBe(false);
+  }
 });
