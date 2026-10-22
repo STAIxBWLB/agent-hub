@@ -18,10 +18,17 @@ function document(file: string): Document {
   return value;
 }
 const map = (doc: Document): Document => (doc.mcpServers ?? doc.servers ?? {}) as Document;
-const owned = (entry: unknown, cwd: string): entry is Document => object(entry) && object(entry.env) && entry.env.AGENTHUB_MODE === "tools" && entry.env.AGENTHUB_PEER_ID === "jcode" && entry.env.AGENTHUB_PROJECT_DIR === cwd;
+/**
+ * The project's `.jcode/mcp.json` entry is shared by every Jcode in it, so it names no peer (#685): jcode gives an entry's own env
+ * precedence over the process env (probed on 0.99.0), so a hardcoded `AGENTHUB_PEER_ID: "jcode"` would make an extra instance's
+ * hub tools act as the base peer. Each owned launch path supplies its own id instead (peerChildEnv for serve and ACP, the TUI launch env).
+ * An entry written before this still hardcodes the id: `jcodeMcpReady` is false for it, and the launcher rewrites it.
+ */
+const owned = (entry: unknown, cwd: string): entry is Document => object(entry) && object(entry.env) && entry.env.AGENTHUB_MODE === "tools"
+  && (entry.env.AGENTHUB_PEER_ID === undefined || entry.env.AGENTHUB_PEER_ID === "jcode") && entry.env.AGENTHUB_PROJECT_DIR === cwd;
 
 export function jcodeMcpEntry(cwd: string, stateDir: string, bundle: string) {
-  return { command: "bun", args: ["run", bundle], shared: false, env: { AGENTHUB_MODE: "tools", AGENTHUB_DELIVERY_ONLY: "true", AGENTHUB_PEER_ID: "jcode", AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } };
+  return { command: "bun", args: ["run", bundle], shared: false, env: { AGENTHUB_MODE: "tools", AGENTHUB_DELIVERY_ONLY: "true", AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } };
 }
 /** The native loader reads later project files last. Never shadow a foreign definition. */
 function inspect(cwd: string): Document {

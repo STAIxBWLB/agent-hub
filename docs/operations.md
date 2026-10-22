@@ -3907,7 +3907,48 @@ restart the hub. For example, a reviewer can use:
 Start them with `ahub codex --as codex-review` and
 `ahub kimi --as kimi-review`. Codex keeps its native TUI and its own hub-owned
 app-server proxy; extra Kimi, Qwen, Pi and local instances use headless starts.
-Extra Jcode instances are unavailable. An extra Claude instance is a reviewer or
+Extra Jcode instances are supported (#685), in `.agenthub/config.local.json` only:
+
+```json
+{
+  "instances": {
+    "jcode-local": {
+      "kind": "jcode",
+      "jcode_home": "/Users/you/.jcode-local",
+      "model_relay": "dgx/fast",
+      "roles": ["verifier"]
+    }
+  }
+}
+```
+
+`jcode_home` is required, absolute, and must differ from the base `jcode_home`, from
+every other instance's and from any directory inside or around them (the hub refuses
+the configuration at startup otherwise). Initialize that home's MCP store with
+Jcode's own client first, as for the base peer: the hub never creates or copies it.
+`provider`, `model` and `provider_profile` are optional and passed as `-p`, `--model`
+and `--provider-profile`. `model_relay` (`dgx/coding` or `dgx/fast`) takes the model
+from the hub's own relay instead, so it cannot be combined with `provider`,
+`provider_profile` or a different `model`. These fields belong to Jcode instances and
+are never editable from settings. Each instance owns its private `jcode serve` and
+`jcode acp` pair, socket, roster row and launch record, and acts as its own peer id
+(for example `jcode-local`), never as `jcode`. Start it with `ahub jcode --as jcode-local`
+(headless; an instance has no TUI) and stop it with `ahub stop jcode-local`: the base
+Jcode and every other instance keep running. An extra implementer needs the same
+managed worktree as every extra implementer (`worktree: ".worktrees/jcode-local"`).
+
+With `model_relay` the hub starts a loopback model relay for that instance, as for Pi,
+and hands Jcode only `-p openai-compatible`, the relay's URL and a per-launch token. The
+gateway key and Access headers stay in the hub: they are removed from the instance's
+environment. The start is refused unless the gateway is positively confirmed on campus
+(`ahub doctor` shows the gateway). Every request the relay serves is recorded as a
+`usage` event with source `omniroute`, the instance id and the task its turn works on.
+The instance stays a cloud peer (`trust.onPrem` is false): it never receives PII work,
+and `ahub status` and the dashboard show its model source as `hub relay dgx/fast (cloud
+peer, not on-prem)`. `ahub doctor` lists the MCP servers its home would load. The
+on-campus live smoke is a person's check (`docs/smoke.md`) and stays unverified until run.
+
+An extra Claude instance is a reviewer or
 planner you start yourself: declare it with `roles` only (for example
 `"claude-review": { "kind": "claude", "roles": ["reviewer"] }`, no `start_mode` or
 `worktree`) and run `ahub claude --as claude-review` in a terminal. It keeps its own

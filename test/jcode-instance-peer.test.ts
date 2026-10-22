@@ -135,3 +135,52 @@ test("a Jcode instance's MCP doctor row has the same severity as the base Jcode'
   expect(nativeDoctorCheck(false, "jcode-local MCP servers", "2 extra").level).toBe(nativeDoctorCheck(false, "jcode MCP servers", "2 extra").level);
   expect(nativeDoctorCheck(false, "jcode-local MCP servers", "2 extra").section).toBe(nativeDoctorCheck(false, "jcode MCP servers", "2 extra").section);
 });
+
+// The project's .jcode/mcp.json is shared by every Jcode in it (#685): its entry must not name a peer, or an instance's hub
+// tools would act as the base `jcode`. Probed on 0.99.0: an entry's env wins over the process env, so a hardcoded id wins.
+import { configureJcodeMcp, jcodeMcpEntry, jcodeMcpReady, JCODE_MCP_FILE, JCODE_MCP_NAME } from "../src/cli/jcode-mcp.ts";
+
+test("the shared Jcode MCP entry names no peer, each owned launch path supplies its own id, and an old entry stays stale (#685)", () => {
+  const dir = root(), state = join(dir, "state"), bundle = "bundle";
+  const entry = jcodeMcpEntry(dir, state, bundle);
+  expect(entry.env).not.toHaveProperty("AGENTHUB_PEER_ID");
+  expect(entry.env).toMatchObject({ AGENTHUB_MODE: "tools", AGENTHUB_DELIVERY_ONLY: "true", AGENTHUB_STATE_DIR: state, AGENTHUB_PROJECT_DIR: dir });
+  configureJcodeMcp(dir, state, bundle);
+  expect(jcodeMcpReady(dir, state, bundle)).toBe(true);
+  // An entry written before this change still hardcodes the base id: it is stale (a start is refused), never silently shared.
+  const file = join(dir, JCODE_MCP_FILE), current = JSON.parse(readFileSync(file, "utf8"));
+  const legacy = structuredClone(current); legacy.mcpServers[JCODE_MCP_NAME].env.AGENTHUB_PEER_ID = "jcode";
+  writeFileSync(file, JSON.stringify(legacy));
+  expect(jcodeMcpReady(dir, state, bundle)).toBe(false);
+  // The launcher rewrites its own legacy entry (it is still ours), but never a foreign peer's.
+  expect(configureJcodeMcp(dir, state, bundle).changed).toBe(true); expect(jcodeMcpReady(dir, state, bundle)).toBe(true);
+  legacy.mcpServers[JCODE_MCP_NAME].env.AGENTHUB_PEER_ID = "codex"; writeFileSync(file, JSON.stringify(legacy));
+  expect(() => configureJcodeMcp(dir, state, bundle)).toThrow("foreign");
+});
+
+test("a base and an instance TUI launch each carry their own peer id, the same provider and the relay, and never the gateway key (#685)", async () => {
+  const dir = root();
+  for (const peer of [undefined, "jcode-local"] as const) {
+    const h = home(dir, `h-${peer ?? "base"}`), record = join(dir, `t-${peer ?? "base"}.jsonl`);
+    const jcode = new JcodePeer({ ...(peer ? { peer, provider: "openai-compatible", launchModel: "dgx/fast", relay: { url: "http://127.0.0.1:9/v1", token: "tok" } } : {}),
+      command: [...fake, "--save-native-session", "--record", record], cwd: dir, home: h });
+    cleanups.push(() => jcode.stop());
+    await jcode.start();
+    await jcode.deliver([newEnvelope("user", "first turn saves the native session", { to: [peer ?? "jcode"] })]);
+    await until(() => jcode.state === "idle");
+    const state = jcode.tuiLaunch();
+    expect(state.state).toBe("ready");
+    if (state.state !== "ready") continue;
+    expect(state.launch.env.JCODE_HOME).toBe(h);
+    expect(state.launch.env.AGENTHUB_PEER_ID).toBe(peer ?? "jcode");
+    if (peer) {
+      expect(state.launch.args).toEqual(expect.arrayContaining(["-p", "openai-compatible", "--model", "dgx/fast"]));
+      expect(state.launch.env.JCODE_OPENAI_COMPAT_API_BASE).toBe("http://127.0.0.1:9/v1"); expect(state.launch.env.OPENAI_COMPAT_API_KEY).toBe("tok");
+      expect(JSON.stringify(state.launch)).not.toContain("OMNIROUTE");
+    } else {
+      // The base Jcode's launch adds nothing else: no provider flag, no relay variable.
+      expect(state.launch.env).not.toHaveProperty("JCODE_OPENAI_COMPAT_API_BASE");
+      expect(state.launch.args).not.toContain("-p");
+    }
+  }
+});

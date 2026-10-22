@@ -329,8 +329,9 @@ export class JcodePeer extends AcpPeer {
     if (differs) throw new JcodeOptionMismatch(differs);
     if (!savedSession(this.jcode.home, sessionId)) return { state: "waiting", binding };
     const [cmd, ...args] = jcodeTuiCommand(this.jcode.command, this.socket, sessionId, this.jcode.launchModel, this.jcode.providerProfile, this.jcode.provider);
-    // The TUI is the person's own client of this instance's server: the instance id (not the base Jcode's) and the same relay values.
-    return { state: "ready", binding, launch: { cmd: cmd!, args, env: { JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, ...(this.id === "jcode" ? {} : { AGENTHUB_PEER_ID: this.id }), ...JCODE_OWNED_ENV, ...relayEnv(this.jcode.relay) } } };
+    // The TUI is the person's own client of this peer's server. The shared project MCP entry names no peer (#685), so every launch
+    // path supplies its own id: the base Jcode's too, or its MCP child would fall back to the channel default.
+    return { state: "ready", binding, launch: { cmd: cmd!, args, env: { JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, AGENTHUB_PEER_ID: this.id, ...JCODE_OWNED_ENV, ...relayEnv(this.jcode.relay) } } };
   }
   override recoveryMetadata(): Record<string, unknown> {
     return { ...super.recoveryMetadata(), launch: { kind: "jcode", peer: this.id, mode: "headless", ...(this.jcode.launchModel ? { model: this.jcode.launchModel } : {}), ...(this.jcode.providerProfile ? { providerProfile: this.jcode.providerProfile } : {}) } };

@@ -142,7 +142,8 @@ test("the configured Jcode MCP SDK bridge reaches this project's tools as jcode 
   const console_ = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => console_.close());
   expect((await console_.request({ t: "start", peer: "jcode" })).ok).toBe(true);
   const entry = JSON.parse(readFileSync(join(dir, JCODE_MCP_FILE), "utf8")).mcpServers[JCODE_MCP_NAME];
-  const transport = new StdioClientTransport({ command: entry.command, args: entry.args, env: { ...process.env, ...entry.env }, stderr: "pipe" });
+  // #685: the shared entry names no peer; the owned ACP child's process env supplies it (peerChildEnv), and jcode merges the two.
+  const transport = new StdioClientTransport({ command: entry.command, args: entry.args, env: { ...process.env, AGENTHUB_PEER_ID: "jcode", ...entry.env }, stderr: "pipe" });
   let diagnostics = ""; transport.stderr?.on("data", data => { diagnostics += String(data); });
   const client = new Client({ name: "fixture", version: "1" }); cleanups.push(() => client.close());
   await client.connect(transport);
@@ -192,7 +193,7 @@ test("pre-marker Jcode entries stay stale read-only until configure adds the del
   const dir = root(), state = join(dir, "state"), bundle = "bundle";
   configureJcodeMcp(dir, state, bundle);
   const file = join(dir, JCODE_MCP_FILE), current = JSON.parse(readFileSync(file, "utf8"));
-  const legacy = structuredClone(current); delete legacy.mcpServers[JCODE_MCP_NAME].env.AGENTHUB_DELIVERY_ONLY;
+  const legacy = structuredClone(current); delete legacy.mcpServers[JCODE_MCP_NAME].env.AGENTHUB_DELIVERY_ONLY; legacy.mcpServers[JCODE_MCP_NAME].env.AGENTHUB_PEER_ID = "jcode"; // an entry written before #685 also named the peer
   writeFileSync(file, JSON.stringify(legacy)); const before = readFileSync(file, "utf8");
   expect(jcodeMcpReady(dir, state, bundle)).toBe(false); expect(readFileSync(file, "utf8")).toBe(before);
   for (const mutate of [(entry: any) => { entry.env.AGENTHUB_DELIVERY_ONLY = "false"; }, (entry: any) => { entry.command = "foreign"; }, (entry: any) => { entry.env.AGENTHUB_PEER_ID = "codex"; }, (entry: any) => { entry.env.AGENTHUB_STATE_DIR = "other"; }, (entry: any) => { entry.args.push("--extra"); }]) {
@@ -232,7 +233,7 @@ test("only a console can resolve the same owned Jcode launch, and a new session 
   const ready = await consoleClient.request({ t: "native_tui_launch", peer: "jcode", binding: waiting.binding });
   expect(ready.ok).toBe(true); expect(ready.state).toBe("ready"); expect(ready.binding).toEqual(waiting.binding);
   expect(ready.launch.args).toContain("--resume"); expect(ready.launch.args).not.toContain("acp"); expect(ready.launch.args).not.toContain("connect");
-  expect(ready.launch.env).toEqual({ JCODE_HOME: home, JCODE_SOCKET: ready.launch.env.JCODE_SOCKET, JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" });
+  expect(ready.launch.env).toEqual({ JCODE_HOME: home, JCODE_SOCKET: ready.launch.env.JCODE_SOCKET, AGENTHUB_PEER_ID: "jcode", JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" }); // #685: the shared MCP entry names no peer, so the launch does
   expect(JSON.stringify((await consoleClient.request({ t: "status" })).status)).not.toContain(ready.launch.env.JCODE_SOCKET);
   const frontend = await consoleClient.request({ t: "peer_start", peer: "jcode" });
   expect(frontend.ok).toBe(false); expect(frontend.command).toBe("ahub jcode --mode tui");

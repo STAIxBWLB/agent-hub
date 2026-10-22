@@ -1713,6 +1713,11 @@ Qwen recovery source/fake proof: saved ids pass through the driver and CLI to AC
 
 Source/fixture proof is recorded in verification/2026-10-11-jcode-peer-contract.md; the live owned-daemon and ACP handshake on 0.94.0 and 0.98.1 in verification/2026-10-19-jcode-0.98.1.md. Unverified: real provider/model, native project MCP discovery and hub-tool receipt, native tool policy and stop/child teardown. Native automatic restoration is withheld because the pinned ACP load does not prove the id. No benchmark comparison or default replacement ran.
 
+### Extra Jcode instance on the on-prem model (#685)
+
+Source and fixture coverage: `test/jcode-instances.test.ts` (declaration refusals, home uniqueness), `test/jcode-instance-peer.test.ts` (two peers with separate groups and sockets, stopping one leaves the other, the `-p openai-compatible` and relay environment, launcher, doctor) and `test/jcode-instance-daemon.test.ts` (campus refusal, relay token, gateway key never forwarded, usage event with instance id and task, status). The relay environment contract (`JCODE_OPENAI_COMPAT_API_BASE`, `OPENAI_COMPAT_API_KEY`, bearer token, stream usage) was probed on jcode 0.99.0 against a loopback fake under an isolated `HOME` and `JCODE_HOME`.
+
+Unverified, a person's leg on campus: declare `jcode-local` in `.agenthub/config.local.json` with its own `jcode_home` and `"model_relay": "dgx/fast"`, run `ahub jcode --as jcode-local`, send it one task, and read back (1) `ahub status` showing `hub relay dgx/fast`, (2) one `usage` event for `jcode-local` in `events.jsonl` with the task id, (3) `ahub stop jcode-local` leaving `jcode` running, and (4) with the VPN off, a refused start that names the campus gateway. No real Jcode account, gateway or model was used by the checks above, and the real model's tool-call quality through the relay is not measured.
 
 ## Project board (#263)
 
