@@ -173,6 +173,7 @@ export function sandboxedExec(argv: string[], opts: { cwd: string; profile: stri
     // Own process group: a timeout has to take the grandchildren too, or they keep the pipes open and the project writable.
     const child = spawn(SANDBOX_EXEC, ["-p", sandbox, ...argv], { cwd: opts.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
     let output = "";
+    let killRequested = false;
     const take = (d: Buffer) => {
       if (output.length < OUTPUT_CAP) output += d.toString();
     };
@@ -185,7 +186,8 @@ export function sandboxedExec(argv: string[], opts: { cwd: string; profile: stri
         child.kill("SIGKILL");
       }
     };
-    const abort = () => killGroup();
+    // A shell may report its killed child and exit 137 normally, without a native signal.
+    const abort = () => { killRequested = true; killGroup(); };
     opts.signal?.addEventListener("abort", abort, { once: true });
     // Best effort, never in the way of the result: a command can mark its files immutable (`chflags uchg`), and then
     // the plain remove throws. What still fails is left to the OS temp cleanup.
@@ -194,7 +196,7 @@ export function sandboxedExec(argv: string[], opts: { cwd: string; profile: stri
         try { spawnSync("chflags", ["-R", "nouchg", own]); rmSync(own, { recursive: true, force: true }); } catch { /* left behind */ }
       }
     };
-    const timer = setTimeout(killGroup, opts.timeoutMs ?? 120_000);
+    const timer = setTimeout(abort, opts.timeoutMs ?? 120_000);
     let done = false;
     const finish = (code: number | null, signal: NodeJS.Signals | null) => {
       if (done) return;
@@ -203,7 +205,7 @@ export function sandboxedExec(argv: string[], opts: { cwd: string; profile: stri
       opts.signal?.removeEventListener("abort", abort);
       dropOwn();
       const clipped = output.length >= OUTPUT_CAP ? `${output.slice(0, OUTPUT_CAP)}\n(output truncated)` : output;
-      resolve({ code, output: signal ? `${clipped}\n(killed: ${signal}, timeout?)` : clipped });
+      resolve({ code, output: signal || killRequested ? `${clipped}\n(killed: ${signal ?? "SIGKILL"}, timeout?)` : clipped });
     };
     child.on("error", (e) => (done || ((done = true), clearTimeout(timer), opts.signal?.removeEventListener("abort", abort), dropOwn(), resolve({ code: null, output: `error: ${e.message}` }))));
     child.on("close", finish);
