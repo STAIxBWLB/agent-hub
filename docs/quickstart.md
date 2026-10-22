@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.12.45
+bun add -g github:STAIxBWLB/agent-hub#v0.13.0
 ahub setup
 ```
 
@@ -29,6 +29,10 @@ For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
+
+## Upgrading to 0.13.0
+
+One version policy now gates the Codex and Kimi fresh reviewers, Jcode, agy and Qwen (#691): `ahub agents` lists each installed CLI with its version and verdict, a version outside the verified ones (or, for Jcode and agy, outside their compatible line) is refused with the trust command, and `ahub agents trust <id> <version>` accepts that exact version on this machine; only the person can run it, and the reviewers' isolation proofs still run. See [agent CLI versions](operations.md#agent-cli-versions). If you use Jcode, run `ahub jcode` once per project: the hub-owned `.jcode/mcp.json` entry no longer names a peer, `ahub status` and `ahub doctor` show the old entry as not ready until it is rewritten, and the hub admits Jcode's hub tools only from an owned launch (#368). Extra Jcode instances, each with its own `jcode_home`, can be declared in `.agenthub/config.local.json` and started with `ahub jcode --as <id>` (#685; see [Jcode operations](operations.md#optional-jcode-peer)). Run `ahub init` once per project to refresh the hub block in `AGENTS.md`: it tells pull-only agents never to poll `hub_inbox` or CI on a timer and to run one heavy job per repository at a time (#681). `ahub usage` (with `limits` and `total`) and the console's Usage panel (`7`) show tokens per peer, task, issue, PR, release, day or model and the quota pause and reset history (#683); `ahub report --dogfood` prints a read-only scorecard (#687). In the console, `r` on a task in review now asks `a` (approve) or `c` (request changes, which needs a note) (#711), and a task's detail shows an overlaps block and, when ripwire 0.6.7 is on the daemon's PATH, its changed symbols, which the review brief lists too (#684). A pull-only peer now drains its queue up to 64 KiB per `hub_inbox` read, a queued delivery can be discarded while its peer is busy, and the person clears one peer's queue with `ahub queue discard --peer <id> --reason <text> --yes` (#713). `ahub sdlc authorize-release <version>` records the person's release approval, and `ahub init --release-guard` installs an optional tag pre-push guard (#481 S6; see [release approval](operations.md#release-approval-and-optional-tag-guard)). Restart Claude sessions so they load the 0.13.0 plugin. Coming from 0.12.44 or older, the notes below apply too.
 
 ## Upgrading to 0.12.45
 
@@ -141,6 +145,8 @@ or set `OMNIROUTE_API_KEY`. The `.agenthub/routing.toml` that `ahub init` writes
 | `ahub settings set planner <peer>` | pin the planner; status reports whether it came from settings, roles or the automatic choice |
 | `ahub settings reload` | apply edited config files without a restart; guarded values wait for your `y` in this terminal, and restart-only keys stay pending |
 | `ahub status` | peers, queues, pauses; `ahub budget` for quota windows |
+| `ahub usage [--by peer\|task\|issue\|pr\|release\|day\|model]` | tokens per group, each number with its source; `ahub usage limits` for pauses and resets |
+| `ahub agents` | which installed agent CLI versions the hub accepts; `ahub agents trust <id> <version>` accepts an untested one on this machine |
 | `ahub memory profile-check` | a person's read-only check of running memory bindings in the current registry |
 | `ahub ask <question>` | what the board, shared memory and the log say, with the ids the answer rests on |
 | `ahub stop <peer>` | stop one headless peer (Kimi, headless Pi, `local`); the hub and the other peers keep running |

@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.12.43 and control protocol 16. Live verification
+This guide describes ahub 0.13.0 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -61,7 +61,7 @@ smoke ledger; the presence of this option proves no outstanding #273 live leg.
 
 ## Command output
 
-`ahub status`, `board`, `budget`, `doctor`, `projects`, `queue list`, `turns` and `report` print shared console tables and labelled details.
+`ahub status`, `board`, `budget`, `doctor`, `projects`, `queue list`, `turns`, `report` and `usage` print shared console tables and labelled details.
 `status --all` uses the projects table. `queue show`, `models status` and `budget execution status` show labelled fields; add `--json` for the raw fetched document.
 `report --by task` keeps the attribution and coverage sentences with section headings and aligned counters.
 Use `--json` for scripts; it returns the fetched data without color, and `status --json` keeps its existing document.
@@ -199,10 +199,10 @@ the stream; only the header is tab-flattened before tokenizing. Body lines retai
 the previous rendering and stay plain, as does command output; colour never changes
 what the panel's text says.
 
-Peers, Approvals, Tasks, Queue and Settings are tables with a header row. A column is as
+Peers, Approvals, Tasks, Queue, Settings and Usage are tables with a header row. A column is as
 wide as its widest cell, up to a third of the terminal; the last column takes
 the rest and is cut with `...`. In Tasks, TITLE takes the rest and the STAGE
-meter keeps a fixed column at the right edge.
+meter keeps a fixed column at the right edge. In Usage, LAST RESET is the column that gives way on a narrow terminal.
 
 | Panel | Columns |
 |---|---|
@@ -212,6 +212,7 @@ meter keeps a fixed column at the right edge.
 | Tasks, backlog view (`b`) | ID PRI RESERVED DEPS CLASS AGE TITLE |
 | Queue | ID PEER STATE REV AGE |
 | Settings | GROUP KEY VALUE SOURCE APPLIES |
+| Usage | PEER TODAY 7D LIFETIME PAUSE QUOTA LAST RESET |
 
 In Tasks, `b` toggles open work and backlog. The backlog heading counts its rows;
 rows sort by rank, then id. PRI shows priority/rank, RESERVED the reserved peer,
@@ -349,7 +350,7 @@ the time); `dispatching` and `accepted` deliveries stay refused, and `retry` kee
 `stale revision`, `unknown delivery`, `already resolved`, `queued delivery is already scheduled`, `recipient queue is full`, `delivery journal unavailable`), never one
 generic sentence (#713).
 
-`ahub queue discard --peer <id> --reason <text> [--state queued|needs_review] [--yes]` clears one peer's backlog and is for the person only (an agent identity is
+`ahub queue discard --peer <id> --reason <text> [--state queued|needs_review] [--yes] [--json]` clears one peer's backlog and is for the person only (an agent identity is
 refused). Without `--yes` it only says how many deliveries it would discard; with `--yes` it discards each queued (default) or `needs_review` delivery of that peer through the
 same resolution as `queue resolve --action discard`, each recorded with the reason, and prints `discarded N of M` with the causes of any it could not discard. Only the
 named peer's queue is read, so other peers are untouched; it is refused while recovery or shutdown holds queue mutations. In the console Queue panel, `D` on a row opens
@@ -1189,7 +1190,13 @@ ahub report --since 7d          # turns, busy time and tokens per peer, messages
 ahub report --since 7d --json   # the same numbers as JSON
 ahub report --by task           # tokens, turns and wall time per task and class, with the unattributed share
 ahub export --since 24h         # the raw events as JSON lines, for your own analysis
+ahub report --dogfood [--since 7d|<iso>] [--json]   # read-only scorecard: flow, quality, cost, delivery, performance, adoption
 ```
+
+`ahub report --dogfood` (#687) reads the event log, `hub.log`, the board and the delivery journal in `hub.db`, up to 16 recently merged
+PRs through `gh`, and the feature table in `docs/dogfood.md`. It covers the last seven days by default, takes no `--by`, and prints the same
+document as `--json` with `unknown` in place of null; missing or truncated evidence is unknown, never 0. It exports ids, timestamps and counts
+only and runs no model. Its bounds and the weekly routine are in [dogfood](dogfood.md#weekly-scorecard).
 
 Per peer and model route, `ahub report` also counts model changes between consecutive
 decisions, how many of them landed inside tool loops and, with `stay_switch` on, sessions
@@ -1205,7 +1212,7 @@ and its end `budget_resume`, with the window, the reset time and who ended it (`
 `ahub budget resume`). A window's reset writes `quota_reset` when its `resetsAt` moves forward or its `used`
 falls by 0.5 or more inside one window id, once per peer, window and `resetsAt`. These events hold ids and
 numbers only, add no protocol version and are ignored by a reader that does not know them. `ahub report`
-and the console do not show them yet (usage view slices #683 U2 to U4).
+does not show them: `ahub usage` and `ahub usage limits` read them (below), and the console's Usage tab shows each peer's last resets (#683 U3). A dashboard usage view is pending (U4).
 
 `ahub usage` reads the same events from an incremental roll-up in `hub.db` instead of rescanning the log (#683):
 
@@ -1937,7 +1944,9 @@ and important markers do not push or interrupt it. There is no hub busy state,
 watchdog, console approval, hub permission mode, context reading, automatic quota
 pause/handoff, shared final answer or session resume. When important messages are
 waiting, every other hub tool result ends with a line saying how many, so the model
-reads `hub_inbox` before starting long local work (#398). Read quota and approve tools
+reads `hub_inbox` before starting long local work (#398). One `hub_inbox` read drains the queue oldest first up to
+64 KiB of rendered text and, when more waits, ends with `N more waiting: call hub_inbox again before you start work` (#713).
+Read quota and approve tools
 in Kimi's own TUI; a person can pause the hub queue by hand. End the native terminal
 session there, not with `ahub stop kimi`.
 
@@ -2323,16 +2332,17 @@ Rows without a live process are stale registrations; forget them with
 
 Agent CLIs update themselves often, and a hub release cannot follow every one. One policy decides each gated CLI: the Codex and Kimi fresh reviewers, Jcode, agy and Qwen (#691).
 
-- `ahub agents` lists each installed CLI with its version and verdict.
+- `ahub agents [--json]` lists each gated CLI with its version, verdict and verified versions.
   - **verified:** a receipt exists.
   - **in-line:** untested, inside the compatible line that a contract gate (Jcode, agy) declares; it starts with a note.
   - **trusted:** you accepted this exact version on this machine.
   - **refused:** the reason names the installed and verified versions and the command that admits it.
+  - **unknown:** the CLI is not on PATH, or its version could not be read.
 - `ahub agents trust <id> <version>` accepts one untested version on this machine (`~/.agenthub/agent-compat.json`); `--revoke` undoes it. Only the person can run it; agent shells are refused.
   - For the reviewers, trust lifts only the version pin. The MCP inventory, Apps/plugins/hooks readback, sandbox denial fixtures and binary fence still run before every child, and a failed leg still refuses.
   - What trust cannot prove is printed when you trust.
 - `ahub doctor` shows one line for each installed CLI that is not on a verified version.
-- A weekly workflow (`.github/workflows/agent-compat.yml`) compares the published npm versions with the verified sets and keeps one `agent-compat` issue up to date. That issue triggers a receipt task, after which the version is added to `verified`.
+- A weekly workflow (`.github/workflows/agent-compat.yml`) compares the latest npm versions of Codex, Kimi Code and Qwen Code with the verified sets, keeps one `agent-compat` issue up to date while one is ahead and closes it when none is. The next step for each listed version is a model-free receipt in `docs/verification/`, then adding it to `verified` in the same PR. Jcode and agy are not watched.
 
 ## Upgrade and crash recovery
 
@@ -4034,7 +4044,7 @@ restart the hub. For example, a reviewer can use:
 
 Start them with `ahub codex --as codex-review` and
 `ahub kimi --as kimi-review`. Codex keeps its native TUI and its own hub-owned
-app-server proxy; extra Kimi, Qwen, Pi and local instances use headless starts.
+app-server proxy; extra Kimi, Qwen, Jcode, Pi and local instances use headless starts.
 Extra Jcode instances are supported (#685), in `.agenthub/config.local.json` only:
 
 ```json

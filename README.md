@@ -5,7 +5,7 @@ Code, Codex, Kimi Code, Pi and a hub-owned local worker (plus Qwen Code, Jcode a
 Antigravity if you want them) share a message bus, a task board and a memory, each
 connected through its own native interface.
 
-Status: 0.12.45, control protocol 16. Bun + TypeScript, one loopback daemon per
+Status: 0.13.0, control protocol 16. Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## Quick start
@@ -48,8 +48,9 @@ ahub ui                                      # the web dashboard
   Budgets pause an agent before it runs out of quota, and recovery never replays an
   effect whose outcome is unknown.
 - **Operations.** A terminal console and a local dashboard, one hub per repository or
-  worktree with a machine-wide view, live settings reload, and `ahub upgrade`, which
-  carries running sessions across versions.
+  worktree with a machine-wide view, live settings reload, token usage and quota
+  history (`ahub usage`), and `ahub upgrade`, which carries running sessions across
+  versions.
 
 ## Upgrading
 
@@ -57,6 +58,10 @@ Run `ahub upgrade` while your hubs are running. Read the notes for your version 
 the [Quickstart](docs/quickstart.md) ("Upgrading to ...") and the
 [Changelog](CHANGELOG.md) first: some releases need a one-time step, such as
 refreshing an agent's MCP entry.
+
+Agent CLIs update themselves. `ahub agents` shows which installed versions the hub
+accepts, and `ahub agents trust <id> <version>` accepts an untested one on this
+machine.
 
 Before you migrate a memory home with `amem`, read
 [memory profiles and rollout](docs/memory.md#selected-memory-profile). Every hub that
@@ -73,7 +78,7 @@ uses the home must run a version that understands the new layout.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-10-22-0.12.45.md) and the
+[release verification report](docs/verification/2026-10-23-0.13.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation

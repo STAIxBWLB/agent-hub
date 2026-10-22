@@ -4,10 +4,20 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.13.0
+
 - Add the #636 action-policy foundation: a pure classifier, machine-local always-ask configuration, session-bound approval budgets and explicit per-peer enforcement status. Adapter pre-tool gates remain pending; status reports that limit instead of claiming protection.
 - Person-only release approval binds the candidate commit, version and fresh docs; an opt-in init-written Git tag pre-push guard refuses missing or mismatched approval and preserves existing hooks (#481 S6).
-
 - Bug-labelled tasks gain source-labelled red-first receipts and PR test-integrity readbacks. Enforce blocks review and approval when proof is missing/unknown or a pre-existing test is modified/deleted; advise shows the findings. Status and merge queues retain private metadata screening (#481 S4).
+- Version policy for native agent CLIs (#691): one verified/in-line/trusted/refused decision in `src/adapters/compat.ts` for the Codex and Kimi reviewers, Jcode, agy and Qwen; `ahub agents [--json]` shows it and the person-only `ahub agents trust <id> <version> [--revoke]` accepts an untested version on this machine; refusals name the version and the trust command; a weekly workflow reports upstream drift. Receipts add Codex reviewer 0.163.0 (#697), Kimi reviewer 2.3.0 and Qwen Code 0.26.0 (#714).
+- Extra Jcode instances with their own home, socket and state; hub tools are bound to an owned launch (#685).
+- Usage: ledger events for Codex usage breakdown, budget pause/resume and derived quota resets (#683 U1); an incremental roll-up in `hub.db`, the `usage` control op and `ahub usage [limits|total]` (U2); the console Usage panel (tab `7`) with windows, pauses, last resets and tokens per peer and per selected task (U3).
+- Code structure (#682, #684): optional bounded code facts from ripwire 0.6.7 in the review brief (observed symbols, unknown change kinds, deleted definitions not covered); head-bound task symbol observations kept apart from the task row and dropped on a head, repository or privacy change; the console task detail shows changed symbols (matching, unplanned, untouched) and screened overlaps, and a completed-change notice says `same file, different symbols` only on complete disjoint evidence; plan symbols match by normalized name across overlap notices, grooming and the review brief (#682 phase 1b).
+- SDLC: the hub links lifecycle issue and PR identity from what it can verify (#694); test integrity for bug fixes with red-first receipts and modified pre-existing test detection (#481 S4); `ahub report --dogfood`, a bounded weekly scorecard of real use (#687), with CI flow measured per recorded PR head (#704); a profile-selected review checklist and hub tool descriptions (#507).
+- Console review guidance (#711): `r` on a task in review asks `a approve` or `c request changes`, shows a guide line, refuses an empty changes note and shows the result; an agent shell refused a person-only action is told why; the user-reviewed done notice names the console path.
+- Pull-only peers catch up (#713): `hub_inbox` drains up to 64 KiB oldest first and says how many are waiting; completed-change notices are one per recipient per done, a newer one supersedes the queued one, and none go to unaccepted work; a queued delivery can be discarded while its peer is busy; refusals name their cause; the person's `ahub queue discard --peer <id> --reason <text> [--yes]` and the console Queue `D` clear a backlog. Empty pull-only polling is detected (#681).
+- Fixes: a check's exit and pipes are read through Bun.spawn so an early exit is not lost (#558); snapshot attribution survives own-commit rebases and long reflogs (#612); readiness respects the reserved owner's WIP cap (#655); host timeout kill markers are preserved in the sandbox (#700); the Codex reviewer disables legacy notify (#697).
+- Releases: a release with any feature bumps the minor version; a fix-only release bumps the patch.
 
 ## 0.12.45
 
