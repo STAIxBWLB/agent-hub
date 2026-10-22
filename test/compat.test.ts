@@ -10,13 +10,13 @@ const file = () => join(mkdtempSync(join(tmpdir(), "ahub-compat-")), "agent-comp
 
 test("a verified version passes, a contract gate admits its line as untested, anything else is refused with versions and the trust command (#691)", () => {
   expect(assessVersion("codex-review", "0.146.0", [])).toEqual({ ok: true, state: "verified", version: "0.146.0" });
-  const refused = assessVersion("codex-review", "0.163.0", []);
+  const refused = assessVersion("codex-review", "0.164.0", []);
   expect(refused.ok).toBe(false);
   if (!refused.ok) {
     expect(refused.reason.startsWith(VERSION_REFUSAL)).toBe(true);
-    expect(refused.reason).toContain("0.163.0");
+    expect(refused.reason).toContain("0.164.0");
     expect(refused.reason).toContain("verified 0.146.0");
-    expect(refused.reason).toContain("ahub agents trust codex-review 0.163.0");
+    expect(refused.reason).toContain("ahub agents trust codex-review 0.164.0");
   }
   // An isolation gate has no line: a newer minor is refused, not assumed compatible.
   expect(assessVersion("kimi-review", "2.3.0", []).ok).toBe(false);
@@ -27,10 +27,10 @@ test("a verified version passes, a contract gate admits its line as untested, an
 });
 
 test("the person's trust admits exactly that version of that kind, and nothing else (#691)", () => {
-  const trusted = [{ id: "codex-review" as const, version: "0.163.0", at: 1 }];
-  expect(assessVersion("codex-review", "0.163.0", trusted)).toMatchObject({ ok: true, state: "trusted" });
-  expect(assessVersion("codex-review", "0.163.1", trusted).ok).toBe(false);
-  expect(assessVersion("kimi-review", "0.163.0", trusted).ok).toBe(false);
+  const trusted = [{ id: "codex-review" as const, version: "0.164.0", at: 1 }];
+  expect(assessVersion("codex-review", "0.164.0", trusted)).toMatchObject({ ok: true, state: "trusted" });
+  expect(assessVersion("codex-review", "0.164.1", trusted).ok).toBe(false);
+  expect(assessVersion("kimi-review", "0.164.0", trusted).ok).toBe(false);
 });
 
 test("trust is written atomically, revocable, and an invalid record trusts nothing (#691)", () => {
@@ -55,7 +55,7 @@ test("every gated kind declares its verified set; contract lines are well-formed
     for (const v of policy.verified) expect(assessVersion(id as keyof typeof COMPAT, v, [])).toMatchObject({ ok: true, state: "verified" });
     if ("line" in policy) expect(policy.gate).toBe("contract");
   }
-  expect(COMPAT["codex-review"].parse("codex-cli 0.163.0\n")).toBe("0.163.0");
+  expect(COMPAT["codex-review"].parse("codex-cli 0.164.0\n")).toBe("0.164.0");
   expect(COMPAT.jcode.parse('{"semver":"0.99.0"}')).toBe("0.99.0");
   expect(COMPAT.jcode.parse("garbage")).toBeUndefined();
 });
@@ -70,8 +70,8 @@ test("the agy launcher reports the compat verdict (#691)", () => {
 test("reading agent versions is allowed for agents; trusting one is the person's (#691)", () => {
   expect(classifyPeerCommand("agents", [])).toBe("allowed");
   expect(classifyPeerCommand("agents", ["--json"])).toBe("allowed");
-  expect(classifyPeerCommand("agents", ["trust", "codex-review", "0.163.0"])).toBe("console");
-  expect(classifyPeerCommand("agents", ["trust", "codex-review", "0.163.0", "--revoke"])).toBe("console");
+  expect(classifyPeerCommand("agents", ["trust", "codex-review", "0.164.0"])).toBe("console");
+  expect(classifyPeerCommand("agents", ["trust", "codex-review", "0.164.0", "--revoke"])).toBe("console");
 });
 
 test("a live-test delegation never reaches trust or revoke; reading stays allowed (#691)", async () => {
@@ -135,7 +135,7 @@ test("trust says what it covers before anything is recorded (#691)", async () =>
   const lines: string[] = [];
   const log = spyOn(console, "log").mockImplementation((line: string) => { lines.push(line); });
   try {
-    expect(() => runAgents(["trust", "codex-review", "0.163.0"], {}, message => { throw new Error(message); })).toThrow();
+    expect(() => runAgents(["trust", "codex-review", "0.164.0"], {}, message => { throw new Error(message); })).toThrow();
     expect(lines.join("\n")).toContain(COMPAT["codex-review"].trustNote);
   } finally { log.mockRestore(); (await import("node:fs")).rmSync(trustFile(), { recursive: true, force: true }); }
 });
@@ -146,7 +146,7 @@ test("a FIFO at the record path neither blocks nor trusts (#691)", () => {
   const started = performance.now();
   expect(readTrust(path)).toEqual([]);
   expect(performance.now() - started).toBeLessThan(1000);
-  expect(assessVersion("codex-review", "0.163.0", readTrust(path)).ok).toBe(false);
+  expect(assessVersion("codex-review", "0.164.0", readTrust(path)).ok).toBe(false);
   expect(() => writeTrust("agy", "1.5.0", false, path)).toThrow("not a regular file");
 });
 
@@ -210,4 +210,9 @@ test("the probe's output collector never keeps more than its cap, and refuses ev
   expect(output.overflowed).toBe(true);
   expect(output.push(Buffer.from("x"))).toBe(false);
   expect(output.size).toBe(64 * 1024);
+});
+
+
+test("Codex reviewer 0.163.0 is receipt-verified without machine trust (#371)", () => {
+  expect(assessVersion("codex-review", "0.163.0", [])).toMatchObject({ ok: true, state: "verified", version: "0.163.0" });
 });

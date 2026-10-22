@@ -15,7 +15,7 @@ function fixture(mode = "ok") {
   writeFileSync(script, `import { appendFileSync } from "node:fs";
 const [mode, calls, ...a] = process.argv.slice(2);
 appendFileSync(calls!, JSON.stringify(a) + "\\n");
-if(a[0] === "--version") { console.log(mode === "version" ? "codex-cli 0.163.0" : "codex-cli 0.146.0"); process.exit(0); }
+if(a[0] === "--version") { console.log(mode === "version" ? "codex-cli 0.164.0" : mode === "modern" ? "codex-cli 0.163.0" : "codex-cli 0.146.0"); process.exit(0); }
 if(a[0] === "exec") { throw new Error("model must not run in isolation prepare"); }
 if(mode === "abort") await new Promise(() => {});
 if(mode === "overflow") { console.log("x".repeat(140000)); process.exit(0); }
@@ -50,6 +50,7 @@ test("Codex isolation proves bounded MCP and sandbox before returning fixed ephe
     expect(result.args).toContain("--ephemeral");
     expect(result.args.some((arg, index) => arg === "--disable" && result.args[index + 1] === "apps")).toBe(true);
     expect(result.args).toContain('web_search="disabled"');
+    expect(result.args).toContain("notify=[]");
     expect(result.args).not.toContain("--sandbox");
     expect(result.args.some(arg => arg.startsWith("default_permissions="))).toBe(true);
     const override = result.args.find(arg => arg.startsWith("mcp_servers="))!;
@@ -290,15 +291,34 @@ test("Codex isolation names an unverified version, and the person's trust lifts 
   try {
     const refused = await codexReviewerBackend.prepare(f.ctx);
     expect(refused).toHaveProperty("unavailable");
-    expect((refused as { unavailable: string }).unavailable).toContain("codex-cli) 0.163.0 (verified 0.146.0)");
-    expect((refused as { unavailable: string }).unavailable).toContain("ahub agents trust codex-review 0.163.0");
-    writeTrust("codex-review", "0.163.0", false);
+    expect((refused as { unavailable: string }).unavailable).toContain("codex-cli) 0.164.0 (verified 0.146.0, 0.163.0)");
+    expect((refused as { unavailable: string }).unavailable).toContain("ahub agents trust codex-review 0.164.0");
+    writeTrust("codex-review", "0.164.0", false);
     const admitted = await codexReviewerBackend.prepare(f.ctx);
     expect(admitted).not.toHaveProperty("unavailable");
     const launch = admitted as Exclude<typeof admitted, { unavailable: string }>;
-    expect(launch.isolation?.version).toBe("0.163.0");
+    expect(launch.isolation?.version).toBe("0.164.0");
     const proofs = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line)[0]);
     for (const step of ["features", "mcp", "sandbox"]) expect(proofs).toContain(step);
     await launch.cleanup?.();
-  } finally { writeTrust("codex-review", "0.163.0", true); f.close(); }
+  } finally { writeTrust("codex-review", "0.164.0", true); f.close(); }
+});
+
+
+test("Codex 0.163.0 retains all proofs and disables legacy notify in proofs and launch argv (#371)", async () => {
+  const f = fixture("modern");
+  try {
+    const result = await codexReviewerBackend.prepare(f.ctx);
+    expect("unavailable" in result).toBe(false);
+    if ("unavailable" in result) return;
+    try {
+      expect(result.isolation.version).toBe("0.163.0");
+      expect(result.isolation.evidence).toContain("legacy-notify-disabled");
+      expect(result.args).toContain("notify=[]");
+      const calls: string[][] = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      expect(calls.some(args => args[0] === "exec")).toBe(false);
+      expect(calls.filter(args => args[0] !== "--version").every(args => args.includes("notify=[]"))).toBe(true);
+      expect(result.current?.()).toBe(true);
+    } finally { await result.cleanup?.(); }
+  } finally { f.close(); }
 });

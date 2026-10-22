@@ -217,7 +217,7 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
     if (Buffer.byteLength(ctx.mcpConfig) > CAP || ctx.privatePaths.length > 128) throw new Error("policy bounds exceeded");
     const hub = ownServer(ctx.mcpConfig);
     // Apps creates a runtime MCP server outside the configured inventory; independently pin and read back its gate.
-    const policy = ["--disable", "plugins", "--disable", "hooks", "--disable", "apps", "-c", 'web_search="disabled"', "-c", `projects=${toml({ [cwd]: { trust_level: "untrusted" } })}`];
+    const policy = ["-c", "notify=[]", "--disable", "plugins", "--disable", "hooks", "--disable", "apps", "-c", 'web_search="disabled"', "-c", `projects=${toml({ [cwd]: { trust_level: "untrusted" } })}`];
     proveDisabledFeatures(await run(["features", "list", ...policy]));
     const before = inventory(await run(["mcp", "list", "--json", ...policy]));
     if (before.some(row => row.name === "agent-hub")) throw new Error("ambient hub MCP collision");
@@ -275,7 +275,7 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
       current: () => { try { return current(); } catch { return false; } },
       cleanup: () => rmSync(cleanupRoot, { recursive: true, force: true }),
       isolation: { backend: "codex", version, binary: `sha256:${binaryHash}`, profile: `sha256:${launchProfile}`, readOnly: true, strictMcp: true, ephemeral: true,
-        evidence: ["model-free-mcp-inventory-disabled-ambient", "hub-tools-exact-allowlist", "plugins-and-hooks-disabled", "apps-disabled-effective-feature-readback", "web-search-disabled", "project-untrusted", "native-public-read-private-deny-write-deny", "native-glob-and-symlink-private-deny", "portable-core-name-and-state-deny", "standard-host-credential-roots-denied", "binary-config-stable", "binary-hash-once-metadata-fence", "session-ephemeral"] } };
+        evidence: ["model-free-mcp-inventory-disabled-ambient", "hub-tools-exact-allowlist", "plugins-and-hooks-disabled", "legacy-notify-disabled", "apps-disabled-effective-feature-readback", "web-search-disabled", "project-untrusted", "native-public-read-private-deny-write-deny", "native-glob-and-symlink-private-deny", "portable-core-name-and-state-deny", "standard-host-credential-roots-denied", "binary-config-stable", "binary-hash-once-metadata-fence", "session-ephemeral"] } };
   } catch (error) {
     if (root) { try { rmSync(root, { recursive: true, force: true }); } catch { /* unavailable remains refused */ } }
     // Name only the path class of an unusable credential root so a stale ~/.docker link is fixable; never a path or contents.
