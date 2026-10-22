@@ -69,7 +69,10 @@ test("a start with a missing or foreign-kind jcode_home is refused and nothing i
   writeFileSync(localHome, "a file, not a directory");
   const file = await console_.request({ t: "start", peer: "jcode-local", args: { mode: "headless" } });
   expect(file.ok).toBe(false); expect(String(file.error)).toContain("jcode_home");
-  expect(() => readFileSync(record, "utf8")).toThrow(); // the fake jcode never ran
+  // The version preflight (#691) runs first, as for the base peer, so the fake answers one `version` probe; nothing else starts.
+  const launched = (() => { try { return rows(record).filter(row => row.kind === "launch").map(row => row.role); } catch { return []; } })();
+  expect(launched.filter(role => role !== "version")).toEqual([]);
+  expect(rows(record).some(row => row.kind === "serve")).toBe(false);
   expect(daemon.bus.stateOf("jcode-local") ?? "offline").toBe("offline");
 });
 
