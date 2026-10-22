@@ -136,3 +136,40 @@ test("short or mismatched brief heads stay optional instead of refusing completi
   expect(done.state).toBe("in_review");expect(done.codeSymbols).toBeUndefined();
  }
 });
+
+function storeSymbols(f: Awaited<ReturnType<typeof rig>>, task: Task, name: string, complete = true) {
+ const observed = brief(task.refs.commit, name); observed.symbols!.complete = complete;
+ f.board.update(task.id,"user","fixture observation",{codeSymbols:buildTaskCodeSymbols(observed,`path:${realPath(f.cwd)}`,()=>true)},undefined,{},undefined,HOST_CODE_SYMBOLS);
+ return f.board.get(task.id)!;
+}
+
+test("symbol overlaps project current screened pair evidence without changing history",async()=>{
+ const f=await rig(),left=f.add(),right=f.add("kimi",OTHER);
+ const mine=storeSymbols(f,left,"Alpha.first");storeSymbols(f,right,"Beta.second");
+ const before=f.board.list().map(t=>t.history),seen=f.seen.length;
+ expect(f.tasks.symbolOverlaps(mine)).toEqual([{task:right.id,files:["a.ts"],sameFileDifferentSymbols:true}]);
+ expect(f.board.list().map(t=>t.history)).toEqual(before);expect(f.seen).toHaveLength(seen);
+ // The current screen, not the earlier capture policy, decides whether this claim is safe.
+ f.tasks.publicMetadataText=text=>!text.includes("Beta");
+ expect(f.tasks.symbolOverlaps(mine)).toEqual([{task:right.id,files:["a.ts"],sameFileDifferentSymbols:false}]);
+ f.tasks.publicMetadataText=text=>!text.includes("a.ts");
+ expect(f.tasks.symbolOverlaps(mine)).toEqual([{task:right.id,files:[],sameFileDifferentSymbols:false}]);
+});
+
+test("symbol overlaps keep ordinary overlap for unknown incomplete shared and stale observations",async()=>{
+ const f=await rig(),left=f.add(),right=f.add("kimi",OTHER),mine=storeSymbols(f,left,"Alpha.first");
+ const plain=[{task:right.id,files:["a.ts"],sameFileDifferentSymbols:false}];
+ expect(f.tasks.symbolOverlaps(mine)).toEqual(plain);
+ storeSymbols(f,right,"Beta.second",false);expect(f.tasks.symbolOverlaps(mine)).toEqual(plain);
+ storeSymbols(f,right,"Alpha.first");expect(f.tasks.symbolOverlaps(mine)).toEqual(plain);
+ storeSymbols(f,right,"Beta.second");f.board.update(right.id,"kimi","new head",{refs:{commit:BASE}});
+ expect(f.tasks.symbolOverlaps(mine)).toEqual(plain);
+});
+
+test("symbol overlaps exclude private tasks on either side and different repositories",async()=>{
+ const f=await rig(),left=f.add(),right=f.add("kimi",OTHER),mine=storeSymbols(f,left,"Alpha.first");storeSymbols(f,right,"Beta.second");
+ f.board.update(right.id,"user","private",{signals:["pii_path"]});expect(f.tasks.symbolOverlaps(mine)).toEqual([]);
+ f.board.update(right.id,"user","public",{signals:[]});
+ expect(f.tasks.symbolOverlaps({...mine,signals:["pii_path"]})).toEqual([]);
+ f.board.update(right.id,"user","other repo",{refs:{repo:"other/repo"}});expect(f.tasks.symbolOverlaps(mine)).toEqual([]);
+});
