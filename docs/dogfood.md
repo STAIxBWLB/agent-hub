@@ -67,7 +67,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | --- | --- | --- |
 | Dogfood scorecard (#687) | on after release; read-only weekly receipt | `ahub report --dogfood --since 7d --json`; bounded evidence and explicit unknowns |
 | Console and dashboard | on | control-request latency, connection timeouts in `hub.log` |
-| Usage view (#683) | CLI (`ahub usage`, U2) and console Usage tab `7` (U3) shipped; dashboard panel pending (U4) | its own panels |
+| Usage view (#683) | CLI (`ahub usage`, U2), console Usage tab `7` (U3) and dashboard Usage view (U4) shipped | its own panels |
 | Settings reload | on | reloads applied, pending restarts |
 | Config editing from the console and dashboard (#689) | pending; hand edits of `config.local.json` meanwhile | edits applied, refused by validation, pending restarts |
 | Upgrade and recovery | on, per release | upgrade receipts in `docs/verification/` |
