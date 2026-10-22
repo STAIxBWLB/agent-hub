@@ -9,6 +9,8 @@ Status: source integration and model-free production-backend admission are verif
 - Existing #223 Claude behavior is retained. This work adds no new live Claude acceptance proof.
 - Codex/Kimi fresh reviewer declarations require `review_mode: "fresh"`. Existing headless instances with roles `["reviewer"]` but no opt-in retain native transport/worktree/permission behavior and stay outside the fresh pool. Claude keeps #223 automatic selection; agy remains metadata-only unavailable. A failed fresh start never downgrades to a continuing native session.
 
+Current-version update: the [2026-10-22 receipt](2026-10-22-codex-reviewer-isolation.md) additionally verifies 0.163.0 and retains 0.146.0. The 0.163.0 unavailability statements below describe this historical slice.
+
 ## Codex native evidence
 
 - Exact executable used for offline probes: `/opt/homebrew/bin/codex`, reporting `codex-cli 0.146.0`. Its npm package resolves to a native binary. A separate fnm executable on PATH reports 0.163.0; that version has no receipt in this slice and must be unavailable.
