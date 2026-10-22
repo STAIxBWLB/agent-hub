@@ -184,3 +184,16 @@ test("a base and an instance TUI launch each carry their own peer id, the same p
     }
   }
 });
+
+// ahub status and the console peer table show an instance's model source (#685), as plain, non-secret text.
+import { renderStatus } from "../src/cli/output.ts";
+import { paint } from "../src/cli/console-state.ts";
+
+test("ahub status lists an extra Jcode instance's model source and shows nothing for a peer without one (#685)", () => {
+  const peers = { jcode: { state: "idle", queued: 0 }, "jcode-local": { state: "idle", queued: 0, modelSource: "hub relay dgx/fast (cloud peer, not on-prem)" } };
+  const out = renderStatus({ peers }, 160, 1_800_000_000_000).map(line => paint(line, false)).join("\n");
+  expect(out).toContain("model source");
+  expect(out).toContain("hub relay dgx/fast (cloud peer, not on-prem)");
+  const base = renderStatus({ peers: { jcode: peers.jcode } }, 160, 1_800_000_000_000).map(line => paint(line, false)).join("\n");
+  expect(base).not.toContain("model source");
+});

@@ -2605,6 +2605,15 @@ the queue.
 - The private socket name ends in `.sock`: jcode names its debug socket by replacing that suffix. Every owned jcode process runs with `JCODE_NO_TELEMETRY=1` (#529).
 - Native ACP load (verified on 0.94.0 and 0.98.1) lacks identity proof. Controlled recovery refuses before effects, crash recovery is manual and a load without an exact echoed id refuses before a prompt or restored claim. Real provider/tool/teardown evidence and comparative measurement remain unverified.
 
+## Amendment: extra Jcode instances (#685)
+
+- `instances.<id>` accepts `kind: "jcode"` only from the untracked `config.local.json`. Instance-only, machine-local fields: `jcode_home` (required: absolute, control-free, at most 4096 bytes), `provider`, `model` and `provider_profile` (one bounded printable word each, passed as `-p`, `--model` and `--provider-profile`) and `model_relay` (`dgx/coding` or `dgx/fast`). No other kind accepts them, and settings never edit them. `checkJcodeInstanceHomes` runs once at daemon startup and refuses a `jcode_home` equal to the base `jcode_home`, equal to another instance's, or nested inside or around either (their native stores would overlap).
+- Each instance is one `JcodePeer` under its own id: its private `jcode serve` and `jcode acp` pair (never standalone `jcode acp`, #559), socket, roster row, launch record and `--server-name agent-hub-<id>`. Its owned children run with `peerChildEnv(<id>)`, and `recoveryMetadata` names the id. `ahub jcode --as <id>` starts it headless; an instance has no TUI. Stopping it stops only its own group. An extra implementer needs the same managed worktree as every extra implementer (`resolveInstanceExecutionCwd`).
+- The project's `.jcode/mcp.json` entry is shared by every Jcode in the project, and jcode gives an entry's own env precedence over the process env (probed on 0.99.0). The entry therefore names no `AGENTHUB_PEER_ID`; every owned launch path supplies its own (serve and ACP through `peerChildEnv`, the TUI launch env). An entry written before this one still names `jcode`: `jcodeMcpReady` is false for it until `ahub jcode` rewrites it.
+- With `model_relay` the daemon starts a per-instance loopback `startModelRelay` (as Pi does) once the gateway is positively on campus (`onCampus()`, never `!offCampus()`); otherwise the start is refused with that reason and nothing runs. Jcode is started with `-p openai-compatible`, the relay's URL and a per-launch token through `JCODE_OPENAI_COMPAT_API_BASE` and `OPENAI_COMPAT_API_KEY` (verified on 0.99.0 under an isolated home: models listing and chat completions both carry the token as bearer, and the stream's usage is returned). The gateway key and Access headers stay in `src/omniroute`: every `OMNIROUTE_*`, `CF_ACCESS_*` and `AGENTHUB_OMNIROUTE*` variable is removed from the instance's environment. Every request the relay serves is one `usage` event with source `omniroute`, the instance id, the gateway's own token counters and task attribution; a counter the gateway did not report stays absent, never zero.
+- The instance stays a cloud peer (`trust.onPrem: false`): the on-prem model alone does not make the agent on-prem, its native policy stays unmanaged with no hub sandbox, and it never owns PII work. Status carries `modelSource` for an instance (`hub relay <alias> (cloud peer, not on-prem)`, or the declared provider, model and profile names), shown in `ahub status` and the dashboard; `ahub doctor` lists the MCP servers each rostered instance's own home would load. None of them carries a URL, token, key or home path.
+- Ceiling: the real model's tool-call quality through the relay and the on-campus start are not verified by source or fixtures (`docs/smoke.md`, "Extra Jcode instance on the on-prem model").
+
 # ACP watch amendment, 2026-10-11 (#286)
 
 - Headless Kimi/Qwen expose `watch` to console-role clients: bounded memory replay followed by activity pushes, no protocol bump, no peer input or approvals from the view. The CLI displays safe wrapped text; private/PII turns display a stub.
@@ -3870,8 +3879,8 @@ cannot publish their derived defaults ahead of that restart.
 
 I2 accepts definitions with a native headless factory and environment or ACP
 session MCP identity. Additional Claude/channel peers belong to I3. Jcode's
-project-file MCP identity is not isolated by this phase and is refused for extra
-instances. Additional instances start headlessly; the existing Codex native TUI
+project-file MCP identity was not isolated by this phase and was refused for extra
+instances; #685 lifts that, see "Extra Jcode instances" below. Additional instances start headlessly; the existing Codex native TUI
 still initializes and attaches to its instance's own app-server proxy. The hub
 never initializes that app-server on the TUI's behalf. `ahub <kind> --as <id>`
 selects the declared identity; selection is removed from native passthrough.
