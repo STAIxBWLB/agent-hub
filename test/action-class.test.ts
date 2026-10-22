@@ -219,3 +219,17 @@ test("#636 R2 home uncertainty survives a saturated cwd candidate set", () => {
   const command = [...Array.from({ length: 8 }, (_, i) => `cd d${i}`), "cd", "rm -rf target"].join(";");
   expect(classifyAction("bash", { command }, root)).toEqual(["destroy"]);
 });
+
+const curlValueCases: Array<[string, ActionClass[]]> = [
+  ["curl -d '-XGET' https://example.test", ["external-write"]],
+  ["curl -d '-G' https://example.test", ["external-write"]],
+  ["curl --data '-XGET' https://example.test", ["external-write"]],
+  ["curl -H '-XGET' -d payload https://example.test", ["external-write"]],
+  ["curl --header '-G' --data payload https://example.test", ["external-write"]],
+  ["curl -G --data '-XPOST' --header '-XDELETE' https://example.test", []],
+];
+for (const [command, expected] of curlValueCases) {
+  test(`#636 R2 curl option values stay data: ${command}`, () => {
+    expect(classifyAction("Bash", { command }, root)).toEqual(expected);
+  });
+}
