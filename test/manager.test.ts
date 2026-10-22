@@ -219,9 +219,14 @@ test("a hub refusal of start_peer remains a known failure with its command", asy
 
 test("unified split accepts a confirmed response beyond the generic action deadline",async()=>{
  const f=await scriptedAction(undefined,true);try{
-  const split=f.action("backlog_split");await f.arrived("backlog_split");
+  const split=f.action("backlog_split");
+  // Assertion failures tear down in-flight HTTP requests; handle their rejection at creation.
+  void split.catch(()=>{});
+  await f.arrived("backlog_split");
+  expect(f.limits).toEqual([["backlog_split",16000]]);
+  expect(f.actualLimits).toEqual([["backlog_split",160]]);
   expect(f.requests.some(r=>r.action?.action==="backlog_split")).toBe(true);
-  const ordinary=f.action("pause");await f.arrived("pause");
+  const ordinary=f.action("pause");void ordinary.catch(()=>{});await f.arrived("pause");
   // Both requests are in flight before the ordinary deadline advances; split's later deadline stays pending.
   expect(f.limits).toEqual([["backlog_split",16000],["pause",10000]]);
   expect(f.actualLimits).toEqual([["backlog_split",160],["pause",100]]);
