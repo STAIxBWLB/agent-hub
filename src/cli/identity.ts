@@ -100,6 +100,24 @@ export function cliCommandLabel(command: string, args: readonly string[], catalo
   return (/^[a-z][a-z0-9-]*$/.test(command) && !/\s/.test(command)) || ["--help", "--version"].includes(command) ? command : "unknown";
 }
 
+/**
+ * #711: a hub refusal that only the person or the task's own reviewer could have avoided ("only its reviewer (user) or the console user can do that",
+ * "only the person may ..."). The wording is the hub's, so this reads it and never invents it: anything else gets no extra line.
+ */
+export const personOnlyRefusal = (error: string): boolean => /\bonly\b[^.]*\b(?:console user|the person)\b/i.test(error);
+
+/**
+ * #711: the extra stderr line for an agent shell that was refused something only the person may do. The refusal itself and the authority are unchanged: this only
+ * says why the shell was treated as an agent and where to act as the person. `undefined` for the console identity and for any refusal that is not person-only.
+ */
+export function agentShellCause(identity: CliIdentity, error: string, env: Readonly<Record<string, string | undefined>> = process.env): string | undefined {
+  if (identity.role !== "tools" || !personOnlyRefusal(error)) return undefined;
+  const markers = ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"].filter(name => env[name] !== undefined);
+  const set = markers.length ? `${markers.join(" and ")} ${markers.length === 1 ? "is" : "are"} set` : "an agent marker is set";
+  const task = /\btask #(\d+)\b/.exec(error)?.[1];
+  return `This shell runs as agent "${identity.peer}" (${set}), not as you. Run the command in your own terminal, or use the ahub console: ${task ? `Tasks, select #${task}, r` : "Tasks, select the task, r"}.`;
+}
+
 export function peerCommandRefusal(peer: string, command: string, env: Readonly<Record<string, string | undefined>> = process.env): string {
   const markers = ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "AGENTHUB_PEER_ID", "CODEX_THREAD_ID"].filter(name => env[name] !== undefined);
   return `${peer} cannot run ahub ${command}; the person runs it in ahub console or a terminal. Refused because inherited agent markers${markers.length ? ` (${markers.join(", ")})` : ""} identify this shell as an agent. A ! command in an agent session runs as that agent; use a separate terminal outside the agent session`;

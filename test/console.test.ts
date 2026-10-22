@@ -794,7 +794,13 @@ describe("console layout (#213)", () => {
     s.tasks.reverse(); // a refresh reorders: #9 now sits at the selected index
     expect(reduceConsole(s, "a", NOW).state.input).toBe("task assign 3 --revision 7 ");
     s.detail.state = "in_review";
-    expect(reduceConsole(s, "r", NOW).state.input).toBe("review 3 ");
+    // #711: `r` asks for the verdict first (the old prefill of `review 3 ` left the person to guess the next word); it still acts on the task the detail shows, #3, not on #9 under the selection
+    const board = s.tasks.map(task => ({ ...task }));
+    s.tasks.forEach(task => { task.state = "in_review"; });                                  // the board agrees with the detail while the review is chosen
+    const chosen = reduceConsole(s, "r", NOW).state;
+    expect(chosen.reviewChoice).toMatchObject({ id: 3 }); expect(chosen.input).toBe("");
+    expect(reduceConsole(chosen, "a", NOW).state.input).toBe("review 3 approved ");
+    s.tasks = board;                                                                          // back to the board the rest of this test is about
     s.detail = "task_show failed"; // a message names no item
     expect(reduceConsole(s, "a", NOW).state.editing).toBe(false);
     s.detail = undefined; expect(reduceConsole(s, "a", NOW).state.input).toBe("task assign 9 --revision 7 "); // without a detail, the row shown

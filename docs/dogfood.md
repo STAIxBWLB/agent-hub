@@ -25,6 +25,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Optional changed-symbol advice (#682, #684 phase 1a) | on after release when ripwire 0.6.7 is installed; change kinds unknown | review brief symbol observations/unknowns; deleted definitions not covered, no gate |
 | Head-bound task symbol observations (#684 phase 2a) | on after release with optional code facts; observed names only | task/UI receipts and completed-change labels; unknown/filtered evidence keeps ordinary overlap, deleted definitions not covered |
 | Console changed-symbols block (#684 phase 2b) | on with 2a data; matching, unplanned and untouched against the plan; overlap lines follow in #379; related-note count remains phase 4 | task detail shows the block or `unknown (no code facts)`; no block for a private task |
+| Console review guidance (#711) | on after release; `r` verdict choice, hints, visible result, agent-shell cause line, notice names the console | a person approving from the console without a failed first try; refusals that named the cause; `ahub review` calls from agent shells that were refused |
 | Console symbol-overlap advice (#684, #379) | on after release; read-only task detail, observed names only | other task IDs/shared paths and screened different-symbol verdict; no pair involving PII, no claim on unknown/incomplete evidence |
 | Review brief, review findings, Important gate (#481 S3) | advise | Important findings per PR, rounds to approval |
 | Spec acceptance (#481 S1) | advise | build entries without acceptance |
