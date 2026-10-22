@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+import { realPath } from "../src/hub/project.ts";
 import { expect, test } from "bun:test";
 import { ReleaseAuthorizations, type ReleaseAuthorization } from "../src/hub/sdlc-release-authorization.ts";
 import type { DocEvidence, ReleaseGit, ReleaseReadiness } from "../src/hub/sdlc-release.ts";
@@ -16,7 +18,8 @@ function fixture() {
   let docsRead: () => Promise<DocEvidence | undefined> = async () => state.docs;
   const git: ReleaseGit = args => {
     reads.push([...args]);
-    if (args[0] === "status") return { code: 0, stdout: state.dirty };
+    if (args[0] === "diff-index") return { code: state.dirty ? 1 : 0, stdout: "" };
+    if (args[0] === "ls-files") return { code: 0, stdout: "" };
     if (args[0] === "remote") return { code: 0, stdout: (args.includes("--push") ? state.push : state.fetch).join("\n") };
     if (args[0] === "show") {
       const commit = args[1]?.split(":")[0] ?? "", version = state.versions.get(commit);
@@ -43,7 +46,7 @@ function fixture() {
       return { code: state.ghCode, stdout: JSON.stringify({ ...(state.ghErrors ? { errors: [{ message: "unavailable" }] } : {}), data: { repository: { ref: state.remoteTag === null ? null : { target: { oid: state.remoteTag } } } } }) };
     },
   };
-  const host = new ReleaseAuthorizations("/fixture/project", ports);
+  const host = new ReleaseAuthorizations(realPath(tmpdir()), ports);
   const update = (): ReleasePushUpdate => ({ localRef: "refs/tags/v1.2.3", localOid: state.tagOid, remoteRef: "refs/tags/v1.2.3", remoteOid: ZERO, version: "1.2.3" });
   const report = (): ReleaseReadiness => ({ repo: "example/repo", head: A, version: "1.2.3", commits: [], mergedPrs: [], documents: fresh(), liveIssues: [], blockers: ["native acceptance and person release decision unverified"], sourceReady: true, native: "unverified", ready: false });
   return { host, state, reads, remoteReads, recorded, ports, update, report, docsRead: (read: typeof docsRead) => { docsRead = read; } };
@@ -63,7 +66,7 @@ test("S6 a fresh authorization binds exact commit, version, docs verdict and dae
   expect(receipt.docs.digest).toMatch(/^[0-9a-f]{64}$/);
   expect(f.host.guardPush("origin", URL, [f.update()])).toMatchObject({ ok: true });
   expect(await f.host.guardRequest({ kind: "npm-publish" })).toMatchObject({ ok: true });
-  const restarted = new ReleaseAuthorizations("/fixture/project", f.ports);
+  const restarted = new ReleaseAuthorizations(realPath(tmpdir()), f.ports);
   expect(restarted.guardPush("origin", URL, [f.update()])).toMatchObject({ ok: false });
   expect(restarted.report(f.report()).authorization).toBeUndefined();
 });

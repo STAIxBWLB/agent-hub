@@ -1,3 +1,4 @@
+import { releaseTrackedClean } from "./release-worktree.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { USER } from "./envelope.ts";
 import { hubGitEnv, hubGitSync } from "./git.ts";
@@ -117,12 +118,12 @@ export class ReleaseAuthorizations {
         return { ok: true, receipts: [this.matched(git, request.version, commit, request.remote)] };
       }
       if (request.kind === "npm-publish") {
-        if (this.read(git, ["status", "--porcelain", "--untracked-files=no"])) throw new ReleaseAuthorizationError("npm publish requires a clean tracked worktree");
+        if (!releaseTrackedClean(this.root, git)) throw new ReleaseAuthorizationError("npm publish requires a clean tracked worktree");
         const commit = this.commit(git, "HEAD"), version = this.version(git, commit);
         const receipt = this.matched(git, version, commit);
         const docs = docsVerdict(await (this.ports.docs ?? readDocEvidence)(this.root), commit, version);
         this.current();
-        if (!docs || docs.digest !== receipt.docs.digest || this.commit(git, "HEAD") !== commit || this.read(git, ["status", "--porcelain", "--untracked-files=no"])) throw new ReleaseAuthorizationError("publish checkout or documentation evidence changed");
+        if (!docs || docs.digest !== receipt.docs.digest || this.commit(git, "HEAD") !== commit || !releaseTrackedClean(this.root, git)) throw new ReleaseAuthorizationError("publish checkout or documentation evidence changed");
         return { ok: true, receipts: [this.matched(git, version, commit)] };
       }
       const origin = this.origin(git), repo = origin.repo;
