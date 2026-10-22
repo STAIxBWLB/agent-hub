@@ -109,14 +109,23 @@ export class UsageRollup {
         if (want >= MAX_LINE_BYTES) {                                  // an unbounded line: skip what was read up to the next newline
           const next = this.skipLongLine(fd, offset, size);
           if (next === undefined) return { bytes: 0, done: true };
-          this.db.query("UPDATE rollup_state SET byte_offset = ? WHERE id = 1").run(next);
-          return { bytes: next - offset, done: next >= size };
+          const moved = this.db.transaction(() => { if (this.state().offset !== offset) return false; this.db.query("UPDATE rollup_state SET byte_offset = ? WHERE id = 1").run(next); return true; }).immediate();
+          return moved ? { bytes: next - offset, done: next >= size } : { bytes: 0, done: false };
         }
         want = Math.min(size - offset, want * 2);
       }
       if (end < 0) return { bytes: 0, done: true };                    // the last line is still being written: it waits for the next pass
       const text = buffer.subarray(0, end + 1).toString("utf8");
-      this.db.transaction(() => { for (const line of text.split("\n")) this.fold(line); this.db.query("UPDATE rollup_state SET byte_offset = ? WHERE id = 1").run(offset + end + 1); })();
+      // The offset was read before the slice was; another roll-up on this hub.db (a restart that overlaps the old process) may have folded the same
+      // bytes since. The transaction takes the write lock first and checks the stored offset again: a pass whose start is stale is abandoned whole,
+      // so a byte range is folded exactly once however many writers there are (found by a forced interleave: the counts doubled).
+      const applied = this.db.transaction(() => {
+        if (this.state().offset !== offset) return false;
+        for (const line of text.split("\n")) this.fold(line);
+        this.db.query("UPDATE rollup_state SET byte_offset = ? WHERE id = 1").run(offset + end + 1);
+        return true;
+      }).immediate();
+      if (!applied) return { bytes: 0, done: false };                   // stale: the next pass starts from the stored offset
       return { bytes: end + 1, done: offset + end + 1 >= size };
     } finally { closeSync(fd); }
   }

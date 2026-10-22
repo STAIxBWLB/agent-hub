@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
 import { appendFileSync, mkdtempSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -229,4 +230,29 @@ test("Claude's total is the sum of its four counters when none was reported, and
   const g = fixture(); g.write([[usage("claude", "m4", { inputTokens: 1, outputTokens: 1, cacheReadTokens: 1, totalTokens: 50 }, undefined, { source: "claude_transcript" })]]);
   const s = g.open(); s.catchUp(); expect(s.query({ by: "peer" }).rows[0]!.total).toEqual({ value: 50, source: "native" });
   r.close(); s.close();
+});
+
+test("two roll-ups on one hub.db fold a byte range once: a pass that started from a stale offset is abandoned", () => {
+  // A restart can overlap the old process. Force the worst order: b reads the stored offset, a commits a whole pass, then b folds its stale slice.
+  const f = fixture();
+  f.write(Array.from({ length: 100 }, () => [tokens("codex", 4)] as [HubEvent]));
+  const a = f.open(), b = f.open();
+  const real = (b as unknown as { state: () => { offset: number } }).state.bind(b); let armed = true;
+  (b as unknown as { state: () => { offset: number } }).state = () => { const s = real(); if (armed) { armed = false; a.poll(); } return s; };
+  b.poll();
+  const c = f.open(); expect(c.query({ by: "peer" }).rows[0]!.counted).toEqual({ value: 400, source: "count" });
+  const fresh = new UsageRollup(join(f.dir, "ref.db"), f.log); fresh.catchUp();
+  expect(JSON.stringify(c.dump())).toBe(JSON.stringify(fresh.dump()));
+  a.close(); b.close(); c.close(); fresh.close();
+});
+
+test("a pass that dies inside its transaction leaves nothing half applied, and the next pass folds the range exactly once", () => {
+  const f = fixture();
+  f.write(Array.from({ length: 200 }, (_, i) => [tokens("codex", 4, 1 + (i % 3))] as [HubEvent]));
+  const r = f.open({ maxBytesPerPass: 5_000 }); r.poll(); const mid = JSON.stringify(r.dump()); r.close();
+  const raw = new Database(join(f.dir, "hub.db")); raw.run("BEGIN"); raw.run("UPDATE rollup_state SET byte_offset = byte_offset + 999999 WHERE id = 1"); raw.close();
+  const r2 = f.open({ maxBytesPerPass: 5_000 }); expect(JSON.stringify(r2.dump())).toBe(mid);
+  r2.catchUp(); const fresh = new UsageRollup(join(f.dir, "ref.db"), f.log); fresh.catchUp();
+  expect(JSON.stringify(r2.dump())).toBe(JSON.stringify(fresh.dump())); expect(fresh.query({ by: "peer" }).rows[0]!.counted.value).toBe(800);
+  r2.close(); fresh.close();
 });
