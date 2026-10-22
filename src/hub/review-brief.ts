@@ -151,13 +151,13 @@ function attributes(cwd: string, source: string, paths: string[]): Map<string, {
   return out;
 }
 
-/** Project derived names through the host metadata screen before comparing or rendering them. */
 /** One plan name against one changed name: a qualified pair must be equal, otherwise the last segments are. Shared with the console's task detail (#684 2b). */
 export const planSymbolMatches = (left: string, right: string): boolean => {
   const normalize = (name: string) => name.replace(/\(.*$/, " ").trim();
   const a = normalize(left), b = normalize(right);
   return a.includes(".") && b.includes(".") ? a === b : a.split(".").at(-1) === b.split(".").at(-1);
 };
+/** Project derived names through the host metadata screen before comparing or rendering them. */
 export function withCodeSymbols(brief:ReviewBrief,result:CodeFactResult<CodeSymbol[]>,plan:readonly string[]|undefined,publicMetadataText:(text:string)=>boolean):ReviewBrief {
   const unknown={...brief,symbols:{state:"unknown" as const,files:[],planned:[],unplanned:[],unseen:[]}};
   if(result.state!=="known")return unknown;

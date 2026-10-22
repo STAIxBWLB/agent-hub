@@ -14,6 +14,9 @@ const isPrivate = (task: any): boolean =>
 const symbolsOf = (task: any): ChangedSymbol[] | undefined => {
   const received = task?.codeSymbols;
   if (!received || received.state !== "known" || !Array.isArray(received.symbols)) return undefined;
+  // Only the public receipt (`publicTaskCodeSymbols`, re-screened on every read) is shown. A stored receipt still carries `repositoryKey` and was never screened for
+  // the current policy: a task handed over in that shape reads as unknown, whatever feeds this renderer today (the renderer holds the rule itself).
+  if (Object.hasOwn(received, "repositoryKey")) return undefined;
   const out: ChangedSymbol[] = [];
   for (const s of received.symbols) if (s && typeof s.id === "string" && typeof s.path === "string" && typeof s.name === "string" && typeof s.kind === "string") out.push({ id: s.id, path: s.path, name: s.name, kind: s.kind });
   return out;

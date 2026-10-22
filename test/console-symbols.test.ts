@@ -58,6 +58,17 @@ test("an incomplete observation says an untouched symbol may have changed (#684 
   expect(flat(detailScreen(task()))).not.toContain("incomplete:");
 });
 
+test("a stored receipt that was never re-screened (it carries repositoryKey) reads as unknown and shows no symbol names (#684 2b, review)", () => {
+  const raw = task({ codeSymbols: { ...observed([sym("UsageRollup.poll"), sym("SecretInternalName", "src/secret.ts")]), mergeBase: "c".repeat(40), repositoryKey: "path:/Users/someone/private/checkout" } });
+  const out = detailScreen(raw);
+  expect(flat(out)).toContain("changed symbols: unknown (no code facts)");
+  expect(out).not.toMatch(/UsageRollup\.poll; in|SecretInternalName|src\/secret\.ts|repositoryKey|\/Users\/someone|matching|unplanned/);
+  expect(classifySymbols(raw)).toMatchObject({ state: "unknown", matching: [], unplanned: [], untouched: [] });
+  expect(symbolFields(raw)).toEqual([["symbols", "changed symbols: unknown (no code facts)"]]);
+  const publicShape = task({ codeSymbols: observed([sym("UsageRollup.poll")]) });                  // the same receipt without repositoryKey is the public one
+  expect(classifySymbols(publicShape).state).toBe("known");
+});
+
 test("a private task shows no symbol block and no raw observation (#684 2b)", () => {
   for (const over of [{ signals: ["pii"] }, { signals: ["pii_path"] }, { title: "[pii]", detail: "[pii]" }]) {
     const out = detailScreen(task(over));
