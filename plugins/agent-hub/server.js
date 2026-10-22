@@ -2454,7 +2454,10 @@ function parse(raw) {
     return;
   }
 }
-var UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery", TRACKED, CodexPeer;
+var UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery", counter = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}, TRACKED, CodexPeer;
 var init_codex_appserver = __esm(() => {
   init_envelope();
   init_context_window();
@@ -2476,6 +2479,7 @@ var init_codex_appserver = __esm(() => {
       return this.contextEpoch;
     }
     tokenTotal;
+    tokenKinds;
     freshThread = false;
     activeTurns = new Set;
     deliveryEpoch = 0;
@@ -2998,6 +3002,7 @@ ${renderDigest(envs, false)}`;
       this.turnDeliveries.clear();
       this.unboundDeliveries.clear();
       this.tokenTotal = undefined;
+      this.tokenKinds = undefined;
       this.freshThread = fresh;
       this.link = link;
       this.threadId = threadId;
@@ -3060,10 +3065,27 @@ ${renderDigest(envs, false)}`;
         const total = Number(params.tokenUsage?.total?.totalTokens);
         if (!Number.isFinite(total))
           return;
+        const previous = this.tokenKinds;
+        const kinds = {
+          input: counter(params.tokenUsage?.total?.inputTokens),
+          cachedInput: counter(params.tokenUsage?.total?.cachedInputTokens),
+          output: counter(params.tokenUsage?.total?.outputTokens),
+          reasoning: counter(params.tokenUsage?.total?.reasoningOutputTokens)
+        };
         const added = this.tokenTotal === undefined ? this.freshThread ? total : 0 : Math.max(0, total - this.tokenTotal);
+        const base = previous ?? (this.freshThread && this.tokenTotal === undefined ? { input: 0, cachedInput: 0, output: 0, reasoning: 0 } : undefined);
         this.tokenTotal = total;
+        this.tokenKinds = kinds;
         if (added > 0)
           this.opts.onTokens?.(added);
+        if (added > 0 && base)
+          this.opts.onTokenBreakdown?.({
+            input: Math.max(0, kinds.input - base.input),
+            cachedInput: Math.max(0, kinds.cachedInput - base.cachedInput),
+            output: Math.max(0, kinds.output - base.output),
+            reasoning: Math.max(0, kinds.reasoning - base.reasoning),
+            total: added
+          });
         return;
       }
       if (method === "turn/started") {

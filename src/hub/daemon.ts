@@ -1797,6 +1797,8 @@ export async function startDaemon(opts: DaemonOptions) {
     // Somebody other than the paused peer has to be there, or the handoff would only leave its tasks without an owner.
     canHandOff: (peer) => [...bus.peers.keys()].some((id) => accountOf(id) !== accountOf(peer) && ["idle", "busy"].includes(bus.stateOf(id))),
     // A reading that arrived through a file carries the file's time; a stale one must not look fresh in the export.
+    // #683 U1: pauses, resumes and derived resets go to the event log, ids and numbers only.
+    ledger: entry => event(entry),
     reading: (peer, windows, hard, at) => event({ type: "quota", peer, windows: windows.map((w) => ({ id: w.id, used: w.used, ...(w.resetsAt ? { resetsAt: w.resetsAt } : {}) })), hard, ...(Math.abs(Date.now() - at) > 1000 ? { measuredAt: new Date(at).toISOString() } : {}) }),
     handoff: (peer, context, urgentOnly) => tasks.reassignForPause(peer, context, urgentOnly),
     resumed: (record) => {
@@ -1823,6 +1825,10 @@ export async function startDaemon(opts: DaemonOptions) {
     notify: (line) => { notify(line); feedBudgetPauses(); },
   }, accountMembers, accountOf));
   budget.setRecoveryHold(recoveryActive());
+  // ponytail: a third full read of events.jsonl at startup (after nativeStopsSeen and claudeNativeUsageSeen). Measured at about 70 ms on the real
+  // 46 MB, 238k-line log, so it is not folded into one pass across startup. Ceiling: the log is never rotated, so the cost grows with it; when a
+  // read passes a few hundred ms, make one `readEvents` pass feed all three sets (or keep the resets in hub.db, the #683 U2 roll-up).
+  budget.seedResets(readEvents(join(opts.stateDir, "events.jsonl")).flatMap(e => e.type === "quota_reset" ? [{ peer: e.peer, window: e.window, ...(e.resetsAt !== undefined ? { resetsAt: e.resetsAt } : {}) }] : []));
   const kimiTokens: { at: number; n: number }[] = [];
   startupCleanup.push(() => budget.close());
   // Turns and their tokens for telemetry (issue #40). Turn ids carry the hub run, so they stay unique across restarts.
@@ -1984,6 +1990,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   const delta = tokenDeltas();
   /** Tokens a peer used, as increments: Kimi reports a session total (turned into increments below), Codex increments. */
+  let codexUsageSeq = 0; // per hub run: with the run id and peer it names one usage record
   const addTokens = (peer: PeerId, n: number): number => {
     const supervisionTurn = supervisionTurns.get(peer);
     if (supervisionTurn && Number.isFinite(n) && n >= 0) supervisionTurn.tokens = (supervisionTurn.tokens ?? 0) + n;
@@ -3867,6 +3874,12 @@ export async function startDaemon(opts: DaemonOptions) {
         admitAttach: () => membershipAllowed(peer),
         permissionMode: permissionMode(peer),
         onTokens: (added) => void addTokens(peer, added),
+        // #683 U1: the same update split into Codex's own kinds, next to the unchanged `tokens` event. One record per update:
+        // the id names the hub run, peer and a per-run sequence, so it is unique across restarts. It never carries the native thread: usage telemetry has no session id (docs/events.md).
+        onTokenBreakdown: delta => {
+          event({ type: "usage", peer, source: "codex_appserver", id: `codex:${runId}:${peer}:${++codexUsageSeq}`, inputTokens: delta.input, cacheReadTokens: delta.cachedInput,
+            outputTokens: delta.output, reasoningTokens: delta.reasoning, totalTokens: delta.total, ...taskAttribution(peer) });
+        },
         contextReader: adapter.budget?.context,
         onContext: adapter.budget?.context ? (reading) => contexts.report(peer, reading, contextSession(peer)) : undefined,
         // #215: before the thread's first turn_start, so the planner can tell which turns belong to which thread.

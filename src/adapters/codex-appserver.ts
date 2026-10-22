@@ -9,6 +9,8 @@ import type { ContextReader } from "./registry-types.ts";
 
 const UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery";
 
+/** A counter Codex reported: a finite non-negative number, otherwise 0 (an absent kind is not a negative delta). */
+const counter = (value: unknown): number => { const n = Number(value); return Number.isFinite(n) && n >= 0 ? n : 0; };
 export interface CodexOptions {
   /** Port the TUI attaches to: `codex --enable tui_app_server --remote ws://127.0.0.1:<proxyPort>`. */
   proxyPort: number;
@@ -28,6 +30,11 @@ export interface CodexOptions {
   onUsage?: (rateLimits: unknown, hard: boolean) => void;
   /** Tokens the thread used since the previous update (see `tokenTotal` for how they are counted). */
   onTokens?: (added: number) => void;
+  /**
+   * The same update as `onTokens`, split into the kinds Codex reports (#683 U1): the increase of each `total` counter since the previous
+   * update. Cached input is a part of `input`, and `reasoning` a part of `output` (Codex's own definition), so `total` is not their sum.
+   */
+  onTokenBreakdown?: (delta: { input: number; cachedInput: number; output: number; reasoning: number; total: number }) => void;
   onContext?: (reading: ContextReading) => void;
   /** The definition's native occupancy reader; standalone proxies retain the native default. */
   contextReader?: ContextReader;
@@ -89,6 +96,8 @@ export class CodexPeer extends BasePeer {
    * resumed thread's first update only sets the baseline: its total holds the history from before (issue #40).
    */
   private tokenTotal: number | undefined;
+  /** The per-kind counters of the last `total`, for the breakdown deltas (#683 U1). */
+  private tokenKinds: { input: number; cachedInput: number; output: number; reasoning: number } | undefined;
   private freshThread = false;
   private readonly activeTurns = new Set<string>();
   private deliveryEpoch = 0;
@@ -584,7 +593,7 @@ export class CodexPeer extends BasePeer {
     for (const ids of this.turnDeliveries.values()) for (const id of ids) this.delivery({ id, state: "needs_review", reason: "Codex native thread changed" });
     for (const id of this.unboundDeliveries) this.delivery({ id, state: "needs_review", reason: "Codex native thread changed" });
     this.turnDeliveries.clear(); this.unboundDeliveries.clear();
-    this.tokenTotal = undefined;
+    this.tokenTotal = undefined; this.tokenKinds = undefined;
     this.freshThread = fresh;
     this.link = link;
     this.threadId = threadId;
@@ -648,9 +657,16 @@ export class CodexPeer extends BasePeer {
       this.opts.onContext?.(reader ? reader.read(params.tokenUsage, this.threadId, Date.now()) : codexContext(params.tokenUsage, this.threadId, Date.now()));
       const total = Number(params.tokenUsage?.total?.totalTokens);
       if (!Number.isFinite(total)) return;
+      const previous = this.tokenKinds;
+      const kinds = { input: counter(params.tokenUsage?.total?.inputTokens), cachedInput: counter(params.tokenUsage?.total?.cachedInputTokens),
+        output: counter(params.tokenUsage?.total?.outputTokens), reasoning: counter(params.tokenUsage?.total?.reasoningOutputTokens) };
       const added = this.tokenTotal === undefined ? (this.freshThread ? total : 0) : Math.max(0, total - this.tokenTotal);
-      this.tokenTotal = total;
+      // The same baseline rule as the total: a thread that was resumed counts only what it adds from now on; a new one counts from zero.
+      const base = previous ?? (this.freshThread && this.tokenTotal === undefined ? { input: 0, cachedInput: 0, output: 0, reasoning: 0 } : undefined);
+      this.tokenTotal = total; this.tokenKinds = kinds;
       if (added > 0) this.opts.onTokens?.(added);
+      if (added > 0 && base) this.opts.onTokenBreakdown?.({ input: Math.max(0, kinds.input - base.input), cachedInput: Math.max(0, kinds.cachedInput - base.cachedInput),
+        output: Math.max(0, kinds.output - base.output), reasoning: Math.max(0, kinds.reasoning - base.reasoning), total: added });
       return;
     }
     if (method === "turn/started") {

@@ -49,6 +49,13 @@ export interface BudgetConfig {
 // wait_max_min is off here, as approvals.notify is: a project config turns it on (30 unless it says otherwise).
 export const DEFAULT_BUDGET: BudgetConfig = { gate: 0.9, stale_min: 30, poll_min: 10, checkpoint_timeout_s: 90, kimi_tokens_5h: 0, wait_max_min: 0 };
 
+export type BudgetLedgerEntry =
+  | { type: "budget_pause"; peer: PeerId; reason: string; window: string; resetsAt: number; by: "hub" | "person" }
+  | { type: "budget_resume"; peer: PeerId; reason: string; window: string; resetsAt: number; by: "hub" | "person" }
+  | { type: "quota_reset"; peer: PeerId; window: string; cause: "resets_at_moved" | "used_dropped"; resetsAt?: number; previousResetsAt?: number; used: number; previousUsed: number; measuredAt?: string };
+/** The window a pause record names: the id before ` window at` in its reason (`5h window at 93% (...)`), else unknown. */
+const reasonWindow = (reason: string): string => /^(\S+) window at /.exec(reason)?.[1] ?? "unknown";
+
 export interface BudgetHooks {
   /** Startup-bound project resolver; undefined keeps builtin-only compatibility. */
   definitionOf?(peer: PeerId): AdapterDefinition | undefined;
@@ -70,10 +77,23 @@ export interface BudgetHooks {
   resumed(record: PauseRecord): void;
   /** Every reading as it arrives, with the time it was measured (telemetry, issue #40). */
   reading?(peer: PeerId, windows: UsageWindow[], hard: boolean, at: number): void;
+  /**
+   * The limit ledger (#683 U1): a pause or resume of the account, and a window reset derived from its readings. Ids, windows and
+   * numbers only. Telemetry never costs a pause or a reading, so a throwing hook is ignored.
+   */
+  ledger?(entry: BudgetLedgerEntry): void;
   notify(line: string): void;
 }
 
 const HYSTERESIS = 0.1;
+/** A window whose `used` falls by this much inside one window id has been reset (#683 U1). */
+const RESET_DROP = 0.5;
+/**
+ * A provider's `resetsAt` for one window wobbles by seconds between readings (observed on the real log: 25 of 85 first-cut resets were jumps
+ * of 1 to 9 s with `used` unchanged, five more of about 10 min) while a real reset moves it by hours (the smallest of the 53 real ones: 2.4 h).
+ * A forward move of this much or less is the same window, not a reset (#683 U1).
+ */
+const RESET_JITTER_MS = 15 * 60_000;
 /** Mark a pause whose handoff was a wait, and one whose wait was undone, in its reason (issue #36). */
 const WAIT_NOTE = "; keeps its work:";
 const WAITED_NOTE = "; waited, then the reset moved to";
@@ -90,6 +110,10 @@ export class Budget {
   private readonly readings = new Map<PeerId, Map<string, Reading>>();
   private readonly pausing = new Map<PeerId, object>();
   private readonly handingOff = new Set<PeerId>();
+  /** The last reading of each window of an account, for the derived `quota_reset` (see `deriveResets`). */
+  private readonly lastSeen = new Map<PeerId, Map<string, { used: number; resetsAt?: number; at: number }>>();
+  /** `peer|window|resetsAt` of every reset already written this run, so a duplicate reading adds no reset. */
+  private readonly resetsRecorded = new Set<string>();
   /** `ahub budget resume`: the owner overrode a pause; readings over the gate are ignored for that peer until then. */
   private readonly ignoreUntil = new Map<PeerId, number>();
   /** Chosen fallback bounds belong to a window, never to every window of the peer. */
@@ -216,6 +240,7 @@ export class Budget {
       try { this.hooks.notify(`budget: ${peer} provider refused again; budget override ended`); } catch { /* a notice cannot prevent the hard pause */ }
     }
     try { this.hooks.reading?.(reporter, windows, hard, at); } catch { /* telemetry never costs a reading */ }
+    this.deriveResets(peer, windows, at);
     const mine = this.readings.get(peer) ?? new Map<string, Reading>();
     this.readings.set(peer, mine);
     for (const w of windows) mine.set(w.id, { ...w, used: Math.max(0, Math.min(1, w.used)), at });
@@ -230,6 +255,45 @@ export class Budget {
     return [...(this.readings.get(peer)?.values() ?? [])].filter((r) => this.now() - r.at <= staleMs && !(r.resetsAt && r.resetsAt <= this.now()));
   }
 
+  /**
+   * `quota_reset` (#683 U1), derived from two readings of one window id of the account: the window's `resetsAt` moved forward (a new
+   * window began, by more than RESET_JITTER_MS), or `used` fell by RESET_DROP or more inside one window id (the provider emptied it before its stated reset). The
+   * baseline is the last reading seen, kept apart from `readings` (a resume clears those) so a reset that ended a pause is still seen.
+   * One entry per peer, window and `resetsAt`: a repeated reading, a replay after a restart of the same value, or a second member of the
+   * account adds none. A stale file reading (`at` older than the baseline) never counts: it describes an earlier window.
+   */
+  private deriveResets(peer: PeerId, windows: UsageWindow[], at: number): void {
+    const last = this.lastSeen.get(peer) ?? new Map<string, { used: number; resetsAt?: number; at: number }>();
+    this.lastSeen.set(peer, last);
+    for (const w of windows) {
+      const used = Math.max(0, Math.min(1, w.used)), before = last.get(w.id);
+      if (before && at >= before.at) {
+        const moved = w.resetsAt !== undefined && before.resetsAt !== undefined && w.resetsAt - before.resetsAt > RESET_JITTER_MS;
+        const sameWindow = w.resetsAt === undefined || before.resetsAt === undefined || Math.abs(w.resetsAt - before.resetsAt) <= RESET_JITTER_MS;
+        const dropped = !moved && before.used - used >= RESET_DROP && sameWindow;
+        if (moved || dropped) {
+          const key = `${peer}|${w.id}|${w.resetsAt ?? "none"}`;
+          if (!this.resetsRecorded.has(key)) {
+            this.resetsRecorded.add(key);
+            this.writeLedger({ type: "quota_reset", peer, window: w.id, cause: moved ? "resets_at_moved" : "used_dropped", ...(w.resetsAt !== undefined ? { resetsAt: w.resetsAt } : {}),
+              ...(before.resetsAt !== undefined ? { previousResetsAt: before.resetsAt } : {}), used, previousUsed: before.used, ...(Math.abs(this.now() - at) > 60_000 ? { measuredAt: new Date(at).toISOString() } : {}) });
+          }
+        }
+      }
+      if (!before || at >= before.at) last.set(w.id, { used, ...(w.resetsAt !== undefined ? { resetsAt: w.resetsAt } : {}), at });
+    }
+  }
+
+  /** The resets already in the ledger from earlier hub runs, so a replayed reading adds none (the daemon reads them from events.jsonl). */
+  seedResets(known: Iterable<{ peer: PeerId; window: string; resetsAt?: number }>): void {
+    for (const r of known) this.resetsRecorded.add(`${r.peer}|${r.window}|${r.resetsAt ?? "none"}`);
+  }
+
+  /** One ledger entry; a failing hook never costs the pause, the resume or the reading it describes. */
+  private writeLedger(entry: BudgetLedgerEntry): void {
+    try { this.hooks.ledger?.(entry); } catch { /* telemetry */ }
+  }
+
   /** The owner's override: lift the pause now and leave the peer alone until the window that caused it has reset. */
   override(peer: PeerId): boolean {
     peer = this.account(peer);
@@ -237,7 +301,7 @@ export class Budget {
     if (!open) return false;
     this.ignoreUntil.set(peer, open.resetsAt);
     const bounds = this.resetBounds.get(peer);
-    this.resume(peer, "overridden by the console user");
+    this.resume(peer, "overridden by the console user", "person");
     // A new refusal may end the override before this same window has reset.
     if (bounds) this.resetBounds.set(peer, bounds);
     return true;
@@ -298,6 +362,10 @@ export class Budget {
       if (this.recoveryHeld) { this.deferred = true; return; }
       if (this.closed) return; // the hub is shutting down: nothing is recorded, the next run sees the reading again
       this.db.query("INSERT OR REPLACE INTO budget_pauses (peer, since, resets_at, reason, summary, moved) VALUES (?, ?, ?, ?, ?, ?)").run(peer, this.now(), resetsAt, reason, summary ?? null, JSON.stringify(open?.moved ?? []));
+      // A new pause that replaces an expired record (its window reset while nobody was attached to be resumed) ends that pause: without this
+      // the ledger would hold two open pauses for one peer, and a pause-duration timeline would be wrong (#683 U1).
+      if (open) this.writeLedger({ type: "budget_resume", peer, reason: "replaced by a new pause after its window reset", window: reasonWindow(open.reason), resetsAt: open.resetsAt, by: "hub" });
+      this.writeLedger({ type: "budget_pause", peer, reason, window: worst.id, resetsAt, by: "hub" });
       this.hooks.pause(peer);
       this.hooks.notify(`budget: ${peer} paused, ${reason}; resumes ${new Date(resetsAt).toLocaleTimeString()}${summary ? "; checkpoint received" : hard ? "; hard limit, no checkpoint" : "; no checkpoint"}`);
       await this.finishHandoff(peer, summary);
@@ -371,11 +439,12 @@ export class Budget {
     }
   }
 
-  private resume(peer: PeerId, why: string): void {
+  private resume(peer: PeerId, why: string, by: "hub" | "person" = "hub"): void {
     peer = this.account(peer);
     const record = this.record(peer);
     if (!record) return;
     this.db.query("DELETE FROM budget_pauses WHERE peer = ?").run(peer);
+    this.writeLedger({ type: "budget_resume", peer, reason: why, window: reasonWindow(record.reason), resetsAt: record.resetsAt, by });
     this.readings.get(peer)?.clear(); // the old numbers describe the window that just ended
     this.resetBounds.delete(peer);
     // The notice is queued while the peer is still paused, so it leads the first delivery: the peer learns what moved

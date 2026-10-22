@@ -1109,6 +1109,15 @@ recorded; `shadow` routes exactly as `off` does, so it is the baseline to compar
 A route event records the decision, so a load-moved request that its MLX fallback served counts
 as a change to `dgx/fast`; the relay's request journal records which backend served it.
 
+The event log also keeps the history of limits (#683). Each Codex update that adds tokens writes a
+`usage` event with source `codex_appserver` next to the existing `tokens` event, split into input, cached
+input, output and reasoning, so re-sent cached context is visible. A budget pause writes `budget_pause`
+and its end `budget_resume`, with the window, the reset time and who ended it (`hub`, or `person` for an
+`ahub budget resume`). A window's reset writes `quota_reset` when its `resetsAt` moves forward or its `used`
+falls by 0.5 or more inside one window id, once per peer, window and `resetsAt`. These events hold ids and
+numbers only, add no protocol version and are ignored by a reader that does not know them. `ahub report`
+and the console do not show them yet (usage view slices #683 U2 to U4).
+
 `ahub report` counts the same overlap warnings as `scripts/overlaps.ts`, from the
 structured events instead of log lines. `--by task` uses the task each usage and
 token record was attributed to when it was written: the delivery that started the
