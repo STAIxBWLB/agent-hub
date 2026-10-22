@@ -169,13 +169,15 @@ test("#221 a hub_inbox result states the queued count once", async () => {
     f.inbox({ ok: true, envs: [newEnvelope("codex", "first")], waiting: 4, waitingImportant: 2 });
     f.holds({ ok: true, held: { count: 0, rows: [], truncated: false }, queued: 4, important: 2 });
     const read = output(await f.call("hub_inbox"));
-    expect(read).toContain("4 queued hub message(s) remain unread");
-    expect(read.match(/\b4 queued\b/g)).toHaveLength(1);
+    // #713: the notice says what to do, and it is still the only place the count appears.
+    expect(read).toContain("4 more waiting: call hub_inbox again before you start work");
+    expect(read.match(/\b4 (?:queued|more waiting)\b/g)).toHaveLength(1);
     // With nothing important left the notice is still the only count.
     f.inbox({ ok: true, envs: [], waiting: 1, waitingImportant: 0 });
     f.holds({ ok: true, held: { count: 0, rows: [], truncated: false }, queued: 1, important: 0 });
     const quiet = output(await f.call("hub_inbox"));
-    expect(quiet.match(/\b1 queued\b/g)).toHaveLength(1);
+    expect(quiet).toContain("1 more waiting: call hub_inbox again before you start work");
+    expect(quiet.match(/\b1 (?:queued|more waiting)\b/g)).toHaveLength(1);
   } finally { await f.close(); }
 });
 

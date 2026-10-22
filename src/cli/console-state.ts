@@ -362,7 +362,7 @@ const KEYS: [string, string[]][] = [
   ["Approvals", ["a allow (then y)", "d deny", "v view", "[ ] select"]],
   ["Peers", ["p pause", "r resume", "m permission mode", "w WIP limit", "l make planner (then y)"]],
   ["Tasks", ["b backlog/open", "n add backlog", "a assign/reserve (then y)", "u unassign (then y)", "r approve or request changes (in review; a or c, then a note)", "p pull, e plan (backlog)", "R return to backlog", "c cancel (then y)"]],
-  ["Queue", ["r resolve (reason, then y)", "queued=discard, needs_review=retry"]],
+  ["Queue", ["r resolve (reason, then y)", "queued=discard, needs_review=retry", "D discard the peer's whole queued backlog (reason, then y)"]],
   ["Events", ["f peer filter", "g kind filter"]],
   ["Settings", ["6 Settings panel", "e edit", "u undo", "preview, reason, then y"]],
   ["Usage", ["7 Usage panel", "Enter view a peer", "tokens today/7d/lifetime with sources", "task from Tasks (3)"]],
@@ -416,7 +416,7 @@ export function parseConsoleCommand(input: string): string[] {
 }
 export function commandNeedsConfirmation(args: string[]): boolean {
   const positional = args.filter(arg => arg !== "--yes");
-  return (args[0] === "backlog" && args[1] !== "list") || (args[0] === "task" && args[1] === "propose" && args.includes("--backlog")) || (positional[0] === "permission" && positional[2] === "never-ask") || (args[0] === "task" && ["assign", "unassign", "cancel"].includes(args[1] ?? "")) || (args[0] === "queue" && args[1] === "resolve") || (args[0] === "permit" && args[2] !== "deny");
+  return (args[0] === "backlog" && args[1] !== "list") || (args[0] === "task" && args[1] === "propose" && args.includes("--backlog")) || (positional[0] === "permission" && positional[2] === "never-ask") || (args[0] === "task" && ["assign", "unassign", "cancel"].includes(args[1] ?? "")) || (args[0] === "queue" && (args[1] === "resolve" || args[1] === "discard")) || (args[0] === "permit" && args[2] !== "deny");
 }
 export function panelRows(s: ConsoleState): any[] {
   if (s.panel === 1) return Object.entries(s.peers).map(([id, peer]) => ({ id, ...peer, budget: s.budget[id] }));
@@ -581,6 +581,19 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       if (!input.trim()) return done();
       try {
         const parsed = parseConsoleCommand(input);
+        if (parsed[0] === "queue" && parsed[1] === "discard") {
+          const reasonAt = parsed.indexOf("--reason"), peer = commandFlag(parsed, "--peer"), state = commandFlag(parsed, "--state") ?? "queued";
+          // The reason is every word after --reason up to the next flag, so a reason typed without quotes ("agy backlog") is whole, not cut to its first word.
+          const words: string[] = [];
+          for (let i = reasonAt + 1; reasonAt >= 0 && i < parsed.length && !parsed[i]!.startsWith("--"); i++) words.push(parsed[i]!);
+          const reason = words.join(" ").trim();
+          if (!peer || !reason) throw new Error("queue discard needs --peer and --reason (it is recorded on every discarded delivery)");
+          const count = s.queue.filter(row => row.peer === peer && row.state === state).length;
+          const args = ["queue", "discard", "--peer", peer, ...(parsed.includes("--state") ? ["--state", state] : []), "--reason", reason, "--yes"];
+          s.history = [...s.history, input].slice(-100); s.historyIndex = s.history.length;
+          s.confirm = { type: "command", args, prompt: `discard all ${count} ${state} deliver${count === 1 ? "y" : "ies"} of ${peer}; no task or native turn is cancelled, other peers are untouched` };
+          return done();
+        }
         const reviewProblem = reviewRefusal(parsed);                                           // an empty changes note never reaches the hub (#711)
         if (reviewProblem) throw new Error(reviewProblem);
         const args = parsed[0] === "permission" ? [...parsed.filter(arg => arg !== "--yes"), ...(parsed.includes("--yes") ? ["--yes"] : [])] : parsed;
@@ -801,6 +814,12 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
       s.input = key === "a" ? `task assign ${item} ${role === "reviewer" ? "--role reviewer " : ""}--revision ${revision} ` : `task unassign ${item} --role ${role} --revision ${revision}`;
       s.editing = true; return done();
     }
+    // #713: D clears the whole queued backlog of the selected row's peer. Nothing runs until a reason is typed and y confirms the count.
+    if (s.panel === 4 && key === "D") {
+      const peer = String(selected.peer ?? "");
+      if (!/^[a-z][a-z0-9-]{0,31}$/.test(peer)) return done();
+      s.input = `queue discard --peer ${peer} --reason `; s.editing = true; return done();
+    }
     if (s.panel === 4 && key === "r") {
       if (!["queued", "needs_review"].includes(selected.state)) return done();
       const revision = selected.revision;
@@ -946,7 +965,7 @@ function panelContext(s: ConsoleState, row: any): string[] {
   if (!row) return [];
   if (s.panel === 6) return ["e edit", ...(s.settingsUndo ? ["u undo"] : [])];
   if (s.panel === 1) return ["p pause", "r resume", "m permission mode", "w WIP limit"];
-  if (s.panel === 4) return [row.state === "queued" ? "r discard" : "r resolve"];
+  if (s.panel === 4) return [row.state === "queued" ? "r discard" : "r resolve"];       // D (the peer's whole backlog) is in the ? key table: it must not push j/k off an 80-column footer
   return [];
 }
 /** The footer's key hint: only keys that act in this mode, panel and state. */

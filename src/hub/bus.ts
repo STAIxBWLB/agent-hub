@@ -1,4 +1,4 @@
-import { appendNote, DIGEST, HUB, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
+import { appendNote, DIGEST, frame, HUB, keepNotes, MAX_HOP, mergePrefaces, newEnvelope, noteLine, parseMarker, quoteNotes, replyAudience, uniqueMemoryLines, type Envelope, type EnvelopeOpts, type PeerId, type PeerState, type Priority } from "./envelope.ts";
 import type { PeerAdapter, DeliveryReceipt } from "./peers.ts";
 import { DeliveryJournal, MAX_ENVELOPE_BODY, type JournalDelivery, type JournalDeliveryState } from "./delivery-journal.ts";
 import { DELIVERY_RETRY_WARNING } from "./delivery-hints.ts";
@@ -103,6 +103,9 @@ const MAX_ATTEMPTS = 3;
 // ponytail: one digest carries at most ten originals; larger supervision windows split into bounded deliveries.
 // Revisit this ceiling after measuring native supervision cost, rather than bypassing the delivery limit.
 const DIGEST_MAX = 10;
+// #713: a pull-only peer reads between steps, often minutes apart, so one pull drains its queue up to this many bytes of rendered text instead of ten items.
+// Bounded, not unbounded: a queue larger than the budget takes more than one pull, and the reply says how many are still waiting. Push peers keep DIGEST_MAX.
+const PULL_BUDGET_BYTES = 64 * 1024;
 const NOTES_KEPT = 10;
 
 /**
@@ -479,7 +482,11 @@ export class Bus {
       return;
     }
     const recipientConsent = actor === `peer:${record.peer}` && action === "retry" && record.state === "needs_review";
-    if (["dispatching", "accepted"].includes(record.state) || (this.peers.get(record.peer)?.state === "busy" && !recipientConsent)) throw new Error("active delivery cannot be resolved");
+    // #713: a `queued` delivery was never handed to the peer, so nothing is in flight and a busy peer (a pull-only TUI is busy most of the time) does not block
+    // discarding it. `dispatching` and `accepted` stay refused, and every other resolution keeps the busy fence.
+    if (["dispatching", "accepted"].includes(record.state)) throw new Error("active delivery cannot be resolved");
+    const queuedDiscard = record.state === "queued" && action === "discard";
+    if (this.peers.get(record.peer)?.state === "busy" && !recipientConsent && !queuedDiscard) throw new Error("peer busy: its delivery cannot be resolved while it works");
     if (record.revision !== revision) throw new Error("stale delivery revision");
     if (record.state === "queued" && action === "retry") throw new Error("queued delivery is already scheduled");
     if (action === "retry" && (this.queues.get(record.peer)?.length ?? 0) + record.originals.length > this.opts.queueCap) throw new Error("recipient queue is full");
@@ -907,6 +914,18 @@ export class Bus {
     if (this.withdrawn.has(env.id)) return;
     const queue = this.queues.get(id) ?? [];
     this.queues.set(id, queue);
+    // #713: a newer "task T is done, check your work" notice for this recipient replaces an earlier queued one for the same T: only the newest is useful, and the older
+    // one is discarded through the same stale/discard path with a journal outcome. Never one that already failed once or is being prepared, as for supervision.
+    const completedFor = env.from === HUB && env.kind === "task" && Number.isSafeInteger(env.refs?.completedFor) ? env.refs!.completedFor : undefined;
+    if (!front && completedFor !== undefined) {
+      for (let i = queue.length - 1; i >= 0; i--) {
+        const old = queue[i]!;
+        if (old.from !== HUB || old.refs?.completedFor !== completedFor || this.attempts.has(`${id}:${old.id}`)) continue;
+        queue.splice(i, 1);
+        this.markWithdrawn(old.id);
+        this.discardQueued(id, old, `superseded completed-change notice for task #${completedFor}`);
+      }
+    }
     const key = env.from === HUB && env.refs?.supervision ? env.refs.supervisionKey : undefined;
     const replace = !front && key ? queue.findIndex((old) => old.from === HUB && old.refs?.supervision && old.refs.supervisionKey === key && !this.attempts.has(`${id}:${old.id}`)) : -1;
     const preparing = !front && key ? this.preparing.get(id)?.find((old) => old.from === HUB && old.refs?.supervision && old.refs.supervisionKey === key && !this.attempts.has(`${id}:${old.id}`) && !this.withdrawn.has(old.id)) : undefined;
@@ -1012,7 +1031,8 @@ export class Bus {
     const preface = this.prefaces.get(id);
     if (!preface && !queue.length) return [];
     const queued = [...queue];
-    const batch = [...(preface ? [preface] : []), ...this.take(id, queue)];
+    // A pull-only peer drains within a byte budget (oldest first, important ones marked as they always were); an attached channel session that pulls keeps one push's worth (#493).
+    const batch = [...(preface ? [preface] : []), ...(this.peers.get(id)?.pullOnly ? this.takeBudget(id, queue) : this.take(id, queue))];
     let out: Envelope[] = [];
     const deliveryId = crypto.randomUUID();
     try {
@@ -1155,6 +1175,26 @@ export class Bus {
       if (failedBefore || batch.length === DIGEST_MAX) break;
     }
     if (remove) for (const env of batch) queue.splice(queue.indexOf(env), 1);
+    return batch;
+  }
+
+  /**
+   * #713: what one pull hands a pull-only peer. Oldest first, so the oldest ordinary item is never kept behind newer important ones (the push order is important
+   * first; a pull is a catch-up). The budget counts each item's rendered bytes as the peer will read them (`frame`), and the first item always goes, so one huge
+   * envelope cannot stall the queue. An envelope that already failed once still goes alone, as in `take`.
+   */
+  private takeBudget(id: PeerId, queue: Envelope[]): Envelope[] {
+    const batch: Envelope[] = [];
+    let bytes = 0;
+    for (const env of queue) {
+      const failedBefore = this.attempts.has(`${id}:${env.id}`);
+      if (failedBefore && batch.length) break;
+      const size = Buffer.byteLength(frame(env)) + 2;
+      if (batch.length && bytes + size > PULL_BUDGET_BYTES) break;
+      batch.push(env); bytes += size;
+      if (failedBefore) break;
+    }
+    for (const env of batch) queue.splice(queue.indexOf(env), 1);
     return batch;
   }
 

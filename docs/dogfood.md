@@ -16,7 +16,8 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Planner WIP caps and backlog pull (#655) | on (`tasks.wip_limits.codex = 2`) | held-ready entries, offers refused for capacity |
 | Task sweep (stalls, idle owners) | on | stall and sweep events per week |
 | Turn-free coordination | off: experimental; needs a separate measured trial | coordination events, conflict notices |
-| Pull-only peers (agy) | on | unread offers, empty-inbox polling (#681) |
+| Pull-only peers (agy) | on; `hub_inbox` drains to 64 KiB (#713) | unread offers, empty-inbox polling (#681); queued count and oldest queued age per pull-only peer in `ahub status`; reads that said `N more waiting` |
+| Completed-change notices, grouped and superseding (#713) | on after release; accepted tasks only | queued `is done and touches` notices per peer (one per done, not per task and per repeat); `superseded completed-change notice` discards; `ahub queue discard` uses |
 
 ## Review and lifecycle
 
