@@ -1007,6 +1007,17 @@ brief's own (a pair of qualified names must be equal, otherwise the last segment
 an incomplete observation says an untouched symbol may have changed; a private task shows nothing. Names are quoted like every agent-written string, at most 40 are
 listed and the rest are counted. The block is advice: deleted definitions are not reported, so it never proves a plan was or was not followed.
 
+Task detail also shows an `overlaps` block (#379), using the hub's read-only
+`symbolOverlaps` projection of its existing open-task/other-owner overlap selection.
+Each row names the other task ID and screened shared paths. A row says "same file,
+different symbols" only when the same current screened predicate used by completion
+notices establishes observed disjointness; otherwise it remains an ordinary overlap.
+The block states "observed names only, deleted definitions may be missing". PII tasks
+are excluded on both sides. No pair result is stored, and the console never infers
+one from its own plan or receipt. Missing fields on older hubs show no block; an
+empty list says `none`. At most 40 pairs and 40 paths per pair are listed, with
+omitted counts. Related-note counts remain a later slice.
+
 When both tasks have complete public observations and non-empty disjoint sets
 for every exact shared file, a completed-change notice says "same file, different
 symbols" with the observed-name/deleted-definition ceiling. It still tells the

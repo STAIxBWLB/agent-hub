@@ -51,3 +51,24 @@ export function symbolFields(task: any): [string, unknown][] {
     "advisory: deleted symbols are not reported"].filter(Boolean).join("; ");
   return [["symbols", shown.length ? shown : "none observed"], ["symbols note", items.length > shown.length ? `${note}; ${items.length - shown.length} more not shown` : note]];
 }
+
+
+/** Render the hub's read-only pair verdicts; never derive disjointness from a local receipt or plan. */
+export function overlapFields(task: any): [string, unknown][] {
+  if (!task || typeof task.id !== "number" || typeof task.state !== "string" || isPrivate(task) || !Array.isArray(task.symbolOverlaps)) return [];
+  if (!task.symbolOverlaps.length) return [["overlaps", "none"]];
+  const items: Record<string, unknown>[] = [];
+  let invalid = 0;
+  for (const row of task.symbolOverlaps) {
+    if (!row || !Number.isSafeInteger(row.task) || row.task < 1 || !Array.isArray(row.files)
+      || !row.files.every((file: unknown) => typeof file === "string") || typeof row.sameFileDifferentSymbols !== "boolean") { invalid++; continue; }
+    items.push({ task: row.task, files: row.files.slice(0, MAX_LINES),
+      overlap: row.sameFileDifferentSymbols ? "same file, different symbols" : "overlap",
+      ...(row.files.length > MAX_LINES ? { omitted: `${row.files.length - MAX_LINES} files not shown` } : {}) });
+  }
+  if (!items.length) return [["overlaps", "unknown (invalid overlap data)"]];
+  const note = ["observed names only, deleted definitions may be missing",
+    items.length > MAX_LINES ? `${items.length - MAX_LINES} more not shown` : "",
+    invalid ? `${invalid} invalid rows withheld` : ""].filter(Boolean).join("; ");
+  return [["overlaps", items.slice(0, MAX_LINES)], ["overlap note", note]];
+}

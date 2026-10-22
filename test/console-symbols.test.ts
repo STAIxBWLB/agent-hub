@@ -130,8 +130,8 @@ const overlaps = [
 ];
 test("task detail renders only the hub's symbol overlap verdict and its observation ceiling (#379)",()=>{
  const detail=task({symbolOverlaps:overlaps}),out=flat(detailScreen(detail));
- expect(out).toContain('task 361; files src/hub/tasks.ts; overlap "same file, different symbols"');
- expect(out).toContain('task 360; files src/hub/tasks.ts, src/hub/board.ts; overlap overlap');
+ expect(out).toContain('task "361"; files src/hub/tasks.ts; overlap "same file, different symbols"');
+ expect(out).toContain('task "360"; files src/hub/tasks.ts, src/hub/board.ts; overlap overlap');
  expect(out).toContain("observed names only, deleted definitions may be missing");
  expect(out).not.toContain("symbolOverlaps");
  // The UI never infers pair disjointness from the selected task's own observation.
