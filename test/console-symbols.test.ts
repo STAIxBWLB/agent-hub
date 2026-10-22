@@ -53,9 +53,9 @@ test("without code facts the block says unknown, and a task with no plan symbols
   expect(flat(detailScreen(task({ codeSymbols: observed([]) })))).toMatch(/- untouched UsageRollup\.poll/);   // with a plan, every planned name is untouched
 });
 
-test("a partial observation says an untouched symbol may have changed (#684 2b)", () => {
-  expect(flat(detailScreen(task({ codeSymbols: observed([sym("UsageRollup.poll")], { complete: false }) })))).toContain("partial: some changed symbols were not listed, so an untouched one may have changed");
-  expect(flat(detailScreen(task()))).not.toContain("partial:");
+test("an incomplete observation says an untouched symbol may have changed (#684 2b)", () => {
+  expect(flat(detailScreen(task({ codeSymbols: observed([sym("UsageRollup.poll")], { complete: false }) })))).toContain("incomplete: some changed symbols were not listed, so an untouched one may have changed");
+  expect(flat(detailScreen(task()))).not.toContain("incomplete:");
 });
 
 test("a private task shows no symbol block and no raw observation (#684 2b)", () => {

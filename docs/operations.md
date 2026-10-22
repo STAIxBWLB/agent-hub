@@ -1004,7 +1004,7 @@ unknown until the brief can independently bind its analysis repository.
 In the console, Enter on a task in Tasks shows a `symbols` block after its plan (#684 phase 2b): each observed changed symbol is `matching` the plan or
 `unplanned`, and each planned symbol that nothing changed under is `untouched`, with the counts and the head they were observed at. The match rule is the review
 brief's own (a pair of qualified names must be equal, otherwise the last segments are). Without code facts it reads `changed symbols: unknown (no code facts)`;
-a partial observation says an untouched symbol may have changed; a private task shows nothing. Names are quoted like every agent-written string, at most 40 are
+an incomplete observation says an untouched symbol may have changed; a private task shows nothing. Names are quoted like every agent-written string, at most 40 are
 listed and the rest are counted. The block is advice: deleted definitions are not reported, so it never proves a plan was or was not followed.
 
 When both tasks have complete public observations and non-empty disjoint sets

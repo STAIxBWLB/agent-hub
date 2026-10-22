@@ -2,7 +2,8 @@ import { planSymbolMatches } from "../hub/review-brief.ts";
 
 // #684 2b: the "changed symbols" block of the console's task detail. Pure data to fields, no terminal code. The hub's own observation of the changed
 // symbols (`codeSymbols`, PR #708) is read as it is; nothing is parsed from code here and nothing is asked of the hub beyond `task_show`.
-// Advisory only: ripwire does not report deleted symbols, so these lists never establish that a plan was or was not followed.
+// Advisory only: ripwire does not report deleted symbols, so these lists never establish that a plan was or was not followed. The plan names are `plan.symbols`,
+// the same list `withCodeSymbols` reads as `planned` in the review brief (daemon.ts passes `task.plan?.symbols`), not a second source.
 
 export interface ChangedSymbol { id: string; path: string; name: string; kind: string }
 export interface SymbolBlock { state: "known" | "unknown"; complete: boolean; head?: string; matching: ChangedSymbol[]; unplanned: ChangedSymbol[]; untouched: string[] }
@@ -43,7 +44,7 @@ export function symbolFields(task: any): [string, unknown][] {
   ];
   const shown = items.slice(0, MAX_LINES);
   const note = [`changed symbols: ${block.matching.length} matching, ${block.unplanned.length} unplanned, ${block.untouched.length} untouched${block.head ? ` at ${block.head}` : ""}`,
-    block.complete ? "" : "partial: some changed symbols were not listed, so an untouched one may have changed",
+    block.complete ? "" : "incomplete: some changed symbols were not listed, so an untouched one may have changed",
     "advisory: deleted symbols are not reported"].filter(Boolean).join("; ");
   return [["symbols", shown.length ? shown : "none observed"], ["symbols note", items.length > shown.length ? `${note}; ${items.length - shown.length} more not shown` : note]];
 }
