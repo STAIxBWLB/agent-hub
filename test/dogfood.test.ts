@@ -123,7 +123,7 @@ test("GitHub complete metadata computes first CI result, same-head reruns and ex
   const at=(n:number)=>new Date(n).toISOString(), sha="a".repeat(40);
   const gh:SdlcGh=async(args)=>{
     if(args[0]==="pr")return{code:0,stdout:JSON.stringify([{number:2,createdAt:at(0),mergedAt:at(8000)}])};
-    if(args[1]?.includes("actions/workflows"))return{code:0,stdout:JSON.stringify({total_count:2,workflow_runs:[{id:1,run_attempt:1,head_sha:sha,pull_requests:[{number:2}],created_at:at(1000),conclusion:"failure"},{id:2,run_attempt:2,head_sha:sha,pull_requests:[{number:2}],created_at:at(2000),conclusion:"success"}]})};
+    if(args[1]?.includes("actions/workflows"))return{code:0,stdout:JSON.stringify({total_count:2,workflow_runs:[{id:1,run_attempt:1,event:"pull_request",head_sha:sha,pull_requests:[{number:2}],created_at:at(1000),conclusion:"failure"},{id:2,run_attempt:2,event:"pull_request",head_sha:sha,pull_requests:[{number:2}],created_at:at(2000),conclusion:"success"}]})};
     const page=(nodes:unknown[])=>({nodes,pageInfo:{hasNextPage:false}});
     return{code:0,stdout:JSON.stringify({data:{repository:{pullRequest:{number:2,state:"MERGED",headRefOid:sha,mergedAt:at(8000),commits:page([{commit:{oid:sha}}]),reviews:page([]),reviewThreads:page([{comments:{nodes:[{createdAt:at(7000),author:{login:"chatgpt-codex-connector"}}]}}]),timelineItems:page([{source:{number:8,createdAt:at(9000),labels:page([{name:"bug"}])}}])}}}})};
   };
@@ -197,7 +197,7 @@ test("CI reads a complete reporting window despite more than 100 lifetime workfl
     if(args[1]?.includes("actions/workflows")) {
       const endpoint=args[1];endpoints.push(endpoint);
       const scoped=endpoint.includes(`created=${at(since)}..${at(until)}`);
-      return{code:0,stdout:JSON.stringify({total_count:scoped&&!truncated?1:1001,workflow_runs:[{id:11,run_attempt:1,head_sha:sha,pull_requests:[{number:3}],created_at:at(2000),conclusion:"success"}]})};
+      return{code:0,stdout:JSON.stringify({total_count:scoped&&!truncated?1:1001,workflow_runs:[{id:11,run_attempt:1,event:"pull_request",head_sha:sha,pull_requests:[{number:3}],created_at:at(2000),conclusion:"success"}]})};
     }
     const page=(nodes:unknown[])=>({nodes,pageInfo:{hasNextPage:false}});
     return{code:0,stdout:JSON.stringify({data:{repository:{pullRequest:{number:3,state:"MERGED",headRefOid:sha,mergedAt:at(9000),commits:page([{commit:{oid:sha}}]),reviews:page([]),reviewThreads:page([]),timelineItems:page([])}}}})};
@@ -224,4 +224,78 @@ test("malformed log timestamps make counts unknown while out-of-window timestamp
     const clean=await readDogfood(f.root,f.root,1000,10000,gh);
     expect(clean.sources.log!.complete).toBe(true);expect(clean.delivery.emptyInboxPollingStreaks.value).toBe(0);
   }finally{f.close();}
+});
+
+test("busy CI windows read only complete recorded PR heads including empty REST associations",async()=>{
+  const since=1000,until=10000,at=(n:number)=>new Date(n).toISOString(),head="c".repeat(40),reviewHead="f".repeat(40),other="d".repeat(40);
+  const workflowCalls:string[]=[];
+  const all=Array.from({length:205},(_,index)=>({id:index+1,run_attempt:index===204?2:1,event:"pull_request",head_sha:index===0||index===204?head:other,pull_requests:[],created_at:at(index===0?2000:3000),conclusion:index===0?"failure":"success"}));
+  all.push({id:206,run_attempt:1,event:"pull_request",head_sha:reviewHead,pull_requests:[],created_at:at(4000),conclusion:"success"});
+  let failure:"none"|"last"|"duplicate"|"truncated"="none";
+  const gh:SdlcGh=async(args,_t,_c,cap)=>{
+    expect(cap).toBeLessThanOrEqual(128*1024);
+    if(args[0]==="pr")return{code:0,stdout:JSON.stringify([{number:4,createdAt:at(1500),mergedAt:at(9000)}])};
+    if(args[1]?.includes("actions/workflows")){
+      const endpoint=args[1];workflowCalls.push(endpoint);
+      expect(endpoint).toContain(`created=${at(since)}..${at(until)}`);
+      const selected=new URL(`https://example.test/${endpoint}`).searchParams.get("head_sha");
+      if(failure==="last"&&selected===reviewHead)return{code:1,stdout:""};
+      const rows=all.filter(row=>row.head_sha===selected);
+      if(failure==="duplicate"&&rows.length===2)rows[1]=rows[0]!;
+      return{code:0,stdout:JSON.stringify({total_count:selected?(failure==="truncated"?101:rows.length):all.length,workflow_runs:selected?rows:all.slice(0,100)})};
+    }
+    const page=(nodes:unknown[])=>({nodes,pageInfo:{hasNextPage:false}});
+    return{code:0,stdout:JSON.stringify({data:{repository:{pullRequest:{number:4,state:"MERGED",headRefOid:head,mergedAt:at(9000),commits:page([{commit:{oid:head}}]),reviews:page([{databaseId:9,commit:{oid:reviewHead}}]),reviewThreads:page([]),timelineItems:page([])}}}})};
+  };
+  const collect=()=>dogfoodPrs("o/r",source([]),since,until,gh);
+  const result=await collect();
+  expect(workflowCalls).toHaveLength(2);
+  expect(result.data[0]).toMatchObject({complete:true,firstPassCi:false,sameHeadReruns:1,ciRuns:[{id:1,attempt:1},{id:205,attempt:2},{id:206,attempt:1}]});
+  const i=input();i.since=since;i.until=until;i.prs=result;
+  expect(dogfoodScorecard(i).flow.prs[0]).toMatchObject({ciRuns:3,ciReruns:1,firstPassCi:0,sameHeadReruns:1});
+  for(const mode of ["last","duplicate","truncated"] as const){
+    failure=mode;workflowCalls.length=0;
+    const partial=await collect();i.prs=partial;
+    expect(partial.complete).toBe(false);
+    expect(dogfoodScorecard(i).flow.prs[0]).toMatchObject({ciRuns:null,ciReruns:null,firstPassCi:null,sameHeadReruns:null});
+  }
+});
+
+test("CI refuses more than eight or incomplete recorded heads without querying a partial head set",async()=>{
+  for(const incomplete of [false,true]){
+    let queries=0;const at=(n:number)=>new Date(n).toISOString(),heads=Array.from({length:9},(_,i)=>(i+1).toString(16).repeat(40));
+    const gh:SdlcGh=async(args)=>{
+      if(args[0]==="pr")return{code:0,stdout:JSON.stringify([{number:5,createdAt:at(1500),mergedAt:at(9000)}])};
+      if(args[1]?.includes("actions/workflows")){queries++;return{code:0,stdout:'{"total_count":0,"workflow_runs":[]}'};}
+      const page=(nodes:unknown[],hasNextPage=false)=>({nodes,pageInfo:{hasNextPage}});
+      return{code:0,stdout:JSON.stringify({data:{repository:{pullRequest:{number:5,state:"MERGED",headRefOid:heads[0],mergedAt:at(9000),commits:page((incomplete?heads.slice(0,1):heads).map(oid=>({commit:{oid}})),incomplete),reviews:page([]),reviewThreads:page([]),timelineItems:page([])}}}})};
+    };
+    const result=await dogfoodPrs("o/r",source([]),1000,10000,gh);
+    expect(queries).toBe(0);expect(result.complete).toBe(false);expect(result.data[0]?.firstPassCi).toBeUndefined();expect(result.data[0]?.sameHeadReruns).toBeUndefined();
+  }
+});
+
+
+test("same-head manual dispatch runs never count as pull-request CI",async()=>{
+  const sha="a".repeat(40),at=(n:number)=>new Date(n).toISOString();
+  let leak=false,projection="";
+  const gh:SdlcGh=async(args)=>{
+    if(args[0]==="pr")return{code:0,stdout:JSON.stringify([{number:6,createdAt:at(1000),mergedAt:at(9000)}])};
+    if(args[1]?.includes("actions/workflows")){
+      const query=new URL(`https://example.test/${args[1]}`).searchParams;
+      const rows=[{id:71,event:"workflow_dispatch",run_attempt:3,head_sha:sha,pull_requests:[],created_at:at(2000),conclusion:"success"},
+        {id:72,event:"pull_request",run_attempt:1,head_sha:sha,pull_requests:[],created_at:at(3000),conclusion:"failure"}]
+        .filter(row=>leak||query.get("event")===null||row.event===query.get("event"));
+      projection=args[args.indexOf("--jq")+1]!;
+      return{code:0,stdout:JSON.stringify({total_count:rows.length,workflow_runs:rows})};
+    }
+    const page=(nodes:unknown[])=>({nodes,pageInfo:{hasNextPage:false}});
+    return{code:0,stdout:JSON.stringify({data:{repository:{pullRequest:{number:6,state:"MERGED",headRefOid:sha,mergedAt:at(9000),commits:page([{commit:{oid:sha}}]),reviews:page([]),reviewThreads:page([]),timelineItems:page([])}}}})};
+  };
+  const collect=()=>dogfoodPrs("o/r",source([]),1000,10000,gh);
+  expect((await collect()).data[0]).toMatchObject({complete:true,firstPassCi:false,sameHeadReruns:0,ciRuns:[{id:72,attempt:1}]});
+  expect(projection).toContain("event");
+  leak=true;const i=input();i.since=1000;i.until=10000;i.prs=await collect();
+  expect(i.prs.complete).toBe(false);
+  expect(dogfoodScorecard(i).flow.prs[0]).toMatchObject({ciRuns:null,ciReruns:null,firstPassCi:null,sameHeadReruns:null});
 });
