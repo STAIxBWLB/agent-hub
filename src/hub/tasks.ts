@@ -3108,8 +3108,8 @@ export class Tasks {
       if (r.action === "request") return this.d.board.update(task.id, HUB, "integration requested", {}, this.integrationRequest(task, r));
       if (r.action === "unresolved") {
         this.d.notify(`task ${this.publicTitle(task)}: turn-free integration unresolved after ${MAX_REQUESTS} requests (${r.why}); its done is recorded, check the overlapping work by hand`);
-        task = this.d.board.update(task.id, HUB, "integration unresolved", {}, r.why);
-      } else if (r.integrated) task = this.d.board.update(task.id, HUB, "integrated", {}, `cohort #${cohort!.id}, revision ${cohort!.revision}`);
+        task = this.withLink(this.d.board.update(task.id, HUB, "integration unresolved", {}, r.why), link, refs);
+      } else if (r.integrated) task = this.withLink(this.d.board.update(task.id, HUB, "integrated", {}, `cohort #${cohort!.id}, revision ${cohort!.revision}`), link, refs);
     } else if (cohort?.held.size && !this.isPii(task)) {
       // No integration step for this member (silence lifted, a PII task open): the notices the silence held stand in
       // for it (issue #107, AC4).
