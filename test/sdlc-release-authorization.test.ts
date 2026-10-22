@@ -9,13 +9,14 @@ const fresh = (head = A, version = "1.2.3"): DocEvidence => ({ schemaVersion: 1,
 function fixture() {
   const state = {
     head: A, tagCommit: A, tagOid: A, push: [URL], fetch: [URL], docs: fresh() as DocEvidence | undefined,
-    versions: new Map([[A, "1.2.3"], [B, "1.2.4"]]), live: true, audit: true,
+    versions: new Map([[A, "1.2.3"], [B, "1.2.4"]]), live: true, audit: true, dirty: "",
     remoteTag: A as string | null, ghCode: 0, ghErrors: false,
   };
   const reads: string[][] = [], remoteReads: string[][] = [], recorded: ReleaseAuthorization[] = [];
   let docsRead: () => Promise<DocEvidence | undefined> = async () => state.docs;
   const git: ReleaseGit = args => {
     reads.push([...args]);
+    if (args[0] === "status") return { code: 0, stdout: state.dirty };
     if (args[0] === "remote") return { code: 0, stdout: (args.includes("--push") ? state.push : state.fetch).join("\n") };
     if (args[0] === "show") {
       const commit = args[1]?.split(":")[0] ?? "", version = state.versions.get(commit);
@@ -198,4 +199,25 @@ test("S6 changed documentation verdict invalidates publish and report without ch
   expect(await f.host.guardRequest({ kind: "npm-publish" })).toMatchObject({ ok: false });
   const report = f.report(); report.documents = changed;
   expect(f.host.report(report).authorization?.state).toBe("stale");
+});
+
+
+test("S6 authorization report is bound to its known GitHub repository ignoring case", async () => {
+  const f = fixture(); await f.host.authorize("user", "1.2.3", A);
+  expect(f.host.report({ ...f.report(), repo: "EXAMPLE/REPO" }).authorization?.state).toBe("matched");
+  const foreign = f.host.report({ ...f.report(), repo: "other/repo" });
+  expect(foreign.authorization?.state).toBe("stale");
+  expect(foreign.blockers).toContain("native acceptance and person release decision unverified");
+  f.state.fetch = f.state.push = ["https://example.test/repo.git"];
+  await f.host.authorize("user", "1.2.3", A);
+  expect(f.host.report(f.report()).authorization?.state).toBe("stale");
+});
+
+test("S6 npm preflight refuses tracked changes at the same HEAD before and after docs read", async () => {
+  const f = fixture(); await f.host.authorize("user", "1.2.3", A);
+  f.state.dirty = " M src/index.ts";
+  expect(await f.host.guardRequest({ kind: "npm-publish" })).toMatchObject({ ok: false, error: expect.stringContaining("clean tracked worktree") });
+  f.state.dirty = "";
+  f.docsRead(async () => { f.state.dirty = " M src/index.ts"; return fresh(); });
+  expect(await f.host.guardRequest({ kind: "npm-publish" })).toMatchObject({ ok: false });
 });

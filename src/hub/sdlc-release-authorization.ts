@@ -117,11 +117,12 @@ export class ReleaseAuthorizations {
         return { ok: true, receipts: [this.matched(git, request.version, commit, request.remote)] };
       }
       if (request.kind === "npm-publish") {
+        if (this.read(git, ["status", "--porcelain", "--untracked-files=no"])) throw new ReleaseAuthorizationError("npm publish requires a clean tracked worktree");
         const commit = this.commit(git, "HEAD"), version = this.version(git, commit);
         const receipt = this.matched(git, version, commit);
         const docs = docsVerdict(await (this.ports.docs ?? readDocEvidence)(this.root), commit, version);
         this.current();
-        if (!docs || docs.digest !== receipt.docs.digest || this.commit(git, "HEAD") !== commit) throw new ReleaseAuthorizationError("publish checkout or documentation evidence changed");
+        if (!docs || docs.digest !== receipt.docs.digest || this.commit(git, "HEAD") !== commit || this.read(git, ["status", "--porcelain", "--untracked-files=no"])) throw new ReleaseAuthorizationError("publish checkout or documentation evidence changed");
         return { ok: true, receipts: [this.matched(git, version, commit)] };
       }
       const origin = this.origin(git), repo = origin.repo;
@@ -162,7 +163,7 @@ export class ReleaseAuthorizations {
   report<T extends ReleaseReadiness>(report: T): T & { authorization?: { state: "matched" | "stale"; receipt: ReleaseAuthorization } } {
     if (!this.latest) return report;
     const entry = this.entries.get(`${report.version}:${report.head}`), verdict = report.head && report.version ? docsVerdict(report.documents, report.head, report.version) : undefined;
-    let matched = !!entry && !!verdict && verdict.digest === entry.receipt.docs.digest;
+    let matched = !!entry && !!entry.origin.repo && entry.origin.repo.toLowerCase() === report.repo.toLowerCase() && !!verdict && verdict.digest === entry.receipt.docs.digest;
     try { matched &&= this.origin(this.git()).hash === entry!.origin.hash; } catch { matched = false; }
     const receipt = structuredClone((matched ? entry! : this.latest).receipt);
     const blockers = matched ? report.blockers.map(item => item === "native acceptance and person release decision unverified" ? "native acceptance unverified" : item) : report.blockers;
