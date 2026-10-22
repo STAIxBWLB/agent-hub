@@ -13,6 +13,7 @@ export const EVENTS_SCHEMA = 1;
  * ids, routing and sizes, tasks carry ids and states, so the file can be exported without leaking what agents wrote.
  */
 export type HubEvent =
+  | { type: "release_authorization"; by: "user"; authorization: string; commit: string; version: string; docsDigest: string; documents: number }
   | { type: "permission_mode"; peer: string; from: import("./permission-mode.ts").PermissionMode; to: import("./permission-mode.ts").PermissionMode }
   | { type: "role"; peer?: string; task?: number; actor: string; stage: "prepared" | "assigned"; roles: { id: string; layer: "shipped" | "project"; hash: string }[] }
   /** A settings change (#269): the registry key, the bounded registry values before/after and their source; an optional person reason is sanitized and capped at 400 UTF-8 bytes. */

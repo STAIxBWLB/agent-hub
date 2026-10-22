@@ -19,7 +19,7 @@ The built-in lifecycle follows the [AI-Native SDLC Playbook](https://claude.com/
 | test | Test | verifier/reviewer | required checks and local gate on the reviewed head | approval, when enabled; bug test integrity below, evals pending S5 |
 | review | Deploy | assigned reviewer | current head-bound verdict, no pending change request/open thread; AC checklist under Compliance | approval, when enabled; open Important findings block in enforce |
 | merge | Deploy | person | current-head readiness, ordered touching PRs | shown; no mutation |
-| release | Deploy | person | merged commit, version/tag, docs freshness/live receipt checklist | shown; authorization pending S6 |
+| release | Deploy | person | merged commit, version/tag, docs freshness/live receipt checklist | person authorization and optional tag hook below |
 | maintain | Maintain | person/planner | follow-up intent and operational evidence | shown; metrics/control bands pending S7 |
 
 Stored `implement` and `verify` stage ids read as `build` and `test`. A write that names the old id stores the id the configuration lists, so new enabled-lifecycle receipts use the canonical ids. The default remains off, preserving existing off-mode output, receipt and schema shapes. Status, explain, console and dashboard name the playbook stage beside enabled lifecycle ids.
@@ -34,7 +34,7 @@ Stored `implement` and `verify` stage ids read as `build` and `test`. A write th
 | S3 | Bugs, Security and Compliance review passes | Head-bound findings, configured nit cap, Important approval gate and recurring-finding amendment proposals |
 | S4 | Red-first tests and test integrity | Bug-label metadata, source-labelled red-first proof and changed pre-existing test blockers |
 | S5 | Continuous evals for agent configuration | Pending gate, dependent on #251/#266; no eval pass claimed |
-| S6 | Production approval gate | Pending person-only release authorization; release report stays read-only |
+| S6 | Production approval gate | Person-only commit/version/docs receipt and opt-in Git tag pre-push guard; report stays read-only |
 | S7 | Metrics, deterministic control bands and follow-up intent | Pending; no automated metric triage or security baseline claimed |
 | S8 | Compliance acceptance-criteria checklist | Head-bound checklist retained; legacy workflow and phase compatibility deprecated; task import removed |
 | S9 | Planner grooming and plan review | Read-only digest, current plan-review receipt at build admission, all-mode WIP and accepted-untouched return |
@@ -64,7 +64,7 @@ The acceptance-criteria checklist belongs to the Compliance pass over the same b
 
 ## Delivery and verification state
 
-Head-bound review/approval gates, bounded custom definitions, read-only merge/release reports, S0/S8 vocabulary/checklist migration, S1 spec acceptance and S9 planner admission and S10 cost governance are implemented in source. S11 release-train governance ships in 0.12.37. S5-S7 and the native advise-through-merge/release cycle remain pending. S4 test integrity is implemented in source. S2 plan conformance and S3 findings are implemented in source. Installation, native acceptance and release authorization require separate receipts.
+Head-bound review/approval gates, bounded custom definitions, read-only merge/release reports, S0/S8 vocabulary/checklist migration, S1 spec acceptance and S9 planner admission and S10 cost governance are implemented in source. S11 release-train governance ships in 0.12.37. S5, S7 and the native advise-through-merge/release cycle remain pending. S6 authorization and its optional tag hook are implemented in source. S4 test integrity is implemented in source. S2 plan conformance and S3 findings are implemented in source. Installation and native acceptance require separate receipts; a person authorization is consent, not native verification.
 
 ## Initial commands
 
@@ -154,7 +154,7 @@ actor = "person"
 after = ["approve"]
 ```
 
-These ids are guidance/receipt destinations. Publish neither merges nor releases. The read-only source-readiness report is implemented below. Native acceptance/release authorization and research measurements remain unverified or pending.
+These ids are guidance/receipt destinations. Publish neither merges nor releases. The read-only source-readiness report is implemented below. Native acceptance and research measurements remain unverified or pending; person authorization is recorded separately below.
 
 
 # Structured documentation readiness evidence (#257)
@@ -294,3 +294,17 @@ Example receipt (replace both SHAs):
 Status/explain and merge-queue rows expose `testIntegrity` with applicability, red-first state, file-inventory state, source labels and modified/deleted test paths. Added tests are allowed. Test paths are under `test/`, `tests/` or `__tests__/`, or have a supported `.test`/`.spec` suffix; conventional `*_test.go`, `test_*.py`, `*_test.py`, `*_spec.rb` and `*Test.java` names also count. Renames/copies, unsafe paths, missing change types and truncated inventories stay unknown. Private tasks and metadata rejected by the current host privacy policy expose a neutral unknown report; receipt metadata is screened again on public output.
 
 Reads share the existing 20 s lifecycle/queue allowance and fixed argument/output caps. Labels and check contexts are bounded to 100 each, PR commits to 100, and the red commit to fewer than 100 changed files; larger proof is unknown rather than silently accepted. The queue revalidates every linked issue's applicability with its final PR snapshot (up to 32 distinct issues). Metadata cannot detect a later commit gutting assertions in a test added by the PR; content-aware review remains required. These metadata/claim receipts do not prove a native/container run by themselves; no live advise-through-release receipt is claimed.
+
+## Person release authorization (#481 S6)
+
+From the running daemon's candidate checkout, the person runs `ahub sdlc authorize-release <version>`. The console-only operation binds approval to the exact current commit, its committed package version, the origin fetch/push identity and fresh committed documentation evidence. It rereads the head and remote after the documentation check. Agent shells, including `--live-test`, cannot grant it. An append-only metadata event records the approval id, commit, version and documentation digest/count. The authoritative ledger is daemon-owned memory: restart revokes every approval; audit history cannot restore one.
+
+`ahub sdlc release <owner/repo>` shows a matching or stale authorization receipt. Authorization removes only the person-decision blocker. Native acceptance remains unverified and `ready` remains false until separately supported. No tag, workflow or publication is changed by authorization or readback.
+
+The optional `ahub init --release-guard` writes instructions and an executable default Git `pre-push` hook. Preview with `--dry-run --json`. An existing regular hook is renamed to `pre-push.agent-hub-original`, preserving its inode and mode, and chained with the exact original arguments and stdin only after successful preflight. Ordinary later `init` calls retain the guard. Linked/hardlinked hooks, occupied backups and custom `core.hooksPath` are refused before project writes; integrate custom hook runners manually instead. The wrapper pins the current Bun and package entry paths; run init again after moving or replacing that installation.
+
+For every actual pushed `v*` destination, the hook requires an exact semantic version and a matching receipt for the captured source object peeled to its commit. Missing consent, another commit/version/remote, daemon downtime or a reset ledger refuses the push. Version-tag deletion is refused. Branch-only pushes do not need a daemon and still reach the user's hook. The person can bypass with Git `--no-verify`; agents must never bypass it. This is a cooperative Git guard, not an OS capability boundary.
+
+Before other release commands, agents run `ahub sdlc release-guard -- <literal argv...>`. Supported forms are one named-remote tag push, `gh release create v<version>` (an existing GitHub tag is read back; a new one requires `--target <full-sha>`), and `npm publish` from the approved checkout. Ambiguous selectors, alternate repositories, bulk pushes, workspaces and archive publishes refuse. The npm preflight refuses tracked worktree changes before and after rechecking the committed-doc verdict and HEAD, but does not attest the eventual tarball, npm configuration or lifecycle scripts. The command performs no release operation and its answer is not an execution grant. GitHub/npm enforcement remains instruction-based until adapter integration (#312/#313); rerun preflight after changing any target or candidate. Native install, live release and migration evidence remain separate obligations.
+
+Tracked npm cleanliness compares the cached index to HEAD and raw tracked blob bytes without `git status`, clean/process filters or text converters. It refuses unknown evidence, gitlinks, transformed files and inventories above 4,096 entries, 4 MiB per file, 32 MiB total or 250 ms; untracked files remain outside this check and the eventual tarball is not attested.

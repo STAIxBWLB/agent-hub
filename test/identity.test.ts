@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, peerCommandRefusal } from "../src/cli/identity.ts";
+import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, liveTestRefusal, peerCommandRefusal } from "../src/cli/identity.ts";
 
 test("plain terminals keep console identity and native markers select tools identity", () => {
   expect(detectCliIdentity({})).toEqual({ role: "console" });
@@ -93,4 +93,12 @@ test("console refusal names only identity markers actually present, never their 
   expect(combined).not.toContain("CODEX_THREAD_ID"); expect(combined).not.toContain("private-peer-marker");
   const empty = peerCommandRefusal("claude", "queue", {});
   for (const marker of ["CLAUDECODE", "AGENTHUB_PEER_ID", "CODEX_THREAD_ID"]) expect(empty).not.toContain(marker);
+});
+
+
+test("release authorization stays person-only while exact release preflights are peer reads", () => {
+  expect(classifyPeerCommand("sdlc", ["authorize-release", "1.2.3"])).toBe("console");
+  expect(liveTestRefusal("sdlc", ["authorize-release", "1.2.3"])).toBe(true);
+  for (const sub of ["release-guard", "release-guard-hook"]) expect(classifyPeerCommand("sdlc", [sub])).toBe("allowed");
+  for (const sub of ["record", "accept", "plan-review", "unknown"]) expect(classifyPeerCommand("sdlc", [sub])).toBe("console");
 });
