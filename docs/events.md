@@ -70,7 +70,7 @@ Token usage by adapter:
   event: `inputTokens`, `cacheReadTokens` (cached input), `outputTokens` and `reasoningTokens` are the growth of
   Codex's own counters, with the same baseline rule, and `totalTokens` is the growth of `totalTokens`. Codex counts
   cached input inside input and reasoning inside output, so `inputTokens + outputTokens` equals `totalTokens` and the
-  other two are shares of those, never added again. The id is unique per hub run, peer and thread. The ledger events
+  other two are shares of those, never added again. The id is unique per hub run, peer and sequence and never carries the native thread, since usage telemetry has no session id. The ledger events
   carry ids, windows and numbers only: no checkpoint text, summary or task title.
 - Pi: the assistant usage its extension forwards at each `message_end`, tool-loop messages included, is recorded as
   increments, each usage id once; a message without a usable count adds nothing.

@@ -116,7 +116,9 @@ test("the daemon writes a codex_appserver usage event next to the tokens event, 
   const usage = events.find(e => e.type === "usage" && e.source === "codex_appserver"), tokens = events.find(e => e.type === "tokens" && e.peer === "codex");
   // The shared fake reports a turn of 100 tokens: 90 input and 10 output, no cached or reasoning.
   expect(usage).toMatchObject({ type: "usage", peer: "codex", source: "codex_appserver", inputTokens: 90, outputTokens: 10, cacheReadTokens: 0, reasoningTokens: 0, totalTokens: 100 });
-  expect(String(usage.id)).toMatch(/^codex:[a-z0-9]+:codex:[^:]+:\d+$/);
+  expect(String(usage.id)).toMatch(/^codex:[a-z0-9]+:codex:\d+$/);
+  // Usage telemetry has no session id (docs/events.md): the id names the run, peer and a sequence, never the native thread.
+  expect(JSON.stringify(usage)).not.toContain("th1"); expect(JSON.stringify(usage)).not.toMatch(/thread|session/i);
   expect(usage.attribution).toBe("unattributed"); expect(usage.task).toBeUndefined(); // codex owns no open task yet
   // The same peer with exactly one open task: the next update is attributed to it, on both the usage and the tokens event.
   const proposed = await console_.request({ t: "task", op: "hub_task_propose", args: { title: "ledger fixture task", class: "implement", owner: "codex" } });
@@ -147,4 +149,4 @@ test("the daemon writes a codex_appserver usage event next to the tokens event, 
   expect(ledger.find(e => e.type === "budget_pause")).toMatchObject({ peer: "codex", window: "5h", by: "hub" });
   expect(ledger.find(e => e.type === "budget_resume")).toMatchObject({ peer: "codex", window: "5h", by: "person", reason: "overridden by the console user" });
   for (const e of ledger) expect(JSON.stringify(e)).not.toMatch(/checkpoint|summary|title/);
-}, 30_000);
+}, 15_000);

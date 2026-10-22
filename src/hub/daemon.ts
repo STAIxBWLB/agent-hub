@@ -1981,7 +1981,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   const delta = tokenDeltas();
   /** Tokens a peer used, as increments: Kimi reports a session total (turned into increments below), Codex increments. */
-  let codexUsageSeq = 0; // per hub run: with the run id, peer and thread it names one usage record
+  let codexUsageSeq = 0; // per hub run: with the run id and peer it names one usage record
   const addTokens = (peer: PeerId, n: number): number => {
     const supervisionTurn = supervisionTurns.get(peer);
     if (supervisionTurn && Number.isFinite(n) && n >= 0) supervisionTurn.tokens = (supervisionTurn.tokens ?? 0) + n;
@@ -3866,10 +3866,9 @@ export async function startDaemon(opts: DaemonOptions) {
         permissionMode: permissionMode(peer),
         onTokens: (added) => void addTokens(peer, added),
         // #683 U1: the same update split into Codex's own kinds, next to the unchanged `tokens` event. One record per update:
-        // the id names the hub run, peer, thread and a per-run sequence, so it is unique across restarts.
+        // the id names the hub run, peer and a per-run sequence, so it is unique across restarts. It never carries the native thread: usage telemetry has no session id (docs/events.md).
         onTokenBreakdown: delta => {
-          const thread = codex.thread || "thread";
-          event({ type: "usage", peer, source: "codex_appserver", id: `codex:${runId}:${peer}:${thread}:${++codexUsageSeq}`, inputTokens: delta.input, cacheReadTokens: delta.cachedInput,
+          event({ type: "usage", peer, source: "codex_appserver", id: `codex:${runId}:${peer}:${++codexUsageSeq}`, inputTokens: delta.input, cacheReadTokens: delta.cachedInput,
             outputTokens: delta.output, reasoningTokens: delta.reasoning, totalTokens: delta.total, ...taskAttribution(peer) });
         },
         contextReader: adapter.budget?.context,
