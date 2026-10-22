@@ -4562,7 +4562,7 @@ Common acceptance criteria:
      - A plain peer with `deliveryOnly: true` is refused `hub_delivery_retry` and gets no retry hint.
      - With `deliveryOnly` undefined it is refused too.
      - A plain `hubOwned` peer is admitted by `peer_stop`; a `form: "tui"` one is refused with the `displayName` text.
-     - A plain peer with `detachForRoster` is detached, not stopped, on roster removal.
+     - A plain peer with `form: "tui"` and `detachForRoster` is detached, not stopped, on roster removal. The same peer with `form` absent takes the roster-removal stop path, as the absent-form rule above says.
      - ACP factory admission refuses an `AcpPeer` subclass that overrides `deliveryOnly` to false.
      - The conformance kit's ACP ports leg moves from `UNSUPPORTED_LEGS` to active: every ACP-transport definition's `start.create` product reports `deliveryOnly`, `hubOwned` and `form: "headless"`, and 2b's own ports land in the same PR as that leg.
      - `test/kimi-tui.test.ts`, `test/roster-pi.test.ts`, the `peer_stop` and configured ACP tests stay unchanged.
