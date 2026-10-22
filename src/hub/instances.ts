@@ -1,4 +1,5 @@
 import { types } from "node:util";
+import { isAbsolute, resolve, sep } from "node:path";
 import { defaultPeerRoles, definitionOf, type AdapterDefinition, type StartForm, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { isPermissionMode, type PermissionMode } from "./permission-mode.ts";
 
@@ -10,7 +11,19 @@ export interface InstanceConfig {
   review_mode?: "fresh";
   worktree?: string;
   readOnly?: boolean;
+  /** Jcode instances only (#685): their own native data home, and optional model selection. Machine-local, never editable from settings. */
+  jcode_home?: string;
+  provider?: string;
+  model?: string;
+  provider_profile?: string;
+  /** The hub's model relay alias this instance's Jcode talks to instead of a native provider. */
+  model_relay?: JcodeModelRelay;
 }
+export const JCODE_MODEL_RELAYS = ["dgx/coding", "dgx/fast"] as const;
+export type JcodeModelRelay = typeof JCODE_MODEL_RELAYS[number];
+const JCODE_FIELDS = ["jcode_home", "provider", "model", "provider_profile", "model_relay"] as const;
+/** A flag value jcode takes as one argv word: bounded, printable, no spaces. */
+const NATIVE_WORD = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
 export type InstancesConfig = Readonly<Record<string, InstanceConfig>>;
 export interface InstanceCatalogEntry { id: string; kind: string; definition: AdapterDefinition; config?: InstanceConfig }
 const MAX_INSTANCES = 64;
@@ -41,6 +54,49 @@ function roles(value: unknown, field: string): string[] {
   return out;
 }
 
+/** The Jcode-only fields of one declaration (#685). Only the validated values are copied; nothing is read twice. */
+function jcodeInstanceFields(entry: Record<string, PropertyDescriptor>, path: string): Partial<InstanceConfig> {
+  const home: unknown = entry.jcode_home?.value;
+  if (typeof home !== "string" || !isAbsolute(home) || !home.trim() || Buffer.byteLength(home) > 4096 || /\p{Cc}/u.test(home)) return fail(`${path}.jcode_home`, "is required: a nonempty control-free absolute path of at most 4096 UTF-8 bytes, other than the base Jcode's home");
+  const out: Partial<InstanceConfig> = { jcode_home: home };
+  for (const key of ["provider", "model", "provider_profile"] as const) {
+    const present = entry[key];
+    if (!present) continue;
+    const word: unknown = present.value;
+    if (typeof word !== "string" || !NATIVE_WORD.test(word)) return fail(`${path}.${key}`, "must be one bounded printable word without spaces");
+    out[key] = word;
+  }
+  if (entry.model_relay) {
+    const relay: unknown = entry.model_relay.value;
+    if (!JCODE_MODEL_RELAYS.includes(relay as JcodeModelRelay)) return fail(`${path}.model_relay`, `must be one of ${JCODE_MODEL_RELAYS.join(", ")}`);
+    // The relay is the model source: a second provider, profile or a different model would contradict it.
+    if (entry.provider || entry.provider_profile || (entry.model && entry.model.value !== relay)) return fail(`${path}.model_relay`, "the relay supplies the provider and model: provider, provider_profile and a different model cannot be set with it");
+    out.model_relay = relay as JcodeModelRelay;
+  }
+  if (entry.start_mode && entry.start_mode.value !== "headless") return fail(`${path}.start_mode`, "a Jcode instance starts headless");
+  return out;
+}
+
+/** A trailing slash or a `.` segment does not make a different home. */
+const normalHome = (home: string): string => resolve(home);
+/**
+ * One native data home per Jcode (#685): an instance may not use the base Jcode's home, another instance's, or one nested
+ * inside either (their stores would overlap). Run once with the loaded base `jcode_home`.
+ */
+export function checkJcodeInstanceHomes(declarations: InstancesConfig | undefined, baseHome: string): void {
+  const homes: { id: string; home: string }[] = [{ id: "the base Jcode", home: normalHome(baseHome) }];
+  for (const [id, config] of Object.entries(declarations ?? {})) {
+    if (config.kind !== "jcode" || config.jcode_home === undefined) continue;
+    const home = normalHome(config.jcode_home);
+    for (const other of homes) {
+      const label = other.id === "the base Jcode" ? "base" : other.id;
+      if (home === other.home) return fail(`instances.${id}.jcode_home`, other.id === "the base Jcode" ? "must differ from the base Jcode's home" : `is the same home as ${label}`);
+      if (home.startsWith(`${other.home}${sep}`) || other.home.startsWith(`${home}${sep}`)) return fail(`instances.${id}.jcode_home`, `is nested inside or around ${other.id === "the base Jcode" ? "the base Jcode's home" : `${label}'s home`}`);
+    }
+    homes.push({ id, home });
+  }
+}
+
 /** Declaration support is explicit policy, independent of the native MCP binding mechanism. */
 export function supportsHeadlessInstances(definition: AdapterDefinition): boolean {
   return definition.instances?.mode === "headless" && !!definition.start.create && definition.start.forms.includes("headless");
@@ -61,7 +117,9 @@ export function validateInstances(raw: unknown, catalog: ProjectAdapterCatalog):
   for (const [id, descriptor] of Object.entries(declarations)) {
     if (!PEER_ID.test(id) || RESERVED.has(id) || resolve(id)) return fail("instances", "ids must be nonreserved extra instance ids, not builtin ids");
     const path = `instances.${id}`, entry = fields(descriptor.value, path);
-    if (Object.keys(entry).some(key => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly"].includes(key))) return fail(path, "unsupported field");
+    const kindName: unknown = entry.kind?.value;
+    const jcodeFields = kindName === "jcode";
+    if (Object.keys(entry).some(key => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly", ...(jcodeFields ? JCODE_FIELDS : [])].includes(key))) return fail(path, "unsupported field");
     const kind: unknown = entry.kind?.value;
     if (typeof kind !== "string") return fail(`${path}.kind`, "must name a native kind");
     const definition = resolve(kind), prefix = `${kind}-`;
@@ -102,6 +160,7 @@ export function validateInstances(raw: unknown, catalog: ProjectAdapterCatalog):
       if (entry.readOnly.value && entry.permission_mode) return fail(`${path}.permission_mode`, "read-only instances cannot select a permission mode");
     }
     const value: InstanceConfig = { kind, ...(entry.review_mode ? { review_mode: "fresh" as const } : {}) };
+    if (jcodeFields) Object.assign(value, jcodeInstanceFields(entry, path));
     if (entry.readOnly) value.readOnly = entry.readOnly.value as boolean;
     if (entry.roles) { value.roles = roles(entry.roles.value, `${path}.roles`); Object.freeze(value.roles); }
     if (entry.start_mode) {

@@ -13,21 +13,27 @@ export interface JcodeOptions extends Omit<AcpOptions, "cmd" | "qwen025" | "expe
   command: string[];
   home: string;
   providerProfile?: string;
+  /** The hub peer id this Jcode acts for: "jcode" for the base peer, an instance id for an extra one (#685). */
+  peer?: string;
+  /** Initial native provider (`-p`), e.g. "openai-compatible" for an instance served by the hub's model relay (#685). */
+  provider?: string;
+  /** The hub's loopback model relay and its per-launch token. Jcode learns only these two values, never the gateway key. */
+  relay?: { url: string; token: string };
   /** How long a native steer may take to be acknowledged (#572); default 5 s. */
   steerTimeoutMs?: number;
 }
-export function jcodeCommand(command: string[], kind: "serve" | "acp", socket: string, cwd: string, model?: string, profile?: string): string[] {
+export function jcodeCommand(command: string[], kind: "serve" | "acp", socket: string, cwd: string, model?: string, profile?: string, provider?: string, peer = "jcode"): string[] {
   if (!command.length || command.some(word => typeof word !== "string" || !word)) throw new Error("jcode_cmd must name an executable argv");
-  return [...command, kind, "--socket", socket, "--cwd", cwd, "--no-update", "--no-selfdev", ...(model ? ["--model", model] : []), ...(profile ? ["--provider-profile", profile] : []),
-    ...(kind === "serve" ? ["--temporary-server", "--owner-pid", String(process.pid), "--server-name", "agent-hub-jcode"] : ["--mcp-tools", "eager"])];
+  return [...command, kind, "--socket", socket, "--cwd", cwd, "--no-update", "--no-selfdev", ...(provider ? ["-p", provider] : []), ...(model ? ["--model", model] : []), ...(profile ? ["--provider-profile", profile] : []),
+    ...(kind === "serve" ? ["--temporary-server", "--owner-pid", String(process.pid), "--server-name", `agent-hub-${peer}`] : ["--mcp-tools", "eager"])];
 }
 export interface JcodeTuiBinding { launchId: string; sessionId: string }
 export type JcodeTuiState = { state: "waiting"; binding: JcodeTuiBinding } |
   { state: "ready"; binding: JcodeTuiBinding; launch: { cmd: string; args: string[]; env: NodeJS.ProcessEnv } };
 
-export function jcodeTuiCommand(command: string[], socket: string, sessionId: string, model?: string, profile?: string): string[] {
+export function jcodeTuiCommand(command: string[], socket: string, sessionId: string, model?: string, profile?: string, provider?: string): string[] {
   if (!command.length || command.some(word => typeof word !== "string" || !word)) throw new Error("jcode_cmd must name an executable argv");
-  return [...command, "--socket", socket, "--resume", sessionId, "--no-update", "--no-selfdev",
+  return [...command, "--socket", socket, "--resume", sessionId, "--no-update", "--no-selfdev", ...(provider ? ["-p", provider] : []),
     ...(model ? ["--model", model] : []), ...(profile ? ["--provider-profile", profile] : [])];
 }
 
@@ -66,6 +72,19 @@ export class JcodeOptionMismatch extends Error {
   constructor(readonly option: "--session-id" | "--model" | "--provider-profile") { super("Jcode launch options differ from its running session"); }
 }
 const JCODE_OWNED_ENV = { JCODE_DISABLE_CLAUDE_MCP: "1", JCODE_NO_TELEMETRY: "1" } as const;
+/**
+ * #685: the only two values an instance served by the hub's model relay learns about its model source, verified on 0.99.0 under
+ * an isolated home (`-p openai-compatible` reads them, sends the token as its bearer and reports usage). The gateway key and
+ * Access headers stay inside src/omniroute: every native child inherits the hub's environment, so a relay-backed instance also
+ * has each gateway variable removed (an `undefined` value drops a variable from a spawned child).
+ */
+const GATEWAY_ENV = /^(OMNIROUTE_|CF_ACCESS_|AGENTHUB_OMNIROUTE)/;
+function relayEnv(relay: JcodeOptions["relay"]): NodeJS.ProcessEnv {
+  if (!relay) return {};
+  const scrub: NodeJS.ProcessEnv = {};
+  for (const key of Object.keys(process.env)) if (GATEWAY_ENV.test(key)) scrub[key] = undefined;
+  return { ...scrub, JCODE_OPENAI_COMPAT_API_BASE: relay.url, OPENAI_COMPAT_API_KEY: relay.token };
+}
 /** #691: the verdict lives in `src/adapters/compat.ts` (line, verified versions, the person's trust); never pin here. */
 export const jcodeVersionSupported = (version: unknown): boolean => assessVersion("jcode", version).ok;
 
@@ -189,11 +208,13 @@ export class JcodePeer extends AcpPeer {
 
   constructor(private readonly jcode: JcodeOptions) {
     if (!isAbsolute(jcode.home)) throw new Error("jcode_home must be an absolute native data path");
+    const peer = jcode.peer ?? "jcode";
     jcodeCommand(jcode.command, "acp", "preview", jcode.cwd);
     // The name must end in ".sock": jcode names its debug socket by replacing that suffix, so "s" binds one path twice.
     const root = mkdtempSync(join(tmpdir(), "ahub-jcode-")), socket = join(root, "j.sock");
-    const cmd = jcodeCommand(jcode.command, "acp", socket, jcode.cwd, jcode.launchModel, jcode.providerProfile);
-    super("jcode", { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, ...JCODE_OWNED_ENV }, mcpServers: [], requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
+    const cmd = jcodeCommand(jcode.command, "acp", socket, jcode.cwd, jcode.launchModel, jcode.providerProfile, jcode.provider, peer);
+    // The ACP child gets peerChildEnv(this.id): the instance id, so its hub tools act as this peer and never as the base Jcode.
+    super(peer, { ...jcode, cmd, env: { ...jcode.env, JCODE_HOME: jcode.home, JCODE_SOCKET: socket, ...JCODE_OWNED_ENV, ...relayEnv(jcode.relay) }, mcpServers: [], requireLoadSessionEcho: true, expectedAgent: { name: "jcode", version: jcodeVersionSupported } });
     this.root = root; this.socket = socket;
   }
 
@@ -202,8 +223,8 @@ export class JcodePeer extends AcpPeer {
     if (!existsSync(join(this.jcode.home, "mcp.json"))) throw new Error("initialize Jcode's global MCP store with its native client before enabling this peer; the hub never initializes or copies it");
     if (existsSync(this.socket)) { this.preserveRoot = true; throw new Error("Jcode private socket is occupied; no daemon was adopted or removed"); }
     this.ending = false;
-    const [bin, ...args] = jcodeCommand(this.jcode.command, "serve", this.socket, this.jcode.cwd, this.jcode.launchModel, this.jcode.providerProfile);
-    const server = spawn(bin!, args, { cwd: this.jcode.cwd, detached: true, env: { ...peerChildEnv("jcode"), JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, JCODE_READY_FD: "3", ...JCODE_OWNED_ENV }, stdio: ["ignore", "ignore", "ignore", "pipe"] });
+    const [bin, ...args] = jcodeCommand(this.jcode.command, "serve", this.socket, this.jcode.cwd, this.jcode.launchModel, this.jcode.providerProfile, this.jcode.provider, this.id);
+    const server = spawn(bin!, args, { cwd: this.jcode.cwd, detached: true, env: { ...peerChildEnv(this.id), JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, JCODE_READY_FD: "3", ...JCODE_OWNED_ENV, ...relayEnv(this.jcode.relay) }, stdio: ["ignore", "ignore", "ignore", "pipe"] });
     this.server = server; trackGroup(server);
     try {
       await new Promise<void>((resolve, reject) => {
@@ -307,11 +328,12 @@ export class JcodePeer extends AcpPeer {
       : options.providerProfile !== undefined && options.providerProfile !== this.jcode.providerProfile ? "--provider-profile" : undefined;
     if (differs) throw new JcodeOptionMismatch(differs);
     if (!savedSession(this.jcode.home, sessionId)) return { state: "waiting", binding };
-    const [cmd, ...args] = jcodeTuiCommand(this.jcode.command, this.socket, sessionId, this.jcode.launchModel, this.jcode.providerProfile);
-    return { state: "ready", binding, launch: { cmd: cmd!, args, env: { JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, ...JCODE_OWNED_ENV } } };
+    const [cmd, ...args] = jcodeTuiCommand(this.jcode.command, this.socket, sessionId, this.jcode.launchModel, this.jcode.providerProfile, this.jcode.provider);
+    // The TUI is the person's own client of this instance's server: the instance id (not the base Jcode's) and the same relay values.
+    return { state: "ready", binding, launch: { cmd: cmd!, args, env: { JCODE_HOME: this.jcode.home, JCODE_SOCKET: this.socket, ...(this.id === "jcode" ? {} : { AGENTHUB_PEER_ID: this.id }), ...JCODE_OWNED_ENV, ...relayEnv(this.jcode.relay) } } };
   }
   override recoveryMetadata(): Record<string, unknown> {
-    return { ...super.recoveryMetadata(), launch: { kind: "jcode", peer: "jcode", mode: "headless", ...(this.jcode.launchModel ? { model: this.jcode.launchModel } : {}), ...(this.jcode.providerProfile ? { providerProfile: this.jcode.providerProfile } : {}) } };
+    return { ...super.recoveryMetadata(), launch: { kind: "jcode", peer: this.id, mode: "headless", ...(this.jcode.launchModel ? { model: this.jcode.launchModel } : {}), ...(this.jcode.providerProfile ? { providerProfile: this.jcode.providerProfile } : {}) } };
   }
 }
 
