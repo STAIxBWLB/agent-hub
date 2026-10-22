@@ -25,6 +25,7 @@ Run this before pushing a PR or reporting a task complete, and paste the output.
 - Conventional commits in English, referencing the issue. Branch + PR, never commit to main.
 - Spec first: when the implementation has to differ from the spec, amend the spec in the same PR.
 - Deliberate shortcuts carry a `ponytail:` comment naming the ceiling and the upgrade path.
+- A PR that adds or changes a user-facing feature updates its row in `docs/dogfood.md`: whether it runs on this repository, and the metric that shows it works (#687).
 
 ## Architecture
 
