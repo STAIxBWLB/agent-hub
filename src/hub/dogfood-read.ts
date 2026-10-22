@@ -8,7 +8,7 @@ import type { HistoryEntry } from "./board.ts";
 import type { StampedEvent } from "./events.ts";
 
 export const DOGFOOD_BYTE_CAP = 16 * 1024 * 1024;
-const MAX_TASKS = 500, MAX_PRS = 16;
+const MAX_TASKS = 500, MAX_PRS = 16, MAX_CI_HEADS = 8, MAX_CI_READS = 32;
 const date = (value: unknown): number | undefined => typeof value === "string" && Number.isFinite(Date.parse(value)) ? Date.parse(value) : undefined;
 const id = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) > 0;
 const repoName = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && !value.startsWith("-");
@@ -108,18 +108,56 @@ export async function dogfoodPrs(repo: string, tasks: Source<DogfoodTask[]>, sin
   const hidden = new Set(tasks.data.filter(t => t.pii && (!t.repo || t.repo.toLowerCase() === repo.toLowerCase())).map(t => t.pr));
   const visible = list.filter(p => id(p?.number) && date(p.mergedAt) !== undefined && date(p.mergedAt)! <= until && !hidden.has(p.number));
   let complete = list.length < 100 && list.every(p => id(p?.number) && date(p.mergedAt) !== undefined) && visible.length <= MAX_PRS;
-  const runs = await parse(["api",`repos/${repo}/actions/workflows/check.yml/runs?per_page=100&created=${new Date(since).toISOString()}..${new Date(until).toISOString()}`,"--jq","{total_count,workflow_runs:[.workflow_runs[]|{id,run_attempt,head_sha,created_at,conclusion,pull_requests:[.pull_requests[]|{number}]}]}"]);
-  const runsComplete = runs && Number.isSafeInteger(runs.total_count) && Array.isArray(runs.workflow_runs) && runs.total_count === runs.workflow_runs.length && runs.workflow_runs.length <= 100 && runs.workflow_runs.every((r:any)=>id(r?.id) && id(r?.run_attempt) && typeof r?.head_sha === "string" && /^[a-f0-9]{40}$/.test(r.head_sha) && date(r.created_at) !== undefined && (r.conclusion === null || typeof r.conclusion === "string") && Array.isArray(r.pull_requests) && r.pull_requests.every((p:any)=>id(p?.number)));
+  // Read recent PRs first: their complete recorded head sets usually fit before
+  // the shared deadline. Repository-wide CI volume never consumes this budget.
+  visible.sort((a,b)=>date(b.mergedAt)!-date(a.mergedAt)!);
+  const projection = "{total_count,workflow_runs:[.workflow_runs[]|{id,run_attempt,head_sha,created_at,conclusion,pull_requests:[.pull_requests[]|{number}]}]}";
+  const validRun = (r:any) => id(r?.id) && id(r?.run_attempt) && typeof r?.head_sha === "string" && /^[a-f0-9]{40}$/.test(r.head_sha)
+    && date(r.created_at) !== undefined && (r.conclusion === null || typeof r.conclusion === "string")
+    && Array.isArray(r.pull_requests) && r.pull_requests.length <= 100 && r.pull_requests.every((p:any)=>id(p?.number));
+  const sha = (v:unknown):v is string => typeof v === "string" && /^[a-f0-9]{40}$/.test(v);
+  let ciReads = 0;
   const rows: DogfoodPr[] = [];
   for (const item of visible.slice(0,MAX_PRS)) {
-    const cost = await readPrCostHistory(repo,item.number,(args,t,c,cap) => args.some(arg => arg.startsWith(`repos/${repo}/actions/workflows/check.yml/runs?`))
-      ? Promise.resolve({code:runs ? 0 : 1,stdout:JSON.stringify(runs ? {total_count:runs.total_count,workflow_runs:runs.workflow_runs?.map((r:any)=>({id:r.id,run_attempt:r.run_attempt,head_sha:r.head_sha,pull_requests:r.pull_requests?.map((p:any)=>p.number)}))} : {})}) : gh(args,t,c,cap));
+    let heads: string[] | undefined, runs: any[] = [], runsComplete = false;
+    const cost = await readPrCostHistory(repo,item.number,async(args,t,c,cap) => {
+      if (args.some(arg => arg.startsWith(`repos/${repo}/actions/workflows/check.yml/runs?`))) {
+        if (!heads || heads.length>MAX_CI_HEADS || ciReads+heads.length>MAX_CI_READS) return {code:1,stdout:""};
+        const collected:any[] = [], seen = new Set<number>();
+        for (const head of heads) {
+          ciReads++;
+          const endpoint=`repos/${repo}/actions/workflows/check.yml/runs?per_page=100&head_sha=${head}&created=${new Date(since).toISOString()}..${new Date(until).toISOString()}`;
+          const part = await parse(["api",endpoint,"--jq",projection]);
+          if (!part || !Number.isSafeInteger(part.total_count) || part.total_count<0 || !Array.isArray(part.workflow_runs)
+            || part.total_count!==part.workflow_runs.length || part.workflow_runs.length>100
+            || !part.workflow_runs.every((r:any)=>validRun(r) && r.head_sha===head)) return {code:1,stdout:""};
+          for (const row of part.workflow_runs) {
+            if (seen.has(row.id)) return {code:1,stdout:""};
+            seen.add(row.id);collected.push(row);
+          }
+          if (collected.length>100) return {code:1,stdout:""};
+        }
+        runs=collected;runsComplete=true;
+        return {code:0,stdout:JSON.stringify({total_count:runs.length,workflow_runs:runs.map((r:any)=>({id:r.id,run_attempt:r.run_attempt,head_sha:r.head_sha,pull_requests:r.pull_requests.map((p:any)=>p.number)}))})};
+      }
+      const reply = await gh(args,t,c,cap);
+      try {
+        const body = JSON.parse(reply.stdout), pr=body?.data?.repository?.pullRequest;
+        const commits=connection(pr?.commits),reviews=connection(pr?.reviews);
+        if (reply.code===0 && !body.errors && pr?.number===item.number && sha(pr.headRefOid) && commits && reviews
+          && commits.every(n=>sha(n?.commit?.oid)) && reviews.every(n=>id(n?.databaseId) && sha(n?.commit?.oid))) {
+          heads=[...new Set<string>([pr.headRefOid,...commits.map(n=>n.commit.oid),...reviews.map(n=>n.commit.oid)])];
+        }
+      } catch { /* Missing or incomplete recorded heads cannot certify CI. */ }
+      return reply;
+    });
     const row: DogfoodPr = cost ?? {repo,pr:item.number,state:"MERGED",mergedAt:date(item.mergedAt),complete:false};
-    const linked = runsComplete ? runs.workflow_runs.filter((r:any) => r.pull_requests?.some((p:any)=>p.number===item.number) && date(r.created_at)! <= row.mergedAt!) : [];
-    if (runsComplete && linked.every((r:any)=>id(r.id) && id(r.run_attempt) && typeof r.head_sha === "string")) {
-      const earliest = [...linked].sort((a:any,b:any)=>date(a.created_at)!-date(b.created_at)!)[0];
-      if (date(item.createdAt) !== undefined && date(item.createdAt)! >= since && earliest?.run_attempt === 1 && ["success","failure","cancelled","timed_out"].includes(earliest.conclusion)) row.firstPassCi = earliest.conclusion === "success";
-      if (linked.length) row.sameHeadReruns = linked.reduce((n:number,r:any)=>n+r.run_attempt-1,0);
+    const linked = runsComplete ? runs.filter((r:any)=>date(r.created_at)!<=row.mergedAt!) : [];
+    if (runsComplete) {
+      const earliest=[...linked].sort((a,b)=>date(a.created_at)!-date(b.created_at)!)[0];
+      if (date(item.createdAt)!>=since && date(item.createdAt)!<=until && earliest?.run_attempt===1
+        && ["success","failure","cancelled","timed_out"].includes(earliest.conclusion)) row.firstPassCi=earliest.conclusion==="success";
+      row.sameHeadReruns=linked.reduce((n,r)=>n+r.run_attempt-1,0);
     }
     const [owner,name] = repo.split("/");
     const detail = await parse(["api","graphql","-f",`query=query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){pageInfo{hasNextPage} nodes{comments(first:1){nodes{createdAt author{login}}}}} timelineItems(first:100,itemTypes:[CROSS_REFERENCED_EVENT]){pageInfo{hasNextPage} nodes{... on CrossReferencedEvent{source{... on Issue{number createdAt labels(first:100){pageInfo{hasNextPage} nodes{name}}}}}}}}}}`,"-f",`owner=${owner}`,"-f",`name=${name}`,"-F",`number=${item.number}`]);
