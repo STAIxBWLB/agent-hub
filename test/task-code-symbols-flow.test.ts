@@ -20,14 +20,14 @@ async function until(condition:()=>boolean){for(let i=0;i<300&&!condition();i++)
 function brief(head=HEAD,name="Alpha.first"):ReviewBrief {
  return {head,base:"origin/main",mergeBase:BASE,reviewable:[{path:"a.ts",status:"M"}],excluded:[],withheld:0,rules:[],rulesMissing:[],ruleGroups:[],unlisted:[],symbols:{state:"known",complete:true,planned:[],unplanned:[],unseen:[],files:[{path:"a.ts",symbols:[{path:"a.ts",name,kind:"fn",line:1,ambiguous:false,change:"unknown"}]}]}};
 }
-async function rig(extra:Partial<TasksDeps>={}) {
+async function rig(extra:Partial<TasksDeps>={},piiOff=false) {
  const cwd=mkdtempSync(join(tmpdir(),"ahub-task-symbol-flow-")),board=new Board(join(cwd,"hub.db")),bus=new Bus({batchMs:0}),seen:{peer:string;body:string}[]=[];
  cleanup.push(()=>{board.close();rmSync(cwd,{recursive:true,force:true});});
  class Peer extends BasePeer {async start(){this.setState("idle");}async stop(){this.setState("offline");}async deliver(envs:{body:string}[]){seen.push(...envs.map(env=>({peer:this.id,body:env.body})));}}
  for(const id of ["codex","claude","kimi"]){const peer=new Peer(id,60000);bus.add(peer);await peer.start();cleanup.push(()=>peer.stop());}
  cleanup.push(()=>bus.closeJournal());
  let prepared=false;
- const tasks=new Tasks({cwd,board,bus,project:"fixture",notify:()=>{},routing:()=>loadRouting(cwd),prepareReviewBrief:async()=>{prepared=true;},reviewBrief:task=>{const out=brief(task.refs.commit,task.owner==="kimi"?"Beta.second":"Alpha.first");if(!prepared)out.symbols!.state="unknown";return out;},...extra});
+ const tasks=new Tasks({cwd,board,bus,project:"fixture",notify:()=>{},routing:()=>{const configured=loadRouting(cwd);if(piiOff)configured.constraints.pii="off";return configured;},prepareReviewBrief:async()=>{prepared=true;},reviewBrief:task=>{const out=brief(task.refs.commit,task.owner==="kimi"?"Beta.second":"Alpha.first");if(!prepared)out.symbols!.state="unknown";return out;},...extra});
  const add=(owner="codex",head=HEAD,refs={})=>{const t=board.propose("user",{title:"fixture",class:"implement",refs:{paths:["a.ts"],commit:head,...refs}});return board.update(t.id,owner,"accepted",{state:"in_progress",owner,reviewer:"claude"});};
  return {cwd,board,bus,tasks,add,seen};
 }
@@ -179,4 +179,16 @@ test("symbol overlaps exclude private tasks on either side and different reposit
  f.board.update(right.id,"user","public",{signals:[]});
  expect(f.tasks.symbolOverlaps({...mine,signals:["pii_path"]})).toEqual([]);
  f.board.update(right.id,"user","other repo",{refs:{repo:"other/repo"}});expect(f.tasks.symbolOverlaps(mine)).toEqual([]);
+});
+
+
+test("symbol overlap projection excludes pii markers even when routing locality is disabled",async()=>{
+ for(const selected of [true,false]){
+  const f=await rig({},true),left=f.add(),right=f.add("kimi",OTHER);
+  storeSymbols(f,left,"Alpha.first");storeSymbols(f,right,"Beta.second");
+  const privateId=selected?left.id:right.id;
+  f.board.update(privateId,"user","private marker",{signals:["pii"]});
+  expect(f.tasks.isPii(f.board.get(privateId)!)).toBe(false); // Exercise the routing opt-out, not the ordinary privacy branch.
+  expect(f.tasks.symbolOverlaps(f.board.get(left.id)!)).toEqual([]);
+ }
 });
