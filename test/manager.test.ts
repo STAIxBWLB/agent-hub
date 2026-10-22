@@ -104,7 +104,7 @@ async function scriptedAction(refusal?: Record<string, unknown>, manualDeadlines
   const requests: any[] = [], limits: [string, number][] = [];
   const replies = new Map<string, (result: Record<string, unknown>) => void>();
   const observed = new Map<string, () => void>();
-  const deadlines = new Map<string, () => void>();
+  const deadlines = new Map<string, () => void>(), actualLimits: [string, number][] = [];
   const hub = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { if (server.upgrade(req)) return; return new Response("no", { status: 400 }); }, websocket: {
     message(ws, data) {
       const message = JSON.parse(String(data)); requests.push(message);
@@ -126,6 +126,7 @@ async function scriptedAction(refusal?: Record<string, unknown>, manualDeadlines
   // Drive only action deadlines after wire arrival. Handshake/HTTP I/O keeps its real watchdog.
   const requestSpy = manualDeadlines ? spyOn(ControlClient.prototype, "request").mockImplementation(function(this: ControlClient, message, ms = 30000) {
     if (message.t !== "ui_action") return request.call(this, message, ms);
+    actualLimits.push([String((message.action as {action: string}).action), ms]);
     const schedule = globalThis.setTimeout;
     const timerSpy = spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: any[]) => void, delay?: number, ...args: any[]) => {
       if (delay !== ms) return schedule(callback, delay, ...args);
@@ -137,7 +138,7 @@ async function scriptedAction(refusal?: Record<string, unknown>, manualDeadlines
   const action = async (kind: string, extra: Record<string, unknown> = {}) => (await fetch(`${origin}/action`, { method: "POST", headers: { origin, cookie, "content-type": "application/json" }, body: JSON.stringify({ action: kind, projectId: project.id, instanceId: "i1", peer: "pi", ...extra }) })).json() as Promise<any>;
   const arrived = (kind: string) => replies.has(kind) ? Promise.resolve() : new Promise<void>(resolve => observed.set(kind, resolve));
   const reply = (kind: string, result: Record<string, unknown>) => replies.get(kind)!(result);
-  return { ...fixture, hub, action, requests, limits, arrived, reply,
+  return { ...fixture, hub, action, requests, limits, actualLimits, arrived, reply,
     expire: (kind: string) => { const deadline = deadlines.get(kind); expect(deadline, `${kind} deadline armed`).toBeDefined(); deadlines.delete(kind); deadline!(); },
     restore: () => requestSpy?.mockRestore() };
 }
@@ -223,6 +224,7 @@ test("unified split accepts a confirmed response beyond the generic action deadl
   const ordinary=f.action("pause");await f.arrived("pause");
   // Both requests are in flight before the ordinary deadline advances; split's later deadline stays pending.
   expect(f.limits).toEqual([["backlog_split",16000],["pause",10000]]);
+  expect(f.actualLimits).toEqual([["backlog_split",160],["pause",100]]);
   f.expire("pause");expect((await ordinary).ok).toBe(false);
   f.reply("backlog_split",{ok:true,text:"children committed"});expect(await split).toMatchObject({ok:true,text:"children committed"});
  }finally{f.restore();await stopManager({home:f.home});f.hub.stop(true)}
