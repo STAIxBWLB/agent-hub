@@ -1621,8 +1621,10 @@ export class Tasks {
 
   /** Console detail advice only: no pair persistence, and no private task on either side. */
   symbolOverlaps(task: Task): { task: number; files: string[]; sameFileDifferentSymbols: boolean }[] {
-    if (this.isPii(task)) return [];
-    return this.overlapHits(task).map(hit => ({
+    // A routing-locality opt-out does not make symbol metadata for a marked task public.
+    const markedPrivate = (value: Task) => value.signals.includes("pii") || value.signals.includes("pii_path");
+    if (markedPrivate(task)) return [];
+    return this.overlapHits(task).filter(hit => !markedPrivate(hit.task)).map(hit => ({
       task: hit.task.id,
       files: hit.paths.filter(this.publicMetadataText),
       sameFileDifferentSymbols: this.sameFileDifferentSymbols(task, hit),

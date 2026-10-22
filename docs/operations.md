@@ -1013,7 +1013,8 @@ Each row names the other task ID and screened shared paths. A row says "same fil
 different symbols" only when the same current screened predicate used by completion
 notices establishes observed disjointness; otherwise it remains an ordinary overlap.
 The block states "observed names only, deleted definitions may be missing". PII tasks
-are excluded on both sides. No pair result is stored, and the console never infers
+are excluded on both sides by their markers, even if the routing locality limit is
+disabled. No pair result is stored, and the console never infers
 one from its own plan or receipt. Missing fields on older hubs show no block; an
 empty list says `none`. At most 40 pairs and 40 paths per pair are listed, with
 omitted counts. Related-note counts remain a later slice.
