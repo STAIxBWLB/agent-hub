@@ -1,4 +1,5 @@
 import { DENY_NAMES, DENY_SEGMENTS } from "@staix/agent-mem/platform";
+import { assessVersion, COMPAT } from "./compat.ts";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
@@ -9,7 +10,9 @@ import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process
 import { realPath } from "../hub/project.ts";
 import type { ReviewerBackend, ReviewerLaunch, ReviewerPrepareContext } from "./reviewer-print.ts";
 
-const VERSION = "0.146.0", TOOLS = ["hub_review", "hub_task_show"];
+const TOOLS = ["hub_review", "hub_task_show"];
+/** A version refusal names only versions and a command, so the daemon may show it (#691). */
+class VersionRefusal extends Error {}
 const CAP = 128 * 1024, MAX_SERVERS = 64;
 const digest = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 /** Conservative translation of the portable core's regex sources; unfamiliar syntax refuses the receipt. */
@@ -207,7 +210,10 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
       child.once("error", () => { failed = true; void finish(null); });
       child.once("close", code => { void finish(code); });
     });
-    if ((await run(["--version"])).trim() !== `codex-cli ${VERSION}`) throw new Error("native version has no isolation receipt");
+    // #691: the verified versions and the person's trust live in compat.ts; every proof below still runs after trust.
+    const verdict = assessVersion("codex-review", COMPAT["codex-review"].parse(await run(["--version"])));
+    if (!verdict.ok) throw new VersionRefusal(verdict.reason);
+    const version = verdict.version;
     if (Buffer.byteLength(ctx.mcpConfig) > CAP || ctx.privatePaths.length > 128) throw new Error("policy bounds exceeded");
     const hub = ownServer(ctx.mcpConfig);
     // Apps creates a runtime MCP server outside the configured inventory; independently pin and read back its gate.
@@ -268,11 +274,12 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
     return { command: bound.command, args: ["exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--json", "--color", "never", "-C", cwd, ...policy, ...permissions, ...mcp, "-c", `developer_instructions=${toml(ctx.systemPrompt)}`, "-"], env,
       current: () => { try { return current(); } catch { return false; } },
       cleanup: () => rmSync(cleanupRoot, { recursive: true, force: true }),
-      isolation: { backend: "codex", version: VERSION, binary: `sha256:${binaryHash}`, profile: `sha256:${launchProfile}`, readOnly: true, strictMcp: true, ephemeral: true,
+      isolation: { backend: "codex", version, binary: `sha256:${binaryHash}`, profile: `sha256:${launchProfile}`, readOnly: true, strictMcp: true, ephemeral: true,
         evidence: ["model-free-mcp-inventory-disabled-ambient", "hub-tools-exact-allowlist", "plugins-and-hooks-disabled", "apps-disabled-effective-feature-readback", "web-search-disabled", "project-untrusted", "native-public-read-private-deny-write-deny", "native-glob-and-symlink-private-deny", "portable-core-name-and-state-deny", "standard-host-credential-roots-denied", "binary-config-stable", "binary-hash-once-metadata-fence", "session-ephemeral"] } };
   } catch (error) {
     if (root) { try { rmSync(root, { recursive: true, force: true }); } catch { /* unavailable remains refused */ } }
     // Name only the path class of an unusable credential root so a stale ~/.docker link is fixable; never a path or contents.
+    if (error instanceof VersionRefusal) return { unavailable: error.message };
     if (error instanceof CredentialRootError) {
       const why = { dangling: "a dangling link", unreadable: "an unreadable path", unsupported: "unsupported syntax or overlapping the checkout" }[error.kind];
       return { unavailable: `Codex reviewer isolation receipt unavailable (credential root ${error.label} is ${why}; remove or repair it)` };

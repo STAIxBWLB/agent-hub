@@ -63,7 +63,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Settings reload | on | reloads applied, pending restarts |
 | Config editing from the console and dashboard (#689) | pending; hand edits of `config.local.json` meanwhile | edits applied, refused by validation, pending restarts |
 | Upgrade and recovery | on, per release | upgrade receipts in `docs/verification/` |
-| Agent CLI version policy and trust (#691) | pending (PR #692); today Codex 0.163.0 and Kimi 2.3.0 are refused, agy 1.4.4 runs untested | `ahub agents` verdicts, versions trusted per machine, lead time from an `agent-compat` issue to a receipt |
+| Agent CLI version policy and trust (#691) | on after the release: Codex 0.163.0 and Kimi 2.3.0 refused until a receipt (#371, #373) or `ahub agents trust`; agy 1.4.4 in-line | `ahub agents` verdicts, versions trusted per machine, lead time from an `agent-compat` issue to a receipt |
 | Benchmarks (#251, #637) | off: `bench.enabled = false`; routing gate pending | bench receipts |
 
 ## Decisions

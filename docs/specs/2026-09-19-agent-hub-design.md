@@ -4827,3 +4827,18 @@ Order: 2a first (it measures everything else). 2b and 2c are independent. 2d aft
 - Literal CLI preflights support a single named-remote tag refspec, GitHub release creation (existing remote tag readback, or explicit full SHA for a new tag), and current-checkout npm publish. Ambiguous/alternate-repository/bulk/workspace/archive selectors refuse. npm requires a clean tracked worktree and rechecks HEAD and committed documentation; artifact bytes, npm config and lifecycle scripts are outside this receipt. gh/npm instructions and preflight are the S6 boundary; adapter refusal belongs to #312/#313. No release effect is executed and no native/live pass is inferred. AC7 is covered by host-ledger units and actual hook/CLI/daemon fixture tests.
 
 - S6 npm cleanliness uses filter-free cached-index/raw-blob comparison before and after docs readback, never `git status` or content conversions. Unknown modes, gitlinks, transformed bytes, unsafe paths or the 4,096-entry / 4 MiB-file / 32 MiB-total / 250 ms bounds refuse. Untracked artifact content remains outside this consent check.
+
+## Amendment: one version policy for native agent CLIs (#691)
+
+Native CLIs update often: Codex 0.146.0 → 0.163.0, and Kimi 2.2.0 → 2.3.0 by self-update on 2026-10-22. Separate exact pins made each update a refusal that only a hub release could lift, and some reasons hid the version.
+
+- **One module.** `src/adapters/compat.ts` holds every gated kind's `verified` set, an optional compatible `line` (contract gates only) and its gate class. `assessVersion` gives verified, in-line, trusted or refused. The gates are the Codex and Kimi reviewer `prepare`, the Jcode preflight, probe and ACP identity, the agy launcher, the Qwen ACP identity and the doctor's Qwen probe. All of them use it.
+- **Person trust on this machine.** `ahub agents trust <id> <version>` writes `<hub home>/agent-compat.json` (schema 1, at most 64 entries, atomic; an invalid file trusts nothing). It is console-only by the identity classifier.
+  - An isolation gate keeps every runtime proof after trust. Trust covers only the source-level claims a runtime probe cannot see.
+  - Nothing is trusted automatically.
+- **Named reasons.** A version refusal starts with `VERSION_REFUSAL` and names only versions and the trust command. The daemon passes it through `sanitize()` for every reviewer backend, while other Codex prepare failures stay generic. The Jcode refusal is named before the owned daemon starts.
+- **Seeing drift.**
+  - `ahub agents` (allowed for agents) and `ahub doctor` show each verdict.
+  - A weekly workflow compares the npm-published versions of the npm-distributed kinds with `verified` and keeps one `agent-compat` issue current.
+  - Jcode and agy have no public registry and are not watched; their launcher verdict is the signal.
+- **Moving a verified set.** A receipt in `docs/verification/` adds the version to `verified` in the same PR.

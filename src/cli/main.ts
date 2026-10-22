@@ -2,6 +2,8 @@
 import { hubGitSync, hubGitEnv } from "../hub/git.ts";
 import { parseReleaseGuardArgv, parseReleasePushUpdates } from "./sdlc-release-guard.ts";
 import { validReleaseVersion } from "../hub/sdlc-release-authorization.ts";
+import { agentVersions, runAgents } from "./agents.ts";
+import { assessVersion, COMPAT, configuredCommands } from "../adapters/compat.ts";
 import { claudePeer as defaultChannelPeer } from "../hub/claude-state.ts";
 import { effectiveInstanceRoles } from "../hub/instances.ts";
 import { resolveInstanceExecutionCwd } from "../hub/instance-execution.ts";
@@ -1996,6 +1998,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     fail("usage: ahub role list [--group <group>] | show <id> | assign <peer> <id> | clear <peer> [<id>]");
   },
+  agents: () => runAgents(args, configuredCommands(loadConfig(cwd)), fail),
+
   doctor: async () => {
     const options = outputOptions();
     if (args.includes("--orphans")) return orphanDoctor(args.includes("--kill"), options);
@@ -2048,9 +2052,13 @@ const commands: Record<string, () => Promise<void> | void> = {
             [servers.length ? `${servers.length} besides the hub's own would load in the hub-owned jcode (${servers.join(", ")}); jcode has no switch to choose them, so remove them from its config or use another JCODE_HOME` : "",
               unreadable.length ? `unreadable or unsafe, not listed: ${unreadable.join(", ")}` : ""].filter(Boolean).join("; ") || "none besides the hub's own");
         } else {
-          const v = version(probe.command[0]!);
-          row(v === probe.expected, probe.name, v === probe.expected ? probe.confirmed : probe.unconfirmed);
+          const verdict = assessVersion(probe.compat, COMPAT[probe.compat].parse(version(probe.command[0]!) ?? ""));
+          row(verdict.ok ? verdict.state === "verified" || undefined : false, probe.name, verdict.ok ? verdict.note ?? probe.confirmed : `${probe.unconfirmed}: ${verdict.reason}`);
         }
+      }
+      // #691: one line for each installed gated CLI that is not on a verified version.
+      for (const agent of agentVersions(configuredCommands(config))) {
+        if (agent.executable && !(agent.verdict.ok && agent.verdict.state === "verified")) row(agent.verdict.ok ? undefined : false, `${agent.id} version`, agent.verdict.ok ? agent.verdict.note ?? agent.verdict.state : agent.verdict.reason);
       }
       const omni = new OmniRoute(config.omniroute);
       const gateway = await omni.base();

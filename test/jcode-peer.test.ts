@@ -8,7 +8,8 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JCODE_BREAKING_VERSION, JCODE_MIN_VERSION, JcodePeer, jcodeCommand, jcodeVersionSupported, verifiedJcodeCommand } from "../src/adapters/jcode.ts";
+import { JcodePeer, jcodeCommand, jcodeVersionSupported, verifiedJcodeCommand } from "../src/adapters/jcode.ts";
+import { COMPAT } from "../src/adapters/compat.ts";
 import { configureJcodeMcp, jcodeMcpReady, JCODE_MCP_FILE, JCODE_MCP_NAME } from "../src/cli/jcode-mcp.ts";
 import { launcherPreview } from "../src/cli/preview.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
@@ -82,7 +83,7 @@ test("Jcode native identity outside the supported range refuses the peer and cle
 });
 
 test("Jcode accepts any native release from the verified minimum up to the breaking version, the minor unpinned (#529)", async () => {
-  expect([JCODE_MIN_VERSION, JCODE_BREAKING_VERSION]).toEqual(["0.98.0", "1.0.0"]);
+  expect(COMPAT.jcode.line).toEqual({ min: "0.98.0", below: "1.0.0" });
   for (const version of ["0.98.0", "0.98.1", "0.99.0", "0.120.3"]) expect(jcodeVersionSupported(version)).toBe(true);
   for (const version of ["0.94.0", "0.97.9", "1.0.0", "2.1.0", "0.99.0-rc.1", "0.98", "v0.98.1", "", undefined, 98]) expect(jcodeVersionSupported(version)).toBe(false);
   const dir = root(), home = join(dir, "home"); mkdirSync(home); writeFileSync(join(home, "mcp.json"), "{}");

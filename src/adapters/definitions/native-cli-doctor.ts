@@ -1,3 +1,4 @@
+import type { CompatId } from "../compat.ts";
 import type { DoctorCheck } from "../../cli/output.ts";
 
 // Fixed builtin doctor policy only. These projections neither execute probes nor extend AdapterDefinition.
@@ -33,7 +34,7 @@ export function nativeDoctorRecoveryIdentity(peer: { id: string; state: string; 
 export type NativeDoctorOptionalProbe =
   | { kind: "source-identity"; name: string; command: string[]; detail: string }
   | { kind: "jcode-mcp"; name: string; home: string }
-  | { kind: "pinned-version"; name: string; command: string[]; expected: string; confirmed: string; unconfirmed: string };
+  | { kind: "pinned-version"; name: string; command: string[]; compat: CompatId; confirmed: string; unconfirmed: string };
 
 /** The host runs these existing checks in order; no process, filesystem or caller callback enters this planner. */
 export function nativeDoctorOptionalProbes(config: { roster: Readonly<Record<string, boolean | undefined>>; jcode_cmd: string[]; qwen_cmd: string[]; jcode_home?: string }): NativeDoctorOptionalProbe[] {
@@ -42,8 +43,8 @@ export function nativeDoctorOptionalProbes(config: { roster: Readonly<Record<str
     detail: "CLI/source identity only; provider, project MCP and native teardown require separate receipts; native policy unmanaged" });
   // #572 AC4: jcode cannot be told which MCP servers to load, so the host lists the ones its config files name.
   if (config.roster.jcode === true && config.jcode_home) probes.push({ kind: "jcode-mcp", name: "jcode MCP servers", home: config.jcode_home });
-  if (config.roster.qwen === true) probes.push({ kind: "pinned-version", name: "qwen", command: config.qwen_cmd, expected: "0.25.0",
-    confirmed: "CLI reports 0.25.0; native ACP identity/modes and provider access require a separate live check",
-    unconfirmed: "Qwen Code 0.25.0 executable not confirmed; provider and ACP readiness unknown" });
+  if (config.roster.qwen === true) probes.push({ kind: "pinned-version", name: "qwen", command: config.qwen_cmd, compat: "qwen",
+    confirmed: "CLI version verified; native ACP identity/modes and provider access require a separate live check",
+    unconfirmed: "Qwen Code executable not confirmed; provider and ACP readiness unknown" });
   return probes;
 }

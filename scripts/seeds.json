@@ -555,8 +555,8 @@
     },
     {
       "id": "jcode-breaking-version",
-      "file": "src/adapters/jcode.ts",
-      "search": "compare(v, release(JCODE_BREAKING_VERSION)!) < 0",
+      "file": "src/adapters/compat.ts",
+      "search": "compare(v, parts(line.below)!) < 0",
       "replacement": "true",
       "testFile": "test/jcode-peer.test.ts",
       "testName": "Jcode native identity outside the supported range refuses the peer and cleans its owned daemon (#332, #529)"

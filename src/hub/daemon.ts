@@ -27,7 +27,8 @@ import { buildReviewBrief } from "./review-brief.ts";
 import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "./profiles.ts";
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
 import { ActivityRing } from "./activity.ts";
-import { JcodeOptionMismatch, isJcodePeer, type JcodePeer } from "../adapters/jcode.ts";
+import { JcodeOptionMismatch, isJcodePeer, jcodeVersionAsync, type JcodePeer } from "../adapters/jcode.ts";
+import { VERSION_REFUSAL } from "../adapters/compat.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc, readSpecEdit, sdlcGh } from "./sdlc.ts";
 import { claudePeer as defaultChannelPeer, claudeStateFile, ownTerminalRow, pathEvidence, transcriptPersisted } from "./claude-state.ts";
@@ -3724,6 +3725,10 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (adapter?.start.daemonPort === "owned-acp") {
       if (!jcodeMcpReady(opts.cwd, opts.stateDir, SERVER_JS)) return { ok: false, error: "Jcode project MCP entry missing or stale; the person runs ahub jcode to configure it" };
+      // #691: name a version refusal before the owned daemon starts; the ACP identity check stays the binding one.
+      const jcodeVerdict = await jcodeVersionAsync(config.jcode_cmd, executionCwd);
+      if (!jcodeVerdict.ok) return { ok: false, error: jcodeVerdict.reason };
+      if (jcodeVerdict.note) log(jcodeVerdict.note);
       const jcode: JcodePeer = adapter!.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["owned-acp"]({ command: config.jcode_cmd, home: config.jcode_home, providerProfile: (args.providerProfile ?? config.jcode_provider_profile) || undefined,
         ...(args.model ? { launchModel: args.model } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}), cwd: executionCwd, watchdogMs: config.watchdog_ms,
         preamble: sessionRoleContract(peer), log: () => log("Jcode native diagnostic: details withheld") }) }) as JcodePeer;
@@ -4172,7 +4177,8 @@ export async function startDaemon(opts: DaemonOptions) {
       try { await reviewer.start(); }
       catch (error) {
         await reviewer.stop().catch(() => {});
-        const reason = backend.nativePolicy && error instanceof Error ? sanitize(error.message).slice(0, 1000)
+        // #691: a version refusal names only versions and the trust command, so it is shown for every backend.
+        const reason = error instanceof Error && (backend.nativePolicy || error.message.startsWith(VERSION_REFUSAL)) ? sanitize(error.message).slice(0, 1000)
           : "reviewer isolation unavailable; inspect the verified CLI version and isolation requirements";
         reviewerUnavailable.set(peer, reason);
         return { ok: false, error: reason };

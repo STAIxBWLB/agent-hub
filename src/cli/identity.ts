@@ -22,7 +22,9 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
     || (command === "memory" && sub !== "graph")
     || (command === "recovery" && (sub === "reattach" || sub === "dispose" && context.repairedFresh === true))
     || (command === "board" && args[0] === "import") || (command === "sdlc" && (args[0] === "record" || args[0] === "accept" || args[0] === "accept-departure"))
-    || (command === "bench" && args.find(arg => arg !== "--json") === "run") || command === "pet";
+    || (command === "bench" && args.find(arg => arg !== "--json") === "run") || command === "pet"
+    // #691: trusting an untested agent CLI version is the person's consent, never a delegated live-test operation.
+    || (command === "agents" && !args.every(arg => arg === "--json"));
 }
 
 export type CliIdentity =
@@ -67,6 +69,8 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
     return "console";
   }
   if (command === "route") return args[0] === "explain" ? "allowed" : "console";
+  // #691: reading agent CLI versions is harmless; trusting an untested version on this machine is a person's.
+  if (command === "agents") return args.every(arg => arg === "--json") ? "allowed" : "console";
   // #247: reading the research measures and records is harmless (ids and counts only); writing them is a person's.
   if (command === "research") return args[0] === "backfill" ? "console" : "allowed";
   // #258: reading hub memory is harmless; promote, demote, forget, supersede and rebuild are a person's.
@@ -88,10 +92,10 @@ export function cliCommandLabel(command: string, args: readonly string[], catalo
   if (command === "backlog") return ["list", "add", "pull", "pull-ready", "split", "return", "plan", "pin", "undo"].includes(args[0] ?? "") ? `backlog ${args[0]}` : "backlog";
   if (command === "board" && args[0] === "import") return "board import";
   if (command === "release") return ["new", "list", "show", "plan", "activate", "freeze", "ship", "drop"].includes(args[0] ?? "") ? `release ${args[0]}` : "release";
-  if (!(catalog?.definitionOf(command) ?? definitionOf(command)) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "reset", "doctor"].includes(command)) return "unknown";
-  if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "memory", "goal", "bench"].includes(command)) {
+  if (!(catalog?.definitionOf(command) ?? definitionOf(command)) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "reset", "doctor", "agents"].includes(command)) return "unknown";
+  if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "memory", "goal", "bench", "agents"].includes(command)) {
     const sub = command === "bench" || command === "memory" || command === "goal" ? args.find((arg) => arg !== "--json") : args[0];
-    if (sub && ["propose", "show", "assign", "unassign", "escalate", "label", "list", "resolve", "resume", "set", "execution", "explain", "status", "abort", "dispose", "reattach", "setup", "start", "stop", "remove", "export", "backfill", "addons", "run", "report", "compare", "search", "graph", "promote", "demote", "forget", "supersede", "dedupe", "decay", "rebuild", "sync", "machine", "import", "suggestions", "confirm", "reject", "new", "link", "state", "done", "take"].includes(sub)) return `${command} ${sub}`;
+    if (sub && ["propose", "show", "assign", "unassign", "escalate", "label", "list", "resolve", "resume", "set", "execution", "explain", "status", "abort", "dispose", "reattach", "setup", "start", "stop", "remove", "export", "backfill", "addons", "run", "report", "compare", "search", "graph", "promote", "demote", "forget", "supersede", "dedupe", "decay", "rebuild", "sync", "machine", "import", "suggestions", "confirm", "reject", "new", "link", "state", "done", "take", "trust"].includes(sub)) return `${command} ${sub}`;
   }
   return (/^[a-z][a-z0-9-]*$/.test(command) && !/\s/.test(command)) || ["--help", "--version"].includes(command) ? command : "unknown";
 }

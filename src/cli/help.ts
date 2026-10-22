@@ -41,6 +41,8 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub logs [-f]", "the last 100 lines of hub.log; -f shows the last 10 and follows it"],
     ["ahub doctor [--json] [--color=auto|always|never]", "check the tools, daemon, plugin, gateway, models and memory worker this project uses"],
     ["ahub doctor --orphans [--kill] [--json] [--color=auto|always|never]", "list registrations whose project root is gone; --kill stops their daemons (SIGTERM, then SIGKILL) only after the process identity checks out"],
+    ["ahub agents [--json]", "show each gated agent CLI's installed version and verdict (verified, in-line, trusted or refused)"],
+    ["ahub agents trust <id> <version> [--revoke]", "accept an untested agent CLI version on this machine (person only; runtime proofs still run)"],
     ["ahub kill", "stop this project's hub"],
     ["ahub reset [--all] [--yes]", "list, then with --yes stop the hub and discard every queued and needs_review delivery, clear holds and pauses and drop session pointers; --all moves the state directory to .agenthub/archive instead"],
     ["ahub restart [--dry-run] [--yes] [--json] [--verbose] [--color=auto|always|never]", "recover this project's runtime; on a terminal without a flag it reviews the plan with you, follows the progress and offers the next steps"],

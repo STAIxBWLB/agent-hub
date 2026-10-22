@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { realPath } from "../src/hub/project.ts";
 import { codexCoreDenyGlobs, codexReviewerBackend } from "../src/adapters/codex-review-isolation.ts";
+import { writeTrust } from "../src/adapters/compat.ts";
 import type { ReviewerPrepareContext } from "../src/adapters/reviewer-print.ts";
 
 function fixture(mode = "ok") {
@@ -282,4 +283,22 @@ test("Codex names a configured credential root by its variable, not its value", 
     if (previous === undefined) delete process.env.DOCKER_CONFIG; else process.env.DOCKER_CONFIG = previous;
     f.close();
   }
+});
+
+test("Codex isolation names an unverified version, and the person's trust lifts only the pin; every proof still runs (#691)", async () => {
+  const f = fixture("version");
+  try {
+    const refused = await codexReviewerBackend.prepare(f.ctx);
+    expect(refused).toHaveProperty("unavailable");
+    expect((refused as { unavailable: string }).unavailable).toContain("codex-cli) 0.163.0 (verified 0.146.0)");
+    expect((refused as { unavailable: string }).unavailable).toContain("ahub agents trust codex-review 0.163.0");
+    writeTrust("codex-review", "0.163.0", false);
+    const admitted = await codexReviewerBackend.prepare(f.ctx);
+    expect(admitted).not.toHaveProperty("unavailable");
+    const launch = admitted as Exclude<typeof admitted, { unavailable: string }>;
+    expect(launch.isolation?.version).toBe("0.163.0");
+    const proofs = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line)[0]);
+    for (const step of ["features", "mcp", "sandbox"]) expect(proofs).toContain(step);
+    await launch.cleanup?.();
+  } finally { writeTrust("codex-review", "0.163.0", true); f.close(); }
 });
