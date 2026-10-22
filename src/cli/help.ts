@@ -75,7 +75,8 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub pause|resume <peer>", "hold a peer's deliveries in its queue / release them"],
     ["ahub queue list [--peer <id>] [--json] [--color=auto|always|never]", "inspect durable deliveries"],
     ["ahub queue show <delivery-id> [--json] [--color=auto|always|never]", "inspect one delivery and revision"],
-    ["ahub queue resolve <delivery-id> --action completed|retry|discard --reason <text> [--revision N]", "resolve a queued or needs_review delivery; --revision binds the displayed row instead of a fresh show"],
+    ["ahub queue resolve <delivery-id> --action completed|retry|discard --reason <text> [--revision N]", "resolve a queued or needs_review delivery; --revision binds the displayed row instead of a fresh show; a queued delivery can be discarded while its peer is busy, and a refusal names its cause"],
+    ["ahub queue discard --peer <id> --reason <text> [--state queued|needs_review] [--yes]", "person only: without --yes count one peer's queued (default) deliveries; with --yes discard them all with the reason, one recorded discard each; other peers' queues are untouched"],
   ]],
   ["Tasks and review", [
     ["ahub board import github --label <label> [--milestone <milestone>] [--repo <owner/repo>]", "person only: read bounded open issues into deduplicated Backlog; never writes GitHub"],

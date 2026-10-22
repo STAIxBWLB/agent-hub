@@ -546,6 +546,25 @@ interface Client {
 type Sock = ServerWebSocket<Client>;
 
 
+/**
+ * #713: why `ahub queue resolve` was refused, from a closed list: the bus and the journal throw their own messages, and only these causes are named, never
+ * free text from an error (an id or a body would leak). An error that is none of them keeps the old generic sentence.
+ */
+const RESOLUTION_CAUSES: [RegExp, string][] = [
+  [/active delivery/i, "active delivery: it was handed to the peer and is not settled yet; wait for it, or resolve it once it is needs_review"],
+  [/peer busy/i, "peer busy: the peer is working, and only a queued delivery can be discarded meanwhile"],
+  [/stale delivery revision/i, "stale revision: the delivery changed since you read it; run ahub queue show again"],
+  [/unknown delivery|delivery not found/i, "unknown delivery: no such delivery id"],
+  [/already terminal|already resolved/i, "already resolved: the delivery is settled"],
+  [/already scheduled/i, "queued delivery is already scheduled: discard it, or wait for its turn"],
+  [/queue is full/i, "recipient queue is full: resolve or discard some of its queued work first"],
+  [/journal unavailable/i, "delivery journal unavailable: the hub cannot record a resolution right now"],
+];
+export function resolutionRefusal(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  return RESOLUTION_CAUSES.find(([pattern]) => pattern.test(text))?.[1] ?? "resolution refused: inspect ahub queue show for the delivery's state";
+}
+
 export async function startDaemon(opts: DaemonOptions) {
   const projectId = opts.projectId ?? randomUUID();
   const instanceId = opts.instanceId ?? randomUUID();
@@ -5481,6 +5500,31 @@ export async function startDaemon(opts: DaemonOptions) {
           if (msg.peer !== undefined && (typeof msg.peer !== "string" || !PEER_ID.test(msg.peer))) return void reply({ ok: false, error: "invalid peer" });
           return void reply({ ok: true, deliveries: bus.queueList(msg.peer).map((row) => queueView(row)) });
         }
+        if (msg.op === "discard") {
+          // #713: the person's bulk clear of one peer's backlog. Without `confirmed` it only counts; with it, every queued (or needs_review) delivery of that peer is discarded
+          // through the same `resolveDelivery` as one by one, each with the reason, so the journal records each as a `resolve ... discard`. Push peers' queues are never touched
+          // because only the named peer is read. Refused while recovery or shutdown holds queue mutations, like every queue resolution.
+          if (typeof msg.peer !== "string" || !PEER_ID.test(msg.peer)) return void reply({ ok: false, error: "peer must be a peer id" });
+          const state = msg.state === undefined ? "queued" : msg.state;
+          if (state !== "queued" && state !== "needs_review") return void reply({ ok: false, error: "state is queued or needs_review" });
+          const rows = bus.queueList(msg.peer).filter((row) => row.state === state);
+          if (msg.confirmed !== true) return void reply({ ok: true, op: "discard", peer: msg.peer, state, count: rows.length, discarded: 0, refused: 0 });
+          if (typeof msg.reason !== "string" || !msg.reason.trim() || msg.reason.length > 2000) return void reply({ ok: false, error: "discard needs a reason" });
+          if (recoveryActive() || stopping) return void reply({ ok: false, error: "recovery or shutdown is holding queue mutations" });
+          let discarded = 0; const refused: Record<string, number> = {};
+          for (const row of rows) {
+            // A queued row with no journal record of its own carries the journal's global revision, which every discard moves: read the row's current revision just before
+            // discarding it, so the 12th discard is not refused as stale because of the 11 before it. A row that is gone or changed state meanwhile is counted as refused.
+            const current = bus.queueShow(row.id) ?? bus.queueList(msg.peer).find((r) => r.id === row.id);
+            try {
+              if (!current || current.state !== state) throw new Error("unknown delivery");
+              bus.resolveDelivery(row.id, current.revision, "discard", msg.reason.trim()); discarded++;
+            }
+            catch (error) { const why = resolutionRefusal(error).split(":")[0]!; refused[why] = (refused[why] ?? 0) + 1; }
+          }
+          writeStatus();
+          return void reply({ ok: true, op: "discard", peer: msg.peer, state, count: rows.length, discarded, refused: rows.length - discarded, ...(rows.length - discarded ? { refusedBy: refused } : {}) });
+        }
         if (typeof msg.id !== "string" || !msg.id || msg.id.length > 256) return void reply({ ok: false, error: "invalid delivery ID" });
         if (msg.op === "show") {
           const row = bus.queueShow(msg.id);
@@ -5492,7 +5536,7 @@ export async function startDaemon(opts: DaemonOptions) {
           bus.resolveDelivery(msg.id, msg.revision, msg.action, msg.reason.trim());
           writeStatus();
           return void reply({ ok: true, delivery: queueView(bus.queueShow(msg.id)) });
-        } catch { return void reply({ ok: false, error: "resolution refused: refresh the delivery revision and inspect active or already resolved work" }); }
+        } catch (error) { return void reply({ ok: false, error: resolutionRefusal(error) }); }
       }
       case "delivery_holds": {
         if (!c.peer || (c.role !== "peer" && c.role !== "tools")) return void reply({ ok: false, error: "held metadata requires a peer identity" });

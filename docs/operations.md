@@ -344,7 +344,21 @@ owner and to stop working.
 `ahub task assign <id> <peer> [--role owner|reviewer] [--revision N]` uses a
 checked console operation when a revision is present. Without it, existing CLI
 behavior is unchanged. `ahub queue resolve ... [--revision N]` uses the supplied
-revision instead of a fresh show. Revision mismatches and superseded post-await
+revision instead of a fresh show. A `queued` delivery was never handed to its peer, so it can be discarded while the peer is busy (a pull-only TUI is busy most of
+the time); `dispatching` and `accepted` deliveries stay refused, and `retry` keeps its rules. A refused resolution names its cause (`active delivery`, `peer busy`,
+`stale revision`, `unknown delivery`, `already resolved`, `queued delivery is already scheduled`, `recipient queue is full`, `delivery journal unavailable`), never one
+generic sentence (#713).
+
+`ahub queue discard --peer <id> --reason <text> [--state queued|needs_review] [--yes]` clears one peer's backlog and is for the person only (an agent identity is
+refused). Without `--yes` it only says how many deliveries it would discard; with `--yes` it discards each queued (default) or `needs_review` delivery of that peer through the
+same resolution as `queue resolve --action discard`, each recorded with the reason, and prints `discarded N of M` with the causes of any it could not discard. Only the
+named peer's queue is read, so other peers are untouched; it is refused while recovery or shutdown holds queue mutations. In the console Queue panel, `D` on a row opens
+the same command for that row's peer, asks for a reason, then a `y` that names the count. No task is cancelled and no native turn is stopped.
+
+Completed-change notices (`Task #N (owner X) is done and touches your open ...`, #713) go one per recipient per done, naming all of that recipient's overlapping tasks, and
+only for tasks the recipient has accepted (in progress, in review or changes requested): an offered or proposed task gets none, since its offer or its accept already shows the
+current board. A newer notice for the same done task replaces the queued, undelivered one for that recipient (a `superseded completed-change notice` discard in the journal), so
+a task that is sent back and done again three times leaves one queued notice, the newest. Revision mismatches and superseded post-await
 publications fail without a board or delivery side effect; a reviewer-only change
 keeps a valid owner assignment but refreshes its reviewer content.
 
@@ -2093,8 +2107,9 @@ but cannot show pushes, so it attaches tools-only (protocol 16, issue #205):
   `messages wait for hub_inbox; for pushes restart Claude with ahub claude`; the
   console footer shows `tools-only: ahub claude` and the dashboard shows the
   status line.
-- The session reads them with `hub_inbox`, at most ten messages at a time plus
-  the hub's recall note when one waits (it says how many still wait). Each read is one `completed` delivery (`read through
+- The session reads them with `hub_inbox`, which drains the queue oldest first (important messages marked, as ever) up to 64 KiB of rendered text plus
+  the hub's recall note when one waits (#713; a push peer's digest is still ten items). When more is waiting the result ends
+  `N more waiting: call hub_inbox again before you start work`. Each read is one `completed` delivery (`read through
   hub_inbox` in `ahub queue list`); nothing is ever `accepted`, and the session
   has no `hub_delivery_done`. A read the model never saw (the tool call was
   cancelled, the plugin died) cannot be retried: `ahub queue show <id>` of the

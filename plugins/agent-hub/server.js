@@ -28740,7 +28740,7 @@ async function callTool(req) {
     return text5(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }
   if (name === "hub_inbox" && !toolsMode) {
-    let remote = [], notice = "", polling = "";
+    let remote = [], notice = "", polling = "", counted = false;
     if (hub) {
       try {
         const res = await hub.request({ t: "inbox" });
@@ -28753,8 +28753,10 @@ async function callTool(req) {
           remote = res.envs.map(frame);
           if (Number.isSafeInteger(res.pollingAdvice?.count) && res.pollingAdvice.count >= 3 && Number.isSafeInteger(res.pollingAdvice?.minutes) && res.pollingAdvice.minutes >= 0 && res.pollingAdvice.minutes <= 10)
             polling = `[polling detected] ${res.pollingAdvice.count} empty reads in ${res.pollingAdvice.minutes} min with no assigned work: end your turn`;
-          if (res.waiting)
-            notice = `(${res.waiting} queued hub message(s) remain unread)`;
+          if (res.waiting) {
+            notice = `(${res.waiting} more waiting: call hub_inbox again before you start work)`;
+            counted = true;
+          }
         }
       } catch {
         notice = "not read: daemon inbox unavailable; inspect the connection before another read";
@@ -28770,7 +28772,7 @@ async function callTool(req) {
 Nothing is waiting. Do not poll: if you have no assigned task, report and end your turn; new work waits here for your next boundary.`;
     const result = text5(polling ? `${body}
 ${polling}` : body);
-    if (notice.endsWith("remain unread)"))
+    if (counted)
       Object.defineProperty(result, QUEUED_COUNTED, { value: true });
     return result;
   }

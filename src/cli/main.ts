@@ -1021,8 +1021,21 @@ const commands: Record<string, () => Promise<void> | void> = {
         printOutput(renderQueue(result.deliveries, options.columns, Date.now()), options.color);
         return;
       }
+      if (operation === "discard") {
+        // #713: the person's bulk clear of one peer's queue. Without --yes it only says how many it would discard.
+        const yes = rest.includes("--yes");
+        const { one, rest: others } = takeFlags(rest.filter((word) => word !== "--yes"), ["--peer", "--reason", "--state"], []);
+        if (others.length || !one["--peer"] || (one["--state"] !== undefined && !["queued", "needs_review"].includes(one["--state"]))) fail("usage: ahub queue discard --peer <id> --reason <text> [--state queued|needs_review] [--yes]");
+        if (yes && !one["--reason"]?.trim()) fail("ahub queue discard needs --reason <text> with --yes: it is recorded on every discarded delivery");
+        const result = await hub.request({ t: "queue", op: "discard", peer: one["--peer"], ...(one["--state"] ? { state: one["--state"] } : {}), ...(yes ? { confirmed: true, reason: one["--reason"] } : {}) }, 60_000);
+        if (!result.ok) fail(result.error);
+        if (options.json) return console.log(JSON.stringify(result, null, 2));
+        if (!yes) return console.log(`${result.count} ${result.state} deliver${result.count === 1 ? "y" : "ies"} for ${result.peer}; nothing discarded. Run again with --reason <text> --yes to discard them.`);
+        console.log(`discarded ${result.discarded} of ${result.count} ${result.state} deliver${result.count === 1 ? "y" : "ies"} for ${result.peer}${result.refused ? `; ${result.refused} refused (${Object.entries(result.refusedBy ?? {}).map(([why, n]) => `${why} ${n}`).join(", ")})` : ""}`);
+        return;
+      }
       const [id, ...flags] = rest;
-      if (!id || !["show", "resolve"].includes(operation)) fail("usage: ahub queue show <id> | resolve <id> --action completed|retry|discard --reason <text> [--revision N]");
+      if (!id || !["show", "resolve"].includes(operation)) fail("usage: ahub queue show <id> | resolve <id> --action completed|retry|discard --reason <text> [--revision N] | discard --peer <id> --reason <text> [--state queued|needs_review] [--yes]");
       if (operation === "show") {
         if (flags.length) fail("usage: ahub queue show <id>");
         const shown = await hub.request({ t: "queue", op: "show", id });

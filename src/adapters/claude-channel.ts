@@ -390,7 +390,7 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     return text(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }
   if (name === "hub_inbox" && !toolsMode) {
-    let remote: string[] = [], notice = "", polling = "";
+    let remote: string[] = [], notice = "", polling = "", counted = false;
     if (hub) {
       try {
         const res = await hub.request({ t: "inbox" });
@@ -400,7 +400,8 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
           pendingQueued = { queued: typeof res.waiting === "number" ? res.waiting : 0, important: typeof res.waitingImportant === "number" ? res.waitingImportant : 0 };
           remote = (res.envs as Envelope[]).map(frame);
           if (Number.isSafeInteger(res.pollingAdvice?.count) && res.pollingAdvice.count >= 3 && Number.isSafeInteger(res.pollingAdvice?.minutes) && res.pollingAdvice.minutes >= 0 && res.pollingAdvice.minutes <= 10) polling = `[polling detected] ${res.pollingAdvice.count} empty reads in ${res.pollingAdvice.minutes} min with no assigned work: end your turn`;
-          if (res.waiting) notice = `(${res.waiting} queued hub message(s) remain unread)`;
+          // #713: a pull drains what fits one read; what is left is said plainly, with what to do about it. The count already says how many remain, so the pending hint adds only the important ones (#221).
+          if (res.waiting) { notice = `(${res.waiting} more waiting: call hub_inbox again before you start work)`; counted = true; }
         }
       } catch { notice = "not read: daemon inbox unavailable; inspect the connection before another read"; }
     } else notice = offline();
@@ -409,7 +410,7 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
     if (notice) out.push(notice);
     const body = out.length ? out.join("\n\n") : "(no queued hub messages)\nNothing is waiting. Do not poll: if you have no assigned task, report and end your turn; new work waits here for your next boundary.";
     const result = text(polling ? `${body}\n${polling}` : body);
-    if (notice.endsWith("remain unread)")) Object.defineProperty(result, QUEUED_COUNTED, { value: true });
+    if (counted) Object.defineProperty(result, QUEUED_COUNTED, { value: true });
     return result;
   }
   if (name === "hub_send") {

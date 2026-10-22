@@ -1673,12 +1673,23 @@ export class Tasks {
    * ponytail: kept in memory, so after a restart such a notice is delivered whatever its task's state; persist the
    * condition if stale notices after restarts show up.
    */
-  private readonly conditional = new Map<string, { peer: PeerId; task: number; states: Task["state"][] }>();
+  private readonly conditional = new Map<string, { peer: PeerId; task: number; tasks?: number[]; states: Task["state"][] }>();
 
   /**
    * Publish a notice about `task`, which only matters to `to` while that task is in one of `states` for it (issue
    * #106): open work by default; the conflict notices of #91 count a task in review too.
    */
+  /**
+   * #713: the completed-change notice of task `done` for one recipient, about all of its tasks in `about`. It stays relevant while any of them is still open for the
+   * recipient, and carries `completedFor` so the bus replaces an earlier queued notice for the same `done` task and recipient.
+   */
+  whileOpenFor(to: PeerId, done: number, about: number[], body: string): void {
+    const env = newEnvelope(HUB, body, { to: [to], kind: "task", refs: { task: String(about[0]), taskRecipient: "owner", completedFor: done } });
+    this.conditional.set(env.id, { peer: to, task: about[0]!, tasks: about, states: OPEN });
+    if (this.conditional.size > 1024) this.conditional.delete(this.conditional.keys().next().value as string);
+    this.d.bus.publish(env);
+  }
+
   whileOpen(to: PeerId, task: number, body: string, states: Task["state"][] = OPEN): void {
     const env = newEnvelope(HUB, body, { to: [to], kind: "task", refs: { task: String(task), taskRecipient: "owner" } });
     this.conditional.set(env.id, { peer: to, task, states });
@@ -1707,8 +1718,8 @@ export class Tasks {
     }
     const c = this.conditional.get(env.id);
     if (!c || c.peer !== peer) return true;
-    const t = this.d.board.get(c.task);
-    return !!t && t.owner === peer && c.states.includes(t.state);
+    // A notice about several of the recipient's tasks matters while any one of them is still open for it (#713).
+    return (c.tasks ?? [c.task]).some((id) => { const t = this.d.board.get(id); return !!t && t.owner === peer && c.states.includes(t.state); });
   };
 
   /** Whether a model-written name may be shown to other peers and in the log: one matching a PII pattern may be PII. */
@@ -3317,6 +3328,9 @@ export class Tasks {
     const hits = this.overlapHits(task).filter((h) => h.task.owner !== USER && h.task.owner !== HUB);
     const cohort = this.cohorts.of(task.id);
     const silent = this.silentFor(task.id);
+    // #713: one notice per recipient per done, naming all of that recipient's overlapping tasks, and only for work the recipient has accepted. An offered or proposed
+    // task has nothing to check yet (its offer, or the accept that follows, already shows the current board), and a repeat done replaces the queued notice (see Bus.enqueue).
+    const byOwner = new Map<PeerId, typeof hits>();
     for (const hit of hits) {
       // A member of the same silent cohort (issue #107): the member that finishes last integrates instead
       // (Cohorts.completion). The notice is held, so something replaces it if no integration runs. Others hear it.
@@ -3324,8 +3338,13 @@ export class Tasks {
         cohort.held.add(task.id);
         continue;
       }
-      this.releaseNotice(`task ${this.publicTitle(task)}: could not publish the completed-change notice to ${hit.task.owner}`, () =>
-        this.whileOpen(hit.task.owner!, hit.task.id, this.completedNotice(task, hit, summary, withheld)));
+      // Accepted by its own owner since it last changed hands (`ownerAcceptance`, the rule the rest of this class uses), and still in work or review: an offered or proposed task is not.
+      if (!["in_progress", "changes_requested", "in_review"].includes(hit.task.state) || !this.ownerAcceptance(hit.task)) continue;
+      byOwner.set(hit.task.owner!, [...(byOwner.get(hit.task.owner!) ?? []), hit]);
+    }
+    for (const [owner, mine] of byOwner) {
+      this.releaseNotice(`task ${this.publicTitle(task)}: could not publish the completed-change notice to ${owner}`, () =>
+        this.whileOpenFor(owner, task.id, mine.map((h) => h.task.id), this.completedNotice(task, mine, summary, withheld)));
     }
   }
 
@@ -3343,15 +3362,18 @@ export class Tasks {
    * included), and any item that matches a PII pattern is left out of what other owners get, the summary also when the
    * PII screen did not clear it (`withheld`, #198).
    */
-  private completedNotice(task: Task, hit: { task: Task; paths: string[]; symbols: string[] }, summary?: string, withheld = false): string {
+  private completedNotice(task: Task, hitOrHits: { task: Task; paths: string[]; symbols: string[] } | { task: Task; paths: string[]; symbols: string[] }[], summary?: string, withheld = false): string {
+    const hits = Array.isArray(hitOrHits) ? hitOrHits : [hitOrHits];
     const paths = this.places(task).paths.filter(this.nameable);
     const signatures = (task.plan?.signatures ?? []).filter(this.nameable);
     const first = (summary ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 300);
     const line = first && !withheld && this.nameable(first) ? first : undefined;
-    const sameFileDifferentSymbols = this.sameFileDifferentSymbols(task, hit);
+    // One line per overlapping task of the recipient, so a single notice names all of them (#713).
+    const touches = hits.map((hit) => `#${hit.task.id} on ${this.where(hit)}${this.sameFileDifferentSymbols(task, hit) ? " (same file, different symbols; observed names only, deleted definitions may be missing)" : ""}`);
+    const open = hits.length > 1 ? `your open tasks ${touches.join("; ")}` : `your open ${touches[0]}`;
 
     return [
-      `Task #${task.id} (owner ${task.owner}) is done and touches your open #${hit.task.id} on ${this.where(hit)}${sameFileDifferentSymbols ? " (same file, different symbols; observed names only, deleted definitions may be missing)" : ""}. Check your work against it before you go on.`,
+      `Task #${task.id} (owner ${task.owner}) is done and touches ${open}. Check your work against it before you go on.`,
       paths.length ? `Changed files: ${paths.join(", ")}` : "",
       signatures.length ? `New or changed signatures: ${signatures.join("; ")}` : "",
       line ? `Summary: ${line}` : "",
