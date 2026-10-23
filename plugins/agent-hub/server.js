@@ -9044,7 +9044,7 @@ function safeModelLabel(value) {
 var init_tool_refusal = () => {};
 
 // src/hub/spec-read.ts
-var BODY_LIMIT, RESULT_LIMIT, STDOUT_LIMIT;
+var BODY_LIMIT, RESULT_LIMIT, STDOUT_LIMIT, NOT_A_REPOSITORY;
 var init_spec_read = __esm(() => {
   init_tool_refusal();
   init_host_executable();
@@ -9052,6 +9052,7 @@ var init_spec_read = __esm(() => {
   BODY_LIMIT = 64 * 1024;
   RESULT_LIMIT = 80 * 1024;
   STDOUT_LIMIT = 512 * 1024;
+  NOT_A_REPOSITORY = new Set(["pr", "pull", "issue", "issues", "task", "tasks", "bug", "fix", "phase", "step", "item", "ticket", "gh", "id", "no", "nr", "p", "s", "t", "u"]);
 });
 
 // src/models/route/config.ts
