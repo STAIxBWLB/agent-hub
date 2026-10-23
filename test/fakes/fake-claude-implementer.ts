@@ -4,6 +4,9 @@ const [log, mode = "success", ...args] = process.argv.slice(2);
 if (mode === "probe") { console.log("2.1.309 (Claude Code)"); process.exit(0); }
 const prompt = await new Response(Bun.stdin.stream()).text();
 appendFileSync(log!, JSON.stringify({ args, prompt, launchId: process.env.AGENTHUB_LAUNCH_ID, peer: process.env.AGENTHUB_PEER_ID, cwd: process.cwd(), pid: process.pid }) + "\n");
+if (mode === "before-session") process.exit(1);
+const sessionId = args[args.indexOf(args.includes("--resume") ? "--resume" : "--session-id") + 1];
+if (prompt) console.log(JSON.stringify({ type: "system", subtype: "init", session_id: sessionId }));
 if (mode === "hang") {
   const child = spawn("/bin/sleep", ["30"], { stdio: "ignore" });
   writeFileSync(log! + ".descendant", String(child.pid));

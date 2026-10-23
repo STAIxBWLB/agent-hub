@@ -75,11 +75,14 @@ test("a spawn error without a PID is failed_safe and idle, with no stale authori
   expect(r.peer.state).toBe("idle"); expect(r.peer.sessionGeneration).toBeUndefined();
 });
 
-test("session publication errors fence stdin, revoke current-child authority and clean up safely", async () => {
+test("native session publication errors revoke authority before result usage and retain an unstarted UUID", async () => {
   const r = rig(); await r.peer.start();
-  (r.peer as unknown as { sessions: { markStarted(): boolean } }).sessions.markStarted = () => { throw new Error("fixture durable write failed"); };
+  const sessions = (r.peer as unknown as { sessions: { markStarted(task: number, id: string): boolean; session(task: number): { resume: boolean } } }).sessions;
+  sessions.markStarted = () => { throw new Error("fixture durable write failed"); };
   await r.peer.deliver([message(1)], "session-write"); await until(() => r.peer.state === "idle");
-  expect(r.calls().every(call => call.prompt === "")).toBe(true); expect(r.peer.sessionGeneration).toBeUndefined(); expect(r.receipts.at(-1)?.state).toBe("needs_review");
+  expect(r.calls()).toHaveLength(1); expect(r.calls()[0].prompt).toContain("fixture only");
+  expect(sessions.session(1).resume).toBe(false); expect(r.usage).toEqual([]);
+  expect(r.peer.sessionGeneration).toBeUndefined(); expect(r.receipts.at(-1)?.state).toBe("needs_review");
 });
 
 test("stop revokes the child token synchronously and confirms owned descendants gone before offline", async () => {
@@ -130,7 +133,7 @@ test("admission changed before spawn never receives framed prompt or child autho
   let checks = 0;
   const r = rig("success", { admit: () => ++checks < 3 });
   await r.peer.start(); await r.peer.deliver([message(1)], "admission-drift"); await until(() => r.peer.state === "idle");
-  expect(r.calls().every(call => call.prompt === "")).toBe(true); expect(r.peer.sessionGeneration).toBeUndefined(); expect(r.receipts.at(-1)?.state).toBe("needs_review");
+  expect(r.calls().every(call => call.prompt === "")).toBe(true); expect(r.peer.sessionGeneration).toBeUndefined(); expect(r.receipts.at(-1)?.state).toBe("failed_safe");
 });
 
 
@@ -199,4 +202,39 @@ test("a person stop upgrades an ongoing watchdog cleanup to offline", async () =
   release(); await stopped;
   expect(r.peer.state).toBe("offline");
   expect(r.receipts.at(-1)?.state).toBe("needs_review");
+});
+
+
+test("a child that fails before naming its session retries with session-id, never resume", async () => {
+  const r = rig("before-session"); await r.peer.start();
+  await r.peer.deliver([message(61)], "before-session"); await until(() => r.peer.state === "idle");
+  expect(r.receipts.at(-1)?.state).toBe("needs_review");
+  r.command[3] = "success";
+  await r.peer.deliver([message(61)], "retry"); await until(() => r.peer.state === "idle");
+  const calls = r.calls(); expect(calls).toHaveLength(2);
+  expect(calls[1].args).not.toContain("--resume");
+  expect(arg(calls[1].args, "--session-id")).toBe(arg(calls[0].args, "--session-id"));
+  await r.peer.deliver([message(61)], "verified-retry"); await until(() => r.peer.state === "idle");
+  expect(arg(r.calls()[2].args, "--resume")).toBe(arg(calls[0].args, "--session-id"));
+});
+
+test("a durable digest drops an approved notice and foreign refs while delivering its admissible message", async () => {
+  const r = rig("success", { admit: env => env.refs?.task === "62" });
+  const journal = new DeliveryJournal({ file: join(r.dir, "mixed-bus.db"), projectRoot: r.dir, projectId: "implementer", instanceId: "fixture" });
+  const bus = new Bus({ journal, batchMax: 3, batchMs: 60000, retryMs: 1 });
+  cleanup.push(async () => { await r.peer.stop(); bus.closeJournal(); });
+  bus.add(r.peer); await r.peer.start();
+  bus.publish({ ...message(60), body: "approved notice must not reach native" });
+  bus.publish({ ...message(63), body: "foreign task must not reach native" });
+  bus.publish(message(62));
+  await until(() => journal.list(r.peer.id).some(row => row.state === "completed" || row.state === "needs_review"));
+  expect(journal.list(r.peer.id).map(row => row.state)).toEqual(["completed"]);
+  expect(r.calls()).toHaveLength(1); expect(r.calls()[0].prompt).toContain("fixture only");
+  expect(r.calls()[0].prompt).not.toContain("approved notice"); expect(r.calls()[0].prompt).not.toContain("foreign task");
+});
+
+test("an entirely inadmissible batch settles failed_safe without a native child", async () => {
+  const r = rig("success", { admit: () => false }); await r.peer.start();
+  await r.peer.deliver([message(60)], "notice-only"); await until(() => r.peer.state === "idle");
+  expect(r.receipts.map(row => row.state)).toEqual(["accepted", "failed_safe"]); expect(r.calls()).toHaveLength(0);
 });

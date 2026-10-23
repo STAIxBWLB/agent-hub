@@ -9,5 +9,7 @@ export function permissionPayload(tool: unknown, input: unknown, publicText: (te
     const text = JSON.stringify(input);
     if (typeof text === "string" && Buffer.byteLength(text) <= 64 * 1024 && publicText(text)) rendered = sanitize(text);
   } catch { /* Unknown or unserializable arguments are never partially shown. */ }
-  return { tool: name, title: Array.from(`${name} ${rendered}`).slice(0, 600).join("") };
+  const full = Array.from(`${name} ${rendered}`);
+  const marker = ` [cut, ${full.length} chars]`;
+  return { tool: name, title: full.length > 600 ? full.slice(0, 600 - marker.length).join("") + marker : full.join("") };
 }

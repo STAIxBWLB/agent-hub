@@ -60,7 +60,7 @@ export class ClaudeTaskSessions {
     return { sessionId: entry.sessionId, resume: entry.started, persistent: true };
   }
 
-  /** Called only after that child's native start; an older child cannot alter a replacement session. */
+  /** Called only after a native frame names this exact session; spawn alone is not transcript evidence. */
   markStarted(task: number, expectedSessionId: string): boolean {
     const key = taskKey(task), entry = this.state.sessions[key];
     if (!entry || entry.sessionId !== expectedSessionId) return false;

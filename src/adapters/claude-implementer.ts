@@ -80,6 +80,7 @@ export class ClaudeImplementerPeer extends BasePeer {
   private binding: (() => boolean) | undefined;
   private command: readonly string[] | undefined;
   private deliveryId: string | undefined;
+  private inputReleased = false;
   private sessions: ClaudeTaskSessions;
   private stopping: Promise<void> | undefined;
   private stoppingTarget: "idle" | "offline" | undefined;
@@ -122,7 +123,7 @@ export class ClaudeImplementerPeer extends BasePeer {
     }
     this.stoppingTarget = next;
     ++this.generation; this.active = undefined; this.childAbort?.abort(); this.childAbort = undefined; this.abort?.abort(); this.clearWatchdog();
-    this.settle("needs_review", reason);
+    this.settle(this.inputReleased ? "needs_review" : "failed_safe", reason);
     if (this.owned || this.running) this.setState("busy");
     const work: Promise<void> = Promise.resolve().then(async () => {
       if (this.owned) await this.owned.stop(); // Retain handle/busy if group cleanup fails.
@@ -141,16 +142,18 @@ export class ClaudeImplementerPeer extends BasePeer {
   }
   async deliver(envs: Envelope[], deliveryId?: string): Promise<void> {
     if (this.state !== "idle" || this.owned || this.running || this.stopping) throw new Error("Claude implementer is not idle");
-    if (!envs.length || envs.some(env => env.private || !this.options.admit(env))) throw new Error("Claude implementer refuses private or inadmissible delivery");
+    if (envs.some(env => env.private)) throw new Error("Claude implementer refuses private delivery");
     const groups: { task?: number; envs: Envelope[] }[] = [];
     for (const env of envs) {
+      // Completion/cancellation notices and foreign task refs do not veto ordinary messages in the digest.
+      if (!this.options.admit(env)) continue;
       const raw = env.refs?.task, task = raw === undefined ? this.options.chatTask() : Number(raw);
-      if (task !== undefined && (!Number.isSafeInteger(task) || task <= 0)) throw new Error("invalid implementer task attribution");
+      if (task !== undefined && (!Number.isSafeInteger(task) || task <= 0)) continue;
       let group = groups.find(item => item.task === task);
       if (!group) { group = { task, envs: [] }; groups.push(group); }
       group.envs.push(env);
     }
-    const generation = this.generation; this.deliveryId = deliveryId;
+    const generation = this.generation; this.deliveryId = deliveryId; this.inputReleased = false;
     this.abort = new AbortController(); this.setState("busy");
     if (deliveryId) this.delivery({ id: deliveryId, state: "accepted" });
     // Register the run identity before any synchronous failure can publish idle.
@@ -159,11 +162,12 @@ export class ClaudeImplementerPeer extends BasePeer {
     void running.finally(() => { if (this.running === running) this.running = undefined; }).catch(() => {});
   }
   private async run(groups: { task?: number; envs: Envelope[] }[], generation: number, running: Promise<void>): Promise<void> {
-    let spawned = false;
     const current = () => generation === this.generation && !this.abort?.signal.aborted;
     try {
-      for (const group of groups) {
-        if (!current() || !this.binding?.() || group.envs.some(env => env.private || !this.options.admit(env))) throw new Error("Claude implementer admission changed");
+      for (let group of groups) {
+        if (!current() || !this.binding?.()) throw new Error("Claude implementer admission changed");
+        group = { ...group, envs: group.envs.filter(env => !env.private && this.options.admit(env)) };
+        if (!group.envs.length) continue;
         let turn = this.sessions.session(group.task);
         if (turn.resume && group.task !== undefined) {
           let persisted: boolean | "unknown" = "unknown";
@@ -183,15 +187,14 @@ export class ClaudeImplementerPeer extends BasePeer {
         const child = new OwnedPrintChild({ peer: this.id, command: this.command!, args: claudeImplementerArgs(turn, mcp, settings, this.options.systemPrompt), cwd: this.options.cwd,
           input: group.envs.map(frame).join("\n\n"), env, current, stop: this.options.stopChild,
           onSpawn: () => {
-            spawned = true;
             try {
               if (!this.binding?.() || group.envs.some(env => env.private || !this.options.admit(env))) throw new Error("Claude implementer admission changed before child start");
-              if (group.task !== undefined && !this.sessions.markStarted(group.task, turn.sessionId)) throw new Error("Claude task session changed before child start");
             } catch {
               // Fence synchronously before OwnedPrintChild can release stdin; cleanup is asynchronous and owned.
-              void this.cancel("Claude implementer session publication failed", "idle").catch(() => {});
+              void this.cancel("Claude implementer admission changed before child start", "idle").catch(() => {});
               return;
             }
+            this.inputReleased = true; // OwnedPrintChild releases stdin immediately after this synchronous admission fence.
             this.childAbort = new AbortController();
             this.active = { permissionHook: true, launchId, generation: `${generation}:${launchId}`, sessionId: turn.sessionId, signal: this.childAbort.signal, ...(group.task !== undefined ? { task: group.task } : {}) };
           },
@@ -199,7 +202,11 @@ export class ClaudeImplementerPeer extends BasePeer {
           onActivity: () => this.touch(),
           onLimit: () => { void this.cancel("Claude implementer output limit exceeded", "idle").catch(() => {}); },
           onFrame: event => {
-            const row = event as { type?: unknown; subtype?: unknown; is_error?: unknown; usage?: ReviewerPrintUsage } | null;
+            const row = event as { type?: unknown; subtype?: unknown; is_error?: unknown; usage?: ReviewerPrintUsage; session_id?: unknown } | null;
+            if (row?.session_id === turn.sessionId && group.task !== undefined) {
+              try { if (!this.sessions.markStarted(group.task, turn.sessionId)) throw new Error("session changed"); }
+              catch { void this.cancel("Claude implementer session publication failed", "idle").catch(() => {}); return; }
+            }
             if (row?.type !== "result" || result) return;
             result = true; failed = row.is_error === true || row.subtype !== "success";
             if (row.usage) this.options.onUsage?.(row.usage, group.task);
@@ -219,12 +226,12 @@ export class ClaudeImplementerPeer extends BasePeer {
       }
       if (current()) {
         if (this.running === running) this.running = undefined;
-        this.settle("completed"); this.setState("idle");
+        this.settle(this.inputReleased ? "completed" : "failed_safe", this.inputReleased ? undefined : "Claude implementer has no admissible envelopes"); this.setState("idle");
       }
     } catch (error) {
       this.active = undefined; this.childAbort?.abort(); this.childAbort = undefined;
       if (current()) {
-        this.settle(spawned ? "needs_review" : "failed_safe", error instanceof PrintChildCleanupError ? "Claude implementer cleanup incomplete" : "Claude implementer turn failed");
+        this.settle(this.inputReleased ? "needs_review" : "failed_safe", error instanceof PrintChildCleanupError ? "Claude implementer cleanup incomplete" : "Claude implementer turn failed");
         if (this.owned) this.setState("busy"); else {
           this.cleanup?.(); this.cleanup = undefined;
           if (this.running === running) this.running = undefined;

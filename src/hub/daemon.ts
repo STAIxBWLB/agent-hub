@@ -2064,11 +2064,17 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     return executionRoot(peer);
   }
-  function currentImplementerTools(c: Client): ReturnType<NonNullable<PeerAdapter["ownedTools"]>> {
+  function implementerChatTask(peer: string): number | undefined {
+    const owned = board.list("in_progress").filter(task => task.owner === peer && !tasks.isPii(task));
+    return owned.length === 1 ? owned[0]!.id : undefined;
+  }
+  function currentImplementerTools(c: Client, verifyRoot = true): ReturnType<NonNullable<PeerAdapter["ownedTools"]>> {
     const bound = c.toolsOwner, peer = c.peer;
     if (!bound || !peer || c.role !== "tools" || stopping || recoveryActive() || !membershipAllowed(peer) || contextPii(peer) || definitionOf(peer)?.start.daemonPort !== "claude-implementer" || bus.peers.get(peer) !== bound.owner) return undefined;
     const launch = bound.owner.ownedTools?.(bound.launchId);
-    if (!launch || launch.signal.aborted || launch.generation !== bound.generation || ownerWriteRoot(peer) !== bound.cwd || bound.cwd === opts.cwd) return undefined;
+    if (!launch || launch.signal.aborted || launch.generation !== bound.generation || bound.cwd === opts.cwd) return undefined;
+    const root = verifyRoot ? ownerWriteRoot(peer) : executionOwners.get(peer)?.owner === bound.owner ? executionRoots.get(peer) : undefined;
+    if (root !== bound.cwd) return undefined;
     if (launch.task !== undefined) {
       const task = board.get(launch.task);
       if (!task || task.owner !== peer || task.state === "cancelled" || tasks.isPii(task)) return undefined;
@@ -4414,7 +4420,7 @@ export async function startDaemon(opts: DaemonOptions) {
             return !!task && task.owner === peer && !tasks.isPii(task) && ["proposed", "in_progress", "changes_requested"].includes(task.state);
           } catch { return false; }
         },
-        chatTask: () => { const owned = board.list("in_progress").filter(task => task.owner === peer && !tasks.isPii(task)); return owned.length === 1 ? owned[0]!.id : undefined; },
+        chatTask: () => implementerChatTask(peer),
         transcriptPersisted: (task, session) => {
           const path = implementerTranscripts.get(`${peer}:${task}:${session}`);
           return path ? pathEvidence(path, lstatSync) : "unknown";
@@ -5470,6 +5476,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (externalIds.size && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("external_adapter_modules"))) return "target lacks external_adapter_modules; verified external definitions cannot be preserved by that daemon";
       if (configuredIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("configured_acp"))) return "target lacks configured_acp; project adapter definitions cannot be preserved by that daemon";
       if (extraIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("peer_instances"))) return "target lacks peer_instances; declared instance identities cannot be restored by that daemon";
+      if (extraIds.some(id => adapterCatalog.definitionOf(declarations[id]!.kind)?.transport === "claude-channel" && declarations[id]!.roles?.includes("implementer")) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("role_stages"))) return "target lacks role_stages; declared Claude implementer authority cannot be restored by that daemon";
       if (board.releases().some(release => release.train && ["active", "frozen"].includes(release.state)) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("release_trains"))) return "target lacks release_trains; active or frozen train safeguards cannot be preserved";
       if ((extraIds.some(id => !!definitionOf(id)?.reviewer) || config.review.pool !== undefined) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("reviewer_pool"))) return "target lacks reviewer_pool; fresh review-only variants and pool policy cannot be preserved";
       return undefined;
@@ -5799,7 +5806,9 @@ export async function startDaemon(opts: DaemonOptions) {
         const shown = permissionPayload(msg.tool, msg.input, tasks.publicMetadataText);
         const pending = new AbortController(), abortPending = () => pending.abort();
         launch.signal.addEventListener("abort", abortPending, { once: true });
-        const heartbeat = setInterval(() => { if (current()) c.toolsOwner?.owner.keepApprovalAlive?.(); else pending.abort(); }, Math.max(10, Math.min(1000, Math.floor(config.watchdog_ms / 3)))); heartbeat.unref();
+        // Heartbeats keep an approval alive; they grant nothing. Admission and the final
+        // answer still revalidate native root evidence, without synchronous Git on every tick.
+        const heartbeat = setInterval(() => { if (currentImplementerTools(c, false) === launch) c.toolsOwner?.owner.keepApprovalAlive?.(); else pending.abort(); }, Math.max(10, Math.min(1000, Math.floor(config.watchdog_ms / 3)))); heartbeat.unref();
         c.toolsOwner?.owner.keepApprovalAlive?.();
         void requestPermission({ peer, title: shown.title, tool: shown.tool, classed: true, options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] }, pending.signal).then(result => {
           const allowed = current() && result.outcome === "answered" && result.optionId === "allow";
@@ -5883,11 +5892,12 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "inbox": {
         if (c.toolsOwner) {
-          const peer = c.peer!, current = captureImplementerTools(c);
+          const peer = c.peer!, current = captureImplementerTools(c), launch = currentImplementerTools(c);
           try {
             // Inspect the still-pending batch before pull commits/removes it: private work never reaches this native child.
             const pending = bus.pendingEnvelopes(peer);
             if (!current() || pending.some(env => { const task = env.refs?.task === undefined ? undefined : board.get(Number(env.refs.task)); return env.private || contextPii(peer) || !!task && tasks.isPii(task); })) return void reply({ ok: false, error: "private inbox delivery refused" });
+            if (!launch || pending.some(env => (env.refs?.task === undefined ? implementerChatTask(peer) : Number(env.refs.task)) !== launch.task)) return void reply({ ok: false, error: "inbox delivery belongs to another task session" });
             const envs = bus.pull(peer);
             if (!envs) return void reply({ ok: false, error: queueHold(peer) ?? "delivery held" });
             return void reply({ ok: true, envs, waiting: bus.queued(peer), waitingImportant: bus.queuedImportant(peer) });

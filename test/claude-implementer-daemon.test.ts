@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
-import { newEnvelope } from "../src/hub/envelope.ts";
+import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
 
@@ -59,9 +60,10 @@ test("#525 only the current child reaches person allow-once or deny; timeout and
   try {
     f.console_.onPush = push => { pushes.push(push); }; f.console_.send({ t: "tail" });
     for (const option of ["allow", "deny"]) {
-      const before = pushes.length, answer = f.tools.request({ t: "permission_request", tool: "Write", input: { file_path: join(f.tree, "source.ts"), content: "fixture" } });
+      const before = pushes.length, answer = f.tools.request({ t: "permission_request", tool: "Write", input: { file_path: join(f.tree, "source.ts"), content: "fixture".repeat(120) } });
       await until(() => pushes.slice(before).some(row => row.t === "permission"), "person approval visible");
       const request = pushes.slice(before).find(row => row.t === "permission");
+      expect(request.title).toMatch(/ \[cut, \d+ chars\]$/);
       expect(request.options.map((row: any) => row.kind)).toEqual(["allow_once", "reject_once"]);
       expect(await f.console_.request({ t: "permit", id: request.id, option })).toMatchObject({ ok: true });
       expect(await answer).toMatchObject({ ok: true, behavior: option === "allow" ? "allow" : "deny" });
@@ -85,6 +87,39 @@ test("#525 current-child inbox refuses a private pending batch before pull remov
   } finally { await f.close(); }
 }, 20_000);
 
+test("#525 a task child reads only its own inbox and leaves another task queued for its own session", async () => {
+  const f = await fixture(true);
+  try {
+    const same = newEnvelope("user", "same task follow-up", { to: [f.peer], refs: { task: String(f.taskId) } });
+    f.daemon.bus.publish(same);
+    const own = await f.tools.request({ t: "inbox" });
+    expect(own.ok).toBe(true);
+    expect(own.envs?.some((env: Envelope) => env.id === same.id)).toBe(true);
+    const proposed = await f.console_.request({ t: "task", op: "hub_task_propose", args: { title: "second bound fixture task", class: "test", owner: f.peer } });
+    expect(proposed, proposed.error).toMatchObject({ ok: true });
+    const second = Number(String(proposed.text).match(/task #(\d+)/)?.[1]);
+    expect(second).toBeGreaterThan(0); expect(second).not.toBe(f.taskId);
+    const before = f.daemon.bus.queueIds(f.peer);
+    expect(before.length).toBeGreaterThan(0);
+    expect(await f.tools.request({ t: "inbox" })).toMatchObject({ ok: false, error: "inbox delivery belongs to another task session" });
+    expect(f.daemon.bus.queueIds(f.peer)).toEqual(before);
+  } finally { await f.close(); }
+}, 20_000);
+
+test("#525 a current task child records deliverables from its verified worktree through completion", async () => {
+  const f = await fixture(true);
+  try {
+    expect(existsSync(join(f.root, "source.ts"))).toBe(false);
+    expect(await f.tools.request({ t: "task", op: "hub_task_done", args: { id: f.taskId, summary: "public fixture delivery", deliverables: [{ path: "source.ts", format: "ts" }] } })).toMatchObject({ ok: true });
+    const result = await f.console_.request({ t: "task", op: "task_show", args: { id: f.taskId } });
+    expect(result).toMatchObject({ ok: true });
+    const task = JSON.parse(String(result.text));
+    const sha256 = createHash("sha256").update("fixture source\n").digest("hex");
+    expect(task.history.find((row: { event: string }) => row.event === "done").deliverables).toMatchObject([{ path: "source.ts", format: "ts", sha256 }]);
+    expect(task.deliverables.files).toMatchObject([{ path: "source.ts", state: "unchanged", sha256 }]);
+  } finally { await f.close(); }
+}, 20_000);
+
 
 test("#525 cancelling the bound task revokes a waiting permission even when the person answers allow", async () => {
   const f = await fixture(true), pushes: any[] = [];
@@ -93,6 +128,20 @@ test("#525 cancelling the bound task revokes a waiting permission even when the 
     const answer = f.tools.request({ t: "permission_request", tool: "Write", input: { file_path: join(f.tree, "source.ts"), content: "cancelled work" } });
     await until(() => pushes.some(row => row.t === "permission"), "approval waiting before cancellation");
     expect(await f.console_.request({ t: "task", op: "hub_task_cancel", args: { id: f.taskId, reason: "fixture cancellation" } })).toMatchObject({ ok: true });
+    const request = pushes.find(row => row.t === "permission");
+    expect(await f.console_.request({ t: "permit", id: request.id, option: "allow" })).toMatchObject({ ok: true });
+    const result = await answer;
+    expect(result.ok === false || result.behavior === "deny").toBe(true);
+  } finally { await f.close(); }
+}, 20_000);
+
+test("#525 an approval answer revalidates a worktree changed while its heartbeat was waiting", async () => {
+  const f = await fixture(), pushes: any[] = [];
+  try {
+    f.console_.onPush = push => { pushes.push(push); }; f.console_.send({ t: "tail" });
+    const answer = f.tools.request({ t: "permission_request", tool: "Write", input: {} });
+    await until(() => pushes.some(row => row.t === "permission"), "approval visible before root change");
+    expect(hubGitSync(["-C", f.tree, "checkout", "--detach", "HEAD"], { encoding: "utf8" }).status).toBe(0);
     const request = pushes.find(row => row.t === "permission");
     expect(await f.console_.request({ t: "permit", id: request.id, option: "allow" })).toMatchObject({ ok: true });
     const result = await answer;
