@@ -309,6 +309,9 @@ export interface Assignment {
   refusals?: RoutingRefusal[];
   owner?: PeerId;
   reviewer?: PeerId;
+  /** #525-3: the task's planner, from the planner walk. Read-only information until 525-2 records it; absent for a PII task or when nobody holds the role. */
+  planner?: PeerId;
+  plannerReason?: PlannerReason;
   /** What local should ask for on this task: a hub route or retired non-hub selection, with its fixed fallback. */
   route?: string;
   fixedModel?: string;
@@ -325,6 +328,70 @@ export interface Assignment {
  */
 export function ownerRoleOfClass(cls: TaskClass): "planner" | "implementer" | "reviewer" {
   return cls === "review" ? "reviewer" : cls === "plan" ? "planner" : "implementer";
+}
+
+/** Why a planner was chosen: the person named it, rotation reached it, the task's recorded planner is kept, or there is none (PII, no holder). */
+export type PlannerReason = "rotation" | "named" | "kept" | "none";
+
+/**
+ * I-2 (#525-3): the peers that implemented a task, read from its own history: any peer with an `accepted` or `done` entry. A reviewer is
+ * never one of them, so a multi-role holder (implementer and reviewer) never reviews a change it made, even after the task changed hands.
+ * Pure: history in, set out. A `done` by the person is not a peer's implementation and is left out.
+ */
+export function implementers(history: readonly { by: PeerId; event: string }[] | undefined): Set<PeerId> {
+  return new Set((history ?? []).filter(entry => (entry.event === "accepted" || entry.event === "done") && entry.by !== "user").map(entry => entry.by));
+}
+
+export interface PlannerWalkInput {
+  /** The settled planner holders, sorted by id. The walk sorts again, so an unsorted input cannot change the result. */
+  planners: readonly PeerId[];
+  /** The rotation seed: the task id. */
+  seed: number;
+  /** A person-named planner: exact, never replaced by rotation. */
+  named?: PeerId;
+  /** The planner already recorded on the task: kept while it is still a holder. */
+  kept?: PeerId;
+  /** Why a holder cannot take planning right now; undefined when it can. */
+  blocked(peer: PeerId): string | undefined;
+  /** A PII task has no planner: its planning stays with the person. */
+  pii: boolean;
+}
+export interface PlannerWalk { planner?: PeerId; reason: PlannerReason; walk: { peer: PeerId; note: string }[]; line: string }
+
+/**
+ * The planner walk (#525 R3, "Choice"): pure, so assignment and `ahub route explain` print the same lines.
+ * - a PII task has no planner;
+ * - a named planner is exact: a name that is not a holder or cannot plan is refused in the trace, never replaced by rotation;
+ * - otherwise the recorded planner is kept while it is still a holder;
+ * - otherwise rotation: holders sorted by id, starting at `seed mod n`, walking forward past unavailable holders. The denominator is every
+ *   holder, availability never renumbers it (the #519 seed rule). When all are skipped, the seed holder is taken, "rotation (none available)".
+ */
+export function plannerWalk(input: PlannerWalkInput): PlannerWalk {
+  const holders = [...new Set(input.planners)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const walk: { peer: PeerId; note: string }[] = [];
+  const finish = (reason: PlannerReason, planner: PeerId | undefined, detail: string): PlannerWalk => ({ ...(planner ? { planner } : {}), reason, walk, line: planner ? `planner: ${planner} (${detail})` : `planner: none (${detail})` });
+  if (input.pii) return finish("none", undefined, "pii: planning stays with the person");
+  if (!holders.length) return finish("none", undefined, "no planner holder");
+  if (input.named !== undefined) {
+    if (!holders.includes(input.named)) { walk.push({ peer: input.named, note: "skipped, not a planner holder" }); return finish("none", undefined, `named ${input.named} is not a planner holder`); }
+    const why = input.blocked(input.named);
+    walk.push({ peer: input.named, note: why ? `named, ${why}` : "named" });
+    return finish("named", input.named, why ? `named; ${why}` : "named");
+  }
+  if (input.kept !== undefined && holders.includes(input.kept)) {
+    walk.push({ peer: input.kept, note: "kept: already the task's planner" });
+    return finish("kept", input.kept, "kept");
+  }
+  const seed = Number.isSafeInteger(input.seed) ? input.seed : 0;
+  const start = ((seed % holders.length) + holders.length) % holders.length;
+  for (let step = 0; step < holders.length; step++) {
+    const peer = holders[(start + step) % holders.length]!;
+    const why = input.blocked(peer);
+    walk.push({ peer, note: why ? `skipped, ${why}` : "available" });
+    if (!why) return finish("rotation", peer, step === 0 ? "rotation" : "rotation, skipped unavailable holders");
+  }
+  const seeded = holders[start]!;
+  return finish("rotation", seeded, "rotation (none available)");
 }
 
 /**
@@ -347,6 +414,11 @@ export function assign(
     pullOnly?: PeerId[];
     namedOwner?: PeerId;
     namedReviewer?: PeerId;
+    /** #525-3: the settled planner holders (sorted ids) and a person-named planner. Absent `planners`: no planner walk, as before. */
+    planners?: readonly PeerId[];
+    namedPlanner?: PeerId;
+    /** The planner already recorded on the task (525-2): kept while it is still a holder. */
+    keptPlanner?: PeerId;
     reviewPool?: { pool: readonly string[]; rerotate?: boolean; failed?: readonly string[]; required?: boolean };
     candidates?: PeerId[];
     notReviewer?: PeerId;
@@ -388,11 +460,14 @@ export function assign(
   // #735: the owner needs write access whenever its role for this class is the implementer's, not only for the three classes that need tests.
   const ownerWrites = ownerRoleOfClass(task.class) === "implementer";
   const refusals = new Map<string, RoutingRefusal>();
+  const former = implementers(task.history);
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
     const deny = (code: RoutingRefusalCode, reason: string): string => { refusals.set(`${role}:${peer}`, { peer, role, code, reason }); return reason; };
     const ceiling = (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.routing?.allowedRoles;
     const requiredRole = role === "reviewer" ? "reviewer" : ownerRoleOfClass(task.class);
     if (ceiling && !ceiling.includes(requiredRole)) return deny("policy", "adapter role ceiling excludes this assignment");
+    // I-2 (#525-3): a peer that implemented this task never reviews it, whoever holds it now, a named reviewer included.
+    if (role === "reviewer" && former.has(peer)) return deny("policy", "implemented this task");
     const unavailable = role === "reviewer" ? (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.reviewer?.unavailable : undefined;
     if (unavailable) return deny("policy", unavailable);
     if (role === "owner" && opts.capabilities && !pii) {
@@ -490,6 +565,27 @@ export function assign(
   const ownerHold = owner ? peerEntry(opts.held, owner) : undefined;
   if (ownerHold) trace.push(`  hold: ${owner}'s queue is held: ${ownerHold} (it receives the task once the hold is resolved)`);
 
+  // #525-3: the planner is chosen by its own walk over the settled planner holders, independent of the owner and the reviewer (planner and
+  // owner, or planner and reviewer, may be the same peer). Information only until 525-2 records it: nothing here moves the task.
+  let planner: PeerId | undefined, plannerReason: PlannerReason | undefined;
+  if (opts.planners !== undefined) {
+    const plannerBlocked = (peer: PeerId): string | undefined => {
+      if ((opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.routing?.allowedRoles?.includes("planner") === false) return "adapter role ceiling excludes planning";
+      if (opts.offRoster?.includes(peer)) return "off roster";
+      if (!Object.hasOwn(states, peer)) return "not attached";
+      if (states[peer] === "offline") return "offline";
+      if (states[peer] === "paused" && routing.constraints.budget_paused === "skip_peer") return "paused";
+      const failing = peerEntry(opts.failing, peer);
+      return failing ? `failing: ${failing}` : undefined;
+    };
+    const walked = plannerWalk({ planners: opts.planners, seed: task.id ?? 0, ...(opts.namedPlanner !== undefined ? { named: opts.namedPlanner } : {}),
+      ...(opts.keptPlanner !== undefined ? { kept: opts.keptPlanner } : {}), blocked: plannerBlocked, pii });
+    for (const row of walked.walk) trace.push(`  planner candidate ${row.peer}: ${row.note}`);
+    trace.push(walked.line);
+    planner = walked.planner;
+    plannerReason = walked.reason;
+  }
+
   let reviewer: PeerId | undefined;
   let sameFamilyFallback = false;
   let plannerFallback = false;
@@ -559,6 +655,12 @@ export function assign(
         sameFamilyFallback = true;
         trace.push(`  same-family fallback: ${reviewer} and ${reviewOwner} share ${ownerFamily}; no eligible other family`);
       }
+      // I-2 (#525-3): when the peers that implemented this task were the only candidates left, the person reviews. Never a fallback to an implementer.
+      if (!reviewer && [...refusals.values()].some(row => row.role === "reviewer" && row.code === "policy" && row.reason === "implemented this task")) {
+        reviewer = "user";
+        reviewBlocked = true;
+        trace.push("  every eligible reviewer implemented this task: the person reviews");
+      }
       trace.push(reviewer ? `reviewer: ${reviewer}` : "reviewer: none, done will approve directly");
       const reviewerHold = reviewer ? peerEntry(opts.held, reviewer) : undefined;
       if (reviewerHold) trace.push(`  hold: ${reviewer}'s queue is held: ${reviewerHold} (it receives the review once the hold is resolved)`);
@@ -569,7 +671,7 @@ export function assign(
   const piBackend = policy?.pi_backend;
   if (owner && (opts.adapterCatalog?.definitionOf ?? definitionOf)(owner, opts.instances)?.routing?.trace === "route") trace.push(`route: ${route ?? "(none)"}, fixed_model ${fixedModel}`);
   if (owner && (opts.adapterCatalog?.definitionOf ?? definitionOf)(owner, opts.instances)?.routing?.trace === "backend") trace.push(`${(opts.adapterCatalog?.definitionOf ?? definitionOf)(owner, opts.instances)!.routing!.backendLabel} decision: backend ${piBackend ?? "dgx"}${task.signals.includes("long_context") ? `, context limit ${piBackend === "mlx" ? routing.pi.mlx_max_context_tokens : routing.pi.dgx_max_context_tokens}` : ""}`);
-  return { ...(reviewSelection ? { reviewSelection } : {}), ...(reviewBlocked ? { reviewBlocked: true as const } : {}), ...(sameFamilyFallback ? { sameFamilyFallback: true as const } : {}), ...(plannerFallback ? { plannerFallback: true as const } : {}), ...(owner ? { owner } : {}), ...(pii ? { reviewer: "user" } : reviewer ? { reviewer } : {}), ...(route ? { route } : {}), fixedModel, ...(piBackend ? { piBackend } : {}), ...(unreserved ? { unreserved } : {}), ...(refusals.size ? { refusals: [...refusals.values()] } : {}), trace };
+  return { ...(reviewSelection ? { reviewSelection } : {}), ...(reviewBlocked ? { reviewBlocked: true as const } : {}), ...(sameFamilyFallback ? { sameFamilyFallback: true as const } : {}), ...(plannerFallback ? { plannerFallback: true as const } : {}), ...(owner ? { owner } : {}), ...(planner ? { planner } : {}), ...(plannerReason ? { plannerReason } : {}), ...(pii ? { reviewer: "user" } : reviewer ? { reviewer } : {}), ...(route ? { route } : {}), fixedModel, ...(piBackend ? { piBackend } : {}), ...(unreserved ? { unreserved } : {}), ...(refusals.size ? { refusals: [...refusals.values()] } : {}), trace };
 }
 
 /**
