@@ -101,6 +101,8 @@ export interface TasksDeps {
   reviewOnly?: (peer: PeerId) => boolean;
   /** #223: captured when a verdict call starts; a non-undefined result refuses the verdict at every later check. */
   reviewAuthority?: (by: PeerId, task: number) => (() => string | undefined) | undefined;
+  /** Host-captured current-child authority, rechecked before an admitted async tool first commits effects. */
+  requestAuthority?: (by: PeerId) => (() => string | undefined) | undefined;
   memory?: MemoryClient;
   /** Captured native profile fence at our memory operation boundaries; no board mutation. */
   memoryCheck?: () => void;
@@ -372,6 +374,12 @@ export class Tasks {
   };
 
   /** One bounded screen call. A screener that fails is no verdict, handled as PII (fail closed). */
+  private requestCheck(by: PeerId): () => void {
+    const authority = this.d.requestAuthority?.(by);
+    const check = () => { const reason = authority?.(); if (reason) throw new PreEffectToolRefusal(reason); };
+    check(); return check;
+  }
+
   private async screenCall(text: string): Promise<PiiVerdict> {
     return (await this.d.piiScreen?.(text).catch(() => undefined)) ?? { label: "unknown", miss: "failed", ms: 0 };
   }
@@ -1432,6 +1440,7 @@ export class Tasks {
   }
 
   async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; backlog?: unknown; goal?: unknown }, external?: GitHubSource, created?: () => void): Promise<Task> {
+    const requestCheck = this.requestCheck(by);
     external = external ? { ...external } : undefined;
     if (external && (by !== USER || input.backlog !== true)) throw new PreEffectToolRefusal("external intake requires person-owned backlog staging");
     if (input.backlog !== undefined && typeof input.backlog !== "boolean") throw new PreEffectToolRefusal("backlog must be a boolean");
@@ -1500,6 +1509,7 @@ export class Tasks {
     if (reserved) this.requireCapabilities({ ...draft, signals, ...(external ? { external } : {}) }, reserved);
     this.warmRepository({ refs: draft.refs, plan });
     const repositoryMismatch = !this.isPii({ signals }) && this.repositories.mismatch(draft.refs, plan);
+    requestCheck();
     let task = this.d.board.propose(by, { ...draft, plan, ...(external ? { external } : {}), ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals, ...(backlog ? { backlog: true } : {}) });
     if (repositoryMismatch) this.releaseNotice(`task #${task.id}: refs and plan name different repositories; check refs.repo before editing`);
     if (this.d.coordination) this.coordinationModes.set(task.id, this.d.coordination());
@@ -3127,6 +3137,7 @@ export class Tasks {
     return base === "build" || base === "implement";
   }
   async acceptReviewed(by: PeerId, id: unknown, plan?: unknown, refs?: unknown): Promise<Task> {
+    const requestCheck = this.requestCheck(by);
     const metadata = acceptRefs(refs);
     const task = this.need(id, false, true);
     this.mine(task, by, "owner", true);
@@ -3137,6 +3148,7 @@ export class Tasks {
     if ((this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode === "off" || !this.isBuildTask(task)) return this.accept(by, id, plan, metadata);
     await this.specGate(by, id);
     await this.planEntryGate(by, draft);
+    requestCheck();
     const current = this.need(id, false, true);
     this.mine(current, by, "owner", true);
     if (current.history.length !== task.history.length || current.owner !== task.owner) throw new PreEffectToolRefusal("task changed during build admission");
@@ -3374,7 +3386,8 @@ export class Tasks {
   }
 
   async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs, deliverables?: unknown): Promise<Task> {
-    const valid = () => this.completionCurrent(id, by, true);
+    const requestCheck = this.requestCheck(by);
+    const valid = () => { requestCheck(); return this.completionCurrent(id, by, true); };
     // #509a: a bad claim (a claimed hash, an outside or denied path, a missing file) is refused before any effect, with nothing recorded.
     const claims = deliverables === undefined ? undefined : this.deliverableClaims(deliverables, valid());
     // The PII screen reads the summary of a done that passes these checks (issue #198); they run again after it.
@@ -3428,7 +3441,7 @@ export class Tasks {
     }
     if (task.state === "proposed" || task.state === "changes_requested") task = this.withLink(this.d.board.update(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE), link, refs); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class, task) : undefined;
-    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link, records);
+    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link, records, requestCheck);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
     this.checking.set(task.id, task.owner);
     const checkedRefs = cleanRefs(refs);
@@ -3564,13 +3577,15 @@ export class Tasks {
   }
 
   /** `gated`: the transition `done()` already gated with no await since, so it is not read back twice (#382). */
-  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness, link?: IdentityLink, records?: DeliverableRecord[]): Promise<Task> {
+  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness, link?: IdentityLink, records?: DeliverableRecord[], requestCheck: () => void = () => {}): Promise<Task> {
+    requestCheck();
     // A check's completion carries the records its `done (checking)` bound: the same bytes the owner delivered, not a later read.
     records ??= latestPendingDeliverables(task);
     let selection = this.poolReview(task, refs);
     let reviewer = selection?.reviewer ?? task.reviewer, reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off" && gated !== (reviewer ? "review" : "approval")) {
       reviewEvidence = await this.lifecycleGate(task, reviewer ? "review" : "approval");
+      requestCheck();
       task = this.withLink(this.completionCurrent(task.id, by, false), link, refs);
       selection = this.poolReview(task, refs);
       reviewer = selection?.reviewer ?? task.reviewer;
@@ -3578,6 +3593,7 @@ export class Tasks {
     // A delayed local check needs a new readback; a completion-selected reviewer also needs optional facts in off mode.
     if (!admission && ((reviewer && (this.d.sdlc?.config().mode ?? "off") !== "off") || this.d.prepareReviewBrief)) {
       admission = await this.reviewRequestAdmission(task, refs, false, by, reviewEvidence, undefined, staged => this.withLink(staged, link, refs), !reviewer);
+      requestCheck();
       task = this.withLink(this.completionCurrent(task.id, by, false), link, refs);
     }
     selection = this.poolReview(task, refs);
@@ -4312,6 +4328,7 @@ export class Tasks {
   }
 
   async remember(by: PeerId, input: { text?: string; title?: string; kind?: string; task?: unknown; horizon?: unknown; scope?: unknown; approach?: unknown; symptom?: unknown; cause?: unknown; evidence?: unknown; retry_when?: unknown }): Promise<string> {
+    const requestCheck = this.requestCheck(by);
     const text = composeRememberText(input);
     const task = input.task !== undefined ? this.d.board.get(Number(input.task)) : undefined;
     if (task && this.isPii(task)) throw new Error("notes about a PII task are not saved: claude-mem processes what it stores with a cloud model");
@@ -4325,10 +4342,12 @@ export class Tasks {
     if (looksSecret(`${title}\n${text}`)) throw new Error("this note looks like it holds a secret (a key, token or password) and is not saved");
     if (this.aboutPrivatePath(title, text, task)) throw new Error("this note is about a path the project keeps private (pii.paths) and is not saved");
     if (await this.withholds("note", `${title}\n${text}`, task)) throw new Error("the PII screen did not clear this note, so it is not saved: claude-mem processes what it stores with a cloud model");
+    requestCheck();
     const kind = (NOTE_KINDS as readonly string[]).includes(String(input.kind)) ? String(input.kind) as Kind : "finding";
     const native = this.saveNative(by, kind, text, title, task, input.horizon === "long" || input.horizon === "short" ? input.horizon : undefined, input.scope === "shared" ? "shared" : "project");
     if (task && this.d.memory) this.markMemoryReference(task, by);
     const res = this.d.memory ? await this.d.memory.save({ text, ...(title ? { title } : {}), project: this.d.project, metadata: { peer: by, kind, ...(task ? { task: task.id } : {}) } }) : undefined;
+    requestCheck();
     if (!res && !native) return this.d.memory ? "memory worker unavailable; nothing saved" : "memory store unavailable; nothing saved";
     const line = noteLine(by, kind, title ? `${title}: ${text}` : text);
     this.d.notify(line);

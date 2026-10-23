@@ -1,6 +1,6 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
+import { OwnedPrintChild, PrintChildCleanupError } from "./claude-print-child.ts";
 import { randomUUID } from "node:crypto";
-import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { HUB, frame } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
 import type { Envelope } from "../hub/envelope.ts";
@@ -107,9 +107,6 @@ export interface ReviewerPrintOptions {
   bindingCurrent?(task: number, binding: ReviewerReviewBinding): boolean;
 }
 
-// ponytail: 256 KiB per NDJSON frame and 4 MiB stdout per review child. Raise only with measured native receipts.
-const MAX_REVIEW_FRAME_BYTES = 256 * 1024, MAX_REVIEW_OUTPUT_BYTES = 4 * 1024 * 1024;
-class GroupCleanupError extends Error {}
 type ReviewTarget = Omit<ReviewerFailure, "cause">;
 interface ReviewBatch { targets: (ReviewTarget | undefined)[]; next: number; failures: ReviewerFailure[] }
 const reviewTarget = (env: Envelope): ReviewTarget | undefined => {
@@ -129,8 +126,7 @@ const reviewTask = (env: Envelope): number | undefined => {
 export class ReviewerPrintPeer extends BasePeer {
   readonly hubNative = true;
   private generation = 0;
-  private child: ChildProcess | undefined;
-  private childStop: ((child: ChildProcess) => Promise<void>) | undefined;
+  private child: OwnedPrintChild | undefined;
   private childCleanup: (() => Promise<void>) | undefined;
   private childCurrent: (() => boolean) | undefined;
   private reviewMcpClose: (() => void) | undefined;
@@ -242,7 +238,7 @@ export class ReviewerPrintPeer extends BasePeer {
       try { result = await this.review(env, task, generation); }
       catch (error) {
         if (generation !== this.generation) return;
-        if (error instanceof GroupCleanupError) {
+        if (error instanceof PrintChildCleanupError) {
           // Unavailable until a stop confirms the group gone: no new review runs beside the survivors.
           this.opts.log?.(`[${this.id}] review of task #${task}: ${error.message}`);
           this.settle("needs_review", `review process group still running: ${error.message}`);
@@ -329,60 +325,41 @@ export class ReviewerPrintPeer extends BasePeer {
     let mcpClosed=false;
     const closeMcp=()=>{ if(mcpClosed)return; mcpClosed=true; mcp?.close(); if(this.reviewMcpClose===closeMcp)this.reviewMcpClose=undefined; };
     this.reviewMcpClose=closeMcp;
-    let ownedChild: ChildProcess | undefined, releasing: Promise<void> | undefined;
+    let ownedChild: OwnedPrintChild | undefined, releasing: Promise<void> | undefined;
     let policyTimer: ReturnType<typeof setInterval> | undefined;
     const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
     try {
     launch = await this.prepare(randomUUID(), input, task, mcp?.config);
     if (generation !== this.generation || this.opts.admit?.(env) === false || launch.current?.() === false) throw new ReviewerUnavailableError("reviewer isolation or admission changed before child spawn", launch.current?.() === false ? "binary" : "unknown");
     this.receipt = launch.isolation;
-    const [cmd, ...prefix] = launch.command;
     let quota = false;
-    return await new Promise<{ code: number | null; quota: boolean }>((resolve, reject) => {
-      const child = spawn(cmd!, [...prefix, ...launch!.args], { cwd: launch!.cwd ?? this.opts.cwd, detached: true,
-        env: peerChildEnv(this.id, launch!.envMode === "replace" ? launch!.env : { ...process.env, ...launch!.env }), stdio: ["pipe", "pipe", "ignore"] });
-      // Owned before any await, so a stop that lands before "spawn" still finds and kills it.
-      this.child = child;
-      ownedChild = child;
-      this.childStop = launch!.stop;
-      this.childCleanup = release;
-      this.childCurrent = launch!.watchCurrent ? launch!.current : undefined;
-      child.once("error", error => { if (this.child === child) { this.child = undefined; this.childStop = undefined; } reject(error); });
-      child.stdin!.on("error", () => { /* the child exited before reading its prompt; its exit settles the review */ });
-      child.once("spawn", () => {
-        trackGroup(child);
-        if (generation !== this.generation) { child.stdin!.destroy(); return; } // stopped meanwhile: no prompt
+    const child = new OwnedPrintChild({ peer: this.id, command: launch.command, args: launch.args,
+      cwd: launch.cwd ?? this.opts.cwd, env: launch.env, envMode: launch.envMode, input,
+      current: () => generation === this.generation, stop: launch.stop,
+      onError: () => { if (this.child === child) this.child = undefined; },
+      onSpawn: () => {
         this.runningBinding={task,binding};
         this.reviewing = task; this.reviewSeq++;
         if (this.childCurrent) policyTimer = setInterval(() => { this.reviewToken(task); }, 100);
-        child.stdin!.end(input);
-      });
-      let buffer = "", outputBytes = 0;
-      child.stdout!.on("data", (chunk: Buffer) => {
-        if (generation !== this.generation) return;
-        outputBytes += chunk.length;
-        if (outputBytes > MAX_REVIEW_OUTPUT_BYTES) { this.abortReview("review output limit exceeded"); return; }
-        buffer += chunk.toString("utf8");
-        for (let i; (i = buffer.indexOf("\n")) >= 0;) {
-          const line = buffer.slice(0, i); buffer = buffer.slice(i + 1);
-          if (Buffer.byteLength(line) > MAX_REVIEW_FRAME_BYTES) { this.abortReview("review output limit exceeded"); return; }
-          try {
-            const event: unknown = JSON.parse(line);
-            const usage = this.opts.backend.usage?.(event);
-            if (usage) this.opts.onUsage?.(usage, task);
-            if (this.opts.backend.failure?.(event) === "quota") quota = true;
-          } catch { /* not a stream-json line */ }
-        }
-        if (Buffer.byteLength(buffer) > MAX_REVIEW_FRAME_BYTES) { this.abortReview("review output limit exceeded"); return; }
-        this.touch();
-      });
-      child.once("exit", code => {
-        if (this.child === child) { this.reviewing = undefined; this.runningBinding=undefined; } // the verdict authority ends with the leader
-        // The review ends when its whole process group is gone (an MCP server or other descendant may outlive the leader).
-        (launch!.stop ? launch!.stop(child) : stopOwnedProcess(child, { group: true })).then(() => { if (this.child === child) { this.child = undefined; this.childStop = undefined; } resolve({ code, quota }); },
-          (error: Error) => reject(new GroupCleanupError(error.message)));
-      });
+      },
+      onFrame: event => {
+        const usage = this.opts.backend.usage?.(event);
+        if (usage) this.opts.onUsage?.(usage, task);
+        if (this.opts.backend.failure?.(event) === "quota") quota = true;
+      },
+      onActivity: () => this.touch(),
+      onLimit: () => this.abortReview("review output limit exceeded"),
+      onLeaderExit: () => {
+        if (this.child === child) { this.reviewing = undefined; this.runningBinding=undefined; }
+      },
     });
+    // Owned before any await, so a stop that lands before "spawn" still finds and kills it.
+    this.child = ownedChild = child;
+    this.childCleanup = release;
+    this.childCurrent = launch.watchCurrent ? launch.current : undefined;
+    const code = await child.done;
+    if (this.child === child) this.child = undefined;
+    return { code, quota };
     } finally {
       closeMcp();
       if (policyTimer) clearInterval(policyTimer);
@@ -403,8 +380,8 @@ export class ReviewerPrintPeer extends BasePeer {
     this.runningBinding=undefined;
     const child = this.child;
     if (!child) return;
-    await (this.childStop ? this.childStop(child) : stopOwnedProcess(child, { group: true }));
-    if (this.child === child) { await this.childCleanup?.(); this.child = undefined; this.childStop = undefined; this.childCleanup = undefined; this.childCurrent = undefined; }
+    await child.stop();
+    if (this.child === child) { await this.childCleanup?.(); this.child = undefined; this.childCleanup = undefined; this.childCurrent = undefined; }
   }
 }
 

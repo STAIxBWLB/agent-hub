@@ -6,6 +6,16 @@ import { CONDUCTOR_START_PEERS, defaultPeerRoles } from "../adapters/registry.ts
 // The hub's task tools, defined once: the MCP server (Claude plugin, Kimi, Codex) and the local worker both read this.
 import { NOTE_KINDS } from "./envelope.ts";
 
+/** Restricted to the fixed current-child tools server, never an ordinary peer tool. */
+/** The fixed MCP surface of a current owned implementer child; independent of broader project roles. */
+export const IMPLEMENTER_HUB_TOOL_NAMES: readonly string[] = Object.freeze(["hub_task_accept", "hub_task_decline", "hub_task_done", "hub_checkpoint", "hub_send", "hub_task_show", "hub_task_propose", "hub_remember", "hub_inbox", "hub_permission_request"]);
+
+export const IMPLEMENTER_PERMISSION_TOOL = {
+  name: "hub_permission_request",
+  description: "Native permission prompt for this current owned child. The person allows once or denies; failure is deny.",
+  inputSchema: { type: "object", properties: { tool_name: { type: "string", maxLength: 128 }, input: { type: "object" }, tool_use_id: { type: "string", maxLength: 256 } }, required: ["tool_name", "input", "tool_use_id"], additionalProperties: false },
+};
+
 /** Shared communication rule for channel and tool-only sessions. */
 export const ACTIONABLE_MESSAGE_INSTRUCTION = "Do not use [FYI] for PR ready, done, submitted, ruling needed, blocker, or changed contract or path messages: each requires action from the recipient. Use [FYI] only for progress or information that needs no action. hub_task_done and hub_review already notify the assigned recipients; no duplicate hub_send chat is needed.";
 

@@ -473,3 +473,18 @@ test("valid JSON of the wrong shape counts as damage: the dry run and --yes poin
     expect(rows(stateDir, "SELECT count(*) AS n FROM resolution_history")).toEqual([{ n: 0 }]);
   } finally { rmSync(base, { recursive: true, force: true }); }
 }, 60_000);
+
+test("#525 runtime reset lists and removes each headless Claude task-session pointer", async () => {
+  const { base, root, stateDir } = fixture();
+  try {
+    const pointer = "claude-task-sessions.claude-worker.json";
+    writeFileSync(join(stateDir, pointer), JSON.stringify({ version: 1, tasks: {} }));
+    const preview = await cli(root, ["reset"]);
+    expect(preview.code, preview.stderr).toBe(0);
+    expect(preview.stdout).toContain(pointer);
+    expect(existsSync(join(stateDir, pointer))).toBe(true);
+    const applied = await cli(root, ["reset", "--yes"]);
+    expect(applied.code, applied.stderr).toBe(0);
+    expect(existsSync(join(stateDir, pointer))).toBe(false);
+  } finally { rmSync(base, { recursive: true, force: true }); }
+});

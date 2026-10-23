@@ -9,8 +9,15 @@ export interface DeliveryReceipt {
   quota?: true;
 }
 
+/** Host-owned print child authority, revoked before stop/turn settlement. No terminal ownership. */
+export interface OwnedToolsLaunch {
+  launchId: string; generation: string; sessionId: string; signal: AbortSignal; task?: number; permissionHook: true;
+}
+
 export interface PeerAdapter {
   readonly id: PeerId;
+  ownedTools?(launchId: unknown): OwnedToolsLaunch | undefined;
+  keepApprovalAlive?(): void;
   readonly state: PeerState;
   /** Host-observed native session identity. An absent port permits owner-token fallback; undefined means unknown. */
   readonly sessionGeneration?: string | number;

@@ -14,7 +14,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { ControlClient, stateDirFor } from "../hub/control-client.ts";
 import { VERSION } from "../version.ts";
-import { ACTIONABLE_MESSAGE_INSTRUCTION, projectConductorTools, projectToolList, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
+import { IMPLEMENTER_HUB_TOOL_NAMES, IMPLEMENTER_PERMISSION_TOOL, ACTIONABLE_MESSAGE_INSTRUCTION, projectConductorTools, projectToolList, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, profileTaskTools } from "../hub/hub-tools.ts";
 import { frame, replyParent, sanitize, HUB_MESSAGE_INSTRUCTION, type Envelope } from "../hub/envelope.ts";
 import { renderHeldHint } from "../hub/delivery-hints.ts";
 
@@ -25,6 +25,7 @@ const stateDir = process.env.AGENTHUB_STATE_DIR ?? stateDirFor(process.cwd());
 const projectRoot = process.env.AGENTHUB_PROJECT_DIR ?? process.cwd();
 /** tools mode: the same server, run by Kimi (ACP mcpServers), Codex (mcp_servers override) or Jcode. Their messages arrive through their own adapters, so no channel here. Not the "tools-only" Claude below. */
 const toolsMode = process.env.AGENTHUB_MODE === "tools";
+const permissionTool = toolsMode && process.env.AGENTHUB_PERMISSION_TOOL === "1";
 /**
  * #368: a tools-mode server acts as exactly the peer whose owned launch started it, and the project's Jcode MCP entry names none, so the
  * id comes from the owned process env alone. With none (a person's own `jcode` run in this project outside the hub) it connects as nobody,
@@ -340,6 +341,7 @@ async function buildToolList() { return toolListFor(await activeLifecycle(stateD
 function toolListFor(lifecycle: Awaited<ReturnType<typeof activeLifecycle>>) {
   return {
   tools: projectToolList([
+    ...(permissionTool ? [IMPLEMENTER_PERMISSION_TOOL] : []),
     {
       name: "hub_send",
       description:
@@ -355,7 +357,7 @@ function toolListFor(lifecycle: Awaited<ReturnType<typeof activeLifecycle>>) {
         additionalProperties: false,
       },
     },
-    ...(toolsMode
+    ...(toolsMode && !permissionTool
       ? []
       : [
           {
@@ -377,7 +379,7 @@ function toolListFor(lifecycle: Awaited<ReturnType<typeof activeLifecycle>>) {
         ]),
     ...profileTaskTools(profile, lifecycle?.stages, lifecycle?.criteria).filter(tool => (lifecycle !== undefined || tool.name !== "hub_sdlc_record") && (!deliveryOnly || tool.name !== "hub_delivery_retry")),
     ...projectConductorTools(lifecycle?.startPeers),
-  ], lifecycle?.readOnly),
+  ], lifecycle?.readOnly).filter(tool => !permissionTool || IMPLEMENTER_HUB_TOOL_NAMES.includes(tool.name)),
   };
 }
 
@@ -390,13 +392,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 async function callTool(req: { params: { name: string; arguments?: Record<string, unknown> } }) {
   const { name, arguments: args } = req.params;
   if (unidentified) return { ...text(UNIDENTIFIED), isError: true };
+  if (permissionTool && !IMPLEMENTER_HUB_TOOL_NAMES.includes(name)) return { ...text("tool unavailable to this owned implementer child"), isError: true };
+  if (name === "hub_permission_request") {
+    const deny = (message: string) => text(JSON.stringify({ behavior: "deny", message }));
+    if (!permissionTool || !hub) return deny("hub permission unavailable");
+    if (typeof args?.tool_name !== "string" || !/^[A-Za-z][A-Za-z0-9_.:/-]{0,127}$/.test(args.tool_name)
+      || !args.input || typeof args.input !== "object" || Array.isArray(args.input)
+      || typeof args.tool_use_id !== "string" || !args.tool_use_id.length || args.tool_use_id.length > 256) return deny("invalid native permission request");
+    try {
+      // Keep original arguments only in this native request closure; the host returns a decision, not replacements.
+      const res = await hub.request({ t: "permission_request", tool: args?.tool_name, input: args?.input }, 3_605_000);
+      return res.ok === true && res.behavior === "allow" ? text(JSON.stringify({ behavior: "allow", updatedInput: args?.input })) : deny(typeof res.message === "string" ? res.message : "permission denied");
+    } catch { return deny("hub permission unavailable"); }
+  }
   if (name === "hub_delivery_done" && channel) {
     if (!hub) return text(offline());
     const a = args ?? {};
     const result = await hub.request({ t: "delivery_complete", deliveryId: a.delivery_id, generation: a.delivery_generation });
     return text(result.ok ? "delivery completed" : `not completed: ${result.error}`);
   }
-  if (name === "hub_inbox" && !toolsMode) {
+  if (name === "hub_inbox" && (!toolsMode || permissionTool)) {
     let remote: string[] = [], notice = "", polling = "", counted = false;
     if (hub) {
       try {

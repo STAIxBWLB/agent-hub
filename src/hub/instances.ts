@@ -146,17 +146,20 @@ export function validateInstances(raw: unknown, catalog: ProjectAdapterCatalog):
     if (freshReviewer && entry.permission_mode) return fail(`${path}.permission_mode`, "a fresh reviewer has a fixed read-only policy");
     // An external instance runs only in the person's terminal; its definition bounds the declared roles.
     const external = definition.instances?.mode === "external";
-    const runtime = freshReviewer ? definition.reviewerVariant ?? definition : definition;
+    const headlessWriter = entry.start_mode?.value === "headless" && !!definition.headlessVariant && declaredRoles.includes("implementer") && declaredRoles.every(role => role === "implementer" || role === "verifier");
+    if (headlessWriter && !entry.worktree) return fail(`${path}.worktree`, "a headless implementer needs its own worktree");
+    if (headlessWriter && entry.permission_mode && entry.permission_mode.value !== "ask" && entry.permission_mode.value !== "ask-when-needed") return fail(`${path}.permission_mode`, "a headless implementer permits only ask or ask-when-needed");
+    const runtime = freshReviewer ? definition.reviewerVariant ?? definition : headlessWriter ? definition.headlessVariant! : definition;
     const unavailableReviewer = freshReviewer && !!(definition.reviewerVariant ?? definition).reviewer?.unavailable;
     if (!unavailableReviewer && runtime.instances?.mode !== "external" && !supportsHeadlessInstances(runtime)) return fail(`${path}.kind`, definition.reviewerVariant ? 'unsupported; this kind only declares headless reviewer instances with roles exactly ["reviewer"]' : "unsupported; explicit external instance policy or a headless instance policy with a headless factory is required");
     if (declaredRoles.includes("planner") && definition.projection?.plannerEligible !== true) return fail(`${path}.roles`, "this kind cannot plan");
     if (external) {
       const declared = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
       // #223: a headless one is the kind's reviewer variant, one fresh hub-run session per review request.
-      if (entry.start_mode && definition.reviewerVariant) {
+      if (headlessWriter) {
+        // Runtime policy and worktree/permission checks above govern this builtin-only writer variant.
+      } else if (entry.start_mode && definition.reviewerVariant) {
         const reviewerRoles = declared.length === 1 && declared[0] === "reviewer";
-        // #525 R1: a headless writer is the kind's implementer variant, which arrives with slice 525-4; until then it is refused.
-        if (!reviewerRoles && declared.includes("implementer") && declared.every(role => role === "implementer" || role === "verifier")) return fail(`${path}.start_mode`, "headless Claude implementer is not available in this release");
         if (!reviewerRoles) return fail(`${path}.roles`, "a headless channel-kind instance is a reviewer: roles must be exactly [\"reviewer\"]");
         if (entry.worktree) return fail(path, "a headless reviewer reads the project checkout: worktree is not supported");
       } else {

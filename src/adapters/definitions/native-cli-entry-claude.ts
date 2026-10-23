@@ -11,8 +11,11 @@ export async function runClaudeEntry(ctx: NativeCliEntryContext): Promise<void> 
   // Each terminal instance keeps its canonical hub identity and its separately validated execution root.
   const peer = ctx.instance ?? "claude";
   if (ctx.hubStarted) {
-    // #223: the hub starts a headless reviewer and runs one `claude -p` per review; nothing runs in this terminal.
-    if (args.includes("--print-command") || args.includes("--dry-run")) return console.log(JSON.stringify({ peer, start: "hub", note: "a headless reviewer the hub runs per review" }, null, 2));
+    // Both builtin headless variants are hub-owned; nothing runs in this terminal.
+    const declaration = ctx.instance ? projectConfig().instances?.[ctx.instance] : undefined;
+    const writer = declaration?.roles?.includes("implementer") && declaration.start_mode === "headless";
+    const description = writer ? "a headless implementer the hub runs per task" : "a headless reviewer the hub runs per review";
+    if (args.includes("--print-command") || args.includes("--dry-run")) return console.log(JSON.stringify({ peer, start: "hub", note: description }, null, 2));
     const hub = await ctx.connect();
     try {
       const snapshot = (await hub.request({ t: "status" })).status;
@@ -20,7 +23,7 @@ export async function runClaudeEntry(ctx: NativeCliEntryContext): Promise<void> 
       const res = await hub.request({ t: "start", peer, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
       if (res.ok !== true) fail(String(res.error ?? `${peer} was not started`));
     } finally { hub.close(); }
-    return console.log(`${peer} started: a headless reviewer the hub runs per review (stop it with ahub stop ${peer})`);
+    return console.log(`${peer} started: ${description} (stop it with ahub stop ${peer})`);
   }
   const { launcherPreview, readControl, prepareTerminalLaunch, registerTerminalLaunch, claudeObservationHooks, buildLaunch, runClaudeLaunch, processSignature, recordClaudeLaunch, cleanupStaleClaudeSettings, nativeLaunchEnv, childEnv, cleanupClaudeSettings } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {

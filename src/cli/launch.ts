@@ -30,10 +30,14 @@ export function instanceLaunchArguments(command: string, raw: readonly string[],
     const declaration = instances && Object.hasOwn(instances, id) ? instances[id] : undefined;
     if (!declaration || declaration.kind !== command || !definitionOf(id, instances)) throw new Error("--as must name a declared instance of this command's native kind");
     // #223: a headless reviewer is started by the hub, never from this terminal.
-    hubStarted = definitionOf(id, instances) === definitionOf(command)?.reviewerVariant;
+    const runtime = definitionOf(id, instances), base = definitionOf(command);
+    hubStarted = runtime === base?.reviewerVariant || runtime === base?.headlessVariant;
     instance = id;
   }
-  if (hubStarted && args.some(arg => arg !== "--print-command" && arg !== "--dry-run")) throw new Error(`${instance} is a headless reviewer the hub runs per review: ahub ${command} --as ${instance} takes no launch arguments`);
+  if (hubStarted && args.some(arg => arg !== "--print-command" && arg !== "--dry-run")) {
+    const writer = definitionOf(instance!, instances) === definitionOf(command)?.headlessVariant;
+    throw new Error(`${instance} is a headless ${writer ? "implementer the hub runs per task" : "reviewer the hub runs per review"}: ahub ${command} --as ${instance} takes no launch arguments`);
+  }
   return { ...(instance ? { instance } : {}), args, ...(hubStarted ? { hubStarted: true as const } : {}) };
 }
 

@@ -19,6 +19,7 @@ test("#451 registry enrollment includes every kind and gives reviewer variants d
   expect(new Set(rows.map(row => row.id)).size).toBe(rows.length);
   for (const definition of ADAPTERS) {
     expect(rows.some(row => row.id === definition.kind && row.definition === definition)).toBe(true);
+    if (definition.headlessVariant) expect(rows.some(row => row.id === `${definition.kind}:implementer` && row.definition === definition.headlessVariant)).toBe(true);
     if (definition.reviewerVariant) expect(rows.some(row => row.id === `${definition.kind}:reviewer` && row.definition === definition.reviewerVariant)).toBe(true);
   }
 });
@@ -195,4 +196,11 @@ test("#625 follow-up: a newly enrolled non-generic ACP engine cannot silently by
   const original = ADAPTERS.find(definition => definition.transport === "acp" && definition.start.daemonPort === "acp")!;
   const fake: AdapterDefinition = { ...original, kind: "fake-owned-acp", reviewerVariant: undefined, start: { ...original.start, daemonPort: "owned-acp" } };
   expect(() => assertEnrollment([...ADAPTERS, fake], [...primary(), fake.kind], UNSUPPORTED, UNSUPPORTED_LEGS)).toThrow(/fake-owned-acp/);
+});
+
+
+test("#525 headless implementer cannot disappear from conformance enrollment", async () => {
+  const { assertEnrollment, UNSUPPORTED } = await enrollment();
+  const reasons = { ...UNSUPPORTED }; delete reasons["claude:implementer"];
+  expect(() => assertEnrollment(ADAPTERS, primary(), reasons)).toThrow(/claude:implementer/);
 });

@@ -4,6 +4,7 @@ export { ACP_LEGS, definitionIdentities, type AcpLeg } from "../../src/adapters/
 /** Unsupported generic legs are explicit receipts, never skipped readiness claims. */
 export const UNSUPPORTED: Record<string, string> = {
   agy: "Pull-only native surface has no driven headless factory, managed permission acknowledgements, quota or resume; real channel/native-hook coverage: test/agy-peer.test.ts",
+  "claude:implementer": "Per-task sessions and current-child prompt approvals use owned print children, not generic text-prompt legs; dedicated coverage: test/claude-implementer.test.ts and test/headless-claude-permission-client.test.ts",
   "claude:reviewer": "Fresh review children require an isolation receipt and task-bound verdict envelope, not a generic text prompt; dedicated coverage: test/reviewer-print.test.ts",
   "codex:reviewer": "Fresh review children require verified native isolation and task-bound verdict authority; dedicated coverage: test/reviewer-print.test.ts and test/codex-review-isolation.test.ts",
   "kimi:reviewer": "Fresh review children require native preparation and task-MCP authority; dedicated coverage: test/kimi-review.test.ts, test/kimi-review-daemon.test.ts and test/kimi-review-stop.test.ts",

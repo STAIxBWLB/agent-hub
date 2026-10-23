@@ -1,3 +1,6 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { normalizeUsage } from "../omniroute/usage.ts";
+import { permissionPayload } from "./permission-payload.ts";
 import { readClaudeLaunchProof } from "./claude-launch-proof.ts";
 import { InboxPolling } from "./inbox-polling.ts";
 import { ActionBudgets, actionPolicyConfig, type ActionPolicyConfig } from "./action-policy.ts";
@@ -99,7 +102,7 @@ import { fileURLToPath } from "node:url";
 import { realPath, hubHome } from "./project.ts";
 import { mainCheckoutBranch, mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent, PublishResult } from "./bus.ts";
-import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, profileTaskTools } from "./hub-tools.ts";
+import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, profileTaskTools } from "./hub-tools.ts";
 import { Conductor, ConductorHolds, conductorPeer, conductorProgressSink, publicConductorTask, publicPeerBudget, type ConductEvent } from "./conductor.ts";
 import { SupervisionFeed } from "./supervision.ts";
 import { drainCliAudits } from "../cli/identity-audit.ts";
@@ -552,6 +555,7 @@ interface Client {
   role?: "peer" | "console" | "tools";
   peer?: PeerId;
   launchId?: string;
+  toolsOwner?: { owner: PeerAdapter; launchId: string; generation: string; cwd: string };
   tail?: () => void;
   watch?: () => void;
   /** The one-launch Kimi TUI admission this socket attached under; its close clears only that admission. */
@@ -611,6 +615,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const channelPeers = [...ADAPTERS.filter(definition => definition.transport === "claude-channel").map(definition => definition.kind),
     ...channelExtras.filter(id => adapterCatalog.definitionOf(id, declarations)?.transport === "claude-channel")];
   const executionRoots = new Map<string, string>();
+  const childToolAuthority = new AsyncLocalStorage<{ by: string; current: () => boolean }>();
+  const implementerTranscripts = new Map<string, string>();
   const executionOwners = new Map<string, { owner: PeerAdapter; cwd: string; socket?: Sock; launchId?: string; generation?: string | number }>();
   const verifiedTerminalRootsThisTurn = new Set<object>();
   const reviewerUnavailable = new Map<string, string>();
@@ -1422,6 +1428,10 @@ export async function startDaemon(opts: DaemonOptions) {
     reviewOnly: reviewOnlyPeer,
     // #223: a headless reviewer's verdict holds only while the same child it started with still runs for that task.
     reviewAuthority: runningReviewAuthority,
+    requestAuthority: by => {
+      const scope = childToolAuthority.getStore();
+      return scope?.by === by ? () => scope.current() ? undefined : "Claude child generation or execution root changed" : undefined;
+    },
     // #223 R4: fresh only when the verdict comes from a reviewer session the hub started for this task's review.
     reviewContext: (by, task) => !!definitionOf(by)?.reviewer && (bus.peers.get(by) as ReviewerPrintPeer | undefined)?.reviewing === task ? "fresh" : "continuing",
     // Proof belongs to the adapter generation actually started in the validated root. A role-only
@@ -2036,6 +2046,14 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       // The hello claim is not attached until its asynchronous preface finishes.
       if (!bound.owner.owns(bound.socket)) return undefined;
+    } else if (bound && definitionOf(peer)?.start.daemonPort === "claude-implementer") {
+      try {
+        if (bound.owner !== bus.peers.get(peer) || bound.owner.state === "offline" || bound.cwd === opts.cwd) throw new Error("execution root changed");
+        if (!verifiedTerminalRootsThisTurn.has(bound)) {
+          if (resolveInstanceExecutionCwd(opts.cwd, peer, declarations, config.roles[peer] ?? [], adapterCatalog) !== bound.cwd) throw new Error("execution root changed");
+          verifiedTerminalRootsThisTurn.add(bound); queueMicrotask(() => verifiedTerminalRootsThisTurn.delete(bound));
+        }
+      } catch { revokeTerminalExecution(peer); return undefined; }
     }
     return bound;
   }
@@ -2045,6 +2063,21 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!bound || bound.owner !== bus.peers.get(peer) || bound.cwd !== executionRoots.get(peer)) return undefined;
     }
     return executionRoot(peer);
+  }
+  function currentImplementerTools(c: Client): ReturnType<NonNullable<PeerAdapter["ownedTools"]>> {
+    const bound = c.toolsOwner, peer = c.peer;
+    if (!bound || !peer || c.role !== "tools" || stopping || recoveryActive() || !membershipAllowed(peer) || contextPii(peer) || definitionOf(peer)?.start.daemonPort !== "claude-implementer" || bus.peers.get(peer) !== bound.owner) return undefined;
+    const launch = bound.owner.ownedTools?.(bound.launchId);
+    if (!launch || launch.signal.aborted || launch.generation !== bound.generation || ownerWriteRoot(peer) !== bound.cwd || bound.cwd === opts.cwd) return undefined;
+    if (launch.task !== undefined) {
+      const task = board.get(launch.task);
+      if (!task || task.owner !== peer || tasks.isPii(task)) return undefined;
+    }
+    return launch;
+  }
+  function captureImplementerTools(c: Client): () => boolean {
+    const binding = c.toolsOwner, launch = currentImplementerTools(c);
+    return () => c.toolsOwner === binding && !!launch && currentImplementerTools(c) === launch;
   }
   function canonicalWriteScope(repo: Repo, budget?: SnapshotBudget): boolean | undefined {
     // ponytail: D1 is inert for builtin owners while .worktrees exists (a deliberate false negative).
@@ -2106,11 +2139,11 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   /** Tokens a peer used, as increments. */
   let codexUsageSeq = 0; // per hub run: with the run id and peer it names one usage record
-  const addTokens = (peer: PeerId, n: number): number => {
+  const addTokens = (peer: PeerId, n: number, task?: number): number => {
     const supervisionTurn = supervisionTurns.get(peer);
     if (supervisionTurn && Number.isFinite(n) && n >= 0) supervisionTurn.tokens = (supervisionTurn.tokens ?? 0) + n;
     if (n > 0) {
-      event({ type: "tokens", peer, n, ...taskAttribution(peer) });
+      event({ type: "tokens", peer, n, ...taskAttribution(peer, task) });
       const turn = turns.get(peer);
       if (turn) turn.tokens += n;
     }
@@ -3774,7 +3807,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const owner = bus.peers.get(peer);
     const stopNotice = definitionOf(peer)?.cli.stopNotice?.(isWsPeer(owner) ? "tui" : !owner ? startMode(peer) : "headless", owner);
     if (stopNotice) return { ok: false, error: stopNotice };
-    if (!(isAcpPeer(owner) || isPiPeer(owner) || isLocalPeer(owner) || isReviewerPrintPeer(owner))) return { ok: false, error: "unknown or non-owned peer; run ahub status and choose a hub-owned headless peer" };
+    if (!(isAcpPeer(owner) || isPiPeer(owner) || isLocalPeer(owner) || isReviewerPrintPeer(owner) || definitionOf(peer)?.start.daemonPort === "claude-implementer" && !!owner?.ownedTools)) return { ok: false, error: "unknown or non-owned peer; run ahub status and choose a hub-owned headless peer" };
     if (isPiPeer(owner) && owner.mode !== "headless") return { ok: false, error: "Pi belongs to a native TUI terminal; end it in its terminal" };
     if (owner.state === "offline" && !(isAcpPeer(owner) && owner.pendingOwnedProcess)) return { ok: false, error: `peer is already offline; start it with ${startCommand(peer)} before stopping it` };
     if (starting.has(peer) || requestedPeerStops.has(peer) || permissionChanges.has(peer)) return { ok: false, error: "peer lifecycle or permission change is in progress; wait for ahub status before retrying" };
@@ -4357,6 +4390,51 @@ export async function startDaemon(opts: DaemonOptions) {
       bus.add(local);
       await local.start();
       return { ok: true, model: route ? `${route} (fallback ${routing.local.fixed_model})` : (args.model ?? routing.local.fixed_model) };
+    }
+    if (adapter?.start.daemonPort === "claude-implementer") {
+      if (args.unattended) return { ok: false, error: "Claude implementer refuses unattended permission bypass" };
+      const currentRoot = () => {
+        const roles = config.roles[peer] ?? [];
+        return !stopping && !recoveryActive() && membershipAllowed(peer) && !contextPii(peer) && roles.includes("implementer") && roles.every(role => role === "implementer" || role === "verifier") && permissionMode(peer) !== "never-ask" && resolveInstanceExecutionCwd(opts.cwd, peer, declarations, roles, adapterCatalog) === executionCwd && executionCwd !== opts.cwd;
+      };
+      try { if (!declarations[peer]?.worktree || !currentRoot()) return { ok: false, error: "Claude implementer requires an isolated worktree and ask permissions" }; }
+      catch { return { ok: false, error: "Claude implementer execution root unavailable" }; }
+      if (existing?.state === "busy") return { ok: false, error: "Claude implementer is busy; cleanup must finish before restart" };
+      if (existing) { mute(existing); await existing.stop(); if (!currentRoot()) throw new Error("Claude implementer startup admission changed"); }
+      const selected = permissionMode(peer);
+      if (selected !== "ask" && selected !== "ask-when-needed") return { ok: false, error: "Claude implementer refuses never-ask" };
+      const implementer = adapter.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: selected, mcpServers: [], daemon: DAEMON_PORTS["claude-implementer"]({
+        cwd: executionCwd, stateDir: opts.stateDir, projectRoot: opts.cwd, instanceId, server: SERVER_JS,
+        factsHook: join(import.meta.dir, "..", "cli", "facts-hook.ts"), systemPrompt: sessionRoleContract(peer), mode: selected, watchdogMs: config.watchdog_ms,
+        admit: env => {
+          try {
+            if (env.private || !currentRoot() || bus.peers.get(peer) !== implementer) return false;
+            if (env.refs?.task === undefined) return true;
+            const task = board.get(Number(env.refs.task));
+            return !!task && task.owner === peer && !tasks.isPii(task) && ["proposed", "in_progress", "changes_requested"].includes(task.state);
+          } catch { return false; }
+        },
+        chatTask: () => { const owned = board.list("in_progress").filter(task => task.owner === peer && !tasks.isPii(task)); return owned.length === 1 ? owned[0]!.id : undefined; },
+        transcriptPersisted: (task, session) => {
+          const path = implementerTranscripts.get(`${peer}:${task}:${session}`);
+          return path ? pathEvidence(path, lstatSync) : "unknown";
+        },
+        onUsage: (usage, task) => {
+          if (bus.peers.get(peer) !== implementer) return;
+          const normalized = normalizeUsage(usage), total = claudeReportedTokens(normalized);
+          if (total !== undefined) addTokens(peer, total, task);
+          event({ type: "usage", peer, source: "claude_result", id: `${runId}:${peer}:${++codexUsageSeq}`, ...normalized,
+            ...(total !== undefined ? { totalTokens: total } : {}), ...taskAttribution(peer, task) });
+        }, notify,
+      }) });
+      await implementer.start();
+      try {
+        if (!currentRoot()) throw new Error("Claude implementer startup admission changed");
+        recoveryTaskPreface(peer); await ensurePreface(peer);
+        if (!currentRoot()) throw new Error("Claude implementer startup admission changed");
+        executionOwners.set(peer, { owner: implementer, cwd: executionCwd }); bus.add(implementer);
+        return { ok: true };
+      } catch (error) { await implementer.stop().catch(() => {}); throw error; }
     }
     if (adapter?.reviewer) {
       const backend = adapter.reviewer.backend;
@@ -5624,7 +5702,10 @@ export async function startDaemon(opts: DaemonOptions) {
 
   function onMessage(sock: Sock, msg: any): void {
     const c = sock.data;
-    const reply = (body: Record<string, unknown>) => { if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ rid: msg.rid, ...body })); };
+    const reply = (body: Record<string, unknown>) => {
+      if (c.toolsOwner && !currentImplementerTools(c)) body = { ok: false, error: "Claude child generation or execution root changed" };
+      if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ rid: msg.rid, ...body }));
+    };
     if (!c.authed) {
       if (msg.t !== "hello" || msg.token !== token) return sock.close(4401, "bad token");
       if (msg.v !== PROTOCOL) {
@@ -5645,6 +5726,13 @@ export async function startDaemon(opts: DaemonOptions) {
         c.peer = String(msg.peer ?? "");
         if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === "hub") return sock.close(4403, "peer id is reserved or malformed");
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
+        if (definitionOf(c.peer)?.start.daemonPort === "claude-implementer") {
+          const owner = bus.peers.get(c.peer), launch = owner?.ownedTools?.(msg.launchId), root = ownerWriteRoot(c.peer);
+          if (!owner || !launch || launch.signal.aborted || !root || root === opts.cwd || typeof msg.launchId !== "string") return sock.close(4403, "this process is not the current Claude child");
+          c.launchId = msg.launchId;
+          c.toolsOwner = { owner, launchId: launch.launchId, generation: launch.generation, cwd: root };
+          if (!currentImplementerTools(c)) return sock.close(4403, "Claude child admission changed");
+        }
         // #368: a hub-tools socket for an owned Jcode (a project-file MCP entry, which names no peer) is admitted only with the launch id of that
         // peer's current owned launch. A forged AGENTHUB_PEER_ID in some other process has no such id, so it never acts as that peer.
         if (definitionOf(c.peer)?.start.daemonPort === "owned-acp") {
@@ -5703,7 +5791,22 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (stopping && msg.t !== "status" && msg.t !== "kill" && !(c.role === "console" && msg.t === "native_hook_launch" && msg.op === "end")) return void reply({ ok: false, error: "hub is stopping" });
     if (c.role !== "console" && c.peer && !membershipAllowed(c.peer)) return void reply({ ok: false, error: `${c.peer} is off roster` });
+    if (c.toolsOwner && !currentImplementerTools(c)) return void reply({ ok: false, error: "Claude child generation or execution root changed" });
     switch (msg.t) {
+      case "permission_request": {
+        const peer = c.peer, launch = currentImplementerTools(c), current = captureImplementerTools(c);
+        if (!peer || !launch || c.role !== "tools" || typeof msg.tool !== "string" || !msg.input || typeof msg.input !== "object" || Array.isArray(msg.input)) return void reply({ ok: false, behavior: "deny", message: "permission unavailable" });
+        const shown = permissionPayload(msg.tool, msg.input, tasks.publicMetadataText);
+        const pending = new AbortController(), abortPending = () => pending.abort();
+        launch.signal.addEventListener("abort", abortPending, { once: true });
+        const heartbeat = setInterval(() => { if (current()) c.toolsOwner?.owner.keepApprovalAlive?.(); else pending.abort(); }, Math.max(10, Math.min(1000, Math.floor(config.watchdog_ms / 3)))); heartbeat.unref();
+        c.toolsOwner?.owner.keepApprovalAlive?.();
+        void requestPermission({ peer, title: shown.title, tool: shown.tool, classed: true, options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] }, pending.signal).then(result => {
+          const allowed = current() && result.outcome === "answered" && result.optionId === "allow";
+          reply({ ok: true, behavior: allowed ? "allow" : "deny", ...(allowed ? {} : { message: result.outcome === "expired" ? "no person answered" : "permission denied" }) });
+        }, () => reply({ ok: true, behavior: "deny", message: "hub permission unavailable" })).finally(() => { clearInterval(heartbeat); launch.signal.removeEventListener("abort", abortPending); }).catch(() => {});
+        return;
+      }
       case "permission_default": {
         if (typeof msg.peer === "string" && rosterChanging === msg.peer) return void reply({ ok: false, error: `${msg.peer} roster change is in progress` });
         if (c.role !== "console") return void reply({ ok: false, error: "permission default confirmation is a human console action" });
@@ -5779,6 +5882,17 @@ export async function startDaemon(opts: DaemonOptions) {
         return void reply({ ok: true });
       }
       case "inbox": {
+        if (c.toolsOwner) {
+          const peer = c.peer!, current = captureImplementerTools(c);
+          try {
+            // Inspect the still-pending batch before pull commits/removes it: private work never reaches this native child.
+            const pending = bus.pendingEnvelopes(peer);
+            if (!current() || pending.some(env => { const task = env.refs?.task === undefined ? undefined : board.get(Number(env.refs.task)); return env.private || contextPii(peer) || !!task && tasks.isPii(task); })) return void reply({ ok: false, error: "private inbox delivery refused" });
+            const envs = bus.pull(peer);
+            if (!envs) return void reply({ ok: false, error: queueHold(peer) ?? "delivery held" });
+            return void reply({ ok: true, envs, waiting: bus.queued(peer), waitingImportant: bus.queuedImportant(peer) });
+          } catch { return void reply({ ok: false, error: "delivery journal unavailable" }); }
+        }
         // The attached session can explicitly claim queued work even during a native turn (#493).
         // Pull and push share holds and journal settlement; work read here is completed, never pushed again.
         const peer = c.peer ? bus.peers.get(c.peer) : undefined;
@@ -5947,6 +6061,21 @@ export async function startDaemon(opts: DaemonOptions) {
         };
         try {
           const peer = c.peer;
+          if (definitionOf(peer)?.start.daemonPort === "claude-implementer") {
+            const launch = currentImplementerTools(c), root = ownerWriteRoot(peer);
+            if (!launch || !root || root === opts.cwd || sessionId !== launch.sessionId || msg.nativeLaunchId !== launch.launchId || msg.nativeInstanceId !== instanceId) return void reply({ t: "facts", ok: false });
+            if (typeof msg.transcriptPath === "string" && isAbsolute(msg.transcriptPath) && basename(msg.transcriptPath) === `${launch.sessionId}.jsonl`) {
+              try {
+                const projects = realPath(join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"), "projects")), transcript = realPath(msg.transcriptPath);
+                if (transcript.startsWith(`${projects}/`) && statSync(transcript).isFile() && launch.task !== undefined) implementerTranscripts.set(`${peer}:${launch.task}:${launch.sessionId}`, transcript);
+              } catch { /* Exact path is not yet present or is unreadable: unknown preserves session identity. */ }
+            }
+            const mode = permissionMode(peer);
+            if (mode !== "ask" && mode !== "ask-when-needed") return void reply({ t: "facts", ok: false });
+            const blocked = scopedWriteBlocked(phase, mode, msg.tool, () => projectFileTool(msg.tool, msg.input, root, config.protect_instruction_files, config.data?.readonly));
+            const actionClasses = phase === "pre" && typeof msg.tool === "string" ? claudeActionClasses(actionBudgets, msg.tool, msg.input, root) : [];
+            return void reply({ t: "facts", ok: true, ...(phase === "pre" ? { permission: mode === "ask-when-needed" && blocked ? "ask" : mode, projectRoot: root, protectInstructionFiles: config.protect_instruction_files, ...(actionClasses.length ? { actionClasses } : {}) } : {}) });
+          }
           let nativeClaude = false;
           if (definitionOf(peer)?.transport === "claude-channel" && sessionId && msg.nativeInstanceId === instanceId) {
             let expectedLaunch: string | undefined;
@@ -6301,8 +6430,9 @@ export async function startDaemon(opts: DaemonOptions) {
           });
         return;
       case "task":
+        if (c.toolsOwner && !IMPLEMENTER_HUB_TOOL_NAMES.includes(String(msg.op))) return void reply({ t: "task", ok: false, error: "tool is not available to this Claude implementer child" });
         if (recoveryActive() && recoveryPhase !== "preparing" && String(msg.op) !== "hub_checkpoint") return void reply({ t: "task", ok: false, error: "recovery is holding mutations" });
-        taskOp(c.peer ?? USER, String(msg.op), msg.args ?? {}).then(
+        (c.toolsOwner ? childToolAuthority.run({ by: c.peer!, current: captureImplementerTools(c) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : taskOp(c.peer ?? USER, String(msg.op), msg.args ?? {})).then(
           (text) => reply({ t: "task", ok: true, text }),
           (e: Error) => reply({ t: "task", ok: false, error: e.message }),
         );
