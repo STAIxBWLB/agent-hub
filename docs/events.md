@@ -71,7 +71,7 @@ Token usage by adapter:
   one function): cache reads are recorded and shown, never counted against `budget.kimi_tokens_5h`. The rolling 5 h sum of the
   counted share against that ceiling is the `tokens` window (`hub count, kimi wire log, of kimi_tokens_5h N`). Rows already in the
   session's log when the hub first sees it (a resumed session) are history and are not counted. An unreadable index, a missing,
-  shrunk or replaced file, a truncated last line, an unknown row shape or an untested wire `protocol_version` (only 1.5 is known)
+  shrunk or replaced file (a replacement is told by a hash of the consumed head and tail kept with each offset, since Linux can reuse the inode), a truncated last line, an unknown row shape or an untested wire `protocol_version` (only 1.5 is known)
   makes the count unknown: one notice (`kimi usage unknown (<reason>)`), the `tokens` reading is dropped, and no figure is reported
   until the 5 h window the gap touched has passed (a transient read error or truncated line heals on the next read). Wire format
   followed: protocol 1.5 as written by Kimi Code 2.3.0 (the issue read 2.1.1; the hub verifies 2.2.0 and 2.3.0 in `compat.ts`). The

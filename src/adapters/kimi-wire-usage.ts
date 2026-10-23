@@ -72,7 +72,10 @@ const DEFAULT_CHUNK = 1024 * 1024;
 const MARKER = Buffer.from('"usage.record"');
 const TRANSIENT: ReadonlySet<KimiWireReason> = new Set(["no-index", "io-error", "partial-line"]);
 
-interface FileState { dev: number; ino: number; offset: number; skipping: boolean }
+/** `print` is the content fingerprint of the consumed region at `offset` (see `fingerprint`): identity that survives inode reuse. */
+interface FileState { dev: number; ino: number; offset: number; skipping: boolean; print: string }
+/** The bytes the fingerprint covers at each end of the consumed region: Kimi's metadata line (with its creation time) and the last bytes read. */
+const PRINT_HEAD = 64, PRINT_TAIL = 256;
 class Unknown extends Error { constructor(readonly reason: KimiWireReason) { super(reason); } }
 
 const count = (value: unknown): number | undefined => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
@@ -190,6 +193,28 @@ export class KimiWireReader {
     return out;
   }
 
+  /**
+   * A hash of the first and last bytes of what was consumed, a pure function of the file's content and the offset. A file replaced by
+   * another (log rotation, a restored session) can get the same device and inode on Linux, and from the old offset its new content parses
+   * mid-line: the stored fingerprint no longer matches, which is `rotated`, never a read.
+   */
+  private fingerprint(fd: number, offset: number): string {
+    if (offset <= 0) return "";
+    const hash = createHash("sha256");
+    for (const [start, length] of [[0, Math.min(offset, PRINT_HEAD)], [Math.max(0, offset - PRINT_TAIL), Math.min(offset, PRINT_TAIL)]] as const) {
+      const buffer = Buffer.allocUnsafe(length);
+      let got = 0;
+      while (got < length) {
+        let n: number;
+        try { n = readSync(fd, buffer, got, length - got, start + got); } catch { throw new Unknown("io-error"); }
+        if (n <= 0) throw new Unknown("shrunk");
+        got += n;
+      }
+      hash.update(buffer);
+    }
+    return hash.digest("hex");
+  }
+
   private readFile(agent: string, path: string, previous: FileState | undefined, limit: number): { state: FileState; rows: KimiWireRow[]; more: boolean; read: number } {
     let fd: number;
     try { fd = openSync(path, "r"); } catch { throw new Unknown("io-error"); }
@@ -198,7 +223,10 @@ export class KimiWireReader {
       if (!stat.isFile()) throw new Unknown("io-error");
       if (previous && (previous.dev !== stat.dev || previous.ino !== stat.ino)) throw new Unknown("rotated");
       if (previous && stat.size < previous.offset) throw new Unknown("shrunk");
-      const state: FileState = previous ? { ...previous } : { dev: stat.dev, ino: stat.ino, offset: 0, skipping: false };
+      if (previous && this.fingerprint(fd, previous.offset) !== previous.print) throw new Unknown("rotated");
+      const state: FileState = previous ? { ...previous } : { dev: stat.dev, ino: stat.ino, offset: 0, skipping: false, print: "" };
+      const started = state.offset;
+      const seal = (done: FileState): FileState => ({ ...done, print: done.offset === started && previous ? done.print : this.fingerprint(fd, done.offset) });
       const rows: KimiWireRow[] = [];
       const length = Math.min(limit, stat.size - state.offset);
       if (length <= 0) return { state, rows, more: false, read: 0 };
@@ -216,7 +244,7 @@ export class KimiWireReader {
       let pos = 0;
       if (state.skipping) {
         const end = buffer.indexOf(10, 0);
-        if (end < 0) return { state: { ...state, offset: base + length }, rows, more: !reachedEnd, read: length };
+        if (end < 0) return { state: seal({ ...state, offset: base + length }), rows, more: !reachedEnd, read: length };
         pos = end + 1;
         state.skipping = false;
       }
@@ -246,7 +274,7 @@ export class KimiWireReader {
         pos = end + 1;
       }
       state.offset = base + pos;
-      return { state, rows, more: state.offset < stat.size, read: length };
+      return { state: seal(state), rows, more: state.offset < stat.size, read: length };
     } finally { closeSync(fd); }
   }
 

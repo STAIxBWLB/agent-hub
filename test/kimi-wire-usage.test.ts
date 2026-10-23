@@ -284,3 +284,29 @@ test("restart seeding honours a budget_resume: rows recorded before the resume r
   rig.usage.collect("kimi");
   expect(rig.log.reports.at(-1)?.used).toBeCloseTo(16 / 1000, 8); // 15 after the resume + 1, not 960 + 16
 });
+
+test("a file replaced in place under the same dev/ino (inode reuse, as on Linux) is rotated, never read from the old offset", () => {
+  const h = home(), s = session(h);
+  appendFileSync(s.wire(), row(10, 2) + row(10, 2));
+  const reader = new KimiWireReader({ home: h.root, sessionId: s.id });
+  expect(reader.read().status).toBe("ok");
+  // same inode, longer, different content: the old offset lands mid-line of the new file
+  writeFileSync(s.wire(), meta() + row(1, 1, 1, 1, 1_790_000_000_001).repeat(10) + other("prompt", "z".repeat(500)));
+  expect(reader.read()).toEqual({ status: "unknown", reason: "rotated" });
+  // an in-place replacement that keeps the head identical but changes the consumed tail is also caught
+  const h2 = home(), s2 = session(h2);
+  appendFileSync(s2.wire(), row(10, 2) + row(10, 2));
+  const reader2 = new KimiWireReader({ home: h2.root, sessionId: s2.id });
+  expect(reader2.read().status).toBe("ok");
+  const original = Buffer.from(meta() + row(10, 2) + row(10, 2));
+  const changed = Buffer.from(original); changed[changed.length - 20] = changed[changed.length - 20] === 0x41 ? 0x42 : 0x41;
+  writeFileSync(s2.wire(), Buffer.concat([changed, Buffer.from(row(3, 3))]));
+  expect(reader2.read()).toEqual({ status: "unknown", reason: "rotated" });
+  // an ordinary append never trips it
+  const h3 = home(), s3 = session(h3);
+  appendFileSync(s3.wire(), row(1, 1));
+  const reader3 = new KimiWireReader({ home: h3.root, sessionId: s3.id });
+  reader3.read(); appendFileSync(s3.wire(), row(2, 2)); appendFileSync(s3.wire(), row(3, 3));
+  const r3 = reader3.read();
+  expect(r3.status === "ok" && r3.rows.map(x => x.inputOther)).toEqual([2, 3]);
+});
