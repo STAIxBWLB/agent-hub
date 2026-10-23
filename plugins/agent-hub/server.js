@@ -3412,7 +3412,7 @@ ${renderDigest(envs, false)}` }] });
       try {
         gate = rawInput === undefined || !this.sessionId ? undefined : this.opts.actionGate?.({ names: [call.title, announced, canonical].filter((name) => typeof name === "string"), ...kind ? { kind } : {}, input: rawInput }, this.sessionId);
       } catch {
-        gate = { title: "Action approval: the always-ask check failed; approve only if you know what runs" };
+        gate = { title: "Action approval: the always-ask check failed; command withheld", denyOnly: true };
       }
       if (once && identity && !gate) {
         this.opts.log?.(`permission auto-approved for ${this.id}: ${identity}`);
@@ -3428,7 +3428,9 @@ ${renderDigest(envs, false)}` }] });
       const title = gate ? gate.title : raw === undefined ? `${named ?? "tool call"} (payload not reported by the agent)` : `${named ?? "tool call"}${input}`;
       this.emitActivity("ask", `${String(msg.id)}: ${activityText(title)}; answer in ahub console`);
       let options = (msg.params?.options ?? []).filter((o) => o.kind !== "allow_always" || !gate && !this.nativePolicy?.lockedReadOnly && raw !== undefined && !cut);
-      const budgetOption = gate?.budget && once ? { optionId: ACTION_BUDGET_OPTION, name: `Allow ${gate.budget.label} for this session`, kind: "allow_once" } : undefined;
+      if (gate?.denyOnly)
+        options = options.filter((o) => o.kind === "reject_once" || o.kind === "reject_always");
+      const budgetOption = !gate?.denyOnly && gate?.budget && once ? { optionId: ACTION_BUDGET_OPTION, name: `Allow ${gate.budget.label} for this session`, kind: "allow_once" } : undefined;
       if (budgetOption)
         options = [...options, budgetOption];
       const tool = typeof named === "string" && /^[\w.:@-]{1,80}$/.test(named) ? named : undefined;
@@ -4075,7 +4077,7 @@ ${renderDigest(envs, false)}`;
       try {
         gate = this.opts.actionGate({ names: ["shell"], kind: "execute", input: { command: params.command, cwd: params.cwd } }, typeof thread === "string" ? thread : "");
       } catch {
-        gate = { title: "Action approval: the always-ask check failed; command withheld" };
+        gate = { title: "Action approval: the always-ask check failed; command withheld", denyOnly: true };
       }
       if (!gate)
         return false;
@@ -4101,7 +4103,9 @@ ${renderDigest(envs, false)}`;
       }
       this.actionWaits.set(controller, { link, turn });
       const options = [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }];
-      if (verdict.budget)
+      if (verdict.denyOnly)
+        options.splice(0, 1);
+      if (!verdict.denyOnly && verdict.budget)
         options.push({ optionId: ACTION_BUDGET_OPTION, name: `Allow ${verdict.budget.label} for this session`, kind: "allow_once" });
       const alive = setInterval(() => {
         if (live())
@@ -4116,8 +4120,8 @@ ${renderDigest(envs, false)}`;
           clearInterval(alive);
           this.actionWaits.delete(controller);
         }
-        let allow = live() && picked === "allow";
-        if (live() && verdict.budget && picked === ACTION_BUDGET_OPTION) {
+        let allow = !verdict.denyOnly && live() && picked === "allow";
+        if (!verdict.denyOnly && live() && verdict.budget && picked === ACTION_BUDGET_OPTION) {
           try {
             allow = verdict.budget.approve() && live();
           } catch {
