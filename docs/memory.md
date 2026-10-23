@@ -145,8 +145,8 @@ The package owns deterministic import identity, text-only graph extraction, curs
 
 Whether hub memory helps is measured, not assumed (#258 AC11, with #248):
 
-- Each task brief writes a `memory_brief` event with counts only (hub-memory items, fails among them, claude-mem
-  items); research records keep `briefs` (`delivered`, `withFail`), and `ahub research` splits approved tasks into
+- Each task brief writes a `memory_brief` event with counts only (hub-memory items, fails among them, supplemental
+  items in the legacy `claudeMem` count field; new events identify `source: "amem"`); research records keep `briefs` (`delivered`, `withFail`), and `ahub research` splits approved tasks into
   "a fail note in its brief", "brief without a fail note" and "no brief recorded" (first pass, rework, check failures).
 - `ahub bench run --memory off|claude-mem|native|both` declares an arm's memory and refuses a hub that runs with other
   settings; compare the arms with `ahub bench compare`.

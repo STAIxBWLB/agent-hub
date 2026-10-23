@@ -1495,7 +1495,7 @@ export async function startDaemon(opts: DaemonOptions) {
     memoryCheck: checkMemory,
     ...(config.memory.enabled || memoryStore ? { briefs: new Briefs(config.memory.enabled ? memory : undefined, chain.at(-1)!, () => config.memory.brief_items,
       memoryStore ? (t) => { checkMemory(); return screenMemory(memoryStore!.related(memoryProject, taskNodes(t), Number.MAX_SAFE_INTEGER)).slice(0, config.memory.brief_items).map((v) => ({ id: `mem:${v.id}`, line: memoryLine(v), kind: v.kind, about: v.about })); } : undefined,
-      (peer, task, counts) => event({ type: "memory_brief", peer, task, ...counts }),
+      (peer, task, counts) => event({ type: "memory_brief", source: "amem", peer, task, ...counts }),
       items => { const stale = staleness(); return items.map(item => `${item.line}${stale(item.about ?? []) ? " (stale?)" : ""}`); }) } : {}),
     ...(memoryStore ? { planFails: (task: import("./board.ts").Task) => {
       checkMemory();

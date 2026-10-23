@@ -41,7 +41,7 @@ function unchanged(f: ReturnType<typeof fixture>, before: string) {
   expect(f.memory.saved).toEqual([]); expect(f.shared).toEqual([]); expect(f.notices).toEqual([]); expect(f.nativeIds).toEqual([]);
 }
 
-test("Tasks.remember stores structured-only fail text exactly in ordinary v1 and mocked claude-mem", async () => {
+test("Tasks.remember stores structured-only fail text exactly in ordinary v1 without a duplicate auxiliary write", async () => {
   const f = fixture();
   const input = { kind: "fail", approach: "retrying a stale snapshot", symptom: "wrong revision observed", cause: "missing current revision check", evidence: "test:revision-regression", retry_when: "the current revision check is present" };
   const expected = "Approach: retrying a stale snapshot\nSymptom: wrong revision observed\nCause: missing current revision check\nEvidence: test:revision-regression\nRetry when: the current revision check is present";
@@ -51,7 +51,7 @@ test("Tasks.remember stores structured-only fail text exactly in ordinary v1 and
   expect(f.rows()[0]).toMatchObject({ schema: "agent-hub.memory/v1", op: "note", text: expected, kind: "fail", source: "hub", peer: "codex" });
   for (const field of ["approach", "symptom", "cause", "evidence", "retry_when"]) expect(Object.hasOwn(f.rows()[0]!, field)).toBe(false);
   expect(f.store.list({ project: "synthetic-project" })[0]?.text).toBe(expected);
-  expect(f.memory.saved).toHaveLength(1); expect(f.memory.saved[0]).toMatchObject({ text: expected, project: "synthetic-project", metadata: { kind: "fail", peer: "codex" } });
+  expect(f.memory.saved).toHaveLength(0);
   expect(f.shared).toHaveLength(1); expect(f.shared[0]).toContain(expected.replace(/\s+/g, " ")); expect(f.nativeIds).toHaveLength(1);
   expect(f.screens).toHaveLength(1); expect(f.screens[0]).toContain(expected);
 });
@@ -73,9 +73,9 @@ for (const [field, value, reason] of [
   unchanged(f, before); expect(f.screens).toEqual([]);
 });
 
-test("Tasks.remember keeps plain fail compatibility in native memory and mocked claude-mem", async () => {
+test("Tasks.remember keeps plain fail compatibility in native memory without a duplicate auxiliary write", async () => {
   const f = fixture(), text = "the plain legacy fail and its reason";
   await f.tasks.remember("codex", { kind: "fail", text });
   expect(f.rows()).toHaveLength(1); expect(f.rows()[0]).toMatchObject({ text, kind: "fail" });
-  expect(f.memory.saved[0]?.text).toBe(text); expect(f.shared[0]).toContain(text);
+  expect(f.memory.saved).toHaveLength(0); expect(f.shared[0]).toContain(text);
 });
