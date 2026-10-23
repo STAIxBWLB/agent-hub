@@ -95,3 +95,11 @@ test("commandText shows the shell command, argv and git argument forms, bounded 
   expect(commandText("npm publish")).toBe("npm publish");
   expect(commandText({ url: "https://x.invalid" })).toBe('{"url":"https://x.invalid"}');
 });
+
+test("a recursive delete is classed against the root it is given: the verified write root, not the project checkout (#636 rebase onto #742)", () => {
+  const budgets = new ActionBudgets(() => actionPolicyConfig(), () => "s1");
+  const call = { command: "rm -rf /work/worktree/build" };
+  expect(claudeActionClasses(budgets, "Bash", call, "/work/project")).toEqual(["destroy"]);  // outside the checkout
+  expect(claudeActionClasses(budgets, "Bash", call, "/work/worktree")).toEqual([]);          // inside a declared instance's verified worktree
+  expect(claudeActionClasses(budgets, "Bash", { command: "rm -rf /work/project/build" }, "/work/worktree")).toEqual(["destroy"]); // and the checkout is outside it
+});
