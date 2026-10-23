@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.13.0
+bun add -g github:STAIxBWLB/agent-hub#v0.14.0
 ahub setup
 ```
 
@@ -29,6 +29,10 @@ For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
+
+## Upgrading to 0.14.0
+
+At a terminal width `ahub board` now prints one line per task: the title is cut with `...`, dependencies move to an AFTER column, STAGE is the meter with a short next-step code (`intent: issue?`, `review: CI?`, `ready`) and a legend line explains them; `ahub board --full`, piped output without `COLUMNS` and `--json` keep the whole title and SDLC advice (#724). The dashboard's Agents view gains a Usage view under Usage budgets: lifetime totals, the last 14 UTC days of tokens per peer, the open pauses and recent limit events, and a task table in which a private task shows only as `#id [pii]` (#683 U4). A task sheet gains a Code group: the changed symbols marked `matching` or `unplanned` against the plan, the plan names nothing changed under as `untouched`, and a symbol opens the Memory tab on its node; a private task has no group (#684). `ahub sdlc metrics [--since <date>]` and the planner tool `hub_sdlc_metrics` (planner or person, read-only) report lead times, first-pass approval, rework rounds, stale-head re-reviews and stalls from board history, with `unknown` where the board cannot tell. An optional `[bands.<metric>]` table in `.agenthub/sdlc.toml` turns a breach into a hub notice, a read-only `triage` backlog task or a `plan` backlog card, once per episode, only while `mode` is `advise` or `enforce`, and never a GitHub issue (#481 S7; see [SDLC metrics and control bands](sdlc.md#sdlc-metrics-and-control-bands-481-s7)). In advise and enforce a task's issue identity is now linked when it is proposed or accepted, with no GitHub read; a title that names another repository (`agent-mem#13`) links only when `refs.repo` names it, and the propose result suggests setting it (#723). A fresh reviewer whose start fails now names a cause class (`version`, `binary`, `mcp_inventory`, `plugins_hooks_apps`, `sandbox_proof`, `credential_root`, `timeout` or `unknown`) on the `reviewer` line of `ahub status` and in `hub.log` (#722). A Claude channel instance in `.agenthub/config.local.json` may declare `implementer` or `verifier` and then needs its own `worktree`, while a planner or reviewer instance refuses one; the hub routes no code tasks to such an instance until #525-5, and a headless Claude instance stays reviewer-only. `planner` is refused on a pi, local or agy instance declaration and dropped, with a notice, from a `roles` entry for those kinds (#525-1; see [Roles per SDLC stage](operations.md#roles-per-sdlc-stage-525-planned)). A planner pull of a reserved backlog task now assigns it to the reserved peer and offers it at once; when that peer is offline, off roster, paused, full or excluded, the pull is refused with the reason and no other peer takes it (#718). `ahub codex --as <id>` for a headless fresh reviewer instance starts it and returns (#720). Restart Claude sessions so they load the 0.14.0 plugin. Coming from 0.12.45 or older, the notes below apply too.
 
 ## Upgrading to 0.13.0
 
@@ -140,7 +144,7 @@ or set `OMNIROUTE_API_KEY`. The `.agenthub/routing.toml` that `ahub init` writes
 | --- | --- |
 | `ahub say [@peer] <text>` | talk; start with `[STATUS]` to let it batch, `[FYI]` for the record only |
 | `ahub task propose [--class <c>] <title>` | put work on the board; the hub picks an owner and a reviewer, and the class if you name none |
-| `ahub board` | who has what; `ahub task show <id>` for one task |
+| `ahub board` | who has what, one line per task at a terminal width; `--full` for whole titles and SDLC advice, `ahub task show <id>` for one task |
 | `ahub task cancel <id> --reason <text>` | close obsolete work without approving it or stopping a native turn |
 | `ahub settings set planner <peer>` | pin the planner; status reports whether it came from settings, roles or the automatic choice |
 | `ahub settings reload` | apply edited config files without a restart; guarded values wait for your `y` in this terminal, and restart-only keys stay pending |

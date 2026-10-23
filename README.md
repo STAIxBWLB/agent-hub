@@ -5,7 +5,7 @@ Code, Codex, Kimi Code, Pi and a hub-owned local worker (plus Qwen Code, Jcode a
 Antigravity if you want them) share a message bus, a task board and a memory, each
 connected through its own native interface.
 
-Status: 0.13.0, control protocol 16. Bun + TypeScript, one loopback daemon per
+Status: 0.14.0, control protocol 16. Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## Quick start
@@ -37,6 +37,8 @@ ahub ui                                      # the web dashboard
 - **A shared task board.** Work is proposed, accepted, done and reviewed through hub
   tools. Roles split planning, implementation and review, `routing.toml` picks
   owners by task class, and owners of overlapping work are told what changed.
+  `ahub sdlc metrics` reads lead times, rework and stalls from board history, and
+  optional control bands turn a breach into a backlog card.
 - **Shared memory.** Decisions, contracts, fails and findings are kept through the
   first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library
   (short- and long-term tiers, a typed graph, git sync between machines). Agents get
@@ -49,8 +51,8 @@ ahub ui                                      # the web dashboard
   effect whose outcome is unknown.
 - **Operations.** A terminal console and a local dashboard, one hub per repository or
   worktree with a machine-wide view, live settings reload, token usage and quota
-  history (`ahub usage`), and `ahub upgrade`, which carries running sessions across
-  versions.
+  history (`ahub usage` and the dashboard's Usage view), and `ahub upgrade`, which
+  carries running sessions across versions.
 
 ## Upgrading
 
@@ -78,7 +80,7 @@ uses the home must run a version that understands the new layout.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-10-23-0.13.0.md) and the
+[release verification report](docs/verification/2026-10-23-0.14.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation
