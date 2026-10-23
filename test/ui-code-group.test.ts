@@ -23,7 +23,7 @@ test("each changed symbol is matching or unplanned against the plan, and a plan 
 test("a private task has no group, unknown facts say unknown, and a stored receipt is never read as public (hub side)", () => {
   expect(codeGroup({ id: 2 }, receipt([sym("x")]), ["x"], allow, true)).toBeUndefined();
   for (const unknown of [undefined, null, "known", receipt([], { state: "unknown", complete: false }), receipt([sym("x")], { repositoryKey: "k" }), { ...receipt([sym("x")]), symbols: "no" }]) {
-    expect(codeGroup({ id: 3 }, unknown, ["x"], allow, false), JSON.stringify(unknown)).toEqual({ state: "unknown", complete: false, symbols: [], untouched: [], more: 0 });
+    expect(codeGroup({ id: 3 }, unknown, ["x"], allow, false), JSON.stringify(unknown)).toEqual({ state: "unknown", complete: false, symbols: [], untouched: [], more: 0, counts: { matching: 0, unplanned: 0, untouched: 0 }, planWithheld: 0 });
   }
 });
 
@@ -32,8 +32,46 @@ test("plan names and ids that fail the hub screen or the shape are dropped, neve
   const group = codeGroup({ id: 4 }, receipt([sym("ok"), { ...sym("bad"), id: "symbol:other@src/x.ts" }, { ...sym("c\u0007trl") }]), ["ok", "SECRET plan name", "untouched one"], secret, false)!;
   expect(group.symbols.map(s => s.name)).toEqual(["ok"]);
   expect(group.untouched).toEqual(["untouched one"]);
-  expect(group.complete).toBe(false); // two listed symbols were refused, so an untouched one may have changed
+  expect(group.complete).toBe(false); // two listed symbols were refused and one plan name withheld
+  expect(group.planWithheld).toBe(1);
   expect(JSON.stringify(group)).not.toContain("SECRET");
+});
+
+test("a long plan name is read at the stored bound and a withheld one marks the group incomplete, never turning a matching symbol into unplanned (finding, bot thread)", () => {
+  const long = "Ns".repeat(126) + ".run"; // 256 characters, over the old 200 bound and under the stored 300
+  expect(long.length).toBeGreaterThan(200); expect(long.length).toBeLessThanOrEqual(300);
+  const changed = receipt([sym(long)]);
+  const kept = codeGroup({ id: 6 }, changed, [long], allow, false)!;
+  expect(kept.symbols[0]!.mark).toBe("matching");
+  expect(kept.untouched).toEqual([]);
+  expect(kept.complete).toBe(true);
+  expect(kept.planWithheld).toBe(0);
+  // The same symbol with its plan name failing the screen: it is not called a departure, the group says a name was withheld and is incomplete.
+  const hidden = codeGroup({ id: 6 }, changed, [long], text => !text.includes("Ns"), false)!;
+  expect(hidden.planWithheld).toBe(1);
+  expect(hidden.complete).toBe(false);
+  expect(hidden.counts).toEqual({ matching: 0, unplanned: 1, untouched: 0 });
+  // A name over the stored bound is malformed, so it is counted too and is never silently dropped.
+  const tooLong = codeGroup({ id: 6 }, receipt([sym("x")]), ["y".repeat(301)], allow, false)!;
+  expect(tooLong).toMatchObject({ planWithheld: 1, complete: false });
+  // Every stored name is read: 50 names are the stored bound, a 51st is withheld, and the first 50 still match.
+  const fifty = Array.from({ length: 50 }, (_, i) => `Plan.name${i}`);
+  const full = codeGroup({ id: 6 }, receipt([sym("Plan.name49")]), [...fifty, "extra"], allow, false)!;
+  expect(full.symbols[0]!.mark).toBe("matching");
+  expect(full.planWithheld).toBe(1);
+  expect(full.counts).toEqual({ matching: 1, unplanned: 0, untouched: 49 }); // the total of the 50 stored names less the one that matched
+  expect(full.untouched).toHaveLength(CODE_GROUP_MAX); // the list is capped; the rest is counted in more and counts
+  expect(full.more).toBe(9);
+});
+
+test("the sheet's counts are the totals and not the listed part (nit)", () => {
+  const many = Array.from({ length: CODE_GROUP_MAX + 9 }, (_, i) => sym(`fn${i}`));
+  // Planned names sit past the cap (fn44, fn47), so the listed part holds none of the matching symbols and the totals are the only place they show.
+  const group = codeGroup({ id: 7 }, receipt(many), ["fn44", "fn47", "gone"], allow, false)!;
+  expect(group.symbols).toHaveLength(CODE_GROUP_MAX);
+  expect(group.symbols.filter(s => s.mark === "matching")).toHaveLength(0);
+  expect(group.counts).toEqual({ matching: 2, unplanned: CODE_GROUP_MAX + 7, untouched: 1 });
+  expect(group.more).toBe(9);
 });
 
 test("the group is capped and says how many more exist (hub side)", () => {
@@ -77,10 +115,26 @@ test("the sheet draws each symbol as a button with its mark, and unknown reads u
   expect(known.text()).toContain("ghost");
   expect(known.text()).toContain("untouched");
   expect(known.text()).toContain("advisory: deleted symbols are not reported");
+  expect(known.text()).toContain("1 matching, 1 unplanned, 1 untouched");
   const unknown = api.codeGroupSection(taskWith(codeGroup({ id: 9 }, undefined, [], allow, false)))!;
   expect(unknown.text()).toContain("unknown (no code facts)");
   expect(unknown.all().filter(n => n.tag === "button")).toEqual([]);
   expect(api.codeGroupSection(taskWith({ state: "known", complete: true, symbols: [], untouched: [], more: 0 }))!.text()).toContain("none observed");
+});
+
+test("the sheet says a withheld plan name may hide a plan match, and counts the totals (finding, nit)", () => {
+  const { api } = pageRig();
+  const many = Array.from({ length: CODE_GROUP_MAX + 3 }, (_, i) => sym(`fn${i}`));
+  const group = codeGroup({ id: 9 }, receipt(many), ["fn0", "Secret.name"], text => !text.includes("Secret"), false)!;
+  const text = api.codeGroupSection(taskWith(group))!.text();
+  expect(text).toContain("1 matching, " + (CODE_GROUP_MAX + 2) + " unplanned, 0 untouched");
+  expect(text).toContain("3 more not shown");
+  expect(text).toContain("1 plan name is withheld, so a symbol marked unplanned may be in the plan");
+  expect(text).toContain("incomplete");
+  expect(text).not.toContain("Secret");
+  const clean = api.codeGroupSection(taskWith(codeGroup({ id: 9 }, receipt([sym("a")]), ["a"], allow, false)))!.text();
+  expect(clean).not.toContain("withheld");
+  expect(clean).not.toContain("incomplete");
 });
 
 test("a task without a group (a private task) shows nothing at all, whatever else it carries", () => {
@@ -119,6 +173,10 @@ test("the Code group's colours are tokens that pass contrast in both themes, and
   }
   expect(css).toMatch(/\.code-symbol\{[^}]*overflow-wrap:anywhere/);
   expect(css).toMatch(/\.code-symbol\{[^}]*min-height:44px/);
+  expect(css).toMatch(/\.code-symbol\{[^}]*min-width:44px/); // a one-letter symbol is still a 44 px target
+  // The unplanned button keeps a hover state: its own :hover rule follows the rule that overrides the base background.
+  expect(css.indexOf("button.code-symbol.unplanned:hover{")).toBeGreaterThan(css.indexOf("button.code-symbol.unplanned{"));
+  expect(css).toMatch(/button\.code-symbol\.unplanned:hover\{background:var\(--hover\)\}/);
   // No colour literal anywhere in the new rules.
   expect(rules.map(r => r.body).join(";")).not.toMatch(/#[0-9a-f]{3,8}\b|rgba?\(|hsla?\(/i);
 });
@@ -157,7 +215,7 @@ test("the daemon's UI snapshot carries codeGroup for a public task, an unknown g
     const snapshot = await client.request({ t: "ui_snapshot", after: 0 });
     const by = (id: number) => snapshot.tasks.find((t: { id: number }) => t.id === id);
     expect(by(observed.id).codeGroup).toMatchObject({ state: "known", head: HEAD.slice(0, 8), symbols: [{ name: "Alpha.first", mark: "matching", id: "symbol:Alpha.first@a.ts" }], untouched: ["Ghost.plan"] });
-    expect(by(bare.id).codeGroup).toEqual({ state: "unknown", complete: false, symbols: [], untouched: [], more: 0 });
+    expect(by(bare.id).codeGroup).toEqual({ state: "unknown", complete: false, symbols: [], untouched: [], more: 0, counts: { matching: 0, unplanned: 0, untouched: 0 }, planWithheld: 0 });
     expect(by(privateTask.id).codeGroup).toBeUndefined();
     expect(JSON.stringify(snapshot)).not.toContain("PRIVATE-PLAN-MARKER");
     expect(JSON.stringify(snapshot.tasks)).not.toContain("repositoryKey");

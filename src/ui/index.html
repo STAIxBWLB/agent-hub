@@ -326,10 +326,11 @@ main>.stack{margin-top:var(--space-6)}
 /* A group is a plain heading and its lines: the global section{} box rule must not wrap each one in a card. */
 .detail-group{margin:var(--space-4) 0;border:0;background:none;border-radius:0;overflow:visible}
 .code-symbols{list-style:none;margin:0;padding:0;display:grid;gap:var(--space-1)}
-.code-symbol{font-family:var(--font-mono);font-size:var(--text-sm);overflow-wrap:anywhere;text-align:left;min-height:44px}
+.code-symbol{font-family:var(--font-mono);font-size:var(--text-sm);overflow-wrap:anywhere;text-align:left;min-height:44px;min-width:44px}
 button.code-symbol{background:var(--panel-soft);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius-control);padding:var(--space-1) var(--space-2)}
 button.code-symbol:hover{background:var(--hover)}
 button.code-symbol.unplanned{color:var(--amber);background:var(--amber-soft);border-color:var(--amber)}
+button.code-symbol.unplanned:hover{background:var(--hover)}
 span.code-symbol.untouched{color:var(--muted)}
 .detail-heading{font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin:0 0 var(--space-2);border-bottom:1px solid var(--line);padding-bottom:var(--space-1)}
 #task-detail-dialog::backdrop{background:var(--scrim)}
@@ -1118,8 +1119,12 @@ function codeGroupSection(task) {
   }
   for (const name of group.untouched || []) { const item = el('li'); item.append(el('span', name, 'code-symbol untouched'), el('span', ' untouched (planned, nothing changed under it)', 'meta')); list.append(item); }
   if (list.children.length) section.append(list); else section.append(el('p', 'none observed', 'meta'));
-  const note = [(group.symbols || []).filter(s => s.mark === 'matching').length + ' matching', (group.symbols || []).filter(s => s.mark === 'unplanned').length + ' unplanned', (group.untouched || []).length + ' untouched'].join(', ') + (group.head ? ' at ' + group.head : '');
-  section.append(el('p', note + (group.more ? '; ' + group.more + ' more not shown' : '') + (group.complete ? '' : '; incomplete: an untouched symbol may have changed') + '; advisory: deleted symbols are not reported', 'meta'));
+  const counts = group.counts || { matching: 0, unplanned: 0, untouched: 0 };
+  const note = counts.matching + ' matching, ' + counts.unplanned + ' unplanned, ' + counts.untouched + ' untouched' + (group.head ? ' at ' + group.head : '');
+  section.append(el('p', note + (group.more ? '; ' + group.more + ' more not shown' : '')
+    + (group.planWithheld ? '; ' + group.planWithheld + ' plan name' + (group.planWithheld === 1 ? ' is' : 's are') + ' withheld, so a symbol marked unplanned may be in the plan' : '')
+    + (group.complete ? '' : '; incomplete: an untouched symbol may have changed, and a symbol marked unplanned may be in the plan')
+    + '; advisory: deleted symbols are not reported', 'meta'));
   return section;
 }
 function openMemoryAt(node) {
