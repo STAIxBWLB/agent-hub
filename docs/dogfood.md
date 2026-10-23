@@ -15,7 +15,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Task board, routing, roles | on (claude planner, reviewer and implementer; codex, jcode, agy implementers) | board history: lead time from propose to approve, review rounds, escalations |
 | Roles per kind and form (#525-1) | on: claude holds the implementer role in the project checkout; Claude implementer instances in their own worktree are off (none declared here) | tasks claude implements (`ahub status` flow roles, board owner history); refusals naming `this kind cannot plan` or `needs its own worktree` |
 | Overlap notices | on; plan symbols match by normalized name (arguments stripped, a bare name matches the last segment, two qualified names must be equal; #682 phase 1b) | `ahub report`: overlap warnings, task pairs; false-overlap rate, and symbol-only matches on bare common names (#682) |
-| Planner WIP caps and backlog pull (#655) | on (`tasks.wip_limits.codex = 2`) | held-ready entries, offers refused for capacity |
+| Planner WIP caps and backlog pull (#655, #718) | on (`tasks.wip_limits.codex = 2`); reserved-pull handoff on after release | board history/offer readback: reserved `backlog pulled` -> `assigned` -> `accepted` for the same peer; stale or unowned offers, capacity refusals and held-ready entries |
 | Task sweep (stalls, idle owners) | on | stall and sweep events per week |
 | Turn-free coordination | off: experimental; needs a separate measured trial | coordination events, conflict notices |
 | Pull-only peers (agy) | on; `hub_inbox` drains to 64 KiB (#713) | unread offers, empty-inbox polling (#681); queued count and oldest queued age per pull-only peer in `ahub status`; reads that said `N more waiting` |

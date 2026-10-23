@@ -116,7 +116,7 @@ test("planner pull honors original person backlog reservations and pull-only off
   class PullOnlyPeer extends PullPeer {readonly pullOnly=true;deliveries=0;async deliver(_envs:Envelope[]){this.deliveries++;}}
   const kimi=new PullOnlyPeer("kimi");bus.add(kimi);await kimi.start();
   const task=await tasks.propose(USER,{title:"named pull-only work",class:"implement",backlog:true,owner:"kimi"});
-  expect(await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"named peer has room"})).toMatchObject({owner:null,reserved:"kimi",state:"proposed"});
+  await expect(tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"named peer has room"})).resolves.toMatchObject({owner:"kimi",reserved:"kimi",state:"proposed"});
   await tasks.releaseReady();expect(board.get(task.id)?.owner).toBe("kimi");expect(bus.queued("kimi")).toBeGreaterThan(0);expect(kimi.deliveries).toBe(0);
 });
 
@@ -135,7 +135,7 @@ test("automatic offline rerouting of planner pulls respects destination WIP",asy
 });
 
 test("person reservation survives planner pull undo and a second pull",async()=>{
- const {tasks,bus,capacity}=await rig();const task=await tasks.propose(USER,{title:"reserved",class:"implement",backlog:true,owner:"codex"});await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"first"});const undone=await tasks.undoPlanning("claude",task.id,1);expect(undone.reserved).toBe("codex");
+ const {tasks,board,bus,capacity}=await rig();const task=await tasks.propose(USER,{title:"reserved",class:"implement",backlog:true,owner:"codex"});/* Pre-#718 ownerless records retain undo compatibility. */board.pullPlanned(task.id,"claude","codex",0,"legacy unoffered pull");const undone=await tasks.undoPlanning("claude",task.id,1);expect(undone.reserved).toBe("codex");
  capacity.codex=0;const local=new PullPeer("local");bus.add(local);await local.start();await expect(tasks.pullPlanned("claude",{id:task.id,revision:2,reason:"second"})).rejects.toThrow("person's reservation");
 });
 test("accepted planner work remains unchanged when automatic handoffs have no capacity",async()=>{
@@ -193,7 +193,8 @@ for (const returnToBacklog of ["undo", "person return"] as const) {
     const { tasks, board, bus, capacity } = await rig();
     const local = new PullPeer("local"); bus.add(local); await local.start();
     const task = await tasks.propose(USER, { title: "restore person reservation", class: "implement", backlog: true, owner: "codex" });
-    await tasks.pullPlanned("claude", { id: task.id, revision: 0, reason: "ready" });
+    // Pre-#718 ownerless records retain person-reservation protection across return/undo.
+    board.pullPlanned(task.id, "claude", "codex", 0, "legacy unoffered pull");
     const restored = returnToBacklog === "undo" ? await tasks.undoPlanning("claude", task.id, 1) : await tasks.moveBacklog(USER, task.id, false);
     expect(restored).toMatchObject({ state: "backlog", owner: null, reserved: "codex" });
     const revision = restored.planningRevision ?? 0;
@@ -218,7 +219,10 @@ test("planner-owned reservations remain editable and a person can override or cl
   expect(task.reserved).toBeNull();
   task = await tasks.planBacklog("claude", { id: task.id, revision: task.planningRevision!, fields: { reserved: "codex" }, reason: "planner chooses again" });
   capacity.codex = 0;
-  const pulled = await tasks.pullPlanned("claude", { id: task.id, revision: task.planningRevision!, reason: "planner reservation can use fallback" });
-  expect(pulled).toMatchObject({ state: "proposed", owner: null, reserved: "local" });
+  await expect(tasks.pullPlanned("claude", { id: task.id, revision: task.planningRevision!, reason: "reserved peer is full" })).rejects.toThrow("reserved peer codex");
+  expect(board.get(task.id)).toEqual(task);
+  task = await tasks.planBacklog("claude", { id: task.id, revision: task.planningRevision!, fields: { reserved: "local" }, reason: "explicitly select another eligible peer" });
+  const pulled = await tasks.pullPlanned("claude", { id: task.id, revision: task.planningRevision!, reason: "offer amended reservation" });
+  expect(pulled).toMatchObject({ state: "proposed", owner: "local", reserved: "local" });
   expect(board.get(task.id)?.reserved).toBe("local");
 });

@@ -410,10 +410,24 @@ export class Board {
     const task = this.get(id);
     if (!task || (task.planningRevision ?? 0) !== revision || task.state !== "backlog" || task.owner || !taskCanPlan(task)) throw new Error("planner pull changed or already started");
     const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "backlog pulled", planning: { revision: revision + 1, fields: ["reserved"], previous: { reserved: task.reserved ?? null }, pull: true }, note, ...(withheld ? { withheld: true as const } : {}) };
-    const result = this.taskWrite(() => this.db.query("UPDATE tasks SET state='proposed',owner=NULL,reviewer=NULL,reserved=?,planning_revision=planning_revision+1,history=?,updated=? WHERE id=? AND planning_revision=? AND state='backlog' AND owner IS NULL")
+    const result = this.taskWrite(() => this.db.query("UPDATE tasks SET state='proposed',owner=NULL,reviewer=NULL,offer=NULL,reserved=?,planning_revision=planning_revision+1,history=?,updated=? WHERE id=? AND planning_revision=? AND state='backlog' AND owner IS NULL")
       .run(reserved, JSON.stringify([...task.history, entry]), now, id, revision));
     if (result.changes !== 1) throw new Error("planner pull changed");
     const updated = this.get(id)!; this.changed(updated, entry); return updated;
+  }
+
+  /** Publish no intermediate ownerless pull: Tasks has already admitted the exact reserved peer. */
+  pullAssigned(id: number, by: PeerId, owner: PeerId, revision: number, note: string, withheld: boolean,
+    reviewer: PeerId | null, assignmentNote: string, extra: Parameters<Board["update"]>[5], expectedFlowRevision: number): Task {
+    return this.atomic(() => {
+      const current = this.get(id);
+      if (!current || current.history.length !== expectedFlowRevision) throw new Error("task flow revision changed");
+      const pulled = this.pullPlanned(id, by, owner, revision, note, withheld);
+      const assigned = this.update(id, by, "assigned", { owner, reviewer }, assignmentNote, extra, pulled.history.length);
+      // Both deferred events describe the committed handoff, including the callback payload.
+      for (const change of this.pendingChanges ?? []) if (change.task.id === id) change.task = assigned;
+      return assigned;
+    });
   }
 
   /** No owner or execution evidence may be taken back by planning undo. */

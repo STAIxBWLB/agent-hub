@@ -1924,8 +1924,8 @@
     {
       "id": "planner-pull-person-reservation",
       "file": "src/hub/tasks.ts",
-      "search": "if (this.hasPersonReservation(task) && assignment.owner !== task.reserved)",
-      "replacement": "if (false)",
+      "search": "const assignment = this.plannerAssignment(task, !!task.reserved);",
+      "replacement": "const assignment = this.plannerAssignment({ ...task, reserved: null });",
       "testFile": "test/planner-pull.test.ts",
       "testName": "planner pull preserves person P0 order and unavailable person reservations (#263)"
     },
