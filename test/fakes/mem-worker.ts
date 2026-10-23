@@ -31,7 +31,7 @@ export class FakeMemoryClient extends ProductionMemoryClient {
     if (event.event === "SessionStart") return this.request("POST", "/api/sessions/init", { ...common, project: event.project, prompt: event.excerpt });
     if (event.event === "Stop") return this.request("POST", "/api/sessions/summarize", { ...common, last_assistant_message: event.excerpt });
     if (event.event === "SessionEnd") return this.request("POST", "/api/sessions/session-end", { ...common, reason: "hub stop", cwd: event.cwd });
-    return this.request("POST", "/api/sessions/observations", { ...common, tool_name: event.tool, tool_input: event.input ?? "", tool_response: event.output ?? event.excerpt,
+    return this.request("POST", "/api/sessions/observations", { ...common, tool_name: event.tool, tool_input: event.input ?? "", tool_response: (event.output ?? event.excerpt).slice(0, 4000),
       cwd: event.cwd, agentId: event.agent, agentType: "local-worker", tool_use_id: event.toolUseId });
   }
 }

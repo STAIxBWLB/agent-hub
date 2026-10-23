@@ -20,6 +20,22 @@ export interface MemoryClientOptions {
 const safeCell = (text: string) => text.replace(/[|\r\n]/g, " ");
 const table = (rows: View[]) => "| ID | Time | T | Title |\n|---|---|---|---|\n" + rows.map(v => `| #mem:${v.id} | ${v.at} | ${v.kind} | ${safeCell(v.title || v.text)} |`).join("\n");
 
+/** Policy sees literal field strings as well as JSON, before display/storage escaping can hide a private value. */
+function policyText(value: unknown): string {
+  const raw: string[] = [];
+  const encoded = JSON.stringify(value, (key: string, item: unknown) => {
+    if (key && item !== undefined) raw.push(key);
+    if (typeof item === "string") { raw.push(item); if (key) raw.push(`${key}: ${item}`); }
+    return item;
+  });
+  return `${encoded ?? ""}\n${raw.join("\n")}`;
+}
+/** Only authoritative tool JSON is decoded, once; arbitrary embedded encodings are not interpreted. */
+function toolJson(text: string | undefined): unknown {
+  if (text === undefined) return undefined;
+  try { return JSON.parse(text) as unknown; } catch { return undefined; }
+}
+
 /** In-process amem host. No worker URL, HTTP, model, timer or resident helper. Errors are neutral and fail open. */
 export class MemoryClient {
   constructor(private readonly options?: MemoryClientOptions) {}
@@ -61,7 +77,9 @@ export class MemoryClient {
   /** Auxiliary model/checkpoint writes are candidates, never curated evidence. Tasks' native note remains authoritative. */
   async save(note: { text: string; title?: string; project: string; metadata: Record<string, unknown> }): Promise<unknown> {
     return this.run(o => {
-      if (!o.candidates || !o.publicText(JSON.stringify(note)) || looksSecret(JSON.stringify(note))) return undefined;
+      if (!o.candidates) return undefined;
+      const complete = policyText({ ...note, project: o.project });
+      if (!o.publicText(complete) || looksSecret(complete)) return undefined;
       o.check();
       const text = `Submitted metadata: ${JSON.stringify(note.metadata)}\n\n${note.text}`;
       if (!o.publicText(text) || looksSecret(text)) return undefined;
@@ -72,7 +90,10 @@ export class MemoryClient {
   }
   async appendCapture(event: CaptureEvent): Promise<unknown> {
     return this.run(o => {
-      const complete = JSON.stringify(event);
+      // Inspect persisted/user data, not host locators such as cwd (the parent of every private path).
+      const data = { project: o.project, agent: event.agent, event: event.event, tool: event.tool, paths: event.paths,
+        status: event.status, excerpt: event.excerpt, input: event.input, output: event.output };
+      const complete = policyText([data, toolJson(event.input), toolJson(event.output)]);
       if (!o.capture || !o.publicText(complete) || looksSecret(complete)) return undefined;
       o.check();
       const store = new CaptureStore({ ...o.capture(), project: o.project, screen: text => looksSecret(text) || !o.publicText(text) });

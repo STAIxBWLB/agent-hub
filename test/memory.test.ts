@@ -1,3 +1,5 @@
+import { withoutPii } from "../src/hub/memory-policy.ts";
+import { loadRouting } from "../src/hub/routing.ts";
 import { afterEach, expect, test, setSystemTime } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -53,4 +55,106 @@ test("capture replays one host invocation once but keeps identical provider ids 
   await capture.end();
   const stored = new CaptureStore({ home: r.home, project: "project-a" }); clean.push(() => stored.close());
   expect(stored.rows().filter(v => v.event === "PostToolUse")).toHaveLength(3);
+});
+
+function actualTextPolicyRig() {
+  const r = rig(), hidden = "private\nfolder", baseRouting = loadRouting(r.home);
+  const routing = { ...baseRouting, signals: { ...baseRouting.signals, pii_patterns: ["private\\s+folder"] } };
+  const permitted = (text: string) => withoutPii([{ title: "", text }], routing, r.home, []).length === 1;
+  const client = new MemoryClient({ project: "project-a", store: r.store, candidates: r.candidates, check() {},
+    screen: rows => withoutPii(rows, routing, r.home, []), publicText: permitted, capture: () => ({ home: r.home }) });
+  // Positive/negative controls exercise the actual valid routing-pattern policy, not a test-only substring screen.
+  expect(permitted(`${hidden}/record.txt`)).toBe(false);
+  expect(permitted("public/record.txt")).toBe(true);
+  return { ...r, client, hidden };
+}
+
+test("actual whitespace PII policy screens a raw capture path before JSON encoding and still accepts public capture", async () => {
+  const r = actualTextPolicyRig();
+  expect(await r.client.appendCapture({ project: "project-a", agent: "local", event: "PostToolUse", tool: "read", paths: ["public/record.txt"], excerpt: "public capture control" })).toHaveProperty("id");
+  expect(await r.client.appendCapture({ project: "project-a", agent: "local", event: "PostToolUse", tool: "read", paths: [`${r.hidden}/record.txt`], excerpt: "apparently public excerpt" })).toBeUndefined();
+  const stored = new CaptureStore({ home: r.home, project: "project-a" }); clean.push(() => stored.close());
+  const rows = stored.rows(); expect(rows).toHaveLength(1);
+  expect(rows[0]!.paths).toEqual(["public/record.txt"]); expect(rows[0]!.excerpt).toBe("public capture control");
+  expect(JSON.stringify(rows)).not.toContain("private\\nfolder");
+});
+
+for (const field of ["nested string", "property key"] as const) test(`actual whitespace PII policy decodes authoritative tool-input JSON ${field} before capture`, async () => {
+  const r = actualTextPolicyRig();
+  const input = field === "nested string" ? JSON.stringify({ payload: { target: `${r.hidden}/record.txt` } })
+    : JSON.stringify({ [`${r.hidden}/record.txt`]: { opaque: "public-looking value" } });
+  // The path exists only inside escaped JSON, not the raw excerpt or paths array.
+  expect(input).not.toContain(r.hidden); expect(JSON.parse(input)).toBeDefined();
+  expect(await r.client.appendCapture({ project: "project-a", agent: "local", event: "PostToolUse", input: '{"payload":{"target":"public/record.txt"}}', excerpt: "public input control" })).toHaveProperty("id");
+  expect(await r.client.appendCapture({ project: "project-a", agent: "local", event: "PostToolUse", input, paths: [], excerpt: "public-looking result" })).toBeUndefined();
+  const stored = new CaptureStore({ home: r.home, project: "project-a" }); clean.push(() => stored.close());
+  expect(stored.rows().map(row => row.excerpt)).toEqual(["public input control"]);
+});
+
+test("actual whitespace PII policy screens the raw candidate title before encoding but keeps a public candidate", async () => {
+  const r = actualTextPolicyRig();
+  expect(await r.client.save({ project: "project-a", title: "public candidate", text: "public candidate control", metadata: { peer: "codex" } })).toMatchObject({ status: "candidate" });
+  expect(await r.client.save({ project: "project-a", title: `${r.hidden}/record.txt`, text: "apparently public candidate", metadata: { peer: "codex" } })).toBeUndefined();
+  const rows = r.candidates.list({ project: "project-a" }); expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ input: { kind: "memory", title: "public candidate" } }); expect(JSON.stringify(rows)).not.toContain("private\\nfolder");
+});
+
+test("actual whitespace PII policy sees complete original JSON tool output beyond 4000 chars before storage bounding", async () => {
+  const r = actualTextPolicyRig(), capture = new Capture(r.client, { project: "project-a", cwd: r.home });
+  capture.init("raw-json-output-session", "public capture start");
+  const output = (path: string) => JSON.stringify({ padding: "public ".repeat(700), payload: { target: path } });
+  const privateOutput = output(`${r.hidden}/record.txt`), publicOutput = output("public/record.txt");
+  expect(privateOutput.length).toBeGreaterThan(4000);
+  expect(privateOutput.indexOf("private")).toBeGreaterThan(4000);
+  expect(privateOutput).not.toContain(r.hidden); expect(JSON.parse(privateOutput).payload.target).toBe(`${r.hidden}/record.txt`);
+  expect(() => JSON.parse(privateOutput.slice(0, 4000))).toThrow(); // A pre-policy slice destroys the only authoritative JSON view.
+  const base = { tool: "read", args: '{"path":"public.txt"}', paths: ["public.txt"] };
+  capture.observe({ ...base, output: publicOutput, id: "public-large", sourceId: "public-large-source" });
+  capture.observe({ ...base, output: privateOutput, id: "private-large", sourceId: "private-large-source" });
+  await capture.end();
+  const stored = new CaptureStore({ home: r.home, project: "project-a" }); clean.push(() => stored.close());
+  const tools = stored.rows().filter(row => row.event === "PostToolUse");
+  expect(tools).toHaveLength(1); // Public output larger than 4000 remains capturable; private tail rejects the entire other event.
+  expect(tools[0]!.excerpt).toContain("public.txt"); expect(tools[0]!.excerpt).toContain("padding");
+  expect(stored.rows().map(row => row.event)).toEqual(expect.arrayContaining(["SessionStart", "PostToolUse", "SessionEnd"]));
+  expect(JSON.stringify(stored.rows())).not.toContain("private\\nfolder");
+});
+
+
+test("capture checks complete custom deny paths with spaces before splitting tokens", async () => {
+  const r = rig(), capture = new Capture(r.client, { project: "project-a", cwd: r.home, deny: ["private folder/"] });
+  capture.init("deny-space-session", "start");
+  capture.observe({ tool: "read", args: "{}", output: "public control", id: "public", paths: ["public/file.txt"] });
+  capture.observe({ tool: "read", args: "{}", output: "hidden file metadata", id: "hidden", paths: ["private folder/record.txt"] });
+  await capture.end();
+  const stored = new CaptureStore({ home: r.home, project: "project-a" }); clean.push(() => stored.close());
+  expect(stored.rows().filter(v => v.event === "PostToolUse")).toHaveLength(1);
+});
+
+
+test("capture ignores non-persisted host cwd when screening a valid private-path policy", async () => {
+  const r = rig(), routing = loadRouting(r.home);
+  const client = new MemoryClient({ project: "project-a", check() {}, screen: rows => rows,
+    publicText: text => withoutPii([{ title: "", text }], routing, r.home, ["private folder"]).length === 1,
+    capture: () => ({ home: r.home }) });
+  const capture = new Capture(client, { project: "project-a", cwd: r.home });
+  capture.init("valid-private-policy", "public start");
+  capture.observe({ tool: "read", args: "{}", output: "public control", id: "public", paths: ["public/file.txt"] });
+  capture.observe({ tool: "read", args: "{}", output: "private result", id: "private", paths: ["private folder/record.txt"] });
+  await capture.end();
+  const stored = new CaptureStore({ home: r.home, project: "project-a" }); clean.push(() => stored.close());
+  expect(stored.rows().filter(v => v.event === "PostToolUse")).toHaveLength(1);
+  expect(stored.rows().map(v => v.event)).toEqual(expect.arrayContaining(["SessionStart", "PostToolUse", "SessionEnd"]));
+});
+
+
+test("the built-in secret screen sees decoded JSON key/value pairs before capture or candidates", async () => {
+  const r = rig();
+  expect(await r.client.appendCapture({ project: "project-a", agent: "local", event: "PostToolUse", excerpt: "public control", input: '{"path":"public.txt"}' })).toHaveProperty("id");
+  for (const field of ["input", "output"]) expect(await r.client.appendCapture({ project: "project-a", agent: "local", event: "PostToolUse", excerpt: "public prefix", [field]: '{"password":"ordinary-private-password"}' })).toBeUndefined();
+  expect(await r.client.save({ project: "project-a", text: "public candidate", metadata: { peer: "codex" } })).toMatchObject({ status: "candidate" });
+  expect(await r.client.save({ project: "project-a", text: "public prefix", metadata: { password: "ordinary-private-password" } })).toBeUndefined();
+  expect(r.candidates.list({ project: "project-a" })).toHaveLength(1);
+  const stored = new CaptureStore({ home: r.home, project: "project-a" }); clean.push(() => stored.close());
+  expect(stored.rows()).toHaveLength(1);
 });
