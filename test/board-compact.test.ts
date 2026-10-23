@@ -45,3 +45,10 @@ test("stage codes are short and an unknown blocker is cut (#724)", () => {
   expect(stageCode("person may inspect merge readiness; no automatic merge")).toBe("ready");
   expect(stageCode("lifecycle stage definition unknown")).toBe("lifecycle...");
 });
+
+test("a long instance id as owner still leaves one line per task at 80 columns (#724)", () => {
+  const long = [{ id: 100, state: "changes_requested", owner: "codex-review-instance-abcdefghij", reviewer: "claude", class: "implement", created: now, title: "A title", deps: [113], signals: [], lifecycle: { stage: "intent", next } }];
+  const lines = text(renderBoard(long, 80, now)).split("\n");
+  expect(lines.filter(line => line.startsWith("#"))).toHaveLength(1);
+  for (const line of lines) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
+});

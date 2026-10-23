@@ -300,7 +300,11 @@ function compactBoard(tasks: any[], data: OutputCell[][], columns: number, stage
     if (name !== "STAGE") drop(name);
     else { const at = names.indexOf("STAGE"); if (at >= 0) table = table.map(row => row.map((cell, i) => i === at ? { ...cell, text: (cell as OutputCell & { short?: string }).short ?? cell.text } : cell)); }
   }
-  const titleRoom = Math.max(4, room());
+  // Still too narrow (a long instance id as OWNER): AFTER gives way, then OWNER is cut, so the row never becomes linked bands.
+  if (room() < 8) drop("AFTER");
+  const owner = names.indexOf("OWNER");
+  if (room() < 8 && owner >= 0) { const cut = Math.max(5, Math.max(...table.map(row => width(flat(row[owner]!.text)))) - (8 - room())); table = table.map(row => row.map((cell, i) => i === owner ? { ...cell, text: ellipsis(flat(cell.text), cut) } : cell)); }
+  const titleRoom = Math.max(5, room());
   // A PII row keeps its whole "ahub task show" hint when 8 columns of title remain; the cut title is never wrapped.
   table = table.map((row, i) => { const pii = `  (ahub task show ${tasks[i].id})`, hint = tasks[i].signals?.includes("pii") && titleRoom - width(pii) >= 8 ? pii : ""; return [...row.slice(0, -1), { ...row[row.length - 1]!, text: ellipsis(row[row.length - 1]!.text, Math.max(4, titleRoom - width(hint))) + hint }]; });
   return rows(names, table, columns);
