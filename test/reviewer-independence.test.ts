@@ -69,3 +69,41 @@ test("a review-class task and a PII task are untouched by I-2", () => {
   expect(assign(task([entry("claude-impl", "accepted")], { class: "review" }), states, routing, { candidates: ["codex"], roles, instances }).reviewer).toBeUndefined();
   expect(assign(task([entry("claude-impl", "accepted")], { signals: ["pii"] }), states, routing, { candidates: ["codex"], roles, instances }).reviewer).toBe("user");
 });
+
+// Round 1 review: I-2 changes the outcome only when it removes an otherwise eligible reviewer.
+test("a former implementer that could not review anyway leaves the outcome exactly as it was before I-2", () => {
+  const history = [entry("claude-impl", "accepted"), entry("claude-impl", "escalated")];
+  const only = parseRouting('[local]\nfixed_model="fixture"\n[classes.implement]\npeers=["codex"]\n[classes.review]\npeers=["claude-impl"]\n');
+  const base = { candidates: ["codex"], roles, instances };
+  const cases: [string, Record<string, PeerState>, Partial<NonNullable<Parameters<typeof assign>[3]>>][] = [
+    ["offline", { codex: "idle", "claude-impl": "offline" }, {}],
+    ["not attached", { codex: "idle" }, {}],
+    ["paused", { codex: "idle", "claude-impl": "paused" }, {}],
+    ["off roster", { codex: "idle", "claude-impl": "idle" }, { offRoster: ["claude-impl"] }],
+    ["failing", { codex: "idle", "claude-impl": "idle" }, { failing: { "claude-impl": "start failed" } }],
+  ];
+  for (const [name, state, extra] of cases) {
+    const withHistory = assign(task(history), state, only, { ...base, ...extra });
+    const withoutHistory = assign(task([]), state, only, { ...base, ...extra });
+    // the pre-I-2 outcome: no reviewer, so done approves directly, and nobody is asked to review by hand
+    expect(withHistory.reviewer, name).toBeUndefined();
+    expect(withHistory.reviewBlocked, name).toBeUndefined();
+    expect(withHistory.reviewer, name).toBe(withoutHistory.reviewer);
+    expect(withHistory.trace, name).toContain("reviewer: none, done will approve directly");
+    expect(withHistory.trace.join("\n"), name).not.toContain("the person reviews");
+    // the refusal names the real blocker, never I-2
+    expect(withHistory.refusals?.find(row => row.peer === "claude-impl" && row.role === "reviewer")?.reason, name).not.toBe("implemented this task");
+  }
+});
+
+test("I-2 is recorded only for an otherwise eligible former implementer, and then the person reviews", () => {
+  const history = [entry("claude-impl", "accepted")];
+  const only = parseRouting('[local]\nfixed_model="fixture"\n[classes.implement]\npeers=["codex"]\n[classes.review]\npeers=["claude-impl"]\n');
+  const a = assign(task(history), { codex: "idle", "claude-impl": "idle" }, only, { candidates: ["codex"], roles, instances });
+  expect(a).toMatchObject({ reviewer: "user", reviewBlocked: true });
+  expect(a.refusals).toContainEqual({ peer: "claude-impl", role: "reviewer", code: "policy", reason: "implemented this task" });
+  // an unavailable former implementer next to an available non-implementer: the available one reviews, no I-2 refusal at all
+  const mixed = assign(task(history), { codex: "idle", "claude-impl": "offline", kimi: "idle" }, parseRouting('[local]\nfixed_model="fixture"\n[classes.implement]\npeers=["codex"]\n[classes.review]\npeers=["claude-impl","kimi"]\n'), { candidates: ["codex"], roles: { ...roles, kimi: ["reviewer"] }, instances });
+  expect(mixed.reviewer).toBe("kimi");
+  expect(mixed.refusals?.some(row => row.reason === "implemented this task")).toBe(false);
+});

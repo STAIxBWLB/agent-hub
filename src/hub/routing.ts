@@ -466,8 +466,6 @@ export function assign(
     const ceiling = (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.routing?.allowedRoles;
     const requiredRole = role === "reviewer" ? "reviewer" : ownerRoleOfClass(task.class);
     if (ceiling && !ceiling.includes(requiredRole)) return deny("policy", "adapter role ceiling excludes this assignment");
-    // I-2 (#525-3): a peer that implemented this task never reviews it, whoever holds it now, a named reviewer included.
-    if (role === "reviewer" && former.has(peer)) return deny("policy", "implemented this task");
     const unavailable = role === "reviewer" ? (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.reviewer?.unavailable : undefined;
     if (unavailable) return deny("policy", unavailable);
     if (role === "owner" && opts.capabilities && !pii) {
@@ -500,6 +498,10 @@ export function assign(
       if (routing.signals.long_context_tokens > limit) return deny("policy", `${nativeRouting.backendLabel} ${backend} capability limit ${limit} tokens`);
     }
     if (nativeRouting?.longContext === "skip-owner" && role === "owner" && task.signals.includes("long_context") && routing.constraints.long_context === "skip_local") return deny("policy", "long_context: skip local");
+    // I-2 (#525-3): a peer that implemented this task never reviews it, whoever holds it now, a named reviewer included. It is the LAST check,
+    // so it only ever removes a candidate that was otherwise eligible: a former implementer that is offline, paused, failing or off roster is
+    // refused for that real reason and leaves the outcome exactly as it was before I-2 (a task with no other reviewer still approves directly).
+    if (role === "reviewer" && former.has(peer)) return deny("policy", "implemented this task");
     return undefined;
   };
   /** Quota that resets soonest gets used first: headroom per hour left in the window, at least 15 min (a task assigned that close to a reset mostly runs after it). */
