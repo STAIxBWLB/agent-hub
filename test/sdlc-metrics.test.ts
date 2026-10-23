@@ -409,3 +409,66 @@ test("the real daemon's band timer writes one card for a breach, then nothing on
     expect(report.bands[0]).toMatchObject({ metric: "rework_rounds", tier: "propose", episode: 11 });
   } finally { db.close(); for (const client of clients) client.close(); await daemon.stop(); rmSync(cwd, { recursive: true, force: true }); }
 });
+
+// --- round 3 ---
+test("rework and stale-head are final only once a task is approved, so an in-flight task is unknown and cannot move a series (nit)", () => {
+  const inFlight = task(1, [0, "accepted"], [1, "done"], [2, "changes_requested"], [3, "accepted"]);
+  expect(taskSample(inFlight)).toMatchObject({ rework_rounds: null, stale_head_re_reviews: null, approved_at: null });
+  // A round with both heads recorded and different is stale, but only counts once the task is approved: before that it is unknown.
+  const staleRound = (approved: boolean) => task(4, [0, "accepted"], [1, "done", { requestHead: "a".repeat(40) }], [2, "changes_requested", { verdictHead: "b".repeat(40) }], [3, "accepted"],
+    ...(approved ? [[4, "done", { requestHead: "b".repeat(40) }], [5, "approved", { verdictHead: "b".repeat(40) }]] as [number, string, { requestHead?: string; verdictHead?: string }][] : []));
+  expect(taskSample(staleRound(false)).stale_head_re_reviews).toBeNull();
+  expect(taskSample(staleRound(true)).stale_head_re_reviews).toBe(1);
+  const approved = task(1, [0, "accepted"], [1, "done"], [2, "changes_requested"], [3, "accepted"], [4, "done"], [5, "approved"]);
+  expect(taskSample(approved)).toMatchObject({ rework_rounds: 1, approved_at: T0 + 5 * H });
+  // The series places a final-only metric at the approval, not at the first verdict, so a late approval does not reorder the past.
+  // Task 3 gets its first verdict before task 2 does, but is approved after it: a rework value is final at approval, so it sits there.
+  const first = taskSample(task(3, [0, "accepted"], [1, "done"], [2, "changes_requested"], [3, "accepted"], [10, "done"], [11, "approved"]));
+  const second = taskSample(task(2, [0, "accepted"], [4, "done"], [5, "approved"]));
+  expect(first.at).toBeLessThan(second.at);
+  expect(series([first, second], "rework_rounds").map(p => p.task)).toEqual([2, 3]);
+  expect(series([first, second], "stale_head_re_reviews").map(p => p.task)).toEqual([]); // no head evidence: unknown, left out
+  // The first-verdict metrics keep the first-verdict position.
+  expect(series([first, second], "first_pass_approval").map(p => p.task)).toEqual([3, 2]);
+});
+
+test("a task still in review does not start a second episode inside one shift after its card is closed (nit)", () => {
+  const { board, tasks } = rig({ rework_rounds: { window: 16, min_samples: 8, min_delta: 0 } });
+  for (let i = 0; i < 16; i++) finished(board, i % 2 === 0 ? 1 : 2);
+  finished(board, 5);
+  const [first] = tasks.proposeFromBands();
+  expect(first).toBeDefined();
+  board.update(first!, "claude", "cancelled", { state: "cancelled" }); // the planner closes the card; the shift is still going on
+  // A task is now in flight with rework so far: it has no final value and must not reshape the episode.
+  const t = board.propose("claude", { title: "in flight", class: "implement" });
+  board.update(t.id, "codex", "accepted", { state: "in_progress", owner: "codex" });
+  board.update(t.id, "codex", "done", { state: "in_review" }); board.update(t.id, "claude", "changes_requested", { state: "changes_requested" }); board.update(t.id, "codex", "accepted", { state: "in_progress" });
+  expect(tasks.proposeFromBands()).toEqual([]);
+  finished(board, 5);
+  expect(tasks.proposeFromBands()).toEqual([]); // same episode, no return to ok: no second card
+});
+
+test("the timer consumes a board revision only for a pass that ran, and re-runs when bands are enabled on an idle board (nit)", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-band-revision-")), stateDir = join(cwd, ".agenthub/state");
+  mkdirSync(stateDir, { recursive: true });
+  const toml = (bands: boolean) => `mode = "advise"\n${bands ? "\n[bands.rework_rounds]\nwindow = 10\nmin_samples = 8\nmin_delta = 0\n" : ""}`;
+  mkdirSync(join(cwd, ".agenthub"), { recursive: true });
+  writeFileSync(join(cwd, ".agenthub/sdlc.toml"), toml(true));
+  const seed = new Board(join(stateDir, "hub.db"));
+  for (const rework of [1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 9]) finished(seed, rework);
+  seed.close();
+  let held = true;
+  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, bandsEveryMs: 30, bandsHeld: () => held,
+    config: { ...DEFAULT_CONFIG, roles: { claude: ["planner"], codex: ["implementer"] }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false } } });
+  const db = new Database(join(stateDir, "hub.db"), { readonly: true });
+  const cards = () => (db.query("SELECT id FROM tasks WHERE detail LIKE 'Band breach key: %'").all() as unknown[]).length;
+  try {
+    await Bun.sleep(300);
+    expect(daemon.bandEvaluations()).toBe(0); // held on an unchanged board: nothing ran and nothing was consumed
+    expect(cards()).toBe(0);
+    held = false;
+    for (let waited = 0; !cards() && waited < 3000; waited += 25) await Bun.sleep(25);
+    expect(cards()).toBe(1); // released with no new write: the breach is still there and is written
+    expect(daemon.bandEvaluations()).toBe(1);
+  } finally { db.close(); await daemon.stop(); rmSync(cwd, { recursive: true, force: true }); }
+});

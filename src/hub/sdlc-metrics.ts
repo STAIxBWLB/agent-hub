@@ -20,6 +20,8 @@ export interface TaskSample {
   id: number;
   /** When the sample counts: its first verdict, else its acceptance, else its first event. */
   at: number;
+  /** When the task was approved, else null: `rework_rounds` and `stale_head_re_reviews` are final only then, and sit at this time in their series. */
+  approved_at: number | null;
   acceptance_to_plan_ms: number | null;
   acceptance_to_first_review_ms: number | null;
   acceptance_to_merge_ms: number | null;
@@ -72,6 +74,9 @@ const VERDICTS = ["approved", "changes_requested"];
  * Review rounds whose verdict was bound to a different head than the review was requested for: the head moved while the review ran.
  * Known only for a round with both heads recorded; a task with no such round is unknown, never 0. (A `done` after an `approved` is not
  * evidence: the board cannot produce one.)
+ * ponytail: the request head is `reviewCost.head` (the commit the done named first) while a verdict's head prefers the lifecycle receipt's
+ * `head`/`localHead` over `refs.commit` (`findingHead`), so a receipt head that differs from the commit can read as stale. Ceiling: a
+ * spurious stale round for a task whose receipt head and commit disagree; the upgrade is one shared head rule for both sides.
  */
 function staleHeadRounds(history: MetricTask["history"]): number | null {
   let pending: string | undefined, known = false, stale = 0;
@@ -95,18 +100,21 @@ export function taskSample(task: MetricTask, extra: { mergedAt?: number; ciRerun
   const verdict = accepted ? first(view, VERDICTS, accepted.at) : first(view, VERDICTS);
   const dones = history.filter(entry => entry.event === "done");
   const ci = first(view, ["check passed", "check failed"]);
+  const approvedAt = history.find(entry => entry.event === "approved")?.at ?? null;
   return {
     id: task.id,
     at: verdict?.at ?? accepted?.at ?? history[0]?.at ?? 0,
+    approved_at: approvedAt,
     acceptance_to_plan_ms: spec && plan ? plan.at - spec.at : null,
     acceptance_to_first_review_ms: accepted && verdict ? verdict.at - accepted.at : null,
     acceptance_to_merge_ms: accepted && extra.mergedAt !== undefined && Number.isFinite(extra.mergedAt) && extra.mergedAt >= accepted.at ? extra.mergedAt - accepted.at : null,
     first_pass_approval: verdict ? (verdict.event === "approved" ? 1 : 0) : null,
-    // Rework is only known for a task that was handed to review at all.
-    rework_rounds: dones.length ? history.filter(entry => entry.event === "changes_requested").length : null,
+    // Rework grows with every round, so it is a value only once the task is approved: a task still in flight has no final one, and a
+    // provisional point would move at each verdict and could start a second breach episode inside one shift.
+    rework_rounds: dones.length && approvedAt !== null ? history.filter(entry => entry.event === "changes_requested").length : null,
     first_pass_check: ci ? (ci.event === "check passed" ? 1 : 0) : null,
     same_head_ci_reruns: extra.ciReruns === undefined ? null : extra.ciReruns,
-    stale_head_re_reviews: staleHeadRounds(history),
+    stale_head_re_reviews: approvedAt !== null ? staleHeadRounds(history) : null,
   };
 }
 
@@ -122,7 +130,9 @@ const round = (value: number) => Math.round(value * 1000) / 1000;
 
 /** The values of one metric in the order they happened, unknown ones left out. */
 export function series(samples: readonly TaskSample[], metric: BandMetric): { value: number; task: number }[] {
-  return [...samples].sort((a, b) => a.at - b.at || a.id - b.id).flatMap(sample => sample[metric] === null ? [] : [{ value: sample[metric] as number, task: sample.id }]);
+  const final = metric === "rework_rounds" || metric === "stale_head_re_reviews";
+  const when = (sample: TaskSample) => final ? sample.approved_at ?? sample.at : sample.at;
+  return [...samples].sort((a, b) => when(a) - when(b) || a.id - b.id).flatMap(sample => sample[metric] === null ? [] : [{ value: sample[metric] as number, task: sample.id }]);
 }
 
 /**

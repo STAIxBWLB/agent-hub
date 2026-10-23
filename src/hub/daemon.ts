@@ -524,6 +524,8 @@ export interface DaemonOptions {
   taskSweepNow?: () => number;
   /** Test seam: the period of the SDLC band evaluation, default five minutes. */
   bandsEveryMs?: number;
+  /** Test seam: an extra hold on the SDLC band evaluation, like a storage error. */
+  bandsHeld?: () => boolean;
   /** How long a research record waits after an approval for the task's open turns to end (#247). Tests shrink this. */
   researchGraceMs?: number;
   /** Tests observe timer-driven sync without opening a remote; production uses the package sync. */
@@ -2054,7 +2056,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   // Claude's numbers arrive through the status line tee `ahub claude` installs (src/cli/statusline-tee.ts).
   let claudeUsageSeen = 0;
-  let bandsRevision = -1; // #481 S7: the board revision the last band evaluation saw
+  let bandsRevision = ""; // #481 S7: the board revision and band configuration the last band evaluation that ran saw
   let bandEvaluations = 0; // evaluations that ran (not skipped for an unchanged board); read by tests through the daemon
   const claudeContextSeen = new Map<string, string>();
   const contextTailSeen = new Map<PeerId, string>();
@@ -2120,11 +2122,13 @@ export async function startDaemon(opts: DaemonOptions) {
     setInterval(() => {
       if (stopping || recoveryActive()) return;
       try {
-        const revision = board.statusRevision();
+        const state = tasks.bandsState();
+        if (!state.ready || opts.bandsHeld?.()) return; // held, mode off or no bands: nothing is consumed, so the breach is still there when it clears
+        const revision = `${board.statusRevision()}:${state.signature}`;
         if (revision === bandsRevision) return;
         bandEvaluations++;
         tasks.proposeFromBands();
-        bandsRevision = board.statusRevision(); // after the write: the cards this pass made are not a reason to run again
+        bandsRevision = `${board.statusRevision()}:${state.signature}`; // after the write: the cards this pass made are not a reason to run again
       } catch (error) { log(`sdlc band evaluation failed: ${sanitize((error as Error).message).slice(0, 160)}`); }
     }, opts.bandsEveryMs ?? 300_000),
     setInterval(() => {

@@ -2519,6 +2519,16 @@ export class Tasks {
    * storage error, like every host writer. The text is fixed words, numbers and task ids, never task text, and no GitHub issue is
    * created. Returns the task ids created.
    */
+  /**
+   * Whether `proposeFromBands` would run now, and a signature of what it would read. The daemon timer records a board revision only for a
+   * pass that ran, and re-runs when the signature changes (a reload that enables bands or edits them on an idle board).
+   */
+  bandsState(): { ready: boolean; signature: string } {
+    const config = this.d.sdlc?.config();
+    const configured = !!config && config.mode !== "off" && !!config.bands && Object.keys(config.bands).length > 0;
+    return { ready: configured && !this.d.sweepHeld?.() && !this.d.bus.isRecoveryHeld && !this.d.bus.storageError, signature: configured ? JSON.stringify([config!.mode, config!.bands]) : "" };
+  }
+
   proposeFromBands(by: PeerId = HUB): number[] {
     const config = this.d.sdlc?.config();
     if (!config || config.mode === "off" || !config.bands || !Object.keys(config.bands).length) return [];

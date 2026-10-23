@@ -307,7 +307,6 @@ export class Board {
     if (!/^[a-z_]{1,64}:#[1-9][0-9]{0,9}:log$/.test(marker)) throw new Error("invalid band notice marker");
     return this.db.query("INSERT OR IGNORE INTO band_notices(marker, at) VALUES(?, ?)").run(marker, Date.now()).changes > 0;
   }
-  bandNoticed(marker: string): boolean { return this.db.query("SELECT 1 FROM band_notices WHERE marker=?").get(marker) !== null; }
   clearStall(task: number): void { this.taskWrite(() => this.db.query("DELETE FROM task_stalls WHERE task=?").run(task)); }
   stalls(): TaskStall[] {
     return (this.db.query("SELECT payload FROM task_stalls ORDER BY task").all() as { payload: string }[]).flatMap(row => {
