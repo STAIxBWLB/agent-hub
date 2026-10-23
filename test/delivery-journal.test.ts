@@ -73,6 +73,8 @@ test("hot roster and unresolved queue reads exclude terminal payload history (#7
     expect(() => bus.knownPeers()).not.toThrow();
     expect(bus.knownPeers()).toEqual(["codex"]);
     expect(journal.revision()).toBe(expected);
+    expect(bus.queueSummary("codex")).toEqual({ needsReview: 1, heldBy: "held" });
+    expect(bus.queueSummary("retired")).toEqual({ needsReview: 0 });
     expect(() => bus.queueList(undefined, true)).not.toThrow();
     expect(bus.queueList(undefined, true).map(row => row.id)).toEqual(["held"]);
     journal.list = list;

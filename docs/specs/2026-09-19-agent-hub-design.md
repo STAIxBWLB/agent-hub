@@ -4997,6 +4997,6 @@ Use `summarizeByTask`, `costMetrics` and bounded SDLC GitHub helpers. Bound file
 - Colours are design tokens only, and the group wraps at phone width with 44 px targets.
 
 
-### #719 daemon responsiveness
+## Amendment: daemon responsiveness (#719)
 
 Periodic roster and supervision reads use pending delivery metadata/rows rather than materializing terminal envelope history. Queue revisions are metadata reads; explicit queue/history and recovery snapshots retain their full semantics. Usage folding keeps its existing byte cap and atomic rows/offset transaction, with a 20 ms slice checked between whole records; one record remains indivisible. Native launch connects alone retry transient transport failures with bounded backoff up to 15 seconds and one busy notice. Ordinary connect defaults and identity/authentication/protocol refusals stay unchanged.

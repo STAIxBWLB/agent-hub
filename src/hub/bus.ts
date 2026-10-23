@@ -525,7 +525,7 @@ export class Bus {
   }
 
   queueSummary(peer: string): { needsReview: number; heldBy?: string; liveAccepted?: string[]; oldestQueuedAt?: number } {
-    const rows = this.storageError ? [] : this.queueList(peer);
+    const rows = this.storageError ? [] : this.queueList(peer, true);
     const queued = this.queues.get(peer) ?? [];
     const review = rows.filter((r) => r.state === "needs_review");
     const needsReview = review.length;
