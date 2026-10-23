@@ -5,7 +5,7 @@ import type { View as MemoryView } from "@staix/agent-mem";
 
 
 const HEADER =
-  "Shared project memory (claude-mem): recent work by the agents in this project. Reference only, not a request. " +
+  "Shared project memory (amem): curated recent notes by the agents in this project. Reference only, not a request. " +
   "Fetch details by id with your memory tools if you need them.";
 
 /** Cut at a line boundary. */

@@ -2,17 +2,17 @@ import type { PeerId } from "../hub/envelope.ts";
 import type { MemoryClient } from "./client.ts";
 
 export interface BriefItem {
-  id: number;
+  id: number | string;
   time: string;
   type: string;
   title: string;
 }
 
-/** Rows of claude-mem's index tables: `| #65499 | 12:30 PM | ◆ | Title | ~372 |`. A row that does not match is skipped, never an error. */
+/** Amem entry tables (plus legacy numeric fixture compatibility): `| #65499 | 12:30 PM | ◆ | Title | ~372 |`. A row that does not match is skipped, never an error. */
 export function parseRows(markdown: string | undefined): BriefItem[] {
   const out: BriefItem[] = [];
-  for (const m of (markdown ?? "").matchAll(/^\|\s*#(\d+)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*(.*?)\s*\|/gm)) {
-    out.push({ id: Number(m[1]), time: m[2]!, type: m[3]!, title: m[4]!.replace(/\s*<-\s*\*\*ANCHOR\*\*/, "") });
+  for (const m of (markdown ?? "").matchAll(/^\|\s*#(mem:[a-f0-9]{32}|\d+)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*(.*?)\s*\|/gm)) {
+    out.push({ id: m[1]!.startsWith("mem:") ? m[1]! : Number(m[1]), time: m[2]!, type: m[3]!, title: m[4]!.replace(/\s*<-\s*\*\*ANCHOR\*\*/, "") });
   }
   return out;
 }
@@ -35,7 +35,7 @@ export interface BriefTask { id?: number; created?: number; title: string; refs:
 /**
  * Task briefs: what memory already knows about a piece of work, handed over with it. The hub's own store first (#258:
  * entries one or two hops from the task's paths, symbols, issue and task, a linked fail first, superseded entries
- * dropped), then claude-mem: index first (search), then the neighbourhood of the top hit (timeline); details stay in
+ * dropped), then amem: index first (search), then the neighbourhood of the top hit (timeline); details stay in
  * the store for the receiver to fetch by id. `brief_items` caps both together. A peer is never shown the same entry
  * twice in one hub run, except a directly matching plan fail that must accompany a new task.
  */
@@ -63,7 +63,7 @@ export class Briefs {
     const found = this.client && own.length < maximum ? await related(this.client, this.project, [task.title, ...(task.refs.paths ?? [])].join(" ")) : [];
     const items: BriefItem[] = [];
     for (const item of found) {
-      if (seen.has(`#${item.id}`)) continue;
+      if (seen.has(`#${item.id}`) || seen.has(String(item.id)) || own.some(v => v.id === item.id)) continue;
       items.push(item);
       if (own.length + items.length === maximum) break;
     }
@@ -71,7 +71,7 @@ export class Briefs {
     for (const item of own) seen.add(item.id);
     for (const item of items) seen.add(`#${item.id}`);
     if (task.id !== undefined) try { this.observe?.(peer, task.id, { native: own.length, fails: own.filter((i) => i.kind === "fail").length, claudeMem: items.length }); } catch { /* telemetry never fails a brief */ }
-    const header = own.length ? "Memory brief (hub memory first, fails first: ahub memory show <mem id>; claude-mem by #id):" : "Memory brief (claude-mem; fetch details by id if you need them):";
-    return [header, ...(this.displayNative?.(own) ?? own.map((i) => i.line)), ...items.map((i) => `#${i.id} ${i.time} ${i.type} ${i.title}`)].join("\n");
+    const header = own.length ? "Memory brief (hub memory first, fails first: ahub memory show <mem id>; amem by mem:id):" : "Memory brief (amem curated notes; fetch details by mem:id):";
+    return [header, ...(this.displayNative?.(own) ?? own.map((i) => i.line)), ...items.map((i) => `${i.id.toString().startsWith("mem:") ? i.id : `#${i.id}`} ${i.time} ${i.type} ${i.title}`)].join("\n");
   }
 }

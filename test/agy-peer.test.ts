@@ -1,3 +1,4 @@
+import { FakeMemoryClient } from "./fakes/mem-worker.ts";
 import { expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -159,7 +160,7 @@ async function claimingHooks(run: (fixture: {
     inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false } };
   mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/config.json"), JSON.stringify(config));
-  const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
+  const daemon = await startDaemon({ memoryClient: new FakeMemoryClient(`http://127.0.0.1:${memory.port}`), cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
   let person: ControlClient | undefined, tools: ControlClient | undefined, peer: ControlClient | undefined;
   try {
     person = await ControlClient.connect(stateDir, { role: "console" });

@@ -1,3 +1,4 @@
+import { FakeMemoryClient } from "./fakes/mem-worker.ts";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -75,7 +76,7 @@ test("watch is console only and its client sends watch/status only, including ol
 test("daemon watch replays/streams only to console; transient markers avoid log, UI, tools and memory (#286)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-watch-")); cleanups.push(() => rmSync(dir, { force: true, recursive: true }));
   const mem = startFakeMemWorker(); cleanups.push(() => mem.stop());
-  const daemon = await startDaemon({ cwd: dir, stateDir: join(dir, "state"), controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+  const daemon = await startDaemon({ memoryClient: new FakeMemoryClient(mem.url), cwd: dir, stateDir: join(dir, "state"), controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, peers: { kimi: { start_mode: "headless" } }, kimi_cmd: fake,
       roster: { qwen: true }, qwen_cmd: [...fake, "--qwen"], snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
       memory: { ...DEFAULT_CONFIG.memory, enabled: true, worker_url: mem.url }, approvals: { timeout_s: 60, notify: false } } });

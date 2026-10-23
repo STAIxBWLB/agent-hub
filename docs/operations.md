@@ -1285,7 +1285,7 @@ ahub task label 12 reverted        # a later verdict (ok, regressed, reverted, i
 
 ## Hub memory
 
-The hub opens the selected memory profile under `memoryHome()` (default `~/.agenthub/memory/`) beside claude-mem ([how it works](memory.md)): notes saved
+The hub opens the selected amem memory profile under `memoryHome()` (default `~/.agenthub/memory/`), with no claude-mem worker dependency ([how it works](memory.md)): notes saved
 against an open task are short-term; when the task is approved its decisions, contracts and fails become long-term.
 Task briefs, session-start recall and `ahub ask` read it first, and the dashboard has a Memory section.
 
@@ -4335,3 +4335,7 @@ The operator steps for 525-1, 525-4 and 525-5 are in "Additional headless peer i
 Periodic peer-roster and delivery-supervision reads select pending journal metadata/rows, excluding completed payload history. Queue revision reads do not construct a recovery snapshot. Explicit queue/history commands retain terminal history. The pending-state index supports these reads without sorting historical payloads.
 
 Native launcher connections retry transport timeouts/unclean closes with bounded backoff for at most 15 seconds, printing `hub busy, retrying` once. The ordinary control-connect timeout remains 3 seconds. An immediately unreachable listener, authentication refusals, wire mismatch and project/instance mismatch are terminal. Every retry rereads the descriptor and preserves the invocation's delegated-audit instance pin. Usage queries retain their existing catch-up budgets and report `behind` until complete; time slicing never advances beyond the last atomically folded record.
+
+## amem runtime (agent-mem#13 P4)
+
+The hub exact-pins @staix/agent-mem 0.6.0 for recall, curated evidence and local deterministic capture. No runtime call reaches a claude-mem worker; `memory.worker_url` is ignored. The person's `ahub memory import claude-mem` remains explicit and off by default. Existing profile, alias, PII and private-turn fences still apply. `ask --remember` and context checkpoints propose machine-local candidates, never automatic curated evidence. See [memory integration](memory.md#in-process-recall-and-capture-agent-mem13-p4) for changed behavior and bounded-view ceilings.

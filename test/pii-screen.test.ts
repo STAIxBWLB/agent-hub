@@ -11,7 +11,7 @@ import { BasePeer } from "../src/hub/peers.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { Briefs } from "../src/memory/brief.ts";
-import { MemoryClient } from "../src/memory/client.ts";
+import { FakeMemoryClient as MemoryClient } from "./fakes/mem-worker.ts";
 import { OmniRoute } from "../src/omniroute/client.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 import { startFakeModelServer, type Script } from "./fakes/model-server.ts";
@@ -188,7 +188,7 @@ test("free text the hub screens since #69 goes through the same screen: summary,
   const handed = r.peers[moved!.to!]!.got.find((e) => e.refs?.task === String(h.id))!.body;
   expect(handed).toContain("[handoff withheld: the PII screen did not clear it");
   const refused = await r.tasks.remember("kimi", { text: `${NAME} prefers csv` }).catch((e: Error) => e.message);
-  expect(refused).toBe("the PII screen did not clear this note, so it is not saved: claude-mem processes what it stores with a cloud model");
+  expect(refused).toBe("the PII screen did not clear this note, so it is not saved: shared memory excludes private data");
 
   // Clear text is unchanged for everyone.
   const plain = await r.tasks.propose("claude", { title: "plain", class: "implement", owner: "kimi" });

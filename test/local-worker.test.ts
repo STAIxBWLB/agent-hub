@@ -12,7 +12,7 @@ import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { MAX_HOP, newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { Capture } from "../src/memory/capture.ts";
-import { MemoryClient } from "../src/memory/client.ts";
+import { FakeMemoryClient as MemoryClient } from "./fakes/mem-worker.ts";
 import { OmniRoute } from "../src/omniroute/client.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 import { startFakeModelServer, toolCall, type Script } from "./fakes/model-server.ts";
@@ -439,7 +439,7 @@ test("daemon local board lists expose PII rows only in a PII turn, never ordinar
   process.env.OMNIROUTE_API_KEY = "k";
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-board-private-")));
   const stateDir = join(cwd, "state");
-  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+  const daemon = await startDaemon({ memoryClient: new MemoryClient(mem.url), cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, omniroute: { urls: [model.url], access_hosts: [] }, memory: { enabled: true, worker_url: mem.url, inject_tokens: 40, brief_items: 8 } } });
   cleanup.push(() => daemon.stop());
   const client = await ControlClient.connect(stateDir, { role: "console" });

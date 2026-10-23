@@ -115,7 +115,7 @@ test("dense graph caps nodes, edges and bytes, orders fails first and never retu
 
 test("memory tools appear in all shared catalogs and never capture arguments or results", () => {
   const calls: unknown[] = [];
-  const client = { request: (...args: unknown[]) => { calls.push(args); return Promise.resolve(); } } as unknown as MemoryClient;
+  const client = { appendCapture: (...args: unknown[]) => { calls.push(args); return Promise.resolve(); } } as unknown as MemoryClient;
   const capture = new Capture(client, { project: "agent-hub", cwd: import.meta.dir });
   capture.init("test-session", "prompt"); calls.length = 0;
   for (const name of ["hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_memory_correct", "hub_task_spec", "hub_check_start", "hub_check_result", "hub_check_cancel"]) {

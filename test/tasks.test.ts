@@ -16,7 +16,7 @@ import { DEFAULT_TASK_SWEEP } from "../src/hub/task-sweep.ts";
 import { AssignmentSupersededError, AssignmentUndeliveredError, ESCALATE_AFTER, Tasks } from "../src/hub/tasks.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 import { Briefs, parseRows } from "../src/memory/brief.ts";
-import { MemoryClient } from "../src/memory/client.ts";
+import { FakeMemoryClient as MemoryClient } from "./fakes/mem-worker.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 
 class FakePeer extends BasePeer {
@@ -313,7 +313,7 @@ test("hub_remember carries peer, kind and task; with the worker down the board w
   expect(await tasks.remember("codex", { text: "use bun:sqlite, not a server", kind: "decision", task: 1 })).toBe("saved to shared memory; the other agents get it with their next message");
   expect(saves().at(-1)).toMatchObject({ text: "use bun:sqlite, not a server", project: "agent-hub", metadata: { peer: "codex", kind: "decision", task: 1 } });
   mem.stop();
-  expect(await tasks.remember("codex", { text: "x" })).toBe("memory worker unavailable; nothing saved");
+  expect(await tasks.remember("codex", { text: "x" })).toBe("memory store unavailable; nothing saved");
   tasks.accept("local", 1);
   expect((await tasks.done("local", 1, "done")).state).toBe("in_review");
 });

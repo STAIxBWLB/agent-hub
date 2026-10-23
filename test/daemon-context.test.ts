@@ -1,3 +1,4 @@
+import { FakeMemoryClient } from "./fakes/mem-worker.ts";
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, statSync, existsSync, mkdirSync, utimesSync } from "node:fs";
 import { join } from "node:path";
@@ -20,7 +21,7 @@ async function fixture(gate = 0.8, reviewOther = false, wipLimits?: Record<strin
   if (wipLimits) writeFileSync(join(cwd, ".agenthub", "config.json"), JSON.stringify({ tasks: { wip_limits: wipLimits } }));
   const routing = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8").replace(/^pii_patterns = .*$/m, 'pii_patterns = ["PRIVATE-MARKER"]');
   writeFileSync(join(cwd, ".agenthub", "routing.toml"), routing);
-  const daemon = await startDaemon({ cwd, stateDir: cwd, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, instanceId: "context-instance", config: { ...DEFAULT_CONFIG, batch_ms: 0, ...(wipLimits ? { tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: wipLimits } } : {}), ...(reviewOther ? { roles: { ...DEFAULT_CONFIG.roles, other: ["reviewer"] } } : {}), context: { gate, stale_min: 1 }, memory: { ...DEFAULT_CONFIG.memory, enabled: true, worker_url: mem.url }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, budget: { ...DEFAULT_CONFIG.budget, checkpoint_timeout_s: 5 }, ...extra } });
+  const daemon = await startDaemon({ memoryClient: new FakeMemoryClient(mem.url), cwd, stateDir: cwd, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, instanceId: "context-instance", config: { ...DEFAULT_CONFIG, batch_ms: 0, ...(wipLimits ? { tasks: { ...DEFAULT_CONFIG.tasks, wip_limits: wipLimits } } : {}), ...(reviewOther ? { roles: { ...DEFAULT_CONFIG.roles, other: ["reviewer"] } } : {}), context: { gate, stale_min: 1 }, memory: { ...DEFAULT_CONFIG.memory, enabled: true, worker_url: mem.url }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: false }, budget: { ...DEFAULT_CONFIG.budget, checkpoint_timeout_s: 5 }, ...extra } });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(cwd, { role: "console" }); cleanup.push(() => console_.close());
   const pushes: any[] = []; console_.onPush = m => pushes.push(m); console_.send({ t: "tail" });

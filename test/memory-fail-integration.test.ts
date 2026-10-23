@@ -12,7 +12,7 @@ import { composeRememberText } from "../src/hub/memory-fail.ts";
 
 class ObserverMemory extends MemoryClient {
   readonly saved: Parameters<MemoryClient["save"]>[0][] = [];
-  constructor() { super("http://127.0.0.1:1"); }
+  constructor() { super(); }
   override async save(note: Parameters<MemoryClient["save"]>[0]): Promise<unknown> {
     this.saved.push(structuredClone(note));
     return { saved: true };

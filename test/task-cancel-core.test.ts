@@ -12,7 +12,7 @@ import { DEFAULT_TASK_SWEEP, nextSweep } from "../src/hub/task-sweep.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { supersededDeliveryReason } from "../src/hub/delivery-superseded.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
-import { MemoryClient } from "../src/memory/client.ts";
+import { FakeMemoryClient as MemoryClient } from "./fakes/mem-worker.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 
 const cleanup: (() => void)[] = [];

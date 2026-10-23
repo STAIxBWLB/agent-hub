@@ -1,3 +1,4 @@
+import { FakeMemoryClient } from "./fakes/mem-worker.ts";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,7 +36,7 @@ writeFileSync(${JSON.stringify(finished)}, "finished");
   chmodSync(executable, 0o700);
   process.env.ORCA_CLI_COMMAND = executable;
   cleanup.push(() => { if (previousOrca === undefined) delete process.env.ORCA_CLI_COMMAND; else process.env.ORCA_CLI_COMMAND = previousOrca; });
-  const daemon = await startDaemon({ cwd: root, stateDir, instanceId: "i-fixture", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+  const daemon = await startDaemon({ ...(memoryUrl ? { memoryClient: new FakeMemoryClient(memoryUrl) } : {}), cwd: root, stateDir, instanceId: "i-fixture", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: !!memoryUrl, ...(memoryUrl ? { worker_url: memoryUrl } : {}) },
       inference: { ...DEFAULT_CONFIG.inference, enabled: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false }, task_sweep: { ...DEFAULT_CONFIG.task_sweep, enabled: false } } });
   cleanup.push(() => daemon.stop());

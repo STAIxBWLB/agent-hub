@@ -10,7 +10,7 @@ import { Board } from "../src/hub/board.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { Tasks } from "../src/hub/tasks.ts";
-import { MemoryClient } from "../src/memory/client.ts";
+import { FakeMemoryClient as MemoryClient } from "./fakes/mem-worker.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 const cleanup: (() => unknown)[] = [];
 afterEach(() => { for (const f of cleanup.splice(0).reverse()) f(); });

@@ -104,7 +104,7 @@ export async function gather(question: string, d: AskDeps): Promise<{ evidence: 
     return { id: `task #${t.id}`, kind: "task", text: `[${t.class}] ${t.state}, owner ${t.owner ?? "none"}, reviewer ${t.reviewer ?? "none"}: ${text}`.slice(0, ITEM_CHARS) };
   });
 
-  // A question that carries PII is not sent to the memory worker, whose observer is a cloud model.
+  // A PII question never queries the shared memory view; local storage does not relax the hub privacy fence.
   const memoryRows = d.memory && !piiQuestion ? related(d.memory, d.project, question, 2).catch(() => []) : Promise.resolve([]);
   // The log carries message bodies and is written by agents too: a line with PII in it is treated like a PII task row.
   const matching = thisRunsLog(d.logFile).filter((l) => hit(l) > 0).slice(-12);
@@ -119,7 +119,7 @@ export async function gather(question: string, d: AskDeps): Promise<{ evidence: 
   try { native = piiQuestion ? [] : (d.native?.(keys) ?? []).map((r) => ({ id: r.id, kind: "memory" as const, text: r.text.slice(0, ITEM_CHARS) })); } catch { /* fail-open */ }
   const memory: Evidence[] = (await memoryRows)
     .filter((r) => !r.title.startsWith(ASK_NOTE_TITLE))
-    .map((r) => ({ id: `#${r.id}`, kind: "memory" as const, text: `${r.time} ${r.type} ${r.title}`.slice(0, ITEM_CHARS) }));
+    .map((r) => ({ id: typeof r.id === "string" ? r.id : `#${r.id}`, kind: "memory" as const, text: `${r.time} ${r.type} ${r.title}`.slice(0, ITEM_CHARS) }));
 
   // Every item is capped, so one long row cannot empty the list; what does not fit is skipped, not everything after it.
   const evidence: Evidence[] = [];
@@ -133,7 +133,7 @@ export async function gather(question: string, d: AskDeps): Promise<{ evidence: 
   return { evidence, pii: piiQuestion || piiShown, onCampus: campus };
 }
 
-const ID = /^(task #\d+|#\d+|mem:[0-9a-f]{8}|log \d\d-\d\d \d\d:\d\d:\d\d\.\d{3})$/;
+const ID = /^(task #\d+|#\d+|mem:(?:[0-9a-f]{8}|[0-9a-f]{32})|log \d\d-\d\d \d\d:\d\d:\d\d\.\d{3})$/;
 
 /** Every id the answer cites, grouped brackets included: `[#1, #2, task #3]`. */
 export function citedIds(answer: string): string[] {

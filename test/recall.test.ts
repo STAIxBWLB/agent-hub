@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore, type NoteInput } from "@staix/agent-mem";
-import { MemoryClient } from "../src/memory/client.ts";
+import { FakeMemoryClient as MemoryClient } from "./fakes/mem-worker.ts";
 import { projectChain } from "@staix/agent-mem";
 import { recallFor, trimToTokens, nativeRecall, recallDisplayText, recallMemoryLine, recallMemoryLines, RECALL_LINE_CHARS } from "../src/memory/recall.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";

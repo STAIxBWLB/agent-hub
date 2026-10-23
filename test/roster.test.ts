@@ -1,3 +1,4 @@
+import { FakeMemoryClient } from "./fakes/mem-worker.ts";
 import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
 import { expect, test } from "bun:test";
@@ -18,7 +19,7 @@ import { hubGitSync } from "../src/hub/git.ts";
 
 async function legacyHub(root: string, enabled: boolean, roster: PeerRoster = {}, extra: Partial<HubConfig> = {}, codexAppPort = 0, hooks: { taskSweepNow?: () => number } = {}) {
   const stateDir = join(root, ".agenthub/state"); mkdirSync(stateDir, { recursive: true });
-  const daemon = await startDaemon({ boundedTools: emulatedBoundedTools(), ...hooks, cwd: root, stateDir, projectId: "roster-legacy-project", controlPort: 0, codexAppPort, codexProxyPort: 0,
+  const daemon = await startDaemon({ ...(extra.memory?.worker_url ? { memoryClient: new FakeMemoryClient(extra.memory.worker_url) } : {}), boundedTools: emulatedBoundedTools(), ...hooks, cwd: root, stateDir, projectId: "roster-legacy-project", controlPort: 0, codexAppPort, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, ...extra, roster, batch_ms: 0, pi: { ...DEFAULT_CONFIG.pi, enabled, auto_start: false },
       memory: { ...DEFAULT_CONFIG.memory, ...extra.memory, enabled: extra.memory?.enabled ?? false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false },
       omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [] } } });
