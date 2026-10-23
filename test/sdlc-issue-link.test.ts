@@ -120,3 +120,31 @@ test("the groom links before it reads GitHub metadata, so a failing or hanging r
   expect(board.get(id)!.sdlc?.issue).toBe(77);
   expect(board.get(id)!.history.some(entry => entry.event === "lifecycle linked")).toBe(true);
 });
+
+test("a sibling shorthand beside a bare #N is ambiguous and links nothing (#723 review)", async () => {
+  const { tasks } = rig("advise");
+  const task = await tasks.propose("claude", { title: "agent-mem#13 follow-up for #723", class: "implement", backlog: true, refs: { repo: SIBLING } });
+  expect(task.sdlc?.issue).toBeUndefined();
+});
+
+test("the refs.repo hint is silent when the lifecycle mode is off (#723 review)", async () => {
+  const { tasks } = rig("off");
+  const task = await tasks.propose("claude", { title: "agent-mem#13 follow-up", class: "implement", backlog: true });
+  expect(tasks.refsRepoHint(task)).toBeUndefined();
+  const advise = rig("advise");
+  expect(advise.tasks.refsRepoHint(await advise.tasks.propose("claude", { title: "agent-mem#13 follow-up", class: "implement", backlog: true }))).toContain("refs.repo");
+});
+
+test("the groom backfill resumes past rows that never link when its time budget runs out (#723 review)", () => {
+  const { tasks, board } = rig("off");
+  for (let i = 0; i < 10; i++) board.propose("claude", { title: `no issue here ${i}`, class: "implement" });
+  const target = board.propose("claude", { title: "Fix #718: late row", class: "implement" });
+  (tasks as any).d.sdlc.config = () => sdlcConfig({ mode: "advise" });
+  const real = performance.now.bind(performance);
+  let t = 0;
+  performance.now = () => (t += 300);
+  try {
+    for (let call = 0; call < 6 && !board.get(target.id)?.sdlc?.issue; call++) (tasks as any).backfillIssueLinks("claude");
+  } finally { performance.now = real; }
+  expect(board.get(target.id)?.sdlc?.issue).toBe(718);
+});

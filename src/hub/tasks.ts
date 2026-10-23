@@ -2394,7 +2394,7 @@ export class Tasks {
    * (the identity needs the repository), so the proposer is told to set it. Advice only; a PII task gets none.
    */
   refsRepoHint(task: Task): string | undefined {
-    if (this.isPii(task) || task.refs.repo || task.sdlc?.issue) return undefined;
+    if (this.isPii(task) || task.refs.repo || task.sdlc?.issue || (this.d.sdlc?.config().mode ?? "off") === "off") return undefined;
     const names = qualifiedTitleRepos(task.title);
     return names.length ? `task #${task.id}: the title names ${names.join(", ")}; set refs.repo to that repository (owner/name) so its issue links and the lifecycle shows it` : undefined;
   }
@@ -2449,7 +2449,8 @@ export class Tasks {
     try { issues = specRefs(task, repository); }
     catch { throw new PreEffectToolRefusal("plan review issue identity unavailable"); }
     // #723: a title that qualifies the sibling repository `refs.repo` names (`agent-mem#13`) is a local parse, never a read.
-    if (!issues.length) issues = siblingTitleRefs(task.title, task.refs.repo);
+    // A sibling shorthand next to a bare #N is two identities, refused below, never the bare one alone.
+    issues = [...new Set([...issues, ...siblingTitleRefs(task.title, task.refs.repo)])];
     if (issues.length > 1) throw new PreEffectToolRefusal("plan review needs one explicit issue identity");
     return issues[0] ? { repo: repository, issue: issues[0] } : undefined;
   }
@@ -2504,17 +2505,22 @@ export class Tasks {
    * the digest, so a groom that later times out has still linked. Each call links up to 32 open tasks that still lack one
    * within a one-second budget, so later tasks are reached on later calls. A local parse; a failure skips that task only.
    */
+  private backfillCursor = 0;
   private backfillIssueLinks(by: PeerId): number {
     if ((this.d.sdlc?.config().mode ?? "off") === "off") return 0;
     // ponytail: 32 links and 1 s per call; raise both only with a measured groom time on a 400-task board.
     const deadline = performance.now() + 1_000;
-    let linked = 0;
-    for (const task of this.d.board.list()) {
+    let linked = 0, i = 0;
+    const list = this.d.board.list(), n = list.length;
+    // The scan resumes where the last call stopped, so rows that never link cannot hold later ones back.
+    for (; i < n; i++) {
       if (linked >= 32 || performance.now() >= deadline) break;
+      const task = list[(this.backfillCursor + i) % n]!;
       if (isClosedTaskState(task.state) || task.sdlc?.issue || this.isPii(task)) continue;
       this.planningAuthority(by);
       try { if (this.linkIssue(task) !== task) linked++; } catch { /* one task never stops the rest */ }
     }
+    this.backfillCursor = n ? (this.backfillCursor + i) % n : 0;
     return linked;
   }
 
