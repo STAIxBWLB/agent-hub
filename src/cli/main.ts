@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import type { DeliverableRow } from "../hub/tasks.ts";
 import { kimiSourceRow } from "../hub/budget-notes.ts";
 import { hubGitSync, hubGitEnv } from "../hub/git.ts";
 import { parseReleaseGuardArgv, parseReleasePushUpdates } from "./sdlc-release-guard.ts";
@@ -1193,6 +1194,27 @@ const commands: Record<string, () => Promise<void> | void> = {
     } else if (sub && Object.hasOwn(states, sub) && args.length === 3) fields = { state: states[sub] };
     else return fail("invalid release command");
     console.log(await taskOp("release_change", { name, revision: Number(revision), fields }));
+  },
+
+  deliverables: async () => {
+    // #317: what each task delivered and what a reviewer approved, by id, hash and size (a path only where the PII screen allows it). Person only: the daemon refuses an agent.
+    const options = outputOptions();
+    const { one, rest } = takeFlags(args, ["--task"], []);
+    const approved = rest.includes("--approved"), check = rest.includes("--check");
+    const extra = rest.filter(arg => !["--json", "--full", "--approved", "--check"].includes(arg) && !arg.startsWith("--color="));
+    const task = one["--task"] === undefined ? undefined : Number(one["--task"]);
+    // takeFlags keeps the last of a repeated flag: for a command that selects a task that would silently drop one of two named tasks.
+    if (args.filter(arg => arg === "--task").length > 1) fail("usage: ahub deliverables [--task <id>] [--approved] [--check] [--json] [--color=auto|always|never] (--task takes one id)");
+    if (extra.length || (one["--task"] !== undefined && !/^[1-9]\d*$/.test(one["--task"])) || (task !== undefined && !Number.isSafeInteger(task))) fail("usage: ahub deliverables [--task <id>] [--approved] [--check] [--json] [--color=auto|always|never]");
+    const rows = JSON.parse(await taskOp("deliverables", { ...(task === undefined ? {} : { task }), ...(approved ? { approved: true } : {}), ...(check ? { check: true } : {}) })) as DeliverableRow[];
+    if (options.json) return console.log(JSON.stringify(rows, null, 2));
+    if (!rows.length) return console.log(task === undefined ? `no ${approved ? "approved " : ""}deliverables on the board` : `task #${task} has no ${approved ? "approved " : ""}deliverables`);
+    for (const row of rows) {
+      const flag = row.checked ? (row.changedSinceReview ? " (changed since review)" : " (unchanged)") : "";
+      console.log(`#${row.task} ${row.title} [${row.state}${flag}]`);
+      for (const file of row.files) console.log(`  ${file.id}  ${file.path ?? "(private)"}  ${file.format}${file.version ? ` ${file.version}` : ""}  ${file.bytes} B  sha256 ${file.sha256}${file.state ? `  ${file.state}` : ""}`);
+    }
+    if (!check) console.log("(hashes are the board's records; add --check to measure the files now)");
   },
 
   board: async () => {

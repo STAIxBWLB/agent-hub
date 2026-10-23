@@ -91,3 +91,115 @@ test("hub_sdlc_record carries deliverables through recordSdlc, and a peer's task
   expect(peer.ok).toBe(true);
   expect(JSON.parse(peer.text).deliverables).toMatchObject({ state: "delivered", files: [{ sha256: sha("slides"), state: "unchanged" }] });
 });
+
+// ---- #317: `ahub deliverables` (the `deliverables` task op) and the dashboard snapshot field
+
+const uiSnapshot = async (daemonConsole: ControlClient) => {
+  const opened = await daemonConsole.request({ t: "ui" }), url = new URL(opened.url);
+  const headers: Record<string, string> = { origin: url.origin, "content-type": "application/json" };
+  const session = await fetch(`${url.origin}/session`, { method: "POST", headers, body: JSON.stringify({ ticket: url.hash.slice(1) }) });
+  expect(session.status).toBe(200); headers.cookie = session.headers.get("set-cookie")!.split(";")[0]!;
+  const response = await fetch(`${url.origin}/snapshot`, { method: "POST", headers, body: JSON.stringify({ after: 0 }) });
+  expect(response.status).toBe(200);
+  return await response.json() as { tasks: { id: number; deliverables?: any }[] };
+};
+
+test("the deliverables op lists the board's records for the person, opens no file without check, and measures with check", async () => {
+  const r = await rig(); r.write("out/report.md", "# Report v1\n");
+  const id = await r.propose(true);
+  expect((await r.op(r.tools, "hub_task_done", { id, summary: "wrote it", deliverables: [{ path: "out/report.md", format: "md", version: "v1" }] })).ok).toBe(true);
+  expect((await r.op(r.console_, "hub_review", { id, verdict: "approved", note: "ok" })).ok).toBe(true);
+  r.write("out/report.md", "# Report v1, edited after approval\n");
+  const plain = JSON.parse((await r.op(r.console_, "deliverables", {})).text);
+  expect(plain).toHaveLength(1);
+  expect(plain[0]).toMatchObject({ task: id, state: "approved", checked: false, files: [{ path: "out/report.md", version: "v1", sha256: sha("# Report v1\n"), bytes: 12 }] });
+  expect(plain[0]).not.toHaveProperty("changedSinceReview");
+  const checked = JSON.parse((await r.op(r.console_, "deliverables", { check: true, task: id })).text);
+  expect(checked[0]).toMatchObject({ checked: true, changedSinceReview: true, files: [{ state: "changed", sha256: sha("# Report v1\n") }] });
+  expect(JSON.parse((await r.op(r.console_, "deliverables", { approved: true })).text)).toHaveLength(1);
+  expect(JSON.parse((await r.op(r.console_, "deliverables", { task: 4242 })).text)).toEqual([]);
+});
+
+test("the deliverables op is the person's: an agent's tools connection is refused, and a malformed task is refused before any read", async () => {
+  const r = await rig(); r.write("report.md", "x");
+  const id = await r.propose();
+  expect((await r.op(r.tools, "hub_task_done", { id, summary: "done", deliverables: [{ path: "report.md", format: "md" }] })).ok).toBe(true);
+  const agent = await r.op(r.tools, "deliverables", {});
+  expect(agent.ok).toBe(false); expect(String(agent.error)).toContain("console command");
+  for (const bad of [0, -1, 1.5, "1", null]) {
+    const refused = await r.op(r.console_, "deliverables", { task: bad });
+    expect(refused.ok, `task=${String(bad)}`).toBe(false); expect(String(refused.error)).toContain("positive integer");
+  }
+});
+
+test("the dashboard snapshot carries a deliverables badge from the board, never opens a file, and shows a measurement only after a live read", async () => {
+  const r = await rig(); r.write("report.md", "reviewed");
+  const id = await r.propose();
+  expect((await r.op(r.tools, "hub_task_done", { id, summary: "done", deliverables: [{ path: "report.md", format: "md" }] })).ok).toBe(true);
+  r.write("report.md", "edited behind the board's back");
+  const first = (await uiSnapshot(r.console_)).tasks.find(task => task.id === id)!;
+  expect(first.deliverables).toMatchObject({ state: "delivered", files: [{ path: "report.md", sha256: sha("reviewed") }] });
+  expect(first.deliverables).not.toHaveProperty("checked");                                  // the poll hashed nothing, so it says nothing about change
+  await r.show(id);                                                                          // task_show is a live read
+  const second = (await uiSnapshot(r.console_)).tasks.find(task => task.id === id)!;
+  expect(second.deliverables).toMatchObject({ checked: { changed: true } });
+  const made = await r.op(r.console_, "hub_task_propose", { title: "no files here", class: "implement" });   // a task with no deliverables carries no field
+  expect(made.ok).toBe(true);
+  const plain = Number(/#(\d+)/.exec(String(made.text))![1]);
+  const tasks = (await uiSnapshot(r.console_)).tasks;
+  expect(tasks.find(task => task.id === plain)).toBeDefined(); expect(tasks.find(task => task.id === plain)).not.toHaveProperty("deliverables");
+});
+
+// ---- #317 through the real `ahub deliverables` command
+
+async function ahub(root: string, args: string[], markers: Record<string, string> = {}) {
+  const wrapper = join(root, `cli-${crypto.randomUUID()}.ts`);
+  writeFileSync(wrapper, `for (const name of ["AGENTHUB_PEER_ID", "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR"]) delete process.env[name];
+Object.assign(process.env, ${JSON.stringify(markers)}, { AGENTHUB_STATE_DIR: ${JSON.stringify(join(root, "state"))}, COLUMNS: "200", NO_COLOR: "1", AGENTHUB_HOME: ${JSON.stringify(join(root, "home"))} });
+process.argv = [process.execPath, ${JSON.stringify(join(import.meta.dir, "../src/cli/main.ts"))}, ...${JSON.stringify(args)}];
+await import(${JSON.stringify(join(import.meta.dir, "../src/cli/main.ts"))});
+`);
+  const child = Bun.spawn([process.execPath, wrapper], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const timer = setTimeout(() => child.kill("SIGKILL"), 15000);
+  try {
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    return { code, stdout, stderr };
+  } finally { clearTimeout(timer); }
+}
+
+test("ahub deliverables prints the records, --check marks a change since review, --json is the same rows, bad flags are usage errors", async () => {
+  const r = await rig(); r.write("out/report.md", "# Report v1\n");
+  const id = await r.propose(true);
+  expect((await r.op(r.tools, "hub_task_done", { id, summary: "wrote it", deliverables: [{ path: "out/report.md", format: "md", version: "v1" }] })).ok).toBe(true);
+  expect((await r.op(r.console_, "hub_review", { id, verdict: "approved", note: "ok" })).ok).toBe(true);
+  const plain = await ahub(r.root, ["deliverables"]);
+  expect(plain.code, plain.stderr).toBe(0);
+  expect(plain.stdout).toContain(`#${id} #${id} write the report [approved]`);
+  expect(plain.stdout).toContain(`out/report.md  md v1  12 B  sha256 ${sha("# Report v1\n")}`);
+  expect(plain.stdout).toContain("add --check to measure the files now");
+  expect(plain.stdout).not.toContain("changed since review");                              // not measured, so not claimed
+  r.write("out/report.md", "# Report v1, edited after approval\n");
+  const checked = await ahub(r.root, ["deliverables", "--check", "--task", String(id)]);
+  expect(checked.code, checked.stderr).toBe(0);
+  expect(checked.stdout).not.toContain("add --check");                                     // the hint is for a list that was not measured
+  expect(checked.stdout).toContain("[approved (changed since review)]");
+  expect(checked.stdout).toMatch(/sha256 [0-9a-f]{64}  changed\n/);
+  const json = JSON.parse((await ahub(r.root, ["deliverables", "--approved", "--json"])).stdout);
+  expect(json).toHaveLength(1); expect(json[0]).toMatchObject({ task: id, state: "approved", checked: false });
+  const empty = await ahub(r.root, ["deliverables", "--task", "999"]);
+  expect(empty.code).toBe(0); expect(empty.stdout).toContain("task #999 has no deliverables");
+  for (const bad of [["--task"], ["--task", "0"], ["--task", "abc"], ["extra"], ["--task", "1", "--task", "2"]]) {
+    const refused = await ahub(r.root, ["deliverables", ...bad]);
+    expect(refused.code, bad.join(" ")).toBe(1); expect(refused.stderr).toMatch(/usage: ahub deliverables|needs a value|more than once|repeated/); expect(refused.stdout).toBe("");
+  }
+});
+
+test("ahub deliverables from an agent shell is refused by the identity layer and by the live-test delegation, and shows no record", async () => {
+  const r = await rig(); r.write("report.md", "secret-looking text");
+  const id = await r.propose();
+  expect((await r.op(r.tools, "hub_task_done", { id, summary: "done", deliverables: [{ path: "report.md", format: "md" }] })).ok).toBe(true);
+  const agent = await ahub(r.root, ["deliverables"], { AGENTHUB_PEER_ID: "kimi" });
+  expect(agent.code).toBe(1); expect(agent.stdout).not.toContain("report.md"); expect(agent.stdout).not.toContain(sha("secret-looking text"));
+  const delegated = await ahub(r.root, ["--live-test", "deliverables"], { AGENTHUB_PEER_ID: "kimi" });
+  expect(delegated.code).toBe(1); expect(delegated.stderr).toContain("live-test cannot write person-attributed content"); expect(delegated.stdout).not.toContain("report.md");
+});

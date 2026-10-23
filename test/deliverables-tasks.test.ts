@@ -252,3 +252,95 @@ test("without an execution-root port (library use) the project root is used, as 
   await r.tasks.done("codex", t.id, "done", undefined, doc());
   expect(r.board.get(t.id)!.history.find(h => h.event === "done")!.deliverables![0]!.sha256).toBe(sha("plain"));
 });
+
+// ---- #317: `ahub deliverables` and the dashboard badge read the same records through Tasks.deliverableList / deliverableBadge
+
+test("deliverableList lists newest task first, opens no file without `check`, and never claims a change it did not measure", async () => {
+  const r = await rig(); r.write("a.md", "alpha"); r.write("b.md", "beta");
+  const first = await r.propose({ title: "first report" });                       // the owner's WIP limit is 1: finish one before the next is proposed
+  await r.tasks.done("codex", first.id, "done", undefined, doc("a.md")); await r.tasks.review("claude", first.id, "approved", "ok");
+  const second = await r.propose({ title: "second report" });
+  await r.tasks.done("codex", second.id, "done", undefined, doc("b.md", "md", "v2"));
+  r.write("a.md", "alpha, edited");                                       // an edit the board cannot know about without measuring
+  const rows = await r.tasks.deliverableList();
+  expect(rows.map(row => row.task)).toEqual([second.id, first.id]);
+  expect(rows[1]).toMatchObject({ title: `#${first.id} first report`, state: "approved", checked: false, files: [{ id: deliverableId("a.md", "md"), path: "a.md", sha256: sha("alpha"), bytes: 5 }] });
+  expect(rows[1]).not.toHaveProperty("changedSinceReview");
+  expect(rows[1]!.files[0]).not.toHaveProperty("state");
+  expect(rows[0]!.files[0]).toMatchObject({ version: "v2", sha256: sha("beta") });
+});
+
+test("deliverableList with `check` measures the files now: changed since review, missing, unchanged", async () => {
+  const r = await rig(); r.write("a.md", "alpha"); r.write("b.md", "beta");
+  const t = await r.propose();
+  await r.tasks.done("codex", t.id, "done", undefined, [...doc("a.md"), ...doc("b.md")]);
+  await r.tasks.review("claude", t.id, "approved", "ok");
+  r.write("a.md", "alpha, edited"); rmSync(join(r.dir, "b.md"));
+  const [row] = await r.tasks.deliverableList({ check: true });
+  expect(row).toMatchObject({ task: t.id, state: "approved", checked: true, changedSinceReview: true });
+  expect(row!.files.map(file => file.state)).toEqual(["changed", "missing"]);
+  expect(row!.files[0]!.sha256).toBe(sha("alpha"));                         // the approved bytes, not the edited ones
+});
+
+test("deliverableList: `approvedOnly` lists only approved versions, `task` selects one task, and a task with none is absent", async () => {
+  const r = await rig(); r.write("a.md", "alpha"); r.write("b.md", "beta");
+  const approved = await r.propose({ title: "approved one" });
+  await r.tasks.done("codex", approved.id, "done", undefined, doc("a.md")); await r.tasks.review("claude", approved.id, "approved", "ok");
+  const plain = await r.propose({ title: "no files" });
+  await r.tasks.done("codex", plain.id, "done"); await r.tasks.review("claude", plain.id, "approved", "ok");
+  const waiting = await r.propose({ title: "waiting one" });
+  await r.tasks.done("codex", waiting.id, "done", undefined, doc("b.md"));
+  expect((await r.tasks.deliverableList()).map(row => row.task).sort()).toEqual([approved.id, waiting.id].sort());
+  expect((await r.tasks.deliverableList({ approvedOnly: true })).map(row => row.task)).toEqual([approved.id]);
+  expect((await r.tasks.deliverableList({ task: waiting.id })).map(row => row.state)).toEqual(["delivered"]);
+  expect(await r.tasks.deliverableList({ task: plain.id })).toEqual([]);
+  expect(await r.tasks.deliverableList({ task: 9999 })).toEqual([]);
+});
+
+test("deliverableList and deliverableBadge show a PII task or a pii.paths file by id, hash and size only, and a private title is the stub", async () => {
+  const r = await rig({ piiPaths: ["patients/**"] }); r.write("patients/2026.csv", "id,dx\n1,flu\n"); r.write("report.md", "ordinary"); r.write("memo.md", "about a patient");
+  const mixed = await r.propose();
+  await r.tasks.done("codex", mixed.id, "done", undefined, [...doc("report.md"), ...doc("patients/2026.csv", "csv")]);
+  const pii = r.board.propose("claude", { title: "Dr Kim's patient memo", class: "implement", signals: ["pii_path"] });
+  r.board.update(pii.id, USER, "accepted", { state: "in_progress", owner: "codex", reviewer: USER });
+  await r.tasks.done("codex", pii.id, "done", undefined, doc("memo.md"));
+  for (const opts of [{}, { check: true }]) {
+    const rows = await r.tasks.deliverableList(opts), text = JSON.stringify(rows);
+    expect(text).not.toContain("patients"); expect(text).not.toContain("memo.md"); expect(text).not.toContain("Kim"); expect(text).not.toContain("flu");
+    expect(rows.find(row => row.task === mixed.id)!.files.map(file => !!file.private)).toEqual([false, true]);
+    expect(rows.find(row => row.task === mixed.id)!.files[0]!.path).toBe("report.md");
+    expect(rows.find(row => row.task === pii.id)!.files[0]).toMatchObject({ private: true, sha256: sha("about a patient") });
+  }
+  const badge = JSON.stringify([r.tasks.deliverableBadge(r.board.get(mixed.id)!), r.tasks.deliverableBadge(r.board.get(pii.id)!)]);
+  expect(badge).not.toContain("patients"); expect(badge).not.toContain("memo.md"); expect(badge).toContain(sha("about a patient"));
+});
+
+test("deliverableBadge opens no file and reports a measurement only for the records it measured; a redelivery clears it", async () => {
+  const r = await rig(); r.write("a.md", "alpha");
+  const t = await r.propose();
+  await r.tasks.done("codex", t.id, "done", undefined, doc("a.md"));
+  r.write("a.md", "edited behind the board's back");
+  const before = r.tasks.deliverableBadge(r.board.get(t.id)!)!;
+  expect(before).toMatchObject({ state: "delivered", files: [{ sha256: sha("alpha") }] }); expect(before).not.toHaveProperty("checked");   // nothing was measured, so nothing is claimed
+  await r.tasks.deliverableStatus(r.board.get(t.id)!);                                                                                     // a live read (task_show, ahub deliverables --check)
+  expect(r.tasks.deliverableBadge(r.board.get(t.id)!)).toMatchObject({ checked: { changed: true } });
+  await r.tasks.review("claude", t.id, "changes_requested", "redo");
+  r.write("a.md", "second delivery");
+  await r.tasks.done("codex", t.id, "again", undefined, doc("a.md"));
+  const after = r.tasks.deliverableBadge(r.board.get(t.id)!)!;
+  expect(after.files[0]!.sha256).toBe(sha("second delivery")); expect(after).not.toHaveProperty("checked");                                // the old measurement was of other records
+  expect(r.tasks.deliverableBadge(r.board.get((await r.propose()).id)!)).toBeUndefined();
+});
+
+test("deliverableList and the badge show the APPROVED bytes, not a later delivery's: a person-approved edit is what the list names", async () => {
+  const r = await rig(); r.write("a.md", "delivered bytes");
+  const t = await r.propose();
+  await r.tasks.done("codex", t.id, "done", undefined, doc("a.md"));
+  r.write("a.md", "the bytes the person approved as they are now");
+  await r.tasks.review(USER, t.id, "approved", "fine as it is");               // the person approves the current bytes: the approval's records differ from the delivery's
+  const task = r.board.get(t.id)!;
+  expect(task.history.find(h => h.event === "done")!.deliverables![0]!.sha256).toBe(sha("delivered bytes"));
+  const [row] = await r.tasks.deliverableList();
+  expect(row).toMatchObject({ state: "approved", files: [{ sha256: sha("the bytes the person approved as they are now"), bytes: Buffer.byteLength("the bytes the person approved as they are now") }] });
+  expect(r.tasks.deliverableBadge(task)!.files[0]!.sha256).toBe(sha("the bytes the person approved as they are now"));
+});
