@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { kimiSourceRow } from "../hub/budget-notes.ts";
 import { hubGitSync, hubGitEnv } from "../hub/git.ts";
 import { parseReleaseGuardArgv, parseReleasePushUpdates } from "./sdlc-release-guard.ts";
 import { validReleaseVersion } from "../hub/sdlc-release-authorization.ts";
@@ -1140,7 +1141,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const res = await hub.request({ t: "budget", ...(set ? { set } : {}) });
     hub.close();
     if (!res.ok) fail(res.error);
-    const data = { budget: res.budget, gate: res.gate };
+    const data = { budget: res.budget, ...(res.peers ? { peers: res.peers } : {}), gate: res.gate };
     if (options.json) return console.log(JSON.stringify(data, null, 2));
     printOutput(renderBudget(data, options.columns, Date.now(), options.full), options.color);
   },
@@ -2128,6 +2129,10 @@ const commands: Record<string, () => Promise<void> | void> = {
           const { status } = await hub.request({ t: "status" });
           const pending = Object.values(status.peers as Record<string, PeerRow>).reduce((n, peer) => n + (peer.needsReview ?? 0), 0);
           row(!status.deliveryError && pending === 0, "delivery recovery", status.deliveryError ?? (pending ? `${pending} deliveries need review; run ahub queue list` : "journal healthy; no deliveries need review"));
+          // #285 AC10: where Kimi's number comes from, and whether the hub can trust it right now. An older hub answers without `kimiSource`: no row, not a failure.
+          const quota = await hub.request({ t: "budget" });
+          const kimiRow = quota.ok ? kimiSourceRow(quota.kimiSource) : undefined;
+          if (kimiRow) row(kimiRow.ok, "kimi usage source", kimiRow.detail);
           const observed = await hub.request({ t: "recovery", op: "inspect", expectedInstanceId: status.instanceId });
           for (const peer of Object.values(observed.recovery?.peers ?? {}) as { id: string; state: string; sessionId?: string; threadId?: string }[]) {
             const check = nativeDoctorRecoveryIdentity(peer);

@@ -67,6 +67,8 @@ import { createConfigEditor } from "./config-edit-host.ts";
 import { readEditable } from "./config-edit.ts";
 import { eventLog, readEvents, type RoleIdentity } from "./events.ts";
 import { KimiUsage, kimiSeedRows } from "./kimi-usage.ts";
+import { TokenWindow } from "./token-window.ts";
+import { budgetNotes, type BudgetPeerNote } from "./budget-notes.ts";
 import { kimiRowTotal } from "../adapters/kimi-wire-usage.ts";
 import { ExecutionBudget } from "./execution-budget.ts";
 import { claudeReportedTokens, readClaudeTranscriptCompletion, readClaudeTranscriptUsage, waitForClaudeCompletion } from "./usage.ts";
@@ -1915,11 +1917,18 @@ export async function startDaemon(opts: DaemonOptions) {
         cacheReadTokens: row.inputCacheRead, cacheWriteTokens: row.inputCacheCreation, totalTokens: kimiRowTotal(row),
         ...taskAttribution(peer), ...(row.model ? { servedModel: row.model } : {}) });
     },
-    report: (peer, window) => budget.report(peer, [{ id: "tokens", used: window.used, resetsAt: window.resetsAt, source: `hub count, kimi wire log, of kimi_tokens_5h ${window.ceiling}` }]),
-    forget: peer => budget.forget(peer, "tokens"),
+    report: (peer, window) => budget.report(peer, [{ id: "tokens", kind: "count", used: window.used, resetsAt: window.resetsAt, source: `hub count, kimi wire log, of kimi_tokens_5h ${window.ceiling}` }]),
+    forget: peer => budget.forget(peer, "tokens", "count"),
     notice: line => notify(line),
   });
   kimiUsage.seed(kimiSeedRows(startupEvents, Math.max(0, ...startupEvents.flatMap(e => e.type === "budget_resume" && definitionOf(e.peer)?.budget?.resetSoftTokensOnResume ? [Date.parse(e.at)] : []).filter(Number.isFinite))));
+  /** Why a peer shows no number (no quota, nothing read yet): one line each, from the definition and the counters, never from a log's text. */
+  const budgetPeerNotes = (): BudgetPeerNote[] => {
+    const quota = budget.status();
+    const peers = [...new Set([...bus.knownPeers().filter(peer => bus.peers.has(peer) && bus.stateOf(peer) !== "offline"), ...Object.keys(quota)])].filter(peer => peer !== USER && peer !== HUB);
+    return budgetNotes({ peers, windows: peer => quota[accountOf(peer)]?.windows.length ?? 0, definition: peer => definitionOf(peer), softTokens: () => kimiUsage.status(),
+      hubTokens5h: peer => hubTokenWindows.get(peer)?.sum(Date.now()) });
+  };
   /** A peer whose definition keeps host-owned soft token accounting (Kimi): its rows are read at a turn start (the floor), a turn end and a usage_update. */
   const softTokenPeer = (peer: PeerId): boolean => !!definitionOf(peer)?.budget?.resetSoftTokensOnResume;
   const collectKimiUsage = (peer: PeerId): void => { if (!softTokenPeer(peer)) return; try { kimiUsage.collect(peer); } catch (error) { log(`kimi usage: ${(error as Error).name}`); } };
@@ -2145,7 +2154,16 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   /** Tokens a peer used, as increments. */
   let codexUsageSeq = 0; // per hub run: with the run id and peer it names one usage record
+  // #285 AC6: a peer with no provider quota (Pi, local) still shows what the hub counted for it in the last 5 h, as information, never as a meter or a gate.
+  const hubTokenWindows = new Map<PeerId, TokenWindow>();
+  const noQuotaPeer = (peer: PeerId): boolean => !!definitionOf(peer)?.budget?.noQuotaReason;
+  const hubTokenWindow = (peer: PeerId): TokenWindow => hubTokenWindows.get(peer) ?? hubTokenWindows.set(peer, new TokenWindow(5 * 3_600_000)).get(peer)!;
+  // Replayed through `seed`, which skips rows older than 5 h before inserting any: a long-lived project's whole log costs one pass, not one search per row.
+  const seedNow = Date.now(), seedRows = new Map<PeerId, { at: number; n: number }[]>();
+  for (const e of startupEvents) if (e.type === "tokens" && noQuotaPeer(e.peer)) (seedRows.get(e.peer) ?? seedRows.set(e.peer, []).get(e.peer)!).push({ at: Date.parse(e.at), n: e.n });
+  for (const [peer, rows] of seedRows) hubTokenWindow(peer).seed(rows, seedNow);
   const addTokens = (peer: PeerId, n: number, task?: number): number => {
+    if (n > 0 && noQuotaPeer(peer)) hubTokenWindow(peer).add(Date.now(), Math.round(n));
     const supervisionTurn = supervisionTurns.get(peer);
     if (supervisionTurn && Number.isFinite(n) && n >= 0) supervisionTurn.tokens = (supervisionTurn.tokens ?? 0) + n;
     if (n > 0) {
@@ -4567,7 +4585,7 @@ export async function startDaemon(opts: DaemonOptions) {
           const summary = bus.queueSummary(peer);
           return { peer, state: bus.stateOf(peer), attached: !!bus.peers.get(peer) && bus.peers.get(peer)!.state !== "offline", queued: bus.queued(peer), needsReview: summary.needsReview,
             manualHeld: manualPaused.has(peer), hold: conductorHolds.get(peer), budgetPause: quota[accountOf(peer)]?.paused ?? null,
-            ...(quota[accountOf(peer)] ? { windows: quota[accountOf(peer)]!.windows.map(w => ({ id: w.id, ...(w.stale || (w.resetsAt !== undefined && w.resetsAt <= Date.now()) ? {} : { used: w.used }), resetsAt: w.resetsAt, at: w.at, source: w.source })) } : {}) };
+            ...(quota[accountOf(peer)] ? { windows: quota[accountOf(peer)]!.windows.map(w => ({ id: w.id, ...(w.stale || (w.resetsAt !== undefined && w.resetsAt <= Date.now()) ? {} : { used: w.used }), resetsAt: w.resetsAt, at: w.at, source: w.source, kind: w.kind, ...(w.superseded ? { superseded: true } : {}) })) } : {}) };
         }),
         taskCounts: board.counts(), approvals: [...permissions.values()].map(p => ({ peer: p.peer, tool: p.tool, at: p.createdAt })),
       };
@@ -4667,6 +4685,7 @@ export async function startDaemon(opts: DaemonOptions) {
   function uiSnapshot(after: number, _input?: Record<string, unknown>, session?: DashboardSession) {
     const quota = budget.status();
     const peers = [...new Set([...Object.keys(quota), ...bus.knownPeers()])];
+    const budgetNoteOf = new Map(budgetPeerNotes().map(note => [note.peer, note] as const));
     // #264 (phase 3): turn, checking and links are additive optional fields that older pages ignore,
     // so PROTOCOL and EVENTS_SCHEMA stay unchanged. They carry ids and enums only.
     const turnView = (peer: PeerId) => {
@@ -4747,7 +4766,7 @@ export async function startDaemon(opts: DaemonOptions) {
         return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, ...(view.codeSymbols ? { codeSymbols: view.codeSymbols } : {}), ...(() => { const group = codeGroup(task, view.codeSymbols, task.plan?.symbols, tasks.publicMetadataText, tasks.isPii(task)); return group ? { codeGroup: group } : {}; })(), ...(view.cancelled ? { cancelled: view.cancelled } : {}), ...(view.external ? { external: view.external } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
       }),
       links: links.filter(link => link.tasks.every(id => { const task = board.get(id); return task && !tasks.isPii(task); })),
-      budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[accountOf(id)] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
+      budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[accountOf(id)] ?? { windows: [] }), ...(budgetNoteOf.get(id) ? { note: budgetNoteOf.get(id)!.note, noteKind: budgetNoteOf.get(id)!.kind } : {}), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
       permissions: [...permissions.values()].map(({ push }) => {
         const req = JSON.parse(push);
         // Local tool titles quote file contents and commands, including those of PII turns.
@@ -6510,7 +6529,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "budget":
         if (c.role !== "console") {
           if (msg.resume !== undefined || msg.set !== undefined) return void reply({ t: "budget", ok: false, error: "budget mutations are console commands" });
-          return void reply({ t: "budget", ok: true, budget: publicPeerBudget(budget.status(), text => tasks.nameable(text)), gate: config.budget.gate });
+          return void reply({ t: "budget", ok: true, budget: publicPeerBudget(budget.status(), text => tasks.nameable(text)), peers: budgetPeerNotes(), kimiSource: kimiUsage.status(), gate: config.budget.gate });
         }
         if (recoveryActive()) return void reply({ t: "budget", ok: false, error: "recovery is holding mutations" });
         if (msg.resume) {
@@ -6519,9 +6538,9 @@ export async function startDaemon(opts: DaemonOptions) {
           const used = Number(msg.set.used);
           if (!bus.peers.has(String(msg.set.peer)) && !budget.record(String(msg.set.peer))) return void reply({ t: "budget", ok: false, error: `unknown peer: ${msg.set.peer}` });
           if (!(used >= 0 && used <= 1)) return void reply({ t: "budget", ok: false, error: "used must be between 0 and 1" });
-          budget.report(String(msg.set.peer), [{ id: msg.set.window === "week" ? "week" : "5h", used, ...(msg.set.resetsInMs ? { resetsAt: Date.now() + Number(msg.set.resetsInMs) } : {}), source: "ahub budget set" }]);
+          budget.report(String(msg.set.peer), [{ id: msg.set.window === "week" ? "week" : "5h", kind: "manual", used, ...(msg.set.resetsInMs ? { resetsAt: Date.now() + Number(msg.set.resetsInMs) } : {}), source: "ahub budget set" }]);
         }
-        return void reply({ t: "budget", ok: true, budget: budget.status(), gate: config.budget.gate });
+        return void reply({ t: "budget", ok: true, budget: budget.status(), peers: budgetPeerNotes(), kimiSource: kimiUsage.status(), gate: config.budget.gate });
       case "usage": {
         // #683 U2: the console, the person and a configured planner read usage; every other agent is refused. Always answered (rid).
         const planner = c.role === "tools" && !!c.peer && !!config.roles[c.peer]?.includes("planner");

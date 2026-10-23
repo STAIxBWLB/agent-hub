@@ -8,8 +8,21 @@ export class TokenWindow {
 
   add(at: number, n: number): void {
     if (!Number.isFinite(at) || !Number.isSafeInteger(n) || n <= 0) return;
-    const index = this.rows.findIndex(row => row.at > at);
-    if (index < 0) this.rows.push({ at, n }); else this.rows.splice(index, 0, { at, n });
+    // The common case is a row at or after the newest one: no search. An older row (a late read) is placed by a scan from the end, which stops at once for a near-current one.
+    let index = this.rows.length;
+    while (index > 0 && this.rows[index - 1]!.at > at) index--;
+    if (index === this.rows.length) this.rows.push({ at, n }); else this.rows.splice(index, 0, { at, n });
+  }
+
+  /**
+   * Rebuild from a history in one pass, for a start-up replay of a long event log: rows already out of the window at `now` are skipped before
+   * anything is inserted, so the cost follows the window and not the log. `add`-ing every historical row instead keeps the expired ones until a read prunes them.
+   */
+  seed(rows: Iterable<{ at: number; n: number }>, now: number): void {
+    const live: { at: number; n: number }[] = [];
+    for (const row of rows) if (Number.isFinite(row.at) && Number.isSafeInteger(row.n) && row.n > 0 && now - row.at <= this.spanMs) live.push({ at: row.at, n: row.n });
+    live.sort((a, b) => a.at - b.at);
+    this.rows = this.rows.length ? [...this.rows, ...live].sort((a, b) => a.at - b.at) : live;
   }
 
   private prune(now: number): void {

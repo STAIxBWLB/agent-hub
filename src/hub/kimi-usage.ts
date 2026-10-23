@@ -52,6 +52,18 @@ export class KimiUsage {
     }
   }
 
+  /**
+   * What the count can say now, for `ahub doctor`, the notes under `ahub budget` and the dashboard. Carries a reason code at most (never a path, id or text from the log).
+   * `off`: no ceiling, so no window. `unreadable`: a log read unknown or was tainted. `counting`: a clean log is bound. `waiting`: no Kimi session is bound yet.
+   */
+  status(): { state: "off" | "waiting" | "counting" } | { state: "unreadable"; reason: string } {
+    if (!this.ports.ceiling()) return { state: "off" };
+    for (const state of this.bound.values()) if (state.unknown) return { state: "unreadable", reason: state.unknown };
+    const now = this.ports.now();
+    for (const until of this.taintedUntil.values()) if (now < until) return { state: "unreadable", reason: "log changed since it was counted" };
+    return { state: this.bound.size ? "counting" : "waiting" };
+  }
+
   /** The peer went offline: its log is no longer read, so an unreadable state of it must not hold the other peers' figure unknown. */
   drop(peer: string): void { this.bound.delete(peer); }
 

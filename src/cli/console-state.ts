@@ -10,6 +10,7 @@ import type { SettingRow, SettingValue } from "../hub/settings.ts";
 import { symbolFields, overlapFields } from "./console-symbols.ts";
 import { choicePrompt, reviewChoiceFor, reviewHint, reviewRefusal, verdictGuide, verdictInput, type ReviewChoice, type Verdict } from "./console-review.ts";
 import { configFormPrompt, reduceConfigForm, type ConfigEditBody, type ConfigForm } from "./console-config.ts";
+import { windowKind } from "../hub/window-kind.ts";
 import { USAGE_DROP, USAGE_HEAD, usageCells, usageDetail, usagePeers, usageTaskLines, type UsageState } from "./console-usage.ts";
 
 export interface Approval {
@@ -334,8 +335,25 @@ function taskFields(detail: Record<string, unknown>): [string, unknown][] {
   const at = fields.findIndex(([key]) => key === "plan");
   return at < 0 ? [...fields, ...block] : [...fields.slice(0, at + 1), ...block, ...fields.slice(at + 1)];
 }
-const detailLines = (detail: Detail, columns: number, now: number, task = false): Span[][] =>
-  typeof detail === "string" ? wrap(detail, columns).map(text => [span(text)]) : fieldLines(task ? taskFields(detail) : Object.entries(detail), columns, now).flat();
+/**
+ * The Peers panel's detail row carries the whole peer, `budget` included. Its windows read as one line each: `5h 23% resets in 10m, native, claude status line, measured 6s ago`,
+ * so a person sees what each number is and where it came from (#285 AC7). A window without a kind (an older hub) is classified like the CLI does.
+ */
+export function budgetFields(budget: any, now: number): [string, unknown][] {
+  if (!budget || typeof budget !== "object") return [];
+  const windows = Array.isArray(budget.windows) ? budget.windows : [];
+  const lines = windows.map((w: any) => {
+    const stale = w.stale ? " (stale)" : w.superseded ? " (information only: a measurement outranks it)" : "";
+    return `${w.id} ${Math.round(Number(w.used) * 100)}%${typeof w.resetsAt === "number" ? ` resets ${relative(w.resetsAt, now)}` : ""}, ${windowKind({ id: String(w.id), source: typeof w.source === "string" ? w.source : "", kind: w.kind })}, ${typeof w.source === "string" ? w.source : "unknown source"}${typeof w.at === "number" ? `, measured ${relative(w.at, now)}` : ""}${stale}`;
+  });
+  return [["quota", lines.length ? lines : typeof budget.note === "string" ? budget.note : "no reading"], ...(lines.length && typeof budget.note === "string" ? [["quota note", budget.note] as [string, unknown]] : [])];
+}
+const detailLines = (detail: Detail, columns: number, now: number, task = false): Span[][] => {
+  if (typeof detail === "string") return wrap(detail, columns).map(text => [span(text)]);
+  const { budget, ...rest } = detail as Record<string, unknown>;
+  const entries: [string, unknown][] = task ? taskFields(detail) : "budget" in detail && !task ? [...Object.entries(rest), ...budgetFields(budget, now)] : Object.entries(detail);
+  return fieldLines(entries, columns, now).flat();
+};
 const allowOptions = (a: Approval) => a.options.filter(o => o.kind.startsWith("allow"));
 /** A pushed request as the console keeps it: every agent-supplied field a string, so no draw can throw on one. */
 export function approvalFrom(msg: any): Approval {

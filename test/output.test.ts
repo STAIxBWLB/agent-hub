@@ -208,6 +208,29 @@ describe("one-shot output", () => {
     expect(terminal.match(new RegExp(hold, "g"))).toHaveLength(1);
     expect(terminal).toContain("byneeds_reviewabcdef12;");
   });
+  // #285 AC6: one line per window with its kind, source and age; a peer without a number says why; an older hub (no kind, no notes) still renders.
+  const kindBudget = { gate: 0.9, budget: {
+    claude: { windows: [{ id: "5h", kind: "native", used: 0.23, resetsAt: now + 600_000, source: "claude status line", at: now - 6_000, stale: false }] },
+    kimi: { windows: [{ id: "tokens", kind: "count", used: 0.56, resetsAt: now + 3 * 3_600_000, source: "hub count, kimi wire log, of kimi_tokens_5h 800000", at: now - 12_000, stale: false, superseded: true },
+      { id: "5h", kind: "manual", used: 0.4, resetsAt: now + 2 * 3_600_000, source: "ahub budget set", at: now - 25 * 60_000, stale: false }] } },
+    peers: [{ peer: "pi", kind: "no-quota", note: "no quota: on-prem backends have no provider quota; 1.2M tokens in 5h (hub count)" }, { peer: "local", kind: "no-quota", note: "no quota: on-prem gateway has no provider quota" },
+      { peer: "codex", kind: "no-reading", note: "no reading yet: codex rateLimits has not reported" }] };
+  test("ahub budget names each window's kind and source, marks a superseded count, and says why Pi, local and a silent peer show no number", () => {
+    const out = text(renderBudget(kindBudget, 200, now));
+    expect(out).toMatch(/claude\s+5h\s+23%\s+in 10m\s+native\s+claude status line\s+6s ago\s+fresh/);
+    expect(out).toMatch(/kimi\s+tokens\s+56%.*count\s+hub count, kimi wire log, of kimi_tokens_5h 800000.*info only/);
+    expect(out).toMatch(/kimi\s+5h\s+40%.*manual\s+ahub budget set.*fresh/);
+    expect(out).toMatch(/pi\s+no quota: on-prem backends have no provider quota; 1\.2M tokens in 5h \(hub count\)/);
+    expect(out).toMatch(/local\s+no quota: on-prem gateway has no provider quota/);
+    expect(out).toMatch(/codex\s+no reading yet: codex rateLimits has not reported/);
+    for (const columns of [80, 100]) for (const line of text(renderBudget(kindBudget, columns, now)).split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
+  });
+  test("ahub budget from an older hub (no kind, no notes) still renders, classifying a window by its source, and an empty hub keeps its hint", () => {
+    const out = text(renderBudget({ gate: 0.9, budget: { codex: { windows: [{ id: "5h", used: 0.5, source: "codex rateLimits", at: now, stale: false }, { id: "week", used: 0.2, source: "ahub budget set", at: now, stale: false }] } } }, 200, now));
+    expect(out).toMatch(/codex\s+5h\s+50%.*native/); expect(out).toMatch(/codex\s+week\s+20%.*manual/);
+    expect(text(renderBudget({ gate: 0.9, budget: {} }, 120, now))).toContain("no quota readings yet");
+    expect(text(renderBudget({ gate: 0.9, budget: {}, peers: [{ peer: "pi", note: "no quota: on-prem backends have no provider quota" }] }, 120, now))).not.toContain("no quota readings yet");
+  });
   test("budget pauses use their reading rather than a daemon locale clock", () => {
     const peers = { codex: { state: "paused", paused: "budget: threshold, resets 11:45:12 PM" } };
     const status = text(renderStatus({ peers, budget: { codex: { windows: [], paused: { reason: "threshold", resetsAt: now + 600_000 } } } }, 80, now));

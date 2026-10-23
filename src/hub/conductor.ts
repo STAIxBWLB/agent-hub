@@ -9,6 +9,7 @@ import type { StartMode } from "./start-mode.ts";
 import type { HubEvent } from "./events.ts";
 import type { SupervisionFeed } from "./supervision.ts";
 import type { Budget } from "./budget.ts";
+import { windowKind, type WindowKind } from "./window-kind.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { supportsHeadlessInstances } from "./instances.ts";
 
@@ -17,9 +18,11 @@ export function conductorProgressSink(record: (event: HubEvent) => void, feed: P
   return event => { record(event); if (event.type === "stuck") feed.milestone(event.task, "stuck", { reason: event.category }); };
 }
 
-export function publicPeerBudget(status: ReturnType<Budget["status"]>, nameable: (text: string) => boolean): Record<string, unknown> {
+/** What `Budget.status` returns, with the fields added after it optional so an older shape still projects. */
+type PublicBudgetStatus = Record<string, { windows: (Omit<ReturnType<Budget["status"]>[string]["windows"][number], "kind" | "superseded"> & { kind?: WindowKind; superseded?: boolean })[]; paused?: ReturnType<Budget["status"]>[string]["paused"] }>;
+export function publicPeerBudget(status: PublicBudgetStatus, nameable: (text: string) => boolean): Record<string, unknown> {
   return Object.fromEntries(Object.entries(status).map(([peer, value]) => [peer, {
-    windows: value.windows.map(window => ({ id: window.id, used: window.used, at: window.at, stale: window.stale,
+    windows: value.windows.map(window => ({ id: window.id, kind: windowKind(window), used: window.used, at: window.at, stale: window.stale, ...(window.superseded ? { superseded: true } : {}),
       ...(window.resetsAt === undefined ? {} : { resetsAt: window.resetsAt }),
       ...(window.windowMins === undefined ? {} : { windowMins: window.windowMins }),
       source: nameable(window.source) ? window.source : "[quota source withheld]",

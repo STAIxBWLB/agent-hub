@@ -149,7 +149,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     // Approval enforcement belongs to the verified native transport and host permission gate.
     permission: { grants: { ...hubGrants } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), restoreOnStart: true, launchKind: "pi", launchRecord: true, ...PI_RECOVERY_SESSION, crashPlan: piCrashPlan, unrecordedTerminal: "tui", continuityBookmark: piRecoveryContinuity, continuity: { key: "pi", parse: parsePiContinuity } },
-    turnEnd: "adapter", budget: { account: "pi", instrumented: true }, reporting: { tokensNotReported: true }, configuration: { schema: piConfigSchema, routingSchema: piRoutingSchema, settings: PI_SETTINGS, restartReasons: PI_RESTART_REASONS, validateEffective: piEffectiveConfig },
+    turnEnd: "adapter", budget: { account: "pi", instrumented: true, noQuotaReason: "on-prem backends have no provider quota" }, reporting: { tokensNotReported: true }, configuration: { schema: piConfigSchema, routingSchema: piRoutingSchema, settings: PI_SETTINGS, restartReasons: PI_RESTART_REASONS, validateEffective: piEffectiveConfig },
     routing: { localAllowedRefusal: "local_allowed = false also excludes pi for this class", longContext: "backend-limit", preferredTier: true, handoffPriority: 0, trace: "backend", backendLabel: "pi" },
     cli: { command: "pi", entry: { lifecycleAdmission: false, execute: runPiEntry }, preview: previewPi, usage: [["ahub pi [--print-command] [--mode headless|tui | --headless] [--backend auto|dgx|mlx] [--model <alias>] [--session-id <id>] [--session-file <path>] [--replace-session]", "start Pi: its TUI in this terminal unless --headless or the start mode setting (peers.pi.start_mode) says headless; without a terminal the hub opens one or says how"]], launchConfigKeys: ["pi.cmd", "pi.backend", "pi.dgx_coding", "pi.dgx_fast", "pi.max_steps", "routing.pi", "peers.pi.start_mode"], previewArgs: ["--mode", "tui"], retainedTerminalNotice: piRetainedTerminalNotice, personOnlyFlags: ["--replace-session"], startWords: form => ["pi", "--mode", form] }, display: PI_DISPLAY,
   },
@@ -162,7 +162,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     // Approval enforcement belongs to the verified native transport and host permission gate.
     permission: { grants: { ...hubGrants } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: true, launchKind: "local", ...LOCAL_RECOVERY_SESSION, crashPlan: localCrashPlan },
-    turnEnd: "adapter", budget: { account: "local", quotaExempt: true, instrumented: true }, configuration: { schema: localConfigSchema, routingSchema: localRoutingSchema, restartReasons: LOCAL_RESTART_REASONS },
+    turnEnd: "adapter", budget: { account: "local", quotaExempt: true, instrumented: true, noQuotaReason: "on-prem gateway has no provider quota" }, configuration: { schema: localConfigSchema, routingSchema: localRoutingSchema, restartReasons: LOCAL_RESTART_REASONS },
     routing: { localAllowedRefusal: "local_allowed = false for this class", longContext: "skip-owner", preferredTier: true, handoffPriority: 1, trace: "route" },
     cli: { command: "local", entry: { lifecycleAdmission: false, execute: runLocalEntry }, usage: [["ahub local [--route <id> | --model <id>]", "start the hub-native worker on the self-hosted models (routing.toml)"]], launchConfigKeys: ["local.deny", "local.bash_network", "local.network_allow", "local.max_steps", "local.read_allow", "routing.local"], startWords: () => ["local"] }, display: LOCAL_DISPLAY,
   },
@@ -243,7 +243,7 @@ export const BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly LegacyAdapterDefinition[
     identity: { mcp: "env" },
     permission: { modes: {}, grants: { ...hubGrants } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "pi", launchRecord: true },
-    turnEnd: "adapter", budget: { account: "pi" },
+    turnEnd: "adapter", budget: { account: "pi", noQuotaReason: "on-prem backends have no provider quota" },
     cli: { command: "pi", startWords: form => ["pi", "--mode", form] }, display: palette("#c79936"),
   },
   {

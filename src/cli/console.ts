@@ -226,7 +226,11 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
         state.recoveryNeed = status.status.recovery ? { id: status.status.recovery.operationId, running: true } : undefined;
       }
       if (syncPermissionDefaults(state, status.status?.permissionDefaults) && state.confirm?.type === "permission_default") stream({ text: permissionDefaultText(state.confirm), kind: "permission_default", peer: state.confirm.peer, tone: "attention" });
-      if (budget.budget) state.budget = budget.budget;
+      if (budget.budget) {
+        // #285: the hub's note per peer (no quota, nothing read yet) rides next to the windows, so the peer detail says why a number is missing.
+        const notes = new Map<string, any>((Array.isArray(budget.peers) ? budget.peers : []).map((n: any) => [String(n?.peer), n] as const));
+        state.budget = Object.fromEntries([...new Set([...Object.keys(budget.budget), ...notes.keys()])].map(peer => [peer, { windows: [], ...budget.budget[peer], ...(notes.get(peer)?.note ? { note: String(notes.get(peer).note) } : {}) }]));
+      }
       if (usageReplies) {
         const [today, week, life, limits, task] = usageReplies, failed = usageReplies.find(reply => reply?.ok === false);
         if (failed || !today?.usage || !week?.usage || !life?.usage || !limits?.limits) state.usage = { ...state.usage, problem: String(failed?.error ?? "usage is unavailable") };

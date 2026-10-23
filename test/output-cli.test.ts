@@ -12,7 +12,7 @@ import { classifyPeerCommand } from "../src/cli/identity.ts";
 const CLI = join(import.meta.dir, "../src/cli/main.ts");
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
-function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean } = {}) {
+function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean; kimiSource?: unknown } = {}) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "ahub-output-")));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const stateDir = join(root, ".agenthub/state"); mkdirSync(stateDir, { recursive: true });
@@ -42,7 +42,7 @@ function fixture(options: { failFullBoard?: boolean; rejectChecked?: boolean } =
       const req = JSON.parse(String(body)); requests.push(req);
       const reply = req.t === "hello" ? { t: "welcome", cwd: root, projectId: project.id, instanceId: status.instanceId }
         : req.t === "status" ? { status }
-        : req.t === "budget" ? { budget, gate: 0.95 }
+        : req.t === "budget" ? { budget, gate: 0.95, ...(options.kimiSource ? { kimiSource: options.kimiSource } : {}) }
         : req.t === "execution_budget" ? req.op === "disable" ? { disabled: true } : { budgets }
         : req.t === "queue" ? ["show", "resolve"].includes(req.op) ? { delivery } : { deliveries }
         : req.t === "task" && options.rejectChecked && ["task_assign_checked", "task_unassign"].includes(req.op) ? { ok: false, error: "unknown operation" }
@@ -128,6 +128,19 @@ for (const filter of ["--ready", "proposed"]) test(`filtered board ${filter} res
   expect(result.stdout).not.toContain("Approved prerequisite");
   expect(f.requests.filter(r => r.t === "task").map(r => r.args)).toEqual([filter === "--ready" ? { ready: true } : { state: "proposed" }, {}]);
 });
+
+// #285 AC10: one CLI run per case, so each stays inside the gate's 20 s per-test cap (docs/agent-notes/tests.md).
+const doctorRow = async (kimiSource?: unknown) => JSON.parse((await fixture({ kimiSource }).run(["doctor", "--json", "--color=never"])).stdout).find((r: any) => r.name === "kimi usage source");
+for (const [kimiSource, level, detail] of [[{ state: "counting" }, "ok", "counting from Kimi's wire log"], [{ state: "off" }, "unknown", "budget.kimi_tokens_5h is 0"],
+  [{ state: "unreadable", reason: "log_rotated" }, "fail", "wire log unreadable (log_rotated)"]] as [unknown, string, string][]) {
+  test(`#285 AC10: doctor reports the Kimi usage source ${(kimiSource as { state: string }).state} from the hub's budget reply, under Hub`, async () => {
+    const row = await doctorRow(kimiSource);
+    expect(row).toMatchObject({ section: "Hub", level }); expect(row.detail).toContain(detail);
+  }, 20_000);
+}
+test("#285 AC10: a hub without kimiSource in its budget reply adds no kimi usage source row", async () => {
+  expect(await doctorRow()).toBeUndefined();
+}, 20_000);
 
 test("doctor preserves collected findings and its error exit when config parsing throws", async () => {
   const f = fixture(); writeFileSync(join(f.root, ".agenthub/config.local.json"), "{bad");

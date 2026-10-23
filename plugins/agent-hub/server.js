@@ -11959,7 +11959,7 @@ var init_builtin_metadata = __esm(() => {
       permission: { grants: { ...hubGrants } },
       session: { idField: "sessionId", currentId: sessionId("sessionId"), restoreOnStart: true, launchKind: "pi", launchRecord: true, ...PI_RECOVERY_SESSION, crashPlan: piCrashPlan, unrecordedTerminal: "tui", continuityBookmark: piRecoveryContinuity, continuity: { key: "pi", parse: parsePiContinuity } },
       turnEnd: "adapter",
-      budget: { account: "pi", instrumented: true },
+      budget: { account: "pi", instrumented: true, noQuotaReason: "on-prem backends have no provider quota" },
       reporting: { tokensNotReported: true },
       configuration: { schema: piConfigSchema, routingSchema: piRoutingSchema, settings: PI_SETTINGS, restartReasons: PI_RESTART_REASONS, validateEffective: piEffectiveConfig },
       routing: { localAllowedRefusal: "local_allowed = false also excludes pi for this class", longContext: "backend-limit", preferredTier: true, handoffPriority: 0, trace: "backend", backendLabel: "pi" },
@@ -11982,7 +11982,7 @@ var init_builtin_metadata = __esm(() => {
       permission: { grants: { ...hubGrants } },
       session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: true, launchKind: "local", ...LOCAL_RECOVERY_SESSION, crashPlan: localCrashPlan },
       turnEnd: "adapter",
-      budget: { account: "local", quotaExempt: true, instrumented: true },
+      budget: { account: "local", quotaExempt: true, instrumented: true, noQuotaReason: "on-prem gateway has no provider quota" },
       configuration: { schema: localConfigSchema, routingSchema: localRoutingSchema, restartReasons: LOCAL_RESTART_REASONS },
       routing: { localAllowedRefusal: "local_allowed = false for this class", longContext: "skip-owner", preferredTier: true, handoffPriority: 1, trace: "route" },
       cli: { command: "local", entry: { lifecycleAdmission: false, execute: runLocalEntry }, usage: [["ahub local [--route <id> | --model <id>]", "start the hub-native worker on the self-hosted models (routing.toml)"]], launchConfigKeys: ["local.deny", "local.bash_network", "local.network_allow", "local.max_steps", "local.read_allow", "routing.local"], startWords: () => ["local"] },
@@ -12123,7 +12123,7 @@ var init_builtin_metadata = __esm(() => {
       permission: { modes: {}, grants: { ...hubGrants } },
       session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "pi", launchRecord: true },
       turnEnd: "adapter",
-      budget: { account: "pi" },
+      budget: { account: "pi", noQuotaReason: "on-prem backends have no provider quota" },
       cli: { command: "pi", startWords: (form) => ["pi", "--mode", form] },
       display: palette("#c79936")
     },
@@ -20532,7 +20532,6 @@ var OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassign
 
 // src/hub/conductor.ts
 init_tool_refusal();
-
 // src/hub/instances.ts
 import { types as types4 } from "util";
 init_project();

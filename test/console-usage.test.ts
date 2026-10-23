@@ -66,6 +66,29 @@ test("Enter opens a peer's detail with the token split, cache read and write sep
   expect(strip(renderConsole(reduceConsole(opened, "\x1b", NOW).state, 120, 24, NOW))).toMatch(/PEER\s+TODAY/);   // Esc returns to the table
 });
 
+test("#285 AC7: the Usage detail and the Peers detail name each window's kind and source, and say why a peer has no number", () => {
+  const s = usageState();
+  s.budget = { codex: { windows: [{ id: "5h", kind: "native", used: 0.42, resetsAt: NOW + 3 * 3600e3, source: "codex rateLimits", at: NOW - 6000, stale: false }, { id: "tokens", kind: "count", used: 0.7, source: "hub count", at: NOW - 6000, stale: false, superseded: true }] },
+    jcode: { windows: [], note: "no reading: jcode declares no quota source; ahub budget set jcode <0..1> feeds one by hand" } };
+  s.selection = 1;                                                    // codex
+  const usage = screen(reduceConsole(s, "\r", NOW).state, 140);
+  expect(usage).toMatch(/quota\s+5h 42% in 3h00m, tokens 70%/);       // the line keeps its shape
+  expect(usage).toMatch(/quota sources\s+5h native, codex rateLimits; tokens count, hub count/);
+  s.selection = 2;                                                    // jcode, no windows
+  expect(screen(reduceConsole(s, "\r", NOW).state, 140)).toMatch(/quota\s+no reading: jcode declares no quota source/);
+  const peers = usageState(); peers.panel = 1; peers.budget = s.budget; peers.selection = 0;
+  const peerRows = Object.keys(peers.peers);
+  peers.selection = peerRows.indexOf("codex");
+  const detail = screen(reduceConsole(peers, "\r", NOW).state, 160);
+  expect(detail).toContain("5h 42% resets in 3h00m, native, codex rateLimits, measured 6s ago");
+  expect(detail).toContain("tokens 70%, count, hub count, measured 6s ago (information only: a measurement outranks it)");
+  peers.selection = peerRows.indexOf("jcode");
+  expect(screen(reduceConsole(peers, "\r", NOW).state, 160)).toMatch(/quota\s+no reading: jcode declares no quota source/);
+  // an older hub: no kind, no note
+  const old = usageState(); old.panel = 1; old.budget = { codex: { windows: [{ id: "week", used: 0.2, source: "ahub budget set", at: NOW, stale: false }] } }; old.selection = Object.keys(old.peers).indexOf("codex");
+  expect(screen(reduceConsole(old, "\r", NOW).state, 160)).toContain("week 20%, manual, ahub budget set");
+});
+
 test("the task selected in Tasks shows its tokens per peer in the Usage panel, and a private task is [pii] with no title (#683 U3)", () => {
   let s = usageState({ panel: 3, tasks: [{ id: 41, state: "in_progress", title: "SECRET-TITLE-FOR-41", class: "implement" }, { id: 42, state: "in_progress", title: "SECRET-TITLE-FOR-42", class: "implement" }] });
   s = reduceConsole(s, "j", NOW).state;                                                      // select #42

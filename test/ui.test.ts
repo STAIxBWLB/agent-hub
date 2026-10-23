@@ -449,7 +449,7 @@ function startPageRuntime(fetch_: (path: string, options: any) => Promise<any>, 
       timers.delete(due[0]); due[1].callback();
     }
   };
-  return { api, root, notice, buttons, advance };
+  return { api, root, notice, buttons, advance, get };
 }
 const unavailableStart = "Start result is unconfirmed. Check the Peers panel before retrying; the hub may still be starting the peer.";
 const startRows = [{ peer: "codex", mode: "tui", attached: false, command: "ahub codex", via: "orca" }, { peer: "kimi", mode: "headless", attached: false }];
@@ -542,6 +542,30 @@ test("an unconfirmed start belongs to its daemon instance, not a replacement", a
   expect(api.pending()).toHaveLength(1); // the old instance cannot block or clear the replacement's controls
 });
 
+
+// #285 AC7: the dashboard's Usage budgets row, drawn by the page's own render(), names each window's kind and source and says why a peer has no number.
+test("the dashboard's Usage budgets row shows kind and source per window, the reason for a peer without one, and classifies a window from an older hub", async () => {
+  const { api, get } = startPageRuntime(async () => ({ ok: true, status: 200, json: async () => ({}) }));
+  const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
+  const mirrored = /function windowKindOf\(w\) \{ return ([^\n]*); \}/.exec(html)![1]!;
+  const kindOf = runInNewContext(`(w) => ${mirrored}`) as (w: unknown) => string;
+  // the page's copy and src/hub/window-kind.ts must agree on every shape a window can have
+  const { windowKind } = await import("../src/hub/window-kind.ts");
+  for (const w of [{ id: "5h", source: "codex rateLimits" }, { id: "tokens", source: "hub count" }, { id: "5h", source: "ahub budget set" }, { id: "5h", source: "x", kind: "count" }, { id: "tokens", source: "x", kind: "manual" }, { id: "week", source: "" }]) expect(kindOf(w), JSON.stringify(w)).toBe(windowKind(w as any));
+  const context = { used: null, freshness: "unknown", source: null, measuredAt: null };
+  api.snapshot({ status: { peers: {} }, budget: {
+    kimi: { windows: [{ id: "tokens", kind: "count", used: 0.56, source: "hub count, kimi wire log, of kimi_tokens_5h 800000", stale: false, superseded: true }, { id: "5h", kind: "manual", used: 0.4, source: "ahub budget set", stale: false }], context },
+    codex: { windows: [{ id: "5h", used: 0.2, source: "codex rateLimits", stale: false }], context },
+    pi: { windows: [], note: "no quota: on-prem backends have no provider quota; 1.2M tokens in 5h (hub count)", noteKind: "no-quota", context },
+    jcode: { windows: [], context } } });
+  const text = get("budget").text();
+  expect(text).toContain("tokens: 56% used (information only)"); expect(text).toContain("count / hub count, kimi wire log, of kimi_tokens_5h 800000");
+  expect(text).toContain("5h: 40% used"); expect(text).toContain("manual / ahub budget set");
+  expect(text).toContain("native / codex rateLimits");                        // no kind from an older hub: classified like the CLI does
+  expect(text).toContain("no quota: on-prem backends have no provider quota; 1.2M tokens in 5h (hub count)");
+  expect(text).toContain("No usage windows reported.");                        // a peer with neither windows nor a note keeps the old line
+  expect(text).not.toContain("undefined");
+});
 
 test("the actual render/update path releases an unconfirmed start at the shared retry bound", async () => {
   const calls: any[] = [];
