@@ -95,3 +95,17 @@ test("#689 control bytes in typed or pasted text never enter an answer, so a ter
   f = reduceConfigForm(f, "\x1b[31m", rev).form ?? f;
   expect(f.text).not.toContain("\x1b");
 });
+
+test("#689 the form first asks what to edit: 1 an instance, 2 the lifecycle, 3 another key; anything else is ignored and Esc leaves", () => {
+  const start: ConfigForm = { kind: "other", token: 5, phase: "fields", step: 0, answers: [], text: "", choosing: true };
+  expect(configFormPrompt(start)).toContain("1 instance");
+  for (const [key, kind] of [["1", "instance"], ["2", "sdlc"], ["3", "other"]] as const) {
+    const next = reduceConfigForm(start, key, rev).form!;
+    expect(next).toMatchObject({ kind, token: 5, phase: "fields", step: 0 });
+    expect(next.choosing).toBeUndefined();
+  }
+  expect(reduceConfigForm(start, "x", rev).form).toBe(start);
+  expect(reduceConfigForm(start, "\r", rev).form).toBe(start);
+  expect(reduceConfigForm(start, "12", rev).form).toBe(start);
+  expect(reduceConfigForm(start, "\x1b", rev)).toEqual({ form: undefined });
+});

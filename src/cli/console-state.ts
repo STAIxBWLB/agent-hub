@@ -9,6 +9,7 @@ import { sanitize } from "../hub/envelope.ts";
 import type { SettingRow, SettingValue } from "../hub/settings.ts";
 import { symbolFields, overlapFields } from "./console-symbols.ts";
 import { choicePrompt, reviewChoiceFor, reviewHint, reviewRefusal, verdictGuide, verdictInput, type ReviewChoice, type Verdict } from "./console-review.ts";
+import { configFormPrompt, reduceConfigForm, type ConfigEditBody, type ConfigForm } from "./console-config.ts";
 import { USAGE_DROP, USAGE_HEAD, usageCells, usageDetail, usagePeers, usageTaskLines, type UsageState } from "./console-usage.ts";
 
 export interface Approval {
@@ -24,6 +25,8 @@ export interface SettingsEdit {
   text: string; value?: SettingValue; reason?: string; lines?: string[]; confirm?: string; undoDigest?: string;
 }
 export interface ConsoleState {
+  /** #689: the structural config form (Settings panel, key c) and the file revisions the hub last reported. */
+  configForm?: ConfigForm; configRevisions?: Record<string, string>;
   settingsRows?: SettingRow[]; settingsKnown?: boolean; settingsUndo?: string; settingsProblem?: string;
   settingsEdit?: SettingsEdit; settingsSequence?: number;
   pendingRestart?: { key: string; reason: string }[];
@@ -65,6 +68,7 @@ export interface ConsoleState {
 export type Detail = string | Record<string, unknown>;
 export type ConsoleEffect = { type: "exit" } | { type: "permit"; id: string; option?: string } |
   { type: "settings_preview"; token: number; key?: string; value?: SettingValue; undo: boolean } |
+  { type: "config_preview"; token: number; edit: ConfigEditBody } | { type: "config_write"; edit: ConfigEditBody; reason: string; confirm?: string } |
   { type: "settings_write"; key?: string; value?: SettingValue; undo: boolean; reason: string; confirm?: string; undoDigest?: string } |
   { type: "permission_default"; peer: string; confirmed: boolean } | { type: "command"; args: string[] } | { type: "show"; panel: number; id: string } | { type: "print"; text: string; kind: string; tone?: Tone } | { type: "keys" };
 export function initialConsoleState(panels = false): ConsoleState {
@@ -490,6 +494,13 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   const done = () => ({ state: bound(s), effects });
   const answered = (id: string) => { s.approvals = s.approvals.filter(a => a.id !== id); if (s.approvalId === id) s.approvalId = undefined; };
   if (key === "\x03") { effects.push({ type: "exit" }); return done(); }
+  if (s.configForm) {
+    const step = reduceConfigForm(s.configForm, key, s.configRevisions ?? {});
+    s.configForm = step.form;
+    if (step.note) notify(s, step.note, now);
+    if (step.effect) effects.push(step.effect);
+    return done();
+  }
   if (s.settingsEdit) {
     const edit = { ...s.settingsEdit }; s.settingsEdit = edit;
     if (key === "\x1b") { s.settingsEdit = undefined; return done(); }
@@ -683,6 +694,14 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     const token = (s.settingsSequence ?? 0) + 1; s.settingsSequence = token;
     s.settingsEdit = { token, panel: 1, key: row.key, undo: false, phase: "value", text: String(wip.wipLimit) };
     return done();
+  }
+  if (s.mode === "panels" && s.panel === 6 && s.detail === undefined && key === "c") {
+    const token = (s.settingsSequence ?? 0) + 1; s.settingsSequence = token;
+    s.configForm = { kind: "other", token, phase: "fields", step: 0, answers: [], text: "", choosing: true };
+    return done();
+  }
+  if (s.mode === "panels" && s.panel === 6 && s.detail === undefined && key === "R" && s.pendingRestart?.length) {
+    s.input = "restart"; s.editing = true; return done();
   }
   if (s.mode === "panels" && s.panel === 6 && s.detail === undefined && (key === "e" || key === "u")) {
     const row = selectedPanelRow(s);
@@ -962,8 +981,9 @@ function taskHints(row: any): string[] {
 const settingValueText = (value: unknown): string => value === null || value === undefined ? "inherit" : Array.isArray(value) ? value.join(",") : String(value);
 function panelContext(s: ConsoleState, row: any): string[] {
   if (s.panel === 3) return [...(row ? taskHints(row) : []), ...(row && s.features?.includes("task_cancel") ? ["c cancel"] : []), s.backlogView ? "b open" : "b backlog", "n add"];
+  // The structural config form and the restart prefill need no selected row (#689).
+  if (s.panel === 6) return [...(row ? ["e edit"] : []), "c config", ...(s.settingsUndo ? ["u undo"] : []), ...(s.pendingRestart?.length ? ["R restart"] : [])];
   if (!row) return [];
-  if (s.panel === 6) return ["e edit", ...(s.settingsUndo ? ["u undo"] : [])];
   if (s.panel === 1) return ["p pause", "r resume", "m permission mode", "w WIP limit"];
   if (s.panel === 4) return [row.state === "queued" ? "r discard" : "r resolve"];       // D (the peer's whole backlog) is in the ? key table: it must not push j/k off an 80-column footer
   return [];
@@ -1044,6 +1064,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   let prompt = s.editing ? `: ${s.input}` : hint(s, columns);
   if (s.confirm?.type === "permission") prompt = `allow ${quoted(s.confirm.option)} for ${s.confirm.peer} (request ${s.confirm.id})? y/N`;
   if (s.confirm?.type === "command") prompt = `${s.confirm.prompt ?? s.confirm.args.join(" ")}? y/N`;
+  if (s.configForm) prompt = configFormPrompt(s.configForm);
   if (s.settingsEdit) {
     const edit = s.settingsEdit;
     prompt = edit.phase === "value" ? `value for ${edit.key} (inherit removes): ${edit.text}` : edit.phase === "preview" ? "checking setting preview; Esc cancels" : edit.phase === "reason" ? `reason: ${edit.text}` : `${edit.undo ? "undo last setting" : `set ${edit.key}`} (${edit.reason})? y/N`;
@@ -1094,6 +1115,12 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
   const height = bodyHeight - noticeLines.length;
   const lines: Span[][] = [];
   if (s.confirm?.type === "permission_default") lines.push(...fieldLines([["default", `${s.confirm.peer} never-ask`], ["source", s.confirm.source], ["bounds", permissionBoundary(s.confirm.peer, undefined, createProjectAdapterCatalog())], ["decision", "y enables; n cancels for this hub; Esc defers; until then ask"]], columns, now).flat());
+  else if (s.configForm && !s.configForm.choosing && (s.configForm.lines?.length || s.configForm.phase !== "fields")) {
+    // #689: what the hub's loaders said about the request, as the person will confirm it: the diff, then the decision.
+    const form = s.configForm;
+    lines.push(...fieldLines([["file", form.edit?.file ?? "-"], ["diff", (form.lines ?? ["checking with the hub's loaders..."]).join("\n")], ...(form.warning ? [["warning", form.warning] as [string, unknown]] : []),
+      ["decision", form.typed ? `Esc cancels; type ${form.typed} to confirm` : "Esc cancels; saving needs a reason and explicit y"]], columns, now).flat());
+  }
   else if (s.settingsEdit) {
     const edit = s.settingsEdit;
     const row = s.settingsRows?.find(row => row.key === edit.key);

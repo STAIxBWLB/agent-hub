@@ -7,6 +7,8 @@ export interface ConfigEditBody { file: "config.local.json" | "sdlc.toml"; revis
 export type ConfigFormKind = "instance" | "sdlc" | "other";
 export interface ConfigForm {
   kind: ConfigFormKind; token: number;
+  /** True until the person has chosen what to edit (1, 2 or 3). */
+  choosing?: boolean;
   phase: "fields" | "preview" | "reason" | "confirm" | "typed";
   step: number; answers: string[]; text: string;
   edit?: ConfigEditBody; lines?: string[]; reason?: string;
@@ -38,6 +40,7 @@ export function openConfigForm(choice: string, token: number): ConfigForm | unde
 }
 
 export function configFormPrompt(form: ConfigForm): string {
+  if (form.choosing) return "edit: 1 instance  2 sdlc lifecycle  3 another key  Esc cancel";
   if (form.phase === "fields") return `${FIELDS[form.kind][form.step]!.ask}: ${form.text}`;
   if (form.phase === "preview") return "checking the change with the hub's loaders; Esc cancels";
   if (form.phase === "reason") return `reason: ${form.text}`;
@@ -73,6 +76,10 @@ function build(form: ConfigForm, revisions: Record<string, string>): { edit: Con
 /** One key. A chunk longer than one key is pasted text: it is text in a text phase and never an answer to y/N. */
 export function reduceConfigForm(form: ConfigForm, key: string, revisions: Record<string, string>): ConfigFormStep {
   if (key === "\x1b") return { form: undefined };
+  if (form.choosing) {
+    const chosen = key.length === 1 ? openConfigForm(key, form.token) : undefined;
+    return { form: chosen ?? form };
+  }
   if (form.phase === "preview") return { form };
   if (form.phase === "confirm") {
     if (key === "n") return { form: undefined };

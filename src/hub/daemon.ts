@@ -6110,7 +6110,7 @@ export async function startDaemon(opts: DaemonOptions) {
         catch (error) { return void reply({ ok: false, error: (error as Error).message }); }
       case "settings_get":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
-        return void reply({ ok: true, ...settingsView(), roster: rosterView() });
+        return void reply({ ok: true, ...settingsView(), roster: rosterView(), configEdit: { revisions: configEditor!.view().revisions } });
       case "settings_reload":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person command" });
         return void reloadConfig("terminal", undefined, msg.confirm).then(reply, () => reply({ ok: false, error: "configuration reload could not be confirmed; inspect hub.log" }));

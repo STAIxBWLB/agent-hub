@@ -102,7 +102,7 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
   let pendingStream: ConsoleEvent[] = []; let droppedStream = 0;
   let priorStreamFooterStart: number | undefined;
   let lastExpandedNotice = "";
-  const notice = (text: string) => notify(state, text, Date.now());
+  const notice = (text: string, tone: Tone = "failure") => notify(state, text, Date.now(), tone);
   const safeWrite = (text: string) => terminal.write(paint([{ text }], color));
   const streamLines = (event: ConsoleEvent) => terminalText(event.text).replace(/\t/g, " ").split("\n").flatMap((text, index) => {
     // Tabs are flattened before measuring, as wrap() does; commands already wrap cells at their own offsets.
@@ -243,6 +243,8 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
         if (settings.ok && Array.isArray(settings.rows)) {
           state.settingsRows = settings.rows; state.settingsKnown = true; state.settingsProblem = undefined;
           state.settingsUndo = typeof settings.undo === "string" ? settings.undo : undefined;
+          const revisions = (settings.configEdit as { revisions?: unknown } | undefined)?.revisions;
+          if (revisions && typeof revisions === "object") state.configRevisions = Object.fromEntries(Object.entries(revisions).filter(([, value]) => typeof value === "string")) as Record<string, string>;
           state.pendingRestart = Array.isArray(settings.pendingRestart) ? settings.pendingRestart : [];
           state.retainedConfig = Array.isArray(settings.retainedConfig) ? settings.retainedConfig : [];
         } else state.settingsProblem = String(settings.error ?? "settings are unavailable");
@@ -281,6 +283,26 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
         state.settingsEdit = undefined; notice("undo preview is unavailable or changed; reload settings and review it again");
       } else state.settingsEdit = { ...edit, ...(action.undo ? { key: response.key, undoDigest: response.undoDigest } : {}), phase: "reason", text: "", lines: [...(Array.isArray(response.lines) ? response.lines.map(String) : []), ...(Array.isArray(response.tasks) ? response.tasks.flatMap((task: any) => [String(task.before?.join("\n") ?? ""), String(task.after?.join("\n") ?? "")]) : []), ...(response.hidden ? [`${response.hidden} more open tasks are not shown`] : [])], ...(typeof response.confirm === "string" ? { confirm: response.confirm } : {}) };
       draw(); return;
+    }
+    if (action.type === "config_preview") {
+      const response = await client.request({ t: "config_edit_preview", edit: action.edit }, 5000);
+      const form = state.configForm;
+      // A reply for a form that was cancelled or replaced is dropped: it never opens a confirmation of its own.
+      if (!active || state.mode !== "panels" || !form || form.token !== action.token) return; // every form has its own token and one outstanding preview
+      if (response.ok === false) { state.configForm = undefined; notice(String(response.error ?? "config preview refused")); }
+      else state.configForm = { ...form, phase: "reason", text: "", lines: (Array.isArray(response.lines) ? response.lines : []).map(String).slice(0, 40),
+        ...(typeof response.confirm === "string" ? { typed: response.confirm, warning: typeof response.warning === "string" ? response.warning : undefined } : {}) };
+      draw(); return;
+    }
+    if (action.type === "config_write") {
+      const result = await client.request({ t: "config_edit_apply", edit: action.edit, reason: action.reason, ...(action.confirm ? { confirm: action.confirm } : {}) }, 35_000);
+      if (!active) return;
+      if (result.ok === false) notice(String(result.error ?? "config write refused"));
+      else {
+        const text = [String(result.text ?? "config saved"), ...(Array.isArray(result.restartPending) && result.restartPending.length ? [`restart pending: ${result.restartPending.join(", ")}`] : [])].join("; ");
+        stream({ text, kind: "settings" }); notice(text, "info");
+      }
+      await refresh(); draw(); return;
     }
     if (action.type === "settings_write") {
       const result = await client.request({ t: action.undo ? "settings_undo" : "settings_set", key: action.key, ...(!action.undo ? { value: action.value } : { undoDigest: action.undoDigest }), reason: action.reason, ...(action.confirm ? { confirm: action.confirm } : {}) }, 35_000);
