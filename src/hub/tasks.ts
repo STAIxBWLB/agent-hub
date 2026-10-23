@@ -4,7 +4,7 @@ import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type Tes
 import { completePlanInventory, planConformance, planConformanceBlockers, planFingerprint, type PlanConformance } from "./plan-conformance.ts";
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, type CostPlan, type ReviewCost } from "./cost-governance.ts";
-import { specRefs } from "./spec-read.ts";
+import { qualifiedTitleRepos, siblingTitleRefs, specRefs } from "./spec-read.ts";
 import type { InstancesConfig } from "./instances.ts";
 import { composeRememberText } from "./memory-fail.ts";
 import { VERSION } from "../version.ts";
@@ -1443,6 +1443,7 @@ export class Tasks {
     if (this.d.coordination) this.coordinationModes.set(task.id, this.d.coordination());
     created?.();
     if (screening) task = this.screenedTask(task, screened);
+    task = this.linkOnWrite(task); // #723
     if (goal) this.linkNative(task, goal, by);
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
     if (defaulted) task = this.d.board.update(task.id, "hub", "class defaulted", {}, "class implement for a claim without one");
@@ -2379,6 +2380,25 @@ export class Tasks {
     if (by !== USER && task[role] !== by) throw new (preEffect ? PreEffectToolRefusal : Error)(`task #${task.id}: only its ${role} (${task[role] ?? "none"}) or the console user can do that`);
   }
 
+  /**
+   * #723: link the issue a task names the moment it is proposed or accepted, in advise and enforce, so the lifecycle never
+   * waits for a groom. It is a local parse with no GitHub read, and it never refuses or fails the write it follows.
+   */
+  private linkOnWrite(task: Task): Task {
+    try { return (this.d.sdlc?.config().mode ?? "off") === "off" ? task : this.linkIssue(task); }
+    catch { return task; }
+  }
+
+  /**
+   * #723: a title that qualifies another repository (`agent-mem#13`, `owner/repo#N`) while `refs.repo` is absent cannot link
+   * (the identity needs the repository), so the proposer is told to set it. Advice only; a PII task gets none.
+   */
+  refsRepoHint(task: Task): string | undefined {
+    if (this.isPii(task) || task.refs.repo || task.sdlc?.issue || (this.d.sdlc?.config().mode ?? "off") === "off") return undefined;
+    const names = qualifiedTitleRepos(task.title);
+    return names.length ? `task #${task.id}: the title names ${names.join(", ")}; set refs.repo to that repository (owner/name) so its issue links and the lifecycle shows it` : undefined;
+  }
+
   /** #694: write the one issue the task itself names (the plan-review source) into its lifecycle receipt, once; never relinks. */
   private linkIssue(task: Task): Task {
     if (this.isPii(task) || task.sdlc?.issue) return task;
@@ -2428,12 +2448,16 @@ export class Tasks {
     let issues: number[];
     try { issues = specRefs(task, repository); }
     catch { throw new PreEffectToolRefusal("plan review issue identity unavailable"); }
+    // #723: a title that qualifies the sibling repository `refs.repo` names (`agent-mem#13`) is a local parse, never a read.
+    // A sibling shorthand next to a bare #N is two identities, refused below, never the bare one alone.
+    issues = [...new Set([...issues, ...siblingTitleRefs(task.title, task.refs.repo)])];
     if (issues.length > 1) throw new PreEffectToolRefusal("plan review needs one explicit issue identity");
     return issues[0] ? { repo: repository, issue: issues[0] } : undefined;
   }
 
   async groomingDigest(by: PeerId): Promise<Record<string, unknown>> {
     this.planningAuthority(by);
+    this.backfillIssueLinks(by); // #723: first, bounded, before the slow reads
     const included = (task: Task) => !isClosedTaskState(task.state) || task.state === "cancelled" && task.history.some(entry => !!entry.supersededBy);
     const snapshot = this.d.board.list().filter(included), issues = new Map<string, PlanIssueMetadata>(), attempted = new Set<string>();
     const deadline = performance.now() + 4_000;
@@ -2473,17 +2497,31 @@ export class Tasks {
     const digest = plannerGrooming(visible, { repository: this.d.repository ?? `path:${realPath(this.d.cwd)}`,
       limits: Object.fromEntries(peers.map(peer => [peer, this.wipLimit(peer)])), wip: Object.fromEntries(peers.map(peer => [peer, this.wip(peer)])),
       states, issues, reviewedIssues, acceptedIssues, blockers });
-    // #694: backfill lifecycle issue links after every authority check, with their own bound (not the metadata-read
-    // budget): each call links up to 32 open tasks that still lack one, so later tasks are reached on later calls.
-    if ((this.d.sdlc?.config().mode ?? "off") !== "off") {
-      let linked = 0;
-      for (const task of this.d.board.list()) {
-        if (linked >= 32) break;
-        if (isClosedTaskState(task.state) || task.sdlc?.issue || this.isPii(task)) continue;
-        if (this.linkIssue(task) !== task) linked++;
-      }
-    }
     return { ...digest, truncated: digest.truncated || incomplete, ...(current.some(task => this.isPii(task)) ? { privateTasks: "withheld" } : {}) };
+  }
+
+  /**
+   * #694, #723: backfill lifecycle issue links with their own bounds, run first and apart from the slow metadata reads and
+   * the digest, so a groom that later times out has still linked. Each call links up to 32 open tasks that still lack one
+   * within a one-second budget, so later tasks are reached on later calls. A local parse; a failure skips that task only.
+   */
+  private backfillCursor = 0;
+  private backfillIssueLinks(by: PeerId): number {
+    if ((this.d.sdlc?.config().mode ?? "off") === "off") return 0;
+    // ponytail: 32 links and 1 s per call; raise both only with a measured groom time on a 400-task board.
+    const deadline = performance.now() + 1_000;
+    let linked = 0, i = 0;
+    const list = this.d.board.list(), n = list.length;
+    // The scan resumes where the last call stopped, so rows that never link cannot hold later ones back.
+    for (; i < n; i++) {
+      if (linked >= 32 || performance.now() >= deadline) break;
+      const task = list[(this.backfillCursor + i) % n]!;
+      if (isClosedTaskState(task.state) || task.sdlc?.issue || this.isPii(task)) continue;
+      this.planningAuthority(by);
+      try { if (this.linkIssue(task) !== task) linked++; } catch { /* one task never stops the rest */ }
+    }
+    this.backfillCursor = n ? (this.backfillCursor + i) % n : 0;
+    return linked;
   }
 
   /** S10 read-only planner report; S7 owns rolling bands and automatic board proposals. */
@@ -2997,7 +3035,7 @@ export class Tasks {
     this.warmRepository(draft);
     const repositoryChanged = this.repositories.scope(task.refs).key !== this.repositories.scope(draft.refs).key;
     const before = new Set(this.overlapHits(task).map((h) => h.task.id));
-    const next = this.d.board.update(task.id, by, "accepted", { state: "in_progress", ...(cleaned ? { plan: cleaned } : {}), ...(metadata ? { refs: metadata } : {}) });
+    const next = this.linkOnWrite(this.d.board.update(task.id, by, "accepted", { state: "in_progress", ...(cleaned ? { plan: cleaned } : {}), ...(metadata ? { refs: metadata } : {}) })); // #723: refs.repo may have just arrived
     this.captureOwnerAcceptance(next);
     this.d.notify(`task ${this.publicTitle(next)} accepted by ${by}`);
     if (repositoryChanged) this.cohorts.leave(next.id);

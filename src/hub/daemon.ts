@@ -2385,10 +2385,11 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify(tasks.publicView(await tasks.undoPlanning(by, a.id, a.revision)));
       case "hub_task_propose": {
         const t = await tasks.propose(by, a);
-        if (t.state === "backlog") return line(t);
+        const repoHint = tasks.refsRepoHint(t); // #723: advice only; never part of the write
+        if (t.state === "backlog") return [line(t), repoHint].filter(Boolean).join("\n");
         const overlap = tasks.overlaps(t, t.owner === by);
         if (t.owner === by && tasks.silentFor(t.id) && factsOn()) factsFor(by).sawPlans(by, tasks.overlapTasks(t)); // as for an accept
-        return [line(t), tasks.namedOwnerNote(t, a.owner as PeerId | undefined, by), overlap, tasks.claimRoleGuidance(t, by), t.owner === by ? tasks.planGuardText(t) : ""].filter(Boolean).join("\n");
+        return [line(t), tasks.namedOwnerNote(t, a.owner as PeerId | undefined, by), overlap, tasks.claimRoleGuidance(t, by), t.owner === by ? tasks.planGuardText(t) : "", repoHint].filter(Boolean).join("\n");
       }
       case "hub_task_accept": {
         // S1 spec acceptance and S9 plan review are checked against one task snapshot before acceptance.

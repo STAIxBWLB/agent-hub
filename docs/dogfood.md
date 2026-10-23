@@ -31,7 +31,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Console symbol-overlap advice (#684, #379) | on after release; read-only task detail, observed names only | other task IDs/shared paths and screened different-symbol verdict; no pair involving PII, no claim on unknown/incomplete evidence |
 | Review brief, review findings, Important gate (#481 S3) | advise | Important findings per PR, rounds to approval |
 | Spec acceptance (#481 S1) | advise | build entries without acceptance |
-| Lifecycle identity linked by the hub (#694) | on in advise | tasks still showing `issue identity missing` or `PR identity missing` at review |
+| Lifecycle identity linked by the hub (#694, #723) | on in advise; links at propose and accept from the title and `refs.repo`, with a groom backfill as the safety net | open tasks still showing `issue identity missing` right after propose (should be only titles that name no issue or a qualified title without `refs.repo`) |
 | Planner plan review (#481 S9) | advise | plans reviewed before build |
 | Plan conformance (#481 S2) | advise | PRs with files outside the plan |
 | Test integrity for bug fixes (#481 S4) | advise | bug PRs without a red-first receipt, modified pre-existing tests |
