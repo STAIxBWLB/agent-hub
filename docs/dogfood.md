@@ -71,7 +71,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Console and dashboard | on | control-request latency, connection timeouts in `hub.log` |
 | Usage view (#683) | CLI (`ahub usage`, U2), console Usage tab `7` (U3) and dashboard Usage view (U4) shipped | its own panels |
 | Settings reload | on | reloads applied, pending restarts |
-| Config editing from the console and dashboard (#689) | pending; hand edits of `config.local.json` meanwhile | edits applied, refused by validation, pending restarts |
+| Config editing from the console and dashboard (#689) | on after release; `ahub settings edit` and console key `c` run here, the dashboard Structure group needs `ahub ui --settings`; executable keys stay console only | `config_edit` events (edits applied by tier and source), refusals shown with the loader reason, restarts left pending |
 | Upgrade and recovery | on, per release | upgrade receipts in `docs/verification/` |
 | Agent CLI version policy and trust (#691) | on after the release: Codex 0.163.0 verified by the [2026-10-22 receipt](verification/2026-10-22-codex-reviewer-isolation.md); Kimi 2.3.0 and Qwen 0.26.0 verified by the [model-free receipt](verification/2026-10-22-kimi-qwen-compat.md), with account/provider live legs unverified; agy 1.4.4 in-line | model-free isolation receipts, `ahub agents` verdicts, versions trusted per machine, lead time from an `agent-compat` issue to a receipt |
 | Benchmarks (#251, #637) | off: `bench.enabled = false`; routing gate pending | bench receipts |
