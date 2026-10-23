@@ -280,6 +280,33 @@ export function stageCode(next: string): string {
 }
 const BOARD_LEGEND = "STAGE: [#---] SDLC progress, stage: next step. issue? no issue, PR? no PR, CI? checks, review? not reviewed, threads? open threads. Full advice: ahub board --full.";
 const ellipsis = (text: string, room: number) => width(text) <= room ? text : room <= 3 ? ".".repeat(Math.max(0, room)) : (() => { let out = ""; for (const unit of characters(text)) { if (width(out + unit) > room - 3) break; out += unit; } return out + "..."; })();
+/**
+ * #399: `ahub backlog list` as a table: one line per card, by rank (unranked last) then id. With a width, TITLE goes last and is
+ * cut like the compact board, and AGE then CLASS give way first on a narrow terminal; without one (piped) or with full, titles are whole.
+ */
+export function renderBacklog(cards: any[], columns?: number, now = Date.now(), full = false): Span[][] {
+  if (!cards.length) return [[span("no backlog cards")]];
+  const sorted = [...cards].sort((a, b) => (typeof a.rank === "number" ? a.rank : Infinity) - (typeof b.rank === "number" ? b.rank : Infinity) || a.id - b.id);
+  let names = ["RANK", "ID", "PRI", "RESERVED", "AFTER", "CLASS", "AGE", "TITLE"];
+  let table: OutputCell[][] = sorted.map(card => {
+    const deps: number[] = Array.isArray(card.deps) ? card.deps : [];
+    return [span(typeof card.rank === "number" ? card.rank : "-", "muted", true), span(`#${card.id}`, "info", true), span(typeof card.priority === "number" ? `P${card.priority}` : "-", undefined, true),
+      span(card.reserved ?? "-", peerTone(card.reserved ?? ""), true), span(deps.length ? (full || columns === undefined ? deps.map(id => `#${id}`).join(",") : `#${deps[0]}${deps.length > 1 ? `,+${deps.length - 1}` : ""}`) : "-", undefined, true), span(card.class ?? "-", undefined, true),
+      span(typeof card.created === "number" ? duration(now - card.created) : "-", "muted", true), span(flat(card.title))];
+  });
+  if (!full && columns !== undefined) {
+    const drop = (name: string) => { const at = names.indexOf(name); if (at < 0) return; names = names.filter((_, i) => i !== at); table = table.map(row => row.filter((_, i) => i !== at)); };
+    const room = () => columns - names.reduce((sum, name, i) => name === "TITLE" ? sum : sum + Math.max(width(name), ...table.map(row => width(flat(row[i]!.text)))), 0) - 2 * (names.length - 1);
+    const want = Math.min(30, Math.max(...table.map(row => width(row[row.length - 1]!.text))));
+    for (const name of ["AGE", "CLASS", "PRI"]) if (room() < want) drop(name);
+    const titleRoom = Math.max(5, room());
+    table = table.map(row => [...row.slice(0, -1), { ...row[row.length - 1]!, text: ellipsis(row[row.length - 1]!.text, titleRoom) }]);
+  }
+  const owners = new Map<string, number>();
+  for (const card of sorted) owners.set(card.reserved ?? "unreserved", (owners.get(card.reserved ?? "unreserved") ?? 0) + 1);
+  const summary = `${plural(sorted.length, "backlog card")}; reserved: ${[...owners].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([owner, n]) => `${owner} ${n}`).join(", ")}`;
+  return [...rows(names, table, columns), [], ...lines(summary, columns)];
+}
 /** #724: one line per task. TITLE goes last and is cut to the room left; at a narrow width REVIEWER, CLASS and AGE give way first. */
 function compactBoard(tasks: any[], data: OutputCell[][], columns: number, staged: boolean): Span[][] {
   const head = ["ID", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "AFTER", ...(staged ? ["STAGE"] : []), "TITLE"];
