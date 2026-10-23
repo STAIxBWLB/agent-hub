@@ -248,6 +248,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
     if (p.pullOnly && definitionOf(id)?.attach?.pullOnlyForms?.includes("tui")) out.push(...detail(`${id} last read`, typeof p.lastInboxAt === "number" ? relative(p.lastInboxAt, now) : "never", columns, "muted"));
     const actionPolicy = data.actionPolicyInfo?.[id];
     if (actionPolicy?.note) out.push(...detail(`${id} action policy`, actionPolicy.note, columns, actionPolicy.enforceable ? "muted" : "attention"));
+    if (typeof p.reviewerUnavailable === "string" && p.reviewerUnavailable) out.push(...detail("reviewer", flat(p.reviewerUnavailable), columns, "failure")); // #722: the cause class, never a path
     if (p.permissionNote) out.push(...detail("permission", p.permissionNote, columns, "muted"));
     if (typeof p.statusNotice?.message === "string" && p.statusNotice.message) out.push(...detail("status notice", p.statusNotice.message, columns, "attention"));
     if (p.requestedModel && p.servedBy && p.requestedModel !== p.servedBy) out.push(...detail("requested model", p.requestedModel, columns));

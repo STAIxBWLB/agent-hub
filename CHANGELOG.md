@@ -4,8 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Fix #722: a fresh reviewer whose per-review start fails now names a closed cause class (`version`, `binary`, `mcp_inventory`, `plugins_hooks_apps`, `sandbox_proof`, `credential_root`, `timeout`, `unknown`) in the unavailable reason, in hub.log and as the `reviewer` line of `ahub status`, instead of one generic sentence. The class never carries a path, native CLI text or a token; a credential root is named by its path class only. Model-free reproduction of the Codex 0.163.0 reviewer proof under an isolated HOME and CODEX_HOME passed on this machine with empty and synthetic ambient configs, so the failing leg is now readable from the log instead of guessed.
 - Roles capability per kind and form (#525-1): a Claude channel instance may declare `implementer` or `verifier` and then requires its own `worktree` (a planner or reviewer instance still reads the project checkout); a headless Claude instance stays reviewer-only and a headless implementer is refused until #525-4; `planner` is refused on kinds that cannot plan (pi, local, agy) in instance declarations and dropped from `roles` with the ceiling notice.
-
 - Fix #720: `ahub codex --as <id>` for a headless reviewer instance (`start_mode: "headless"`, `review_mode: "fresh"`) sends the hub `start`, prints the result and returns, as the Claude entry does, instead of failing at terminal recovery after the start succeeded. TUI-only flags are refused for it; the default `ahub codex` TUI path is unchanged.
 
 ## 0.13.0

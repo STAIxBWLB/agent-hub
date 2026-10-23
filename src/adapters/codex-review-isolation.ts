@@ -8,7 +8,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { realPath } from "../hub/project.ts";
-import type { ReviewerBackend, ReviewerLaunch, ReviewerPrepareContext } from "./reviewer-print.ts";
+import type { ReviewerBackend, ReviewerCauseClass, ReviewerLaunch, ReviewerPrepareContext } from "./reviewer-print.ts";
 
 const TOOLS = ["hub_review", "hub_task_show"];
 /** A version refusal names only versions and a command, so the daemon may show it (#691). */
@@ -176,8 +176,10 @@ function ownServer(text: string): Record<string, unknown> {
 }
 
 /** All reads are model-free and bounded; stdout/config/env values never become diagnostic text. */
-async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { unavailable: string }> {
+async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { unavailable: string; causeClass?: ReviewerCauseClass; detail?: string }> {
   let root: string | undefined;
+  // #722: the proof leg being run, so a refusal names a class and never text from the native CLI. `timedOut` is set by `run` only.
+  let leg: ReviewerCauseClass = "binary", timedOut = false;
   try {
     const cwd = realPath(ctx.cwd), env = peerChildEnv(ctx.peer), bound = resolveCommand(ctx, cwd);
     const initialBinaryMetadata = bound.files.map(metadata).join(";");
@@ -191,12 +193,12 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
       return bound.files.map(metadata).join(";") === initialBinaryMetadata;
     };
     const run = (args: readonly string[], capture = true, maxBytes = CAP) => new Promise<string>((resolveOutput, reject) => {
-      if (ctx.signal.aborted || performance.now() >= deadline) { reject(new Error("metadata deadline")); return; }
+      if (ctx.signal.aborted || performance.now() >= deadline) { if (!ctx.signal.aborted) timedOut = true; reject(new Error("metadata deadline")); return; }
       const [cmd, ...prefix] = bound.command;
       const child = spawn(cmd!, [...prefix, ...args], { cwd, env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
       let output = "", bytes = 0, failed = false, settled = false;
       const stop = () => { failed = true; void finish(null); };
-      const timer = setTimeout(stop, Math.max(1, Math.min(2000, deadline - performance.now())));
+      const timer = setTimeout(() => { if (!ctx.signal.aborted) timedOut = true; stop(); }, Math.max(1, Math.min(2000, deadline - performance.now())));
       ctx.signal.addEventListener("abort", stop, { once: true });
       const finish = async (code: number | null) => {
         if (settled) return; settled = true; clearTimeout(timer); ctx.signal.removeEventListener("abort", stop);
@@ -211,14 +213,18 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
       child.once("close", code => { void finish(code); });
     });
     // #691: the verified versions and the person's trust live in compat.ts; every proof below still runs after trust.
+    leg = "version";
     const verdict = assessVersion("codex-review", COMPAT["codex-review"].parse(await run(["--version"])));
     if (!verdict.ok) throw new VersionRefusal(verdict.reason);
     const version = verdict.version;
+    leg = "mcp_inventory";
     if (Buffer.byteLength(ctx.mcpConfig) > CAP || ctx.privatePaths.length > 128) throw new Error("policy bounds exceeded");
     const hub = ownServer(ctx.mcpConfig);
     // Apps creates a runtime MCP server outside the configured inventory; independently pin and read back its gate.
     const policy = ["-c", "notify=[]", "--disable", "plugins", "--disable", "hooks", "--disable", "apps", "-c", 'web_search="disabled"', "-c", `projects=${toml({ [cwd]: { trust_level: "untrusted" } })}`];
+    leg = "plugins_hooks_apps";
     proveDisabledFeatures(await run(["features", "list", ...policy]));
+    leg = "mcp_inventory";
     const before = inventory(await run(["mcp", "list", "--json", ...policy]));
     if (before.some(row => row.name === "agent-hub")) throw new Error("ambient hub MCP collision");
     const servers: Record<string, unknown> = Object.assign(Object.create(null), { "agent-hub": hub });
@@ -232,6 +238,7 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
     const observedEnv = object(observedTransport.env ?? {}), intendedEnv = object(hub.env);
     if (observedTransport.type !== "stdio" || observedTransport.command !== hub.command || JSON.stringify(observedTransport.args ?? []) !== JSON.stringify(hub.args) || Object.keys(observedEnv).length !== Object.keys(intendedEnv).length || Object.entries(intendedEnv).some(([key, value]) => observedEnv[key] !== value)) throw new Error("hub transport changed");
     // A real native sandbox probes a fresh private fixture: the model never sees these files.
+    leg = "sandbox_proof";
     root = realPath(mkdtempSync(join(tmpdir(), "ahub-codex-review-isolation-")));
     const privateFile = join(root, "private.env"), publicFile = join(root, "public.txt"), writeFile = join(root, "write-proof");
     const coreName = join(root, ".env"), coreStateDir = join(root, ".agenthub", "state"), coreState = join(coreStateDir, "private.txt");
@@ -245,8 +252,10 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
     writeFileSync(privateFile, "private fixture"); writeFileSync(publicFile, "public fixture"); writeFileSync(globFile, "glob private fixture");
     symlinkSync(globFile, alias);
     const filesystem: Record<string, string> = { "/": "read", [privateFile]: "deny", [join(globRoot, "**", "*.env")]: "deny" };
+    leg = "credential_root";
     for (const glob of codexCoreDenyGlobs()) filesystem[glob] = "deny";
     denyCredentialRoots(filesystem, [...hostCredentialRoots(env, cwd), ...hostCredentialRoots({ HOME: fixtureHome }, cwd)], cwd);
+    leg = "sandbox_proof";
     for (const entry of ctx.privatePaths) {
       if (typeof entry !== "string" || !entry || Buffer.byteLength(entry) > 4096 || /\p{Cc}/u.test(entry)) throw new Error("invalid private path policy");
       // Native Seatbelt supports *, ?, and closed character classes, not brace alternatives.
@@ -268,6 +277,7 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
     const script = 'if /bin/cat "$1" >/dev/null 2>&1; then echo AHUB_CODEX_PUBLIC_READ; fi; if /bin/cat "$2" >/dev/null 2>&1; then exit 12; else echo AHUB_CODEX_PRIVATE_DENIED; fi; if (echo no > "$3") 2>/dev/null; then exit 13; else echo AHUB_CODEX_WRITE_DENIED; fi; if /bin/cat "$4" >/dev/null 2>&1; then exit 14; else echo AHUB_CODEX_GLOB_PRIVATE_DENIED; fi; if /bin/cat "$5" >/dev/null 2>&1; then exit 15; else echo AHUB_CODEX_ALIAS_PRIVATE_DENIED; fi; if /bin/cat "$6" >/dev/null 2>&1; then exit 16; else echo AHUB_CODEX_CORE_NAME_DENIED; fi; if /bin/cat "$7" >/dev/null 2>&1; then exit 17; else echo AHUB_CODEX_CORE_STATE_DENIED; fi; if /bin/cat "$8" >/dev/null 2>&1; then exit 18; else echo AHUB_CODEX_HOST_CONFIG_DENIED; fi; if /bin/cat "$9" >/dev/null 2>&1; then exit 19; else echo AHUB_CODEX_HOST_KUBE_DENIED; fi; if /bin/cat "${10}" >/dev/null 2>&1; then exit 20; else echo AHUB_CODEX_HOST_DOCKER_DENIED; fi; if /bin/cat "${11}" >/dev/null 2>&1; then exit 21; else echo AHUB_CODEX_HOST_ALIAS_DENIED; fi';
     const proof = await run(["sandbox", "-P", "ahub-review", "-C", cwd, ...policy, ...permissions, "/bin/sh", "-c", script, "proof", publicFile, privateFile, writeFile, globFile, alias, coreName, coreState, hostConfig, hostKube, hostDocker, hostAlias]);
     if (proof.trim() !== "AHUB_CODEX_PUBLIC_READ\nAHUB_CODEX_PRIVATE_DENIED\nAHUB_CODEX_WRITE_DENIED\nAHUB_CODEX_GLOB_PRIVATE_DENIED\nAHUB_CODEX_ALIAS_PRIVATE_DENIED\nAHUB_CODEX_CORE_NAME_DENIED\nAHUB_CODEX_CORE_STATE_DENIED\nAHUB_CODEX_HOST_CONFIG_DENIED\nAHUB_CODEX_HOST_KUBE_DENIED\nAHUB_CODEX_HOST_DOCKER_DENIED\nAHUB_CODEX_HOST_ALIAS_DENIED" || existsSync(writeFile)) throw new Error("native sandbox isolation unverified");
+    leg = "binary";
     if (!current()) throw new Error("binary or config changed during proof");
     const cleanupRoot = root;
     const launchProfile = digest(toml({ profile, servers, policy }));
@@ -279,12 +289,13 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
   } catch (error) {
     if (root) { try { rmSync(root, { recursive: true, force: true }); } catch { /* unavailable remains refused */ } }
     // Name only the path class of an unusable credential root so a stale ~/.docker link is fixable; never a path or contents.
-    if (error instanceof VersionRefusal) return { unavailable: error.message };
+    if (error instanceof VersionRefusal) return { unavailable: error.message, causeClass: "version" };
     if (error instanceof CredentialRootError) {
       const why = { dangling: "a dangling link", unreadable: "an unreadable path", unsupported: "unsupported syntax or overlapping the checkout" }[error.kind];
-      return { unavailable: `Codex reviewer isolation receipt unavailable (credential root ${error.label} is ${why}; remove or repair it)` };
+      return { unavailable: `Codex reviewer isolation receipt unavailable (credential root ${error.label} is ${why}; remove or repair it)`, causeClass: "credential_root", detail: `${error.label}: ${why}` };
     }
-    return { unavailable: "Codex reviewer isolation receipt unavailable (version, MCP inventory, sandbox, configuration or process proof)" };
+    // A timeout is a proof command that ran out of time, whichever leg it was on; every other refusal names the leg that was running.
+    return { unavailable: "Codex reviewer isolation receipt unavailable (version, MCP inventory, sandbox, configuration or process proof)", causeClass: timedOut ? "timeout" : leg };
   }
 }
 
