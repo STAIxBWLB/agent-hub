@@ -19556,13 +19556,13 @@ class ControlClient {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(control.url);
       const client = new ControlClient(ws);
-      const timer = setTimeout(() => refuse(new Error(`hub connection timed out at ${control.url}`)), timeoutMs);
+      const timer = setTimeout(() => refuse(Object.assign(new Error(`hub connection timed out at ${control.url}`), { code: "AHUB_CONNECT_TIMEOUT" })), timeoutMs);
       const refuse = (error) => {
         clearTimeout(timer);
         reject(error);
         ws.close();
       };
-      ws.onerror = () => refuse(new Error(`cannot reach hub at ${control.url}`));
+      ws.onerror = () => refuse(Object.assign(new Error(`cannot reach hub at ${control.url}`), { code: "AHUB_CONNECT_UNREACHABLE" }));
       ws.onclose = (ev) => {
         clearTimeout(timer);
         reject(Object.assign(new Error(`hub closed the connection: ${ev.reason || "stale token?"}`), { code: ev.code }));

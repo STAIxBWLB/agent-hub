@@ -2108,7 +2108,7 @@ export async function startDaemon(opts: DaemonOptions) {
       try { tasks.flushPlannerNotices(); } catch { /* the board remains authoritative if notice delivery fails */ }
       for (const pending of checkpointWaits.values()) if (!pending.valid()) pending.done(undefined);
       for (const [id, request] of permissions) if (request.expiresAt > Date.now()) supervision.approvalWaiting({ id, peer: request.peer, tool: request.tool ?? "unknown", createdAt: request.createdAt });
-      for (const row of bus.queueList()) if (row.state === "needs_review") supervision.needsReview(row.peer, row.id);
+      for (const row of bus.queueList(undefined, true)) if (row.state === "needs_review") supervision.needsReview(row.peer, row.id);
       feedBudgetPauses();
       supervision.checkRound();
       try {
@@ -2829,7 +2829,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // filled one stays in the row and never matches.
   const ADDED_COLUMNS = [["deps", "[]"], ["plan", "{}"]] as const;
   const integrity = (older = 0) => {
-    const queues = Object.fromEntries(Object.keys(bus.snapshot().queues).sort().map((id) => [id, bus.queueIds(id)]));
+    const queues = Object.fromEntries(Object.keys(bus.snapshot(false).queues).sort().map((id) => [id, bus.queueIds(id)]));
     const boardState = board.list().sort((a, b) => a.id - b.id).map((t) => {
       const row: Record<string, unknown> = { ...t };
       for (const [col, empty] of ADDED_COLUMNS.slice(0, older)) if (JSON.stringify(row[col]) === empty) delete row[col];
@@ -2992,7 +2992,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // A queue change is not a bus event: without this, status.json reports the queue as it was before the last
   // message and keeps a phantom `queued N` after the queue drains (measured on a live 0.6.3 hub).
   function heldRows(peer: PeerId) {
-    return bus.queueList(peer).filter(row => row.state === "needs_review").map(row => ({
+    return bus.queueList(peer, true).filter(row => row.state === "needs_review").map(row => ({
       id: row.id, senders: [...new Set(row.originals.map(env => sanitize(env.from)))],
       kinds: [...new Set(row.originals.map(env => env.kind))], createdAt: row.createdAt,
       context: deliveryTaskContext(row.originals, board, peer),
@@ -3008,7 +3008,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (settlingSuperseded || stopping || recoveryActive() || bus.isRecoveryHeld) return;
     settlingSuperseded = true;
     try {
-      for (const row of bus.queueList()) {
+      for (const row of bus.queueList(undefined, true)) {
         if (row.state !== "needs_review" || row.reason?.startsWith("requested stop:")) continue;
         const reason = supersededDeliveryReason(row.originals, board, row.peer);
         if (!reason) continue;

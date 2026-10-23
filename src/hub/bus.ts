@@ -429,14 +429,14 @@ export class Bus {
   }
 
   knownPeers(): string[] {
-    const pending = this.storageError ? [] : this.journal?.list().filter((row) => ["queued", "dispatching", "accepted", "needs_review"].includes(row.state)).map((row) => row.peer) ?? [];
+    const pending = this.storageError ? [] : this.journal?.pendingPeers() ?? [];
     return [...new Set([...this.peers.keys(), ...[...this.queues].filter(([, queue]) => queue.length).map(([id]) => id), ...pending])].sort();
   }
 
-  queueList(peer?: string): JournalDelivery[] {
+  queueList(peer?: string, unresolvedOnly = false): JournalDelivery[] {
     if (this.journal) {
-      const rows = this.journal.list(peer).filter((row) => !row.reason?.startsWith("grouped into delivery "));
-      const revision = this.journal.snapshot().revision;
+      const rows = (unresolvedOnly ? this.journal.unresolved(peer) : this.journal.list(peer)).filter((row) => !row.reason?.startsWith("grouped into delivery "));
+      const revision = this.journal.revision();
       const recorded = new Set(rows.filter((r) => ["queued", "dispatching", "accepted", "needs_review"].includes(r.state)).flatMap((r) => (r.originals as Envelope[]).map((e) => `${r.peer}:${e.id}`)));
       const ids = peer ? [peer] : [...this.queues.keys()];
       for (const p of ids) for (const e of this.queues.get(p) ?? []) if (!recorded.has(`${p}:${e.id}`)) rows.push({ id: `q:${p}:${e.id}`, peer: p, state: "queued", revision, createdAt: e.ts, updatedAt: e.ts, originals: [e], out: [e] });
@@ -525,7 +525,7 @@ export class Bus {
   }
 
   queueSummary(peer: string): { needsReview: number; heldBy?: string; liveAccepted?: string[]; oldestQueuedAt?: number } {
-    const rows = this.storageError ? [] : this.queueList(peer);
+    const rows = this.storageError ? [] : this.queueList(peer, true);
     const queued = this.queues.get(peer) ?? [];
     const review = rows.filter((r) => r.state === "needs_review");
     const needsReview = review.length;

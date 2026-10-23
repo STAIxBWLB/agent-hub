@@ -13,6 +13,25 @@ export const DAEMON_FEATURES = ["external_adapter_modules", "configured_acp", "n
 /** Protocols a current coordinator may authenticate while upgrading a running source. */
 export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, PROTOCOL] as const;
 
+/** Only a launch retries transient transport failures. Refusals and identity mismatches
+ * remain terminal; every attempt rereads the descriptor and applies the instance pin. */
+export async function retryLaunchConnect<T>(attempt: (timeoutMs: number) => Promise<T>, onRetry: () => void,
+  ports: { now(): number; sleep(ms: number): Promise<unknown> } = { now: Date.now, sleep: ms => Bun.sleep(ms) }): Promise<T> {
+  const until = ports.now() + 15_000;
+  let backoff = 250, announced = false;
+  for (;;) {
+    try { return await attempt(Math.max(1, Math.min(3000, until - ports.now()))); }
+    catch (error) {
+      const code = (error as { code?: unknown } | null)?.code;
+      if (!["AHUB_CONNECT_TIMEOUT", 1006].includes(code as string | number) || ports.now() >= until) throw error;
+      if (!announced) { announced = true; onRetry(); }
+      await ports.sleep(Math.min(backoff, until - ports.now()));
+      if (ports.now() >= until) throw error;
+      backoff = Math.min(1000, backoff * 2);
+    }
+  }
+}
+
 export interface Hello {
   /** `tools`: acts for `peer` (task tools, hub_send) without being a delivery target: the MCP server Kimi and Codex run. */
   role: "peer" | "console" | "tools";
@@ -110,9 +129,9 @@ export class ControlClient {
     return new Promise((resolve, reject) => {
       const ws = new WebSocket(control.url);
       const client = new ControlClient(ws);
-      const timer = setTimeout(() => refuse(new Error(`hub connection timed out at ${control.url}`)), timeoutMs);
+      const timer = setTimeout(() => refuse(Object.assign(new Error(`hub connection timed out at ${control.url}`), { code: "AHUB_CONNECT_TIMEOUT" })), timeoutMs);
       const refuse = (error: Error) => { clearTimeout(timer); reject(error); ws.close(); };
-      ws.onerror = () => refuse(new Error(`cannot reach hub at ${control.url}`));
+      ws.onerror = () => refuse(Object.assign(new Error(`cannot reach hub at ${control.url}`), { code: "AHUB_CONNECT_UNREACHABLE" }));
       ws.onclose = (ev) => {
         clearTimeout(timer);
         // A refused hello carries its reason (bad token, wire version, peer id); say that, not a guess.

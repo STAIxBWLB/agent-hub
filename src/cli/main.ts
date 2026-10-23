@@ -37,7 +37,7 @@ import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { ControlClient, readControl } from "../hub/control-client.ts";
+import { retryLaunchConnect, ControlClient, readControl } from "../hub/control-client.ts";
 import { loadConfig } from "../hub/daemon.ts";
 import { factsHook } from "./facts-hook.ts";
 import { hubHome, projectContext, projectRoot, realPath } from "../hub/project.ts";
@@ -275,12 +275,14 @@ function printOutput(lines: Span[][], color: boolean): void {
 }
 const unattendedEnv = process.env.AGENTHUB_UNATTENDED === "1";
 const lifecycle = { inspectProject, startProject, stopProject };
-const connect = async () => {
+const connect = async (timeoutMs = 3000) => {
   assertDelegatedAuditConsumer();
   if (delegatedAuditHub && !delegatedConnectionTaken) { delegatedConnectionTaken = true; return delegatedAuditHub; }
   return ControlClient.connect(stateDir, identity.role === "tools" ? { role: "tools", peer: identity.peer, projectRoot: cwd }
-    : { role: "console", projectRoot: cwd, ...(delegatedAuditHub ? { instanceId: delegatedAuditHub.instanceId } : {}) });
+    : { role: "console", projectRoot: cwd, ...(delegatedAuditHub ? { instanceId: delegatedAuditHub.instanceId } : {}) }, timeoutMs);
 };
+
+const connectLaunch = () => retryLaunchConnect(connect, () => console.error("hub busy, retrying"));
 
 function registeredProject(): Project {
   const registry = new Registry();
@@ -944,7 +946,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     // Preserve the original guard before native effects; previews remain read-only and precede this guard.
     if (entry.lifecycleAdmission && !args.includes("--print-command") && !args.includes("--dry-run")) assertLifecycleAvailable();
     const nativeConnect = async () => {
-      const hub = await connect();
+      const hub = await connectLaunch();
       try { if (selectedInstance) { requirePeerInstances(hub.features); requireActiveInstance((await hub.request({ t: "status" })).status, selectedInstance); } return hub; }
       catch (error) { hub.close(); throw error; }
     };
@@ -2279,7 +2281,7 @@ async function runConductorCommand(): Promise<void> {
 const runConfigured = configuredCommand ? async () => {
   const selection = parseConfiguredAcpArguments(cmd, args, projectCatalog, declaredInstances);
   if (!selection.preview) assertLifecycleAvailable();
-  await runConfiguredAcpEntry({ kind: cmd, raw: args, catalog: projectCatalog, instances: declaredInstances, connect, print: text => console.log(text), operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+  await runConfiguredAcpEntry({ kind: cmd, raw: args, catalog: projectCatalog, instances: declaredInstances, connect: connectLaunch, print: text => console.log(text), operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
 } : undefined;
 const run = identity.role === "tools" && commandAccess === "conductor" ? runConductorCommand : (Object.hasOwn(commands, cmd) ? commands[cmd] : undefined) ?? runConfigured ?? (() => fail(`unknown command "${cmd}"; run ahub help`));
 try {

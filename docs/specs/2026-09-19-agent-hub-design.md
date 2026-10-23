@@ -4999,3 +4999,8 @@ Use `summarizeByTask`, `costMetrics` and bounded SDLC GitHub helpers. Bound file
 - At most 40 symbols and 40 untouched names are listed, with the count of the rest. Advisory only: ripwire does not report deleted symbols.
 - A symbol button closes the sheet, sets the Memory view's `node` to the symbol's canonical id (`symbol:<name>@<path>`) and switches to the Memory tab. The daemon's memory view reads a node of up to 512 characters when it starts with `symbol:` (200 otherwise) so a receipt id is never truncated into another node. Memory entries attached to that symbol appear once phase 3 links them; until then the graph shows the symbol node alone.
 - Colours are design tokens only, and the group wraps at phone width with 44 px targets.
+
+
+## Amendment: daemon responsiveness (#719)
+
+Periodic roster and supervision reads use pending delivery metadata/rows rather than materializing terminal envelope history. Queue revisions are metadata reads; explicit queue/history and recovery snapshots retain their full semantics. Usage folding keeps its existing byte cap and atomic rows/offset transaction, with a 20 ms slice checked between whole records; one record remains indivisible. Native launch connects alone retry transient transport failures with bounded backoff up to 15 seconds and one busy notice. Ordinary connect defaults and identity/authentication/protocol refusals stay unchanged.
