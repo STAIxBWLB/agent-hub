@@ -71,6 +71,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Dogfood scorecard (#687) | on after release; read-only weekly receipt | `ahub report --dogfood --since 7d --json`; bounded evidence and explicit unknowns |
 | Console and dashboard | on | control-request latency, connection timeouts in `hub.log` |
 | Usage view (#683) | CLI (`ahub usage`, U2), console Usage tab `7` (U3) and dashboard Usage view (U4) shipped | its own panels |
+| Kimi usage from its wire log (#285 phase 2) | on after the release when `budget.kimi_tokens_5h` is set; this repository sets it | `tokens` and `usage` (`kimi_wire`) events per Kimi turn, the `tokens` window in `ahub budget`, and the count of `kimi usage unknown` notices; the live check against Kimi's `/usage` (AC11) and the `ahub doctor` row `kimi usage source` are deferred to #285's later phases |
 | Settings reload | on | reloads applied, pending restarts |
 | Config editing from the console and dashboard (#689) | on after release; `ahub settings edit` and console key `c` run here, the dashboard Structure group needs `ahub ui --settings`; executable keys stay console only | `config_edit` events (edits applied by tier and source), refusals shown with the loader reason, restarts left pending |
 | Upgrade and recovery | on, per release | upgrade receipts in `docs/verification/` |

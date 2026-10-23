@@ -60,7 +60,9 @@ import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSources } from "./config-reload.ts";
 import { createConfigEditor } from "./config-edit-host.ts";
 import { readEditable } from "./config-edit.ts";
-import { eventLog, readEvents, tokenDeltas, type RoleIdentity } from "./events.ts";
+import { eventLog, readEvents, type RoleIdentity } from "./events.ts";
+import { KimiUsage, kimiSeedRows } from "./kimi-usage.ts";
+import { kimiRowTotal } from "../adapters/kimi-wire-usage.ts";
 import { ExecutionBudget } from "./execution-budget.ts";
 import { claudeReportedTokens, readClaudeTranscriptCompletion, readClaudeTranscriptUsage, waitForClaudeCompletion } from "./usage.ts";
 import type { ServerWebSocket } from "bun";
@@ -502,6 +504,8 @@ export interface DaemonOptions {
   checkoutBranch?: typeof mainCheckoutBranch;
   /** Host-only admission transport; never selected by project config or tools. */
   releaseHostAdmission?: (cwd: string) => Promise<ReleaseHostAdmission>;
+  /** Host-only (#285): Kimi's data home for its wire-log usage reader; default `KIMI_CODE_HOME`, else `~/.kimi-code`. Never read from config or tools. */
+  kimiHome?: string;
   /** Host-only evidence seam; never supplied by project config or control messages. */
   releaseDocEvidence?: (root: string) => Promise<DocEvidence | undefined>;
   projectId?: string;
@@ -1865,7 +1869,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       for (const move of record.moved) moves.set(JSON.stringify([move.id, move.role, move.to, move.title]), move);
       const unreadMoves = [...moves.values()];
-      if (definitionOf(record.peer)?.budget?.resetSoftTokensOnResume) kimiTokens.length = 0; // a new window: the old counts would pause it again at once
+      if (definitionOf(record.peer)?.budget?.resetSoftTokensOnResume) kimiUsage.reset(); // a new window: the old counts would pause it again at once
       const moved = unreadMoves.length ? `While you were paused these moved: ${unreadMoves.map((m) => `${m.title} (${m.role} -> ${m.to ?? "nobody"})`).join("; ")}. They stay where they are; ask the user if you should take one back.` : earlier.length ? "Moves from earlier pauses are preserved in the unread notices below." : "Nothing was moved while you were paused.";
       bus.publish(newEnvelope(HUB, `Your quota window has reset and the hub has resumed you (paused since ${new Date(record.since).toLocaleTimeString()}, ${record.reason}). ${moved}${earlier.length ? ` Earlier unread resume notices: ${earlier.join("\n")}` : ""} Messages queued for you follow.`, { to: [record.peer], kind: "budget", priority: "important", refs: { budgetResume: record.peer, budgetResumeMoves: unreadMoves, ...(earlier.length ? { budgetResumeEarlier: earlier } : {}) } }));
       // Publish the complete replacement before removing its evidence. A failed write keeps the old notices.
@@ -1877,8 +1881,28 @@ export async function startDaemon(opts: DaemonOptions) {
   // ponytail: a third full read of events.jsonl at startup (after nativeStopsSeen and claudeNativeUsageSeen). Measured at about 70 ms on the real
   // 46 MB, 238k-line log, so it is not folded into one pass across startup. Ceiling: the log is never rotated, so the cost grows with it; when a
   // read passes a few hundred ms, make one `readEvents` pass feed all three sets (or keep the resets in hub.db, the #683 U2 roll-up).
-  budget.seedResets(readEvents(join(opts.stateDir, "events.jsonl")).flatMap(e => e.type === "quota_reset" ? [{ peer: e.peer, window: e.window, ...(e.resetsAt !== undefined ? { resetsAt: e.resetsAt } : {}) }] : []));
-  const kimiTokens: { at: number; n: number }[] = [];
+  const startupEvents = readEvents(join(opts.stateDir, "events.jsonl"));
+  budget.seedResets(startupEvents.flatMap(e => e.type === "quota_reset" ? [{ peer: e.peer, window: e.window, ...(e.resetsAt !== undefined ? { resetsAt: e.resetsAt } : {}) }] : []));
+  // #285 phase 2: Kimi's consumption is the hub's own count of its session wire log (`src/adapters/kimi-wire-usage.ts`), not an ACP total.
+  const kimiUsage = new KimiUsage({
+    home: opts.kimiHome ?? process.env.KIMI_CODE_HOME ?? join(homedir(), ".kimi-code"),
+    now: () => Date.now(),
+    ceiling: () => config.budget.kimi_tokens_5h,
+    session: peer => contextSession(peer),
+    record: (peer, row, counted) => {
+      addTokens(peer, counted);
+      event({ type: "usage", peer, source: "kimi_wire", id: row.id, measuredAt: new Date(row.at).toISOString(), inputTokens: row.inputOther, outputTokens: row.output,
+        cacheReadTokens: row.inputCacheRead, cacheWriteTokens: row.inputCacheCreation, totalTokens: kimiRowTotal(row),
+        ...taskAttribution(peer), ...(row.model ? { servedModel: row.model } : {}) });
+    },
+    report: (peer, window) => budget.report(peer, [{ id: "tokens", used: window.used, resetsAt: window.resetsAt, source: `hub count, kimi wire log, of kimi_tokens_5h ${window.ceiling}` }]),
+    forget: peer => budget.forget(peer, "tokens"),
+    notice: line => notify(line),
+  });
+  kimiUsage.seed(kimiSeedRows(startupEvents, Math.max(0, ...startupEvents.flatMap(e => e.type === "budget_resume" && definitionOf(e.peer)?.budget?.resetSoftTokensOnResume ? [Date.parse(e.at)] : []).filter(Number.isFinite))));
+  /** A peer whose definition keeps host-owned soft token accounting (Kimi): its rows are read at a turn start (the floor), a turn end and a usage_update. */
+  const softTokenPeer = (peer: PeerId): boolean => !!definitionOf(peer)?.budget?.resetSoftTokensOnResume;
+  const collectKimiUsage = (peer: PeerId): void => { if (!softTokenPeer(peer)) return; try { kimiUsage.collect(peer); } catch (error) { log(`kimi usage: ${(error as Error).name}`); } };
   startupCleanup.push(() => budget.close());
   // #683 U2: events.jsonl folded into hub.db, a bounded pass at a time, so `usage` never rescans the log.
   const usageRollup = new UsageRollup(join(opts.stateDir, "hub.db"), join(opts.stateDir, "events.jsonl"));
@@ -2042,8 +2066,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const paths = changedPaths(repo, from, to).filter(path => { const local = path.slice(repo.prefix.length); return scopes.some(scope => !scope || local === scope || local.startsWith(scope + "/")); });
     return projectedDiff({ repo, from, to, paths, projections, deny: config.local.deny, nameable: tasks.nameable, privatePath: path => matchesPolicy(root, join(repo.top, path), config.pii?.paths ?? []) });
   }
-  const delta = tokenDeltas();
-  /** Tokens a peer used, as increments: Kimi reports a session total (turned into increments below), Codex increments. */
+  /** Tokens a peer used, as increments. */
   let codexUsageSeq = 0; // per hub run: with the run id and peer it names one usage record
   const addTokens = (peer: PeerId, n: number): number => {
     const supervisionTurn = supervisionTurns.get(peer);
@@ -2054,15 +2077,6 @@ export async function startDaemon(opts: DaemonOptions) {
       if (turn) turn.tokens += n;
     }
     return n;
-  };
-  const onKimiTokens = (total: number, session: string, peer: string) => {
-    const n = addTokens(peer, delta(peer, total, session));
-    if (!config.budget.kimi_tokens_5h || !n) return;
-    const now = Date.now();
-    kimiTokens.push({ at: now, n });
-    while (kimiTokens.length && now - kimiTokens[0]!.at > 5 * 3_600_000) kimiTokens.shift();
-    const used = kimiTokens.reduce((s, t) => s + t.n, 0) / config.budget.kimi_tokens_5h;
-    budget.report(peer, [{ id: "tokens", used, resetsAt: kimiTokens[0]!.at + 5 * 3_600_000, source: "kimi usage_update (soft limit)" }]);
   };
   // Claude's numbers arrive through the status line tee `ahub claude` installs (src/cli/statusline-tee.ts).
   let claudeUsageSeen = 0;
@@ -3295,7 +3309,9 @@ export async function startDaemon(opts: DaemonOptions) {
         const preparedRoles = preparedSessionRoleIdentities.get(e.peer)?.map(role => ({ ...role })) ?? null;
         turns.set(e.peer, { id, capture, start: Date.now(), tokens: 0, writeTasks, branches, writeScope, deliveryTask: delivery, attribution, preparedRoles, ...(start ? { tree: start.tree, head: start.head, commit: start.commit, reflog: start.reflog, snapshotMs: start.ms } : {}), ...(pii ? { private: true } : {}) });
         event({ type: "turn_start", peer: e.peer, turn: id });
+        if (softTokenPeer(e.peer)) try { kimiUsage.turnStarted(e.peer); } catch { /* counting never costs a turn */ }
       } else if (!busy && open) {
+        collectKimiUsage(e.peer); // before the turn closes: its rows count toward the turn's tokens
         turns.delete(e.peer);
         let afterTurn: (() => void) | undefined;
         let files: number | undefined;
@@ -3383,6 +3399,7 @@ export async function startDaemon(opts: DaemonOptions) {
           try { tasks.recordOwnerTurn(e.peer, open.writeTasks, changed, !!open.taskEffect || !!open.effectsPending); } catch { /* advisory cannot fail native completion */ }
         }
       }
+      if (e.state === "offline" && softTokenPeer(e.peer)) { collectKimiUsage(e.peer); kimiUsage.drop(e.peer); }
       if (e.state === "offline") { offlineSince.set(e.peer, offlineSince.get(e.peer) ?? Date.now()); supervision.peerOffline(e.peer); supervisionTurns.delete(e.peer); }
       else offlineSince.delete(e.peer);
       // A session that ended may come back without hooks: its context path is verified again or not at all (issue #108).
@@ -3877,7 +3894,6 @@ export async function startDaemon(opts: DaemonOptions) {
         // session's configured MCP servers (issue #138). Exact names only; a stopping hub approves nothing.
         autoApprove: (title) => !stopping && HUB_TOOL_TITLES.has(title),
         log,
-        onTokens: (total, session) => onKimiTokens(total, session, peer),
         // Pause synchronously before the adapter requeues a provider-refused prompt (#306).
         onQuotaRefusal: (window) => {
           budget.report(peer, [window], true);
@@ -3888,6 +3904,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // adapter's own session id; report() drops it when that is not the daemon's current session. An invalid
         // shape reports a null reading: unknown, not the previous value (#285).
         onUsageDiagnostic: (observation, sessionId) => {
+          if (observation.source === "usage_update") collectKimiUsage(peer); // phase 2: the update is the cue to read the wire log, never a token total
           if (observation.source !== "usage_update" || observation.shape !== "context-used") return;
           const current = contextSession(peer);
           if (!current) return;

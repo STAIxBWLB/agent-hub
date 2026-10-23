@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { attribute, deliveryTask } from "../src/hub/attribution.ts";
@@ -31,8 +31,14 @@ test("original delivery requires one distinct positive task, allowing unrelated 
 
 test("daemon writes delivery task on native tokens and turn_end even without ownership", async () => {
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-attribution-"));
+  // Kimi's consumption is its wire log (#285 phase 2), protocol 1.5: the fake ACP agent's session is "s1".
+  const kimiHome = join(stateDir, "kimi-home"), wire = join(kimiHome, "sessions", "wd_x_1", "session_s1", "agents", "main", "wire.jsonl");
+  mkdirSync(join(wire, ".."), { recursive: true });
+  writeFileSync(wire, `${JSON.stringify({ type: "metadata", protocol_version: "1.5", created_at: 1 })}\n`);
+  writeFileSync(join(kimiHome, "session_index.jsonl"), `${JSON.stringify({ sessionId: "s1", sessionDir: join(wire, "..", "..", "..") })}\n`);
+  const turnRow = () => appendFileSync(wire, `${JSON.stringify({ type: "usage.record", agentId: "main", model: "kimi-code/k3", usage: { inputOther: 30, output: 20, inputCacheRead: 9999, inputCacheCreation: 0 }, usageScope: "turn", time: Date.now() + 5000 })}\n`);
   const daemon = await startDaemon({
-    cwd: join(import.meta.dir, ".."), stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    cwd: join(import.meta.dir, ".."), stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, kimiHome,
     config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false },
       kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts")] },
   });
@@ -41,6 +47,7 @@ test("daemon writes delivery task on native tokens and turn_end even without own
     client = await ControlClient.connect(stateDir, { role: "console" });
     expect((await client.request({ t: "start", peer: "kimi" })).ok).toBe(true);
     // No task is owned by Kimi. Task ids from delivery still identify review/help work.
+    turnRow();
     daemon.bus.publish(newEnvelope(USER, "do the work", { to: ["kimi"], refs: { task: "77" } }));
     const file = join(stateDir, "events.jsonl");
     for (let i = 0; i < 300 && !readEvents(file).some(e => e.type === "turn_end" && e.task === 77); i++) await Bun.sleep(10);
@@ -49,6 +56,7 @@ test("daemon writes delivery task on native tokens and turn_end even without own
     expect(events.find(e => e.type === "turn_end" && e.task === 77)).toMatchObject({ peer: "kimi", attribution: "delivery", tokens: 50 });
     // A later untagged turn must not inherit the previous delivered task.
     const before = events.filter(e => e.type === "tokens" && e.peer === "kimi").length;
+    turnRow();
     daemon.bus.publish(newEnvelope(USER, "more work", { to: ["kimi"] }));
     for (let i = 0; i < 300 && readEvents(file).filter(e => e.type === "tokens" && e.peer === "kimi").length <= before; i++) await Bun.sleep(10);
     expect(readEvents(file).filter(e => e.type === "tokens" && e.peer === "kimi").at(-1)).toMatchObject({ attribution: "unattributed" });

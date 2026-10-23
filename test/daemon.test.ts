@@ -82,7 +82,7 @@ test("a PII owner withdrawal notice uses the public title and a private delivery
   expect(notice.body).not.toContain("900101");
 });
 
-async function hub(extra: { unattended?: boolean; memoryUrl?: string; nativeMemory?: boolean; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string; experiments?: typeof DEFAULT_CONFIG.experiments; roles?: typeof DEFAULT_CONFIG.roles; wipLimits?: Record<string, number>; boundedTools?: Parameters<typeof startDaemon>[0]["boundedTools"] } = {}) {
+async function hub(extra: { kimiHome?: string; unattended?: boolean; memoryUrl?: string; nativeMemory?: boolean; modelUrl?: string; notifier?: (title: string, body: string) => void; approvals?: { timeout_s: number; notify: boolean }; permissionTimeoutMs?: number; cwd?: string; checks?: typeof DEFAULT_CONFIG.checks; ignored?: string[]; snapshots?: typeof DEFAULT_CONFIG.snapshots; codex_bin?: string; codexAppPort?: number; codexProxyPort?: number; limits?: typeof DEFAULT_CONFIG.limits; capabilities?: typeof DEFAULT_CONFIG.capabilities; coordination?: string; experiments?: typeof DEFAULT_CONFIG.experiments; roles?: typeof DEFAULT_CONFIG.roles; wipLimits?: Record<string, number>; boundedTools?: Parameters<typeof startDaemon>[0]["boundedTools"] } = {}) {
   const { memoryUrl, nativeMemory, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, experiments, roles, wipLimits, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
@@ -1265,7 +1265,13 @@ test("completion checks: run where git vouches for the config, refused where it 
 
 // issue #40: events.jsonl from a scripted hub reproduces the known counts and never carries a body.
 test("telemetry: a scripted hub's events give the known counts, match the overlap counter, and hold no bodies", async () => {
-  const { stateDir, daemon, console_ } = await hub();
+  // Kimi's consumption is its wire log (#285 phase 2, protocol 1.5): one row of 50 counted tokens for the fake agent's session "s1".
+  const kimiHome = mkdtempSync(join(tmpdir(), "agenthub-kimi-home-")); cleanup.push(() => rmSync(kimiHome, { recursive: true, force: true }));
+  const sessionDir = join(kimiHome, "sessions", "wd_x_1", "session_s1"), wire = join(sessionDir, "agents", "main", "wire.jsonl");
+  mkdirSync(join(wire, ".."), { recursive: true });
+  writeFileSync(wire, `${JSON.stringify({ type: "metadata", protocol_version: "1.5", created_at: 1 })}\n${JSON.stringify({ type: "usage.record", agentId: "main", model: "kimi-code/k3", usage: { inputOther: 30, output: 20, inputCacheRead: 5000, inputCacheCreation: 0 }, usageScope: "turn", time: Date.now() + 60_000 })}\n`);
+  writeFileSync(join(kimiHome, "session_index.jsonl"), `${JSON.stringify({ sessionId: "s1", sessionDir })}\n`);
+  const { stateDir, daemon, console_ } = await hub({ kimiHome });
   const { client } = await fakeClaude(stateDir);
   await until(() => daemon.bus.peers.get("claude")?.state === "idle", "claude attach");
   expect((await console_.request({ t: "start", peer: "kimi" })).ok).toBe(true);
@@ -1283,7 +1289,7 @@ test("telemetry: a scripted hub's events give the known counts, match the overla
   const kimiTurns = r.peers.kimi!.turns;
   if (kimiTurns === null) throw new Error("the observed completed Kimi turn must have a known count");
   expect(kimiTurns).toBeGreaterThanOrEqual(1);
-  expect(r.peers.kimi!.tokens).toBe(50 * kimiTurns); // the fake's usage_update: a session total, 50 per prompt
+  expect(r.peers.kimi!.tokens).toBe(50); // the wire row's input + cache writes + output; its cache reads and the fake's usage_update add nothing
   expect(r.messages.total).toBeGreaterThanOrEqual(1);
   // The same notice the human sees, counted by scripts/overlaps.ts from hub.log.
   expect(parseOverlaps(readFileSync(join(stateDir, "hub.log"), "utf8")).length).toBe(r.overlaps.warnings);
