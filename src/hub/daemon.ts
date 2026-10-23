@@ -4471,9 +4471,11 @@ export async function startDaemon(opts: DaemonOptions) {
     const attentionStatus = status(false, true);
     let pet; try { const config = loadPetConfig(opts.cwd); pet = { enabled: config.enabled, character: config.character ?? "stai", blink: config.blink }; } catch { pet = { enabled: false }; }
     const peerView = Object.fromEntries(Object.entries(attentionStatus.peers).map(([id, peer]) => [id, { ...peer, ...turnView(id as PeerId) }])), boardTasks = board.list();
-    const usageView = () => {
+    const usageView = (open: boolean) => {
+      // #683 U4: the roll-up runs only while the Agents view that shows it is open, never on a hidden view's 1 s poll.
+      if (!open) return undefined;
       try {
-        usageRollup.catchUp(100);
+        const caught = usageRollup.catchUp(100);
         const status = budget.status();
         const live = new Set(Object.entries(status).filter(([, v]) => v.paused).map(([peer]) => peer));
         const limits = usageRollup.limits(undefined, { limit: 100, live });
@@ -4481,6 +4483,8 @@ export async function startDaemon(opts: DaemonOptions) {
         const daily = usageRollup.daily(14);
         const taskUsage = usageRollup.query({ by: "task" });
         return {
+          // `behind`: the roll-up has not folded the whole log, so every figure below is a lower bound, never the whole (unknown is not 0).
+          behind: !caught,
           daily,
           limits,
           total,
@@ -4541,7 +4545,7 @@ export async function startDaemon(opts: DaemonOptions) {
       roster: rosterView(),
       ...benchView(),
       ...memoryView(_input?.memory),
-      usage: usageView(),
+      usage: usageView(_input?.view === "agents"),
     };
   }
 

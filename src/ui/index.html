@@ -382,6 +382,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 .usage-table .num{font-family:var(--font-mono);text-align:right}
 .usage-tag{display:inline-block;padding:1px var(--space-2);border-radius:var(--radius-control);font-size:var(--text-xs);font-family:var(--font-mono)}
 .usage-tag.pii{background:var(--amber-soft);color:var(--amber);border:1px solid var(--amber)}
+.meta.usage-behind{color:var(--amber);background:var(--amber-soft);border:1px solid var(--amber);border-radius:var(--radius-control);padding:var(--space-2) var(--space-3)}
 .usage-paused-alert{border:1px solid var(--amber);background:var(--amber-soft);color:var(--amber);padding:var(--space-3);border-radius:var(--radius-control);margin-bottom:var(--space-3);font-size:var(--text-sm)}
 @media(max-width:600px){.usage-summary-grid{grid-template-columns:1fr}}
 </style>
@@ -1304,8 +1305,13 @@ function formatCounter(c, exact) {
   const tag = c.source === 'count' ? 'hub' : c.source === 'partial' ? 'at least' : c.source;
   return str + (tag && tag !== 'native' ? ' (' + tag + ')' : '');
 }
+const USAGE_COVERAGE_NOTE = 'Coverage: Jcode and Kimi (prior to #285) report hub-counted increments; unrecorded sources are noted as unknown.';
 function renderUsage(usage, tasks, budget) {
   if (!usage) return;
+  // #683 U4: a roll-up that has not folded the whole log gives lower bounds; say so rather than show the folded part as the whole.
+  const coverage = $('usage-coverage-note');
+  coverage.textContent = USAGE_COVERAGE_NOTE + (usage.behind === true ? ' Still folding the event log: figures are a lower bound until it catches up.' : '');
+  coverage.classList.toggle('usage-behind', usage.behind === true);
   const total = usage.total;
   if (total) {
     const overall = total.overall;
@@ -1325,9 +1331,9 @@ function renderUsage(usage, tasks, budget) {
     }
     for (const d of daily.days) {
       const col = el('div', undefined, 'usage-day-col');
-      col.append(el('span', formatCounter(d.total), 'usage-day-total'));
+      col.append(el('span', d.empty === true ? 'no record' : formatCounter(d.total), 'usage-day-total'));
       const bar = el('div', undefined, 'usage-stacked-bar');
-      bar.title = d.day + ': ' + formatCounter(d.total);
+      bar.title = d.day + ': ' + (d.empty === true ? 'no record' : formatCounter(d.total));
       for (const p of daily.peers || []) {
         const c = d.peers[p];
         if (c && c.value && c.value > 0) {
@@ -1405,7 +1411,8 @@ function renderUsage(usage, tasks, budget) {
     if (id === 0) continue;
     const bt = boardTasks.find(t => t.id === id);
     const ut = taskUsageMap.get(id);
-    const pii = ut?.pii || bt?.title?.includes?.('[pii]') || (bt?.title === undefined && ut?.pii);
+    // A PII task's public title is exactly "[pii]" (Tasks.publicView), so the board row alone marks it even when it has no usage rows.
+    const pii = ut?.pii === true || bt?.title === '[pii]';
     const tr = el('tr');
     const taskCell = el('td');
     if (pii) {
@@ -1536,7 +1543,7 @@ async function poll() {
   const captured = context();
   if (managerMode && (!captured.projectId || !captured.instanceId)) { if (!stopped) timer = setTimeout(poll, 1000); return; }
   try {
-    const input = {after:cursor, memory:memoryInput()}; if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
+    const input = {after:cursor, memory:memoryInput(), view:currentView}; if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
     const result = await post('/snapshot', input);
     if (!managerMode || (result.projectId === captured.projectId && result.instanceId === captured.instanceId && captured.generation === viewGeneration)) {
       snapshotValid = true; lastSnapshot = result; lastSnapshotAt = Date.now(); render(result); setConnection('Live / updated ' + new Date().toLocaleTimeString(), 'live'); setDisconnected(false);

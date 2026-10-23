@@ -54,7 +54,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Feature | State here | Measured by |
 | --- | --- | --- |
 | Quota budgets and pauses | on | pauses, resets, time paused (#683) |
-| Token usage per peer and task | `ahub report` and, from the roll-up in `hub.db`, `ahub usage [--by peer\|task\|issue\|pr\|release\|day\|model]`, `usage limits` and `usage total` (#683 U2); console and dashboard views pending (U3, U4) | tokens per merged PR |
+| Token usage per peer and task | `ahub report` and, from the roll-up in `hub.db`, `ahub usage [--by peer\|task\|issue\|pr\|release\|day\|model]`, `usage limits` and `usage total` (#683 U2); console tab `7` (U3) and dashboard Usage view (U4) shipped | tokens per merged PR |
 | Context gate | off: `context.gate = 0` | context-pressure events |
 | Always-ask action classes (#636) | foundation only; enforcement pending (#312, #313) | classed calls asked, budget refusals |
 | Permission modes | on, person-chosen | approval prompts and their wait times |
