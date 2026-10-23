@@ -99,7 +99,8 @@
         "src/adapters/registry.ts",
         "src/hub/instance-budget.ts",
         "src/hub/claude-state.ts",
-        "src/adapters/definitions/native-channel-state.ts"
+        "src/adapters/definitions/native-channel-state.ts",
+        "src/hub/usage-rollup.ts"
       ]
     },
     "docs/agent-notes/bus.md": {
@@ -175,7 +176,9 @@
         "src/adapters/configured-acp.ts",
         "src/hub/config-trust.ts",
         "src/cli/memory.ts",
-        "src/adapters/definitions/native-channel-state.ts"
+        "src/adapters/definitions/native-channel-state.ts",
+        "src/hub/task-code-group.ts",
+        "src/cli/status-lines.ts"
       ]
     },
     "docs/agent-notes/local-worker.md": {
@@ -226,7 +229,9 @@
         "src/hub/no-writes.ts",
         "src/adapters/registry.ts",
         "src/hub/review-findings.ts",
-        "src/hub/plan-conformance.ts"
+        "src/hub/plan-conformance.ts",
+        "src/hub/sdlc-metrics.ts",
+        "src/hub/spec-read.ts"
       ]
     },
     "docs/agent-notes/tests.md": {
