@@ -36,3 +36,20 @@ test("status surfaces weakened machine-local startup policy without binding a se
   }
   expect(new ActionBudgets(() => undefined, () => undefined).status("worker", true).note).toBe("always-ask active");
 });
+
+
+test("only a complete host local tool title restores approval for a long or private command", () => {
+  const command = `npm install -g ${"package-".repeat(90)}`;
+  const budgets = new ActionBudgets(() => undefined, () => "current");
+  const gate = actionGate({ budgets, policy: () => undefined, root: () => "/project", task: () => undefined,
+    publicView: () => ({}), isPrivate: () => true, nameable: () => false }, "worker");
+  const call = { names: ["bash"], input: { command } };
+  expect(gate(call, "current")).toMatchObject({ denyOnly: true });
+  const complete = gate(call, "current", `bash: ${command}`);
+  expect(complete?.title).toBe(`Action approval (install)\nbash: ${command}`);
+  expect(complete?.denyOnly).toBeUndefined(); expect(complete?.budget?.label).toBe("install x2");
+  for (const title of ["bash: npm install -g [cut]", "[private command withheld]", ""]) {
+    const view = gate(call, "current", title);
+    expect(view?.denyOnly).toBe(true); expect(view?.budget).toBeUndefined();
+  }
+});

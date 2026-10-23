@@ -116,3 +116,16 @@ test("a crashed Pi has no enforceable live tool path even when it was not stoppe
   expect((await r.call("printf must-not-run > crash-marker; git push", "after-crash")).text).toContain("stopped");
   expect(existsSync(join(r.cwd, "crash-marker"))).toBe(false);
 });
+
+
+test("Pi classed long bash preserves the entire tool command on the person's console", async () => {
+  const r = await rig(true); await r.mode("never-ask");
+  const command = `: ${"padding ".repeat(90)}; printf important-tail > pi-tail-marker; git push`;
+  expect(command.length).toBeGreaterThan(512);
+  const answer = r.call(command, "long-command"); await until(() => r.asks.length === 1);
+  const ask = r.asks[0];
+  expect(ask.title).toBe(`Action approval (publish)\nbash: ${command}`);
+  expect(ask.options.some((o: any) => o.optionId === "allow")).toBe(true);
+  r.client.send({ t: "permit", id: ask.id, option: "deny" });
+  expect((await answer).text).toContain("did not approve"); expect(existsSync(join(r.cwd, "pi-tail-marker"))).toBe(false);
+});

@@ -8,7 +8,7 @@ const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 async function until(check: () => boolean) { for (let n = 0; n < 200 && !check(); n++) await Bun.sleep(5); expect(check()).toBe(true); }
 const command = (id: string | number, extra: Record<string, unknown> = {}) => ({ id, method: "item/commandExecution/requestApproval", params: { threadId: "thread-1", turnId: "turn-1", itemId: "item", startedAtMs: 1, command: "git push origin main", cwd: "/fixture", ...extra } });
-async function rig(extra: Partial<CodexOptions> = {}) {
+async function rig(extra: Partial<CodexOptions> = {}, startTurn = true) {
   let native: { send(text: string): unknown } | undefined;
   const received: any[] = [], seen: any[] = [], asks: PermissionRequest[] = [];
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
@@ -26,7 +26,7 @@ async function rig(extra: Partial<CodexOptions> = {}) {
   tui.send(JSON.stringify({ id: 1, method: "thread/start", params: {} })); await until(() => peer.state === "idle");
   const emit = (msg: unknown) => native!.send(JSON.stringify(msg));
   const start = (turn = "turn-1") => emit({ method: "turn/started", params: { threadId: peer.thread, turn: { id: turn } } });
-  start(); await until(() => peer.state === "busy");
+  if (startTurn) { start(); await until(() => peer.state === "busy"); }
   return { peer, tui, emit, start, received, seen, asks };
 }
 
@@ -103,11 +103,37 @@ test("Codex a classed request without an observed native turn fails closed", asy
   expect(r.asks).toHaveLength(0); expect(r.received.find(row => row.id === 60).result.decision).toBe("decline");
 });
 
-test("Codex uses the shared policy ledger with current session and privacy screening", async () => {
-  let peer: CodexPeer | undefined;
-  const budgets = new ActionBudgets(() => actionPolicyConfig({ budgets: { publish: 2 } }), () => peer?.thread);
-  const gate = actionGate({ budgets, policy: () => actionPolicyConfig({ budgets: { publish: 2 } }), root: () => "/fixture", task: () => undefined, publicView: () => ({}), isPrivate: () => true, nameable: () => false }, "codex");
-  const r = await rig({ actionGate: gate, onPermission: async req => { expect(req.title).toContain("[private command withheld]"); return ACTION_BUDGET_OPTION; } }); peer = r.peer;
-  r.emit(command(70)); await until(() => r.received.some(row => row.id === 70));
-  expect(r.received.find(row => row.id === 70).result.decision).toBe("accept"); expect(budgets.status("codex", false).remaining.publish).toBe(1);
+test("Codex uses the shared policy ledger only when the command is visible", async () => {
+  for (const privateTurn of [false, true]) {
+    let peer: CodexPeer | undefined;
+    const budgets = new ActionBudgets(() => actionPolicyConfig({ budgets: { publish: 2 } }), () => peer?.thread);
+    const gate = actionGate({ budgets, policy: () => actionPolicyConfig({ budgets: { publish: 2 } }), root: () => "/fixture", task: () => undefined,
+      publicView: () => ({}), isPrivate: () => privateTurn, nameable: () => !privateTurn }, "codex");
+    const r = await rig({ actionGate: gate, onPermission: async req => {
+      if (privateTurn) { expect(req.title).toContain("[private command withheld]"); expect(req.options.map(o => o.kind)).toEqual(["reject_once"]); }
+      else { expect(req.title).toContain("git push origin main"); expect(req.options.some(o => o.optionId === ACTION_BUDGET_OPTION)).toBe(true); }
+      return ACTION_BUDGET_OPTION;
+    } }); peer = r.peer;
+    r.emit(command(70)); await until(() => r.received.some(row => row.id === 70));
+    expect(r.received.find(row => row.id === 70).result.decision).toBe(privateTurn ? "decline" : "accept");
+    expect(budgets.status("codex", false).remaining.publish).toBe(privateTurn ? 0 : 1);
+  }
+});
+
+
+for (const forged of ["allow", ACTION_BUDGET_OPTION]) test(`Codex deny-only view offers no grant and rejects a forged ${forged} answer`, async () => {
+  let grants = 0;
+  const r = await rig({ actionGate: () => ({ title: "command withheld", denyOnly: true, budget: { label: "publish x2", approve: () => { grants++; return true; } } }),
+    onPermission: async req => { expect(req.options.map(o => o.kind)).toEqual(["reject_once"]); return forged; } });
+  r.emit(command("deny-only"));
+  await until(() => r.received.some(row => row.id === "deny-only"));
+  expect(r.received.find(row => row.id === "deny-only").result).toEqual({ decision: "decline" }); expect(grants).toBe(0);
+});
+
+
+test("Codex legacy approval without an observed active turn denies instead of inventing a binding", async () => {
+  const r = await rig({}, false);
+  r.emit({ id: "legacy-no-turn", method: "execCommandApproval", params: { conversationId: "thread-1", callId: "legacy", command: ["git", "push"], cwd: "/fixture" } });
+  await until(() => r.received.some(row => row.id === "legacy-no-turn"));
+  expect(r.received.find(row => row.id === "legacy-no-turn").result.decision).toBe("abort"); expect(r.asks).toHaveLength(0);
 });

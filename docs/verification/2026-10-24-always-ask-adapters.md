@@ -13,7 +13,7 @@ The generated ServerRequest schema SHA-256 is `f339be472737a0003efa25fba2e6e6c92
 - File-change and permission-profile approvals carry different payload contracts. They remain native, as do absent/unknown command payloads.
 - Native approval policy includes `never`. The existing hub mode mapper sends approvalPolicy never for never-ask. The proxy has no pre-tool path when no RPC is emitted. Received-RPC tests prove gating in all hub modes, not interception of an absent request. No authenticated native never-ask execution was attempted.
 
-The console always sees screened public approval copy. An intercepted id is answered once and suppresses guessed, duplicated or late TUI replies. Thread/turn replacement, completion, interruption, disconnect and stop invalidate pending decisions before effects. A missing current native turn denies. `ponytail:` each socket retains at most 1024 intercepted ids; reaching the cap closes both sides instead of evicting late-reply fences. The upgrade is an explicit reattachment/session-lifetime protocol.
+Codex and ACP approval copy stays privacy-screened; a cut, withheld or changed command is deny-only. The local/Pi on-prem console receives the complete tool title as described below. An intercepted id is answered once and suppresses guessed, duplicated or late TUI replies. Thread/turn replacement, completion, interruption, disconnect and stop invalidate pending decisions before effects. A missing current native turn denies. `ponytail:` each socket retains at most 1024 intercepted ids; reaching the cap closes both sides instead of evicting late-reply fences. The upgrade is an explicit reattachment/session-lifetime protocol.
 
 ## Local and Pi boundary
 
@@ -23,7 +23,7 @@ Pi's persisted call receipt contains the classification and approval operation, 
 
 The managed terminal and headless Claude forms remain in the status table: terminal evidence must match a live hooked generation; the owned headless form installs the managed hook and accepts only current-child allow-once/denial through its native prompt tool. Native requirements are never relaxed by a cached class budget.
 
-A cut approval command is marked `[cut, N chars]` and cannot offer a multi-call budget. Whole-command privacy screening precedes the cut. `ponytail:` startup still reads untracked machine-local action policy without retained person confirmation. Weakening defaults is visible as attention in status; the upgrade is a retained person-bound startup confirmation.
+A cut approval command is marked `[cut, N chars]` and offers only denial, with no allow-once or multi-call budget. Whole-command privacy screening precedes the cut. `ponytail:` startup still reads untracked machine-local action policy without retained person confirmation. Weakening defaults is visible as attention in status; the upgrade is a retained person-bound startup confirmation.
 
 ## Verification
 
@@ -37,3 +37,16 @@ Pinned Bun 1.4.2 typecheck and 74 focused tests passed (670 assertions), includi
 The branch keeps the 0.15.0 release changelog section and its Jcode/headless-Claude documentation recheck, with this feature under Unreleased. The generated bundle was rebuilt with frozen dependencies and Bun 1.4.2. Runtime and test code were unchanged by the rebase itself.
 
 A subsequent bot finding exposed an unexpected-exit status gap: Pi.fail marks the peer offline without setting its requested-stop flags, so acceptingTools alone could still report active enforcement. The status projection now requires both a non-offline state and acceptingTools. A real daemon regression makes its fake native Pi process exit with code 7; before the fix it fails the named enforceable=false assertion, and after the fix status is not enforceable and the stopped tool endpoint performs no effect. Typecheck, the 12 relevant tests (187 assertions), and bundle freshness pass. All test/gate invocations clear inherited AGENTHUB_HOME per the current area note. The interrupted pre-fix gate is not counted as passing proof; the final changed gate is reported separately.
+
+
+## Round-one presentation and status boundaries
+
+The person's on-prem local/Pi console now receives the complete host tool title after the class line, even for a private turn. The host-only optional presentation port must match the exact executed bash/git form. A shortened, withheld or mismatched view is deny-only and carries no class-budget choice. ACP/Codex consumers also enforce the deny-only flag against forged answers. Their unknown/unclassed native flow is unchanged. A public positive budget control remains covered; the former private-command budget-acceptance expectation is replaced with denial because approval of hidden commands is the rejected behavior.
+
+Red-first real daemon controls reproduced both failures: a 793-character command lost its significant tail at the public 512-character cut, and a PII-turn command became wholly withheld. They now verify full console visibility, denied effects and allow-once behavior, plus absence of private material from logs, status, ordinary peer messages and subsequent model history. Pi has its own long-command control. Incomplete host-title, native cut/withheld and forged grant controls deny.
+
+Managed Claude implementer status requires a current busy child generation. An idle instance with no process is not enforceable (also fixes #402); the idle assertion failed before that correction, while the existing active-child positive control remains. Local action allowances now use a dedicated session port and no longer widen contextSession for checkpoints, telemetry or supervision.
+
+Legacy Codex execCommandApproval has a conversation/call id but no provable native turn id by itself. Without an observed active turn from turn/started it is auto-declined, without a person request; no turn identity is invented. A dedicated legacy no-turn control pins this fail-closed compatibility ceiling. Native 0.163.0 command payload shapes were probed model-free; real legacy-provider behavior remains unverified.
+
+All actual conflict markers in operations.md were removed, preserving the intended local-policy text and its open startup-confirmation ceiling. The first-party tracked/untracked tree scan (excluding .git and node_modules) returns zero markers. Relevant focused checks pass 59 tests / 648 assertions; final gate results are in the PR handoff.

@@ -108,14 +108,22 @@ export class ActionBudgets {
   }
 }
 
-/** Adapter integrations must pass the host's publicView and current command/private-turn screens. */
-export function actionApprovalText<T>(classes: readonly ActionClass[], command: string, task: T | undefined,
-  ports: { publicView(task: T): Record<string, unknown>; private: boolean; commandView(command: string): string | undefined }): string {
+type ActionApprovalPorts<T> = { publicView(task: T): Record<string, unknown>; private: boolean; commandView(command: string): string | undefined };
+
+/** Public/native presentation: incomplete command views grant no approval, not even once. */
+export function actionApprovalView<T>(classes: readonly ActionClass[], command: string, task: T | undefined,
+  ports: ActionApprovalPorts<T>): { title: string; complete: boolean } {
   const view = task === undefined ? undefined : ports.publicView(task);
   const title = typeof view?.title === "string" ? sanitize(view.title).replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 160) : undefined;
   const shown = ports.private ? undefined : ports.commandView(command);
   const full = shown === undefined ? undefined : Array.from(sanitize(shown).replace(/[\p{Cc}\p{Cf}]/gu, " "));
   const marker = ` [cut, ${full?.length ?? 0} chars]`;
   const line = full === undefined ? "[private command withheld]" : full.length > 512 ? full.slice(0, 512 - marker.length).join("") + marker : full.join("");
-  return `Action approval (${ACTION_CLASSES.filter(key => classes.includes(key)).join(", ")})${title ? `; task ${title}` : ""}: ${line}`;
+  return { title: `Action approval (${ACTION_CLASSES.filter(key => classes.includes(key)).join(", ")})${title ? `; task ${title}` : ""}: ${line}`,
+    complete: shown === command && full !== undefined && full.length <= 512 && full.join("") === command };
+}
+
+/** Adapter integrations must pass the host's publicView and current command/private-turn screens. */
+export function actionApprovalText<T>(classes: readonly ActionClass[], command: string, task: T | undefined, ports: ActionApprovalPorts<T>): string {
+  return actionApprovalView(classes, command, task, ports).title;
 }

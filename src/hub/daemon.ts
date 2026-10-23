@@ -1803,7 +1803,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (isWsPeer(p) && p.claiming) return undefined;
     if (definitionOf(peer)?.transport === "claude-channel") { const c = claudeSession(peer); return c.sessionId ? `${c.sessionId}:${c.launchId ?? ""}` : undefined; }
     if (isCodexPeer(p)) return p.thread || undefined;
-    if (isAcpPeer(p) || isPiPeer(p) || isLocalPeer(p)) { const id = p.recoveryMetadata().sessionId; return typeof id === "string" ? id : undefined; }
+    if (isAcpPeer(p) || isPiPeer(p)) { const id = p.recoveryMetadata().sessionId; return typeof id === "string" ? id : undefined; }
     return undefined;
   };
   const activityRings: Record<string, ActivityRing> = Object.fromEntries(SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.capabilities?.watch).map(peer => [peer, new ActivityRing()]));
@@ -2732,7 +2732,13 @@ export async function startDaemon(opts: DaemonOptions) {
       else delete defaultSources[peer];
     }
   };
-  const actionBudgets = new ActionBudgets(() => config.action_policy, contextSession);
+  // Action allowances have their own host session port; adding local here must not change checkpoints, context telemetry or supervision.
+  const actionSession = (peer: PeerId): string | undefined => {
+    const owner = bus.peers.get(peer);
+    if (isLocalPeer(owner)) { const id = owner.recoveryMetadata().sessionId; return typeof id === "string" ? id : undefined; }
+    return contextSession(peer);
+  };
+  const actionBudgets = new ActionBudgets(() => config.action_policy, actionSession);
   // #636 slice 2: the always-ask gate of an ACP peer, built per peer from the host's own ports (root, task, PII screen); never from the agent.
   const acpActionGate = (peer: PeerId) => actionGate({ budgets: actionBudgets, policy: () => config.action_policy, root: executionRoot,
     task: p => board.list("in_progress").find(t => t.owner === p), publicView: task => tasks.publicView(task), isPrivate: p => !!turns.get(p)?.private || contextPii(p),
@@ -2751,7 +2757,10 @@ export async function startDaemon(opts: DaemonOptions) {
       return { enforced: true };
     }
     const owner = bus.peers.get(peer);
-    if (definitionOf(peer)?.start.daemonPort === "claude-implementer") return owner?.ownedTools && owner.state !== "offline" ? { enforced: true } : { enforced: false, reason: "the managed Claude implementer is offline" };
+    if (definitionOf(peer)?.start.daemonPort === "claude-implementer") {
+      const generation = owner?.sessionGeneration;
+      return owner?.state === "busy" && typeof generation === "string" && generation.length > 0 ? { enforced: true } : { enforced: false, reason: "no current managed Claude implementer child" };
+    }
     if (isCodexPeer(owner)) return { enforced: false, reason: owner.actionGated ? "Codex approval RPCs are gated, but native policy can execute without sending one (never-ask sends approvalPolicy never)" : "this Codex proxy has no hub approval gate" };
     if (isLocalPeer(owner)) return owner.state !== "offline" ? { enforced: true } : { enforced: false, reason: "the local worker is offline" };
     if (isPiPeer(owner)) return owner.state !== "offline" && owner.acceptingTools ? { enforced: true } : { enforced: false, reason: "Pi has no verified live tool bridge" };
@@ -3612,25 +3621,26 @@ export async function startDaemon(opts: DaemonOptions) {
     return result.outcome === "answered" ? result.optionId : undefined;
   }
   /** The managed local/Pi execution boundary: a classed call asks before any native mode or tool-wide grant. */
-  async function classedToolPermission(peer: string, root: string, tool: string | undefined, input: unknown, signal: AbortSignal | undefined, current: () => boolean, observe?: ApprovalObserver): Promise<ToolApproval | undefined> {
+  async function classedToolPermission(peer: string, root: string, title: string, tool: string | undefined, input: unknown, signal: AbortSignal | undefined, current: () => boolean, observe?: ApprovalObserver): Promise<ToolApproval | undefined> {
     if (!tool || input === undefined) return undefined;
     if (stopping || signal?.aborted || !current()) return "aborted";
     // runTool executes in this host root and ignores model-supplied cwd/workdir fields.
     const effective = input && typeof input === "object" && !Array.isArray(input) ? { ...input, cwd: root, workdir: root } : input;
     let gate: ActionGateVerdict | undefined;
-    try { gate = acpActionGate(peer)({ names: [tool], input: effective }, contextSession(peer) ?? ""); }
-    catch { gate = { title: "Action approval: the always-ask check failed; command withheld" }; }
+    try { gate = acpActionGate(peer)({ names: [tool], input: effective }, actionSession(peer) ?? "", title); }
+    catch { gate = { title: "Action approval: the always-ask check failed; command withheld", denyOnly: true }; }
     if (!gate) return undefined;
     const options: PermissionRequest["options"] = [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }];
-    if (gate.budget) options.push({ optionId: ACTION_BUDGET_OPTION, name: `Allow ${gate.budget.label} for this session`, kind: "allow_once" });
+    if (gate.denyOnly) options.splice(0, 1);
+    if (!gate.denyOnly && gate.budget) options.push({ optionId: ACTION_BUDGET_OPTION, name: `Allow ${gate.budget.label} for this session`, kind: "allow_once" });
     const picked = await requestPermission({ peer, title: gate.title, tool, classed: true, options }, signal, observe);
     if (picked.outcome === "expired") return "expired";
     if (stopping || signal?.aborted || !current()) return "aborted";
     if (picked.outcome !== "answered") return false;
-    if (picked.optionId === ACTION_BUDGET_OPTION) {
+    if (!gate.denyOnly && picked.optionId === ACTION_BUDGET_OPTION) {
       try { return gate.budget?.approve() === true; } catch { return false; }
     }
-    return picked.optionId === "allow";
+    return !gate.denyOnly && picked.optionId === "allow";
   }
   async function requestPermission(req: PermissionRequest, signal?: AbortSignal, observe?: ApprovalObserver): Promise<PermissionResult> {
     const requestEpoch = permissionAnswerEpoch(req.peer);
@@ -4229,7 +4239,7 @@ export async function startDaemon(opts: DaemonOptions) {
       actionBudgets.revoke(peer);
       const piPermit = async (title: string, tool: string, signal?: AbortSignal, path?: string, valid: () => boolean = () => true, observe?: ApprovalObserver, originalPath?: string, input?: unknown): Promise<ToolApproval> => {
         if (stopping || signal?.aborted || !valid() || !pi.acceptingTools || bus.peers.get(peer) !== pi) return "aborted";
-        const classed = await classedToolPermission(peer, executionCwd, tool, input, signal, () => valid() && pi.acceptingTools && bus.peers.get(peer) === pi, observe);
+        const classed = await classedToolPermission(peer, executionCwd, title, tool, input, signal, () => valid() && pi.acceptingTools && bus.peers.get(peer) === pi, observe);
         if (classed !== undefined) return classed;
         if (stopping || signal?.aborted || !valid() || !pi.acceptingTools || bus.peers.get(peer) !== pi) return "aborted";
         const selected = permissionMode(peer);
@@ -4396,7 +4406,7 @@ export async function startDaemon(opts: DaemonOptions) {
       actionBudgets.revoke(peer);
       const permit = async (title: string, tool?: string, signal?: AbortSignal, path?: string, observe?: ApprovalObserver, originalPath?: string, input?: unknown): Promise<ToolApproval> => {
         if (stopping || signal?.aborted || bus.peers.get(peer) !== local) return "aborted";
-        const classed = await classedToolPermission(peer, executionCwd, tool, input, signal, () => bus.peers.get(peer) === local, observe);
+        const classed = await classedToolPermission(peer, executionCwd, title, tool, input, signal, () => bus.peers.get(peer) === local, observe);
         if (classed !== undefined) return classed;
         if (stopping || signal?.aborted || bus.peers.get(peer) !== local) return "aborted";
         const selected = permissionMode(peer);

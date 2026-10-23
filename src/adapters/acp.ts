@@ -31,6 +31,8 @@ export interface PermissionRequest {
 /** What the host's always-ask gate says about one request (#636): the approval text it must show, and a class-budget choice when one applies. */
 export interface ActionGateVerdict {
   title: string;
+  /** The person cannot see the complete command: no allow option or class-budget grant is valid. */
+  denyOnly?: true;
   /** A person's explicit choice to approve the classes for the rest of the session's budget (`label` names them); never an ordinary allow. */
   budget?: { label: string; approve(): boolean };
 }
@@ -687,7 +689,7 @@ export class AcpPeer extends BasePeer {
     let gate: ActionGateVerdict | undefined;
     try {
       gate = rawInput === undefined || !this.sessionId ? undefined : this.opts.actionGate?.({ names: [call.title, announced, canonical].filter((name): name is string => typeof name === "string"), ...(kind ? { kind } : {}), input: rawInput }, this.sessionId);
-    } catch { gate = { title: "Action approval: the always-ask check failed; approve only if you know what runs" }; } // a failing gate asks, never allows
+    } catch { gate = { title: "Action approval: the always-ask check failed; command withheld", denyOnly: true }; } // a failing gate asks, never allows
     if (once && identity && !gate) {
       this.opts.log?.(`permission auto-approved for ${this.id}: ${identity}`); // the name only: arguments may quote a PII turn
       this.emitActivity("ask", `${String(msg.id)}: ${activityText(announced ?? call.title)} (automatic)`);
@@ -708,8 +710,9 @@ export class AcpPeer extends BasePeer {
     const title: string = gate ? gate.title : raw === undefined ? `${named ?? "tool call"} (payload not reported by the agent)` : `${named ?? "tool call"}${input}`;
     this.emitActivity("ask", `${String(msg.id)}: ${activityText(title)}; answer in ahub console`);
     let options: PermissionOption[] = (msg.params?.options ?? []).filter((o: PermissionOption) => o.kind !== "allow_always" || !gate && !this.nativePolicy?.lockedReadOnly && raw !== undefined && !cut);
+    if (gate?.denyOnly) options = options.filter(o => o.kind === "reject_once" || o.kind === "reject_always");
     // The class-budget choice is the hub's own option: answered to the agent as its allow_once once the ledger has recorded the grant.
-    const budgetOption: PermissionOption | undefined = gate?.budget && once ? { optionId: ACTION_BUDGET_OPTION, name: `Allow ${gate.budget.label} for this session`, kind: "allow_once" } : undefined;
+    const budgetOption: PermissionOption | undefined = !gate?.denyOnly && gate?.budget && once ? { optionId: ACTION_BUDGET_OPTION, name: `Allow ${gate.budget.label} for this session`, kind: "allow_once" } : undefined;
     if (budgetOption) options = [...options, budgetOption];
     // Only a bare tool name travels on its own (a desktop notice shows it); anything prose-like stays in the title.
     const tool = typeof named === "string" && /^[\w.:@-]{1,80}$/.test(named) ? named : undefined;

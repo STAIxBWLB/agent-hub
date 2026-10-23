@@ -613,7 +613,7 @@ export class CodexPeer extends BasePeer {
     const thread = legacy ? params.conversationId : params.threadId;
     let gate: ActionGateVerdict | undefined;
     try { gate = this.opts.actionGate({ names: ["shell"], kind: "execute", input: { command: params.command, cwd: params.cwd } }, typeof thread === "string" ? thread : ""); }
-    catch { gate = { title: "Action approval: the always-ask check failed; command withheld" }; }
+    catch { gate = { title: "Action approval: the always-ask check failed; command withheld", denyOnly: true }; }
     if (!gate) return false;
     const verdict = gate;
     // ponytail: retain at most 1024 intercepted ids per socket, never evict a tombstone and accept a late native answer.
@@ -630,7 +630,8 @@ export class CodexPeer extends BasePeer {
     if (!live()) { answer(false); return true; } // no invented native turn binding, even when the command is classed
     this.actionWaits.set(controller, { link, turn });
     const options: PermissionRequest["options"] = [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }];
-    if (verdict.budget) options.push({ optionId: ACTION_BUDGET_OPTION, name: `Allow ${verdict.budget.label} for this session`, kind: "allow_once" });
+    if (verdict.denyOnly) options.splice(0, 1); // keep only denial, even if a broken callback later returns allow
+    if (!verdict.denyOnly && verdict.budget) options.push({ optionId: ACTION_BUDGET_OPTION, name: `Allow ${verdict.budget.label} for this session`, kind: "allow_once" });
     const alive = setInterval(() => { if (live()) this.touch(); }, Math.max(10, Math.min(30_000, Math.floor(this.watchdogMs / 3))));
     void (async () => {
       let picked: string | undefined;
@@ -639,8 +640,8 @@ export class CodexPeer extends BasePeer {
         picked = await Promise.race([this.opts.onPermission?.({ peer: this.id, title: verdict.title, tool: "shell", kind: "execute", classed: true, options }, controller.signal), cancelled]);
       } catch { /* a broken or missing approval handler denies */ }
       finally { clearInterval(alive); this.actionWaits.delete(controller); }
-      let allow = live() && picked === "allow";
-      if (live() && verdict.budget && picked === ACTION_BUDGET_OPTION) {
+      let allow = !verdict.denyOnly && live() && picked === "allow";
+      if (!verdict.denyOnly && live() && verdict.budget && picked === ACTION_BUDGET_OPTION) {
         try { allow = verdict.budget.approve() && live(); } catch { allow = false; }
       }
       answer(allow);

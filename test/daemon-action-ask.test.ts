@@ -176,3 +176,21 @@ test("Claude: status claims enforcement only for a live session whose current ge
   const gone = await status();
   expect(gone.enforceable).toBe(false); expect(gone.note).toContain("no live Claude session");
 });
+
+
+test("ACP a classed cut command offers only denial and a forged allow cannot run it", async () => {
+  const r = await rig({ unattended: true });
+  expect((await r.client.request({ t: "start", peer: "kimi" })).ok).toBe(true);
+  await until(() => r.daemon.bus.stateOf("kimi") === "idle");
+  const command = `git push ${"branch-".repeat(100)}`;
+  await r.client.request({ t: "send", body: `PERMISSION ANNOUNCED ACTIONCMD[${command}]`, to: ["kimi"] });
+  await until(() => r.pushes.some(row => row.t === "permission"));
+  const ask = r.pushes.find(row => row.t === "permission");
+  expect(ask.title).toContain("[cut,"); expect(ask.options.every((o: any) => o.kind.startsWith("reject_"))).toBe(true);
+  expect((await r.client.request({ t: "permit", id: ask.id, option: "yes" })).ok).toBe(false);
+  const deny = ask.options.find((o: any) => o.kind === "reject_once"); expect(deny).toBeDefined();
+  r.client.send({ t: "permit", id: ask.id, option: deny.optionId });
+  const replies = () => r.pushes.filter(row => row.t === "event" && row.e?.t === "envelope" && row.e.env.from === "kimi");
+  await until(() => replies().length === 1);
+  expect(replies()[0].e.env.body).toEndWith(`permission=${deny.optionId}`);
+});

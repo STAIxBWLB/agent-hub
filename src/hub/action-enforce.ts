@@ -1,5 +1,5 @@
 import { ACTION_CLASSES, classifyAction, type ActionClass } from "./action-class.ts";
-import { actionApprovalText, actionPolicyConfig, type ActionBudgets, type ActionPolicyConfig } from "./action-policy.ts";
+import { actionApprovalView, actionPolicyConfig, type ActionBudgets, type ActionPolicyConfig } from "./action-policy.ts";
 import type { ActionGateVerdict } from "../adapters/acp.ts";
 
 /**
@@ -66,17 +66,25 @@ export interface ActionGatePorts<T> {
  * within an approved class budget, and every unclassed call, return undefined and follow the permission mode as before (the budget
  * spends here, once per request).
  */
-export function actionGate<T>(ports: ActionGatePorts<T>, peer: string): (call: ActionCall, session: string) => ActionGateVerdict | undefined {
-  return (call, session) => {
+export function actionGate<T>(ports: ActionGatePorts<T>, peer: string): (call: ActionCall, session: string, onPremToolTitle?: string) => ActionGateVerdict | undefined {
+  return (call, session, onPremToolTitle) => {
     const classes = classifyCall(call, ports.root(peer));
     if (!classes.length) return undefined;
     const decision = ports.budgets.request(ports.budgets.bindSession(peer, session), classes);
     if (decision.kind !== "ask") return undefined; // native, or within an approved class budget
-    const title = actionApprovalText(decision.classes, commandText(call.input), ports.task(peer), {
-      publicView: task => ports.publicView(task), private: ports.isPrivate(peer), commandView: command => ports.nameable(command) ? command : undefined });
+    // Only the host's local/Pi permit callback supplies this full title. Match the exact executed tool form before bypassing public redaction.
+    const input = call.input && typeof call.input === "object" && !Array.isArray(call.input) ? call.input as Record<string, unknown> : undefined;
+    const expected = call.names.includes("bash") && typeof input?.command === "string" ? `bash: ${input.command}`
+      : call.names.includes("git") && Array.isArray(input?.args) && input.args.every(word => typeof word === "string") ? `git ${input.args.join(" ")}` : undefined;
+    const complete = expected !== undefined && expected === onPremToolTitle;
+    const view = onPremToolTitle === undefined ? actionApprovalView(decision.classes, commandText(call.input), ports.task(peer), {
+      publicView: task => ports.publicView(task), private: ports.isPrivate(peer), commandView: command => ports.nameable(command) ? command : undefined })
+      : { title: `Action approval (${decision.classes.join(", ")})\n${complete ? onPremToolTitle : "[complete command unavailable]"}`, complete };
+    const { title } = view;
+    if (!view.complete) return { title, denyOnly: true };
     const challenge = decision.challenge, limits = actionPolicyConfig(ports.policy()).budgets;
     // A budget of one is this call alone: the ordinary allow already says that, so no second choice is offered for it.
-    if (/ \[cut, \d+ chars\]$/.test(title) || !challenge || !decision.classes.some(key => limits[key] > 1)) return { title };
+    if (!challenge || !decision.classes.some(key => limits[key] > 1)) return { title };
     return { title, budget: { label: decision.classes.map(key => `${key} x${limits[key]}`).join(", "), approve: () => ports.budgets.approve(challenge) } };
   };
 }
