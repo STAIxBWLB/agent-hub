@@ -3431,7 +3431,7 @@ function jsonObject(text) {
     return;
   }
 }
-var HANDSHAKE_MS = 30000, TOOL_INPUT_CAP = 64, TOOL_CEILING_MS, RpcTimeoutError, AcpPeer;
+var ACTION_BUDGET_OPTION = "agent-hub:action-budget", HANDSHAKE_MS = 30000, TOOL_INPUT_CAP = 64, TOOL_CEILING_MS, RpcTimeoutError, AcpPeer;
 var init_acp = __esm(() => {
   init_envelope();
   init_kimi_native();
@@ -3661,6 +3661,9 @@ var init_acp = __esm(() => {
     }
     getPermissionMode() {
       return this.permissionMode;
+    }
+    get actionGated() {
+      return this.opts.actionGate !== undefined;
     }
     get pendingOwnedProcess() {
       return this.opts.requireOwnedGroup === true && this.proc !== undefined;
@@ -4048,20 +4051,30 @@ ${renderDigest(envs, false)}` }] });
       const announced = id === undefined ? undefined : this.toolTitles.get(id);
       const canonical = canonicalMcpToolName(announced, this.opts.mcpServers?.map((s) => s.name));
       const identity = this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? undefined : [typeof call.title === "string" ? call.title : undefined, canonical].find((candidate) => candidate !== undefined && this.opts.autoApprove?.(candidate));
-      if (once && identity) {
+      const rawInput = call.rawInput ?? (id === undefined ? undefined : this.toolInputs.get(id) ?? jsonObject(this.toolText.get(id)));
+      let gate;
+      try {
+        gate = rawInput === undefined || !this.sessionId ? undefined : this.opts.actionGate?.({ names: [call.title, announced, canonical].filter((name) => typeof name === "string"), ...kind ? { kind } : {}, input: rawInput }, this.sessionId);
+      } catch {
+        gate = { title: "Action approval: the always-ask check failed; approve only if you know what runs" };
+      }
+      if (once && identity && !gate) {
         this.opts.log?.(`permission auto-approved for ${this.id}: ${identity}`);
         this.emitActivity("ask", `${String(msg.id)}: ${activityText(announced ?? call.title)} (automatic)`);
         this.emitActivity("answered", `${String(msg.id)}: allow_once (automatic)`);
         return this.send({ jsonrpc: "2.0", id: msg.id, result: { outcome: { outcome: "selected", optionId: once.optionId } } });
       }
-      const raw = call.rawInput ?? (id === undefined ? undefined : this.toolInputs.get(id) ?? jsonObject(this.toolText.get(id)));
+      const raw = rawInput;
       const full = raw === undefined ? "" : typeof raw === "string" ? raw : JSON.stringify(raw);
       const cut = full.length > 600;
       const input = raw === undefined ? "" : `: ${cut ? `${full.slice(0, 600)} [cut, ${full.length} chars]` : full}`;
       const named = typeof call.title === "string" && jsonObject(call.title) === undefined ? call.title : announced;
-      const title = raw === undefined ? `${named ?? "tool call"} (payload not reported by the agent)` : `${named ?? "tool call"}${input}`;
+      const title = gate ? gate.title : raw === undefined ? `${named ?? "tool call"} (payload not reported by the agent)` : `${named ?? "tool call"}${input}`;
       this.emitActivity("ask", `${String(msg.id)}: ${activityText(title)}; answer in ahub console`);
-      const options = (msg.params?.options ?? []).filter((o) => o.kind !== "allow_always" || !this.nativePolicy?.lockedReadOnly && raw !== undefined && !cut);
+      let options = (msg.params?.options ?? []).filter((o) => o.kind !== "allow_always" || !gate && !this.nativePolicy?.lockedReadOnly && raw !== undefined && !cut);
+      const budgetOption = gate?.budget && once ? { optionId: ACTION_BUDGET_OPTION, name: `Allow ${gate.budget.label} for this session`, kind: "allow_once" } : undefined;
+      if (budgetOption)
+        options = [...options, budgetOption];
       const tool = typeof named === "string" && /^[\w.:@-]{1,80}$/.test(named) ? named : undefined;
       const turn = this.turn;
       const alive = setInterval(() => this.state === "busy" && turn === this.turn && this.touch(), Math.max(10, Math.min(30000, Math.floor(this.watchdogMs / 3))));
@@ -4070,20 +4083,31 @@ ${renderDigest(envs, false)}` }] });
       let picked;
       try {
         const cancelled = new Promise((resolve) => controller.signal.addEventListener("abort", () => resolve(undefined), { once: true }));
-        picked = await Promise.race([this.opts.onPermission?.({ peer: this.id, title, options, ...tool ? { tool } : {}, ...kind ? { kind } : {} }, controller.signal).catch(() => {
+        picked = await Promise.race([this.opts.onPermission?.({ peer: this.id, title, options, ...tool ? { tool } : {}, ...kind ? { kind } : {}, ...gate ? { classed: true } : {} }, controller.signal).catch(() => {
           return;
         }), cancelled]);
       } finally {
         clearInterval(alive);
         this.permissionWaits.delete(controller);
       }
-      const valid = !controller.signal.aborted && this.state !== "offline" && turn === this.turn && !this.stopping && options.some((o) => o.optionId === picked);
+      let valid = !controller.signal.aborted && this.state !== "offline" && turn === this.turn && !this.stopping && options.some((o) => o.optionId === picked);
+      let answer = picked;
+      if (valid && budgetOption && picked === budgetOption.optionId) {
+        let granted = false;
+        try {
+          granted = gate.budget.approve();
+        } catch {}
+        if (granted && once)
+          answer = once.optionId;
+        else
+          valid = false;
+      }
       if (turn === this.turn)
         this.emitActivity("answered", `${String(msg.id)}: ${valid ? options.find((o) => o.optionId === picked)?.kind : "cancelled"}`);
       this.send({
         jsonrpc: "2.0",
         id: msg.id,
-        result: { outcome: valid ? { outcome: "selected", optionId: picked } : { outcome: "cancelled" } }
+        result: { outcome: valid ? { outcome: "selected", optionId: answer } : { outcome: "cancelled" } }
       });
     }
     request(method, params, timeoutMs) {
