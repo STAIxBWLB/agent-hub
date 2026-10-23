@@ -37,6 +37,8 @@ export interface ConfigEditHost {
 export interface ConfigEditView {
   revisions: Record<ConfigEditFile, string>;
   instances: { id: string; fields: Record<string, unknown>; tier3: string[] }[];
+  /** The instance ids config.local.json holds now, including ones the running hub has not started with yet: the forms change those leaf by leaf. */
+  known: string[];
   blocks: { path: string; value: unknown }[];
   sdlc: { mode: string; requiredChecks: readonly string[]; pending: boolean; problem?: string };
   /** Tier 3 keys with the console command that changes them; the dashboard shows exactly this, read-only. */
@@ -67,10 +69,12 @@ export function createConfigEditor(host: ConfigEditHost) {
     const file = host.fileSdlc(), running = host.runningSdlc();
     let local: Record<string, unknown> = {};
     try { local = host.localConfig(); } catch { /* the revisions say the file is unavailable */ }
+    const fileInstances = local.instances && typeof local.instances === "object" && !Array.isArray(local.instances) ? Object.keys(local.instances) : [];
     const isSet = (path: readonly string[]): boolean => { let node: unknown = local; for (const part of path) { if (!node || typeof node !== "object" || !Object.hasOwn(node, part)) return false; node = (node as Record<string, unknown>)[part]; } return node !== undefined; };
     const declared = host.declared();
     return {
       revisions: viewRevisions(host.cwd),
+      known: fileInstances,
       instances: Object.entries(declared).map(([id, fields]) => ({ id, fields: Object.fromEntries(TIER2_INSTANCE_FIELDS.filter(field => fields[field] !== undefined).map(field => [field, fields[field]])),
         tier3: TIER3_INSTANCE_FIELDS.filter(field => fields[field] !== undefined) as string[] })),
       blocks: BLOCKS.map(path => ({ path: path.join("."), value: host.effective(path) ?? null })),
@@ -105,6 +109,8 @@ export function createConfigEditor(host: ConfigEditHost) {
     if (!plan.ok) return plan;
     // The plan reads the file itself: if it finds a tier 3 key the request alone did not show, a dashboard still learns nothing.
     if (plan.tier === 3 && authority !== "terminal") return { ok: false, error: `${plan.tier3Keys[0]} chooses what the hub runs or where secrets go: it is never editable from the dashboard; change it in the console` };
+    // The request names some tier 3 keys and the file adds others (an instance it holds a home for): one write changes exactly one, and each is typed.
+    if (plan.tier3Keys.length > 1) return { ok: false, error: "change one executable or secret-locating key at a time: each needs its own typed confirmation" };
     return { ok: true, plan };
   }
   function diffText(plan: Extract<ConfigEditPlan, { ok: true }>): string[] {

@@ -45,7 +45,7 @@ function fixture(local: unknown = {}, hold?: string, override: Partial<ConfigEdi
       } catch (error) { return (error as Error).message; }
     },
     declared: () => ({}),
-    localConfig: () => ({}),
+    localConfig: () => { try { return JSON.parse(readFileSync(join(dir, ".agenthub/config.local.json"), "utf8")); } catch { return {}; } },
     ...override,
   };
   const editor = createConfigEditor(host);
@@ -263,4 +263,50 @@ test("#689 a view over a symlinked config.local.json reports the revision as una
   const view = f.editor.view();
   expect(view.revisions["config.local.json"]).toBe("unavailable");
   expect(view.revisions["sdlc.toml"]).toBe("absent");
+});
+
+test("#689 one tier 3 key per write counts the keys the file adds to the request, not only the ones the request names", async () => {
+  const a = join(tmpdir(), "ahub-config-host-multi-a"), b = join(tmpdir(), "ahub-config-host-multi-b");
+  for (const dir of [a, b]) { mkdirSync(dir, { recursive: true }); cleanup.push(() => rmSync(dir, { recursive: true, force: true })); }
+  const f = fixture({ instances: { "jcode-a": { kind: "jcode", jcode_home: a }, "jcode-b": { kind: "jcode", jcode_home: b, model: "m" } } });
+  const before = f.read("config.local.json");
+  for (const set of [
+    [{ path: ["instances", "jcode-a"], value: null }, { path: ["instances", "jcode-b"], value: null }],
+    [{ path: ["instances", "jcode-a"], value: null }, { path: ["instances", "jcode-b", "model"], value: "other" }],
+    [{ path: ["instances", "jcode-b", "model"], value: "x" }, { path: ["instances", "jcode-a"], value: null }],
+  ]) {
+    for (const confirm of ["instances.jcode-a", "instances.jcode-b", "instances.jcode-b.model"]) {
+      const preview = f.editor.preview(f.request(set), "terminal");
+      const applied = await f.editor.apply(f.request(set), "terminal", confirm, "both");
+      for (const result of [preview, applied]) { expect(result.ok, JSON.stringify(set)).toBe(false); expect(String(result.error)).toContain("one executable or secret-locating key at a time"); }
+    }
+  }
+  expect(f.read("config.local.json")).toBe(before);
+  expect(f.events).toEqual([]);
+  // One at a time still works, and each needs its own typed key.
+  const one = await f.editor.apply(f.request([{ path: ["instances", "jcode-a"], value: null }]), "terminal", "instances.jcode-a", "first");
+  expect(one.ok).toBe(true);
+  expect(Object.keys(JSON.parse(f.read("config.local.json")!).instances)).toEqual(["jcode-b"]);
+  expect((await f.editor.apply(f.request([{ path: ["instances", "jcode-b"], value: null }]), "terminal", "instances.jcode-a", "wrong key")).ok).toBe(false);
+  expect(Object.keys(JSON.parse(f.read("config.local.json")!).instances)).toEqual(["jcode-b"]);
+});
+
+test("#689 the typed confirmation names the key the plan will change, never a different one", async () => {
+  const home = join(tmpdir(), "ahub-config-host-conf"); mkdirSync(home, { recursive: true }); cleanup.push(() => rmSync(home, { recursive: true, force: true }));
+  const f = fixture({ instances: { "jcode-a": { kind: "jcode", jcode_home: home } } });
+  const preview = f.editor.preview(f.request([{ path: ["instances", "jcode-a"], value: null }]), "terminal");
+  expect(preview).toMatchObject({ ok: true, tier: 3, confirm: "instances.jcode-a" });
+  expect((await f.editor.apply(f.request([{ path: ["instances", "jcode-a"], value: null }]), "terminal", "instances.jcode-b", "x")).ok).toBe(false);
+});
+
+test("#689 the form's known-instance list comes from the file, so an instance added and still restart-pending is changed leaf by leaf", () => {
+  const f = fixture({ instances: { "codex-review": { kind: "codex", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } } });
+  // The running hub declares nothing (the default fixture's declared() is empty): the file is what an edit changes.
+  const view = f.editor.view();
+  expect(view.known).toEqual(["codex-review"]);
+  expect(view.instances).toEqual([]);
+  const none = fixture({});
+  expect(none.editor.view().known).toEqual([]);
+  const bad = fixture({}, undefined, { localConfig: () => { throw new Error("unreadable"); } });
+  expect(bad.editor.view().known).toEqual([]);
 });

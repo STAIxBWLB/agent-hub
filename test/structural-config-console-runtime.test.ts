@@ -5,13 +5,13 @@ const revision = "b".repeat(64);
 const tick = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 type Reply = Record<string, unknown>;
 /** The real console runtime and reducer; only the hub's WS client is a recorder. */
-function fixture(replies: { preview?: (msg: any) => Reply | Promise<Reply>; apply?: (msg: any) => Reply; pendingRestart?: { key: string; reason: string }[]; panelRows?: boolean } = {}) {
+function fixture(replies: { preview?: (msg: any) => Reply | Promise<Reply>; apply?: (msg: any) => Reply; pendingRestart?: { key: string; reason: string }[]; panelRows?: boolean; known?: string[] } = {}) {
   let data = (_text: string) => {};
   const output: string[] = [], requests: any[] = [], commands: string[][] = [];
   const terminal: ConsoleTerminal = { columns: 140, rows: 30, isTTY: true, write: text => { output.push(text); }, raw: () => {}, onData: listener => { data = listener; return () => {}; }, onResize: () => () => {}, onSignal: () => () => {} };
   const client = { onPush: (_msg: any) => {}, onClose: (_code: number, _reason: string) => {}, send: (_msg: any) => {}, close: () => {}, request: async (msg: any): Promise<Reply> => {
     requests.push(msg);
-    if (msg.t === "settings_get") return { ok: true, rows: [], pendingRestart: replies.pendingRestart ?? [], configEdit: { revisions: { "config.local.json": revision, "sdlc.toml": "absent" } } };
+    if (msg.t === "settings_get") return { ok: true, rows: [], pendingRestart: replies.pendingRestart ?? [], configEdit: { revisions: { "config.local.json": revision, "sdlc.toml": "absent" }, known: replies.known ?? [] } };
     if (msg.t === "config_edit_preview") return replies.preview ? await replies.preview(msg) : { ok: true, lines: ["review.pool: (unset) -> [\"codex\"] (applies at next use)"] };
     if (msg.t === "config_edit_apply") return replies.apply ? replies.apply(msg) : { ok: true, text: "config.local.json written: review.pool", restartPending: [] };
     return { ok: true, status: { peers: {}, pendingRestart: replies.pendingRestart ?? [] }, budget: {}, text: "[]", deliveries: [] };
@@ -158,5 +158,14 @@ test("#689 an older preview reply never lands on a newer form: the second form's
     await f.press("why"); await f.enter(); await f.press("y");
     expect(writes(f)).toHaveLength(1);
     expect(writes(f)[0].edit.set[0].path).toEqual(["snapshots", "keep"]);
+  } finally { await f.stop(); }
+});
+
+test("#689 an instance the file holds but the running hub has not started with is changed as a leaf, never replaced whole", async () => {
+  const f = fixture({ known: ["codex-pending"] });
+  try {
+    await f.press("6"); await f.press("c"); await f.press("1");
+    for (const answer of ["codex-pending", "", "verifier", "", "", "", "", ""]) { await f.press(answer); await f.enter(); }
+    expect(f.requests.find(msg => msg.t === "config_edit_preview")).toEqual({ t: "config_edit_preview", edit: { file: "config.local.json", revision, set: [{ path: ["instances", "codex-pending", "roles"], value: ["verifier"] }] } });
   } finally { await f.stop(); }
 });

@@ -342,3 +342,26 @@ test("#689 a symlinked config.local.json never takes the Settings view down: the
   const reply = await f.client.request({ t: "config_edit_apply", edit: { file: "config.local.json", revision: "unavailable", set: [{ path: ["approvals", "timeout_s"], value: 5 }] }, reason: "x" });
   expect(reply.ok).toBe(false);
 }, 20_000);
+
+test("#689 a console write cannot delete two Jcode homes with one typed key, from the real daemon", async () => {
+  const a = realPath(mkdtempSync(join(tmpdir(), "ahub-structural-ma-"))), b = realPath(mkdtempSync(join(tmpdir(), "ahub-structural-mb-"))), base = realPath(mkdtempSync(join(tmpdir(), "ahub-structural-mc-")));
+  cleanup.push(() => rmSync(a, { recursive: true, force: true }), () => rmSync(b, { recursive: true, force: true }), () => rmSync(base, { recursive: true, force: true }));
+  const f = await fixture({ local: { jcode_home: base, instances: { "jcode-a": { kind: "jcode", jcode_home: a }, "jcode-b": { kind: "jcode", jcode_home: b } } } });
+  const before = f.read("config.local.json");
+  const both = [{ path: ["instances", "jcode-a"], value: null }, { path: ["instances", "jcode-b"], value: null }];
+  const reply = await f.client.request({ t: "config_edit_apply", edit: await f.edit(both), reason: "both", confirm: "instances.jcode-a" });
+  expect(reply.ok).toBe(false); expect(String(reply.error)).toContain("one executable or secret-locating key at a time");
+  expect((await f.client.request({ t: "config_edit_preview", edit: await f.edit(both) })).ok).toBe(false);
+  expect(f.read("config.local.json")).toBe(before);
+  expect(f.events()).toEqual([]);
+}, 20_000);
+
+test("#689 after an instance is added, the hub's own view lists it as known before any restart, so the next edit of it is a leaf", async () => {
+  const f = await fixture({ local: { research: { enabled: false } } });
+  expect((await f.client.request({ t: "settings_get" })).configEdit.known).toEqual([]);
+  expect((await f.client.request({ t: "config_edit_apply", edit: await f.edit([{ path: ["instances", "codex-review"], value: reviewer }]), reason: "add" })).ok).toBe(true);
+  const view = await f.client.request({ t: "settings_get" });
+  expect(view.configEdit.known).toEqual(["codex-review"]);
+  const snapshot = await (await (async () => { const url = new URL((await f.client.request({ t: "ui", settings: true })).url); const open = await fetch(`${url.origin}/session`, { method: "POST", headers: { origin: url.origin, "content-type": "application/json" }, body: JSON.stringify({ ticket: url.hash.slice(1) }) }); const cookie = open.headers.get("set-cookie")!.split(";")[0]!; return fetch(`${url.origin}/snapshot`, { method: "POST", headers: { origin: url.origin, "content-type": "application/json", cookie }, body: JSON.stringify({ after: 0 }) }); })()).json() as { settings?: { configEdit?: { known?: string[] } } };
+  expect(snapshot.settings?.configEdit?.known).toEqual(["codex-review"]);
+}, 20_000);

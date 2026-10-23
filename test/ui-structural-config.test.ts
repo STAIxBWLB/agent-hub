@@ -24,6 +24,7 @@ const edit = { revisions: { "config.local.json": "a".repeat(64), "sdlc.toml": "a
   blocks: [{ path: "review.pool", value: ["claude", "codex"] }, { path: "context.gate", value: 0.8 }],
   sdlc: { mode: "advise", requiredChecks: ["gate"], pending: false },
   tier3: [{ key: "kimi_cmd", set: true, command: "ahub settings edit config.local.json set kimi_cmd <json>" }, { key: "instances.jcode-two.model", set: true, command: "ahub settings edit config.local.json set instances.jcode-two.model <json>" }],
+  known: ["codex-review", "jcode-two"],
   backups: [{ name: "config.local.json.1700000000000.abcdef12.bak", file: "config.local.json", at: 1_700_000_000_000, bytes: 321 }],
   fields: { instance: ["kind", "roles", "start_mode", "review_mode", "readOnly", "worktree", "permission_mode"], tier3Instance: ["jcode_home", "provider", "model", "provider_profile"] } };
 function page(settings: Record<string, unknown>, session = true) {
@@ -206,4 +207,14 @@ test("#689 clearing a field of an existing instance is a removal of that leaf wi
   view.replies.push({ ok: true, lines: ["x"], tier: 2 });
   await form.all().find(node => node.textContent === "Preview change")!.listeners.click!();
   expect(view.sent[0]).toMatchObject({ edit: { set: [{ path: ["instances", "codex-review", "start_mode"], value: null }] } });
+});
+
+test("#689 an instance that is in the file but not yet declared by the running hub is changed as a leaf too", async () => {
+  const view = page(withEdit({ known: ["codex-review", "jcode-two", "codex-pending"] }));
+  const form = view.get("settings").all().find(node => node.className === "structure-add")!;
+  const field = (name: string) => form.all().find(node => node.id === "structure-" + name)!;
+  field("id").value = "codex-pending"; field("roles").value = "verifier";
+  view.replies.push({ ok: true, lines: ["x"], tier: 2 });
+  await form.all().find(node => node.textContent === "Preview change")!.listeners.click!();
+  expect(view.sent[0]).toMatchObject({ edit: { set: [{ path: ["instances", "codex-pending", "roles"], value: ["verifier"] }] } });
 });

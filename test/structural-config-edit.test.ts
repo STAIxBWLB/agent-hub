@@ -270,3 +270,13 @@ test("#689 sdlc.toml keeps its newline convention: a CRLF file changes only the 
   const noFinal = ok(project({}, 'mode = "advise"').plan("sdlc.toml", [{ path: ["mode"], value: "off" }]));
   expect(noFinal.next).toBe('mode = "off"\n');
 });
+
+test("#689 a tier 3 value gets no hash in the audit record, so a low-entropy model name cannot be recovered from the event log", () => {
+  const home = join(tmpdir(), "ahub-config-edit-hash-home"); mkdirSync(home, { recursive: true }); cleanup.push(() => rmSync(home, { recursive: true, force: true }));
+  const p = project({ instances: { "jcode-two": { kind: "jcode", jcode_home: home, model: "gpt-5" } } });
+  const written = writeConfigEdit(p.dir, p.state, ok(p.plan("config.local.json", [{ path: ["instances", "jcode-two", "model"], value: "gpt-6" }])));
+  expect(written.paths).toEqual([{ path: "instances.jcode-two.model", before: "(set)", after: "(set)" }]);
+  for (const guess of ["gpt-5", "gpt-6"]) expect(JSON.stringify(written)).not.toContain(valueHash(guess)!);
+  const tier2 = writeConfigEdit(p.dir, p.state, ok(p.plan("config.local.json", [{ path: ["approvals", "timeout_s"], value: 90 }])));
+  expect(tier2.paths[0]).toMatchObject({ path: "approvals.timeout_s", after: valueHash(90) });
+});

@@ -944,7 +944,7 @@ function renderStructure(target, edit, raise) {
       const inputs = {}; for (const [name] of STRUCTURE_FIELDS) inputs[name] = structureField(form, name, name + (name === 'roles' ? ' (comma list)' : name === 'readOnly' ? ' (true or false)' : ''), '');
       const convert = (name, text) => name === 'roles' ? structureList(text) : name === 'readOnly' ? text === 'true' : text;
       fields.set = () => {
-        const name = id.value.trim(), known = (edit.instances || []).some((item) => item.id === name), typed = [];
+        const name = id.value.trim(), known = (edit.known || []).includes(name), typed = [];
         for (const [field] of STRUCTURE_FIELDS) { const text = inputs[field].value.trim(); if (text) typed.push([field, text]); }
         if (!name) { structureState.error = 'An instance needs an id and a kind.'; return null; }
         // readOnly is exactly true or false: anything else is the person's typo, never a silent false.

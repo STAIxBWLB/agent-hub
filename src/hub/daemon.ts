@@ -5148,9 +5148,9 @@ export async function startDaemon(opts: DaemonOptions) {
     pending: () => pendingRestart,
     effective: path => valueAt(config, path),
     runningSdlc: () => ({ mode: lifecycleConfig.mode, requiredChecks: lifecycleConfig.requiredChecks }),
-    // Status and the settings view poll this: read sdlc.toml again only when its size or mtime changed (ponytail: a stat per poll; a watcher if that ever shows).
+    // Status and the settings view poll this: read sdlc.toml again only when its stamp changed. ponytail: the stamp is mtime, ctime, inode and size, so an in-place rewrite of the same size inside one filesystem timestamp tick is missed until the next change; it feeds display only (a status line), never an authority. A watcher is the upgrade if a poll ever shows.
     fileSdlc: () => {
-      const stamp = (() => { try { const info = statSync(join(opts.cwd, ".agenthub", "sdlc.toml")); return `${info.mtimeMs}:${info.size}`; } catch { return "-"; } })();
+      const stamp = (() => { try { const info = statSync(join(opts.cwd, ".agenthub", "sdlc.toml")); return `${info.mtimeMs}:${info.ctimeMs}:${info.ino}:${info.size}`; } catch { return "-"; } })();
       if (sdlcFileCache?.stamp !== stamp) {
         let value: { mode: string; requiredChecks: readonly string[] } | string;
         sdlcFileReads++;
@@ -6123,7 +6123,7 @@ export async function startDaemon(opts: DaemonOptions) {
         catch (error) { return void reply({ ok: false, error: (error as Error).message }); }
       case "settings_get":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
-        return void reply({ ok: true, ...settingsView(), roster: rosterView(), configEdit: (() => { const view = configEditor!.view(); return { revisions: view.revisions, instances: view.instances.map(item => ({ id: item.id })) }; })() });
+        return void reply({ ok: true, ...settingsView(), roster: rosterView(), configEdit: (() => { const view = configEditor!.view(); return { revisions: view.revisions, known: view.known }; })() });
       case "settings_reload":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person command" });
         return void reloadConfig("terminal", undefined, msg.confirm).then(reply, () => reply({ ok: false, error: "configuration reload could not be confirmed; inspect hub.log" }));

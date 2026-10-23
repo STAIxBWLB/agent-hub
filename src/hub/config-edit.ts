@@ -271,7 +271,9 @@ export function writeConfigEdit(cwd: string, stateDir: string, plan: Extract<Con
     try { mode = statSync(path).mode & 0o777; } catch { /* a new file is the owner's alone */ }
     if (plan.next === null) rmSync(path, { force: true }); else atomicWrite(path, plan.next, mode);
     return { ...(backup ? { backup } : {}), fileBefore: fileRevision(plan.before), fileAfter: fileRevision(plan.next),
-      paths: plan.diff.map(row => ({ path: row.path, before: valueHash(row.before), after: valueHash(row.after) })) };
+      // A tier 3 value (a model name, a provider, a home) is low-entropy and dictionary-recoverable from an unsalted hash, so it gets none:
+      // the event shows that the key changed and the file revisions bind the change. A tier 2 value keeps its short hash.
+      paths: plan.diff.map(row => row.tier === 3 ? { path: row.path, before: row.before === undefined ? null : "(set)", after: row.after === undefined ? null : "(set)" } : { path: row.path, before: valueHash(row.before), after: valueHash(row.after) }) };
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code && !/\.agenthub|git/.test((error as Error).message)) throw new Error(`.agenthub/${file} could not be written (${code}); nothing was changed`);
