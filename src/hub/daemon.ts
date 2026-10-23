@@ -107,6 +107,7 @@ import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
 import { startDashboard, dashboardView, type DashboardSession } from "./ui.ts";
+import { codeGroup } from "./task-code-group.ts";
 import { DAEMON_FEATURES, PROTOCOL, stateDirFor } from "./control-client.ts";
 import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
@@ -4463,7 +4464,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const text = (v: unknown, max = 200) => typeof v === "string" && v.trim() && v.length <= max ? v.trim() : undefined;
       const tier = q.tier === "short" || q.tier === "long" || q.tier === "goals" ? q.tier : "long";
       const kind = typeof q.kind === "string" && (["decision", "finding", "contract", "fail"] as string[]).includes(q.kind) ? q.kind as MemoryView["kind"] : undefined;
-      const peer = text(q.peer, 32), machine = text(q.machine, 32), search = text(q.q), node = text(q.node), since = [text(q.since, 40)].find((v) => v !== undefined && !Number.isNaN(Date.parse(v))); // an unreadable since filters nothing
+      const peer = text(q.peer, 32), machine = text(q.machine, 32), search = text(q.q), node = text(q.node, typeof q.node === "string" && q.node.startsWith("symbol:") ? 512 : 200), since = [text(q.since, 40)].find((v) => v !== undefined && !Number.isNaN(Date.parse(v))); // an unreadable since filters nothing
       const hops = q.hops === 2 ? 2 : 1;
       const all = memoryStore.list({ project: memoryProject, limit: Number.MAX_SAFE_INTEGER });
       const goals = memoryStore.goals(memoryProject);
@@ -4557,7 +4558,7 @@ export async function startDaemon(opts: DaemonOptions) {
       tasks: boardTasks.map((task) => {
         const view = tasks.publicView(task);
         // Refs and history can themselves quote private text. The dashboard needs neither.
-        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, ...(view.codeSymbols ? { codeSymbols: view.codeSymbols } : {}), ...(view.cancelled ? { cancelled: view.cancelled } : {}), ...(view.external ? { external: view.external } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
+        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, ...(view.codeSymbols ? { codeSymbols: view.codeSymbols } : {}), ...(() => { const group = codeGroup(task, view.codeSymbols, task.plan?.symbols, tasks.publicMetadataText, tasks.isPii(task)); return group ? { codeGroup: group } : {}; })(), ...(view.cancelled ? { cancelled: view.cancelled } : {}), ...(view.external ? { external: view.external } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}) };
       }),
       links: links.filter(link => link.tasks.every(id => { const task = board.get(id); return task && !tasks.isPii(task); })),
       budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[accountOf(id)] ?? { windows: [] }), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),

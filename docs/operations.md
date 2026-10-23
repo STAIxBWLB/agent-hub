@@ -1045,6 +1045,8 @@ brief's own (a pair of qualified names must be equal, otherwise the last segment
 an incomplete observation says an untouched symbol may have changed; a private task shows nothing. Names are quoted like every agent-written string, at most 40 are
 listed and the rest are counted. The block is advice: deleted definitions are not reported, so it never proves a plan was or was not followed.
 
+The dashboard's task sheet has the same block as a "Code" group (#684 phase 2c): the changed symbols as buttons marked `matching` or `unplanned` against the plan, the plan names nothing changed under as `untouched`, and the same advisory line (deleted symbols are not reported, an incomplete observation may hide a changed one). The hub classifies them (`codeGroup` on each task of the UI snapshot, from the same public observation the console reads), so the page never matches names itself. A symbol opens the Memory tab with its canonical node (`symbol:<name>@<path>`) as the graph start; the list is capped at 40 with the count of what is left out. Without code facts the group reads `unknown (no code facts)`, and a private task has no group at all, so the sheet shows nothing for it.
+
 Task detail also shows an `overlaps` block (#379), using the hub's read-only
 `symbolOverlaps` projection of its existing open-task/other-owner overlap selection.
 Each row names the other task ID and screened shared paths. A row says "same file,

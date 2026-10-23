@@ -325,6 +325,12 @@ main>.stack{margin-top:var(--space-6)}
 .plan-block form,.plan-block .content{padding:0}
 /* A group is a plain heading and its lines: the global section{} box rule must not wrap each one in a card. */
 .detail-group{margin:var(--space-4) 0;border:0;background:none;border-radius:0;overflow:visible}
+.code-symbols{list-style:none;margin:0;padding:0;display:grid;gap:var(--space-1)}
+.code-symbol{font-family:var(--font-mono);font-size:var(--text-sm);overflow-wrap:anywhere;text-align:left;min-height:44px}
+button.code-symbol{background:var(--panel-soft);color:var(--ink);border:1px solid var(--line);border-radius:var(--radius-control);padding:var(--space-1) var(--space-2)}
+button.code-symbol:hover{background:var(--hover)}
+button.code-symbol.unplanned{color:var(--amber);background:var(--amber-soft);border-color:var(--amber)}
+span.code-symbol.untouched{color:var(--muted)}
 .detail-heading{font-size:var(--text-xs);letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin:0 0 var(--space-2);border-bottom:1px solid var(--line);padding-bottom:var(--space-1)}
 #task-detail-dialog::backdrop{background:var(--scrim)}
 .dialog-head{display:flex;justify-content:space-between;align-items:center;gap:var(--space-3);margin-bottom:var(--space-4)}
@@ -1094,6 +1100,33 @@ function dropTarget(node, accepted, payload) {
     void action({...payload, id:card.id});
   });
 }
+// #684 2c: the sheet's Code group. The hub classified the symbols (`task.codeGroup`, absent for a private task, so nothing renders for one);
+// the page only draws them. A symbol is a button that opens the Memory tab with its canonical node (`symbol:<name>@<path>`) as the graph start.
+function codeGroupSection(task) {
+  const group = task.codeGroup;
+  if (!group) return null;
+  const section = el('section', undefined, 'detail-group code-group'); section.append(el('h4', 'Code', 'detail-heading'));
+  if (group.state !== 'known') { section.append(el('p', 'unknown (no code facts)', 'meta')); return section; }
+  const list = el('ul', undefined, 'code-symbols');
+  for (const symbol of group.symbols || []) {
+    const item = el('li'), open = el('button', symbol.name, 'code-symbol ' + symbol.mark);
+    open.type = 'button'; open.dataset.symbolNode = symbol.id; open.title = symbol.path + ' (' + symbol.mark + '); open in Memory';
+    open.setAttribute('aria-label', symbol.name + ' in ' + symbol.path + ', ' + symbol.mark + '; open in Memory');
+    open.addEventListener('click', () => openMemoryAt(symbol.id));
+    item.append(open, el('span', ' ' + symbol.mark + ' / ' + symbol.path, 'meta'));
+    list.append(item);
+  }
+  for (const name of group.untouched || []) { const item = el('li'); item.append(el('span', name, 'code-symbol untouched'), el('span', ' untouched (planned, nothing changed under it)', 'meta')); list.append(item); }
+  if (list.children.length) section.append(list); else section.append(el('p', 'none observed', 'meta'));
+  const note = [(group.symbols || []).filter(s => s.mark === 'matching').length + ' matching', (group.symbols || []).filter(s => s.mark === 'unplanned').length + ' unplanned', (group.untouched || []).length + ' untouched'].join(', ') + (group.head ? ' at ' + group.head : '');
+  section.append(el('p', note + (group.more ? '; ' + group.more + ' more not shown' : '') + (group.complete ? '' : '; incomplete: an untouched symbol may have changed') + '; advisory: deleted symbols are not reported', 'meta'));
+  return section;
+}
+function openMemoryAt(node) {
+  if (typeof node !== 'string' || !node.startsWith('symbol:')) return;
+  memoryQuery.node = node; memoryQuery.q = ''; $('memory-q').value = '';
+  closeTaskDetail(); switchView('memory'); rerenderMemory();
+}
 function taskDetail(task, card, stage, ids, overdue) {
   const row = el('article', undefined, 'task-detail'), head = el('div', undefined, 'row-head');
   row.setAttribute('aria-label', '#' + task.id + ' ' + task.title + ', ' + task.state.replaceAll('_', ' ') + ', owner ' + (task.owner || 'unassigned') + ', priority P' + card.priority);
@@ -1124,6 +1157,7 @@ function taskDetail(task, card, stage, ids, overdue) {
   if(task.external?.provider==='github'){const source=el('a','GitHub #'+task.external.issue);source.href=task.external.url;source.rel='noreferrer';source.target='_blank';links.append(source);}
   if(task.pinned)links.append(el('p','Pinned','meta'));
   if (links.children.length > 1) row.append(links);
+  const code = codeGroupSection(task); if (code) row.append(code);
   const controls = el('div', undefined, 'actions');
   if (card.pull && boardViewState?.snapshot.boardCapabilities?.backlog===true) controls.append(boardButton('Pull into To Do', {action:'backlog_pull',id:task.id}));
   if (card.pull && boardViewState?.snapshot.planningCapabilities?.wipPull===true) controls.append(boardButton('Pull within WIP', {action:'planner_pull',id:task.id,revision:task.planningRevision ?? 0,reason:'person requested a WIP-constrained pull'}));
