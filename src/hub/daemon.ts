@@ -583,6 +583,9 @@ export function resolutionRefusal(error: unknown): string {
   return RESOLUTION_CAUSES.find(([pattern]) => pattern.test(text))?.[1] ?? "resolution refused: inspect ahub queue show for the delivery's state";
 }
 
+/** No remote set and a stop are not failures: agent-mem words the missing remote "no sync remote" (v1) or "no generation sync remote configured". */
+export const quietSyncError = (error: string | undefined): boolean => /^(no (generation )?sync remote|stopped)/.test(error ?? "");
+
 export async function startDaemon(opts: DaemonOptions) {
   const projectId = opts.projectId ?? randomUUID();
   const instanceId = opts.instanceId ?? randomUUID();
@@ -1169,7 +1172,7 @@ export async function startDaemon(opts: DaemonOptions) {
       try {
         checkMemory();
         const r = await (opts.memorySync ?? syncMemory)(memoryStore!, { signal: syncStop.signal });
-        if (!r.ok && !/^(no sync remote|stopped)/.test(r.error ?? "")) log(`hub memory sync failed: ${r.error}`);
+        if (!r.ok && !quietSyncError(r.error)) log(`hub memory sync failed: ${r.error}`);
         else if (r.warning) log(`hub memory sync: ${r.warning}`);
       } catch { /* A stale binding disables native memory, never the bus. */ }
       finally { syncRun = undefined; }

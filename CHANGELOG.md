@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- The hub no longer logs `hub memory sync failed: no generation sync remote configured` every sync interval: agent-mem's generation sync words a missing remote this way, and no remote is not a failure (#401).
+
 ## 0.15.0
 
 - `ahub backlog list` prints a table, one line per card by rank (RANK, ID, PRI, RESERVED, AFTER, CLASS, AGE, TITLE, with titles cut to the terminal width), and a count by reserved owner; `--full` and piped output keep whole titles, `--json` prints the raw listing (#399).
