@@ -116,7 +116,7 @@ test("planner pull honors original person backlog reservations and pull-only off
   class PullOnlyPeer extends PullPeer {readonly pullOnly=true;deliveries=0;async deliver(_envs:Envelope[]){this.deliveries++;}}
   const kimi=new PullOnlyPeer("kimi");bus.add(kimi);await kimi.start();
   const task=await tasks.propose(USER,{title:"named pull-only work",class:"implement",backlog:true,owner:"kimi"});
-  expect(await tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"named peer has room"})).toMatchObject({owner:"kimi",reserved:"kimi",state:"proposed"});
+  await expect(tasks.pullPlanned("claude",{id:task.id,revision:0,reason:"named peer has room"})).resolves.toMatchObject({owner:"kimi",reserved:"kimi",state:"proposed"});
   await tasks.releaseReady();expect(board.get(task.id)?.owner).toBe("kimi");expect(bus.queued("kimi")).toBeGreaterThan(0);expect(kimi.deliveries).toBe(0);
 });
 

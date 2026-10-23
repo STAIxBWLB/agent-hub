@@ -423,7 +423,10 @@ export class Board {
       const current = this.get(id);
       if (!current || current.history.length !== expectedFlowRevision) throw new Error("task flow revision changed");
       const pulled = this.pullPlanned(id, by, owner, revision, note, withheld);
-      return this.update(id, by, "assigned", { owner, reviewer }, assignmentNote, extra, pulled.history.length);
+      const assigned = this.update(id, by, "assigned", { owner, reviewer }, assignmentNote, extra, pulled.history.length);
+      // Both deferred events describe the committed handoff, including the callback payload.
+      for (const change of this.pendingChanges ?? []) if (change.task.id === id) change.task = assigned;
+      return assigned;
     });
   }
 

@@ -136,12 +136,37 @@ test("reserved pull and assignment roll back together when the owner write fails
 });
 
 test("reserved pull observers read the assigned owner only after the atomic handoff commits", async () => {
-  const f = await rig(), task = await reserved(f), seen: (string | null | undefined)[] = [];
+  const f = await rig(), task = await reserved(f), seen: (string | null | undefined)[] = [], snapshots: (string | null)[] = [];
   const prior = f.board.onChange;
   f.board.onChange = (row, entry) => {
     prior?.(row, entry);
-    if (row.id === task.id && ["backlog pulled", "assigned"].includes(entry.event)) seen.push(f.board.get(task.id)?.owner);
+    if (row.id === task.id && ["backlog pulled", "assigned"].includes(entry.event)) { seen.push(f.board.get(task.id)?.owner); snapshots.push(row.owner); }
   };
   await pull(f, task);
   expect(seen).toEqual(["codex", "codex"]);
+  expect(snapshots).toEqual(["codex", "codex"]);
+});
+
+for (const unavailable of ["WIP full", "excluded"] as const) test(`reserved backlog explain matches the pull refusal (${unavailable})`, async () => {
+  const f = await rig(); let task = await reserved(f, "claude");
+  if (unavailable === "WIP full") f.capacity.codex = 0;
+  else task = f.board.update(task.id, "codex", "declined", {}, "cannot take this work");
+  const before = f.board.get(task.id), trace = f.tasks.explain(task.id);
+  expect(trace.some(line => line.startsWith("owner: none available"))).toBe(true);
+  expect(trace).not.toContain("owner: local");
+  await expect(pull(f, task)).rejects.toThrow();
+  expect(f.board.get(task.id)).toEqual(before);
+});
+
+for (const by of [USER, "claude"]) test(`fresh reserved offer returns untouched with its reservation retained (${by})`, async () => {
+  const f = await rig(), task = await reserved(f), offered = await pull(f, task), before = f.board.get(task.id);
+  await expect(f.tasks.returnUntouchedToBacklog("local", { id: task.id, revision: offered.planningRevision!, reason: "not authorized" })).rejects.toThrow("planning");
+  expect(f.board.get(task.id)).toEqual(before);
+  const returned = await f.tasks.returnUntouchedToBacklog(by, { id: task.id, revision: offered.planningRevision!, reason: "defer untouched work" });
+  expect(returned).toMatchObject({ state: "backlog", owner: null, reviewer: null, reserved: "codex" });
+  expect(offers(f, task, "codex")).toEqual([]); expect(f.tasks.wip("codex")).toBe(0);
+  const repulled = await pull(f, returned), saved = f.board.get(task.id)!;
+  expect(repulled).toMatchObject({ state: "proposed", owner: "codex", reserved: "codex" });
+  expect(saved.offer?.envelopeId).not.toBe(before?.offer?.envelopeId);
+  expect(offers(f, task, "codex")).toHaveLength(1);
 });

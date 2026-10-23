@@ -893,11 +893,11 @@ export class Tasks {
     }
     return parts.length ? `no peer can take the planner pull: ${parts.join("; ")}` : "no peer has eligible planner WIP capacity";
   }
-  private plannerAssignment(task: Task, reservedOnly = false): Assignment {
+  private plannerAssignment(task: Task, reservedOnly = false, routing: Routing = this.d.routing()): Assignment {
     const states = this.states();
     const full = this.plannerFull(task);
     // Preview the To Do transition without routing or offering the persisted backlog row.
-    return assign({ ...task, state: "proposed" }, states, this.d.routing(), { exclude: this.excluded(task), excludeOwners: full, ...(reservedOnly && task.reserved && !this.excluded(task).includes(task.reserved) ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class, task) });
+    return assign({ ...task, state: "proposed" }, states, routing, { exclude: this.excluded(task), excludeOwners: full, ...(reservedOnly && task.reserved ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class, task) });
   }
 
   async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {
@@ -928,7 +928,6 @@ export class Tasks {
         const refusal = task.reserved ? `reserved peer ${task.reserved} cannot take the planner pull: ${assignment.refusals?.find(row => row.role === "owner" && row.peer === task.reserved)?.reason ?? "not eligible"}; ${this.plannerRefusal(task)}` : this.plannerRefusal(task);
         throw new PreEffectToolRefusal(`${this.hasPersonReservation(task) ? "a person's reservation is retained; " : ""}${refusal}`);
       }
-      if (this.hasPersonReservation(task) && assignment.owner !== task.reserved) throw new PreEffectToolRefusal("a person's reservation is retained");
       return { task, owner: assignment.owner };
     };
     const initial = validate(), withheld = await this.withholds("note", input.reason, initial.task);
@@ -1869,7 +1868,9 @@ export class Tasks {
       const task = this.d.board.get(target);
       if (!task) throw new Error(`no task #${target}`);
       if (isClosedTaskState(task.state)) return [...workflow, `task ${this.publicTitle(task)} (${task.state}): closed; not routed`];
-      const a = assign(task, this.states(), routing, { exclude: this.excluded(task), excludeOwners: this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [], waitsFor: this.waitsFor(task), ...this.weights(task.class, task) });
+      const planned = task.state === "backlog" && !!task.reserved || this.plannerPullRecord(task)?.pull === true;
+      const a = planned ? this.plannerAssignment(task, true, routing)
+        : assign(task, this.states(), routing, { exclude: this.excluded(task), waitsFor: this.waitsFor(task), ...this.weights(task.class, task) });
       // The split trace is for the pair the record is about: the task's owner when it has one (issue #109).
       return [...workflow, `task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"}${task.reserved ? `, reserved for ${task.reserved}` : ""})`, ...(task.profileClass ? [`profile class ${profileTaskLabel(task)}`] : []), ...(task.role ? [`task role ${task.role} (guidance only)`] : []), "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, task.owner ?? a.owner)?.trace ?? [])];
     }
