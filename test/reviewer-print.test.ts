@@ -49,7 +49,8 @@ test("expired isolation at delivery cannot spawn a child and reports a head-boun
   await peer.start(); await peer.deliver([request(1)], "delivery");
   await until(() => peer.state === "idle" && failures.length === 1);
   expect(existsSync(log)).toBe(false);
-  expect(failures).toEqual([{ task: 1, head: "a".repeat(40), flowRevision: 7, cause: "start_failed" }]);
+  // #722: a receipt that expired before spawn is the binary class (the binary/config binding changed).
+  expect(failures).toEqual([{ task: 1, head: "a".repeat(40), flowRevision: 7, cause: "start_failed", causeClass: "binary" }]);
 });
 
 test("a batch isolation failure reports every unprocessed review with its bound head/revision", async () => {
@@ -61,7 +62,8 @@ test("a batch isolation failure reports every unprocessed review with its bound 
   cleanup.push(() => peer.stop());
   await peer.start(); await peer.deliver([request(11), request(12)], "batch-failure");
   await until(() => peer.state === "idle");
-  expect(failures).toEqual([11, 12].map(task => ({ task, head: "a".repeat(40), flowRevision: 7, cause: "start_failed" })));
+  // #722: a backend refusal with no class is `unknown`, never a guess.
+  expect(failures).toEqual([11, 12].map(task => ({ task, head: "a".repeat(40), flowRevision: 7, cause: "start_failed", causeClass: "unknown" })));
   expect(states).toEqual(["busy", "busy"]);
   expect(existsSync(log)).toBe(false);
 });

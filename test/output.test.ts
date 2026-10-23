@@ -43,6 +43,14 @@ describe("one-shot output", () => {
     expect(text(renderStatus({ peers: state.peers }, 160, now))).not.toContain(message);
   });
 
+  test("#722 a reviewer that failed its per-review proof shows its cause class in ahub status, in failure tone", () => {
+    const reason = "reviewer isolation unavailable [cause: sandbox_proof]: the native sandbox proof did not pass";
+    const status = renderStatus({ peers: { "codex-review": { state: "idle", queued: 0, reviewerUnavailable: reason } } }, 160, now);
+    expect(text(status)).toContain("[cause: sandbox_proof]");
+    expect(status.flat().some(cell => cell.tone === "failure" && cell.text.includes("[cause: sandbox_proof]"))).toBe(true);
+    expect(text(renderStatus({ peers: { "codex-review": { state: "idle", queued: 0 } } }, 160, now))).not.toContain("[cause:");
+  });
+
   test("peer status notices keep terminal display sanitization", () => {
     const message = "\x1b[31mreattach session\x1b[0m\nstatus guidance";
     const peers = { other: { state: "offline", statusNotice: { message } } };

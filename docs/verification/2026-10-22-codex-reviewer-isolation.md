@@ -45,3 +45,17 @@ Central compatibility policy marks 0.146.0 and 0.163.0 as verified. Other versio
 ## Evidence boundaries
 
 The network setting remains configured disabled, without a separate network probe. Web search is requested disabled; effective model-turn mode is not read back. Returned exec argv is checked, but no run proves exec selecting the named default permission profile. No account/model review, TUI interaction or native Linux result is claimed. These runtime tests exercise the installed macOS binary; same-user filesystem/config mutation after the final metadata check remains outside atomic snapshot guarantees. The supported credential-root list is bounded, not a classifier for every private host file. Hosted CI and the changed-source gate are separate code-verification evidence recorded on the PR.
+
+## Per-review start failure classes (#722)
+
+Date: 2026-10-23. Platform: macOS arm64, Codex 0.163.0 (Homebrew `/opt/homebrew/bin/codex` and the fnm launcher), no model request, login or credential copy. Every CLI run used a temporary HOME and CODEX_HOME with only PATH, TMPDIR and LANG inherited; the person's real `~/.codex` was never passed to an agent CLI (its file names and table names were read, never values).
+
+Reproduction of the reported `start_failed`, model-free, with the production `codexReviewerBackend.prepare`:
+
+- Empty temporary homes: the receipt was produced (14 evidence entries) on both launchers, in about 0.3 to 0.4 s.
+- Synthetic ambient configuration shaped like the real one (features, a marketplace, a plugin, four MCP servers with per-tool tables and an env table, a `hooks.json`): the receipt was produced in each of four variants.
+- Each proof command (`--version`, `features list`, `mcp list --json`, `debug models --bundled`) took 54 to 82 ms, idle and with 12 busy loops running, against the 2 s per-command and 12 s total budgets.
+- The proof commands did not rewrite `config.toml` (inode, size and mtime unchanged), so the config fence does not trip on them.
+- This machine's credential roots: none is a dangling link, and the checkout is inside none of them.
+
+So no hub bug was reproduced in the proof legs, and the first failure on 2026-10-22 happened in a daemon whose environment is not reproducible from the file system alone. The fix is the diagnosis: the refusal now carries one of the closed classes `version`, `binary`, `mcp_inventory`, `plugins_hooks_apps`, `sandbox_proof`, `credential_root`, `timeout`, `unknown`. It is in the unavailable reason, a `hub.log` line and the `reviewer` line of `ahub status`, and never holds a path, native CLI text or a token (a credential root is named by its path class). The next `start_failed` on this machine therefore names its leg. Fixture tests cover each class (`test/codex-review-isolation.test.ts`, `test/reviewer-pool-daemon.test.ts`, `test/output.test.ts`).
