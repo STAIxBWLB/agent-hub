@@ -161,3 +161,32 @@ test("native envelope size cap preserves existing large Claude permission, facts
     expect(requests.at(-1).input.content).toBe(input.content);
   } finally { server.stop(true); rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("a classed call (actionClasses from the hub) is `ask` in every permission mode, never allow, and keeps its facts text (#636)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-action-hook-"));
+  let reply: Record<string, unknown> = { ok: true };
+  const server = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(req, server) { return server.upgrade(req) ? undefined : new Response("no", { status: 400 }); }, websocket: {
+    message(ws, raw) { const msg = JSON.parse(String(raw)); ws.send(JSON.stringify(msg.t === "hello" ? { t: "welcome", rid: msg.rid } : { ...reply, rid: msg.rid })); },
+  } });
+  writeFileSync(join(dir, "status.json"), JSON.stringify({ controlPort: server.port, protocol: PROTOCOL }));
+  writeFileSync(join(dir, "control-token"), "fixture-token");
+  const original = process.env.AGENTHUB_STATE_DIR;
+  try {
+    const run = async (tool = "Bash") => { const out = await factsHook(JSON.stringify({ hook_event_name: "PreToolUse", tool_name: tool, tool_input: { command: "git push origin main" } }), dir, "claude"); return out ? JSON.parse(out).hookSpecificOutput : undefined; };
+    for (const mode of ["ask", "ask-when-needed", "never-ask"]) {
+      reply = { ok: true, projectRoot: dir, permission: mode, actionClasses: ["publish"] };
+      const out = await run();
+      expect(out.permissionDecision).toBe("ask");
+      expect(out.permissionDecisionReason).toBe("agent-hub always-ask: publish");
+      reply = { ok: true, projectRoot: dir, permission: mode, actionClasses: ["publish", "destroy"], text: "other peer changed main" };
+      const withFacts = await run();
+      expect(withFacts).toMatchObject({ permissionDecision: "ask", additionalContext: "other peer changed main", permissionDecisionReason: "agent-hub always-ask: publish, destroy" });
+      reply = { ok: true, projectRoot: dir, permission: mode }; // not classed: the mode decides as before
+      expect((await run())?.permissionDecision).toBe(mode === "never-ask" ? "allow" : undefined);
+    }
+    // an empty list is "not classed"; a value that is present but unreadable asks instead of falling back to an allow
+    reply = { ok: true, projectRoot: dir, permission: "never-ask", actionClasses: [] }; expect((await run())?.permissionDecision).toBe("allow");
+    for (const bad of ["publish", [1], null, {}]) { reply = { ok: true, projectRoot: dir, permission: "never-ask", actionClasses: bad }; const out = await run(); expect(out.permissionDecision).toBe("ask"); expect(out.permissionDecisionReason).toBe("agent-hub always-ask"); }
+    reply = { ok: false, actionClasses: ["publish"] }; expect(await run()).toBeUndefined(); // a hub that cannot answer leaves the native policy
+  } finally { if (original === undefined) delete process.env.AGENTHUB_STATE_DIR; server.stop(true); rmSync(dir, { recursive: true, force: true }); }
+});

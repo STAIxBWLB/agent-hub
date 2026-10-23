@@ -87,11 +87,11 @@ export class ActionBudgets {
     return true;
   }
   /** Read-only projection: no session is created, rebound or reset by a status poll. */
-  status(peer: string, enforced: boolean) {
+  status(peer: string, enforced: boolean, reason = "adapter integration pending") {
     const config = actionPolicyConfig(this.config()), state = this.sessions.get(peer);
     const bound = !!state && this.currentSession(peer) === state.handle.session && state.policy === JSON.stringify(config);
     return { enabled: config.enabled, alwaysAsk: [...config.always_ask], limits: { ...config.budgets }, remaining: bound ? { ...state.remaining } : empty(), sessionBound: bound,
-      enforceable: enforced, note: !enforced ? `always-ask not enforceable: adapter integration pending${config.enabled ? "" : "; policy disabled"}` : config.enabled ? "always-ask active" : "always-ask disabled" };
+      enforceable: enforced, note: !enforced ? `always-ask not enforceable: ${reason}${config.enabled ? "" : "; policy disabled"}` : config.enabled ? "always-ask active" : "always-ask disabled" };
   }
 }
 

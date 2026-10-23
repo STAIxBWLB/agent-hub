@@ -90,10 +90,14 @@ export async function factsHook(stdin: string, stateDir: string, peer: string, t
     if (phase !== "pre" || !res?.ok) return undefined;
     const permission = isPermissionMode(res.permission) ? res.permission : "ask";
     const fileTool = projectFileTool(input.tool_name, input.tool_input, res.projectRoot, res.protectInstructionFiles === true);
-    const allow = input.hook_event_name === "PreToolUse" && (permission === "never-ask" || permission === "ask-when-needed" && fileTool);
+    // Always-ask (#636): the hub classed this call (publish, external-write, destroy, install). `ask` wins over every allow, never-ask included.
+    // A present value that is not an empty list asks, even when malformed: the hook never turns an unreadable classification into an allow.
+    const classed = res.actionClasses !== undefined && !(Array.isArray(res.actionClasses) && res.actionClasses.length === 0);
+    const classNames = Array.isArray(res.actionClasses) ? res.actionClasses.filter((key: unknown): key is string => typeof key === "string" && /^[a-z-]{1,32}$/.test(key)) : [];
+    const allow = !classed && input.hook_event_name === "PreToolUse" && (permission === "never-ask" || permission === "ask-when-needed" && fileTool);
     const text = typeof res.text === "string" && res.text ? res.text : undefined;
-    if (!allow && !text) return undefined;
-    return JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", ...(text ? { additionalContext: text } : {}), ...(allow ? { permissionDecision: "allow" } : {}) } });
+    if (!allow && !classed && !text) return undefined;
+    return JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", ...(text ? { additionalContext: text } : {}), ...(classed ? { permissionDecision: "ask", permissionDecisionReason: `agent-hub always-ask${classNames.length ? `: ${classNames.join(", ")}` : ""}` } : allow ? { permissionDecision: "allow" } : {}) } });
   } finally {
     hub.close();
   }
