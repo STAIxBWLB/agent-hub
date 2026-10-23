@@ -319,6 +319,15 @@ export interface Assignment {
 }
 
 /**
+ * The role a class's owner works in (#735): `plan` is the planner's, `review` the reviewer's, and every other class (implement, bulk_edit,
+ * test, summarize, triage, and a profile class that maps onto one) is done by an implementer, which needs write access. Derived, never a
+ * list of the write classes, so a class added later is a write class unless it says otherwise here.
+ */
+export function ownerRoleOfClass(cls: TaskClass): "planner" | "implementer" | "reviewer" {
+  return cls === "review" ? "reviewer" : cls === "plan" ? "planner" : "implementer";
+}
+
+/**
  * L1. A pure function of policy, task and peer states, so `ahub route explain` runs exactly what assignment runs and
  * prints its trace. `states`: effective bus states of attached peers (a peer that is not in the map is not attached).
  */
@@ -376,11 +385,13 @@ export function assign(
   if (!pii) try { needsSpec = specRefs({ title: task.title ?? "", detail: task.detail ?? "", refs: task.refs ?? {}, external: task.external }, opts.repository ?? "", { bareTitle: isGitHubRepository(opts.repository) }).length > 0; }
   catch { needsSpec = true; } // an invalid/foreign reference never grants a sandboxed peer spec access
   const needsTests = ["implement", "test", "bulk_edit"].includes(task.class);
+  // #735: the owner needs write access whenever its role for this class is the implementer's, not only for the three classes that need tests.
+  const ownerWrites = ownerRoleOfClass(task.class) === "implementer";
   const refusals = new Map<string, RoutingRefusal>();
   const blocked = (peer: PeerId, role: "owner" | "reviewer"): string | undefined => {
     const deny = (code: RoutingRefusalCode, reason: string): string => { refusals.set(`${role}:${peer}`, { peer, role, code, reason }); return reason; };
     const ceiling = (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.routing?.allowedRoles;
-    const requiredRole = role === "reviewer" || task.class === "review" ? "reviewer" : task.class === "plan" ? "planner" : "implementer";
+    const requiredRole = role === "reviewer" ? "reviewer" : ownerRoleOfClass(task.class);
     if (ceiling && !ceiling.includes(requiredRole)) return deny("policy", "adapter role ceiling excludes this assignment");
     const unavailable = role === "reviewer" ? (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.reviewer?.unavailable : undefined;
     if (unavailable) return deny("policy", unavailable);
@@ -397,7 +408,10 @@ export function assign(
     if (role === "owner" && opts.excludeOwners?.includes(peer)) return deny("owner-admission", "owner admission: WIP or delivery hold");
     const adapter = (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances);
     if (role === "owner" && adapter?.routing?.reviewOnly) return deny("owner-admission", "owner admission: a review-only instance owns no task");
-    if (role === "owner" && needsTests && adapter && adapter.kind !== peer) {
+    // ponytail: until slice 525-5 proves a person-started channel instance's execution root, such an instance owns no write-class task, whatever the host's
+    // isolation verdict says. Remove this line with 525-5 and let the isolation check below decide.
+    if (role === "owner" && ownerWrites && adapter?.instances?.mode === "external" && adapter.kind !== peer) return deny("owner-admission", "owner admission: a person-started Claude instance owns no write-class task until #525-5 proves its execution root");
+    if (role === "owner" && ownerWrites && adapter && adapter.kind !== peer) {
       if (!peerEntry(opts.roles, peer)?.includes("implementer")) return deny("owner-admission", "owner admission: declared write owner requires the current implementer role");
       if (peerEntry(opts.ownerIsolation, peer) !== true) return deny("owner-admission", "owner admission: declared write owner requires a verified isolated execution root");
     }
