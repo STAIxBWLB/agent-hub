@@ -13,15 +13,16 @@ afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 function fixture() {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-child-authority-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
   const routing = loadRouting(cwd); routing.signals.pii_screen = "local";
-  let live = true, entered!: () => void, release!: () => void, saves = 0;
+  let live = true, entered!: () => void, release!: () => void, saves = 0, triages = 0;
   const reached = new Promise<void>(resolve => { entered = resolve; });
   const gate = new Promise<void>(resolve => { release = resolve; });
   const tasks = new Tasks({ board, bus, cwd, project: "fixture", routing: () => routing, notify: () => {},
     requestAuthority: by => by === "codex" ? () => live ? undefined : "child generation expired" : undefined,
+    triage: { onCampus: async () => true, classify: async () => { triages++; return "test"; } },
     piiScreen: async () => { entered(); await gate; return { label: "clear", ms: 0 }; },
     memory: { save: async () => { saves++; return {}; } } as unknown as MemoryClient });
   cleanup.push(() => rmSync(cwd, { recursive: true, force: true }), () => board.close());
-  return { board, tasks, reached, release, revoke: () => { live = false; }, saves: () => saves };
+  return { board, tasks, reached, release, revoke: () => { live = false; }, saves: () => saves, triages: () => triages };
 }
 
 test("a revoked child cannot publish a proposal after its privacy await", async () => {
@@ -54,4 +55,13 @@ test("a revoked child cannot finish its task after the summary screen", async ()
   await f.reached; f.revoke(); f.release();
   await expect(pending).rejects.toThrow("child generation expired");
   expect(f.board.get(task.id)).toEqual(before);
+});
+
+
+test("a revoked child cannot invoke triage after the awaited privacy screen", async () => {
+  const f = fixture();
+  const pending = f.tasks.propose("codex", { title: "public unclassified fixture", backlog: true });
+  await f.reached; f.revoke(); f.release();
+  await expect(pending).rejects.toThrow("child generation expired");
+  expect(f.triages()).toBe(0); expect(f.board.list()).toEqual([]);
 });

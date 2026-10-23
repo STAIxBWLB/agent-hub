@@ -9,7 +9,7 @@ import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
 
 async function until(condition: () => boolean, leg: string) { for (let n = 0; n < 300 && !condition(); n++) await Bun.sleep(5); expect(condition(), leg).toBe(true); }
-async function fixture() {
+async function fixture(taskBound = false) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-claude-impl-daemon-"))), peer = "claude-worker", tree = join(root, ".worktrees", peer), stateDir = join(root, ".agenthub", "state"), log = join(root, "calls.jsonl"), home = join(root, "home"), bin = join(root, "bin");
   const oldEnv = { HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, PATH: process.env.PATH, AMEM_HOME: process.env.AMEM_HOME, AGENTHUB_HOME: process.env.AGENTHUB_HOME };
   mkdirSync(stateDir, { recursive: true }); mkdirSync(home); mkdirSync(bin);
@@ -25,12 +25,19 @@ async function fixture() {
     const instanceId = (await console_.request({ t: "status" })).status.instanceId;
     const started = await console_.request({ t: "start", peer }); expect(started).toMatchObject({ ok: true, executionCwd: tree });
     expect(await console_.request({ t: "permission", peer, mode: "ask-when-needed" })).toMatchObject({ ok: true });
-    const sent = daemon.bus.publish(newEnvelope("user", "fixture only", { to: [peer] })); expect(sent).toContain(peer);
+    let taskId: number | undefined;
+    if (taskBound) {
+      const proposed = await console_.request({ t: "task", op: "hub_task_propose", args: { title: "bound fixture task", class: "test", owner: peer } });
+      expect(proposed.ok, proposed.error).toBe(true);
+      taskId = Number(String(proposed.text).match(/task #(\d+)/)?.[1]); expect(taskId).toBeGreaterThan(0);
+    } else {
+      const sent = daemon.bus.publish(newEnvelope("user", "fixture only", { to: [peer] })); expect(sent).toContain(peer);
+    }
     await until(() => existsSync(log), "owned native child log");
     const call = JSON.parse(readFileSync(log, "utf8").trim().split("\n")[0]!), session = call.args[call.args.indexOf("--session-id") + 1];
     const tools = await ControlClient.connect(stateDir, { role: "tools", peer, launchId: call.launchId, projectRoot: root }); clients.push(tools);
     const connect = async (launchId: string) => { const client = await ControlClient.connect(stateDir, { role: "tools", peer, launchId, projectRoot: root }); clients.push(client); return client; };
-    return { root, peer, tree, stateDir, log, home, daemon, console_, tools, call, session, instanceId, connect, async close() { for (const client of clients) client.close(); await daemon!.stop(); for (const [key, value] of Object.entries(oldEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } rmSync(root, { recursive: true, force: true }); } };
+    return { taskId, root, peer, tree, stateDir, log, home, daemon, console_, tools, call, session, instanceId, connect, async close() { for (const client of clients) client.close(); await daemon!.stop(); for (const [key, value] of Object.entries(oldEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } rmSync(root, { recursive: true, force: true }); } };
   } catch (error) { for (const client of clients) client.close(); await daemon?.stop(); for (const [key, value] of Object.entries(oldEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } rmSync(root, { recursive: true, force: true }); throw error; }
 }
 
@@ -75,5 +82,20 @@ test("#525 current-child inbox refuses a private pending batch before pull remov
     expect(before.length).toBeGreaterThan(0);
     expect(await f.tools.request({ t: "inbox" })).toMatchObject({ ok: false });
     expect(f.daemon.bus.queueIds(f.peer)).toEqual(before);
+  } finally { await f.close(); }
+}, 20_000);
+
+
+test("#525 cancelling the bound task revokes a waiting permission even when the person answers allow", async () => {
+  const f = await fixture(true), pushes: any[] = [];
+  try {
+    f.console_.onPush = push => { pushes.push(push); }; f.console_.send({ t: "tail" });
+    const answer = f.tools.request({ t: "permission_request", tool: "Write", input: { file_path: join(f.tree, "source.ts"), content: "cancelled work" } });
+    await until(() => pushes.some(row => row.t === "permission"), "approval waiting before cancellation");
+    expect(await f.console_.request({ t: "task", op: "hub_task_cancel", args: { id: f.taskId, reason: "fixture cancellation" } })).toMatchObject({ ok: true });
+    const request = pushes.find(row => row.t === "permission");
+    expect(await f.console_.request({ t: "permit", id: request.id, option: "allow" })).toMatchObject({ ok: true });
+    const result = await answer;
+    expect(result.ok === false || result.behavior === "deny").toBe(true);
   } finally { await f.close(); }
 }, 20_000);

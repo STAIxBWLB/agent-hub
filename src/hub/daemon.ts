@@ -2071,7 +2071,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!launch || launch.signal.aborted || launch.generation !== bound.generation || ownerWriteRoot(peer) !== bound.cwd || bound.cwd === opts.cwd) return undefined;
     if (launch.task !== undefined) {
       const task = board.get(launch.task);
-      if (!task || task.owner !== peer || tasks.isPii(task)) return undefined;
+      if (!task || task.owner !== peer || task.state === "cancelled" || tasks.isPii(task)) return undefined;
     }
     return launch;
   }

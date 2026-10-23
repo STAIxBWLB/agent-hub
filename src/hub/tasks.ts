@@ -1485,6 +1485,7 @@ export class Tasks {
     // board, in no envelope and before no other model. A pattern match is PII without a call; no verdict is PII too.
     const screening = this.screenOn();
     const screened = screening && !signals.includes("pii") ? await this.screenCall(screenText({ ...text, detail: screenDetail, plan })) : undefined;
+    requestCheck();
     if (screened && screened.label !== "clear") signals.push("pii");
     let cls = baseGiven;
     let triaged = false;
@@ -1492,8 +1493,11 @@ export class Tasks {
     if (!cls && this.d.triage) {
       // Signals first: a PII task's text may only go to a model that is reached without leaving the campus network.
       const pii = this.isPii({ signals });
-      if (!pii || (await this.d.triage.onCampus().catch(() => false))) cls = await this.d.triage.classify(text.title, text.detail).catch(() => undefined);
+      const reached = !pii || await this.d.triage.onCampus().catch(() => false);
+      requestCheck();
+      if (reached) cls = await this.d.triage.classify(text.title, text.detail).catch(() => undefined);
       else fenced = true;
+      requestCheck();
       triaged = !!cls;
     }
     // A claim is work the caller will do itself: without a class and a model to name one, it is implementation (#6).
@@ -4347,7 +4351,6 @@ export class Tasks {
     const native = this.saveNative(by, kind, text, title, task, input.horizon === "long" || input.horizon === "short" ? input.horizon : undefined, input.scope === "shared" ? "shared" : "project");
     if (task && this.d.memory) this.markMemoryReference(task, by);
     const res = this.d.memory ? await this.d.memory.save({ text, ...(title ? { title } : {}), project: this.d.project, metadata: { peer: by, kind, ...(task ? { task: task.id } : {}) } }) : undefined;
-    requestCheck();
     if (!res && !native) return this.d.memory ? "memory worker unavailable; nothing saved" : "memory store unavailable; nothing saved";
     const line = noteLine(by, kind, title ? `${title}: ${text}` : text);
     this.d.notify(line);

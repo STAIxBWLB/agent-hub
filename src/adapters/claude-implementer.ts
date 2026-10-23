@@ -49,7 +49,7 @@ export function claudeImplementerArgs(turn: ImplementerTurn, mcp: string, settin
  * ponytail: native prompt behavior is certified by the dated deterministic receipt, not re-inferred at startup;
  * the upgrade is another isolated native permission probe before extending COMPAT. */
 export async function proveClaudeImplementer(peer: string, command: readonly string[]): Promise<() => boolean> {
-  const binary = Bun.which(command[0]!) ?? command[0]!;
+  const binary = Bun.which(command[0]!, { PATH: process.env.PATH }) ?? command[0]!;
   const fingerprint = () => { const file = realPath(binary), stat = lstatSync(file); return [file, stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":"); };
   const binding = fingerprint(), home = mkdtempSync(join(tmpdir(), "ahub-claude-proof-"));
   let version = "", timedOut = false;
@@ -78,9 +78,11 @@ export class ClaudeImplementerPeer extends BasePeer {
   private abort: AbortController | undefined;
   private cleanup: (() => void) | undefined;
   private binding: (() => boolean) | undefined;
+  private command: readonly string[] | undefined;
   private deliveryId: string | undefined;
   private sessions: ClaudeTaskSessions;
   private stopping: Promise<void> | undefined;
+  private stoppingTarget: "idle" | "offline" | undefined;
   private mode: "ask" | "ask-when-needed";
   constructor(id: string, private readonly options: ClaudeImplementerOptions) {
     super(id, options.watchdogMs);
@@ -101,9 +103,11 @@ export class ClaudeImplementerPeer extends BasePeer {
     if (this.owned || this.running || this.stopping) throw new Error("Claude implementer cleanup is not complete");
     if (this.state !== "offline") return;
     const generation = ++this.generation;
-    const binding = await (this.options.prove?.() ?? proveClaudeImplementer(this.id, this.options.command ?? ["claude"]));
+    const selected = this.options.command ?? ["claude"];
+    const command = this.options.prove ? selected : [realPath(Bun.which(selected[0]!, { PATH: process.env.PATH }) ?? selected[0]!), ...selected.slice(1)];
+    const binding = await (this.options.prove?.() ?? proveClaudeImplementer(this.id, command));
     if (generation !== this.generation) return;
-    this.binding = binding; this.setState("idle");
+    this.command = command; this.binding = binding; this.setState("idle");
   }
   async stop(reason = "Claude implementer stopped before settlement"): Promise<void> { return this.cancel(reason, "offline"); }
   protected override onWatchdog(): void { void this.cancel("Claude implementer watchdog timeout", "idle").catch(() => {}); }
@@ -112,18 +116,27 @@ export class ClaudeImplementerPeer extends BasePeer {
     if (id) this.delivery({ id, state, ...(reason ? { reason } : {}) });
   }
   private cancel(reason: string, next: "idle" | "offline"): Promise<void> {
-    if (this.stopping) return this.stopping;
+    if (this.stopping) {
+      if (next === "offline") this.stoppingTarget = "offline";
+      return this.stopping;
+    }
+    this.stoppingTarget = next;
     ++this.generation; this.active = undefined; this.childAbort?.abort(); this.childAbort = undefined; this.abort?.abort(); this.clearWatchdog();
     this.settle("needs_review", reason);
     if (this.owned || this.running) this.setState("busy");
-    const work = (async () => {
+    const work: Promise<void> = Promise.resolve().then(async () => {
       if (this.owned) await this.owned.stop(); // Retain handle/busy if group cleanup fails.
-      await this.running?.catch(() => {});
+      const running = this.running;
+      await running?.catch(() => {});
+      if (this.running === running) this.running = undefined;
       this.cleanup?.(); this.cleanup = undefined; this.owned = undefined;
-      this.setState(next);
-    })();
+      // An idle callback can synchronously drain the next Bus delivery.
+      const target = this.stoppingTarget ?? next;
+      if (this.stopping === work) { this.stopping = undefined; this.stoppingTarget = undefined; }
+      this.setState(target);
+    });
     this.stopping = work;
-    void work.finally(() => { if (this.stopping === work) this.stopping = undefined; }).catch(() => {});
+    void work.finally(() => { if (this.stopping === work) { this.stopping = undefined; this.stoppingTarget = undefined; } }).catch(() => {});
     return work;
   }
   async deliver(envs: Envelope[], deliveryId?: string): Promise<void> {
@@ -140,11 +153,12 @@ export class ClaudeImplementerPeer extends BasePeer {
     const generation = this.generation; this.deliveryId = deliveryId;
     this.abort = new AbortController(); this.setState("busy");
     if (deliveryId) this.delivery({ id: deliveryId, state: "accepted" });
-    const running = this.run(groups, generation);
+    // Register the run identity before any synchronous failure can publish idle.
+    const running: Promise<void> = Promise.resolve().then(() => this.run(groups, generation, running));
     this.running = running;
     void running.finally(() => { if (this.running === running) this.running = undefined; }).catch(() => {});
   }
-  private async run(groups: { task?: number; envs: Envelope[] }[], generation: number): Promise<void> {
+  private async run(groups: { task?: number; envs: Envelope[] }[], generation: number, running: Promise<void>): Promise<void> {
     let spawned = false;
     const current = () => generation === this.generation && !this.abort?.signal.aborted;
     try {
@@ -166,7 +180,7 @@ export class ClaudeImplementerPeer extends BasePeer {
           AGENTHUB_INSTANCE_ID: this.options.instanceId, AGENTHUB_LAUNCH_ID: launchId, AGENTHUB_HOOK_PURPOSE: "permission", AGENTHUB_PERMISSION_TOOL: "1" };
         const mcp = JSON.stringify({ mcpServers: { "agent-hub": { command: process.execPath, args: ["run", this.options.server], env } } });
         let result = false, failed = false;
-        const child = new OwnedPrintChild({ peer: this.id, command: this.options.command ?? ["claude"], args: claudeImplementerArgs(turn, mcp, settings, this.options.systemPrompt), cwd: this.options.cwd,
+        const child = new OwnedPrintChild({ peer: this.id, command: this.command!, args: claudeImplementerArgs(turn, mcp, settings, this.options.systemPrompt), cwd: this.options.cwd,
           input: group.envs.map(frame).join("\n\n"), env, current, stop: this.options.stopChild,
           onSpawn: () => {
             spawned = true;
@@ -203,12 +217,19 @@ export class ClaudeImplementerPeer extends BasePeer {
         if (!current()) return;
         if (code !== 0 || !result || failed) throw new Error("Claude implementer turn failed");
       }
-      if (current()) { this.settle("completed"); this.setState("idle"); }
+      if (current()) {
+        if (this.running === running) this.running = undefined;
+        this.settle("completed"); this.setState("idle");
+      }
     } catch (error) {
       this.active = undefined; this.childAbort?.abort(); this.childAbort = undefined;
       if (current()) {
         this.settle(spawned ? "needs_review" : "failed_safe", error instanceof PrintChildCleanupError ? "Claude implementer cleanup incomplete" : "Claude implementer turn failed");
-        if (this.owned) this.setState("busy"); else { this.cleanup?.(); this.cleanup = undefined; this.setState("idle"); }
+        if (this.owned) this.setState("busy"); else {
+          this.cleanup?.(); this.cleanup = undefined;
+          if (this.running === running) this.running = undefined;
+          this.setState("idle");
+        }
       }
     }
   }

@@ -1,8 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ClaudeImplementerPeer, type ClaudeImplementerOptions } from "../src/adapters/claude-implementer.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { realPath } from "../src/hub/project.ts";
 import { stopOwnedProcess } from "../src/hub/child-process.ts";
@@ -13,11 +15,12 @@ async function until(check: () => boolean): Promise<void> { for (let i = 0; i < 
 function rig(mode = "success", extra: Partial<ClaudeImplementerOptions> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-claude-impl-")), log = join(dir, "calls.jsonl"), receipts: DeliveryReceipt[] = [], usage: unknown[] = [];
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  const command = [process.execPath, fake, log, mode];
   const peer = new ClaudeImplementerPeer("claude-worker", { cwd: dir, stateDir: dir, projectRoot: dir, instanceId: "fixture-instance", server: join(dir, "server.js"), factsHook: join(dir, "hook.ts"), systemPrompt: "fixture role", watchdogMs: 5000,
-    command: [process.execPath, fake, log, mode], admit: () => true, chatTask: () => undefined, prove: async () => () => true, onUsage: (row, task) => usage.push({ row, task }), ...extra });
+    command, admit: () => true, chatTask: () => undefined, prove: async () => () => true, onUsage: (row, task) => usage.push({ row, task }), ...extra });
   peer.onDelivery = receipt => { receipts.push(receipt); };
   cleanup.push(() => peer.stop());
-  return { dir, log, peer, receipts, usage, calls: () => existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [] };
+  return { dir, log, command, peer, receipts, usage, calls: () => existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [] };
 }
 const message = (task?: number) => newEnvelope("hub", "fixture only", { kind: "task", to: ["claude-worker"], ...(task ? { refs: { task: String(task) } } : {}) });
 const arg = (args: string[], name: string) => args[args.indexOf(name) + 1];
@@ -128,4 +131,72 @@ test("admission changed before spawn never receives framed prompt or child autho
   const r = rig("success", { admit: () => ++checks < 3 });
   await r.peer.start(); await r.peer.deliver([message(1)], "admission-drift"); await until(() => r.peer.state === "idle");
   expect(r.calls().every(call => call.prompt === "")).toBe(true); expect(r.peer.sessionGeneration).toBeUndefined(); expect(r.receipts.at(-1)?.state).toBe("needs_review");
+});
+
+
+test("production proof pins the actual turn executable when an earlier PATH entry appears", async () => {
+  const r = rig("success", { command: ["claude"], prove: undefined }), oldPath = process.env.PATH, oldHome = process.env.HOME, oldConfig = process.env.CLAUDE_CONFIG_DIR;
+  const authKey = (key: string) => /^(ANTHROPIC_|CLAUDE_CODE_|AWS_|GOOGLE_|GCLOUD_|AZURE_|CLOUDSDK_)/.test(key);
+  const auth = new Map(Object.keys(process.env).filter(authKey).map(key => [key, process.env[key]] as const));
+  for (const key of auth.keys()) delete process.env[key];
+  const early = join(r.dir, "earlier-bin"), late = join(r.dir, "verified-bin"), marker = join(r.dir, "binary-used"), proofMarker = join(r.dir, "fake-version-proof");
+  mkdirSync(early); mkdirSync(late); mkdirSync(join(r.dir, "isolated-home"));
+  writeFileSync(join(late, "claude"), `#!/bin/sh\nif [ "$1" = '--version' ]; then printf verified > '${proofMarker}'; printf '2.1.309 (Claude Code)\\n'; exit 0; fi\n/bin/cat >/dev/null\nprintf verified >> '${marker}'\nprintf '{"type":"result","subtype":"success","usage":{"input_tokens":1,"output_tokens":1}}\\n'\n`, { mode: 0o700 });
+  process.env.PATH = `${early}:${late}:${oldPath ?? ""}`; process.env.HOME = join(r.dir, "isolated-home"); process.env.CLAUDE_CONFIG_DIR = join(r.dir, "isolated-home", ".claude");
+  try {
+    expect(Object.keys(process.env).some(authKey)).toBe(false);
+    await r.peer.start();
+    expect(readFileSync(proofMarker, "utf8")).toBe("verified");
+    expect((r.peer as unknown as { command: string[] }).command[0]).toBe(realPath(join(late, "claude")));
+    // PATH itself does not change: installing another executable earlier must not bypass proof.
+    writeFileSync(join(early, "claude"), `#!/bin/sh\nprintf unproved >> '${marker}'\nexit 1\n`, { mode: 0o700 });
+    await r.peer.deliver([message(41)], "pinned-binary"); await until(() => r.peer.state === "idle");
+    expect(existsSync(marker)).toBe(true);
+    expect(readFileSync(marker, "utf8")).toBe("verified");
+    expect(r.receipts.at(-1)?.state).toBe("completed");
+  } finally { await r.peer.stop(); if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath; if (oldHome === undefined) delete process.env.HOME; else process.env.HOME = oldHome; if (oldConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = oldConfig; for (const [key, value] of auth) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
+});
+
+for (const watchdog of [false, true]) test(`a queued durable delivery starts at the cleanup-complete idle boundary (${watchdog ? "watchdog" : "natural"})`, async () => {
+  let release!: () => void, cleaning = false, first = true;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const r = rig(watchdog ? "hang" : "success", { watchdogMs: watchdog ? 500 : 5000,
+    stopChild: async child => { if (!watchdog && first) { first = false; cleaning = true; await gate; } await stopOwnedProcess(child, { group: true }); } });
+  const journal = new DeliveryJournal({ file: join(r.dir, "bus.db"), projectRoot: r.dir, projectId: "implementer", instanceId: "fixture" });
+  const bus = new Bus({ journal, batchMax: 1, batchMs: 0, retryMs: 1 });
+  cleanup.push(async () => { release(); await r.peer.stop(); bus.closeJournal(); });
+  bus.add(r.peer);
+  if (watchdog) {
+    const state = r.peer.onState!;
+    r.peer.onState = next => {
+      if (next === "idle") {
+        const held = journal.list(r.peer.id).find(row => row.state === "needs_review");
+        if (held) bus.resolveDelivery(held.id, held.revision, "discard", "fixture person acknowledged completed cleanup", "user");
+      }
+      state(next);
+    };
+  }
+  await r.peer.start(); bus.publish(message(51));
+  await until(() => watchdog ? r.calls().length === 1 : cleaning);
+  if (watchdog) r.command[3] = "success"; // Same test executable, next turn succeeds.
+  bus.publish(message(52));
+  if (!watchdog) release();
+  await until(() => journal.list(r.peer.id).some(row => row.originals.some(env => env.refs?.task === "52") && ["completed", "needs_review"].includes(row.state)));
+  const deliveries = journal.list(r.peer.id);
+  expect(deliveries.map(row => row.state)).toEqual(watchdog ? ["discarded", "completed"] : ["completed", "completed"]);
+  expect(r.calls()).toHaveLength(2);
+});
+
+test("a person stop upgrades an ongoing watchdog cleanup to offline", async () => {
+  let release!: () => void, cleaning = false;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const r = rig("hang", { watchdogMs: 100, stopChild: async child => { cleaning = true; await gate; await stopOwnedProcess(child, { group: true }); } });
+  cleanup.push(() => { release(); });
+  await r.peer.start(); await r.peer.deliver([message(61)], "watchdog-person-stop");
+  await until(() => cleaning);
+  expect(r.peer.state).toBe("busy"); expect(r.peer.sessionGeneration).toBeUndefined();
+  const stopped = r.peer.stop();
+  release(); await stopped;
+  expect(r.peer.state).toBe("offline");
+  expect(r.receipts.at(-1)?.state).toBe("needs_review");
 });
