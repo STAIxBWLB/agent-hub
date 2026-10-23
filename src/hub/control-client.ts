@@ -23,7 +23,7 @@ export async function retryLaunchConnect<T>(attempt: (timeoutMs: number) => Prom
     try { return await attempt(Math.max(1, Math.min(3000, until - ports.now()))); }
     catch (error) {
       const code = (error as { code?: unknown } | null)?.code;
-      if (!["AHUB_CONNECT_TIMEOUT", "AHUB_CONNECT_UNREACHABLE", 1006].includes(code as string | number) || ports.now() >= until) throw error;
+      if (!["AHUB_CONNECT_TIMEOUT", 1006].includes(code as string | number) || ports.now() >= until) throw error;
       if (!announced) { announced = true; onRetry(); }
       await ports.sleep(Math.min(backoff, until - ports.now()));
       if (ports.now() >= until) throw error;

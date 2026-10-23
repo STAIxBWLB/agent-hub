@@ -20,13 +20,13 @@ test("launch retries transient timeouts and announces busy once within its total
 
 test("a perpetually busy launch exhausts 15 seconds without another attempt", async () => {
   const time = clock(), limits: number[] = [];
-  const failure = Object.assign(new Error("unreachable"), { code: "AHUB_CONNECT_UNREACHABLE" });
+  const failure = Object.assign(new Error("timeout"), { code: "AHUB_CONNECT_TIMEOUT" });
   await expect(retryLaunchConnect(async timeout => { limits.push(timeout); time.advance(timeout); throw failure; }, () => {}, time)).rejects.toBe(failure);
   expect(time.now()).toBe(15_000); expect(limits).toEqual([3000, 3000, 3000, 3000, 250]);
   expect(time.waits).toEqual([250, 500, 1000, 1000]);
 });
 
-for (const code of [4401, 4404, 4426, 4000, undefined]) test(`launch never retries a refusal or unclassified error: ${code}`, async () => {
+for (const code of [4401, 4404, 4426, 4000, "AHUB_CONNECT_UNREACHABLE", undefined]) test(`launch never retries a refusal or unclassified error: ${code}`, async () => {
   const time = clock(), failure = Object.assign(new Error("refused"), { code }); let attempts = 0, notices = 0;
   await expect(retryLaunchConnect(async () => { attempts++; throw failure; }, () => { notices++; }, time)).rejects.toBe(failure);
   expect(attempts).toBe(1); expect(notices).toBe(0); expect(time.waits).toEqual([]);

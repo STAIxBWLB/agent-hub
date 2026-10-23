@@ -70,8 +70,10 @@ test("hot roster and unresolved queue reads exclude terminal payload history (#7
     const list = journal.list.bind(journal), snapshot = journal.snapshot.bind(journal);
     journal.list = () => { throw new Error("full delivery history on hot path"); };
     journal.snapshot = () => { throw new Error("recovery snapshot on hot path"); };
+    expect(() => bus.knownPeers()).not.toThrow();
     expect(bus.knownPeers()).toEqual(["codex"]);
     expect(journal.revision()).toBe(expected);
+    expect(() => bus.queueList(undefined, true)).not.toThrow();
     expect(bus.queueList(undefined, true).map(row => row.id)).toEqual(["held"]);
     journal.list = list;
     // Explicit history still includes terminal rows and does not need a recovery snapshot.
