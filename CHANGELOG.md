@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Planner walk and reviewer independence in `assign()` (#525 slice 525-3): `assign()` gains a pure planner walk over the settled planner holders (rotation by task id over every holder, never renumbered by availability, a named planner exact, a recorded planner kept, a PII task none) and returns `Assignment.planner` and `plannerReason`; `ahub route explain` prints the same walk. A peer that accepted or finished a task never reviews it (I-2, including a named reviewer and the declared reviewer pool): when no other candidate is left the person reviews. Nothing records the planner yet, so task behaviour is unchanged until 525-2.
 - Terminal Claude implementer instances (#525-5) start in their declared managed worktree and own write tasks only after the daemon verifies the current launch record and channel cwd; facts and terminal recovery retain the verified execution root.
 
 - Fix #719: keep periodic delivery reads independent of terminal payload history, time-slice usage folding and retry transient native launch connections within a bounded budget.

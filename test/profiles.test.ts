@@ -48,7 +48,7 @@ test("profile aliases route and budget on a persisted base while unknown/prototy
   const task = await tasks.propose("codex", { title: "Survey", class: "survey", owner: "codex" });
   expect(task).toMatchObject({ class: "summarize", profile: "research", profileClass: "survey" }); expect(board.get(task.id)).toMatchObject({ profileClass: "survey" });
   const routing = loadRouting(dir), states = { claude: "idle", codex: "idle", kimi: "idle", local: "idle" } as const;
-  expect(assign(task, states, routing)).toEqual(assign({ class: "summarize", signals: task.signals }, states, routing));
+  expect(assign(task, states, routing)).toEqual(assign({ class: "summarize", signals: task.signals, history: task.history }, states, routing)); // same history: I-2 (#525-3) refuses codex, which claimed this task, as its reviewer
   expect(tasks.explain(task.id).join("\n")).toContain("survey (base summarize, research)");
   const legacy = await rig(); const dev = await legacy.tasks.propose("codex", { title: "Dev", class: "implement", owner: "codex", plan: { sections: ["ignored"], paths: ["a.ts"] } });
   expect(dev.profile).toBeUndefined(); expect(dev.profileClass).toBeUndefined(); expect(dev.plan).toEqual({ paths: ["a.ts"] }); await expect(legacy.tasks.propose("codex", { title: "Wrong alias", class: "survey" })).rejects.toThrow();

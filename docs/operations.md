@@ -1087,7 +1087,7 @@ approved; caught (changes were requested and the owner's redo was approved);
 contradicted (within a week, work on the same file or symbol failed its check
 or review); escalated (after the reviewer asked for changes). A record counts
 tasks, not verdicts. `ahub task show <id>` lists a task's outcomes and `ahub
-route explain` shows each reviewer's record with the implementer. With
+route explain` shows each reviewer's record with the implementer. `ahub route explain <id>` also prints the planner walk (`planner candidate X: ...` lines, then `planner: X (rotation | named | kept)`): the rotation among the rostered planner holders by task id (#525-3), shown for information, since nothing records or enforces a per-task planner yet. A peer that accepted or finished a task never reviews it; when every eligible reviewer did, the person reviews and the trace says so. With
 `"review": { "adaptive": true }` in `.agenthub/config.json`, reviewers with at
 least `min_reviews` (5) reviews of that implementer in the class are ordered by
 how their reviews held up, ahead of quota but after idle before busy; off by

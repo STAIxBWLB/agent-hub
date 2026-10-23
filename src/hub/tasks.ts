@@ -770,10 +770,19 @@ export class Tasks {
   }
 
   /** What assignment weighs besides states and policy: quota, demotion and the review record. */
+  /**
+   * #525-3: the settled planner holders, sorted: the one input of the planner walk. It comes from the same settled role map as planner
+   * authority (`d.roles`), restricted to rostered peers, so assignment, planner notices and `route explain` agree on who the holders are.
+   * Read-only for now: the walk's result is shown and recorded nowhere until 525-2.
+   */
+  private plannerHolders(): PeerId[] {
+    return Object.entries(this.d.roles ?? {}).filter(([peer, roles]) => Array.isArray(roles) && roles.includes("planner") && this.d.bus.isRostered(peer)).map(([peer]) => peer).sort();
+  }
+
   private weights(cls: TaskClass, task?: Task) {
     const now = Date.now();
     const quota = this.d.quota?.();
-    return { ...this.health(), ...(task ? { reviewPool: this.reviewPoolOptions(task) } : {}), now, demoted: this.demoted(cls, now), reviews: this.reviewRecord(cls), ...(quota ? { quota } : {}), ...(this.d.review?.adaptive ? { adaptive: { min: this.d.review.min_reviews } } : {}) };
+    return { ...this.health(), planners: this.plannerHolders(), ...(task ? { reviewPool: this.reviewPoolOptions(task) } : {}), now, demoted: this.demoted(cls, now), reviews: this.reviewRecord(cls), ...(quota ? { quota } : {}), ...(this.d.review?.adaptive ? { adaptive: { min: this.d.review.min_reviews } } : {}) };
   }
 
   /**
