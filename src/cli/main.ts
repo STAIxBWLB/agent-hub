@@ -1380,8 +1380,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (sub === "assign") {
       const { one, rest: positional } = takeFlags(rest, ["--role", "--revision"], []);
       const role = one["--role"] ?? "owner", rawRevision = one["--revision"], revision = rawRevision === undefined ? undefined : Number(rawRevision);
-      if (positional.length !== 2 || !["owner", "reviewer"].includes(role) || (rawRevision !== undefined && (!/^\d+$/.test(rawRevision) || !Number.isSafeInteger(revision)))) fail("usage: ahub task assign <id> <peer> [--role owner|reviewer] [--revision N]");
-      return console.log(await taskOp(revision === undefined ? "task_assign" : "task_assign_checked", { id: positional[0], peer: positional[1], ...(role === "reviewer" ? { role } : {}), ...(revision === undefined ? {} : { revision }) }));
+      if (positional.length !== 2 || !["owner", "reviewer", "planner"].includes(role) || (rawRevision !== undefined && (!/^\d+$/.test(rawRevision) || !Number.isSafeInteger(revision)))) fail("usage: ahub task assign <id> <peer> [--role owner|reviewer|planner] [--revision N]");
+      return console.log(await taskOp(revision === undefined ? "task_assign" : "task_assign_checked", { id: positional[0], peer: positional[1], ...(role !== "owner" ? { role } : {}), ...(revision === undefined ? {} : { revision }) }));
     }
     if (sub === "unassign") {
       const { one, rest: positional } = takeFlags(rest, ["--role", "--revision"], []);

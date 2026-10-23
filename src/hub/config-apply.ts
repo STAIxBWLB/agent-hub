@@ -17,6 +17,7 @@ import { projectionConfig } from "./text-projection.ts";
 import { validateInstances, type InstancesConfig } from "./instances.ts";
 import { peerRosterConfig, staleInstanceKey } from "./roster.ts";
 import { CHARACTER_IDS } from "../pet/characters.ts";
+import { checkSettingValue, settingDef } from "./settings.ts";
 import { petPalette } from "../pet/config.ts";
 
 export type ApplyClass = "live" | "next use" | "restart";
@@ -189,6 +190,11 @@ export function validateRawConfig(raw: unknown, declarations?: InstancesConfig, 
   const instances = validateInstances(value.instances ?? declarations, catalog);
   block({ ...schema,
     instances: v => { validateInstances(v, catalog); },
+    planner: v => {
+      const def = settingDef("planner", instances, catalog);
+      if (typeof def === "string") fail("config.planner", def);
+      checkSettingValue(def as import("./settings.ts").SettingDef, v);
+    },
     permission_modes: v => { permissionDefaults(v, instances, catalog); },
     roster: v => { peerRosterConfig(v, instances, catalog, inertModuleRoster); },
     peers: v => { peerStartConfig(v, instances, catalog); },

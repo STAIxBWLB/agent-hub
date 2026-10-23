@@ -1,5 +1,6 @@
 import { HOST_CODE_SYMBOLS, parseTaskCodeSymbols, type TaskCodeSymbols } from "./task-code-symbols.ts";
 import { planFingerprint } from "./plan-conformance.ts";
+import type { PlannerReason } from "./routing.ts";
 import type { ReviewerPoolReason } from "./reviewer-pool.ts";
 import type { GitHubSource } from "./github-import.ts";
 import { Database } from "bun:sqlite";
@@ -47,6 +48,12 @@ export interface HistoryEntry {
   supersededBy?: string;
   /** The owner an event that set it left the task with (#67); absent in rows written before 0.11. */
   owner?: PeerId | null;
+  /** Host-selected planner at this transition; absent in legacy history. */
+  planner?: PeerId | null;
+  plannerReason?: PlannerReason;
+  /** Saved plan-review author/self-review evidence, retained if the current receipt changes. */
+  planAuthor?: PeerId | null;
+  selfReview?: true;
   /** On a decline or an escalation: the owner it was declined for or taken from (#207); later reroutes leave it out. */
   from?: PeerId;
   /** On a decline: the owner had no capacity right now (#531). Absent on older rows and on a plain refusal, which read as lasting. */
@@ -99,6 +106,16 @@ function reviewerHistory(extra: ReviewerHistory): ReviewerHistory {
   if (failure && (!id(failure.peer) || !["start_failed", "quota", "no_verdict"].includes(failure.cause) || failure.head !== undefined && (typeof failure.head !== "string" || !failure.head.trim() || failure.head.length > 300 || Buffer.byteLength(failure.head) > 1200 || /\p{Cc}/u.test(failure.head)))) throw new Error("invalid reviewer failure metadata");
   return { ...(extra.reviewerFamily ? { reviewerFamily: extra.reviewerFamily } : {}), ...(extra.reviewerReason ? { reviewerReason: extra.reviewerReason } : {}), ...(extra.reviewBlocked ? { reviewBlocked: true } : {}), ...(failure ? { reviewerFailure: { peer: failure.peer, cause: failure.cause, ...(failure.head ? { head: failure.head } : {}) } } : {}) };
 }
+export interface PlannerBinding { planner: PeerId | null; plannerReason: PlannerReason }
+function plannerValue(value: unknown): PeerId | null {
+  if (value == null) return null;
+  if (typeof value !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(value)) throw new Error("invalid planner id");
+  return value;
+}
+function plannerMetadata(planner: unknown, reason?: PlannerReason): Pick<HistoryEntry, "planner" | "plannerReason"> {
+  if (reason !== undefined && !["rotation", "named", "kept", "none"].includes(reason)) throw new Error("invalid planner reason");
+  return { planner: plannerValue(planner), ...(reason === undefined ? {} : { plannerReason: reason }) };
+}
 export interface Task extends PlanningFields {
   offer?: TaskOffer;
   cancelled?: TaskCancellation;
@@ -113,6 +130,8 @@ export interface Task extends PlanningFields {
   /** Catalog guidance id only, never an authority role (#295). */
   role?: string;
   owner: PeerId | null;
+  /** Null for legacy rows; only Tasks chooses or changes a planner. */
+  planner?: PeerId | null;
   reviewer: PeerId | null;
   state: TaskState;
   refs: TaskRefs;
@@ -241,6 +260,8 @@ export class Board {
     // Derived status-cache generation: only Board task/stall writes advance it, never journal writes.
     this.db.run("CREATE TABLE IF NOT EXISTS board_status_revision (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL)");
     this.db.run("INSERT OR IGNORE INTO board_status_revision VALUES (1,0)");
+    if (!have.has("planner")) this.db.run("ALTER TABLE tasks ADD COLUMN planner TEXT");
+    this.db.run("CREATE INDEX IF NOT EXISTS tasks_planner_present ON tasks(planner) WHERE planner IS NOT NULL");
     if (!have.has("reserved")) this.db.run("ALTER TABLE tasks ADD COLUMN reserved TEXT");
     if (!have.has("external_repo")) this.db.run("ALTER TABLE tasks ADD COLUMN external_repo TEXT");
     if (!have.has("external_issue")) this.db.run("ALTER TABLE tasks ADD COLUMN external_issue INTEGER");
@@ -260,16 +281,19 @@ export class Board {
       release_order INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'planning', planned_start INTEGER, cut INTEGER, ship INTEGER,
       activated_at INTEGER, frozen_at INTEGER, shipped_at INTEGER, created INTEGER NOT NULL, updated INTEGER NOT NULL,
       revision INTEGER NOT NULL DEFAULT 0)`);
+    if (!(this.db.query("PRAGMA table_info(releases)").all() as { name: string }[]).some(row => row.name === "planner")) this.db.run("ALTER TABLE releases ADD COLUMN planner TEXT");
+    this.db.run("CREATE INDEX IF NOT EXISTS releases_planner_present ON releases(planner) WHERE planner IS NOT NULL");
     if (!(this.db.query("PRAGMA table_info(releases)").all() as { name: string }[]).some(row => row.name === "train")) this.db.run("ALTER TABLE releases ADD COLUMN train TEXT");
 
   }
 
-  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; profile?: import("./profiles.ts").ProfileName; profileClass?: string; customProfile?: true; role?: string; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[]; backlog?: boolean; external?: GitHubSource }): Task {
-    const now = Date.now();
-    const history: HistoryEntry[] = [{ at: now, by, event: t.backlog ? "backlogged" : "proposed", ...(this.trackPlanRevisions?.() && t.plan && Object.keys(t.plan).length ? { planRevision: { revision: 1, fingerprint: planFingerprint(t.plan) } } : {}) }];
+  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; planner?: PeerId | null; plannerReason?: PlannerReason; profile?: import("./profiles.ts").ProfileName; profileClass?: string; customProfile?: true; role?: string; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[]; backlog?: boolean; external?: GitHubSource }): Task {
+    const now = Date.now(), planner = plannerValue(t.planner);
+    const chosen = Object.hasOwn(t, "planner") || t.plannerReason !== undefined ? plannerMetadata(planner, t.plannerReason) : {};
+    const history: HistoryEntry[] = [{ at: now, by, ...chosen, event: t.backlog ? "backlogged" : "proposed", ...(this.trackPlanRevisions?.() && t.plan && Object.keys(t.plan).length ? { planRevision: { revision: 1, fingerprint: planFingerprint(t.plan) } } : {}) }];
     const { lastInsertRowid } = this.taskWrite(() => this.db
-      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated, project_profile, task_role, external_repo, external_issue) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(t.title, t.detail ?? "", t.class, t.backlog ? "backlog" : "proposed", JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now, t.profile && (t.profile !== "dev" || t.customProfile || t.profileClass !== undefined && t.profileClass !== t.class) ? JSON.stringify({ profile: t.profile, profileClass: t.profileClass ?? t.class }) : null, t.role ?? null, t.external?.repo.toLowerCase() ?? null, t.external?.issue ?? null));
+      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated, project_profile, task_role, external_repo, external_issue, planner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(t.title, t.detail ?? "", t.class, t.backlog ? "backlog" : "proposed", JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now, t.profile && (t.profile !== "dev" || t.customProfile || t.profileClass !== undefined && t.profileClass !== t.class) ? JSON.stringify({ profile: t.profile, profileClass: t.profileClass ?? t.class }) : null, t.role ?? null, t.external?.repo.toLowerCase() ?? null, t.external?.issue ?? null, planner));
     const task = this.get(Number(lastInsertRowid))!;
     this.changed(task, history[0]!);
     return task;
@@ -346,7 +370,7 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled" | "codeSymbols">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "capacity" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | "reviewFindings" | "unmetCriteria" | "deliverables" | "planObservation" | "planDeparture" | "planDepartureInvalidated" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number, codeSymbolsAuthority?: typeof HOST_CODE_SYMBOLS): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "planner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled" | "codeSymbols">>, note?: string, extra: Pick<HistoryEntry, "plannerReason" | "planAuthor" | "selfReview" | "profile" | "sweep" | "reason" | "from" | "capacity" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | "reviewFindings" | "unmetCriteria" | "deliverables" | "planObservation" | "planDeparture" | "planDepartureInvalidated" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number, codeSymbolsAuthority?: typeof HOST_CODE_SYMBOLS): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
@@ -355,7 +379,11 @@ export class Board {
     if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state) && !untouchedReturn) {
       throw new Error(`task #${id} is ${task.state}: cannot move to ${patch.state}`);
     }
-    const next = { ...task, ...patch, refs: { ...task.refs, ...patch.refs } };
+    const planner = Object.hasOwn(patch, "planner") ? plannerValue(patch.planner) : task.planner ?? null;
+    const plannerHistory = Object.hasOwn(patch, "planner") || extra.plannerReason !== undefined ? plannerMetadata(planner, extra.plannerReason) : {};
+    const authorHistory = Object.hasOwn(extra, "planAuthor") ? { planAuthor: plannerValue(extra.planAuthor) } : {};
+    if (extra.selfReview !== undefined && extra.selfReview !== true) throw new Error("invalid self-review metadata");
+    const next = { ...task, ...patch, planner, refs: { ...task.refs, ...patch.refs } };
     const headOf = (row: Task) => row.refs.commit ?? row.sdlc?.head ?? row.sdlc?.localHead;
     const privateSymbols = next.signals.includes("pii") || next.signals.includes("pii_path");
     if (Object.hasOwn(patch, "codeSymbols")) {
@@ -398,10 +426,10 @@ export class Board {
     // Disabling reporting must not let plan or repository refs edits/reverts resurrect prior consent.
     const repositoryRefsChanged = patch.refs !== undefined && JSON.stringify([task.refs.repo, task.refs.paths]) !== JSON.stringify([next.refs.repo, next.refs.paths]);
     const departureInvalidated = extra.planDepartureInvalidated === true || hasDeparture && (planChanged || repositoryRefsChanged);
-    const history = [...task.history, { at: Date.now(), by, event, ...(planRevision ? { planRevision } : {}), ...(extra.planObservation ? { planObservation: extra.planObservation } : {}), ...(extra.planDeparture ? { planDeparture: extra.planDeparture } : {}), ...(departureInvalidated ? { planDepartureInvalidated: true as const } : {}), ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.withheld && (note || reviewFindings) ? { withheld: true as const } : {}), ...(reviewFindings ? { reviewFindings } : {}), ...(unmetCriteria?.length ? { unmetCriteria } : {}), ...(deliverables ? { deliverables } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}) }];
+    const history = [...task.history, { at: Date.now(), by, event, ...plannerHistory, ...authorHistory, ...(extra.selfReview === true ? { selfReview: true as const } : {}), ...(planRevision ? { planRevision } : {}), ...(extra.planObservation ? { planObservation: extra.planObservation } : {}), ...(extra.planDeparture ? { planDeparture: extra.planDeparture } : {}), ...(departureInvalidated ? { planDepartureInvalidated: true as const } : {}), ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.withheld && (note || reviewFindings) ? { withheld: true as const } : {}), ...(reviewFindings ? { reviewFindings } : {}), ...(unmetCriteria?.length ? { unmetCriteria } : {}), ...(deliverables ? { deliverables } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}) }];
     this.taskWrite(() => {
-      const result = this.db.query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ? WHERE id = ?")
-        .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), id);
+      const result = this.db.query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ?, planner = ? WHERE id = ?")
+        .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), planner, id);
       if (result.changes) {
         if (next.codeSymbols) this.db.query("INSERT INTO task_code_symbols(task,payload) VALUES(?,?) ON CONFLICT(task) DO UPDATE SET payload=excluded.payload").run(id, JSON.stringify(next.codeSymbols));
         else this.db.query("DELETE FROM task_code_symbols WHERE task=?").run(id);
@@ -430,24 +458,25 @@ export class Board {
   }
 
   /** A planner reserves a routing slot without claiming or dispatching the work. */
-  pullPlanned(id: number, by: PeerId, reserved: PeerId, revision: number, note: string, withheld = false): Task {
+  pullPlanned(id: number, by: PeerId, reserved: PeerId, revision: number, note: string, withheld = false, binding?: PlannerBinding): Task {
     const task = this.get(id);
     if (!task || (task.planningRevision ?? 0) !== revision || task.state !== "backlog" || task.owner || !taskCanPlan(task)) throw new Error("planner pull changed or already started");
-    const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "backlog pulled", planning: { revision: revision + 1, fields: ["reserved"], previous: { reserved: task.reserved ?? null }, pull: true }, note, ...(withheld ? { withheld: true as const } : {}) };
-    const result = this.taskWrite(() => this.db.query("UPDATE tasks SET state='proposed',owner=NULL,reviewer=NULL,offer=NULL,reserved=?,planning_revision=planning_revision+1,history=?,updated=? WHERE id=? AND planning_revision=? AND state='backlog' AND owner IS NULL")
-      .run(reserved, JSON.stringify([...task.history, entry]), now, id, revision));
+    const selected = binding ? plannerMetadata(binding.planner, binding.plannerReason) : {};
+    const now = Date.now(), entry: HistoryEntry = { at: now, by, ...selected, event: "backlog pulled", planning: { revision: revision + 1, fields: ["reserved"], previous: { reserved: task.reserved ?? null }, pull: true }, note, ...(withheld ? { withheld: true as const } : {}) };
+    const result = this.taskWrite(() => this.db.query("UPDATE tasks SET state='proposed',owner=NULL,reviewer=NULL,offer=NULL,reserved=?,planning_revision=planning_revision+1,history=?,updated=?,planner=? WHERE id=? AND planning_revision=? AND state='backlog' AND owner IS NULL")
+      .run(reserved, JSON.stringify([...task.history, entry]), now, binding ? selected.planner ?? null : task.planner ?? null, id, revision));
     if (result.changes !== 1) throw new Error("planner pull changed");
     const updated = this.get(id)!; this.changed(updated, entry); return updated;
   }
 
   /** Publish no intermediate ownerless pull: Tasks has already admitted the exact reserved peer. */
   pullAssigned(id: number, by: PeerId, owner: PeerId, revision: number, note: string, withheld: boolean,
-    reviewer: PeerId | null, assignmentNote: string, extra: Parameters<Board["update"]>[5], expectedFlowRevision: number): Task {
+    reviewer: PeerId | null, assignmentNote: string, extra: Parameters<Board["update"]>[5], expectedFlowRevision: number, binding?: PlannerBinding): Task {
     return this.atomic(() => {
       const current = this.get(id);
       if (!current || current.history.length !== expectedFlowRevision) throw new Error("task flow revision changed");
-      const pulled = this.pullPlanned(id, by, owner, revision, note, withheld);
-      const assigned = this.update(id, by, "assigned", { owner, reviewer }, assignmentNote, extra, pulled.history.length);
+      const pulled = this.pullPlanned(id, by, owner, revision, note, withheld, binding);
+      const assigned = this.update(id, by, "assigned", { owner, reviewer, ...(binding ? { planner: binding.planner } : {}) }, assignmentNote, { ...extra, ...(binding ? { plannerReason: binding.plannerReason } : {}) }, pulled.history.length);
       // Both deferred events describe the committed handoff, including the callback payload.
       for (const change of this.pendingChanges ?? []) if (change.task.id === id) change.task = assigned;
       return assigned;
@@ -508,9 +537,9 @@ export class Board {
     });
   }
 
-  newRelease(name: string, goal: string, order: number): Release {
-    const now = Date.now();
-    const result = this.db.query("INSERT INTO releases(name,goal,release_order,created,updated) VALUES(?,?,?,?,?)").run(name, goal, order, now, now);
+  newRelease(name: string, goal: string, order: number, planner?: PeerId | null): Release {
+    const now = Date.now(), selected = plannerValue(planner);
+    const result = this.db.query("INSERT INTO releases(name,goal,release_order,created,updated,planner) VALUES(?,?,?,?,?,?)").run(name, goal, order, now, now, selected);
     return this.release(Number(result.lastInsertRowid))!;
   }
   release(id: number): Release | undefined {
@@ -520,10 +549,10 @@ export class Board {
   releases(): Release[] {
     return (this.db.query("SELECT * FROM releases ORDER BY release_order,id").all() as Record<string, unknown>[]).map(parseRelease);
   }
-  updateRelease(id: number, patch: Partial<Pick<Release, "state" | "plannedStart" | "cut" | "ship" | "train">>, revision: number): Release {
+  updateRelease(id: number, patch: Partial<Pick<Release, "state" | "planner" | "plannedStart" | "cut" | "ship" | "train">>, revision: number): Release {
     const release = this.release(id);
     if (!release || release.revision !== revision) throw new Error("release revision changed");
-    const next = { ...release, ...patch }, now = Date.now();
+    const next = { ...release, ...patch, planner: Object.hasOwn(patch, "planner") ? plannerValue(patch.planner) : release.planner ?? null }, now = Date.now();
     const moves: Record<ReleaseState, ReleaseState[]> = { planning: ["active", "dropped"], active: ["frozen", "dropped"], frozen: ["shipped", "dropped"], shipped: [], dropped: [] };
     if (next.state !== release.state && !moves[release.state].includes(next.state)) throw new Error("invalid release transition");
     if (patch.train && next.state !== release.state && ["frozen", "shipped"].includes(next.state)) {
@@ -532,8 +561,8 @@ export class Board {
     }
     const dates = [next.plannedStart, next.cut, next.ship].filter((date): date is number => date !== null);
     if (dates.some(date => !Number.isSafeInteger(date) || date <= 0 || date > 8_640_000_000_000_000) || dates.some((date, i) => i > 0 && dates[i-1]! > date)) throw new Error("invalid release planned dates");
-    const result = this.db.query("UPDATE releases SET state=?,planned_start=?,cut=?,ship=?,activated_at=?,frozen_at=?,shipped_at=?,updated=?,train=?,revision=revision+1 WHERE id=? AND revision=?")
-      .run(next.state, next.plannedStart, next.cut, next.ship, release.activatedAt ?? (next.state === "active" ? now : null), release.frozenAt ?? (next.state === "frozen" ? now : null), release.shippedAt ?? (next.state === "shipped" ? now : null), now, next.train === undefined ? null : JSON.stringify(next.train), id, revision);
+    const result = this.db.query("UPDATE releases SET state=?,planned_start=?,cut=?,ship=?,activated_at=?,frozen_at=?,shipped_at=?,updated=?,train=?,planner=?,revision=revision+1 WHERE id=? AND revision=?")
+      .run(next.state, next.plannedStart, next.cut, next.ship, release.activatedAt ?? (next.state === "active" ? now : null), release.frozenAt ?? (next.state === "frozen" ? now : null), release.shippedAt ?? (next.state === "shipped" ? now : null), now, next.train === undefined ? null : JSON.stringify(next.train), next.planner, id, revision);
     if (result.changes !== 1) throw new Error("release revision changed");
     return this.release(id)!;
   }
@@ -565,6 +594,19 @@ export class Board {
     return ("task" in where
       ? this.db.query("SELECT * FROM reviews WHERE task = ? ORDER BY at").all(where.task)
       : this.db.query("SELECT * FROM reviews WHERE class = ? ORDER BY at").all(where.class)) as ReviewOutcome[];
+  }
+
+  /** A short-circuit SQL presence read; no task, receipt or history body is hydrated into JS. */
+  hasPlannerState(): boolean {
+    const row = this.db.query(`SELECT
+      EXISTS(SELECT 1 FROM tasks WHERE planner IS NOT NULL) OR
+      EXISTS(SELECT 1 FROM releases WHERE planner IS NOT NULL) OR
+      EXISTS(SELECT 1 FROM tasks WHERE CASE WHEN json_valid(sdlc) THEN
+        json_type(sdlc,'$.planReview.planAuthor') IS NOT NULL OR json_type(sdlc,'$.planReview.selfReview') IS NOT NULL ELSE 0 END) OR
+      EXISTS(SELECT 1 FROM tasks, json_each(CASE WHEN json_valid(tasks.history) THEN tasks.history ELSE '[]' END) AS entry
+        WHERE CASE WHEN json_valid(entry.value) THEN json_type(entry.value,'$.planAuthor') IS NOT NULL OR json_type(entry.value,'$.selfReview') IS NOT NULL ELSE 0 END)
+      AS present`).get() as { present: number };
+    return row.present === 1;
   }
 
   close(): void {
@@ -609,11 +651,12 @@ function parse(row: Record<string, unknown>): Task {
   delete out.planning_revision;
   if (out.pinned) out.pinned = true; else delete out.pinned;
   for (const key of ["rank", "priority", "release", "due"]) if (out[key] == null) delete out[key];
+  out.planner = row.planner ?? null;
   return out as unknown as Task;
 }
 
 function parseRelease(row: Record<string, unknown>): Release {
-  return { ...(row.train == null ? {} : { train: JSON.parse(String(row.train)) }), id: Number(row.id), name: String(row.name), goal: String(row.goal), order: Number(row.release_order), state: row.state as ReleaseState,
+  return { ...(row.train == null ? {} : { train: JSON.parse(String(row.train)) }), planner: row.planner == null ? null : String(row.planner), id: Number(row.id), name: String(row.name), goal: String(row.goal), order: Number(row.release_order), state: row.state as ReleaseState,
     plannedStart: row.planned_start as number | null, cut: row.cut as number | null, ship: row.ship as number | null,
     activatedAt: row.activated_at as number | null, frozenAt: row.frozen_at as number | null, shippedAt: row.shipped_at as number | null,
     created: Number(row.created), updated: Number(row.updated), revision: Number(row.revision) };
