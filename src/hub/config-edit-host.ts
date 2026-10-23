@@ -19,6 +19,10 @@ export interface ConfigEditHost {
   reload: (authority: EditAuthority, key: string) => Promise<Record<string, unknown>>;
   event: (event: Extract<HubEvent, { type: "config_edit" }>) => void;
   notify: (text: string) => void;
+  /** Called after a write so status.json and the console snapshot show what is now pending. */
+  changed: () => void;
+  /** What waits for a restart now, from the reload's own bookkeeping (instance declarations are restart-bound). */
+  pending: () => { key: string; reason: string }[];
   /** The running hub's value at a config path, for the form. */
   effective: (path: readonly string[]) => unknown;
   /** The lifecycle the running hub holds, to say what a changed sdlc.toml waits for. */
@@ -51,12 +55,14 @@ export function createConfigEditor(host: ConfigEditHost) {
     return typeof file !== "string" && (file.mode !== running.mode || JSON.stringify(file.requiredChecks) !== JSON.stringify(running.requiredChecks));
   };
   /** What a changed sdlc.toml waits for: shown with the other pending restarts. */
-  const pendingRestart = (): { key: string; reason: string }[] => {
+  const sdlcRestart = (): { key: string; reason: string }[] => {
     const file = host.fileSdlc(), running = host.runningSdlc();
     if (typeof file === "string") return [];
     return [...(file.mode !== running.mode ? [{ key: "sdlc.mode", reason: "the lifecycle is read once at hub start" }] : []),
       ...(JSON.stringify(file.requiredChecks) !== JSON.stringify(running.requiredChecks) ? [{ key: "sdlc.required_checks", reason: "the lifecycle is read once at hub start" }] : [])];
   };
+  const pendingRestart = (): { key: string; reason: string }[] => sdlcRestart();
+  const allPending = (): string[] => [...host.pending().map(row => row.key), ...sdlcRestart().map(row => row.key)];
   function view(): ConfigEditView {
     const file = host.fileSdlc(), running = host.runningSdlc();
     const declared = host.declared();
@@ -124,15 +130,17 @@ export function createConfigEditor(host: ConfigEditHost) {
     const source = authority === "terminal" ? "terminal" as const : "dashboard" as const;
     host.event({ type: "config_edit", file: plan.request.file, paths: written.paths, fileBefore: written.fileBefore, fileAfter: written.fileAfter, tier: plan.tier, by: "person", source, ...(written.backup ? { backup: written.backup } : {}), ...(reason ? { reason } : {}) });
     try { host.notify(`config edit: ${plan.request.file} ${plan.diff.map(row => row.path).join(", ")} (${source})`); } catch { /* the write stands */ }
-    if (plan.request.file === "sdlc.toml") return { ok: true, saved: true, ...(written.backup ? { backup: written.backup } : {}), lines: diffText(plan), text: `sdlc.toml written; the lifecycle is read once at hub start: restart pending`, restartPending: pendingRestart().map(row => row.key) };
+    const settled = () => { try { host.changed(); } catch { /* the write stands; the next status write shows it */ } };
+    if (plan.request.file === "sdlc.toml") { settled(); return { ok: true, saved: true, ...(written.backup ? { backup: written.backup } : {}), lines: diffText(plan), text: `sdlc.toml written; the lifecycle is read once at hub start: restart pending`, restartPending: allPending() }; }
     const failures: string[] = [];
     for (const key of leafKeys(plan)) {
       let reloaded: Record<string, unknown>;
       try { reloaded = await host.reload(authority, key); } catch { reloaded = { ok: false, error: "the change was saved but could not be published; inspect hub.log" }; }
       if (reloaded.ok !== true) failures.push(`${key}: ${String(reloaded.error ?? "not published")}`);
     }
+    settled();
     if (failures.length) return { ok: false, saved: true, error: `saved, but not published: ${failures.join("; ")}; run ahub settings reload to review it`, ...(written.backup ? { backup: written.backup } : {}) };
-    return { ok: true, saved: true, ...(written.backup ? { backup: written.backup } : {}), lines: diffText(plan), text: `config.local.json written: ${plan.diff.map(row => row.path).join(", ")}${plan.diff.some(row => row.applies === "restart") ? "; restart pending" : ""}`, restartPending: pendingRestart().map(row => row.key) };
+    return { ok: true, saved: true, ...(written.backup ? { backup: written.backup } : {}), lines: diffText(plan), text: `config.local.json written: ${plan.diff.map(row => row.path).join(", ")}${plan.diff.some(row => row.applies === "restart") ? "; restart pending" : ""}`, restartPending: allPending() };
   }
   return { view, preview, apply, pendingRestart };
 }

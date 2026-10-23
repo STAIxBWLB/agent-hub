@@ -14,7 +14,7 @@ const cleanup: (() => unknown)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 const reviewer = { kind: "codex", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" };
 
-function fixture(local: unknown = {}, hold?: string) {
+function fixture(local: unknown = {}, hold?: string, override: Partial<ConfigEditHost> = {}) {
   const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-config-host-"))), state = join(dir, ".agenthub/state");
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
@@ -23,7 +23,7 @@ function fixture(local: unknown = {}, hold?: string) {
   git("init", "-q"); git("add", "-f", ".agenthub/config.json"); git("commit", "-qm", "base");
   writeFileSync(join(dir, ".agenthub/config.local.json"), JSON.stringify(local, null, 2));
   const events: HubEvent[] = [], notices: string[] = [], reloads: { authority: EditAuthority; key: string }[] = [];
-  const state2 = { held: hold, running: { mode: "off", requiredChecks: [] as string[] }, reloadError: undefined as string | undefined };
+  const state2 = { held: hold, running: { mode: "off", requiredChecks: [] as string[] }, reloadError: undefined as string | undefined, pending: [] as { key: string; reason: string }[], changed: 0 };
   const host: ConfigEditHost = {
     cwd: dir, stateDir: state,
     check: (file, text) => {
@@ -34,7 +34,8 @@ function fixture(local: unknown = {}, hold?: string) {
     },
     held: () => state2.held,
     reload: async (authority, key) => { reloads.push({ authority, key }); return state2.reloadError ? { ok: false, error: state2.reloadError } : { ok: true }; },
-    event: event => { events.push(event); }, notify: text => { notices.push(text); },
+    event: event => { events.push(event); }, notify: text => { notices.push(text); }, changed: () => { state2.changed++; },
+    pending: () => state2.pending,
     effective: () => undefined,
     runningSdlc: () => state2.running,
     fileSdlc: () => {
@@ -45,6 +46,7 @@ function fixture(local: unknown = {}, hold?: string) {
     },
     declared: () => ({}),
     tier3Set: () => false,
+    ...override,
   };
   const editor = createConfigEditor(host);
   const request = (set: { path: string[]; value: unknown }[], file: "config.local.json" | "sdlc.toml" = "config.local.json") => ({ file, revision: editRevisions(dir)[file], set });
@@ -179,6 +181,7 @@ test("#689 sdlc.toml: advise to enforce is validated, written with a backup, aud
   expect(done).toMatchObject({ ok: true, saved: true, restartPending: ["sdlc.mode"] });
   expect(f.read("sdlc.toml")).toBe('mode = "enforce"\nrequired_checks = ["gate"]\n');
   expect(f.reloads).toEqual([]); // the lifecycle is read once at start: there is nothing to publish
+  expect(f.state2.changed).toBe(1); // status.json is rewritten so the pending restart shows
   expect(configBackups(f.state).map(item => item.file)).toEqual(["sdlc.toml"]);
   expect(f.events).toHaveLength(1);
   expect(f.events[0]).toMatchObject({ type: "config_edit", file: "sdlc.toml", tier: 2 });
@@ -194,6 +197,14 @@ test("#689 a write that saved but could not publish says so, keeps the file and 
   expect(result.saved).toBe(true);
   expect(String(result.error)).toContain("saved, but not published");
   expect(JSON.parse(f.read("config.local.json")!).instances["codex-review"]).toEqual(reviewer);
+  expect(f.events).toHaveLength(1);
+  expect(f.state2.changed).toBe(1); // a saved-but-unpublished edit still changes what status shows
+});
+
+test("#689 a status refresh that throws never turns a saved edit into a failure", async () => {
+  const f = fixture({ roster: { codex: false } }, undefined, { changed: () => { throw new Error("status write failed"); } });
+  const result = await f.editor.apply(valid(f), "terminal");
+  expect(result).toMatchObject({ ok: true, saved: true });
   expect(f.events).toHaveLength(1);
 });
 
