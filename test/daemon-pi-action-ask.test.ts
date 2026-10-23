@@ -12,9 +12,10 @@ async function until(check: () => boolean) {
   for (let n = 0; n < 500 && !check(); n++) await Bun.sleep(10);
   expect(check()).toBe(true);
 }
-async function rig(unattended = false) {
+async function rig(unattended = false, crash = false) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-pi-actions-"));
   cleanups.push(() => rmSync(cwd, { recursive: true, force: true }));
+  const exitTrigger = join(cwd, "exit-native");
   const policy = { budgets: { publish: 2 } };
   mkdirSync(join(cwd, ".agenthub"));
   writeFileSync(join(cwd, ".agenthub/config.local.json"), JSON.stringify({ action_policy: policy }));
@@ -22,7 +23,7 @@ async function rig(unattended = false) {
     permissionTimeoutMs: 500, unattended, boundedTools: { specAvailable: async () => ({ available: true }), fetchSpec: async () => { throw new Error("unexpected spec read"); } },
     config: { ...DEFAULT_CONFIG, batch_ms: 0, action_policy: policy as never,
       memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
-      pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")] } } });
+      pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), ...(crash ? ["--exit-trigger", exitTrigger, "--exit-code", "7"] : [])] } } });
   cleanups.push(() => daemon.stop());
   const client = await ControlClient.connect(cwd, { role: "console" }); cleanups.push(() => client.close());
   const asks: any[] = []; client.onPush = row => { if (row.t === "permission") asks.push(row); }; client.send({ t: "tail" });
@@ -37,7 +38,7 @@ async function rig(unattended = false) {
   })).json() as Promise<{ text: string }>;
   const status = async () => (await client.request({ t: "status" })).status.actionPolicyInfo.pi;
   const mode = async (value: string) => expect((await client.request({ t: "permission", peer: "pi", mode: value, confirmed: true })).permissionMode).toBe(value);
-  return { cwd, daemon, client, asks, call, status, mode };
+  return { cwd, daemon, client, asks, call, status, mode, exitTrigger };
 }
 
 test("Pi classed calls ask before every native mode, including unattended, while plain calls retain the mode", async () => {
@@ -101,4 +102,17 @@ test("Pi timed-out or stopped approval cannot execute or seed a class allowance"
   await pending;
   expect(existsSync(join(r.cwd, "stopped-marker"))).toBe(false);
   expect((await r.status()).remaining.publish).toBe(0);
+});
+
+
+test("a crashed Pi has no enforceable live tool path even when it was not stopped by the person", async () => {
+  const r = await rig(false, true);
+  expect((await r.status()).enforceable).toBe(true);
+  writeFileSync(r.exitTrigger, "exit");
+  await until(() => r.daemon.bus.stateOf("pi") === "offline");
+  const status = await r.status();
+  expect(status.enforceable).toBe(false);
+  expect(status.note).toContain("always-ask not enforceable");
+  expect((await r.call("printf must-not-run > crash-marker; git push", "after-crash")).text).toContain("stopped");
+  expect(existsSync(join(r.cwd, "crash-marker"))).toBe(false);
 });

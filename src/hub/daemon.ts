@@ -2754,7 +2754,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (definitionOf(peer)?.start.daemonPort === "claude-implementer") return owner?.ownedTools && owner.state !== "offline" ? { enforced: true } : { enforced: false, reason: "the managed Claude implementer is offline" };
     if (isCodexPeer(owner)) return { enforced: false, reason: owner.actionGated ? "Codex approval RPCs are gated, but native policy can execute without sending one (never-ask sends approvalPolicy never)" : "this Codex proxy has no hub approval gate" };
     if (isLocalPeer(owner)) return owner.state !== "offline" ? { enforced: true } : { enforced: false, reason: "the local worker is offline" };
-    if (isPiPeer(owner)) return owner.acceptingTools ? { enforced: true } : { enforced: false, reason: "Pi has no verified live tool bridge" };
+    if (isPiPeer(owner)) return owner.state !== "offline" && owner.acceptingTools ? { enforced: true } : { enforced: false, reason: "Pi has no verified live tool bridge" };
     if (isAcpPeer(owner) && owner.actionGated) {
       const mode = owner.permissionModeState;
       return mode === "ask" ? { enforced: true } : { enforced: false, reason: mode === "unknown" || mode === "unmanaged" ? "its native approval mode is not managed by the hub, so a request may never be sent" : `its native mode ${mode} sends no request for a call it allows` };
