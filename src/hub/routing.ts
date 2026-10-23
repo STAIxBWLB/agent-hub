@@ -408,9 +408,6 @@ export function assign(
     if (role === "owner" && opts.excludeOwners?.includes(peer)) return deny("owner-admission", "owner admission: WIP or delivery hold");
     const adapter = (opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances);
     if (role === "owner" && adapter?.routing?.reviewOnly) return deny("owner-admission", "owner admission: a review-only instance owns no task");
-    // ponytail: until slice 525-5 proves a person-started channel instance's execution root, such an instance owns no write-class task, whatever the host's
-    // isolation verdict says. Remove this line with 525-5 and let the isolation check below decide.
-    if (role === "owner" && ownerWrites && adapter?.instances?.mode === "external" && adapter.kind !== peer) return deny("owner-admission", "owner admission: a person-started Claude instance owns no write-class task until #525-5 proves its execution root");
     if (role === "owner" && ownerWrites && adapter && adapter.kind !== peer) {
       if (!peerEntry(opts.roles, peer)?.includes("implementer")) return deny("owner-admission", "owner admission: declared write owner requires the current implementer role");
       if (peerEntry(opts.ownerIsolation, peer) !== true) return deny("owner-admission", "owner admission: declared write owner requires a verified isolated execution root");

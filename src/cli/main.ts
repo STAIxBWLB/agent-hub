@@ -958,7 +958,10 @@ const commands: Record<string, () => Promise<void> | void> = {
       projectConfig, connect: nativeConnect, fail,
       exec: (bin, argv, tool) => exec(bin, argv, tool, context.executionCwd),
       execWithEnv: (bin, argv, env) => execWithEnv(bin, argv, env, selectedInstance ?? entry.command, context.executionCwd), takeFlags,
-      helpers: { launcherPreview: (tool, raw, projectRoot, state, unattended) => launcherPreview(tool, raw, projectRoot, state, unattended, selectedInstance), readControl, recordTerminalLaunch, prepareTerminalLaunch, registerTerminalLaunch, recoveryLock, processSignature,
+      helpers: { resolveExecutionCwd: peer => {
+        const current = readInstanceRoleConfig(cwd);
+        return resolveInstanceExecutionCwd(cwd, peer, current.instances, effectiveInstanceRoles(peer, current.instances, current.roles, current.catalog), current.catalog);
+      }, launcherPreview: (tool, raw, projectRoot, state, unattended) => launcherPreview(tool, raw, projectRoot, state, unattended, selectedInstance), readControl, recordTerminalLaunch, prepareTerminalLaunch, registerTerminalLaunch, recoveryLock, processSignature,
         buildLaunch, claudeObservationHooks, recordClaudeLaunch, cleanupStaleClaudeSettings, cleanupClaudeSettings,
         nativeLaunchEnv, runClaudeLaunch, childEnv, qwenSessionId, configureJcodeMcp, configureKimiMcp,
         buildKimiTuiLaunch, startModeOf },

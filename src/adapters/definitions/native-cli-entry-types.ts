@@ -16,6 +16,8 @@ export interface NativeCliEntryContext {
   execWithEnv(bin: string, argv: string[], extra: NodeJS.ProcessEnv): never;
   takeFlags(argv: string[], single: string[], repeated: string[]): { one: Record<string, string>; many: Record<string, string[]>; rest: string[] };
   helpers: {
+    /** Fixed host validation; the entry never chooses or creates an execution worktree. */
+    resolveExecutionCwd(peer: string): string;
     launcherPreview: typeof import("../../cli/preview.ts").launcherPreview;
     readControl: typeof import("../../hub/control-client.ts").readControl;
     recordTerminalLaunch: typeof import("../../cli/terminal-recovery.ts").recordTerminalLaunch;

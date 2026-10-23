@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { realPath } from "../src/hub/project.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 
 async function plugin(launchId: string | undefined) {
@@ -65,7 +66,7 @@ async function plugin(launchId: string | undefined) {
 
 for (const launchId of ["managed-launch", undefined]) test(`#551 plugin hello ${launchId ? "carries launch id" : "preserves absent launch compatibility"}`, async () => {
   const f = await plugin(launchId);
-  try { expect(f.hellos).toHaveLength(1); expect(f.hellos[0].launchId).toBe(launchId); expect(f.hellos[0].standby).not.toBe(true); }
+  try { expect(f.hellos).toHaveLength(1); expect(f.hellos[0].launchId).toBe(launchId); expect(f.hellos[0].standby).not.toBe(true); expect(f.hellos[0].cwd).toBe(realPath(f.hellos[0].projectRoot)); }
   finally { await f.close(); }
 });
 

@@ -1,3 +1,4 @@
+import { realPath } from "../hub/project.ts";
 import { readInstanceConfig } from "../hub/instance-config.ts";
 import { effectiveInstanceRoles } from "../hub/instances.ts";
 import { activeLifecycle } from "../hub/lifecycle-schema.ts";
@@ -259,6 +260,7 @@ async function connectLoop(): Promise<void> {
     try {
       const client = await ControlClient.connect(stateDir, { role: toolsMode ? "tools" : "peer", peer: peerId, ...(toolsMode ? {} : { channel }),
         ...(process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {}),
+        ...(!toolsMode ? { cwd: realPath(process.cwd()) } : {}),
         ...(!toolsMode && standingBy ? { standby: true } : {}),
         ...(process.env.AGENTHUB_PROJECT_DIR ? { projectRoot } : {}) });
       client.onPush = (msg) => {

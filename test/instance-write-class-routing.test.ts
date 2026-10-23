@@ -11,53 +11,34 @@ const instances = { "claude-impl": { kind: "claude", roles: ["implementer"], wor
 const catalog = builtinProjectCatalog();
 const states: Record<string, PeerState> = { "claude-impl": "idle", "claude-plan": "idle", "claude-rev": "idle", "codex-a": "idle", claude: "idle", codex: "idle" };
 const policy = (peers: string[]) => parseRouting(`[local]\nfixed_model="fixture"\n${CLASSES.map(name => `[classes.${name}]\npeers=${JSON.stringify(peers)}\n`).join("")}`);
-// The host's verdict is deliberately "isolated": the refusal must not depend on it, because a channel instance's root is not proven until 525-5.
-const base = (extra: Partial<Options> = {}): Options => ({ instances: instances as never, adapterCatalog: catalog, roles: { "claude-impl": ["implementer"], "claude-plan": ["planner"], "claude-rev": ["reviewer"], "codex-a": ["implementer"] }, ownerIsolation: { "claude-impl": true, "codex-a": true, "claude-plan": true, "claude-rev": true }, ...extra });
-const REASON = "owner admission: a person-started Claude instance owns no write-class task until #525-5 proves its execution root";
+// #525-5: only the host's verified current execution root admits a declared write owner.
+const base = (extra: Partial<Options> = {}): Options => ({ instances: instances as never, adapterCatalog: catalog, roles: { "claude-impl": ["implementer"], "claude-plan": ["planner"], "claude-rev": ["reviewer"], "codex-a": ["implementer"] }, ownerIsolation: { "claude-impl": true, "codex-a": true }, ...extra });
+const REASON = "owner admission: declared write owner requires a verified isolated execution root";
 
 test("#735 ownerRoleOfClass is derived: plan is the planner's, review the reviewer's, every other class the implementer's", () => {
-  expect(ownerRoleOfClass("plan")).toBe("planner");
-  expect(ownerRoleOfClass("review")).toBe("reviewer");
+  expect(ownerRoleOfClass("plan")).toBe("planner"); expect(ownerRoleOfClass("review")).toBe("reviewer");
   for (const cls of CLASSES.filter(name => name !== "plan" && name !== "review")) expect(ownerRoleOfClass(cls), cls).toBe("implementer");
 });
-
-for (const cls of CLASSES) {
-  const writes = ownerRoleOfClass(cls) === "implementer";
-  test(`#735 ${cls}: a Claude implementer instance ${writes ? "never owns it, named or automatic" : "is not refused by the write gate"}, and explain says what assign does`, () => {
-    const task = { class: cls, signals: [] as string[] };
-    const named = assign(task, states, policy(["claude-impl"]), base({ namedOwner: "claude-impl", candidates: ["claude-impl"] }));
-    const automatic = assign(task, states, policy(["claude"]), base());
-    if (writes) {
-      expect(named.owner, "named").toBeUndefined();
-      expect(automatic.owner === "claude-impl", "automatic").toBe(false);
-      expect(named.refusals).toContainEqual(expect.objectContaining({ peer: "claude-impl", role: "owner", code: "owner-admission", reason: REASON }));
-      expect(named.trace.join("\n")).toContain(`owner candidate claude-impl: skipped, ${REASON}`);
-      // The refusal does not wait for the host's isolation verdict: the same answer with it true, false and absent.
-      for (const ownerIsolation of [{ "claude-impl": true }, { "claude-impl": false }, {} as Record<string, boolean>]) expect(assign(task, states, policy(["claude-impl"]), base({ namedOwner: "claude-impl", candidates: ["claude-impl"], ownerIsolation })).owner).toBeUndefined();
-      // Only the instance is refused: the builtin claude and a headless Codex instance with proof still own it.
-      expect(assign(task, states, policy(["claude"]), base()).owner).toBe("claude");
-      expect(assign(task, states, policy(["codex-a"]), base({ candidates: ["codex-a"], namedOwner: "codex-a" })).owner).toBe("codex-a");
-    } else {
-      const holder = cls === "plan" ? "claude-plan" : "claude-rev";
-      expect(assign(task, states, policy([holder]), base({ namedOwner: holder, candidates: [holder] })).owner, `${holder} may own ${cls}`).toBe(holder);
-      expect(named.refusals?.some(row => row.reason === REASON)).not.toBe(true);
+for (const cls of CLASSES) test(`#525-5 ${cls}: Claude write ownership requires the host's verified isolation`, () => {
+  const task = { class: cls, signals: [] as string[] }, writes = ownerRoleOfClass(cls) === "implementer";
+  if (writes) {
+    for (const ownerIsolation of [{ "claude-impl": false }, {} as Record<string, boolean>]) {
+      const refused = assign(task, states, policy(["claude-impl"]), base({ candidates: ["claude-impl"], namedOwner: "claude-impl", ownerIsolation }));
+      expect(refused.owner).toBeUndefined();
+      expect(refused.refusals).toContainEqual(expect.objectContaining({ peer: "claude-impl", code: "owner-admission", reason: REASON }));
+      expect(refused.trace.join("\n")).toContain(REASON);
     }
-  });
-}
-
-test("#735 explain and assign are the same function: the refusal reaches the trace a person reads, for a draft and for a named owner", () => {
-  const task = { class: "summarize" as const, signals: [] as string[] };
-  const result = assign(task, states, policy(["claude-impl"]), base({ candidates: ["claude-impl"], namedOwner: "claude-impl" }));
-  expect(result.trace.some(line => line.includes(REASON))).toBe(true);
-  expect(result.trace).toContain("owner: none available, task stays proposed (ahub task assign <id> <peer>)");
+    expect(assign(task, states, policy(["claude-impl"]), base({ candidates: ["claude-impl"], namedOwner: "claude-impl" })).owner).toBe("claude-impl");
+    expect(assign(task, states, policy(["claude"]), base()).owner).toBe("claude");
+    expect(assign(task, states, policy(["codex-a"]), base({ candidates: ["codex-a"], namedOwner: "codex-a" })).owner).toBe("codex-a");
+  } else {
+    const holder = cls === "plan" ? "claude-plan" : "claude-rev";
+    expect(assign(task, states, policy([holder]), base({ namedOwner: holder, candidates: [holder] })).owner).toBe(holder);
+  }
 });
-
-test("#735 a Claude instance with the verifier role only and one that holds both implementer and planner are still refused as the owner of write classes", () => {
-  for (const roles of [["verifier"], ["implementer", "planner"], ["implementer", "verifier", "reviewer"]]) {
-    for (const cls of ["implement", "test", "bulk_edit", "summarize", "triage"] as const) {
-      const result = assign({ class: cls, signals: [] }, states, policy(["claude-impl"]), base({ roles: { "claude-impl": roles }, candidates: ["claude-impl"], namedOwner: "claude-impl" }));
-      expect(result.owner, `${roles.join("+")} ${cls}`).toBeUndefined();
-    }
+test("#525-5 a verifier without the implementer role cannot own write work, even with isolation", () => {
+  for (const cls of ["implement", "test", "bulk_edit", "summarize", "triage"] as const) {
+    expect(assign({ class: cls, signals: [] }, states, policy(["claude-impl"]), base({ roles: { "claude-impl": ["verifier"] }, candidates: ["claude-impl"], namedOwner: "claude-impl" })).owner).toBeUndefined();
   }
 });
 

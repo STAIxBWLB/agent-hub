@@ -44,34 +44,6 @@ var __esm = (fn, res, err) => () => {
   return res;
 };
 
-// src/adapters/definitions/native-cli-preview-common.ts
-function publicArg(arg) {
-  const flags = new Set(["--settings", "--model", "--mcp-config", "--session-id", "--session-file", "--resume", "--continue", "--print", "--safe", "--new"]);
-  const key = arg.split("=", 1)[0];
-  return flags.has(key) ? arg.includes("=") ? key + "=" + REDACTED : key : REDACTED;
-}
-function nativeCommand(command, trusted) {
-  return command.map((value, i) => value === trusted[i] ? value : REDACTED);
-}
-function previewState(args, baseEnvNames) {
-  const unresolved = [];
-  const envNames = [...baseEnvNames];
-  const value = (flag) => {
-    const at = args.indexOf(flag);
-    if (at < 0)
-      return;
-    const next = args[at + 1];
-    if (!next || next.startsWith("--"))
-      throw new Error("missing option value");
-    return next;
-  };
-  return { unresolved, envNames, value };
-}
-function finishPreview(ctx, launch, envNames, unresolved, metadata, settings) {
-  return { tool: ctx.tool, ...metadata ?? {}, cmd: launch.cmd, args: launch.args, settings, envNames: [...new Set(envNames)].sort(), ...launch.warning ? { warning: launch.warning } : {}, unresolved, redaction: "Arbitrary user arguments, settings, commands and configured executable overrides are redacted. Environment values are never displayed.", needs: ["Native executable, accounts and runtime readiness are not checked."] };
-}
-var REDACTED = "[redacted]", UNRESOLVED = "[unresolved]";
-
 // node_modules/@staix/agent-mem/src/memory/platform.ts
 import { realpathSync } from "fs";
 import { basename, dirname, join, resolve, sep } from "path";
@@ -232,6 +204,34 @@ var init_project = __esm(() => {
   init_platform();
   init_platform();
 });
+
+// src/adapters/definitions/native-cli-preview-common.ts
+function publicArg(arg) {
+  const flags = new Set(["--settings", "--model", "--mcp-config", "--session-id", "--session-file", "--resume", "--continue", "--print", "--safe", "--new"]);
+  const key = arg.split("=", 1)[0];
+  return flags.has(key) ? arg.includes("=") ? key + "=" + REDACTED : key : REDACTED;
+}
+function nativeCommand(command, trusted) {
+  return command.map((value, i) => value === trusted[i] ? value : REDACTED);
+}
+function previewState(args, baseEnvNames) {
+  const unresolved = [];
+  const envNames = [...baseEnvNames];
+  const value = (flag) => {
+    const at = args.indexOf(flag);
+    if (at < 0)
+      return;
+    const next = args[at + 1];
+    if (!next || next.startsWith("--"))
+      throw new Error("missing option value");
+    return next;
+  };
+  return { unresolved, envNames, value };
+}
+function finishPreview(ctx, launch, envNames, unresolved, metadata, settings) {
+  return { tool: ctx.tool, ...metadata ?? {}, cmd: launch.cmd, args: launch.args, settings, envNames: [...new Set(envNames)].sort(), ...launch.warning ? { warning: launch.warning } : {}, unresolved, redaction: "Arbitrary user arguments, settings, commands and configured executable overrides are redacted. Environment values are never displayed.", needs: ["Native executable, accounts and runtime readiness are not checked."] };
+}
+var REDACTED = "[redacted]", UNRESOLVED = "[unresolved]";
 
 // src/adapters/compat.ts
 import { closeSync, constants, fstatSync, lstatSync as lstatSync2, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from "fs";
@@ -9930,10 +9930,12 @@ async function runClaudeEntry(ctx) {
       fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)");
     }
   }
+  const executionCwd = ctx.instance ? ctx.helpers.resolveExecutionCwd(peer) : cwd;
+  ctx.executionCwd = executionCwd;
   const control = readControl(stateDir);
   if (control?.instanceId) {
     process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
-    const terminal = await prepareTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: cwd } : undefined);
+    const terminal = await prepareTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd } : undefined);
     if (!terminal)
       process.env.AGENTHUB_LAUNCH_ID = randomUUID6();
     else {
@@ -9946,7 +9948,7 @@ async function runClaudeEntry(ctx) {
     }
   }
   let original;
-  for (const file of [join17(cwd, ".claude", "settings.local.json"), join17(cwd, ".claude", "settings.json"), join17(process.env.HOME ?? "", ".claude", "settings.json")]) {
+  for (const file of [join17(executionCwd, ".claude", "settings.local.json"), join17(executionCwd, ".claude", "settings.json"), join17(process.env.HOME ?? "", ".claude", "settings.json")]) {
     try {
       original ??= JSON.parse(readFileSync7(file, "utf8")).statusLine;
     } catch {}
@@ -9961,7 +9963,7 @@ async function runClaudeEntry(ctx) {
   try {
     let launchRecord;
     if (control?.instanceId) {
-      launchRecord = { ...ctx.instance ? { peer } : {}, instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid), unattended: launch.unattended === true };
+      launchRecord = { ...ctx.instance ? { peer, executionCwd } : {}, instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid), unattended: launch.unattended === true };
       recordClaudeLaunch(stateDir, launchRecord);
       cleanupStaleClaudeSettings(stateDir, previousLaunch);
     }
@@ -9970,7 +9972,7 @@ async function runClaudeEntry(ctx) {
     const env = nativeLaunchEnv("claude", childEnv());
     if (ctx.instance)
       env.AGENTHUB_PEER_ID = peer;
-    result = await runClaudeLaunch(launch, { cwd, stateDir, env: { ...env, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd }, ...launchRecord ? { record: launchRecord } : {} });
+    result = await runClaudeLaunch(launch, { cwd: executionCwd, stateDir, env: { ...env, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd }, ...launchRecord ? { record: launchRecord } : {} });
   } finally {
     cleanupClaudeSettings(stateDir, launch.settingsFile);
   }
@@ -19293,6 +19295,9 @@ var require_dist = __commonJS(function(exports, module) {
   Object.defineProperty(exports, "__esModule", { value: true });
   exports.default = formatsPlugin;
 });
+
+// src/adapters/claude-channel.ts
+init_project();
 
 // src/hub/instance-config.ts
 init_registry();
@@ -28681,6 +28686,7 @@ async function connectLoop() {
         peer: peerId,
         ...toolsMode ? {} : { channel },
         ...process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {},
+        ...!toolsMode ? { cwd: realPath(process.cwd()) } : {},
         ...!toolsMode && standingBy ? { standby: true } : {},
         ...process.env.AGENTHUB_PROJECT_DIR ? { projectRoot: projectRoot2 } : {}
       });
