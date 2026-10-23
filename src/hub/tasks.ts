@@ -4351,7 +4351,7 @@ export class Tasks {
     const native = this.saveNative(by, kind, text, title, task, input.horizon === "long" || input.horizon === "short" ? input.horizon : undefined, input.scope === "shared" ? "shared" : "project");
     if (task && this.d.memory) this.markMemoryReference(task, by);
     const res = !native && this.d.memory ? await this.d.memory.save({ text, ...(title ? { title } : {}), project: this.d.project, metadata: { peer: by, kind, ...(task ? { task: task.id } : {}) } }) : undefined;
-    if (!res && !native) return this.d.memory ? "memory store unavailable; nothing saved" : "memory store unavailable; nothing saved";
+    if (!res && !native) return "memory store unavailable; nothing saved";
     if (!native && res && typeof res === "object" && "status" in res && res.status === "candidate") {
       return "saved as a pending memory candidate; a person must review it before it becomes shared evidence";
     }

@@ -3062,6 +3062,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(() => { const warning = mainCheckoutWarning(opts.cwd, tasks.publicMetadataText, checkoutBranch); return warning ? { mainCheckout: warning } : {}; })(),
     startModes: Object.fromEntries([...START_MODE_PEERS, ...configuredIds].map(peer => [peer, startModeOf(config.peers, peer, declarations, adapterCatalog)])),
     memoryProfile: memoryProfileStatus(includeAttentionItems),
+    memoryRead: memory.readStatus(),
     lifecycleStages: [...lifecycleConfig.stages],
     // ponytail: off keeps the #257 phase schema until RETIRED_WORKFLOW_FROM, when the alias and this flag go together.
     ...(lifecycleConfig.mode !== "off" ? { lifecycleCriteria: true } : {}),
@@ -6557,7 +6558,7 @@ export async function startDaemon(opts: DaemonOptions) {
             // Screened before the caps: withheld entries never crowd out readable evidence.
             const hits = screenMemory(memoryStore!.list({ project: memoryProject, limit: Number.MAX_SAFE_INTEGER })).map((v) => [v, score(v)] as const).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([v]) => v);
             const near = screenMemory(memoryStore!.related(memoryProject, [...new Set(hits.flatMap((v) => v.about))], Number.MAX_SAFE_INTEGER)).slice(0, 6);
-            return [...hits, ...near].map((v) => ({ id: `mem:${v.id.slice(0, 8)}`, text: memoryLine(v).slice(13) }));
+            return [...hits, ...near].map((v) => ({ id: `mem:${v.id}`, text: memoryLine(v).slice(13) }));
           } } : {}),
           project: chain.at(-1)!,
           logFile,
@@ -6703,6 +6704,7 @@ export async function startDaemon(opts: DaemonOptions) {
       executionBudget.close();
       syncStop.abort(); // a sync in flight kills its git step and ends before the store closes
       await syncRun?.catch(() => undefined);
+      memory.close();
       candidates?.close();
       memoryStore?.close();
       board.close();

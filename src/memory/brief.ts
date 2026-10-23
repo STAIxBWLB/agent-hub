@@ -67,11 +67,12 @@ export class Briefs {
       items.push(item);
       if (own.length + items.length === maximum) break;
     }
-    if (!own.length && !items.length) return undefined;
+    const notice = this.client?.readNotice();
+    if (!own.length && !items.length && !notice) return undefined;
     for (const item of own) seen.add(item.id);
     for (const item of items) seen.add(`#${item.id}`);
     if (task.id !== undefined) try { this.observe?.(peer, task.id, { native: own.length, fails: own.filter((i) => i.kind === "fail").length, claudeMem: items.length }); } catch { /* telemetry never fails a brief */ }
     const header = own.length ? "Memory brief (hub memory first, fails first: ahub memory show <mem id>; amem by mem:id):" : "Memory brief (amem curated notes; fetch details by mem:id):";
-    return [header, ...(this.displayNative?.(own) ?? own.map((i) => i.line)), ...items.map((i) => `${i.id.toString().startsWith("mem:") ? i.id : `#${i.id}`} ${i.time} ${i.type} ${i.title}`)].join("\n");
+    return [header, ...(notice ? [notice] : []), ...(this.displayNative?.(own) ?? own.map((i) => i.line)), ...items.map((i) => `${i.id.toString().startsWith("mem:") ? i.id : `#${i.id}`} ${i.time} ${i.type} ${i.title}`)].join("\n");
   }
 }

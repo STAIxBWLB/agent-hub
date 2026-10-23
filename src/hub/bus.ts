@@ -667,7 +667,7 @@ export class Bus {
     this.persist();
   }
 
-  /** Another peer's shared note: rides in the preface like recall. The newest NOTES_KEPT stay; older ones remain in claude-mem. */
+  /** Another peer's shared note: rides in the preface like recall. The newest NOTES_KEPT stay; older ones remain in amem. */
   note(id: PeerId, line: string): void {
     const existing = this.prefaces.get(id);
     this.prefaces.set(id, existing ? { ...existing, body: keepNotes(uniqueMemoryLines(appendNote(existing.body, line)), NOTES_KEPT) } : newEnvelope(HUB, uniqueMemoryLines(line), { to: [id], kind: "presence" }));

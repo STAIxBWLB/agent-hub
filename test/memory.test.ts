@@ -4,7 +4,7 @@ import { afterEach, expect, test, setSystemTime } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryStore, CandidateStore, CaptureStore } from "@staix/agent-mem";
+import { MemoryStore, CandidateStore, CaptureStore, writeCaptureConfigFile } from "@staix/agent-mem";
 import { MemoryClient } from "../src/memory/client.ts";
 import { Capture } from "../src/memory/capture.ts";
 import { Briefs, related } from "../src/memory/brief.ts";
@@ -18,6 +18,7 @@ function rig() {
  const store = new MemoryStore({home}), candidates = new CandidateStore({home}); clean.push(()=>store.close(),()=>candidates.close());
  let valid = true; const logs: string[]=[];
  const client = new MemoryClient({ project:"project-a",store,candidates,check(){if(!valid) throw Error("changed");},screen:rows=>rows.filter(v=>!`${v.title} ${v.text}`.includes("private-value")),publicText:t=>!t.includes("private-value"),capture:()=>({home}),log:l=>logs.push(l) });
+ clean.push(() => client.close());
  const note = (text:string,project="project-a") => store.note({op:"note",project,scope:"project",tier:"short",kind:"decision",text,about:[],peer:"kimi",source:"person"});
  return {home,store,candidates,client,note,logs,revoke(){valid=false;}};
 }
@@ -157,4 +158,53 @@ test("the built-in secret screen sees decoded JSON key/value pairs before captur
   expect(r.candidates.list({ project: "project-a" })).toHaveLength(1);
   const stored = new CaptureStore({ home: r.home, project: "project-a" }); clean.push(() => stored.close());
   expect(stored.rows()).toHaveLength(1);
+});
+
+
+test("capture persists only relative file paths while commands remain screened input", async () => {
+ const r=rig(), capture=new Capture(r.client,{project:"project-a",cwd:r.home}); capture.init("paths","public prompt");
+ capture.observe({tool:"read",args:JSON.stringify({path:join(r.home,"src/file.ts")}),output:"public",id:"read",paths:[join(r.home,"src/file.ts")],sourceId:"read"});
+ capture.observe({tool:"write",args:'{"path":"relative.txt"}',output:"public",id:"write",paths:["relative.txt"],sourceId:"write"});
+ capture.observe({tool:"bash",args:'{"command":"echo public"}',output:"public",id:"bash",paths:["echo public"],sourceId:"bash"});
+ capture.observe({tool:"git",args:'{"args":["status"]}',output:"public",id:"git",paths:["status"],sourceId:"git"});
+ capture.observe({tool:"read",args:'{"path":"../outside.txt"}',output:"public",id:"outside",paths:["../outside.txt"],sourceId:"outside"});
+ await capture.end();
+ const store=new CaptureStore({home:r.home,project:"project-a"});clean.push(()=>store.close());
+ const rows=store.rows({limit:100}).filter(row=>row.event==="PostToolUse");
+ expect(rows).toHaveLength(5);
+ expect(rows.find(row=>row.tool==="write")!.paths).toEqual(["relative.txt"]);
+ expect(rows.find(row=>row.tool==="read"&&row.paths.length)!.paths).toEqual(["src/file.ts"]);
+ expect(rows.filter(row=>row.tool==="bash"||row.tool==="git").every(row=>row.paths.length===0)).toBe(true);
+ expect(rows.flatMap(row=>row.paths).every(name=>!name.startsWith("/")&&!name.includes(".."))).toBe(true);
+});
+
+test("capture reuses one handle until a binding refusal or explicit close releases it", async () => {
+ const r=rig();
+ await r.client.appendCapture({project:"project-a",agent:"local",event:"PostToolUse",excerpt:"first"});
+ // Observe teardown at the published store boundary, without replacing its persistence behavior.
+ const original=CaptureStore.prototype.close;let closes=0;
+ CaptureStore.prototype.close=function(){closes++;return original.call(this);};
+ try {
+   await r.client.appendCapture({project:"project-a",agent:"local",event:"PostToolUse",excerpt:"second"});
+   expect(closes).toBe(0);
+   r.revoke();expect(await r.client.appendCapture({project:"project-a",agent:"local",event:"PostToolUse",excerpt:"refused"})).toBeUndefined();
+   expect(closes).toBe(1);r.client.close();r.client.close();expect(closes).toBe(1);
+   expect(await r.client.health()).toEqual({ok:false});
+ } finally {CaptureStore.prototype.close=original;}
+ const store=new CaptureStore({home:r.home,project:"project-a"});clean.push(()=>store.close());expect(store.rows().map(row=>row.excerpt).sort()).toEqual(["first","second"]);
+});
+
+
+test("cached capture adopts changed home R6 bounds at the next append", async () => {
+ const r=rig();const original=CaptureStore.prototype.close;let closes=0;
+ CaptureStore.prototype.close=function(){closes++;return original.call(this);};
+ try {
+   expect(await r.client.appendCapture({project:"project-a",agent:"local",event:"PostToolUse",at:new Date(Date.now()-2*86400000).toISOString(),excerpt:"old retained row"})).toHaveProperty("id");
+   expect(closes).toBe(0);
+   writeCaptureConfigFile(join(r.store.dir,"capture-config.json"),{capMb:1,retentionDays:1});
+   expect(await r.client.appendCapture({project:"project-a",agent:"local",event:"PostToolUse",excerpt:"current row"})).toHaveProperty("id");
+   expect(closes).toBe(1);
+ } finally {CaptureStore.prototype.close=original;}
+ const store=new CaptureStore({home:r.home,project:"project-a"});clean.push(()=>store.close());
+ expect(store.rows().map(row=>row.excerpt)).toEqual(["current row"]);expect(store.stats()).toMatchObject({capMb:1,retentionDays:1});
 });

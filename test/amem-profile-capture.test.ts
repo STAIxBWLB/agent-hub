@@ -136,7 +136,8 @@ test("production amem records every actual local execution when the provider reu
   const beforeAsk = model.requests.length;
   const asked = await client.request({ t: "ask", question: query });
   expect(asked.ok).toBe(true); expect(asked.found).toBe(false); expect(asked.answer).toBeUndefined();
-  expect(asked.evidence.some((item: { id: string }) => item.id === `mem:${note.slice(0, 8)}` || item.id === `mem:${note}`)).toBe(true);
+  expect(asked.evidence.filter((item: { id: string }) => item.id === `mem:${note}`)).toHaveLength(1);
+  expect(asked.evidence.some((item: { id: string }) => item.id === `mem:${note.slice(0, 8)}`)).toBe(false);
   expect(JSON.stringify(asked.evidence)).not.toContain(capturedOnly);
   expect(model.requests).toHaveLength(beforeAsk); // evidence-only: inference is disabled, no extra provider turn
   await daemon.stop();

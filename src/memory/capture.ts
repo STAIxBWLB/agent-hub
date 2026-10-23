@@ -1,3 +1,4 @@
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { defaultCapturePeer } from "../adapters/definitions/native-identity-defaults.ts";
 import { BOUNDED_TASK_TOOLS } from "../hub/hub-tools.ts";
 import { MEMORY_READ_TOOLS } from "../hub/read-tools.ts";
@@ -40,6 +41,7 @@ export class Capture {
     if (!this.sessionId || ((MEMORY_READ_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, "")) || BOUNDED_TASK_TOOLS.has(call.tool.replace(/^mcp__[^ ]+__/, ""))) || call.tool.replace(/^mcp__[^ ]+__/, "") === "hub_memory_correct") || this.opts.skip?.includes(call.tool)) return;
     // Anything that names a denylisted path is kept out of memory entirely, input and output alike.
     if (call.paths.some((p) => isDenied(p, this.opts.deny) || p.split(/\s+/).some((word) => isDenied(word, this.opts.deny)))) return;
+    // ponytail: legacy callers without a host sourceId dedupe native ids within a summary interval; all live LocalPeer calls supply invocation identity. Require that port for other hosts.
     const sourceId = call.sourceId ?? `${this.sequence}:${call.id}`;
     let at = this.toolTimes.get(sourceId);
     if (!at) {
@@ -47,7 +49,12 @@ export class Capture {
       // ponytail: duplicate-call timestamps retain the newest 1024 source ids; upgrade to a host-supplied source-event timestamp.
       if (this.toolTimes.size > 1024) this.toolTimes.delete(this.toolTimes.keys().next().value!);
     }
-    void this.client.appendCapture({ project: this.opts.project, cwd: this.opts.cwd, at, sessionId: this.sessionId, agent: this.agentId, event: "PostToolUse", tool: call.tool, paths: call.paths, excerpt: `${call.args}\n${call.output}`, input: call.args, output: call.output, toolUseId: call.id, sourceId, platformSource: this.platformSource });
+    // Commands/argv are policy inputs, never path metadata. Persist only in-project file-tool paths.
+    const paths = ["read", "write", "edit"].includes(call.tool) ? call.paths.flatMap(p => {
+      const name = relative(resolve(this.opts.cwd), resolve(this.opts.cwd, p));
+      return !name || isAbsolute(name) || name.split(sep).includes("..") ? [] : [name.split(sep).join("/")];
+    }) : [];
+    void this.client.appendCapture({ project: this.opts.project, cwd: this.opts.cwd, at, sessionId: this.sessionId, agent: this.agentId, event: "PostToolUse", tool: call.tool, paths, excerpt: `${call.args}\n${call.output}`, input: call.args, output: call.output, toolUseId: call.id, sourceId, platformSource: this.platformSource });
   }
 
   summarize(lastAssistantMessage: string): void {

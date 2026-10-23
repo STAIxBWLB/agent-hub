@@ -1,4 +1,3 @@
-import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
 import type { PeerId } from "../hub/envelope.ts";
 import type { MemoryClient } from "./client.ts";
 import type { View as MemoryView } from "@staix/agent-mem";
@@ -17,29 +16,21 @@ export function trimToTokens(text: string, tokens: number): string {
   return `${cut >= 0 ? text.slice(0, cut) : ""}\n(trimmed)`;
 }
 
-/** The worker answers unknown projects and empty filters with a status page, not context. */
+/** The project client supplies a screened context block; unavailable/empty views have no preface. */
 const hasContext = (text: string | undefined): text is string => !!text && text.startsWith("# [");
 
-/** Observation lines only: every block repeats the same legend, which would eat the token budget. */
-const entries = (text: string) => text.slice(Math.max(text.indexOf("\n### "), 0)).trim();
+/** Drop only the redundant source heading. Keep coverage/truncation notices before section headings. */
+const entries = (text: string) => {
+  const start = text.indexOf("\n");
+  return start < 0 ? "" : text.slice(start + 1).trim();
+};
 
-export async function recallFor(peer: PeerId, client: MemoryClient, chain: string[], tokens: number): Promise<string | undefined> {
-  const hooks = definitionOf(peer)?.hooks;
-  const own = hooks?.recallInjected ? hooks.recallPlatform : undefined;
-  // Everyone else gets all platforms in one call; claude and codex get the other platforms only.
-  const blocks = own
-    ? await Promise.all(
-        [...ADAPTERS.flatMap(adapter => adapter.hooks?.recallSource ? [adapter.hooks.recallSource] : []), "agent-hub"].filter((p) => p !== own).map(async (p) => {
-          const text = await client.contextInject(chain, p);
-          return hasContext(text) ? `## from ${p} sessions\n${entries(text)}` : undefined;
-        }),
-      )
-    : [await client.contextInject(chain).then((text) => (hasContext(text) ? entries(text) : undefined))];
-  const found = blocks.filter((b): b is string => !!b);
-  if (!found.length) return undefined;
-  // The budget is split per block, or the first platform could crowd the others out of a cross-platform recall.
-  const share = Math.floor(tokens / found.length);
-  return `${HEADER}\n\n${found.map((b) => trimToTokens(b, share)).join("\n\n")}`;
+export async function recallFor(_peer: PeerId, client: MemoryClient, chain: string[], tokens: number): Promise<string | undefined> {
+  // Curated amem notes are one project source, regardless of which native peer originally authored them.
+  const text = await client.contextInject(chain);
+  if (!hasContext(text)) return undefined;
+  const body = entries(text);
+  return body ? `${HEADER}\n\n${trimToTokens(body, tokens)}` : undefined;
 }
 
 /**

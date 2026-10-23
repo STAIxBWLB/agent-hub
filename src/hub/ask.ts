@@ -121,10 +121,22 @@ export async function gather(question: string, d: AskDeps): Promise<{ evidence: 
     .filter((r) => !r.title.startsWith(ASK_NOTE_TITLE))
     .map((r) => ({ id: typeof r.id === "string" ? r.id : `#${r.id}`, kind: "memory" as const, text: `${r.time} ${r.type} ${r.title}`.slice(0, ITEM_CHARS) }));
 
+  // Native briefs keep short ids; the client supplies full ids for the same rows. Resolve only a unique
+  // prefix before dedupe/budget accounting. An ambiguous short id stays separate: it identifies neither full row.
+  const fullMemoryIds = new Map<string, Set<string>>();
+  for (const row of [...native, ...memory]) if (/^mem:[0-9a-f]{32}$/.test(row.id)) {
+    const prefix = row.id.slice(0, 12), ids = fullMemoryIds.get(prefix) ?? new Set<string>();
+    ids.add(row.id); fullMemoryIds.set(prefix, ids);
+  }
+  const memoryId = (row: Evidence): string => {
+    const full = row.kind === "memory" && /^mem:[0-9a-f]{8}$/.test(row.id) ? fullMemoryIds.get(row.id) : undefined;
+    return full?.size === 1 ? full.values().next().value! : row.id;
+  };
   // Every item is capped, so one long row cannot empty the list; what does not fit is skipped, not everything after it.
   const evidence: Evidence[] = [];
   let size = 0;
-  for (const e of [...taskRows, ...native, ...memory, ...logRows]) {
+  for (const row of [...taskRows, ...native, ...memory, ...logRows]) {
+    const e = { ...row, id: memoryId(row) };
     if (evidence.some((x) => x.id === e.id)) continue;
     if (size + e.text.length + e.id.length > EVIDENCE_CHARS) continue;
     size += e.text.length + e.id.length;
