@@ -40,6 +40,8 @@ export interface Hello {
   channel?: boolean;
   /** Managed Claude launch identity; absent for plain or pre-daemon sessions. */
   launchId?: string;
+  /** Optional canonical native execution cwd; ownership requires independent host proof. */
+  cwd?: string;
   /** Reclaim after replacement, never an intentional initial takeover. */
   standby?: boolean;
   projectId?: string;

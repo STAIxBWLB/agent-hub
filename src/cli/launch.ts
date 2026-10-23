@@ -108,6 +108,8 @@ export interface ClaudeLaunchRecord extends Record<string, unknown> {
   instanceId: string; launchId: string; settingsFile?: string; launcherPid: number; launcherSignature?: string;
   /** A claude-<name> instance (#450 I3); absent for the builtin claude peer, whose file keeps its original name. */
   peer?: string;
+  /** Validated terminal instance root; absent for legacy/canonical launches. */
+  executionCwd?: string;
 }
 
 export interface ClaudeLaunchPublication { recorded: boolean; warning?: string; }
@@ -172,10 +174,10 @@ export function recordClaudeLaunch(stateDir: string, record: ClaudeLaunchRecord)
 
 function sameClaudeLaunch(left: ClaudeLaunchRecord, right: ClaudeLaunchRecord): boolean {
   return left.instanceId === right.instanceId && left.launchId === right.launchId && left.settingsFile === right.settingsFile
-    && left.launcherPid === right.launcherPid && left.launcherSignature === right.launcherSignature;
+    && left.launcherPid === right.launcherPid && left.launcherSignature === right.launcherSignature && left.executionCwd === right.executionCwd;
 }
 function nativeAttestationPath(stateDir: string, launch: ClaudeLaunchRecord): string {
-  const hash = createHash("sha256").update(JSON.stringify([launch.instanceId, launch.launchId, launch.settingsFile, launch.launcherPid, launch.launcherSignature])).digest("hex");
+  const hash = createHash("sha256").update(JSON.stringify([launch.instanceId, launch.launchId, launch.settingsFile, launch.launcherPid, launch.launcherSignature, ...(launch.executionCwd ? [launch.executionCwd] : [])])).digest("hex");
   return join(stateDir, `claude-native-${hash}.json`);
 }
 function privateClaudeNative(stateDir: string, launch: ClaudeLaunchRecord): { file: string; stat: ReturnType<typeof lstatSync>; record: ClaudeLaunchRecord } | undefined {

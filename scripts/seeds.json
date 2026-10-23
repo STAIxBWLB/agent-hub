@@ -1132,8 +1132,8 @@
     {
       "id": "claude-readonly-glob-grant",
       "file": "src/hub/daemon.ts",
-      "search": "projectFileTool(msg.tool, msg.input, opts.cwd, config.protect_instruction_files, config.data?.readonly)",
-      "replacement": "projectFileTool(msg.tool, msg.input, opts.cwd, config.protect_instruction_files)",
+      "search": "projectFileTool(msg.tool, msg.input, writeRoot ?? opts.cwd, config.protect_instruction_files, config.data?.readonly)",
+      "replacement": "projectFileTool(msg.tool, msg.input, writeRoot ?? opts.cwd, config.protect_instruction_files)",
       "testFile": "test/permission-modes.test.ts",
       "testName": "Claude scoped permission replies withhold glob-readonly writes without leaking policy paths (#259)"
     },

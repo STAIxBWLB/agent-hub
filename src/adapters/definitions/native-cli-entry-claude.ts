@@ -8,7 +8,7 @@ import { claudeStateFile } from "../../hub/claude-state.ts";
 
 export async function runClaudeEntry(ctx: NativeCliEntryContext): Promise<void> {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, fail } = ctx;
-  // #450 I3: a claude-<name> instance keeps its own identity, launch and recovery records; it never owns a worktree.
+  // Each terminal instance keeps its canonical hub identity and its separately validated execution root.
   const peer = ctx.instance ?? "claude";
   if (ctx.hubStarted) {
     // #223: the hub starts a headless reviewer and runs one `claude -p` per review; nothing runs in this terminal.
@@ -27,10 +27,12 @@ export async function runClaudeEntry(ctx: NativeCliEntryContext): Promise<void> 
     try { return console.log(JSON.stringify(launcherPreview("claude", args, cwd, stateDir, unattendedEnv), null, 2)); }
     catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }
   }
+  const executionCwd = ctx.instance ? ctx.helpers.resolveExecutionCwd(peer) : cwd;
+  ctx.executionCwd = executionCwd;
   const control = readControl(stateDir);
   if (control?.instanceId) {
     process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
-    const terminal = await prepareTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd: cwd } : undefined);
+    const terminal = await prepareTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd } : undefined);
     if (!terminal) process.env.AGENTHUB_LAUNCH_ID = randomUUID();
     else {
       const hub = await ctx.connect();
@@ -41,7 +43,7 @@ export async function runClaudeEntry(ctx: NativeCliEntryContext): Promise<void> 
   // `--settings` outranks project and user settings, so the tee has to wrap whichever status line would have won:
   // project local, then project, then user.
   let original: { command?: string; refreshInterval?: number; padding?: number } | undefined;
-  for (const file of [join(cwd, ".claude", "settings.local.json"), join(cwd, ".claude", "settings.json"), join(process.env.HOME ?? "", ".claude", "settings.json")]) {
+  for (const file of [join(executionCwd, ".claude", "settings.local.json"), join(executionCwd, ".claude", "settings.json"), join(process.env.HOME ?? "", ".claude", "settings.json")]) {
     try {
       original ??= JSON.parse(readFileSync(file, "utf8")).statusLine;
     } catch {
@@ -58,14 +60,14 @@ export async function runClaudeEntry(ctx: NativeCliEntryContext): Promise<void> 
     let launchRecord: ClaudeLaunchRecord | undefined;
     if (control?.instanceId) {
       // Publish only the final launch's installed hook and effective permission flags.
-      launchRecord = { ...(ctx.instance ? { peer } : {}), instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID!, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid), unattended: launch.unattended === true };
+      launchRecord = { ...(ctx.instance ? { peer, executionCwd } : {}), instanceId: control.instanceId, launchId: process.env.AGENTHUB_LAUNCH_ID!, permissionHook: launch.permissionHook === true, hookPurpose: launch.hookPurpose, settingsFile: launch.settingsFile, launcherPid: process.pid, launcherSignature: processSignature(process.pid), unattended: launch.unattended === true };
       recordClaudeLaunch(stateDir, launchRecord);
       cleanupStaleClaudeSettings(stateDir, previousLaunch);
     }
     if (launch.warning) console.error(launch.warning);
     const env = nativeLaunchEnv("claude", childEnv());
     if (ctx.instance) env.AGENTHUB_PEER_ID = peer; // the channel plugin and the statusline tee write for this instance
-    result = await runClaudeLaunch(launch, { cwd, stateDir, env: { ...env, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd }, ...(launchRecord ? { record: launchRecord } : {}) });
+    result = await runClaudeLaunch(launch, { cwd: executionCwd, stateDir, env: { ...env, AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd }, ...(launchRecord ? { record: launchRecord } : {}) });
   } finally {
     cleanupClaudeSettings(stateDir, launch.settingsFile);
   }

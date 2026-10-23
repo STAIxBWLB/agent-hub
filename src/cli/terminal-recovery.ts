@@ -328,7 +328,7 @@ export function recordPath(stateDir: string): string {
   return join(stateDir, RECORD_FILE);
 }
 
-/** Extra terminal ownership is supported only for the native proxy transport; other I2 extras stay headless. */
+/** Resolve declared terminal roots without treating a launch candidate as daemon ownership proof. */
 function executionRoot(peer: string, projectRoot: string, captured?: string): string {
   const builtin = definitionOf(peer);
   if (builtin?.session.launchRecord) return projectRoot;
@@ -336,11 +336,6 @@ function executionRoot(peer: string, projectRoot: string, captured?: string): st
   const definition = catalog.definitionOf(peer, declarations);
   if (!definition?.session.launchRecord) throw new Error(`${peer}: no managed terminal recovery adapter`);
   if (!declarations?.[peer] || definition.transport !== "codex-appserver" && definition.transport !== "claude-channel") throw new Error(`${peer}: extra instance has no managed terminal support`);
-  // #450 I3: a Claude instance reviews or plans in the canonical checkout; it never owns an execution worktree.
-  if (definition.transport === "claude-channel") {
-    if (captured !== undefined && captured !== projectRoot) throw new Error(`${peer}: recorded execution root changed; manual recovery required`);
-    return projectRoot;
-  }
   const expected = resolveInstanceExecutionCwd(projectRoot, peer, declarations, effectiveInstanceRoles(peer, declarations, roles, catalog), catalog);
   if (captured !== undefined && captured !== expected) throw new Error(`${peer}: declared execution worktree changed; manual recovery required`);
   return expected;

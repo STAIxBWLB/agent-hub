@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Terminal Claude implementer instances (#525-5) start in their declared managed worktree and own write tasks only after the daemon verifies the current launch record and channel cwd; facts and terminal recovery retain the verified execution root.
+
 - Fix #719: keep periodic delivery reads independent of terminal payload history, time-slice usage folding and retry transient native launch connections within a bounded budget.
 - Fix #736: a review finding carried from a task to its follow-up on the same PR or branch (an approve-as-step follow-up, a superseded task) is no longer proposed as a recurring finding; the same finding on separate work still writes one planning card.
 - Fix #735: until slice 525-5, a person-started Claude channel instance owns no task of any write class, not only implement, test and bulk_edit: the refused set is derived from the class's owner role (`ownerRoleOfClass`), so `summarize`, `triage` and any later class are refused too, named or automatic, and `ahub route explain` names the refusal. The spec records that a configured ACP agent may hold `planner` but can neither be pinned as planner nor chosen as the automatic planner (it has no host projection).
