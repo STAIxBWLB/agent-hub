@@ -60,8 +60,10 @@ Token usage by adapter:
   `usage_update` Kimi sends is context occupancy: it is shown as the peer's native context reading (source
   `acp_usage_update`, phase 1) and writes no `tokens` event. The reader (`src/adapters/kimi-wire-usage.ts`, the only code that knows
   the format) finds the session directory from `session_index.jsonl` (resolved with `realPath`, kept inside `<kimi home>/sessions`)
-  and reads `agents/*/wire.jsonl` incrementally from saved offsets, sub-agents included, at a turn end, at a turn start (the
-  history floor) and when a `usage_update` arrives: no watcher, no timer. Each `usage.record` row becomes a `usage` event
+  and reads `agents/*/wire.jsonl` incrementally from saved offsets, sub-agents included, at a turn end, when a `usage_update`
+  arrives and when the peer goes offline (a turn start only binds the session and fixes the history floor, it reads nothing): no
+  watcher, no timer. One call reads at most a fixed byte bound across all of the session's files (the rest waits for the next call),
+  and two agent entries that are one file count once. Each `usage.record` row becomes a `usage` event
   (`source: kimi_wire`, `inputTokens` = Kimi's `inputOther`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `totalTokens`
   including cache reads, `servedModel`, `measuredAt` = Kimi's row time) and a `tokens` event of the counted share. The id is an
   opaque hash of session, agent and byte offset; no path, session id or text reaches an event. Only the four integers, the model

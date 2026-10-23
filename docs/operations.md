@@ -1253,7 +1253,7 @@ rescans the whole file on each call.
 for the history it already spent. A task with no link, and a record with no task, are `unattributed`.
 
 Every number names its source: `native` (the provider's own counter), `hub count` (the hub's own `tokens` increments, which cover peers that
-report no usage record, such as Jcode and Kimi), or `unknown`. Unknown is never shown as 0. `TOTAL` includes cache reads and `WITHOUT CACHE`
+report no usage record, such as Jcode; Kimi's rows are counted from its wire log and also carry `kimi_wire` usage records), or `unknown`. Unknown is never shown as 0. `TOTAL` includes cache reads and `WITHOUT CACHE`
 removes them; Claude's total is the sum of its four reported counters because its transcript carries none (`ahub report` still shows it as unknown), and a source whose input already
 contains the cached part (Codex, the gateway) gets no derived total. A lifetime total that mixes a native and a hub-counted peer is labelled
 `hub count`. When a peer is unknown the overall figure is `partial, at least`: a lower bound that leaves the named peers out, never a sum that counts them
@@ -3360,9 +3360,12 @@ ownership, bind servers or start agents, sidecars or models.
 `ahub status`, `ahub tail` and the dashboard show native context occupancy,
 source and measurement freshness. Claude readings come from the status-line
 tee installed by `ahub claude`; Codex readings come from its current thread's
-native token-usage updates. Kimi readings come from its ACP `usage_update`
-(`{used, size}`, source `acp_usage_update`): context occupancy, not
-consumption, so no token total is counted from it; the adapter accepts the
+native token-usage updates. Kimi's context occupancy comes from its ACP `usage_update`
+(`{used, size}`, source `acp_usage_update`), not consumption, so no token total is counted from it. Its consumption is counted from its
+session wire log (`<kimi home>/sessions/.../agents/*/wire.jsonl`, #285 phase 2) and reported as the `tokens` window of
+`budget.kimi_tokens_5h` (source `hub count, kimi wire log, of kimi_tokens_5h N`; cache reads are not counted); an unreadable log shows
+unknown with one notice, never a short count. Until the OAuth probe or `ahub budget set kimi ...` feeds the plan quota, the provider's
+own 5 h and weekly ratios stay unknown. Not yet verified live against Kimi's `/usage` (#285 AC11); the adapter accepts the
 update whenever it names the current session, because 2.1.1's source text
 emits it after the turn settles (read from the source, not yet observed live
 through the hub; docs/smoke.md), so the peer may already be idle.

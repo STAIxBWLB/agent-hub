@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { appendFileSync, linkSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { KimiWireReader, kimiCountedTokens, kimiRowTotal } from "../src/adapters/kimi-wire-usage.ts";
+import { KimiWireReader, kimiCountedTokens, kimiRowTotal, type KimiWireReason } from "../src/adapters/kimi-wire-usage.ts";
 import { KimiUsage, kimiSeedRows } from "../src/hub/kimi-usage.ts";
 import { TokenWindow } from "../src/hub/token-window.ts";
 
@@ -151,10 +151,10 @@ test("TokenWindow ages rows by when they were used, and reset empties it", () =>
   w.add(1, 1); w.reset(); expect(w.sum(2)).toBe(0);
 });
 
-function usageRig(h: ReturnType<typeof home>, ceiling = 1000) {
+function usageRig(h: ReturnType<typeof home>, ceiling = 1000, maxBytes?: number) {
   let now = 1_790_000_100_000, current: string | undefined;
   const log = { recorded: [] as { peer: string; counted: number; id: string }[], reports: [] as { used: number; resetsAt: number }[], forgot: 0, notices: [] as string[] };
-  const usage = new KimiUsage({ home: h.root, now: () => now, ceiling: () => ceiling, session: () => current,
+  const usage = new KimiUsage({ home: h.root, ...(maxBytes ? { maxBytes } : {}), now: () => now, ceiling: () => ceiling, session: () => current,
     record: (peer, r, counted) => log.recorded.push({ peer, counted, id: r.id }), report: (_p, w) => log.reports.push({ used: w.used, resetsAt: w.resetsAt }),
     forget: () => { log.forgot++; }, notice: line => log.notices.push(line) });
   return { usage, log, clock: (to: number) => { now = to; }, now: () => now, bind: (id: string | undefined) => { current = id; } };
@@ -224,4 +224,63 @@ test("AC3: no marker from a prompt, message or tool output, no path and no sessi
   for (const secret of [MARKER, h.root, s.dir, s.id, "session_aaaa"]) expect(seen).not.toContain(secret);
   expect(rig.log.recorded).toHaveLength(1);
   expect(rig.log.notices).toHaveLength(1);
+});
+
+test("a later read pass that is unknown never loses the rows of an earlier pass (round 1 finding 1)", () => {
+  const h = home(), s = session(h), rig = usageRig(h, 1000, 131_072);
+  rig.bind(s.id); rig.usage.turnStarted("kimi");
+  const t = rig.now();
+  // 4 rows of ~40 KiB of padding each: the reader's per-call bound (128 KiB, its floor) forces several passes. The last row is truncated.
+  const pad = (n: number) => other("prompt", "p".repeat(n));
+  appendFileSync(s.wire(), row(7, 0, 0, 0, t + 1) + pad(70_000) + row(3, 0, 0, 0, t + 2) + pad(70_000) + row(5, 0, 0, 0, t + 3) + pad(70_000) + row(11, 0, 0, 0, t + 4).trimEnd().slice(0, 40));
+  rig.usage.collect("kimi");
+  // every row before the broken line was read cleanly and is recorded; the count is not a subset of them
+  expect(rig.log.recorded.map(r => r.counted)).toEqual([7, 3, 5]);
+  expect(rig.log.reports).toHaveLength(0);
+  expect(rig.log.forgot).toBe(1);
+});
+
+test("two agent entries for one real file are counted once (dev/ino dedupe)", () => {
+  const h = home(), s = session(h, "session_aaaa-1111", ["main", "agent-0"]);
+  rmSync(s.wire("agent-0")); linkSync(s.wire(), s.wire("agent-0"));
+  appendFileSync(s.wire(), row(5, 5));
+  const r = new KimiWireReader({ home: h.root, sessionId: s.id }).read();
+  expect(r.status === "ok" && r.rows.map(x => x.inputOther)).toEqual([5]);
+  const h2 = home(), s2 = session(h2, "session_bbbb-2222", ["main", "agent-0"]);
+  rmSync(s2.wire("agent-0")); symlinkSync(s2.wire(), s2.wire("agent-0"));
+  appendFileSync(s2.wire(), row(6, 6));
+  const r2 = new KimiWireReader({ home: h2.root, sessionId: s2.id }).read();
+  expect(r2.status === "ok" && r2.rows.map(x => x.inputOther)).toEqual([6]);
+});
+
+test("one call reads at most the total byte bound across every file, and the rest waits for the next call", () => {
+  const h = home(), s = session(h, "session_aaaa-1111", ["main", "agent-0", "agent-1"]);
+  for (const agent of ["main", "agent-0", "agent-1"]) appendFileSync(s.wire(agent), row(1, 1) + other("prompt", "x".repeat(60_000)) + row(2, 2));
+  const reader = new KimiWireReader({ home: h.root, sessionId: s.id, maxBytes: 131_072 });
+  const first = reader.read();
+  expect(first.status === "ok" && first.more).toBe(true);
+  let total = first.status === "ok" ? first.rows.length : 0;
+  for (let n = 0; n < 30; n++) { const r = reader.read(); if (r.status !== "ok") throw new Error("unknown"); total += r.rows.length; if (!r.more) break; }
+  expect(total).toBe(6);
+});
+
+test("an oversized index is refused from the open descriptor, not read", () => {
+  const h = home(), s = session(h);
+  writeFileSync(join(h.root, "session_index.jsonl"), Buffer.alloc(17 * 1024 * 1024, 32));
+  expect(new KimiWireReader({ home: h.root, sessionId: s.id }).read()).toEqual({ status: "unknown", reason: "io-error" as KimiWireReason });
+});
+
+test("restart seeding honours a budget_resume: rows recorded before the resume return nothing to the window (round 1 finding 3)", () => {
+  const before = { type: "usage", source: "kimi_wire", id: "old", at: "2026-10-23T01:00:00.000Z", measuredAt: "2026-10-23T01:00:00.000Z", inputTokens: 900, cacheWriteTokens: 0, outputTokens: 60 };
+  const after = { type: "usage", source: "kimi_wire", id: "new", at: "2026-10-23T03:00:00.000Z", measuredAt: "2026-10-23T03:00:00.000Z", inputTokens: 10, cacheWriteTokens: 0, outputTokens: 5 };
+  const resumedAt = Date.parse("2026-10-23T02:00:00.000Z");
+  expect(kimiSeedRows([before, after] as never, resumedAt)).toEqual([{ id: "old", at: Date.parse(before.measuredAt), counted: 0 }, { id: "new", at: Date.parse(after.measuredAt), counted: 15 }]);
+  expect(kimiSeedRows([before, after] as never).map(r => r.counted)).toEqual([960, 15]);
+  const h = home(), rig = usageRig(h, 1000);
+  rig.clock(Date.parse("2026-10-23T03:30:00.000Z"));
+  rig.usage.seed(kimiSeedRows([before, after] as never, resumedAt));
+  const s = session(h); rig.bind(s.id); rig.usage.turnStarted("kimi");
+  appendFileSync(s.wire(), row(1, 0, 0, 0, rig.now() + 1));
+  rig.usage.collect("kimi");
+  expect(rig.log.reports.at(-1)?.used).toBeCloseTo(16 / 1000, 8); // 15 after the resume + 1, not 960 + 16
 });

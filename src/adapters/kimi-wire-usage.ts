@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, lstatSync, openSync, readFileSync, readSync, readdirSync } from "node:fs";
+import { closeSync, fstatSync, lstatSync, openSync, readSync, readdirSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, sep } from "node:path";
 import { realPath } from "../hub/project.ts";
@@ -58,7 +58,7 @@ export interface KimiWireOptions {
   home: string;
   /** The ACP session id the hub owns; matched exactly against `session_index.jsonl`. */
   sessionId: string;
-  /** Bytes read from one file per call. */
+  /** Bytes read per call in total, across every file of the session (the call runs on the daemon's event loop). */
   maxBytes?: number;
 }
 
@@ -99,13 +99,16 @@ export class KimiWireReader {
       const dir = this.resolve();
       const next = new Map<string, FileState>();
       const rows: KimiWireRow[] = [];
-      let more = false;
+      let more = false, budget = this.chunk;
       const agents = this.agents(dir);
       for (const name of this.files.keys()) if (!agents.has(name)) throw new Unknown("missing");
       for (const [name, wire] of agents) {
-        const result = this.readFile(name, wire, this.files.get(name));
+        const previous = this.files.get(name);
+        if (budget <= 0) { if (previous) next.set(name, previous); more = true; continue; } // the bound is spent: this file waits for the next call
+        const result = this.readFile(name, wire, previous, budget);
         next.set(name, result.state);
         rows.push(...result.rows);
+        budget -= result.read;
         more ||= result.more;
       }
       this.files = next;
@@ -128,12 +131,7 @@ export class KimiWireReader {
       if (again !== this.dir) throw new Unknown("moved");
       return this.dir;
     }
-    let text: string;
-    try {
-      const file = join(this.home, "session_index.jsonl");
-      if (lstatSync(file).size > INDEX_CAP) throw new Unknown("io-error");
-      text = readFileSync(file, "utf8");
-    } catch (error) { throw error instanceof Unknown ? error : new Unknown("no-index"); }
+    const text = this.index();
     let listed: string | undefined;
     for (const line of text.split("\n")) {
       if (!line.includes(this.sessionId)) continue;
@@ -150,9 +148,29 @@ export class KimiWireReader {
     return dir;
   }
 
+  /** The index, opened once and sized from that descriptor, so a link swapped in between a check and the read cannot lift the bound. */
+  private index(): string {
+    let fd: number;
+    try { fd = openSync(join(this.home, "session_index.jsonl"), "r"); } catch { throw new Unknown("no-index"); }
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || stat.size > INDEX_CAP) throw new Unknown("io-error");
+      const buffer = Buffer.allocUnsafe(stat.size);
+      let got = 0;
+      while (got < stat.size) {
+        const n = readSync(fd, buffer, got, stat.size - got, got);
+        if (n <= 0) break;
+        got += n;
+      }
+      return buffer.toString("utf8", 0, got);
+    } catch (error) { throw error instanceof Unknown ? error : new Unknown("io-error"); }
+    finally { closeSync(fd); }
+  }
+
   /** `agents/<name>/wire.jsonl` of every agent that has one: the main agent and its sub-agents. */
   private agents(dir: string): Map<string, string> {
     const out = new Map<string, string>();
+    const files = new Set<string>(); // one file seen under two names (a link, a hard link) is counted once
     let names: string[];
     try { names = readdirSync(join(dir, "agents")).filter(name => AGENT_NAME.test(name)).sort(); }
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return out; throw new Unknown("io-error"); }
@@ -163,12 +181,16 @@ export class KimiWireReader {
       let real: string;
       try { real = realPath(path); } catch { throw new Unknown("io-error"); }
       if (!inside(dir, real)) throw new Unknown("outside-home");
+      let identity: string;
+      try { const stat = statSync(real); identity = `${stat.dev}:${stat.ino}`; } catch { throw new Unknown("io-error"); }
+      if (files.has(identity)) continue;
+      files.add(identity);
       out.set(name, real);
     }
     return out;
   }
 
-  private readFile(agent: string, path: string, previous: FileState | undefined): { state: FileState; rows: KimiWireRow[]; more: boolean } {
+  private readFile(agent: string, path: string, previous: FileState | undefined, limit: number): { state: FileState; rows: KimiWireRow[]; more: boolean; read: number } {
     let fd: number;
     try { fd = openSync(path, "r"); } catch { throw new Unknown("io-error"); }
     try {
@@ -178,8 +200,8 @@ export class KimiWireReader {
       if (previous && stat.size < previous.offset) throw new Unknown("shrunk");
       const state: FileState = previous ? { ...previous } : { dev: stat.dev, ino: stat.ino, offset: 0, skipping: false };
       const rows: KimiWireRow[] = [];
-      const length = Math.min(this.chunk, stat.size - state.offset);
-      if (length <= 0) return { state, rows, more: false };
+      const length = Math.min(limit, stat.size - state.offset);
+      if (length <= 0) return { state, rows, more: false, read: 0 };
       const buffer = Buffer.allocUnsafe(length);
       let got = 0;
       while (got < length) {
@@ -194,7 +216,7 @@ export class KimiWireReader {
       let pos = 0;
       if (state.skipping) {
         const end = buffer.indexOf(10, 0);
-        if (end < 0) return { state: { ...state, offset: base + length }, rows, more: !reachedEnd };
+        if (end < 0) return { state: { ...state, offset: base + length }, rows, more: !reachedEnd, read: length };
         pos = end + 1;
         state.skipping = false;
       }
@@ -224,7 +246,7 @@ export class KimiWireReader {
         pos = end + 1;
       }
       state.offset = base + pos;
-      return { state, rows, more: state.offset < stat.size };
+      return { state, rows, more: state.offset < stat.size, read: length };
     } finally { closeSync(fd); }
   }
 

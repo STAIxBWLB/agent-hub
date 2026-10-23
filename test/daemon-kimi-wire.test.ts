@@ -115,3 +115,28 @@ test("with the ceiling off the usage and tokens events still flow and no window 
   expect(kimiEvents(r.file, "tokens").map(e => e.n)).toEqual([20]);
   expect((await r.console_.request({ t: "budget" })).budget.kimi?.windows ?? []).toEqual([]); // no ceiling: no window
 });
+
+test("AC4 across a restart: a resume followed by a restart does not bring the pre-resume rows back (round 1 finding 3)", async () => {
+  const r = await rig(100);
+  r.row(r.wire, 90, 10);
+  await r.turn("heavy");
+  await until(() => !!kimiEvents(r.file, "budget_pause").length, "pause");
+  expect((await r.console_.request({ t: "budget", resume: "kimi" })).ok).toBe(true);
+  await until(() => r.daemon.bus.stateOf("kimi") === "idle", "idle again");
+  await Bun.sleep(20);
+  r.row(r.wire, 4, 1);
+  await r.turn("light");
+  await r.daemon.stop();
+  const again = await startDaemon({ cwd: r.root, stateDir: r.stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, kimiHome: r.kimiHome, instanceId: "kimi-wire-2",
+    config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
+      pi: { ...DEFAULT_CONFIG.pi, enabled: false }, budget: { ...DEFAULT_CONFIG.budget, kimi_tokens_5h: 100, checkpoint_timeout_s: 1 }, kimi_cmd: ["bun", join(import.meta.dir, "fakes/acp-server.ts")] } });
+  cleanup.push(() => again.stop());
+  const console2 = await ControlClient.connect(r.stateDir, { role: "console" }); cleanup.push(() => console2.close());
+  expect((await console2.request({ t: "start", peer: "kimi" })).ok).toBe(true);
+  await until(() => again.bus.stateOf("kimi") === "idle", "kimi idle after restart");
+  const before = kimiEvents(r.file, "turn_end").length;
+  again.bus.publish(newEnvelope(USER, "after restart", { to: ["kimi"] }));
+  await until(() => kimiEvents(r.file, "turn_end").length > before, "turn after restart");
+  const paused = (await console2.request({ t: "budget" })).budget.kimi?.paused;
+  expect(paused).toBeUndefined();
+});

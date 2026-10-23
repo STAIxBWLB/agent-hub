@@ -62,6 +62,7 @@ import { createConfigEditor } from "./config-edit-host.ts";
 import { readEditable } from "./config-edit.ts";
 import { eventLog, readEvents, type RoleIdentity } from "./events.ts";
 import { KimiUsage, kimiSeedRows } from "./kimi-usage.ts";
+import { kimiRowTotal } from "../adapters/kimi-wire-usage.ts";
 import { ExecutionBudget } from "./execution-budget.ts";
 import { claudeReportedTokens, readClaudeTranscriptCompletion, readClaudeTranscriptUsage, waitForClaudeCompletion } from "./usage.ts";
 import type { ServerWebSocket } from "bun";
@@ -1891,14 +1892,14 @@ export async function startDaemon(opts: DaemonOptions) {
     record: (peer, row, counted) => {
       addTokens(peer, counted);
       event({ type: "usage", peer, source: "kimi_wire", id: row.id, measuredAt: new Date(row.at).toISOString(), inputTokens: row.inputOther, outputTokens: row.output,
-        cacheReadTokens: row.inputCacheRead, cacheWriteTokens: row.inputCacheCreation, totalTokens: row.inputOther + row.inputCacheCreation + row.inputCacheRead + row.output,
+        cacheReadTokens: row.inputCacheRead, cacheWriteTokens: row.inputCacheCreation, totalTokens: kimiRowTotal(row),
         ...taskAttribution(peer), ...(row.model ? { servedModel: row.model } : {}) });
     },
     report: (peer, window) => budget.report(peer, [{ id: "tokens", used: window.used, resetsAt: window.resetsAt, source: `hub count, kimi wire log, of kimi_tokens_5h ${window.ceiling}` }]),
     forget: peer => budget.forget(peer, "tokens"),
     notice: line => notify(line),
   });
-  kimiUsage.seed(kimiSeedRows(startupEvents));
+  kimiUsage.seed(kimiSeedRows(startupEvents, Math.max(0, ...startupEvents.flatMap(e => e.type === "budget_resume" && definitionOf(e.peer)?.budget?.resetSoftTokensOnResume ? [Date.parse(e.at)] : []).filter(Number.isFinite))));
   /** A peer whose definition keeps host-owned soft token accounting (Kimi): its rows are read at a turn start (the floor), a turn end and a usage_update. */
   const softTokenPeer = (peer: PeerId): boolean => !!definitionOf(peer)?.budget?.resetSoftTokensOnResume;
   const collectKimiUsage = (peer: PeerId): void => { if (!softTokenPeer(peer)) return; try { kimiUsage.collect(peer); } catch (error) { log(`kimi usage: ${(error as Error).name}`); } };
