@@ -35,7 +35,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub sdlc train report|configure|cut <release-id> [revision] [json]", "plan a release and freeze its approved scope after resource/quota admission"],
     ["ahub sdlc release-assign <task> <revision> <release-id|none> <reason...>", "assign approved/in-flight work without changing execution"],
     ["ahub sdlc costs [owner/repo]", "read bounded planner cost metrics for linked merged PRs"],
-    ["ahub sdlc metrics [--since <date>]", "read SDLC metrics and control band tiers from board history (planner or person; read-only)"],
+    ["ahub sdlc metrics [--since <YYYY-MM-DD|ISO time>]", "read SDLC metrics and control band tiers from board history (planner or person; read-only)"],
     ["ahub backlog groom | return <task> <revision> <reason...>", "read grooming findings or return accepted untouched work to backlog (planner/person)"],
     ["ahub status [--json] [--full] [--color=auto|always|never]", "the hub, its peers, model backends and task counts"],
     ["ahub status --all [--json] [--color=auto|always|never]", "show every registered project"],
