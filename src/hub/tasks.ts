@@ -893,11 +893,11 @@ export class Tasks {
     }
     return parts.length ? `no peer can take the planner pull: ${parts.join("; ")}` : "no peer has eligible planner WIP capacity";
   }
-  private plannerAssignment(task: Task, reservedOnly = false): Assignment {
+  private plannerAssignment(task: Task, reservedOnly = false, routing: Routing = this.d.routing()): Assignment {
     const states = this.states();
     const full = this.plannerFull(task);
     // Preview the To Do transition without routing or offering the persisted backlog row.
-    return assign({ ...task, state: "proposed" }, states, this.d.routing(), { exclude: this.excluded(task), excludeOwners: full, ...(reservedOnly && task.reserved && !this.excluded(task).includes(task.reserved) ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class, task) });
+    return assign({ ...task, state: "proposed" }, states, routing, { exclude: this.excluded(task), excludeOwners: full, ...(reservedOnly && task.reserved ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class, task) });
   }
 
   async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {
@@ -922,14 +922,25 @@ export class Tasks {
           return !!competing && (competing.rank < order.rank || competing.rank === order.rank && competing.id < order.id);
         })) throw new PreEffectToolRefusal("a person's P0 backlog order is retained");
       }
-      const assignment = this.plannerAssignment(task);
-      if (!assignment.owner) throw new PreEffectToolRefusal(this.plannerRefusal(task));
-      if (this.hasPersonReservation(task) && assignment.owner !== task.reserved) throw new PreEffectToolRefusal("a person's reservation is retained");
+      if (task.reserved && this.excluded(task).includes(task.reserved)) throw new PreEffectToolRefusal(this.plannerRefusal(task));
+      const assignment = this.plannerAssignment(task, !!task.reserved);
+      if (!assignment.owner) {
+        const refusal = task.reserved ? `reserved peer ${task.reserved} cannot take the planner pull: ${assignment.refusals?.find(row => row.role === "owner" && row.peer === task.reserved)?.reason ?? "not eligible"}; ${this.plannerRefusal(task)}` : this.plannerRefusal(task);
+        throw new PreEffectToolRefusal(`${this.hasPersonReservation(task) ? "a person's reservation is retained; " : ""}${refusal}`);
+      }
       return { task, owner: assignment.owner };
     };
     const initial = validate(), withheld = await this.withholds("note", input.reason, initial.task);
     authorized();
     const current = validate();
+    if (current.task.reserved) {
+      return this.assignOwner(current.task, by, { candidates: [current.owner], namedOwner: current.owner, planner: true, refuseNamed: "pre",
+        plannerPull: { revision: input.revision, note: input.reason.trim(), withheld, guard: () => {
+          authorized();
+          const checked = validate();
+          if (checked.task.history.length !== current.task.history.length || checked.owner !== current.owner) throw new PreEffectToolRefusal("planner pull changed during admission");
+        } } });
+    }
     const pulled = this.d.board.pullPlanned(current.task.id, by, current.owner, input.revision, input.reason.trim(), withheld);
     this.planningRecorded({ by, task: pulled.id, fields: ["pull", "reserved"], revision: pulled.planningRevision! });
     return pulled;
@@ -1857,7 +1868,9 @@ export class Tasks {
       const task = this.d.board.get(target);
       if (!task) throw new Error(`no task #${target}`);
       if (isClosedTaskState(task.state)) return [...workflow, `task ${this.publicTitle(task)} (${task.state}): closed; not routed`];
-      const a = assign(task, this.states(), routing, { exclude: this.excluded(task), excludeOwners: this.plannerPullRecord(task)?.pull ? this.plannerFull(task) : [], waitsFor: this.waitsFor(task), ...this.weights(task.class, task) });
+      const planned = task.state === "backlog" && !!task.reserved || this.plannerPullRecord(task)?.pull === true;
+      const a = planned ? this.plannerAssignment(task, true, routing)
+        : assign(task, this.states(), routing, { exclude: this.excluded(task), waitsFor: this.waitsFor(task), ...this.weights(task.class, task) });
       // The split trace is for the pair the record is about: the task's owner when it has one (issue #109).
       return [...workflow, `task ${this.publicTitle(task)} (${task.state}, owner ${task.owner ?? "none"}${task.reserved ? `, reserved for ${task.reserved}` : ""})`, ...(task.profileClass ? [`profile class ${profileTaskLabel(task)}`] : []), ...(task.role ? [`task role ${task.role} (guidance only)`] : []), "if it were assigned now:", ...a.trace, ...(this.splitShadow(task, task.owner ?? a.owner)?.trace ?? [])];
     }
@@ -1945,14 +1958,17 @@ export class Tasks {
   }
 
   /** `override`: a person's explicit assign, which past refusals do not block and which drops an agent's reservation (#207). */
-  private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean; planner?: boolean; expectedFlowRevision?: number; refuseNamed?: "pre" | "plain" } = {}): Promise<Task> {
-    if (task.state === "backlog") throw new PreEffectToolRefusal(`task #${task.id}: pull backlog work before assigning it`);
+  private async assignOwner(task: Task, by: PeerId, opts: { candidates?: PeerId[]; namedOwner?: PeerId; event?: string; note?: string; reason?: TaskMoveReason; clearOnFail?: boolean; exclude?: PeerId[]; context?: string; contextWithheld?: boolean; claim?: boolean; override?: boolean; roster?: boolean; planner?: boolean; expectedFlowRevision?: number; refuseNamed?: "pre" | "plain"; plannerPull?: { revision: number; note: string; withheld: boolean; guard: () => void } } = {}): Promise<Task> {
+    if (task.state === "backlog" && !opts.plannerPull) throw new PreEffectToolRefusal(`task #${task.id}: pull backlog work before assigning it`);
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
     let stagedClaimGap: string | undefined;
     if (mode !== "off" && this.isBuildTask(task)) {
       const gap = task.sdlc?.planReview ? await this.planReviewGap(task) : "plan not reviewed since proposal";
       const current = this.d.board.get(task.id);
-      if (!current || !this.ownerAssignmentCurrent(task, current)) return current ?? task;
+      if (!current || !this.ownerAssignmentCurrent(task, current)) {
+        if (opts.plannerPull) throw new PreEffectToolRefusal("planner pull changed during admission");
+        return current ?? task;
+      }
       task = current; // Reviewer-only and quiet bookkeeping updates do not supersede ownership authority.
       if (gap) {
         this.releaseNotice(`task ${this.publicTitle(current)}: ${gap}; planner: call hub_planner_groom then hub_plan_review`);
@@ -1969,9 +1985,10 @@ export class Tasks {
     const waits = this.waitsFor(task);
     const plannedMove = opts.planner || this.plannerPullRecord(task)?.pull === true && (by === HUB || opts.roster) && (opts.reason !== "manual" || opts.roster);
     const plannerFull = plannedMove ? this.plannerFull(task) : [];
-    const a = assign(task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], excludeOwners: plannerFull, ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class, task), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}) });
+    const a = assign(opts.plannerPull ? { ...task, state: "proposed" } : task, this.states(), this.d.routing(), { exclude: [...(opts.override ? [] : this.excluded(task)), ...(opts.exclude ?? []), ...(opts.event === "escalated" && task.owner ? [task.owner] : [])], excludeOwners: plannerFull, ...(opts.candidates ? { candidates: opts.candidates } : {}), waitsFor: waits, ...this.weights(task.class, task), ...(opts.namedOwner ? { namedOwner: opts.namedOwner } : {}) });
 
     if (waits.length) {
+      if (opts.plannerPull) throw new PreEffectToolRefusal("planner pull waits for dependency approval");
       this.releaseNotice(`task ${this.publicTitle(task)} waits for ${waits.map((id) => `#${id}`).join(", ")}; it is offered once they are approved`);
       return task;
     }
@@ -1997,7 +2014,13 @@ export class Tasks {
     // A person's explicit assign replaces an agent's reservation (#207). Only a refusal keeps the owner it moves away from
     // out for good: a reviewer's rejections or an escalation by hand, never the hub's own move after a failed delivery.
     const lasting = opts.event === "escalated" && task.owner && (opts.reason === "rejections" || opts.reason === "manual");
-    const next = this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.roster && task.state === "in_progress" ? { state: "proposed" as const } : {}), ...(opts.event === "escalated" ? { rejections: 0 } : {}), ...(opts.override && task.reserved ? { reserved: null } : {}) }, this.assignmentNote(`${opts.note ?? `to ${a.owner}`}${passed}`, a), { ...this.reviewMetadata(a), ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}) }, opts.expectedFlowRevision);
+    opts.plannerPull?.guard();
+    const assignmentNote = this.assignmentNote(`${opts.note ?? `to ${a.owner}`}${passed}`, a);
+    const assignmentExtra = { ...this.reviewMetadata(a), ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}) };
+    const next = opts.plannerPull
+      ? this.d.board.pullAssigned(task.id, by, a.owner, opts.plannerPull.revision, opts.plannerPull.note, opts.plannerPull.withheld, a.reviewer ?? null, assignmentNote, assignmentExtra, task.history.length)
+      : this.d.board.update(task.id, by, opts.event ?? "assigned", { owner: a.owner, reviewer: a.reviewer ?? null, ...(opts.roster && task.state === "in_progress" ? { state: "proposed" as const } : {}), ...(opts.event === "escalated" ? { rejections: 0 } : {}), ...(opts.override && task.reserved ? { reserved: null } : {}) }, assignmentNote, assignmentExtra, opts.expectedFlowRevision);
+    if (opts.plannerPull) this.planningRecorded({ by, task: next.id, fields: ["pull", "reserved"], revision: next.planningRevision! });
     // What calibration reads (issue #109): routing chose the first owner (no single named candidate, no claim; not an
     // escalation, relay or reassignment of work already begun), and the work overlaps another owner's task not started
     // yet. For the record only. Work routed back to its proposer is left out, as its observations are (by === owner).
@@ -2011,6 +2034,11 @@ export class Tasks {
     // The cohort record formed just below reads it, and so does `route explain` while that turn lasts.
     if (opts.claim && a.owner === by && this.d.bus.peers.get(by)?.state === "busy") this.sent.set(handOver(next, by), by);
     try {
+      if (opts.plannerPull && task.offer) {
+        const prior = { ...task, owner: task.offer.owner };
+        this.withdrawRoleRequest(prior, next, "owner");
+        this.releaseNotice(`task #${next.id}: stale offer withdrawal failed`, () => this.d.bus.withdraw(task.offer!.envelopeId));
+      }
       if (by === USER && opts.event === "reassigned") this.withdrawRoleRequest(task, next, "owner");
       const hits = this.overlapHits(next);
       this.formCohort(next, hits);

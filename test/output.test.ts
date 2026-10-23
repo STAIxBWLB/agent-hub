@@ -74,7 +74,7 @@ describe("one-shot output", () => {
       expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
       expect(line).not.toMatch(/[─-╿]/);
     }
-    const board = text(renderBoard(outputFixture.tasks, columns, now));
+    const board = text(renderBoard(outputFixture.tasks, columns, now, true));
     const header = board.split("\n")[0]!;
     const from = Bun.stringWidth(header.split("TITLE")[0]!);
     const to = Bun.stringWidth(header.split("STAGE")[0]!);
@@ -179,7 +179,7 @@ describe("one-shot output", () => {
   test("narrow piped widths preserve short boards and complete cells", () => {
     for (const columns of [12, ...Array.from({ length: 45 }, (_, i) => i + 36)]) {
       for (const title of ["wip", "Fix it", "Z".repeat(300)]) {
-        const rendered = renderBoard([{ id: 1, state: "changes_requested", owner: "codex", reviewer: "claude", class: "implement", title, signals: [] }], columns, now);
+        const rendered = renderBoard([{ id: 1, state: "changes_requested", owner: "codex", reviewer: "claude", class: "implement", title, signals: [] }], columns, now, true);
         const board = text(rendered);
         for (const line of board.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
         expect(board).not.toContain("...");
@@ -195,9 +195,9 @@ describe("one-shot output", () => {
   test("filtered boards resolve dependencies against the full task list", () => {
     const approved = { id: 1, state: "approved", title: "done" };
     const ready = { id: 5, state: "proposed", title: "ready", deps: [1] };
-    const board = text(renderBoard([ready], 80, now, false, [approved, ready]));
+    const board = text(renderBoard([ready], 80, now, true, [approved, ready]));
     expect(board).toContain("proposed"); expect(board).not.toContain("waiting"); expect(board).toContain("after #1");
-    expect(text(renderBoard([ready], 80, now, false, [{ ...approved, state: "in_progress" }, ready]))).toContain("waiting");
+    expect(text(renderBoard([ready], 80, now, true, [{ ...approved, state: "in_progress" }, ready]))).toContain("waiting");
   });
   test("real daemon notices are shown once and actionable ids stay whole", () => {
     const status = text(renderStatus(outputFixture.status, undefined, now));
@@ -224,9 +224,9 @@ describe("one-shot output", () => {
   });
   test("multi-word states stay together whenever their table has room", () => {
     for (const columns of [120, 200]) {
-      const waiting = text(renderBoard([{ id: 5, state: "proposed", title: "waiting task", deps: [1] }], columns, now));
+      const waiting = text(renderBoard([{ id: 5, state: "proposed", title: "waiting task", deps: [1] }], columns, now, true));
       expect(waiting).toContain("proposed waiting");
-      const failed = text(renderBoard([{ id: 5, state: "in_review", title: "failed check", history: [{ event: "check failed", at: now }] }], columns, now));
+      const failed = text(renderBoard([{ id: 5, state: "in_review", title: "failed check", history: [{ event: "check failed", at: now }] }], columns, now, true));
       expect(failed).toContain("in_review check failed");
     }
   });
@@ -242,13 +242,13 @@ describe("one-shot output", () => {
     expect(physical.filter(line => line[linkAt]?.text.trim() === "attached")).toHaveLength(3);
     expect(physical.some(line => line[contextAt]?.text.includes("80% 14s ago"))).toBe(true);
     expect(text(rendered)).not.toContain("...");
-    const board = renderBoard([{ id: 1, state: "changes_requested", owner: "codex", reviewer: "claude", class: "implement", created: now, title: "Useful title columns" }], 60, now);
+    const board = renderBoard([{ id: 1, state: "changes_requested", owner: "codex", reviewer: "claude", class: "implement", created: now, title: "Useful title columns" }], 60, now, true);
     const titleHeader = board.find(line => line.some(cell => cell.text.trim() === "TITLE"))!;
     const i = titleHeader.findIndex(cell => cell.text.trim() === "TITLE");
     expect(Bun.stringWidth(titleHeader[i]!.text)).toBeGreaterThanOrEqual(12);
   });
   test("unavailable dependency context omits stages rather than inferring waiting", () => {
-    const board = text(renderBoard([{ id: 5, state: "proposed", deps: [1], title: "filtered task" }], 80, now, false, null));
+    const board = text(renderBoard([{ id: 5, state: "proposed", deps: [1], title: "filtered task" }], 80, now, true, null));
     expect(board).not.toContain("STAGE"); expect(board).not.toContain("waiting");
     expect(board).toContain("proposed"); expect(board).toContain("filtered task"); expect(board).toContain("after #1");
   });
@@ -267,7 +267,7 @@ describe("one-shot output", () => {
       { id: 14, state: "changes_requested", owner: "codex", reviewer: "claude", class: "implement", title: "Fix the follow-up", created: now - (2 * 86_400_000 + 3 * 3_600_000) },
     ];
     for (const columns of [76, 80]) {
-      const rendered = renderBoard(tasks, columns, now);
+      const rendered = renderBoard(tasks, columns, now, true);
       for (const [field, values] of [["ID", ["#1", "#12", "#14"]], ["OWNER", ["codex", "claude"]], ["REVIEWER", ["codex", "claude"]], ["AGE", ["1m", "3h00m", "2d03h"]], ["STAGE", ["[####]", "[###-]", "[#!--]"]]] as const) {
         const headerAt = rendered.findIndex(line => line.some(cell => cell.text.trim() === field));
         const header = rendered[headerAt]!;
@@ -291,7 +291,7 @@ describe("one-shot output", () => {
     ];
     for (const columns of [60, 76, 80]) for (const state of ["proposed", "changes_requested"]) {
       const tasks = base.map(task => task.id === 14 ? { ...task, state } : task);
-      const rendered = renderBoard(tasks, columns, now);
+      const rendered = renderBoard(tasks, columns, now, true);
       const headerAt = rendered.findIndex(line => line.some(cell => cell.text.trim() === "TITLE"));
       const titleAt = rendered[headerAt]!.findIndex(cell => cell.text.trim() === "TITLE");
       expect(Bun.stringWidth(rendered[headerAt]![titleAt]!.text) - 2).toBeGreaterThanOrEqual(12);
@@ -330,7 +330,7 @@ describe("one-shot output", () => {
       const chunks = wrap("x".repeat(titleWidth) + " --- from suffix", titleWidth, 0);
       const rendered = table(["ID", "TITLE"], chunks.map((text, i) => [{ text: i ? "" : "#1" }, { text }]), columns, [2, titleWidth]);
       for (const line of rendered) expect(Bun.stringWidth(paint(line, false))).toBeLessThanOrEqual(columns);
-      const hostile = text(renderBoard([{ id: 1, state: "proposed", title: "word --- from ".repeat(20) }], columns, now));
+      const hostile = text(renderBoard([{ id: 1, state: "proposed", title: "word --- from ".repeat(20) }], columns, now, true));
       for (const line of hostile.split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(columns);
     }
   });
