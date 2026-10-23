@@ -33,7 +33,7 @@ function rig(mode: SdlcMode = "off", options: Partial<TasksDeps> = {}) {
   const create = (pii = false) => {
     const row = board.propose("user", { title: "review fixture", class: "implement", plan: { paths: ["src/hub/tasks.ts"] }, ...(pii ? { signals: ["pii"] } : {}) });
     board.update(row.id, "user", "accepted", { state: "in_progress", owner: "codex", reviewer: "claude" });
-    return board.update(row.id, "codex", "done", { state: "in_review", refs: { commit: policy.head }, sdlc: { stage: "review", repo: "o/r", issue: 1, pr: 2, localHead: policy.head, localResult: "passed" } });
+    return board.update(row.id, "codex", "done", { state: "in_review", refs: { commit: policy.head }, sdlc: { stage: "review", repo: "o/r", issue: 1, pr: 100 + row.id, localHead: policy.head, localResult: "passed" } });
   };
   const reopen = (id: number) => {
     board.update(id, "codex", "accepted", { state: "in_progress" });
@@ -300,4 +300,39 @@ for (const [by, cls] of [["user", "plan"], ["hub", "implement"], ["user", "imple
   const actual = r.board.list("backlog").filter(row => row.class === "plan" && row.history[0]?.by === "hub");
   expect(actual).toHaveLength(1);
   expect(actual[0]?.title).toContain("Review policy amendment");
+});
+
+test("#736 a finding carried to a follow-up of the same PR or branch is not a recurrence; separate work still is", async () => {
+  const r = rig(), sameWork = (pr: number, branch: string) => {
+    const row = r.board.propose("user", { title: "step follow-up fixture", class: "implement", plan: { paths: ["src/hub/tasks.ts"] } });
+    r.board.update(row.id, "user", "accepted", { state: "in_progress", owner: "codex", reviewer: "claude" });
+    return r.board.update(row.id, "codex", "done", { state: "in_review", refs: { commit: A, branch, repo: "o/r" }, sdlc: { stage: "review", repo: "o/r", issue: 1, pr, localHead: A, localResult: "passed" } });
+  };
+  const step = sameWork(34, "feat/p3"), followUp = sameWork(34, "feat/p3");
+  await submit(r.tasks, step.id, [finding("carried")]);
+  await submit(r.tasks, followUp.id, [finding("carried")]);
+  expect(r.board.list("backlog")).toHaveLength(0);
+  const sameBranch = sameWork(35, "feat/p3");
+  await submit(r.tasks, sameBranch.id, [finding("carried")]);
+  expect(r.board.list("backlog")).toHaveLength(0);
+  const other = sameWork(36, "feat/other");
+  await submit(r.tasks, other.id, [finding("carried")]);
+  const cards = r.board.list("backlog");
+  expect(cards).toHaveLength(1);
+  expect(cards[0]?.detail).toContain("Review finding key: security:carried");
+});
+
+test("#736 a free-form superseded_by joins the replacement, and repository identity comes from the board resolver", async () => {
+  const r = rig();
+  const loose = (title: string) => { const row = r.board.propose("user", { title, class: "implement", plan: { paths: ["src/hub/tasks.ts"] } }); r.board.update(row.id, "user", "accepted", { state: "in_progress", owner: "codex", reviewer: "claude" }); return r.board.update(row.id, "codex", "done", { state: "in_review", refs: { commit: A }, sdlc: { stage: "review", repo: "o/r", issue: 1, localHead: A, localResult: "passed" } }); };
+  const old = loose("superseded fixture"), next = loose("replacement fixture");
+  await submit(r.tasks, old.id, [finding("carried-over")]);
+  r.board.update(old.id, "user", "cancelled", { state: "cancelled", cancelled: { reason: "replaced", supersededBy: `task #${next.id}`, flowRevision: 1 } });
+  await submit(r.tasks, next.id, [finding("carried-over")]);
+  expect(r.board.list("backlog")).toHaveLength(0);
+  const a = r.board.update(loose("other repo a").id, "codex", "done", { refs: { commit: A, branch: "main", repo: "x/one" } });
+  const b = r.board.update(loose("other repo b").id, "codex", "done", { refs: { commit: A, branch: "main", repo: "x/two" } });
+  await submit(r.tasks, a.id, [finding("same-branch-name")]);
+  await submit(r.tasks, b.id, [finding("same-branch-name")]);
+  expect(r.board.list("backlog").map(card => card.detail)).toEqual([expect.stringContaining("security:same-branch-name")]);
 });

@@ -559,6 +559,31 @@ export class Tasks {
   }
 
   /** Host-authored proposals contain only cleared IDs, integer task references and fixed instruction targets. */
+  /**
+   * #736: how many separate pieces of work the tasks are. Tasks that share a PR, a branch in one repository, or a
+   * supersession (a cancelled task names its replacement) are one piece of work, as an approve-as-step follow-up is: a
+   * finding carried between them is the same finding, not a recurrence.
+   */
+  private workUnits(rows: readonly Task[]): number {
+    const parent = new Map<number, number>();
+    const find = (id: number): number => { let at = id; while (parent.has(at)) at = parent.get(at)!; return at; };
+    const join = (a: number, b: number) => { const x = find(a), y = find(b); if (x !== y) parent.set(x, y); };
+    const first = new Map<string, number>(), ids = new Set(rows.map(row => row.id));
+    for (const row of rows) {
+      // Repository identity comes from the board's own resolver, so aliases match and an outside path never falls back to this project.
+      const prRepo = row.sdlc?.pr ? this.repositories.scope(row.sdlc.repo ? { repo: row.sdlc.repo, paths: row.refs.paths } : row.refs).key : "";
+      const branchRepo = row.refs.branch ? this.repositories.scope(row.refs).key : "";
+      for (const key of [prRepo ? `pr ${prRepo}#${row.sdlc!.pr}` : "", branchRepo ? `branch ${branchRepo} ${row.refs.branch}` : ""]) {
+        if (!key) continue;
+        const seen = first.get(key);
+        if (seen === undefined) first.set(key, row.id); else join(row.id, seen);
+      }
+      // superseded_by is free text ("task #73", "#73" or "73"); the first task number in it names the replacement.
+      const next = Number(/#?(\d+)/.exec(row.cancelled?.supersededBy ?? "")?.[1]);
+      if (ids.has(next)) join(row.id, next);
+    }
+    return new Set(rows.map(row => find(row.id))).size;
+  }
   private proposeRecurringFindings(task: Task, by: PeerId, items: readonly ReviewFinding[], withheld: boolean): void {
     if (withheld || this.isPii(task) || this.d.privateTurn?.(by) || !items.length || !this.findingTextAllowed(task, items)) return;
     const rows = this.d.board.list();
@@ -574,7 +599,7 @@ export class Tasks {
         const finding = last?.reviewFindings?.items.find(value => value.id === item.id);
         return !last?.withheld && finding && same(finding) && finding.disposition !== "false_positive" && this.findingTextAllowed(row, [finding]);
       });
-      if (new Set(holders.map(row => row.id)).size < 2) continue;
+      if (this.workUnits(holders) < 2) continue;
       const key = `Review finding key: ${item.pass}:${item.id}`;
       if (keys.has(key)) continue;
       const title = `Review policy amendment for recurring finding ${item.pass}:${item.id}`;
