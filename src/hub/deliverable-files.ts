@@ -12,7 +12,7 @@ import { DELIVERABLE_LIMITS, deliverableId, type DeliverableClaim, type Delivera
  *
  * - Containment: `guardPath` (read mode) resolves the path with `realPath`, refuses anything outside the project, on the secrets denylist or
  *   through a dangling link, and returns the resolved path. The file is then opened without following a final link and its identity
- *   (device and inode) is compared with what was checked, so a path swapped between the check and the open is refused, not read.
+ *   (device, inode, size and mtime: Linux reuses an inode number at once) is compared with what was checked, so a path swapped between the check and the open is refused, not read.
  * - Plain folders: nothing here needs git, a PR, a snapshot or a lifecycle receipt.
  * - Bounded and non-blocking: a regular file only, at most `fileBytes` each and `totalBytes` per call, read in 1 MiB chunks with an await
  *   between them so a large file never stalls the daemon. A file that changes while it is read is refused, never recorded half-read.
@@ -68,7 +68,7 @@ async function digest(path: string, found: Located): Promise<{ sha256: string; b
   catch { return refuse(path, "the file cannot be opened"); }
   try {
     const before = await handle.stat();
-    if (!before.isFile() || !sameFile(before, found.stat)) return refuse(path, "the file changed while it was being checked");
+    if (!before.isFile() || !sameFile(before, found.stat) || before.size !== found.stat.size || before.mtimeMs !== found.stat.mtimeMs) return refuse(path, "the file changed while it was being checked");
     const hash = createHash("sha256"), buffer = Buffer.allocUnsafe(CHUNK);
     let bytes = 0;
     for (;;) {
