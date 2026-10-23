@@ -1,3 +1,4 @@
+import { FakeMemoryClient } from "./fakes/mem-worker.ts";
 import { afterEach, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -26,7 +27,7 @@ const until = async (check: () => boolean) => { for (let i = 0; i < 300 && !chec
 async function fixture(config: Partial<HubConfig> = {}, state?: { cwd: string; stateDir: string }, native: { codexAppPort?: number; unattended?: boolean } = {}) {
   const cwd = state?.cwd ?? mkdtempSync(join(tmpdir(), "ahub-permission-"));
   const stateDir = state?.stateDir ?? join(cwd, "state");
-  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: native.codexAppPort ?? 0, codexProxyPort: 0,
+  const daemon = await startDaemon({ ...(config.memory?.worker_url ? { memoryClient: new FakeMemoryClient(config.memory.worker_url) } : {}), cwd, stateDir, controlPort: 0, codexAppPort: native.codexAppPort ?? 0, codexProxyPort: 0,
     unattended: native.unattended,
     config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, batch_ms: 0, kimi_cmd: [process.execPath, join(import.meta.dir, "fakes/acp-server.ts")], memory: { ...DEFAULT_CONFIG.memory, enabled: false }, ...config } });
   cleanup.push(() => daemon.stop());

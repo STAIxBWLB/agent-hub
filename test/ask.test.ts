@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { ask, citedIds, gather, keywords, NOTHING, type AskDeps } from "../src/hub/ask.ts";
 import { Board } from "../src/hub/board.ts";
 import { DEFAULT_INFERENCE, Inference } from "../src/hub/inference.ts";
-import { MemoryClient } from "../src/memory/client.ts";
+import { FakeMemoryClient as MemoryClient } from "./fakes/mem-worker.ts";
 import { OmniRoute } from "../src/omniroute/client.ts";
 import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 import { startFakeModelServer, type Script } from "./fakes/model-server.ts";

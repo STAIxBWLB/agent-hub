@@ -47,7 +47,6 @@ import { inspectProject, startProject, stopProject, runProjectDaemon } from "../
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { openManager, startManager, stopManager } from "../hub/manager.ts";
 import { OmniRoute } from "../omniroute/client.ts";
-import { MemoryClient } from "../memory/client.ts";
 import { init, planInit } from "./init.ts";
 import { launcherPreview } from "./preview.ts";
 import { instanceLaunchArguments, requirePeerInstances, requireActiveInstance, cleanupStaleClaudeSettings, cleanupClaudeSettings, buildLaunch, buildKimiTuiLaunch, claudeObservationHooks, nativeLaunchEnv, recordClaudeLaunch, runClaudeLaunch, type ClaudeLaunchRecord, UNATTENDED_WARNING } from "./launch.ts";
@@ -77,7 +76,7 @@ import { armRuns, benchCompare, benchCsv, benchReport, formatCompare, formatRepo
 import { benchPreflight, defaultIo, runBench } from "./bench.ts";
 import { ADDONS, isAddon, type AddonName } from "../hub/tooling.ts";
 import { goalCommand, memoryCommand } from "./memory.ts";
-import { selectedMemoryProfile } from "../hub/memory-profile.ts";
+import { AGENT_MEM_VERSION, assertAgentMemVersion, selectedMemoryProfile } from "../hub/memory-profile.ts";
 import { checkMemoryProfiles, formatMemoryProfileCheck } from "../hub/memory-profile-check.ts";
 import { addonReport, appendRecords, formatAddons, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
 import { summarize, summarizeByTask } from "../hub/report.ts";
@@ -2187,9 +2186,9 @@ const commands: Record<string, () => Promise<void> | void> = {
         row(mlx.state === "ready" || mlx.state === "stopped", "pi mlx", `${mlx.state}${mlx.model ? ` (${mlx.model})` : ""}${mlx.lastError ? `: ${mlx.lastError}` : ""}`);
       }
 
-      const memory = new MemoryClient();
-      const mem = await memory.health();
-      row(mem.ok, "memory worker", mem.ok ? `claude-mem ${mem.version ?? ""} at ${memory.url}` : `unavailable at ${memory.url} (the hub works without it)`);
+      let memoryLibraryReady = false;
+      try { assertAgentMemVersion({ name: "@staix/agent-mem", version: AGENT_MEM_VERSION }); memoryLibraryReady = true; } catch { /* report the failed exact pin without opening a store */ }
+      row(memoryLibraryReady, "memory library", memoryLibraryReady ? `amem ${AGENT_MEM_VERSION}; in-process, no claude-mem worker` : "installed amem does not match the exact dependency pin");
       const bridge = spawnSync("dot", ["ai", "memory", "status"], { encoding: "utf8" });
       const out = bridge.error ? "" : bridge.stdout.replace(/\x1b\[[0-9;]*m/g, "");
       for (const tool of DOCTOR_MEMORY_CAPTURE_PEERS) {

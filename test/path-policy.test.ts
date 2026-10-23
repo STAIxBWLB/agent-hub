@@ -33,7 +33,7 @@ test("private declared paths force local-only before triage even with pattern co
   const dir = root(), board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 }), notices: string[] = [];
   cleanup.push(() => board.close());
   for (const id of ["claude", "codex", "kimi", "local"]) { const peer = new Peer(id); bus.add(peer); await peer.start(); }
-  const routing = loadRouting(dir); routing.constraints.pii = "off"; routing.classes.implement = { ...routing.classes.implement, peers: ["codex", "local"] }; let triaged = 0; const memory = new CountingMemory("http://127.0.0.1:1");
+  const routing = loadRouting(dir); routing.constraints.pii = "off"; routing.classes.implement = { ...routing.classes.implement, peers: ["codex", "local"] }; let triaged = 0; const memory = new CountingMemory();
   const tasks = new Tasks({ wipLimit: () => 3, board, bus, cwd: dir, project: "fixture", profile: "research", piiPaths: ["data/private"], memory, routing: () => routing, notify: line => notices.push(line),
     triage: { onCampus: async () => false, classify: async () => { triaged++; return "implement"; } } });
   const task = await tasks.propose("local", { title: "PATH_PRIVATE_TASK_MARKER", owner: "local", plan: { paths: ["data/private/input.csv"] } });

@@ -1,12 +1,12 @@
 # Hub memory integration
 
-Agent-hub consumes the exact-pinned first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library (current pin `0.4.0`, initial pin `0.1.1`). The package owns portable storage, tiers, graph, goals, sync, import and raw commands. Agent-hub owns caller authority, current project privacy policy, task lifecycle integration and presentation. Optional claude-mem remains a separate capture and session-recall source.
+Agent-hub consumes the exact-pinned first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library (current pin `0.6.0`, initial pin `0.1.1`). The package owns portable storage, tiers, graph, goals, sync, import and raw commands. Agent-hub owns caller authority, current project privacy policy, task lifecycle integration and presentation. Claude-mem is an optional, explicit import source only; runtime recall and capture make no worker HTTP requests.
 
 ## Portable core and data directory
 
 The [agent-mem repository](https://github.com/STAIxBWLB/agent-mem) is the reference for the data model, immutable entry IDs, append-only segments, derived SQLite index and rebuild equality, home selection, import cursors, dedupe and machine sync. Shared v1 remains the default and needs no migration: schema `agent-hub.memory/v1`, canonical hashes and log/machine/lock paths remain compatible. `memoryHome()` comes from the package and selects `AMEM_HOME`, then `$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`; an explicit `StoreOptions.home` keeps its parent-directory meaning. The test preload (`test/hub-home.ts`) clears inherited `AMEM_HOME` and supplies an isolated `AGENTHUB_HOME` when none is provided.
 
-`src/memory/` contains hub integration only: briefs, recall, the claude-mem worker client and capture. `src/hub/memory-policy.ts` supplies `withoutPii`, `promotionScreen` and `mentionsPrivatePath`; `src/hub/read-tools.ts` supplies screened peer reads. Deny, hardened git, realPath and process identity come from the package's Node-safe `@staix/agent-mem/platform` entry and are re-exported through the existing local/hub/Pi modules. No core implementation is vendored in agent-hub. The `0.1.1` platform subpath is required because `0.1.0` exposes only a root entry that loads `bun:sqlite`, which Node-hosted Pi extensions cannot import. This is a packaging compatibility export; the platform algorithms are unchanged.
+`src/memory/` contains hub integration only: briefs, recall, the in-process amem client and deterministic capture. `src/hub/memory-policy.ts` supplies `withoutPii`, `promotionScreen` and `mentionsPrivatePath`; `src/hub/read-tools.ts` supplies screened peer reads. Deny, hardened git, realPath and process identity come from the package's Node-safe `@staix/agent-mem/platform` entry and are re-exported through the existing local/hub/Pi modules. No core implementation is vendored in agent-hub. The `0.1.1` platform subpath is required because `0.1.0` exposes only a root entry that loads `bun:sqlite`, which Node-hosted Pi extensions cannot import. This is a packaging compatibility export; the platform algorithms are unchanged.
 
 ## Selected memory profile
 
@@ -95,12 +95,11 @@ A running hub syncs 5 seconds after start and every `memory.sync_interval_min` m
 
 - **Task briefs**: when a task is handed to an owner, its brief lists hub memory first (entries one or two hops from
   the task's paths, symbols, issue and task: a linked fail first, then nearer, then newer; superseded entries dropped;
-  other projects' entries only when shared), then claude-mem's, `memory.brief_items` lines in all. A peer is never
+  other projects' entries only when shared), then related amem curated notes, `memory.brief_items` lines in all. A peer is never
   shown the same entry twice in one hub run.
-- **Session-start recall**: this project's long-term decisions, contracts and fails (and shared ones) lead the recall block; display-only filtering omits automatic approval notes, while changes-requested notes show their nonempty reasons. Lines preserve their headers and end at word boundaries with a visible marker when capped; each delivery deduplicates memory ids across prefaces and note lines. Stored notes and brief evidence are unchanged. Claude-mem's recent work follows; each gets half of `memory.inject_tokens` when both answer.
+- **Session-start recall**: this project's long-term decisions, contracts and fails (and shared ones) lead the recall block; display-only filtering omits automatic approval notes, while changes-requested notes show their nonempty reasons. Lines preserve their headers and end at word boundaries with a visible marker when capped; each delivery deduplicates memory ids across prefaces and note lines. Stored notes and brief evidence are unchanged. Recent short-term amem curated notes follow; each gets half of `memory.inject_tokens` when both answer.
 - **`ahub ask`**: entries that match the question and the graph neighbourhood of what they are about are evidence, cited
-  as `[mem:<8 hex>]`. A question that carries PII skips them. `ahub ask --remember` still saves only to claude-mem, so a
-  model's answer never becomes hub memory.
+  as `[mem:<8 hex>]` for existing native projections or `[mem:<32 hex>]` for full entry references. A question that carries PII skips them. `ahub ask --remember` writes a pending candidate, never curated evidence; a person must review it.
 - **`ahub memory`** needs no running hub. The hub CLI identity gate allows screened list/search/show reads in agent shells; graph and unscreened views are a person's. Managed peers use the bounded `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools through the daemon, with project scope, `memory_read`, PII-turn refusal and capture exclusion:
 
 ```bash
@@ -146,8 +145,8 @@ The package owns deterministic import identity, text-only graph extraction, curs
 
 Whether hub memory helps is measured, not assumed (#258 AC11, with #248):
 
-- Each task brief writes a `memory_brief` event with counts only (hub-memory items, fails among them, claude-mem
-  items); research records keep `briefs` (`delivered`, `withFail`), and `ahub research` splits approved tasks into
+- Each task brief writes a `memory_brief` event with counts only (hub-memory items, fails among them, supplemental
+  items in the legacy `claudeMem` count field; new events identify `source: "amem"`); research records keep `briefs` (`delivered`, `withFail`), and `ahub research` splits approved tasks into
   "a fail note in its brief", "brief without a fail note" and "no brief recorded" (first pass, rework, check failures).
 - `ahub bench run --memory off|claude-mem|native|both` declares an arm's memory and refuses a hub that runs with other
   settings; compare the arms with `ahub bench compare`.
@@ -186,3 +185,32 @@ A `changes_requested` review with unmet items can create one fail candidate. Tas
 Candidates and rendered/delivered/cited counters live only in agent-mem's machine-local `M/candidates.db` (package retention: 500 candidates/project for 30 days, 10,000 counters/project for 90 days). They are never imported or synced and are not evidence for recall, briefs, ask or graph. For shared v1, a person reviews them with `amem review` and accepts or rejects through that CLI's TTY and policy checks; generation review remains unsupported and refused. Dashboard acceptance is a later step. Accepted results are ordinary v1 notes under the package's acceptance contract; the hub tool has no acceptance authority.
 
 Rendered observations use the final journal payload, including memory lines in prefaces and briefs, with the real delivery id. Delivered observations require the journal's first positive transport acknowledgement (or the pull path's completed read receipt). Failed or uncertain handoffs do not establish delivery; journal-less transports leave it unknown. Citation observations resolve `mem:<id8+>` in a peer message or task completion summary against screened project-visible entries. Citations use explicit `message:<envelope-id>` or `summary:<task>:<history-index>` observation keys when the source delivery is not proven; their rendered/delivered values remain unknown. They do not establish a per-delivery causal ratio. Duplicate observations are idempotent per entry/context/observation, not cumulative usage claims. Unavailable task, turn or session identity and unobserved metrics remain unknown, never zero. No observation is written for a private envelope, PII task or PII turn. These are delivery and citation proxies, not proof that an agent understood or used a note correctly.
+
+## In-process recall and capture (agent-mem#13 P4)
+
+The exact 0.6.0 pin is the first published package with P3. It was checked directly against the cache-busting npm registry read: gitHead `2a182f2f23b7744a746b6854f9fb920df627a99f`, published 2026-10-23. The hub uses the canonical, alias-resolved project key and the selected profile; caller-written legacy project-chain labels never select a different store. `memory.worker_url` is retained only as ignored legacy configuration, not a network destination. `ahub doctor` reports the library rather than probing a worker.
+
+Changes from the worker integration are deliberate:
+
+- Task briefs and ask use curated amem entries with authentic `mem:` identifiers. Raw capture is not evidence. The existing native graph-neighbourhood/fails-first path is retained.
+- Recent recall supplements long-term notes with short-term curated notes. It does not recreate claude-mem's model-produced observation summaries. Those historical rows require the explicit person-run import.
+- Local capture deterministically appends SessionStart, tool events, Stop excerpts and SessionEnd. Host session/turn/step/invocation identity distinguishes actual executions even when a provider reuses its tool-call id; a replay of the same observation dedupes. There is no model summarizer, worker, watcher or network call. Published CaptureStore owns bounded excerpts, cap/retention, contention spool and replay. The bound handle is reused; effective R6 config is checked before each append and a change reopens it before writing. Refusal and daemon shutdown close it.
+- The host excludes private turns, PII tasks, private paths, memory/tool bookkeeping and secrets before capture. It screens complete input/output before truncation. Whole-row privacy screening also precedes read selection and rendering.
+- Native task notes are written once. Auxiliary checkpoint and model-answer writes are candidates, not another curated copy; their submitted metadata is retained in the candidate text and their note kind is preserved. The complete candidate must fit the package's 4000-character limit, or the save is unavailable. Model answers are excluded from every curated read projection even if an old import contains one.
+- Supplemental reads use bounded exact-project pages with explicit coverage; see "P4 supplemental read and capture bounds" below. Published SearchIndex supplies ranking after screening, with a term-wise labelled fallback when FTS5 is absent.
+
+The integration test uses actual temporary stores with fetch denied and verifies recall, brief and ask without a worker, local-only capture, replay dedupe, privacy before excerpts, project binding and candidate/evidence separation. Older fixture transport tests use a host-only injected FakeMemoryClient; no URL or fixture registry is accepted from production configuration.
+
+Historical benchmark memory-arm labels are retained for old records. Their `claude-mem`/`both` names are not evidence of a live worker on this runtime; new comparisons require a new declared condition and an amem-aware benchmark plan. No benchmark collection was run for this integration.
+
+
+Write screening examines both the JSON representation and literal structured keys/values before storage escaping. Authoritative tool input/output JSON is decoded once, from the complete original output before excerpt bounding; arbitrary nested JSON-as-text or other encodings are not interpreted. Host locators such as cwd are not capture content and are not persisted: treating the project root as content would falsely classify every event as mentioning every private subtree. Persisted capture fields and complete tool data remain screened, and complete custom deny paths are checked before token fallback. The test-only old-HTTP projection retains its old 4000-character response cap; production capture delegates its bound to CaptureStore after policy.
+
+
+## P4 supplemental read and capture bounds
+
+Session-start supplemental recall is one screened short-term curated block from every author, including the receiving peer. No adapter platform whitelist or "agent-hub" pseudo-source remains. The supplemental view uses the published `readPage` keyset API: at most 16 pages of 256 exact-project candidate bodies, plus one lookahead. It never calls the materializing `list()` path. Newest project candidates are considered first; filtering private or non-short rows may leave fewer displayed rows. A remaining page produces `memory view truncated: newest 4096 project candidates considered` in recall, search and task briefs, including when all considered rows are withheld. The control status `memoryRead` reports the last read's `truncated`, `scanned` live candidate bodies and `limit`; it is not a total corpus count.
+
+This supplemental path deliberately excludes other projects' shared rows, which could previously crowd out the project's own short-term notes. Native shared long-term recall, graph evidence and peer read tools retain their existing scope. The package still folds relation metadata during a body page; tier/scope-aware core pages and incremental metadata snapshots are the upgrade path for that remaining cost. No total-cost bound on the core refresh is claimed.
+
+Capture reuses one store handle per bound project/profile home and closes it on a binding error and daemon shutdown. Effective published R6 config is checked before each append; changed cap or retention reopens the handle before that append, so person settings retain next-invocation behavior. Every effect still rechecks the current binding and screens complete input/output first. Persisted path metadata contains only project-relative read/write/edit paths; bash commands, git argv and outside-root paths are omitted from that column. Legacy library callers without a host invocation id still deduplicate a native id within a summary interval; live LocalPeer supplies a separate session/turn/step/invocation id. Other hosts must supply that port before claiming cross-turn identity.

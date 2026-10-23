@@ -4335,28 +4335,31 @@ export class Tasks {
     const requestCheck = this.requestCheck(by);
     const text = composeRememberText(input);
     const task = input.task !== undefined ? this.d.board.get(Number(input.task)) : undefined;
-    if (task && this.isPii(task)) throw new Error("notes about a PII task are not saved: claude-mem processes what it stores with a cloud model");
+    if (task && this.isPii(task)) throw new Error("notes about a PII task are not saved: shared memory excludes private data");
     // Shared with every other peer as well, so text that matches a PII pattern is refused like a note about a PII task.
     const title = String(input.title ?? "").trim();
-    if (this.isPii({ signals: detectSignals({ title, detail: text, refs: {} }, this.d.routing(), this.d.cwd) })) throw new Error("this note matches a PII pattern and is not saved: claude-mem processes what it stores with a cloud model");
+    if (this.isPii({ signals: detectSignals({ title, detail: text, refs: {} }, this.d.routing(), this.d.cwd) })) throw new Error("this note matches a PII pattern and is not saved: shared memory excludes private data");
     if (input.horizon !== undefined && input.horizon !== "short" && input.horizon !== "long") throw new Error('horizon is "short" or "long"');
     if (input.scope !== undefined && input.scope !== "project" && input.scope !== "shared") throw new Error('scope is "project" or "shared"');
     if (!this.d.memory && !this.d.store) return "memory is disabled; nothing saved";
-    // Long-term notes leave the machine (#258), and claude-mem's observer is a cloud model: a secret goes to neither.
+    // Long-term notes can leave the machine (#258); local storage does not relax secret exclusion.
     if (looksSecret(`${title}\n${text}`)) throw new Error("this note looks like it holds a secret (a key, token or password) and is not saved");
     if (this.aboutPrivatePath(title, text, task)) throw new Error("this note is about a path the project keeps private (pii.paths) and is not saved");
-    if (await this.withholds("note", `${title}\n${text}`, task)) throw new Error("the PII screen did not clear this note, so it is not saved: claude-mem processes what it stores with a cloud model");
+    if (await this.withholds("note", `${title}\n${text}`, task)) throw new Error("the PII screen did not clear this note, so it is not saved: shared memory excludes private data");
     requestCheck();
     const kind = (NOTE_KINDS as readonly string[]).includes(String(input.kind)) ? String(input.kind) as Kind : "finding";
     const native = this.saveNative(by, kind, text, title, task, input.horizon === "long" || input.horizon === "short" ? input.horizon : undefined, input.scope === "shared" ? "shared" : "project");
     if (task && this.d.memory) this.markMemoryReference(task, by);
-    const res = this.d.memory ? await this.d.memory.save({ text, ...(title ? { title } : {}), project: this.d.project, metadata: { peer: by, kind, ...(task ? { task: task.id } : {}) } }) : undefined;
-    if (!res && !native) return this.d.memory ? "memory worker unavailable; nothing saved" : "memory store unavailable; nothing saved";
+    const res = !native && this.d.memory ? await this.d.memory.save({ text, ...(title ? { title } : {}), project: this.d.project, metadata: { peer: by, kind, ...(task ? { task: task.id } : {}) } }) : undefined;
+    if (!res && !native) return "memory store unavailable; nothing saved";
+    if (!native && res && typeof res === "object" && "status" in res && res.status === "candidate") {
+      return "saved as a pending memory candidate; a person must review it before it becomes shared evidence";
+    }
     const line = noteLine(by, kind, title ? `${title}: ${text}` : text);
     this.d.notify(line);
     // Display identity only: a queued recall may already contain this saved entry. Stored/captured text stays unchanged.
     this.d.share?.(by, native ? noteLine(by, kind, `mem:${native.id} ${title ? `${title}: ` : ""}${text}`) : line);
-    return `saved to shared memory${native ? ` (hub memory ${native.id.slice(0, 8)}, ${native.tier}-term${this.d.memory && !res ? "; claude-mem unavailable" : ""})` : ""}; the other agents get it with their next message`;
+    return `saved to shared memory${native ? ` (hub memory ${native.id.slice(0, 8)}, ${native.tier}-term)` : ""}; the other agents get it with their next message`;
   }
 
   /** The task's key in the hub's store: unique across `ahub reset --all`, which restarts the ids. */
@@ -4459,14 +4462,13 @@ export class Tasks {
   /** Auto notes: only transitions that carry content, never for PII. */
   private note(task: Task, by: PeerId, kind: Kind, text: string, withheld = false): void {
     if (this.isPii(task) || (!this.d.memory && !this.d.store)) return;
-    // claude-mem's observer is a cloud model: model-written text that matches a PII pattern, or that the PII screen did
-    // not clear (#198), is not sent (#69). Long-term hub memory leaves the machine (#258): the same rule, and no secrets.
+    // Model-written text must clear the host PII screen (#198/#69); long-term memory may sync (#258). No secrets.
     if (withheld || !this.nameable(text)) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (${this.whyWithheld(text)})`);
     if (looksSecret(text)) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (it looks like it holds a secret)`);
     const title = `agent-hub task #${task.id}: ${task.title}`.slice(0, 120);
     if (this.aboutPrivatePath(title, text, task)) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (it is about a private path)`);
-    this.saveNative(by, kind, text, title, task);
-    if (this.d.memory) {
+    const native = this.saveNative(by, kind, text, title, task);
+    if (!native && this.d.memory) {
       try { this.markMemoryReference(task, by); } catch { return this.releaseNotice(`task #${task.id}: memory reference could not be recorded; note was not saved`); }
       void this.d.memory.save({ text, title, project: this.d.project, metadata: { peer: by, task: task.id, kind } });
     }

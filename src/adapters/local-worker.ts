@@ -235,7 +235,7 @@ export class LocalPeer extends BasePeer {
   ): Promise<string> {
     const { maxSteps = 30 } = this.opts;
     const turnSignal = this.abort!.signal;
-    // claude-mem's observer is a cloud model: nothing of a PII turn is captured.
+    // Local capture preserves the host privacy fence: nothing of a PII turn is recorded.
     const capture = policy?.pii ? undefined : this.opts.capture;
     // Unknown gateway state is never permission to send PII.
     if (policy?.pii && !(await this.opts.omni.onCampus())) {
@@ -245,6 +245,7 @@ export class LocalPeer extends BasePeer {
     this.routePii = !!policy?.pii;
     const ctx = this.toolContext(envs, turnSignal, !!policy?.pii, reply);
     let usedTools = false;
+    let captureInvocation = 0;
     for (let step = 0; step < maxSteps; step++) {
       this.elide(msgs);
       const res = await this.call(msgs, policy, envs);
@@ -280,7 +281,7 @@ export class LocalPeer extends BasePeer {
           if (this.approvalStopReason) { this.abort?.abort(); throw new ApprovalWaitStop(this.approvalStopReason); }
           this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
           // Hub tool arguments/results are not capture evidence; Tasks owns its screened memory writes.
-          if (name !== "hub_send" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name)) capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
+          if (name !== "hub_send" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name)) capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
         }
       } finally { if (results.length) this.routes.observeResults(res.routeDecision, res.message, results); }
     }

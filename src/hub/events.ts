@@ -37,8 +37,8 @@ export type HubEvent =
   | { type: "hub_start"; instance: string }
   /** #248: the add-ons a peer works with, names and versions from a closed list, at each attach. */
   | { type: "tooling"; peer: string; addons: import("./tooling.ts").Addon[] }
-  /** #258: a task brief handed to its owner: how many hub-memory items (and fails among them) and claude-mem items, never their text. */
-  | { type: "memory_brief"; peer: string; task: number; native: number; fails: number; claudeMem: number }
+  /** #258: a task brief handed to its owner: how many hub-memory items (and fails among them) and supplemental items (legacy claudeMem field), never their text. New local-library records identify source amem. */
+  | { type: "memory_brief"; source?: "amem"; peer: string; task: number; native: number; fails: number; claudeMem: number }
   | { type: "split"; task: number; where?: "routing" | "cohort"; verdict: "split" | "single" | "unknown"; single?: string; splitS?: number; singleS?: number; reason?: string; trace?: string[] }
   | { type: "state"; peer: string; state: string }
   | { type: "turn_start"; peer: string; turn: string }

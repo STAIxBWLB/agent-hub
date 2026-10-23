@@ -10,7 +10,7 @@ import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { processTable } from "../src/hub/child-process.ts";
 import { PiPeer } from "../src/adapters/pi.ts";
 import { Capture } from "../src/memory/capture.ts";
-import { MemoryClient } from "../src/memory/client.ts";
+import { FakeMemoryClient as MemoryClient } from "./fakes/mem-worker.ts";
 import { startFakeModelServer, toolCall } from "./fakes/model-server.ts";
 
 const cleanup: (() => unknown)[] = [];

@@ -1,3 +1,4 @@
+import { FakeMemoryClient } from "./fakes/mem-worker.ts";
 import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
 import { CandidateStore, memoryProjectKey } from "@staix/agent-mem";
 import { afterEach, expect, test } from "bun:test";
@@ -86,6 +87,7 @@ async function hub(extra: { kimiHome?: string; unattended?: boolean; memoryUrl?:
   const { memoryUrl, nativeMemory, modelUrl, approvals, checks, ignored, snapshots, codex_bin, limits, capabilities, coordination, experiments, roles, wipLimits, ...rest } = extra;
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-"));
   const daemon = await startDaemon({
+    ...(memoryUrl ? { memoryClient: new FakeMemoryClient(memoryUrl) } : {}),
     boundedTools: emulatedBoundedTools(),
     cwd: ROOT,
     stateDir,
@@ -1088,7 +1090,7 @@ test("ahub ask over the control link: console only, evidence from the board, --r
   await console_.request({ t: "task", op: "hub_task_propose", args: { title: "write the release notes", class: "summarize" } });
 
   const res = await console_.request({ t: "ask", question: "what is open?", remember: true });
-  expect(res).toMatchObject({ ok: true, found: true, answer: "One task is open [task #1].", pii: false, saved: "saved to shared memory as a model-written answer" });
+  expect(res).toMatchObject({ ok: true, found: true, answer: "One task is open [task #1].", pii: false, saved: "saved as a candidate model-written answer; a person must review it" });
   expect(res.evidence[0]).toMatchObject({ id: "task #1", kind: "task" });
   // saved as what it is: the hub's model wrote it, the user only asked
   const note = mem.calls.filter((c) => c.path === "/api/memory/save").at(-1)!.body as any;

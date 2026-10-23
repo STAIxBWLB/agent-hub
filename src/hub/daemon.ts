@@ -90,7 +90,7 @@ import { isReviewerPrintPeer, reviewerUnavailableReason, ReviewerUnavailableErro
 import { createReviewerMcpSession } from "../adapters/reviewer-mcp.ts";
 import { reviewerPoolConfig } from "./reviewer-pool-config.ts";
 import { reviewDiff } from "../adapters/claude-print.ts";
-import { Capture, skipTools } from "../memory/capture.ts";
+import { Capture } from "../memory/capture.ts";
 import { DEFAULT_OMNIROUTE, OmniRoute, type OmniRouteConfig } from "../omniroute/client.ts";
 import { Briefs } from "../memory/brief.ts";
 import { Board, isClosedTaskState, taskProposalAt, taskHasStarted, CLASSES, type Task, type TaskClass } from "./board.ts";
@@ -122,7 +122,7 @@ import { codeGroup } from "./task-code-group.ts";
 import { DAEMON_FEATURES, PROTOCOL, stateDirFor } from "./control-client.ts";
 import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
-import { MemoryClient, workerUrl } from "../memory/client.ts";
+import { MemoryClient } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { appendRecords, taskRecords } from "./research.ts";
 import { benchReport, MIN_ATTEMPTS, readRuns, runSummary, type Measures, type RunSummary } from "./bench.ts";
@@ -148,7 +148,7 @@ import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
 import { detectTooling } from "./tooling.ts";
 import { looksSecret, DEFAULT_LEASE_MS, extractNodes, memoryHome, SUGGESTED, taskKey, type CandidateStore, type MemoryStore, type GoalView, type Suggested, type View as MemoryView } from "@staix/agent-mem";
 import { memoryProjectKey } from "@staix/agent-mem";
-import { AGENT_MEM_VERSION, MEMORY_SPLIT_INCOMPLETE, memoryProjectFor, openProfileMemory, openProfileCandidates, type MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
+import { AGENT_MEM_VERSION, MEMORY_SPLIT_INCOMPLETE, memoryProjectFor, openProfileMemory, openProfileCandidates, MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
 import { syncMemory } from "@staix/agent-mem";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead } from "./read-tools.ts";
 import { nativeRecall } from "../memory/recall.ts";
@@ -503,6 +503,8 @@ function mlxPinProblem(routing: Routing, project: boolean): string | undefined {
 }
 
 export interface DaemonOptions {
+  /** Host-only test/embedding port; never read from project configuration or a tool. */
+  memoryClient?: MemoryClient;
   /** Host-only snapshot/probe seams; never read from project config or tool arguments. */
   snapshot?: typeof snapshot;
   snapshotBurstMs?: number;
@@ -1055,7 +1057,6 @@ export async function startDaemon(opts: DaemonOptions) {
     }, delayMs);
     recoveryLeaseTimer.unref?.();
   };
-  const memory = new MemoryClient(config.memory.worker_url ?? workerUrl(), 2000, log);
   const chain = projectChain(opts.cwd);
   const recalled = new Set<PeerId>(); // once per peer per hub run, however often the peer's session restarts
   // #258: the hub's own store, machine-wide in ~/.agenthub/memory. Entries are filed under the project's memory key (its
@@ -1099,12 +1100,24 @@ export async function startDaemon(opts: DaemonOptions) {
    * Notes as they leave for a model (a recall preface, a brief, `ask` evidence) are screened again under the current
    * policy: a shared note was accepted under another project's patterns, and patterns change. A match is withheld.
    */
-  const screenMemory = <T extends { title: string | null; text: string }>(vs: T[]): T[] => withoutPii(vs, activeRouting(), opts.cwd, config.pii?.paths ?? []);
+  const screenMemory = <T extends { title: string | null; text: string }>(vs: T[]): T[] => withoutPii(vs.filter(v => !looksSecret(`${v.title ?? ""}\n${v.text}`) && !v.title?.startsWith(ASK_NOTE_TITLE)), activeRouting(), opts.cwd, config.pii?.paths ?? []);
   let candidates: CandidateStore | undefined;
   if (memoryStore) {
     try { candidates = openProfileCandidates(memoryBinding!); const opened = candidates; startupCleanup.push(() => opened.close()); }
     catch { log("memory candidate sidecar unavailable"); }
   }
+  let captureBinding = memoryBinding;
+  if (config.memory.enabled && !captureBinding && !memoryProblem) {
+    try { captureBinding = new MemoryProfileBinding({ project: memoryProject, projectKey: memoryProjectRaw }); }
+    catch { memoryUnavailable("memory profile unavailable; capture disabled"); }
+  }
+  const memory = opts.memoryClient ?? new MemoryClient({
+    project: memoryProject, store: memoryStore, candidates,
+    check: () => { if (memoryProblem || !captureBinding) throw new Error("memory unavailable"); captureBinding.assertCurrent(); if (memoryProjectFor(opts.cwd) !== memoryProject) throw new Error("memory project changed"); },
+    screen: rows => screenMemory(rows),
+    publicText: text => !looksSecret(text) && withoutPii([{ title: "", text }], activeRouting(), opts.cwd, config.pii?.paths ?? []).length === 1,
+    capture: () => ({ memoryDir: captureBinding!.home }), log,
+  });
   const memoryTelemetry = candidates && memoryStore ? new MemoryTelemetry(candidates, memoryStore, memoryProject, screenMemory, checkMemory) : undefined;
   const staleness = () => createStalenessProbe({ cwd: opts.cwd, privatePaths: config.pii?.paths ?? [], deny: config.local.deny });
   const memoryLine = (v: MemoryView) => `mem:${v.id.slice(0, 8)} ${v.kind} ${v.tier}: ${`${v.title ? `${v.title}: ` : ""}${v.text}`.replace(/\s+/g, " ").slice(0, 160)}`;
@@ -1182,7 +1195,7 @@ export async function startDaemon(opts: DaemonOptions) {
   /** Session-start cross-platform recall. Awaited before the peer can receive anything, so it rides on the first delivery. Fail-open. */
   async function ensurePreface(peer: PeerId): Promise<void> {
     if ((!config.memory.enabled && !memoryStore) || recalled.has(peer) || reviewOnlyPeer(peer)) return; // #223 R2: no shared memory in a fresh review
-    // The hub's own long-term decisions, contracts and fails lead; claude-mem's recent work follows, each with half the budget.
+    // The hub's own long-term decisions, contracts and fails lead; amem's curated short-term notes follow, each with half the budget.
     let own: string | undefined;
     try {
       checkMemory();
@@ -1482,7 +1495,7 @@ export async function startDaemon(opts: DaemonOptions) {
     memoryCheck: checkMemory,
     ...(config.memory.enabled || memoryStore ? { briefs: new Briefs(config.memory.enabled ? memory : undefined, chain.at(-1)!, () => config.memory.brief_items,
       memoryStore ? (t) => { checkMemory(); return screenMemory(memoryStore!.related(memoryProject, taskNodes(t), Number.MAX_SAFE_INTEGER)).slice(0, config.memory.brief_items).map((v) => ({ id: `mem:${v.id}`, line: memoryLine(v), kind: v.kind, about: v.about })); } : undefined,
-      (peer, task, counts) => event({ type: "memory_brief", peer, task, ...counts }),
+      (peer, task, counts) => event({ type: "memory_brief", source: "amem", peer, task, ...counts }),
       items => { const stale = staleness(); return items.map(item => `${item.line}${stale(item.about ?? []) ? " (stale?)" : ""}`); }) } : {}),
     ...(memoryStore ? { planFails: (task: import("./board.ts").Task) => {
       checkMemory();
@@ -2374,10 +2387,10 @@ export async function startDaemon(opts: DaemonOptions) {
       return JSON.stringify(shown ? { ...reviewerView(by, result as Record<string, unknown>), ...briefField(shown) } : result);
     }
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
-    // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
+    // shared memory and a new task could be routed to a cloud peer without matching any pattern.
     if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op === "hub_sdlc_metrics" || op.startsWith("hub_release_") || op === "hub_backlog_return_untouched" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
-    // completed-change notice) and claude-mem. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
+    // completed-change notice) and shared memory. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
     if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && (a.plan != null || a.refs != null)))) {
       const target = board.get(Number(a.id));
       if (target && !tasks.isPii(target)) throw new PreEffectToolRefusal(`${op} on task #${target.id} is not available while working on a PII task: its text would reach other peers; do it in a turn without the PII task`);
@@ -2586,7 +2599,7 @@ export async function startDaemon(opts: DaemonOptions) {
           chmodSync(`${file}.tmp`, 0o600);
           renameSync(`${file}.tmp`, file);
           pending.done(summary);
-          if (config.memory.enabled) await memory.save({ text: summary, title: `agent-hub ${by} context checkpoint`, project: opts.cwd, metadata: { peer: by, kind: "handover" } }).catch(() => undefined);
+          if (config.memory.enabled) await memory.save({ text: summary, title: `agent-hub ${by} context checkpoint`, project: memoryProject, metadata: { peer: by, kind: "handover" } }).catch(() => undefined);
           notify(`context: ${by} checkpoint saved locally; no tasks or session changed`);
           return "context checkpoint saved locally; keep your tasks and session, the operator decides the next step";
         }
@@ -3049,6 +3062,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(() => { const warning = mainCheckoutWarning(opts.cwd, tasks.publicMetadataText, checkoutBranch); return warning ? { mainCheckout: warning } : {}; })(),
     startModes: Object.fromEntries([...START_MODE_PEERS, ...configuredIds].map(peer => [peer, startModeOf(config.peers, peer, declarations, adapterCatalog)])),
     memoryProfile: memoryProfileStatus(includeAttentionItems),
+    memoryRead: memory.readStatus(),
     lifecycleStages: [...lifecycleConfig.stages],
     // ponytail: off keeps the #257 phase schema until RETIRED_WORKFLOW_FROM, when the alias and this flag go together.
     ...(lifecycleConfig.mode !== "off" ? { lifecycleCriteria: true } : {}),
@@ -4401,7 +4415,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (existing?.state === "busy") return { ok: false, error: "local is busy; retry when it is idle" };
       if (existing) { mute(existing); await existing.stop(); }
       const capture = config.memory.enabled
-        ? new Capture(memory, { project: chain.at(-1)!, cwd: executionCwd, skip: skipTools(), deny: config.local.deny })
+        ? new Capture(memory, { project: memoryProject, cwd: executionCwd, deny: config.local.deny })
         : undefined;
       actionBudgets.revoke(peer);
       const permit = async (title: string, tool?: string, signal?: AbortSignal, path?: string, observe?: ApprovalObserver, originalPath?: string, input?: unknown): Promise<ToolApproval> => {
@@ -6544,7 +6558,7 @@ export async function startDaemon(opts: DaemonOptions) {
             // Screened before the caps: withheld entries never crowd out readable evidence.
             const hits = screenMemory(memoryStore!.list({ project: memoryProject, limit: Number.MAX_SAFE_INTEGER })).map((v) => [v, score(v)] as const).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([v]) => v);
             const near = screenMemory(memoryStore!.related(memoryProject, [...new Set(hits.flatMap((v) => v.about))], Number.MAX_SAFE_INTEGER)).slice(0, 6);
-            return [...hits, ...near].map((v) => ({ id: `mem:${v.id.slice(0, 8)}`, text: memoryLine(v).slice(13) }));
+            return [...hits, ...near].map((v) => ({ id: `mem:${v.id}`, text: memoryLine(v).slice(13) }));
           } } : {}),
           project: chain.at(-1)!,
           logFile,
@@ -6564,7 +6578,7 @@ export async function startDaemon(opts: DaemonOptions) {
                   project: chain.at(-1)!,
                   metadata: { peer: "hub", asked_by: USER, kind: "finding", source: "ahub ask" },
                 });
-                saved = ok ? "saved to shared memory as a model-written answer" : "memory worker unavailable; nothing saved";
+                saved = ok ? "saved as a candidate model-written answer; a person must review it" : "memory store unavailable; nothing saved";
               }
             }
             reply({ t: "ask", ok: true, ...res, ...(saved ? { saved } : {}) });
@@ -6690,6 +6704,7 @@ export async function startDaemon(opts: DaemonOptions) {
       executionBudget.close();
       syncStop.abort(); // a sync in flight kills its git step and ends before the store closes
       await syncRun?.catch(() => undefined);
+      memory.close();
       candidates?.close();
       memoryStore?.close();
       board.close();

@@ -19,7 +19,7 @@ import { gather } from "../src/hub/ask.ts";
 const PROJECT = "synthetic/candidate-producers", MARKER = "CANDIDATE-ONLY-CORRECTION";
 class ObserverMemory extends MemoryClient {
   readonly saved: Parameters<MemoryClient["save"]>[0][] = [];
-  constructor() { super("http://127.0.0.1:1"); }
+  constructor() { super(); }
   override async save(note: Parameters<MemoryClient["save"]>[0]): Promise<unknown> { this.saved.push(structuredClone(note)); return { saved: true }; }
 }
 const cleanup: (() => void)[] = [];

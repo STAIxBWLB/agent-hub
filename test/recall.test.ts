@@ -4,38 +4,31 @@ import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { MemoryStore, type NoteInput } from "@staix/agent-mem";
 import { MemoryClient } from "../src/memory/client.ts";
+import { withoutPii } from "../src/hub/memory-policy.ts";
+import { loadRouting } from "../src/hub/routing.ts";
 import { projectChain } from "@staix/agent-mem";
 import { recallFor, trimToTokens, nativeRecall, recallDisplayText, recallMemoryLine, recallMemoryLines, RECALL_LINE_CHARS } from "../src/memory/recall.ts";
-import { startFakeMemWorker } from "./fakes/mem-worker.ts";
 
-const OBS = { claude: ["1 claude-line"], codex: ["2 codex-line"], kimi: ["3 kimi-line"] };
-
-test("kimi gets every platform in one call; codex gets the other platforms only, without the repeated legend", async () => {
-  const fake = startFakeMemWorker(OBS);
-  const client = new MemoryClient(fake.url);
-
-  const kimi = await recallFor("kimi", client, ["work", "agent-hub"], 2000);
-  expect(kimi).toContain("claude-line");
-  expect(kimi).toContain("kimi-line");
-  expect(fake.calls).toHaveLength(1);
-  expect(fake.calls[0]!.query).toBe("?projects=work%2Cagent-hub");
-
-  const codex = (await recallFor("codex", client, ["agent-hub"], 2000))!;
-  expect(codex).toContain("## from claude sessions");
-  expect(codex).toContain("kimi-line");
-  expect(codex).not.toContain("codex-line");
-  expect(codex).not.toContain("Legend");
-  fake.stop();
+test("every peer receives one project context call without author-platform filtering", async () => {
+  const calls: unknown[][] = [];
+  const client = { contextInject: async (...args: unknown[]) => {
+    calls.push(args); return "# [amem] recent curated context\n\n### Curated short-term notes\nclaude-own-note\ncodex-own-note\nlocal-note\njcode-note";
+  } } as unknown as MemoryClient;
+  for (const peer of ["claude", "codex", "kimi", "local", "jcode", "claude-worker", "jcode-worker"]) {
+    const block = await recallFor(peer, client, ["work", "agent-hub"], 2000);
+    for (const note of ["claude-own-note", "codex-own-note", "local-note", "jcode-note"]) expect(block).toContain(note);
+    expect(block).not.toContain("## from");
+  }
+  expect(calls).toHaveLength(7);
+  expect(calls.every(args => args.length === 1 && JSON.stringify(args[0]) === '["work","agent-hub"]')).toBe(true);
 });
 
-test("no context, an unknown project and a stopped worker all mean no preface", async () => {
-  const empty = startFakeMemWorker();
-  expect(await recallFor("kimi", new MemoryClient(empty.url), ["agent-hub"], 2000)).toBeUndefined();
-  empty.stop();
-  const fake = startFakeMemWorker(OBS);
-  expect(await recallFor("kimi", new MemoryClient(fake.url), ["nonexistent"], 2000)).toBeUndefined();
-  fake.stop();
-  expect(await recallFor("claude", new MemoryClient(fake.url, 100), ["agent-hub"], 2000)).toBeUndefined();
+test("empty or unavailable project context means no preface for any peer", async () => {
+  for (const text of [undefined, "", "# amem unavailable", "# [amem] empty context"]) {
+    const client = { contextInject: async () => text } as unknown as MemoryClient;
+    for (const peer of ["claude", "codex", "local", "jcode"]) expect(await recallFor(peer, client, ["agent-hub"], 2000)).toBeUndefined();
+  }
+  expect(await recallFor("claude", new MemoryClient(), ["agent-hub"], 2000)).toBeUndefined();
 });
 
 test("trim cuts at a line boundary; the project chain ends with this repo", () => {
@@ -69,15 +62,39 @@ test("worktrees use the native parent and parent/worktree aliases", () => {
   }
 });
 
-test("the token budget is split per platform so the first one cannot crowd out the rest", async () => {
-  const fake = startFakeMemWorker({
-    codex: Array.from({ length: 200 }, (_, i) => `9${i} codex filler line ${i}`),
-    kimi: ["3 kimi-line"],
-  });
-  const block = (await recallFor("claude", new MemoryClient(fake.url), ["agent-hub"], 100))!;
-  expect(block).toContain("(trimmed)");
-  expect(block).toContain("## from kimi sessions\n### Sep 19, 2026\n3 kimi-line");
-  fake.stop();
+test("one project budget retains coverage notices before trimming the curated block", async () => {
+  const notice = "Coverage: recent curated notes are partial; additional rows were omitted.";
+  let calls = 0;
+  const client = { contextInject: async () => {
+    calls++; return `# [amem] recent curated context\n${notice}\n### Curated short-term notes\n${Array.from({ length: 200 }, (_, i) => `curated filler line ${i}`).join("\n")}`;
+  } } as unknown as MemoryClient;
+  const block = await recallFor("claude", client, ["agent-hub"], 100);
+  expect(calls).toBe(1); expect(block).toContain(notice); expect(block).toContain("### Curated short-term notes");
+  expect(block).toContain("(trimmed)"); expect(block).not.toContain("curated filler line 199");
+});
+
+test("published amem recall includes local and jcode authors plus Claude and Codex own notes, screened within one project", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ahub-recall-project-context-"));
+  let now = Date.now();
+  const store = new MemoryStore({ home, now: () => now++ }), project = "recall-project";
+  const baseline = loadRouting(home);
+  const routing = { ...baseline, signals: { ...baseline.signals, pii_patterns: ["private\\s+marker"] } };
+  const note = (peer: string, text: string, key = project) => store.note({ op: "note", project: key, scope: "project", tier: "short", kind: "contract", peer, source: "hub", text, about: [] });
+  try {
+    const ids = [note("claude", "claude own curated note"), note("codex", "codex own curated note"), note("local", "local authored curated note"), note("jcode", "jcode authored curated note")];
+    note("local", "private marker withheld note"); note("jcode", "foreign project note", "another-project");
+    let reads = 0;
+    const client = new MemoryClient({ project, store, check() {},
+      screen: rows => { reads++; return withoutPii(rows, routing, home); },
+      publicText: text => withoutPii([{ title: null, text }], routing, home).length === 1 });
+    for (const peer of ["claude", "codex", "local", "jcode", "claude-worker"]) {
+      const before = reads, block = await recallFor(peer, client, ["caller-label-cannot-select-foreign-project"], 2000);
+      for (const id of ids) expect(block).toContain(`mem:${id}`);
+      for (const text of ["claude own curated note", "codex own curated note", "local authored curated note", "jcode authored curated note"]) expect(block).toContain(text);
+      expect(block).not.toContain("private marker"); expect(block).not.toContain("foreign project note");
+      expect(reads - before).toBe(1);
+    }
+  } finally { store.close(); rmSync(home, { recursive: true, force: true }); }
 });
 
 

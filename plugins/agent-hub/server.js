@@ -47,7 +47,7 @@ var __esm = (fn, res, err) => () => {
 // node_modules/@staix/agent-mem/src/memory/platform.ts
 import { realpathSync } from "fs";
 import { basename, dirname, join, resolve, sep } from "path";
-import { spawnSync, execFileSync } from "child_process";
+import { createRequire } from "module";
 import { createHash } from "crypto";
 function canonicalPath(path) {
   return canonical(path);
@@ -59,7 +59,7 @@ function realPath(path) {
     if (!resolve(path).includes("\\"))
       throw error;
     const argv = process.platform === "darwin" ? ["/bin/realpath", "--", path] : ["realpath", "-e", "--", path];
-    const r = spawnSync(argv[0], argv.slice(1), { encoding: "utf8" });
+    const r = childProcess().spawnSync(argv[0], argv.slice(1), { encoding: "utf8" });
     if (r.status !== 0 || !r.stdout.endsWith(`
 `))
       throw error;
@@ -82,11 +82,11 @@ function memoryGitEnv(env = process.env, options = {}) {
 }
 function memoryGitSync(args, options) {
   const argv = memoryGitArgv(args);
-  return spawnSync(argv[0], argv.slice(1), { ...options, env: memoryGitEnv(options.env ?? process.env) });
+  return childProcess().spawnSync(argv[0], argv.slice(1), { ...options, env: memoryGitEnv(options.env ?? process.env) });
 }
 function processSignature(pid) {
   try {
-    const text = execFileSync("ps", ["-p", String(pid), "-o", "lstart=,comm="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).trim();
+    const text = childProcess().execFileSync("ps", ["-p", String(pid), "-o", "lstart=,comm="], { encoding: "utf8", env: { ...process.env, LC_ALL: "C", TZ: "UTC" } }).trim();
     return text ? createHash("sha256").update(text).digest("hex") : undefined;
   } catch {
     return;
@@ -110,7 +110,7 @@ function processLiveness(pid, signature, identity = processSignature) {
     return error.code === "ESRCH" ? "gone" : "unknown";
   }
 }
-var canonical = (path) => {
+var require2, processes, childProcess = () => processes ??= require2("node:child_process"), canonical = (path) => {
   const absolute = resolve(path);
   try {
     return realpathSync(absolute);
@@ -120,6 +120,7 @@ var canonical = (path) => {
   }
 }, DENY_SEGMENTS, DENY_NAMES, hasSegment = (rel, seg) => `/${rel}/`.includes(`/${seg}/`), SAFE_CONFIG, CREDENTIAL_KEYS, memoryGitArgv = (args, opts = {}) => ["git", "--no-pager", ...SAFE_CONFIG.filter((c) => !opts.credentials || !CREDENTIAL_KEYS.has(c)).flatMap((c) => ["-c", c]), ...args];
 var init_platform = __esm(() => {
+  require2 = createRequire(import.meta.url);
   DENY_SEGMENTS = [".maru/secrets", ".agenthub/state", ".agenthub/archive"];
   DENY_NAMES = ["^\\.env", "\\.pem$", "\\.key$", "^id_rsa", "^id_ed25519", "^credentials(\\.|$)", "^auth\\.json$", "^\\.netrc$", "^\\.npmrc$", "^\\.pypirc$"];
   SAFE_CONFIG = ["core.fsmonitor=false", "core.hooksPath=/dev/null", "diff.external=", "core.pager=cat", "credential.helper=", "core.askpass="];
@@ -1020,7 +1021,7 @@ var init_child_process = __esm(() => {
 });
 
 // src/adapters/agy/entry.ts
-import { spawn, spawnSync as spawnSync2 } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import { resolve as resolve4 } from "path";
 function agyTuiSpawnOptions(cwd, env) {
   return { cwd, env, stdio: "inherit" };
@@ -1078,7 +1079,7 @@ async function runAgyEntry(ctx) {
     console.log(JSON.stringify({ command: "agy", args: argv.map(publicArg), mode: "tui", permission: "unmanaged", mcp: ".agents/plugins/agent-hub/", writes: false }));
     return;
   }
-  const version = spawnSync2("agy", ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: peerChildEnv("agy") });
+  const version = spawnSync("agy", ["--version"], { encoding: "utf8", timeout: 5000, maxBuffer: 4096, env: peerChildEnv("agy") });
   const gate = agyVersionGate(version.status === 0 ? version.stdout : "");
   if (!gate.ok)
     fail(gate.message);
@@ -1802,7 +1803,7 @@ var init_claude_print = __esm(() => {
 import { createHash as createHash2 } from "crypto";
 import { spawn as spawn3 } from "child_process";
 import { existsSync as existsSync2, lstatSync as lstatSync4, mkdirSync as mkdirSync3, mkdtempSync, readFileSync as readFileSync3, rmSync, statSync, symlinkSync, writeFileSync as writeFileSync3 } from "fs";
-import { createRequire } from "module";
+import { createRequire as createRequire2 } from "module";
 import { homedir as homedir2, tmpdir } from "os";
 import { basename as basename2, delimiter, dirname as dirname4, isAbsolute as isAbsolute3, join as join5, relative, resolve as resolve5 } from "path";
 function codexCoreDenyGlobs(names = DENY_NAMES, segments = DENY_SEGMENTS) {
@@ -1934,7 +1935,7 @@ function resolveCommand(ctx, cwd) {
     if (!target || !["arm64", "x64"].includes(process.arch))
       throw new Error("unverified native platform");
     const suffix = `${process.platform}-${process.arch === "x64" ? "x64" : "arm64"}`;
-    const manifest = createRequire(binary).resolve(`@openai/codex-${suffix}/package.json`);
+    const manifest = createRequire2(binary).resolve(`@openai/codex-${suffix}/package.json`);
     binary = realPath(join5(dirname4(manifest), "vendor", target, "bin", "codex"));
   }
   const files = [binary];
@@ -4303,7 +4304,7 @@ ${renderDigest(envs, false)}`;
 });
 
 // src/adapters/jcode.ts
-import { spawn as spawn7, spawnSync as spawnSync3 } from "child_process";
+import { spawn as spawn7, spawnSync as spawnSync2 } from "child_process";
 import { createConnection } from "net";
 import { closeSync as closeSync3, constants as constants2, existsSync as existsSync4, fstatSync as fstatSync3, lstatSync as lstatSync6, mkdtempSync as mkdtempSync3, openSync as openSync3, readSync as readSync2, rmSync as rmSync3 } from "fs";
 import { tmpdir as tmpdir3 } from "os";
@@ -5050,12 +5051,12 @@ var init_deny = __esm(() => {
 });
 
 // src/local/sandbox.ts
-import { spawn as spawn8, spawnSync as spawnSync4 } from "child_process";
+import { spawn as spawn8, spawnSync as spawnSync3 } from "child_process";
 import { existsSync as existsSync6, mkdtempSync as mkdtempSync4, readdirSync, rmSync as rmSync5 } from "fs";
 import { homedir as homedir4, tmpdir as tmpdir4 } from "os";
 import { dirname as dirname9, join as join11, resolve as resolve9 } from "path";
 function developerDir() {
-  const out = spawnSync4("xcode-select", ["-p"], { encoding: "utf8" });
+  const out = spawnSync3("xcode-select", ["-p"], { encoding: "utf8" });
   let dir = out.status === 0 ? out.stdout.trim() : "";
   try {
     dir = dir && realPath(dir);
@@ -5181,7 +5182,7 @@ function sandboxedExec(argv, opts) {
         rmSync5(own, { recursive: true, force: true });
       } catch {
         try {
-          spawnSync4("chflags", ["-R", "nouchg", own]);
+          spawnSync3("chflags", ["-R", "nouchg", own]);
           rmSync5(own, { recursive: true, force: true });
         } catch {}
       }
@@ -9225,7 +9226,7 @@ var init_hub_tools = __esm(() => {
     tool("hub_memory_show", "Read up to 8 visible memory ids or unique prefixes (6..64 UTF-8 bytes each). Original ids redirect; unavailable ids share one refusal. Whole output <=8 KB.", { ids: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", minLength: 6, maxLength: 64, description: "6 to 64 UTF-8 bytes" } } }, ["ids"]),
     tool("hub_memory_graph", "Read screened memory neighbourhoods, fails first. Up to 8 starts (<=200 UTF-8 bytes each), 1 or 2 hops; default 60/max 120 nodes, max 240 edges, whole output <=6 KB. No project argument.", { starts: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", minLength: 1, maxLength: 200, description: "At most 200 UTF-8 bytes" } }, hops: { type: "integer", enum: [1, 2] }, limit: { type: "integer", minimum: 1, maximum: 120 } }, ["starts"]),
     tool("hub_memory_correct", "Propose a correction to a visible memory entry. This creates a machine-local candidate only; a person accepts or rejects it with amem review. It never edits a note. id is an exact id or unique visible prefix; text and reason must each fit 4000 UTF-8 bytes.", { id: str2, text: str2, reason: str2 }, ["id", "text", "reason"]),
-    tool("hub_remember", "Save a decision, finding, contract or fail to the memory all agents share (the hub's memory and claude-mem); the other agents also get it with their next message. A fail is an approach you tried that does not work, and why: the most useful note, it stops the others spending their quota on it. Do not retry what a fail note rules out without new evidence. Conclusions worth recalling, not chatter. For kind fail, optional approach, symptom, cause, evidence and retry_when strings compose fixed labeled text; text may be omitted when structured fields are supplied. The complete text must fit 4000 UTF-8 bytes and is refused, never truncated, when oversized. A note on an open task is short-term until the task is approved, when its decisions, contracts and fails become long-term; horizon long keeps it now, scope shared lets the person's other projects find it.", { text: str2, approach: str2, symptom: str2, cause: str2, evidence: str2, retry_when: str2, title: str2, kind: { type: "string", enum: [...NOTE_KINDS] }, task: id, horizon: { type: "string", enum: ["short", "long"] }, scope: { type: "string", enum: ["project", "shared"] } })
+    tool("hub_remember", "Save a decision, finding, contract or fail to the memory all agents share (the hub's amem curated store); the other agents also get it with their next message. A fail is an approach you tried that does not work, and why: the most useful note, it stops the others spending their quota on it. Do not retry what a fail note rules out without new evidence. Conclusions worth recalling, not chatter. For kind fail, optional approach, symptom, cause, evidence and retry_when strings compose fixed labeled text; text may be omitted when structured fields are supplied. The complete text must fit 4000 UTF-8 bytes and is refused, never truncated, when oversized. A note on an open task is short-term until the task is approved, when its decisions, contracts and fails become long-term; horizon long keeps it now, scope shared lets the person's other projects find it.", { text: str2, approach: str2, symptom: str2, cause: str2, evidence: str2, retry_when: str2, title: str2, kind: { type: "string", enum: [...NOTE_KINDS] }, task: id, horizon: { type: "string", enum: ["short", "long"] }, scope: { type: "string", enum: ["project", "shared"] } })
   ];
   PLANNER_REVIEW_TOOLS = [
     tool("hub_planner_groom", "Read a bounded planner grooming digest of dependencies, repository-scoped overlaps, WIP and blockers. No board change; unavailable evidence stays unknown.", {}),
@@ -9503,6 +9504,7 @@ var init_local_worker = __esm(() => {
       this.routePii = !!policy?.pii;
       const ctx = this.toolContext(envs, turnSignal, !!policy?.pii, reply);
       let usedTools = false;
+      let captureInvocation = 0;
       for (let step = 0;step < maxSteps; step++) {
         this.elide(msgs);
         const res = await this.call(msgs, policy, envs);
@@ -9551,7 +9553,7 @@ var init_local_worker = __esm(() => {
             }
             this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
             if (name !== "hub_send" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name))
-              capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
+              capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
           }
         } finally {
           if (results.length)
@@ -10779,7 +10781,7 @@ var init_native_cli_entry_codex = () => {};
 
 // src/adapters/definitions/native-cli-entry-kimi.ts
 import { resolve as resolve13 } from "path";
-import { spawnSync as spawnSync5 } from "child_process";
+import { spawnSync as spawnSync4 } from "child_process";
 async function runKimiEntry(ctx) {
   const peer = ctx.instance ?? "kimi";
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, connect, fail, takeFlags } = ctx;
@@ -10846,7 +10848,7 @@ async function runKimiEntry(ctx) {
         const written = configureKimiMcp(cwd, stateDir, bundleInStatus(snapshot) ?? resolve13(cliDir, "../../plugins/agent-hub/server.js"), "tui");
         if (written.tracked)
           console.error(".kimi-code/mcp.json is tracked; the agent-hub entry contains machine paths. Review this local change before committing it.");
-        result = spawnSync5(launch.cmd, launch.args, { cwd, stdio: "inherit", env: { ...nativeLaunchEnv("kimi", childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
+        result = spawnSync4(launch.cmd, launch.args, { cwd, stdio: "inherit", env: { ...nativeLaunchEnv("kimi", childEnv()), AGENTHUB_STATE_DIR: stateDir, AGENTHUB_PROJECT_DIR: cwd } });
       } finally {
         if (admission.admissionId)
           await hub.request({ t: "kimi_launch_end", admissionId: admission.admissionId }).catch(() => {});
@@ -12875,6 +12877,9 @@ var init_home = __esm(() => {
   init_platform();
 });
 
+// node_modules/@staix/agent-mem/src/memory/machine.ts
+var init_machine = () => {};
+
 // node_modules/@staix/agent-mem/src/memory/search-fts.ts
 var init_search_fts = () => {};
 
@@ -12884,19 +12889,33 @@ var init_generation = __esm(() => {
   init_platform();
 });
 
+// node_modules/@staix/agent-mem/src/memory/aliases.ts
+var init_aliases = () => {};
+
 // node_modules/@staix/agent-mem/src/memory/shard.ts
 var init_shard = __esm(() => {
   init_generation();
+  init_aliases();
+  init_aliases();
+});
+
+// node_modules/@staix/agent-mem/src/memory/capture-input.ts
+var init_capture_input = __esm(() => {
+  init_screen();
+  init_platform();
 });
 
 // node_modules/@staix/agent-mem/src/memory/capture.ts
+var SPOOL_MAX_BYTES;
 var init_capture = __esm(() => {
   init_screen();
-  init_platform();
+  init_capture_input();
+  init_capture_input();
   init_home();
   init_shard();
-  init_store();
+  init_machine();
   init_search_fts();
+  SPOOL_MAX_BYTES = 256 * 1024;
 });
 
 // node_modules/@staix/agent-mem/src/memory/ops-contract.ts
@@ -13126,6 +13145,8 @@ var init_store = __esm(() => {
   init_screen();
   init_mutation();
   init_home();
+  init_machine();
+  init_machine();
   init_search_fts();
   init_shard();
   init_capture();
@@ -13139,6 +13160,46 @@ var init_store = __esm(() => {
   UNSETTLED_MS = 180 * 24 * 3600000;
   DEFAULT_LEASE_MS = 4 * 3600000;
   MIGRATION_BOOTSTRAP = Symbol("migration index bootstrap");
+});
+
+// node_modules/@staix/agent-mem/src/memory/work-lists.ts
+var forbidden;
+var init_work_lists = __esm(() => {
+  init_generation();
+  init_mutation();
+  init_platform();
+  init_screen();
+  init_shard();
+  init_machine();
+  forbidden = new Set(["__proto__", "constructor", "prototype"]);
+});
+
+// node_modules/@staix/agent-mem/src/memory/project.ts
+var init_project2 = __esm(() => {
+  init_platform();
+});
+
+// node_modules/@staix/agent-mem/src/memory/policy.ts
+var MAX_BYTES3, MAX_STRING_BYTES, flags;
+var init_policy = __esm(() => {
+  init_screen();
+  init_platform();
+  init_project2();
+  MAX_BYTES3 = 256 * 1024;
+  MAX_STRING_BYTES = 16 * 1024;
+  flags = new Set(["private", "pii", "privateturn", "isprivate", "ispii"]);
+});
+
+// node_modules/@staix/agent-mem/src/session-brief.ts
+var init_session_brief = __esm(() => {
+  init_generation();
+  init_home();
+  init_platform();
+  init_policy();
+  init_project2();
+  init_reader_lease();
+  init_shard();
+  init_work_lists();
 });
 
 // node_modules/ajv/dist/compile/codegen/code.js
@@ -20391,7 +20452,7 @@ var package_default = {
     bun: ">=1.4.2"
   },
   dependencies: {
-    "@staix/agent-mem": "0.4.0"
+    "@staix/agent-mem": "0.6.0"
   },
   devDependencies: {
     "@modelcontextprotocol/sdk": "^1.27.1",
@@ -20464,8 +20525,11 @@ init_capture();
 init_store();
 // node_modules/@staix/agent-mem/src/memory/capacity.ts
 init_home();
-init_capture();
+
+// node_modules/@staix/agent-mem/src/memory/metrics.ts
 var METRICS_MAX_BYTES = 64 * 1024;
+// node_modules/@staix/agent-mem/src/memory/capacity.ts
+init_capture();
 // node_modules/@staix/agent-mem/src/memory/sync.ts
 init_platform();
 init_mutation();
@@ -20481,24 +20545,16 @@ var zero = "0".repeat(40);
 init_platform();
 init_store();
 init_shard();
-
-// node_modules/@staix/agent-mem/src/memory/work-lists.ts
-init_generation();
-init_mutation();
-init_platform();
-init_screen();
-init_shard();
-init_store();
-var forbidden = new Set(["__proto__", "constructor", "prototype"]);
-// node_modules/@staix/agent-mem/src/memory/project.ts
-init_platform();
+init_work_lists();
 
 // node_modules/@staix/agent-mem/src/index.ts
+init_project2();
 init_home();
 init_platform();
 
 // node_modules/@staix/agent-mem/src/memory/commands.ts
 init_store();
+init_project2();
 // node_modules/@staix/agent-mem/src/memory/candidates.ts
 init_home();
 init_platform();
@@ -20554,15 +20610,8 @@ init_capture();
 init_generation();
 init_home();
 init_platform();
-
-// node_modules/@staix/agent-mem/src/memory/policy.ts
-init_screen();
-init_platform();
-var MAX_BYTES3 = 256 * 1024;
-var MAX_STRING_BYTES = 16 * 1024;
-var flags = new Set(["private", "pii", "privateturn", "isprivate", "ispii"]);
-
-// node_modules/@staix/agent-mem/src/mcp-memory.ts
+init_policy();
+init_project2();
 init_reader_lease();
 init_search_fts();
 init_shard();
@@ -20570,7 +20619,75 @@ init_store();
 
 // node_modules/@staix/agent-mem/src/memory/vault.ts
 init_generation();
+init_policy();
 init_generation();
+
+// node_modules/@staix/agent-mem/src/mcp-memory.ts
+init_work_lists();
+
+// node_modules/@staix/agent-mem/src/index.ts
+init_policy();
+init_work_lists();
+
+// node_modules/@staix/agent-mem/src/hook-git.ts
+init_platform();
+init_platform();
+
+// node_modules/@staix/agent-mem/src/hook-spool.ts
+init_capture_input();
+init_platform();
+init_policy();
+
+// node_modules/@staix/agent-mem/src/hook-contract.ts
+var HOOK_INPUT_BYTES = 64 * 1024;
+
+// node_modules/@staix/agent-mem/src/hook-spool.ts
+var RECORD_BYTES = HOOK_INPUT_BYTES + 8192;
+var MAX_BYTES4 = 2 * 1024 * 1024;
+var DRAIN_BYTES = 256 * 1024;
+var CAPACITY_BYTES = 256 * 1024;
+var RETIRE_AFTER_MS = 7 * 24 * 3600000;
+
+// node_modules/@staix/agent-mem/src/hook-project.ts
+init_platform();
+init_project2();
+init_platform();
+
+// node_modules/@staix/agent-mem/src/hook-native.ts
+var SUPERVISOR = [
+  "marker=$1; seconds=$2; shift 2; leader=$$",
+  'owned() { identity=$(/bin/ps -ww -p "$leader" -o pgid=,command=) || return 1; case "$identity" in *"$marker"*) ;; *) return 1 ;; esac; set -f; set -- $identity; [ "$1" = "$leader" ]; }',
+  'reap() { if owned; then kill -KILL "-$leader"; fi; }',
+  "[ -x /bin/sleep ] && [ -x /bin/ps ] && owned || exit 125",
+  "trap reap EXIT HUP INT TERM",
+  '( /bin/sleep "$seconds" & sleeper=$!; kill -0 "$sleeper" 2>/dev/null || { reap; exit 125; }; printf "\\n%s:ARMED\\n" "$marker"; wait "$sleeper"; reap ) & watchdog=$!',
+  'kill -0 "$watchdog" 2>/dev/null || { reap; exit 125; }',
+  '"$@" </dev/null; code=$?; printf "\\n%s:%s\\n" "$marker" "$code"',
+  "read -r ignored || :",
+  'wait "$watchdog"'
+].join("; ");
+
+// node_modules/@staix/agent-mem/src/hooks.ts
+init_aliases();
+init_home();
+init_platform();
+init_policy();
+// node_modules/@staix/agent-mem/src/ingest.ts
+init_capture();
+init_home();
+init_platform();
+init_policy();
+init_project2();
+init_shard();
+var MAX_BYTES5 = 16 * 1024 * 1024;
+var DEFAULT_BYTES = 4 * 1024 * 1024;
+var MAX_CURSOR_BYTES = 128 * 1024;
+var utf8 = new TextDecoder("utf-8", { fatal: true });
+var MAX_RECORD = 256 * 1024;
+
+// node_modules/@staix/agent-mem/src/index.ts
+init_session_brief();
+
 // src/hub/memory-candidates.ts
 init_tool_refusal();
 
