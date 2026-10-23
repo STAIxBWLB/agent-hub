@@ -128,3 +128,51 @@ test("Kimi ACP: a class budget grants more calls until it is spent, and the appr
   expect(readFileSync(join(r.stateDir, "events.jsonl"), "utf8")).not.toContain("Action approval");
   expect(readFileSync(join(r.stateDir, "events.jsonl"), "utf8")).not.toContain("rm -rf /tmp/three");
 });
+
+const budgetOf = async (r: Awaited<ReturnType<typeof rig>>) => (await r.client.request({ t: "status" })).status.actionPolicyInfo.kimi;
+
+test("Kimi ACP: a stopped owner that resumes the same native session starts its class budget from zero (#636 review)", async () => {
+  const r = await rig({ policy: { budgets: { destroy: 3 } } });
+  expect((await r.client.request({ t: "start", peer: "kimi" })).ok).toBe(true);
+  await until(() => r.daemon.bus.stateOf("kimi") === "idle");
+  const replies = () => r.pushes.filter(p => p.t === "event" && p.e?.t === "envelope" && p.e.env.from === "kimi").map(p => p.e.env.body as string);
+  const permissions = () => r.pushes.filter(p => p.t === "permission");
+  await r.client.request({ t: "send", body: "PERMISSION ANNOUNCED ACTIONCMD[rm -rf /tmp/one]", to: ["kimi"] });
+  await until(() => permissions().length === 1);
+  const grant = permissions()[0].options.find((o: any) => o.optionId === "agent-hub:action-budget");
+  r.client.send({ t: "permit", id: permissions()[0].id, option: grant.optionId });
+  await until(() => replies().length === 1);
+  expect((await budgetOf(r)).remaining.destroy).toBe(2); // the person's choice opened a budget of 3: this call and two more
+  // a requested stop, then a start that resumes the very same native session id (the fake's session is always s1)
+  expect((await r.client.request({ t: "peer_stop", peer: "kimi" })).ok).toBe(true);
+  await until(() => r.daemon.bus.stateOf("kimi") === "offline");
+  expect((await budgetOf(r)).remaining.destroy).toBe(0);
+  expect((await r.client.request({ t: "start", peer: "kimi", args: { sessionId: "s1" } })).ok).toBe(true);
+  await until(() => r.daemon.bus.stateOf("kimi") === "idle");
+  expect((await budgetOf(r)).remaining.destroy).toBe(0); // the allowance did not come back with the session id
+  await r.client.request({ t: "send", body: "PERMISSION ANNOUNCED ACTIONCMD[rm -rf /tmp/two]", to: ["kimi"] });
+  await until(() => permissions().length === 2);
+  expect(permissions()[1].title).toBe("Action approval (destroy): rm -rf /tmp/two"); // asks again, with a fresh budget offer
+  expect(permissions()[1].options.some((o: any) => o.optionId === "agent-hub:action-budget")).toBe(true);
+}, 30_000);
+
+test("Claude: status claims enforcement only for a live session whose current generation has run the hub hook (#636 review)", async () => {
+  const r = await rig();
+  const status = async () => (await r.client.request({ t: "status" })).status.actionPolicyInfo.claude;
+  const channel = await ControlClient.connect(r.stateDir, { role: "peer", peer: "claude" });
+  await until(() => r.daemon.bus.peers.get("claude")?.state === "idle");
+  expect((await status()).enforceable).toBe(false); // attached, but no launch record at all
+  expect((await status()).note).toContain("no hub permission hook");
+  const info = (await r.client.request({ t: "status" })).status;
+  const launcher = { instanceId: info.instanceId, launchId: "live-launch", permissionHook: true, hookPurpose: "permission", unattended: false };
+  writeFileSync(join(r.stateDir, "claude-launch.json"), JSON.stringify(launcher));
+  const retained = await status();
+  expect(retained.enforceable).toBe(false); expect(retained.note).toContain("no live Claude session has run the hub permission hook yet"); // a retained record is not a live hook
+  const hook = await ControlClient.connect(r.stateDir, { role: "tools", peer: "claude" }); cleanup.push(() => hook.close());
+  expect((await hook.request({ t: "facts", phase: "session", tool: "Read", input: {}, sessionId: "live-session", nativeInstanceId: info.instanceId, nativeLaunchId: launcher.launchId, hookPurpose: "permission" })).ok).toBe(true);
+  expect((await status()).enforceable).toBe(true);
+  channel.close(); // the session ends: the retained launch record outlives the process, the claim does not
+  await until(() => r.daemon.bus.peers.get("claude")?.state === "offline");
+  const gone = await status();
+  expect(gone.enforceable).toBe(false); expect(gone.note).toContain("no live Claude session");
+});

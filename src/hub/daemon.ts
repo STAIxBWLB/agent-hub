@@ -2680,9 +2680,13 @@ export async function startDaemon(opts: DaemonOptions) {
   // adapter with the gate, and only while its native mode is `ask`: Kimi's `yolo` and `auto` modes send no request for a call they allow.
   const actionEnforcement = (peer: PeerId): { enforced: boolean; reason?: string } => {
     if (definitionOf(peer)?.transport === "claude-channel") {
-      const launch = claudePermissionLaunch(peer);
-      return !launch ? { enforced: false, reason: "no hub permission hook in this Claude session (start it with ahub claude)" }
-        : launch.unattended ? { enforced: false, reason: "this Claude launch is --unattended: its permission checks, hooks included, are off" } : { enforced: true };
+      const launch = claudePermissionLaunch(peer), attached = bus.peers.get(peer);
+      // The launch record outlives the process, so it proves nothing alone: the attached session must be the generation whose hook last spoke to the hub.
+      if (!launch) return { enforced: false, reason: "no hub permission hook in this Claude session (start it with ahub claude)" };
+      if (launch.unattended) return { enforced: false, reason: "this Claude launch is --unattended: its permission checks, hooks included, are off" };
+      if (!isWsPeer(attached) || attached.state === "offline" || claudePermissionGenerations.get(peer) !== attached.sessionGeneration)
+        return { enforced: false, reason: "no live Claude session has run the hub permission hook yet" };
+      return { enforced: true };
     }
     const owner = bus.peers.get(peer);
     if (isAcpPeer(owner) && owner.actionGated) {
@@ -3459,6 +3463,9 @@ export async function startDaemon(opts: DaemonOptions) {
         }
       }
       if (e.state === "offline" && softTokenPeer(e.peer)) { collectKimiUsage(e.peer); kimiUsage.drop(e.peer); }
+      // #636: a class-budget allowance belongs to the owner that earned it. A stopped, crashed or removed owner that later resumes the same native
+      // session id starts from zero (a replaced adapter's own `offline` is muted, so a new owner also revokes where it is created).
+      if (e.state === "offline") actionBudgets.revoke(e.peer);
       if (e.state === "offline") { offlineSince.set(e.peer, offlineSince.get(e.peer) ?? Date.now()); supervision.peerOffline(e.peer); supervisionTurns.delete(e.peer); }
       else offlineSince.delete(e.peer);
       // A session that ended may come back without hooks: its context path is verified again or not at all (issue #108).
@@ -3938,6 +3945,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (adapter?.start.acpCommand) {
       const cmd = adapter.start.acpCommand(config.kimi_cmd, args.model);
+      actionBudgets.revoke(peer); // a new owner never inherits the allowance of the one it replaces, even for the same session id
       const kimi: AcpPeer = adapter!.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["acp"]({
         onActivity: item => activityRings[peer]?.append(item),
         isPrivateTurn: () => !!turns.get(peer)?.private || contextPii(peer),
@@ -3991,6 +3999,7 @@ export async function startDaemon(opts: DaemonOptions) {
         userArgs: [], unattended: false, env: {}, nativeCommand: configuredIds.includes(adapter.kind) ? undefined : config.qwen_cmd, model: args.model });
       const mcpServers = [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv(peer, true)).map(([name, value]) => ({ name, value })) }];
       const permission = readOnlyPeer(peer) ? "read-only" as const : permissionMode(peer);
+      actionBudgets.revoke(peer); // a new owner never inherits the allowance of the one it replaces, even for the same session id
       const owner = adapter.start.create({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: undefined, permission, mcpServers, daemon: { acp: {
         onActivity: item => activityRings[peer]?.append(item),
         isPrivateTurn: () => !!turns.get(peer)?.private || contextPii(peer),

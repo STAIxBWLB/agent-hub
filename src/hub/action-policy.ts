@@ -31,24 +31,25 @@ export function actionPolicyConfig(value?: unknown): ActionPolicyConfig {
 export interface ActionSessionBudget { readonly peer: string; readonly session: string }
 export interface ActionChallenge { readonly classes: readonly ActionClass[] }
 export type ActionDecision = { kind: "native" } | { kind: "ask"; classes: ActionClass[]; challenge?: ActionChallenge } | { kind: "budget"; classes: ActionClass[] };
-interface Session { handle: ActionSessionBudget; policy: string; remaining: Record<ActionClass, number> }
+/** `grants` counts the class-budget approvals of this session and policy: a challenge remembers it, so a later approval can tell that another one landed first. */
+interface Session { handle: ActionSessionBudget; policy: string; remaining: Record<ActionClass, number>; grants: Record<ActionClass, number> }
 const empty = (): Record<ActionClass, number> => ({ publish: 0, destroy: 0, "external-write": 0, install: 0 });
 /** Host-only ledger: session ids and policy come from current runtime ports, never a tool argument. */
 export class ActionBudgets {
   private sessions = new Map<string, Session>();
-  private challenges = new WeakMap<ActionChallenge, { handle: ActionSessionBudget; policy: string; classes: ActionClass[] }>();
+  private challenges = new WeakMap<ActionChallenge, { handle: ActionSessionBudget; policy: string; classes: ActionClass[]; grants: Record<ActionClass, number> }>();
   constructor(private readonly config: () => ActionPolicyConfig | undefined, private readonly currentSession: (peer: string) => string | undefined) {}
   bindSession(peer: string, session: string): ActionSessionBudget | undefined {
     if (!session || this.currentSession(peer) !== session) return undefined;
     const previous = this.sessions.get(peer);
     if (previous?.handle.session === session) return previous.handle;
     const handle = Object.freeze({ peer, session });
-    this.sessions.set(peer, { handle, policy: "", remaining: empty() });
+    this.sessions.set(peer, { handle, policy: "", remaining: empty(), grants: empty() });
     return handle;
   }
   revoke(peer: string): void { this.sessions.delete(peer); }
   policyChanged(): void {
-    for (const state of this.sessions.values()) { state.policy = ""; state.remaining = empty(); }
+    for (const state of this.sessions.values()) { state.policy = ""; state.remaining = empty(); state.grants = empty(); }
     this.challenges = new WeakMap();
   }
   private current(handle: ActionSessionBudget | undefined): Session | undefined {
@@ -56,7 +57,7 @@ export class ActionBudgets {
     const state = this.sessions.get(handle.peer);
     if (state?.handle !== handle || this.currentSession(handle.peer) !== handle.session) return undefined;
     const policy = JSON.stringify(actionPolicyConfig(this.config()));
-    if (state.policy !== policy) { state.policy = policy; state.remaining = empty(); }
+    if (state.policy !== policy) { state.policy = policy; state.remaining = empty(); state.grants = empty(); }
     return state;
   }
   private selected(actions: readonly ActionClass[]): ActionClass[] {
@@ -70,20 +71,31 @@ export class ActionBudgets {
     if (!state) return { kind: "ask", classes };
     if (classes.some(key => state.remaining[key] <= 0)) {
       const challenge = Object.freeze({ classes: Object.freeze([...classes]) });
-      this.challenges.set(challenge, { handle: state.handle, policy: state.policy, classes: [...classes] });
+      this.challenges.set(challenge, { handle: state.handle, policy: state.policy, classes: [...classes], grants: { ...state.grants } });
       return { kind: "ask", classes, challenge };
     }
     for (const key of classes) state.remaining[key]--;
     return { kind: "budget", classes };
   }
-  /** Explicit class-budget approval only, never an ordinary allow_once; this invocation consumes slot one. */
+  /**
+   * Explicit class-budget approval only, never an ordinary allow_once; this invocation consumes slot one. Requests run concurrently, so
+   * two challenges can be issued while a class is spent: the first approval opens the allowance (budget minus this call), and an approval of
+   * a challenge issued before it is a later call inside that allowance, which consumes one slot instead of opening another. With no slot
+   * left it is refused (the person asks again and sees a fresh challenge), so N approved calls is the most any budget lets through.
+   * Every class is checked before any is spent: a refusal changes nothing.
+   */
   approve(challenge: ActionChallenge | undefined): boolean {
     if (!challenge) return false;
     const grant = this.challenges.get(challenge); this.challenges.delete(challenge);
     if (!grant) return false;
     const state = this.current(grant.handle), config = actionPolicyConfig(this.config());
     if (!state || state.policy !== grant.policy) return false;
-    for (const key of grant.classes) state.remaining[key] = Math.max(0, config.budgets[key] - 1);
+    const late = (key: ActionClass) => state.grants[key] !== grant.grants[key];
+    if (grant.classes.some(key => late(key) && state.remaining[key] <= 0)) return false;
+    for (const key of grant.classes) {
+      state.remaining[key] = late(key) ? state.remaining[key] - 1 : Math.max(0, config.budgets[key] - 1);
+      state.grants[key]++;
+    }
     return true;
   }
   /** Read-only projection: no session is created, rebound or reset by a status poll. */
