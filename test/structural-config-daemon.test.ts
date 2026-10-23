@@ -275,3 +275,24 @@ test("#689 a structural value the file loader accepts but the effective config r
   expect(f.read("config.local.json")).toBe(before);
   expect(f.events()).toEqual([]);
 }, 20_000);
+
+test("#689 the dashboard snapshot carries the Structure data to a settings session and an ordinary one, and the page that renders it is the one served", async () => {
+  const home = realPath(mkdtempSync(join(tmpdir(), "ahub-structural-snap-"))), base = realPath(mkdtempSync(join(tmpdir(), "ahub-structural-snapb-")));
+  cleanup.push(() => rmSync(home, { recursive: true, force: true }), () => rmSync(base, { recursive: true, force: true }));
+  const f = await fixture({ local: { jcode_home: base, instances: { "jcode-two": { kind: "jcode", jcode_home: home, model: "secret-model-name" } } } });
+  const url = new URL((await f.client.request({ t: "ui", settings: true })).url);
+  const open = await fetch(`${url.origin}/session`, { method: "POST", headers: { origin: url.origin, "content-type": "application/json" }, body: JSON.stringify({ ticket: url.hash.slice(1) }) });
+  const cookie = open.headers.get("set-cookie")!.split(";")[0]!;
+  const snapshot = await (await fetch(`${url.origin}/snapshot`, { method: "POST", headers: { origin: url.origin, "content-type": "application/json", cookie }, body: JSON.stringify({ after: 0 }) })).json() as { settings?: { configEdit?: Record<string, any>; sessionUntil?: number } };
+  const edit = snapshot.settings?.configEdit;
+  expect(edit?.revisions["config.local.json"]).toMatch(/^[a-f0-9]{64}$/);
+  expect(edit?.instances.map((item: { id: string }) => item.id)).toEqual(["jcode-two"]);
+  expect(edit?.instances[0].tier3).toEqual(expect.arrayContaining(["jcode_home", "model"]));
+  // A browser is told that a tier 3 field is set, never its value or its path.
+  // The peer table already names an instance's model (`modelSource`, #685); what #689 adds is the edit payload, and that carries no tier 3 value and no path.
+  const raw = JSON.stringify(edit);
+  expect(raw).not.toContain("secret-model-name"); expect(raw).not.toContain(home); expect(raw).not.toContain(base);
+  expect(edit?.tier3.find((item: { key: string }) => item.key === "instances.jcode-two.model")).toMatchObject({ set: true, command: expect.stringContaining("ahub settings edit config.local.json set instances.jcode-two.model") });
+  const page = await (await fetch(`${url.origin}/`)).text();
+  expect(page).toContain("renderStructure"); expect(page).toContain("structure-tier3");
+}, 20_000);

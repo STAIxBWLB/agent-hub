@@ -4860,7 +4860,7 @@ export async function startDaemon(opts: DaemonOptions) {
   /** For the dashboard: the rows, and until when this session may raise. A project whose files do not read still gets its dashboard. */
   // ponytail: reads the two config files and the undo record and parses the routing files on each dashboard poll; cache by mtime if a page ever feels it.
   function settingsSnapshot(session?: DashboardSession): { settings?: Record<string, unknown> } {
-    try { return { settings: { ...settingsView(), ...(session?.settings ? { sessionUntil: session.settingsUntil } : {}) } }; }
+    try { return { settings: { ...settingsView(), ...(session?.settings ? { sessionUntil: session.settingsUntil } : {}), ...(configEditor ? { configEdit: configEditor.view() } : {}) } }; }
     catch { return {}; }
   }
   function settingsView(): { rows: SettingRow[]; undo?: string; pendingRestart: { key: string; reason: string }[]; retainedConfig: { key: string; reason: string }[] } {
