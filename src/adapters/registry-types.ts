@@ -270,7 +270,7 @@ export interface AdapterDefinition {
     trace?: "route" | "backend";
     backendLabel?: string;
   };
-  budget?: { account: string; quotaExempt?: boolean; instrumented?: boolean; reader?: QuotaReader; context?: ContextReader; checkpoint?: boolean; resetSoftTokensOnResume?: boolean };
+  budget?: { account: string; quotaExempt?: boolean; /** Why this peer has no provider quota, shown by `ahub budget` and the dashboard (#285 AC6). */ noQuotaReason?: string; instrumented?: boolean; reader?: QuotaReader; context?: ContextReader; checkpoint?: boolean; resetSoftTokensOnResume?: boolean };
   configuration?: {
     schema?(ports: NativeConfigValidators): Record<string, NativeConfigCheck>;
     routingSchema?(ports: NativeConfigValidators): Record<string, NativeConfigCheck>;

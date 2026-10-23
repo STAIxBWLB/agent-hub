@@ -2,6 +2,8 @@ import { definitionOf, type AdapterDefinition } from "../adapters/registry.ts";
 import { Database } from "bun:sqlite";
 import type { PeerId } from "./envelope.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
+import { windowKind, type WindowKind } from "./window-kind.ts";
+export { windowKind, type WindowKind };
 
 export interface UsageWindow {
   id: "5h" | "week" | "tokens";
@@ -12,6 +14,8 @@ export interface UsageWindow {
   /** length of the window, for a fallback reset time */
   windowMins?: number;
   source: string;
+  /** Optional: a window without one is classified by `windowKind`, so a source that predates it keeps working. */
+  kind?: WindowKind;
 }
 /** No declared source is unknown, not a synthetic empty provider reading. */
 export function readNativeQuota(definition: AdapterDefinition | undefined, value: unknown): UsageWindow[] | undefined {
@@ -19,7 +23,10 @@ export function readNativeQuota(definition: AdapterDefinition | undefined, value
 }
 interface Reading extends UsageWindow {
   at: number;
+  kind: WindowKind;
 }
+/** Readings are kept per window id and kind, so a person's number and the provider's for one window never overwrite each other. */
+const readingKey = (id: string, kind: WindowKind): string => `${id}|${kind}`;
 
 export interface Moved {
   id: number;
@@ -243,14 +250,21 @@ export class Budget {
     this.deriveResets(peer, windows, at);
     const mine = this.readings.get(peer) ?? new Map<string, Reading>();
     this.readings.set(peer, mine);
-    for (const w of windows) mine.set(w.id, { ...w, used: Math.max(0, Math.min(1, w.used)), at });
+    for (const w of windows) {
+      const kind = windowKind(w);
+      // A provider that has refused another turn outranks a person's number for the same window.
+      if (hard && kind !== "manual") mine.delete(readingKey(w.id, "manual"));
+      mine.set(readingKey(w.id, kind), { ...w, kind, used: Math.max(0, Math.min(1, w.used)), at });
+    }
     if (this.recoveryHeld) { this.deferred = true; if (hard) this.deferredHard.add(peer); return; }
     this.evaluate(peer, hard).catch((e: Error) => this.closed || this.hooks.notify(`budget: evaluating ${peer} failed: ${e.message}`));
   }
 
-  /** A source that can no longer be trusted drops its reading of one window: the window shows unknown, never the last number. */
-  forget(peer: PeerId, id: UsageWindow["id"]): void {
-    this.readings.get(this.account(peer))?.delete(id);
+  /** A source that can no longer be trusted drops its reading of one window: the window shows unknown, never the last number. `kind` limits it to that source's own reading. */
+  forget(peer: PeerId, id: UsageWindow["id"], kind?: WindowKind): void {
+    const mine = this.readings.get(this.account(peer));
+    if (!mine) return;
+    for (const [key, reading] of mine) if (reading.id === id && (!kind || reading.kind === kind)) mine.delete(key);
   }
 
   /** Readings that still say something: not stale, and not about a window that has reset since they were taken. */
@@ -258,6 +272,18 @@ export class Budget {
     peer = this.account(peer);
     const staleMs = this.cfg.stale_min * 60_000;
     return [...(this.readings.get(peer)?.values() ?? [])].filter((r) => this.now() - r.at <= staleMs && !(r.resetsAt && r.resetsAt <= this.now()));
+  }
+
+  /**
+   * The readings the gate and routing act on (#285 AC8). A person's number for a window replaces the provider's and the hub's for that window; and while
+   * a native or manual reading is fresh, the hub count is shown but never gates, because it is an estimate against a ceiling and the others are measurements.
+   * A stale or reset reading is out of `fresh`, so the count gates again when nothing better is left.
+   */
+  private gating(peer: PeerId): Reading[] {
+    const fresh = this.fresh(peer);
+    const fed = new Set(fresh.filter((r) => r.kind === "manual").map((r) => r.id));
+    const decided = fresh.filter((r) => r.kind === "manual" || !fed.has(r.id));
+    return decided.some((r) => r.kind !== "count") ? decided.filter((r) => r.kind !== "count") : decided;
   }
 
   /**
@@ -271,7 +297,7 @@ export class Budget {
     const last = this.lastSeen.get(peer) ?? new Map<string, { used: number; resetsAt?: number; at: number }>();
     this.lastSeen.set(peer, last);
     for (const w of windows) {
-      const used = Math.max(0, Math.min(1, w.used)), before = last.get(w.id);
+      const used = Math.max(0, Math.min(1, w.used)), slot = readingKey(w.id, windowKind(w)), before = last.get(slot);
       if (before && at >= before.at) {
         const moved = w.resetsAt !== undefined && before.resetsAt !== undefined && w.resetsAt - before.resetsAt > RESET_JITTER_MS;
         const sameWindow = w.resetsAt === undefined || before.resetsAt === undefined || Math.abs(w.resetsAt - before.resetsAt) <= RESET_JITTER_MS;
@@ -285,7 +311,7 @@ export class Budget {
           }
         }
       }
-      if (!before || at >= before.at) last.set(w.id, { used, ...(w.resetsAt !== undefined ? { resetsAt: w.resetsAt } : {}), at });
+      if (!before || at >= before.at) last.set(slot, { used, ...(w.resetsAt !== undefined ? { resetsAt: w.resetsAt } : {}), at });
     }
   }
 
@@ -315,7 +341,7 @@ export class Budget {
   private async evaluate(peer: PeerId, hard: boolean): Promise<void> {
     peer = this.account(peer);
     if (this.recoveryHeld) { this.deferred = true; if (hard) this.deferredHard.add(peer); return; }
-    const fresh = this.fresh(peer);
+    const fresh = this.gating(peer);
     const over = fresh.filter((r) => r.used >= this.cfg.gate);
     const open = this.record(peer);
     // An expired restored record may be waiting for attachment on an unpaused bus. A new hard refusal
@@ -465,7 +491,7 @@ export class Budget {
    */
   headroom(): Record<PeerId, { headroom: number; resetsAt?: number }> {
     return Object.fromEntries([...this.readings.keys()].flatMap((peer) => {
-      const fresh = this.fresh(peer);
+      const fresh = this.gating(peer);
       if (!fresh.length) return [];
       const used = Math.max(...fresh.map((r) => r.used));
       const binding = fresh.filter((r) => r.used === used);
@@ -474,13 +500,19 @@ export class Budget {
     }));
   }
 
-  status(): Record<PeerId, { windows: (Reading & { stale: boolean })[]; paused?: { reason: string; resetsAt: number; since: number } }> {
+  status(): Record<PeerId, { windows: (Reading & { stale: boolean; superseded: boolean })[]; paused?: { reason: string; resetsAt: number; since: number } }> {
     const staleMs = this.cfg.stale_min * 60_000;
     const peers = new Set([...this.readings.keys(), ...this.records().map((r) => r.peer)]);
     return Object.fromEntries(
       [...peers].map((peer) => {
         const open = this.record(peer);
-        return [peer, { windows: [...(this.readings.get(peer)?.values() ?? [])].map((r) => ({ ...r, stale: this.now() - r.at > staleMs })), ...(open ? { paused: { reason: open.reason, resetsAt: open.resetsAt, since: open.since } } : {}) }];
+        const fresh = new Set(this.fresh(peer)), used = new Set(this.gating(peer));
+        // `superseded`: fresh, but information only: a measurement of the same account outranks it (the hub count under a native or manual reading).
+        // The reading the gate acts on is listed first (then the information-only ones, then the stale), so a client that looks a window up by id, as every
+        // client did before kinds existed, lands on the effective number and not on the one it replaced.
+        const rank = (r: Reading) => (used.has(r) ? 0 : fresh.has(r) ? 1 : 2);
+        const ordered = [...(this.readings.get(peer)?.values() ?? [])].sort((a, b) => rank(a) - rank(b));
+        return [peer, { windows: ordered.map((r) => ({ ...r, stale: this.now() - r.at > staleMs, superseded: fresh.has(r) && !used.has(r) })), ...(open ? { paused: { reason: open.reason, resetsAt: open.resetsAt, since: open.since } } : {}) }];
       }),
     );
   }

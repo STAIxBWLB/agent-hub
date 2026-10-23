@@ -1,3 +1,4 @@
+import { windowKind, type WindowKind } from "../hub/window-kind.ts";
 import type { Counter, LimitsResult, UsageResult, UsageRow } from "../hub/usage-rollup.ts";
 
 // #683 U3: what the console's Usage panel shows, as plain strings. No terminal code and no state import here: console-state.ts renders it.
@@ -32,7 +33,7 @@ export function usagePeers(usage: UsageState | undefined, budget: Record<string,
   return [...ids].sort().map(id => ({ id }));
 }
 
-interface Budget { windows?: { id: string; used: number; resetsAt?: number }[]; paused?: { resetsAt: number } }
+interface Budget { windows?: { id: string; used: number; resetsAt?: number; kind?: string; source?: string }[]; paused?: { resetsAt: number }; note?: string }
 const windowText = (w: { id: string; used: number; resetsAt?: number }, rel: (at: number) => string) =>
   `${w.id} ${Math.round(w.used * 100)}%${typeof w.resetsAt === "number" ? ` ${rel(w.resetsAt)}` : ""}`;
 const lastResets = (limits: LimitsResult | undefined, peer: string, count: number) =>
@@ -66,7 +67,9 @@ export function usageDetail(usage: UsageState | undefined, peer: string, budget:
   const resets = lastResets(usage?.limits, peer, 3).map(h => `${h.window} ${rel(Date.parse(h.at))}`);
   const out: Record<string, string> = {
     peer,
-    quota: budget?.windows?.length ? budget.windows.map(w => windowText(w, rel)).join(", ") : "no reading",
+    quota: budget?.windows?.length ? budget.windows.map(w => windowText(w, rel)).join(", ") : budget?.note ?? "no reading",
+    // What each number is and where it came from (#285 AC7), in its own field so the quota line keeps its shape.
+    ...(budget?.windows?.length ? { "quota sources": budget.windows.map(w => `${w.id} ${windowKind({ id: w.id, source: w.source, kind: w.kind as WindowKind | undefined })}${w.source ? `, ${w.source}` : ""}`).join("; ") } : {}),
     pause: budget?.paused ? `budget pause, resumes ${rel(budget.paused.resetsAt)}` : "none",
     "last resets": resets.length ? resets.join(", ") : "none recorded",
     today: splitText(rowOf(usage?.today, peer)),

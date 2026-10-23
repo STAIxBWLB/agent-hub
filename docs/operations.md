@@ -2101,6 +2101,24 @@ A budget pause remains authoritative until the budget command explicitly
 overrides it or the window resets. Check `ahub status` and `ahub board` after
 a pause or handoff.
 
+`ahub budget` (#285 phase 4) prints one row per window and a line for every attached peer that has no number. The KIND column says what the
+number is, and SOURCE where it came from; MEASURED is its age.
+
+| Kind | Meaning | Source examples |
+| --- | --- | --- |
+| `native` | the provider's own ratio and reset | `claude status line`, `codex rateLimits`, `kimi ACP usage-limit refusal` |
+| `count` | tokens the hub counted, against a ceiling a person set | `hub count, kimi wire log, of kimi_tokens_5h 800000` (window `tokens`) |
+| `manual` | a person fed it with `ahub budget set <peer> <0..1> [--window 5h\|week] [--resets-in 2h]` | `ahub budget set` |
+
+A count never claims to be the provider's quota. For one window and peer a manual value replaces the provider's at the gate, and while any native
+or manual reading is fresh the count is shown as `info only` and does not gate or feed routing headroom; when those go stale, or reset, the
+count gates again. A provider's hard refusal clears the person's number for that window, so a pause is never outvoted. A peer without a number says
+why instead: Pi and local print `no quota: on-prem ... has no provider quota` with the hub's own 5 h token count (information, never a meter);
+Kimi without `budget.kimi_tokens_5h` says it reports context occupancy only; an unreadable Kimi wire log says so with a reason code; a peer whose
+source has not reported yet says which. `--json` carries `kind`, `source`, `superseded` and a `peers` list of those notes; an older hub answers
+without them and the CLI classifies a window by its source. `ahub doctor` adds the row `kimi usage source` (counting, no ceiling, or unreadable).
+The console's peer detail (Enter on Peers) and the Usage detail, and the dashboard's Usage budgets row, show the same kind and source per window.
+
 Kimi Code CLI 2.1.1's observed 5-hour usage-limit refusal creates a hard budget reading (`kimi ACP usage-limit refusal`). `ahub status` shows a budget pause and `ahub budget` shows its source and reset estimate. The refusal gives no reset timestamp, so the hub estimates the reset at five hours after it was observed and resumes on the next budget tick after the existing one-minute grace. With `budget.wait_max_min` below that estimate, the existing budget relay automatically hands open tasks to an attached eligible peer; routing skips Kimi while paused. No checkpoint is requested from an exhausted agent.
 `ahub budget resume kimi` overrides the reading so the provider can be tried early. A new provider refusal ends that override and pauses it again; a pending soft checkpoint cannot postpone this hard pause.
 During one hub run, an early override followed by the same window's refusal keeps its earlier future reset bound; a provider's explicit reset remains authoritative. A restored pause without a per-window reading cannot identify that earlier window, so its next refusal starts a new estimate.

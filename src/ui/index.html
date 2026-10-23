@@ -1612,6 +1612,8 @@ function renderUsage(usage, tasks, budget) {
   }
   $('usage-task-count').textContent = taskCount + ' tasks';
 }
+// Mirrors windowKind in src/hub/window-kind.ts (the page imports nothing): a window from an older hub has no kind. test/ui.test.ts keeps the two equal.
+function windowKindOf(w) { return w.kind || (w.id === 'tokens' ? 'count' : w.source === 'ahub budget set' ? 'manual' : 'native'); }
 function render(snapshot) {
   renderNeedsAttention(snapshot);
   const peers = Object.fromEntries(Object.entries(snapshot.status.peers || {}).map(([id, peer]) => [id, {...peer, ...(snapshot.status.roleInfo || {})[id]}])), ids = Object.keys(peers), starts = Array.isArray(snapshot.starts) ? snapshot.starts : [];
@@ -1677,13 +1679,14 @@ function render(snapshot) {
         if (pct !== null) { const bar = el('progress'); bar.max = 1; bar.value = context.used; bar.setAttribute('aria-label', peer + ' context usage'); row.append(bar); }
       }
       if (budget.paused) { const line = el('p', 'Paused: ' + budget.paused.reason + ' / resets ', 'meta'), stamp = el('span'); stamp.dataset.ts = budget.paused.resetsAt; stamp.title = time(budget.paused.resetsAt); stamp.textContent = rel(budget.paused.resetsAt); line.append(stamp); row.append(line); }
-      if (!budget.windows.length) row.append(el('p', 'No usage windows reported.', 'meta'));
+      if (!budget.windows.length) row.append(el('p', budget.note || 'No usage windows reported.', 'meta'));
+      else if (budget.note) row.append(el('p', budget.note, 'meta'));
       for (const window of budget.windows) {
         const item = el('div', undefined, 'budget-window'), percent = Math.round(window.used * 100);
-        item.append(el('p', window.id + ': ' + percent + '% used' + (window.stale ? ' (stale)' : ''), 'meta'));
+        item.append(el('p', window.id + ': ' + percent + '% used' + (window.stale ? ' (stale)' : window.superseded ? ' (information only)' : ''), 'meta'));
         const bar = el('progress'); bar.max = 1; bar.value = window.used; bar.className = percent >= 90 ? 'critical' : percent >= 70 ? 'warn' : '';
         bar.setAttribute('aria-label', peer + ' ' + window.id + ' usage'); item.append(bar);
-        const meta = el('p', window.source + (window.resetsAt ? ' / resets ' : ''), 'meta');
+        const meta = el('p', windowKindOf(window) + ' / ' + window.source + (window.resetsAt ? ' / resets ' : ''), 'meta');
         if (window.resetsAt) { const stamp = el('span'); stamp.dataset.ts = window.resetsAt; stamp.title = time(window.resetsAt); stamp.textContent = rel(window.resetsAt); meta.append(stamp); }
         item.append(meta); row.append(item);
       }

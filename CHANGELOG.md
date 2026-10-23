@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Budget window kinds, precedence and notes (#285 phase 4, AC6, AC7, AC8, AC10): `UsageWindow` gains an optional `kind` (`native`, `count`, `manual`). `ahub budget` prints each window's kind, source and age, marks a hub count that a native or manual reading outranks as `info only`, and says why a peer shows no number (Pi and local have no quota and show the hub's own 5 h token count; Kimi without `budget.kimi_tokens_5h`, or with an unreadable wire log, says so). A fresh `ahub budget set` value replaces the provider's and the hub's for its window at the gate and in routing headroom, and a provider refusal clears it. The console peer and Usage details and the dashboard Usage budgets row show kind and source, and `ahub doctor` gains `kimi usage source`. `PROTOCOL` is unchanged.
+
 ## 0.15.0
 
 - `ahub backlog list` prints a table, one line per card by rank (RANK, ID, PRI, RESERVED, AFTER, CLASS, AGE, TITLE, with titles cut to the terminal width), and a count by reserved owner; `--full` and piped output keep whole titles, `--json` prints the raw listing (#399).

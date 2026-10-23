@@ -1,4 +1,5 @@
 import { definitionOf } from "../adapters/registry.ts";
+import { windowKind } from "../hub/window-kind.ts";
 import { boardColumns, type BoardPeerInput } from "../ui/task-board.ts";
 import { peerStyle } from "../ui/peer-palette.ts";
 import { cells, TABLES, table, fitLine, wrap, duration, relative, plural, terminalText, initialConsoleState, stateTone, type Span, type Tone } from "./console-state.ts";
@@ -21,7 +22,8 @@ export interface StatusOutput {
   pid?: number; controlPort?: number; cwd?: string; version?: string; peers: Record<string, any>; roleInfo?: Record<string, any>; actionPolicyInfo?: Record<string, { note: string; enforceable: boolean }>; budget?: Record<string, any>; planner?: { peers?: string[]; source?: string };
   tasks?: Record<string, number>; models?: { backends?: any[] }; permissionDefaults?: any[]; deliveryError?: string; crash?: string[];
 }
-export interface BudgetOutput { budget: Record<string, any>; gate?: number }
+/** `peers`: one note per peer that shows no number, and why (no quota, nothing read yet); absent from an older hub. */
+export interface BudgetOutput { budget: Record<string, any>; gate?: number; peers?: { peer: string; kind?: string; note: string }[] }
 export interface RosterRow { peer: string; on: boolean; startMode: string; state: string; queued: number; tasks: number }
 export function renderRoster(data: RosterRow[], columns?: number): Span[][] {
   return rows(["PEER", "ROSTER", "START", "STATE", "Q", "TASKS"], data.map(row => [span(row.peer, "info", true), span(row.on ? "on" : "off", row.on ? "success" : "muted", true), span(row.startMode, undefined, true), span(row.state, stateTone(row.state), true), span(row.queued, undefined, true), span(row.tasks, undefined, true)]), columns);
@@ -358,9 +360,13 @@ export function renderBoard(tasks: any[], columns?: number, now = Date.now(), fu
 }
 export function renderBudget(data: BudgetOutput, columns?: number, now = Date.now(), _full = false): Span[][] {
   const out: Span[][] = [];
-  const windows = Object.entries(data.budget).flatMap(([peer, b]) => (b.windows ?? []).map((w: any) => [span(peer, peerTone(peer)), span(w.id), span(`${Math.round(w.used * 100)}%`, "number"), span(typeof w.resetsAt === "number" ? relative(w.resetsAt, now) : "-", "muted"), span(w.source ?? "unknown", "muted"), span(typeof w.at === "number" ? relative(w.at, now) : "unknown", "muted"), span(w.stale ? "stale" : "fresh", w.stale ? "attention" : undefined)]));
-  if (windows.length) out.push(...rows(["PEER", "WINDOW", "USED", "RESETS", "SOURCE", "MEASURED", "STATE"], windows, columns));
-  else out.push(...lines(`no quota readings yet (gate ${data.gate ?? "unknown"}). Sources: Codex rate limits, Claude's status line (ahub claude), ahub budget set.`, columns));
+  // KIND names what the number is (#285): the provider's own (native), tokens the hub counted against a ceiling (count), or a person's (manual).
+  // A window without a kind, from an older hub, is classified by `windowKind`. A fresh window that does not gate says so in STATE.
+  const windows = Object.entries(data.budget).flatMap(([peer, b]) => (b.windows ?? []).map((w: any) => [span(peer, peerTone(peer)), span(w.id), span(`${Math.round(w.used * 100)}%`, "number"), span(typeof w.resetsAt === "number" ? relative(w.resetsAt, now) : "-", "muted"), span(windowKind({ id: w.id, source: w.source ?? "", kind: w.kind }), "muted"), span(w.source ?? "unknown", "muted"), span(typeof w.at === "number" ? relative(w.at, now) : "unknown", "muted"), span(w.stale ? "stale" : w.superseded ? "info only" : "fresh", w.stale ? "attention" : undefined)]));
+  if (windows.length) out.push(...rows(["PEER", "WINDOW", "USED", "RESETS", "KIND", "SOURCE", "MEASURED", "STATE"], windows, columns));
+  else if (!data.peers?.length) out.push(...lines(`no quota readings yet (gate ${data.gate ?? "unknown"}). Sources: Codex rate limits, Claude's status line (ahub claude), ahub budget set.`, columns));
+  // A peer with no number says why, in its own line, so a peer without quota is not mistaken for one that has not reported.
+  for (const note of data.peers ?? []) out.push(...detail(note.peer, note.note, columns, peerTone(note.peer)));
   for (const [peer, b] of Object.entries(data.budget)) if (b.paused) out.push(...detail(`paused ${peer}`, `${b.paused.reason ?? "budget"}${typeof b.paused.resetsAt === "number" ? `; resumes ${relative(b.paused.resetsAt, now)}` : ""}`, columns, "attention"));
   return out;
 }

@@ -69,7 +69,7 @@ Token usage by adapter:
   opaque hash of session, agent and byte offset; no path, session id or text reaches an event. Only the four integers, the model
   label and the time are copied from a row. The counted share is `inputOther + inputCacheCreation + output` (`kimiCountedTokens`,
   one function): cache reads are recorded and shown, never counted against `budget.kimi_tokens_5h`. The rolling 5 h sum of the
-  counted share against that ceiling is the `tokens` window (`hub count, kimi wire log, of kimi_tokens_5h N`). Rows already in the
+  counted share against that ceiling is the `tokens` window (`hub count, kimi wire log, of kimi_tokens_5h N`, kind `count`: #285 phase 4 names each window's kind in the budget reply, never in an event, and a person's `ahub budget set` value, kind `manual`, outranks it at the gate). Rows already in the
   session's log when the hub first sees it (a resumed session) are history and are not counted. An unreadable index, a missing,
   shrunk or replaced file (a replacement is told by a hash of the consumed head and tail kept with each offset, since Linux can reuse the inode), a truncated last line, an unknown row shape or an untested wire `protocol_version` (only 1.5 is known)
   makes the count unknown: one notice (`kimi usage unknown (<reason>)`), the `tokens` reading is dropped, and no figure is reported
