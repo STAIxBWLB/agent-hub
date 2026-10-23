@@ -128,7 +128,7 @@ class Node {
   text(): string { return [this.textContent, ...this.children.map(child => child.text())].join(" "); }
   all(): Node[] { return [this, ...this.children.flatMap(child => child.all())]; }
 }
-const IDS = ["usage-lifetime-total", "usage-lifetime-total-sub", "usage-lifetime-nocache", "usage-lifetime-cache", "usage-coverage-note", "usage-daily-chart", "usage-daily-legend", "usage-daily-meta", "usage-paused-alert", "usage-budget-windows", "usage-limits-tbody", "usage-task-tbody", "usage-task-count"];
+const IDS = ["usage-lifetime-total", "usage-lifetime-total-sub", "usage-lifetime-nocache", "usage-lifetime-cache", "usage-coverage-note", "usage-daily-chart", "usage-daily-legend", "usage-daily-meta", "usage-paused-alert", "usage-budget-windows", "usage-limits-tbody", "usage-limits-note", "usage-task-tbody", "usage-task-count"];
 function usageRig() {
   const html = readFileSync(new URL("../src/ui/index.html", import.meta.url), "utf8");
   const start = html.indexOf("function formatCounter("), end = html.indexOf("renderUsage(snapshot.usage");
@@ -256,4 +256,48 @@ test("the daemon builds usage only while the Agents view is open, and says when 
     expect(Array.isArray(open.tasks)).toBe(true);
     expect(JSON.stringify(open)).not.toMatch(/"title"/);
   } finally { client.close(); await daemon.stop(); rmSync(root, { recursive: true, force: true }); if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous; }
+});
+
+test("a task with no native total falls back to the hub's count, and a native total wins when there is one (#683 U4)", () => {
+  const { api, nodes } = usageRig();
+  const usage = fixtureSnapshot().usage as { tasks: Record<string, unknown>[] };
+  usage.tasks = [
+    { id: 21, pii: false, input: counter(null), output: counter(null), cacheRead: counter(null), cacheWrite: counter(null), total: counter(null), counted: counter(4200, "count") },
+    { id: 22, pii: false, input: counter(1), output: counter(2), cacheRead: counter(null), cacheWrite: counter(null), total: counter(3), counted: counter(9999, "count") },
+    { id: 23, pii: false, input: counter(null), output: counter(null), cacheRead: counter(null), cacheWrite: counter(null), total: counter(null), counted: counter(null) },
+  ];
+  api.renderUsage(usage, [{ id: 21, title: "a", state: "approved" }, { id: 22, title: "b", state: "approved" }, { id: 23, title: "c", state: "approved" }], undefined);
+  const total = (id: number) => nodes.get("usage-task-tbody")!.children.find(row => row.children[0]!.text().includes("#" + id + " "))!.children[8]!.textContent;
+  expect(total(21)).toBe("4.2k (hub)");
+  expect(total(22)).toBe("3");
+  expect(total(23)).toBe("unknown");
+});
+
+test("the limits timeline says how many older events it leaves out, from this view's cut and the hub's bound (#683 U4)", () => {
+  const { api, nodes } = usageRig();
+  const event = (i: number) => ({ at: "2026-10-10T01:00:" + String(i % 60).padStart(2, "0") + "Z", type: "budget_pause", peer: "codex", window: "5h", detail: {} });
+  const base = fixtureSnapshot().usage as { limits: Record<string, unknown> };
+  api.renderUsage({ ...base, limits: { open: [], history: Array.from({ length: 25 }, (_, i) => event(i)), omitted: 40, truncated: true } }, [], undefined);
+  expect(nodes.get("usage-limits-tbody")!.children.length).toBe(20);
+  expect(nodes.get("usage-limits-note")!.hidden).toBe(false);
+  expect(nodes.get("usage-limits-note")!.textContent).toContain("45 older events are not shown");
+  api.renderUsage({ ...base, limits: { open: [], history: [event(1)], omitted: 0, truncated: false } }, [], undefined);
+  expect(nodes.get("usage-limits-note")!.hidden).toBe(true);
+});
+
+test("a failed usage read replaces the old figures with an explicit unavailable state, and a hidden view leaves them alone (#683 U4)", () => {
+  const { api, nodes } = usageRig();
+  api.renderUsage(fixtureSnapshot().usage, fixtureSnapshot().tasks, undefined);
+  expect(nodes.get("usage-lifetime-total")!.textContent).not.toBe("unavailable");
+  api.renderUsage(undefined, [], undefined); // hidden view: no usage in the snapshot, the page keeps what it has
+  expect(nodes.get("usage-lifetime-total")!.textContent).not.toBe("unavailable");
+  api.renderUsage({ unavailable: true }, [], undefined);
+  expect(nodes.get("usage-lifetime-total")!.textContent).toBe("unavailable");
+  expect(nodes.get("usage-task-tbody")!.children).toEqual([]);
+  expect(nodes.get("usage-limits-tbody")!.children).toEqual([]);
+  expect(nodes.get("usage-daily-chart")!.text()).toContain("Usage unavailable");
+  expect(nodes.get("usage-coverage-note")!.textContent).toContain("could not be read");
+  // The next good snapshot restores the figures.
+  api.renderUsage(fixtureSnapshot().usage, fixtureSnapshot().tasks, undefined);
+  expect(nodes.get("usage-lifetime-total")!.textContent).toContain("at least");
 });

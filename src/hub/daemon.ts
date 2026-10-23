@@ -4504,7 +4504,8 @@ export async function startDaemon(opts: DaemonOptions) {
         };
       } catch (e) {
         log(`dashboard usage view failed: ${(e as Error).message}`);
-        return undefined;
+        // The page keeps the last figures for `undefined` (a hidden view), so a failed read says so explicitly instead.
+        return { unavailable: true };
       }
     };
     return {

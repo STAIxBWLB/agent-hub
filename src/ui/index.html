@@ -451,6 +451,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
   <div class="section-subhead"><h3>Limits &amp; quota timeline</h3></div>
   <div id="usage-paused-alert" class="usage-paused-alert" hidden></div>
   <div id="usage-budget-windows" class="budget-grid"></div>
+  <p id="usage-limits-note" class="meta" hidden></p>
   <div class="usage-table-wrap">
     <table class="usage-table">
       <thead><tr><th>Time</th><th>Event</th><th>Peer</th><th>Window</th><th>Detail</th></tr></thead>
@@ -1305,9 +1306,24 @@ function formatCounter(c, exact) {
   const tag = c.source === 'count' ? 'hub' : c.source === 'partial' ? 'at least' : c.source;
   return str + (tag && tag !== 'native' ? ' (' + tag + ')' : '');
 }
+const USAGE_LIMIT_ROWS = 20;
 const USAGE_COVERAGE_NOTE = 'Coverage: Jcode and Kimi (prior to #285) report hub-counted increments; unrecorded sources are noted as unknown.';
 function renderUsage(usage, tasks, budget) {
   if (!usage) return;
+  // A failed read is not a hidden view: replace the old figures with an explicit state so stale totals are never shown as current.
+  if (usage.unavailable === true) {
+    for (const id of ['usage-lifetime-total', 'usage-lifetime-nocache', 'usage-lifetime-cache']) $(id).textContent = 'unavailable';
+    for (const id of ['usage-lifetime-total-sub']) $(id).textContent = '';
+    $('usage-coverage-note').textContent = USAGE_COVERAGE_NOTE + ' The usage roll-up could not be read just now; the figures were cleared and will return on the next poll.';
+    $('usage-coverage-note').classList.toggle('usage-behind', true);
+    $('usage-daily-chart').replaceChildren(el('p', 'Usage unavailable.', 'empty'));
+    $('usage-daily-legend').replaceChildren();
+    $('usage-paused-alert').hidden = true;
+    $('usage-limits-tbody').replaceChildren();
+    $('usage-task-tbody').replaceChildren();
+    $('usage-task-count').textContent = 'unavailable';
+    return;
+  }
   // #683 U4: a roll-up that has not folded the whole log gives lower bounds; say so rather than show the folded part as the whole.
   const coverage = $('usage-coverage-note');
   coverage.textContent = USAGE_COVERAGE_NOTE + (usage.behind === true ? ' Still folding the event log: figures are a lower bound until it catches up.' : '');
@@ -1373,8 +1389,13 @@ function renderUsage(usage, tasks, budget) {
   const limitsTbody = $('usage-limits-tbody');
   limitsTbody.replaceChildren();
   const history = limits?.history || [];
+  // The timeline shows the newest rows only: say how many older events it leaves out, from the hub's bound and from this view's.
+  const hidden = Math.max(0, history.length - USAGE_LIMIT_ROWS) + (Number.isFinite(limits?.omitted) ? limits.omitted : 0);
+  const limitsNote = $('usage-limits-note');
+  limitsNote.hidden = hidden === 0;
+  limitsNote.textContent = hidden === 0 ? '' : 'Showing the newest ' + Math.min(history.length, USAGE_LIMIT_ROWS) + ' limit events; ' + hidden + ' older ' + (hidden === 1 ? 'event is' : 'events are') + ' not shown (ahub usage limits lists them).';
   if (history.length) {
-    for (const h of history.slice(-20).reverse()) {
+    for (const h of history.slice(-USAGE_LIMIT_ROWS).reverse()) {
       const tr = el('tr');
       const timeCell = el('td', time(Date.parse(h.at)));
       timeCell.title = h.at;
@@ -1429,7 +1450,8 @@ function renderUsage(usage, tasks, budget) {
     const outputCell = el('td', formatCounter(ut?.output), 'num');
     const crCell = el('td', formatCounter(ut?.cacheRead), 'num');
     const cwCell = el('td', formatCounter(ut?.cacheWrite), 'num');
-    const totalCell = el('td', formatCounter(ut?.total || ut?.counted), 'num');
+    // `total` is a Counter object even when nothing native was reported, so choose by its value: a tokens-only task (Jcode, older Kimi) falls back to the hub's count.
+    const totalCell = el('td', formatCounter(ut?.total?.value != null ? ut.total : ut?.counted), 'num');
 
     tr.append(taskCell, stateCell, ownerCell, prCell, inputCell, outputCell, crCell, cwCell, totalCell);
     taskTbody.append(tr);
