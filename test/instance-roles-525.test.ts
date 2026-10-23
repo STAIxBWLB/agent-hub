@@ -18,9 +18,9 @@ test("a Claude channel instance may implement or verify in its own worktree, and
   expect(() => validate({ "claude-x": { kind: "claude", roles: ["conductor"] } })).toThrow("roles within");
 });
 
-test("a headless Claude instance stays a fresh reviewer; a headless implementer is refused until 525-4 (#525 R1)", () => {
+test("a headless Claude reviewer stays fresh; a headless implementer needs its worktree (#525 R1)", () => {
   expect(validate({ "claude-review": { kind: "claude", roles: ["reviewer"], start_mode: "headless" } })["claude-review"]?.start_mode).toBe("headless");
-  expect(() => validate({ "claude-w": { kind: "claude", roles: ["implementer"], start_mode: "headless", worktree: ".worktrees/w" } })).toThrow("headless Claude implementer is not available in this release");
+  expect(() => validate({ "claude-w": { kind: "claude", roles: ["implementer"], start_mode: "headless" } })).toThrow("a headless implementer needs its own worktree");
   expect(() => validate({ "claude-p": { kind: "claude", roles: ["planner"], start_mode: "headless" } })).toThrow("exactly [\"reviewer\"]");
   expect(() => validate({ "claude-rw": { kind: "claude", roles: ["reviewer", "implementer"], start_mode: "headless" } })).toThrow("exactly [\"reviewer\"]");
 });

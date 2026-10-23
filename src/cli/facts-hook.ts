@@ -65,7 +65,7 @@ export async function factsHook(stdin: string, stateDir: string, peer: string, t
     const port = definitionOf(peer)?.hooks?.factsHook;
     const payload: unknown = JSON.parse(stdin);
     if (!port?.decode(nativeEvent, payload)) return undefined;
-    const hub = await ControlClient.connect(stateDir, { role: "tools", peer }, timeoutMs);
+    const hub = await ControlClient.connect(stateDir, { role: "tools", peer, ...(nativeHookIdentity(stateDir, peer).nativeLaunchId ? { launchId: nativeHookIdentity(stateDir, peer).nativeLaunchId } : {}) }, timeoutMs);
     try {
       const reply = await hub.request({ t: "native_facts", event: nativeEvent, payload, ...nativeHookIdentity(stateDir, peer) }, timeoutMs);
       const output = reply.ok ? port.encode(nativeEvent, typeof reply.text === "string" ? reply.text : undefined) : undefined;
@@ -74,7 +74,7 @@ export async function factsHook(stdin: string, stateDir: string, peer: string, t
   }
   const input = JSON.parse(stdin) as { hook_event_name?: unknown; tool_name?: unknown; tool_input?: unknown; tool_use_id?: unknown; session_id?: unknown; transcript_path?: unknown };
   const phase = ({ SessionStart: "session", UserPromptSubmit: "start", PostToolUse: "post", Stop: "stop" } as Record<string, string>)[String(input.hook_event_name)] ?? "pre";
-  const hub = await ControlClient.connect(stateDir, { role: "tools", peer }, timeoutMs);
+  const hub = await ControlClient.connect(stateDir, { role: "tools", peer, ...(nativeHookIdentity(stateDir, peer).nativeLaunchId ? { launchId: nativeHookIdentity(stateDir, peer).nativeLaunchId } : {}) }, timeoutMs);
   try {
     const res = await hub.request({
       t: "facts",

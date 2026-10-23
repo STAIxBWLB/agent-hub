@@ -10,7 +10,7 @@ export function claudePeer(value: string | undefined): string {
 const CLAUDE_PEER = /^claude(?:-[a-z0-9-]+)?$/;
 
 /** Per-peer Claude state file names. The builtin claude peer keeps its original names, so nothing migrates. */
-export function claudeStateFile(base: "claude-launch" | "claude-session" | "claude-context", peer: string): string {
+export function claudeStateFile(base: "claude-launch" | "claude-session" | "claude-context" | "claude-task-sessions", peer: string): string {
   // #624: another kind (agy is a hyphen-free builtin too) must never resolve to Claude's own files.
   if (!CLAUDE_PEER.test(peer) || !PEER.test(peer)) throw new Error(`${peer} is not a Claude peer; Claude state files belong to Claude peers only`);
   return peer.includes("-") ? `${base}.${peer}.json` : `${base}.json`;

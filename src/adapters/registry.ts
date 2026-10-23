@@ -24,7 +24,10 @@ function immutable<T>(value: T, seen = new WeakSet<object>()): T {
 }
 
 const fixedBuiltinDefinitions = new Set<AdapterDefinition>([...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, QWEN_DEFINITION, AGY_DEFINITION, AGY_REVIEWER_VARIANT]);
-for (const definition of [...fixedBuiltinDefinitions]) if (definition.reviewerVariant) fixedBuiltinDefinitions.add(definition.reviewerVariant);
+for (const definition of [...fixedBuiltinDefinitions]) {
+  if (definition.reviewerVariant) fixedBuiltinDefinitions.add(definition.reviewerVariant);
+  if (definition.headlessVariant) fixedBuiltinDefinitions.add(definition.headlessVariant);
+}
 
 /** Keep the native catalog's order, independently of the legacy default-role object order. */
 export const ADAPTERS: readonly AdapterDefinition[] = immutable([
@@ -65,6 +68,7 @@ for (const definition of [...ADAPTERS, ...declarationOnlyDefinitions]) {
   assertDefinitionCoherence(definition);
   assertNativeCapabilityScope(definition);
   if (definition.reviewerVariant) { assertDefinitionCoherence(definition.reviewerVariant); assertNativeCapabilityScope(definition.reviewerVariant); }
+  if (definition.headlessVariant) { assertDefinitionCoherence(definition.headlessVariant); assertNativeCapabilityScope(definition.headlessVariant); }
   if (definition.api !== ADAPTER_API || definitions.has(definition.kind)) throw new Error("invalid builtin adapter registry");
   definitions.set(definition.kind, definition);
 }
@@ -114,7 +118,11 @@ function resolvedDefinition(id: string, kind: string | undefined, instances: Kin
   const reviewerOnly = Array.isArray(roles) && !types.isProxy(roles) && roles.length === 1 && Object.getOwnPropertyDescriptor(roles, "0")?.value === "reviewer";
   const variant = definition?.reviewerVariant;
   const fresh = variant?.reviewer?.declaration === "automatic" || ownField(declaration, "review_mode") === "fresh";
-  return variant && kind !== id && reviewerOnly && ownField(declaration, "start_mode") === "headless" && fresh ? variant : definition;
+  const headless = kind !== id && ownField(declaration, "start_mode") === "headless";
+  if (variant && headless && reviewerOnly && fresh) return variant;
+  const roleValues = Array.isArray(roles) && !types.isProxy(roles) && roles.length <= 4 ? Array.from({ length: roles.length }, (_, index) => Object.getOwnPropertyDescriptor(roles, String(index))?.value) : [];
+  const writerRoles = roleValues.includes("implementer") && roleValues.every(role => role === "implementer" || role === "verifier");
+  return headless && writerRoles && definition?.headlessVariant ? definition.headlessVariant : definition;
 }
 export function familyOf(id: string, instances?: KindMap): string | undefined {
   return definitionOf(id, instances)?.family;
@@ -217,6 +225,7 @@ export function assertDefinitionCoherence(definition: AdapterDefinition): void {
     }
   }
   if (definition.reviewerVariant && !definition.reviewerVariant.reviewer) fail("reviewerVariant.reviewer", "reviewer variant lacks reviewer policy");
+  if (definition.headlessVariant && (definition.headlessVariant.transport !== "hub-native" || !definition.headlessVariant.start.create || definition.headlessVariant.instances?.mode !== "headless")) fail("headlessVariant", "implementer variant requires its headless hub-native factory");
   if (definition.reviewer?.unavailable && (definition.start.create || definition.reviewer.backend)) fail("reviewer", "unavailable reviewer must remain metadata-only");
 }
 
@@ -233,7 +242,10 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
     ["routing", definition.routing !== undefined],
     ["projection", definition.projection !== undefined],
     ["instances.nativeHome", declared(definition.instances, "nativeHome")], // #685: a fixed-builtin assumption, one native data home per declared instance
+    ["identity.currentChild", declared(definition.identity, "currentChild")],
     ["reviewerVariant", definition.reviewerVariant !== undefined],
+    ["headlessVariant", definition.headlessVariant !== undefined],
+    ["start.daemonPort claude-implementer", definition.start.daemonPort === "claude-implementer"],
     ["reviewer", definition.reviewer !== undefined],
     ["hooks.factsHook", declared(definition.hooks, "factsHook")],
     ["cli.entry", declared(definition.cli, "entry")],

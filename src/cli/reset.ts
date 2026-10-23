@@ -11,7 +11,7 @@ import { HUB_DB_BUSY_TIMEOUT_MS } from "../hub/db-timeout.ts";
 /** Agent session resume pointers. `pi-sessions/` holds Pi transcripts, history rather than pointers, and stays. */
 export const SESSION_POINTERS = ["sessions.json", "claude-session.json", "claude-context.json"];
 /** The fixed pointers plus each Claude instance's own session and context files (#450 I3). */
-const sessionPointers = (stateDir: string): string[] => [...SESSION_POINTERS, ...(existsSync(stateDir) ? readdirSync(stateDir).filter(name => /^claude-(session|context)\.[a-z][a-z0-9-]{0,31}\.json$/.test(name)) : [])];
+const sessionPointers = (stateDir: string): string[] => [...SESSION_POINTERS, ...(existsSync(stateDir) ? readdirSync(stateDir).filter(name => /^claude-(session|context|task-sessions)\.[a-z][a-z0-9-]{0,31}\.json$/.test(name)) : [])];
 /** What a running daemon publishes; a daemon that did not stop cleanly (crash, SIGKILL, forced exit) leaves it. */
 export const MANIFEST = ["status.json", "control-token", "hub.pid"];
 

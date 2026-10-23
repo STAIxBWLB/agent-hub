@@ -20,7 +20,8 @@ export function assertAcpLegEnrollment(definitions: readonly AdapterDefinition[]
 }
 export function definitionIdentities(definitions: readonly AdapterDefinition[]): { id: string; definition: AdapterDefinition }[] {
   return definitions.flatMap(definition => [{ id: definition.kind, definition },
-    ...(definition.reviewerVariant ? [{ id: `${definition.kind}:reviewer`, definition: definition.reviewerVariant }] : [])]);
+    ...(definition.reviewerVariant ? [{ id: `${definition.kind}:reviewer`, definition: definition.reviewerVariant }] : []),
+    ...(definition.headlessVariant ? [{ id: `${definition.kind}:implementer`, definition: definition.headlessVariant }] : [])]);
 }
 export function assertEnrollment(definitions: readonly AdapterDefinition[], enrolled: readonly string[], unsupported: Readonly<Record<string, string>>, unsupportedLegs: Readonly<Record<string, string>> = {}, coherence?: (definition: AdapterDefinition) => void): void {
   assertAcpLegEnrollment(definitions, unsupportedLegs);

@@ -60,6 +60,13 @@ export function createReviewer(ctx: CreateContext): PeerAdapter {
   return new ReviewerPrintPeer(ctx.instance, ctx.daemon.reviewerPrint);
 }
 
+export function createClaudeImplementer(ctx: CreateContext): PeerAdapter {
+  if (!("claudeImplementer" in ctx.daemon)) throw new Error("Claude implementer requires its per-task transport options");
+  if (ctx.permission !== "ask" && ctx.permission !== "ask-when-needed") throw new Error("Claude implementer requires ask or ask-when-needed");
+  const { ClaudeImplementerPeer } = require("../claude-implementer.ts") as typeof import("../claude-implementer.ts");
+  return new ClaudeImplementerPeer(ctx.instance, ctx.daemon.claudeImplementer);
+}
+
 /** Preserve existing transport option types and object identity; selection stays host-owned. */
 export const DAEMON_PORTS = {
   "codex-appserver": (options: Extract<DaemonPorts, { codex: unknown }>["codex"]) => ({ codex: options }),
@@ -68,5 +75,6 @@ export const DAEMON_PORTS = {
   "pi-rpc": (options: Extract<DaemonPorts, { pi: unknown }>["pi"]) => ({ pi: options }),
   "local-worker": (options: Extract<DaemonPorts, { local: unknown }>["local"]) => ({ local: options }),
   "reviewer-print": (options: Extract<DaemonPorts, { reviewerPrint: unknown }>["reviewerPrint"]) => ({ reviewerPrint: options }),
+  "claude-implementer": (options: Extract<DaemonPorts, { claudeImplementer: unknown }>["claudeImplementer"]) => ({ claudeImplementer: options }),
   "claude-print": (options: Extract<DaemonPorts, { claudePrint: unknown }>["claudePrint"]) => ({ claudePrint: options }),
 } satisfies Record<DaemonEngine, unknown>;

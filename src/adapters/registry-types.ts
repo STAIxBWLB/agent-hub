@@ -1,3 +1,4 @@
+import type { ClaudeImplementerOptions } from "./claude-implementer.ts";
 import type { ReviewerBackend, ReviewerPrintOptions } from "./reviewer-print.ts";
 import type { SettingDef } from "../hub/settings.ts";
 import type { Addon } from "../hub/tooling.ts";
@@ -20,7 +21,7 @@ import type { BuiltinCliEntry } from "./definitions/native-cli-entry-types.ts";
 import type { NativePreviewBuilder } from "./definitions/native-cli-preview-common.ts";
 
 export type StartForm = "tui" | "headless";
-export type DaemonEngine = "codex-appserver" | "acp" | "owned-acp" | "pi-rpc" | "local-worker" | "claude-print" | "reviewer-print";
+export type DaemonEngine = "codex-appserver" | "acp" | "owned-acp" | "pi-rpc" | "local-worker" | "claude-print" | "reviewer-print" | "claude-implementer";
 
 /** Existing buildLaunch inputs plus the startup-bound instance and project identity. */
 export interface LaunchContext {
@@ -62,7 +63,8 @@ export type DaemonPorts =
   | { pi: PiOptions }
   | { local: LocalOptions }
   | { claudePrint: ClaudePrintOptions }
-  | { reviewerPrint: ReviewerPrintOptions };
+  | { reviewerPrint: ReviewerPrintOptions }
+  | { claudeImplementer: ClaudeImplementerOptions };
 
 export interface CreateContext<Ports extends DaemonPorts = DaemonPorts> {
   instance: string;
@@ -200,7 +202,7 @@ export interface AdapterDefinition {
     ownedFlags: readonly string[];
     conductorStartArgs?(args: string[]): { mode?: StartForm } | Error;
   };
-  identity: { mcp: "acp-session" | "project-file" | "env" | "channel-plugin" };
+  identity: { mcp: "acp-session" | "project-file" | "env" | "channel-plugin"; currentChild?: true };
   /** Declaration admission only; execution-root and runtime owner proof remain host responsibilities. */
   instances?: { mode: "external" | "headless"; roles?: readonly string[];
     /** Each declared instance runs its own native data home (`jcode_home`) and may pass its own provider, model and profile names (#685). Fixed builtins only. */
@@ -300,6 +302,8 @@ export interface AdapterDefinition {
   hooks?: Partial<NativeHooks>;
   /** #223: what a declared headless reviewer-only instance of this kind runs as. Fixed builtins only. */
   reviewerVariant?: AdapterDefinition;
+  /** #525: fixed builtin variant for declared headless implementer instances. */
+  headlessVariant?: AdapterDefinition;
   /** Fixed host backend; runtime isolation proof is required before bus admission. */
   reviewer?: { backend?: ReviewerBackend; defaultPool: boolean; unavailable?: string; declaration: "automatic" | "explicit" };
 }

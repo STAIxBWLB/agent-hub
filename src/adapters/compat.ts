@@ -27,6 +27,10 @@ export interface CompatPolicy {
 
 const plain = (text: string) => text.length <= 64 && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(text) ? text : undefined;
 export const COMPAT = {
+  // Receipt: docs/verification/2026-10-23-headless-claude-permissions.md
+  "claude-implementer": { label: "Claude headless implementer", verified: ["2.1.309"], gate: "contract", probe: ["claude", "--version"],
+    parse: out => plain(out.trim().replace(/ \(Claude Code\)$/, "")),
+    trustNote: "The native prompt-tool allow, deny, MCP error/disconnect and hook-failure fallthrough have an isolated receipt. No dontAsk/bypass fallback exists; another version's permission behavior is unverified." },
   // 0.163.0 receipt: docs/verification/2026-10-22-codex-reviewer-isolation.md
   "codex-review": { label: "Codex reviewer (codex-cli)", verified: ["0.146.0", "0.163.0"], gate: "isolation", probe: ["codex", "--version"], config: "codex_bin",
     parse: out => plain(out.trim().replace(/^codex-cli /, "")),

@@ -2,7 +2,7 @@
 
 `bun test test/conformance` runs actual adapter implementations against synthetic local transports. It requires no provider account and proves no live native client compatibility. The shared runner in `kit.ts` accepts an adapter fixture and checks delivery occupancy, a real transport round trip, safe recovery metadata and observed teardown. Native-specific assertions live beside it.
 
-- Enrollment follows `ADAPTERS`, not a second registration loop. `enrollment.ts` checks every builtin and its separately named `:reviewer` variant, with concrete unsupported reasons rather than silent skips. Missing fixtures, stale enrollment, a removed agy reason and an unenrolled test kind fail the guard.
+- Enrollment follows `ADAPTERS`, not a second registration loop. `enrollment.ts` checks every builtin and its separately named `:reviewer` and `:implementer` variants, with concrete unsupported reasons rather than silent skips. Missing fixtures, stale enrollment, a removed agy reason and an unenrolled test kind fail the guard.
 - Claude, Codex, Kimi, Pi, local, Qwen and Jcode run the shared contract. Driven peers are created through the selected definition's `start.create` and its exact daemon transport port. Claude's authenticated channel is the host-owned external-hello exception: the real daemon constructs it; the kit invents no headless factory.
 - Every ACP definition participates. Kimi and Qwen use the generic ACP engine; Jcode uses its owned daemon plus ACP engine. Native permission/mode/quota legs without a verified protocol have explicit `UNSUPPORTED_LEGS` reasons, with actual Jcode unmanaged-mode refusal checked on the running factory-created peer. Kimi's native TUI is separately exercised as a pull-only external channel.
 - ACP fixtures use the existing fake stdio agent; Jcode uses its fake private daemon plus ACP client, Codex uses its fake app-server and TUI proxy, Pi uses its fake RPC owner and authenticated extension bridge, local uses its fake HTTP gateway, Claude uses an authenticated channel against the real daemon.
@@ -30,3 +30,5 @@ The reusable kit ships as `@staix/agent-hub/conformance` for Bun-based external 
 Synthetic transport proof does not certify an installed native version, isolation, reviewer authority, credentials or production readiness. External modules need separate pinned-native evidence for those claims.
 
 The packaged implementation lives under the adapter layer at `src/adapters/conformance/`; its public import remains `@staix/agent-hub/conformance`.
+
+Headless Claude implementers have a distinct enrollment identity. Their dedicated tests exercise per-task sessions, current-child authority, prompt-tool approvals, private-envelope refusal and owned group cleanup; generic text-prompt legs do not certify these boundaries.
