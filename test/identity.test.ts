@@ -61,6 +61,10 @@ test("the roster and its settings remain human-only for an agent identity (#315)
   for (const args of [["set", "roster.kimi", "true"], ["set", "roster.kimi", "false", "--yes"]]) expect(classifyPeerCommand("settings", args)).toBe("console");
 });
 
+test("structural config edits and their backups are human-only for an agent identity (#689)", () => {
+  for (const args of [["edit", "config.local.json", "set", "review.pool", "[]"], ["edit", "sdlc.toml", "set", "mode", "\"off\"", "--yes"], ["edit", "config.local.json", "set", "instances.jcode-two.model", "\"m\"", "--as-user"], ["backups"], ["backups", "--json"]]) expect(classifyPeerCommand("settings", args)).toBe("console");
+});
+
 
 test("memory dedupe listing and apply are console-only and audit-labeled without note text (#380)", () => {
   for (const args of [["dedupe"], ["dedupe", "--json"], ["dedupe", "--apply"], ["dedupe", "--apply", "--as-user"]]) {
