@@ -73,7 +73,7 @@ import { kimiRowTotal } from "../adapters/kimi-wire-usage.ts";
 import { ExecutionBudget } from "./execution-budget.ts";
 import { claudeReportedTokens, readClaudeTranscriptCompletion, readClaudeTranscriptUsage, waitForClaudeCompletion } from "./usage.ts";
 import type { ServerWebSocket } from "bun";
-import { isAcpPeer, type AcpPeer, QwenIdentityError, type PermissionRequest } from "../adapters/acp.ts";
+import { isAcpPeer, type AcpPeer, QwenIdentityError, ACTION_BUDGET_OPTION, type PermissionRequest, type ActionGateVerdict } from "../adapters/acp.ts";
 import { isCodexPeer, type CodexPeer } from "../adapters/codex-appserver.ts";
 import { isPiPeer, type PiPeer } from "../adapters/pi.ts";
 import { startModelRelay, type ModelRelay } from "../models/relay.ts";
@@ -1803,7 +1803,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (isWsPeer(p) && p.claiming) return undefined;
     if (definitionOf(peer)?.transport === "claude-channel") { const c = claudeSession(peer); return c.sessionId ? `${c.sessionId}:${c.launchId ?? ""}` : undefined; }
     if (isCodexPeer(p)) return p.thread || undefined;
-    if (isAcpPeer(p) || isPiPeer(p)) { const id = p.recoveryMetadata().sessionId; return typeof id === "string" ? id : undefined; }
+    if (isAcpPeer(p) || isPiPeer(p) || isLocalPeer(p)) { const id = p.recoveryMetadata().sessionId; return typeof id === "string" ? id : undefined; }
     return undefined;
   };
   const activityRings: Record<string, ActivityRing> = Object.fromEntries(SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.capabilities?.watch).map(peer => [peer, new ActivityRing()]));
@@ -2751,11 +2751,15 @@ export async function startDaemon(opts: DaemonOptions) {
       return { enforced: true };
     }
     const owner = bus.peers.get(peer);
+    if (definitionOf(peer)?.start.daemonPort === "claude-implementer") return owner?.ownedTools && owner.state !== "offline" ? { enforced: true } : { enforced: false, reason: "the managed Claude implementer is offline" };
+    if (isCodexPeer(owner)) return { enforced: false, reason: owner.actionGated ? "Codex approval RPCs are gated, but native policy can execute without sending one (never-ask sends approvalPolicy never)" : "this Codex proxy has no hub approval gate" };
+    if (isLocalPeer(owner)) return owner.state !== "offline" ? { enforced: true } : { enforced: false, reason: "the local worker is offline" };
+    if (isPiPeer(owner)) return owner.acceptingTools ? { enforced: true } : { enforced: false, reason: "Pi has no verified live tool bridge" };
     if (isAcpPeer(owner) && owner.actionGated) {
       const mode = owner.permissionModeState;
       return mode === "ask" ? { enforced: true } : { enforced: false, reason: mode === "unknown" || mode === "unmanaged" ? "its native approval mode is not managed by the hub, so a request may never be sent" : `its native mode ${mode} sends no request for a call it allows` };
     }
-    return { enforced: false };
+    return { enforced: false, reason: "this adapter has no hub pre-tool approval path" };
   };
   const permissionMode = (peer: string): PermissionMode => permissionModes.get(peer) ?? "ask";
   const permissionModeSources = new Map(Object.entries(defaultSources).map(([peer, value]) => [peer, value.source]));
@@ -3607,6 +3611,27 @@ export async function startDaemon(opts: DaemonOptions) {
     const result = await requestPermission(req, signal);
     return result.outcome === "answered" ? result.optionId : undefined;
   }
+  /** The managed local/Pi execution boundary: a classed call asks before any native mode or tool-wide grant. */
+  async function classedToolPermission(peer: string, root: string, tool: string | undefined, input: unknown, signal: AbortSignal | undefined, current: () => boolean, observe?: ApprovalObserver): Promise<ToolApproval | undefined> {
+    if (!tool || input === undefined) return undefined;
+    if (stopping || signal?.aborted || !current()) return "aborted";
+    // runTool executes in this host root and ignores model-supplied cwd/workdir fields.
+    const effective = input && typeof input === "object" && !Array.isArray(input) ? { ...input, cwd: root, workdir: root } : input;
+    let gate: ActionGateVerdict | undefined;
+    try { gate = acpActionGate(peer)({ names: [tool], input: effective }, contextSession(peer) ?? ""); }
+    catch { gate = { title: "Action approval: the always-ask check failed; command withheld" }; }
+    if (!gate) return undefined;
+    const options: PermissionRequest["options"] = [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }];
+    if (gate.budget) options.push({ optionId: ACTION_BUDGET_OPTION, name: `Allow ${gate.budget.label} for this session`, kind: "allow_once" });
+    const picked = await requestPermission({ peer, title: gate.title, tool, classed: true, options }, signal, observe);
+    if (picked.outcome === "expired") return "expired";
+    if (stopping || signal?.aborted || !current()) return "aborted";
+    if (picked.outcome !== "answered") return false;
+    if (picked.optionId === ACTION_BUDGET_OPTION) {
+      try { return gate.budget?.approve() === true; } catch { return false; }
+    }
+    return picked.optionId === "allow";
+  }
   async function requestPermission(req: PermissionRequest, signal?: AbortSignal, observe?: ApprovalObserver): Promise<PermissionResult> {
     const requestEpoch = permissionAnswerEpoch(req.peer);
     const observed = (source: "person" | "automatic" | "expired" | "aborted") => {
@@ -4098,9 +4123,11 @@ export async function startDaemon(opts: DaemonOptions) {
     if (adapter?.start.daemonPort === "codex-appserver") {
       if (args.unattended && permissionMode(peer) !== "ask") return { ok: false, error: "Codex --unattended cannot take a non-ask mode; run ahub permission codex ask first, or restart without --unattended" };
       let codexSteering = false;
+      actionBudgets.revoke(peer);
       const codex: CodexPeer = adapter!.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["codex-appserver"]({
         admitAttach: () => membershipAllowed(peer),
         permissionMode: permissionMode(peer),
+        actionGate: acpActionGate(peer), onPermission,
         onTokens: (added) => void addTokens(peer, added),
         // #683 U1: the same update split into Codex's own kinds, next to the unchanged `tokens` event. One record per update:
         // the id names the hub run, peer and a per-run sequence, so it is unique across restarts. It never carries the native thread: usage telemetry has no session id (docs/events.md).
@@ -4199,7 +4226,11 @@ export async function startDaemon(opts: DaemonOptions) {
       let piReply: Envelope | undefined;
       // Tools the person allowed "always" for this Pi start; a new start gets a new set (#209).
       const piAlways = new Set<string>();
-      const piPermit = async (title: string, tool: string, signal?: AbortSignal, path?: string, valid: () => boolean = () => true, observe?: ApprovalObserver, originalPath?: string): Promise<ToolApproval> => {
+      actionBudgets.revoke(peer);
+      const piPermit = async (title: string, tool: string, signal?: AbortSignal, path?: string, valid: () => boolean = () => true, observe?: ApprovalObserver, originalPath?: string, input?: unknown): Promise<ToolApproval> => {
+        if (stopping || signal?.aborted || !valid() || !pi.acceptingTools || bus.peers.get(peer) !== pi) return "aborted";
+        const classed = await classedToolPermission(peer, executionCwd, tool, input, signal, () => valid() && pi.acceptingTools && bus.peers.get(peer) === pi, observe);
+        if (classed !== undefined) return classed;
         if (stopping || signal?.aborted || !valid() || !pi.acceptingTools || bus.peers.get(peer) !== pi) return "aborted";
         const selected = permissionMode(peer);
         if (selected === "never-ask" || (selected === "ask-when-needed" && PI_EDIT_TOOLS.has(tool) && !!path && grantablePath(realPath(executionCwd), path, originalPath, config.protect_instruction_files))) {
@@ -4249,8 +4280,8 @@ export async function startDaemon(opts: DaemonOptions) {
             const nativeTurn = pi.observationTurn;
             const output = TASK_TOOL_NAMES.has(name) || CONDUCTOR_TOOL_NAMES.has(name) ? await taskOp(peer, name, raw as Record<string, unknown>, true) : await runTool(name, JSON.stringify(raw), { ...ctx, signal,
               ...(humanBash ? { onProcessExit: (code: number | null) => { exitCode = code; } } : {}),
-              permit: async (title, tool, toolSignal, path, _observe, originalPath) => {
-                const picked = humanBash ? (toolSignal?.aborted || context?.isCurrent() !== true ? "aborted" : true) : await piPermit(title, tool ?? name, toolSignal, path, context?.isCurrent, context?.onApproval, originalPath);
+              permit: async (title, tool, toolSignal, path, _observe, originalPath, input) => {
+                const picked = humanBash ? (toolSignal?.aborted || context?.isCurrent() !== true ? "aborted" : true) : await piPermit(title, tool ?? name, toolSignal, path, context?.isCurrent, context?.onApproval, originalPath, input);
                 return picked; // never turn a nonempty expiry/abort string into authorization
               },
             });
@@ -4362,7 +4393,11 @@ export async function startDaemon(opts: DaemonOptions) {
       const capture = config.memory.enabled
         ? new Capture(memory, { project: chain.at(-1)!, cwd: executionCwd, skip: skipTools(), deny: config.local.deny })
         : undefined;
-      const permit = async (title: string, tool?: string, signal?: AbortSignal, path?: string, observe?: ApprovalObserver, originalPath?: string): Promise<ToolApproval> => {
+      actionBudgets.revoke(peer);
+      const permit = async (title: string, tool?: string, signal?: AbortSignal, path?: string, observe?: ApprovalObserver, originalPath?: string, input?: unknown): Promise<ToolApproval> => {
+        if (stopping || signal?.aborted || bus.peers.get(peer) !== local) return "aborted";
+        const classed = await classedToolPermission(peer, executionCwd, tool, input, signal, () => bus.peers.get(peer) === local, observe);
+        if (classed !== undefined) return classed;
         if (stopping || signal?.aborted || bus.peers.get(peer) !== local) return "aborted";
         const selected = permissionMode(peer);
         if (selected === "never-ask" || (selected === "ask-when-needed" && !!tool && PI_EDIT_TOOLS.has(tool) && !!path && grantablePath(realPath(executionCwd), path, originalPath, config.protect_instruction_files))) {

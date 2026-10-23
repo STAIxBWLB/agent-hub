@@ -2534,714 +2534,6 @@ var nonnegative = (n) => typeof n === "number" && Number.isFinite(n) && n >= 0, 
 // src/hub/context-window.ts
 var init_context_window = () => {};
 
-// src/adapters/codex-appserver.ts
-import { spawn as spawn5 } from "child_process";
-function parse(raw) {
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return;
-  }
-}
-var UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery", counter = (value) => {
-  const n = Number(value);
-  return Number.isFinite(n) && n >= 0 ? n : 0;
-}, TRACKED, CodexPeer;
-var init_codex_appserver = __esm(() => {
-  init_envelope();
-  init_context_window();
-  init_child_process();
-  TRACKED = new Set(["thread/start", "thread/resume"]);
-  CodexPeer = class CodexPeer extends BasePeer {
-    opts;
-    permissionMode;
-    nativeApprovalPolicies = new Map;
-    overriddenApprovals = new Set;
-    restoringApprovals = new Map;
-    proc;
-    server;
-    link;
-    claimedTui;
-    threadId = "";
-    contextEpoch = 0;
-    get sessionGeneration() {
-      return this.contextEpoch;
-    }
-    tokenTotal;
-    tokenKinds;
-    freshThread = false;
-    activeTurns = new Set;
-    deliveryEpoch = 0;
-    retiredTurns = new Set;
-    unidentifiedCancellation = false;
-    get statusNotice() {
-      return this.unidentifiedCancellation ? { code: "unidentified-cancellation", message: UNIDENTIFIED_CANCELLATION_NOTICE } : undefined;
-    }
-    unboundAccepted = false;
-    nextId = -1;
-    pending = new Map;
-    usageTimer;
-    injected;
-    answering = [];
-    lastAnswer = "";
-    deltas = new Map;
-    primed = false;
-    version;
-    steers = new Set;
-    turnDeliveries = new Map;
-    unboundDeliveries = new Set;
-    constructor(id, opts) {
-      super(id, opts.watchdogMs);
-      this.opts = opts;
-      this.permissionMode = opts.permissionMode ?? "ask";
-    }
-    recoveryMetadata() {
-      return {
-        launch: { kind: "codex", bin: this.opts.bin ?? "codex", cwd: this.opts.cwd, appPort: this.opts.appPort, proxyPort: this.opts.proxyPort },
-        ...this.threadId ? { threadId: this.threadId } : {}
-      };
-    }
-    get thread() {
-      return this.threadId;
-    }
-    get proxyUrl() {
-      return `ws://127.0.0.1:${this.server?.port ?? this.opts.proxyPort}`;
-    }
-    terminalOwner(launchId) {
-      const link = this.link;
-      return this.threadId && link && link === this.claimedTui && link.launchId === launchId && link.tui.readyState === WebSocket.OPEN && link.up.readyState === WebSocket.OPEN ? { generation: String(this.sessionGeneration) } : undefined;
-    }
-    async start() {
-      const upstream = this.opts.upstreamUrl ?? await this.spawnAppServer();
-      try {
-        this.server = Bun.serve({
-          hostname: "127.0.0.1",
-          port: this.opts.proxyPort,
-          fetch: (req, server) => {
-            if (req.headers.has("origin"))
-              return new Response("forbidden", { status: 403 });
-            const launchId = /^Bearer (\S+)$/.exec(req.headers.get("authorization") ?? "")?.[1];
-            if (server.upgrade(req, { data: { ...launchId && launchId.length <= 128 ? { launchId } : {} } }))
-              return;
-            return new Response("agent-hub codex proxy");
-          },
-          websocket: {
-            open: (tui) => {
-              if (this.opts.admitAttach?.() === false) {
-                tui.close(4000, "codex is off roster; retry when a person adds it");
-                return;
-              }
-              if (this.claimedTui) {
-                tui.close(1013, "codex TUI already attached to this hub");
-                return;
-              }
-              this.attach(tui, upstream);
-            },
-            message: (tui, data) => {
-              if (this.opts.admitAttach?.() === false) {
-                tui.close(4000, "codex is off roster");
-                return;
-              }
-              if (tui.data?.up)
-                this.fromTui(tui.data, String(data));
-            },
-            close: (tui) => {
-              if (tui.data?.up)
-                this.detach(tui.data);
-            }
-          }
-        });
-      } catch (error) {
-        const proc = this.proc;
-        if (proc && await this.stopQuietly(proc) && this.proc === proc)
-          this.proc = undefined;
-        throw error;
-      }
-    }
-    stopQuietly(proc) {
-      return stopOwnedProcess(proc, { group: true }).then(() => true, (error) => {
-        this.opts.log?.(`[${this.id}] ${error.message}`);
-        return false;
-      });
-    }
-    async stop() {
-      this.server?.stop(true);
-      this.claimedTui?.tui.close(1001, "hub shutting down");
-      const proc = this.proc;
-      if (proc) {
-        await stopOwnedProcess(proc, { group: true });
-        if (this.proc === proc)
-          this.proc = undefined;
-      }
-      this.setState("offline");
-    }
-    deliver(envs, deliveryId) {
-      const link = this.link;
-      if (this.state !== "idle" || !link || link.up.readyState !== WebSocket.OPEN) {
-        if (deliveryId)
-          this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is not injectable` });
-        return Promise.reject(new Error(`${this.id} is not injectable`));
-      }
-      const text = this.render(envs);
-      const id = this.nextId--, epoch = this.deliveryEpoch, session = this.contextEpoch;
-      this.setState("busy");
-      return new Promise((resolve, reject) => {
-        let invalidated = false;
-        const retiredAtCancel = new Set;
-        const invalidate = (reason) => {
-          if (invalidated)
-            return;
-          invalidated = true;
-          for (const turn of [...this.activeTurns, ...this.turnDeliveries.keys()])
-            if (!turn.startsWith("unknown:"))
-              retiredAtCancel.add(turn);
-          envs = [];
-          if (deliveryId)
-            this.delivery({ id: deliveryId, state: "needs_review", reason });
-          reject(new Error(reason));
-        };
-        this.pending.set(id, {
-          deliveryId,
-          kind: "deliver",
-          invalidate,
-          resolve: (result) => {
-            const nativeTurn = typeof result?.turn?.id === "string" ? result.turn.id : undefined;
-            if (invalidated || epoch !== this.deliveryEpoch || session !== this.contextEpoch || link !== this.link) {
-              invalidate("Codex turn acceptance arrived after its delivery was invalidated");
-              if (nativeTurn && session === this.contextEpoch && link === this.link && (!retiredAtCancel.has(nativeTurn) || this.retiredTurns.has(nativeTurn)))
-                this.retireTurn(nativeTurn);
-              return;
-            }
-            this.primed = true;
-            this.injected = replyParent(envs);
-            this.answering = [...envs];
-            if (nativeTurn && !this.turnDeliveries.has(nativeTurn))
-              this.turnDeliveries.set(nativeTurn, new Set);
-            if (!nativeTurn && !this.activeTurns.size)
-              this.unboundAccepted = true;
-            if (deliveryId) {
-              if (nativeTurn)
-                this.addTurnDelivery(nativeTurn, deliveryId);
-              else
-                this.unboundDeliveries.add(deliveryId);
-              this.delivery({ id: deliveryId, state: "accepted" });
-            }
-            resolve();
-          },
-          reject: (e) => {
-            this.restoringApprovals.delete(id);
-            if (invalidated)
-              return;
-            if (epoch !== this.deliveryEpoch || session !== this.contextEpoch || link !== this.link) {
-              invalidate("Codex turn refusal arrived after its delivery was invalidated");
-              return;
-            }
-            if (!this.activeTurns.size)
-              this.setState("idle");
-            if (deliveryId)
-              this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message });
-            reject(e);
-          }
-        });
-        link.up.send(JSON.stringify({ method: "turn/start", id, params: this.applyPermissionPolicy({ threadId: this.threadId, input: [{ type: "text", text }] }, id) }));
-      });
-    }
-    render(envs) {
-      return this.primed || !this.opts.preamble ? renderDigest(envs, this.primed) : `${this.opts.preamble}
-
-${renderDigest(envs, false)}`;
-    }
-    steer(envs, deliveryId) {
-      const link = this.link;
-      const expectedTurnId = [...this.activeTurns].reverse().find((t) => !t.startsWith("unknown:"));
-      if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId) {
-        if (deliveryId)
-          this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} has no steerable turn` });
-        return Promise.reject(new Error(`${this.id} has no steerable turn`));
-      }
-      const id = this.nextId--;
-      const expectedEpoch = this.contextEpoch;
-      this.steers.add(id);
-      return new Promise((resolve, reject) => {
-        let timer;
-        const settle = () => {
-          clearTimeout(timer);
-          this.steers.delete(id);
-        };
-        const fail = (e) => {
-          settle();
-          if (deliveryId)
-            this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message });
-          reject(e);
-        };
-        this.pending.set(id, {
-          deliveryId,
-          kind: "steer",
-          expectedTurnId,
-          afterTurn: deliveryId ? () => {
-            if (timer !== undefined)
-              return;
-            timer = setTimeout(() => {
-              const pending = this.pending.get(id);
-              this.pending.delete(id);
-              pending?.reject(new Error("steer unanswered: RPC timeout"));
-            }, this.opts.steerTimeoutMs ?? 1e4);
-            timer.unref?.();
-          } : undefined,
-          resolve: (result) => {
-            if (deliveryId && (this.link !== link || this.contextEpoch !== expectedEpoch || !this.activeTurns.has(expectedTurnId) || typeof result?.turnId === "string" && result.turnId !== expectedTurnId)) {
-              fail(new Error("steer accepted after its original native turn ended or changed"));
-              return;
-            }
-            settle();
-            this.primed = true;
-            this.injected = replyParent(this.injected ? [this.injected, ...envs] : envs);
-            this.answering.push(...envs);
-            if (deliveryId) {
-              this.addTurnDelivery(expectedTurnId, deliveryId);
-              this.delivery({ id: deliveryId, state: "accepted" });
-            }
-            resolve();
-          },
-          reject: fail
-        });
-        const input = [{ type: "text", text: this.render(envs) }];
-        link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input } }));
-      });
-    }
-    steerText(text) {
-      const link = this.link;
-      const expectedTurnId = [...this.activeTurns].reverse().find((t) => !t.startsWith("unknown:"));
-      if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId)
-        return Promise.resolve("refused");
-      const id = this.nextId--;
-      return new Promise((resolve) => {
-        const timer = setTimeout(() => this.pending.delete(id) && resolve("unanswered"), this.opts.steerTimeoutMs ?? 1e4);
-        timer.unref?.();
-        this.pending.set(id, { resolve: () => (clearTimeout(timer), resolve("accepted")), reject: () => (clearTimeout(timer), resolve("refused")) });
-        link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input: [{ type: "text", text }] } }));
-      });
-    }
-    onWatchdog() {
-      this.deliveryEpoch++;
-      const known = new Set([...this.activeTurns, ...this.turnDeliveries.keys()].filter((id) => !id.startsWith("unknown:")));
-      const pendingStarts = [...this.pending.values()].filter((pending) => pending.kind === "deliver");
-      if ([...this.activeTurns].some((id) => id.startsWith("unknown:")) || (this.unboundDeliveries.size || this.unboundAccepted || pendingStarts.length) && !known.size) {
-        this.unidentifiedCancellation = true;
-        this.opts.log?.(UNIDENTIFIED_CANCELLATION_NOTICE);
-      }
-      for (const turnId of known)
-        this.retireTurn(turnId);
-      for (const pending of pendingStarts)
-        pending.invalidate?.("Codex turn watchdog timeout before native acceptance was confirmed");
-      this.activeTurns.clear();
-      this.unboundAccepted = false;
-      for (const ids of this.turnDeliveries.values())
-        for (const id of ids)
-          this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout" });
-      for (const id of this.unboundDeliveries)
-        this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout" });
-      this.turnDeliveries.clear();
-      this.unboundDeliveries.clear();
-      this.injected = undefined;
-      this.answering = [];
-      this.lastAnswer = "";
-      this.deltas.clear();
-      this.abandonSteers("turn went silent");
-      if (this.unidentifiedCancellation)
-        this.setState("offline");
-      else
-        super.onWatchdog();
-    }
-    retireTurn(turnId) {
-      this.retiredTurns.add(turnId);
-      if (this.link?.up.readyState === WebSocket.OPEN)
-        this.link.up.send(JSON.stringify({ method: "turn/interrupt", id: this.nextId--, params: { threadId: this.threadId, turnId } }));
-    }
-    abandonSteers(reason) {
-      for (const id of this.steers) {
-        const p = this.pending.get(id);
-        this.pending.delete(id);
-        p?.reject(new Error(`steer unanswered: ${reason}`));
-      }
-    }
-    endSteers(turnId) {
-      for (const id of this.steers) {
-        const pending = this.pending.get(id);
-        if (!pending || pending.expectedTurnId !== turnId)
-          continue;
-        if (pending.deliveryId)
-          pending.afterTurn?.();
-        else {
-          this.pending.delete(id);
-          pending.reject(new Error("steer unanswered: turn completed"));
-        }
-      }
-    }
-    addTurnDelivery(turnId, deliveryId) {
-      const ids = this.turnDeliveries.get(turnId) ?? new Set;
-      ids.add(deliveryId);
-      this.turnDeliveries.set(turnId, ids);
-      this.unboundDeliveries.delete(deliveryId);
-    }
-    knownRejection(error) {
-      return /turn in progress|no active turn|not injectable|rejected|usage limit/i.test(error.message);
-    }
-    async spawnAppServer() {
-      const port = this.opts.appPort;
-      const probe = () => fetch(`http://127.0.0.1:${port}/healthz`).then((r) => r.ok, () => false);
-      if (await probe()) {
-        throw new Error(`port ${port} already answers /healthz: an app-server the hub does not own is running (orphan from a crashed hub?)`);
-      }
-      let gone = "";
-      const env = peerChildEnv(this.id, { ...process.env, ...this.opts.env ?? {} });
-      this.proc = spawn5(this.opts.bin ?? "codex", ["app-server", "--listen", `ws://127.0.0.1:${port}`, ...this.opts.extraArgs ?? []], {
-        cwd: this.opts.cwd,
-        env,
-        stdio: ["ignore", "ignore", "pipe"],
-        detached: true
-      });
-      trackGroup(this.proc);
-      this.proc.stderr?.on("data", (d) => this.opts.log?.(`[${this.id}] ${String(d).trimEnd()}`));
-      this.proc.on("error", (e) => gone = `cannot run ${this.opts.bin ?? "codex"}: ${e.message}`);
-      this.proc.on("exit", (code) => {
-        gone ||= `codex app-server exited with code ${code}`;
-        this.opts.log?.(`[${this.id}] ${gone}`);
-        this.setState("offline");
-      });
-      for (let i = 0;i < 100 && !gone; i++) {
-        if (await probe())
-          return `ws://127.0.0.1:${port}`;
-        await Bun.sleep(100);
-      }
-      if (gone)
-        throw new Error(gone);
-      const proc = this.proc;
-      if (proc && await this.stopQuietly(proc) && this.proc === proc)
-        this.proc = undefined;
-      throw new Error("codex app-server did not become healthy within 10 s");
-    }
-    attach(tui, upstream) {
-      const up = new WebSocket(upstream);
-      const link = { tui, up, backlog: [], tracked: new Map, ...tui.data.launchId ? { launchId: tui.data.launchId } : {} };
-      this.claimedTui = link;
-      tui.data = link;
-      up.onopen = () => {
-        for (const frame of link.backlog.splice(0))
-          up.send(frame);
-      };
-      up.onmessage = (ev) => this.fromAppServer(link, String(ev.data));
-      up.onclose = () => tui.close();
-    }
-    detach(link) {
-      link.up.close();
-      if (this.claimedTui === link)
-        this.claimedTui = undefined;
-      if (this.link !== link)
-        return;
-      clearInterval(this.usageTimer);
-      this.link = undefined;
-      this.restoringApprovals.clear();
-      this.threadId = "";
-      this.contextEpoch++;
-      this.deliveryEpoch++;
-      this.retiredTurns.clear();
-      this.unidentifiedCancellation = false;
-      this.activeTurns.clear();
-      this.unboundAccepted = false;
-      for (const p of this.pending.values()) {
-        if (p.kind === "deliver")
-          p.invalidate?.("Codex TUI detached");
-        else
-          p.reject(new Error(p.kind === "steer" ? "Codex TUI detached" : "codex TUI detached"));
-      }
-      this.pending.clear();
-      for (const ids of this.turnDeliveries.values())
-        for (const id of ids)
-          this.delivery({ id, state: "needs_review", reason: "Codex TUI detached" });
-      for (const id of this.unboundDeliveries)
-        this.delivery({ id, state: "needs_review", reason: "Codex TUI detached" });
-      this.turnDeliveries.clear();
-      this.unboundDeliveries.clear();
-      this.forgetTurn();
-      this.setState("offline");
-    }
-    detachForRoster(mode = "ask") {
-      this.permissionMode = mode;
-      const link = this.claimedTui;
-      if (!link)
-        return;
-      link.tui.close(4000, "codex is off roster; retry when a person adds it");
-      this.detach(link);
-    }
-    forgetTurn() {
-      this.injected = undefined;
-      this.answering = [];
-      this.lastAnswer = "";
-    }
-    get proxyAttached() {
-      return !!this.link && this.link.up.readyState === WebSocket.OPEN;
-    }
-    getPermissionMode() {
-      return this.permissionMode;
-    }
-    get permissionModeState() {
-      return this.getPermissionMode();
-    }
-    setStartupPermissionMode(mode) {
-      if (this.link || this.state !== "offline" || this.overriddenApprovals.size)
-        throw new Error("codex startup mode reconciliation requires a fresh unattached proxy");
-      this.permissionMode = mode;
-    }
-    clearPermissionMode() {
-      const restorable = [...this.overriddenApprovals].every((thread) => this.nativeApprovalPolicies.has(thread));
-      this.permissionMode = "ask";
-      return restorable;
-    }
-    async setPermissionMode(mode) {
-      if (!this.link || this.link.up.readyState !== WebSocket.OPEN)
-        throw new Error("codex permission mode unavailable: attach the TUI through ahub codex first");
-      if (mode === "ask" && [...this.overriddenApprovals].some((thread) => !this.nativeApprovalPolicies.has(thread)))
-        throw new Error("codex cannot restore ask: native approval policy unavailable; close the TUI, then run ahub permission codex ask before you restart the Codex session with ahub codex");
-      this.permissionMode = mode;
-    }
-    applyPermissionPolicy(params, id) {
-      const thread = typeof params.threadId === "string" ? params.threadId : this.threadId;
-      if (this.permissionMode !== "ask") {
-        this.overriddenApprovals.add(thread);
-        return { ...params, approvalPolicy: this.permissionMode === "never-ask" ? "never" : "on-request" };
-      }
-      if (this.overriddenApprovals.has(thread) && this.nativeApprovalPolicies.has(thread)) {
-        this.restoringApprovals.set(id, thread);
-        return { ...params, approvalPolicy: this.nativeApprovalPolicies.get(thread) };
-      }
-      return params;
-    }
-    settlePermissionRestore(id, failed) {
-      const thread = this.restoringApprovals.get(id);
-      this.restoringApprovals.delete(id);
-      if (thread !== undefined && !failed && this.permissionMode === "ask")
-        this.overriddenApprovals.delete(thread);
-    }
-    fromTui(link, raw) {
-      const msg = parse(raw);
-      if (msg?.method === "turn/start" && msg.params && link === this.link) {
-        const thread = typeof msg.params.threadId === "string" ? msg.params.threadId : this.threadId;
-        const restoring = this.overriddenApprovals.has(thread) && this.nativeApprovalPolicies.has(thread);
-        if (msg.params.approvalPolicy != null && !restoring)
-          this.nativeApprovalPolicies.set(thread, msg.params.approvalPolicy);
-        if (this.permissionMode !== "ask" || this.overriddenApprovals.has(thread)) {
-          msg.params = this.applyPermissionPolicy(msg.params, msg.id);
-          raw = JSON.stringify(msg);
-        }
-      }
-      if (msg?.id !== undefined && TRACKED.has(msg.method))
-        link.tracked.set(msg.id, msg.method);
-      if (link.up.readyState === WebSocket.OPEN)
-        link.up.send(raw);
-      else
-        link.backlog.push(raw);
-    }
-    fromAppServer(link, raw) {
-      const msg = parse(raw);
-      const nativeId = msg?.params?.turnId ?? msg?.params?.turn?.id ?? msg?.result?.turn?.id;
-      if (this.state === "busy" && !(typeof nativeId === "string" && this.retiredTurns.has(nativeId)))
-        this.touch();
-      if (!msg)
-        return void link.tui.send(raw);
-      if (msg.id !== undefined && !msg.method)
-        this.settlePermissionRestore(msg.id, !!msg.error);
-      if (typeof msg.id === "number" && msg.id < 0 && !msg.method) {
-        const p = this.pending.get(msg.id);
-        this.pending.delete(msg.id);
-        if (msg.error)
-          p?.reject(new Error(msg.error.message ?? "app-server rejected the request"));
-        else
-          p?.resolve(msg.result);
-        return;
-      }
-      if (typeof msg.result?.userAgent === "string")
-        this.version = /^[^/\s]+\/(\d+\.\d+\.\d+(?:-[\w.]+)?)/.exec(msg.result.userAgent)?.[1] ?? this.version;
-      const tracked = msg.id !== undefined && !msg.method ? link.tracked.get(msg.id) : undefined;
-      if (tracked && link.tracked.delete(msg.id)) {
-        if (typeof msg.result?.thread?.id === "string") {
-          const thread = msg.result.thread.id;
-          if (!this.overriddenApprovals.has(thread) && msg.result.approvalPolicy != null)
-            this.nativeApprovalPolicies.set(thread, msg.result.approvalPolicy);
-          this.adopt(link, msg.result.thread.id, tracked === "thread/start");
-        }
-      } else if (msg.method)
-        this.onNotification(link, msg.method, msg.params ?? {});
-      link.tui.send(raw);
-    }
-    adopt(link, threadId, fresh = false) {
-      if (typeof threadId !== "string" || !threadId || link !== this.claimedTui || link.tui.readyState !== WebSocket.OPEN || link.up.readyState !== WebSocket.OPEN)
-        return;
-      this.abandonSteers("thread changed");
-      for (const [id, pending] of this.pending)
-        if (pending.kind === "deliver") {
-          pending.invalidate?.("Codex native thread changed before acceptance was confirmed");
-          this.pending.delete(id);
-        }
-      for (const ids of this.turnDeliveries.values())
-        for (const id of ids)
-          this.delivery({ id, state: "needs_review", reason: "Codex native thread changed" });
-      for (const id of this.unboundDeliveries)
-        this.delivery({ id, state: "needs_review", reason: "Codex native thread changed" });
-      this.turnDeliveries.clear();
-      this.unboundDeliveries.clear();
-      this.tokenTotal = undefined;
-      this.tokenKinds = undefined;
-      this.freshThread = fresh;
-      this.link = link;
-      this.threadId = threadId;
-      this.contextEpoch++;
-      this.deliveryEpoch++;
-      this.retiredTurns.clear();
-      this.unidentifiedCancellation = false;
-      this.activeTurns.clear();
-      this.unboundAccepted = false;
-      this.forgetTurn();
-      this.opts.log?.(`[${this.id}] thread ${threadId}`);
-      this.opts.onThread?.(threadId, fresh);
-      this.setState("idle");
-      this.readUsage();
-      clearInterval(this.usageTimer);
-      this.usageTimer = setInterval(() => this.readUsage(), this.opts.usagePollMs ?? 600000);
-      this.usageTimer.unref?.();
-    }
-    revert(turnId) {
-      const link = this.link;
-      if (this.state !== "idle" || !link || link.up.readyState !== WebSocket.OPEN)
-        return Promise.reject(new Error(`${this.id} is not idle`));
-      const id = this.nextId--;
-      return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => this.pending.delete(id) && reject(new Error("thread/revert got no answer")), 30000);
-        timer.unref?.();
-        this.pending.set(id, { resolve: () => (clearTimeout(timer), resolve()), reject: (e) => (clearTimeout(timer), reject(e)) });
-        link.up.send(JSON.stringify({ method: "thread/revert", id, params: { threadId: this.threadId, beforeTurnId: turnId } }));
-      });
-    }
-    readUsage() {
-      const link = this.link;
-      if (!this.opts.onUsage || !link || link.up.readyState !== WebSocket.OPEN)
-        return;
-      const id = this.nextId--;
-      this.pending.set(id, { resolve: (result) => this.opts.onUsage?.(result?.rateLimits, false), reject: () => {} });
-      link.up.send(JSON.stringify({ method: "account/rateLimits/read", id }));
-      setTimeout(() => this.pending.delete(id), 30000).unref?.();
-    }
-    onNotification(link, method, params) {
-      if (link === this.link && method === "account/rateLimits/updated")
-        return void this.opts.onUsage?.(params.rateLimits, false);
-      if (link === this.link && method === "error" && params.error?.codexErrorInfo === "usageLimitExceeded") {
-        this.opts.onUsage?.({ rateLimitReachedType: "usageLimitExceeded" }, true);
-      }
-      if (link !== this.link || params.threadId !== this.threadId)
-        return;
-      const nativeId = method === "turn/started" || method === "turn/completed" ? params.turn?.id : params.turnId;
-      if (typeof nativeId === "string" && this.retiredTurns.has(nativeId)) {
-        if (method === "turn/completed")
-          this.retiredTurns.delete(nativeId);
-        return;
-      }
-      if (this.unidentifiedCancellation)
-        return;
-      const unknownTurn = () => [...this.activeTurns].some((id) => id.startsWith("unknown:"));
-      if (method === "thread/tokenUsage/updated") {
-        const reader = this.opts.contextReader;
-        this.opts.onContext?.(reader ? reader.read(params.tokenUsage, this.threadId, Date.now()) : codexContext(params.tokenUsage, this.threadId, Date.now()));
-        const total = Number(params.tokenUsage?.total?.totalTokens);
-        if (!Number.isFinite(total))
-          return;
-        const previous = this.tokenKinds;
-        const kinds = {
-          input: counter(params.tokenUsage?.total?.inputTokens),
-          cachedInput: counter(params.tokenUsage?.total?.cachedInputTokens),
-          output: counter(params.tokenUsage?.total?.outputTokens),
-          reasoning: counter(params.tokenUsage?.total?.reasoningOutputTokens)
-        };
-        const added = this.tokenTotal === undefined ? this.freshThread ? total : 0 : Math.max(0, total - this.tokenTotal);
-        const base = previous ?? (this.freshThread && this.tokenTotal === undefined ? { input: 0, cachedInput: 0, output: 0, reasoning: 0 } : undefined);
-        this.tokenTotal = total;
-        this.tokenKinds = kinds;
-        if (added > 0)
-          this.opts.onTokens?.(added);
-        if (added > 0 && base)
-          this.opts.onTokenBreakdown?.({
-            input: Math.max(0, kinds.input - base.input),
-            cachedInput: Math.max(0, kinds.cachedInput - base.cachedInput),
-            output: Math.max(0, kinds.output - base.output),
-            reasoning: Math.max(0, kinds.reasoning - base.reasoning),
-            total: added
-          });
-        return;
-      }
-      if (method === "turn/started") {
-        const nativeTurn = params.turn?.id ?? `unknown:${Date.now()}`;
-        this.unboundAccepted = false;
-        this.activeTurns.add(nativeTurn);
-        for (const id of [...this.unboundDeliveries])
-          this.addTurnDelivery(nativeTurn, id);
-        this.lastAnswer = "";
-        this.setState("busy");
-        if (params.turn?.id)
-          this.opts.onTurn?.(params.turn.id);
-      } else if (method === "item/agentMessage/delta") {
-        if (!this.activeTurns.size || typeof params.turnId === "string" && !this.activeTurns.has(params.turnId) && !unknownTurn())
-          return;
-        const buf = this.deltas.get(params.itemId) ?? [];
-        buf.push(params.delta);
-        this.deltas.set(params.itemId, buf);
-      } else if (method === "item/completed" && ["fileChange", "commandExecution", "mcpToolCall", "userMessage"].includes(params.item?.type)) {
-        if (typeof params.turnId === "string" && !this.activeTurns.has(params.turnId) && !unknownTurn())
-          return;
-        try {
-          this.opts.onItem?.(params.item, typeof params.turnId === "string" && this.activeTurns.has(params.turnId) ? params.turnId : undefined);
-        } catch (error) {
-          this.opts.log?.(`[${this.id}] item handler failed: ${error.message}`);
-        }
-      } else if (method === "item/completed" && params.item?.type === "agentMessage") {
-        if (!this.activeTurns.size || typeof params.turnId === "string" && !this.activeTurns.has(params.turnId) && !unknownTurn())
-          return;
-        const item = params.item;
-        const text = item.text ?? item.content?.map((c) => c.text ?? "").join("") ?? this.deltas.get(item.id)?.join("") ?? "";
-        this.deltas.delete(item.id);
-        if (item.phase !== "commentary" && text.trim())
-          this.lastAnswer = text.trim();
-      } else if (method === "turn/completed") {
-        const nativeTurn = params.turn?.id;
-        if (!this.activeTurns.size || typeof nativeTurn === "string" && !this.activeTurns.has(nativeTurn) && ![...this.activeTurns].some((id) => id.startsWith("unknown:")))
-          return;
-        this.activeTurns.delete(nativeTurn);
-        for (const id of this.activeTurns)
-          if (id.startsWith("unknown:"))
-            this.activeTurns.delete(id);
-        if (params.turn?.status === "failed") {
-          this.opts.log?.(`[${this.id}] turn failed: ${params.turn.error?.message ?? "unknown error"}`);
-        }
-        this.endSteers(nativeTurn);
-        if (this.activeTurns.size)
-          return;
-        if (typeof nativeTurn === "string") {
-          for (const id of this.turnDeliveries.get(nativeTurn) ?? [])
-            this.delivery({ id, state: params.turn?.status === "failed" ? "needs_review" : "completed", ...params.turn?.status === "failed" ? { reason: params.turn?.error?.message ?? "Codex turn failed" } : {} });
-          this.turnDeliveries.delete(nativeTurn);
-        }
-        const inReplyTo = this.injected;
-        const to = replyAudience(this.answering);
-        this.injected = undefined;
-        this.answering = [];
-        this.deltas.clear();
-        if (this.lastAnswer)
-          this.onMessage?.(this.lastAnswer, inReplyTo ? { inReplyTo, to } : {});
-        this.lastAnswer = "";
-        this.setState("idle");
-      }
-    }
-  };
-});
-
 // src/hub/activity.ts
 function activityText(value) {
   return typeof value === "string" ? value.slice(0, TEXT_CAP) : "";
@@ -3455,7 +2747,7 @@ var init_acp_owned_group = __esm(() => {
 });
 
 // src/adapters/acp.ts
-import { spawn as spawn6 } from "child_process";
+import { spawn as spawn5 } from "child_process";
 import { createInterface } from "readline";
 function normalizeACPUsage(value, source = "usage_update") {
   const unknown = { source, availability: "unsupported", shape: "none" };
@@ -3628,7 +2920,7 @@ var init_acp = __esm(() => {
         throw new Error("Configured ACP still has a process; stop it before starting another");
       this.stopping = false;
       const [bin, ...args] = this.opts.cmd;
-      const proc = spawn6(bin, args, { cwd: this.opts.cwd, env: peerChildEnv(this.id, { ...process.env, ...this.opts.env ?? {} }), stdio: ["pipe", "pipe", "pipe"], detached: true });
+      const proc = spawn5(bin, args, { cwd: this.opts.cwd, env: peerChildEnv(this.id, { ...process.env, ...this.opts.env ?? {} }), stdio: ["pipe", "pipe", "pipe"], detached: true });
       this.proc = proc;
       trackGroup(proc);
       proc.on("error", (e) => {
@@ -4202,6 +3494,806 @@ ${renderDigest(envs, false)}` }] });
       if (this.proc?.stdin.writable)
         this.proc.stdin.write(`${JSON.stringify(msg)}
 `);
+    }
+  };
+});
+
+// src/adapters/codex-appserver.ts
+import { spawn as spawn6 } from "child_process";
+function parse(raw) {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return;
+  }
+}
+var UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery", counter = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : 0;
+}, TRACKED, CodexPeer;
+var init_codex_appserver = __esm(() => {
+  init_envelope();
+  init_context_window();
+  init_child_process();
+  init_acp();
+  TRACKED = new Set(["thread/start", "thread/resume"]);
+  CodexPeer = class CodexPeer extends BasePeer {
+    opts;
+    permissionMode;
+    actionWaits = new Map;
+    get actionGated() {
+      return this.opts.actionGate !== undefined;
+    }
+    nativeApprovalPolicies = new Map;
+    overriddenApprovals = new Set;
+    restoringApprovals = new Map;
+    proc;
+    server;
+    link;
+    claimedTui;
+    threadId = "";
+    contextEpoch = 0;
+    get sessionGeneration() {
+      return this.contextEpoch;
+    }
+    tokenTotal;
+    tokenKinds;
+    freshThread = false;
+    activeTurns = new Set;
+    deliveryEpoch = 0;
+    retiredTurns = new Set;
+    unidentifiedCancellation = false;
+    get statusNotice() {
+      return this.unidentifiedCancellation ? { code: "unidentified-cancellation", message: UNIDENTIFIED_CANCELLATION_NOTICE } : undefined;
+    }
+    unboundAccepted = false;
+    nextId = -1;
+    pending = new Map;
+    usageTimer;
+    injected;
+    answering = [];
+    lastAnswer = "";
+    deltas = new Map;
+    primed = false;
+    version;
+    steers = new Set;
+    turnDeliveries = new Map;
+    unboundDeliveries = new Set;
+    constructor(id, opts) {
+      super(id, opts.watchdogMs);
+      this.opts = opts;
+      this.permissionMode = opts.permissionMode ?? "ask";
+    }
+    recoveryMetadata() {
+      return {
+        launch: { kind: "codex", bin: this.opts.bin ?? "codex", cwd: this.opts.cwd, appPort: this.opts.appPort, proxyPort: this.opts.proxyPort },
+        ...this.threadId ? { threadId: this.threadId } : {}
+      };
+    }
+    get thread() {
+      return this.threadId;
+    }
+    get proxyUrl() {
+      return `ws://127.0.0.1:${this.server?.port ?? this.opts.proxyPort}`;
+    }
+    terminalOwner(launchId) {
+      const link = this.link;
+      return this.threadId && link && link === this.claimedTui && link.launchId === launchId && link.tui.readyState === WebSocket.OPEN && link.up.readyState === WebSocket.OPEN ? { generation: String(this.sessionGeneration) } : undefined;
+    }
+    async start() {
+      const upstream = this.opts.upstreamUrl ?? await this.spawnAppServer();
+      try {
+        this.server = Bun.serve({
+          hostname: "127.0.0.1",
+          port: this.opts.proxyPort,
+          fetch: (req, server) => {
+            if (req.headers.has("origin"))
+              return new Response("forbidden", { status: 403 });
+            const launchId = /^Bearer (\S+)$/.exec(req.headers.get("authorization") ?? "")?.[1];
+            if (server.upgrade(req, { data: { ...launchId && launchId.length <= 128 ? { launchId } : {} } }))
+              return;
+            return new Response("agent-hub codex proxy");
+          },
+          websocket: {
+            open: (tui) => {
+              if (this.opts.admitAttach?.() === false) {
+                tui.close(4000, "codex is off roster; retry when a person adds it");
+                return;
+              }
+              if (this.claimedTui) {
+                tui.close(1013, "codex TUI already attached to this hub");
+                return;
+              }
+              this.attach(tui, upstream);
+            },
+            message: (tui, data) => {
+              if (this.opts.admitAttach?.() === false) {
+                tui.close(4000, "codex is off roster");
+                return;
+              }
+              if (tui.data?.up)
+                this.fromTui(tui.data, String(data));
+            },
+            close: (tui) => {
+              if (tui.data?.up)
+                this.detach(tui.data);
+            }
+          }
+        });
+      } catch (error) {
+        const proc = this.proc;
+        if (proc && await this.stopQuietly(proc) && this.proc === proc)
+          this.proc = undefined;
+        throw error;
+      }
+    }
+    stopQuietly(proc) {
+      return stopOwnedProcess(proc, { group: true }).then(() => true, (error) => {
+        this.opts.log?.(`[${this.id}] ${error.message}`);
+        return false;
+      });
+    }
+    async stop() {
+      this.abortActionWaits();
+      this.server?.stop(true);
+      this.claimedTui?.tui.close(1001, "hub shutting down");
+      const proc = this.proc;
+      if (proc) {
+        await stopOwnedProcess(proc, { group: true });
+        if (this.proc === proc)
+          this.proc = undefined;
+      }
+      this.setState("offline");
+    }
+    deliver(envs, deliveryId) {
+      const link = this.link;
+      if (this.state !== "idle" || !link || link.up.readyState !== WebSocket.OPEN) {
+        if (deliveryId)
+          this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is not injectable` });
+        return Promise.reject(new Error(`${this.id} is not injectable`));
+      }
+      const text = this.render(envs);
+      const id = this.nextId--, epoch = this.deliveryEpoch, session = this.contextEpoch;
+      this.setState("busy");
+      return new Promise((resolve, reject) => {
+        let invalidated = false;
+        const retiredAtCancel = new Set;
+        const invalidate = (reason) => {
+          if (invalidated)
+            return;
+          invalidated = true;
+          for (const turn of [...this.activeTurns, ...this.turnDeliveries.keys()])
+            if (!turn.startsWith("unknown:"))
+              retiredAtCancel.add(turn);
+          envs = [];
+          if (deliveryId)
+            this.delivery({ id: deliveryId, state: "needs_review", reason });
+          reject(new Error(reason));
+        };
+        this.pending.set(id, {
+          deliveryId,
+          kind: "deliver",
+          invalidate,
+          resolve: (result) => {
+            const nativeTurn = typeof result?.turn?.id === "string" ? result.turn.id : undefined;
+            if (invalidated || epoch !== this.deliveryEpoch || session !== this.contextEpoch || link !== this.link) {
+              invalidate("Codex turn acceptance arrived after its delivery was invalidated");
+              if (nativeTurn && session === this.contextEpoch && link === this.link && (!retiredAtCancel.has(nativeTurn) || this.retiredTurns.has(nativeTurn)))
+                this.retireTurn(nativeTurn);
+              return;
+            }
+            this.primed = true;
+            this.injected = replyParent(envs);
+            this.answering = [...envs];
+            if (nativeTurn && !this.turnDeliveries.has(nativeTurn))
+              this.turnDeliveries.set(nativeTurn, new Set);
+            if (!nativeTurn && !this.activeTurns.size)
+              this.unboundAccepted = true;
+            if (deliveryId) {
+              if (nativeTurn)
+                this.addTurnDelivery(nativeTurn, deliveryId);
+              else
+                this.unboundDeliveries.add(deliveryId);
+              this.delivery({ id: deliveryId, state: "accepted" });
+            }
+            resolve();
+          },
+          reject: (e) => {
+            this.restoringApprovals.delete(id);
+            if (invalidated)
+              return;
+            if (epoch !== this.deliveryEpoch || session !== this.contextEpoch || link !== this.link) {
+              invalidate("Codex turn refusal arrived after its delivery was invalidated");
+              return;
+            }
+            if (!this.activeTurns.size)
+              this.setState("idle");
+            if (deliveryId)
+              this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message });
+            reject(e);
+          }
+        });
+        link.up.send(JSON.stringify({ method: "turn/start", id, params: this.applyPermissionPolicy({ threadId: this.threadId, input: [{ type: "text", text }] }, id) }));
+      });
+    }
+    render(envs) {
+      return this.primed || !this.opts.preamble ? renderDigest(envs, this.primed) : `${this.opts.preamble}
+
+${renderDigest(envs, false)}`;
+    }
+    steer(envs, deliveryId) {
+      const link = this.link;
+      const expectedTurnId = [...this.activeTurns].reverse().find((t) => !t.startsWith("unknown:"));
+      if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId) {
+        if (deliveryId)
+          this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} has no steerable turn` });
+        return Promise.reject(new Error(`${this.id} has no steerable turn`));
+      }
+      const id = this.nextId--;
+      const expectedEpoch = this.contextEpoch;
+      this.steers.add(id);
+      return new Promise((resolve, reject) => {
+        let timer;
+        const settle = () => {
+          clearTimeout(timer);
+          this.steers.delete(id);
+        };
+        const fail = (e) => {
+          settle();
+          if (deliveryId)
+            this.delivery({ id: deliveryId, state: this.knownRejection(e) ? "failed_safe" : "needs_review", reason: e.message });
+          reject(e);
+        };
+        this.pending.set(id, {
+          deliveryId,
+          kind: "steer",
+          expectedTurnId,
+          afterTurn: deliveryId ? () => {
+            if (timer !== undefined)
+              return;
+            timer = setTimeout(() => {
+              const pending = this.pending.get(id);
+              this.pending.delete(id);
+              pending?.reject(new Error("steer unanswered: RPC timeout"));
+            }, this.opts.steerTimeoutMs ?? 1e4);
+            timer.unref?.();
+          } : undefined,
+          resolve: (result) => {
+            if (deliveryId && (this.link !== link || this.contextEpoch !== expectedEpoch || !this.activeTurns.has(expectedTurnId) || typeof result?.turnId === "string" && result.turnId !== expectedTurnId)) {
+              fail(new Error("steer accepted after its original native turn ended or changed"));
+              return;
+            }
+            settle();
+            this.primed = true;
+            this.injected = replyParent(this.injected ? [this.injected, ...envs] : envs);
+            this.answering.push(...envs);
+            if (deliveryId) {
+              this.addTurnDelivery(expectedTurnId, deliveryId);
+              this.delivery({ id: deliveryId, state: "accepted" });
+            }
+            resolve();
+          },
+          reject: fail
+        });
+        const input = [{ type: "text", text: this.render(envs) }];
+        link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input } }));
+      });
+    }
+    steerText(text) {
+      const link = this.link;
+      const expectedTurnId = [...this.activeTurns].reverse().find((t) => !t.startsWith("unknown:"));
+      if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId)
+        return Promise.resolve("refused");
+      const id = this.nextId--;
+      return new Promise((resolve) => {
+        const timer = setTimeout(() => this.pending.delete(id) && resolve("unanswered"), this.opts.steerTimeoutMs ?? 1e4);
+        timer.unref?.();
+        this.pending.set(id, { resolve: () => (clearTimeout(timer), resolve("accepted")), reject: () => (clearTimeout(timer), resolve("refused")) });
+        link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input: [{ type: "text", text }] } }));
+      });
+    }
+    onWatchdog() {
+      this.abortActionWaits();
+      this.deliveryEpoch++;
+      const known = new Set([...this.activeTurns, ...this.turnDeliveries.keys()].filter((id) => !id.startsWith("unknown:")));
+      const pendingStarts = [...this.pending.values()].filter((pending) => pending.kind === "deliver");
+      if ([...this.activeTurns].some((id) => id.startsWith("unknown:")) || (this.unboundDeliveries.size || this.unboundAccepted || pendingStarts.length) && !known.size) {
+        this.unidentifiedCancellation = true;
+        this.opts.log?.(UNIDENTIFIED_CANCELLATION_NOTICE);
+      }
+      for (const turnId of known)
+        this.retireTurn(turnId);
+      for (const pending of pendingStarts)
+        pending.invalidate?.("Codex turn watchdog timeout before native acceptance was confirmed");
+      this.activeTurns.clear();
+      this.unboundAccepted = false;
+      for (const ids of this.turnDeliveries.values())
+        for (const id of ids)
+          this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout" });
+      for (const id of this.unboundDeliveries)
+        this.delivery({ id, state: "needs_review", reason: "Codex turn watchdog timeout" });
+      this.turnDeliveries.clear();
+      this.unboundDeliveries.clear();
+      this.injected = undefined;
+      this.answering = [];
+      this.lastAnswer = "";
+      this.deltas.clear();
+      this.abandonSteers("turn went silent");
+      if (this.unidentifiedCancellation)
+        this.setState("offline");
+      else
+        super.onWatchdog();
+    }
+    retireTurn(turnId) {
+      this.abortActionWaits(undefined, turnId);
+      this.retiredTurns.add(turnId);
+      if (this.link?.up.readyState === WebSocket.OPEN)
+        this.link.up.send(JSON.stringify({ method: "turn/interrupt", id: this.nextId--, params: { threadId: this.threadId, turnId } }));
+    }
+    abandonSteers(reason) {
+      for (const id of this.steers) {
+        const p = this.pending.get(id);
+        this.pending.delete(id);
+        p?.reject(new Error(`steer unanswered: ${reason}`));
+      }
+    }
+    endSteers(turnId) {
+      for (const id of this.steers) {
+        const pending = this.pending.get(id);
+        if (!pending || pending.expectedTurnId !== turnId)
+          continue;
+        if (pending.deliveryId)
+          pending.afterTurn?.();
+        else {
+          this.pending.delete(id);
+          pending.reject(new Error("steer unanswered: turn completed"));
+        }
+      }
+    }
+    addTurnDelivery(turnId, deliveryId) {
+      const ids = this.turnDeliveries.get(turnId) ?? new Set;
+      ids.add(deliveryId);
+      this.turnDeliveries.set(turnId, ids);
+      this.unboundDeliveries.delete(deliveryId);
+    }
+    knownRejection(error) {
+      return /turn in progress|no active turn|not injectable|rejected|usage limit/i.test(error.message);
+    }
+    async spawnAppServer() {
+      const port = this.opts.appPort;
+      const probe = () => fetch(`http://127.0.0.1:${port}/healthz`).then((r) => r.ok, () => false);
+      if (await probe()) {
+        throw new Error(`port ${port} already answers /healthz: an app-server the hub does not own is running (orphan from a crashed hub?)`);
+      }
+      let gone = "";
+      const env = peerChildEnv(this.id, { ...process.env, ...this.opts.env ?? {} });
+      this.proc = spawn6(this.opts.bin ?? "codex", ["app-server", "--listen", `ws://127.0.0.1:${port}`, ...this.opts.extraArgs ?? []], {
+        cwd: this.opts.cwd,
+        env,
+        stdio: ["ignore", "ignore", "pipe"],
+        detached: true
+      });
+      trackGroup(this.proc);
+      this.proc.stderr?.on("data", (d) => this.opts.log?.(`[${this.id}] ${String(d).trimEnd()}`));
+      this.proc.on("error", (e) => gone = `cannot run ${this.opts.bin ?? "codex"}: ${e.message}`);
+      this.proc.on("exit", (code) => {
+        gone ||= `codex app-server exited with code ${code}`;
+        this.opts.log?.(`[${this.id}] ${gone}`);
+        this.setState("offline");
+      });
+      for (let i = 0;i < 100 && !gone; i++) {
+        if (await probe())
+          return `ws://127.0.0.1:${port}`;
+        await Bun.sleep(100);
+      }
+      if (gone)
+        throw new Error(gone);
+      const proc = this.proc;
+      if (proc && await this.stopQuietly(proc) && this.proc === proc)
+        this.proc = undefined;
+      throw new Error("codex app-server did not become healthy within 10 s");
+    }
+    attach(tui, upstream) {
+      const up = new WebSocket(upstream);
+      const link = { tui, up, backlog: [], tracked: new Map, approvalIds: new Set, ...tui.data.launchId ? { launchId: tui.data.launchId } : {} };
+      this.claimedTui = link;
+      tui.data = link;
+      up.onopen = () => {
+        for (const frame of link.backlog.splice(0))
+          up.send(frame);
+      };
+      up.onmessage = (ev) => this.fromAppServer(link, String(ev.data));
+      up.onclose = () => tui.close();
+    }
+    detach(link) {
+      this.abortActionWaits(link);
+      link.up.close();
+      if (this.claimedTui === link)
+        this.claimedTui = undefined;
+      if (this.link !== link)
+        return;
+      clearInterval(this.usageTimer);
+      this.link = undefined;
+      this.restoringApprovals.clear();
+      this.threadId = "";
+      this.contextEpoch++;
+      this.deliveryEpoch++;
+      this.retiredTurns.clear();
+      this.unidentifiedCancellation = false;
+      this.activeTurns.clear();
+      this.unboundAccepted = false;
+      for (const p of this.pending.values()) {
+        if (p.kind === "deliver")
+          p.invalidate?.("Codex TUI detached");
+        else
+          p.reject(new Error(p.kind === "steer" ? "Codex TUI detached" : "codex TUI detached"));
+      }
+      this.pending.clear();
+      for (const ids of this.turnDeliveries.values())
+        for (const id of ids)
+          this.delivery({ id, state: "needs_review", reason: "Codex TUI detached" });
+      for (const id of this.unboundDeliveries)
+        this.delivery({ id, state: "needs_review", reason: "Codex TUI detached" });
+      this.turnDeliveries.clear();
+      this.unboundDeliveries.clear();
+      this.forgetTurn();
+      this.setState("offline");
+    }
+    detachForRoster(mode = "ask") {
+      this.permissionMode = mode;
+      const link = this.claimedTui;
+      if (!link)
+        return;
+      link.tui.close(4000, "codex is off roster; retry when a person adds it");
+      this.detach(link);
+    }
+    forgetTurn() {
+      this.injected = undefined;
+      this.answering = [];
+      this.lastAnswer = "";
+    }
+    get proxyAttached() {
+      return !!this.link && this.link.up.readyState === WebSocket.OPEN;
+    }
+    getPermissionMode() {
+      return this.permissionMode;
+    }
+    get permissionModeState() {
+      return this.getPermissionMode();
+    }
+    setStartupPermissionMode(mode) {
+      if (this.link || this.state !== "offline" || this.overriddenApprovals.size)
+        throw new Error("codex startup mode reconciliation requires a fresh unattached proxy");
+      this.permissionMode = mode;
+    }
+    clearPermissionMode() {
+      const restorable = [...this.overriddenApprovals].every((thread) => this.nativeApprovalPolicies.has(thread));
+      this.permissionMode = "ask";
+      return restorable;
+    }
+    async setPermissionMode(mode) {
+      if (!this.link || this.link.up.readyState !== WebSocket.OPEN)
+        throw new Error("codex permission mode unavailable: attach the TUI through ahub codex first");
+      if (mode === "ask" && [...this.overriddenApprovals].some((thread) => !this.nativeApprovalPolicies.has(thread)))
+        throw new Error("codex cannot restore ask: native approval policy unavailable; close the TUI, then run ahub permission codex ask before you restart the Codex session with ahub codex");
+      this.permissionMode = mode;
+    }
+    applyPermissionPolicy(params, id) {
+      const thread = typeof params.threadId === "string" ? params.threadId : this.threadId;
+      if (this.permissionMode !== "ask") {
+        this.overriddenApprovals.add(thread);
+        return { ...params, approvalPolicy: this.permissionMode === "never-ask" ? "never" : "on-request" };
+      }
+      if (this.overriddenApprovals.has(thread) && this.nativeApprovalPolicies.has(thread)) {
+        this.restoringApprovals.set(id, thread);
+        return { ...params, approvalPolicy: this.nativeApprovalPolicies.get(thread) };
+      }
+      return params;
+    }
+    settlePermissionRestore(id, failed) {
+      const thread = this.restoringApprovals.get(id);
+      this.restoringApprovals.delete(id);
+      if (thread !== undefined && !failed && this.permissionMode === "ask")
+        this.overriddenApprovals.delete(thread);
+    }
+    fromTui(link, raw) {
+      const msg = parse(raw);
+      if (msg?.id !== undefined && !msg.method && link.approvalIds.has(msg.id))
+        return;
+      if (msg?.method === "turn/interrupt" && link === this.link)
+        this.abortActionWaits(link, typeof msg.params?.turnId === "string" ? msg.params.turnId : undefined);
+      if (msg?.method === "turn/start" && msg.params && link === this.link) {
+        const thread = typeof msg.params.threadId === "string" ? msg.params.threadId : this.threadId;
+        const restoring = this.overriddenApprovals.has(thread) && this.nativeApprovalPolicies.has(thread);
+        if (msg.params.approvalPolicy != null && !restoring)
+          this.nativeApprovalPolicies.set(thread, msg.params.approvalPolicy);
+        if (this.permissionMode !== "ask" || this.overriddenApprovals.has(thread)) {
+          msg.params = this.applyPermissionPolicy(msg.params, msg.id);
+          raw = JSON.stringify(msg);
+        }
+      }
+      if (msg?.id !== undefined && TRACKED.has(msg.method))
+        link.tracked.set(msg.id, msg.method);
+      if (link.up.readyState === WebSocket.OPEN)
+        link.up.send(raw);
+      else
+        link.backlog.push(raw);
+    }
+    fromAppServer(link, raw) {
+      const msg = parse(raw);
+      const nativeId = msg?.params?.turnId ?? msg?.params?.turn?.id ?? msg?.result?.turn?.id;
+      if (this.state === "busy" && !(typeof nativeId === "string" && this.retiredTurns.has(nativeId)))
+        this.touch();
+      if (!msg)
+        return void link.tui.send(raw);
+      if (this.interceptActionApproval(link, msg))
+        return;
+      if (msg.id !== undefined && !msg.method)
+        this.settlePermissionRestore(msg.id, !!msg.error);
+      if (typeof msg.id === "number" && msg.id < 0 && !msg.method) {
+        const p = this.pending.get(msg.id);
+        this.pending.delete(msg.id);
+        if (msg.error)
+          p?.reject(new Error(msg.error.message ?? "app-server rejected the request"));
+        else
+          p?.resolve(msg.result);
+        return;
+      }
+      if (typeof msg.result?.userAgent === "string")
+        this.version = /^[^/\s]+\/(\d+\.\d+\.\d+(?:-[\w.]+)?)/.exec(msg.result.userAgent)?.[1] ?? this.version;
+      const tracked = msg.id !== undefined && !msg.method ? link.tracked.get(msg.id) : undefined;
+      if (tracked && link.tracked.delete(msg.id)) {
+        if (typeof msg.result?.thread?.id === "string") {
+          const thread = msg.result.thread.id;
+          if (!this.overriddenApprovals.has(thread) && msg.result.approvalPolicy != null)
+            this.nativeApprovalPolicies.set(thread, msg.result.approvalPolicy);
+          this.adopt(link, msg.result.thread.id, tracked === "thread/start");
+        }
+      } else if (msg.method)
+        this.onNotification(link, msg.method, msg.params ?? {});
+      link.tui.send(raw);
+    }
+    abortActionWaits(link, turn) {
+      for (const [controller, wait] of this.actionWaits)
+        if ((!link || wait.link === link) && (!turn || wait.turn === turn))
+          controller.abort();
+    }
+    interceptActionApproval(link, msg) {
+      if (!this.opts.actionGate || !(typeof msg.id === "string" || Number.isSafeInteger(msg.id)))
+        return false;
+      const legacy = msg.method === "execCommandApproval", params = msg.params;
+      if (!legacy && msg.method !== "item/commandExecution/requestApproval")
+        return false;
+      if (!params || typeof params !== "object")
+        return false;
+      if (link.approvalIds.has(msg.id))
+        return true;
+      if (legacy ? !Array.isArray(params.command) || !params.command.length || !params.command.every((word) => typeof word === "string") : typeof params.command !== "string" || !params.command.length || params.kind != null && params.kind !== "command")
+        return false;
+      const thread = legacy ? params.conversationId : params.threadId;
+      let gate;
+      try {
+        gate = this.opts.actionGate({ names: ["shell"], kind: "execute", input: { command: params.command, cwd: params.cwd } }, typeof thread === "string" ? thread : "");
+      } catch {
+        gate = { title: "Action approval: the always-ask check failed; command withheld" };
+      }
+      if (!gate)
+        return false;
+      const verdict = gate;
+      if (link.approvalIds.size >= 1024) {
+        this.abortActionWaits(link);
+        link.up.close();
+        link.tui.close(1008, "Codex action approval id capacity reached; reattach");
+        return true;
+      }
+      link.approvalIds.add(msg.id);
+      const named = [...this.activeTurns].filter((turn) => !turn.startsWith("unknown:") && !this.retiredTurns.has(turn));
+      const turn = legacy ? named.length === 1 ? named[0] : undefined : typeof params.turnId === "string" ? params.turnId : undefined;
+      const epoch = this.contextEpoch, controller = new AbortController;
+      const live = () => !controller.signal.aborted && link === this.link && epoch === this.contextEpoch && thread === this.threadId && typeof turn === "string" && this.activeTurns.has(turn) && !this.retiredTurns.has(turn) && !this.unidentifiedCancellation && this.state === "busy" && link.tui.readyState === WebSocket.OPEN && link.up.readyState === WebSocket.OPEN;
+      const answer = (allow) => {
+        if (link.up.readyState === WebSocket.OPEN)
+          link.up.send(JSON.stringify({ id: msg.id, result: { decision: legacy ? allow ? "approved" : "abort" : allow ? "accept" : "decline" } }));
+      };
+      if (!live()) {
+        answer(false);
+        return true;
+      }
+      this.actionWaits.set(controller, { link, turn });
+      const options = [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }];
+      if (verdict.budget)
+        options.push({ optionId: ACTION_BUDGET_OPTION, name: `Allow ${verdict.budget.label} for this session`, kind: "allow_once" });
+      const alive = setInterval(() => {
+        if (live())
+          this.touch();
+      }, Math.max(10, Math.min(30000, Math.floor(this.watchdogMs / 3))));
+      (async () => {
+        let picked;
+        try {
+          const cancelled = new Promise((resolve) => controller.signal.addEventListener("abort", () => resolve(undefined), { once: true }));
+          picked = await Promise.race([this.opts.onPermission?.({ peer: this.id, title: verdict.title, tool: "shell", kind: "execute", classed: true, options }, controller.signal), cancelled]);
+        } catch {} finally {
+          clearInterval(alive);
+          this.actionWaits.delete(controller);
+        }
+        let allow = live() && picked === "allow";
+        if (live() && verdict.budget && picked === ACTION_BUDGET_OPTION) {
+          try {
+            allow = verdict.budget.approve() && live();
+          } catch {
+            allow = false;
+          }
+        }
+        answer(allow);
+      })();
+      return true;
+    }
+    adopt(link, threadId, fresh = false) {
+      if (typeof threadId !== "string" || !threadId || link !== this.claimedTui || link.tui.readyState !== WebSocket.OPEN || link.up.readyState !== WebSocket.OPEN)
+        return;
+      this.abortActionWaits();
+      this.abandonSteers("thread changed");
+      for (const [id, pending] of this.pending)
+        if (pending.kind === "deliver") {
+          pending.invalidate?.("Codex native thread changed before acceptance was confirmed");
+          this.pending.delete(id);
+        }
+      for (const ids of this.turnDeliveries.values())
+        for (const id of ids)
+          this.delivery({ id, state: "needs_review", reason: "Codex native thread changed" });
+      for (const id of this.unboundDeliveries)
+        this.delivery({ id, state: "needs_review", reason: "Codex native thread changed" });
+      this.turnDeliveries.clear();
+      this.unboundDeliveries.clear();
+      this.tokenTotal = undefined;
+      this.tokenKinds = undefined;
+      this.freshThread = fresh;
+      this.link = link;
+      this.threadId = threadId;
+      this.contextEpoch++;
+      this.deliveryEpoch++;
+      this.retiredTurns.clear();
+      this.unidentifiedCancellation = false;
+      this.activeTurns.clear();
+      this.unboundAccepted = false;
+      this.forgetTurn();
+      this.opts.log?.(`[${this.id}] thread ${threadId}`);
+      this.opts.onThread?.(threadId, fresh);
+      this.setState("idle");
+      this.readUsage();
+      clearInterval(this.usageTimer);
+      this.usageTimer = setInterval(() => this.readUsage(), this.opts.usagePollMs ?? 600000);
+      this.usageTimer.unref?.();
+    }
+    revert(turnId) {
+      const link = this.link;
+      if (this.state !== "idle" || !link || link.up.readyState !== WebSocket.OPEN)
+        return Promise.reject(new Error(`${this.id} is not idle`));
+      const id = this.nextId--;
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => this.pending.delete(id) && reject(new Error("thread/revert got no answer")), 30000);
+        timer.unref?.();
+        this.pending.set(id, { resolve: () => (clearTimeout(timer), resolve()), reject: (e) => (clearTimeout(timer), reject(e)) });
+        link.up.send(JSON.stringify({ method: "thread/revert", id, params: { threadId: this.threadId, beforeTurnId: turnId } }));
+      });
+    }
+    readUsage() {
+      const link = this.link;
+      if (!this.opts.onUsage || !link || link.up.readyState !== WebSocket.OPEN)
+        return;
+      const id = this.nextId--;
+      this.pending.set(id, { resolve: (result) => this.opts.onUsage?.(result?.rateLimits, false), reject: () => {} });
+      link.up.send(JSON.stringify({ method: "account/rateLimits/read", id }));
+      setTimeout(() => this.pending.delete(id), 30000).unref?.();
+    }
+    onNotification(link, method, params) {
+      if (link === this.link && method === "account/rateLimits/updated")
+        return void this.opts.onUsage?.(params.rateLimits, false);
+      if (link === this.link && method === "error" && params.error?.codexErrorInfo === "usageLimitExceeded") {
+        this.opts.onUsage?.({ rateLimitReachedType: "usageLimitExceeded" }, true);
+      }
+      if (link !== this.link || params.threadId !== this.threadId)
+        return;
+      const nativeId = method === "turn/started" || method === "turn/completed" ? params.turn?.id : params.turnId;
+      if (typeof nativeId === "string" && this.retiredTurns.has(nativeId)) {
+        if (method === "turn/completed")
+          this.retiredTurns.delete(nativeId);
+        return;
+      }
+      if (this.unidentifiedCancellation)
+        return;
+      const unknownTurn = () => [...this.activeTurns].some((id) => id.startsWith("unknown:"));
+      if (method === "thread/tokenUsage/updated") {
+        const reader = this.opts.contextReader;
+        this.opts.onContext?.(reader ? reader.read(params.tokenUsage, this.threadId, Date.now()) : codexContext(params.tokenUsage, this.threadId, Date.now()));
+        const total = Number(params.tokenUsage?.total?.totalTokens);
+        if (!Number.isFinite(total))
+          return;
+        const previous = this.tokenKinds;
+        const kinds = {
+          input: counter(params.tokenUsage?.total?.inputTokens),
+          cachedInput: counter(params.tokenUsage?.total?.cachedInputTokens),
+          output: counter(params.tokenUsage?.total?.outputTokens),
+          reasoning: counter(params.tokenUsage?.total?.reasoningOutputTokens)
+        };
+        const added = this.tokenTotal === undefined ? this.freshThread ? total : 0 : Math.max(0, total - this.tokenTotal);
+        const base = previous ?? (this.freshThread && this.tokenTotal === undefined ? { input: 0, cachedInput: 0, output: 0, reasoning: 0 } : undefined);
+        this.tokenTotal = total;
+        this.tokenKinds = kinds;
+        if (added > 0)
+          this.opts.onTokens?.(added);
+        if (added > 0 && base)
+          this.opts.onTokenBreakdown?.({
+            input: Math.max(0, kinds.input - base.input),
+            cachedInput: Math.max(0, kinds.cachedInput - base.cachedInput),
+            output: Math.max(0, kinds.output - base.output),
+            reasoning: Math.max(0, kinds.reasoning - base.reasoning),
+            total: added
+          });
+        return;
+      }
+      if (method === "turn/started") {
+        const nativeTurn = params.turn?.id ?? `unknown:${Date.now()}`;
+        this.unboundAccepted = false;
+        this.activeTurns.add(nativeTurn);
+        for (const id of [...this.unboundDeliveries])
+          this.addTurnDelivery(nativeTurn, id);
+        this.lastAnswer = "";
+        this.setState("busy");
+        if (params.turn?.id)
+          this.opts.onTurn?.(params.turn.id);
+      } else if (method === "item/agentMessage/delta") {
+        if (!this.activeTurns.size || typeof params.turnId === "string" && !this.activeTurns.has(params.turnId) && !unknownTurn())
+          return;
+        const buf = this.deltas.get(params.itemId) ?? [];
+        buf.push(params.delta);
+        this.deltas.set(params.itemId, buf);
+      } else if (method === "item/completed" && ["fileChange", "commandExecution", "mcpToolCall", "userMessage"].includes(params.item?.type)) {
+        if (typeof params.turnId === "string" && !this.activeTurns.has(params.turnId) && !unknownTurn())
+          return;
+        try {
+          this.opts.onItem?.(params.item, typeof params.turnId === "string" && this.activeTurns.has(params.turnId) ? params.turnId : undefined);
+        } catch (error) {
+          this.opts.log?.(`[${this.id}] item handler failed: ${error.message}`);
+        }
+      } else if (method === "item/completed" && params.item?.type === "agentMessage") {
+        if (!this.activeTurns.size || typeof params.turnId === "string" && !this.activeTurns.has(params.turnId) && !unknownTurn())
+          return;
+        const item = params.item;
+        const text = item.text ?? item.content?.map((c) => c.text ?? "").join("") ?? this.deltas.get(item.id)?.join("") ?? "";
+        this.deltas.delete(item.id);
+        if (item.phase !== "commentary" && text.trim())
+          this.lastAnswer = text.trim();
+      } else if (method === "turn/completed") {
+        const nativeTurn = params.turn?.id;
+        this.abortActionWaits(link, typeof nativeTurn === "string" ? nativeTurn : undefined);
+        if (!this.activeTurns.size || typeof nativeTurn === "string" && !this.activeTurns.has(nativeTurn) && ![...this.activeTurns].some((id) => id.startsWith("unknown:")))
+          return;
+        this.activeTurns.delete(nativeTurn);
+        for (const id of this.activeTurns)
+          if (id.startsWith("unknown:"))
+            this.activeTurns.delete(id);
+        if (params.turn?.status === "failed") {
+          this.opts.log?.(`[${this.id}] turn failed: ${params.turn.error?.message ?? "unknown error"}`);
+        }
+        this.endSteers(nativeTurn);
+        if (this.activeTurns.size)
+          return;
+        if (typeof nativeTurn === "string") {
+          for (const id of this.turnDeliveries.get(nativeTurn) ?? [])
+            this.delivery({ id, state: params.turn?.status === "failed" ? "needs_review" : "completed", ...params.turn?.status === "failed" ? { reason: params.turn?.error?.message ?? "Codex turn failed" } : {} });
+          this.turnDeliveries.delete(nativeTurn);
+        }
+        const inReplyTo = this.injected;
+        const to = replyAudience(this.answering);
+        this.injected = undefined;
+        this.answering = [];
+        this.deltas.clear();
+        if (this.lastAnswer)
+          this.onMessage?.(this.lastAnswer, inReplyTo ? { inReplyTo, to } : {});
+        this.lastAnswer = "";
+        this.setState("idle");
+      }
     }
   };
 });
@@ -5215,7 +5307,7 @@ async function runTool(name, rawArgs, ctx) {
         const approvedTarget = file;
         const content = String(a.content ?? "");
         const refused = approvalError(await ctx.permit(`write ${a.path} (${content.length} chars):
-${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path)), "error: the user did not approve this write");
+${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), "error: the user did not approve this write");
         if (refused)
           return refused;
         if (ctx.signal?.aborted)
@@ -5236,7 +5328,7 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path)), "er
           return `error: \`old\` must match exactly once, it matched ${count} times`;
         const refused = approvalError(await ctx.permit(`edit ${a.path}:
 - ${preview(String(a.old), 600)}
-+ ${preview(String(a.new ?? ""), 600)}`, "edit", ctx.signal, file, undefined, String(a.path)), "error: the user did not approve this edit");
++ ${preview(String(a.new ?? ""), 600)}`, "edit", ctx.signal, file, undefined, String(a.path), a), "error: the user did not approve this edit");
         if (refused)
           return refused;
         if (ctx.signal?.aborted)
@@ -5257,7 +5349,7 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path)), "er
           return "error: empty command";
         if (command.length > 4000)
           return "error: command longer than 4000 characters; put it in a script file with write, then run that";
-        const refused = approvalError(await ctx.permit(`bash: ${command}`, "bash", ctx.signal), "error: the user did not approve this command");
+        const refused = approvalError(await ctx.permit(`bash: ${command}`, "bash", ctx.signal, undefined, undefined, undefined, a), "error: the user did not approve this command");
         if (refused)
           return refused;
         const res = await sandboxedExec(["/bin/bash", "-c", command], { cwd: ctx.cwd, profile: ctx.sandboxProfile, readOnlyData: !!ctx.readOnly?.length, timeoutMs: (Number(a.timeout_s) || 120) * 1000, ...ctx.sandboxEnv ? { env: ctx.sandboxEnv } : {}, ...ctx.signal ? { signal: ctx.signal } : {} });
@@ -5276,7 +5368,7 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path)), "er
         if (problem)
           return `error: git ${sub}: ${problem}`;
         if (GIT_WRITE.has(sub)) {
-          const refused = approvalError(await ctx.permit(`git ${args.join(" ")}`, "git", ctx.signal), "error: the user did not approve this git command");
+          const refused = approvalError(await ctx.permit(`git ${args.join(" ")}`, "git", ctx.signal, undefined, undefined, undefined, a), "error: the user did not approve this git command");
           if (refused)
             return refused;
         }
@@ -9471,7 +9563,7 @@ var init_local_worker = __esm(() => {
         cwd: this.opts.cwd,
         deny: this.opts.tools.deny,
         readOnly: this.opts.tools.readOnly,
-        permit: async (title, tool, _signal, canonicalTarget, _observe, originalPath) => {
+        permit: async (title, tool, _signal, canonicalTarget, _observe, originalPath, input) => {
           if (turnSignal.aborted)
             return "aborted";
           const generation = this.turn;
@@ -9500,7 +9592,7 @@ var init_local_worker = __esm(() => {
             };
             const onAbort = () => finish("aborted");
             turnSignal.addEventListener("abort", onAbort, { once: true });
-            this.opts.tools.permit(title, tool, turnSignal, canonicalTarget, observe, originalPath).then(finish, (error) => {
+            this.opts.tools.permit(title, tool, turnSignal, canonicalTarget, observe, originalPath, input).then(finish, (error) => {
               turnSignal.removeEventListener("abort", onAbort);
               reject(error);
             });

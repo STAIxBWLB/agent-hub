@@ -76,7 +76,7 @@ export function actionGate<T>(ports: ActionGatePorts<T>, peer: string): (call: A
       publicView: task => ports.publicView(task), private: ports.isPrivate(peer), commandView: command => ports.nameable(command) ? command : undefined });
     const challenge = decision.challenge, limits = actionPolicyConfig(ports.policy()).budgets;
     // A budget of one is this call alone: the ordinary allow already says that, so no second choice is offered for it.
-    if (!challenge || !decision.classes.some(key => limits[key] > 1)) return { title };
+    if (/ \[cut, \d+ chars\]$/.test(title) || !challenge || !decision.classes.some(key => limits[key] > 1)) return { title };
     return { title, budget: { label: decision.classes.map(key => `${key} x${limits[key]}`).join(", "), approve: () => ports.budgets.approve(challenge) } };
   };
 }

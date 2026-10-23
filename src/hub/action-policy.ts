@@ -5,8 +5,7 @@ export interface ActionPolicyConfig { enabled: boolean; always_ask: ActionClass[
 const DEFAULT_BUDGETS: Record<ActionClass, number> = { publish: 1, destroy: 3, "external-write": 5, install: 2 };
 /** Defaults are host policy; overrides belong only in untracked config.local.json.
  * ponytail: startup adopts that local policy without a retained person confirmation.
- * Before adapter enforcement (#312/#313), bind weakened startup policy to person
- * confirmation or surface it as attention; slice 1 never enforces these grants.
+ * Status surfaces every weakening as attention; upgrade: retain a person-bound startup confirmation.
  */
 export function actionPolicyConfig(value?: unknown): ActionPolicyConfig {
   const fail = (): never => { throw new Error("action_policy: expected enabled, always_ask and class budgets (integers 0..1000)"); };
@@ -102,8 +101,10 @@ export class ActionBudgets {
   status(peer: string, enforced: boolean, reason = "adapter integration pending") {
     const config = actionPolicyConfig(this.config()), state = this.sessions.get(peer);
     const bound = !!state && this.currentSession(peer) === state.handle.session && state.policy === JSON.stringify(config);
+    const weakened = !config.enabled || ACTION_CLASSES.some(key => !config.always_ask.includes(key) || config.budgets[key] > DEFAULT_BUDGETS[key]);
+    const attention = weakened ? "; attention: machine-local policy weakens defaults; no retained startup confirmation" : "";
     return { enabled: config.enabled, alwaysAsk: [...config.always_ask], limits: { ...config.budgets }, remaining: bound ? { ...state.remaining } : empty(), sessionBound: bound,
-      enforceable: enforced, note: !enforced ? `always-ask not enforceable: ${reason}${config.enabled ? "" : "; policy disabled"}` : config.enabled ? "always-ask active" : "always-ask disabled" };
+      enforceable: enforced, note: (!enforced ? `always-ask not enforceable: ${reason}${config.enabled ? "" : "; policy disabled"}` : config.enabled ? "always-ask active" : "always-ask disabled") + attention };
   }
 }
 
@@ -113,6 +114,8 @@ export function actionApprovalText<T>(classes: readonly ActionClass[], command: 
   const view = task === undefined ? undefined : ports.publicView(task);
   const title = typeof view?.title === "string" ? sanitize(view.title).replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 160) : undefined;
   const shown = ports.private ? undefined : ports.commandView(command);
-  const line = shown === undefined ? "[private command withheld]" : sanitize(shown).replace(/[\p{Cc}\p{Cf}]/gu, " ").slice(0, 512);
+  const full = shown === undefined ? undefined : Array.from(sanitize(shown).replace(/[\p{Cc}\p{Cf}]/gu, " "));
+  const marker = ` [cut, ${full?.length ?? 0} chars]`;
+  const line = full === undefined ? "[private command withheld]" : full.length > 512 ? full.slice(0, 512 - marker.length).join("") + marker : full.join("");
   return `Action approval (${ACTION_CLASSES.filter(key => classes.includes(key)).join(", ")})${title ? `; task ${title}` : ""}: ${line}`;
 }
