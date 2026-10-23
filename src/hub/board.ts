@@ -66,6 +66,8 @@ export interface HistoryEntry {
   reviewContext?: "fresh" | "continuing";
   /** Structured review report bound to the reviewed artifact, stored in the existing history JSON. */
   reviewFindings?: ReviewFindingSet;
+  /** #507b: the recorded acceptance criteria (S8 checklist ids) a verdict's unmet items named; derived by the hub from the checklist, never free text. */
+  unmetCriteria?: string[];
   /** Host-authored plan content revision, separate from backlog planningRevision. */
   planRevision?: { revision: number; fingerprint: string };
   planObservation?: { repo: string; pr: number; head: string; revision: number; fingerprint: string };
@@ -76,6 +78,11 @@ export interface HistoryEntry {
   reviewBlocked?: true;
   reviewerFailure?: { peer: string; head?: string; cause: "start_failed" | "quota" | "no_verdict" };
   planning?: { revision: number; fields: (keyof PlanningFields)[]; previous: PlanningFields; pull?: true; split?: { children: { id: number; revision: number; history: number }[] } };
+}
+/** The ids a stored verdict may carry (#507b): bounded criterion identifiers in the S8 checklist's own format, at most its 32, each once. */
+function criterionIdList(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 32 || value.some(id => typeof id !== "string" || !/^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(id)) || new Set(value).size !== value.length) throw new Error("unmet criteria: expected up to 32 distinct criterion ids");
+  return [...value] as string[];
 }
 export type ReviewerHistory = Pick<HistoryEntry, "reviewerFamily" | "reviewerReason" | "reviewBlocked" | "reviewerFailure">;
 function reviewerHistory(extra: ReviewerHistory): ReviewerHistory {
@@ -332,7 +339,7 @@ export class Board {
 
   /** The only way a task changes. Validates the move, records who did what, returns the new row. */
   /** A `plan` in the patch replaces the old one whole: a new plan is the owner's current intent, not an addition. */
-  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled" | "codeSymbols">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "capacity" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | "reviewFindings" | "planObservation" | "planDeparture" | "planDepartureInvalidated" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number, codeSymbolsAuthority?: typeof HOST_CODE_SYMBOLS): Task {
+  update(id: number, by: PeerId, event: string, patch: Partial<Pick<Task, "state" | "owner" | "reviewer" | "reserved" | "refs" | "plan" | "rejections" | "signals" | "sdlc" | "role" | "cancelled" | "codeSymbols">>, note?: string, extra: Pick<HistoryEntry, "profile" | "sweep" | "reason" | "from" | "capacity" | "withheld" | "noWrites" | "reviewCost" | "reviewContext" | "reviewFindings" | "unmetCriteria" | "planObservation" | "planDeparture" | "planDepartureInvalidated" | keyof ReviewerHistory> = {}, expectedFlowRevision?: number, codeSymbolsAuthority?: typeof HOST_CODE_SYMBOLS): Task {
     const task = this.get(id);
     if (!task) throw new Error(`no task #${id}`);
     if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
@@ -366,6 +373,11 @@ export class Board {
       if (head !== undefined && !/^[a-f0-9]{40}$/.test(head)) throw new Error("finding metadata requires a full reviewed head");
       reviewFindings = { ...(head ? { head } : {}), items: parseReviewFindings(extra.reviewFindings.items, { person: by === "user", maxNits: 64 }) };
     }
+    let unmetCriteria: string[] | undefined;
+    if (extra.unmetCriteria !== undefined) {
+      if (!["approved", "changes_requested"].includes(event) || patch.state !== event) throw new Error("unmet criteria require a saved review verdict");
+      unmetCriteria = criterionIdList(extra.unmetCriteria);
+    }
     if (extra.planDeparture && (by !== "user" || event !== "plan departure accepted")) throw new Error("plan departure acceptance is person-only");
     const trackPlan = this.trackPlanRevisions?.() === true, hasDeparture = task.history.some(h => h.planDeparture);
     const fingerprint = patch.plan && (trackPlan || hasDeparture) ? planFingerprint(next.plan ?? {}) : undefined;
@@ -374,7 +386,7 @@ export class Board {
     // Disabling reporting must not let plan or repository refs edits/reverts resurrect prior consent.
     const repositoryRefsChanged = patch.refs !== undefined && JSON.stringify([task.refs.repo, task.refs.paths]) !== JSON.stringify([next.refs.repo, next.refs.paths]);
     const departureInvalidated = extra.planDepartureInvalidated === true || hasDeparture && (planChanged || repositoryRefsChanged);
-    const history = [...task.history, { at: Date.now(), by, event, ...(planRevision ? { planRevision } : {}), ...(extra.planObservation ? { planObservation: extra.planObservation } : {}), ...(extra.planDeparture ? { planDeparture: extra.planDeparture } : {}), ...(departureInvalidated ? { planDepartureInvalidated: true as const } : {}), ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.withheld && (note || reviewFindings) ? { withheld: true as const } : {}), ...(reviewFindings ? { reviewFindings } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}) }];
+    const history = [...task.history, { at: Date.now(), by, event, ...(planRevision ? { planRevision } : {}), ...(extra.planObservation ? { planObservation: extra.planObservation } : {}), ...(extra.planDeparture ? { planDeparture: extra.planDeparture } : {}), ...(departureInvalidated ? { planDepartureInvalidated: true as const } : {}), ...reviewMetadata, ...(note ? { note } : {}), ...(patch.cancelled?.supersededBy ? { supersededBy: patch.cancelled.supersededBy } : {}), ...("owner" in patch ? { owner: next.owner } : {}), ...(extra.profile ? { profile: extra.profile } : {}), ...(extra.sweep ? { sweep: extra.sweep } : {}), ...(extra.reason && TASK_MOVE_REASONS.includes(extra.reason) ? { reason: extra.reason } : {}), ...(extra.from ? { from: extra.from } : {}), ...(extra.capacity === true ? { capacity: true as const } : {}), ...(extra.withheld && (note || reviewFindings) ? { withheld: true as const } : {}), ...(reviewFindings ? { reviewFindings } : {}), ...(unmetCriteria?.length ? { unmetCriteria } : {}), ...(extra.reviewContext === "fresh" || extra.reviewContext === "continuing" ? { reviewContext: extra.reviewContext } : {}), ...(extra.reviewCost ? { reviewCost: extra.reviewCost } : {}), ...(event === "done" && extra.noWrites === true ? { noWrites: true as const } : {}) }];
     this.taskWrite(() => {
       const result = this.db.query("UPDATE tasks SET state = ?, owner = ?, reviewer = ?, reserved = ?, refs = ?, plan = ?, rejections = ?, signals = ?, history = ?, sdlc = ?, task_role = ?, cancelled = ?, updated = ? WHERE id = ?")
         .run(next.state, next.owner, next.reviewer, next.reserved ?? null, JSON.stringify(next.refs), JSON.stringify(next.plan ?? {}), next.rejections, JSON.stringify(next.signals), JSON.stringify(history), next.sdlc ? JSON.stringify(next.sdlc) : null, next.role ?? null, next.cancelled ? JSON.stringify(next.cancelled) : null, Date.now(), id);
