@@ -92,6 +92,17 @@ test("a file over the size limit is refused, never hashed in part", async () => 
   await expect(hashDeliverables(["a.bin", "b.bin", "c.bin"].map(p => claim(p, "bin")), near.ports())).rejects.toThrow(/together larger than 512 MiB/);
 });
 
+test("files that grew past the aggregate limit since delivery are read as unknown, not hashed", async () => {
+  const f = folder({ "a.bin": "a", "b.bin": "b", "c.bin": "c" });
+  const records = await hashDeliverables(["a.bin", "b.bin", "c.bin"].map(p => claim(p, "bin")), f.ports());
+  for (const name of ["a.bin", "b.bin", "c.bin"]) truncateSync(join(f.root, name), 200 * 1024 * 1024); // sparse: each under the file limit, 600 MiB together
+  const checks = await checkDeliverables(records, f.ports());
+  expect(checks.map(c => c.state)).toEqual(["unknown", "unknown", "unknown"]);
+  expect(checks[0]!.why).toMatch(/together are now larger than 512 MiB/);
+  truncateSync(join(f.root, "c.bin"), 1); // back under the aggregate (c.bin is its original "c" again): each file is measured, and the grown ones differ
+  expect((await checkDeliverables(records, f.ports())).map(c => c.state)).toEqual(["changed", "changed", "unchanged"]);
+});
+
 test("a PII path or a PII task makes the record private, and the public view shows no path for it", async () => {
   const f = folder({ "report.md": "r", "patients/2026.csv": "p" });
   const records = await hashDeliverables([claim("report.md"), claim("patients/2026.csv", "csv")], f.ports({ private: path => path.startsWith("patients/") }));

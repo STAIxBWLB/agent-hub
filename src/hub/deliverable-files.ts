@@ -111,8 +111,13 @@ export interface DeliverableCheck { record: DeliverableRecord; state: Deliverabl
  */
 export async function checkDeliverables(records: readonly DeliverableRecord[], ports: DeliverablePorts): Promise<DeliverableCheck[]> {
   const out: DeliverableCheck[] = [];
+  // The files may have grown since delivery: the aggregate bound holds for a read as for a delivery, so an over-large set is read as unknown, not hashed.
+  let total = 0;
+  for (const record of records) { try { if (record.path) total += locate(record.path, ports).stat.size; } catch { /* reported per file below */ } }
+  const tooLarge = total > DELIVERABLE_LIMITS.totalBytes;
   for (const record of records) {
     if (!record.path) { out.push({ record, state: "unknown", why: "no path recorded" }); continue; }
+    if (tooLarge) { out.push({ record, state: "unknown", why: `the files together are now larger than ${DELIVERABLE_LIMITS.totalBytes / (1024 * 1024)} MiB` }); continue; }
     try {
       const found = locate(record.path, ports);
       const now = await digest(record.path, found);

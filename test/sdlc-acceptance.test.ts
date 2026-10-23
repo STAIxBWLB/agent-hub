@@ -93,6 +93,8 @@ test("an owner's build stage change re-reads the body edit time; other stages an
   r.issue.lastEditedAt = LATER; // a body edit after acceptance: the synchronous gate alone sees only "unknown"
   await expect(r.tasks.specStageGate("codex", r.id, { stage: "build" })).rejects.toThrow("spec changed after acceptance");
   await expect(r.tasks.specStageGate("codex", r.id, { stage: "implement" })).rejects.toThrow("spec changed after acceptance");
+  // #509a: naming deliverables in the same receipt does not slip past the live check (the receipt is read without them, as recordSdlc records it)
+  await expect(r.tasks.specStageGate("codex", r.id, { stage: "build", deliverables: [{ path: "a.md", format: "md" }] })).rejects.toThrow("spec changed after acceptance");
   await r.tasks.specStageGate("codex", r.id, { stage: "review" });
   await r.tasks.specStageGate(USER, r.id, { stage: "build" });
   expect(rig("advise").tasks.specStageGate("codex", 1, { stage: "build" })).resolves.toBeUndefined();

@@ -3047,7 +3047,9 @@ export class Tasks {
     const task = this.need(id, false, true), config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     if (config.mode === "off" || by === USER || !input || typeof input !== "object" || !("stage" in input)) return;
     let next: ReturnType<typeof sdlcReceipt>;
-    try { next = sdlcReceipt(input, task.sdlc, config, VERSION); } catch { return; } // recordLifecycle reports an invalid receipt
+    // #509a: `deliverables` ride in the receipt but are not a lifecycle field: recordSdlc splits them off, so the gate reads the same receipt it will record.
+    const { deliverables: _carried, ...lifecycleInput } = input as Record<string, unknown>;
+    try { next = sdlcReceipt(lifecycleInput, task.sdlc, config, VERSION); } catch { return; } // recordLifecycle reports an invalid receipt
     const definition = stageDefinition(config, next.stage);
     if (next.stage === task.sdlc?.stage || !definition || canonicalStage(definition.base) !== "build") return;
     const accepted = next.acceptance;
