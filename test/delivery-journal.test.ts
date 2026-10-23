@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
+import { Bus } from "../src/hub/bus.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 
 function open() {
@@ -54,5 +55,27 @@ test("AC2: automatic settlement records the hub actor and conflicts with person 
     journal.resolve(row.id, row.revision, "completed", "superseded: presence", row.revision, "hub");
     expect(journal.resolution(row.id)).toMatchObject({ actor: "hub", action: "completed", reason: "superseded: presence" });
     expect(() => journal.resolve(row.id, row.revision, "completed", "superseded: presence")).toThrow();
+  } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("hot roster and unresolved queue reads exclude terminal payload history (#719)", () => {
+  const { dir, journal } = open();
+  try {
+    const env = newEnvelope("user", "x".repeat(8192));
+    journal.transaction(() => {
+      for (let n = 0; n < 512; n++) journal.createDelivery({ id: `history-${n}`, peer: "retired", state: "failed", createdAt: env.ts + n, originals: [env], out: [env] });
+      journal.createDelivery({ id: "held", peer: "codex", state: "needs_review", createdAt: env.ts, originals: [env], out: [env] });
+    });
+    const expected = journal.snapshot().revision, bus = new Bus({ journal });
+    const list = journal.list.bind(journal), snapshot = journal.snapshot.bind(journal);
+    journal.list = () => { throw new Error("full delivery history on hot path"); };
+    journal.snapshot = () => { throw new Error("recovery snapshot on hot path"); };
+    expect(bus.knownPeers()).toEqual(["codex"]);
+    expect(journal.revision()).toBe(expected);
+    expect(bus.queueList(undefined, true).map(row => row.id)).toEqual(["held"]);
+    journal.list = list;
+    // Explicit history still includes terminal rows and does not need a recovery snapshot.
+    expect(bus.queueList()).toHaveLength(513);
+    journal.snapshot = snapshot;
   } finally { journal.close(); rmSync(dir, { recursive: true, force: true }); }
 });

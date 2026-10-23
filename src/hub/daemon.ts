@@ -2094,7 +2094,7 @@ export async function startDaemon(opts: DaemonOptions) {
       try { tasks.flushPlannerNotices(); } catch { /* the board remains authoritative if notice delivery fails */ }
       for (const pending of checkpointWaits.values()) if (!pending.valid()) pending.done(undefined);
       for (const [id, request] of permissions) if (request.expiresAt > Date.now()) supervision.approvalWaiting({ id, peer: request.peer, tool: request.tool ?? "unknown", createdAt: request.createdAt });
-      for (const row of bus.queueList()) if (row.state === "needs_review") supervision.needsReview(row.peer, row.id);
+      for (const row of bus.queueList(undefined, true)) if (row.state === "needs_review") supervision.needsReview(row.peer, row.id);
       feedBudgetPauses();
       supervision.checkRound();
       try {

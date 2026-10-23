@@ -69,7 +69,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Feature | State here | Measured by |
 | --- | --- | --- |
 | Dogfood scorecard (#687) | on after release; read-only weekly receipt | `ahub report --dogfood --since 7d --json`; bounded evidence and explicit unknowns |
-| Console and dashboard | on | control-request latency, connection timeouts in `hub.log` |
+| Console and dashboard | on; #719 pending-history reads and bounded native launch retries take effect after release | control-request latency, connection timeouts and launch retry notices; daemon CPU/RSS samples, measured separately from lifetime CPU |
 | Usage view (#683) | CLI (`ahub usage`, U2), console Usage tab `7` (U3) and dashboard Usage view (U4) shipped | its own panels |
 | Settings reload | on | reloads applied, pending restarts |
 | Config editing from the console and dashboard (#689) | on after release; `ahub settings edit` and console key `c` run here, the dashboard Structure group needs `ahub ui --settings`; executable keys stay console only | `config_edit` events (edits applied by tier and source), refusals shown with the loader reason, restarts left pending |

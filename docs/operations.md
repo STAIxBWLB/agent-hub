@@ -1244,7 +1244,7 @@ ahub usage limits [--peer <id>] [--limit <n>] [--json]   # current quota windows
 ahub usage total [--json]                  # lifetime development tokens since the first event, per peer and overall
 ```
 
-The daemon folds `events.jsonl` into `usage_rollup`, `token_rollup` and `limit_events` from a stored byte offset, at most 8 MiB per pass and
+The daemon folds `events.jsonl` into `usage_rollup`, `token_rollup` and `limit_events` from a stored byte offset, at most 8 MiB per pass, with a 20 ms scheduling slice checked between whole records (one record is indivisible),
 only whole lines, and each pass commits its rows and the new offset together, so a crash repeats a pass and never half-applies one. A rebuild
 from byte 0 gives the same rows (tested). A log that was replaced by a shorter one is folded again from the start. On this project's 47 MB,
 238k-line log the first fold took about 170 ms and a `usage` command about 95 ms, against about 150 ms for `ahub report --by task`, which
@@ -4273,3 +4273,9 @@ The design for planner, implementer and reviewer instances per stage is in the s
 - Code tasks routed to a terminal Claude implementer instance once its execution root is proven (525-5), and a headless Claude implementer with `start_mode: "headless"` (`permission_mode` `ask` or `ask-when-needed`; `never-ask` refused) (525-4).
 - The `planner` setting accepts a list of peers or instance ids; each task records its own planner, and only that planner or the person runs planner tools on it.
 - A reviewer is never a peer that implemented the task, and a plan's author does not record its own plan review while another planner is available.
+
+## Daemon responsiveness and launch connects (#719)
+
+Periodic peer-roster and delivery-supervision reads select pending journal metadata/rows, excluding completed payload history. Queue revision reads do not construct a recovery snapshot. Explicit queue/history commands retain terminal history. The pending-state index supports these reads without sorting historical payloads.
+
+Native launcher connections retry transport timeouts/unreachable connections with bounded backoff for at most 15 seconds, printing `hub busy, retrying` once. The ordinary control-connect timeout remains 3 seconds. Authentication refusals, wire mismatch and project/instance mismatch are terminal. Every retry rereads the descriptor and preserves the invocation's delegated-audit instance pin. Usage queries retain their existing catch-up budgets and report `behind` until complete; time slicing never advances beyond the last atomically folded record.

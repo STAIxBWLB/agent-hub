@@ -101,7 +101,8 @@ export class UsageRollup {
    * Fold the next slice of the log. Whole lines only: a trailing partial line (a crash, or a write in flight) waits for the next pass.
    * A log that is shorter than the stored offset was replaced or reset, so the roll-up starts over from byte 0.
    */
-  poll(): { bytes: number; done: boolean } {
+  poll(maxMs = 20): { bytes: number; done: boolean } {
+    const deadline = performance.now() + Math.max(0, Math.min(20, maxMs));
     if (this.closed) return { bytes: 0, done: true };
     if (!existsSync(this.eventsFile)) return { bytes: 0, done: true };
     const fd = openSync(this.eventsFile, "r");
@@ -127,18 +128,27 @@ export class UsageRollup {
         want = Math.min(size - offset, want * 2);
       }
       if (end < 0) return { bytes: 0, done: true };                    // the last line is still being written: it waits for the next pass
-      const text = buffer.subarray(0, end + 1).toString("utf8");
+      let consumed = 0;
       // The offset was read before the slice was; another roll-up on this hub.db (a restart that overlaps the old process) may have folded the same
       // bytes since. The transaction takes the write lock first and checks the stored offset again: a pass whose start is stale is abandoned whole,
       // so a byte range is folded exactly once however many writers there are (found by a forced interleave: the counts doubled).
       const applied = this.db.transaction(() => {
         if (this.state().offset !== offset) return false;
-        for (const line of text.split("\n")) this.fold(line);
-        this.db.query("UPDATE rollup_state SET byte_offset = ? WHERE id = 1").run(offset + end + 1);
+        // Commit only complete processed records with their offset. Yield between records;
+        // ponytail: one whole record and the existing corrupt-line skip are indivisible;
+        // a streaming parser would be needed to preempt within either operation.
+        for (let start = 0; start <= end;) {
+          const newline = buffer.indexOf(0x0a, start);
+          if (newline < 0 || newline > end) break;
+          this.fold(buffer.subarray(start, newline).toString("utf8"));
+          consumed = newline + 1; start = consumed;
+          if (performance.now() >= deadline) break;
+        }
+        this.db.query("UPDATE rollup_state SET byte_offset = ? WHERE id = 1").run(offset + consumed);
         return true;
       }).immediate();
       if (!applied) return { bytes: 0, done: false };                   // stale: the next pass starts from the stored offset
-      return { bytes: end + 1, done: offset + end + 1 >= size };
+      return { bytes: consumed, done: offset + consumed >= size };
     } finally { closeSync(fd); }
   }
 
@@ -160,7 +170,7 @@ export class UsageRollup {
    */
   catchUp(maxMs?: number): boolean {
     const until = maxMs === undefined ? Infinity : Date.now() + maxMs;
-    for (let i = 0; i < 100_000; i++) { if (this.poll().done) return true; if (Date.now() >= until) return false; }
+    for (let i = 0; i < 100_000; i++) { if (this.poll(Math.min(20, until - Date.now())).done) return true; if (Date.now() >= until) return false; }
     return true;
   }
 

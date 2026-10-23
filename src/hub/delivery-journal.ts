@@ -335,6 +335,7 @@ export class DeliveryJournal {
       if (!resolutionColumns.some((column) => column.name === "original_ids")) this.db.run("ALTER TABLE resolution_history ADD COLUMN original_ids TEXT NOT NULL DEFAULT '[]'");
       this.db.run("CREATE INDEX IF NOT EXISTS resolution_retry_peer ON resolution_history(project_id, peer, action)");
       this.db.run("CREATE INDEX IF NOT EXISTS deliveries_peer ON deliveries(project_id, peer, state)");
+      this.db.run("CREATE INDEX IF NOT EXISTS deliveries_pending ON deliveries(project_id, created_at, id, peer) WHERE state IN ('queued', 'dispatching', 'accepted', 'needs_review')");
     })();
   }
   private recoverRetryHistory(meta: Record<string, unknown>): void {
@@ -740,6 +741,19 @@ export class DeliveryJournal {
       .get(id, this.projectId) as Record<string, unknown> | null;
     return row ? parseDelivery(row) : undefined;
   }
+  /** Hot roster reads never materialize completed envelope history. */
+  pendingPeers(): string[] {
+    this.ensureOpen();
+    const rows = this.db.query("SELECT DISTINCT peer FROM deliveries WHERE project_id = ? AND state IN ('queued', 'dispatching', 'accepted', 'needs_review') ORDER BY peer").all(this.projectId) as { peer: unknown }[];
+    return rows.map(row => text(row.peer, "delivery peer", 256));
+  }
+  /** The queue needs a current revision, not the recovery snapshot's payloads. */
+  revision(): number {
+    this.ensureOpen();
+    const row = this.db.query("SELECT revision FROM delivery_meta WHERE project_id = ?").get(this.projectId) as { revision: unknown } | null;
+    if (!row) throw new Error("delivery journal metadata missing");
+    return integer(row.revision, "revision");
+  }
   list(peer?: string): JournalDelivery[] {
     this.ensureOpen();
     const rows = (
@@ -757,9 +771,11 @@ export class DeliveryJournal {
     ) as Record<string, unknown>[];
     return rows.map(parseDelivery);
   }
-  unresolved(peer: string): JournalDelivery[] {
+  unresolved(peer?: string): JournalDelivery[] {
     this.ensureOpen();
-    const rows = this.db.query("SELECT * FROM deliveries WHERE project_id = ? AND peer = ? AND state IN ('queued', 'dispatching', 'accepted', 'needs_review') ORDER BY created_at, id").all(this.projectId, peer) as Record<string, unknown>[];
+    const rows = (peer === undefined
+      ? this.db.query("SELECT * FROM deliveries WHERE project_id = ? AND state IN ('queued', 'dispatching', 'accepted', 'needs_review') ORDER BY created_at, id").all(this.projectId)
+      : this.db.query("SELECT * FROM deliveries WHERE project_id = ? AND peer = ? AND state IN ('queued', 'dispatching', 'accepted', 'needs_review') ORDER BY created_at, id").all(this.projectId, peer)) as Record<string, unknown>[];
     return rows.map(parseDelivery);
   }
   heldDeliveryHints(peer: string) {
