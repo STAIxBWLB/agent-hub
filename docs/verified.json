@@ -69,7 +69,9 @@
         "src/cli/configured-acp-entry.ts",
         "src/cli/preview.ts",
         "src/hub/roster.ts",
-        "src/hub/instances.ts"
+        "src/hub/instances.ts",
+        "src/hub/action-enforce.ts",
+        "src/hub/permission-payload.ts"
       ]
     },
     "docs/agent-notes/benchmarks.md": {
@@ -100,7 +102,10 @@
         "src/hub/instance-budget.ts",
         "src/hub/claude-state.ts",
         "src/adapters/definitions/native-channel-state.ts",
-        "src/hub/usage-rollup.ts"
+        "src/hub/usage-rollup.ts",
+        "src/adapters/kimi-wire-usage.ts",
+        "src/hub/kimi-usage.ts",
+        "src/hub/token-window.ts"
       ]
     },
     "docs/agent-notes/bus.md": {
@@ -178,7 +183,11 @@
         "src/cli/memory.ts",
         "src/adapters/definitions/native-channel-state.ts",
         "src/hub/task-code-group.ts",
-        "src/cli/status-lines.ts"
+        "src/cli/status-lines.ts",
+        "src/hub/config-tier.ts",
+        "src/hub/config-edit.ts",
+        "src/hub/config-edit-host.ts",
+        "src/hub/claude-launch-proof.ts"
       ]
     },
     "docs/agent-notes/local-worker.md": {
@@ -231,7 +240,10 @@
         "src/hub/review-findings.ts",
         "src/hub/plan-conformance.ts",
         "src/hub/sdlc-metrics.ts",
-        "src/hub/spec-read.ts"
+        "src/hub/spec-read.ts",
+        "src/hub/workflow.ts",
+        "src/hub/deliverables.ts",
+        "src/hub/deliverable-files.ts"
       ]
     },
     "docs/agent-notes/tests.md": {

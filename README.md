@@ -36,8 +36,13 @@ ahub ui                                      # the web dashboard
   restarts.
 - **A shared task board.** Work is proposed, accepted, done and reviewed through hub
   tools. Roles split planning, implementation and review, `routing.toml` picks
-  owners by task class, and owners of overlapping work are told what changed.
-  `ahub sdlc metrics` reads lead times, rework and stalls from board history, and
+  owners by task class, and owners of overlapping work are told what changed. A
+  peer that accepted or finished a task never reviews it, a review request lists
+  the task's acceptance criteria by id, and a done report can name deliverable
+  files that the hub hashes itself, so an approval binds the bytes reviewed. Extra
+  Claude Code instances can implement in their own worktree, in a terminal or
+  headless with one session per task. `ahub sdlc metrics` reads lead times,
+  rework and stalls from board history, and
   optional control bands turn a breach into a backlog card.
 - **Shared memory.** Decisions, contracts, fails and findings are kept through the
   first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library
@@ -47,10 +52,15 @@ ahub ui                                      # the web dashboard
   through an authenticated relay. Tasks marked as PII stay on the on-prem worker.
 - **Guard rails.** The local worker and Pi run in a sandbox, and their writes and
   shell commands wait for your approval unless you choose a looser permission mode.
-  Budgets pause an agent before it runs out of quota, and recovery never replays an
+  Publish, external-write, destroy and install calls ask a person in every mode for
+  Claude Code and hub-owned ACP peers such as Kimi, wherever the hub sees the call
+  before it runs; `ahub status` names each peer where it cannot. Budgets pause an
+  agent before it runs out of quota, and recovery never replays an
   effect whose outcome is unknown.
 - **Operations.** A terminal console and a local dashboard, one hub per repository or
-  worktree with a machine-wide view, live settings reload, token usage and quota
+  worktree with a machine-wide view, live settings reload, structural config
+  (instances, review, lifecycle) edited with a validated diff and a backup from the
+  console or a dashboard settings session, token usage and quota
   history (`ahub usage` and the dashboard's Usage view), and `ahub upgrade`, which
   carries running sessions across versions.
 
@@ -80,7 +90,7 @@ uses the home must run a version that understands the new layout.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-10-23-0.14.0.md) and the
+[release verification report](docs/verification/2026-10-23-0.15.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation

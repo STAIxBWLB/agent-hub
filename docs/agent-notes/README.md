@@ -35,3 +35,7 @@ Background moved out of the area notes for 0.13.0:
 - Jcode MCP entry (#685, adapters.md): jcode gives an MCP entry's own env precedence over the process env (probed on 0.99.0), so a peer id in the shared `.jcode/mcp.json` entry would make every extra instance act as `jcode`.
 - Bulk queue discard (#713, bus.md): a queued row with no journal record of its own carries the journal's global revision, which every discard moves, so a revision read once at the start goes stale after the first discard.
 - Usage roll-up (#683 U2, budget.md): a pass cap smaller than one log line once hung the fold.
+
+Background moved out of the area notes for 0.15.0:
+
+- I-2 as the last reviewer check (#744, tasks.md): placed earlier, it refused an offline former implementer as "implemented this task" instead of "offline", which turned a task that used to approve directly into a blocked person review.
