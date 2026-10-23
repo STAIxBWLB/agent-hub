@@ -68,7 +68,7 @@ test("R2 action policy refuses shared reloads without offering confirmation or a
     const row = rows.find((item: { key: string }) => item.key === "action_policy.enabled");
     expect(row.source).toBe("default");
     expect(row.value).toBe(true);
-    expect(row.hint).toBe("not enforced yet: adapter integration pending");
+    expect(row.hint).toBe("enforced for Claude (PreToolUse hook) and hub-owned ACP peers in ask mode; ahub status lists each peer that is not enforceable");
   } finally { client?.close(); await daemon.stop(); }
 });
 

@@ -24,7 +24,18 @@ export interface PermissionRequest {
   kind?: string;
   /** The tool's name alone, when the adapter knows it apart from the title (which can quote the payload). */
   tool?: string;
+  /** An always-ask class call (#636): the host never answers it on its own, not even for an unattended hub. */
+  classed?: true;
 }
+
+/** What the host's always-ask gate says about one request (#636): the approval text it must show, and a class-budget choice when one applies. */
+export interface ActionGateVerdict {
+  title: string;
+  /** A person's explicit choice to approve the classes for the rest of the session's budget (`label` names them); never an ordinary allow. */
+  budget?: { label: string; approve(): boolean };
+}
+/** The option id of that choice. The agent never sees it: it is answered with the agent's own allow_once. */
+export const ACTION_BUDGET_OPTION = "agent-hub:action-budget";
 
 export interface ACPUsageDiagnostic {
   source: "usage_update" | "prompt_result";
@@ -108,6 +119,11 @@ export interface AcpOptions {
   onPermission?: (req: PermissionRequest, signal?: AbortSignal) => Promise<string | undefined>;
   /** Tool titles approved once without asking: the hub's own tools, as Codex gets them (issue #72). Exact names only. */
   autoApprove?: (toolTitle: string) => boolean;
+  /**
+   * Always-ask (#636): given a request's tool names, kind and arguments, a verdict only when a person must be asked, else undefined (the
+   * request then follows the permission mode as before). A verdict beats `autoApprove`, withholds `allow_always` and carries the approval text.
+   */
+  actionGate?: (call: { names: readonly string[]; kind?: string; input: unknown }, session: string) => ActionGateVerdict | undefined;
   /** Transient person-only stream; no native update escapes through another observer. */
   onActivity?: (item: Activity) => void;
   isPrivateTurn?: () => boolean;
@@ -323,6 +339,9 @@ export class AcpPeer extends BasePeer {
   }
 
   getPermissionMode(): PermissionMode { return this.permissionMode; }
+
+  /** Whether this peer's permission requests pass through an always-ask gate (#636). */
+  get actionGated(): boolean { return this.opts.actionGate !== undefined; }
   /** Offline does not certify shutdown: retain the original runtime until its owned group is confirmed gone. */
   get pendingOwnedProcess(): boolean { return this.opts.requireOwnedGroup === true && this.proc !== undefined; }
   get permissionModeState(): PermissionMode | "unknown" | "unmanaged" {
@@ -662,7 +681,14 @@ export class AcpPeer extends BasePeer {
     // Configured ACP titles are not trusted MCP identity, even when they spell a hub tool exactly.
     const identity = this.nativePolicy !== undefined || this.opts.requireOwnedGroup ? undefined
       : [typeof call.title === "string" ? call.title : undefined, canonical].find((candidate) => candidate !== undefined && this.opts.autoApprove?.(candidate));
-    if (once && identity) {
+    // Always-ask (#636): classed before anything may answer for the person. A call whose arguments the agent did not report is not classed
+    // (unknown follows the permission mode); a classed call is never auto-approved, whatever its title says.
+    const rawInput = call.rawInput ?? (id === undefined ? undefined : this.toolInputs.get(id) ?? jsonObject(this.toolText.get(id)));
+    let gate: ActionGateVerdict | undefined;
+    try {
+      gate = rawInput === undefined || !this.sessionId ? undefined : this.opts.actionGate?.({ names: [call.title, announced, canonical].filter((name): name is string => typeof name === "string"), ...(kind ? { kind } : {}), input: rawInput }, this.sessionId);
+    } catch { gate = { title: "Action approval: the always-ask check failed; approve only if you know what runs" }; } // a failing gate asks, never allows
+    if (once && identity && !gate) {
       this.opts.log?.(`permission auto-approved for ${this.id}: ${identity}`); // the name only: arguments may quote a PII turn
       this.emitActivity("ask", `${String(msg.id)}: ${activityText(announced ?? call.title)} (automatic)`);
       this.emitActivity("answered", `${String(msg.id)}: allow_once (automatic)`);
@@ -671,7 +697,7 @@ export class AcpPeer extends BasePeer {
     // The approver has to see what runs, not only the tool's name ("Bash"). The request itself carries it
     // for some agents; for the rest it was on the `tool_call` update that announced the call, as rawInput or,
     // failing that, as streamed argument text that only counts once it is a complete JSON object.
-    const raw = call.rawInput ?? (id === undefined ? undefined : this.toolInputs.get(id) ?? jsonObject(this.toolText.get(id)));
+    const raw = rawInput;
     const full = raw === undefined ? "" : typeof raw === "string" ? raw : JSON.stringify(raw);
     // A cut payload hides its tail, and a tail can change what runs: it is marked and buys no session-wide grant.
     const cut = full.length > 600;
@@ -679,9 +705,12 @@ export class AcpPeer extends BasePeer {
     // A request titled with the argument JSON is no title at all: display what the call was announced as.
     const named = typeof call.title === "string" && jsonObject(call.title) === undefined ? call.title : announced;
     // An unknown payload is never dressed up as a description, and it must not buy a blanket grant.
-    const title: string = raw === undefined ? `${named ?? "tool call"} (payload not reported by the agent)` : `${named ?? "tool call"}${input}`;
+    const title: string = gate ? gate.title : raw === undefined ? `${named ?? "tool call"} (payload not reported by the agent)` : `${named ?? "tool call"}${input}`;
     this.emitActivity("ask", `${String(msg.id)}: ${activityText(title)}; answer in ahub console`);
-    const options: PermissionOption[] = (msg.params?.options ?? []).filter((o: PermissionOption) => o.kind !== "allow_always" || !this.nativePolicy?.lockedReadOnly && raw !== undefined && !cut);
+    let options: PermissionOption[] = (msg.params?.options ?? []).filter((o: PermissionOption) => o.kind !== "allow_always" || !gate && !this.nativePolicy?.lockedReadOnly && raw !== undefined && !cut);
+    // The class-budget choice is the hub's own option: answered to the agent as its allow_once once the ledger has recorded the grant.
+    const budgetOption: PermissionOption | undefined = gate?.budget && once ? { optionId: ACTION_BUDGET_OPTION, name: `Allow ${gate.budget.label} for this session`, kind: "allow_once" } : undefined;
+    if (budgetOption) options = [...options, budgetOption];
     // Only a bare tool name travels on its own (a desktop notice shows it); anything prose-like stays in the title.
     const tool = typeof named === "string" && /^[\w.:@-]{1,80}$/.test(named) ? named : undefined;
     // Waiting for a person is not the agent going silent: keep the watchdog from cancelling the turn meanwhile.
@@ -692,17 +721,24 @@ export class AcpPeer extends BasePeer {
     let picked: string | undefined;
     try {
       const cancelled = new Promise<undefined>(resolve => controller.signal.addEventListener("abort", () => resolve(undefined), { once: true }));
-      picked = await Promise.race([this.opts.onPermission?.({ peer: this.id, title, options, ...(tool ? { tool } : {}), ...(kind ? { kind } : {}) }, controller.signal).catch(() => undefined), cancelled]);
+      picked = await Promise.race([this.opts.onPermission?.({ peer: this.id, title, options, ...(tool ? { tool } : {}), ...(kind ? { kind } : {}), ...(gate ? { classed: true as const } : {}) }, controller.signal).catch(() => undefined), cancelled]);
     } finally {
       clearInterval(alive); // also when there is no handler at all
       this.permissionWaits.delete(controller);
     }
-    const valid = !controller.signal.aborted && this.state !== "offline" && turn === this.turn && !this.stopping && options.some((o) => o.optionId === picked);
+    let valid = !controller.signal.aborted && this.state !== "offline" && turn === this.turn && !this.stopping && options.some((o) => o.optionId === picked);
+    let answer = picked;
+    // A class-budget grant is recorded only for a still-current session and policy; if the ledger refuses it, nothing is allowed (fail closed).
+    if (valid && budgetOption && picked === budgetOption.optionId) {
+      let granted = false;
+      try { granted = gate!.budget!.approve(); } catch { /* not granted */ }
+      if (granted && once) answer = once.optionId; else valid = false;
+    }
     if (turn === this.turn) this.emitActivity("answered", `${String(msg.id)}: ${valid ? options.find(o => o.optionId === picked)?.kind : "cancelled"}`);
     this.send({
       jsonrpc: "2.0",
       id: msg.id,
-      result: { outcome: valid ? { outcome: "selected", optionId: picked } : { outcome: "cancelled" } },
+      result: { outcome: valid ? { outcome: "selected", optionId: answer } : { outcome: "cancelled" } },
     });
   }
 

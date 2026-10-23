@@ -1,6 +1,7 @@
 import { readClaudeLaunchProof } from "./claude-launch-proof.ts";
 import { InboxPolling } from "./inbox-polling.ts";
 import { ActionBudgets, actionPolicyConfig, type ActionPolicyConfig } from "./action-policy.ts";
+import { actionGate, claudeActionClasses } from "./action-enforce.ts";
 import { ReleaseAuthorizations, releaseAuthorizationError } from "./sdlc-release-authorization.ts";
 import { parseReleaseGuardArgv, parseReleasePushUpdates } from "../cli/sdlc-release-guard.ts";
 import type { DocEvidence } from "./sdlc-release.ts";
@@ -2670,6 +2671,30 @@ export async function startDaemon(opts: DaemonOptions) {
     }
   };
   const actionBudgets = new ActionBudgets(() => config.action_policy, contextSession);
+  // #636 slice 2: the always-ask gate of an ACP peer, built per peer from the host's own ports (root, task, PII screen); never from the agent.
+  const acpActionGate = (peer: PeerId) => actionGate({ budgets: actionBudgets, policy: () => config.action_policy, root: executionRoot,
+    task: p => board.list("in_progress").find(t => t.owner === p), publicView: task => tasks.publicView(task), isPrivate: p => !!turns.get(p)?.private || contextPii(p),
+    nameable: text => tasks.nameable(text) }, peer);
+  // A peer is enforceable only where the hub sees the call before it runs, in the mode it runs in now; anything else says why, never a silent claim.
+  // Claude: the launcher installed the PreToolUse hook (an `--unattended` launch skips every permission check, hooks included). ACP: a hub-owned
+  // adapter with the gate, and only while its native mode is `ask`: Kimi's `yolo` and `auto` modes send no request for a call they allow.
+  const actionEnforcement = (peer: PeerId): { enforced: boolean; reason?: string } => {
+    if (definitionOf(peer)?.transport === "claude-channel") {
+      const launch = claudePermissionLaunch(peer), attached = bus.peers.get(peer);
+      // The launch record outlives the process, so it proves nothing alone: the attached session must be the generation whose hook last spoke to the hub.
+      if (!launch) return { enforced: false, reason: "no hub permission hook in this Claude session (start it with ahub claude)" };
+      if (launch.unattended) return { enforced: false, reason: "this Claude launch is --unattended: its permission checks, hooks included, are off" };
+      if (!isWsPeer(attached) || attached.state === "offline" || claudePermissionGenerations.get(peer) !== attached.sessionGeneration)
+        return { enforced: false, reason: "no live Claude session has run the hub permission hook yet" };
+      return { enforced: true };
+    }
+    const owner = bus.peers.get(peer);
+    if (isAcpPeer(owner) && owner.actionGated) {
+      const mode = owner.permissionModeState;
+      return mode === "ask" ? { enforced: true } : { enforced: false, reason: mode === "unknown" || mode === "unmanaged" ? "its native approval mode is not managed by the hub, so a request may never be sent" : `its native mode ${mode} sends no request for a call it allows` };
+    }
+    return { enforced: false };
+  };
   const permissionMode = (peer: string): PermissionMode => permissionModes.get(peer) ?? "ask";
   const permissionModeSources = new Map(Object.entries(defaultSources).map(([peer, value]) => [peer, value.source]));
   const unattendedPeers = new Set<string>();
@@ -2976,7 +3001,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ),
     taskWip: Object.fromEntries(peerIds.map(id => [id, { wip: tasks.wip(id), wipLimit: tasks.wipLimit(id) }])),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
-    actionPolicyInfo: Object.fromEntries(peerIds.map(id => [id, actionBudgets.status(id, false)])),
+    actionPolicyInfo: Object.fromEntries(peerIds.map(id => { const e = actionEnforcement(id); return [id, actionBudgets.status(id, e.enforced, e.reason)]; })),
     roleInfo: Object.fromEntries(peerIds.map(id => [id, { flowRoles: config.roles[id] ?? [], catalogRoles: roleState(id), ...(config.roles[id]?.includes("planner") ? { planner: plannerSource } : {}) }])),
     planner: { peers: plannerPeers(), source: plannerSource },
     ...(pendingPermissionDefaults.size ? { permissionDefaults: [...pendingPermissionDefaults].map(([peer, source]) => ({ peer, mode: "never-ask", source })) } : {}),
@@ -3438,6 +3463,9 @@ export async function startDaemon(opts: DaemonOptions) {
         }
       }
       if (e.state === "offline" && softTokenPeer(e.peer)) { collectKimiUsage(e.peer); kimiUsage.drop(e.peer); }
+      // #636: a class-budget allowance belongs to the owner that earned it. A stopped, crashed or removed owner that later resumes the same native
+      // session id starts from zero (a replaced adapter's own `offline` is muted, so a new owner also revokes where it is created).
+      if (e.state === "offline") actionBudgets.revoke(e.peer);
       if (e.state === "offline") { offlineSince.set(e.peer, offlineSince.get(e.peer) ?? Date.now()); supervision.peerOffline(e.peer); supervisionTurns.delete(e.peer); }
       else offlineSince.delete(e.peer);
       // A session that ended may come back without hooks: its context path is verified again or not at all (issue #108).
@@ -3524,7 +3552,8 @@ export async function startDaemon(opts: DaemonOptions) {
       catch { try { log(`permission observer failed for ${req.peer}`); } catch { /* settlement is authoritative */ } }
     };
     if (stopping || signal?.aborted) { observed("aborted"); return { outcome: "cancelled" }; }
-    if (opts.unattended) { observed("automatic"); return { outcome: "answered", optionId: req.options.find((o) => o.kind === "allow_once")?.optionId }; }
+    // Always-ask (#636): a classed call is never answered for the person, `--unattended` included; it waits for a person and expires as a denial.
+    if (opts.unattended && !req.classed) { observed("automatic"); return { outcome: "answered", optionId: req.options.find((o) => o.kind === "allow_once")?.optionId }; }
     const id = randomUUID().slice(0, 8);
     // The title is written by an agent and read by the person approving it: escape sequences and carriage returns
     // could repaint the terminal line, so everything but newline and tab is made visible.
@@ -3916,9 +3945,11 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (adapter?.start.acpCommand) {
       const cmd = adapter.start.acpCommand(config.kimi_cmd, args.model);
+      actionBudgets.revoke(peer); // a new owner never inherits the allowance of the one it replaces, even for the same session id
       const kimi: AcpPeer = adapter!.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["acp"]({
         onActivity: item => activityRings[peer]?.append(item),
         isPrivateTurn: () => !!turns.get(peer)?.private || contextPii(peer),
+        actionGate: acpActionGate(peer),
         cmd, kind: adapter.kind,
         permissionMode: permissionMode(peer),
         ...(args.model ? { launchModel: args.model } : {}),
@@ -3968,9 +3999,11 @@ export async function startDaemon(opts: DaemonOptions) {
         userArgs: [], unattended: false, env: {}, nativeCommand: configuredIds.includes(adapter.kind) ? undefined : config.qwen_cmd, model: args.model });
       const mcpServers = [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv(peer, true)).map(([name, value]) => ({ name, value })) }];
       const permission = readOnlyPeer(peer) ? "read-only" as const : permissionMode(peer);
+      actionBudgets.revoke(peer); // a new owner never inherits the allowance of the one it replaces, even for the same session id
       const owner = adapter.start.create({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: undefined, permission, mcpServers, daemon: { acp: {
         onActivity: item => activityRings[peer]?.append(item),
         isPrivateTurn: () => !!turns.get(peer)?.private || contextPii(peer),
+        actionGate: acpActionGate(peer),
         kind: adapter.kind, cmd: [launch.cmd, ...launch.args], permissionMode: permission === "read-only" ? "ask" : permission,
         ...(externalIds.has(adapter.kind) ? { requireOwnedGroup: true, requireLoadSessionEcho: true, nativePolicy: adapter.permission.genericAcp ?? {} } : {}),
         ...(args.model ? { launchModel: args.model } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}),
@@ -5940,7 +5973,9 @@ export async function startDaemon(opts: DaemonOptions) {
           const permission = nativeClaude && permissionLaunch && !permissionLaunch.unattended && msg.nativeLaunchId === permissionLaunch.launchId && writeRoot !== undefined ? permissionMode(peer) : undefined;
           if (permission !== undefined && isWsPeer(nativePeer)) claudePermissionGenerations.set(peer, nativePeer.sessionGeneration);
           const protectedWrite = scopedWriteBlocked(phase, permission, msg.tool, () => projectFileTool(msg.tool, msg.input, writeRoot ?? opts.cwd, config.protect_instruction_files, config.data?.readonly));
-          const permissionReply = phase === "pre" && permission !== undefined ? { permission: permission === "ask-when-needed" && protectedWrite ? "ask" : permission, projectRoot: writeRoot ?? opts.cwd, protectInstructionFiles: config.protect_instruction_files } : {};
+          // Always-ask (#636): a classed call is asked about in every permission mode. The hub names only the classes, under the same verified root as the file policy above; the hook turns them into `ask`.
+          const actionClasses = phase === "pre" && permission !== undefined && typeof msg.tool === "string" ? claudeActionClasses(actionBudgets, msg.tool, msg.input, writeRoot ?? opts.cwd) : [];
+          const permissionReply = phase === "pre" && permission !== undefined ? { permission: permission === "ask-when-needed" && protectedWrite ? "ask" : permission, projectRoot: writeRoot ?? opts.cwd, protectInstructionFiles: config.protect_instruction_files, ...(actionClasses.length ? { actionClasses } : {}) } : {};
           // Permission-only hooks carry no native-turn evidence and must never drive busy state.
           const purpose = permissionLaunch?.hookPurpose ?? msg.hookPurpose;
           const observesNative = purpose === "facts" || purpose === "idle" || purpose === "facts-and-idle" || (purpose === undefined && (config.coordination === "turn-free" || config.task_sweep.enabled || config.roles[peer]?.includes("conductor")));

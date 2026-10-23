@@ -111,3 +111,24 @@ test("approval copy composes the actual Tasks public view and metadata privacy b
     expect(text).toContain("[pii]"); expect(text).not.toContain("patient"); expect(text).not.toContain("ghp_");
   } finally { board.close(); rmSync(cwd, { recursive: true, force: true }); }
 });
+
+test("two concurrent challenges approved in turn never let more than N calls through (#636 review)", () => {
+  const r = rig(); r.config({ budgets: { install: 3 } });
+  const a = r.ask(["install"]), b = r.ask(["install"]), c = r.ask(["install"]), d = r.ask(["install"]); // four requests issued while the class is spent
+  expect(r.ledger.approve(a)).toBe(true);  // call 1 of 3: opens the allowance, 2 left
+  expect(r.ledger.approve(b)).toBe(true);  // call 2 of 3: a late approval consumes a slot, never resets
+  expect(r.ledger.approve(c)).toBe(true);  // call 3 of 3
+  expect(r.ledger.approve(d)).toBe(false); // the budget is spent: a fourth approval is refused, so only N ran
+  expect(r.ledger.status("worker", true).remaining.install).toBe(0);
+  expect(r.ledger.request(r.bound, ["install"]).kind).toBe("ask"); // and the next call asks again
+});
+
+test("a late approval of a mixed-class challenge is refused whole when any class has no slot left, and spends nothing", () => {
+  const r = rig(); r.config({ budgets: { install: 1, publish: 3 } });
+  const first = r.ask(["publish"]), mixed = r.ask(["install", "publish"]), mixed2 = r.ask(["install", "publish"]);
+  expect(r.ledger.approve(first)).toBe(true);   // publish opens: 2 left
+  expect(r.ledger.approve(mixed)).toBe(true);   // install opens (budget 1, so 0 left); publish is late and takes a slot: 1 left
+  expect(r.ledger.status("worker", true).remaining).toMatchObject({ publish: 1, install: 0 });
+  expect(r.ledger.approve(mixed2)).toBe(false); // install is late and spent: refused whole, so publish keeps its slot
+  expect(r.ledger.status("worker", true).remaining).toMatchObject({ publish: 1, install: 0 });
+});
