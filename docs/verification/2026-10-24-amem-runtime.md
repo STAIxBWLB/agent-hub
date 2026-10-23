@@ -56,3 +56,14 @@ The production native ask source now emits full memory ids, matching the client 
 
 
 First-review validation before the final gate: pinned Bun 1.4.2 typecheck and bundle rebuild pass; 153 focused tests across nine files pass with 6644 assertions. Four restored-old-behavior probes each fail a named assertion for all-author recall, bounded page reads, ask id dedupe and relative-only path metadata, then restore source byte-for-byte. The cached-handle regression also changes home R6 bounds from 512 MB/90 days to 1 MB/1 day and proves the next append reopens the handle and removes the expired row. A real daemon control response and the person's status renderer both expose truncation. The required full-gate result and its exact head follow in the task handoff, not inferred from this focused run.
+
+
+## PR 752 second-review CI correction
+
+At `e288b1a4`, run 40028391482 failed Ubuntu's cancellation-permission fixture. macOS job 120670470231 had no failing assertion: the cancellation test and both document-baseline tests passed, and the suite was still passing benchmark tests when the 1260-second whole-suite watchdog terminated it (exit 143, no invocation daemon leaks). No snapshot fixture change was needed for that run.
+
+Only the cancellation late-answer fixture now holds the existing Bun fake-clock/timer ports after live child setup and before the permission request. It awaits a native WebSocket permission push instead of polling a fake clock, then cancels and answers allow while expiry and heartbeat remain held. The existing permit acknowledgement and final deny assertions are unchanged, with extra held-clock/timer/restoration controls. Real timers are restored in finally before daemon cleanup; ordinary expiry and stop tests retain real timers. A native WebSocket probe shows I/O remains live with both timer paths held. All 15 permission/projection tests pass (172 assertions). Removing the current-task cancellation guard fails the named final deny assertion, then the exact source is restored.
+
+Per the progressing-cutoff rule in tests.md, hosted macOS alone gets a 1440-second whole-suite watchdog and a 30-minute job ceiling. Ubuntu remains at 1080 seconds and 25 minutes, and every individual test keeps its 20-second limit. Production permission, snapshot and P3 resource limits are unchanged. Exact-head full-gate and CI status are recorded in the handoff.
+
+Pinned typecheck passes. The installed actionlint parser rejects the pre-existing concurrency.queue key identically on the baseline and modified workflow; it reports no additional diagnostic, and a successful actionlint run is not claimed. GitHub CI remains the workflow execution proof.

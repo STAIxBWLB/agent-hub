@@ -76,7 +76,7 @@ jobs:
     if: needs.decision.outputs.admission == 'run' || needs.decision.outputs.admission == 'reuse'
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: ${{ matrix.os == 'macos-latest' && 30 || 25 }}
     strategy:
       fail-fast: false
       matrix:
@@ -113,7 +113,9 @@ jobs:
           # By 2026-10-20 macOS jobs ran 892-1009 s and run 39419130424 was cut at 960 s twice while
           # still passing tests (#593): macOS gets 1260 s, and the job ceiling rose to 25 minutes with it.
           # Linux then hit 780 s one second after a passing test (run 39441258200): Linux gets 1080 s.
-          AHUB_CHECK_HANG_S: ${{ runner.os == 'macOS' && '1260' || '1080' }}
+          # Run 40028391482 reached 1260 s on macOS while benchmark tests kept passing; allow 1440 s
+          # and 30 minutes for that job, preserving Ubuntu's allowance and the per-test 20 s bound.
+          AHUB_CHECK_HANG_S: ${{ runner.os == 'macOS' && '1440' || '1080' }}
           AHUB_RESTART_DIAGNOSTICS_DIR: ${{ runner.temp }}/ahub-restart-diagnostics
         run: scripts/check.sh
       - name: Capture macOS fsmonitor readback diagnostics after a failed gate

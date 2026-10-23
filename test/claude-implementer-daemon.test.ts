@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, test, jest } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -124,17 +124,25 @@ test("#525 a current task child records deliverables from its verified worktree 
 
 
 test("#525 cancelling the bound task revokes a waiting permission even when the person answers allow", async () => {
-  const f = await fixture(true), pushes: any[] = [];
+  const f = await fixture(true);
   try {
-    f.console_.onPush = push => { pushes.push(push); }; f.console_.send({ t: "tail" });
+    const waiting = new Promise<any>(resolve => { f.console_.onPush = push => { if (push.t === "permission") resolve(push); }; });
+    f.console_.send({ t: "tail" });
+    // This tests final-answer authority, not expiry or the heartbeat's earlier withdrawal.
+    // Native WebSocket I/O stays live while the existing clock/timer ports are held.
+    jest.useFakeTimers({ now: Date.now() });
+    const heldAt = Date.now();
     const answer = f.tools.request({ t: "permission_request", tool: "Write", input: { file_path: join(f.tree, "source.ts"), content: "cancelled work" } });
-    await until(() => pushes.some(row => row.t === "permission"), "approval waiting before cancellation");
+    const request = await waiting;
+    expect(request.t).toBe("permission"); expect(request.peer).toBe(f.peer);
+    expect(jest.getTimerCount()).toBeGreaterThanOrEqual(2);
     expect(await f.console_.request({ t: "task", op: "hub_task_cancel", args: { id: f.taskId, reason: "fixture cancellation" } })).toMatchObject({ ok: true });
-    const request = pushes.find(row => row.t === "permission");
+    expect(Date.now()).toBe(heldAt);
     expect(await f.console_.request({ t: "permit", id: request.id, option: "allow" })).toMatchObject({ ok: true });
     const result = await answer;
     expect(result.ok === false || result.behavior === "deny").toBe(true);
-  } finally { await f.close(); }
+  } finally { jest.useRealTimers(); await f.close(); }
+  expect(jest.isFakeTimers()).toBe(false);
 }, 20_000);
 
 test("#525 an approval answer revalidates a worktree changed while its heartbeat was waiting", async () => {
