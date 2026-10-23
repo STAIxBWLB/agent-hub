@@ -269,10 +269,55 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   if (counts) out.push([], ...lines(`TASKS  ${counts} (ahub board)`, columns));
   return out;
 }
-export function renderBoard(tasks: any[], columns?: number, now = Date.now(), _full = false, allTasks: any[] | null = tasks): Span[][] {
+// #724: short next-step codes for the compact board, keyed on the blocker texts of src/hub/sdlc.ts; the full advice stays in --full and ahub task show.
+const STAGE_CODES: [string, string][] = [["issue identity missing", "issue?"], ["PR identity missing", "PR?"], ["PR is not open", "PR closed"], ["current PR evidence unknown", "PR state?"],
+  ["required check", "CI?"], ["local gate", "gate?"], ["current head has not been reviewed", "review?"], ["GitHub review approval", "approval?"], ["review requests", "requests?"],
+  ["review threads", "threads?"], ["open important review findings", "findings"], ["person may inspect merge readiness", "ready"]];
+export function stageCode(next: string): string {
+  const known = STAGE_CODES.find(([prefix]) => next.startsWith(prefix));
+  return known ? known[1] : width(next) <= 12 ? next : characters(next).slice(0, 9).join("") + "...";
+}
+const BOARD_LEGEND = "STAGE: [#---] SDLC progress, stage: next step. issue? no issue, PR? no PR, CI? checks, review? not reviewed, threads? open threads. Full advice: ahub board --full.";
+const ellipsis = (text: string, room: number) => width(text) <= room ? text : room <= 3 ? ".".repeat(Math.max(0, room)) : (() => { let out = ""; for (const unit of characters(text)) { if (width(out + unit) > room - 3) break; out += unit; } return out + "..."; })();
+/** #724: one line per task. TITLE goes last and is cut to the room left; at a narrow width REVIEWER, CLASS and AGE give way first. */
+function compactBoard(tasks: any[], data: OutputCell[][], columns: number, staged: boolean): Span[][] {
+  const head = ["ID", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "AFTER", ...(staged ? ["STAGE"] : []), "TITLE"];
+  let table = tasks.map((task, i) => {
+    const row = data[i]!, deps: number[] = task.deps ?? [];
+    const after = deps.length ? `#${deps[0]}${deps.length > 1 ? `,+${deps.length - 1}` : ""}` : "-";
+    const meter = /^\[[^\]]*\](?: cancelled)?/.exec(row[7]?.text ?? "")?.[0] ?? "[----]";
+    const stage = task.lifecycle ? `${meter} ${task.lifecycle.stage}: ${stageCode(String(task.lifecycle.next ?? ""))}` : meter;
+    const short = task.lifecycle ? `${meter} ${stageCode(String(task.lifecycle.next ?? ""))}` : meter;
+    return [row[0]!, row[1]!, row[2]!, row[3]!, row[4]!, row[5]!, span(after, undefined, true), ...(staged ? [{ ...span(stage, row[7]!.tone, true), short }] : []), span(flat(task.title))];
+  });
+  let names = [...head];
+  const drop = (name: string) => { const at = names.indexOf(name); if (at < 0) return; names = names.filter((_, i) => i !== at); table = table.map(row => row.filter((_, i) => i !== at)); };
+  for (const name of [...names]) if (name !== "TITLE" && table.every(row => flat(row[names.indexOf(name)]?.text) === "-")) drop(name);
+  const room = () => { const t = names.indexOf("TITLE"); return columns - names.reduce((sum, name, i) => i === t ? sum : sum + Math.max(width(name), ...table.map(row => width(flat(row[i]!.text)))), 0) - 2 * (names.length - 1); };
+  const want = Math.min(30, Math.max(...table.map(row => width(row[row.length - 1]!.text))));
+  for (const name of ["REVIEWER", "CLASS", "AGE", "STAGE"]) if (room() < want) {
+    // STAGE is never dropped: it falls back to the meter and the code, the stage name being the meter's position.
+    if (name !== "STAGE") drop(name);
+    else { const at = names.indexOf("STAGE"); if (at >= 0) table = table.map(row => row.map((cell, i) => i === at ? { ...cell, text: (cell as OutputCell & { short?: string }).short ?? cell.text } : cell)); }
+  }
+  // Still too narrow (a long instance id as OWNER): AFTER gives way, then OWNER is cut, so the row never becomes linked bands.
+  if (room() < 8) drop("AFTER");
+  const owner = names.indexOf("OWNER");
+  if (room() < 8 && owner >= 0) { const cut = Math.max(5, Math.max(...table.map(row => width(flat(row[owner]!.text)))) - (8 - room())); table = table.map(row => row.map((cell, i) => i === owner ? { ...cell, text: ellipsis(flat(cell.text), cut) } : cell)); }
+  const titleRoom = Math.max(5, room());
+  // A PII row keeps its whole "ahub task show" hint when 8 columns of title remain; the cut title is never wrapped.
+  table = table.map((row, i) => { const pii = `  (ahub task show ${tasks[i].id})`, hint = tasks[i].signals?.includes("pii") && titleRoom - width(pii) >= 8 ? pii : ""; return [...row.slice(0, -1), { ...row[row.length - 1]!, text: ellipsis(row[row.length - 1]!.text, Math.max(4, titleRoom - width(hint))) + hint }]; });
+  return rows(names, table, columns);
+}
+export function renderBoard(tasks: any[], columns?: number, now = Date.now(), full = false, allTasks: any[] | null = tasks): Span[][] {
   if (!tasks.length) return [[span("no tasks")]];
   const s = initialConsoleState(); s.panel = 3; s.tasks = tasks;
   const stages = allTasks === null ? undefined : new Map(taskProgress(boardColumnContext(tasks, allTasks)).stages.map(stage => [stage.id, stage]));
+  const counts = [...new Set(tasks.map(task => task.state))].map(state => `${tasks.filter(task => task.state === state).length} ${state}`).join(", ");
+  if (!full && columns !== undefined) {
+    const data = tasks.map(task => { const row = cells(s, task, false, now, stages); row[2] = span(row[2]!.text, peerTone(task.owner ?? "")); row[3] = span(row[3]!.text, peerTone(task.reviewer ?? "")); return row; });
+    return [...compactBoard(tasks, data, columns, allTasks !== null), [], ...lines(`${plural(tasks.length, "task")}: ${counts}`, columns), ...(allTasks !== null ? lines(BOARD_LEGEND, columns, "muted") : [])];
+  }
   const data = tasks.map(task => {
     const row = cells(s, task, false, now, stages);
     row[2] = span(row[2]!.text, peerTone(task.owner ?? ""));
@@ -281,7 +326,6 @@ export function renderBoard(tasks: any[], columns?: number, now = Date.now(), _f
     if (allTasks === null) row.pop();
     return row;
   });
-  const counts = [...new Set(tasks.map(task => task.state))].map(state => `${tasks.filter(task => task.state === state).length} ${state}`).join(", ");
   return [...rows(allTasks === null ? TABLES[3]!.slice(0, -1) : [...TABLES[3]!], data, columns), [], ...lines(`${plural(tasks.length, "task")}: ${counts}`, columns)];
 }
 export function renderBudget(data: BudgetOutput, columns?: number, now = Date.now(), _full = false): Span[][] {
