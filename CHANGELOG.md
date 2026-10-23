@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Acceptance criteria with ids in review (#507, AC3): a task's recorded criteria checklist (the #481 S8 `criteria` receipt, no second model) is listed in the review request with each id and result, and a `hub_review` unmet item that starts with a recorded id (`AC2: what is missing`) is recorded on the verdict as `unmetCriteria`, shown in the task history and public view. The ids are read from the board's checklist at the verdict, never from the caller; a PII task lists and records none, and a task with no checklist gets exactly the request it got before.
 - Planner walk and reviewer independence in `assign()` (#525 slice 525-3): `assign()` gains a pure planner walk over the settled planner holders (rotation by task id over every holder, never renumbered by availability, a named planner exact, a recorded planner kept, a PII task none) and returns `Assignment.planner` and `plannerReason`; `ahub route explain` prints the same walk. A peer that accepted or finished a task never reviews it (I-2, including a named reviewer and the declared reviewer pool): when no other candidate is left the person reviews. Nothing records the planner yet, so task behaviour is unchanged until 525-2.
 - Terminal Claude implementer instances (#525-5) start in their declared managed worktree and own write tasks only after the daemon verifies the current launch record and channel cwd; facts and terminal recovery retain the verified execution root.
 

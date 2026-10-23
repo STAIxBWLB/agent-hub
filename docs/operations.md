@@ -3686,6 +3686,7 @@ A bundled adapter module is authorized by the person with `adapter_modules` (at 
 # Acceptance-criteria checklist (#481)
 
 - The task reviewer/person records a head-bound `criteria` receipt with criterion ids matching the issue's AC ids, required/result fields and hashed evidence refs. This checklist belongs to the Compliance review pass. Use `ahub sdlc record <id> '<receipt JSON>'`; [schema and example](sdlc.md#acceptance-criteria-checklist).
+- The review request lists the recorded criteria with their ids and results, and a `hub_review` unmet item that starts with a recorded id (`AC2: ...`) is recorded on the verdict as `unmetCriteria` (#507b); `ahub task show` lists those ids in the history. A task with no checklist, and a PII task, are unchanged.
 - Advise shows incomplete/stale checklist blockers; enforce checks them at approval. The `criteria` gate does not need a workflow selector. Dependencies stay with `ahub task propose --after`; checklist task import is removed.
 - `status <id>`, `explain <id>` and `export <id>` use the same current board/config projection. Export keeps sanitized state and source hashes, with no external text, extra authority or verification claim.
 - Migration from the retired workflow and its compatibility window (until hub 0.13.0) are described in [Retired workflow compatibility](sdlc.md#retired-workflow-compatibility-252-481-s8). Stored checklist task lists are ignored with a visible note; they never change board dependencies.

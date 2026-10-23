@@ -46,4 +46,20 @@ export function criteriaView(config: SdlcConfig, task: Task, isPrivate: (t: Task
   for (const criterion of checklist.criteria) if (criterion.required && criterion.result !== "verified") blockers.push(`criterion ${criterion.id}: ${criterion.result}`);
   return { id: checklist.id, ready: blockers.length === 0, blockers, criteria: checklist.criteria.map(c => ({ ...c, refs: [...c.refs] })), ...("tasks" in checklist && (checklist as LegacyPhaseReceipt).tasks.length ? { note: "stored checklist task list ignored: task import was retired (#481)" } : {}) };
 }
+/**
+ * #507b: which of a task's recorded acceptance criteria (the #481 S8 checklist, the only criteria model) a reviewer's unmet items name.
+ * An item names a criterion when it STARTS with that criterion's id, exactly (case and all), followed by the end of the item or a delimiter:
+ * `AC3: the overwrite case has no test`, or just `AC3`. An id the checklist does not hold is plain text, never a criterion, and an id in the
+ * middle of a sentence is not a claim. Pure: items in, ids out (in the order first named, each once).
+ */
+export function unmetCriteriaIds(items: readonly string[], checklist: Pick<CriteriaReceipt, "criteria"> | undefined): string[] {
+  if (!checklist) return [];
+  const known = new Set(checklist.criteria.map(c => c.id));
+  const named: string[] = [];
+  for (const item of items) {
+    const id = /^\s*([A-Za-z][A-Za-z0-9-]{0,47})(?=$|[\s:.,;)\]])/.exec(item)?.[1];
+    if (id !== undefined && known.has(id) && !named.includes(id)) named.push(id);
+  }
+  return named;
+}
 export function workflowHash(value: unknown): string { return createHash("sha256").update(JSON.stringify(value)).digest("hex"); }

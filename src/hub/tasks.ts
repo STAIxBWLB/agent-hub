@@ -21,7 +21,7 @@ import { correctionInput, resolveVisibleMemory } from "./memory-candidates.ts";
 import type { MemoryScreen } from "./read-tools.ts";
 import { withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
 import { profileClass, profileData, profileTaskLabel, projectProfile, type ProfileName, type ProfileSelection, type ProjectProfile } from "./profiles.ts";
-import { criteriaView, workflowHash } from "./workflow.ts";
+import { criteriaView, unmetCriteriaIds, workflowHash } from "./workflow.ts";
 import { isAbsolute, relative } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
@@ -633,6 +633,7 @@ export class Tasks {
       ...(h.owner === undefined ? {} : { owner: h.owner }),
       ...(h.reviewerFamily ? { reviewerFamily: screenHistoryText(h.reviewerFamily, "reviewer family") } : {}),
       ...(h.reviewerReason ? { reviewerReason: h.reviewerReason } : {}),
+      ...(h.unmetCriteria?.length ? { unmetCriteria: h.unmetCriteria } : {}),
       ...(h.reviewBlocked ? { reviewBlocked: true } : {}),
       ...(h.reviewerFailure ? { reviewerFailure: { peer: screenHistoryText(h.reviewerFailure.peer, "reviewer"), cause: h.reviewerFailure.cause, ...(h.reviewerFailure.head ? { head: screenHistoryText(h.reviewerFailure.head, "review head") } : {}) } } : {}),
       ...(h.planning ? { planning: { revision: h.planning.revision, fields: h.planning.fields, ...(h.planning.split ? { children: h.planning.split.children.map(child => child.id) } : {}) } } : {}),
@@ -3684,7 +3685,13 @@ export class Tasks {
     const checklistLines = checklistTemplates.map(template =>
       template.replaceAll("{target}", target).replaceAll("{check}", checkResult)
     );
-    const checklist = [
+    // #507b: the task's recorded acceptance criteria (the #481 S8 checklist, ids and all). A PII task shows none: its checklist is private.
+    const recorded = this.isPii(task) ? undefined : checklistOf(task.sdlc);
+    const criteriaBlock = recorded?.criteria.length
+      ? ["Acceptance criteria (name an id at the start of an unmet item, such as \"AC1: what is missing\"):",
+        ...recorded.criteria.map(c => `- ${c.id}${c.required ? "" : " (optional)"}: ${c.result}`)].join("\n") + "\n"
+      : "";
+    const checklist = criteriaBlock + [
       "Checklist:",
       ...this.planGuardItems(task).map(item => `- Check the plan against this live fail before the remaining checks: ${item.line}`),
       ...checklistLines.map(line => `- ${line}`),
@@ -3881,7 +3888,10 @@ export class Tasks {
     const family = by === USER ? undefined : (this.d.adapterCatalog?.familyOf ?? familyOf)(by, this.d.instances?.());
     const reviewerFamily = poolRequest?.reviewerFamily === family ? family : undefined;
     const reviewerReason = reviewerFamily ? poolRequest?.reviewerReason : undefined;
-    const flag = { ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(reviewContext ? { reviewContext } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
+    // #507b: unmet items that start with a recorded criterion id name that criterion. The ids come from the checklist on the board as it is at this
+    // write (the `task` just rechecked by valid()), never from the caller; a PII task carries none, its checklist being private.
+    const unmetCriteria = pii ? [] : unmetCriteriaIds(items, checklistOf(task.sdlc));
+    const flag = { ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(reviewContext ? { reviewContext } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
     if (verdict === "approved") {
       const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0, ...(reviewedHead && task.sdlc ? { sdlc: { ...task.sdlc, reviewedHead, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), "merge") } } : {}) }, note, flag);
       if (next.owner) {

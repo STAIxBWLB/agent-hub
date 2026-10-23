@@ -49,6 +49,7 @@
 
 # Project profile overrides
 
+- Acceptance criteria are profile-independent (#507b): a task's recorded criteria checklist (docs/sdlc.md, Acceptance-criteria checklist) is listed in every profile's review request, ahead of the profile's `review_checklist` lines, and an unmet item that starts with a criterion id names it; a profile only changes the wording of its checklist, never the criteria or their ids.
 - `profile_overrides` in shared/local config selects project data over the chosen shipped profile. `classes`, `role_text` and `catalog_roles` maps merge by key across layers; `plan_keys`, `agents`, `example_checks` and `review_checklist` replace as units. A local `profile` selects the active base for both init and native contracts.
 - Classes may add or remap profile aliases to existing base classes. Existing base names keep their meanings; class maps are bounded to 32 override entries. Task storage and route explanations preserve the alias, including a dev custom alias, while routing/budgets/checks use its base. Other tasks under custom dev data retain the selected profile semantics too, so document sections do not become whole-path overlaps. Unmodified dev rows retain their old shape.
 - `plan_keys` selects distinct existing plan fields, not new board fields. Task proposals and their schemas use the selection. Accept schemas retain legacy fields for already existing tasks/profile changes.
