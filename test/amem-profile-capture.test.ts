@@ -73,7 +73,7 @@ test("an unavailable selected memory profile never falls back to raw capture whi
   expect(readFileSync(join(memoryDir, "profile.json"), "utf8")).toBe(malformed);
 });
 
-test("a valid production amem profile recalls curated notes and captures a real local turn without contacting a configured legacy worker", async () => {
+test("production amem records every actual local execution when the provider reuses one tool id across steps and turns, without worker HTTP", async () => {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-amem-valid-daemon-")));
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const cwd = join(root, "project"), stateDir = join(cwd, "state"), memoryDir = join(root, "private-memory");
@@ -93,8 +93,13 @@ test("a valid production amem profile recalls curated notes and captures a real 
   // This tripwire is deliberately a real test-only listener. The production client receives no injected fake.
   const legacy = Bun.serve({ hostname: "127.0.0.1", port: 0, fetch(request) { workerCalls.push(new URL(request.url).pathname); return Response.json({ status: "ok", version: "must-not-be-read" }); } });
   cleanup.push(() => legacy.stop(true));
-  const model = startFakeModelServer({ key: "valid-amem-fixture-key", script: body => body.messages.at(-1)?.role === "tool"
-    ? { content: "public read complete" } : { tool_calls: [toolCall("read", { path: "public.txt" })] } });
+  const model = startFakeModelServer({ key: "valid-amem-fixture-key", script: body => {
+    const start = body.messages.findLastIndex(message => message.role === "user");
+    const completed = body.messages.slice(start + 1).filter(message => message.role === "tool").length;
+    // Provider ids are untrusted correlation metadata, not a globally unique capture receipt.
+    // Reuse one id at successive steps AND in the next turn, with identical arguments/results.
+    return completed < 2 ? { tool_calls: [toolCall("read", { path: "public.txt" }, "call_0")] } : { content: "public read complete" };
+  } });
   cleanup.push(model.stop);
   const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, batch_ms: 0,
@@ -109,10 +114,21 @@ test("a valid production amem profile recalls curated notes and captures a real 
   const answers: string[] = [];
   daemon.bus.tap(event => { if (event.t === "envelope" && event.env.from === "local") answers.push(event.env.body); });
   expect((await client.request({ t: "start", peer: "local", args: { model: "vllm/test" } })).ok).toBe(true);
-  expect((await client.request({ t: "send", body: "read public.txt once", to: ["local"] })).ok).toBe(true);
-  await until(() => answers.length === 1 && daemon.bus.stateOf("local") === "idle", "the production memory-backed local turn completes");
-  expect(answers).toEqual(["public read complete"]);
-  expect(model.requests).toHaveLength(2);
+  for (const turn of [1, 2]) {
+    expect((await client.request({ t: "send", body: `read public.txt twice for public turn ${turn}`, to: ["local"] })).ok).toBe(true);
+    await until(() => answers.length === turn && daemon.bus.stateOf("local") === "idle", "the production local turn completes both repeated-id tool calls");
+  }
+  expect(answers).toEqual(["public read complete", "public read complete"]);
+  expect(model.requests).toHaveLength(6); // two tool executions and one conclusion per actual turn
+  const turns = [model.requests[2]!, model.requests[5]!];
+  for (const request of turns) {
+    const messages = request.body.messages as { role: string; content?: unknown; tool_call_id?: string; tool_calls?: { id: string }[] }[];
+    const start = messages.findLastIndex(message => message.role === "user"), current = messages.slice(start + 1);
+    const calls = current.flatMap(message => message.tool_calls ?? []), results = current.filter(message => message.role === "tool");
+    expect(calls.map(call => call.id)).toEqual(["call_0", "call_0"]);
+    expect(results).toHaveLength(2); expect(results.map(result => result.tool_call_id)).toEqual(["call_0", "call_0"]);
+    expect(results.every(result => String(result.content).includes(capturedOnly))).toBe(true);
+  }
   const firstRequest = JSON.stringify(model.requests[0]!.body);
   expect(firstRequest).toContain(note.slice(0, 8));
   expect(firstRequest).toContain(`${query}: preserve curated evidence`);
@@ -128,8 +144,11 @@ test("a valid production amem profile recalls curated notes and captures a real 
   try {
     const rows = capture.rows({ project, limit: 128 });
     expect(rows.map(row => row.event)).toEqual(expect.arrayContaining(["SessionStart", "PostToolUse", "Stop", "SessionEnd"]));
-    expect(rows.filter(row => row.event === "PostToolUse" && row.tool === "read")).toHaveLength(1);
-    expect(rows.find(row => row.event === "PostToolUse")!.excerpt).toContain(capturedOnly);
+    const reads = rows.filter(row => row.event === "PostToolUse" && row.tool === "read");
+    expect(reads).toHaveLength(4); // all four actual executions, despite byte-identical provider ids/args/results
+    expect(new Set(reads.map(row => row.id)).size).toBe(4);
+    expect(new Set(reads.map(row => row.excerpt)).size).toBe(1);
+    expect(reads.every(row => row.excerpt.includes(capturedOnly))).toBe(true);
   } finally { capture.close(); }
   const verified = new MemoryStore({ memoryDir });
   try { expect(verified.get(note, project)?.text).toBe(`${query}: preserve curated evidence independently of raw capture.`); }

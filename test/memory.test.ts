@@ -42,3 +42,15 @@ test("capture is deterministic, screened before bounding, exactly once and exclu
 test("an unavailable or changed profile fails open without leaking content or writing a candidate/capture",async()=>{
  const r=rig();r.note("known note");r.revoke();expect(await r.client.search("known","project-a")).toBeUndefined();expect(await r.client.save({project:"project-a",text:"private-value",metadata:{}})).toBeUndefined();expect(await r.client.appendCapture({project:"project-a",agent:"local",event:"PostToolUse",excerpt:"private-value"})).toBeUndefined();expect(await r.client.health()).toEqual({ok:false});expect(r.candidates.list({project:"project-a"})).toHaveLength(0);expect(r.logs.every(v=>v==="amem operation unavailable")).toBe(true);expect(await new MemoryClient().health()).toEqual({ok:false});
 });
+
+
+test("capture replays one host invocation once but keeps identical provider ids from different invocations at the same clock", async () => {
+  setSystemTime(new Date()); clean.push(() => setSystemTime());
+  const r = rig(), capture = new Capture(r.client, { project: "project-a", cwd: r.home });
+  capture.init("same-session", "start");
+  const call = { tool: "read", args: '{"path":"source.ts"}', output: "unchanged public file", id: "call_0", paths: ["source.ts"] };
+  for (const sourceId of ["turn1.step0.0", "turn1.step0.0", "turn1.step1.1", "turn2.step0.0"]) capture.observe({ ...call, sourceId });
+  await capture.end();
+  const stored = new CaptureStore({ home: r.home, project: "project-a" }); clean.push(() => stored.close());
+  expect(stored.rows().filter(v => v.event === "PostToolUse")).toHaveLength(3);
+});

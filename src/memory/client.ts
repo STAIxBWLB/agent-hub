@@ -4,7 +4,7 @@ import { CaptureStore, SearchIndex, looksSecret, type CaptureOptions as StoreCap
 
 export interface CaptureEvent {
   project: string; at?: string; agent: string; event: string; tool?: string; paths?: string[]; status?: string; excerpt: string;
-  cwd?: string; sessionId?: string; toolUseId?: string; input?: string; output?: string; platformSource?: string;
+  cwd?: string; sourceId?: string; sessionId?: string; toolUseId?: string; input?: string; output?: string; platformSource?: string;
 }
 export interface MemoryClientOptions {
   project: string;
@@ -78,7 +78,7 @@ export class MemoryClient {
       const store = new CaptureStore({ ...o.capture(), project: o.project, screen: text => looksSecret(text) || !o.publicText(text) });
       try {
         const at = event.at ?? new Date().toISOString();
-        const receipt = createHash("sha256").update(JSON.stringify([o.project,event.sessionId,event.toolUseId,event.event,at])).digest("hex");
+        const receipt = createHash("sha256").update(JSON.stringify([o.project,event.sessionId,event.sourceId,event.toolUseId,event.event,at])).digest("hex");
         o.check();
         return store.append({ project: o.project, at, agent: event.agent, event: event.event, ...(event.tool ? { tool: event.tool } : {}), paths: event.paths ?? [], ...(event.status ? { status: event.status } : {}), excerpt: event.excerpt }, { receipt });
       } finally { store.close(); }

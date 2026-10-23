@@ -76,7 +76,7 @@ Not run yet (2026-10-12). Source and fakes cover tiers, the graph, retrieval, sy
 - [ ] `ahub memory import claude-mem` against the live claude-mem store of this machine: counts and skipped classes, claude-mem unchanged.
 - [ ] `memory.suggest_edges: true` with the hub's model reachable: suggestions appear, are drawn dashed, and stay out of briefs until confirmed.
 - [ ] Dashboard Memory section and Long-term tasks tab in a browser, light and dark, at phone width.
-- [ ] AC11 arms on a bench project (`--memory off`, `claude-mem`, `native`), 5 repeats each, and two weeks of research records with `briefs`.
+- [ ] AC11 collection after P4: declare a new amem-aware condition before runs and collect repeated arms plus research records with `briefs`. The historical `--memory claude-mem` label is not evidence of a worker on the new runtime; do not compare it silently with old worker runs.
 
 ## Office view (#264, phases 1-4)
 
@@ -629,14 +629,14 @@ Needs a model gateway in `omniroute.urls` (for the owner: the campus gateway ove
 1. `ahub doctor`: `omniroute` healthy, `omniroute key` present, every routing model alias served; no Switchyard row.
 2. In a scratch git repo: `ahub up`, `ahub local`, `ahub tail`, then `ahub say @local "fix the typos in <file>, run git diff --stat and report"`. `ahub tail` shows a permission request for the edit; `ahub permit <id> allow`. The file changes, the answer is a short conclusion, `ahub status` shows the served model in the local row's `MODEL` column and `vllm` in the backend table's `PROVIDER` column.
 3. In an isolated scratch project, use `[local] route = "hub/stage"` with served `fast` and `coding` aliases. Confirm the in-process route event and gateway provider. Try a legacy `sy/` selection: it uses `fixed_model` with one warning, starts no sidecar, and leaves the routing file unchanged. The older Switchyard receipts below describe the retired integration.
-4. claude-mem: `sqlite3 -readonly ~/.claude-mem/claude-mem.db "select agent_id, agent_type, project, title from observations order by id desc limit 3"` shows `local | local-worker` rows a minute or two later (claude-mem's observer runs asynchronously).
+4. amem: after a public tool turn with a unique marker, `amem search "<marker>" --limit 10` in that project shows machine-local capture without a worker or model summarizer. Confirm ordinary curated rows remain separate from raw capture and `ahub ask` never cites a raw capture row.
 
 ## M4: task board
 
 1. `ahub up`, `ahub kimi`, `ahub local`, `ahub tail`. `ahub route explain --class bulk_edit "fix typos"` prints candidates, owner and reviewer.
 2. `ahub task propose bulk_edit "Fix the spelling mistakes in words.ts" --path words.ts`: `local` accepts, edits, calls `hub_task_done`; `ahub board` shows it `approved` (no reviewer attached) or `in_review`.
 3. `ahub task propose test "Check that words.ts contains ..."`: Kimi takes it and reports through the hub's MCP tools (`ahub task show <id>` history: `kimi accepted`, `kimi done`).
-4. PII: propose a task whose title matches `signals.pii_patterns`. Owner `local`, reviewer `user`; `grep <value> .agenthub/state/hub.log` and the `ahub tail` output find nothing; `ahub board` shows `[pii]`; `ahub task show <id>` shows the text; `ahub review <id> approved` closes it; claude-mem has no row with the value.
+4. PII: propose a task whose title matches `signals.pii_patterns`. Owner `local`, reviewer `user`; `grep <value> .agenthub/state/hub.log` and the `ahub tail` output find nothing; `ahub board` shows `[pii]`; `ahub task show <id>` shows the text; `ahub review <id> approved` closes it; amem has no capture, candidate or curated row with the value.
 5. With Claude and Codex attached: a task proposed by Claude, done by Codex, reaches Claude as a review; `tasks.escalate_after` consecutive `changes_requested` (default 3) move it to the next peer in `escalate_to`.
 
 ## M5: budget relay

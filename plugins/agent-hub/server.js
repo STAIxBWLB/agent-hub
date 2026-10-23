@@ -9504,6 +9504,7 @@ var init_local_worker = __esm(() => {
       this.routePii = !!policy?.pii;
       const ctx = this.toolContext(envs, turnSignal, !!policy?.pii, reply);
       let usedTools = false;
+      let captureInvocation = 0;
       for (let step = 0;step < maxSteps; step++) {
         this.elide(msgs);
         const res = await this.call(msgs, policy, envs);
@@ -9552,7 +9553,7 @@ var init_local_worker = __esm(() => {
             }
             this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
             if (name !== "hub_send" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name))
-              capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
+              capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
           }
         } finally {
           if (results.length)
