@@ -25,6 +25,9 @@ const TICKET_MS = 60_000;
 const SESSION_MS = 60 * 60_000;
 /** How long a session opened by `ahub ui --settings` may change settings that raise authority; it stays an ordinary session after. */
 export const SETTINGS_MS = 15 * 60_000;
+/** The page's view names (index.html DASHBOARD_VIEWS): the only values a snapshot request's `view` may carry to a project hub. */
+export const DASHBOARD_VIEWS = ["board", "office", "stream", "agents", "message", "memory", "settings"] as const;
+export const dashboardView = (value: unknown): typeof DASHBOARD_VIEWS[number] | undefined => (DASHBOARD_VIEWS as readonly unknown[]).includes(value) ? value as typeof DASHBOARD_VIEWS[number] : undefined;
 const LIMIT = 64;
 const secret = () => randomBytes(32).toString("hex");
 

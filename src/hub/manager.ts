@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { ControlClient, PROTOCOL, RECOVERY_SOURCE_PROTOCOLS } from "./control-client.ts";
 import { Registry, type Project } from "./registry.ts";
 import { hubHome } from "./project.ts";
-import { startDashboard } from "./ui.ts";
+import { startDashboard, dashboardView } from "./ui.ts";
 import { projectChain } from "@staix/agent-mem";
 import type { ProjectInspection } from "./lifecycle.ts";
 import { MAX_COMMAND_MS } from "../cli/terminal-recovery.ts";
@@ -164,7 +164,7 @@ export async function startManager(options: ManagerOptions = {}): Promise<Manage
         else if (deliveryRead) nominalMs = 30_000;
         const timeoutMs = options.forwardTimeoutMs?.(String(input.action), nominalMs) ?? nominalMs;
         const result = await client.request(input.action === "snapshot"
-          ? { t: "ui_snapshot", after: input.after ?? 0, ...(input.memory !== undefined ? { memory: input.memory } : {}) }
+          ? { t: "ui_snapshot", after: input.after ?? 0, ...(input.memory !== undefined ? { memory: input.memory } : {}), ...(dashboardView(input.view) ? { view: input.view } : {}) }
           : { t: "ui_action", action: input, instanceId: input.instanceId }, timeoutMs);
         // ControlClient resolves its deadline as this exact sentinel; a hub refusal stays a known failure.
         if (["start_peer", "backlog_split"].includes(String(input.action)) && result.ok === false && result.error === `no answer from the hub within ${Math.round(timeoutMs / 1000)} s`) {

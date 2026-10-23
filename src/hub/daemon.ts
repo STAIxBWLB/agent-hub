@@ -106,7 +106,7 @@ import { projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUn
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
-import { startDashboard, type DashboardSession } from "./ui.ts";
+import { startDashboard, dashboardView, type DashboardSession } from "./ui.ts";
 import { DAEMON_FEATURES, PROTOCOL, stateDirFor } from "./control-client.ts";
 import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
@@ -6023,7 +6023,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "ui_snapshot":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_snapshot is a console command" });
         if (!Number.isSafeInteger(msg.after ?? 0) || (msg.after ?? 0) < 0) return void reply({ ok: false, error: "invalid cursor" });
-        return void reply(uiSnapshot(msg.after ?? 0, msg.memory !== undefined ? { memory: msg.memory } : undefined));
+        return void reply(uiSnapshot(msg.after ?? 0, msg.memory !== undefined || dashboardView(msg.view) ? { ...(msg.memory !== undefined ? { memory: msg.memory } : {}), ...(dashboardView(msg.view) ? { view: msg.view } : {}) } : undefined));
       case "ui_action":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_action is a console command" });
         if (recoveryActive()) return void reply({ ok: false, error: "recovery is holding mutations" });

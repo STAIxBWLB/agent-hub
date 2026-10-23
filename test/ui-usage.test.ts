@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
+import { openManager, startManager, stopManager, type Lifecycle, type ProjectRecord } from "../src/hub/manager.ts";
 import { realPath } from "../src/hub/project.ts";
 import { runInNewContext } from "node:vm";
 import { contrast } from "../src/ui/peer-palette.ts";
@@ -300,4 +301,40 @@ test("a failed usage read replaces the old figures with an explicit unavailable 
   // The next good snapshot restores the figures.
   api.renderUsage(fixtureSnapshot().usage, fixtureSnapshot().tasks, undefined);
   expect(nodes.get("usage-lifetime-total")!.textContent).toContain("at least");
+});
+
+test("the unified dashboard (ahub ui --all) forwards the open view, so the Usage section fills only for the Agents view (#683 U4)", async () => {
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-usage-manager-"))), home = join(root, "home"), previous = process.env.AGENTHUB_HOME;
+  process.env.AGENTHUB_HOME = home;
+  const stateDir = join(root, ".agenthub/state"); mkdirSync(stateDir, { recursive: true }); mkdirSync(home, { recursive: true });
+  const daemon = await startDaemon({ boundedTools: emulatedBoundedTools(), cwd: root, stateDir, projectId: "usage-manager", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [] } } });
+  const instanceId = String(JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).instanceId);
+  const project: ProjectRecord = { id: "usage-manager", root, stateDir, basePort: 4700, instanceId, pid: process.pid };
+  const registry = { get: (id: string) => id === project.id ? project : undefined, list: () => [project] } as any;
+  const lifecycle: Lifecycle = { inspectProject: async () => ({ state: "running", status: { instanceId, peers: {} } }), startProject: async () => ({ started: true } as any), stopProject: async () => {} };
+  try {
+    await startManager({ home, registry, lifecycle });
+    const target = new URL(await openManager({ home, registry, lifecycle })), origin = target.origin;
+    const post = (path: string, body: unknown, cookie?: string) => fetch(`${origin}${path}`, { method: "POST", headers: { origin, "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
+    const cookie = (await post("/session", { ticket: target.hash.slice(1) })).headers.get("set-cookie")!.split(";")[0]!;
+    const snapshot = (view?: unknown) => post("/snapshot", { after: 0, projectId: project.id, instanceId, ...(view !== undefined ? { view } : {}) }, cookie).then(response => response.json() as Promise<any>);
+    const agents = await snapshot("agents");
+    expect(agents.ok).toBe(true);
+    expect(agents.usage).toBeDefined();
+    expect(agents.usage.behind).toBe(false);
+    for (const other of ["board", "memory", "settings", undefined]) expect((await snapshot(other)).usage, String(other)).toBeUndefined();
+    // Only the page's view names pass; anything else is dropped before the project hub sees it.
+    // The control message carries the view to the project hub, so a string that is not exactly a page view name must never reach it:
+    // the daemon would otherwise read `view === "agents"` from a hostile value. These are all refused at the manager.
+    const forwarded: unknown[] = [];
+    const original = ControlClient.prototype.request;
+    ControlClient.prototype.request = function (this: ControlClient, message: Record<string, unknown>, ms?: number) { if (message.t === "ui_snapshot") forwarded.push(message.view); return original.call(this, message, ms); } as typeof original;
+    try {
+      for (const bad of ["Agents", "agents ", "__proto__", "constructor", "x".repeat(5000), { view: "agents" }, ["agents"], 7]) expect((await snapshot(bad)).usage, JSON.stringify(bad)?.slice(0, 20)).toBeUndefined();
+      expect(forwarded).toEqual([undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined]);
+      await snapshot("agents");
+      expect(forwarded.at(-1)).toBe("agents");
+    } finally { ControlClient.prototype.request = original; }
+  } finally { await stopManager({ home }); await daemon.stop(); rmSync(root, { recursive: true, force: true }); if (previous === undefined) delete process.env.AGENTHUB_HOME; else process.env.AGENTHUB_HOME = previous; }
 });
