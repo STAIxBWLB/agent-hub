@@ -20,7 +20,7 @@ The built-in lifecycle follows the [AI-Native SDLC Playbook](https://claude.com/
 | review | Deploy | assigned reviewer | current head-bound verdict, no pending change request/open thread; AC checklist under Compliance | approval, when enabled; open Important findings block in enforce |
 | merge | Deploy | person | current-head readiness, ordered touching PRs | shown; no mutation |
 | release | Deploy | person | merged commit, version/tag, docs freshness/live receipt checklist | person authorization and optional tag hook below |
-| maintain | Maintain | person/planner | follow-up intent and operational evidence | shown; metrics/control bands pending S7 |
+| maintain | Maintain | person/planner | follow-up intent and operational evidence | shown; metrics and control bands from S7 (`ahub sdlc metrics`) |
 
 Stored `implement` and `verify` stage ids read as `build` and `test`. A write that names the old id stores the id the configuration lists, so new enabled-lifecycle receipts use the canonical ids. The default remains off, preserving existing off-mode output, receipt and schema shapes. Status, explain, console and dashboard name the playbook stage beside enabled lifecycle ids.
 
@@ -35,7 +35,7 @@ Stored `implement` and `verify` stage ids read as `build` and `test`. A write th
 | S4 | Red-first tests and test integrity | Bug-label metadata, source-labelled red-first proof and changed pre-existing test blockers |
 | S5 | Continuous evals for agent configuration | Pending gate, dependent on #251/#266; no eval pass claimed |
 | S6 | Production approval gate | Person-only commit/version/docs receipt and opt-in Git tag pre-push guard; report stays read-only |
-| S7 | Metrics, deterministic control bands and follow-up intent | Pending; no automated metric triage or security baseline claimed |
+| S7 | Metrics, deterministic control bands and follow-up intent | `ahub sdlc metrics`, optional `[bands]` with log, diagnose and propose tiers; no security baseline yet |
 | S8 | Compliance acceptance-criteria checklist | Head-bound checklist retained; legacy workflow and phase compatibility deprecated; task import removed |
 | S9 | Planner grooming and plan review | Read-only digest, current plan-review receipt at build admission, all-mode WIP and accepted-untouched return |
 | S10 | Planner cost governance | Typed review/CI scope, premature-review admission, identical-tree CI reuse and read-only cost report |
@@ -220,6 +220,18 @@ Enabled lifecycles send an attached planner one grooming pointer for a changed b
 The digest is bounded to 500 task rows (open work plus structured cancelled supersession evidence) and 256 findings, with at most eight issue metadata reads sharing four seconds. Spec acceptance and planner-review staleness are compared independently. Truncation and unavailable evidence are explicit. Qualified foreign repositories are compared within their own key. Without a proven repository key an absolute outside-project path remains unknown; the dedicated repository-overlap resolver is tracked in #476.
 
 S9 ceilings: a private build task with an issue reference cannot satisfy enforce admission: privacy forbids the external issue metadata read, and no person override for a metadata-free plan receipt exists. Grooming pointers are coalesced only while queued, per board revision; there is no minimum time interval after delivery, so a busy board may produce one delivered pointer per revision.
+
+# SDLC metrics and control bands (#481 S7)
+
+`ahub sdlc metrics [--since <YYYY-MM-DD|ISO time>]` (the planner tool `hub_sdlc_metrics`; planner or person only, read-only) derives these from board history: time from acceptance to plan review (from spec acceptance), to the first verdict and to merge; the first-pass approval rate and rework rounds; the first-pass CI rate and reruns of failing jobs at the same head; stale-head re-reviews (a done after an approval, which a head change voids); and open stalls by kind. Each is a count, mean, median, p90 and max over the tasks that have it, and `unknown` is the word and a count (`unknown: N`) for a task that does not: a metric the board cannot derive is never zero. Merge time and same-head reruns need a PR readback, which this report does not make; they read `unknown` here and `ahub sdlc costs` carries the PR-based figures. A private task is counted as withheld and read for nothing else. The report is a pure function of the board history, so a fixture history gives the same report every time.
+
+`.agenthub/sdlc.toml` may set `[bands.<metric>]` for `acceptance_to_plan_ms`, `acceptance_to_first_review_ms`, `first_pass_approval`, `rework_rounds`, `first_pass_ci` or `stale_head_re_reviews`. Every field is optional and bounded: `window` (4 to 200, default 20), `min_samples` (3 to 200, default 8, at most `window`), `log_sigma` 2, `diagnose_sigma` 3, `propose_sigma` 4 (ordered, 0.5 to 20), `drift_run` (3 to 50, default 6) and `min_delta` (the smallest step worth a tier: an hour for the times, one round, half a rate). An unknown metric or field is refused with its path. The newest value is compared with the mean and population standard deviation of the `window` values before it, on the bad side only (a longer time, more rework, a lower rate); fewer than `min_samples` before it fires nothing, and so does a step under `min_delta`. A run of `drift_run` newest values all more than one deviation on the bad side is at least `diagnose` even when none reaches a sigma tier. Tiers:
+
+- `log`: one hub notice, once per breach.
+- `diagnose`: one read-only `triage` backlog task for the planner to inspect the histories behind the metric. It asks for no edit of files, branches or the board.
+- `propose`: one `plan` backlog card that names the metric and its evidence (the newest value, the task that produced it, the baseline and the deviations).
+
+A breach is keyed by metric, tier and the task that produced the value (`Band breach key:` in the card), so evaluating again writes nothing new. The daemon evaluates every five minutes. Detection never calls a model, the cards hold fixed words, numbers and task ids and no task text, and the hub opens no GitHub issue: external registration stays a person's decision. A scheduled security scan baseline is not part of this slice.
 
 # Planner review and CI cost governance (#481 S10)
 

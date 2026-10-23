@@ -104,7 +104,8 @@ export const TASK_TOOLS: HubTool[] = [
 export const PLANNER_REVIEW_TOOLS: HubTool[] = [
   tool("hub_planner_groom", "Read a bounded planner grooming digest of dependencies, repository-scoped overlaps, WIP and blockers. No board change; unavailable evidence stays unknown.", {}),
   tool("hub_plan_review", "Record a planner review against the task planning revision and host-read issue edit time. Configured planner or person only; never accepts caller issue timestamps.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str, maxLength: 1000 }, ...costPlanProperties }, ["id", "revision", "reason"]),
-  tool("hub_sdlc_costs", "Read bounded review and CI cost metrics for linked merged PRs. Planner/person only; metadata only, no board writes. S7 owns automatic band proposals.", { repo: str }),
+  tool("hub_sdlc_costs", "Read bounded review and CI cost metrics for linked merged PRs. Planner/person only; metadata only, no board writes.", { repo: str }),
+  tool("hub_sdlc_metrics", "Read SDLC metrics from board history: time from acceptance to plan, first review and merge, first-pass approval and rework rounds, first-pass CI and same-head reruns, stale-head re-reviews, stalls, and the control band tiers when sdlc.toml sets [bands]. Planner/person only; read-only, no model and no GitHub issue.", { since: str }),
   tool("hub_backlog_return_untouched", "Return accepted but untouched work to the backlog with its history and planning retained. Refuses execution/branch/commit evidence; planner or person only.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str, maxLength: 1000 } }, ["id", "revision", "reason"]),
 ];
 TASK_TOOLS.push(...PLANNER_REVIEW_TOOLS);
