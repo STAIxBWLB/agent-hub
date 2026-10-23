@@ -46,7 +46,10 @@ test("#525 headless writer capabilities cannot be claimed by external or configu
   const foreign = { ...base, headlessVariant: variant } as AdapterDefinition;
   expect(() => assertNativeCapabilityScope(foreign)).toThrow("restricted to fixed builtin");
   const foreignPort = { ...variant, kind: "fixture" } as AdapterDefinition;
-  expect(() => assertNativeCapabilityScope(foreignPort)).toThrow("claude-implementer");
+  expect(() => assertNativeCapabilityScope(foreignPort)).toThrow("identity.currentChild");
+  // Isolate the port restriction from the independently refused current-child capability.
+  const { currentChild: _currentChild, ...ordinaryIdentity } = foreignPort.identity;
+  expect(() => assertNativeCapabilityScope({ ...foreignPort, identity: ordinaryIdentity })).toThrow("claude-implementer");
   expect(() => assertDefinitionCoherence({ ...base, headlessVariant: base })).toThrow("headless hub-native factory");
 });
 

@@ -28,7 +28,7 @@ async function fixture(taskBound = false) {
     let taskId: number | undefined;
     if (taskBound) {
       const proposed = await console_.request({ t: "task", op: "hub_task_propose", args: { title: "bound fixture task", class: "test", owner: peer } });
-      expect(proposed.ok, proposed.error).toBe(true);
+      expect(proposed, proposed.error).toMatchObject({ ok: true });
       taskId = Number(String(proposed.text).match(/task #(\d+)/)?.[1]); expect(taskId).toBeGreaterThan(0);
     } else {
       const sent = daemon.bus.publish(newEnvelope("user", "fixture only", { to: [peer] })); expect(sent).toContain(peer);
