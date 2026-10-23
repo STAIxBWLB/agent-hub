@@ -25,7 +25,10 @@ function policyText(value: unknown): string {
   const raw: string[] = [];
   const encoded = JSON.stringify(value, (key: string, item: unknown) => {
     if (key && item !== undefined) raw.push(key);
-    if (typeof item === "string") { raw.push(item); if (key) raw.push(`${key}: ${item}`); }
+    if (typeof item === "number" && !Number.isFinite(item)) throw new Error("invalid memory scalar");
+    if (item === null || ["string", "number", "boolean"].includes(typeof item)) {
+      const text = String(item); raw.push(text); if (key) raw.push(`${key}: ${text}`);
+    }
     return item;
   });
   return `${encoded ?? ""}\n${raw.join("\n")}`;

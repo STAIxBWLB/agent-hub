@@ -151,9 +151,9 @@ test("capture ignores non-persisted host cwd when screening a valid private-path
 test("the built-in secret screen sees decoded JSON key/value pairs before capture or candidates", async () => {
   const r = rig();
   expect(await r.client.appendCapture({ project: "project-a", agent: "local", event: "PostToolUse", excerpt: "public control", input: '{"path":"public.txt"}' })).toHaveProperty("id");
-  for (const field of ["input", "output"]) expect(await r.client.appendCapture({ project: "project-a", agent: "local", event: "PostToolUse", excerpt: "public prefix", [field]: '{"password":"ordinary-private-password"}' })).toBeUndefined();
+  for (const password of ["ordinary-private-password", 12345678]) for (const field of ["input", "output"]) expect(await r.client.appendCapture({ project: "project-a", agent: "local", event: "PostToolUse", excerpt: "public prefix", [field]: JSON.stringify({ password }) })).toBeUndefined();
   expect(await r.client.save({ project: "project-a", text: "public candidate", metadata: { peer: "codex" } })).toMatchObject({ status: "candidate" });
-  expect(await r.client.save({ project: "project-a", text: "public prefix", metadata: { password: "ordinary-private-password" } })).toBeUndefined();
+  for (const password of ["ordinary-private-password", 12345678]) expect(await r.client.save({ project: "project-a", text: "public prefix", metadata: { password } })).toBeUndefined();
   expect(r.candidates.list({ project: "project-a" })).toHaveLength(1);
   const stored = new CaptureStore({ home: r.home, project: "project-a" }); clean.push(() => stored.close());
   expect(stored.rows()).toHaveLength(1);
