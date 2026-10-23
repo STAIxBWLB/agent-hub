@@ -228,3 +228,45 @@ test("#689 removing a key (null) deletes it and its emptied block; setting nothi
   expect(same.ok).toBe(false);
   if (!same.ok) expect(same.error).toContain("nothing to change");
 });
+
+test("#689 removing or replacing a whole instance that holds a tier 3 field is itself tier 3, so a dashboard can never reach its values", () => {
+  const home = join(tmpdir(), "ahub-config-edit-t3-home");
+  mkdirSync(home, { recursive: true }); cleanup.push(() => rmSync(home, { recursive: true, force: true }));
+  const p = project({ instances: { "jcode-two": { kind: "jcode", jcode_home: home, model: "secret-model", roles: ["implementer"] }, "codex-review": reviewer } });
+  const removeTier3 = ok(p.plan("config.local.json", [{ path: ["instances", "jcode-two"], value: null }]));
+  expect(removeTier3.tier).toBe(3);
+  expect(removeTier3.tier3Keys).toEqual(["instances.jcode-two"]);
+  expect(removeTier3.diff[0]).toMatchObject({ path: "instances.jcode-two", tier: 3 });
+  const removeTier2 = ok(p.plan("config.local.json", [{ path: ["instances", "codex-review"], value: null }]));
+  expect(removeTier2.tier).toBe(2);
+  expect(removeTier2.tier3Keys).toEqual([]);
+});
+
+test("#689 a symlinked .agenthub directory is never read or written through, for either file", () => {
+  const p = project({});
+  const real = join(p.dir, "real-agenthub");
+  mkdirSync(real); writeFileSync(join(real, "sdlc.toml"), 'mode = "advise"\n');
+  rmSync(join(p.dir, ".agenthub"), { recursive: true, force: true });
+  symlinkSync(real, join(p.dir, ".agenthub"));
+  expect(() => editRevisions(p.dir)).toThrow(".agenthub must be a real directory");
+  const refused = planConfigEdit(p.dir, { file: "sdlc.toml", revision: "absent", set: [{ path: ["mode"], value: "enforce" }] }, p.check);
+  expect(refused.ok).toBe(false);
+  if (!refused.ok) expect(refused.error).toContain(".agenthub must be a real directory");
+  expect(readFileSync(join(real, "sdlc.toml"), "utf8")).toBe('mode = "advise"\n');
+});
+
+test("#689 sdlc.toml keeps its newline convention: a CRLF file changes only the edited lines and stays CRLF", () => {
+  const text = '# lifecycle\r\nmode = "advise"\r\nrequired_checks = ["gate"]\r\nmax_nits = 3\r\n\r\n[bands.rework_rounds]\r\nwindow = 10\r\n';
+  const p = project({}, text);
+  const plan = ok(p.plan("sdlc.toml", [{ path: ["mode"], value: "enforce" }]));
+  expect(plan.next).toBe(text.replace('mode = "advise"', 'mode = "enforce"'));
+  expect(plan.next!.replace(/\r\n/g, "").includes("\n")).toBe(false);
+  const added = ok(project({}, '[bands.rework_rounds]\r\nwindow = 10\r\n').plan("sdlc.toml", [{ path: ["mode"], value: "off" }]));
+  expect(added.next).toBe('mode = "off"\r\n\r\n[bands.rework_rounds]\r\nwindow = 10\r\n');
+  const lf = ok(project({}, 'mode = "advise"\n').plan("sdlc.toml", [{ path: ["mode"], value: "off" }]));
+  expect(lf.next).toBe('mode = "off"\n');
+  const mixed = ok(project({}, 'mode = "advise"\r\nmax_nits = 2\n').plan("sdlc.toml", [{ path: ["mode"], value: "off" }]));
+  expect(mixed.next).toBe('mode = "off"\r\nmax_nits = 2\n'); // an untouched line keeps its own ending
+  const noFinal = ok(project({}, 'mode = "advise"').plan("sdlc.toml", [{ path: ["mode"], value: "off" }]));
+  expect(noFinal.next).toBe('mode = "off"\n');
+});

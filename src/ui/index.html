@@ -897,8 +897,9 @@ function structureForm(cls, title, build, file, edit, raise) {
   form.append(actions, result);
   const body = () => { const set = fields.set(); return set ? {file, revision: edit.revisions[file], set} : null; };
   preview.addEventListener('click', async () => {
-    const request = body(); if (!request) return;
     structureState.error = ''; structureState.field = ''; structureState.lines = [];
+    const request = body();
+    if (!request) { if (!structureState.error) structureState.error = 'Give a mode or the required checks.'; structureResult(result); return; }
     try {
       const reply = await post('/action', {action:'config_edit_preview', edit: request});
       if (reply.ok === false) { structureState.error = reply.error || 'The hub refused this change.'; structureState.field = reply.field || ''; }
@@ -938,14 +939,24 @@ function renderStructure(target, edit, raise) {
       const mode = structureField(form, 'sdlc-mode', 'sdlc mode (off, advise, enforce)', edit.sdlc.mode), checks = structureField(form, 'sdlc-checks', 'required checks, comma list', edit.sdlc.requiredChecks.join(', '));
       fields.set = () => { const set = []; if (mode.value.trim()) set.push({path:['mode'], value: mode.value.trim()}); if (checks.value.trim()) set.push({path:['required_checks'], value: structureList(checks.value)}); return set.length ? set : null; };
     }, 'sdlc.toml', edit, raise));
-    const add = structureForm('structure-add', 'Add or change an instance', (form, fields) => {
+    const add = structureForm('structure-add', 'Add an instance, or change one field of an existing one (type clear to remove a field)', (form, fields) => {
       const id = structureField(form, 'id', 'instance id, <kind>-<name>', 'codex-review');
       const inputs = {}; for (const [name] of STRUCTURE_FIELDS) inputs[name] = structureField(form, name, name + (name === 'roles' ? ' (comma list)' : name === 'readOnly' ? ' (true or false)' : ''), '');
+      const convert = (name, text) => name === 'roles' ? structureList(text) : name === 'readOnly' ? text === 'true' : text;
       fields.set = () => {
-        const value = {};
-        for (const [name] of STRUCTURE_FIELDS) { const text = inputs[name].value.trim(); if (!text) continue; value[name] = name === 'roles' ? structureList(text) : name === 'readOnly' ? text === 'true' : text; }
-        if (!id.value.trim() || !value.kind) { structureState.error = 'An instance needs an id and a kind.'; return null; }
-        return [{path:['instances', id.value.trim()], value}];
+        const name = id.value.trim(), known = (edit.instances || []).some((item) => item.id === name), typed = [];
+        for (const [field] of STRUCTURE_FIELDS) { const text = inputs[field].value.trim(); if (text) typed.push([field, text]); }
+        if (!name) { structureState.error = 'An instance needs an id and a kind.'; return null; }
+        // readOnly is exactly true or false: anything else is the person's typo, never a silent false.
+        if (typed.some(([field, text]) => field === 'readOnly' && text !== 'true' && text !== 'false' && text !== 'clear')) { structureState.error = 'readOnly is true or false.'; return null; }
+        if (known) {
+          // An existing instance changes leaf by leaf: a field left blank keeps its value, and a tier 3 field it holds is never part of the request.
+          if (!typed.length) { structureState.error = 'Type the field to change, or clear to remove it.'; return null; }
+          return typed.map(([field, text]) => ({path:['instances', name, field], value: text === 'clear' ? null : convert(field, text)}));
+        }
+        const value = {}; for (const [field, text] of typed) { if (text !== 'clear') value[field] = convert(field, text); }
+        if (!value.kind) { structureState.error = 'An instance needs an id and a kind.'; return null; }
+        return [{path:['instances', name], value}];
       };
     }, 'config.local.json', edit, raise);
     group.append(add);

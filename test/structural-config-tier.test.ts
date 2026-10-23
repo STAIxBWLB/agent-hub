@@ -52,3 +52,15 @@ test("#689 structuralLeaf is the one rule reload authority reads, and it never a
   for (const key of ["instances.jcode-two.jcode_home", "kimi_cmd", "omniroute.api_key_file", "terminal.open", "instances", "roster.codex", "checks.timeout_s", "adapters.grok.command"]) expect(structuralLeaf(key), key).toBe(false);
   expect(CONFIG_EDIT_FILES).toEqual(["config.local.json", "sdlc.toml"]);
 });
+
+import { maskTier3 } from "../src/hub/config-tier.ts";
+test("#689 maskTier3 shows a tier 3 key, a tier 3 instance field and anything under a tier 3 prefix only as (set)", () => {
+  expect(maskTier3(["instances", "jcode-two", "model"], "m")).toBe("(set)");
+  expect(maskTier3(["kimi_cmd"], ["/bin/sh"])).toBe("(set)");
+  expect(maskTier3(["omniroute", "api_key_file"], "/etc/key")).toBe("(set)");
+  expect(maskTier3(["terminal", "open"], "x")).toBe("(set)");
+  expect(maskTier3(["instances", "jcode-two"], { kind: "jcode", jcode_home: "/h", roles: ["implementer"] })).toEqual({ kind: "jcode", jcode_home: "(set)", roles: ["implementer"] });
+  expect(maskTier3(["review", "pool"], ["claude"])).toEqual(["claude"]);
+  expect(maskTier3(["instances", "x", "roles"], ["reviewer"])).toEqual(["reviewer"]);
+  expect(maskTier3(["kimi_cmd"], undefined)).toBeUndefined();
+});

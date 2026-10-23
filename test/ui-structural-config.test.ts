@@ -18,8 +18,9 @@ class Element {
   all(): Element[] { return [this, ...this.children.flatMap(child => child.all())]; }
   text() { return this.all().map(node => node.textContent).join("\n"); }
 }
+const existing = { "codex-review": { kind: "codex", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" }, "jcode-two": { kind: "jcode", roles: ["implementer"] } };
 const edit = { revisions: { "config.local.json": "a".repeat(64), "sdlc.toml": "absent" },
-  instances: [{ id: "codex-review", fields: { kind: "codex", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" }, tier3: [] }, { id: "jcode-two", fields: { kind: "jcode" }, tier3: ["jcode_home", "model"] }],
+  instances: [{ id: "codex-review", fields: existing["codex-review"], tier3: [] }, { id: "jcode-two", fields: existing["jcode-two"], tier3: ["jcode_home", "model"] }],
   blocks: [{ path: "review.pool", value: ["claude", "codex"] }, { path: "context.gate", value: 0.8 }],
   sdlc: { mode: "advise", requiredChecks: ["gate"], pending: false },
   tier3: [{ key: "kimi_cmd", set: true, command: "ahub settings edit config.local.json set kimi_cmd <json>" }, { key: "instances.jcode-two.model", set: true, command: "ahub settings edit config.local.json set instances.jcode-two.model <json>" }],
@@ -83,10 +84,10 @@ test("#689 previewing sends the revision the hub reported and shows the loader's
   const root = view.get("settings");
   const form = root.all().find(node => node.className === "structure-add")!;
   const field = (name: string) => form.all().find(node => node.id === "structure-" + name)!;
-  field("id").value = "codex-review"; field("kind").value = "codex"; field("roles").value = "reviewer"; field("review_mode").value = "fresh";
+  field("id").value = "codex-fresh"; field("kind").value = "codex"; field("roles").value = "reviewer"; field("review_mode").value = "fresh";
   view.replies.push({ ok: false, error: "instances.codex-review.review_mode: fresh requires reviewer-only roles, headless mode and a declared fresh-review capability", field: "instances.codex-review.review_mode" });
   await form.all().find(node => node.textContent === "Preview change")!.listeners.click!();
-  expect(view.sent[0]).toEqual({ action: "config_edit_preview", edit: { file: "config.local.json", revision: "a".repeat(64), set: [{ path: ["instances", "codex-review"], value: { kind: "codex", roles: ["reviewer"], review_mode: "fresh" } }] } });
+  expect(view.sent[0]).toEqual({ action: "config_edit_preview", edit: { file: "config.local.json", revision: "a".repeat(64), set: [{ path: ["instances", "codex-fresh"], value: { kind: "codex", roles: ["reviewer"], review_mode: "fresh" } }] } });
   expect(root.text()).toContain("fresh requires reviewer-only roles, headless mode");
   expect(form.all().some(node => node.textContent === "Write change")).toBe(false);
   field("start_mode").value = "headless";
@@ -142,4 +143,67 @@ test("#689 the Structure styles are token pairs that pass contrast in both theme
   expect(css).toMatch(/\.structure-[^{]*(button|input|select)[^{]*\{[^}]*min-height:44px/);
   const phone = css.match(/@media\(max-width:600px\)\{([\s\S]*?)\}\s*(?=@media|$)/)?.[1] ?? "";
   expect(phone).toContain(".structure-");
+});
+
+test("#689 an instance form with no id or no kind says so on the page instead of doing nothing, and sends no request", async () => {
+  const view = page(withEdit());
+  const root = view.get("settings"), form = root.all().find(node => node.className === "structure-add")!;
+  const field = (name: string) => form.all().find(node => node.id === "structure-" + name)!;
+  await form.all().find(node => node.textContent === "Preview change")!.listeners.click!();
+  expect(view.sent).toEqual([]);
+  expect(form.text()).toContain("An instance needs an id and a kind.");
+  field("id").value = "codex-new"; // a new instance with no kind
+  await form.all().find(node => node.textContent === "Preview change")!.listeners.click!();
+  expect(view.sent).toEqual([]); expect(form.text()).toContain("An instance needs an id and a kind.");
+  field("id").value = "codex-review"; // an existing one with nothing to change
+  await form.all().find(node => node.textContent === "Preview change")!.listeners.click!();
+  expect(view.sent).toEqual([]); expect(form.text()).toContain("Type the field to change");
+});
+
+test("#689 the lifecycle form with nothing typed says so on the page and sends no request", async () => {
+  const view = page(withEdit());
+  const lifecycle = view.get("settings").all().find(node => node.className === "structure-sdlc")!;
+  await lifecycle.all().find(node => node.textContent === "Preview change")!.listeners.click!();
+  expect(view.sent).toEqual([]);
+  expect(lifecycle.text()).toContain("Give a mode or the required checks.");
+});
+
+test("#689 changing one field of an existing instance sends only that field as a leaf, so omitted fields and tier 3 fields are never replaced", async () => {
+  const view = page(withEdit());
+  const root = view.get("settings"), form = root.all().find(node => node.className === "structure-add")!;
+  const field = (name: string) => form.all().find(node => node.id === "structure-" + name)!;
+  field("id").value = "jcode-two"; field("roles").value = "verifier";
+  view.replies.push({ ok: true, lines: ["x"], tier: 2 });
+  await form.all().find(node => node.textContent === "Preview change")!.listeners.click!();
+  expect(view.sent[0]).toEqual({ action: "config_edit_preview", edit: { file: "config.local.json", revision: "a".repeat(64), set: [{ path: ["instances", "jcode-two", "roles"], value: ["verifier"] }] } });
+  // Another existing instance: a field left blank stays as it is (no kind is needed to change one field).
+  field("roles").value = ""; field("id").value = "codex-review"; field("review_mode").value = "fresh"; field("worktree").value = "";
+  view.replies.push({ ok: true, lines: ["x"], tier: 2 });
+  await form.all().find(node => node.textContent === "Preview change")!.listeners.click!();
+  expect(view.sent[1]).toMatchObject({ edit: { set: [{ path: ["instances", "codex-review", "review_mode"], value: "fresh" }] } });
+});
+
+test("#689 a new instance still goes as one object, and a bad readOnly is refused on the page, never turned into false", async () => {
+  const view = page(withEdit());
+  const root = view.get("settings"), form = root.all().find(node => node.className === "structure-add")!;
+  const field = (name: string) => form.all().find(node => node.id === "structure-" + name)!;
+  field("id").value = "codex-extra"; field("kind").value = "codex"; field("roles").value = "reviewer"; field("start_mode").value = "headless";
+  field("readOnly").value = "TRUE";
+  await form.all().find(node => node.textContent === "Preview change")!.listeners.click!();
+  expect(view.sent).toEqual([]);
+  expect(form.text()).toContain("readOnly is true or false");
+  field("readOnly").value = "true";
+  view.replies.push({ ok: true, lines: ["x"], tier: 2 });
+  await form.all().find(node => node.textContent === "Preview change")!.listeners.click!();
+  expect(view.sent[0]).toMatchObject({ edit: { set: [{ path: ["instances", "codex-extra"], value: { kind: "codex", roles: ["reviewer"], start_mode: "headless", readOnly: true } }] } });
+});
+
+test("#689 clearing a field of an existing instance is a removal of that leaf with the word clear, never an empty value", async () => {
+  const view = page(withEdit());
+  const root = view.get("settings"), form = root.all().find(node => node.className === "structure-add")!;
+  const field = (name: string) => form.all().find(node => node.id === "structure-" + name)!;
+  field("id").value = "codex-review"; field("start_mode").value = "clear";
+  view.replies.push({ ok: true, lines: ["x"], tier: 2 });
+  await form.all().find(node => node.textContent === "Preview change")!.listeners.click!();
+  expect(view.sent[0]).toMatchObject({ edit: { set: [{ path: ["instances", "codex-review", "start_mode"], value: null }] } });
 });

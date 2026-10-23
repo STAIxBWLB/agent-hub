@@ -59,6 +59,7 @@ import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, v
 import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSources } from "./config-reload.ts";
 import { createConfigEditor } from "./config-edit-host.ts";
+import { readEditable } from "./config-edit.ts";
 import { eventLog, readEvents, tokenDeltas, type RoleIdentity } from "./events.ts";
 import { ExecutionBudget } from "./execution-budget.ts";
 import { claudeReportedTokens, readClaudeTranscriptCompletion, readClaudeTranscriptUsage, waitForClaudeCompletion } from "./usage.ts";
@@ -683,6 +684,8 @@ export async function startDaemon(opts: DaemonOptions) {
   // #689: structural config edits. Assigned with the settings section; status and the settings view read it before then, so it is held here.
   let configEditor: ReturnType<typeof createConfigEditor> | undefined;
   const structuralScopes = new Set<string>();
+  let sdlcFileReads = 0;
+  let sdlcFileCache: { stamp: string; value: { mode: string; requiredChecks: readonly string[] } | string } | undefined;
   /** What waits for a restart: the reload's own keys, then a changed sdlc.toml (read once at start). */
   const allPendingRestart = (): { key: string; reason: string }[] => [...pendingRestart, ...(configEditor?.pendingRestart() ?? [])];
   let retainedConfig: { key: string; reason: string }[] = [];
@@ -5145,9 +5148,19 @@ export async function startDaemon(opts: DaemonOptions) {
     pending: () => pendingRestart,
     effective: path => valueAt(config, path),
     runningSdlc: () => ({ mode: lifecycleConfig.mode, requiredChecks: lifecycleConfig.requiredChecks }),
-    fileSdlc: () => { try { const loaded = loadSdlc(opts.cwd, VERSION); return { mode: loaded.mode, requiredChecks: loaded.requiredChecks }; } catch (error) { return sanitize((error as Error).message).slice(0, 300); } },
+    // Status and the settings view poll this: read sdlc.toml again only when its size or mtime changed (ponytail: a stat per poll; a watcher if that ever shows).
+    fileSdlc: () => {
+      const stamp = (() => { try { const info = statSync(join(opts.cwd, ".agenthub", "sdlc.toml")); return `${info.mtimeMs}:${info.size}`; } catch { return "-"; } })();
+      if (sdlcFileCache?.stamp !== stamp) {
+        let value: { mode: string; requiredChecks: readonly string[] } | string;
+        sdlcFileReads++;
+        try { const loaded = loadSdlc(opts.cwd, VERSION); value = { mode: loaded.mode, requiredChecks: loaded.requiredChecks }; } catch (error) { value = sanitize((error as Error).message).slice(0, 300); }
+        sdlcFileCache = { stamp, value };
+      }
+      return sdlcFileCache.value;
+    },
     declared: () => Object.fromEntries(Object.entries(declarations).map(([id, value]) => [id, { ...value }])),
-    tier3Set: path => { try { return valueAt(JSON.parse(readFileSync(join(opts.cwd, ".agenthub", "config.local.json"), "utf8")), path) !== undefined; } catch { return false; } },
+    localConfig: () => { try { const text = readEditable(opts.cwd, "config.local.json"); const doc = text === null ? {} : JSON.parse(text); return doc && typeof doc === "object" && !Array.isArray(doc) ? doc : {}; } catch { return {}; } },
   });
 
   async function uiAction(a: Record<string, unknown>, session?: DashboardSession): Promise<unknown> {
@@ -6110,7 +6123,7 @@ export async function startDaemon(opts: DaemonOptions) {
         catch (error) { return void reply({ ok: false, error: (error as Error).message }); }
       case "settings_get":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
-        return void reply({ ok: true, ...settingsView(), roster: rosterView(), configEdit: { revisions: configEditor!.view().revisions } });
+        return void reply({ ok: true, ...settingsView(), roster: rosterView(), configEdit: (() => { const view = configEditor!.view(); return { revisions: view.revisions, instances: view.instances.map(item => ({ id: item.id })) }; })() });
       case "settings_reload":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person command" });
         return void reloadConfig("terminal", undefined, msg.confirm).then(reply, () => reply({ ok: false, error: "configuration reload could not be confirmed; inspect hub.log" }));
@@ -6444,7 +6457,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // After a crash that recorded Pi, crash recovery starts it (#66): its recorded session first, a fresh one if that fails.
   const piRecovered = !archivedPiContinuity && !!crashed?.peers.some((p) => definitionOf(p.peer)?.session.restoreOnStart);
   if (piAutoStart() && !recoveryActive() && !piRecovered) autoStartPi();
-  return { bus, token, port: server.port as number, bandEvaluations: () => bandEvaluations, stop, stopped: new Promise<void>((r) => (onStop = r)) };
+  return { bus, token, port: server.port as number, bandEvaluations: () => bandEvaluations, sdlcFileReads: () => sdlcFileReads, stop, stopped: new Promise<void>((r) => (onStop = r)) };
   } finally {
     if (!ready) for (const cleanup of startupCleanup.reverse()) { try { await cleanup(); } catch { /* preserve startup error */ } }
   }

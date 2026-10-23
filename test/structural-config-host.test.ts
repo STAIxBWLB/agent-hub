@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../src/hub/daemon.ts";
@@ -45,7 +45,7 @@ function fixture(local: unknown = {}, hold?: string, override: Partial<ConfigEdi
       } catch (error) { return (error as Error).message; }
     },
     declared: () => ({}),
-    tier3Set: () => false,
+    localConfig: () => ({}),
     ...override,
   };
   const editor = createConfigEditor(host);
@@ -214,4 +214,53 @@ test("#689 a reason that is empty, too long or carries control bytes is bounded 
   expect(f.events).toEqual([]);
   expect((await f.editor.apply(valid(f), "terminal", undefined, "ok\u0007reason")).ok).toBe(true);
   expect((f.events[0] as { reason?: string }).reason).toBe("ok reason");
+});
+
+test("#689 a whole-instance removal that holds a tier 3 field: the dashboard is refused without a value in the reply, the console is asked for the key and sees no value", async () => {
+  const home = join(tmpdir(), "ahub-config-host-t3-home"); mkdirSync(home, { recursive: true }); cleanup.push(() => rmSync(home, { recursive: true, force: true }));
+  const f = fixture({ instances: { "jcode-two": { kind: "jcode", jcode_home: home, model: "secret-model-name", provider: "secret-provider", roles: ["implementer"] } } });
+  const set = [{ path: ["instances", "jcode-two"], value: null }];
+  const before = f.read("config.local.json");
+  for (const result of [f.editor.preview(f.request(set), "settings"), await f.editor.apply(f.request(set), "settings", "instances.jcode-two", "forged")]) {
+    expect(result.ok).toBe(false);
+    expect(String(result.error)).toContain("never editable from the dashboard");
+    for (const secret of [home, "secret-model-name", "secret-provider"]) expect(JSON.stringify(result)).not.toContain(secret);
+  }
+  expect(f.read("config.local.json")).toBe(before);
+  expect(f.events).toEqual([]);
+  const preview = f.editor.preview(f.request(set), "terminal");
+  expect(preview).toMatchObject({ ok: true, tier: 3, confirm: "instances.jcode-two" });
+  for (const secret of [home, "secret-model-name", "secret-provider"]) expect(JSON.stringify(preview)).not.toContain(secret);
+  expect(JSON.stringify(preview.diff)).toContain("(set)");
+  expect(String((await f.editor.apply(f.request(set), "terminal", undefined, "no key")).error)).toContain("type the key name to confirm");
+  const done = await f.editor.apply(f.request(set), "terminal", "instances.jcode-two", "remove it");
+  expect(done.ok).toBe(true);
+  for (const secret of [home, "secret-model-name", "secret-provider"]) { expect(JSON.stringify(done)).not.toContain(secret); expect(JSON.stringify(f.events)).not.toContain(secret); expect(JSON.stringify(f.notices)).not.toContain(secret); }
+  expect(JSON.parse(f.read("config.local.json")!).instances).toBeUndefined();
+});
+
+test("#689 a tier 3 field inside a replaced instance object is masked in the console preview too, and tier 2 fields stay readable", async () => {
+  const home = join(tmpdir(), "ahub-config-host-t3-home2"); mkdirSync(home, { recursive: true }); cleanup.push(() => rmSync(home, { recursive: true, force: true }));
+  const f = fixture({ instances: { "jcode-two": { kind: "jcode", jcode_home: home, model: "secret-model-name", roles: ["implementer"] } } });
+  const preview = f.editor.preview(f.request([{ path: ["instances", "jcode-two"], value: { kind: "jcode", jcode_home: home, model: "other-model-name", roles: ["verifier"] } }]), "terminal");
+  expect(preview.ok).toBe(true);
+  const text = JSON.stringify(preview);
+  for (const secret of [home, "secret-model-name", "other-model-name"]) expect(text).not.toContain(secret);
+  expect(text).toContain("verifier"); expect(text).toContain("implementer");
+});
+
+test("#689 the view counts a tier 3 key's presence from one read of config.local.json, not one read per key", () => {
+  let reads = 0;
+  const f = fixture({ instances: {} }, undefined, { localConfig: () => { reads++; return {}; } });
+  f.editor.view();
+  expect(reads).toBe(1);
+});
+
+test("#689 a view over a symlinked config.local.json reports the revision as unavailable instead of throwing", () => {
+  const f = fixture({});
+  rmSync(join(f.dir, ".agenthub/config.local.json")); writeFileSync(join(f.dir, "elsewhere.json"), "{}");
+  symlinkSync(join(f.dir, "elsewhere.json"), join(f.dir, ".agenthub/config.local.json"));
+  const view = f.editor.view();
+  expect(view.revisions["config.local.json"]).toBe("unavailable");
+  expect(view.revisions["sdlc.toml"]).toBe("absent");
 });

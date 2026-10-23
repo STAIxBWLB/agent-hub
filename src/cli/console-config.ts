@@ -7,6 +7,8 @@ export interface ConfigEditBody { file: "config.local.json" | "sdlc.toml"; revis
 export type ConfigFormKind = "instance" | "sdlc" | "other";
 export interface ConfigForm {
   kind: ConfigFormKind; token: number;
+  /** The instance ids the hub reports: an id in it changes leaf by leaf, a new id is added as one object. */
+  known?: readonly string[];
   /** True until the person has chosen what to edit (1, 2 or 3). */
   choosing?: boolean;
   phase: "fields" | "preview" | "reason" | "confirm" | "typed";
@@ -22,21 +24,22 @@ export interface ConfigFormStep { form?: ConfigForm; effect?: ConfigFormEffect; 
 
 const FIELDS: Record<ConfigFormKind, readonly { name: string; ask: string }[]> = {
   instance: [
-    { name: "id", ask: "instance id, <kind>-<name> (e.g. codex-review)" }, { name: "kind", ask: "kind (claude, codex, kimi, jcode, ...)" },
-    { name: "roles", ask: "roles, comma list (planner, implementer, verifier, reviewer; empty keeps the kind's)" },
-    { name: "start_mode", ask: "start_mode (headless; empty leaves it unset)" }, { name: "review_mode", ask: "review_mode (fresh; empty leaves it unset)" },
+    { name: "id", ask: "instance id, <kind>-<name> (e.g. codex-review)" }, { name: "kind", ask: "kind (claude, codex, kimi, jcode, ...; empty for an instance that exists already)" },
+    { name: "roles", ask: "roles, comma list (planner, implementer, verifier, reviewer; empty leaves it)" },
+    { name: "start_mode", ask: "start_mode (headless; empty leaves it, clear removes it)" }, { name: "review_mode", ask: "review_mode (fresh; empty leaves it unset)" },
     { name: "worktree", ask: "worktree path (empty leaves it unset)" }, { name: "permission_mode", ask: "permission_mode (ask, ask-when-needed, never-ask; empty leaves it unset)" },
     { name: "readOnly", ask: "readOnly (true or false; empty leaves it unset)" },
   ],
   sdlc: [{ name: "mode", ask: "sdlc mode (off, advise, enforce; empty leaves it)" }, { name: "required_checks", ask: "required checks, comma list (empty leaves them)" }],
   other: [{ name: "path", ask: "key path, dot separated (e.g. review.pool)" }, { name: "json", ask: "JSON value (empty removes the key)" }],
 };
+const a1x = (text: string | undefined): text is string => !!text;
 const list = (text: string): string[] => text.split(",").map(item => item.trim()).filter(Boolean);
 
 /** `1` an instance, `2` the lifecycle, `3` another structural key; anything else opens nothing. */
-export function openConfigForm(choice: string, token: number): ConfigForm | undefined {
+export function openConfigForm(choice: string, token: number, known: readonly string[] = []): ConfigForm | undefined {
   const kind = ({ "1": "instance", "2": "sdlc", "3": "other" } as const)[choice as "1"];
-  return kind ? { kind, token, phase: "fields", step: 0, answers: [], text: "" } : undefined;
+  return kind ? { kind, token, phase: "fields", step: 0, answers: [], text: "", ...(known.length ? { known } : {}) } : undefined;
 }
 
 export function configFormPrompt(form: ConfigForm): string {
@@ -50,16 +53,23 @@ export function configFormPrompt(form: ConfigForm): string {
 
 /** The request the answers describe, or the first reason they cannot. */
 function build(form: ConfigForm, revisions: Record<string, string>): { edit: ConfigEditBody } | { note: string } {
-  const [a0 = "", a1 = "", a2 = "", a3 = "", a4 = "", a5 = "", a6 = "", a7 = ""] = form.answers;
+  const [a0 = "", a1 = ""] = form.answers;
   if (form.kind === "instance") {
-    const value: Record<string, unknown> = { kind: a1 };
-    if (a2) value.roles = list(a2);
-    if (a3) value.start_mode = a3;
-    if (a4) value.review_mode = a4;
-    if (a5) value.worktree = a5;
-    if (a6) value.permission_mode = a6;
-    if (a7) { if (a7 !== "true" && a7 !== "false") return { note: "readOnly is true or false" }; value.readOnly = a7 === "true"; }
-    return { edit: { file: "config.local.json", revision: revisions["config.local.json"] ?? "absent", set: [{ path: ["instances", a0], value }] } };
+    const names = ["kind", "roles", "start_mode", "review_mode", "worktree", "permission_mode", "readOnly"] as const;
+    const typed = names.flatMap((name, index) => a1x(form.answers[index + 1]) ? [[name, form.answers[index + 1]!] as const] : []);
+    const ro = typed.find(([name]) => name === "readOnly");
+    if (ro && !["true", "false", "clear"].includes(ro[1])) return { note: "readOnly is true or false (or clear)" };
+    const convert = (name: string, text: string): unknown => name === "roles" ? list(text) : name === "readOnly" ? text === "true" : text;
+    const file = revisions["config.local.json"] ?? "absent";
+    if (form.known?.includes(a0)) {
+      // An existing instance changes leaf by leaf: a blank field keeps its value, and a tier 3 field it holds is never part of the request.
+      if (!typed.length) return { note: "type a field to change, or clear to remove one" };
+      return { edit: { file: "config.local.json", revision: file, set: typed.map(([name, text]) => ({ path: ["instances", a0, name], value: text === "clear" ? null : convert(name, text) })) } };
+    }
+    if (!a1) return { note: "the kind is required for a new instance" };
+    const value: Record<string, unknown> = {};
+    for (const [name, text] of typed) if (text !== "clear") value[name] = convert(name, text);
+    return { edit: { file: "config.local.json", revision: file, set: [{ path: ["instances", a0], value }] } };
   }
   if (form.kind === "sdlc") {
     const set: ConfigEditBody["set"] = [];
@@ -77,7 +87,7 @@ function build(form: ConfigForm, revisions: Record<string, string>): { edit: Con
 export function reduceConfigForm(form: ConfigForm, key: string, revisions: Record<string, string>): ConfigFormStep {
   if (key === "\x1b") return { form: undefined };
   if (form.choosing) {
-    const chosen = key.length === 1 ? openConfigForm(key, form.token) : undefined;
+    const chosen = key.length === 1 ? openConfigForm(key, form.token, form.known) : undefined;
     return { form: chosen ?? form };
   }
   if (form.phase === "preview") return { form };
@@ -104,7 +114,6 @@ export function reduceConfigForm(form: ConfigForm, key: string, revisions: Recor
   }
   // phase "fields"
   if (form.kind === "instance" && form.step === 0 && !answer) return { form, note: "an instance id is required" };
-  if (form.kind === "instance" && form.step === 1 && !answer) return { form, note: "the kind is required" };
   if (form.kind === "other" && form.step === 0 && (!answer || answer.startsWith(".") || answer.endsWith(".") || answer.includes(".."))) return { form, note: "give a key path such as review.pool" };
   const answers = [...form.answers, answer];
   if (form.step + 1 < FIELDS[form.kind].length) return { form: { ...form, answers, step: form.step + 1, text: "" } };

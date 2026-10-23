@@ -35,7 +35,10 @@ test("#689 the form refuses a missing id or kind on the spot, edits with backspa
   let f = openConfigForm("1", 1)!;
   expect(enter(f).note).toContain("instance id");
   f = type(f, "abc"); f = reduceConfigForm(f, "\x7f", rev).form!; expect(f.text).toBe("ab"); f = reduceConfigForm(f, "\x15", rev).form!; expect(f.text).toBe("");
-  f = type(f, "codex-x"); f = enter(f).form!; expect(enter(f).note).toContain("kind");
+  f = type(f, "codex-x"); f = enter(f).form!; expect(enter(f).form!.step).toBe(2); // an empty kind is allowed here: it is only required for a new instance, and the end says so
+  let g = openConfigForm("1", 2, [])!;
+  for (const answer of ["codex-x", "", "", "", "", "", "", ""]) { g = type(g, answer); const r = enter(g); if (answer === "") { g = r.form ?? g; } else g = r.form!; }
+  expect(g.phase).toBe("fields"); // the last Enter was refused: no preview for a new instance without a kind
   expect(reduceConfigForm(f, "\x1b", rev)).toEqual({ form: undefined });
   expect(openConfigForm("9", 1)).toBeUndefined();
 });
@@ -108,4 +111,29 @@ test("#689 the form first asks what to edit: 1 an instance, 2 the lifecycle, 3 a
   expect(reduceConfigForm(start, "\r", rev).form).toBe(start);
   expect(reduceConfigForm(start, "12", rev).form).toBe(start);
   expect(reduceConfigForm(start, "\x1b", rev)).toEqual({ form: undefined });
+});
+
+test("#689 the instance form for an id the hub already declares sends only the fields typed, as leaves; a new id is one object", () => {
+  const known = { "config.local.json": "a".repeat(64) };
+  const run = (id: string, answers: string[]) => { let f = openConfigForm("1", 9, ["codex-review"])!; let effect; for (const answer of [id, ...answers]) { f = type(f, answer); const r = enter(f); f = r.form ?? f; effect = r.effect ?? effect; } void known; return (effect as { edit: { set: unknown[] } }).edit.set; };
+  expect(run("codex-review", ["", "verifier", "", "", "", "", ""])).toEqual([{ path: ["instances", "codex-review", "roles"], value: ["verifier"] }]);
+  expect(run("codex-review", ["", "", "clear", "", "", "", ""])).toEqual([{ path: ["instances", "codex-review", "start_mode"], value: null }]);
+  expect(run("codex-new", ["codex", "reviewer", "headless", "fresh", "", "", ""])).toEqual([{ path: ["instances", "codex-new"], value: { kind: "codex", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } }]);
+});
+
+test("#689 an existing instance with nothing typed is refused on the spot, and the kind is not required for it", () => {
+  let f = openConfigForm("1", 9, ["codex-review"])!;
+  f = type(f, "codex-review"); f = enter(f).form!;
+  expect(f.step).toBe(1);
+  for (let i = 0; i < 6; i++) f = enter(f).form!;
+  const last = enter(f);
+  expect(last.effect).toBeUndefined();
+  expect(last.note).toContain("type a field to change");
+});
+
+test("#689 readOnly other than true, false or clear is refused rather than turned into false", () => {
+  let f = openConfigForm("1", 9, [])!;
+  for (const answer of ["codex-x", "codex", "", "", "", "", ""]) { f = type(f, answer); f = enter(f).form!; }
+  f = type(f, "TRUE");
+  expect(enter(f).note).toContain("true or false");
 });

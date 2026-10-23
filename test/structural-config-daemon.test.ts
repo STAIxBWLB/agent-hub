@@ -296,3 +296,49 @@ test("#689 the dashboard snapshot carries the Structure data to a settings sessi
   const page = await (await fetch(`${url.origin}/`)).text();
   expect(page).toContain("renderStructure"); expect(page).toContain("structure-tier3");
 }, 20_000);
+
+test("#689 an sdlc.toml changed by hand shows as restart pending on the next status, and a repeated status does not need another read", async () => {
+  const f = await fixture({ sdlc: 'mode = "advise"\n' });
+  expect((await f.client.request({ t: "status" })).status.pendingRestart).toEqual([]);
+  writeFileSync(f.file("sdlc.toml"), 'mode = "enforce"\nrequired_checks = ["gate"]\n');
+  const keys = async () => (await f.client.request({ t: "status" })).status.pendingRestart.map((row: { key: string }) => row.key);
+  expect(await keys()).toEqual(["sdlc.mode", "sdlc.required_checks"]);
+  const reads = f.daemon.sdlcFileReads();
+  for (let i = 0; i < 5; i++) expect(await keys()).toEqual(["sdlc.mode", "sdlc.required_checks"]);
+  expect(f.daemon.sdlcFileReads(), "five more statuses with the file unchanged read it no more").toBe(reads);
+  writeFileSync(f.file("sdlc.toml"), 'mode = "advise"\n');
+  expect(await keys()).toEqual([]);
+  writeFileSync(f.file("sdlc.toml"), "mode = [broken");
+  expect(await keys()).toEqual([]); // an unreadable file is a problem the view names, not a restart the hub could take
+}, 20_000);
+
+test("#689 a dashboard preview and apply of a whole-instance removal never carry a tier 3 value, and the console is asked for the key", async () => {
+  const home = realPath(mkdtempSync(join(tmpdir(), "ahub-structural-rm-"))), base = realPath(mkdtempSync(join(tmpdir(), "ahub-structural-rmb-")));
+  cleanup.push(() => rmSync(home, { recursive: true, force: true }), () => rmSync(base, { recursive: true, force: true }));
+  const f = await fixture({ local: { jcode_home: base, instances: { "jcode-two": { kind: "jcode", jcode_home: home, model: "secret-model-name", provider: "secret-provider" } } } });
+  const settings = await f.session(true);
+  const before = f.read("config.local.json");
+  const set = [{ path: ["instances", "jcode-two"], value: null }];
+  for (const action of ["config_edit_preview", "config_edit_apply"]) {
+    const reply = await settings({ action, edit: await f.edit(set), reason: "forged", confirm: "instances.jcode-two" });
+    expect(reply.ok, action).toBe(false);
+    for (const secret of [home, "secret-model-name", "secret-provider"]) expect(JSON.stringify(reply), action).not.toContain(secret);
+  }
+  expect(f.read("config.local.json")).toBe(before);
+  const preview = await f.client.request({ t: "config_edit_preview", edit: await f.edit(set) });
+  expect(preview).toMatchObject({ ok: true, tier: 3, confirm: "instances.jcode-two" });
+  for (const secret of [home, "secret-model-name", "secret-provider"]) expect(JSON.stringify(preview)).not.toContain(secret);
+}, 20_000);
+
+test("#689 a symlinked config.local.json never takes the Settings view down: the revision is unavailable and the rows still load", async () => {
+  const f = await fixture({ local: {} });
+  rmSync(f.file("config.local.json")); writeFileSync(join(f.dir, "elsewhere.json"), "{}");
+  const { symlinkSync } = await import("node:fs");
+  symlinkSync(join(f.dir, "elsewhere.json"), f.file("config.local.json"));
+  const view = await f.client.request({ t: "settings_get" });
+  expect(view.ok).toBe(true);
+  expect(Array.isArray(view.rows)).toBe(true);
+  expect(view.configEdit.revisions["config.local.json"]).toBe("unavailable");
+  const reply = await f.client.request({ t: "config_edit_apply", edit: { file: "config.local.json", revision: "unavailable", set: [{ path: ["approvals", "timeout_s"], value: 5 }] }, reason: "x" });
+  expect(reply.ok).toBe(false);
+}, 20_000);

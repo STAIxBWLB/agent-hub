@@ -244,6 +244,8 @@ export async function runConsole(options: ConsoleOptions): Promise<void> {
           state.settingsRows = settings.rows; state.settingsKnown = true; state.settingsProblem = undefined;
           state.settingsUndo = typeof settings.undo === "string" ? settings.undo : undefined;
           const revisions = (settings.configEdit as { revisions?: unknown } | undefined)?.revisions;
+          const declared = (settings.configEdit as { instances?: unknown } | undefined)?.instances;
+          state.configInstances = Array.isArray(declared) ? declared.map(item => String((item as { id?: unknown }).id)).filter(Boolean) : [];
           if (revisions && typeof revisions === "object") state.configRevisions = Object.fromEntries(Object.entries(revisions).filter(([, value]) => typeof value === "string")) as Record<string, string>;
           state.pendingRestart = Array.isArray(settings.pendingRestart) ? settings.pendingRestart : [];
           state.retainedConfig = Array.isArray(settings.retainedConfig) ? settings.retainedConfig : [];

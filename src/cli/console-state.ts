@@ -26,7 +26,7 @@ export interface SettingsEdit {
 }
 export interface ConsoleState {
   /** #689: the structural config form (Settings panel, key c) and the file revisions the hub last reported. */
-  configForm?: ConfigForm; configRevisions?: Record<string, string>;
+  configForm?: ConfigForm; configRevisions?: Record<string, string>; configInstances?: string[];
   settingsRows?: SettingRow[]; settingsKnown?: boolean; settingsUndo?: string; settingsProblem?: string;
   settingsEdit?: SettingsEdit; settingsSequence?: number;
   pendingRestart?: { key: string; reason: string }[];
@@ -697,7 +697,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
   }
   if (s.mode === "panels" && s.panel === 6 && s.detail === undefined && key === "c") {
     const token = (s.settingsSequence ?? 0) + 1; s.settingsSequence = token;
-    s.configForm = { kind: "other", token, phase: "fields", step: 0, answers: [], text: "", choosing: true };
+    s.configForm = { kind: "other", token, phase: "fields", step: 0, answers: [], text: "", choosing: true, ...(s.configInstances?.length ? { known: s.configInstances } : {}) };
     return done();
   }
   if (s.mode === "panels" && s.panel === 6 && s.detail === undefined && key === "R" && s.pendingRestart?.length) {

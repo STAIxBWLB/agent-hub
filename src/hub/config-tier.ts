@@ -36,7 +36,7 @@ const isObject = (value: unknown): value is Record<string, unknown> => !!value &
  * The tier of one edit. `value` is only read for a whole `instances.<id>` object, whose fields are classified one by one
  * (the highest tier wins, an unknown field is refused by name, never dropped).
  */
-export function configTier(file: ConfigEditFile, path: readonly string[], value?: unknown): ConfigTier {
+export function configTier(file: ConfigEditFile, path: readonly string[], value?: unknown, held?: unknown): ConfigTier {
   if (!path.length || path.some(part => typeof part !== "string" || !part || part.length > 64 || UNSAFE.has(part) || /[\s\x00-\x1f]/.test(part))) return refuse("invalid configuration path");
   const key = path.join(".");
   if (file === "sdlc.toml") return path.length === 1 && (SDLC_KEYS as readonly string[]).includes(path[0]!) ? { tier: 2 } : refuse(`sdlc.${key} is not editable here: only mode and required_checks are; edit .agenthub/sdlc.toml in your editor`);
@@ -45,6 +45,9 @@ export function configTier(file: ConfigEditFile, path: readonly string[], value?
     if (path.length === 1) return refuse("instances: name one instance (instances.<id>)");
     if (!PEER.test(path[1]!)) return refuse(`instances.${path[1]}: an instance id is lower-case letters, digits and hyphens`);
     if (path.length === 2) {
+      // A whole instance that already holds a native home, account or model is tier 3 to remove or replace, whatever the new value is:
+      // its values are what a browser must never see or delete (#689 review).
+      if (isObject(held) && TIER3_INSTANCE_FIELDS.some(field => Object.hasOwn(held, field))) return { tier: 3, key: `instances.${path[1]}` };
       if (value === undefined || value === null) return { tier: 2 }; // removal of a whole declaration; the loaders judge what depends on it
       if (!isObject(value)) return refuse(`instances.${path[1]}: must be an object of instance fields`);
       let tier3: string | undefined;
@@ -72,4 +75,15 @@ export function structuralLeaf(key: string): boolean {
   const path = key.split(".");
   const tier = configTier("config.local.json", path);
   return "tier" in tier && tier.tier === 2;
+}
+
+/** A value as a reply may show it: a tier 3 key is only ever `(set)`, and inside a whole instance only its tier 3 fields are. */
+export function maskTier3(path: readonly string[], value: unknown): unknown {
+  if (value === undefined) return undefined;
+  const key = path.join(".");
+  if (path[0] === "instances" && path.length === 2 && isObject(value)) return Object.fromEntries(Object.entries(value).map(([field, item]) => [field, (TIER3_INSTANCE_FIELDS as readonly string[]).includes(field) ? "(set)" : item]));
+  const tier = configTier("config.local.json", path, undefined);
+  if ("tier" in tier && tier.tier === 3) return "(set)";
+  if (TIER3_PREFIXES.some(prefix => key === prefix || key.startsWith(`${prefix}.`))) return "(set)";
+  return value;
 }

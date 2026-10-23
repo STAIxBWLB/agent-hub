@@ -1,5 +1,5 @@
-import { configBackups, editRevisions, parseConfigEditRequest, planConfigEdit, writeConfigEdit, type CandidateCheck, type ConfigEditPlan } from "./config-edit.ts";
-import { configTier, TIER2_INSTANCE_FIELDS, TIER3_INSTANCE_FIELDS, TIER3_PREFIXES, type ConfigEditFile } from "./config-tier.ts";
+import { configBackups, parseConfigEditRequest, viewRevisions, planConfigEdit, writeConfigEdit, type CandidateCheck, type ConfigEditPlan } from "./config-edit.ts";
+import { configTier, maskTier3, TIER2_INSTANCE_FIELDS, TIER3_INSTANCE_FIELDS, TIER3_PREFIXES, type ConfigEditFile } from "./config-tier.ts";
 import type { HubEvent } from "./events.ts";
 
 /**
@@ -31,8 +31,8 @@ export interface ConfigEditHost {
   fileSdlc: () => { mode: string; requiredChecks: readonly string[] } | string;
   /** The declared instances of the running hub: id to its tier 2 fields. */
   declared: () => Record<string, Record<string, unknown>>;
-  /** Whether a tier 3 key has a value in the file (never the value). */
-  tier3Set: (path: readonly string[]) => boolean;
+  /** config.local.json as the file holds it now, parsed once per call (`{}` when it is missing or unreadable). Never sent anywhere: it is read for what is set, never shown. */
+  localConfig: () => Record<string, unknown>;
 }
 export interface ConfigEditView {
   revisions: Record<ConfigEditFile, string>;
@@ -65,14 +65,17 @@ export function createConfigEditor(host: ConfigEditHost) {
   const allPending = (): string[] => [...host.pending().map(row => row.key), ...sdlcRestart().map(row => row.key)];
   function view(): ConfigEditView {
     const file = host.fileSdlc(), running = host.runningSdlc();
+    let local: Record<string, unknown> = {};
+    try { local = host.localConfig(); } catch { /* the revisions say the file is unavailable */ }
+    const isSet = (path: readonly string[]): boolean => { let node: unknown = local; for (const part of path) { if (!node || typeof node !== "object" || !Object.hasOwn(node, part)) return false; node = (node as Record<string, unknown>)[part]; } return node !== undefined; };
     const declared = host.declared();
     return {
-      revisions: editRevisions(host.cwd),
+      revisions: viewRevisions(host.cwd),
       instances: Object.entries(declared).map(([id, fields]) => ({ id, fields: Object.fromEntries(TIER2_INSTANCE_FIELDS.filter(field => fields[field] !== undefined).map(field => [field, fields[field]])),
         tier3: TIER3_INSTANCE_FIELDS.filter(field => fields[field] !== undefined) as string[] })),
       blocks: BLOCKS.map(path => ({ path: path.join("."), value: host.effective(path) ?? null })),
       sdlc: { mode: running.mode, requiredChecks: running.requiredChecks, pending: sdlcPending(), ...(typeof file === "string" ? { problem: file } : {}) },
-      tier3: [...TIER3_PREFIXES.map(key => ({ key, set: host.tier3Set(key.split(".")), command: `ahub settings edit config.local.json set ${key} <json>` })),
+      tier3: [...TIER3_PREFIXES.map(key => ({ key, set: isSet(key.split(".")), command: `ahub settings edit config.local.json set ${key} <json>` })),
         ...Object.entries(declared).flatMap(([id, fields]) => TIER3_INSTANCE_FIELDS.filter(field => fields[field] !== undefined).map(field => ({ key: `instances.${id}.${field}`, set: true, command: `ahub settings edit config.local.json set instances.${id}.${field} <json>` })))],
       backups: configBackups(host.stateDir).slice(0, 10),
       fields: { instance: TIER2_INSTANCE_FIELDS, tier3Instance: TIER3_INSTANCE_FIELDS },
@@ -100,18 +103,20 @@ export function createConfigEditor(host: ConfigEditHost) {
     if (held) return { ok: false, error: `${held} is holding config edits` };
     const plan = planConfigEdit(host.cwd, raw, host.check);
     if (!plan.ok) return plan;
+    // The plan reads the file itself: if it finds a tier 3 key the request alone did not show, a dashboard still learns nothing.
+    if (plan.tier === 3 && authority !== "terminal") return { ok: false, error: `${plan.tier3Keys[0]} chooses what the hub runs or where secrets go: it is never editable from the dashboard; change it in the console` };
     return { ok: true, plan };
   }
   function diffText(plan: Extract<ConfigEditPlan, { ok: true }>): string[] {
-    const show = (value: unknown, secret: boolean): string => value === undefined ? "(unset)" : secret ? "(set)" : JSON.stringify(value);
-    return plan.diff.map(row => `${row.path}: ${show(row.before, row.tier === 3)} -> ${show(row.after, row.tier === 3)} (${row.applies === "restart" ? "pending restart" : "applies at next use"})`);
+    const show = (path: string, value: unknown): string => { const masked = maskTier3(path.split("."), value); return masked === undefined ? "(unset)" : JSON.stringify(masked); };
+    return plan.diff.map(row => `${row.path}: ${show(row.path, row.before)} -> ${show(row.path, row.after)} (${row.applies === "restart" ? "pending restart" : "applies at next use"})`);
   }
   function preview(raw: unknown, authority: EditAuthority): Record<string, unknown> {
     const result = planned(raw, authority);
     if (!result.ok) return { ok: false, error: result.error, ...(result.field ? { field: result.field } : {}) };
     const { plan } = result;
     return { ok: true, file: plan.request.file, revision: plan.request.revision, tier: plan.tier, lines: [...diffText(plan), ...plan.notes],
-      diff: plan.diff.map(row => ({ path: row.path, tier: row.tier, applies: row.applies, before: row.tier === 3 ? (row.before === undefined ? null : "(set)") : row.before ?? null, after: row.tier === 3 ? (row.after === undefined ? null : "(set)") : row.after ?? null })),
+      diff: plan.diff.map(row => ({ path: row.path, tier: row.tier, applies: row.applies, before: maskTier3(row.path.split("."), row.before) ?? null, after: maskTier3(row.path.split("."), row.after) ?? null })),
       ...(plan.tier === 3 ? { confirm: plan.tier3Keys[0], warning: "this runs code with the daemon's rights, or chooses where secrets are read from" } : {}) };
   }
   async function apply(raw: unknown, authority: EditAuthority, confirm?: unknown, rawReason?: unknown): Promise<Record<string, unknown>> {

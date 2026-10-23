@@ -38,6 +38,9 @@ export function reasonField(message: string): string | undefined {
 
 /** The file's text, or null when it is not there. A failure is named by its code: its own text holds absolute paths. */
 export function readEditable(cwd: string, file: ConfigEditFile): string | null {
+  // Only the last component used to be checked: a committed `.agenthub` symlink would have been read and written through.
+  try { if (!lstatSync(join(cwd, ".agenthub")).isDirectory()) throw new Error(".agenthub must be a real directory, not a link"); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; if (/must be a real directory/.test((error as Error).message)) throw error; throw new Error(`.agenthub could not be read (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`); }
   const path = join(cwd, ".agenthub", file);
   try {
     const info = lstatSync(path);
@@ -50,6 +53,8 @@ export function readEditable(cwd: string, file: ConfigEditFile): string | null {
     throw new Error(`.agenthub/${file} could not be read (${code ?? "unknown error"}): it must be a regular file inside its size limit`);
   }
 }
+/** The revisions for a view: a file that cannot be read safely is `unavailable`, so one bad file never takes the whole Settings view down. */
+export const viewRevisions = (cwd: string): Record<ConfigEditFile, string> => Object.fromEntries(CONFIG_EDIT_FILES.map(file => { try { return [file, fileRevision(readEditable(cwd, file))]; } catch { return [file, "unavailable"]; } })) as Record<ConfigEditFile, string>;
 export const editRevisions = (cwd: string): Record<ConfigEditFile, string> => Object.fromEntries(CONFIG_EDIT_FILES.map(file => [file, fileRevision(readEditable(cwd, file))])) as Record<ConfigEditFile, string>;
 
 /** Strict shape of an untrusted request: unknown fields are refused, never dropped. */
@@ -123,22 +128,36 @@ function topLevel(lines: readonly string[]): { end: number; spans: Map<string, [
   }
   return { end, spans };
 }
+/**
+ * Edits `mode` and `required_checks` line by line. Every line the edit does not touch keeps its own ending, so a one-key change never
+ * rewrites a CRLF checkout; a line the edit writes or adds takes the ending of the first line break the file has (LF for a new file).
+ */
 function editSdlcText(text: string | null, set: ConfigEditSet[]): string | null {
-  let lines = text === null ? [] : text.replace(/\r\n/g, "\n").split("\n");
-  if (lines.length && lines.at(-1) === "") lines.pop();
+  const raw = text === null ? [] : text.split("\n");
+  const trailing = raw.length > 0 && raw.at(-1) === "";
+  if (trailing) raw.pop();
+  // Parallel arrays: the line's text and the ending it had. A line that was the file's last may have had none.
+  const lines = raw.map(line => line.endsWith("\r") ? line.slice(0, -1) : line);
+  const endings = raw.map((line, index) => line.endsWith("\r") ? "\r\n" : index === raw.length - 1 && !trailing ? "" : "\n");
+  const own = text !== null && /\r?\n/.exec(text)?.[0] === "\r\n" ? "\r\n" : "\n";
   for (const { path, value } of set) {
     const key = path[0]!, { end, spans } = topLevel(lines), found = spans.get(key);
-    if (found) lines.splice(found[0], found[1] - found[0] + 1, ...(value === null ? [] : [tomlValue(key, value)]));
-    else if (value !== null) {
+    if (found) {
+      const fresh = value === null ? [] : [tomlValue(key, value)];
+      const last = endings[found[1]]!;
+      lines.splice(found[0], found[1] - found[0] + 1, ...fresh);
+      endings.splice(found[0], found[1] - found[0] + 1, ...fresh.map(() => last === "" ? own : last));
+    } else if (value !== null) {
       // A new key goes after the last top-level line, before the first table.
       let at = end;
       while (at > 0 && !lines[at - 1]!.trim()) at--;
-      lines.splice(at, 0, tomlValue(key, value));
-      if (at + 1 === lines.length) continue;
-      if (lines[at + 1]!.trim() !== "" && /^\s*\[/.test(lines[at + 1]!)) lines.splice(at + 1, 0, "");
+      lines.splice(at, 0, tomlValue(key, value)); endings.splice(at, 0, own);
+      if (at > 0 && endings[at - 1] === "") endings[at - 1] = own;
+      if (at + 1 < lines.length && lines[at + 1]!.trim() !== "" && /^\s*\[/.test(lines[at + 1]!)) { lines.splice(at + 1, 0, ""); endings.splice(at + 1, 0, own); }
     }
   }
-  return lines.length ? `${lines.join("\n")}\n` : null;
+  if (!lines.length) return null;
+  return lines.map((line, index) => line + (endings[index] === "" && index === lines.length - 1 ? own : endings[index])).join("");
 }
 const parseToml = (text: string | null): Record<string, unknown> => text === null ? {} : Bun.TOML.parse(text) as Record<string, unknown>;
 
@@ -177,12 +196,12 @@ export function planConfigEdit(cwd: string, rawRequest: unknown, check: Candidat
       if (!isObject(doc)) return { ok: false, error: ".agenthub/config.local.json must hold a JSON object; nothing was written" };
       const old = structuredClone(doc);
       for (const { path, value } of request.set) {
-        const tier = configTier("config.local.json", path, value);
-        if ("refused" in tier) return { ok: false, error: tier.refused, field: path.join(".") };
         const held = valueAt(old, path);
+        const tier = configTier("config.local.json", path, value, held);
+        if ("refused" in tier) return { ok: false, error: tier.refused, field: path.join(".") };
         if (tier.tier === 3) tier3Keys.push(tier.key);
         // A whole instance replaced by a tier 2 object must not drop a tier 3 field it held: that would silently erase a home or account.
-        if (path[0] === "instances" && path.length === 2 && isObject(held) && isObject(value) && tier.tier === 2) {
+        if (path[0] === "instances" && path.length === 2 && isObject(held) && isObject(value)) {
           const lost = Object.keys(held).find(field => !(field in value) && ["jcode_home", "provider", "model", "provider_profile"].includes(field));
           if (lost) return { ok: false, error: `instances.${path[1]}.${lost}: this replacement would drop a native home or account setting; set only the fields you change (instances.${path[1]}.<field>); nothing was written`, field: `instances.${path[1]}.${lost}` };
         }
