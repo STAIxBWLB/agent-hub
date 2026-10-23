@@ -40,7 +40,7 @@ marked `private: true`, and PII tasks `pii: true`.
 | `turn_start` | `peer`, `turn` (`<peer>#<hub run>.<n>`, unique across restarts). A turn follows the adapter: pausing a busy peer does not end it |
 | `turn_end` | `peer`, `turn`, `ms`, `tokens` (when the adapter reported any during the turn), `files` and `snapshotMs` (when snapshots are on: how many files the turn changed, and the time both snapshots took); optional numeric `task`, `attribution` (`delivery`, `single_open`, `unattributed`) frozen at turn start, `pii: true` for an attributed PII task |
 | `tokens` | `peer`, `n` (tokens added since the previous report), optional numeric `task`, `attribution` (`delivery`, `single_open`, `unattributed`), `pii: true` for an attributed PII task |
-| `usage` | `peer`, `source` (`omniroute`, `claude_transcript`, `codex_appserver`), opaque `id`, optional `measuredAt` (provider/source time), the `requestedModel`, `servedModel` and `provider` labels, and any provider-reported counters (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens`, `totalTokens`); optional numeric `task`, `attribution` (`delivery`, `single_open`, `unattributed`), `pii: true` for an attributed PII task. Missing counters stay unknown. |
+| `usage` | `peer`, `source` (`omniroute`, `claude_transcript`, `codex_appserver`, `kimi_wire`), opaque `id`, optional `measuredAt` (provider/source time), the `requestedModel`, `servedModel` and `provider` labels, and any provider-reported counters (`inputTokens`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens`, `totalTokens`); optional numeric `task`, `attribution` (`delivery`, `single_open`, `unattributed`), `pii: true` for an attributed PII task. Missing counters stay unknown. |
 | `task` | `id`, `event` (the board history event, e.g. `proposed`, `assigned`, `done`, `check failed`, `blocked`, `ready`), `by`, `state`, `owner`, `reviewer`, `class`, `pii`, and `reason` when the board recorded a move reason (`manual`, `budget`, `offline`, `idle`, `rejections`, `declined`, `inference_failed`, `delivery_failed`) |
 | `overlap` | `task`, `owner`, `others` (`task`, `owner`, `paths`, and `symbols` when plans name the same symbol; a name that matches a PII pattern is left out, so either list can be empty), the structured twin of the console notice |
 | `permission_mode` | `peer`, `from`, `to` (`ask`, `ask-when-needed`, `never-ask`): a person set a peer's permission mode (`from` equals `to` when it was already in force) or confirmed a never-ask default (issue #242) |
@@ -56,12 +56,24 @@ marked `private: true`, and PII tasks `pii: true`.
 
 Token usage by adapter:
 
-- Kimi (ACP `usage_update`, and the usage a `session/prompt` result carries): recorded when it holds a checked
-  total or an input/output pair. The `{used, size}` shape Kimi sends is context occupancy: it is shown as the peer's
-  native context reading (source `acp_usage_update`, #285 phase 1) and no `tokens` event is written from it; Kimi's
-  consumption is not recorded yet (phase 2). The adapter accepts the update whenever it names the current session;
-  Kimi 2.1.1's source text emits it after the prompt resolves, when the peer may already be idle, and that order is
-  not yet observed live through the hub (docs/smoke.md).
+- Kimi (#285 phase 2): consumption is the hub's own count of Kimi's session wire log, never an ACP total. The `{used, size}`
+  `usage_update` Kimi sends is context occupancy: it is shown as the peer's native context reading (source
+  `acp_usage_update`, phase 1) and writes no `tokens` event. The reader (`src/adapters/kimi-wire-usage.ts`, the only code that knows
+  the format) finds the session directory from `session_index.jsonl` (resolved with `realPath`, kept inside `<kimi home>/sessions`)
+  and reads `agents/*/wire.jsonl` incrementally from saved offsets, sub-agents included, at a turn end, at a turn start (the
+  history floor) and when a `usage_update` arrives: no watcher, no timer. Each `usage.record` row becomes a `usage` event
+  (`source: kimi_wire`, `inputTokens` = Kimi's `inputOther`, `outputTokens`, `cacheReadTokens`, `cacheWriteTokens`, `totalTokens`
+  including cache reads, `servedModel`, `measuredAt` = Kimi's row time) and a `tokens` event of the counted share. The id is an
+  opaque hash of session, agent and byte offset; no path, session id or text reaches an event. Only the four integers, the model
+  label and the time are copied from a row. The counted share is `inputOther + inputCacheCreation + output` (`kimiCountedTokens`,
+  one function): cache reads are recorded and shown, never counted against `budget.kimi_tokens_5h`. The rolling 5 h sum of the
+  counted share against that ceiling is the `tokens` window (`hub count, kimi wire log, of kimi_tokens_5h N`). Rows already in the
+  session's log when the hub first sees it (a resumed session) are history and are not counted. An unreadable index, a missing,
+  shrunk or replaced file, a truncated last line, an unknown row shape or an untested wire `protocol_version` (only 1.5 is known)
+  makes the count unknown: one notice (`kimi usage unknown (<reason>)`), the `tokens` reading is dropped, and no figure is reported
+  until the 5 h window the gap touched has passed (a transient read error or truncated line heals on the next read). Wire format
+  followed: protocol 1.5 as written by Kimi Code 2.3.0 (the issue read 2.1.1; the hub verifies 2.2.0 and 2.3.0 in `compat.ts`). The
+  live check against Kimi's own `/usage` (#285 AC11) is not done yet.
 - Codex (app-server `thread/tokenUsage/updated`): recorded as the growth of the thread's running total, so
   compaction estimates, usage-limit refreshes and the replay to a reattaching connection add nothing. A thread
   started under the hub counts from zero; a resumed thread's first update is its history and only sets the

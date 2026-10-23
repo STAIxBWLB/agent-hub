@@ -431,8 +431,12 @@ inside a peer.
   update whenever it names the current session, since 2.1.1's source text emits it
   after the prompt resolves (an order read from the source, not yet observed live
   through the hub; docs/smoke.md). A gate crossing records the
-  event and notice for an ACP peer but sends it no checkpoint request yet. Only validated cumulative totals or input/output
-  pairs feed native token readings; unsupported shapes remain unknown. `ahub budget set`
+  event and notice for an ACP peer but sends it no checkpoint request yet. Since #285 phase 2 the soft ceiling's counter is the
+  hub's own count of Kimi's session wire log (`src/adapters/kimi-wire-usage.ts`, wire protocol 1.5, read on Kimi 2.3.0; the issue
+  read 2.1.1), not an ACP total: each `usage.record` row of the owned session, sub-agents included, is a `usage` event
+  (`source: kimi_wire`) and a `tokens` event, and the rolling 5 h sum of `inputOther + inputCacheCreation + output` (cache reads are
+  recorded, never counted) is the `tokens` window, source `hub count, kimi wire log, of kimi_tokens_5h N`. Any read the reader
+  cannot trust gives unknown (one notice, the reading dropped), never a short count. `ahub budget set`
   feeds a reading by hand. `local` has no quota and is never paused.
 - Gate at `budget.gate` (default 0.9) on any fresh window; readings older than
   `budget.stale_min` are ignored. Checkpoint first, pause second: the peer gets one

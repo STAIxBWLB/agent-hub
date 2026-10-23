@@ -248,6 +248,11 @@ export class Budget {
     this.evaluate(peer, hard).catch((e: Error) => this.closed || this.hooks.notify(`budget: evaluating ${peer} failed: ${e.message}`));
   }
 
+  /** A source that can no longer be trusted drops its reading of one window: the window shows unknown, never the last number. */
+  forget(peer: PeerId, id: UsageWindow["id"]): void {
+    this.readings.get(this.account(peer))?.delete(id);
+  }
+
   /** Readings that still say something: not stale, and not about a window that has reset since they were taken. */
   private fresh(peer: PeerId): Reading[] {
     peer = this.account(peer);
