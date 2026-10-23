@@ -570,13 +570,16 @@ export class Tasks {
     const join = (a: number, b: number) => { const x = find(a), y = find(b); if (x !== y) parent.set(x, y); };
     const first = new Map<string, number>(), ids = new Set(rows.map(row => row.id));
     for (const row of rows) {
-      const repo = (row.sdlc?.repo ?? row.refs.repo ?? this.d.repository ?? "").toLowerCase();
-      for (const key of [row.sdlc?.pr ? `pr ${repo}#${row.sdlc.pr}` : "", row.refs.branch ? `branch ${repo} ${row.refs.branch}` : ""]) {
+      // Repository identity comes from the board's own resolver, so aliases match and an outside path never falls back to this project.
+      const prRepo = row.sdlc?.pr ? this.repositories.scope(row.sdlc.repo ? { repo: row.sdlc.repo, paths: row.refs.paths } : row.refs).key : "";
+      const branchRepo = row.refs.branch ? this.repositories.scope(row.refs).key : "";
+      for (const key of [prRepo ? `pr ${prRepo}#${row.sdlc!.pr}` : "", branchRepo ? `branch ${branchRepo} ${row.refs.branch}` : ""]) {
         if (!key) continue;
         const seen = first.get(key);
         if (seen === undefined) first.set(key, row.id); else join(row.id, seen);
       }
-      const next = Number(row.cancelled?.supersededBy);
+      // superseded_by is free text ("task #73", "#73" or "73"); the first task number in it names the replacement.
+      const next = Number(/#?(\d+)/.exec(row.cancelled?.supersededBy ?? "")?.[1]);
       if (ids.has(next)) join(row.id, next);
     }
     return new Set(rows.map(row => find(row.id))).size;

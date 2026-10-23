@@ -321,3 +321,18 @@ test("#736 a finding carried to a follow-up of the same PR or branch is not a re
   expect(cards).toHaveLength(1);
   expect(cards[0]?.detail).toContain("Review finding key: security:carried");
 });
+
+test("#736 a free-form superseded_by joins the replacement, and repository identity comes from the board resolver", async () => {
+  const r = rig();
+  const loose = (title: string) => { const row = r.board.propose("user", { title, class: "implement", plan: { paths: ["src/hub/tasks.ts"] } }); r.board.update(row.id, "user", "accepted", { state: "in_progress", owner: "codex", reviewer: "claude" }); return r.board.update(row.id, "codex", "done", { state: "in_review", refs: { commit: A }, sdlc: { stage: "review", repo: "o/r", issue: 1, localHead: A, localResult: "passed" } }); };
+  const old = loose("superseded fixture"), next = loose("replacement fixture");
+  await submit(r.tasks, old.id, [finding("carried-over")]);
+  r.board.update(old.id, "user", "cancelled", { state: "cancelled", cancelled: { reason: "replaced", supersededBy: `task #${next.id}`, flowRevision: 1 } });
+  await submit(r.tasks, next.id, [finding("carried-over")]);
+  expect(r.board.list("backlog")).toHaveLength(0);
+  const a = r.board.update(loose("other repo a").id, "codex", "done", { refs: { commit: A, branch: "main", repo: "x/one" } });
+  const b = r.board.update(loose("other repo b").id, "codex", "done", { refs: { commit: A, branch: "main", repo: "x/two" } });
+  await submit(r.tasks, a.id, [finding("same-branch-name")]);
+  await submit(r.tasks, b.id, [finding("same-branch-name")]);
+  expect(r.board.list("backlog").map(card => card.detail)).toEqual([expect.stringContaining("security:same-branch-name")]);
+});
