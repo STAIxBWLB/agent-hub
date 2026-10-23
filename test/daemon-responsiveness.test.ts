@@ -26,7 +26,7 @@ test("a native launch connection starts during a cold 50 MB roll-up pass (#719)"
   mkdirSync(stateDir, { recursive: true });
   writeFileSync(join(root, ".agenthub", "config.json"), JSON.stringify({ memory: { enabled: false }, inference: { enabled: false }, snapshots: { enabled: false } }));
   const log = join(stateDir, "events.jsonl");
-  const row = JSON.stringify({ v: 1, at: "2026-10-23T00:00:00.000Z", type: "tokens", peer: "codex", n: 1, attribution: "unattributed", pad: "x".repeat(400) }) + "\n";
+  const row = JSON.stringify({ v: 1, at: "2026-10-23T00:00:00.000Z", type: "tokens", peer: "codex", n: 1, attribution: "unattributed", pad: "x".repeat(450) }) + "\n";
   // Write in bounded blocks instead of retaining a second 50 MB string fixture.
   const block = row.repeat(1000); for (let n = 0; n < 100; n++) appendFileSync(log, block);
   expect(statSync(log).size).toBeGreaterThan(50 * 1024 * 1024);
