@@ -730,7 +730,7 @@ stay first. Stream: one aligned row per event (time, kind, sender, body in monos
 the section head, above the scrolling list. Memory: result rows show title, kind and age, the selected row is marked with an accent
 edge, and the graph and the detail pane use the colour tokens. Settings: each group is a section with a short header, a key that waits
 for a restart carries a "restart pending" badge, and "Pending restart" shows a count; the text lines, Preview, Save and Undo are as
-they were. Message uses the shared form styles.
+they were. A Structure group edits structural configuration in a settings session (#689, see Structural configuration below). Message uses the shared form styles.
 
 Icons replace the symbol glyphs: the star mark, the stream arrow and the Office "checking" mark are sprite icons (twelve Tabler icons
 in all), and the Office draws each condition (idle, busy, offline, paused, waiting on approval) as a shape (ring, disc, cross, bars, raised hand)
@@ -1253,7 +1253,7 @@ rescans the whole file on each call.
 for the history it already spent. A task with no link, and a record with no task, are `unattributed`.
 
 Every number names its source: `native` (the provider's own counter), `hub count` (the hub's own `tokens` increments, which cover peers that
-report no usage record, such as Jcode; Kimi's rows are counted from its wire log and also carry `kimi_wire` usage records), or `unknown`. Unknown is never shown as 0. `TOTAL` includes cache reads and `WITHOUT CACHE`
+report no usage record, such as Jcode), or `unknown`. Kimi's rows are `native`: the hub reads Kimi's own per-request counters from its session wire log and records them as `kimi_wire` usage records (#285 phase 2). Unknown is never shown as 0. `TOTAL` includes cache reads and `WITHOUT CACHE`
 removes them; Claude's total is the sum of its four reported counters because its transcript carries none (`ahub report` still shows it as unknown), and a source whose input already
 contains the cached part (Codex, the gateway) gets no derived total. A lifetime total that mixes a native and a hub-counted peer is labelled
 `hub count`. When a peer is unknown the overall figure is `partial, at least`: a lower bound that leaves the named peers out, never a sum that counts them
@@ -1606,7 +1606,7 @@ stays the default until an evaluation says otherwise (`docs/cooperbench.md`).
 
 ## Always-ask action policy foundation (#636)
 
-The classifier, local configuration and session budget counter decide; since slice 2 the Claude PreToolUse hook and ACP `session/request_permission` enforce them. Codex, Pi and the local worker are not enforced yet (slice 3, #313): their `ahub status` rows still say `always-ask not enforceable: adapter integration pending`. A default-on policy adds a pre-tool check only where the hub sees the call before it runs, and each peer's status row says whether it does.
+The classifier, local configuration and session budget counter decide; since slice 2 the Claude PreToolUse hook and ACP `session/request_permission` enforce them. Codex, Jcode, Pi and the local worker are not enforced yet (slice 3, #313): their `ahub status` rows still say `always-ask not enforceable: adapter integration pending`. A headless Claude implementer (#525-4) runs the same hook check (its facts hook returns `ask` for a classed call), but its status row also still says `adapter integration pending`. A default-on policy adds a pre-tool check only where the hub sees the call before it runs, and each peer's status row says whether it does.
 
 What is enforced, and where it is not:
 
@@ -1617,7 +1617,7 @@ What is enforced, and where it is not:
 
 Class budgets: the approval of a classed ACP call offers one extra choice, `Allow <class> xN for this session`, when the class budget is above one. Only that choice (never an ordinary allow) spends the ledger: it allows this call and the next N-1 of the same classes in the same native session, then asks again; several requests open at once share it, so a budget of N never lets more than N approved calls through. A new native session, a changed policy or a stopped, crashed or restarted peer starts from zero, even when it resumes the same session id. A budget of one is the single call the ordinary allow already covers. Claude's own permission dialog cannot carry that choice, so every classed Claude call asks.
 
-Only ignored, untracked `.agenthub/config.local.json` can hold `action_policy`. Its optional keys are `enabled` (default true), `always_ask` (a distinct subset of publish, external-write, destroy, install; default all), and `budgets` (per-class integers 0..1000; defaults 1, 5, 3, 2 respectively). Shared `config.json` cannot set this policy and gets no confirmation offer. A tracked or unknown-trust local file is ignored. Use `ahub settings set action_policy.enabled <true|false>` or `ahub settings set action_policy.budgets.<class> <n>` for registered settings; change `always_ask` in the local file and use the existing confirmed terminal reload. Policy publication invalidates cached grants and pending approval challenges. Startup currently reads the untracked local policy without a retained confirmation; this ceiling must be addressed before the adapter gates ship (#312/#313).
+Only ignored, untracked `.agenthub/config.local.json` can hold `action_policy`. Its optional keys are `enabled` (default true), `always_ask` (a distinct subset of publish, external-write, destroy, install; default all), and `budgets` (per-class integers 0..1000; defaults 1, 5, 3, 2 respectively). Shared `config.json` cannot set this policy and gets no confirmation offer. A tracked or unknown-trust local file is ignored. Use `ahub settings set action_policy.enabled <true|false>` or `ahub settings set action_policy.budgets.<class> <n>` for registered settings; change `always_ask` in the local file and use the existing confirmed terminal reload. Policy publication invalidates cached grants and pending approval challenges. Startup still reads the untracked local policy without a retained confirmation, although the Claude and ACP gates now enforce it; this ceiling stays open (#312/#313).
 
 The ledger asks first and after the approved class budget is spent. Adapter integrations must request that class allowance explicitly; an ordinary one-time answer does not seed the cache, and a cached budget never suppresses a prompt required by the native mode. One approval includes its own invocation; budget zero asks for every invocation. A fresh native session resets counters, and status polls do not bind sessions. Unknown command syntax retains native permission handling. This foundation never changes a sandbox or bypasses a denied permission; per-adapter enforcement tests land with their integrations.
 
@@ -1806,7 +1806,9 @@ if another write replaces that record, preview again. For busy roster removal,
 the panel names `ahub roster remove <peer> --now`, which explicitly stops an owned
 runtime or detaches a native session during its active turn; the panel does not force it.
 Esc cancels, and pasted confirmation text cannot
-write. This panel uses the current authenticated daemon connection.
+write. This panel uses the current authenticated daemon connection. `c` edits
+structural configuration and `R` prefills `restart` while a restart is pending
+(see [Structural configuration](#structural-configuration-from-the-console-and-the-dashboard-issue-689)).
 
 The dashboard's Settings section and `ahub settings` show and change the same
 closed list of settings (issue #269). Run them from a plain terminal:
@@ -1894,7 +1896,9 @@ Pi relay model aliases (`pi.dgx_coding`, `pi.dgx_fast`) and `routing.pi` retain 
   waits for `y` in `ahub console` at each hub start. Tool approvals stay
   deny-only for Pi and local in every session.
 - Commands and binaries, credential files, gateway URLs and the local worker's
-  reach are never editable here: edit `.agenthub/config.local.json` yourself.
+  reach are never editable here: change them with `ahub settings edit` in a
+  terminal, each confirmed by typing its name (tier 3 below), or edit
+  `.agenthub/config.local.json` yourself.
 - Every change is announced in `hub.log` and open consoles with its source and
   recorded as a `settings` event. `ahub settings` needs a running hub; an older
   hub answers the request as unknown and the CLI advises upgrading. The unified
@@ -3686,7 +3690,7 @@ A bundled adapter module is authorized by the person with `adapter_modules` (at 
 # Acceptance-criteria checklist (#481)
 
 - The task reviewer/person records a head-bound `criteria` receipt with criterion ids matching the issue's AC ids, required/result fields and hashed evidence refs. This checklist belongs to the Compliance review pass. Use `ahub sdlc record <id> '<receipt JSON>'`; [schema and example](sdlc.md#acceptance-criteria-checklist).
-- Deliverables (#509a, docs/sdlc.md, Deliverable records): `hub_task_done` and `hub_sdlc_record` take `deliverables: [{path, format, version?}]`; the hub hashes the files itself (a claimed hash is refused), in a plain folder with no git or PR, under the owner's execution root (its own worktree for a declared worktree instance; an unproven root refuses and reads `unknown`), and a reviewer's approval is refused when a file changed since delivery. `ahub task show <id>` shows each file's state (`unchanged`, `changed`, `missing`, `unknown`) and `changedSinceReview`; a PII task or `pii.paths` file shows id, hash and size only.
+- Deliverables (#509a, docs/sdlc.md, Deliverable records): `hub_task_done` and `hub_sdlc_record` take `deliverables: [{path, format, version?}]`; the hub hashes the files itself (a claimed hash is refused), in a plain folder with no git or PR, under the owner's execution root (its own worktree for a declared worktree instance; an unproven root refuses and reads `unknown`), and a reviewer's approval is refused with `deliverable changed since it was delivered` when a file changed since delivery (the owner calls `hub_task_done` again, or the person approves the current bytes). `ahub task show <id>` shows each file's state (`unchanged`, `changed`, `missing`, `unknown`) and `changedSinceReview`; a PII task or `pii.paths` file shows id, hash and size only.
 - The review request lists the recorded criteria with their ids and results, and a `hub_review` unmet item that starts with a recorded id (`AC2: ...`) is recorded on the verdict as `unmetCriteria` (#507b); `ahub task show` lists those ids in the history. A task with no checklist, and a PII task, are unchanged.
 - Advise shows incomplete/stale checklist blockers; enforce checks them at approval. The `criteria` gate does not need a workflow selector. Dependencies stay with `ahub task propose --after`; checklist task import is removed.
 - `status <id>`, `explain <id>` and `export <id>` use the same current board/config projection. Export keeps sanitized state and source hashes, with no external text, extra authority or verification claim.
@@ -3793,7 +3797,7 @@ are described below. Native planner-cycle evidence remains unverified.
 
 ## Planning and phased releases (#263)
 
-Use `ahub backlog list` to read public staged work (a table by rank with the reserved owner, dependencies and cut titles; `--full` keeps whole titles and `--json` prints the raw listing), then `ahub backlog plan <id>
+Use `ahub backlog list` to read public staged work (a table by rank with the reserved owner, dependencies and cut titles, then a count by reserved owner; `--full` and piped output keep whole titles and `--json` prints the raw listing), then `ahub backlog plan <id>
 <revision> <fields-json> <reason>` to set rank, priority (0-3), release id, planned
 start/due UTC milliseconds or pin. `pin` accepts true/false; `undo` needs the
 current revision and latest eligible edit. The dashboard provides local-time
@@ -4293,11 +4297,16 @@ reattachment or TUI detachment clears it. The notice contains fixed guidance, wi
 
 ## Roles per SDLC stage (#525)
 
-The design for planner, implementer and reviewer instances per stage is in the spec section "Amendment: roles per SDLC stage (#525)". Slice 525-1 is available: role capability per kind and form, Claude channel instances as implementer or verifier in their own worktree, and `planner` refused on builtin kinds that cannot plan (pi, local and agy): an instance declaring it is refused with `this kind cannot plan`, and a `roles` entry keeps its other roles with the notice `roles.<peer>: ignored roles outside the adapter ceiling`. A configured ACP agent (`adapters`) is different: it may hold `planner` in its `roles` or in a `roles` entry and then plans like any peer, but it can never be pinned with the `planner` setting or chosen as the automatic planner, because it has no host projection (#735). The operator steps for 525-1 are in "Additional headless peer instances" above; each later slice (525-2 to 525-6) adds its own here when it ships, and until then those instance rules are current. The planned changes an operator will see:
+The design for planner, implementer and reviewer instances per stage is in the spec section "Amendment: roles per SDLC stage (#525)". Slice 525-1 is available: role capability per kind and form, Claude channel instances as implementer or verifier in their own worktree, and `planner` refused on builtin kinds that cannot plan (pi, local and agy): an instance declaring it is refused with `this kind cannot plan`, and a `roles` entry keeps its other roles with the notice `roles.<peer>: ignored roles outside the adapter ceiling`. A configured ACP agent (`adapters`) is different: it may hold `planner` in its `roles` or in a `roles` entry and then plans like any peer, but it can never be pinned with the `planner` setting or chosen as the automatic planner, because it has no host projection (#735). Slices 525-3, 525-4 and 525-5 are available too:
 
-- Terminal Claude implementer instances accept code tasks after execution-root proof (525-5). A headless Claude implementer runs one owned child per turn in its declared worktree, with a separate persisted session per task (`start_mode: "headless"`, permission `ask` or `ask-when-needed`; `never-ask` refused) (525-4).
+- 525-3: `assign()` walks the planner holders (rotation by task id over every holder, never renumbered by availability; a named planner exact; a recorded planner kept; none for a PII task) and `ahub route explain <id>` prints that walk. Nothing records the planner yet, so the walk is information only. A peer that accepted or finished a task never reviews it, a named reviewer and the declared reviewer pool included; when no other candidate is left the person reviews.
+- 525-4: a headless Claude implementer runs one owned child per turn in its declared worktree, with a separate persisted session per task (`start_mode: "headless"`, permission `ask` or `ask-when-needed`; `never-ask` refused).
+- 525-5: terminal Claude implementer instances own write-class tasks once the daemon has verified their execution root.
+
+The operator steps for 525-1, 525-4 and 525-5 are in "Additional headless peer instances" above; each later slice (525-2, 525-6) adds its own here when it ships, and until then those instance rules are current. The planned changes an operator will see:
+
 - The `planner` setting accepts a list of peers or instance ids; each task records its own planner, and only that planner or the person runs planner tools on it.
-- A reviewer is never a peer that implemented the task, and a plan's author does not record its own plan review while another planner is available.
+- A plan's author does not record its own plan review while another planner is available.
 
 ## Daemon responsiveness and launch connects (#719)
 
