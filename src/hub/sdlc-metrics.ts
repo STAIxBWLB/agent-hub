@@ -1,7 +1,8 @@
 // #481 S7: SDLC metrics and deterministic control bands. Pure: board history in, numbers out. No I/O, no clock, no model.
 // A metric that cannot be derived is `unknown` and counted as such, never 0.
+// `first_pass_check` reads the hub's own completion check (`check passed` / `check failed` at hub_task_done), not PR CI: it is unknown where completion checks are off.
 
-export const BAND_METRICS = ["acceptance_to_plan_ms", "acceptance_to_first_review_ms", "first_pass_approval", "rework_rounds", "first_pass_ci", "stale_head_re_reviews"] as const;
+export const BAND_METRICS = ["acceptance_to_plan_ms", "acceptance_to_first_review_ms", "first_pass_approval", "rework_rounds", "first_pass_check", "stale_head_re_reviews"] as const;
 export type BandMetric = typeof BAND_METRICS[number];
 export const BAND_TIERS = ["ok", "log", "diagnose", "propose"] as const;
 export type BandTier = typeof BAND_TIERS[number];
@@ -10,7 +11,8 @@ export type BandTier = typeof BAND_TIERS[number];
 export interface MetricTask {
   id: number;
   private?: boolean;
-  history: { at: number; event: string }[];
+  /** `requestHead` is the head a `done` asked review for (reviewCost.head); `verdictHead` the head a verdict was bound to (reviewFindings.head). Compared for equality only, never printed. */
+  history: { at: number; event: string; requestHead?: string; verdictHead?: string }[];
 }
 
 /** Per-task values; `null` is unknown. */
@@ -23,7 +25,7 @@ export interface TaskSample {
   acceptance_to_merge_ms: number | null;
   first_pass_approval: 0 | 1 | null;
   rework_rounds: number | null;
-  first_pass_ci: 0 | 1 | null;
+  first_pass_check: 0 | 1 | null;
   same_head_ci_reruns: number | null;
   stale_head_re_reviews: number | null;
 }
@@ -44,21 +46,44 @@ export interface BandResult {
   z: number | null;
   /** The task that produced the last value: the breach's evidence. */
   lastTask: number | null;
+  /** The task whose value started the run of non-ok values this one belongs to, else null: one breach episode has one card. */
+  episode: number | null;
 }
 
 /** Which way is worse. A rate that falls and a time that grows are both breaches. */
 export const BAD_DIRECTION: Record<BandMetric, "up" | "down"> = {
-  acceptance_to_plan_ms: "up", acceptance_to_first_review_ms: "up", first_pass_approval: "down", rework_rounds: "up", first_pass_ci: "down", stale_head_re_reviews: "up",
+  acceptance_to_plan_ms: "up", acceptance_to_first_review_ms: "up", first_pass_approval: "down", rework_rounds: "up", first_pass_check: "down", stale_head_re_reviews: "up",
 };
 const HOUR = 3_600_000;
 /** Per-metric floor on the absolute deviation, so a flat baseline does not make every wobble a breach. */
 export const DEFAULT_MIN_DELTA: Record<BandMetric, number> = {
-  acceptance_to_plan_ms: HOUR, acceptance_to_first_review_ms: HOUR, first_pass_approval: 0.5, rework_rounds: 1, first_pass_ci: 0.5, stale_head_re_reviews: 1,
+  acceptance_to_plan_ms: HOUR, acceptance_to_first_review_ms: HOUR, first_pass_approval: 0.5, rework_rounds: 1, first_pass_check: 0.5, stale_head_re_reviews: 1,
+};
+/** Per-metric floor on the baseline deviation: a flat baseline (every value the same) must not turn one step into thousands of deviations. */
+export const SD_FLOOR: Record<BandMetric, number> = {
+  acceptance_to_plan_ms: HOUR / 2, acceptance_to_first_review_ms: HOUR / 2, first_pass_approval: 0.5, rework_rounds: 0.5, first_pass_check: 0.5, stale_head_re_reviews: 0.5,
 };
 export const DEFAULT_BAND: Omit<BandConfig, "minDelta"> = { window: 20, minSamples: 8, logSigma: 2, diagnoseSigma: 3, proposeSigma: 4, driftRun: 6 };
 
 const first = (task: MetricTask, events: readonly string[], after = -Infinity) => task.history.find(entry => entry.at >= after && events.includes(entry.event));
 const VERDICTS = ["approved", "changes_requested"];
+
+/**
+ * Review rounds whose verdict was bound to a different head than the review was requested for: the head moved while the review ran.
+ * Known only for a round with both heads recorded; a task with no such round is unknown, never 0. (A `done` after an `approved` is not
+ * evidence: the board cannot produce one.)
+ */
+function staleHeadRounds(history: MetricTask["history"]): number | null {
+  let pending: string | undefined, known = false, stale = 0;
+  for (const entry of history) {
+    if (entry.event === "done") pending = entry.requestHead;
+    else if (VERDICTS.includes(entry.event)) {
+      if (pending !== undefined && entry.verdictHead !== undefined) { known = true; if (entry.verdictHead !== pending) stale++; }
+      pending = undefined;
+    }
+  }
+  return known ? stale : null;
+}
 
 /** One task's values from its own history. A private task never reaches here. */
 export function taskSample(task: MetricTask, extra: { mergedAt?: number; ciReruns?: number | null } = {}): TaskSample {
@@ -70,7 +95,6 @@ export function taskSample(task: MetricTask, extra: { mergedAt?: number; ciRerun
   const verdict = accepted ? first(view, VERDICTS, accepted.at) : first(view, VERDICTS);
   const dones = history.filter(entry => entry.event === "done");
   const ci = first(view, ["check passed", "check failed"]);
-  const approvedAt = history.find(entry => entry.event === "approved")?.at;
   return {
     id: task.id,
     at: verdict?.at ?? accepted?.at ?? history[0]?.at ?? 0,
@@ -80,10 +104,9 @@ export function taskSample(task: MetricTask, extra: { mergedAt?: number; ciRerun
     first_pass_approval: verdict ? (verdict.event === "approved" ? 1 : 0) : null,
     // Rework is only known for a task that was handed to review at all.
     rework_rounds: dones.length ? history.filter(entry => entry.event === "changes_requested").length : null,
-    first_pass_ci: ci ? (ci.event === "check passed" ? 1 : 0) : null,
+    first_pass_check: ci ? (ci.event === "check passed" ? 1 : 0) : null,
     same_head_ci_reruns: extra.ciReruns === undefined ? null : extra.ciReruns,
-    // A done after an approval means the approval was voided and the work went to review again.
-    stale_head_re_reviews: dones.length ? (approvedAt === undefined ? 0 : dones.filter(entry => entry.at > approvedAt).length) : null,
+    stale_head_re_reviews: staleHeadRounds(history),
   };
 }
 
@@ -109,16 +132,16 @@ export function series(samples: readonly TaskSample[], metric: BandMetric): { va
  */
 export function controlBands(points: readonly { value: number; task: number }[], metric: BandMetric, config: BandConfig): BandResult {
   const baselineCount = Math.max(0, Math.min(config.window, points.length - 1));
-  const none = (reason: string, extra: Partial<BandResult> = {}): BandResult => ({ metric, tier: "ok", reason, baseline: baselineCount, mean: null, sd: null, last: points.at(-1)?.value ?? null, z: null, lastTask: points.at(-1)?.task ?? null, ...extra });
+  const none = (reason: string, extra: Partial<BandResult> = {}): BandResult => ({ metric, tier: "ok", reason, baseline: baselineCount, mean: null, sd: null, last: points.at(-1)?.value ?? null, z: null, lastTask: points.at(-1)?.task ?? null, episode: null, ...extra });
   if (points.length < 2 || baselineCount < config.minSamples) return none(`baseline of ${baselineCount} is below the ${config.minSamples} needed`);
   const last = points.at(-1)!, base = points.slice(-1 - baselineCount, -1).map(point => point.value);
   const mean = base.reduce((sum, value) => sum + value, 0) / base.length;
   const sd = Math.sqrt(base.reduce((sum, value) => sum + (value - mean) ** 2, 0) / base.length);
   const sign = BAD_DIRECTION[metric] === "up" ? 1 : -1;
   const deviation = sign * (last.value - mean);
-  const z = deviation <= 0 ? 0 : deviation / Math.max(sd, 1e-9);
-  const result = { metric, baseline: base.length, mean: round(mean), sd: round(sd), last: last.value, z: round(Math.min(z, 1e6)), lastTask: last.task };
-  const drifting = points.length - 1 >= config.driftRun && points.slice(-config.driftRun).every(point => sign * (point.value - mean) > sd);
+  const z = deviation <= 0 ? 0 : deviation / Math.max(sd, SD_FLOOR[metric]);
+  const result = { metric, baseline: base.length, mean: round(mean), sd: round(sd), last: last.value, z: round(Math.min(z, 1e6)), lastTask: last.task, episode: null as number | null };
+  const drifting = deviation >= config.minDelta && deviation > 0 && points.length - 1 >= config.driftRun && points.slice(-config.driftRun).every(point => sign * (point.value - mean) > sd);
   let tier: BandTier = "ok", reason = `${round(Math.min(z, 1e6))} deviations on the bad side`;
   if (deviation >= config.minDelta && deviation > 0) {
     if (z >= config.proposeSigma) { tier = "propose"; reason = `${round(Math.min(z, 1e6))} deviations beyond the baseline (propose at ${config.proposeSigma})`; }
@@ -129,6 +152,24 @@ export function controlBands(points: readonly { value: number; task: number }[],
   return { ...result, tier, reason };
 }
 
+/** How far back an episode is searched. ponytail: a run longer than this restarts its key every sample, so the open-card rule in Tasks holds it to one card. */
+export const EPISODE_LOOKBACK = 200;
+/**
+ * `controlBands` for the newest value, plus the breach episode it belongs to: the trailing run of values whose own tier (computed from
+ * the values before each, with nothing after) was not `ok`. The episode is the task that started the run, so a sustained shift keeps one
+ * key for as long as it lasts, and it is derived from history alone, so it survives a restart.
+ */
+export function controlEpisode(points: readonly { value: number; task: number }[], metric: BandMetric, config: BandConfig): BandResult {
+  const now = controlBands(points, metric, config);
+  if (now.tier === "ok") return now;
+  let start = points.length - 1;
+  for (let end = points.length - 2; end >= 0 && points.length - 1 - end <= EPISODE_LOOKBACK; end--) {
+    if (controlBands(points.slice(0, end + 1), metric, config).tier === "ok") break;
+    start = end;
+  }
+  return { ...now, episode: points[start]!.task };
+}
+
 export interface MetricsReport {
   since: number | null;
   tasks: number;
@@ -137,7 +178,7 @@ export interface MetricsReport {
     acceptance_to_plan_ms: Summary; acceptance_to_first_review_ms: Summary; acceptance_to_merge_ms: Summary;
     first_pass_approval: { n: number; unknown: number; rate: number | null };
     rework_rounds: Summary;
-    first_pass_ci: { n: number; unknown: number; rate: number | null };
+    first_pass_check: { n: number; unknown: number; rate: number | null };
     same_head_ci_reruns: Summary;
     stale_head_re_reviews: Summary;
   };
@@ -159,7 +200,7 @@ export function sdlcMetrics(tasks: readonly MetricTask[], opts: { since?: number
   const all = visible.map(task => taskSample(task, { mergedAt: opts.mergedAt?.[task.id], ciReruns: opts.ciReruns?.[task.id] }));
   const samples = opts.since === undefined ? all : all.filter(sample => sample.at >= opts.since!);
   const bands: BandResult[] | "off" = opts.bands && Object.keys(opts.bands).length
-    ? BAND_METRICS.flatMap(metric => opts.bands![metric] ? [controlBands(series(samples, metric), metric, opts.bands![metric]!)] : [])
+    ? BAND_METRICS.flatMap(metric => opts.bands![metric] ? [controlEpisode(series(samples, metric), metric, opts.bands![metric]!)] : [])
     : "off";
   return {
     since: opts.since ?? null, tasks: samples.length, withheldPrivate: tasks.length - visible.length,
@@ -167,7 +208,7 @@ export function sdlcMetrics(tasks: readonly MetricTask[], opts: { since?: number
       acceptance_to_plan_ms: summarize(samples.map(s => s.acceptance_to_plan_ms)), acceptance_to_first_review_ms: summarize(samples.map(s => s.acceptance_to_first_review_ms)),
       acceptance_to_merge_ms: summarize(samples.map(s => s.acceptance_to_merge_ms)),
       first_pass_approval: rate(samples.map(s => s.first_pass_approval)), rework_rounds: summarize(samples.map(s => s.rework_rounds)),
-      first_pass_ci: rate(samples.map(s => s.first_pass_ci)), same_head_ci_reruns: summarize(samples.map(s => s.same_head_ci_reruns)),
+      first_pass_check: rate(samples.map(s => s.first_pass_check)), same_head_ci_reruns: summarize(samples.map(s => s.same_head_ci_reruns)),
       stale_head_re_reviews: summarize(samples.map(s => s.stale_head_re_reviews)),
     },
     stalls: opts.stalls ?? { open: 0, byKind: {}, doneWithoutWrites: 0 }, bands,

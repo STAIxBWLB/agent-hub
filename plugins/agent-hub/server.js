@@ -7995,7 +7995,17 @@ var init_review_findings = __esm(() => {
 });
 
 // src/hub/sdlc-metrics.ts
-var init_sdlc_metrics = () => {};
+var HOUR = 3600000, SD_FLOOR;
+var init_sdlc_metrics = __esm(() => {
+  SD_FLOOR = {
+    acceptance_to_plan_ms: HOUR / 2,
+    acceptance_to_first_review_ms: HOUR / 2,
+    first_pass_approval: 0.5,
+    rework_rounds: 0.5,
+    first_pass_check: 0.5,
+    stale_head_re_reviews: 0.5
+  };
+});
 
 // src/hub/workflow.ts
 var init_workflow = __esm(() => {

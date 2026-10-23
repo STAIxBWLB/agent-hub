@@ -222,6 +222,8 @@ export class Board {
     // And from before issue #207: existing rows reserve nobody.
     for (const col of ["offer", "cancelled"]) if (!have.has(col)) this.db.run(`ALTER TABLE tasks ADD COLUMN ${col} TEXT`);
     this.db.run("CREATE TABLE IF NOT EXISTS task_stalls (task INTEGER PRIMARY KEY, payload TEXT NOT NULL)");
+    // #481 S7: one row per log-tier band breach episode already announced, so a restart never repeats the notice.
+    this.db.run("CREATE TABLE IF NOT EXISTS band_notices (marker TEXT PRIMARY KEY, at INTEGER NOT NULL)");
     // Derived status-cache generation: only Board task/stall writes advance it, never journal writes.
     this.db.run("CREATE TABLE IF NOT EXISTS board_status_revision (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL)");
     this.db.run("INSERT OR IGNORE INTO board_status_revision VALUES (1,0)");
@@ -300,6 +302,12 @@ export class Board {
     this.taskWrite(() => this.db.query("INSERT INTO task_stalls(task,payload) VALUES(?,?) ON CONFLICT(task) DO UPDATE SET payload=excluded.payload").run(stall.task, JSON.stringify(stall)));
     return true;
   }
+  /** True when the marker was new (and is now recorded), false when it was announced before. Ids, metric names and task numbers only. */
+  recordBandNotice(marker: string): boolean {
+    if (!/^[a-z_]{1,64}:#[1-9][0-9]{0,9}:log$/.test(marker)) throw new Error("invalid band notice marker");
+    return this.db.query("INSERT OR IGNORE INTO band_notices(marker, at) VALUES(?, ?)").run(marker, Date.now()).changes > 0;
+  }
+  bandNoticed(marker: string): boolean { return this.db.query("SELECT 1 FROM band_notices WHERE marker=?").get(marker) !== null; }
   clearStall(task: number): void { this.taskWrite(() => this.db.query("DELETE FROM task_stalls WHERE task=?").run(task)); }
   stalls(): TaskStall[] {
     return (this.db.query("SELECT payload FROM task_stalls ORDER BY task").all() as { payload: string }[]).flatMap(row => {

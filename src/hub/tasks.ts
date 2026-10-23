@@ -2501,7 +2501,8 @@ export class Tasks {
       if (!Number.isFinite(cutoff) || cutoff < 0) throw new PreEffectToolRefusal("since must be a time (YYYY-MM-DD or an ISO timestamp) or milliseconds");
     }
     const rows = this.d.board.list();
-    const tasks: MetricTask[] = rows.map(task => ({ id: task.id, private: this.isPii(task), history: task.history.map(entry => ({ at: entry.at, event: entry.event })) }));
+    const tasks: MetricTask[] = rows.map(task => ({ id: task.id, private: this.isPii(task), history: task.history.map(entry => ({ at: entry.at, event: entry.event,
+      ...(entry.reviewCost?.head ? { requestHead: entry.reviewCost.head } : {}), ...(entry.reviewFindings?.head ? { verdictHead: entry.reviewFindings.head } : {}) })) }));
     const visibleIds = new Set(rows.filter(task => !this.isPii(task)).map(task => task.id));
     const byKind: Record<string, number> = {};
     for (const stall of this.stalled()) if (visibleIds.has(stall.task)) byKind[stall.cause.kind] = (byKind[stall.cause.kind] ?? 0) + 1;
@@ -2510,41 +2511,54 @@ export class Tasks {
   }
 
   /**
-   * #481 S7: act on the band tiers, deterministically and once per breach. `log` is one hub line; `diagnose` is one read-only
-   * `triage` backlog task for the planner; `propose` is one `plan` backlog card naming the metric and its evidence. A breach is
-   * keyed by metric and the task that produced the value, so a repeated evaluation writes nothing new. The text is fixed words,
-   * numbers and task ids, never task text, and no GitHub issue is created. Returns the task ids created.
+   * #481 S7: act on the band tiers, deterministically and once per breach episode. An episode is a run of non-ok values for one metric
+   * (`BandResult.episode`, derived from history), so a sustained shift is one episode however many tasks finish inside it. `log` is one
+   * hub notice, `diagnose` one read-only `triage` backlog task and `propose` one `plan` backlog card naming the metric and its evidence.
+   * A metric with an open band card (a backlog or open task whose detail carries its key) writes nothing more, so a value that grows
+   * from diagnose to propose inside one episode does not add a second card. Held while the hub is stopping, recovering or has a
+   * storage error, like every host writer. The text is fixed words, numbers and task ids, never task text, and no GitHub issue is
+   * created. Returns the task ids created.
    */
   proposeFromBands(by: PeerId = HUB): number[] {
     const config = this.d.sdlc?.config();
     if (!config || config.mode === "off" || !config.bands || !Object.keys(config.bands).length) return [];
+    if (this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) return [];
     if (by !== HUB && by !== USER) this.planningAuthority(by);
     const report = this.sdlcMetrics(by === HUB ? USER : by);
     if (report.bands === "off") return [];
     const rows = this.d.board.list();
-    const seen = new Set(rows.filter(row => row.history[0]?.by === HUB).flatMap(row => row.detail?.split("\n").filter(line => line.startsWith("Band breach key: ")) ?? []));
+    const bandRows = rows.filter(row => row.history[0]?.by === HUB && row.detail?.startsWith("Band breach key: "));
+    const keyOf = (row: Task) => row.detail!.split("\n")[0]!.slice("Band breach key: ".length);
+    const seen = new Set(bandRows.map(keyOf));
+    // A card counts as open while its task is not closed: the planner has not yet decided on it.
+    const open = new Set(bandRows.filter(row => !isClosedTaskState(row.state)).map(row => keyOf(row).split(":")[0]!));
     const created: number[] = [];
     for (const band of report.bands as BandResult[]) {
-      if (band.tier === "ok" || band.lastTask === null) continue;
-      const key = `Band breach key: ${band.metric}:${band.tier === "propose" ? "propose" : "diagnose"}:#${band.lastTask}`;
-      if (band.tier === "log") { if (!this.loggedBands.has(key)) { this.loggedBands.add(key); this.releaseNotice(`sdlc band: ${band.metric} is ${band.reason}; last value ${band.last} on task #${band.lastTask}`); } continue; }
-      if (seen.has(key)) continue;
-      const evidence = `metric ${band.metric}; newest value ${band.last} on task #${band.lastTask}; baseline mean ${band.mean}, deviation ${band.sd} over ${band.baseline} tasks; ${band.reason}`;
-      const diagnose = band.tier === "diagnose";
+      if (band.tier === "ok" || band.lastTask === null || band.episode === null) continue;
+      const key = `${band.metric}:#${band.episode}`;
+      if (band.tier === "log") {
+        const marker = `${key}:log`;
+        if (!open.has(band.metric) && this.d.board.recordBandNotice(marker)) this.releaseNotice(`sdlc band: ${band.metric} is ${band.reason}; last value ${band.last} on task #${band.lastTask}`);
+        continue;
+      }
+      if (seen.has(`${key}:propose`) || seen.has(`${key}:diagnose`) || open.has(band.metric)) continue;
+      const tier = band.tier === "propose" ? "propose" : "diagnose";
+      const full = `${key}:${tier}`;
+      const evidence = `metric ${band.metric}; newest value ${band.last} on task #${band.lastTask}; episode began at task #${band.episode}; baseline mean ${band.mean}, deviation ${band.sd} over ${band.baseline} tasks; ${band.reason}`;
+      const diagnose = tier === "diagnose";
       const title = diagnose ? `Diagnose SDLC metric ${band.metric}: read-only triage` : `Review SDLC metric ${band.metric}: control band breach`;
-      const detail = `${key}\n${evidence}\n${diagnose
+      const detail = `Band breach key: ${full}\n${evidence}\n${diagnose
         ? "Read-only triage for the planner: inspect the recent task histories behind this metric and report what changed. Do not edit files, branches or the board."
         : "Backlog card for the planner: decide whether this breach needs a process change. It names the metric and its evidence; it opens no GitHub issue."}`;
       const draft = { title, detail, refs: {} };
       const signals = this.signalsFor(draft);
       if (this.isPii({ signals }) || !this.candidateTextAllowed(`${title}\n${detail}`)) continue;
       const proposal = this.d.board.propose(HUB, { ...draft, class: diagnose ? "triage" : "plan", backlog: true, signals });
-      this.incomingBacklog.add(proposal.id); seen.add(key); created.push(proposal.id);
+      this.incomingBacklog.add(proposal.id); seen.add(full); open.add(band.metric); created.push(proposal.id);
     }
     for (const id of created) this.releaseNotice(`task #${id}: SDLC control band breach proposed in the backlog`);
     return created;
   }
-  private readonly loggedBands = new Set<string>();
 
   /** S10 read-only planner report; S7 owns rolling bands and automatic board proposals. */
   async costReport(by: PeerId, repository?: unknown, scopePrs?: readonly number[]): Promise<Record<string, unknown>> {
