@@ -29,7 +29,7 @@ export interface ToolContext {
   /** Turn cancellation signal, including the execution-budget wall cap. */
   signal?: AbortSignal;
   /** Only true permits an effect; expiry and abort remain distinct from a person's denial. */
-  permit: (title: string, tool?: string, signal?: AbortSignal, canonicalTarget?: string, observe?: ApprovalObserver, originalPath?: string) => Promise<ToolApproval>;
+  permit: (title: string, tool?: string, signal?: AbortSignal, canonicalTarget?: string, observe?: ApprovalObserver, originalPath?: string, input?: unknown) => Promise<ToolApproval>;
   /** Trusted process status, independent of what its stdout says. */
   onProcessExit?: (code: number | null) => void;
   /** Publish a message to other peers mid-turn. Returns a one-line receipt. */
@@ -147,7 +147,7 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         let file = guardPath(ctx, String(a.path), "write");
         const approvedTarget = file;
         const content = String(a.content ?? "");
-        const refused = approvalError(await ctx.permit(`write ${a.path} (${content.length} chars):\n${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path)), "error: the user did not approve this write");
+        const refused = approvalError(await ctx.permit(`write ${a.path} (${content.length} chars):\n${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), "error: the user did not approve this write");
         if (refused) return refused;
         if (ctx.signal?.aborted) return "error: turn cancelled before write";
         file = guardPath(ctx, String(a.path), "write");
@@ -162,7 +162,7 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         let text = readFileSync(file, "utf8");
         let count = text.split(String(a.old)).length - 1;
         if (!a.old || count !== 1) return `error: \`old\` must match exactly once, it matched ${count} times`;
-        const refused = approvalError(await ctx.permit(`edit ${a.path}:\n- ${preview(String(a.old), 600)}\n+ ${preview(String(a.new ?? ""), 600)}`, "edit", ctx.signal, file, undefined, String(a.path)), "error: the user did not approve this edit");
+        const refused = approvalError(await ctx.permit(`edit ${a.path}:\n- ${preview(String(a.old), 600)}\n+ ${preview(String(a.new ?? ""), 600)}`, "edit", ctx.signal, file, undefined, String(a.path), a), "error: the user did not approve this edit");
         if (refused) return refused;
         if (ctx.signal?.aborted) return "error: turn cancelled before edit";
         // Approval can outlive another peer's edit or a path change. Apply only the approved fragment to current bytes.
@@ -179,7 +179,7 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         if (!command.trim()) return "error: empty command";
         // The approver sees the whole command, not a prefix: what is hidden cannot be approved.
         if (command.length > 4000) return "error: command longer than 4000 characters; put it in a script file with write, then run that";
-        const refused = approvalError(await ctx.permit(`bash: ${command}`, "bash", ctx.signal), "error: the user did not approve this command");
+        const refused = approvalError(await ctx.permit(`bash: ${command}`, "bash", ctx.signal, undefined, undefined, undefined, a), "error: the user did not approve this command");
         if (refused) return refused;
         const res = await sandboxedExec(["/bin/bash", "-c", command], { cwd: ctx.cwd, profile: ctx.sandboxProfile, readOnlyData: !!ctx.readOnly?.length, timeoutMs: (Number(a.timeout_s) || 120) * 1000, ...(ctx.sandboxEnv ? { env: ctx.sandboxEnv } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
         try { ctx.onProcessExit?.(res.code); } catch { /* optional status observer never changes a tool result */ }
@@ -192,7 +192,7 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         const problem = gitArgsProblem(args, ctx.deny);
         if (problem) return `error: git ${sub}: ${problem}`;
         if (GIT_WRITE.has(sub)) {
-          const refused = approvalError(await ctx.permit(`git ${args.join(" ")}`, "git", ctx.signal), "error: the user did not approve this git command");
+          const refused = approvalError(await ctx.permit(`git ${args.join(" ")}`, "git", ctx.signal, undefined, undefined, undefined, a), "error: the user did not approve this git command");
           if (refused) return refused;
         }
         // Sandboxed like bash: flags such as --output or an editor cannot write outside the project or reach the network.
