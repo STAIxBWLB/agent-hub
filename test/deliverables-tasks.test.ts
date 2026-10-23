@@ -21,12 +21,12 @@ class Peer extends BasePeer {
 }
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
-async function rig(opts: { piiPaths?: string[]; deny?: string[] } = {}) {
+async function rig(opts: { piiPaths?: string[]; deny?: string[]; executionRoot?: (peer: string) => string | undefined } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-deliverable-tasks-")), board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 }), notices: string[] = [];
   const peers = { claude: new Peer("claude"), codex: new Peer("codex") };
   for (const peer of Object.values(peers)) { bus.add(peer); await peer.start(); }
   const tasks = new Tasks({ board, bus, cwd: dir, project: "deliverables", routing: () => loadRouting(dir), roles: { claude: ["planner", "reviewer"] }, notify: (text: string) => notices.push(text), piiScreen: async () => ({ label: "clear", ms: 0 }),
-    ...(opts.piiPaths ? { piiPaths: opts.piiPaths } : {}), ...(opts.deny ? { deny: opts.deny } : {}) } as never);
+    ...(opts.piiPaths ? { piiPaths: opts.piiPaths } : {}), ...(opts.deny ? { deny: opts.deny } : {}), ...(opts.executionRoot ? { executionRoot: opts.executionRoot } : {}) } as never);
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
   const write = (path: string, text: string) => { mkdirSync(join(dir, path, ".."), { recursive: true }); writeFileSync(join(dir, path), text); };
   const propose = (extra: object = {}) => tasks.propose("claude", { title: "write the report", class: "implement", owner: "codex", ...extra });
@@ -203,4 +203,52 @@ test("the board refuses deliverables on an event that cannot carry them, and dam
   expect(() => r.board.update(t.id, "claude", "answer", {}, undefined, { deliverables: [record] } as never)).toThrow("deliverable records require a done, a lifecycle record or an approval");
   expect(() => r.board.update(t.id, "claude", "lifecycle", {}, undefined, { deliverables: [{ ...record, sha256: "nope" }] } as never)).toThrow("expected a sha256");
   expect(r.board.get(t.id)!.history.some(h => h.deliverables)).toBe(false);
+});
+
+// Review of #344's integration: a declared worktree instance writes under its own verified root, not the project checkout.
+test("an owner with a verified execution root has its deliverables hashed there, not in the project checkout", async () => {
+  const worktree = mkdtempSync(join(tmpdir(), "ahub-worktree-")); cleanup.push(() => rmSync(worktree, { recursive: true, force: true }));
+  const r = await rig({ executionRoot: peer => (peer === "codex" ? worktree : undefined) });
+  r.write("report.md", "the checkout's other file");                 // same relative path, different bytes, in the canonical checkout
+  mkdirSync(join(worktree, "out"), { recursive: true }); writeFileSync(join(worktree, "report.md"), "the worktree's real deliverable");
+  const t = await r.propose();
+  await r.tasks.done("codex", t.id, "done", undefined, doc());
+  const record = r.board.get(t.id)!.history.find(h => h.event === "done")!.deliverables![0]!;
+  expect(record.sha256).toBe(sha("the worktree's real deliverable")); // never the checkout's file
+  await r.tasks.review("claude", t.id, "approved", "ok");              // the binding re-hash reads the same root, so it is unchanged
+  expect((await r.tasks.deliverableStatus(r.board.get(t.id)!))).toMatchObject({ state: "approved", changedSinceReview: false });
+  writeFileSync(join(worktree, "report.md"), "edited in the worktree");
+  expect((await r.tasks.deliverableStatus(r.board.get(t.id)!))).toMatchObject({ changedSinceReview: true });
+});
+
+test("a file that exists only in the checkout is not a deliverable of a worktree owner", async () => {
+  const worktree = mkdtempSync(join(tmpdir(), "ahub-worktree-")); cleanup.push(() => rmSync(worktree, { recursive: true, force: true }));
+  const r = await rig({ executionRoot: () => worktree });
+  r.write("only-here.md", "checkout only");
+  const t = await r.propose();
+  await expect(r.tasks.done("codex", t.id, "done", undefined, doc("only-here.md"))).rejects.toThrow(/does not exist/);
+});
+
+test("an execution root that is not proven refuses to hash, and a read reports every file unknown, never unchanged", async () => {
+  let proven: string | undefined = undefined;
+  const r = await rig({ executionRoot: () => proven });
+  r.write("report.md", "x");
+  const t = await r.propose();
+  await expect(r.tasks.done("codex", t.id, "done", undefined, doc())).rejects.toThrow(/execution root is not verified right now/);
+  expect(r.board.get(t.id)!.history.some(h => h.deliverables)).toBe(false);
+  proven = r.dir;                                                       // root proven: it is delivered
+  await r.tasks.done("codex", t.id, "done", undefined, doc());
+  proven = undefined;                                                   // root lost afterwards (the owner was replaced)
+  const status = (await r.tasks.deliverableStatus(r.board.get(t.id)!))!;
+  expect(status.files.map(f => f.state)).toEqual(["unknown"]);
+  expect(status.changedSinceReview).toBe(false);
+  await expect(r.tasks.review("claude", t.id, "approved", "ok")).rejects.toThrow(/deliverable changed since it was delivered: .* \(unknown\)/); // a reviewer cannot approve what the hub cannot vouch for
+});
+
+test("without an execution-root port (library use) the project root is used, as before", async () => {
+  const r = await rig();
+  r.write("report.md", "plain");
+  const t = await r.propose();
+  await r.tasks.done("codex", t.id, "done", undefined, doc());
+  expect(r.board.get(t.id)!.history.find(h => h.event === "done")!.deliverables![0]!.sha256).toBe(sha("plain"));
 });

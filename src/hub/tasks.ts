@@ -70,6 +70,11 @@ export interface TasksDeps {
   piiPaths?: string[];
   /** The project's secrets denylist (`local.deny`), for the deliverable file reader (#509a). */
   deny?: string[];
+  /**
+   * #509a: the root a peer's files live under: its verified execution root (the daemon's `ownerWriteRoot`), which for a declared worktree
+   * instance is not the project checkout. `undefined` means the root is not proven right now. Absent (library use): the project root.
+   */
+  executionRoot?: (peer: PeerId) => string | undefined;
   catalog?: RoleCatalog;
   /** Role ids whose contract was prepared for the current native session. */
   sessionRoles?: (peer: PeerId) => string[];
@@ -3296,7 +3301,7 @@ export class Tasks {
     if (!delivered) return undefined;
     const approved = task.state === "approved" ? approvedDeliverables(task.history) : undefined;
     const basis = approved ?? delivered;
-    const checks = await checkDeliverables(basis, this.deliverablePorts(task));
+    const checks = await this.checkRecords(basis, task);
     const shown = publicDeliverables(basis, this.nameable)!;
     const files = checks.map((check, i): DeliverableStatus => {
       const { sha256, id, format, version, path, private: hidden } = shown[i]!;
@@ -3305,10 +3310,20 @@ export class Tasks {
     return { state: approved ? "approved" : "delivered", changedSinceReview: files.some(file => file.state === "changed"), files };
   }
 
+  /** Check records against the owner's root; with that root unproven every file is `unknown` (never `unchanged`, never an exception). */
+  private async checkRecords(records: DeliverableRecord[], task: Task) {
+    try { return await checkDeliverables(records, this.deliverablePorts(task)); }
+    catch (error) { return records.map(record => ({ record, state: "unknown" as const, why: error instanceof Error ? error.message : "unreadable" })); }
+  }
+
   /** What the deliverable reader needs from the host: the project root, the secrets denylist, and which files make a record private (#509a). */
   private deliverablePorts(task: Task): DeliverablePorts {
     const taskPrivate = this.isPii(task);
-    return { cwd: this.d.cwd, deny: this.d.deny ?? [], private: path => taskPrivate || matchesPolicy(this.d.cwd, path, this.d.piiPaths ?? [], true) };
+    // The owner's own root: a declared worktree instance writes under its worktree, so its deliverables are hashed there, never in the canonical
+    // checkout (which holds a different file or none). With the root unproven there is nothing safe to hash: refuse rather than guess.
+    const root = !this.d.executionRoot || !task.owner || task.owner === USER ? this.d.cwd : this.d.executionRoot(task.owner);
+    if (root === undefined) throw new DeliverableRefusal(`deliverables: ${task.owner}'s execution root is not verified right now, so its files cannot be hashed`);
+    return { cwd: root, deny: this.d.deny ?? [], private: path => taskPrivate || matchesPolicy(root, path, this.d.piiPaths ?? [], true) };
   }
 
   /**
@@ -3959,7 +3974,7 @@ export class Tasks {
       const delivered = latestDeliverables(task.history);
       if (delivered) {
         const identity = JSON.stringify(delivered);
-        const checks = await checkDeliverables(delivered, this.deliverablePorts(task));
+        const checks = await this.checkRecords(delivered, task);
         task = valid();
         if (JSON.stringify(latestDeliverables(task.history)) !== identity) throw new PreEffectToolRefusal("the task's deliverables changed during the verdict; review the current work again");
         const drift = checks.filter(check => check.state !== "unchanged");

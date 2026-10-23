@@ -1437,6 +1437,8 @@ export async function startDaemon(opts: DaemonOptions) {
     profileData: resolvedProfile,
     piiPaths: config.pii?.paths,
     deny: config.local.deny,
+    // #509a: deliverables are hashed under the owner's verified execution root (a declared worktree instance's worktree), `undefined` when unproven.
+    executionRoot: peer => ownerWriteRoot(peer),
     catalog,
     sessionRoles: peer => bus.peers.has(peer) && bus.stateOf(peer) !== "offline" ? preparedSessionRoles.get(peer) ?? [] : [],
     projectedReview: task => reviewProjection(task),
