@@ -90,7 +90,7 @@ for (const unavailable of ["offline", "off-roster", "paused", "WIP full"] as con
   }
   const before = f.board.get(task.id), revision = f.board.statusRevision();
   expect(f.bus.stateOf("local")).toBe("idle"); expect(f.capacity.local).toBe(1);
-  await expect(pull(f, task)).rejects.toThrow();
+  await expect(pull(f, task)).rejects.toThrow("reserved peer codex cannot take the planner pull");
   expect(f.board.get(task.id)).toEqual(before); expect(f.board.statusRevision()).toBe(revision);
   expect(offers(f, task, "local")).toEqual([]); expect(offers(f, task, "codex")).toEqual([]);
 });

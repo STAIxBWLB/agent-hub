@@ -924,8 +924,10 @@ export class Tasks {
       }
       if (task.reserved && this.excluded(task).includes(task.reserved)) throw new PreEffectToolRefusal(this.plannerRefusal(task));
       const assignment = this.plannerAssignment(task, !!task.reserved);
-      if (!assignment.owner && this.hasPersonReservation(task)) throw new PreEffectToolRefusal(`a person's reservation is retained; ${this.plannerRefusal(task)}`);
-      if (!assignment.owner) throw new PreEffectToolRefusal(this.plannerRefusal(task));
+      if (!assignment.owner) {
+        const refusal = task.reserved ? `reserved peer ${task.reserved} cannot take the planner pull: ${assignment.refusals?.find(row => row.role === "owner" && row.peer === task.reserved)?.reason ?? "not eligible"}; ${this.plannerRefusal(task)}` : this.plannerRefusal(task);
+        throw new PreEffectToolRefusal(`${this.hasPersonReservation(task) ? "a person's reservation is retained; " : ""}${refusal}`);
+      }
       if (this.hasPersonReservation(task) && assignment.owner !== task.reserved) throw new PreEffectToolRefusal("a person's reservation is retained");
       return { task, owner: assignment.owner };
     };
