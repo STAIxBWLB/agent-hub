@@ -106,7 +106,7 @@ import { projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUn
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
-import { startDashboard, type DashboardSession } from "./ui.ts";
+import { startDashboard, dashboardView, type DashboardSession } from "./ui.ts";
 import { DAEMON_FEATURES, PROTOCOL, stateDirFor } from "./control-client.ts";
 import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
@@ -4496,6 +4496,43 @@ export async function startDaemon(opts: DaemonOptions) {
     const attentionStatus = status(false, true);
     let pet; try { const config = loadPetConfig(opts.cwd); pet = { enabled: config.enabled, character: config.character ?? "stai", blink: config.blink }; } catch { pet = { enabled: false }; }
     const peerView = Object.fromEntries(Object.entries(attentionStatus.peers).map(([id, peer]) => [id, { ...peer, ...turnView(id as PeerId) }])), boardTasks = board.list();
+    const usageView = (open: boolean) => {
+      // #683 U4: the roll-up runs only while the Agents view that shows it is open, never on a hidden view's 1 s poll.
+      if (!open) return undefined;
+      try {
+        const caught = usageRollup.catchUp(100);
+        const status = budget.status();
+        const live = new Set(Object.entries(status).filter(([, v]) => v.paused).map(([peer]) => peer));
+        const limits = usageRollup.limits(undefined, { limit: 100, live });
+        const total = usageRollup.total();
+        const daily = usageRollup.daily(14);
+        const taskUsage = usageRollup.query({ by: "task" });
+        return {
+          // `behind`: the roll-up has not folded the whole log, so every figure below is a lower bound, never the whole (unknown is not 0).
+          behind: !caught,
+          daily,
+          limits,
+          total,
+          tasks: taskUsage.rows.map(r => ({
+            id: r.key === "unattributed" ? 0 : Number(r.key.replace(/^#/, "")),
+            pii: r.pii === true,
+            records: r.records,
+            input: r.input,
+            output: r.output,
+            cacheRead: r.cacheRead,
+            cacheWrite: r.cacheWrite,
+            reasoning: r.reasoning,
+            total: r.total,
+            counted: r.counted,
+            totalWithoutCache: r.totalWithoutCache,
+          })),
+        };
+      } catch (e) {
+        log(`dashboard usage view failed: ${(e as Error).message}`);
+        // The page keeps the last figures for `undefined` (a hidden view), so a failed read says so explicitly instead.
+        return { unavailable: true };
+      }
+    };
     return {
       ok: true,
       projectId,
@@ -4534,6 +4571,7 @@ export async function startDaemon(opts: DaemonOptions) {
       roster: rosterView(),
       ...benchView(),
       ...memoryView(_input?.memory),
+      usage: usageView(_input?.view === "agents"),
     };
   }
 
@@ -6010,7 +6048,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "ui_snapshot":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_snapshot is a console command" });
         if (!Number.isSafeInteger(msg.after ?? 0) || (msg.after ?? 0) < 0) return void reply({ ok: false, error: "invalid cursor" });
-        return void reply(uiSnapshot(msg.after ?? 0, msg.memory !== undefined ? { memory: msg.memory } : undefined));
+        return void reply(uiSnapshot(msg.after ?? 0, msg.memory !== undefined || dashboardView(msg.view) ? { ...(msg.memory !== undefined ? { memory: msg.memory } : {}), ...(dashboardView(msg.view) ? { view: msg.view } : {}) } : undefined));
       case "ui_action":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_action is a console command" });
         if (recoveryActive()) return void reply({ ok: false, error: "recovery is holding mutations" });

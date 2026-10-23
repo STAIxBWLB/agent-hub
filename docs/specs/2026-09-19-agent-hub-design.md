@@ -4944,6 +4944,15 @@ Use `summarizeByTask`, `costMetrics` and bounded SDLC GitHub helpers. Bound file
 - The `usage` op now folds the log with `catchUp(250)` before it answers (one 8 MiB pass per poll left a hub that had just started on a big log answering from the first pass: found by the live panel on a copy of the real 47 MB log, where TODAY read `no records` for peers that had used tokens). When the budget runs out the reply has `behind: true`; the console says `still catching up` and the CLI warns on stderr.
 - Ceiling: the limits history is the newest 1000 events; the panel only needs each peer's last three resets. The dashboard panel is slice U4 and calls the same op.
 
+## Amendment: the dashboard Usage view (#683 U4)
+
+- The Usage view is part of the Agents view, under Usage budgets (`src/ui/index.html`, `renderUsage`), and reads the same roll-up as `ahub usage` and the console panel: lifetime totals with the peers whose figure is unknown, the last 14 UTC calendar days of stacked tokens per peer, the open budget pauses with the last 20 pause, resume and reset events, and a task table (state, owner, PR, input, output, cache read, cache write, total).
+- `uiSnapshot` builds `usage` only when the request names `view: "agents"` (the page sends its open view with every poll, like it sends `memory`), so a hidden view costs no roll-up work on the 1 s poll. It folds the log with `catchUp(100)`; when that returns false the snapshot carries `usage.behind: true` and the view says the figures are a lower bound until it catches up, never the folded part as the whole.
+- `UsageRollup.daily(days, now)` returns the last `days` calendar days ending today, clipped to the first day with a record. A day with no record is a row with `empty: true` and the view shows `no record`, never zero. Every counter keeps its source (`native`, `hub` for a count, `at least` for a partial sum) and `unknown` stays the word.
+- A private task is the public title `[pii]` on the board (`Tasks.publicView`) or a `pii` roll-up row; the view shows `#id [pii]` and never a title, and the snapshot carries ids and numbers only.
+- Colours are design tokens only; the view is one column at 600 px and its tables and chart scroll inside themselves. `test/ui-usage.test.ts` runs the page's own `renderUsage` over a snapshot fixture (PII marker absent, unknown not zero, the lower-bound note) and checks the view's token pairs for contrast in both themes.
+- Ceiling: the view recomputes the daily and task aggregates on each poll while the Agents view is open; a materialised daily table is the upgrade if that ever costs more than a few ms on a large log.
+
 ## Amendment: the console changed-symbols block (#684 phase 2b)
 
 - `src/cli/console-symbols.ts` (pure data) and `taskFields` in `console-state.ts`: Enter on a task in Tasks adds `symbols` and `symbols note` after the plan field and drops the raw `codeSymbols` field. It reads the public `codeSymbols` that `task_show` already carries (#684 2a) and the task's `plan.symbols`; it asks the hub for nothing new.

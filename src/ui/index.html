@@ -357,6 +357,34 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 .skeleton-bar{display:block;height:var(--space-4);border-radius:var(--radius-control);background:var(--line)}
 .skeleton-tall{height:var(--space-8)}
 @media(max-width:600px){.skeleton-board{flex-direction:column}}
+/* Usage view */
+.usage-summary-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:var(--space-3);margin-bottom:var(--space-4)}
+.usage-stat-card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-surface);padding:var(--space-4)}
+.usage-stat-label{display:block;font-size:var(--text-xs);color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:var(--space-1)}
+.usage-stat-value{display:block;font-size:var(--text-xl);font-weight:700;font-family:var(--font-mono);color:var(--ink)}
+.usage-stat-sub{display:block;font-size:var(--text-xs);color:var(--muted);margin-top:var(--space-1)}
+.usage-block{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius-surface);padding:var(--space-4);margin-bottom:var(--space-4);min-width:0}
+.usage-block h3{font-size:var(--text-base);margin:0 0 var(--space-3)}
+.usage-chart-wrap{overflow-x:auto;padding-bottom:var(--space-2)}
+.usage-daily-bars{display:flex;align-items:flex-end;gap:var(--space-3);min-height:180px;padding:var(--space-2) 0}
+.usage-day-col{display:flex;flex-direction:column;align-items:center;flex:1 1 0;min-width:48px}
+.usage-stacked-bar{width:100%;max-width:40px;height:140px;background:var(--panel-soft);border:1px solid var(--line);border-radius:var(--radius-control);display:flex;flex-direction:column-reverse;overflow:hidden}
+.usage-bar-segment{width:100%}
+.usage-day-label{font-size:var(--text-xs);color:var(--muted);font-family:var(--font-mono);margin-top:var(--space-2);white-space:nowrap}
+.usage-day-total{font-size:var(--text-xs);color:var(--ink);font-family:var(--font-mono);margin-bottom:var(--space-1);white-space:nowrap}
+.usage-legend{display:flex;flex-wrap:wrap;gap:var(--space-3);margin-top:var(--space-3);padding-top:var(--space-3);border-top:1px solid var(--line)}
+.usage-legend-item{display:inline-flex;align-items:center;gap:var(--space-2);font-size:var(--text-xs);color:var(--ink)}
+.usage-table-wrap{overflow-x:auto;max-width:100%}
+.usage-table{width:100%;border-collapse:collapse;font-size:var(--text-sm);text-align:left}
+.usage-table th,.usage-table td{padding:var(--space-2) var(--space-3);border-bottom:1px solid var(--line);white-space:nowrap}
+.usage-table th{font-size:var(--text-xs);color:var(--muted);text-transform:uppercase;letter-spacing:.05em;background:var(--panel-soft)}
+.usage-table tr:hover td{background:var(--hover)}
+.usage-table .num{font-family:var(--font-mono);text-align:right}
+.usage-tag{display:inline-block;padding:1px var(--space-2);border-radius:var(--radius-control);font-size:var(--text-xs);font-family:var(--font-mono)}
+.usage-tag.pii{background:var(--amber-soft);color:var(--amber);border:1px solid var(--amber)}
+.meta.usage-behind{color:var(--amber);background:var(--amber-soft);border:1px solid var(--amber);border-radius:var(--radius-control);padding:var(--space-2) var(--space-3)}
+.usage-paused-alert{border:1px solid var(--amber);background:var(--amber-soft);color:var(--amber);padding:var(--space-3);border-radius:var(--radius-control);margin-bottom:var(--space-3);font-size:var(--text-sm)}
+@media(max-width:600px){.usage-summary-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -404,7 +432,45 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 <section id="projects-panel" aria-labelledby="projects-title" data-view="agents" hidden><div class="section-head"><h2 id="projects-title">Projects</h2><span id="project-count" class="meta"></span></div><div id="projects"></div></section>
 <section aria-labelledby="peers-title" data-view="agents" hidden><div class="section-head"><h2 id="peers-title">Peers &amp; queues</h2><span id="peer-count" class="meta"></span></div><div id="peers"><div class="skeleton" aria-hidden="true"><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span><span class="skeleton-bar skeleton-tall"></span></div><p class="empty">Loading peers...</p></div></section>
 <section aria-labelledby="permissions-title" data-view="agents" hidden><div class="section-head"><h2 id="permissions-title">Pending approvals</h2><span id="permission-count" class="meta"></span></div><div id="permissions"></div></section>
-<section aria-labelledby="budget-title" data-view="agents" hidden><div class="section-head"><h2 id="budget-title">Usage budgets</h2></div><div id="budget"></div></section>
+<section aria-labelledby="budget-title" data-view="agents" hidden><div class="section-head"><h2 id="budget-title">Usage budgets</h2></div><div id="budget"></div>
+<div id="usage-content" class="content">
+<div class="usage-summary-grid">
+  <div class="usage-stat-card"><span class="usage-stat-label">Lifetime Tokens</span><span id="usage-lifetime-total" class="usage-stat-value">-</span><span id="usage-lifetime-total-sub" class="usage-stat-sub"></span></div>
+  <div class="usage-stat-card"><span class="usage-stat-label">Without Cache</span><span id="usage-lifetime-nocache" class="usage-stat-value">-</span><span id="usage-lifetime-nocache-sub" class="usage-stat-sub"></span></div>
+  <div class="usage-stat-card"><span class="usage-stat-label">Cache Reads</span><span id="usage-lifetime-cache" class="usage-stat-value">-</span><span id="usage-lifetime-cache-sub" class="usage-stat-sub"></span></div>
+</div>
+<p id="usage-coverage-note" class="meta">Coverage: Jcode and Kimi (prior to #285) report hub-counted increments; unrecorded sources are noted as unknown.</p>
+
+<div class="usage-block">
+  <div class="section-subhead"><h3>Daily tokens per peer</h3><span id="usage-daily-meta" class="meta"></span></div>
+  <div class="usage-chart-wrap"><div id="usage-daily-chart" class="usage-daily-bars"></div></div>
+  <div id="usage-daily-legend" class="usage-legend"></div>
+</div>
+
+<div class="usage-block">
+  <div class="section-subhead"><h3>Limits &amp; quota timeline</h3></div>
+  <div id="usage-paused-alert" class="usage-paused-alert" hidden></div>
+  <div id="usage-budget-windows" class="budget-grid"></div>
+  <p id="usage-limits-note" class="meta" hidden></p>
+  <div class="usage-table-wrap">
+    <table class="usage-table">
+      <thead><tr><th>Time</th><th>Event</th><th>Peer</th><th>Window</th><th>Detail</th></tr></thead>
+      <tbody id="usage-limits-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="usage-block">
+  <div class="section-subhead"><h3>Task tokens</h3><span id="usage-task-count" class="meta"></span></div>
+  <div class="usage-table-wrap">
+    <table id="usage-task-table" class="usage-table">
+      <thead><tr><th>Task</th><th>State</th><th>Owner</th><th>PR</th><th class="num">Input</th><th class="num">Output</th><th class="num">Cache read</th><th class="num">Cache write</th><th class="num">Total</th></tr></thead>
+      <tbody id="usage-task-tbody"></tbody>
+    </table>
+  </div>
+</div>
+</div>
+</section>
 <section aria-labelledby="bench-title" data-view="agents" hidden><div class="section-head"><h2 id="bench-title">Benchmarks</h2><span id="bench-count" class="meta"></span></div><div id="bench"></div></section>
 </div>
 </main>
@@ -1228,6 +1294,171 @@ function renderNeedsAttention(snapshot) {
   const approvals=$('agents-approval-count');approvals.textContent=approvalCount?'('+approvalCount+')':'';approvals.hidden=!approvalCount;
   const title=value?.act?'('+value.act+') agent-hub':attentionBaseTitle;if(document.title!==title)document.title=title;
 }
+function formatCounter(c, exact) {
+  if (!c || c.value === null || c.value === undefined) return 'unknown';
+  const val = c.value;
+  let str;
+  if (exact || Math.abs(val) < 1000) str = String(val);
+  else if (val >= 1e7) str = Math.round(val / 1e6) + 'M';
+  else if (val >= 1e6) str = (val / 1e6).toFixed(1) + 'M';
+  else if (val >= 1e4) str = Math.round(val / 1e3) + 'k';
+  else str = (val / 1e3).toFixed(1) + 'k';
+  const tag = c.source === 'count' ? 'hub' : c.source === 'partial' ? 'at least' : c.source;
+  return str + (tag && tag !== 'native' ? ' (' + tag + ')' : '');
+}
+const USAGE_LIMIT_ROWS = 20;
+const USAGE_COVERAGE_NOTE = 'Coverage: Jcode and Kimi (prior to #285) report hub-counted increments; unrecorded sources are noted as unknown.';
+function renderUsage(usage, tasks, budget) {
+  if (!usage) return;
+  // A failed read is not a hidden view: replace the old figures with an explicit state so stale totals are never shown as current.
+  if (usage.unavailable === true) {
+    for (const id of ['usage-lifetime-total', 'usage-lifetime-nocache', 'usage-lifetime-cache']) $(id).textContent = 'unavailable';
+    for (const id of ['usage-lifetime-total-sub']) $(id).textContent = '';
+    $('usage-coverage-note').textContent = USAGE_COVERAGE_NOTE + ' The usage roll-up could not be read just now; the figures were cleared and will return on the next poll.';
+    $('usage-coverage-note').classList.toggle('usage-behind', true);
+    $('usage-daily-chart').replaceChildren(el('p', 'Usage unavailable.', 'empty'));
+    $('usage-daily-legend').replaceChildren();
+    $('usage-paused-alert').hidden = true;
+    $('usage-limits-tbody').replaceChildren();
+    $('usage-task-tbody').replaceChildren();
+    $('usage-task-count').textContent = 'unavailable';
+    return;
+  }
+  // #683 U4: a roll-up that has not folded the whole log gives lower bounds; say so rather than show the folded part as the whole.
+  const coverage = $('usage-coverage-note');
+  coverage.textContent = USAGE_COVERAGE_NOTE + (usage.behind === true ? ' Still folding the event log: figures are a lower bound until it catches up.' : '');
+  coverage.classList.toggle('usage-behind', usage.behind === true);
+  const total = usage.total;
+  if (total) {
+    const overall = total.overall;
+    $('usage-lifetime-total').textContent = formatCounter(overall?.tokens);
+    const unknownPeers = total.unknownPeers?.tokens || [];
+    $('usage-lifetime-total-sub').textContent = unknownPeers.length ? 'Unknown: ' + unknownPeers.join(', ') : (total.since ? 'Since ' + total.since.slice(0, 10) : '');
+    $('usage-lifetime-nocache').textContent = formatCounter(overall?.withoutCache);
+    $('usage-lifetime-cache').textContent = formatCounter(overall?.cacheRead);
+  }
+  const daily = usage.daily;
+  const chart = $('usage-daily-chart'), legend = $('usage-daily-legend');
+  if (daily && daily.days && daily.days.length) {
+    chart.replaceChildren();
+    let maxDay = 1;
+    for (const d of daily.days) {
+      if (d.total?.value && d.total.value > maxDay) maxDay = d.total.value;
+    }
+    for (const d of daily.days) {
+      const col = el('div', undefined, 'usage-day-col');
+      col.append(el('span', d.empty === true ? 'no record' : formatCounter(d.total), 'usage-day-total'));
+      const bar = el('div', undefined, 'usage-stacked-bar');
+      bar.title = d.day + ': ' + (d.empty === true ? 'no record' : formatCounter(d.total));
+      for (const p of daily.peers || []) {
+        const c = d.peers[p];
+        if (c && c.value && c.value > 0) {
+          const seg = el('div', undefined, 'usage-bar-segment peer-' + p);
+          const pct = Math.max(2, Math.round((c.value / maxDay) * 100));
+          seg.style.height = pct + '%';
+          seg.style.backgroundColor = 'var(--peer-color)';
+          seg.title = p + ': ' + formatCounter(c);
+          bar.append(seg);
+        }
+      }
+      col.append(bar, el('span', d.day.slice(5), 'usage-day-label'));
+      chart.append(col);
+    }
+    legend.replaceChildren();
+    for (const p of daily.peers || []) {
+      const item = el('span', undefined, 'usage-legend-item peer-' + p);
+      const dot = el('span', undefined, 'peer-color-dot peer-' + p);
+      dot.style.backgroundColor = 'var(--peer-color)';
+      item.append(dot, el('span', p));
+      legend.append(item);
+    }
+  } else {
+    chart.replaceChildren(el('p', 'No daily token records yet.', 'empty'));
+    legend.replaceChildren();
+  }
+
+  const limits = usage.limits;
+  const pausedAlert = $('usage-paused-alert');
+  if (limits?.open?.length) {
+    pausedAlert.hidden = false;
+    pausedAlert.textContent = 'Active budget pauses: ' + limits.open.map(p => p.peer + ' (' + p.window + (p.resetsAt ? ', resets ' + rel(p.resetsAt) : '') + ')').join('; ');
+  } else {
+    pausedAlert.hidden = true;
+  }
+
+  const limitsTbody = $('usage-limits-tbody');
+  limitsTbody.replaceChildren();
+  const history = limits?.history || [];
+  // The timeline shows the newest rows only: say how many older events it leaves out, from the hub's bound and from this view's.
+  const hidden = Math.max(0, history.length - USAGE_LIMIT_ROWS) + (Number.isFinite(limits?.omitted) ? limits.omitted : 0);
+  const limitsNote = $('usage-limits-note');
+  limitsNote.hidden = hidden === 0;
+  limitsNote.textContent = hidden === 0 ? '' : 'Showing the newest ' + Math.min(history.length, USAGE_LIMIT_ROWS) + ' limit events; ' + hidden + ' older ' + (hidden === 1 ? 'event is' : 'events are') + ' not shown (ahub usage limits lists them).';
+  if (history.length) {
+    for (const h of history.slice(-USAGE_LIMIT_ROWS).reverse()) {
+      const tr = el('tr');
+      const timeCell = el('td', time(Date.parse(h.at)));
+      timeCell.title = h.at;
+      const typeCell = el('td', h.type.replace(/^budget_/, '').replace(/^quota_/, ''));
+      const peerCell = el('td', h.peer);
+      const winCell = el('td', h.window);
+      let detailText = '';
+      if (h.detail) {
+        if (h.detail.resetsAt) detailText += 'resets ' + rel(Number(h.detail.resetsAt)) + ' ';
+        if (h.detail.used !== undefined) detailText += Math.round(Number(h.detail.used) * 100) + '% ';
+        if (h.detail.cause) detailText += '(' + h.detail.cause + ')';
+      }
+      const detailCell = el('td', detailText.trim() || '-');
+      tr.append(timeCell, typeCell, peerCell, winCell, detailCell);
+      limitsTbody.append(tr);
+    }
+  } else {
+    const tr = el('tr');
+    const td = el('td', 'No limit events recorded yet.', 'empty');
+    td.colSpan = 5;
+    tr.append(td);
+    limitsTbody.append(tr);
+  }
+
+  const taskTbody = $('usage-task-tbody');
+  taskTbody.replaceChildren();
+  const usageTasks = usage.tasks || [];
+  const taskUsageMap = new Map(usageTasks.map(t => [t.id, t]));
+  const boardTasks = tasks || [];
+  const taskIds = new Set([...boardTasks.map(t => t.id), ...usageTasks.map(t => t.id)]);
+  const sortedIds = [...taskIds].sort((a, b) => b - a);
+  let taskCount = 0;
+  for (const id of sortedIds) {
+    if (id === 0) continue;
+    const bt = boardTasks.find(t => t.id === id);
+    const ut = taskUsageMap.get(id);
+    // A PII task's public title is exactly "[pii]" (Tasks.publicView), so the board row alone marks it even when it has no usage rows.
+    const pii = ut?.pii === true || bt?.title === '[pii]';
+    const tr = el('tr');
+    const taskCell = el('td');
+    if (pii) {
+      taskCell.append(el('span', '#' + id + ' [pii]', 'usage-tag pii'));
+    } else {
+      taskCell.textContent = '#' + id + (bt?.title ? ' ' + bt.title : '');
+    }
+    const stateCell = el('td', bt?.state ? bt.state.replaceAll('_', ' ') : '-');
+    const ownerCell = el('td', bt?.owner || '-');
+    const prNum = bt?.lifecycle?.pr || bt?.sdlc?.pr;
+    const prCell = el('td', prNum ? '#' + prNum : (bt?.refs?.branch || '-'));
+
+    const inputCell = el('td', formatCounter(ut?.input), 'num');
+    const outputCell = el('td', formatCounter(ut?.output), 'num');
+    const crCell = el('td', formatCounter(ut?.cacheRead), 'num');
+    const cwCell = el('td', formatCounter(ut?.cacheWrite), 'num');
+    // `total` is a Counter object even when nothing native was reported, so choose by its value: a tokens-only task (Jcode, older Kimi) falls back to the hub's count.
+    const totalCell = el('td', formatCounter(ut?.total?.value != null ? ut.total : ut?.counted), 'num');
+
+    tr.append(taskCell, stateCell, ownerCell, prCell, inputCell, outputCell, crCell, cwCell, totalCell);
+    taskTbody.append(tr);
+    taskCount++;
+  }
+  $('usage-task-count').textContent = taskCount + ' tasks';
+}
 function render(snapshot) {
   renderNeedsAttention(snapshot);
   const peers = Object.fromEntries(Object.entries(snapshot.status.peers || {}).map(([id, peer]) => [id, {...peer, ...(snapshot.status.roleInfo || {})[id]}])), ids = Object.keys(peers), starts = Array.isArray(snapshot.starts) ? snapshot.starts : [];
@@ -1309,6 +1540,7 @@ function render(snapshot) {
   renderBench(snapshot.bench);
   renderMemory(snapshot.memory);
   renderSettings(snapshot.settings, snapshot.roster);
+  renderUsage(snapshot.usage, snapshot.tasks, snapshot.budget);
   const stream = $('stream');
   if (!eventCount) { stream.replaceChildren(); empty(stream, 'No activity yet.'); }
   for (const entry of snapshot.events || []) {
@@ -1333,7 +1565,7 @@ async function poll() {
   const captured = context();
   if (managerMode && (!captured.projectId || !captured.instanceId)) { if (!stopped) timer = setTimeout(poll, 1000); return; }
   try {
-    const input = {after:cursor, memory:memoryInput()}; if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
+    const input = {after:cursor, memory:memoryInput(), view:currentView}; if (managerMode) { input.projectId = captured.projectId; input.instanceId = captured.instanceId; }
     const result = await post('/snapshot', input);
     if (!managerMode || (result.projectId === captured.projectId && result.instanceId === captured.instanceId && captured.generation === viewGeneration)) {
       snapshotValid = true; lastSnapshot = result; lastSnapshotAt = Date.now(); render(result); setConnection('Live / updated ' + new Date().toLocaleTimeString(), 'live'); setDisconnected(false);

@@ -65,6 +65,10 @@ export interface TotalRow { peer: string; tokens: Counter; withoutCache: Counter
 /** `unknownPeers`: the peers whose figure is unknown, which the overall figure then leaves out (so it is `partial`, a lower bound, never a sum that treats them as 0). */
 export interface TotalResult { since: string | null; peers: TotalRow[]; overall: { tokens: Counter; withoutCache: Counter; cacheRead: Counter }; unknownPeers: { tokens: string[]; withoutCache: string[]; cacheRead: string[] } }
 
+/** `empty`: no record at all for that UTC day (a gap), shown as an empty column and never as a zero. */
+export interface DailyRow { day: string; peers: Record<string, Counter>; total: Counter; empty?: true }
+export interface DailyResult { days: DailyRow[]; peers: string[] }
+
 const sum = (a: number | null, b: number | null): number | null => a === null ? b : b === null ? a : a + b;
 const counter = (value: number | null, n: number, source: UsageSource = "native"): Counter => n > 0 && value !== null ? { value, source } : { value: null, source: "unknown" };
 
@@ -348,6 +352,60 @@ export class UsageRollup {
     };
     return { since: this.state().firstAt, peers: out, overall: { tokens: fold(r => r.tokens, false), withoutCache: fold(r => r.withoutCache, true), cacheRead: fold(r => r.cacheRead, false) },
       unknownPeers: { tokens: unknownPeers(r => r.tokens), withoutCache: unknownPeers(r => r.withoutCache), cacheRead: unknownPeers(r => r.cacheRead) } };
+  }
+
+  /**
+   * Daily tokens per peer for the last `days` calendar UTC days up to `now`, stacked for the dashboard Usage view (#683 U4).
+   * For each day and peer, tokens is native when reported, counted increments when available, otherwise unknown. A day inside
+   * the window with no record is an `empty` row (a gap the chart shows), and the window never starts before the first record.
+   */
+  daily(days = 14, now: number = Date.now()): DailyResult {
+    const raw = this.db.query(`SELECT day, peer, SUM(total) AS total, SUM(total_n) AS total_n FROM usage_rollup GROUP BY day, peer ORDER BY day ASC`).all() as any[];
+    const counted = this.db.query(`SELECT day, peer, SUM(tokens) AS tokens, SUM(increments) AS increments FROM token_rollup GROUP BY day, peer ORDER BY day ASC`).all() as any[];
+    const usageMap = new Map<string, { total: number; total_n: number }>();
+    for (const r of raw) usageMap.set(`${r.day}\0${r.peer}`, { total: r.total, total_n: r.total_n });
+    const countMap = new Map<string, { tokens: number; increments: number }>();
+    for (const r of counted) countMap.set(`${r.day}\0${r.peer}`, { tokens: r.tokens, increments: r.increments });
+
+    const allDays = [...new Set([...raw.map(r => r.day as string), ...counted.map(r => r.day as string)])].sort();
+    const allPeers = [...new Set([...raw.map(r => r.peer as string), ...counted.map(r => r.peer as string)])].sort();
+    // The last `days` calendar days ending today, clipped to the first day that has any record.
+    const dayMs = 86_400_000, today = new Date(now).toISOString().slice(0, 10);
+    const sliceDays: string[] = [];
+    if (allDays.length) for (let i = Math.max(1, Math.min(days, 366)) - 1; i >= 0; i--) {
+      const day = new Date(Date.parse(today + "T00:00:00Z") - i * dayMs).toISOString().slice(0, 10);
+      if (day >= allDays[0]!) sliceDays.push(day);
+    }
+
+    const resultDays: DailyRow[] = [];
+    for (const d of sliceDays) {
+      const peerCounters: Record<string, Counter> = {};
+      const knownCounters: Counter[] = [];
+      for (const p of allPeers) {
+        const u = usageMap.get(`${d}\0${p}`);
+        const c = countMap.get(`${d}\0${p}`);
+        let counterVal: Counter = { value: null, source: "unknown" };
+        if (u && u.total_n > 0) {
+          counterVal = counter(u.total, u.total_n);
+        } else if (c && c.increments > 0) {
+          counterVal = { value: c.tokens, source: "count" };
+        }
+        peerCounters[p] = counterVal;
+        if (counterVal.value !== null) knownCounters.push(counterVal);
+      }
+      let dayTotal: Counter = { value: null, source: "unknown" };
+      if (knownCounters.length > 0) {
+        const sumVal = knownCounters.reduce((acc, cur) => acc + cur.value!, 0);
+        const source: UsageSource = knownCounters.length !== allPeers.length
+          ? "partial"
+          : knownCounters.every(cur => cur.source === "native")
+          ? "native"
+          : "count";
+        dayTotal = { value: sumVal, source };
+      }
+      resultDays.push({ day: d, peers: peerCounters, total: dayTotal, ...(!allDays.includes(d) ? { empty: true as const } : {}) });
+    }
+    return { days: resultDays, peers: allPeers };
   }
 
   /** Every roll-up row, in key order, for the rebuild-equals-incremental test. */

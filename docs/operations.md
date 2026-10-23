@@ -150,6 +150,14 @@ per peer (`#id [pii]` for a private task, never a title). The panel asks the hub
 `usage unavailable`. The numbers come from the roll-up of `ahub usage`, so the console and the CLI agree. A request folds the event log first, within 250 ms;
 when a very large log is not folded yet the answer carries `behind: true`, the panel says `still catching up` and `ahub usage` prints a warning on stderr, so a partial number is never shown as the whole.
 
+The dashboard's Usage view (#683 U4) sits in the Agents view, under Usage budgets, and shows the same roll-up: the lifetime, without-cache and cache-read totals with
+the peers whose figure is unknown, the last 14 UTC days as stacked columns per peer (a day with no record is a `no record` column, never zero), a limits table with the
+open pauses and the last 20 pause, resume and reset events, and a task table (state, owner, PR, input, output, cache read, cache write, total). Every figure names its
+source like the console does and `unknown` stays the word. A private task shows `#id [pii]` and never its title. The page asks for the figures only while the Agents view is open
+(`view: "agents"` in the snapshot request), so a hidden view costs no roll-up work on the 1 s poll. When the roll-up is still behind a very large log the snapshot carries
+`usage.behind: true` and the view says the figures are a lower bound until it catches up. Colours are design tokens only, the view reflows to one column at 600 px, and its
+tables and chart scroll inside themselves.
+
 Reviewing from the console (#711): on a task in review in Tasks (a selected row, or the open task detail), `r` asks which verdict first on the prompt line,
 `review #372 "<title>": a approve  c request changes  Esc cancel` (the title is quoted and cut, a private task shows `[pii]`). `a` puts `review 372 approved ` on
 the input line with a guide line above it (`Enter approves #372. You can type a note first. Esc cancels.`); `c` puts `review 372 changes_requested ` there and
@@ -1212,7 +1220,7 @@ and its end `budget_resume`, with the window, the reset time and who ended it (`
 `ahub budget resume`). A window's reset writes `quota_reset` when its `resetsAt` moves forward or its `used`
 falls by 0.5 or more inside one window id, once per peer, window and `resetsAt`. These events hold ids and
 numbers only, add no protocol version and are ignored by a reader that does not know them. `ahub report`
-does not show them: `ahub usage` and `ahub usage limits` read them (below), and the console's Usage tab shows each peer's last resets (#683 U3). A dashboard usage view is pending (U4).
+does not show them: `ahub usage` and `ahub usage limits` read them (below), and the console's Usage tab shows each peer's last resets (#683 U3). A dashboard Usage view shows the same roll-up in the Agents view (#683 U4, below).
 
 `ahub usage` reads the same events from an incremental roll-up in `hub.db` instead of rescanning the log (#683):
 
