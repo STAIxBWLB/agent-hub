@@ -18,6 +18,8 @@ export type HubEvent =
   | { type: "role"; peer?: string; task?: number; actor: string; stage: "prepared" | "assigned"; roles: { id: string; layer: "shipped" | "project"; hash: string }[] }
   /** A settings change (#269): the registry key, the bounded registry values before/after and their source; an optional person reason is sanitized and capped at 400 UTF-8 bytes. */
   | { type: "settings"; key: string; from: import("./settings.ts").SettingValue; to: import("./settings.ts").SettingValue; source: "dashboard" | "terminal"; undo?: boolean; reason?: string }
+  /** A structural config edit (#689): the file, key paths with short hashes of their values before and after (never a value), the file revisions and the person who made it. */
+  | { type: "config_edit"; file: "config.local.json" | "sdlc.toml"; paths: { path: string; before: string | null; after: string | null }[]; fileBefore: string; fileAfter: string; tier: 2 | 3; by: "person"; source: "dashboard" | "terminal"; backup?: string; reason?: string }
   | { type: "envelope"; id: string; from: string; to?: string[]; priority: string; hop: number; kind?: string; task?: string; bytes?: number; private?: boolean; dropped?: string }
   | { type: "overflow" | "undeliverable"; id: string; from: string; peer: string }
   | { type: "stale"; id: string; from: string; peer: string; task?: string }

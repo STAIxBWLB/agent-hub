@@ -73,6 +73,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub roster add <peer> | remove <peer> [--yes] [--now]", "human only: change live participation through settings; removal previews retained messages and task handoff; remove also deletes the roster key of an instance no longer declared"],
     ["ahub settings [list] [--json] | get <key> [--json]", "human only: the settings the dashboard can change, each with its value, the file it comes from and when it applies"],
     ["ahub settings set <key> <value|inherit> [--yes] [--preview] [--now] | undo | reload", "human only: change or reload validated settings, written to .agenthub/config.local.json or routing.local.toml (never a tracked file); --preview shows the effect and saves nothing; undo puts back the last write"],
+    ["ahub settings edit <config.local.json|sdlc.toml> (set <path> <json> | remove <path>)... [--reason <text>] [--preview] [--yes] | backups [--json]", "human only: structural config (instances, review, snapshots, approvals, context.gate, sdlc.toml mode and required_checks) validated by the hub's own loaders, previewed as a diff and written with a backup; a key that runs code or locates secrets needs its name typed, never --yes"],
     ["ahub pause|resume <peer>", "hold a peer's deliveries in its queue / release them"],
     ["ahub queue list [--peer <id>] [--json] [--color=auto|always|never]", "inspect durable deliveries"],
     ["ahub queue show <delivery-id> [--json] [--color=auto|always|never]", "inspect one delivery and revision"],

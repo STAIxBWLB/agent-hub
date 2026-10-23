@@ -18,6 +18,7 @@ import { matchesPolicy } from "../hub/path-policy.ts";
 import { projectedDiff } from "../hub/projected-diff.ts";
 import { TextProjections } from "../hub/text-projection.ts";
 import { terminalText } from "./console-state.ts";
+import { parseSettingsEditArgs, runSettingsEdit, SETTINGS_EDIT_USAGE } from "./settings-edit.ts";
 import { petView, readPet, renderPet } from "./pet.ts";
 import { startPetWindow, closePetWindow } from "../pet/window.ts";
 import { loadPetConfig, savePetPalette } from "./pet-config.ts";
@@ -1509,7 +1510,31 @@ const commands: Record<string, () => Promise<void> | void> = {
     } finally { hub.close(); }
   },
   settings: async () => {
-    const usage = "usage: ahub settings [list] [--json] | get <key> [--json] | set <key> <value|inherit> [--yes] [--preview] | undo | reload";
+    // #689: structural config edits (instances, review, snapshots, approvals, context.gate, sdlc.toml) and their backups. The hub validates and writes.
+    if (args[0] === "edit" || args[0] === "backups") {
+      // A command line the parser refuses never reaches the hub, not even as a connection.
+      const early = args[0] === "backups" ? (args.length > 2 || (args[1] !== undefined && args[1] !== "--json") ? SETTINGS_EDIT_USAGE : undefined) : (() => { const parsed = parseSettingsEditArgs(args.slice(1)); return typeof parsed === "string" ? parsed : undefined; })();
+      if (early) fail(early);
+      const hub = await connect();
+      try {
+        const rl = process.stdin.isTTY ? createInterface({ input: process.stdin, output: process.stdout }) : undefined;
+        const usage = await runSettingsEdit(args, {
+          request: async message => {
+            const reply = await hub.request(message, 35_000);
+            if (reply.ok !== true) {
+              const error = String(reply.error ?? "config edit refused");
+              fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "config_edit/i.test(error) ? `${error}; upgrade and restart the running hub to use ahub settings edit` : error);
+            }
+            return reply;
+          },
+          ask: async prompt => { if (!rl) return null; try { return await rl.question(prompt); } catch { return null; } },
+          print: line => console.log(terminalText(line)),
+        }).finally(() => rl?.close());
+        if (usage) fail(usage);
+      } finally { hub.close(); }
+      return;
+    }
+    const usage = "usage: ahub settings [list] [--json] | get <key> [--json] | set <key> <value|inherit> [--yes] [--preview] | undo | reload | edit <file> ... | backups";
     const flags = args.filter((arg) => arg.startsWith("--")), [sub = "list", key, text, ...extra] = args.filter((arg) => !arg.startsWith("--"));
     const allowed: Record<string, string[]> = { list: ["--json"], get: ["--json"], set: ["--yes", "--preview", "--now"], undo: [], reload: [] };
     if (!Object.hasOwn(allowed, sub) || flags.some((flag) => !allowed[sub]!.includes(flag)) || extra.length) fail(usage);

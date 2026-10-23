@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Structural configuration from the console and the dashboard (#689): instances (`kind`, `roles`, `start_mode`, `review_mode`, `readOnly`, `worktree`, `permission_mode`), `review`, `snapshots.keep`, `approvals.timeout_s`, `context.gate` and `sdlc.toml` `mode` and `required_checks` are edited with `ahub settings edit`, the console Settings key `c` and a dashboard Structure group in a settings session. The hub validates with its own loaders and shows the loader's reason at the field, shows a diff, checks the file revision twice, keeps the newest five backups (`ahub settings backups`), writes atomically, records a `config_edit` event with hashes only and lists a changed instance or `sdlc.toml` as restart pending (console `R` prefills `restart`). Executable and secret-locating keys (`kimi_cmd`, `omniroute`, `terminal`, an instance's `jcode_home` and `model`, and the rest of `NEVER_EDITABLE`) stay console only and need their name typed; the dashboard shows them as text with the command, and the hub refuses a forged request for one. A fresh `codex-review` reviewer missing `start_mode` shows the loader's reason and writes nothing.
+
 ## 0.14.0
 
 - Fix #724: `ahub board` at a terminal width prints one line per task: TITLE cut with `...`, an AFTER column for dependencies, a compact STAGE (meter, stage and a next-step code such as `intent: issue?`) and a legend line. `--full` and piped output keep the wrapped layout with the whole SDLC advice; `--json` is unchanged.

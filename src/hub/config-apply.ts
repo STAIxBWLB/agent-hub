@@ -5,6 +5,7 @@ import { externalMetadataDefinitions, type ExternalAdapterMetadata } from "../ad
 import { reviewerPoolConfig } from "./reviewer-pool-config.ts";
 import type { HubConfig } from "./daemon.ts";
 import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked } from "./config-trust.ts";
+import { structuralLeaf } from "./config-tier.ts";
 import { createProjectAdapterCatalog, type ProjectAdapterCatalog, ADAPTERS, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS, SUPPORTED_PEERS, PLANNER_PEERS, START_MODE_PEERS } from "../adapters/registry.ts";
 import { CLASSES } from "./board.ts";
 import { permissionDefaults } from "./permission-mode.ts";
@@ -44,6 +45,8 @@ export interface ConfigAuthorizationInput {
   acceptedFallback?: boolean;
   /** The prospective settled planner/conductor holder sets change, even if the raw role list shrinks. */
   settledHolderChange?: boolean;
+  /** #689: the daemon sets this only for a structural edit it validated and wrote itself; `structuralLeaf` still decides the key. */
+  structural?: boolean;
   guard?: ReloadGuard;
 }
 export interface ConfigAuthorizationDecision { key: string; allowed: boolean; guarded: boolean; reason: string }
@@ -90,6 +93,8 @@ export function authorizeConfigLeaf(input: ConfigAuthorizationInput): ConfigAuth
   // Every other policy change is conservative: person intent never turns tracked or unknown code into host authority.
   if (input.tracked !== false) return result(false, true, input.tracked ? "guarded source is tracked; retain the running value" : "guarded source trust is unknown; retain the running value");
   if (input.authority === "ordinary") return result(false, true, "guarded change needs a selected setting or a confirmed terminal reload");
+  // #689: a structural key (never an executable or secret one) written by the daemon's own validated edit, from a settings session.
+  if (input.authority === "settings" && !guard && input.structural === true && input.confirmed === true && input.source === "config" && input.sourceFile === "config.local.json" && structuralLeaf(key)) return result(true, true, "confirmed structural edit");
   if (input.authority === "settings" && !guard) return result(false, true, "nonregistered policy requires a confirmed terminal reload");
   if (input.confirmed !== true) return result(false, true, "guarded change needs explicit confirmation for this key");
   return result(true, true, guard ? "confirmed registered setting" : "confirmed terminal reload");

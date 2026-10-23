@@ -1891,6 +1891,38 @@ Pi relay model aliases (`pi.dgx_coding`, `pi.dgx_fast`) and `routing.pi` retain 
   hub answers the request as unknown and the CLI advises upgrading. The unified
   dashboard (`ahub ui --all`) acts as an ordinary session.
 
+### Structural configuration from the console and the dashboard (issue #689)
+
+Instances, the review and approval blocks and the lifecycle can be edited without an editor. The hub reads the candidate with the loaders it starts with (`readInstanceConfig` and `validateInstances`, `loadConfig` with its effective-config bounds, `checkJcodeInstanceHomes`, `sdlcConfig`), shows a diff and writes only after a person confirms. Three tiers:
+
+1. **Registry settings** (everything above) are unchanged.
+2. **Structural keys**, editable in the console and in a dashboard settings session:
+   - `instances.<id>` with `kind`, `roles`, `start_mode`, `review_mode`, `readOnly`, `worktree` and `permission_mode`, in `config.local.json`;
+   - `review.adaptive`, `review.min_reviews`, `review.pool`, `review.rerotate`, `snapshots.keep`, `approvals.timeout_s` and `context.gate`, in `config.local.json`;
+   - `mode` and `required_checks` in `.agenthub/sdlc.toml`. Only those two lines change: comments and every other table stay as written, and a layout the editor cannot change faithfully (a key repeated, or one inside a multi-line string) is refused with its own reason.
+
+   `roster.*`, `tasks.wip_limits.*`, `permission_modes`, `peers` and the rest of the registry keep their own `ahub settings set` path.
+3. **Executable and secret-locating keys** are console only: the rest of `NEVER_EDITABLE` (`kimi_cmd`, `jcode_cmd`, `codex_bin`, `pi.cmd`, `checks`, `mlx`, `omniroute`, `terminal`, `adapters`, `adapter_modules` and the like) and the Jcode instance fields `jcode_home`, `provider`, `model` and `provider_profile`. The console shows "this runs code with the daemon's rights, or chooses where secrets are read from" and writes only when the key's exact name is typed, one key at a time; `--yes` never confirms one. The dashboard lists each of them with the console command that changes it and nothing else: no value, no path, no input. A forged dashboard request for one is refused by the hub.
+
+In the console (`ahub console`, Settings tab `6`): `c` asks what to edit (`1` an instance, `2` the lifecycle, `3` another key), asks each field, shows the hub's diff or its loader reason, asks for a reason, then `y`. Esc cancels at any step, and pasted text never confirms. `R` appears while a restart is pending and prefills `restart`; the command still asks its own `y`. In the dashboard, open `ahub ui --settings`: the Structure group has the same forms; outside a settings session it is read only.
+
+```bash
+ahub settings edit config.local.json set instances.codex-review '{"kind":"codex","roles":["reviewer"],"start_mode":"headless","review_mode":"fresh"}' --reason "add the fresh reviewer"
+ahub settings edit sdlc.toml set mode '"enforce"' --preview
+ahub settings edit config.local.json remove review.pool --yes
+ahub settings backups              # the newest backups of each file
+```
+
+Rules:
+- A missing `start_mode` on the fresh `codex-review` reviewer shows the loader's reason (`fresh requires reviewer-only roles, headless mode ...`), names the field and writes nothing.
+- The edit carries the revision (a sha256, or `absent`) of the file it was read from. The hub checks it when it plans the edit and again immediately before it writes, so a file changed on disk since is refused with a hint to reload and review again.
+- The previous file is kept in `<state dir>/config-backups/` (the newest five of each file; `ahub settings backups` lists them) and the new one replaces it atomically. A `config.local.json` that git tracks is never written. Unknown fields and unknown keys are refused by name, never dropped.
+- A whole instance that holds a native home, account or model (`jcode_home`, `provider`, `model`, `provider_profile`) is tier 3 to remove or replace, so a dashboard can neither see nor delete those values; an existing instance changes leaf by leaf (`instances.<id>.<field>`), and `clear` removes one field. A preview or write shows a tier 3 value only as `(set)`, and a write changes exactly one tier 3 key, counting the keys the file adds (removing two Jcode instances is two writes, each confirmed by its own typed name). The audit record gives a tier 3 key no value hash at all, because a model or provider name is easy to recover from an unsalted hash; the file revisions bind the change instead. An instance already in `config.local.json` is changed leaf by leaf even before a restart has started it. If `.agenthub` or `config.local.json` is a symlink, the Settings view reports its revision as `unavailable` and no edit is planned. An edit of `sdlc.toml` keeps the file's own line endings.
+- Every write records a `config_edit` event: the file, each key path with a short hash of its value before and after (never a value), the file revisions before and after, the tier, the source (`dashboard` or `terminal`) and `by: person`. The notice and `hub.log` name key paths only.
+- A changed instance declaration is restart-bound: it is listed as `pending restart` (`instances`) and takes effect at the next hub start. A changed `sdlc.toml` is read once at start and is listed as `sdlc.mode` or `sdlc.required_checks` until the running hub holds the same value. `review`, `snapshots`, `approvals` and `context.gate` publish through the one reload path, one key at a time.
+- Person only: an agent shell or a hub tool is refused (`ahub settings` is a console command in the identity gate, and the three control requests answer only the console role). Recovery or shutdown holds every edit.
+- The hub must run this release: an older hub answers `unknown message` and the command says to upgrade and restart it.
+
 ## Start modes: TUI by default, headless as opt-in
 
 A peer that has a TUI the hub attaches to starts in it by default (issue #269).

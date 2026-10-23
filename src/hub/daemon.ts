@@ -58,6 +58,8 @@ import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked, stripUntrust
 import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateEffectiveConfig, validatePetConfig } from "./config-apply.ts";
 import { resolveSettledRoles } from "./settled-roles.ts";
 import { CONFIG_SOURCE_FILES, configFingerprint, configSourceTexts, parseConfigSources, type ConfigSources } from "./config-reload.ts";
+import { createConfigEditor } from "./config-edit-host.ts";
+import { readEditable } from "./config-edit.ts";
 import { eventLog, readEvents, tokenDeltas, type RoleIdentity } from "./events.ts";
 import { ExecutionBudget } from "./execution-budget.ts";
 import { claudeReportedTokens, readClaudeTranscriptCompletion, readClaudeTranscriptUsage, waitForClaudeCompletion } from "./usage.ts";
@@ -679,6 +681,13 @@ export async function startDaemon(opts: DaemonOptions) {
   let configRevision = 0;
   let reloadConfirmation: { token: string; fingerprint: string; revision: number; keys: string[] } | undefined;
   let pendingRestart: { key: string; reason: string }[] = [];
+  // #689: structural config edits. Assigned with the settings section; status and the settings view read it before then, so it is held here.
+  let configEditor: ReturnType<typeof createConfigEditor> | undefined;
+  const structuralScopes = new Set<string>();
+  let sdlcFileReads = 0;
+  let sdlcFileCache: { stamp: string; value: { mode: string; requiredChecks: readonly string[] } | string } | undefined;
+  /** What waits for a restart: the reload's own keys, then a changed sdlc.toml (read once at start). */
+  const allPendingRestart = (): { key: string; reason: string }[] => [...pendingRestart, ...(configEditor?.pendingRestart() ?? [])];
   let retainedConfig: { key: string; reason: string }[] = [];
   function retainedConfigAfterReload(sources: ConfigSources, fileConfig: HubConfig, rejected: readonly { key: string; reason: string }[], scope?: string): { key: string; reason: string }[] {
     const rows = new Map<string, string>();
@@ -2885,7 +2894,7 @@ export async function startDaemon(opts: DaemonOptions) {
     instanceId,
     version: VERSION,
     pluginBundle: SERVER_JS,
-    pendingRestart,
+    pendingRestart: allPendingRestart(),
     retainedConfig,
     ...(() => { const warning = mainCheckoutWarning(opts.cwd, tasks.publicMetadataText, checkoutBranch); return warning ? { mainCheckout: warning } : {}; })(),
     startModes: Object.fromEntries([...START_MODE_PEERS, ...configuredIds].map(peer => [peer, startModeOf(config.peers, peer, declarations, adapterCatalog)])),
@@ -4545,7 +4554,7 @@ export async function startDaemon(opts: DaemonOptions) {
       instanceId,
       attention: attentionStatus.attentionInput,
       pet,
-      status: { peers: peerView, pendingRestart, retainedConfig, taskWip: attentionStatus.taskWip, roleInfo: attentionStatus.roleInfo },
+      status: { peers: peerView, pendingRestart: allPendingRestart(), retainedConfig, taskWip: attentionStatus.taskWip, roleInfo: attentionStatus.roleInfo },
       boardCapabilities: { backlog: true },
       planningCapabilities: { enabled: true, wipPull: true, split: true },
       releases: tasks.releaseList(USER),
@@ -4674,7 +4683,7 @@ export async function startDaemon(opts: DaemonOptions) {
         settledHolderChange = JSON.stringify(oldHolders) !== JSON.stringify(newHolders);
         if (settledHolderChange) effect = `planner ${JSON.stringify(oldHolders.planners)} -> ${JSON.stringify(newHolders.planners)}; conductor ${JSON.stringify(oldHolders.conductors)} -> ${JSON.stringify(newHolders.conductors)}`;
       }
-      const input = { key, before, acceptedFallback, settledHolderChange, after: machine && rawChanged ? rawAfter : after, source: route ? "routing" as const : "config" as const, sourceFile: origin?.name, tracked, authority, guard, confirmed: !!scope || confirmed.includes(key) };
+      const input = { key, before, acceptedFallback, settledHolderChange, after: machine && rawChanged ? rawAfter : after, source: route ? "routing" as const : "config" as const, sourceFile: origin?.name, tracked, authority, guard, confirmed: !!scope || confirmed.includes(key), structural: !!scope && structuralScopes.has(scope) };
       const decision = authorizeConfigLeaf(input);
       if (!decision.allowed) {
         const next = `${decision.reason}; review and run ahub settings reload, or revert this key${machine && tracked !== false ? "; move machine-local declarations to an untracked local file first" : ""}`;
@@ -4854,7 +4863,7 @@ export async function startDaemon(opts: DaemonOptions) {
   /** For the dashboard: the rows, and until when this session may raise. A project whose files do not read still gets its dashboard. */
   // ponytail: reads the two config files and the undo record and parses the routing files on each dashboard poll; cache by mtime if a page ever feels it.
   function settingsSnapshot(session?: DashboardSession): { settings?: Record<string, unknown> } {
-    try { return { settings: { ...settingsView(), ...(session?.settings ? { sessionUntil: session.settingsUntil } : {}) } }; }
+    try { return { settings: { ...settingsView(), ...(session?.settings ? { sessionUntil: session.settingsUntil } : {}), ...(configEditor ? { configEdit: configEditor.view() } : {}) } }; }
     catch { return {}; }
   }
   function settingsView(): { rows: SettingRow[]; undo?: string; pendingRestart: { key: string; reason: string }[]; retainedConfig: { key: string; reason: string }[] } {
@@ -4876,7 +4885,7 @@ export async function startDaemon(opts: DaemonOptions) {
     });
     const undo = pendingUndo(opts.stateDir);
     const planner = `In force: ${plannerPeers().join(", ") || "nobody"} (${plannerSource}). Setting it makes that peer the only planner; agents cannot change it.`;
-    return { pendingRestart, retainedConfig, rows: rows.map(row => row.key === "planner" ? { ...row, hint: planner } : row), ...(undo ? { undo } : {}) };
+    return { pendingRestart: allPendingRestart(), retainedConfig, rows: rows.map(row => row.key === "planner" ? { ...row, hint: planner } : row), ...(undo ? { undo } : {}) };
   }
   /** The same announcement whatever surface made the change: events.jsonl, hub.log and every open console. */
   const recordSetting = (key: string, from: SettingValue, to: SettingValue, source: "dashboard" | "terminal", undo = false, reason?: string) => {
@@ -5114,6 +5123,46 @@ export async function startDaemon(opts: DaemonOptions) {
     return { ...preview, ...identity, lines: [`Undo ${def.key}: put back ${settingText(value)}`, ...(Array.isArray(preview.lines) ? preview.lines : []), "The saved previous machine-local file is revalidated before writing."] };
   }
 
+  // #689: structural config edits (src/hub/config-edit-host.ts). The editor decides authority, the typed confirmation and the audit event;
+  // the daemon supplies the loaders' verdict, the hold and the one scoped reload path. A structural key is allowed through reload authority
+  // only while its own scope is registered here, for the duration of that one reload.
+  configEditor = createConfigEditor({
+    cwd: opts.cwd, stateDir: opts.stateDir,
+    check: (file, text) => {
+      if (file !== "config.local.json") return;
+      const texts = configSourceTexts(opts.cwd);
+      texts["config.local.json"] = text;
+      const sources = parseConfigSources(texts, undefined, opts.cwd, externalAdapters);
+      const candidate = loadConfig(opts.cwd, sources.layers, sources.routing.retired ?? [], externalDefinitions);
+      // Bounds and kinds are the raw-config check parseConfigSources just ran; the effective merge below is loadConfig itself.
+      checkJcodeInstanceHomes(sources.identity.instances, candidate.jcode_home);
+    },
+    held: () => stopping || recoveryActive() ? "recovery or shutdown" : undefined,
+    reload: async (authority, key) => {
+      structuralScopes.add(key);
+      try { return await reloadConfig(authority, key); } finally { structuralScopes.delete(key); }
+    },
+    event: entry => event(entry),
+    notify: text => notify(text),
+    changed: () => writeStatus(),
+    pending: () => pendingRestart,
+    effective: path => valueAt(config, path),
+    runningSdlc: () => ({ mode: lifecycleConfig.mode, requiredChecks: lifecycleConfig.requiredChecks }),
+    // Status and the settings view poll this: read sdlc.toml again only when its stamp changed. ponytail: the stamp is mtime, ctime, inode and size, so an in-place rewrite of the same size inside one filesystem timestamp tick is missed until the next change; it feeds display only (a status line), never an authority. A watcher is the upgrade if a poll ever shows.
+    fileSdlc: () => {
+      const stamp = (() => { try { const info = statSync(join(opts.cwd, ".agenthub", "sdlc.toml")); return `${info.mtimeMs}:${info.ctimeMs}:${info.ino}:${info.size}`; } catch { return "-"; } })();
+      if (sdlcFileCache?.stamp !== stamp) {
+        let value: { mode: string; requiredChecks: readonly string[] } | string;
+        sdlcFileReads++;
+        try { const loaded = loadSdlc(opts.cwd, VERSION); value = { mode: loaded.mode, requiredChecks: loaded.requiredChecks }; } catch (error) { value = sanitize((error as Error).message).slice(0, 300); }
+        sdlcFileCache = { stamp, value };
+      }
+      return sdlcFileCache.value;
+    },
+    declared: () => Object.fromEntries(Object.entries(declarations).map(([id, value]) => [id, { ...value }])),
+    localConfig: () => { try { const text = readEditable(opts.cwd, "config.local.json"); const doc = text === null ? {} : JSON.parse(text); return doc && typeof doc === "object" && !Array.isArray(doc) ? doc : {}; } catch { return {}; } },
+  });
+
   async function uiAction(a: Record<string, unknown>, session?: DashboardSession): Promise<unknown> {
     const bad = { ok: false, error: "invalid or unavailable dashboard action" };
     // #269: a session opened by `ahub ui --settings` may raise authority while its window lasts; any other may not.
@@ -5199,6 +5248,11 @@ export async function startDaemon(opts: DaemonOptions) {
         return a.undo === true ? settingsUndoPreview() : settingsPreview(a.key, a.value);
       case "setting_reload":
         return reloadConfig(authority);
+      case "config_edit_preview":
+        return configEditor!.preview(a.edit, authority);
+      case "config_edit_apply":
+        // A dashboard session is never given the typed confirmation of an executable key: that is the console's, and refused here by the editor.
+        return configEditor!.apply(a.edit, authority, undefined, a.reason);
       default:
         return bad;
     }
@@ -6069,7 +6123,7 @@ export async function startDaemon(opts: DaemonOptions) {
         catch (error) { return void reply({ ok: false, error: (error as Error).message }); }
       case "settings_get":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
-        return void reply({ ok: true, ...settingsView(), roster: rosterView() });
+        return void reply({ ok: true, ...settingsView(), roster: rosterView(), configEdit: (() => { const view = configEditor!.view(); return { revisions: view.revisions, known: view.known }; })() });
       case "settings_reload":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person command" });
         return void reloadConfig("terminal", undefined, msg.confirm).then(reply, () => reply({ ok: false, error: "configuration reload could not be confirmed; inspect hub.log" }));
@@ -6083,6 +6137,16 @@ export async function startDaemon(opts: DaemonOptions) {
       case "settings_undo":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
         return void settingsUndo("terminal", msg.confirm, msg.now, msg.reason, msg.key, msg.undoDigest).then(reply, () => reply({ ok: false, error: "the setting could not be undone; inspect hub.log" }));
+      case "config_edit_get":
+        if (c.role !== "console") return void reply({ ok: false, error: "config edits are a person's: run ahub settings edit in a terminal" });
+        return void reply({ ok: true, ...configEditor!.view() });
+      case "config_edit_preview":
+        if (c.role !== "console") return void reply({ ok: false, error: "config edits are a person's: run ahub settings edit in a terminal" });
+        return void reply(configEditor!.preview(msg.edit, "terminal"));
+      case "config_edit_apply":
+        if (c.role !== "console") return void reply({ ok: false, error: "config edits are a person's: run ahub settings edit in a terminal" });
+        void configEditor!.apply(msg.edit, "terminal", msg.confirm, msg.reason).then(reply, () => reply({ ok: false, error: "the config edit could not be completed; inspect hub.log" }));
+        return;
       case "kimi_launch_end": {
         if (c.role !== "console") return void reply({ ok: false, error: "Kimi launch cleanup is console only" });
         if (typeof msg.admissionId === "string" && msg.admissionId === kimiAdmissionId) clearKimiAdmission();
@@ -6393,7 +6457,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // After a crash that recorded Pi, crash recovery starts it (#66): its recorded session first, a fresh one if that fails.
   const piRecovered = !archivedPiContinuity && !!crashed?.peers.some((p) => definitionOf(p.peer)?.session.restoreOnStart);
   if (piAutoStart() && !recoveryActive() && !piRecovered) autoStartPi();
-  return { bus, token, port: server.port as number, bandEvaluations: () => bandEvaluations, stop, stopped: new Promise<void>((r) => (onStop = r)) };
+  return { bus, token, port: server.port as number, bandEvaluations: () => bandEvaluations, sdlcFileReads: () => sdlcFileReads, stop, stopped: new Promise<void>((r) => (onStop = r)) };
   } finally {
     if (!ready) for (const cleanup of startupCleanup.reverse()) { try { await cleanup(); } catch { /* preserve startup error */ } }
   }
