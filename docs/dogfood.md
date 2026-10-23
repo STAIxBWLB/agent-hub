@@ -62,7 +62,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Quota budgets and pauses | on | pauses, resets, time paused (#683) |
 | Token usage per peer and task | `ahub report` and, from the roll-up in `hub.db`, `ahub usage [--by peer\|task\|issue\|pr\|release\|day\|model]`, `usage limits` and `usage total` (#683 U2); console tab `7` (U3) and dashboard Usage view (U4) shipped | tokens per merged PR |
 | Context gate | off: `context.gate = 0` | context-pressure events |
-| Always-ask action classes (#636) | on for Claude (PreToolUse hook) and hub-owned ACP peers in ask mode, after the release (#312); Codex, Pi and the local worker pending (#313) | `permission` events for `Action approval` requests, the `actionPolicyInfo` rows of `ahub status`, budget refusals; a `never-ask` Kimi is listed as not enforceable, not claimed |
+| Always-ask action classes (#636) | on after release for managed Claude forms, hub-owned ACP in ask mode, local/Pi tools and received Codex command approvals; Codex native bypass stays not enforceable | classed permission requests, full local/Pi command visibility and denied effects for incomplete native views; actionPolicyInfo current-child enforceability, remaining class budgets and weakening attention; Codex native no-request and Kimi non-ask ceilings are explicit |
 | Permission modes | on, person-chosen | approval prompts and their wait times |
 | Pi and the local worker on DGX | off: DGX unreachable recently; Pi is off the roster | turns served on-prem, relay errors |
 | PII routing | on | PII tasks and where they ran |

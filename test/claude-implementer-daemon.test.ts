@@ -25,6 +25,7 @@ async function fixture(taskBound = false) {
     const console_ = await ControlClient.connect(stateDir, { role: "console", projectRoot: root }); clients.push(console_);
     const instanceId = (await console_.request({ t: "status" })).status.instanceId;
     const started = await console_.request({ t: "start", peer }); expect(started).toMatchObject({ ok: true, executionCwd: tree });
+    expect((await console_.request({ t: "status" })).status.actionPolicyInfo[peer].enforceable).toBe(false); // idle has no current native child (#402)
     expect(await console_.request({ t: "permission", peer, mode: "ask-when-needed" })).toMatchObject({ ok: true });
     let taskId: number | undefined;
     if (taskBound) {
@@ -45,6 +46,7 @@ async function fixture(taskBound = false) {
 test("#525 headless current-child facts are isolated; missing or stale launch evidence cannot attach or grant", async () => {
   const f = await fixture();
   try {
+    expect((await f.console_.request({ t: "status" })).status.actionPolicyInfo[f.peer]).toMatchObject({ enforceable: true, note: "always-ask active" });
     await expect(f.connect("forged-child")).rejects.toThrow("current Claude child");
     const facts = () => f.tools.request({ t: "facts", phase: "pre", nativeLaunchId: f.call.launchId, nativeInstanceId: f.instanceId, sessionId: f.session, tool: "Write", input: { file_path: join(f.tree, "source.ts"), content: "fixture" } });
     expect(await facts()).toMatchObject({ ok: true, projectRoot: f.tree, permission: "ask-when-needed" });

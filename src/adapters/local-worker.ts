@@ -293,7 +293,7 @@ export class LocalPeer extends BasePeer {
       cwd: this.opts.cwd,
       deny: this.opts.tools.deny,
       readOnly: this.opts.tools.readOnly,
-      permit: async (title, tool, _signal, canonicalTarget, _observe, originalPath) => {
+      permit: async (title, tool, _signal, canonicalTarget, _observe, originalPath, input) => {
         if (turnSignal.aborted) return "aborted";
         const generation = this.turn;
         let observed = false;
@@ -313,7 +313,7 @@ export class LocalPeer extends BasePeer {
           const finish = (decision: ToolApproval) => { turnSignal.removeEventListener("abort", onAbort); resolve(decision); };
           const onAbort = () => finish("aborted");
           turnSignal.addEventListener("abort", onAbort, { once: true });
-          this.opts.tools.permit(title, tool, turnSignal, canonicalTarget, observe, originalPath).then(finish, (error) => { turnSignal.removeEventListener("abort", onAbort); reject(error); });
+          this.opts.tools.permit(title, tool, turnSignal, canonicalTarget, observe, originalPath, input).then(finish, (error) => { turnSignal.removeEventListener("abort", onAbort); reject(error); });
         });
         if (generation !== this.turn || (turnSignal.aborted && picked !== "expired")) return "aborted";
         // Legacy permit callbacks can represent a person's denial without provenance. A true

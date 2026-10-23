@@ -6,6 +6,7 @@ import { BasePeer } from "../hub/peers.ts";
 import { codexContext, type ContextReading } from "../hub/context-window.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import type { ContextReader } from "./registry-types.ts";
+import { ACTION_BUDGET_OPTION, type ActionGateVerdict, type PermissionRequest } from "./acp.ts";
 
 const UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery";
 
@@ -15,6 +16,9 @@ export interface CodexOptions {
   /** Port the TUI attaches to: `codex --enable tui_app_server --remote ws://127.0.0.1:<proxyPort>`. */
   proxyPort: number;
   permissionMode?: PermissionMode;
+  /** Host-only always-ask gate, shared with ACP; an absent verdict preserves native handling. */
+  actionGate?: (call: { names: readonly string[]; kind?: string; input: unknown }, session: string) => ActionGateVerdict | undefined;
+  onPermission?: (request: PermissionRequest, signal?: AbortSignal) => Promise<string | undefined>;
   /** Port for the spawned `codex app-server`. Ignored when `upstreamUrl` is set. */
   appPort: number;
   /** Attach to an already running app-server instead of spawning one (tests). */
@@ -65,6 +69,7 @@ interface Link {
   tui: ServerWebSocket<Link>;
   up: WebSocket;
   backlog: string[]; // TUI frames that arrived before the upstream socket opened
+  approvalIds: Set<string | number>; // intercepted native ids stay tombstoned for this socket lifetime
   tracked: Map<string | number, string>; // request id -> method, for thread/start and thread/resume
 }
 
@@ -78,6 +83,8 @@ const TRACKED = new Set(["thread/start", "thread/resume"]);
  */
 export class CodexPeer extends BasePeer {
   private permissionMode: PermissionMode;
+  private readonly actionWaits = new Map<AbortController, { link: Link; turn: string | undefined }>();
+  get actionGated(): boolean { return this.opts.actionGate !== undefined; }
   private readonly nativeApprovalPolicies = new Map<string, unknown>();
   private readonly overriddenApprovals = new Set<string>();
   private readonly restoringApprovals = new Map<string | number, string>();
@@ -200,6 +207,7 @@ export class CodexPeer extends BasePeer {
   }
 
   async stop(): Promise<void> {
+    this.abortActionWaits();
     this.server?.stop(true);
     this.claimedTui?.tui.close(1001, "hub shutting down");
     const proc = this.proc;
@@ -353,6 +361,7 @@ export class CodexPeer extends BasePeer {
 
   /** A silent turn is interrupted before the peer is declared idle, or the next turn/start would land inside it. */
   protected override onWatchdog(): void {
+    this.abortActionWaits();
     this.deliveryEpoch++;
     const known = new Set([...this.activeTurns, ...this.turnDeliveries.keys()].filter(id => !id.startsWith("unknown:")));
     const pendingStarts = [...this.pending.values()].filter(pending => pending.kind === "deliver");
@@ -379,6 +388,7 @@ export class CodexPeer extends BasePeer {
   }
 
   private retireTurn(turnId: string): void {
+    this.abortActionWaits(undefined, turnId);
     this.retiredTurns.add(turnId);
     if (this.link?.up.readyState === WebSocket.OPEN) this.link.up.send(JSON.stringify({ method: "turn/interrupt", id: this.nextId--, params: { threadId: this.threadId, turnId } }));
   }
@@ -445,7 +455,7 @@ export class CodexPeer extends BasePeer {
 
   private attach(tui: ServerWebSocket<Link>, upstream: string): void {
     const up = new WebSocket(upstream);
-    const link: Link = { tui, up, backlog: [], tracked: new Map(), ...(tui.data.launchId ? { launchId: tui.data.launchId } : {}) };
+    const link: Link = { tui, up, backlog: [], tracked: new Map(), approvalIds: new Set(), ...(tui.data.launchId ? { launchId: tui.data.launchId } : {}) };
     this.claimedTui = link;
     tui.data = link;
     up.onopen = () => {
@@ -456,6 +466,7 @@ export class CodexPeer extends BasePeer {
   }
 
   private detach(link: Link): void {
+    this.abortActionWaits(link);
     link.up.close();
     if (this.claimedTui === link) this.claimedTui = undefined;
     if (this.link !== link) return;
@@ -539,6 +550,8 @@ export class CodexPeer extends BasePeer {
 
   private fromTui(link: Link, raw: string): void {
     const msg = parse(raw);
+    if (msg?.id !== undefined && !msg.method && link.approvalIds.has(msg.id)) return;
+    if (msg?.method === "turn/interrupt" && link === this.link) this.abortActionWaits(link, typeof msg.params?.turnId === "string" ? msg.params.turnId : undefined);
     if (msg?.method === "turn/start" && msg.params && link === this.link) {
       const thread = typeof msg.params.threadId === "string" ? msg.params.threadId : this.threadId;
       // A resumed TUI can echo the sticky hub overlay. The restoring turn must use the kept baseline.
@@ -561,6 +574,7 @@ export class CodexPeer extends BasePeer {
     if (this.state === "busy" && !(typeof nativeId === "string" && this.retiredTurns.has(nativeId))) this.touch();
     if (!msg) return void link.tui.send(raw);
 
+    if (this.interceptActionApproval(link, msg)) return;
     if (msg.id !== undefined && !msg.method) this.settlePermissionRestore(msg.id, !!msg.error);
     if (typeof msg.id === "number" && msg.id < 0 && !msg.method) {
       const p = this.pending.get(msg.id);
@@ -583,8 +597,61 @@ export class CodexPeer extends BasePeer {
     link.tui.send(raw);
   }
 
+  private abortActionWaits(link?: Link, turn?: string): void {
+    for (const [controller, wait] of this.actionWaits) if ((!link || wait.link === link) && (!turn || wait.turn === turn)) controller.abort();
+  }
+
+  /** Only the two native command schemas verified on 0.163.0. Missing payloads keep their native policy. */
+  private interceptActionApproval(link: Link, msg: any): boolean {
+    if (!this.opts.actionGate || !(typeof msg.id === "string" || Number.isSafeInteger(msg.id))) return false;
+    const legacy = msg.method === "execCommandApproval", params = msg.params;
+    if (!legacy && msg.method !== "item/commandExecution/requestApproval") return false;
+    if (!params || typeof params !== "object") return false;
+    if (link.approvalIds.has(msg.id)) return true; // one intercepted callback has exactly one host answer
+    if (legacy ? !Array.isArray(params.command) || !params.command.length || !params.command.every((word: unknown) => typeof word === "string")
+      : typeof params.command !== "string" || !params.command.length || params.kind != null && params.kind !== "command") return false;
+    const thread = legacy ? params.conversationId : params.threadId;
+    let gate: ActionGateVerdict | undefined;
+    try { gate = this.opts.actionGate({ names: ["shell"], kind: "execute", input: { command: params.command, cwd: params.cwd } }, typeof thread === "string" ? thread : ""); }
+    catch { gate = { title: "Action approval: the always-ask check failed; command withheld", denyOnly: true }; }
+    if (!gate) return false;
+    const verdict = gate;
+    // ponytail: retain at most 1024 intercepted ids per socket, never evict a tombstone and accept a late native answer.
+    // Reattach is the upgrade path after this finite lifetime cap; closing both sides fails closed.
+    if (link.approvalIds.size >= 1024) { this.abortActionWaits(link); link.up.close(); link.tui.close(1008, "Codex action approval id capacity reached; reattach"); return true; }
+    link.approvalIds.add(msg.id);
+    const named = [...this.activeTurns].filter(turn => !turn.startsWith("unknown:") && !this.retiredTurns.has(turn));
+    const turn = legacy ? named.length === 1 ? named[0] : undefined : typeof params.turnId === "string" ? params.turnId : undefined;
+    const epoch = this.contextEpoch, controller = new AbortController();
+    const live = () => !controller.signal.aborted && link === this.link && epoch === this.contextEpoch && thread === this.threadId &&
+      typeof turn === "string" && this.activeTurns.has(turn) && !this.retiredTurns.has(turn) && !this.unidentifiedCancellation && this.state === "busy" &&
+      link.tui.readyState === WebSocket.OPEN && link.up.readyState === WebSocket.OPEN;
+    const answer = (allow: boolean) => { if (link.up.readyState === WebSocket.OPEN) link.up.send(JSON.stringify({ id: msg.id, result: { decision: legacy ? allow ? "approved" : "abort" : allow ? "accept" : "decline" } })); };
+    if (!live()) { answer(false); return true; } // no invented native turn binding, even when the command is classed
+    this.actionWaits.set(controller, { link, turn });
+    const options: PermissionRequest["options"] = [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }];
+    if (verdict.denyOnly) options.splice(0, 1); // keep only denial, even if a broken callback later returns allow
+    if (!verdict.denyOnly && verdict.budget) options.push({ optionId: ACTION_BUDGET_OPTION, name: `Allow ${verdict.budget.label} for this session`, kind: "allow_once" });
+    const alive = setInterval(() => { if (live()) this.touch(); }, Math.max(10, Math.min(30_000, Math.floor(this.watchdogMs / 3))));
+    void (async () => {
+      let picked: string | undefined;
+      try {
+        const cancelled = new Promise<undefined>(resolve => controller.signal.addEventListener("abort", () => resolve(undefined), { once: true }));
+        picked = await Promise.race([this.opts.onPermission?.({ peer: this.id, title: verdict.title, tool: "shell", kind: "execute", classed: true, options }, controller.signal), cancelled]);
+      } catch { /* a broken or missing approval handler denies */ }
+      finally { clearInterval(alive); this.actionWaits.delete(controller); }
+      let allow = !verdict.denyOnly && live() && picked === "allow";
+      if (!verdict.denyOnly && live() && verdict.budget && picked === ACTION_BUDGET_OPTION) {
+        try { allow = verdict.budget.approve() && live(); } catch { allow = false; }
+      }
+      answer(allow);
+    })();
+    return true;
+  }
+
   private adopt(link: Link, threadId: unknown, fresh = false): void {
     if (typeof threadId !== "string" || !threadId || link !== this.claimedTui || link.tui.readyState !== WebSocket.OPEN || link.up.readyState !== WebSocket.OPEN) return;
+    this.abortActionWaits();
     this.abandonSteers("thread changed");
     for (const [id, pending] of this.pending) if (pending.kind === "deliver") {
       pending.invalidate?.("Codex native thread changed before acceptance was confirmed");
@@ -699,6 +766,7 @@ export class CodexPeer extends BasePeer {
       if (item.phase !== "commentary" && text.trim()) this.lastAnswer = text.trim();
     } else if (method === "turn/completed") {
       const nativeTurn = params.turn?.id;
+      this.abortActionWaits(link, typeof nativeTurn === "string" ? nativeTurn : undefined);
       // A watchdog or a newer turn has invalidated this completion. Unknown-id legacy starts retain their fallback.
       if (!this.activeTurns.size || typeof nativeTurn === "string" && !this.activeTurns.has(nativeTurn) && ![...this.activeTurns].some(id => id.startsWith("unknown:"))) return;
       this.activeTurns.delete(nativeTurn);
