@@ -22,6 +22,8 @@ import type { MemoryScreen } from "./read-tools.ts";
 import { withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
 import { profileClass, profileData, profileTaskLabel, projectProfile, type ProfileName, type ProfileSelection, type ProjectProfile } from "./profiles.ts";
 import { criteriaView, unmetCriteriaIds, workflowHash } from "./workflow.ts";
+import { approvedDeliverables, latestDeliverables, parseDeliverableClaims, publicDeliverables, type DeliverableRecord, type DeliverableStatus } from "./deliverables.ts";
+import { checkDeliverables, DeliverableRefusal, hashDeliverables, vetDeliverables, type DeliverablePorts } from "./deliverable-files.ts";
 import { isAbsolute, relative } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
@@ -66,6 +68,13 @@ export interface TasksDeps {
   profile?: ProfileName;
   profileData?: ProjectProfile;
   piiPaths?: string[];
+  /** The project's secrets denylist (`local.deny`), for the deliverable file reader (#509a). */
+  deny?: string[];
+  /**
+   * #509a: the root a peer's files live under: its verified execution root (the daemon's `ownerWriteRoot`), which for a declared worktree
+   * instance is not the project checkout. `undefined` means the root is not proven right now. Absent (library use): the project root.
+   */
+  executionRoot?: (peer: PeerId) => string | undefined;
   catalog?: RoleCatalog;
   /** Role ids whose contract was prepared for the current native session. */
   sessionRoles?: (peer: PeerId) => string[];
@@ -183,6 +192,11 @@ const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
 const QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep", "memory reference started"]);
 QUIET_EVENTS.add("ready held"); // #655: the hub's note that a ready task waits for its reserved owner's WIP slot.
 QUIET_EVENTS.add("plan observed"); // Host observation does not move the task or replace completion intent.
+/** The records of the `done (checking)` entry a passed check now completes: what the owner delivered then (#509a). */
+const latestPendingDeliverables = (task: Task): DeliverableRecord[] | undefined => {
+  const checking = task.history.findLastIndex(entry => entry.event === "done (checking)");
+  return checking >= 0 && !task.history.slice(checking + 1).some(entry => entry.event === "done") ? task.history[checking]!.deliverables : undefined;
+};
 
 /**
  * Thrown when an assignment's board write is saved but a publish or notify after it failed (#297): the move is
@@ -634,6 +648,7 @@ export class Tasks {
       ...(h.reviewerFamily ? { reviewerFamily: screenHistoryText(h.reviewerFamily, "reviewer family") } : {}),
       ...(h.reviewerReason ? { reviewerReason: h.reviewerReason } : {}),
       ...(h.unmetCriteria?.length ? { unmetCriteria: h.unmetCriteria } : {}),
+      ...(h.deliverables?.length ? { deliverables: publicDeliverables(h.deliverables, this.nameable) } : {}),
       ...(h.reviewBlocked ? { reviewBlocked: true } : {}),
       ...(h.reviewerFailure ? { reviewerFailure: { peer: screenHistoryText(h.reviewerFailure.peer, "reviewer"), cause: h.reviewerFailure.cause, ...(h.reviewerFailure.head ? { head: screenHistoryText(h.reviewerFailure.head, "review head") } : {}) } } : {}),
       ...(h.planning ? { planning: { revision: h.planning.revision, fields: h.planning.fields, ...(h.planning.split ? { children: h.planning.split.children.map(child => child.id) } : {}) } } : {}),
@@ -2776,7 +2791,23 @@ export class Tasks {
   }
 
   /** Artifact links and claimed local gates stay on the board; no outside text is accepted. */
-  recordLifecycle(by: PeerId, id: unknown, input: unknown): Task {
+  /**
+   * `hub_sdlc_record` (#509a): the receipt may also name `deliverables`. They are split off here, claims vetted and the files hashed by the hub,
+   * and only then is the rest recorded as before. A receipt with deliverables and nothing else records just the deliverables.
+   */
+  async recordSdlc(by: PeerId, id: unknown, input: unknown): Promise<Task> {
+    if (!input || typeof input !== "object" || Array.isArray(input) || !("deliverables" in input)) return this.recordLifecycle(by, id, input);
+    const { deliverables, ...receipt } = input as Record<string, unknown>;
+    const task = this.need(id, false, true);
+    if (by !== USER && by !== task.owner && by !== task.reviewer) throw new PreEffectToolRefusal("only the task owner, reviewer or console user may record lifecycle evidence");
+    const claims = this.deliverableClaims(deliverables, task);
+    const records = await this.hashClaims(claims, task, true);
+    const current = this.need(id, false, true);
+    if (current.history.length !== task.history.length) throw new PreEffectToolRefusal("task changed while its deliverables were hashed; record them again");
+    return this.recordLifecycle(by, id, receipt, records);
+  }
+
+  recordLifecycle(by: PeerId, id: unknown, input: unknown, deliverables?: DeliverableRecord[]): Task {
     const task = this.need(id, false, true);
     if (by !== USER && by !== task.owner && by !== task.reviewer) throw new PreEffectToolRefusal("only the task owner, reviewer or console user may record lifecycle evidence");
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
@@ -2806,7 +2837,7 @@ export class Tasks {
     if (next.reviewedHead !== undefined && (next.reviewedHead !== task.sdlc?.reviewedHead || (suppliedHead && artifactChanged))) this.mine(task, by, "reviewer", true);
     const departure = task.history.findLast(h => h.by === USER && h.planDeparture)?.planDeparture;
     const invalidatesDeparture = !!departure && (artifactChanged || next.localHead !== task.sdlc?.localHead && next.localHead !== undefined && next.localHead !== departure.head || next.reviewedHead !== task.sdlc?.reviewedHead && next.reviewedHead !== undefined && next.reviewedHead !== departure.head);
-    return this.d.board.update(task.id, by, "lifecycle", { sdlc: next }, undefined, { ...this.planObservation({ ...task, sdlc: next }), ...(invalidatesDeparture ? { planDepartureInvalidated: true } : {}) });
+    return this.d.board.update(task.id, by, "lifecycle", { sdlc: next }, undefined, { ...this.planObservation({ ...task, sdlc: next }), ...(invalidatesDeparture ? { planDepartureInvalidated: true } : {}), ...(deliverables ? { deliverables } : {}) });
   }
 
   async deliveryQueue(repo: string) {
@@ -3016,7 +3047,9 @@ export class Tasks {
     const task = this.need(id, false, true), config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     if (config.mode === "off" || by === USER || !input || typeof input !== "object" || !("stage" in input)) return;
     let next: ReturnType<typeof sdlcReceipt>;
-    try { next = sdlcReceipt(input, task.sdlc, config, VERSION); } catch { return; } // recordLifecycle reports an invalid receipt
+    // #509a: `deliverables` ride in the receipt but are not a lifecycle field: recordSdlc splits them off, so the gate reads the same receipt it will record.
+    const { deliverables: _carried, ...lifecycleInput } = input as Record<string, unknown>;
+    try { next = sdlcReceipt(lifecycleInput, task.sdlc, config, VERSION); } catch { return; } // recordLifecycle reports an invalid receipt
     const definition = stageDefinition(config, next.stage);
     if (next.stage === task.sdlc?.stage || !definition || canonicalStage(definition.base) !== "build") return;
     const accepted = next.acceptance;
@@ -3260,6 +3293,59 @@ export class Tasks {
     return this.assignOwner(back, HUB, { event: "reassigned", reason: "declined", clearOnFail: true, ...(capacity === true && task.owner ? { exclude: [task.owner] } : {}), ...(planned ? { planner: true } : {}) });
   }
 
+  /**
+   * #509a: the task's deliverables as they are now against what was delivered and what was approved. `changedSinceReview` is true only for a file
+   * measured to differ from the bytes a reviewer approved (or, before approval, from the bytes delivered); a file the hub cannot read is
+   * `unknown`, never `unchanged`. Ids, hashes and sizes only for a private record. Undefined when the task delivered nothing.
+   */
+  async deliverableStatus(task: Task): Promise<{ state: "none" | "delivered" | "approved"; changedSinceReview: boolean; files: DeliverableStatus[] } | undefined> {
+    const delivered = latestDeliverables(task.history);
+    if (!delivered) return undefined;
+    const approved = task.state === "approved" ? approvedDeliverables(task.history) : undefined;
+    const basis = approved ?? delivered;
+    const checks = await this.checkRecords(basis, task);
+    const shown = publicDeliverables(basis, this.nameable)!;
+    const files = checks.map((check, i): DeliverableStatus => {
+      const { sha256, id, format, version, path, private: hidden } = shown[i]!;
+      return { id, sha256, state: check.state, ...(path ? { path } : {}), format, ...(version ? { version } : {}), ...(hidden ? { private: true as const } : {}) };
+    });
+    return { state: approved ? "approved" : "delivered", changedSinceReview: files.some(file => file.state === "changed"), files };
+  }
+
+  /** Check records against the owner's root; with that root unproven every file is `unknown` (never `unchanged`, never an exception). */
+  private async checkRecords(records: DeliverableRecord[], task: Task) {
+    try { return await checkDeliverables(records, this.deliverablePorts(task)); }
+    catch (error) { return records.map(record => ({ record, state: "unknown" as const, why: error instanceof Error ? error.message : "unreadable" })); }
+  }
+
+  /** What the deliverable reader needs from the host: the project root, the secrets denylist, and which files make a record private (#509a). */
+  private deliverablePorts(task: Task): DeliverablePorts {
+    const taskPrivate = this.isPii(task);
+    // The owner's own root: a declared worktree instance writes under its worktree, so its deliverables are hashed there, never in the canonical
+    // checkout (which holds a different file or none). With the root unproven there is nothing safe to hash: refuse rather than guess.
+    const root = !this.d.executionRoot || !task.owner || task.owner === USER ? this.d.cwd : this.d.executionRoot(task.owner);
+    if (root === undefined) throw new DeliverableRefusal(`deliverables: ${task.owner}'s execution root is not verified right now, so its files cannot be hashed`);
+    return { cwd: root, deny: this.d.deny ?? [], private: path => taskPrivate || matchesPolicy(root, path, this.d.piiPaths ?? [], true) };
+  }
+
+  /**
+   * #509a: parse and vet a call's deliverable claims before any effect. A claimed hash is a refusal (the hub hashes the files itself), and so is a
+   * path outside the project, on the denylist, inside the hub's own state, not a regular file, missing or too large. Nothing is hashed or stored here.
+   */
+  private deliverableClaims(input: unknown, task: Task, preEffect = true) {
+    try {
+      const claims = parseDeliverableClaims(input);
+      vetDeliverables(claims, this.deliverablePorts(task));
+      return claims;
+    } catch (error) { throw new (preEffect ? PreEffectToolRefusal : Error)(error instanceof Error ? error.message : "invalid deliverables"); }
+  }
+
+  /** Hash vetted claims now. A refusal during the read (the file changed while it was read) is still before any write. */
+  private async hashClaims(claims: ReturnType<Tasks["deliverableClaims"]>, task: Task, preEffect = true): Promise<DeliverableRecord[]> {
+    try { return await hashDeliverables(claims, this.deliverablePorts(task)); }
+    catch (error) { throw new (preEffect ? PreEffectToolRefusal : Error)(error instanceof DeliverableRefusal || error instanceof Error ? error.message : "deliverables could not be hashed"); }
+  }
+
   /** Tasks whose check is queued or running, and the owner it was started for. */
   private readonly checking = new Map<number, PeerId | null>();
   private checkQueue: Promise<void> = Promise.resolve();
@@ -3287,11 +3373,16 @@ export class Tasks {
     return task;
   }
 
-  async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs): Promise<Task> {
+  async done(by: PeerId, id: unknown, summary?: string, refs?: TaskRefs, deliverables?: unknown): Promise<Task> {
     const valid = () => this.completionCurrent(id, by, true);
+    // #509a: a bad claim (a claimed hash, an outside or denied path, a missing file) is refused before any effect, with nothing recorded.
+    const claims = deliverables === undefined ? undefined : this.deliverableClaims(deliverables, valid());
     // The PII screen reads the summary of a done that passes these checks (issue #198); they run again after it.
     const withheld = await this.withholds("summary", summary, valid());
     let task = valid();
+    // The hub hashes the files itself, once, here: what the owner delivered is what this read, whatever the file becomes afterwards.
+    const records = claims ? await this.hashClaims(claims, task, true) : undefined;
+    task = valid();
     // #481 S1: done without a separate accept starts build work too: the same live spec check as accept, before any write.
     if (task.state === "proposed" || task.state === "changes_requested") {
       const admission = task;
@@ -3337,12 +3428,12 @@ export class Tasks {
     }
     if (task.state === "proposed" || task.state === "changes_requested") task = this.withLink(this.d.board.update(task.id, by, "accepted", { state: "in_progress" }, WITH_DONE), link, refs); // done without a separate accept
     const command = this.d.runCheck ? this.d.check?.(task.class, task) : undefined;
-    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link);
+    if (!command) return this.complete(task, by, summary, refs, "", withheld, "review", reviewAdmission, link, records);
     // The tool call returns now; a check can outlast an agent's tool timeout. The result decides what comes next.
     this.checking.set(task.id, task.owner);
     const checkedRefs = cleanRefs(refs);
     this.warmRepository({ ...task, refs: { ...task.refs, ...checkedRefs } });
-    const pending = this.d.board.update(task.id, by, "done (checking)", { codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...checkedRefs } }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined }, task.history.length, HOST_CODE_SYMBOLS);
+    const pending = this.d.board.update(task.id, by, "done (checking)", { codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...checkedRefs } }), refs: checkedRefs, ...(task.sdlc ? { sdlc: task.sdlc } : {}) }, summary, { withheld: withheld || undefined, ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     this.releaseNotice(`task ${this.publicTitle(pending)} done by ${by}; its check is queued or running: ${command}`);
     const seen = { events: pending.history.length, owner: pending.owner };
     this.pendingChecks++;
@@ -3473,7 +3564,9 @@ export class Tasks {
   }
 
   /** `gated`: the transition `done()` already gated with no await since, so it is not read back twice (#382). */
-  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness, link?: IdentityLink): Promise<Task> {
+  private async complete(task: Task, by: PeerId, summary?: string, refs?: TaskRefs, checkOutput = "", withheld = false, gated?: "review", admission?: ReviewReadiness, link?: IdentityLink, records?: DeliverableRecord[]): Promise<Task> {
+    // A check's completion carries the records its `done (checking)` bound: the same bytes the owner delivered, not a later read.
+    records ??= latestPendingDeliverables(task);
     let selection = this.poolReview(task, refs);
     let reviewer = selection?.reviewer ?? task.reviewer, reviewEvidence: PrEvidence | undefined;
     if (this.d.sdlc && this.d.sdlc.config().mode !== "off" && gated !== (reviewer ? "review" : "approval")) {
@@ -3495,7 +3588,7 @@ export class Tasks {
     const completedRefs = cleanRefs(refs);
     this.warmRepository({ ...task, refs: { ...task.refs, ...completedRefs } });
     const noWrites = this.noWritesRecorded({ ...task, refs: { ...task.refs, ...completedRefs } });
-    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...completedRefs } }), state: reviewer ? "in_review" : "approved", ...(selection ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...this.planObservation(task), withheld: withheld || undefined, ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection), ...(reviewCost ? { reviewCost } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...completedRefs } }), state: reviewer ? "in_review" : "approved", ...(selection ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...this.planObservation(task), withheld: withheld || undefined, ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`, withheld);
     this.tellCompleted(next, summary, withheld);
@@ -3691,7 +3784,13 @@ export class Tasks {
       ? ["Acceptance criteria (name an id at the start of an unmet item, such as \"AC1: what is missing\"):",
         ...recorded.criteria.map(c => `- ${c.id}${c.required ? "" : " (optional)"}: ${c.result}`)].join("\n") + "\n"
       : "";
-    const checklist = criteriaBlock + [
+    // #509a: what was delivered, by id, hash and size. A private record (a PII task, or a path under pii.paths) shows no path.
+    const delivered = publicDeliverables(latestDeliverables(task.history), this.nameable);
+    const deliverablesBlock = delivered?.length
+      ? ["Deliverables (the hub hashed these files when the task was done; approval binds these hashes):",
+        ...delivered.map(d => `- ${d.id}: ${d.path ?? "(path withheld)"} [${d.format}${d.version ? ` ${d.version}` : ""}] sha256 ${d.sha256.slice(0, 16)}, ${d.bytes} bytes`)].join("\n") + "\n"
+      : "";
+    const checklist = deliverablesBlock + criteriaBlock + [
       "Checklist:",
       ...this.planGuardItems(task).map(item => `- Check the plan against this live fail before the remaining checks: ${item.line}`),
       ...checklistLines.map(line => `- ${line}`),
@@ -3870,6 +3969,28 @@ export class Tasks {
       const checked = sdlcReceipt({ reviewedHead: head }, task.sdlc, this.d.sdlc?.config() ?? sdlcConfig(undefined));
       reviewedHead = checked.reviewedHead;
     }
+    // #509a: an approval binds the bytes that were delivered. The files are read again now: unchanged, their hashes go on the approval; changed,
+    // missing or unreadable, a reviewer's approval is refused before any write, and the person may approve the files as they are, saying so.
+    let boundDeliverables: DeliverableRecord[] | undefined;
+    if (verdict === "approved") {
+      const delivered = latestDeliverables(task.history);
+      if (delivered) {
+        const identity = JSON.stringify(delivered);
+        const checks = await this.checkRecords(delivered, task);
+        task = valid();
+        if (JSON.stringify(latestDeliverables(task.history)) !== identity) throw new PreEffectToolRefusal("the task's deliverables changed during the verdict; review the current work again");
+        const drift = checks.filter(check => check.state !== "unchanged");
+        if (!drift.length) boundDeliverables = delivered;
+        else {
+          const text = drift.map(check => `${check.record.id} (${check.state})`).join(", ");
+          if (by !== USER) throw new PreEffectToolRefusal(`deliverable changed since it was delivered: ${text}; ask its owner to call hub_task_done again so the current files are reviewed, or a person may approve them as they are`);
+          // The person approves what is on disk now: those bytes are measured and bound, and the verdict says the files had moved.
+          boundDeliverables = await this.hashClaims(delivered.map(record => ({ path: record.path!, format: record.format, ...(record.version !== undefined ? { version: record.version } : {}) })), task, true);
+          task = valid();
+          note = `${note ?? ""}\nApproved with the deliverable files changed since delivery: ${text}`.trim();
+        }
+      }
+    }
     if (verdict === "approved" && this.d.sdlc && this.d.sdlc.config().mode !== "off") { await this.lifecycleGate(task, "approval", reviewedHead, proposedSets(task)); task = valid(); }
     let candidate: Extract<CandidateInput, { kind: "fail" }> | undefined;
     if (verdict === "changes_requested" && items.length && this.d.candidates && !withheld && !this.isPii(task) && !this.d.privateTurn?.(by)) {
@@ -3891,7 +4012,7 @@ export class Tasks {
     // #507b: unmet items that start with a recorded criterion id name that criterion. The ids come from the checklist on the board as it is at this
     // write (the `task` just rechecked by valid()), never from the caller; a PII task carries none, its checklist being private.
     const unmetCriteria = pii ? [] : unmetCriteriaIds(items, checklistOf(task.sdlc));
-    const flag = { ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(reviewContext ? { reviewContext } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
+    const flag = { ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
     if (verdict === "approved") {
       const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0, ...(reviewedHead && task.sdlc ? { sdlc: { ...task.sdlc, reviewedHead, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), "merge") } } : {}) }, note, flag);
       if (next.owner) {

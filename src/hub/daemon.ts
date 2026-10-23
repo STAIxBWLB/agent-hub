@@ -1436,6 +1436,9 @@ export async function startDaemon(opts: DaemonOptions) {
     profile: profileName(config.profile),
     profileData: resolvedProfile,
     piiPaths: config.pii?.paths,
+    deny: config.local.deny,
+    // #509a: deliverables are hashed under the owner's verified execution root (a declared worktree instance's worktree), `undefined` when unproven.
+    executionRoot: peer => ownerWriteRoot(peer),
     catalog,
     sessionRoles: peer => bus.peers.has(peer) && bus.stateOf(peer) !== "offline" ? preparedSessionRoles.get(peer) ?? [] : [],
     projectedReview: task => reviewProjection(task),
@@ -2493,7 +2496,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "hub_task_decline":
         return line(await tasks.decline(by, a.id, a.reason, a.capacity === true));
       case "hub_task_done": {
-        const t = await tasks.done(by, a.id, a.summary, a.refs);
+        const t = await tasks.done(by, a.id, a.summary, a.refs, a.deliverables);
         const completion = t.history.findLast(h => h.by === by && (h.event === "done" || h.event === "done (checking)"));
         if (!piiTurn && !tasks.isPii(t) && completion && !completion.withheld && typeof a.summary === "string" && completion.note?.startsWith(a.summary)) {
           citeMemory(by, a.summary, `summary:${t.id}:${t.history.indexOf(completion)}`, [newEnvelope(by, "", { refs: { task: String(t.id) } })]);
@@ -2507,7 +2510,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "hub_sdlc_record":
         await tasks.specStageGate(by, a.id, a.receipt); // #481 S1: a live spec edit-time check before a build stage
-        return line(tasks.recordLifecycle(by, a.id, a.receipt));
+        return line(await tasks.recordSdlc(by, a.id, a.receipt));
       case "hub_review":
         return line(await tasks.review(by, a.id, a.verdict, a.note, a.unmet, a.head, a.coverage, a.findings));
       case "hub_remember":
@@ -2550,7 +2553,8 @@ export async function startDaemon(opts: DaemonOptions) {
       const task = board.get(Number(a.id));
       if (task?.state === "backlog") throw new PreEffectToolRefusal("backlog is read through planner tools");
       if (!task) return JSON.stringify(`no task #${a.id}`);
-      return JSON.stringify({ ...reviewerView(by, publicConductorTask(task, (t) => tasks.publicView(t, true))), ...briefField(task), flowRevision: task.history.length });
+      const peerDeliverables = await tasks.deliverableStatus(task);
+      return JSON.stringify({ ...reviewerView(by, publicConductorTask(task, (t) => tasks.publicView(t, true))), ...briefField(task), ...(peerDeliverables ? { deliverables: peerDeliverables } : {}), flowRevision: task.history.length });
     }
     if (op === "route_explain" && by !== USER) {
       if (a.id !== undefined && board.get(Number(a.id))?.state === "backlog") throw new PreEffectToolRefusal("backlog is read through planner tools");
@@ -2586,7 +2590,8 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!task) return JSON.stringify(`no task #${a.id}`);
         const { codeSymbols: _storedCodeSymbols, ...detail } = task;
         const codeSymbols = tasks.publicView(task).codeSymbols;
-        return JSON.stringify({ ...detail, ...(codeSymbols ? { codeSymbols } : {}), symbolOverlaps: tasks.symbolOverlaps(task), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
+        const consoleDeliverables = await tasks.deliverableStatus(task);
+        return JSON.stringify({ ...detail, ...(codeSymbols ? { codeSymbols } : {}), ...(consoleDeliverables ? { deliverables: consoleDeliverables } : {}), symbolOverlaps: tasks.symbolOverlaps(task), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
       }
       case "task_assign":
       case "task_assign_checked": {
