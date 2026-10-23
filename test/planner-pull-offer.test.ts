@@ -58,6 +58,7 @@ for (const by of [USER, "claude"]) test(`reserved backlog pull immediately offer
   const f = await rig(), task = await reserved(f, by), pulled = await pull(f, task);
   expect(pulled).toMatchObject({ state: "proposed", owner: "codex", reserved: "codex", planningRevision: (task.planningRevision ?? 0) + 1 });
   const saved = f.board.get(task.id)!; expect(saved.offer).toBeDefined();
+  await expect(f.tasks.undoPlanning("claude", task.id, pulled.planningRevision!)).rejects.toThrow("stale");
   expect(saved.offer).toMatchObject({ owner: "codex", pullOnly: true, assignmentFlowRevision: saved.history.length });
   const queued = offers(f, task, "codex"); expect(queued).toHaveLength(1); expect(queued[0]!.id).toBe(saved.offer!.envelopeId);
   expect(queued[0]!.refs?.taskOffer).toBe(saved.history.length); expect(offers(f, task, "local")).toEqual([]);
@@ -119,8 +120,8 @@ test("reserved pull delivery failure carries the saved owner in AssignmentUndeli
 test("unreserved legacy planner pull remains lazy instead of creating an immediate offer", async () => {
   const f = await rig(), task = await f.tasks.propose(USER, { title: "unreserved legacy work", class: "implement", backlog: true });
   const pulled = await pull(f, task);
-  expect(pulled).toMatchObject({ state: "proposed", owner: null, reserved: "codex" });
-  expect(offers(f, task, "codex")).toEqual([]); expect(f.board.get(task.id)?.offer).toBeUndefined();
+  expect(pulled).toMatchObject({ state: "proposed", owner: null, reserved: expect.any(String) });
+  expect(offers(f, task, pulled.reserved!)).toEqual([]); expect(f.board.get(task.id)?.offer).toBeUndefined();
 });
 
 test("reserved pull and assignment roll back together when the owner write fails", async () => {
