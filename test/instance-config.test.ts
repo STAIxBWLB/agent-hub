@@ -31,8 +31,8 @@ test("instance admission follows explicit policy instead of MCP identity shape",
 
 test("external instance policy preserves human terminal and role restrictions", () => {
   expect(validateInstances({ "claude-plan": { kind: "claude", roles: ["planner", "reviewer"] } }, builtinProjectCatalog())["claude-plan"]?.roles).toEqual(["planner", "reviewer"]);
-  expect(() => validateInstances({ "claude-write": { kind: "claude", roles: ["implementer"] } }, builtinProjectCatalog())).toThrow("reviewer and/or planner");
-  expect(() => validateInstances({ "claude-plan": { kind: "claude", roles: ["planner"], worktree: ".worktrees/plan" } }, builtinProjectCatalog())).toThrow("person's terminal");
+  expect(() => validateInstances({ "claude-write": { kind: "claude", roles: ["implementer"] } }, builtinProjectCatalog())).toThrow("needs its own worktree"); // #525 R1: an implementer channel instance is allowed, in its own worktree
+  expect(() => validateInstances({ "claude-plan": { kind: "claude", roles: ["planner"], worktree: ".worktrees/plan" } }, builtinProjectCatalog())).toThrow("reads the project checkout");
   expect(() => validateInstances({ "agy-plan": { kind: "agy", roles: ["planner"] } }, builtinProjectCatalog())).toThrow("unsupported");
 });
 

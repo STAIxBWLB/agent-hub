@@ -4,6 +4,10 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Roles capability per kind and form (#525-1): a Claude channel instance may declare `implementer` or `verifier` and then requires its own `worktree` (a planner or reviewer instance still reads the project checkout); a headless Claude instance stays reviewer-only and a headless implementer is refused until #525-4; `planner` is refused on kinds that cannot plan (pi, local, agy) in instance declarations and dropped from `roles` with the ceiling notice.
+
+- Fix #720: `ahub codex --as <id>` for a headless reviewer instance (`start_mode: "headless"`, `review_mode: "fresh"`) sends the hub `start`, prints the result and returns, as the Claude entry does, instead of failing at terminal recovery after the start succeeded. TUI-only flags are refused for it; the default `ahub codex` TUI path is unchanged.
+
 ## 0.13.0
 
 - Add the #636 action-policy foundation: a pure classifier, machine-local always-ask configuration, session-bound approval budgets and explicit per-peer enforcement status. Adapter pre-tool gates remain pending; status reports that limit instead of claiming protection.

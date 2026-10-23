@@ -4099,11 +4099,14 @@ run yourself in this project outside the hub has no peer id: its hub tools refus
 every call with that reason and never default to `jcode`, and a process that only
 sets `AGENTHUB_PEER_ID` without an owned launch is refused by the hub.
 
-An extra Claude instance is a reviewer or
-planner you start yourself: declare it with `roles` only (for example
-`"claude-review": { "kind": "claude", "roles": ["reviewer"] }`, no `start_mode` or
-`worktree`) and run `ahub claude --as claude-review` in a terminal. It keeps its own
-`claude-*.claude-review.json` state files.
+An extra Claude instance is one you start yourself: declare it with `roles` (for example
+`"claude-review": { "kind": "claude", "roles": ["reviewer"] }`) and run `ahub claude --as claude-review` in a
+terminal. It keeps its own `claude-*.claude-review.json` state files. A planner or reviewer instance reads the
+project checkout and refuses `worktree`. From #525-1 an `implementer` or `verifier` instance is accepted and
+requires its own `worktree` (for example `"claude-impl": { "kind": "claude", "roles": ["implementer"],
+"worktree": ".worktrees/claude-impl" }`). The hub does not route code tasks to it until #525-5 proves its
+execution root, so today it changes validation only. A headless Claude instance stays a reviewer (`roles`
+exactly `["reviewer"]`); a headless implementer is refused until #525-4.
 
 A headless Claude reviewer is run by the hub instead (#223): declare
 `"claude-review": { "kind": "claude", "roles": ["reviewer"], "start_mode": "headless" }`
@@ -4204,7 +4207,7 @@ reattachment or TUI detachment clears it. The notice contains fixed guidance, wi
 
 ## Roles per SDLC stage (#525, planned)
 
-The design for planner, implementer and reviewer instances per stage is in the spec section "Amendment: roles per SDLC stage (#525)". Nothing in it is available yet. Each implementation slice (525-1 to 525-6) adds its operator steps here when it ships. Until then, the instance rules in "Additional headless peer instances" above are current. The planned changes an operator will see:
+The design for planner, implementer and reviewer instances per stage is in the spec section "Amendment: roles per SDLC stage (#525)". Slice 525-1 is available: role capability per kind and form, Claude channel instances as implementer or verifier in their own worktree, and `planner` refused on kinds that cannot plan (pi, local, agy; `loadConductorPolicy` drops such a `roles` entry with the ceiling notice). Each implementation slice (525-1 to 525-6) adds its operator steps here when it ships. Until then, the instance rules in "Additional headless peer instances" above are current. The planned changes an operator will see:
 
 - A Claude instance with `["implementer"]` and a `worktree`, as a terminal instance (started with `ahub claude --as <id>`) or as `start_mode: "headless"` (`permission_mode` `ask` or `ask-when-needed`; `never-ask` refused).
 - The `planner` setting accepts a list of peers or instance ids; each task records its own planner, and only that planner or the person runs planner tools on it.

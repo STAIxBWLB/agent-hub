@@ -5,6 +5,19 @@ export async function runCodexEntry(ctx: NativeCliEntryContext): Promise<void> {
   const peer = ctx.instance ?? "codex";
   const { args, cwd, stateDir, unattendedEnv, projectConfig, connect, fail, exec } = ctx;
   const { launcherPreview, buildLaunch, readControl, prepareTerminalLaunch, registerTerminalLaunch } = ctx.helpers;
+  if (ctx.hubStarted) {
+    // #720: the hub starts a headless reviewer (a fresh Codex per review); nothing runs in this terminal, so there is no TUI launch,
+    // no terminal recovery and no exec. Launch arguments were already refused by instanceLaunchArguments.
+    if (args.includes("--print-command") || args.includes("--dry-run")) return console.log(JSON.stringify({ peer, start: "hub", note: "a headless reviewer the hub runs per review" }, null, 2));
+    const hub = await connect();
+    try {
+      const snapshot = (await hub.request({ t: "status" })).status;
+      const warning = retainedLaunchWarning(snapshot, peer, ctx.definition); if (warning) console.error(warning);
+      const res = await hub.request({ t: "start", peer, operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+      if (res.ok !== true) fail(String(res.error ?? `${peer} was not started`));
+    } finally { hub.close(); }
+    return console.log(`${peer} started: a headless reviewer the hub runs per review (stop it with ahub stop ${peer})`);
+  }
   if (args.includes("--print-command") || args.includes("--dry-run")) {
     try { return console.log(JSON.stringify(launcherPreview("codex", args, cwd, stateDir, unattendedEnv), null, 2)); }
     catch { fail("cannot preview launch: invalid arguments or configuration (details withheld to protect credentials)"); }

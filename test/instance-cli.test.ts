@@ -1,5 +1,7 @@
 import { expect, test } from "bun:test";
 import { instanceLaunchArguments, requirePeerInstances, nativeLaunchEnv } from "../src/cli/launch.ts";
+import { validateInstances } from "../src/hub/instances.ts";
+import { createProjectAdapterCatalog as builtinProjectCatalog } from "../src/adapters/registry.ts";
 
 const declarations = { "codex-review": { kind: "codex" }, "kimi-check": { kind: "kimi" } };
 
@@ -90,6 +92,56 @@ test("extra Codex still launches native TUI on its own proxy from verified execu
   expect(requests.some(request => request.t === "initialize")).toBe(false);
 });
 
+// #720: a headless Codex reviewer is started by the hub; the CLI sends start, prints and returns.
+function headlessCodexContext(args: string[] = [], startReply: Record<string, unknown> = { ok: true }) {
+  const { context, requests } = entryContext("codex", args);
+  const touched: string[] = [];
+  context.hubStarted = true;
+  context.exec = (): never => { touched.push("exec"); throw new Error("exec must not run"); };
+  context.execWithEnv = (): never => { touched.push("execWithEnv"); throw new Error("exec must not run"); };
+  Object.assign(context.helpers, {
+    readControl: () => { touched.push("readControl"); return undefined; },
+    prepareTerminalLaunch: async () => { touched.push("prepareTerminalLaunch"); throw new Error("no managed terminal recovery adapter"); },
+    registerTerminalLaunch: async () => { touched.push("registerTerminalLaunch"); },
+    buildLaunch: () => { touched.push("buildLaunch"); throw new Error("no TUI launch for a headless reviewer"); },
+  });
+  context.connect = async () => ({ request: async (message: Record<string, unknown>) => {
+    requests.push(message);
+    return message.t === "status" ? { status: { peers: { "codex-worker": { state: "offline" } } } } : startReply;
+  }, close() {} }) as unknown as Awaited<ReturnType<NativeCliEntryContext["connect"]>>;
+  return { context, requests, touched };
+}
+
+test("#720 ahub codex --as <headless reviewer> returns after the start, with no terminal recovery or exec", async () => {
+  const { context, requests, touched } = headlessCodexContext();
+  const lines: string[] = [], log = console.log;
+  console.log = (line: unknown) => { lines.push(String(line)); };
+  try { await runCodexEntry(context); } finally { console.log = log; }
+  expect(requests.map(request => request.t)).toEqual(["status", "start"]);
+  expect(requests.find(request => request.t === "start")?.peer).toBe("codex-worker");
+  expect(touched).toEqual([]);
+  expect(lines.join("\n")).toContain("codex-worker started: a headless reviewer the hub runs per review");
+});
+
+test("#720 a refused start of a headless Codex reviewer fails with the daemon's reason and does nothing else", async () => {
+  const { context, touched } = headlessCodexContext([], { ok: false, error: "codex 0.164.0 is not trusted" });
+  await expect(runCodexEntry(context)).rejects.toThrow("codex 0.164.0 is not trusted");
+  expect(touched).toEqual([]);
+});
+
+test("#720 a headless Codex reviewer's preview starts nothing and TUI-only flags are refused before the entry", async () => {
+  const { context, requests, touched } = headlessCodexContext(["--print-command"]);
+  const lines: string[] = [], log = console.log;
+  console.log = (line: unknown) => { lines.push(String(line)); };
+  try { await runCodexEntry(context); } finally { console.log = log; }
+  expect(requests).toEqual([]);
+  expect(touched).toEqual([]);
+  expect(JSON.parse(lines.join("\n"))).toMatchObject({ peer: "codex-worker", start: "hub" });
+  const reviewer = { "codex-review": { kind: "codex", roles: ["reviewer"], start_mode: "headless", review_mode: "fresh" } } as never;
+  const instances = validateInstances(reviewer, builtinProjectCatalog());
+  expect(instanceLaunchArguments("codex", ["--as", "codex-review"], instances)).toEqual({ instance: "codex-review", args: [], hubStarted: true });
+  for (const flag of ["resume", "--model", "--unattended"]) expect(() => instanceLaunchArguments("codex", ["--as", "codex-review", flag], instances)).toThrow("takes no launch arguments");
+});
 
 test("native child environment keeps selected instance and removes inherited vendor identity", () => {
   const env = nativeLaunchEnv("codex-review", { AGENTHUB_PEER_ID: "kimi-check", CLAUDECODE: "1", CODEX_THREAD_ID: "old-thread", AGENTHUB_RECOVERY_OPERATION: "old-operation" }, declarations);

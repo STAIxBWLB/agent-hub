@@ -290,9 +290,10 @@ export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]
       if (!file.roles || typeof file.roles !== "object" || Array.isArray(file.roles)) throw new Error("roles must be an object of peer role lists");
       for (const [peer, assigned] of Object.entries(file.roles)) {
         conductorPeer({ [peer]: assigned });
-        const ceiling = definitionOf(peer)?.routing?.allowedRoles;
+        const definition = definitionOf(peer), ceiling = definition?.routing?.allowedRoles;
         const declared = assigned as string[];
-        roles[peer] = ceiling ? declared.filter(role => ceiling.includes(role)) : declared;
+        // #525 R1: planner needs a kind that can plan (projection.plannerEligible); such an entry is dropped with the ceiling notice, never thrown.
+        roles[peer] = (ceiling ? declared.filter(role => ceiling.includes(role)) : declared).filter(role => role !== "planner" || !definition || definition.projection?.plannerEligible === true);
         if (roles[peer]!.length !== declared.length) notices.push(`roles.${peer}: ignored roles outside the adapter ceiling`);
       }
     }
