@@ -7994,6 +7994,19 @@ var init_review_findings = __esm(() => {
   MAX_BYTES2 = 64 * 1024;
 });
 
+// src/hub/sdlc-metrics.ts
+var HOUR = 3600000, SD_FLOOR;
+var init_sdlc_metrics = __esm(() => {
+  SD_FLOOR = {
+    acceptance_to_plan_ms: HOUR / 2,
+    acceptance_to_first_review_ms: HOUR / 2,
+    first_pass_approval: 0.5,
+    rework_rounds: 0.5,
+    first_pass_check: 0.5,
+    stale_head_re_reviews: 0.5
+  };
+});
+
 // src/hub/workflow.ts
 var init_workflow = __esm(() => {
   init_sdlc();
@@ -8010,6 +8023,7 @@ var init_sdlc = __esm(() => {
   init_test_integrity();
   init_plan_conformance();
   init_review_findings();
+  init_sdlc_metrics();
   init_workflow();
   init_child_process();
   init_host_executable();
@@ -8992,7 +9006,8 @@ var init_hub_tools = __esm(() => {
   PLANNER_REVIEW_TOOLS = [
     tool("hub_planner_groom", "Read a bounded planner grooming digest of dependencies, repository-scoped overlaps, WIP and blockers. No board change; unavailable evidence stays unknown.", {}),
     tool("hub_plan_review", "Record a planner review against the task planning revision and host-read issue edit time. Configured planner or person only; never accepts caller issue timestamps.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str2, maxLength: 1000 }, ...costPlanProperties }, ["id", "revision", "reason"]),
-    tool("hub_sdlc_costs", "Read bounded review and CI cost metrics for linked merged PRs. Planner/person only; metadata only, no board writes. S7 owns automatic band proposals.", { repo: str2 }),
+    tool("hub_sdlc_costs", "Read bounded review and CI cost metrics for linked merged PRs. Planner/person only; metadata only, no board writes.", { repo: str2 }),
+    tool("hub_sdlc_metrics", "Read SDLC metrics from board history: time from acceptance to plan, first review and merge, first-pass approval and rework rounds, first-pass CI and same-head reruns, stale-head re-reviews, stalls, and the control band tiers when sdlc.toml sets [bands]. Planner/person only; read-only, no model and no GitHub issue.", { since: str2 }),
     tool("hub_backlog_return_untouched", "Return accepted but untouched work to the backlog with its history and planning retained. Refuses execution/branch/commit evidence; planner or person only.", { id, revision: { type: "integer", minimum: 0 }, reason: { ...str2, maxLength: 1000 } }, ["id", "revision", "reason"])
   ];
   TASK_TOOLS.push(...PLANNER_REVIEW_TOOLS);
@@ -19618,6 +19633,7 @@ init_git();
 
 // src/hub/tasks.ts
 init_spec_read();
+init_sdlc_metrics();
 // package.json
 var package_default = {
   name: "@staix/agent-hub",

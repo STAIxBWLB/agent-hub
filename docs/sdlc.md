@@ -20,7 +20,7 @@ The built-in lifecycle follows the [AI-Native SDLC Playbook](https://claude.com/
 | review | Deploy | assigned reviewer | current head-bound verdict, no pending change request/open thread; AC checklist under Compliance | approval, when enabled; open Important findings block in enforce |
 | merge | Deploy | person | current-head readiness, ordered touching PRs | shown; no mutation |
 | release | Deploy | person | merged commit, version/tag, docs freshness/live receipt checklist | person authorization and optional tag hook below |
-| maintain | Maintain | person/planner | follow-up intent and operational evidence | shown; metrics/control bands pending S7 |
+| maintain | Maintain | person/planner | follow-up intent and operational evidence | shown; metrics and control bands from S7 (`ahub sdlc metrics`) |
 
 Stored `implement` and `verify` stage ids read as `build` and `test`. A write that names the old id stores the id the configuration lists, so new enabled-lifecycle receipts use the canonical ids. The default remains off, preserving existing off-mode output, receipt and schema shapes. Status, explain, console and dashboard name the playbook stage beside enabled lifecycle ids.
 
@@ -35,7 +35,7 @@ Stored `implement` and `verify` stage ids read as `build` and `test`. A write th
 | S4 | Red-first tests and test integrity | Bug-label metadata, source-labelled red-first proof and changed pre-existing test blockers |
 | S5 | Continuous evals for agent configuration | Pending gate, dependent on #251/#266; no eval pass claimed |
 | S6 | Production approval gate | Person-only commit/version/docs receipt and opt-in Git tag pre-push guard; report stays read-only |
-| S7 | Metrics, deterministic control bands and follow-up intent | Pending; no automated metric triage or security baseline claimed |
+| S7 | Metrics, deterministic control bands and follow-up intent | `ahub sdlc metrics`, optional `[bands]` with log, diagnose and propose tiers, one card per breach episode; no PR readback and no security baseline (design spec amendment) |
 | S8 | Compliance acceptance-criteria checklist | Head-bound checklist retained; legacy workflow and phase compatibility deprecated; task import removed |
 | S9 | Planner grooming and plan review | Read-only digest, current plan-review receipt at build admission, all-mode WIP and accepted-untouched return |
 | S10 | Planner cost governance | Typed review/CI scope, premature-review admission, identical-tree CI reuse and read-only cost report |
@@ -220,6 +220,27 @@ Enabled lifecycles send an attached planner one grooming pointer for a changed b
 The digest is bounded to 500 task rows (open work plus structured cancelled supersession evidence) and 256 findings, with at most eight issue metadata reads sharing four seconds. Spec acceptance and planner-review staleness are compared independently. Truncation and unavailable evidence are explicit. Qualified foreign repositories are compared within their own key. Without a proven repository key an absolute outside-project path remains unknown; the dedicated repository-overlap resolver is tracked in #476.
 
 S9 ceilings: a private build task with an issue reference cannot satisfy enforce admission: privacy forbids the external issue metadata read, and no person override for a metadata-free plan receipt exists. Grooming pointers are coalesced only while queued, per board revision; there is no minimum time interval after delivery, so a busy board may produce one delivered pointer per revision.
+
+# SDLC metrics and control bands (#481 S7)
+
+`ahub sdlc metrics [--since <YYYY-MM-DD|ISO time>]` (the planner tool `hub_sdlc_metrics`; planner or person only, read-only) derives these from board history: time from spec acceptance to plan review, from acceptance to the first verdict and (when a merge time is supplied) to merge; the first-pass approval rate and rework rounds; the first-pass check rate; same-head CI reruns; stale-head re-reviews; and open stalls by kind. Each is a count, mean, median, p90 and max over the tasks that have it. `unknown` is the word and a count (`unknown: N`) for a task that does not have it: a metric the board cannot derive is never zero. A private task is counted as withheld and read for nothing else. The report is a pure function of the board history, so a fixture history gives the same report every time.
+
+What each metric reads, and what it does not:
+
+- `first_pass_check` is the hub's own completion check (`check passed` or `check failed` at `hub_task_done`), not PR CI. It is `unknown` for every task where completion checks are off, which is the default.
+- `stale_head_re_reviews` counts review rounds whose verdict was bound to a different head than the review was requested for (the `done`'s recorded head against the verdict's findings head), so it needs both heads on the round. A task with no such round is `unknown`, not 0. (A `done` after an `approved` is not a signal: the board cannot produce one.)
+- `acceptance_to_merge_ms` and `same_head_ci_reruns` need a PR readback. This report makes none, so they read `unknown` here; `ahub sdlc costs` carries the PR-based review rounds, CI runs and reruns.
+- `stalls` counts open stalls on public tasks by kind and the dones recorded without writes.
+
+`.agenthub/sdlc.toml` may set `[bands.<metric>]` for `acceptance_to_plan_ms`, `acceptance_to_first_review_ms`, `first_pass_approval`, `rework_rounds`, `first_pass_check` or `stale_head_re_reviews`. Every field is optional and bounded: `window` (4 to 200, default 20), `min_samples` (3 to 200, default 8, at most `window`), `log_sigma` 2, `diagnose_sigma` 3, `propose_sigma` 4 (ordered, 0.5 to 20), `drift_run` (3 to 50, default 6) and `min_delta` (the smallest step worth any tier: an hour for the times, one round, half a rate). An unknown metric or field is refused with its path. The newest value is compared with the mean and population standard deviation of the `window` values before it, on the bad side only (a longer time, more rework, a lower rate). The deviation is floored per metric (half an hour, or half a round or a rate) so a flat baseline does not turn one step into thousands of deviations. Fewer than `min_samples` before it fires nothing, and so does a step under `min_delta`, drift included. A run of `drift_run` newest values all more than one deviation on the bad side is at least `diagnose` even when none reaches a sigma tier, provided the newest step clears `min_delta`. Tiers:
+
+- `log`: one hub notice per breach episode, remembered in the board database so a restart does not repeat it.
+- `diagnose`: one read-only `triage` backlog task for the planner to inspect the histories behind the metric. It asks for no edit of files, branches or the board.
+- `propose`: one `plan` backlog card that names the metric and its evidence (the newest value, the task that produced it, where the episode began, the baseline and the deviations).
+
+`rework_rounds` and `stale_head_re_reviews` are final only when a task is approved: a task still in flight is `unknown` for both and the series places them at the approval, so a provisional value cannot move and start a second episode inside one shift. The stale-head count compares the head a `done` requested with the head the verdict is bound to; the verdict head prefers the lifecycle receipt's `head` or `localHead` over the commit, so a task whose receipt head and commit disagree can read one spurious stale round. Release metrics (interval, lead time, hotfix rate), release bands and the per-release gates-run record are not built; they need release history and S6, and are the next slice. A breach is an episode: the run of non-ok values of one metric, keyed `<metric>:#<task that started it>:<tier>` in the card (`Band breach key:`). The key comes from history alone, so a sustained shift keeps one key however many tasks finish inside it, and a restart finds the same one. A metric with an open band card (a backlog or open task, not approved or cancelled) writes nothing more, so a value that grows from `diagnose` to `propose` inside one episode adds no second card. When the planner closes the card and the metric returns to ok, a later breach is a new episode and a new card. The daemon evaluates every five minutes, only when the board or the band configuration changed since the last evaluation that ran, and not while it is stopping or recovering or has a storage error; a held pass, mode off or no bands consumes nothing, so the breach is written when the hold clears. A failed evaluation is one `hub.log` line. Detection never calls a model, the cards hold fixed words, numbers and task ids and no task text, and the hub opens no GitHub issue: external registration stays a person's decision.
+
+Bands act only when the lifecycle `mode` is `advise` or `enforce`: in `off` the writer is idle, though `ahub sdlc metrics` still reports each configured band's tier. A scheduled security scan baseline is not part of this slice.
 
 # Planner review and CI cost governance (#481 S10)
 

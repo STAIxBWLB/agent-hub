@@ -522,6 +522,10 @@ export interface DaemonOptions {
   orphanWatchMs?: number;
   /** Deterministic task-sweep time; the production default is Date.now. */
   taskSweepNow?: () => number;
+  /** Test seam: the period of the SDLC band evaluation, default five minutes. */
+  bandsEveryMs?: number;
+  /** Test seam: an extra hold on the SDLC band evaluation, like a storage error. */
+  bandsHeld?: () => boolean;
   /** How long a research record waits after an approval for the task's open turns to end (#247). Tests shrink this. */
   researchGraceMs?: number;
   /** Tests observe timer-driven sync without opening a remote; production uses the package sync. */
@@ -2052,6 +2056,8 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   // Claude's numbers arrive through the status line tee `ahub claude` installs (src/cli/statusline-tee.ts).
   let claudeUsageSeen = 0;
+  let bandsRevision = ""; // #481 S7: the board revision and band configuration the last band evaluation that ran saw
+  let bandEvaluations = 0; // evaluations that ran (not skipped for an unchanged board); read by tests through the daemon
   const claudeContextSeen = new Map<string, string>();
   const contextTailSeen = new Map<PeerId, string>();
   const retainedCliAudits = new Set<string>();
@@ -2110,6 +2116,21 @@ export async function startDaemon(opts: DaemonOptions) {
     }, 1000),
     setInterval(() => budget.tick(), 30_000),
     setInterval(pollUsageRollup, 10_000),
+    // #481 S7: band tiers are evaluated every five minutes, and only when the board changed since the last evaluation (the status
+    // revision moves on every task write), so an idle board costs one integer read. Held while stopping or recovering, like the task sweep.
+    // ponytail: one evaluation reads every task with its history (a few ms per hundred tasks); bound it by a history window if a board passes several thousand tasks.
+    setInterval(() => {
+      if (stopping || recoveryActive()) return;
+      try {
+        const state = tasks.bandsState();
+        if (!state.ready || opts.bandsHeld?.()) return; // held, mode off or no bands: nothing is consumed, so the breach is still there when it clears
+        const revision = `${board.statusRevision()}:${state.signature}`;
+        if (revision === bandsRevision) return;
+        bandEvaluations++;
+        tasks.proposeFromBands();
+        bandsRevision = `${board.statusRevision()}:${state.signature}`; // after the write: the cards this pass made are not a reason to run again
+      } catch (error) { log(`sdlc band evaluation failed: ${sanitize((error as Error).message).slice(0, 160)}`); }
+    }, opts.bandsEveryMs ?? 300_000),
     setInterval(() => {
       if (!ready || !memoryBinding) return;
       const before = memoryProblem;
@@ -2235,7 +2256,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     // Inside a PII turn the worker's words may carry the PII whatever they are attached to: a note would go to
     // claude-mem (a cloud observer) and a new task could be routed to a cloud peer without matching any pattern.
-    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op.startsWith("hub_release_") || op === "hub_backlog_return_untouched" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
+    if (piiTurn && (MEMORY_READ_TOOLS.has(op) || op === "hub_memory_correct" || op === "hub_remember" || op === "hub_task_propose" || op === "hub_sdlc_record" || op === "hub_plan_review" || op === "hub_sdlc_costs" || op === "hub_sdlc_metrics" || op.startsWith("hub_release_") || op === "hub_backlog_return_untouched" || op === "hub_backlog_plan" || op === "hub_backlog_undo" || op === "hub_backlog_pull" || op === "hub_backlog_split" || op === "release_new")) throw new PreEffectToolRefusal(`${op} is not available while working on a PII task: its text must not leave this machine`);
     // The same words attached to an ordinary task would reach its reviewer, its owner, overlapping owners (a plan, the
     // completed-change notice) and claude-mem. A turn that holds a PII task acts on ordinary tasks in a turn of its own.
     if (piiTurn && (op === "hub_task_done" || op === "hub_review" || (op === "hub_task_accept" && (a.plan != null || a.refs != null)))) {
@@ -2365,6 +2386,8 @@ export async function startDaemon(opts: DaemonOptions) {
         return JSON.stringify(await tasks.groomingDigest(by));
       case "hub_sdlc_costs":
         return JSON.stringify(await tasks.costReport(by, a.repo));
+      case "hub_sdlc_metrics":
+        return JSON.stringify(tasks.sdlcMetrics(by, a.since));
       case "hub_plan_review": {
         const { id, ...review } = a;
         return JSON.stringify(tasks.publicView(await tasks.recordPlanReview(by, id, review)));
@@ -6369,7 +6392,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // After a crash that recorded Pi, crash recovery starts it (#66): its recorded session first, a fresh one if that fails.
   const piRecovered = !archivedPiContinuity && !!crashed?.peers.some((p) => definitionOf(p.peer)?.session.restoreOnStart);
   if (piAutoStart() && !recoveryActive() && !piRecovered) autoStartPi();
-  return { bus, token, port: server.port as number, stop, stopped: new Promise<void>((r) => (onStop = r)) };
+  return { bus, token, port: server.port as number, bandEvaluations: () => bandEvaluations, stop, stopped: new Promise<void>((r) => (onStop = r)) };
   } finally {
     if (!ready) for (const cleanup of startupCleanup.reverse()) { try { await cleanup(); } catch { /* preserve startup error */ } }
   }

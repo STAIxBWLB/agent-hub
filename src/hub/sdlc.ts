@@ -2,6 +2,7 @@ import { parseIssueLabels, parseRedFirst, testIntegrityBlockers, type RedFirstRe
 import { planConformanceBlockers, type PlanConformance } from "./plan-conformance.ts";
 import { DEFAULT_MAX_NITS, findingsForHead, findingHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
 import type { CostPlan } from "./cost-governance.ts";
+import { bandsConfig, type BandsConfig } from "./sdlc-metrics.ts";
 import { criteriaReceipt, type CriteriaReceipt, type CriteriaView, type LegacyPhaseReceipt } from "./workflow.ts";
 import { constants, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
@@ -32,7 +33,7 @@ export type StageGate = "issue" | "pr" | "local" | "review" | "checks" | "criter
 export interface StageDefinition { base: SdlcBaseStage; actor: string; entry_gates: StageGate[]; exit_gates: StageGate[]; after: string[]; }
 export type SdlcMode = "off" | "advise" | "enforce";
 /** `workflow: "gsd-lite"` marks the retired setting during its window (#481 S8): every task then needs a criteria checklist. */
-export interface SdlcConfig { workflow?: "gsd-lite"; maxNits?: number; mode: SdlcMode; requiredChecks: string[]; stages: SdlcStage[]; definitions?: Record<string, StageDefinition>; deprecations?: string[]; }
+export interface SdlcConfig { workflow?: "gsd-lite"; maxNits?: number; /** #481 S7: optional control bands per metric; absent means none. */ bands?: BandsConfig; mode: SdlcMode; requiredChecks: string[]; stages: SdlcStage[]; definitions?: Record<string, StageDefinition>; deprecations?: string[]; }
 export interface PlanReviewReceipt {
   planner: string;
   planningRevision: number;
@@ -133,10 +134,11 @@ export function sdlcConfig(value: unknown, version?: string): SdlcConfig {
   if (value === undefined) return { mode: "off", requiredChecks: [], stages: [...SDLC_STAGES] };
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("sdlc: expected a table");
   const raw = value as Record<string, unknown>;
-  for (const key of Object.keys(raw)) if (!["mode", "required_checks", "stages", "workflow", "definitions", "max_nits"].includes(key)) throw new Error(`sdlc.${key}: unknown field`);
+  for (const key of Object.keys(raw)) if (!["mode", "required_checks", "stages", "workflow", "definitions", "max_nits", "bands"].includes(key)) throw new Error(`sdlc.${key}: unknown field`);
   const maxNits = raw.max_nits === undefined ? DEFAULT_MAX_NITS : raw.max_nits;
   if (typeof maxNits !== "number" || !Number.isSafeInteger(maxNits) || maxNits < 0 || maxNits > 64) throw new Error("sdlc.max_nits: expected an integer from 0 to 64");
-  const findingConfig = raw.max_nits === undefined ? {} : { maxNits };
+  const bands = bandsConfig(raw.bands), bandConfig = Object.keys(bands).length ? { bands } : {};
+  const findingConfig = { ...(raw.max_nits === undefined ? {} : { maxNits }), ...bandConfig };
   const mode = raw.mode ?? "off";
   if (mode !== "off" && mode !== "advise" && mode !== "enforce") throw new Error("sdlc.mode: expected off, advise or enforce");
   // ponytail: the #481 S8 window is a fixed version; delete `workflow`, the phase aliases and their tests once it passes.

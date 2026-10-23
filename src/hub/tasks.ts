@@ -5,6 +5,7 @@ import { completePlanInventory, planConformance, planConformanceBlockers, planFi
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, type CostPlan, type ReviewCost } from "./cost-governance.ts";
 import { qualifiedTitleRepos, siblingTitleRefs, specRefs } from "./spec-read.ts";
+import { sdlcMetrics, type BandResult, type MetricTask, type MetricsReport } from "./sdlc-metrics.ts";
 import type { InstancesConfig } from "./instances.ts";
 import { composeRememberText } from "./memory-fail.ts";
 import { VERSION } from "../version.ts";
@@ -2522,6 +2523,89 @@ export class Tasks {
     }
     this.backfillCursor = n ? (this.backfillCursor + i) % n : 0;
     return linked;
+  }
+
+  /**
+   * #481 S7: the SDLC metrics from board history, read-only. Private tasks are counted as withheld and read for nothing else; PR
+   * readbacks are not made here (the cost report owns them), so merge time and same-head reruns read `unknown` unless given.
+   * Detection never calls a model and the report writes nothing.
+   */
+  sdlcMetrics(by: PeerId, since?: unknown, merged?: { mergedAt?: Record<number, number>; ciReruns?: Record<number, number | null> }): MetricsReport {
+    this.planningAuthority(by);
+    if (by !== USER && this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("metrics unavailable during private work");
+    let cutoff: number | undefined;
+    if (since !== undefined && since !== null && since !== "") {
+      cutoff = typeof since === "number" ? since : /^\d+$/.test(String(since)) ? Number(since) : Date.parse(String(since));
+      if (!Number.isFinite(cutoff) || cutoff < 0) throw new PreEffectToolRefusal("since must be a time (YYYY-MM-DD or an ISO timestamp) or milliseconds");
+    }
+    const rows = this.d.board.list();
+    const tasks: MetricTask[] = rows.map(task => ({ id: task.id, private: this.isPii(task), history: task.history.map(entry => ({ at: entry.at, event: entry.event,
+      ...(entry.reviewCost?.head ? { requestHead: entry.reviewCost.head } : {}), ...(entry.reviewFindings?.head ? { verdictHead: entry.reviewFindings.head } : {}) })) }));
+    const visibleIds = new Set(rows.filter(task => !this.isPii(task)).map(task => task.id));
+    const byKind: Record<string, number> = {};
+    for (const stall of this.stalled()) if (visibleIds.has(stall.task)) byKind[stall.cause.kind] = (byKind[stall.cause.kind] ?? 0) + 1;
+    const stalls = { open: Object.values(byKind).reduce((sum, n) => sum + n, 0), byKind, doneWithoutWrites: rows.filter(task => visibleIds.has(task.id) && task.history.findLast(entry => entry.event === "done")?.noWrites).length };
+    return sdlcMetrics(tasks, { ...(cutoff !== undefined ? { since: cutoff } : {}), ...(this.d.sdlc?.config().bands ? { bands: this.d.sdlc.config().bands } : {}), stalls, ...(merged ?? {}) });
+  }
+
+  /**
+   * #481 S7: act on the band tiers, deterministically and once per breach episode. An episode is a run of non-ok values for one metric
+   * (`BandResult.episode`, derived from history), so a sustained shift is one episode however many tasks finish inside it. `log` is one
+   * hub notice, `diagnose` one read-only `triage` backlog task and `propose` one `plan` backlog card naming the metric and its evidence.
+   * A metric with an open band card (a backlog or open task whose detail carries its key) writes nothing more, so a value that grows
+   * from diagnose to propose inside one episode does not add a second card. Held while the hub is stopping, recovering or has a
+   * storage error, like every host writer. The text is fixed words, numbers and task ids, never task text, and no GitHub issue is
+   * created. Returns the task ids created.
+   */
+  /**
+   * Whether `proposeFromBands` would run now, and a signature of what it would read. The daemon timer records a board revision only for a
+   * pass that ran, and re-runs when the signature changes (a reload that enables bands or edits them on an idle board).
+   */
+  bandsState(): { ready: boolean; signature: string } {
+    const config = this.d.sdlc?.config();
+    const configured = !!config && config.mode !== "off" && !!config.bands && Object.keys(config.bands).length > 0;
+    return { ready: configured && !this.d.sweepHeld?.() && !this.d.bus.isRecoveryHeld && !this.d.bus.storageError, signature: configured ? JSON.stringify([config!.mode, config!.bands]) : "" };
+  }
+
+  proposeFromBands(by: PeerId = HUB): number[] {
+    const config = this.d.sdlc?.config();
+    if (!config || config.mode === "off" || !config.bands || !Object.keys(config.bands).length) return [];
+    if (this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) return [];
+    if (by !== HUB && by !== USER) this.planningAuthority(by);
+    const report = this.sdlcMetrics(by === HUB ? USER : by);
+    if (report.bands === "off") return [];
+    const rows = this.d.board.list();
+    const bandRows = rows.filter(row => row.history[0]?.by === HUB && row.detail?.startsWith("Band breach key: "));
+    const keyOf = (row: Task) => row.detail!.split("\n")[0]!.slice("Band breach key: ".length);
+    const seen = new Set(bandRows.map(keyOf));
+    // A card counts as open while its task is not closed: the planner has not yet decided on it.
+    const open = new Set(bandRows.filter(row => !isClosedTaskState(row.state)).map(row => keyOf(row).split(":")[0]!));
+    const created: number[] = [];
+    for (const band of report.bands as BandResult[]) {
+      if (band.tier === "ok" || band.lastTask === null || band.episode === null) continue;
+      const key = `${band.metric}:#${band.episode}`;
+      if (band.tier === "log") {
+        const marker = `${key}:log`;
+        if (!open.has(band.metric) && this.d.board.recordBandNotice(marker)) this.releaseNotice(`sdlc band: ${band.metric} is ${band.reason}; last value ${band.last} on task #${band.lastTask}`);
+        continue;
+      }
+      if (seen.has(`${key}:propose`) || seen.has(`${key}:diagnose`) || open.has(band.metric)) continue;
+      const tier = band.tier === "propose" ? "propose" : "diagnose";
+      const full = `${key}:${tier}`;
+      const evidence = `metric ${band.metric}; newest value ${band.last} on task #${band.lastTask}; episode began at task #${band.episode}; baseline mean ${band.mean}, deviation ${band.sd} over ${band.baseline} tasks; ${band.reason}`;
+      const diagnose = tier === "diagnose";
+      const title = diagnose ? `Diagnose SDLC metric ${band.metric}: read-only triage` : `Review SDLC metric ${band.metric}: control band breach`;
+      const detail = `Band breach key: ${full}\n${evidence}\n${diagnose
+        ? "Read-only triage for the planner: inspect the recent task histories behind this metric and report what changed. Do not edit files, branches or the board."
+        : "Backlog card for the planner: decide whether this breach needs a process change. It names the metric and its evidence; it opens no GitHub issue."}`;
+      const draft = { title, detail, refs: {} };
+      const signals = this.signalsFor(draft);
+      if (this.isPii({ signals }) || !this.candidateTextAllowed(`${title}\n${detail}`)) continue;
+      const proposal = this.d.board.propose(HUB, { ...draft, class: diagnose ? "triage" : "plan", backlog: true, signals });
+      this.incomingBacklog.add(proposal.id); seen.add(full); open.add(band.metric); created.push(proposal.id);
+    }
+    for (const id of created) this.releaseNotice(`task #${id}: SDLC control band breach proposed in the backlog`);
+    return created;
   }
 
   /** S10 read-only planner report; S7 owns rolling bands and automatic board proposals. */

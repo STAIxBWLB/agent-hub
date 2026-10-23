@@ -1295,6 +1295,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (args.length > 2) fail("usage: ahub sdlc costs [owner/repository]");
       return console.log(await taskOp("hub_sdlc_costs", { ...(args[1] ? { repo: args[1] } : {}) }));
     }
+    if (sub === "metrics") {
+      const flags = takeFlags(args.slice(1), ["--since"], []);
+      if (flags.rest.length) fail("usage: ahub sdlc metrics [--since <YYYY-MM-DD|ISO time>]");
+      return console.log(await taskOp("hub_sdlc_metrics", { ...(flags.one["--since"] !== undefined ? { since: flags.one["--since"] } : {}) }));
+    }
     if (sub === "plan-review") {
       const revision = Number(args[2]);
       if (!Number.isSafeInteger(id) || id! <= 0 || !Number.isSafeInteger(revision) || revision < 0 || args.length < 4) fail("usage: ahub sdlc plan-review <task> <revision> <reason...>");
