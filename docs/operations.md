@@ -3793,7 +3793,7 @@ are described below. Native planner-cycle evidence remains unverified.
 
 ## Planning and phased releases (#263)
 
-Use `ahub backlog list` to read public staged work, then `ahub backlog plan <id>
+Use `ahub backlog list` to read public staged work (a table by rank with the reserved owner, dependencies and cut titles; `--full` keeps whole titles and `--json` prints the raw listing), then `ahub backlog plan <id>
 <revision> <fields-json> <reason>` to set rank, priority (0-3), release id, planned
 start/due UTC milliseconds or pin. `pin` accepts true/false; `undo` needs the
 current revision and latest eligible edit. The dashboard provides local-time

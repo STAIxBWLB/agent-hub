@@ -90,7 +90,7 @@ import { agentShellCause, classifyPeerCommand, cliCommandLabel, detectCliIdentit
 import { recordCliAudit, recordDelegatedCliAudit } from "./identity-audit.ts";
 import { runConsole } from "./console.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
-import { outputWidth, renderRoster, renderStatus, renderBoard, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
+import { outputWidth, renderRoster, renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
 import { renderHelp, configuredAcpHelp } from "./help.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
@@ -1147,7 +1147,15 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   backlog: async () => {
     const [sub, id, revision, value, ...reason] = args;
-    if (sub === "list" && args.length === 1) return console.log(await taskOp("hub_backlog_list", {}));
+    if (sub === "list" && outputArguments().length === 1) {
+      // #399: a table by default; --json prints the hub's listing unchanged, and a refusal is printed as it came.
+      const options = outputOptions(), raw = await taskOp("hub_backlog_list", {});
+      if (options.json) return console.log(raw);
+      let cards: unknown;
+      try { cards = JSON.parse(raw); } catch { return console.log(raw); }
+      if (!Array.isArray(cards)) return console.log(raw);
+      return printOutput(renderBacklog(cards, options.columns, Date.now(), options.full), options.color);
+    }
     if (sub === "groom" && args.length === 1) return console.log(await taskOp("hub_planner_groom", {}));
     if (["return", "return-untouched"].includes(sub ?? "") && /^[1-9]\d*$/.test(id ?? "") && /^\d+$/.test(revision ?? "") && args.length >= 4) {
       return console.log(await taskOp("hub_backlog_return_untouched", { id: Number(id), revision: Number(revision), reason: args.slice(3).join(" ") }));
