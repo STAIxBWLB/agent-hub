@@ -28681,12 +28681,18 @@ async function connectLoop() {
     let code;
     let closeReason;
     try {
+      let executionCwd;
+      if (!toolsMode) {
+        try {
+          executionCwd = realPath(process.cwd());
+        } catch {}
+      }
       const client = await ControlClient.connect(stateDir, {
         role: toolsMode ? "tools" : "peer",
         peer: peerId,
         ...toolsMode ? {} : { channel },
         ...process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {},
-        ...!toolsMode ? { cwd: realPath(process.cwd()) } : {},
+        ...executionCwd !== undefined ? { cwd: executionCwd } : {},
         ...!toolsMode && standingBy ? { standby: true } : {},
         ...process.env.AGENTHUB_PROJECT_DIR ? { projectRoot: projectRoot2 } : {}
       });

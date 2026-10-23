@@ -5935,7 +5935,8 @@ export async function startDaemon(opts: DaemonOptions) {
           if (definitionOf(peer)?.transport === "claude-channel" && msg.nativeInstanceId !== undefined && msg.nativeInstanceId !== instanceId) return void reply({ t: "facts", ok: false });
           const nativePeer = nativeClaude ? bus.peers.get(peer) : undefined;
           const permissionLaunch = definitionOf(peer)?.transport === "claude-channel" ? claudePermissionLaunch(peer) : undefined;
-          const writeRoot = declarations[peer] && config.roles[peer]?.includes("implementer") ? ownerWriteRoot(peer) : executionRoot(peer);
+          const writeRoot = declarations[peer]?.worktree ? ownerWriteRoot(peer) : executionRoot(peer);
+          if (declarations[peer]?.worktree && writeRoot === undefined) return void reply({ t: "facts", ok: false });
           const permission = nativeClaude && permissionLaunch && !permissionLaunch.unattended && msg.nativeLaunchId === permissionLaunch.launchId && writeRoot !== undefined ? permissionMode(peer) : undefined;
           if (permission !== undefined && isWsPeer(nativePeer)) claudePermissionGenerations.set(peer, nativePeer.sessionGeneration);
           const protectedWrite = scopedWriteBlocked(phase, permission, msg.tool, () => projectFileTool(msg.tool, msg.input, writeRoot ?? opts.cwd, config.protect_instruction_files, config.data?.readonly));

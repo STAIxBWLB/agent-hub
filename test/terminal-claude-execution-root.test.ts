@@ -10,15 +10,15 @@ import { readClaudeLaunchProof } from "../src/hub/claude-launch-proof.ts";
 import { assign, parseRouting } from "../src/hub/routing.ts";
 import { createProjectAdapterCatalog } from "../src/adapters/registry.ts";
 
-async function fixture() {
+async function fixture(role: "implementer" | "verifier" = "implementer") {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-terminal-claude-"))), peer = "claude-builder";
   const stateDir = join(root, ".agenthub", "state"), executionCwd = join(root, ".worktrees", peer);
   mkdirSync(stateDir, { recursive: true });
   for (const args of [["init", "-q"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], ["worktree", "add", "-qb", "builder", executionCwd]]) {
     expect(hubGitSync(["-C", root, ...args], { encoding: "utf8" }).status).toBe(0);
   }
-  const instances = { [peer]: { kind: "claude", roles: ["implementer"], worktree: `.worktrees/${peer}` } };
-  writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify({ instances, roles: { [peer]: ["implementer"] }, memory: { enabled: false, native: false }, inference: { enabled: false }, snapshots: { enabled: false }, mlx: { enabled: false }, pi: { enabled: false, auto_start: false }, task_sweep: { enabled: false }, batch_ms: 0 }));
+  const instances = { [peer]: { kind: "claude", roles: [role], worktree: `.worktrees/${peer}` } };
+  writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify({ instances, roles: { [peer]: [role] }, memory: { enabled: false, native: false }, inference: { enabled: false }, snapshots: { enabled: false }, mlx: { enabled: false }, pi: { enabled: false, auto_start: false }, task_sweep: { enabled: false }, batch_ms: 0 }));
   const daemon = await startDaemon({ cwd: root, stateDir, config: loadConfig(root), controlPort: 0, codexAppPort: 0, codexProxyPort: 0 });
   const console_ = await ControlClient.connect(stateDir, { role: "console", projectRoot: root });
   const status = async () => (await console_.request({ t: "status" })).status;
@@ -133,4 +133,26 @@ test("#525-5 Claude launcher records and executes the validated worktree while p
     for (const [i, name] of names.entries()) if (previous[i] === undefined) delete process.env[name]; else process.env[name] = previous[i];
     await f.close();
   }
+}, 20_000);
+
+
+test("#525-5 verifier-only worktree never receives canonical permission fallback without current root proof", async () => {
+  const f = await fixture("verifier");
+  try {
+    f.record(); await f.attach({ launchId: "launch-one", cwd: f.executionCwd });
+    const tools = await ControlClient.connect(f.stateDir, { role: "tools", peer: f.peer, projectRoot: f.root });
+    const facts = () => tools.request({ t: "facts", phase: "pre", native: true, nativeLaunchId: "launch-one", nativeInstanceId: f.instanceId, sessionId: "verifier-session", tool: "Edit", input: { file_path: join(f.root, "canonical.ts") } });
+    try {
+      for (const mode of ["ask-when-needed", "never-ask"]) {
+        expect((await facts()).projectRoot).toBe(f.executionCwd);
+        expect(await f.console_.request({ t: "permission", peer: f.peer, mode, confirmed: true })).toMatchObject({ ok: true });
+        f.record({ executionCwd: f.root });
+        const revoked = await facts(); expect(revoked.permission).toBeUndefined(); expect(revoked.projectRoot).toBeUndefined();
+        f.record(); await f.attach({ launchId: "launch-one", cwd: f.executionCwd });
+      }
+      const valid = await facts(); expect(valid.permission).toBe("never-ask"); expect(valid.projectRoot).toBe(f.executionCwd);
+      await f.attach({ launchId: "launch-one" });
+      const missing = await facts(); expect(missing.permission).toBeUndefined(); expect(missing.projectRoot).toBeUndefined();
+    } finally { tools.close(); }
+  } finally { await f.close(); }
 }, 20_000);

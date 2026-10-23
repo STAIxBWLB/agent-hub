@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { realPath } from "../src/hub/project.ts";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 
-async function plugin(launchId: string | undefined) {
+async function plugin(launchId: string | undefined, deletableCwd = false) {
   const root = mkdtempSync(join(tmpdir(), "ahub-channel-launch-"));
   const hellos: any[] = [], replies = new Map<number, (value: any) => void>();
   let socket: { close(code: number, reason: string): unknown } | undefined;
@@ -31,7 +31,9 @@ async function plugin(launchId: string | undefined) {
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: root, AGENTHUB_HOME: join(root, "hub-home"), AMEM_HOME: join(root, "memory-home"), CLAUDE_CONFIG_DIR: join(root, "claude-home"), AGENTHUB_CHANNEL: "1", AGENTHUB_PEER_ID: "claude", AGENTHUB_STATE_DIR: root, AGENTHUB_PROJECT_DIR: root, AGENTHUB_INSTANCE_ID: "fixture-instance" };
   delete env.AGENTHUB_MODE; delete env.AGENTHUB_DELIVERY_ONLY;
   if (launchId === undefined) delete env.AGENTHUB_LAUNCH_ID; else env.AGENTHUB_LAUNCH_ID = launchId;
-  const child = Bun.spawn([process.execPath, wrapper], { cwd: root, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
+  const cwd = deletableCwd ? join(root, "session-cwd") : root;
+  if (deletableCwd) mkdirSync(cwd);
+  const child = Bun.spawn([process.execPath, wrapper], { cwd, env, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   const stderr = (async () => { for await (const data of child.stderr) diagnostics += Buffer.from(data).toString(); })();
   const stdout = (async () => {
     let buffer = "";
@@ -59,7 +61,7 @@ async function plugin(launchId: string | undefined) {
     await rpc("initialize", { protocolVersion: "2024-11-05", capabilities: {}, clientInfo: { name: "launch-test", version: "1" } });
     child.stdin.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
     await until(() => diagnostics.includes('connected to hub as "claude"'), "plugin consumed welcome");
-    return { hellos, rpc, until, close, diagnostics: () => diagnostics, disconnect: (code: number) => socket!.close(code, code === 4430 ? "stale launch" : "replaced"),
+    return { hellos, rpc, until, close, removeCwd: () => { if (!deletableCwd) throw new Error("not a disposable cwd"); rmSync(cwd, { recursive: true }); }, diagnostics: () => diagnostics, disconnect: (code: number) => socket!.close(code, code === 4430 ? "stale launch" : "replaced"),
       status: (peers: unknown) => writeFileSync(join(root, "status.json"), JSON.stringify({ ...manifest, peers })) };
   } catch (error) { await close(); throw error; }
 }
@@ -93,5 +95,18 @@ test("#551 plugin marks every reconnect after replacement as standby even when s
     await f.until(() => f.hellos.length >= 2, "standby reconnect");
     expect(f.hellos[1]).toMatchObject({ launchId: "valid-launch", standby: true, channel: true });
     expect(f.diagnostics()).toContain("[fixture retry timer] 1000");
+  } finally { await f.close(); }
+});
+
+
+test("#525-5 a removed native cwd omits root evidence but does not stop channel reconnect", async () => {
+  const f = await plugin("valid-launch", true);
+  try {
+    expect(f.hellos[0].cwd).toBeDefined();
+    f.removeCwd(); f.status({ claude: { state: "offline" } }); f.disconnect(4000);
+    await f.until(() => f.hellos.length >= 2, "channel reconnects with a removed cwd");
+    expect(f.hellos[1].cwd).toBeUndefined();
+    expect(f.hellos[1]).toMatchObject({ launchId: "valid-launch", standby: true, channel: true });
+    expect((await f.rpc("ping"))).toEqual({});
   } finally { await f.close(); }
 });

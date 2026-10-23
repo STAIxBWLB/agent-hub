@@ -258,9 +258,14 @@ async function connectLoop(): Promise<void> {
     let code: number | undefined;
     let closeReason: string | undefined;
     try {
+      let executionCwd: string | undefined;
+      if (!toolsMode) {
+        try { executionCwd = realPath(process.cwd()); }
+        catch { /* A removed native cwd revokes root evidence, never the messaging connection. */ }
+      }
       const client = await ControlClient.connect(stateDir, { role: toolsMode ? "tools" : "peer", peer: peerId, ...(toolsMode ? {} : { channel }),
         ...(process.env.AGENTHUB_LAUNCH_ID ? { launchId: process.env.AGENTHUB_LAUNCH_ID } : {}),
-        ...(!toolsMode ? { cwd: realPath(process.cwd()) } : {}),
+        ...(executionCwd !== undefined ? { cwd: executionCwd } : {}),
         ...(!toolsMode && standingBy ? { standby: true } : {}),
         ...(process.env.AGENTHUB_PROJECT_DIR ? { projectRoot } : {}) });
       client.onPush = (msg) => {
