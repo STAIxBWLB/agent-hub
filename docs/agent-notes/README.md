@@ -39,3 +39,7 @@ Background moved out of the area notes for 0.13.0:
 Background moved out of the area notes for 0.15.0:
 
 - I-2 as the last reviewer check (#744, tasks.md): placed earlier, it refused an offline former implementer as "implemented this task" instead of "offline", which turned a task that used to approve directly into a blocked person review.
+
+Background moved out of the area notes for 0.16.0:
+
+- Closing-refs negation list (#760, tests.md): agent-mem PR #36 said "Does not close #15", GitHub read `close #15` as a closing keyword, and the design issue closed with T3 open. The list errs toward flagging: a false positive costs a rewrite of the PR text, a false negative closes a design issue, and a body that really means a qualified close is the author's to reword. A keyword typed into a comment or the merge dialog is out of the check's reach. At 0.16.0 `closing-refs` is not a required status check (branch rules require `check (ubuntu-latest)`, `check (macos-latest)` and `seeded guards`).

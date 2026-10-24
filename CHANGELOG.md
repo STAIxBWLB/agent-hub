@@ -4,6 +4,9 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.16.0
+
+- The project daemon stops through its normal stop on SIGHUP and SIGQUIT too, not only SIGINT and SIGTERM, so memory sync git (detached since agent-mem 0.7.0) never outlives the hub; SIGQUIT no longer reaches its default core dump (#438).
 - Raise the exact `@staix/agent-mem` pin to 0.7.0: standalone setup, notes and the review queue, decay and promotion candidates, recall validity with person-only history, intent briefs and use telemetry, doctor and the sync cadence. The hub passes its own command names (`ahub memory`, `ahub goal`) into the library's usage and refusal text. A generation home now lists its candidate review queue instead of refusing it. agent-mem 0.7.0 runs memory sync git in its own process group, which the daemon stops on all four exit signals (#438).
 - Add read-time memory code neighbours (#684): opt-in dashboard calls with commit-stamped dashed edges, bounded symbol graph overlays, fails-first related task briefs and a console note count. Code edges are never stored; unknown and partial evidence stay explicit.
 

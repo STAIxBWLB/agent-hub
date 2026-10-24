@@ -20781,7 +20781,7 @@ init_sdlc_metrics();
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
-  version: "0.15.0",
+  version: "0.16.0",
   description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
   license: "MIT",
   type: "module",

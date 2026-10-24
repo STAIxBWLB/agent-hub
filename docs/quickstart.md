@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.15.0
+bun add -g github:STAIxBWLB/agent-hub#v0.16.0
 ahub setup
 ```
 
@@ -29,6 +29,10 @@ For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
+
+## Upgrading to 0.16.0
+
+Always-ask now covers the local worker, Pi and Codex too (#636 slice 3): a local or Pi model tool call is classed before its permission mode, a `never-ask` grant, Pi's `Always allow` or `--unattended`, and a classed command approval request that Codex sends offers only allow-once, deny and the class budget. Unattended local or Pi work that publishes, installs or deletes now waits for you: answer it in the console, or change `action_policy` as in the 0.15.0 notes below. `ahub status` still lists Codex as not enforceable, because its native policy can run a command without sending a request, and Jcode as having no hub approval path. An approval whose command is cut or withheld (an ACP peer's private turn, for one) can only be denied, and a local `action_policy` that weakens the defaults is flagged on every status policy row. The classifier now reads the literal words around a shell expansion (`git push origin $B` asks) and takes the strictest class where the expansion can change it, while a `gh api graphql` call with one literal query no longer asks (#762, #756; see [security notes](security.md)). The hub no longer calls a claude-mem worker (agent-mem#13 P4): recall, briefs, `ahub ask` and the local worker's capture run in process on the exact-pinned `@staix/agent-mem` 0.7.0, `memory.worker_url` is ignored, `ahub doctor` reports the library, and `ahub ask --remember` and context checkpoints save pending candidates that only a person accepts; `ahub memory import claude-mem` stays the explicit way to copy old notes. The planner setting takes up to eight peers (`ahub settings set planner claude,codex`): each new task records one of them, only that planner or you change its planning, an agent's own plan is reviewed by another holder whenever one is online, and `ahub task assign <id> <peer> --role planner` moves it (#525-2; see [the planner](operations.md#the-planner-455)). Once a planner list is set or any task records a planner, `ahub upgrade` and recovery refuse a target release without `task_planners`, so the project cannot be moved back to 0.15.0 that way. `ahub deliverables [--task <id>] [--approved] [--check]` lists what each task delivered and a reviewer approved, and a dashboard card shows a `Deliverables n` chip (#509b). `ahub budget` prints each window's kind and source and says why a peer has no number (#285). The dashboard Memory view gains a Code neighbours toggle for a selected symbol, and `ahub doctor --stale-anchors` is a read-only report of memory symbol anchors at the current head (#684). The `codex-review` reviewer on Codex 0.164.0 no longer needs `ahub agents trust` (#757). Upgrade running hubs with `ahub upgrade` and restart Claude sessions so they load the 0.16.0 plugin. Coming from 0.14.0 or older, the notes below apply too.
 
 ## Upgrading to 0.15.0
 
@@ -98,7 +102,7 @@ The restarted Claude planner gets the release-train tools (`hub_release_new`, `h
 
 Jcode must be 0.98.0 or later, below 1.0.0; 0.94.0 is no longer accepted, so `ahub doctor` fails its Jcode row for an older install and the peer does not start (#529). Every owned jcode process runs with `JCODE_NO_TELEMETRY=1`.
 
-Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is 0.6.0. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
+Since 0.12.37 the hub opens a split memory home through its shards (#534); the current exact `@staix/agent-mem` pin is 0.7.0. Before anyone runs `amem migrate --shards` on a memory home, every hub using that home must run 0.12.37 or later: an older hub does not see the split and keeps writing the old layout. `ahub memory profile-check` is split-aware and compares each hub with its own project's shard (#536). See [memory profiles and rollout](memory.md#selected-memory-profile).
 
 From 0.12.30 or earlier, existing Jcode project MCP entries need one refresh before conductor or dashboard starts. Once per project, the person runs:
 
@@ -150,7 +154,7 @@ or set `OMNIROUTE_API_KEY`. The `.agenthub/routing.toml` that `ahub init` writes
 | `ahub task propose [--class <c>] <title>` | put work on the board; the hub picks an owner and a reviewer, and the class if you name none |
 | `ahub board` | who has what, one line per task at a terminal width; `--full` for whole titles and SDLC advice, `ahub task show <id>` for one task |
 | `ahub task cancel <id> --reason <text>` | close obsolete work without approving it or stopping a native turn |
-| `ahub settings set planner <peer>` | pin the planner; status reports whether it came from settings, roles or the automatic choice |
+| `ahub settings set planner <peer>[,<peer>...]` | pin up to eight planners; status reports whether they came from settings, roles or the automatic choice |
 | `ahub settings reload` | apply edited config files without a restart; guarded values wait for your `y` in this terminal, and restart-only keys stay pending |
 | `ahub settings edit <file> set <path> <json>` | change an instance, the review block or the `sdlc.toml` lifecycle with a validated diff and a backup; `ahub settings backups` lists the backups |
 | `ahub status` | peers, queues, pauses; `ahub budget` for quota windows |
@@ -165,7 +169,7 @@ More: `ahub help`. How it is built and why: [`docs/specs/2026-09-19-agent-hub-de
 
 ## Shared memory
 
-The hub exact-pins the first-party `@staix/agent-mem` 0.6.0 core, including deterministic capture; no claude-mem worker is needed. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Generation candidate acceptance is still refused.
+The hub exact-pins the first-party `@staix/agent-mem` 0.7.0 core, including deterministic capture; no claude-mem worker is needed. Existing shared-v1 memory remains the default; upgrading does not migrate it. Managed agents use screened `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` tools, or propose a correction with `hub_memory_correct`; only a person accepts candidates through the supported `amem review` path. Since agent-mem 0.7.0, `amem review` also accepts candidates on a selected generation.
 
 Before any real generation migration, upgrade every hub sharing that memory home to 0.12.30 or later and check its authenticated binding with `ahub memory profile-check` in each custom registry. Ready bindings prove compatibility, not an atomic live cutover: quiesce consumers and close their handles before migrating, then reopen through the supported session-preserving lifecycle. Invalid or changed profiles disable native memory without falling back to legacy writes; the bus and board continue. See [memory operations](operations.md#hub-memory) for the remaining rollout gates.
 
