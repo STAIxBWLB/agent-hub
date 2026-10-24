@@ -2919,7 +2919,7 @@ export class Tasks {
     const plannerStage = !!input && typeof input === "object" && !Array.isArray(input) && Object.hasOwn(input, "stage")
       && Object.keys(input).every(key => ["stage", "repo", "issue"].includes(key))
       && (definition?.actor === "planner" || definition?.actor === "owner/planner") && this.taskPlanner(task).includes(by);
-    if (by !== USER && by !== task.owner && by !== task.reviewer && !plannerStage) throw new PreEffectToolRefusal("only the task owner, reviewer, stage planner or console user may record lifecycle evidence");
+    if (by !== USER && by !== task.owner && by !== task.reviewer && !plannerStage) throw new PreEffectToolRefusal("only the task owner, reviewer or console user may record lifecycle evidence; a stage planner may record stage identity");
     // The spec identity is person-owned in enforce. No observation cache or restart can reopen a relink bypass.
     const specRelink = (task.sdlc?.repo !== undefined && next.repo !== task.sdlc.repo) || (task.sdlc?.issue !== undefined && next.issue !== task.sdlc.issue);
     if (config.mode === "enforce" && by !== USER && specRelink) throw new PreEffectToolRefusal("only the person may relink an established repository or issue in enforce");

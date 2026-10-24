@@ -170,7 +170,7 @@ export function checkSettingValue(def: SettingDef, raw: unknown, routes: readonl
       const peers = typeof raw === "string" ? [raw] : raw;
       if (!Array.isArray(peers) || peers.length === 0 || peers.length > PEERS_MAX || new Set(peers).size !== peers.length
         || peers.some(peer => typeof peer !== "string" || !PEER.test(peer) || !(def.values ?? PLANNER_PEERS).includes(peer))) {
-        throw new Error(`${def.key} takes one to ${PEERS_MAX} distinct eligible planner peer ids; allowed: ${(def.values ?? PLANNER_PEERS).join(", ")}`);
+        throw new Error(`${def.key} must be one of ${(def.values ?? PLANNER_PEERS).join(", ")}, or a list of one to ${PEERS_MAX} distinct eligible planner peer ids`);
       }
       return peers.length === 1 ? peers[0] as string : [...peers] as string[];
     }

@@ -7,6 +7,8 @@ import { Board } from "../src/hub/board.ts";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon, type HubConfig } from "../src/hub/daemon.ts";
 
+const PUBLISHED_015_FEATURES = ["external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "recovery_deferred_hub", "peer_instances", "role_stages", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated"];
+
 type Evidence = "task" | "release" | "plan-author-null" | "self-review" | "history-plan-author-null" | "history-self-review" | "legacy-null";
 function seed(file: string, evidence: Evidence): void {
   const board = new Board(file);
@@ -84,7 +86,7 @@ for (const input of [{ name: "ordinary default" }, { name: "legacy nullable task
 
 test("#525 R3 a published 0.15.0 role_stages claim cannot restore task planner authority", async () => {
   // Frozen from v0.15.0: role_stages covered the earlier headless implementation slice, not task-bound planners.
-  const oldFeatures = ["external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "recovery_deferred_hub", "peer_instances", "role_stages", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated"];
+  const oldFeatures = PUBLISHED_015_FEATURES;
   const f = await fixture({ evidence: "task" });
   try {
     expect(oldFeatures).toContain("role_stages");
@@ -92,6 +94,25 @@ test("#525 R3 a published 0.15.0 role_stages claim cannot restore task planner a
     const result = await f.client.request({ t: "recovery", op: "inspect", operationId: "old-planner-target", expectedInstanceId: f.status.instanceId, targetFeatures: oldFeatures });
     expect(result).toMatchObject({ ok: false });
     expect(result.error).toContain("planner");
+    expect((await f.client.request({ t: "status" })).status.instanceId).toBe(f.status.instanceId);
+  } finally { await f.close(); }
+}, 20_000);
+
+
+test("#525 a newly proposed planner-bound task refuses absent and published-0.15 target capabilities before prepare or commit", async () => {
+  const f = await fixture();
+  try {
+    const proposed = await f.client.request({ t: "task", op: "hub_task_propose", args: { title: "planner recovery premise", class: "review" } });
+    expect(proposed.ok).not.toBe(false);
+    const tasks = JSON.parse((await f.client.request({ t: "task", op: "hub_task_list", args: {} })).text);
+    expect(tasks).toHaveLength(1); expect(tasks[0].planner).toBe("claude");
+    for (const targetFeatures of [undefined, PUBLISHED_015_FEATURES]) for (const op of ["prepare", "commit"]) {
+      const reply = await f.client.request({ t: "recovery", op, operationId: "planner-capability-negative", expectedInstanceId: f.status.instanceId,
+        ...(targetFeatures === undefined ? {} : { targetFeatures }) });
+      expect(reply).toMatchObject({ ok: false, error: expect.stringContaining("target lacks task_planners") });
+      expect((await f.client.request({ t: "recovery", op: "inspect", expectedInstanceId: f.status.instanceId })).recovery.phase).toBeUndefined();
+      expect(JSON.parse((await f.client.request({ t: "task", op: "hub_task_list", args: {} })).text)).toEqual(tasks);
+    }
     expect((await f.client.request({ t: "status" })).status.instanceId).toBe(f.status.instanceId);
   } finally { await f.close(); }
 }, 20_000);
