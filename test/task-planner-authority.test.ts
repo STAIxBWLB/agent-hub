@@ -191,5 +191,5 @@ test("a throwing proposal planner rolls back the row, revision and callbacks wit
   expect(r.board.statusRevision()).toBe(revision); expect(changes).toEqual([]);
   r.board.proposalPlanner = selected;
   const retry = r.board.propose(USER, { title: "successful retry", class: "plan" });
-  expect(retry.id).toBe(failedId); expect(retry.planner).toBe(["claude", "codex"][retry.id % 2]); expect(changes).toEqual([retry.id]);
+  expect(retry.id).toBe(failedId!); expect(retry.planner).toBe(["claude", "codex"][retry.id % 2]); expect(changes).toEqual([retry.id]);
 });

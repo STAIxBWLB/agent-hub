@@ -44,5 +44,5 @@ for (const [fileValue, shown, submitted, normalized] of [
   await f.save();
   expect(f.sent).toEqual([{ action: "setting", key: "planner", value: submitted }]);
   const definition = settingDef("planner"); if (typeof definition === "string") throw new Error(definition);
-  expect(checkSettingValue(definition, f.sent[0]!.value)).toEqual(normalized);
+  expect(checkSettingValue(definition, f.sent[0]!.value)).toEqual(normalized === null || typeof normalized === "string" ? normalized : [...normalized]);
 });

@@ -1860,7 +1860,9 @@ export class Tasks {
         this.addPlannerBacklog(peer, current);
         for (const id of ids) {
           const task = this.d.board.get(id);
-          if (task?.state === "backlog") for (const recipient of this.taskPlanner(task)) this.addPlannerBacklog(recipient, [id]);
+          if (task?.state === "backlog" && !this.taskPlanner(task).includes(peer)) {
+            for (const recipient of this.taskPlanner(task)) this.addPlannerBacklog(recipient, [id]);
+          }
         }
         return false;
       }

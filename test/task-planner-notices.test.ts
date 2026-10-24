@@ -73,19 +73,19 @@ test("ready-unassigned sweep and no-owner stall notices go only to the effective
   for (const peer of Object.values(r.peers)) await peer.stop();
   const stalled = await r.tasks.propose(USER, { title: "no execution owner", class: "implement" });
   expect(stalled.owner).toBeNull(); expect(stalled.planner).toBeDefined();
-  expect(r.told.map(row => row.peer)).toEqual([stalled.planner]);
+  expect(r.told.map(row => row.peer)).toEqual([stalled.planner!]);
 });
 
 test("independent review notices use pure rotation, expose ids only and remain current across equal-clock plan revisions", async () => {
   const now = Date.now; Date.now = () => 100_000;
   try {
     const r = await rig(sdlcConfig({ mode: "enforce", required_checks: [] }));
-    const made = r.board.propose("claude", { title: "PRIVATE_TITLE_NOT_IN_REVIEW_NOTICE", class: "implement", backlog: true, plan: { paths: ["private-plan-marker.ts"] } });
+    const made = r.board.propose("claude", { title: "PRIVATE_TITLE_NOT_IN_REVIEW_NOTICE", class: "implement", backlog: true, reserved: "kimi", plan: { paths: ["private-plan-marker.ts"], review: { scope: "full", reviewers: 1 }, ci: "full" } });
     const task = r.board.update(made.id, USER, "fixture bound author", { planner: "claude" });
     const expected = assign({ ...task, state: "proposed" }, { claude: "busy", codex: "busy", local: "busy", kimi: "idle" }, r.routing,
       { roles: r.roles, candidates: [], planners: ["codex", "local"] }).planner!;
-    await expect(r.tasks.pullPlanned("claude", { id: task.id, revision: 0, reason: "needs independent review" })).rejects.toThrow("plan");
-    await expect(r.tasks.pullPlanned("claude", { id: task.id, revision: 0, reason: "same request" })).rejects.toThrow("plan");
+    await expect(r.tasks.pullPlanned("claude", { id: task.id, revision: 0, reason: "needs independent review" })).rejects.toThrow("plan not reviewed");
+    await expect(r.tasks.pullPlanned("claude", { id: task.id, revision: 0, reason: "same request" })).rejects.toThrow("plan not reviewed");
     const requests = () => r.bus.pendingEnvelopes(expected).filter(env => env.refs?.planReview !== undefined);
     expect(requests()).toHaveLength(1); const first = requests()[0]!;
     expect(first.to).toEqual([expected]); expect(first.refs).toMatchObject({ task: String(task.id), planReview: 0, planAuthor: "claude" });
@@ -94,7 +94,7 @@ test("independent review notices use pure rotation, expose ids only and remain c
     await r.tasks.recordPlanReview(expected, task.id, { revision: 0, reason: "independent", review: { scope: "full", reviewers: 1 }, ci: "full" });
     expect(r.tasks.relevant(expected, first)).toBe(false);
     await r.tasks.planBacklog("claude", { id: task.id, revision: 0, fields: { priority: 1 }, reason: "new planning revision" });
-    await expect(r.tasks.pullPlanned("claude", { id: task.id, revision: 1, reason: "new review required" })).rejects.toThrow("plan");
+    await expect(r.tasks.pullPlanned("claude", { id: task.id, revision: 1, reason: "new review required" })).rejects.toThrow("plan not reviewed");
     const current = requests().find(env => env.refs?.planReview === 1)!; expect(current).toBeDefined();
     // Date.now is deliberately unchanged: flow evidence, not a strict millisecond comparison, distinguishes reviews.
     expect(current.ts).toBe(first.ts); expect(r.tasks.relevant(expected, current)).toBe(true);
@@ -104,10 +104,11 @@ test("independent review notices use pure rotation, expose ids only and remain c
 });
 
 test("bound planner lifecycle actors may record only stage identity, never reviewer or deliverable authority", async () => {
-  const config = sdlcConfig({ mode: "enforce", required_checks: [], stages: ["question", "draft", "review"], definitions: {
+  const config = sdlcConfig({ mode: "enforce", required_checks: [], stages: ["question", "draft", "review", "merge"], definitions: {
     question: { base: "plan", actor: "planner", entry_gates: [], exit_gates: [] },
     draft: { base: "plan", actor: "owner/planner", entry_gates: [], exit_gates: [] },
     review: { base: "review", actor: "reviewer", entry_gates: [], exit_gates: [] },
+    merge: { base: "merge", actor: "planner", entry_gates: [], exit_gates: [] },
   } });
   const r = await rig(config), made = r.board.propose(USER, { title: "stage fixture", class: "implement" });
   const task = r.board.update(made.id, USER, "fixture execution", { owner: "kimi", reviewer: "local", planner: "claude" });
