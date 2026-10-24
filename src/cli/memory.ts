@@ -1,12 +1,26 @@
+import { TaskRepositories } from "../hub/task-repository.ts";
+import type { TaskPlan, TaskRefs } from "../hub/board.ts";
+import { Database } from "bun:sqlite";
+import { lstatSync } from "node:fs";
+import { join } from "node:path";
+import { CodeFacts } from "../hub/code-facts.ts";
+import { HUB_DB_BUSY_TIMEOUT_MS } from "../hub/db-timeout.ts";
+import { hubGitEnv, hubGitSync } from "../hub/git.ts";
+import { stateDirFor } from "../hub/control-client.ts";
+import { isDenied } from "../local/deny.ts";
+import { foldSegment } from "../hub/permission-mode.ts";
+import { matchesPolicyLexically } from "../hub/path-policy.ts";
+import { memoryAnchorTaskIdentity, memoryStaleAnchors, unavailableMemoryStaleAnchors, type MemoryStaleAnchorReport, type MemoryTaskPrivacy } from "../hub/memory-stale-anchors.ts";
+import { MEMORY_SYMBOL_START_BUDGET_MS } from "../hub/memory-symbols.ts";
 import { detectCliIdentity } from "./identity.ts";
 import { createStalenessProbe } from "../hub/memory-staleness.ts";
-import { looksSecret, memoryProjectKey, type MemoryStore } from "@staix/agent-mem";
+import { looksSecret, memoryProjectKey, pathCandidates, readProfileJSON, resolveShardProfile, type MemoryStore } from "@staix/agent-mem";
 import type { SyncOptions } from "@staix/agent-mem";
 import { MEMORY_USAGE as CORE_MEMORY_USAGE, rawMemoryCommand, rawGoalCommand } from "@staix/agent-mem";
 import { mentionsPrivatePath, promotionScreen, withoutPii } from "../hub/memory-policy.ts";
 import { currentRouting, detectSignals } from "../hub/routing.ts";
 import { loadConfig } from "../hub/daemon.ts";
-import { bindProfileMemory, memoryProjectFor, memoryProjectForStore, openProfileMemory, MEMORY_PROFILE_UNAVAILABLE, MEMORY_SPLIT_INCOMPLETE, type MemoryProfileReceipt, type ProfileMemoryOptions } from "../hub/memory-profile.ts";
+import { bindProfileMemory, memoryProjectFor, memoryProjectForStore, openProfileMemory, MemoryProfileBinding, MEMORY_PROFILE_UNAVAILABLE, MEMORY_SPLIT_INCOMPLETE, type MemoryProfileReceipt, type ProfileMemoryOptions } from "../hub/memory-profile.ts";
 
 export { GOAL_USAGE } from "@staix/agent-mem";
 export const MEMORY_USAGE = `${CORE_MEMORY_USAGE} | decay [--days N] [--json] | profile-check [--json]`;
@@ -104,4 +118,92 @@ export async function goalCommand(args: string[], cwd: string, opts: { store?: M
     });
     return profileOutput(text, args.includes("--json"), context.binding.status(context.store), person);
   } finally { if (context.owned) context.store.close(); }
+}
+
+
+interface StaleAnchorCommandOptions {
+  store?: MemoryStore;
+  facts?: Pick<CodeFacts, "exists">;
+  stateDir?: string;
+  head?: () => string | undefined;
+  taskPrivacy?: (key: string) => MemoryTaskPrivacy;
+  now?: () => number;
+}
+/** Unlike an ordinary core open, inspection must not initialize a missing profile, machine or shard. */
+function existingInspectionProfile(project: string, cwd: string): boolean {
+  try {
+    const binding = new MemoryProfileBinding({ project, projectKey: memoryProjectKey(cwd) });
+    const profiles = [binding.profile, ...(binding.profile.sharded ? [resolveShardProfile(binding.home, { user: true })] : [])];
+    for (const profile of profiles) {
+      const machineFile = join(profile.sharded ? profile.home : profile.dir, "machine.json"), machine = lstatSync(machineFile);
+      if (!machine.isFile() || machine.isSymbolicLink()) return false;
+      const metadata = readProfileJSON(machineFile, 4096) as { id?: unknown } | undefined;
+      if (!metadata || typeof metadata.id !== "string" || !/^[a-f0-9]{16}$/.test(metadata.id)) return false;
+      for (const name of ["log", "local"]) { const folder = lstatSync(join(profile.dir, name)); if (!folder.isDirectory() || folder.isSymbolicLink()) return false; }
+    }
+    binding.assertCurrent(); return true;
+  } catch { return false; }
+}
+
+/** Host-only doctor report: selected amem reads may maintain derived indexes/leases, never notes or candidates. */
+export async function memoryStaleAnchorsCommand(cwd: string, opts: StaleAnchorCommandOptions = {}): Promise<MemoryStaleAnchorReport> {
+  let ownedFacts: CodeFacts | undefined;
+  let context: ReturnType<typeof commandStores> | undefined;
+  try {
+    const project = projectOf(cwd, opts.store);
+    if (!opts.store && !existingInspectionProfile(project, cwd)) return unavailableMemoryStaleAnchors();
+    context = commandStores(opts.store, { project, projectKey: memoryProjectKey(cwd), deferPromotions: true }, cwd);
+    const config = () => loadConfig(cwd);
+    const publicMetadataText = (text: string): boolean => {
+      try {
+        const c = config(), paths = [...(c.pii?.paths ?? []), ...c.local.deny];
+        return !looksSecret(text) && !detectSignals({ title: "", detail: text, refs: {} }, currentRouting(cwd), cwd).includes("pii")
+          && !mentionsPrivatePath(text, [], paths, cwd)
+          && !pathCandidates(text).some(path => isDenied(path, c.local.deny) || isDenied(foldSegment(path), c.local.deny.map(foldSegment)));
+      } catch { return false; }
+    };
+    const clock = opts.now ?? performance.now.bind(performance), metadataDeadline = clock() + MEMORY_SYMBOL_START_BUDGET_MS;
+    const blockedTasks = new Map<string, "private" | "unknown">(), repositories = new TaskRepositories(cwd); let taskSourceUnavailable = false;
+    const taskPrivacy = opts.taskPrivacy ?? ((key: string): MemoryTaskPrivacy => {
+      const identity = memoryAnchorTaskIdentity(key, project); if (!identity) return "unknown";
+      const blocked = blockedTasks.get(key); if (blocked) return blocked;
+      if (taskSourceUnavailable || clock() >= metadataDeadline) return "unknown";
+      let db: Database | undefined;
+      try {
+        const file = join(opts.stateDir ?? stateDirFor(cwd), "hub.db"), stat = lstatSync(file);
+        if (!stat.isFile() || stat.isSymbolicLink()) { taskSourceUnavailable = true; return "unknown"; }
+        db = new Database(file, { readonly: true, create: false });
+        db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
+        const row = db.query(`SELECT id,created,signals,title,detail,refs,plan FROM tasks WHERE id=? AND created=?
+          AND length(signals)<=65536 AND length(title)<=300 AND length(detail)<=8000 AND length(refs)<=65536 AND length(plan)<=65536`).get(identity.id, identity.created) as { id: number; created: number; signals: string; title: string; detail: string; refs: string; plan: string } | null;
+        if (!row || row.id !== identity.id || row.created !== identity.created) { blockedTasks.set(key, "unknown"); return "unknown"; }
+        const signals: unknown = JSON.parse(row.signals), refs: unknown = JSON.parse(row.refs), plan: unknown = JSON.parse(row.plan);
+        if (!Array.isArray(signals) || !signals.every(signal => typeof signal === "string") || !refs || typeof refs !== "object" || Array.isArray(refs) || !plan || typeof plan !== "object" || Array.isArray(plan)) { blockedTasks.set(key, "unknown"); return "unknown"; }
+        const raw = [row.title, row.detail];
+        JSON.stringify({ refs, plan }, (key: string, value: unknown) => { if (key) raw.push(key); if (typeof value === "string") raw.push(value); return value; });
+        if (signals.includes("pii") || signals.includes("pii_path") || !publicMetadataText(raw.join("\n"))) { blockedTasks.set(key, "private"); return "private"; }
+        const paths = [...Object.values(refs), ...Object.values(plan)].flatMap(value => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []);
+        const c = config();
+        if (paths.some(path => isDenied(path, c.local.deny) || matchesPolicyLexically(cwd, path, [...(c.pii?.paths ?? []), ...c.local.deny]))) { blockedTasks.set(key, "private"); return "private"; }
+        const scope = repositories.scope(refs as TaskRefs);
+        if (scope.key !== repositories.project.key || repositories.mismatch(refs as TaskRefs, plan as TaskPlan)) { blockedTasks.set(key, "unknown"); return "unknown"; }
+        return "public";
+      } catch { taskSourceUnavailable = true; return "unknown"; }
+      finally { db?.close(); }
+    });
+    const head = opts.head ?? (() => {
+      try {
+        const result = hubGitSync(["-C", cwd, "rev-parse", "--verify", "HEAD"], { encoding: "utf8", env: hubGitEnv(process.env, { repositoryIsolation: true }), timeout: 1000, maxBuffer: 4096 });
+        const value = result.stdout.trim(); return result.status === 0 && /^[a-f0-9]{40}$/.test(value) ? value : undefined;
+      } catch { return undefined; }
+    });
+    const facts = opts.facts ?? (ownedFacts = new CodeFacts({ timeoutMs: MEMORY_SYMBOL_START_BUDGET_MS }));
+    const binding = context.binding;
+    return await memoryStaleAnchors({ cwd, project, store: context.store, head, now: opts.now, taskPrivacy, publicMetadataText,
+      assertCurrent: () => binding.assertCurrent(),
+      context: () => ({ cwd, project, repo: project, deny: config().local.deny, allowed: publicMetadataText }),
+      exists: (repo, at, name) => facts.exists(repo, at, name),
+      finishQueries: async () => { if (ownedFacts) { await ownedFacts.close(); ownedFacts = undefined; } } });
+  } catch { return unavailableMemoryStaleAnchors(); }
+  finally { try { if (ownedFacts) await ownedFacts.close(); } finally { if (context?.owned) context.store.close(); } }
 }
