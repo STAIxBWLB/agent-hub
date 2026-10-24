@@ -188,6 +188,85 @@ function unwrapped(input: string[]): string[] {
   return [];
 }
 
+/**
+ * Whether every definition of a GraphQL document is a read: a `query` (or shorthand `{...}`) or a `fragment`. Strings and comments are skipped, so
+ * a keyword inside one counts for nothing. A `mutation`, a `subscription`, any other top-level word, unbalanced text or no operation is false:
+ * unknown is never a read.
+ */
+function graphqlQueryOnly(text: string): boolean {
+  const skipString = (at: number): number => {              // `at` is the opening quote; the index after the string, or -1 when it never ends
+    // A block string ends at its first `"""`: GraphQL's escaped `\"""` ends it later, so a lexer that ends early only turns a read into a write (the strict direction).
+    if (text.startsWith('"""', at)) { const end = text.indexOf('"""', at + 3); return end < 0 ? -1 : end + 3; }
+    // GraphQL's line terminators are LF, CR and CRLF, and none may appear in a single-line string: ending early is the strict direction.
+    for (let i = at + 1; i < text.length; i++) { if (text[i] === "\\") { i++; if (text[i] === "\n" || text[i] === "\r") return -1; } else if (text[i] === '"') return i + 1; else if (text[i] === "\n" || text[i] === "\r") return -1; }
+    return -1;
+  };
+  const skipComment = (at: number): number => { let i = at; while (i < text.length && text[i] !== "\n" && text[i] !== "\r") i++; return i; };   // a comment ends at LF or CR (so also CRLF), never later than GraphQL ends it
+  const closers: Record<string, string> = { "{": "}", "(": ")", "[": "]" };
+  const skipBlock = (at: number): number => {             // `at` is an opening bracket; the index after its matching close, or -1
+    const close = closers[text[at]!]!;
+    for (let i = at + 1; i < text.length; i++) {
+      const c = text[i]!;
+      if (c === '"') { const end = skipString(i); if (end < 0) return -1; i = end - 1; }
+      else if (c === "#") i = skipComment(i) - 1;
+      else if (c in closers) { const end = skipBlock(i); if (end < 0) return -1; i = end - 1; }
+      else if (c === "}" || c === ")" || c === "]") return c === close ? i + 1 : -1;
+    }
+    return -1;
+  };
+  let start = true, operations = 0;                          // `start`: the next token begins a top-level definition
+  for (let i = 0; i < text.length;) {
+    const c = text[i]!;
+    if (/[\s,\uFEFF]/.test(c)) { i++; continue; }
+    if (c === "#") { i = skipComment(i); continue; }
+    if (c === "{") { const end = skipBlock(i); if (end < 0) return false; if (start) operations++; i = end; start = true; continue; }   // shorthand query, or the body that ends a definition
+    if (c === "(") { if (start) return false; const end = skipBlock(i); if (end < 0) return false; i = end; continue; }
+    const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(text.slice(i, i + 256))?.[0];
+    if (name) {
+      if (start) { if (name === "query") operations++; else if (name !== "fragment") return false; start = false; }
+      i += name.length; continue;
+    }
+    if (!start && (c === "@" || c === ":")) { i++; continue; }   // a directive, or `fragment X on Y`; nothing else is read at the top level
+    return false;
+  }
+  return start && operations > 0;
+}
+
+/**
+ * `gh api graphql` with fields (#756): undefined when the call does not name the graphql endpoint, true only for ONE literal `query` field whose
+ * every operation is a read. A query from a file or stdin (`@file`, `--input`), a second `query` field, an option this does not know,
+ * another positional and every unparsable document are false: the caller keeps them external-write.
+ */
+function ghGraphqlRead(words: string[]): boolean | undefined {
+  const rest = words.slice(1);                                   // `words` is `api ...`
+  if (!rest.includes("graphql")) return undefined;
+  const fieldOptions = ["-f", "-F", "--field", "--raw-field"];
+  const valued = ["-H", "--header", "--hostname", "-q", "--jq", "-t", "--template", "--cache", "-p", "--preview", "-X", "--method"];
+  const booleans = ["--paginate", "--slurp", "--silent", "-i", "--include", "--verbose"];
+  const positional: string[] = [], queries: string[] = [];
+  for (let i = 0; i < rest.length; i++) {
+    const word = rest[i]!;
+    if (word === "--" || !word.startsWith("-")) { positional.push(word); continue; }
+    let field: string | undefined;
+    if (fieldOptions.includes(word)) { field = rest[++i]; if (field === undefined) return false; }
+    else if (word.startsWith("--field=") || word.startsWith("--raw-field=")) field = word.slice(word.indexOf("=") + 1);
+    else if (/^-[fF][^=]/.test(word)) field = word.slice(2);
+    else if (valued.includes(word)) { if (++i >= rest.length) return false; }
+    else if (valued.some(key => key.startsWith("--") ? word.startsWith(`${key}=`) : /^-[HqtpX]./.test(word) && word.startsWith(key))) continue;
+    else if (!booleans.includes(word)) return false;
+    if (field !== undefined) {
+      const eq = field.indexOf("=");
+      if (eq < 0) return false;
+      if (field.slice(0, eq) === "query") queries.push(field.slice(eq + 1));
+    }
+  }
+  const method = option(rest, "-X", "--method");
+  if (method !== undefined && method.toUpperCase() !== "POST") return false;
+  const [query] = queries;
+  if (positional.length !== 1 || positional[0] !== "graphql" || queries.length !== 1 || query === undefined || query.startsWith("@")) return false;
+  return graphqlQueryOnly(query);
+}
+
 /** Scan curl options once: data, headers and other option values never become options. */
 function curlWrites(input: string[]): boolean {
   const longValues = new Set([
@@ -310,7 +389,8 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
   if (program === "gh") {
     if (words[0] === "release" && ["create", "upload", "edit", "delete"].includes(words[1] ?? "")) found.add("publish");
     if (["issue", "pr", "gist"].includes(words[0] ?? "") && ["create", "comment", "edit", "close", "reopen", "merge", "review", "delete"].includes(words[1] ?? "")) found.add("external-write");
-    if (words[0] === "api") {
+    if (words[0] === "run" && ["rerun", "cancel", "delete"].includes(words[1] ?? "") || words[0] === "workflow" && ["run", "enable", "disable"].includes(words[1] ?? "")) found.add("external-write");
+    if (words[0] === "api" && ghGraphqlRead(words) !== true) {   // a GraphQL document of queries only is a read (#756); everything else keeps the REST rule
       const method = option(words, "-X", "--method");
       const field = words.some(w => w === "-f" || w === "-F" || w.startsWith("-f") || w.startsWith("-F") || w === "--input" || w.startsWith("--input=") || w.startsWith("--field") || w.startsWith("--raw-field"));
       if (method ? !["GET", "HEAD"].includes(method.toUpperCase()) : field) found.add("external-write");
