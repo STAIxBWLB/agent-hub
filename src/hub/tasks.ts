@@ -1,4 +1,4 @@
-import { canonicalMemorySymbolNode, MEMORY_SYMBOL_LIMIT, type MemorySymbolNodes } from "./memory-symbols.ts";
+import { canonicalMemorySymbolNode, normalizeMemorySymbolInput, MEMORY_SYMBOL_LIMIT, type MemorySymbolNodes } from "./memory-symbols.ts";
 import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, HOST_CODE_SYMBOLS } from "./task-code-symbols.ts";
 import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
 import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
@@ -4624,7 +4624,7 @@ export class Tasks {
       // Approved, or settled in the store already: the snapshot the caller holds can predate an approval made while it awaited.
       const approved = !!task && (task.state === "approved" || st.store.settled(this.memoryKey(task)));
       const tier: Tier = horizon ?? (approved && PROMOTED_KINDS.includes(kind) ? "long" : "short");
-      const about = extractNodes(`${title}\n${text}`, { cwd: this.d.cwd, project: st.project, repo: st.repo, deny: st.deny, paths: [...(task?.refs.paths ?? []), ...(task?.plan?.paths ?? [])], ...(task ? { task: { id: task.id, created: task.created } } : {}) });
+      const about = extractNodes(`${title}\n${text}`, { cwd: this.d.cwd, project: st.project, repo: st.repo, deny: st.deny, paths: [...(task?.refs.paths ?? []), ...(task?.plan?.paths ?? [])], symbols: symbols ? [] : task?.plan?.symbols?.map(normalizeMemorySymbolInput), ...(task ? { task: { id: task.id, created: task.created } } : {}) });
       // Existing notes remain immutable; the completion note connects actual symbols through the shared task node.
       if (symbols && task) {
         const taskNode = `task:${this.memoryKey(task)}`;

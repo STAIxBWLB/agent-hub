@@ -32,7 +32,7 @@ test("#684 completion anchors actual changed symbols and symbol-related retrieva
   const f = rig();
   await f.tasks.remember("codex", { kind: "fail", text: "earlier decision evidence", task: f.task.id });
   const earlier = f.store.list({ project: "fixture" })[0]!;
-  expect(earlier.about.filter(node => node.startsWith("symbol:"))).toEqual([]);
+  expect(earlier.about.filter(node => node.startsWith("symbol:"))).toEqual(["symbol:Guessed.run@a.ts"]);
   await f.tasks.done("codex", f.task.id, "implementation finished");
   const completion = f.store.list({ project: "fixture" }).find(note => note.text.startsWith(`Task #${f.task.id} done`))!;
   expect(completion.about).toContain(NODE);

@@ -217,7 +217,7 @@ Capture reuses one store handle per bound project/profile home and closes it on 
 
 ## Canonical symbol anchors (#684 phase 3)
 
-The hub normalizes function signatures with its shared symbol normalizer and uses the existing amem `symbol:<qualified>@<path>` node format. An explicit file identity is required; an unknown or name-only resolution never invents a file. Plans remain retrieval queries, not evidence that a symbol changed. Newly saved task notes do not persist the plan's guessed symbols.
+The hub normalizes function signatures with its shared symbol normalizer and uses the existing amem `symbol:<qualified>@<path>` node format. Code-backed completion anchors require explicit file identity; an unknown or name-only resolution never invents a file. Existing non-completion notes retain normalized plan-intent associations, which are not evidence that a symbol exists or changed. Completion notes replace those guesses with verified actual symbols, or none when observations are unknown.
 
 At an admitted completion, only the current head's screened host observations are candidates. The optional code-facts `exists` check must positively confirm an unambiguous existing symbol before its node enters the new completion note. Private tasks make no symbol queries and write no memory. Unknown observations write no symbol anchors and the completion note labels their coverage unknown. At most 16 candidates are considered; new checks stop after a shared two-second scheduling budget. An already-started call retains the code-facts boundary's own bounded execution and cleanup, so this is not a strict two-second wall-clock guarantee. Missing evidence never refuses completion.
 
