@@ -124,6 +124,8 @@ export async function goalCommand(args: string[], cwd: string, opts: { store?: M
 interface StaleAnchorCommandOptions {
   store?: MemoryStore;
   facts?: Pick<CodeFacts, "exists">;
+  /** Trusted host test seam; never read from CLI arguments or project configuration. */
+  createFacts?: () => Pick<CodeFacts, "exists" | "close">;
   stateDir?: string;
   head?: () => string | undefined;
   taskPrivacy?: (key: string) => MemoryTaskPrivacy;
@@ -149,7 +151,7 @@ function existingInspectionProfile(project: string, cwd: string): boolean {
 
 /** Host-only doctor report: selected amem reads may maintain derived indexes/leases, never notes or candidates. */
 export async function memoryStaleAnchorsCommand(cwd: string, opts: StaleAnchorCommandOptions = {}): Promise<MemoryStaleAnchorReport> {
-  let ownedFacts: CodeFacts | undefined;
+  let ownedFacts: Pick<CodeFacts, "exists" | "close"> | undefined;
   let context: ReturnType<typeof commandStores> | undefined;
   try {
     const project = projectOf(cwd, opts.store);
@@ -199,7 +201,7 @@ export async function memoryStaleAnchorsCommand(cwd: string, opts: StaleAnchorCo
         const value = result.stdout.trim(); return result.status === 0 && /^[a-f0-9]{40}$/.test(value) ? value : undefined;
       } catch { return undefined; }
     });
-    const facts = opts.facts ?? (ownedFacts = new CodeFacts({ timeoutMs: MEMORY_SYMBOL_START_BUDGET_MS }));
+    const facts = opts.facts ?? (ownedFacts = opts.createFacts?.() ?? new CodeFacts({ timeoutMs: MEMORY_SYMBOL_START_BUDGET_MS }));
     const binding = context.binding;
     return await memoryStaleAnchors({ cwd, project, store: context.store, head, now: opts.now, taskPrivacy, publicMetadataText,
       assertCurrent: () => binding.assertCurrent(),
@@ -207,5 +209,8 @@ export async function memoryStaleAnchorsCommand(cwd: string, opts: StaleAnchorCo
       exists: (repo, at, name) => facts.exists(repo, at, name),
       finishQueries: async () => { if (ownedFacts) { await ownedFacts.close(); ownedFacts = undefined; } } });
   } catch { return unavailableMemoryStaleAnchors(); }
-  finally { try { if (ownedFacts) await ownedFacts.close(); } finally { if (context?.owned) context.store.close(); } }
+  finally {
+    try { if (ownedFacts) await ownedFacts.close(); } catch { /* Optional cleanup failure remains neutral, including a second failed close. */ }
+    try { if (context?.owned) context.store.close(); } catch { /* Inspection must still return its neutral report. */ }
+  }
 }

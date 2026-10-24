@@ -14,9 +14,17 @@ export function planGuardNodes(task: BriefTask, context: PlanGuardContext): stri
   }
   const onlyPath = nodes.size === 1 ? nodePath([...nodes][0]!) : undefined;
   for (const symbol of task.plan?.symbols ?? []) {
-    for (const node of extractNodes("", { ...context, paths: onlyPath ? [onlyPath] : [], symbols: [normalizeMemorySymbolInput(symbol)], checkExists: false })) nodes.add(node);
+    if (typeof symbol !== "string") continue;
+    for (const form of new Set([symbol, normalizeMemorySymbolInput(symbol)])) {
+      for (const node of extractNodes("", { ...context, paths: onlyPath ? [onlyPath] : [], symbols: [form], checkExists: false })) nodes.add(node);
+    }
   }
   return [...nodes].sort();
+}
+/** Retrieval nodes retain the title/task context as well as the explicit plan query. */
+export function taskMemoryQueryNodes(task: BriefTask, context: PlanGuardContext): string[] {
+  const ordinary = extractNodes(task.title, { ...context, paths: [...(task.refs.paths ?? []), ...(task.plan?.paths ?? [])], ...(task.id !== undefined && task.created !== undefined ? { task: { id: task.id, created: task.created } } : {}) });
+  return [...new Set([...ordinary, ...planGuardNodes(task, context)])].sort();
 }
 const samePath = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
 

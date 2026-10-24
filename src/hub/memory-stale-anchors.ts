@@ -1,6 +1,6 @@
 import { ASK_NOTE_TITLE } from "./ask.ts";
 import { looksSecret, taskKey, type MemoryStore, type View } from "@staix/agent-mem";
-import type { CodeFactResult } from "./code-facts.ts";
+import { unindexedSymbolSyntax, type CodeFactResult } from "./code-facts.ts";
 import { canonicalMemorySymbolNode, MEMORY_SYMBOL_LIMIT, MEMORY_SYMBOL_START_BUDGET_MS, type MemorySymbolContext } from "./memory-symbols.ts";
 
 export const MEMORY_STALE_SCAN_LIMIT = 256;
@@ -8,7 +8,7 @@ const PAGE = 64, NODE_SCAN_LIMIT = 256;
 const SHA = /^[a-f0-9]{40}$/, ID = /^[a-f0-9]{32}$/;
 export type MemoryTaskPrivacy = "public" | "private" | "unknown";
 export type MemoryStaleReason = "absent" | "withheld" | "provenance" | "task-private" | "task-privacy-unknown" | "unavailable" | "ambiguous" | "present-path-unverified" | "budget" | "head-changed";
-export interface MemoryStaleAnchorRow { id?: string; anchor?: string; state: "stale" | "unknown"; reason: MemoryStaleReason }
+export interface MemoryStaleAnchorRow { id?: string; anchor?: string; state: "stale" | "unknown"; reason: MemoryStaleReason; label?: "absent from indexed definitions" }
 export interface MemoryStaleAnchorReport {
   state: "known" | "unknown";
   head?: string;
@@ -115,12 +115,14 @@ export async function memoryStaleAnchors(options: MemoryStaleAnchorOptions): Pro
       if (!anchor) { report.rows.push({ state: "unknown", reason: "withheld" }); continue; }
       const row: MemoryStaleAnchorRow = { id: candidate.note.id, anchor, state: "unknown", reason: "unavailable" };
       report.rows.push(row); identities.set(row, context.repo);
+      const name = anchor.slice(7, anchor.lastIndexOf("@"));
+      if (unindexedSymbolSyntax(name)) continue;
       if (!report.head) continue;
       if (now() >= deadline) { row.reason = "budget"; report.truncated = true; continue; }
       if (options.head() !== report.head) { row.reason = "head-changed"; continue; }
       try {
         options.assertCurrent?.(); report.queried++;
-        const answer = await options.exists(options.cwd, report.head, anchor.slice(7, anchor.lastIndexOf("@")));
+        const answer = await options.exists(options.cwd, report.head, name);
         const withheld = privacy(candidate.note, options);
         const current = options.context();
         if (withheld || current.project !== options.project || current.cwd !== options.cwd || current.repo !== context.repo || canonicalMemorySymbolNode(candidate.raw, current) !== anchor) { delete row.id; delete row.anchor; row.reason = withheld ?? "withheld"; continue; }
@@ -141,6 +143,7 @@ export async function memoryStaleAnchors(options: MemoryStaleAnchorOptions): Pro
       const changed = row.anchor !== undefined && (current.project !== options.project || current.cwd !== options.cwd || current.repo !== identities.get(row) || canonicalMemorySymbolNode(candidate.raw, current) !== row.anchor);
       if (hidden || changed) { delete row.id; delete row.anchor; row.state = "unknown"; row.reason = hidden ?? "withheld"; }
     }
+    for (const row of report.rows) if (row.state === "stale" && row.reason === "absent") row.label = "absent from indexed definitions";
     report.stale = report.rows.filter(row => row.state === "stale").length;
     report.unknown = report.rows.length - report.stale;
     report.state = report.unknown || report.truncated || !report.head ? "unknown" : "known";
@@ -151,6 +154,6 @@ export async function memoryStaleAnchors(options: MemoryStaleAnchorOptions): Pro
 export function formatMemoryStaleAnchors(report: MemoryStaleAnchorReport): string {
   return [`stale anchors: ${report.stale}; unknown: ${report.unknown ?? "unknown"}; coverage: ${report.state}${report.truncated ? " (truncated)" : ""}`,
     `scope: ${report.head ?? "HEAD unavailable"}; scanned ${report.scanned}/${report.scanLimit}; queried ${report.queried}/${report.limit}`,
-    ...report.rows.map(row => `${row.id ? `mem:${row.id} ` : ""}${row.anchor ? `${row.anchor} ` : ""}${row.state} (${row.reason})`),
+    ...report.rows.map(row => `${row.id ? `mem:${row.id} ` : ""}${row.anchor ? `${row.anchor} ` : ""}${row.state} (${row.reason})${row.label ? `: ${row.label}` : ""}`),
     "review only; no memory entries or candidate records changed"].join("\n");
 }

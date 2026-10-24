@@ -230,3 +230,13 @@ Qualified-name misses from the current ripwire CLI remain unknown: version 0.6.7
 `ahub doctor --stale-anchors [--json]` is an optional read-only inspection of symbol anchors against the current head. It reports bounded coverage and unknown evidence explicitly. A positive absence establishes stale status; unavailable, private or ambiguous evidence does not. It never deletes, edits, promotes or repairs a note. The default doctor checks are unchanged.
 
 Inspection considers at most 256 exact-project notes and starts at most 16 code-facts checks, with explicit unknown/truncated coverage. A task-linked anchor also requires a current, public, reset-safe task record in this repository; historical public text cannot override a now-private, foreign or missing task record. A missing/uninitialized selected profile or project shard remains unknown and is not created. Existing core reads may maintain derived indexes and reader leases, but the report changes no authoritative note or candidate record.
+
+## Symbol preparation and historical query compatibility (#684 follow-ups)
+
+A filled symbol-preparation key (execution root, head and merge base) is reused between the prepare-only and completion passes. Within one pass, identical name lookups share known or unknown results even when several candidate file paths use that name. Completion still rechecks current privacy, repository and head provenance; cached advice never grants authority.
+
+Plan-guard and related-memory queries include both an explicit raw symbol input and its normalized form, so an older `symbol:foo(a: string)@x.ts` association remains reachable alongside `symbol:foo@x.ts`. This is query compatibility only; existing notes and their IDs are never rewritten.
+
+The stale report leaves unsupported `#`, `->` and `:` lookup spellings unknown. A plain name not found by the index is labelled "absent from indexed definitions", not proof that an imported package API or type was removed. The JSON state/reason fields retain their existing meaning, with an additive label only on final validated absence rows.
+
+Code-facts queries can register transient detached Git worktrees. Interrupted cleanup, including Ctrl-C, can leave a prunable registration. Inspection does not auto-prune: inspect `git worktree list --porcelain` and clean only a confirmed abandoned entry. A repeated owned cleanup failure returns neutral unknown coverage; borrowed handles remain caller-owned. Note and candidate bytes are unchanged by inspection.
