@@ -57,7 +57,7 @@ test("#759 only the effective planner or person relinks backlog issue identity i
 
 test("#759 relink drops spec acceptance and undo restores only identity without reviving consent", async () => {
   const r = rig();
-  const acceptance = { repo: "owner/repo", issue: 450, createdAt: "2026-10-01T00:00:00.000Z", lastEditedAt: null, acceptedAt: 1 };
+  const acceptance = { repo: "owner/repo", issue: 450, createdAt: "2026-10-01T00:00:00.000Z", updatedAt: "2026-10-01T00:00:00.000Z", lastEditedAt: null, acceptedAt: 1 };
   r.board.update(r.id, USER, "fixture acceptance", { sdlc: { ...r.old, acceptance } });
   const changed = await r.tasks.planBacklog("claude", { id: r.id, revision: 0, fields: { sdlc: { issue: 525 } }, reason: "new spec" });
   expect(changed.sdlc?.acceptance).toBeUndefined();
@@ -95,8 +95,40 @@ test("#759 planning identity is strict and nullable absence can be represented f
 
 test("#759 historically accepted work cannot use the unstarted-backlog relink exception after untouched return", async () => {
   const r = rig();
-  r.board.update(r.id, USER, "accepted", { state: "in_progress", owner: "kimi" });
+  r.board.update(r.id, USER, "fixture proposed", { state: "proposed", owner: "kimi" });
+  r.board.update(r.id, USER, "accepted", { state: "in_progress" });
   await r.tasks.returnUntouchedToBacklog(USER, { id: r.id, revision: 0, reason: "no work happened" });
   const revision = r.board.get(r.id)!.planningRevision!;
   await refused(r, () => r.tasks.planBacklog(USER, { id: r.id, revision, fields: { sdlc: { issue: 525 } }, reason: "historically started" }));
+});
+
+test("#759 issue planning and note-only revisions retain pin, stale, frozen and private guards", async () => {
+  const fields = { sdlc: { issue: 525 } };
+  const pinned = rig();
+  await pinned.tasks.planBacklog(USER, { id: pinned.id, revision: 0, fields: { pinned: true }, reason: "person pin" });
+  await refused(pinned, () => pinned.tasks.planBacklog("claude", { id: pinned.id, revision: 1, fields, reason: "relink pinned" }));
+  await refused(pinned, () => pinned.tasks.planBacklog("claude", { id: pinned.id, revision: 1, reason: "note pinned" }));
+  const stale = rig();
+  await stale.tasks.planBacklog("claude", { id: stale.id, revision: 0, reason: "note" });
+  await refused(stale, () => stale.tasks.planBacklog("claude", { id: stale.id, revision: 0, fields, reason: "stale relink" }));
+  const frozen = rig();
+  const release = await frozen.tasks.newRelease(USER, { name: "scope", goal: "deliver", order: 0 });
+  await frozen.tasks.planBacklog(USER, { id: frozen.id, revision: 0, fields: { release: release.id }, reason: "scope" });
+  frozen.tasks.changeRelease(USER, { id: release.id, revision: 0, state: "active" });
+  // Fixture an already-frozen scope; release-cut admission is outside this planning guard test.
+  frozen.board.updateRelease(release.id, { state: "frozen" }, 1);
+  await refused(frozen, () => frozen.tasks.planBacklog("claude", { id: frozen.id, revision: 1, fields, reason: "frozen relink" }));
+  await refused(frozen, () => frozen.tasks.planBacklog("claude", { id: frozen.id, revision: 1, reason: "frozen note" }));
+  const privateCard = rig();
+  privateCard.board.update(privateCard.id, USER, "fixture private", { signals: ["pii"], planner: null });
+  await refused(privateCard, () => privateCard.tasks.planBacklog("claude", { id: privateCard.id, revision: 0, fields, reason: "private relink" }));
+});
+
+test("#759 undo of a first issue link restores absent identity and cannot inject privileged evidence", async () => {
+  const r = rig();
+  r.board.update(r.id, USER, "fixture no identity", { sdlc: { stage: r.old.stage } });
+  await r.tasks.planBacklog("claude", { id: r.id, revision: 0, fields: { sdlc: { repo: "owner/repo", issue: 525 } }, reason: "first spec" });
+  const undone = await r.tasks.undoPlanning("claude", r.id, 1);
+  expect(undone.sdlc).toEqual({ stage: r.old.stage });
+  expect(undone.history.at(-1)?.planning?.fields).toEqual(["sdlc"]);
 });
