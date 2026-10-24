@@ -5075,3 +5075,16 @@ The hub uses exact-pinned @staix/agent-mem 0.6.0 for runtime recall/capture, wit
 - `fields.sdlc` accepts only `repo`/`issue` on an unstarted, ownerless backlog card, by its effective planner or the person. Null identity members restore a previous absence during undo. Other lifecycle/evidence fields remain unavailable through planning, and ordinary `hub_sdlc_record` still refuses backlog cards.
 - Issue relinks use the same identity invalidation as `sdlcReceipt`: old spec acceptance and identity-bound evidence cannot survive a different identity. Existing stage is preserved, or the host's initial stage is used when the card had no receipt. The atomic planning write records the new revision and only previous identity members; undo cannot revive an old acceptance receipt. Authority and task/release/privacy state are rechecked after screening.
 - CLI `ahub backlog plan ... <fields-json> <reason>` uses `{}` for a note and nested `sdlc` for an issue relink. Tool descriptions expose the same contract. Actual cards #138 and #287 are relinked to #525 and #754 only after landing and availability in the running hub, through an authorized planner/person identity.
+
+## Amendment: the planner board-changed notice (#758)
+
+The notice "The board changed. Before offering or accepting build work, read `hub_planner_groom` ..." went to every attached planner at every board status revision, including revisions the planner wrote itself, and queued a new copy each time. One planner session received it 12 times in 44 minutes. With the lifecycle on, `flushPlannerNotices` now reads what was added to each card's history since its last scan and decides per planner:
+
+- **Author skipped.** A history entry whose `by` is the planner raises nothing for that planner.
+- **Scoped.** Only the card's planners are told (`taskPlanner`, #525-2): a card bound to one planner does not reach another.
+- **Task weight only when a plan review is needed.** A history entry that carries `planning` (a planning revision or dependency change), a card's creation (a peer's propose, with or without `after`, a split child, a generated card: new work and its dependencies are what a review consolidates) and any change of a card's `deps` since the last scan, whatever wrote it, is a `task` notice. An earlier copy that is still queued for that planner (never attempted or delivered) is withdrawn and replaced, so there is at most one unsettled notice per planner and it names the latest board revision. A settled notice is not replaced.
+- **The hub's own bookkeeping tells nobody.** An entry by `hub` without `planning` (lifecycle links, idle sweeps, holds, plan observations) neither raises a notice nor spends the `fyi` window.
+- **`fyi` weight otherwise.** A state move, review or assignment is recorded as an `fyi` task notice (console and log, no turn), at most once per planner per ten minutes (`GROOM_FYI_WINDOW_MS`, bounded by the injected clock `TasksDeps.now`).
+- **Restart and offline.** The first notice a planner gets after a hub start is task weight, as before. Changes made while a configured planner was offline stay pending for it.
+
+Ceiling: a scan lists the board once per status revision (at most one per flush); an indexed history read is the upgrade. `PROTOCOL` is unchanged.
