@@ -174,7 +174,7 @@ test("ahub deliverables prints the records, --check marks a change since review,
   expect((await r.op(r.console_, "hub_review", { id, verdict: "approved", note: "ok" })).ok).toBe(true);
   const plain = await ahub(r.root, ["deliverables"]);
   expect(plain.code, plain.stderr).toBe(0);
-  expect(plain.stdout).toContain(`#${id} #${id} write the report [approved]`);
+  expect(plain.stdout).toContain(`#${id} write the report [approved]`); expect(plain.stdout).not.toContain(`#${id} #${id}`);
   expect(plain.stdout).toContain(`out/report.md  md v1  12 B  sha256 ${sha("# Report v1\n")}`);
   expect(plain.stdout).toContain("add --check to measure the files now");
   expect(plain.stdout).not.toContain("changed since review");                              // not measured, so not claimed

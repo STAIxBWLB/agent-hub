@@ -1211,7 +1211,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (!rows.length) return console.log(task === undefined ? `no ${approved ? "approved " : ""}deliverables on the board` : `task #${task} has no ${approved ? "approved " : ""}deliverables`);
     for (const row of rows) {
       const flag = row.checked ? (row.changedSinceReview ? " (changed since review)" : " (unchanged)") : "";
-      console.log(`#${row.task} ${row.title} [${row.state}${flag}]`);
+      console.log(`${row.title} [${row.state}${flag}]`);                                   // `title` is the hub's publicTitle: it already starts with `#<id>`
       for (const file of row.files) console.log(`  ${file.id}  ${file.path ?? "(private)"}  ${file.format}${file.version ? ` ${file.version}` : ""}  ${file.bytes} B  sha256 ${file.sha256}${file.state ? `  ${file.state}` : ""}`);
     }
     if (!check) console.log("(hashes are the board's records; add --check to measure the files now)");
