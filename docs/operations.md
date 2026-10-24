@@ -1298,7 +1298,7 @@ ahub memory forget 1a2b3c4d              # a person's; also promote, demote, sup
 
 `"memory": { "native": false }` in `.agenthub/config.json` turns it off for a project.
 
-The exact-pinned `@staix/agent-mem` 0.4.0 resolves `AMEM_HOME`, then `$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`. An absent `M/profile.json` selects shared v1; an explicit generation selects `M/generations/G` with the package's readonly legacy bridge. All daemon memory consumers and the hub memory/goal CLI use that selected profile. Invalid metadata or a missing selected generation makes native memory unavailable while the bus and board continue; there is no fallback to legacy writes. Inspect the daemon's memory binding/availability before interpreting missing memory as an empty store.
+The exact-pinned `@staix/agent-mem` 0.6.0 resolves `AMEM_HOME`, then `$AGENTHUB_HOME/memory`, then `~/.agenthub/memory`. An absent `M/profile.json` selects shared v1; an explicit generation selects `M/generations/G` with the package's readonly legacy bridge. All daemon memory consumers and the hub memory/goal CLI use that selected profile. Invalid metadata or a missing selected generation makes native memory unavailable while the bus and board continue; there is no fallback to legacy writes. Inspect the daemon's memory binding/availability before interpreting missing memory as an empty store.
 
 The daemon checks its selector at hub operation entry and before candidate/counter writes. It does not hot-switch handles or provide an atomic fence against selection changes during an in-flight core call. Quiesce consumers and close their handles before migration or selection changes; reopen through the supported session-preserving lifecycle afterward. Candidate/counter storage remains `M/candidates.db`, independent of `G`; `amem review` on a generation is still refused. Every running hub using this home needs an authenticated receipt: a matching ready binding, or a generation-capable unbound receipt (`disabled` when native memory is off, `unavailable` when opening failed) proving it holds no memory handle. An unbound daemon and zero running hubs are quiesced for memory; a stale bound handle, unreadable registry or unknown runtime is not ready. Existing JSON memory/goal results remain unchanged; the additive binding receipt belongs to daemon status, profile-check and the decay object. This source integration does not authorize installing a new runtime, migrating real memory, restarting sessions or claiming real-machine sync/capture receipts. Migration/deactivation and their limits belong to [agent-mem](https://github.com/STAIxBWLB/agent-mem); see [the hub profile contract](memory.md#selected-memory-profile).
 
@@ -1623,7 +1623,7 @@ Class budgets: the approval of a classed ACP, received Codex command, local or P
 
 Only ignored, untracked `.agenthub/config.local.json` can hold `action_policy`. Its optional keys are `enabled` (default true), `always_ask` (a distinct subset of publish, external-write, destroy, install; default all), and `budgets` (per-class integers 0..1000; defaults 1, 5, 3, 2 respectively). Shared `config.json` cannot set this policy and gets no confirmation offer. A tracked or unknown-trust local file is ignored. Use `ahub settings set action_policy.enabled <true|false>` or `ahub settings set action_policy.budgets.<class> <n>` for registered settings; change `always_ask` in the local file and use the existing confirmed terminal reload. Policy publication invalidates cached grants and pending approval challenges. Startup reads the untracked local policy without a retained confirmation. A policy that disables enforcement, omits a class or increases a class budget appends an attention notice to every status policy row. `ponytail:` this makes weakened startup policy visible, but the startup confirmation ceiling remains open; the upgrade is retained person-bound startup confirmation.
 
-The ledger asks first and after the approved class budget is spent. Adapter integrations must request that class allowance explicitly; an ordinary one-time answer does not seed the cache, and a cached budget never suppresses a prompt required by the native mode. One approval includes its own invocation; budget zero asks for every invocation. A fresh native session resets counters, and status polls do not bind sessions. Unknown command syntax retains native permission handling. This foundation never changes a sandbox or bypasses a denied permission; per-adapter enforcement tests land with their integrations.
+The ledger asks first and after the approved class budget is spent. Adapter integrations must request that class allowance explicitly; an ordinary one-time answer does not seed the cache, and a cached budget never suppresses a prompt required by the native mode. One approval includes its own invocation; budget zero asks for every invocation. A fresh native session resets counters, and status polls do not bind sessions. A command with no classed literal prefix retains native permission handling; around a shell expansion the literal words are classed, and where the opaque part could change the class the strictest reachable class applies (#756, #762; [security](security.md)). This foundation never changes a sandbox or bypasses a denied permission; per-adapter enforcement tests land with their integrations.
 
 ## Permission modes for running peers
 
@@ -2325,6 +2325,13 @@ marked self-review too. Independent requests contain ids only. Controlled
 recovery requires `task_planners` once a list/instance planner is configured or
 any task/release binding or plan-review authorship marker is stored, even after
 that configuration is removed.
+
+With the lifecycle on (an `.agenthub/sdlc.toml` mode other than off), a card's planners get a "The board
+changed" notice (#758). The planner whose own write changed the board is skipped.
+A planning revision, a dependency change or a new card is a task notice; state
+moves, reviews and assignments are recorded at `fyi` weight (no turn), at most
+once per planner per ten minutes. A newer notice replaces an unsettled copy, and
+the hub's own bookkeeping tells nobody.
 
 ## Resetting a project's hub
 
@@ -3383,8 +3390,11 @@ unreadable result runs the main gate again and refuses release. A manual
 it is never accepted as full-gate evidence. A `timing_runs=20` dispatch runs only the daemon, PII screen and ACP
 test files twenty times on macOS, in its own concurrency group; it does not replace the full gate. Each PR has its own CI concurrency group, so PRs run side by side; within a PR a newer pending run replaces the older pending one and an admitted run is never cancelled; main pushes and dispatches keep queueing every run. Two groups admitting the same tree at once may run it twice, never a false green (#609). `scripts/check.sh --changed [<base>]` runs every non-test step but only the affected test files, and the full suite when it cannot tell; the full gate stays CI's (#610).
 `scripts/check.sh` stops a suite still running after `AHUB_CHECK_HANG_S` seconds
-(960 by default); hosted CI sets 1080 on Linux and 1260 on macOS inside a 25-minute
-job limit (#378, #593).
+(960 by default); hosted CI sets 1080 on Linux inside a 25-minute job limit and 1440
+on macOS inside a 30-minute one (#378, #593, #752).
+The `closing-refs` workflow fails a PR whose title, body or commit messages would make
+GitHub close an issue the text only mentions (`Refs #N`, a negated or qualified keyword);
+an issue linked only in the sidebar passes (#760).
 The gate holds `<git common dir>/ahub-heavy.lock` across every worktree of a
 repository. A second gate waits up to `AHUB_CHECK_LOCK_WAIT_S` (1800 seconds by
 default; 0 fails immediately) and names the holder. A holder whose PID is gone
@@ -3737,7 +3747,7 @@ A bundled adapter module is authorized by the person with `adapter_modules` (at 
 # Acceptance-criteria checklist (#481)
 
 - The task reviewer/person records a head-bound `criteria` receipt with criterion ids matching the issue's AC ids, required/result fields and hashed evidence refs. This checklist belongs to the Compliance review pass. Use `ahub sdlc record <id> '<receipt JSON>'`; [schema and example](sdlc.md#acceptance-criteria-checklist).
-- Deliverables (#509a, docs/sdlc.md, Deliverable records): `hub_task_done` and `hub_sdlc_record` take `deliverables: [{path, format, version?}]`; the hub hashes the files itself (a claimed hash is refused), in a plain folder with no git or PR, under the owner's execution root (its own worktree for a declared worktree instance; an unproven root refuses and reads `unknown`), and a reviewer's approval is refused with `deliverable changed since it was delivered` when a file changed since delivery (the owner calls `hub_task_done` again, or the person approves the current bytes). `ahub task show <id>` shows each file's state (`unchanged`, `changed`, `missing`, `unknown`) and `changedSinceReview`; a PII task or `pii.paths` file shows id, hash and size only.
+- Deliverables (#509a, docs/sdlc.md, Deliverable records): `hub_task_done` and `hub_sdlc_record` take `deliverables: [{path, format, version?}]`; the hub hashes the files itself (a claimed hash is refused), in a plain folder with no git or PR, under the owner's execution root (its own worktree for a declared worktree instance; an unproven root refuses and reads `unknown`), and a reviewer's approval is refused with `deliverable changed since it was delivered` when a file changed since delivery (the owner calls `hub_task_done` again, or the person approves the current bytes). `ahub task show <id>` shows each file's state (`unchanged`, `changed`, `missing`, `unknown`) and `changedSinceReview`; a PII task or `pii.paths` file shows id, hash and size only. The person lists every task's delivered and approved files with `ahub deliverables [--task <id>] [--approved] [--check] [--json]`: without `--check` it reads the board's records and opens no file; `--check` measures them now and marks a row `changed since review`, `a file is missing` or `could not be measured`. The dashboard card shows a `Deliverables n` chip and the task sheet a Deliverables group from the same records; it shows a change only after a live check. An agent's shell is refused (#317).
 - The review request lists the recorded criteria with their ids and results, and a `hub_review` unmet item that starts with a recorded id (`AC2: ...`) is recorded on the verdict as `unmetCriteria` (#507b); `ahub task show` lists those ids in the history. A task with no checklist, and a PII task, are unchanged.
 - Advise shows incomplete/stale checklist blockers; enforce checks them at approval. The `criteria` gate does not need a workflow selector. Dependencies stay with `ahub task propose --after`; checklist task import is removed.
 - `status <id>`, `explain <id>` and `export <id>` use the same current board/config projection. Export keeps sanitized state and source hashes, with no external text, extra authority or verification claim.
@@ -3859,8 +3869,8 @@ only after every member is approved, cancelled or moved out; it runs no tag or p
 The dashboard shows phase progress, blocking dependencies, dates and remaining
 work. Actual task dates come from execution/review/approval history, never input.
 
-Configured planners read `hub_backlog_list` and `hub_release_list`, edit with
-`hub_backlog_plan`, and undo their own latest eligible change with
+Configured planners read `hub_backlog_list` and `hub_release_list`, edit the
+cards they plan (see "The planner") with `hub_backlog_plan`, and undo their own latest eligible change with
 `hub_backlog_undo`. Catalog guidance or a caller-supplied role grants no authority.
 PII cards stay stubs, reasons are screened/withheld in public history, and planning
 telemetry records ids/changed fields without prose. #247 task records carry
@@ -4364,7 +4374,7 @@ The hub exact-pins @staix/agent-mem 0.6.0 for recall, curated evidence and local
 
 ## Backlog issue identity and notes
 
-After #759 is released, the card's effective planner or the person can relink an unstarted backlog card through `hub_backlog_plan`, using `fields: {sdlc: {repo: "owner/repo", issue: 525}}`. The change is one planning revision and clears the old spec acceptance. Stage, reviewed heads, checklists and other lifecycle evidence cannot be supplied through this path; `hub_sdlc_record` still refuses backlog work.
+The card's effective planner or the person can relink an unstarted backlog card through `hub_backlog_plan`, using `fields: {sdlc: {repo: "owner/repo", issue: 525}}`. The change is one planning revision and clears the old spec acceptance. Stage, reviewed heads, checklists and other lifecycle evidence cannot be supplied through this path; `hub_sdlc_record` still refuses backlog work.
 
 Omit tool `fields`, or use `{}`, to record only the bounded reason as a new revision. The person CLI retains its JSON argument: `ahub backlog plan <id> <revision> '{}' '<reason>'`. Existing planner scope, pins, frozen releases and stale-revision checks still apply. Undo restores identity members without restoring old consent; null members represent an absent previous repo or issue.
 
@@ -4372,7 +4382,7 @@ The grooming digest no longer calls ordered dependency phases duplicate merely b
 
 ## Inspecting memory symbol anchors
 
-After #684 phase 3 is released, `ahub doctor --stale-anchors [--json]` checks a bounded set of this project's screened symbol anchors through the optional code-facts boundary. Stale means positively absent at the reported head; unavailable or ambiguous evidence stays unknown. Read the coverage/truncation fields before treating the report as complete. This command performs no note mutation or automatic repair.
+`ahub doctor --stale-anchors [--json]` (#684 phase 3) checks a bounded set of this project's screened symbol anchors through the optional code-facts boundary. Stale means positively absent at the reported head; unavailable or ambiguous evidence stays unknown. Read the coverage/truncation fields before treating the report as complete. This command performs no note mutation or automatic repair.
 
 A task completion note stores actually observed, existing symbol nodes instead of plan guesses. Earlier notes remain connected through the same reset-safe task node. Related-memory retrieval reaches those earlier notes at memory hop two; the graph's literal two-edge view shows the completion note and task node. Unknown observations are labelled and never substituted with the plan. See [canonical symbol anchors](memory.md#canonical-symbol-anchors-684-phase-3) for bounds.
 
@@ -4384,7 +4394,7 @@ An absence row says "absent from indexed definitions". Imported package APIs/typ
 
 ## Inspecting memory code neighbours
 
-After #684 phase 4 is released, select a symbol in Memory and enable Code neighbours. Dashed calls are read-time caller/callee evidence at the displayed commit SHA; solid note associations still come from authored metadata. Unknown, lower-bound and truncated coverage are advisory, never a proof of no callers. The accessible edge list carries the same SHA and direction. Toggle off to view the stored graph alone.
+In the dashboard Memory view (#684 phase 4), select a symbol and enable Code neighbours. Dashed calls are read-time caller/callee evidence at the displayed commit SHA; solid note associations still come from authored metadata. Unknown, lower-bound and truncated coverage are advisory, never a proof of no callers. The accessible edge list carries the same SHA and direction. Toggle off to view the stored graph alone.
 
 `hub_memory_graph` includes the same bounded derived context for symbol starts within its existing 6 KB output budget. Task briefs prioritize attached fails and decisions within `brief_items`; the console related-note count refers to that bounded selection. Code facts remain optional: no index is copied into memory, no graph edges are persisted and no PII task/turn starts a query.
 

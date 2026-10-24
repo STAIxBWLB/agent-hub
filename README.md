@@ -5,7 +5,7 @@ Code, Codex, Kimi Code, Pi and a hub-owned local worker (plus Qwen Code, Jcode a
 Antigravity if you want them) share a message bus, a task board and a memory, each
 connected through its own native interface.
 
-Status: 0.15.0, control protocol 16. Bun + TypeScript, one loopback daemon per
+Status: 0.16.0, control protocol 16. Bun + TypeScript, one loopback daemon per
 project. Site: [agent-hub.staix.net](https://agent-hub.staix.net).
 
 ## Quick start
@@ -35,26 +35,30 @@ ahub ui                                      # the web dashboard
   into digests, priorities decide what interrupts a turn, and delivery survives
   restarts.
 - **A shared task board.** Work is proposed, accepted, done and reviewed through hub
-  tools. Roles split planning, implementation and review, `routing.toml` picks
+  tools. Roles split planning, implementation and review (up to eight planners,
+  each task bound to one), `routing.toml` picks
   owners by task class, and owners of overlapping work are told what changed. A
   peer that accepted or finished a task never reviews it, a review request lists
   the task's acceptance criteria by id, and a done report can name deliverable
-  files that the hub hashes itself, so an approval binds the bytes reviewed. Extra
+  files that the hub hashes itself, so an approval binds the bytes reviewed, and
+  `ahub deliverables` lists them. Extra
   Claude Code instances can implement in their own worktree, in a terminal or
   headless with one session per task. `ahub sdlc metrics` reads lead times,
   rework and stalls from board history, and
   optional control bands turn a breach into a backlog card.
 - **Shared memory.** Decisions, contracts, fails and findings are kept through the
-  first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library
-  (short- and long-term tiers, a typed graph, git sync between machines). Agents get
+  first-party [`@staix/agent-mem`](https://github.com/STAIxBWLB/agent-mem) library,
+  in process with no claude-mem worker (short- and long-term tiers, a typed graph,
+  git sync between machines). Agents get
   it as a recall preface, as briefs on a task, and through bounded search tools.
 - **Local and on-prem models.** Pi and the local worker can run on DGX or local MLX
   through an authenticated relay. Tasks marked as PII stay on the on-prem worker.
 - **Guard rails.** The local worker and Pi run in a sandbox, and their writes and
   shell commands wait for your approval unless you choose a looser permission mode.
   Publish, external-write, destroy and install calls ask a person in every mode for
-  Claude Code and hub-owned ACP peers such as Kimi, wherever the hub sees the call
-  before it runs; `ahub status` names each peer where it cannot. Budgets pause an
+  Claude Code, the local worker, Pi, hub-owned ACP peers such as Kimi and the
+  approval requests Codex sends, wherever the hub sees the call before it runs;
+  `ahub status` names each peer where it cannot. Budgets pause an
   agent before it runs out of quota, and recovery never replays an
   effect whose outcome is unknown.
 - **Operations.** A terminal console and a local dashboard, one hub per repository or
@@ -90,7 +94,7 @@ uses the home must run a version that understands the new layout.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-10-23-0.15.0.md) and the
+[release verification report](docs/verification/2026-10-25-0.16.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation

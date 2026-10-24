@@ -105,7 +105,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub remember <text...>", "save a note to the memory all agents share"],
   ]],
   ["Budget", [
-    ["ahub budget [--json] [--full] [--color=auto|always|never]", "quota windows per peer, and who is paused until when"],
+    ["ahub budget [--json] [--full] [--color=auto|always|never]", "quota windows per peer with each number's kind (native, count, manual) and source, why a peer shows no number, and who is paused until when"],
     ["ahub budget set <peer> <0..1> [--resets-in 30m] [--window 5h|week]", "feed a reading by hand (also: test the relay)"],
     ["ahub budget resume <peer>", "override a budget pause; readings are ignored for that peer until the window resets"],
     ["ahub budget execution status [id] [--json] [--color=auto|always|never]", "read execution counters and limits"],
