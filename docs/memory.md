@@ -225,6 +225,8 @@ Earlier notes stay immutable. The completion note and earlier notes share the ta
 
 ponytail: the symbol -> task bridge expires with the existing short-term completion finding; afterward a long-term note is found by symbol only through its own `about`. The upgrade path is phase 4 (#367), deriving edges from recorded changed symbols at read time without storing them.
 
+Qualified-name misses from the current ripwire CLI remain unknown: version 0.6.7 can report `Parser.run` absent while observing `run` in `Parser`. Plain-name negative evidence retains its existing meaning. The shared code-facts boundary can lift this ceiling once a CLI/schema attests qualified lookup.
+
 `ahub doctor --stale-anchors [--json]` is an optional read-only inspection of symbol anchors against the current head. It reports bounded coverage and unknown evidence explicitly. A positive absence establishes stale status; unavailable, private or ambiguous evidence does not. It never deletes, edits, promotes or repairs a note. The default doctor checks are unchanged.
 
 Inspection considers at most 256 exact-project notes and starts at most 16 code-facts checks, with explicit unknown/truncated coverage. A task-linked anchor also requires a current, public, reset-safe task record in this repository; historical public text cannot override a now-private, foreign or missing task record. A missing/uninitialized selected profile or project shard remains unknown and is not created. Existing core reads may maintain derived indexes and reader leases, but the report changes no authoritative note or candidate record.

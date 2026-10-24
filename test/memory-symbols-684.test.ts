@@ -61,11 +61,13 @@ test("#684 fake ripwire observed symbols and exists evidence yield canonical mem
     git("init", "-qb", "main"); writeFileSync(join(cwd, "a.ts"), "export function retained() {}\n"); git("add", "."); git("commit", "-qm", "base"); const base = git("rev-parse", "HEAD");
     writeFileSync(join(cwd, "a.ts"), "export function retained() {}\nexport function added() {}\n"); git("add", "."); git("commit", "-qm", "head"); const head = git("rev-parse", "HEAD");
     const executable = join(bin, "ripwire");
-    writeFileSync(executable, `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(join(import.meta.dir, "fakes/fake-ripwire.ts"))} "$@"\n`); chmodSync(executable, 0o755);
+    writeFileSync(executable, `#!/bin/sh\nfor arg in "$@"; do\n  if [ "$arg" = "--callers=Parser.run" ]; then\n    echo '<callers schema="ripwire.callers/v1" of="Parser.run" found="0"/>'\n    exit 1\n  fi\ndone\nexec ${quote(process.execPath)} ${quote(join(import.meta.dir, "fakes/fake-ripwire.ts"))} "$@"\n`); chmodSync(executable, 0o755);
     const observed = await facts.changedSymbols(cwd, base, head);
     expect(observed.state).toBe("known"); if (observed.state !== "known") return;
     const result = await resolveMemorySymbolNodes(observed.value.map(symbol => `symbol:${symbol.name}@${symbol.path}`), { ...context, cwd }, name => facts.exists(cwd, head, name), () => 0);
     expect(result).toMatchObject({ state: "known", nodes: ["symbol:retained@a.ts", "symbol:added@a.ts"] });
+    expect(await facts.exists(cwd, head, "Parser.run")).toEqual({ state: "unknown" });
+    expect(await facts.exists(cwd, head, "missing")).toEqual({ state: "known", value: { exists: false, ambiguous: false } });
     const calls = readFileSync(record, "utf8").trim().split("\n").map(line => JSON.parse(line));
     expect(calls.some(call => call.args.includes("--callers=retained"))).toBe(true);
     expect(calls.every(call => call.cwd !== cwd)).toBe(true);

@@ -210,7 +210,11 @@ export class CodeFacts {
   exists(repo:string,head:string,symbol:string,options:Omit<CodeLocation,"repo"|"head">={}):Promise<CodeFactResult<{exists:boolean;ambiguous:boolean}>> {
     if(!text(symbol))return Promise.resolve(unknown());
     return this.query({...options,repo,head},`exists:${symbol}`,async(cwd,bin)=>{const r=await this.run(bin,[cwd,`--callers=${symbol}`,"--no-cache"],cwd);
-      if(r.code!==0){const n=xml(r.out);if(n.tag==="callers" && n.attrs.schema==="ripwire.callers/v1" && n.attrs.of===symbol && n.attrs.found==="0")return{exists:false,ambiguous:false};throw Error();}
+      if(r.code!==0){const n=xml(r.out);if(n.tag==="callers" && n.attrs.schema==="ripwire.callers/v1" && n.attrs.of===symbol && n.attrs.found==="0") {
+        // ponytail: ripwire 0.6.7 can miss a qualified name whose bare method exists. Require a CLI/schema qualified-lookup attestation before trusting its absence.
+        if(symbol.includes(".") || symbol.includes("::"))throw Error();
+        return{exists:false,ambiguous:false};
+      }throw Error();}
       const n=xml(r.out);if(n.tag!=="callers" || n.attrs.schema!=="ripwire.callers/v1" || n.attrs.of!==symbol || !integer(n.attrs.defs)||Number(n.attrs.defs)<1)throw Error();return{exists:true,ambiguous:n.attrs.via==="name" || Number(n.attrs.defs)>1};});
   }
   neighbours(repo:string,head:string,symbol:string,depth=1,options:Omit<CodeLocation,"repo"|"head">={}):Promise<CodeFactResult<{callers:CodeSymbol[];callees:CodeSymbol[];hiddenAmbiguous:number;countsFloor:boolean}>> {
