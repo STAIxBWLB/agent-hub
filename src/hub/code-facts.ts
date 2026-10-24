@@ -13,6 +13,8 @@ export type CodeFactResult<T> = { state: "known"; value: T } | { state: "unknown
 export interface CodeLocation { repo: string; head: string; private?: boolean }
 const unknown = (): {state:"unknown"} => ({state:"unknown"});
 const SHA = /^[a-f0-9]{40}$/;
+/** These host anchor spellings have no indexed-name lookup attestation in ripwire 0.6.7. */
+export const unindexedSymbolSyntax = (name: string): boolean => /#|:|->/.test(name);
 // Keep the owned group leader alive after the CLI exits, until the host has stopped every group member.
 const LAUNCHER = String.raw`
 const {writeSync,closeSync}=require("node:fs");
@@ -212,7 +214,7 @@ export class CodeFacts {
     return this.query({...options,repo,head},`exists:${symbol}`,async(cwd,bin)=>{const r=await this.run(bin,[cwd,`--callers=${symbol}`,"--no-cache"],cwd);
       if(r.code!==0){const n=xml(r.out);if(n.tag==="callers" && n.attrs.schema==="ripwire.callers/v1" && n.attrs.of===symbol && n.attrs.found==="0") {
         // ponytail: ripwire 0.6.7 can miss a qualified name whose bare method exists. Require a CLI/schema qualified-lookup attestation before trusting its absence.
-        if(symbol.includes(".") || symbol.includes("::"))throw Error();
+        if(symbol.includes(".") || unindexedSymbolSyntax(symbol))throw Error();
         return{exists:false,ambiguous:false};
       }throw Error();}
       const n=xml(r.out);if(n.tag!=="callers" || n.attrs.schema!=="ripwire.callers/v1" || n.attrs.of!==symbol || !integer(n.attrs.defs)||Number(n.attrs.defs)<1)throw Error();return{exists:true,ambiguous:n.attrs.via==="name" || Number(n.attrs.defs)>1};});

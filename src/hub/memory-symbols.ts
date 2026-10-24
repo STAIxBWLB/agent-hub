@@ -50,6 +50,7 @@ export async function resolveMemorySymbolNodes(
 ): Promise<MemorySymbolNodes> {
   const result: MemorySymbolNodes = { state: "known", nodes: [], unknown: 0, truncated: candidates.length > MEMORY_SYMBOL_LIMIT };
   const deadline = now() + MEMORY_SYMBOL_START_BUDGET_MS, seen = new Set<string>();
+  const lookups = new Map<string, Promise<CodeFactResult<{ exists: boolean; ambiguous: boolean }>>>();
   for (const candidate of candidates.slice(0, MEMORY_SYMBOL_LIMIT)) {
     const node = canonicalMemorySymbolNode(candidate, context);
     if (!node) { result.unknown++; continue; }
@@ -57,7 +58,13 @@ export async function resolveMemorySymbolNodes(
     seen.add(node);
     if (now() >= deadline) { result.unknown++; result.truncated = true; continue; }
     try {
-      const fact = await exists(node.slice(7, node.lastIndexOf("@")));
+      const name = node.slice(7, node.lastIndexOf("@"));
+      let lookup = lookups.get(name);
+      if (!lookup) {
+        lookup = Promise.resolve().then(() => exists(name)).catch(() => ({ state: "unknown" } as const));
+        lookups.set(name, lookup);
+      }
+      const fact = await lookup;
       if (fact.state === "known" && fact.value.exists === true && fact.value.ambiguous === false) result.nodes.push(node);
       else result.unknown++;
     } catch { result.unknown++; }

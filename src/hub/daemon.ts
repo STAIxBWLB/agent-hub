@@ -1,4 +1,4 @@
-import { normalizeMemorySymbolInput, resolveMemorySymbolNodes, type MemorySymbolNodes } from "./memory-symbols.ts";
+import { resolveMemorySymbolNodes, type MemorySymbolNodes } from "./memory-symbols.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { normalizeUsage } from "../omniroute/usage.ts";
 import { permissionPayload } from "./permission-payload.ts";
@@ -22,7 +22,7 @@ import { renderHeldHint } from "./delivery-hints.ts";
 import { correctionInput, MemoryTelemetry } from "./memory-candidates.ts";
 import { MemoryObservations } from "./memory-observations.ts";
 import { createStalenessProbe } from "./memory-staleness.ts";
-import { matchingPlanFails, planGuardNodes } from "./memory-plan-guard.ts";
+import { matchingPlanFails, planGuardNodes, taskMemoryQueryNodes } from "./memory-plan-guard.ts";
 import { planningWipLimits } from "./planning.ts";
 import { projectedDiff } from "./projected-diff.ts";
 import { listenWithoutPortCollision } from "./listen.ts";
@@ -147,7 +147,7 @@ import { grantablePath, instructionProtection, isPermissionMode, permissionBound
 import { ContextWindows, DEFAULT_CONTEXT, readNativeContext, type ContextConfig } from "./context-window.ts";
 import { projectFileTool, scopedWriteBlocked } from "../cli/facts-hook.ts";
 import { detectTooling } from "./tooling.ts";
-import { looksSecret, DEFAULT_LEASE_MS, extractNodes, memoryHome, SUGGESTED, taskKey, type CandidateStore, type MemoryStore, type GoalView, type Suggested, type View as MemoryView } from "@staix/agent-mem";
+import { looksSecret, DEFAULT_LEASE_MS, memoryHome, SUGGESTED, taskKey, type CandidateStore, type MemoryStore, type GoalView, type Suggested, type View as MemoryView } from "@staix/agent-mem";
 import { memoryProjectKey } from "@staix/agent-mem";
 import { AGENT_MEM_VERSION, MEMORY_SPLIT_INCOMPLETE, memoryProjectFor, openProfileMemory, openProfileCandidates, MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
 import { syncMemory } from "@staix/agent-mem";
@@ -1127,7 +1127,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const memoryLine = (v: MemoryView) => `mem:${v.id.slice(0, 8)} ${v.kind} ${v.tier}: ${`${v.title ? `${v.title}: ` : ""}${v.text}`.replace(/\s+/g, " ").slice(0, 160)}`;
   /** A task's own nodes: what its title names (an issue, a path), its refs and plan paths, plan symbols, and the task itself. */
   const taskNodes = (t: { id?: number; created?: number; title?: string; refs: { paths?: string[] }; plan?: { paths?: string[]; symbols?: string[] } }) =>
-    extractNodes(t.title ?? "", { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny, paths: [...(t.refs.paths ?? []), ...(t.plan?.paths ?? [])], symbols: t.plan?.symbols?.map(normalizeMemorySymbolInput), ...(t.id !== undefined && t.created !== undefined ? { task: { id: t.id, created: t.created } } : {}) });
+    taskMemoryQueryNodes({ ...t, title: t.title ?? "" }, { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny });
 
   const leaseNoticed = new Set<string>();
   const goalLine = (g: GoalView) => `goal:${g.id.slice(0, 8)} ${g.state} ${g.title}${g.lease.holder ? ` (held by ${g.lease.holder === memoryStore?.machine.id ? "this machine" : `machine ${g.lease.holder.slice(0, 8)}`} until ${g.lease.until}${g.lease.conflict.length ? `; conflicting claim from ${g.lease.conflict.map((m) => m.slice(0, 8)).join(", ")}` : ""})` : ""}`;
@@ -1480,9 +1480,10 @@ export async function startDaemon(opts: DaemonOptions) {
       const brief = buildReviewBrief(root, task.refs.commit, { privatePath: path => isDenied(path, config.local.deny) || matchesPolicy(root, path, config.pii?.paths ?? [], true), nameable: tasks.nameable });
       if ("unavailable" in brief) return;
       const key = JSON.stringify([root, brief.head, brief.mergeBase]);
+      // prepareOnly and completion share one exact-tree pass, including an unknown result.
+      if (memoryStore && memorySymbols.has(key)) return;
       const observed = await codeFacts.changedSymbols(root, brief.mergeBase, brief.head);
       reviewSymbols.set(key, observed);
-      memorySymbols.delete(key);
       const candidates = tasks.memorySymbolCandidates(task);
       if (memoryStore && candidates && !tasks.isPii(board.get(task.id) ?? task)) {
         const nodes = await resolveMemorySymbolNodes(candidates,
