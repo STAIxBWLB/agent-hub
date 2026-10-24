@@ -1976,3 +1976,7 @@ Kimi usage ceiling: 2.2.0 print stream-json exposes no token counts. Keep unobse
 - In the native TUI call `hub_inbox`, `hub_send`, and a permitted board read/proposal within a non-PII task. Confirm the tool audience and actor remain `agy`, the native model consumes the tool results, and no unsolicited push or PII task text reaches it.
 - End the TUI normally. Confirm its group/socket detaches and only its matching managed three-file plugin is cleaned up; unrelated project/global settings remain unchanged.
 - This live project/account leg is pending until actually run. An older daemon's missing `native_hook_launch` refusal is not a successful TUI launch or grounds for an automatic restart of other active peers.
+
+## Held deliveries and peer retries (#434 AC8, 2026-10-24)
+
+See [delivery holds and peer retry verification](verification/2026-10-24-delivery-holds-ac8.md) for live evidence of hub-settled held deliveries (39 superseded notices in `resolution_history`) and peer retries (2 peer retry rows in `resolution_history`, 27 rows across Claude, Jcode, and Kimi in `delivery_retry_evidence`), alongside daemon status and queue readbacks.
