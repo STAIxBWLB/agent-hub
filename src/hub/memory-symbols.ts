@@ -1,3 +1,6 @@
+import { isDenied } from "../local/deny.ts";
+import { foldSegment } from "./permission-mode.ts";
+import { matchesPolicyLexically } from "./path-policy.ts";
 import { extractNodes } from "@staix/agent-mem";
 import { normalizePlanSymbol } from "./symbol-normalizer.ts";
 import type { CodeFactResult } from "./code-facts.ts";
@@ -32,7 +35,10 @@ export function canonicalMemorySymbolNode(node: string, context: MemorySymbolCon
   // Use the package's path/deny normalization, without reading a working tree or following symlinks.
   const paths = extractNodes("", { ...context, paths: [path], checkExists: false }).filter(value => value.startsWith("path:"));
   if (paths.length !== 1) return;
-  const normalized = `symbol:${name}@${paths[0]!.slice(5)}`;
+  const file = paths[0]!.slice(5), deny = context.deny ?? [];
+  // Core extraction covers literal denies; host read-time policy also covers folded names and declared globs.
+  if (isDenied(foldSegment(file), deny.map(foldSegment)) || matchesPolicyLexically(context.cwd, file, deny)) return;
+  const normalized = `symbol:${name}@${file}`;
   try { if ([node, name, path, normalized].every(context.allowed)) return normalized; } catch { /* Unknown policy withholds. */ }
 }
 
