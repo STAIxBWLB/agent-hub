@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add read-time memory code neighbours (#684): opt-in dashboard calls with commit-stamped dashed edges, bounded symbol graph overlays, fails-first related task briefs and a console note count. Code edges are never stored; unknown and partial evidence stay explicit.
+
 - Fix #758: the planner "board changed" notice skips the planner whose own write changed the board, tells only a card's planners, replaces an unsettled copy so a planner meets the latest revision once, and is recorded at `fyi` weight (no turn) for state moves, reviews and assignments, at most once per planner per ten minutes. A planning revision or dependency change, and a new card, are still task notices; the hub's own bookkeeping entries tell nobody.
 - Verify the Codex 0.164.0 fresh reviewer (#757): the model-free production `codexReviewerBackend.prepare` passed every isolation leg under temporary HOME and CODEX_HOME (empty and synthetic-ambient configuration, all native canaries) and the six source claims were rechecked at upstream `rust-v0.164.0`, so `COMPAT["codex-review"].verified` lists 0.164.0 and `ahub codex --as codex-review` no longer needs `ahub agents trust` on it. Receipt: `docs/verification/2026-10-24-codex-0164-reviewer-isolation.md`.
 - Memory symbol follow-ups (#684): reuse one exact-tree preparation and unknown name lookups at done, query historical raw signatures alongside normalized nodes, label index-only absence, and keep optional doctor cleanup failures neutral. Transient worktree cleanup remains a person action.

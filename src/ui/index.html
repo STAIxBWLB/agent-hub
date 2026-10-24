@@ -151,6 +151,13 @@ progress.critical::-moz-progress-bar{background:var(--red)}
 /* Memory */
 .memory-controls{display:flex;gap:var(--space-2);flex-wrap:wrap;padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--line)}
 .memory-controls input,.memory-controls select{width:auto;flex:1 1 130px}
+.memory-code-toggle{display:flex;align-items:center;gap:var(--space-2);flex:1 1 210px;min-height:44px}
+.memory-controls .memory-code-toggle input{flex:0 0 auto;width:auto;accent-color:var(--accent)}
+#memory-code-help{flex:1 1 220px;align-self:center}
+.memory-row.code-neighbour-note .label{text-decoration:underline dotted;text-underline-offset:3px}
+.mnode.code-neighbour-note circle{stroke:var(--focus);stroke-width:3}
+.medge.derived{stroke:var(--ink);stroke-dasharray:6 4}
+.memory-code-coverage{margin:0;padding:var(--space-2) var(--space-4);overflow-wrap:anywhere}
 .memory-row{display:block;width:100%;text-align:left;border:0;border-bottom:1px solid var(--line);border-radius:0;padding:var(--space-3) var(--space-4);background:var(--panel)}
 .memory-row[aria-pressed="true"]{background:var(--accent-soft);box-shadow:inset 3px 0 0 var(--accent)}
 .memory-row:hover{background:var(--hover)}
@@ -440,7 +447,7 @@ main[data-stale]>:not(#notice):not(#disconnected){opacity:.6;transition:opacity 
 <section id="office-section" aria-labelledby="office-title" data-view="office" hidden><div class="section-head"><h2 id="office-title">Office</h2><div class="filters"><label for="office-view">Office mode</label><select id="office-view"><option value="off">Off</option><option value="flat">Flat</option><option value="isometric">Isometric</option></select></div></div><div id="office" class="content"></div></section>
 <section aria-labelledby="stream-title" data-view="stream" hidden><div class="section-head"><h2 id="stream-title">Live stream</h2><div class="filters"><div id="stream-filters" class="chips" role="group" aria-label="Filter events by kind"></div><label><input id="follow" type="checkbox" checked> Follow latest</label></div></div><div id="stream" class="stream" tabindex="0" aria-label="Recent hub events"><p class="empty">Waiting for hub activity...</p></div><p id="stream-empty" class="empty" hidden>No events match this filter.</p></section>
 
-<section aria-labelledby="memory-title" data-view="memory" hidden><div class="section-head"><h2 id="memory-title">Memory</h2><div class="filters"><div id="memory-tiers" class="chips" role="group" aria-label="Memory tier"></div><span id="memory-count" class="meta"></span></div></div><div class="memory-controls"><input id="memory-q" type="search" maxlength="200" placeholder="Search memory" aria-label="Search memory"><select id="memory-kind" aria-label="Filter memory by kind"><option value="">All kinds</option><option value="decision">Decisions</option><option value="contract">Contracts</option><option value="fail">Fails</option><option value="finding">Findings</option></select><select id="memory-peer" aria-label="Filter memory by peer"><option value="">All peers</option></select><select id="memory-machine" aria-label="Filter memory by machine"><option value="">All machines</option></select><select id="memory-since" aria-label="Filter memory by time"><option value="">Any time</option><option value="1">Last day</option><option value="7">Last week</option><option value="30">Last 30 days</option></select><select id="memory-hops" aria-label="Graph neighbourhood depth"><option value="1">1 hop</option><option value="2">2 hops</option></select></div><div id="memory-list" class="task-list" aria-label="Memory entries"></div><div id="memory-graph" class="memory-graph"></div><div id="memory-detail"></div></section>
+<section aria-labelledby="memory-title" data-view="memory" hidden><div class="section-head"><h2 id="memory-title">Memory</h2><div class="filters"><div id="memory-tiers" class="chips" role="group" aria-label="Memory tier"></div><span id="memory-count" class="meta"></span></div></div><div class="memory-controls"><input id="memory-q" type="search" maxlength="200" placeholder="Search memory" aria-label="Search memory"><select id="memory-kind" aria-label="Filter memory by kind"><option value="">All kinds</option><option value="decision">Decisions</option><option value="contract">Contracts</option><option value="fail">Fails</option><option value="finding">Findings</option></select><select id="memory-peer" aria-label="Filter memory by peer"><option value="">All peers</option></select><select id="memory-machine" aria-label="Filter memory by machine"><option value="">All machines</option></select><select id="memory-since" aria-label="Filter memory by time"><option value="">Any time</option><option value="1">Last day</option><option value="7">Last week</option><option value="30">Last 30 days</option></select><select id="memory-hops" aria-label="Graph neighbourhood depth"><option value="1">1 hop</option><option value="2">2 hops</option></select><label class="memory-code-toggle"><input id="memory-code-neighbours" type="checkbox" aria-describedby="memory-code-help" disabled>Code neighbours (1 hop)</label><span id="memory-code-help" class="meta">Select a symbol to inspect derived code neighbours.</span></div><div id="memory-list" class="task-list" aria-label="Memory entries"></div><div id="memory-graph" class="memory-graph"></div><div id="memory-detail"></div></section>
 <section aria-labelledby="compose-title" data-view="message" hidden><div class="section-head"><h2 id="compose-title">Console message</h2></div><form id="send" class="content"><div class="field"><label for="recipient">Recipient</label><select id="recipient" name="recipient"><option value="">All peers</option></select></div><div class="field"><label for="message">Message</label><textarea id="message" name="body" required maxlength="8000" placeholder="Send an instruction to the team..."></textarea></div><button class="primary" data-mutation="project" type="submit">Send message</button></form></section>
 <section aria-labelledby="settings-title" data-view="settings" hidden><div class="section-head"><h2 id="settings-title">Settings</h2><span id="settings-session" class="meta" role="status"></span></div><div id="settings"><p class="empty">Waiting for the hub...</p></div></section>
 </div>
@@ -2242,21 +2249,22 @@ function renderBench(bench) {
 }
 // #258: the hub's memory, read-only. A tier at a time, filtered; selecting an entry or a node shows its neighbourhood
 // (inline SVG, a small force layout computed here) with the same edges as a list, and its detail.
-const memoryQuery = {tier:'long', q:'', kind:'', peer:'', machine:'', since:'', node:'', hops:1};
+const memoryQuery = {tier:'long', q:'', kind:'', peer:'', machine:'', since:'', node:'', hops:1, codeNeighbours:false};
 let memoryGeneration = -1;
 function memoryInput() {
   if (memoryGeneration !== viewGeneration) { // another project: its own nodes, peers and machines
-    memoryGeneration = viewGeneration; memoryQuery.node = ''; memoryQuery.peer = ''; memoryQuery.machine = '';
+    memoryGeneration = viewGeneration; memoryQuery.node = ''; memoryQuery.peer = ''; memoryQuery.machine = ''; memoryQuery.codeNeighbours = false;
     for (const id of ['memory-peer', 'memory-machine']) $(id).value = '';
   }
   const out = {tier:memoryQuery.tier, hops:memoryQuery.hops};
   for (const key of ['q', 'kind', 'peer', 'machine', 'node']) if (memoryQuery[key]) out[key] = memoryQuery[key];
+  if (memoryQuery.codeNeighbours === true && memoryQuery.node.startsWith('symbol:') && currentView === 'memory' && !document.hidden) out.codeNeighbours = true;
   // A whole timestamp, floored to the hour so the query stays the same between polls.
   if (memoryQuery.since) out.since = new Date(Math.floor((Date.now() - Number(memoryQuery.since) * 86400000) / 3600000) * 3600000).toISOString();
   return out;
 }
 // The next poll (at most a second away) carries the changed query; polling is never started twice.
-function rerenderMemory() { for (const chip of $('memory-tiers').children) chip.setAttribute('aria-pressed', String(chip.dataset.tier === memoryQuery.tier)); }
+function rerenderMemory() { memoryCodeToggle(); for (const chip of $('memory-tiers').children) chip.setAttribute('aria-pressed', String(chip.dataset.tier === memoryQuery.tier)); }
 function memoryOptions(id, values, all, key) {
   const select = $(id), keep = select.value;
   const want = [''].concat(values);
@@ -2264,6 +2272,51 @@ function memoryOptions(id, values, all, key) {
   select.replaceChildren(...want.map((v) => { const o = el('option', v || all); o.value = v; return o; }));
   select.value = want.includes(keep) ? keep : '';
   memoryQuery[key] = select.value; // a filter whose value is gone reads as none, on the page and in the next query
+}
+// Render-only union: stored edges remain stored; code facts are separately SHA-stamped and never persisted here.
+function memoryPresentation(memory) {
+  const stored = memory.graph || {nodes:[], edges:[]}, entries = memory.entries || [];
+  const enabled = memoryQuery.codeNeighbours === true && memoryQuery.node.startsWith('symbol:') && memory.node === memoryQuery.node;
+  if (!enabled) return {graph:stored, entries, noteIds:[], coverage:''};
+  const code = memory.code, head = code?.head;
+  if (!code || !/^[a-f0-9]{40}$/.test(head || '')) return {graph:stored, entries, noteIds:[], coverage:'Code neighbours: unknown (no current code facts).'};
+  let coverage = 'Code neighbours: ' + (code.state === 'known' ? 'known' : 'unknown') + (code.truncated ? '; truncated' : '')
+    + (code.countsFloor ? '; lower-bound counts' : '') + ' at ' + head + '; dashed edges are derived, never stored.';
+  const nodes = new Map(stored.nodes.map(node => [node.id, node]));
+  const candidateNodes = new Map((code.nodes || []).filter(node => node.derived === true && node.head === head && node.type === 'symbol' && typeof node.id === 'string' && node.id.startsWith('symbol:')).map(node => [node.id, node]));
+  const edges = new Map(stored.edges.map(edge => [JSON.stringify([edge.from, edge.to, edge.rel]), edge]));
+  const connected = new Set();
+  for (const edge of code.edges || []) {
+    if (edge.derived !== true || edge.head !== head || edge.rel !== 'calls' || !candidateNodes.has(edge.from) || !candidateNodes.has(edge.to)) continue;
+    const key = JSON.stringify([edge.from, edge.to, edge.rel]);
+    if (!edges.has(key)) edges.set(key, edge);
+    connected.add(edge.from); connected.add(edge.to);
+  }
+  for (const [id, node] of candidateNodes) if ((connected.has(id) || id === memory.node) && !nodes.has(id)) nodes.set(id, node);
+  const notes = (code.notes || []).filter(note => (!memoryQuery.kind || note.kind === memoryQuery.kind) && (!memoryQuery.tier || note.tier === memoryQuery.tier) && (!memoryQuery.peer || note.peer === memoryQuery.peer) && (!memoryQuery.machine || note.machine === memoryQuery.machine) && /^mem:[a-f0-9]{32}$/.test(note.id) && typeof note.line === 'string' && Array.isArray(note.about) && note.about.some(id => connected.has(id)));
+  const noteIds = [...new Set(notes.map(note => note.id))], highlightIds = new Set(noteIds), byId = new Map(entries.map(entry => [entry.id, entry]));
+  for (const note of notes) {
+    const id = note.id.slice(4), existing = byId.get(id);
+    byId.set(id, existing ? {...existing, codeNeighbour:true} : {id, title:null, text:note.line, kind:note.kind || 'finding', codeNeighbour:true, codeFallback:true, head});
+    if (!nodes.has(note.id)) nodes.set(note.id, {id:note.id, type:'memory', label:note.line, kind:note.kind});
+    for (const about of note.about) if (candidateNodes.has(about) && connected.has(about)) {
+      highlightIds.add(about);
+      const rel = note.kind === 'fail' ? 'rules_out' : 'about', key = JSON.stringify([note.id, about, rel]);
+      if (!edges.has(key)) edges.set(key, {from:note.id, to:about, rel});
+    }
+  }
+  const ordered = [...byId.values()].sort((a, b) => Number(b.kind === 'fail') - Number(a.kind === 'fail') || Number(b.codeNeighbour === true) - Number(a.codeNeighbour === true));
+  const rank = node => node.kind === 'fail' ? 0 : node.id === memory.node ? 1 : highlightIds.has(node.id) ? 2 : node.derived ? 3 : 4;
+  const orderedNodes = [...nodes.values()].sort((a, b) => rank(a) - rank(b)), keptNodes = orderedNodes.slice(0, 200), keptIds = new Set(keptNodes.map(node => node.id));
+  const nodeOmitted = orderedNodes.length - keptNodes.length, noteOmitted = ordered.length - Math.min(ordered.length, 50);
+  if (nodeOmitted || noteOmitted) coverage += '; display truncated: ' + nodeOmitted + ' nodes and ' + noteOmitted + ' entries omitted';
+  return {graph:{nodes:keptNodes, edges:[...edges.values()].filter(edge => keptIds.has(edge.from) && keptIds.has(edge.to))}, entries:ordered.slice(0, 50), noteIds:[...highlightIds], coverage};
+}
+function memoryCodeToggle() {
+  const toggle = $('memory-code-neighbours'), eligible = memoryQuery.node.startsWith('symbol:');
+  if (!eligible) memoryQuery.codeNeighbours = false;
+  toggle.disabled = !eligible; toggle.checked = memoryQuery.codeNeighbours === true;
+  $('memory-code-help').textContent = eligible ? 'Optional current-head caller/callee context; dashed edges are derived.' : 'Select a symbol to inspect derived code neighbours.';
 }
 function layout(graph) {
   // Deterministic: start on a circle in node order, then a fixed number of spring steps; no animation loop.
@@ -2287,6 +2340,7 @@ function layout(graph) {
 }
 function selectMemoryNode(node) { memoryQuery.node = memoryQuery.node === node ? '' : node; rerenderMemory(); }
 function renderMemory(memory) {
+  memoryCodeToggle();
   const tiers = $('memory-tiers');
   if (!tiers.children.length) for (const [tier, label] of [['short', 'Short-term'], ['long', 'Long-term'], ['goals', 'Long-term tasks']]) {
     const chip = el('button', label, 'chip'); chip.type = 'button'; chip.dataset.tier = tier;
@@ -2295,6 +2349,7 @@ function renderMemory(memory) {
   }
   for (const chip of tiers.children) chip.setAttribute('aria-pressed', String(chip.dataset.tier === memoryQuery.tier));
   if (!memory) { $('memory-count').textContent = ''; update('memory-list', null, (target) => empty(target, 'Hub memory is off for this project, or nothing is stored yet. Save a note with ahub remember <text>.')); update('memory-graph', null, () => {}); update('memory-detail', null, () => {}); return; }
+  const presentation = memoryPresentation(memory);
   $('memory-count').textContent = memory.counts.long + ' long-term / ' + memory.counts.short + ' short-term / ' + (memory.counts.goals || 0) + ' open tasks';
   if (memory.goals) {
     // Long-term tasks: state, who holds the lease and until when (a conflict when two machines claimed it), linked board tasks.
@@ -2320,15 +2375,16 @@ function renderMemory(memory) {
   }
   memoryOptions('memory-peer', memory.peers, 'All peers', 'peer');
   memoryOptions('memory-machine', memory.machines, 'All machines', 'machine');
-  if (!memory.goals) update('memory-list', {entries: memory.entries, node: memoryQuery.node}, (target) => {
-    if (!memory.entries.length) return empty(target, 'No ' + memory.tier + '-term entries match. Save one with ahub remember <text>.');
+  if (!memory.goals) update('memory-list', {entries: presentation.entries, node: memoryQuery.node}, (target) => {
+    if (!presentation.entries.length) return empty(target, 'No ' + memory.tier + '-term entries match. Save one with ahub remember <text>.');
     const keyed = keyedStart('memory');
-    for (const entry of memory.entries) {
+    for (const entry of presentation.entries) {
       const row = keyed('mem:' + entry.id, JSON.stringify([entry, memoryQuery.node === 'mem:' + entry.id]), () => {
-      const row = el('button', undefined, 'memory-row'); row.type = 'button'; row.setAttribute('aria-pressed', String(memoryQuery.node === 'mem:' + entry.id));
+      const row = el('button', undefined, 'memory-row' + (entry.codeNeighbour ? ' code-neighbour-note' : '')); row.type = 'button'; row.setAttribute('aria-pressed', String(memoryQuery.node === 'mem:' + entry.id));
       const head = el('div', undefined, 'row-head');
       head.append(el('span', (entry.title ? entry.title + ': ' : '') + entry.text.split('\n')[0].slice(0, 140), 'label'), badge(entry.kind, entry.kind === 'fail' ? 'err' : entry.kind === 'decision' ? 'ok' : entry.kind === 'contract' ? 'warn' : ''));
-      row.append(head, el('div', entry.id.slice(0, 8) + ' / ' + entry.peer + ' / ' + time(entry.at) + (entry.scope === 'shared' ? ' / shared' : '') + (entry.supersededBy ? ' / superseded' : '') + (entry.machine !== memory.machine ? ' / from machine ' + entry.machine.slice(0, 6) : ''), 'meta'));
+      if (entry.codeNeighbour) head.append(badge('Code neighbour', 'info'));
+      row.append(head, el('div', entry.codeFallback ? entry.id.slice(0, 8) + ' / via code neighbour at ' + entry.head : entry.id.slice(0, 8) + ' / ' + entry.peer + ' / ' + time(entry.at) + (entry.scope === 'shared' ? ' / shared' : '') + (entry.supersededBy ? ' / superseded' : '') + (entry.machine !== memory.machine ? ' / from machine ' + entry.machine.slice(0, 6) : ''), 'meta'));
       row.addEventListener('click', () => selectMemoryNode('mem:' + entry.id));
       return row;
       });
@@ -2336,19 +2392,21 @@ function renderMemory(memory) {
     }
     keyed.end();
   });
-  update('memory-graph', memory.graph || null, (target) => {
-    const graph = memory.graph;
+  update('memory-graph', {graph:presentation.graph, coverage:presentation.coverage, noteIds:presentation.noteIds}, (target) => {
+    const graph = presentation.graph;
+    if (presentation.coverage) target.append(el('p', presentation.coverage, 'memory-code-coverage meta'));
     if (!graph || !graph.nodes.length) return;
     const NS = 'http://www.w3.org/2000/svg', svg = document.createElementNS(NS, 'svg'), pos = layout(graph);
     svg.setAttribute('viewBox', '0 0 640 320'); svg.setAttribute('role', 'img'); svg.setAttribute('aria-label', 'Neighbourhood of ' + memory.node + ': ' + graph.nodes.length + ' nodes, ' + graph.edges.length + ' edges; the list below has the same edges');
     for (const e of graph.edges) {
       const p = pos.get(e.from), q = pos.get(e.to); if (!p || !q) continue;
-      const line = document.createElementNS(NS, 'line'); line.setAttribute('x1', p.x); line.setAttribute('y1', p.y); line.setAttribute('x2', q.x); line.setAttribute('y2', q.y); line.setAttribute('class', 'medge ' + e.rel);
+      const line = document.createElementNS(NS, 'line'); line.setAttribute('x1', p.x); line.setAttribute('y1', p.y); line.setAttribute('x2', q.x); line.setAttribute('y2', q.y); line.setAttribute('class', 'medge ' + e.rel + (e.derived ? ' derived' : ''));
+      if (e.derived) { const title = document.createElementNS(NS, 'title'); title.textContent = 'Derived ' + e.rel + ' at ' + e.head; line.append(title); }
       svg.append(line);
     }
     for (const node of graph.nodes) {
       const p = pos.get(node.id), g = document.createElementNS(NS, 'g'), c = document.createElementNS(NS, 'circle'), t = document.createElementNS(NS, 'text');
-      g.setAttribute('class', 'mnode ' + node.type + (node.kind ? ' ' + node.kind : '') + (node.id === memory.node ? ' selected' : '')); g.setAttribute('tabindex', '0'); g.setAttribute('role', 'button'); g.setAttribute('aria-label', node.type + ' ' + node.label);
+      g.setAttribute('class', 'mnode ' + node.type + (node.kind ? ' ' + node.kind : '') + (node.id === memory.node ? ' selected' : '') + (presentation.noteIds.includes(node.id) ? ' code-neighbour-note' : '')); g.setAttribute('tabindex', '0'); g.setAttribute('role', 'button'); g.setAttribute('aria-label', node.type + ' ' + node.label);
       c.setAttribute('cx', p.x); c.setAttribute('cy', p.y); c.setAttribute('r', node.type === 'memory' ? 9 : 6);
       t.setAttribute('x', p.x + 11); t.setAttribute('y', p.y + 4); t.textContent = node.label.slice(0, 28);
       g.append(c, t);
@@ -2357,7 +2415,7 @@ function renderMemory(memory) {
       svg.append(g);
     }
     const list = el('ul', undefined, 'memory-edges');
-    for (const e of graph.edges) list.append(el('li', e.from + ' ' + e.rel + ' ' + e.to));
+    for (const e of graph.edges) list.append(el('li', e.from + ' ' + e.rel + ' ' + e.to + (e.derived ? ' (derived at ' + e.head + ')' : '')));
     target.append(svg, list);
   });
   update('memory-detail', memory.detail || null, (target) => {
@@ -2373,6 +2431,7 @@ function renderMemory(memory) {
   });
 }
 for (const [id, key] of [['memory-kind', 'kind'], ['memory-peer', 'peer'], ['memory-machine', 'machine'], ['memory-since', 'since']]) $(id).addEventListener('change', () => { memoryQuery[key] = $(id).value; rerenderMemory(); });
+$('memory-code-neighbours').addEventListener('change', () => { memoryQuery.codeNeighbours = $('memory-code-neighbours').checked === true; rerenderMemory(); });
 $('memory-hops').addEventListener('change', () => { memoryQuery.hops = Number($('memory-hops').value); rerenderMemory(); });
 let memorySearch;
 $('memory-q').addEventListener('input', () => { clearTimeout(memorySearch); memorySearch = setTimeout(() => { memoryQuery.q = $('memory-q').value.trim(); rerenderMemory(); }, 300); });

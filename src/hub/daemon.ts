@@ -1,4 +1,6 @@
-import { resolveMemorySymbolNodes, type MemorySymbolNodes } from "./memory-symbols.ts";
+import { deriveMemoryCodeOverlay, unavailableMemoryCodeOverlay } from "./memory-code-overlay.ts";
+import { readMemoryCodeHead, type MemoryCodeHead } from "./memory-code-head.ts";
+import { canonicalMemorySymbolNode, resolveMemorySymbolNodes, type MemorySymbolNodes } from "./memory-symbols.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { normalizeUsage } from "../omniroute/usage.ts";
 import { permissionPayload } from "./permission-payload.ts";
@@ -1129,6 +1131,72 @@ export async function startDaemon(opts: DaemonOptions) {
   const taskNodes = (t: { id?: number; created?: number; title?: string; refs: { paths?: string[] }; plan?: { paths?: string[]; symbols?: string[] } }) =>
     taskMemoryQueryNodes({ ...t, title: t.title ?? "" }, { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny });
 
+  const memoryCodeCache = new Map<string, { code: import("./memory-code-overlay.ts").MemoryCodeOverlay; proof: MemoryCodeHead; expires: number }>();
+  const memoryCodeProofs = new Map<string, MemoryCodeHead>();
+  const memoryCodeSeeds = new WeakMap<object, Set<string>>();
+  let memoryCodeNextStart = 0;
+  async function memoryCode(starts: readonly string[], valid: () => boolean = () => true, cacheOnly = false) {
+    if (!memoryStore || !starts.length || !valid()) return unavailableMemoryCodeOverlay();
+    const key = JSON.stringify([memoryRepo, starts]), now = performance.now(), cached = memoryCodeCache.get(key);
+    if (cached && cached.expires > now && cached.proof.current() === cached.code.head) return cached.code;
+    if (cacheOnly || now < memoryCodeNextStart) return unavailableMemoryCodeOverlay();
+    memoryCodeNextStart = now + 5000;
+    const proof = readMemoryCodeHead(opts.cwd); if (!proof) return unavailableMemoryCodeOverlay();
+    const head = proof.head; memoryCodeProofs.set(head, proof);
+    if (memoryCodeProofs.size > 32) memoryCodeProofs.delete(memoryCodeProofs.keys().next().value!);
+    const code = await deriveMemoryCodeOverlay(starts, {
+      context: () => ({ cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny }),
+      head: () => head,
+      valid: () => { checkMemory(); return !stopping && valid() && proof.current() === head; },
+      publicMetadataText: text => tasks.publicMetadataText(text) && boundedSafe(text),
+      neighbours: (root, head, selector, depth) => codeFacts.neighbours(root, head, selector, depth, { priority: "optional" }),
+      related: (nodes, limit) => screenMemory(memoryStore!.related(memoryProject, [...nodes], limit)).map(v => ({ id: `mem:${v.id}`, line: memoryLine(v), kind: v.kind, about: v.about })),
+    });
+    memoryCodeSeeds.set(code, new Set(starts.map(raw => canonicalMemorySymbolNode(raw, { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny, allowed: tasks.publicMetadataText })).filter((id): id is string => !!id)));
+    memoryCodeCache.set(key, { code, proof, expires: performance.now() + (code.state === "known" ? 30_000 : 5000) });
+    if (memoryCodeCache.size > 32) memoryCodeCache.delete(memoryCodeCache.keys().next().value!);
+    return code;
+  }
+  function currentMemoryCode(code: import("./memory-code-overlay.ts").MemoryCodeOverlay) {
+    try {
+      checkMemory();
+      if (!code.head || memoryCodeProofs.get(code.head)?.current() !== code.head || !tasks.publicMetadataText(JSON.stringify({ ...code, notes: [] })) || !boundedSafe(JSON.stringify({ ...code, notes: [] }))) return unavailableMemoryCodeOverlay();
+      const context = { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny, allowed: (text: string) => tasks.publicMetadataText(text) && boundedSafe(text) };
+      if (code.nodes.some(node => canonicalMemorySymbolNode(node.id, context) !== node.id)) return unavailableMemoryCodeOverlay();
+      for (const note of code.notes) {
+        const row = memoryStore?.get(note.id.slice(4), memoryProject);
+        if (!row || `mem:${row.id}` !== note.id || !screenMemory([row]).length || !boundedSafe(JSON.stringify(row))) return unavailableMemoryCodeOverlay();
+      }
+      const seeds = memoryCodeSeeds.get(code) ?? new Set<string>();
+      const neighbours = code.nodes.map(node => node.id).filter(id => !seeds.has(id));
+      const rows = memoryStore && neighbours.length ? screenMemory(memoryStore.related(memoryProject, neighbours, 128)) : [];
+      const notes = rows.filter(row => row.about.some(id => neighbours.includes(id)) && boundedSafe(JSON.stringify(row)))
+        .sort((a, b) => Number(b.kind === "fail") - Number(a.kind === "fail") || b.at.localeCompare(a.at)).slice(0, 16)
+        .map(row => ({ id: `mem:${row.id}`, line: memoryLine(row), kind: row.kind, about: row.about, tier: row.tier, peer: row.peer, machine: row.machine, at: row.at }));
+      return { ...code, notes };
+    } catch { return unavailableMemoryCodeOverlay(); }
+  }
+  async function taskMemoryResult(task: import("../memory/brief.ts").BriefTask, cacheOnly = false) {
+    const maximum = config.memory.brief_items;
+    const current = () => task.id === undefined ? undefined : board.get(task.id), initial = current();
+    const valid = () => { const value = current(); return !!initial && !!value && value.created === task.created && value.updated === initial.updated && value.history.length === initial.history.length && value.owner === initial.owner && tasks.memoryCodeEligible(value) && !turns.get(value.owner ?? "")?.private && !contextPii(value.owner ?? ""); };
+    if (!memoryStore || initial && tasks.isPii(initial)) return { items: [], state: "unknown" as const };
+    const starts = taskNodes(task).filter(node => node.startsWith("symbol:"));
+    let code = unavailableMemoryCodeOverlay();
+    try { if (valid() && starts.length) { const prepared = await memoryCode(starts, valid, cacheOnly); if (valid()) code = currentMemoryCode(prepared); } }
+    catch { /* Optional code failure must not discard existing direct memory advice. */ }
+    checkMemory();
+    const latest = current(); if (latest && tasks.isPii(latest)) return { items: [], state: "unknown" as const };
+    // Optional code evidence never suppresses the existing direct path/title/symbol memory brief.
+    const direct = screenMemory(memoryStore.related(memoryProject, taskNodes(task), 128)).map(v => ({ id: `mem:${v.id}`, line: memoryLine(v), kind: v.kind, about: v.about }));
+    const items = [...new Map([...direct, ...code.notes].map(row => [row.id, row])).values()]
+      .filter(row => [row.line, ...(row.about ?? [])].every(tasks.publicMetadataText))
+      .sort((a, b) => Number(b.kind === "fail") - Number(a.kind === "fail") || Number(b.kind === "decision") - Number(a.kind === "decision"))
+      .slice(0, maximum);
+    return { items, state: starts.length ? code.state : "known" as const, ...(code.head ? { head: code.head } : {}) };
+  }
+  async function taskMemoryItems(task: import("../memory/brief.ts").BriefTask) { return (await taskMemoryResult(task)).items; }
+
   const leaseNoticed = new Set<string>();
   const goalLine = (g: GoalView) => `goal:${g.id.slice(0, 8)} ${g.state} ${g.title}${g.lease.holder ? ` (held by ${g.lease.holder === memoryStore?.machine.id ? "this machine" : `machine ${g.lease.holder.slice(0, 8)}`} until ${g.lease.until}${g.lease.conflict.length ? `; conflicting claim from ${g.lease.conflict.map((m) => m.slice(0, 8)).join(", ")}` : ""})` : ""}`;
   /**
@@ -1514,7 +1582,7 @@ export async function startDaemon(opts: DaemonOptions) {
     candidates, candidateScreen: screenMemory, privateTurn: peer => !!turns.get(peer)?.private || contextPii(peer),
     memoryCheck: checkMemory,
     ...(config.memory.enabled || memoryStore ? { briefs: new Briefs(config.memory.enabled ? memory : undefined, chain.at(-1)!, () => config.memory.brief_items,
-      memoryStore ? (t) => { checkMemory(); return screenMemory(memoryStore!.related(memoryProject, taskNodes(t), Number.MAX_SAFE_INTEGER)).slice(0, config.memory.brief_items).map((v) => ({ id: `mem:${v.id}`, line: memoryLine(v), kind: v.kind, about: v.about })); } : undefined,
+      memoryStore ? taskMemoryItems : undefined,
       (peer, task, counts) => event({ type: "memory_brief", source: "amem", peer, task, ...counts }),
       items => { const stale = staleness(); return items.map(item => `${item.line}${stale(item.about ?? []) ? " (stale?)" : ""}`); }) } : {}),
     ...(memoryStore ? { planFails: (task: import("./board.ts").Task) => {
@@ -2432,9 +2500,17 @@ export async function startDaemon(opts: DaemonOptions) {
       if (a.owner && a.owner !== by) need("assign", "hand tasks to other peers");
     }
     if (MEMORY_READ_TOOLS.has(op)) {
+      validateMemoryRead(op, a);
       need("memory_read", "read shared memory");
+      if (!boundedSafe(JSON.stringify(a))) throw new PreEffectToolRefusal("memory read unavailable");
       checkMemory();
-      return memoryRead(memoryStore, memoryProject, screenMemory, op, a, staleness());
+      const generation = connectionGeneration(by);
+      const valid = () => may(by, "memory_read") && connectionGeneration(by) === generation && !turns.get(by)?.private && !contextPii(by);
+      const symbolStarts = op === "hub_memory_graph" ? (a.starts as string[]).filter(node => node.startsWith("symbol:")) : [];
+      const code = symbolStarts.length ? await memoryCode(symbolStarts, valid).catch(() => unavailableMemoryCodeOverlay()) : undefined;
+      if (!valid()) throw new PreEffectToolRefusal("memory read unavailable");
+      checkMemory();
+      return memoryRead(memoryStore, memoryProject, screenMemory, op, a, staleness(), code ? currentMemoryCode(code) : undefined);
     }
     if (op === "hub_memory_correct") { need("memory_correct", "propose memory corrections"); return tasks.correct(by, a); }
     if (op === "hub_remember") need("remember", "save notes to shared memory");
@@ -2681,7 +2757,10 @@ export async function startDaemon(opts: DaemonOptions) {
         const { codeSymbols: _storedCodeSymbols, ...detail } = task;
         const codeSymbols = tasks.publicView(task).codeSymbols;
         const consoleDeliverables = await tasks.deliverableStatus(task);
-        return JSON.stringify({ ...detail, ...(codeSymbols ? { codeSymbols } : {}), ...(consoleDeliverables ? { deliverables: consoleDeliverables } : {}), symbolOverlaps: tasks.symbolOverlaps(task), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
+        const related = tasks.isPii(task) ? undefined : await taskMemoryResult(task, true).catch(() => ({ items: [], state: "unknown" as const }));
+        const fresh = board.get(task.id);
+        const relatedMemory = related && fresh?.updated === task.updated && !tasks.isPii(fresh) ? { state: related.state, count: related.items.length, ...("head" in related ? { head: related.head } : {}) } : { state: "unknown" };
+        return JSON.stringify({ ...detail, relatedMemory, ...(codeSymbols ? { codeSymbols } : {}), ...(consoleDeliverables ? { deliverables: consoleDeliverables } : {}), symbolOverlaps: tasks.symbolOverlaps(task), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
       }
       case "deliverables": {
         // #317 (`ahub deliverables`): the board's deliverable records, person only. `check` measures the files now; without it nothing is opened.
@@ -4766,6 +4845,21 @@ export async function startDaemon(opts: DaemonOptions) {
         entries: rows.map((v) => shape(v)), ...(node ? { node, graph: memoryStore.graph(memoryProject, node, hops, 200), ...(selected ? { detail: shape(selected, true) } : {}) } : {}) } };
     } catch (e) { log(`hub memory view failed: ${(e as Error).message}`); return {}; } // an unreadable store never breaks the dashboard
   }
+  async function uiMemorySnapshot(after: number, input?: Record<string, unknown>, session?: DashboardSession) {
+    const query = input?.memory as Record<string, unknown> | undefined;
+    const start = input?.view === "memory" && query && query.codeNeighbours === true && typeof query.node === "string" && query.node.startsWith("symbol:") && Buffer.byteLength(query.node) <= 512 ? query.node : undefined;
+    const code = start ? await memoryCode([start]).catch(() => unavailableMemoryCodeOverlay()) : undefined;
+    const snapshot = uiSnapshot(after, input, session);
+    if (code && "memory" in snapshot && snapshot.memory && typeof snapshot.memory === "object") {
+      const published = currentMemoryCode(code), tier = query?.tier === "goals" ? "goals" : query?.tier === "short" ? "short" : "long";
+      const search = typeof query?.q === "string" ? query.q.toLowerCase() : undefined;
+      published.notes = published.notes.filter(note => note.tier === tier && (!query?.kind || note.kind === query.kind) && (!query?.peer || note.peer === query.peer) && (!query?.machine || note.machine === query.machine)
+        && (!query?.since || typeof query.since !== "string" || !note.at || note.at >= query.since)
+        && (!search || (() => { const row = memoryStore?.get(note.id.slice(4), memoryProject); return !!row && `${row.title ?? ""} ${row.text}`.toLowerCase().includes(search); })()));
+      Object.assign(snapshot.memory, { code: published });
+    }
+    return snapshot;
+  }
   function uiSnapshot(after: number, _input?: Record<string, unknown>, session?: DashboardSession) {
     const quota = budget.status();
     const peers = [...new Set([...Object.keys(quota), ...bus.knownPeers()])];
@@ -6368,7 +6462,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "ui":
         if (c.role !== "console") return void reply({ t: "ui", ok: false, error: "ui is a console command" });
         try {
-          dashboard ??= startDashboard({ snapshot: uiSnapshot, action: uiAction });
+          dashboard ??= startDashboard({ snapshot: uiMemorySnapshot, action: uiAction });
           writeStatus();
           // #269: `ahub ui --settings` is the same person's command; its ticket marks the session it opens.
           if (msg.settings === true) notify("settings session opened from ahub ui --settings: for 15 minutes that dashboard session may change permission modes, routing and start settings");
@@ -6457,7 +6551,8 @@ export async function startDaemon(opts: DaemonOptions) {
       case "ui_snapshot":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_snapshot is a console command" });
         if (!Number.isSafeInteger(msg.after ?? 0) || (msg.after ?? 0) < 0) return void reply({ ok: false, error: "invalid cursor" });
-        return void reply(uiSnapshot(msg.after ?? 0, msg.memory !== undefined || dashboardView(msg.view) ? { ...(msg.memory !== undefined ? { memory: msg.memory } : {}), ...(dashboardView(msg.view) ? { view: msg.view } : {}) } : undefined));
+        void uiMemorySnapshot(msg.after ?? 0, msg.memory !== undefined || dashboardView(msg.view) ? { ...(msg.memory !== undefined ? { memory: msg.memory } : {}), ...(dashboardView(msg.view) ? { view: msg.view } : {}) } : undefined).then(value => reply(value), () => reply({ ok: false, error: "memory view unavailable" }));
+        return;
       case "ui_action":
         if (c.role !== "console") return void reply({ ok: false, error: "ui_action is a console command" });
         if (recoveryActive()) return void reply({ ok: false, error: "recovery is holding mutations" });
