@@ -91,6 +91,16 @@ const cases: Array<[string, ActionClass[]]> = [
   ["gh api graphql -f query='query{a(s:\"}\"){b}} mutation{x}'", ["external-write"]],
   ["gh api graphql -f query='fragment F on User{login} query{viewer{...F}}'", []],
   ["gh api graphql -f query='fragment F on User{login}'", ["external-write"]],
+  // a comment ends at LF, CR or CRLF: a mutation after a CR or CRLF terminator is a real operation, not comment text
+  ["gh api graphql -f query='query{a} #x\rmutation{b}'", ["external-write"]],
+  ["gh api graphql -f query='query{a} #x\r\nmutation{b}'", ["external-write"]],
+  ["gh api graphql -f query='query{a} #x\nmutation{b}'", ["external-write"]],
+  ["gh api graphql -f query='query{a #x\rb} mutation{c}'", ["external-write"]],
+  ["gh api graphql -f query='query{a #x\r\nb} mutation{c}'", ["external-write"]],
+  ["gh api graphql -f query='query{a #x\rb}'", []],
+  ["gh api graphql -f query='query{a #x\r\nb}'", []],
+  ["gh api graphql -f query='query{a(s:\"x\ry\"){b}}'", ["external-write"]],
+  ["gh api graphql -f query='query{a} #x\rquery{b}'", []],
   ["gh api graphql -f query='query{a}'; git push", ["publish"]],
   ["gh api graphql -f query='query{a}; git push'", ["external-write"]],   // the `;` is inside the document, which is then not a query
   ["gh api repos/o/r/actions/runs -X GET -f per_page=5", []],

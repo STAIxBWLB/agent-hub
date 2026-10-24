@@ -96,7 +96,9 @@ prompt. A `mutation`, a `subscription`, a second `query` field, a document from 
 file or stdin (`-F query=@file`, `--input`), an unknown option, a non-POST method
 and any document the hub cannot parse stay `external-write`: unknown is never a
 read. Read-only `gh` commands (`view`, `list`, `status`, `watch`, REST GET) are
-unclassed.
+unclassed. Other `gh` writes (`repo delete|archive|edit`, `secret` and `variable`
+`set|delete`, `label create|edit|delete`) are not classed yet and keep native
+handling; that gap is outside #756.
 
 Config defaults apply automatically only up to ask-when-needed. A never-ask
 request from an applied untracked config is held as ask until the person

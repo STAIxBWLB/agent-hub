@@ -195,17 +195,20 @@ function unwrapped(input: string[]): string[] {
  */
 function graphqlQueryOnly(text: string): boolean {
   const skipString = (at: number): number => {              // `at` is the opening quote; the index after the string, or -1 when it never ends
+    // A block string ends at its first `"""`: GraphQL's escaped `\"""` ends it later, so a lexer that ends early only turns a read into a write (the strict direction).
     if (text.startsWith('"""', at)) { const end = text.indexOf('"""', at + 3); return end < 0 ? -1 : end + 3; }
-    for (let i = at + 1; i < text.length; i++) { if (text[i] === "\\") i++; else if (text[i] === '"') return i + 1; else if (text[i] === "\n") return -1; }
+    // GraphQL's line terminators are LF, CR and CRLF, and none may appear in a single-line string: ending early is the strict direction.
+    for (let i = at + 1; i < text.length; i++) { if (text[i] === "\\") { i++; if (text[i] === "\n" || text[i] === "\r") return -1; } else if (text[i] === '"') return i + 1; else if (text[i] === "\n" || text[i] === "\r") return -1; }
     return -1;
   };
+  const skipComment = (at: number): number => { let i = at; while (i < text.length && text[i] !== "\n" && text[i] !== "\r") i++; return i; };   // a comment ends at LF or CR (so also CRLF), never later than GraphQL ends it
   const closers: Record<string, string> = { "{": "}", "(": ")", "[": "]" };
   const skipBlock = (at: number): number => {             // `at` is an opening bracket; the index after its matching close, or -1
     const close = closers[text[at]!]!;
     for (let i = at + 1; i < text.length; i++) {
       const c = text[i]!;
       if (c === '"') { const end = skipString(i); if (end < 0) return -1; i = end - 1; }
-      else if (c === "#") { while (i < text.length && text[i] !== "\n") i++; }
+      else if (c === "#") i = skipComment(i) - 1;
       else if (c in closers) { const end = skipBlock(i); if (end < 0) return -1; i = end - 1; }
       else if (c === "}" || c === ")" || c === "]") return c === close ? i + 1 : -1;
     }
@@ -215,7 +218,7 @@ function graphqlQueryOnly(text: string): boolean {
   for (let i = 0; i < text.length;) {
     const c = text[i]!;
     if (/[\s,\uFEFF]/.test(c)) { i++; continue; }
-    if (c === "#") { while (i < text.length && text[i] !== "\n") i++; continue; }
+    if (c === "#") { i = skipComment(i); continue; }
     if (c === "{") { const end = skipBlock(i); if (end < 0) return false; if (start) operations++; i = end; start = true; continue; }   // shorthand query, or the body that ends a definition
     if (c === "(") { if (start) return false; const end = skipBlock(i); if (end < 0) return false; i = end; continue; }
     const name = /^[A-Za-z_][A-Za-z0-9_]*/.exec(text.slice(i, i + 256))?.[0];
