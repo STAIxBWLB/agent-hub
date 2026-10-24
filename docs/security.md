@@ -85,7 +85,26 @@ it. The classifier reads command text: unknown syntax keeps native handling, and
 an agent with an unrestricted shell can still reach the same effect another way
 (the hostile-agent boundary above).
 
-The `gh` classes (#636, #756). `publish`: `gh release create|upload|edit|delete`.
+Expansions (#762). A shell expansion (`$VAR`, `${...}`, `$(...)`, a backtick,
+`$'...'`) is an opaque word, and the literal words around it are still read, so
+`git push origin $B`, `npm publish $D`, `gh issue create --title "$T"` and
+`rm -rf "$DIR"` are classed like their literal forms. The command an expansion
+runs (`echo $(git push)`) is classed too. Where the opaque part can change the
+class the strictest class the command can reach is used, never none: `git $CMD`
+is publish and destroy, `npm $CMD` is publish and install, `gh $GROUP ...` is
+publish and external-write, `gh <group> $ACTION` is external-write (publish for
+`release`), `gh api` with a dynamic method (`-X $M`), a dynamic option word, or a
+trailing operand that is an expansion, is external-write, a GraphQL query with an
+expansion in it is never a read, and `rm`, `cp -f` and `mv -f` with an opaque
+target are destroy (an expansion may hold `..` or an absolute path). A command
+with no classed literal prefix (`echo $X`, `cat "$F"`, `sudo $CMD`,
+`bash -c "$CMD"`) stays unclassed, and so does an opaque value in a position that
+is data (the endpoint of `gh api`, a header, a `--jq` filter, a read-only
+subcommand's argument). What the policy still cannot see is the content of a
+variable used as the whole command, an alias or function, a script the command
+runs, and text read from a file or stdin.
+
+The `gh` classes (#636, #756, #762). `publish`: `gh release create|upload|edit|delete`.
 `external-write`: `gh issue|pr|gist create|comment|edit|close|reopen|merge|review|delete`,
 `gh run rerun|cancel|delete`, `gh workflow run|enable|disable`, and `gh api` with a
 non-GET method or any field or `--input`. `gh api graphql` is the one exception,
@@ -96,9 +115,8 @@ prompt. A `mutation`, a `subscription`, a second `query` field, a document from 
 file or stdin (`-F query=@file`, `--input`), an unknown option, a non-POST method
 and any document the hub cannot parse stay `external-write`: unknown is never a
 read. Read-only `gh` commands (`view`, `list`, `status`, `watch`, REST GET) are
-unclassed. Other `gh` writes (`repo delete|archive|edit`, `secret` and `variable`
-`set|delete`, `label create|edit|delete`) are not classed yet and keep native
-handling; that gap is outside #756.
+unclassed. `gh repo delete|archive|edit`, `gh secret` and `gh variable`
+`set|delete`, and `gh label create|edit|delete` are `external-write` as well.
 
 Config defaults apply automatically only up to ask-when-needed. A never-ask
 request from an applied untracked config is held as ask until the person

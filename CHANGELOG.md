@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Fix #762: the always-ask classifier no longer drops a command at its first shell expansion. `git push origin $B`, `npm publish $D`, `gh issue create --title "$T"` and `rm -rf "$DIR"` are classed from their literal words, the command inside `$(...)` or a backtick is classed too, and where the opaque part can change the class (`git $CMD`, `gh api -X $M`, `gh api graphql -f query=$Q`, an opaque `rm` target) the strictest reachable class is used. A command with no classed literal prefix stays unclassed. `gh repo delete|archive|edit`, `gh secret|variable set|delete` and `gh label create|edit|delete` are `external-write`.
 - Fix #756: the always-ask classifier classes `gh api graphql` by operation. One literal `query` field whose every operation is a query (or shorthand `{...}`) is a read and no longer asked about; a mutation, a subscription, a second query field, a query from a file or stdin and any unparsable document stay `external-write`. `gh run rerun|cancel|delete` and `gh workflow run|enable|disable` are `external-write`. REST `gh api` is unchanged.
 - Replace claude-mem worker runtime calls with exact-pinned amem 0.6.0 (agent-mem#13 P4): curated recall, briefs and ask use in-process storage; local capture is deterministic and model-free. Privacy and selected-profile fences remain; raw capture is excluded from evidence. Auxiliary model/checkpoint writes become pending candidates. Claude-mem remains an explicit import source only.
 
