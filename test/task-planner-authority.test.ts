@@ -19,12 +19,12 @@ class FakePeer extends BasePeer {
 }
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
-async function rig(trackPlans = false) {
+async function rig(trackPlans = false, forTask?: () => Promise<undefined>) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-task-planner-")), board = new Board(join(dir, "hub.db")), roster = new Set(["claude", "codex", "kimi"]);
   const bus = new Bus({ batchMs: 0, rostered: peer => roster.has(peer) });
   const roles: Record<string, string[]> = { claude: ["planner", "reviewer"], codex: ["planner", "reviewer"], kimi: ["implementer"] };
   const routing = loadRouting(dir), screen = { enabled: false, run: async () => {} };
-  const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture/task-planner", roles, notify: () => {}, wipLimit: () => 16,
+  const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture/task-planner", roles, ...(forTask ? { briefs: { forTask } as never } : {}), notify: () => {}, wipLimit: () => 16,
     routing: () => ({ ...routing, signals: { ...routing.signals, pii_patterns: [...routing.signals.pii_patterns, "PII_FIXTURE"], pii_screen: screen.enabled ? "local" : "off" } }),
     piiScreen: async () => { await screen.run(); return { label: "clear", ms: 0 }; },
     releaseWindow: async () => ({ at: Date.now(), host: true, quota: true, idle: true, reasons: [] }) });
@@ -192,4 +192,29 @@ test("a throwing proposal planner rolls back the row, revision and callbacks wit
   r.board.proposalPlanner = selected;
   const retry = r.board.propose(USER, { title: "successful retry", class: "plan" });
   expect(retry.id).toBe(failedId!); expect(retry.planner).toBe(["claude", "codex"][retry.id % 2]); expect(changes).toEqual([retry.id]);
+});
+
+
+test("planner-only changes while an owner brief awaits preserve the exact owner handoff", async () => {
+  let enter!: () => void, resume!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; });
+  const barrier = new Promise<void>(resolve => { resume = resolve; });
+  const r = await rig(false, async () => { enter(); await barrier; return undefined; });
+  const pending = r.tasks.propose(USER, { title: "brief barrier fixture", class: "implement", owner: "kimi" });
+  const result = pending.then(task => ({ task }), error => ({ error }));
+  await Promise.race([entered, result.then(() => { throw new Error("owner delivery did not reach its brief barrier"); })]);
+  const before = r.board.list()[0]!;
+  try {
+    expect(before.owner).toBe("kimi"); expect(before.offer).toBeUndefined();
+    const planner = before.planner === "claude" ? "codex" : "claude";
+    const changed = await r.tasks.assignTo(before.id, planner, USER, true, "planner");
+    expect(changed.planner).toBe(planner);
+    expect({ owner: changed.owner, reviewer: changed.reviewer, state: changed.state }).toEqual({ owner: before.owner, reviewer: before.reviewer, state: before.state });
+    expect(changed.history.at(-1)?.event).toBe("planner changed");
+  } finally { resume(); }
+  expect(await result).toHaveProperty("task");
+  const handed = r.peers.kimi!.received.filter(env => env.kind === "task" && env.refs?.task === String(before.id) && env.refs.taskRecipient === "owner");
+  expect(handed).toHaveLength(1);
+  expect(r.board.get(before.id)?.offer?.envelopeId).toBe(handed[0]!.id);
+  expect(r.tasks.relevant("kimi", handed[0]!)).toBe(true);
 });

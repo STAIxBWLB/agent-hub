@@ -194,6 +194,7 @@ const OPEN: Task["state"][] = ["proposed", "in_progress", "changes_requested"];
 const QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep", "memory reference started"]);
 QUIET_EVENTS.add("ready held"); // #655: the hub's note that a ready task waits for its reserved owner's WIP slot.
 QUIET_EVENTS.add("plan observed"); // Host observation does not move the task or replace completion intent.
+QUIET_EVENTS.add("planner changed"); // Planning authority does not move the execution owner or revoke its handoff.
 /** The records of the `done (checking)` entry a passed check now completes: what the owner delivered then (#509a). */
 const latestPendingDeliverables = (task: Task): DeliverableRecord[] | undefined => {
   const checking = task.history.findLastIndex(entry => entry.event === "done (checking)");
