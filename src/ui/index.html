@@ -1251,12 +1251,15 @@ function openMemoryAt(node) {
 function deliverableLabel(d) {
   if (!d) return '';
   const n = d.files.length, base = n + (n === 1 ? ' file ' : ' files ') + d.state;
-  return d.checked ? (d.checked.changed ? base + ', changed since review' : base + ', unchanged when last checked') : base;
+  if (!d.checked) return base;
+  // Only a measurement in which every file was unchanged says so: a missing or unreadable file is shown as such, never as unchanged.
+  const says = { changed: ', changed since review', missing: ', a file is missing', unknown: ', could not be measured', unchanged: ', unchanged when last checked' };
+  return base + (says[d.checked.result] ?? says.unknown);
 }
 function deliverablesSection(task) {
   const d = task.deliverables; if (!d?.files?.length) return null;
   const section = el('section', undefined, 'detail-group'); section.append(el('h4', 'Deliverables', 'detail-heading'));
-  section.append(el('p', deliverableLabel(d) + (d.checked ? '' : ' (not measured now: run ahub deliverables --check)'), d.checked?.changed ? 'meta warn' : 'meta'));
+  section.append(el('p', deliverableLabel(d) + (d.checked ? '' : ' (not measured now: run ahub deliverables --check)'), d.checked && d.checked.result !== 'unchanged' ? 'meta warn' : 'meta'));
   const list = el('ul', undefined, 'deliverable-list');
   for (const file of d.files) list.append(el('li', (file.path || 'private file') + ' [' + file.format + (file.version ? ' ' + file.version : '') + '] ' + file.bytes + ' B, sha256 ' + file.sha256.slice(0, 12), 'meta'));
   section.append(list); return section;
@@ -1324,7 +1327,7 @@ function taskCard(task, card, stage, ids, overdue, compact = true) {
     if (card.starred) { const star = el('span', undefined, 'star'); star.title = 'starred'; star.append(icon('i-star', 'starred')); head.append(star); }
     const meta = el('div', undefined, 'card-meta'); meta.append(cardBadge(task, card, overdue));
     if (task.release != null) { const release=boardViewState?.snapshot.releases?.find(release=>release.id===task.release); meta.append(el('span', 'Release #' + task.release + (release?.name ? ' ' + release.name : ''), 'release-chip')); }
-    if (task.deliverables?.files?.length) { const chip = el('span', 'Deliverables ' + task.deliverables.files.length + (task.deliverables.state === 'approved' ? ' approved' : '') + (task.deliverables.checked?.changed ? ', changed' : ''), 'release-chip deliverable-chip'); chip.title = deliverableLabel(task.deliverables); meta.append(chip); row.setAttribute('aria-label', row.getAttribute('aria-label') + ', ' + deliverableLabel(task.deliverables)); }
+    if (task.deliverables?.files?.length) { const chip = el('span', 'Deliverables ' + task.deliverables.files.length + (task.deliverables.state === 'approved' ? ' approved' : '') + (task.deliverables.checked?.result === 'changed' ? ', changed' : task.deliverables.checked && task.deliverables.checked.result !== 'unchanged' ? ', ' + task.deliverables.checked.result : ''), 'release-chip deliverable-chip'); chip.title = deliverableLabel(task.deliverables); meta.append(chip); row.setAttribute('aria-label', row.getAttribute('aria-label') + ', ' + deliverableLabel(task.deliverables)); }
     row.append(head, meta);
     row.addEventListener('click', () => openTaskDetail(task.id));
     row.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openTaskDetail(task.id); } });

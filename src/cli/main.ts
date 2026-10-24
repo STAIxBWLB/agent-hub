@@ -1210,7 +1210,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (options.json) return console.log(JSON.stringify(rows, null, 2));
     if (!rows.length) return console.log(task === undefined ? `no ${approved ? "approved " : ""}deliverables on the board` : `task #${task} has no ${approved ? "approved " : ""}deliverables`);
     for (const row of rows) {
-      const flag = row.checked ? (row.changedSinceReview ? " (changed since review)" : " (unchanged)") : "";
+      const flag = row.checked ? ({ changed: " (changed since review)", missing: " (a file is missing)", unknown: " (could not be measured)", unchanged: " (unchanged)" } as const)[row.result ?? "unknown"] : "";
       console.log(`${row.title} [${row.state}${flag}]`);                                   // `title` is the hub's publicTitle: it already starts with `#<id>`
       for (const file of row.files) console.log(`  ${file.id}  ${file.path ?? "(private)"}  ${file.format}${file.version ? ` ${file.version}` : ""}  ${file.bytes} B  sha256 ${file.sha256}${file.state ? `  ${file.state}` : ""}`);
     }

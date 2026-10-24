@@ -44,12 +44,12 @@ test("the group lists each file with its path, format, version, size and a hash 
 
 test("a measurement the hub reported is shown, as changed (warn) or unchanged, and a private file is drawn without a path", () => {
   const { api } = page();
-  const changed = api.deliverablesSection({ id: 1, deliverables: { state: "approved", files: [file({ path: undefined, private: true })], checked: { at: 1, changed: true } } })!;
+  const changed = api.deliverablesSection({ id: 1, deliverables: { state: "approved", files: [file({ path: undefined, private: true })], checked: { at: 1, result: "changed" } } })!;
   expect(changed.text()).toContain("1 file approved, changed since review");
   expect(changed.text()).toContain("private file [md v1]"); expect(changed.text()).not.toContain("out/report.md");
   expect(changed.text()).not.toContain("not measured now");
   expect(changed.children.find(node => node.textContent.includes("changed since review"))!.className).toContain("warn");
-  const same = api.deliverablesSection({ id: 1, deliverables: { state: "delivered", files: [file()], checked: { at: 1, changed: false } } })!;
+  const same = api.deliverablesSection({ id: 1, deliverables: { state: "delivered", files: [file()], checked: { at: 1, result: "unchanged" } } })!;
   expect(same.text()).toContain("1 file delivered, unchanged when last checked");
   expect(same.children.find(node => node.textContent.includes("unchanged when last checked"))!.className).not.toContain("warn");
 });
@@ -59,9 +59,23 @@ test("the label says nothing about change without a measurement, and never says 
   const base = { state: "delivered", files: [file()] };
   expect(api.deliverableLabel(base)).toBe("1 file delivered");
   expect(api.deliverableLabel({ ...base, state: "approved", files: [file(), file()] })).toBe("2 files approved");
-  expect(api.deliverableLabel({ ...base, checked: { at: 1, changed: false } })).toBe("1 file delivered, unchanged when last checked");
-  expect(api.deliverableLabel({ ...base, checked: { at: 1, changed: true } })).toBe("1 file delivered, changed since review");
+  expect(api.deliverableLabel({ ...base, checked: { at: 1, result: "unchanged" } })).toBe("1 file delivered, unchanged when last checked");
+  expect(api.deliverableLabel({ ...base, checked: { at: 1, result: "changed" } })).toBe("1 file delivered, changed since review");
   for (const unmeasured of [base, { ...base, checked: undefined }, { ...base, checked: null }]) expect(api.deliverableLabel(unmeasured)).not.toMatch(/unchanged|changed since/);
+});
+
+test("a measurement with a missing or unreadable file is never labelled unchanged, and is drawn as a warning", () => {
+  const { api } = page();
+  const base = { state: "approved", files: [file()] };
+  expect(api.deliverableLabel({ ...base, checked: { at: 1, result: "missing" } })).toBe("1 file approved, a file is missing");
+  expect(api.deliverableLabel({ ...base, checked: { at: 1, result: "unknown" } })).toBe("1 file approved, could not be measured");
+  expect(api.deliverableLabel({ ...base, checked: { at: 1, result: "something new" } })).toBe("1 file approved, could not be measured");   // an unrecognised reading is not read as unchanged
+  expect(api.deliverableLabel({ ...base, checked: { at: 1 } })).toBe("1 file approved, could not be measured");
+  for (const result of ["missing", "unknown"]) {
+    const section = api.deliverablesSection({ id: 1, deliverables: { ...base, checked: { at: 1, result } } })!;
+    expect(section.text()).not.toContain("unchanged"); expect(section.text()).not.toContain("not measured now");
+    expect(section.children.find(node => /missing|measured/.test(node.textContent))!.className).toContain("warn");
+  }
 });
 
 test("the card shows a Deliverables chip with the label as its title and in its aria-label, built from the snapshot field only", () => {

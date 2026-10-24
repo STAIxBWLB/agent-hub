@@ -323,7 +323,7 @@ test("deliverableBadge opens no file and reports a measurement only for the reco
   const before = r.tasks.deliverableBadge(r.board.get(t.id)!)!;
   expect(before).toMatchObject({ state: "delivered", files: [{ sha256: sha("alpha") }] }); expect(before).not.toHaveProperty("checked");   // nothing was measured, so nothing is claimed
   await r.tasks.deliverableStatus(r.board.get(t.id)!);                                                                                     // a live read (task_show, ahub deliverables --check)
-  expect(r.tasks.deliverableBadge(r.board.get(t.id)!)).toMatchObject({ checked: { changed: true } });
+  expect(r.tasks.deliverableBadge(r.board.get(t.id)!)).toMatchObject({ checked: { result: "changed" } });
   await r.tasks.review("claude", t.id, "changes_requested", "redo");
   r.write("a.md", "second delivery");
   await r.tasks.done("codex", t.id, "again", undefined, doc("a.md"));
@@ -343,4 +343,47 @@ test("deliverableList and the badge show the APPROVED bytes, not a later deliver
   const [row] = await r.tasks.deliverableList();
   expect(row).toMatchObject({ state: "approved", files: [{ sha256: sha("the bytes the person approved as they are now"), bytes: Buffer.byteLength("the bytes the person approved as they are now") }] });
   expect(r.tasks.deliverableBadge(task)!.files[0]!.sha256).toBe(sha("the bytes the person approved as they are now"));
+});
+
+// ---- the cached check never reports a file it could not measure as unchanged (claude round 1, codex-connector P2 on tasks.ts)
+
+test("a missing file is `missing`, never `unchanged`: the list row, the badge and the whole-row result all say so", async () => {
+  const r = await rig(); r.write("a.md", "alpha"); r.write("b.md", "beta");
+  const t = await r.propose();
+  await r.tasks.done("codex", t.id, "done", undefined, [...doc("a.md"), ...doc("b.md")]);
+  await r.tasks.review("claude", t.id, "approved", "ok");
+  rmSync(join(r.dir, "b.md"));                                                    // a.md is untouched, b.md is gone
+  const [row] = await r.tasks.deliverableList({ check: true });
+  expect(row!.files.map(file => file.state)).toEqual(["unchanged", "missing"]);
+  expect(row).toMatchObject({ checked: true, changedSinceReview: false, result: "missing" });
+  expect(r.tasks.deliverableBadge(r.board.get(t.id)!)).toMatchObject({ checked: { result: "missing" } });
+});
+
+test("a change outranks a missing file, and a task whose files all measured unchanged is the only `unchanged`", async () => {
+  const r = await rig(); r.write("a.md", "alpha"); r.write("b.md", "beta");
+  const t = await r.propose();
+  await r.tasks.done("codex", t.id, "done", undefined, [...doc("a.md"), ...doc("b.md")]);
+  await r.tasks.review("claude", t.id, "approved", "ok");
+  expect((await r.tasks.deliverableList({ check: true }))[0]).toMatchObject({ result: "unchanged", changedSinceReview: false });
+  expect(r.tasks.deliverableBadge(r.board.get(t.id)!)).toMatchObject({ checked: { result: "unchanged" } });
+  r.write("a.md", "alpha, edited"); rmSync(join(r.dir, "b.md"));
+  expect((await r.tasks.deliverableList({ check: true }))[0]).toMatchObject({ result: "changed", changedSinceReview: true });
+  expect(r.tasks.deliverableBadge(r.board.get(t.id)!)).toMatchObject({ checked: { result: "changed" } });
+});
+
+test("an unverified execution root makes every file `unknown`: the row and the badge say could-not-be-measured, never unchanged", async () => {
+  const root = { value: undefined as string | undefined };                       // the owner's proven root; undefined is "not verified right now"
+  const r = await rig({ executionRoot: () => root.value });
+  root.value = r.dir;
+  r.write("a.md", "alpha");
+  const t = await r.propose();
+  await r.tasks.done("codex", t.id, "done", undefined, doc("a.md"));
+  await r.tasks.review("claude", t.id, "approved", "ok");
+  expect((await r.tasks.deliverableList({ check: true }))[0]).toMatchObject({ result: "unchanged" });
+  expect(r.tasks.deliverableBadge(r.board.get(t.id)!)).toMatchObject({ checked: { result: "unchanged" } });
+  root.value = undefined;                                                         // the owner's root can no longer be proven
+  const [row] = await r.tasks.deliverableList({ check: true });
+  expect(row!.files.map(file => file.state)).toEqual(["unknown"]);
+  expect(row).toMatchObject({ checked: true, result: "unknown", changedSinceReview: false });
+  expect(r.tasks.deliverableBadge(r.board.get(t.id)!)).toMatchObject({ checked: { result: "unknown" } });   // the earlier "unchanged" is replaced, not kept
 });

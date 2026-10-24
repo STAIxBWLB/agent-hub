@@ -142,7 +142,7 @@ test("the dashboard snapshot carries a deliverables badge from the board, never 
   expect(first.deliverables).not.toHaveProperty("checked");                                  // the poll hashed nothing, so it says nothing about change
   await r.show(id);                                                                          // task_show is a live read
   const second = (await uiSnapshot(r.console_)).tasks.find(task => task.id === id)!;
-  expect(second.deliverables).toMatchObject({ checked: { changed: true } });
+  expect(second.deliverables).toMatchObject({ checked: { result: "changed" } });
   const made = await r.op(r.console_, "hub_task_propose", { title: "no files here", class: "implement" });   // a task with no deliverables carries no field
   expect(made.ok).toBe(true);
   const plain = Number(/#(\d+)/.exec(String(made.text))![1]);
@@ -183,6 +183,12 @@ test("ahub deliverables prints the records, --check marks a change since review,
   expect(checked.code, checked.stderr).toBe(0);
   expect(checked.stdout).not.toContain("add --check");                                     // the hint is for a list that was not measured
   expect(checked.stdout).toContain("[approved (changed since review)]");
+  rmSync(join(r.root, "out/report.md"));                                                    // now the only file is gone: it must read as missing, not unchanged
+  const gone = await ahub(r.root, ["deliverables", "--check", "--task", String(id)]);
+  expect(gone.code, gone.stderr).toBe(0);
+  expect(gone.stdout).toContain("[approved (a file is missing)]"); expect(gone.stdout).not.toContain("(unchanged)"); expect(gone.stdout).toMatch(/sha256 [0-9a-f]{64}  missing\n/);
+  expect(JSON.parse((await ahub(r.root, ["deliverables", "--check", "--json"])).stdout)[0]).toMatchObject({ result: "missing", changedSinceReview: false });
+  r.write("out/report.md", "# Report v1, edited after approval\n");
   expect(checked.stdout).toMatch(/sha256 [0-9a-f]{64}  changed\n/);
   const json = JSON.parse((await ahub(r.root, ["deliverables", "--approved", "--json"])).stdout);
   expect(json).toHaveLength(1); expect(json[0]).toMatchObject({ task: id, state: "approved", checked: false });
