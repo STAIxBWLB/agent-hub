@@ -43,6 +43,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Spec acceptance (#481 S1) | advise | build entries without acceptance |
 | Lifecycle identity linked by the hub (#694, #723) | on in advise; links at propose and accept from the title and `refs.repo`, with a groom backfill as the safety net | open tasks still showing `issue identity missing` right after propose (should be only titles that name no issue or a qualified title without `refs.repo`) |
 | Planner plan review (#481 S9) | advise | plans reviewed before build |
+| Planner board-changed notice (#758) | on here, with the lifecycle in `advise`: `claude` is the planner, so a card another peer proposes or re-plans reaches it once at task weight, and its own writes, state moves, reviews and assignments cost it no turn | per planner and week: `task`-kind hub envelopes whose body starts `The board changed` (target: one per planning change, none after the planner's own write), the same envelopes at `fyi` priority (recorded, no turn: at most one per 10 minutes), and the count still queued at once (target: at most one). Read from `ahub log` and the event log; the 12 copies in 44 minutes seen on 2026-10-24 are the baseline |
 | Plan conformance (#481 S2) | advise | PRs with files outside the plan |
 | Test integrity for bug fixes (#481 S4) | advise | bug PRs without a red-first receipt, modified pre-existing tests |
 | Required checks | advise (`check (ubuntu-latest)`, `check (macos-latest)`, `seeded guards`) | first-pass CI rate, same-head reruns (`hub_sdlc_costs`) |

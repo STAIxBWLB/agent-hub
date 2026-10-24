@@ -20749,6 +20749,7 @@ QUIET_EVENTS.add("ready held");
 QUIET_EVENTS.add("plan observed");
 QUIET_EVENTS.add("planner changed");
 var OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassigned"]);
+var GROOM_FYI_WINDOW_MS = 10 * 60000;
 
 // src/hub/conductor.ts
 init_tool_refusal();

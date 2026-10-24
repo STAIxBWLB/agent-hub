@@ -57,6 +57,8 @@ export interface TasksDeps {
   /** Effective per-peer planner capacity, taken from the existing settings loader. */
   wipLimit?: (peer: PeerId) => number;
   recordPlanning?: (change: { by: string; task?: number; release?: number; fields: string[]; revision: number }) => void;
+  /** The clock of the planner board-changed notice window (#758); tests inject one. Absent: `Date.now`. */
+  now?: () => number;
   board: Board;
   bus: Bus;
   routing: () => Routing;
@@ -298,6 +300,10 @@ const planText = (plan: TaskPlan = {}) => ALL_PLAN_KEYS.filter((k) => plan[k]?.l
 const screenText = (t: { title: string; detail: string; plan?: TaskPlan; external?: Task["external"] }) => [t.title, t.detail, planText(t.plan), t.external?.repo, t.external?.url].filter(value => value !== undefined).join("\n");
 /** Re-screens of one task whose verdict was unknown, per hub run (#198). */
 const RESCREEN_MAX = 10;
+/** #758: the planner "board changed" notice. Its body starts with this, so an unsettled copy is found (and replaced) by the prefix. */
+const GROOM_NOTICE_PREFIX = "The board changed";
+/** #758: a board change that needs no plan review is recorded at most once per planner in this window. */
+const GROOM_FYI_WINDOW_MS = 10 * 60_000;
 
 /**
  * The task flow. Adapters and tools never touch the board: every change comes through here, where assignment,
@@ -328,6 +334,13 @@ export class Tasks {
   private readonly plannerBacklog = new Map<PeerId, Set<number>>();
   private readonly plannerBlockedQueue = new Map<PeerId, string>();
   private readonly knownPlanners = new Set<PeerId>();
+  /**
+   * #758: what the planner board-changed notice has read of the board. `revision` is the board status revision last scanned, `lengths` each task's
+   * history length at that scan (so only entries added since are read), `pending` what each planner has not yet been told (`review`: a planning
+   * revision or dependency change of a card it plans; `other`: a state move, review or assignment) and `sent` when it was last told.
+   * ponytail: a scan lists the whole board once per status revision (at most one per flush); the upgrade is an indexed history read.
+   */
+  private readonly groomScan = { revision: -1, lengths: new Map<number, number>(), deps: new Map<number, string>(), pending: new Map<PeerId, { review: boolean; other: boolean }>(), sent: new Map<PeerId, { fyiAt: number }>() };
   /** Turn-free cohorts (issue #107): who works without messages, and who integrates. */
   readonly cohorts: Cohorts;
   private readonly coordinationModes = new Map<number, boolean>();
@@ -1092,12 +1105,71 @@ export class Tasks {
     }
     if (pending.size) this.plannerBacklog.set(peer, pending);
   }
-  private readonly groomingNotified = new Map<string, number>();
+  /**
+   * The planner "board changed" notice (#758). Read only what was added to a card's history since the last scan, and tell each attached planner of
+   * what it did not write itself and plans (`taskPlanner`, the #525-2 scoping): a planning revision or dependency change (in or outside a
+   * `planning` entry) or the creation of a card is a task notice, replacing a copy that
+   * is still unsettled so the planner meets the latest revision once; a state move, review or assignment is recorded at `fyi` weight (no turn),
+   * at most once per planner per ten minutes. The hub's own bookkeeping entries tell nobody. A planner with no earlier notice gets one task notice
+   * (a restart, or the first one after it was attached), as before.
+   */
+  private groomNotices(configured: readonly PeerId[], planners: readonly PeerId[]): void {
+    const scan = this.groomScan, revision = this.d.board.statusRevision(), first = scan.revision < 0;
+    if (scan.revision !== revision) {
+      for (const task of this.d.board.list()) {
+        const seen = scan.lengths.get(task.id), depsKey = JSON.stringify(task.deps ?? []), depsBefore = scan.deps.get(task.id);
+        scan.lengths.set(task.id, task.history.length); scan.deps.set(task.id, depsKey);
+        if (first || seen === task.history.length && depsBefore === depsKey) continue;
+        const holders = this.taskPlanner(task);
+        const tell = (author: string, review: boolean) => {
+          for (const holder of configured) {              // every configured planner, so a change made while one was offline is not lost
+            if (holder === author || !holders.includes(holder)) continue;
+            const pending = scan.pending.get(holder) ?? { review: false, other: false };
+            if (review) pending.review = true; else pending.other = true;
+            scan.pending.set(holder, pending);
+          }
+        };
+        // A card's creation (a propose, with or without `after`, a split child, a generated card) is new work to consolidate, so it needs a plan review.
+        if (seen === undefined) tell(task.history[0]?.by ?? HUB, true);
+        for (const entry of seen === undefined ? task.history.slice(1) : task.history.slice(seen)) {
+          if (entry.by === HUB && entry.planning === undefined) continue;   // the hub's own bookkeeping (lifecycle links, sweeps, holds) is not a board change to tell anyone about
+          tell(entry.by, entry.planning !== undefined);
+        }
+        // Dependencies changed outside a `planning` entry (a propose with `after`, a split, any other write): the same as a planning change.
+        // Its author is the last entry's only when this scan saw a new entry; a write with no entry has no known author, so no planner is skipped.
+        if (depsBefore !== undefined && depsBefore !== depsKey) tell(seen !== undefined && seen < task.history.length ? task.history.at(-1)!.by : "", true);
+      }
+      scan.revision = revision;
+    }
+    const now = this.d.now?.() ?? Date.now();
+    for (const peer of planners) {
+      const told = scan.sent.get(peer), pending = scan.pending.get(peer);
+      const review = told === undefined || pending?.review === true;
+      if (!review && !pending?.other) continue;
+      if (!review && now - told!.fyiAt < GROOM_FYI_WINDOW_MS) { scan.pending.delete(peer); continue; }
+      this.releaseNotice(`could not notify planner ${peer} about grooming`, () => {
+        if (review) this.sendGroomNotice(peer, revision);
+        else this.d.bus.publish(newEnvelope(HUB, `${GROOM_NOTICE_PREFIX} (revision ${revision}): state moves, reviews or assignments only. No plan review is needed.`, { to: [peer], kind: "task", priority: "fyi" }));
+        scan.pending.delete(peer);
+        scan.sent.set(peer, { fyiAt: review ? told?.fyiAt ?? 0 : now });
+      });
+    }
+  }
+
+  /** The task-weight notice: an unsettled earlier copy for this planner is withdrawn and replaced, never a second one queued. */
+  private sendGroomNotice(peer: PeerId, revision: number): void {
+    const body = `${GROOM_NOTICE_PREFIX} (revision ${revision}). Before offering or accepting build work, read hub_planner_groom, consolidate dependencies and priorities, and record hub_plan_review against the current planning revision.`;
+    for (const old of this.d.bus.pendingEnvelopes(peer)) if (old.from === HUB && old.kind === "task" && old.body.startsWith(GROOM_NOTICE_PREFIX)) this.d.bus.withdraw(old.id);
+    const recipients = this.d.bus.publish(newEnvelope(HUB, body, { to: [peer], kind: "task" }));
+    if (!recipients.includes(peer)) throw new Error("the notice was not queued");
+  }
+
   /** One bounded ids-only batch per attached planner; failed or evicted copies stay pending. */
   flushPlannerNotices(): number {
     const configured = Object.entries(this.d.roles ?? {}).filter(([, roles]) => roles.includes("planner")).map(([peer]) => peer);
     for (const peer of this.knownPlanners) if (!configured.includes(peer)) {
       this.knownPlanners.delete(peer); this.plannerBacklog.delete(peer); this.plannerBlockedQueue.delete(peer);
+      this.groomScan.pending.delete(peer); this.groomScan.sent.delete(peer);
     }
     for (const peer of configured) if (!this.knownPlanners.has(peer)) {
       this.knownPlanners.add(peer);
@@ -1106,18 +1178,7 @@ export class Tasks {
     }
     const planners = configured.filter(peer => this.d.bus.isRostered(peer) && this.d.bus.peers.has(peer) && this.d.bus.stateOf(peer) !== "offline");
     if (!planners.length) return 0;
-    if ((this.d.sdlc?.config().mode ?? "off") !== "off") {
-      const revision = this.d.board.statusRevision();
-      const body = "The board changed. Before offering or accepting build work, read hub_planner_groom, consolidate dependencies and priorities, and record hub_plan_review against the current planning revision.";
-      for (const peer of planners) if (this.groomingNotified.get(peer) !== revision) {
-        const queued = this.d.bus.pendingEnvelopes(peer).some(env => env.from === HUB && env.kind === "task" && env.body === body);
-        if (queued) continue;
-        this.releaseNotice(`could not notify planner ${peer} about grooming`, () => {
-          const recipients = this.d.bus.publish(newEnvelope(HUB, body, { to: [peer], kind: "task" }));
-          if (recipients.includes(peer)) this.groomingNotified.set(peer, revision);
-        });
-      }
-    }
+    if ((this.d.sdlc?.config().mode ?? "off") !== "off") this.groomNotices(configured, planners);
     for (const id of this.incomingBacklog) if (this.d.board.get(id)?.state !== "backlog") this.incomingBacklog.delete(id);
     const incoming = [...this.incomingBacklog].sort((a, b) => a - b).slice(0, 64);
     if (incoming.length) {
