@@ -1,3 +1,4 @@
+import { normalizeMemorySymbolInput, resolveMemorySymbolNodes, type MemorySymbolNodes } from "./memory-symbols.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { normalizeUsage } from "../omniroute/usage.ts";
 import { permissionPayload } from "./permission-payload.ts";
@@ -1126,7 +1127,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const memoryLine = (v: MemoryView) => `mem:${v.id.slice(0, 8)} ${v.kind} ${v.tier}: ${`${v.title ? `${v.title}: ` : ""}${v.text}`.replace(/\s+/g, " ").slice(0, 160)}`;
   /** A task's own nodes: what its title names (an issue, a path), its refs and plan paths, plan symbols, and the task itself. */
   const taskNodes = (t: { id?: number; created?: number; title?: string; refs: { paths?: string[] }; plan?: { paths?: string[]; symbols?: string[] } }) =>
-    extractNodes(t.title ?? "", { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny, paths: [...(t.refs.paths ?? []), ...(t.plan?.paths ?? [])], symbols: t.plan?.symbols, ...(t.id !== undefined && t.created !== undefined ? { task: { id: t.id, created: t.created } } : {}) });
+    extractNodes(t.title ?? "", { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny, paths: [...(t.refs.paths ?? []), ...(t.plan?.paths ?? [])], symbols: t.plan?.symbols?.map(normalizeMemorySymbolInput), ...(t.id !== undefined && t.created !== undefined ? { task: { id: t.id, created: t.created } } : {}) });
 
   const leaseNoticed = new Set<string>();
   const goalLine = (g: GoalView) => `goal:${g.id.slice(0, 8)} ${g.state} ${g.title}${g.lease.holder ? ` (held by ${g.lease.holder === memoryStore?.machine.id ? "this machine" : `machine ${g.lease.holder.slice(0, 8)}`} until ${g.lease.until}${g.lease.conflict.length ? `; conflicting claim from ${g.lease.conflict.map((m) => m.slice(0, 8)).join(", ")}` : ""})` : ""}`;
@@ -1265,6 +1266,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const board = new Board(join(opts.stateDir, "hub.db"));
   const codeFacts = new CodeFacts();
   const reviewSymbols = new Map<string, CodeFactResult<CodeSymbol[]>>();
+  const memorySymbols = new Map<string, MemorySymbolNodes>();
   startupCleanup.push(() => board.close());
   startupCleanup.push(() => codeFacts.close());
   const supervision = new SupervisionFeed({
@@ -1478,8 +1480,22 @@ export async function startDaemon(opts: DaemonOptions) {
       const brief = buildReviewBrief(root, task.refs.commit, { privatePath: path => isDenied(path, config.local.deny) || matchesPolicy(root, path, config.pii?.paths ?? [], true), nameable: tasks.nameable });
       if ("unavailable" in brief) return;
       const key = JSON.stringify([root, brief.head, brief.mergeBase]);
-      reviewSymbols.set(key, await codeFacts.changedSymbols(root, brief.mergeBase, brief.head));
-      if (reviewSymbols.size > 64) reviewSymbols.delete(reviewSymbols.keys().next().value!);
+      const observed = await codeFacts.changedSymbols(root, brief.mergeBase, brief.head);
+      reviewSymbols.set(key, observed);
+      memorySymbols.delete(key);
+      const candidates = tasks.memorySymbolCandidates(task);
+      if (memoryStore && candidates && !tasks.isPii(board.get(task.id) ?? task)) {
+        const nodes = await resolveMemorySymbolNodes(candidates,
+          { cwd: root, project: memoryProject, repo: memoryRepo, deny: config.local.deny, allowed: tasks.publicMetadataText },
+          name => { const current = board.get(task.id); return !current || current.owner !== task.owner || tasks.isPii(current) ? Promise.resolve({ state: "unknown" }) : codeFacts.exists(root, brief.head, name); });
+        memorySymbols.set(key, nodes);
+      }
+      if (reviewSymbols.size > 64) { const oldest = reviewSymbols.keys().next().value!; reviewSymbols.delete(oldest); memorySymbols.delete(oldest); }
+    },
+    memorySymbolNodes: task => {
+      if (tasks.isPii(task) || !task.codeSymbols || task.codeSymbols.head !== task.refs.commit) return undefined;
+      const root = executionRoot(task.owner ?? "");
+      return memorySymbols.get(JSON.stringify([root, task.codeSymbols.head, task.codeSymbols.mergeBase]));
     },
     reviewBrief: task => {
       const root = executionRoot(task.owner ?? "");
