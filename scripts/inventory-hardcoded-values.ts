@@ -77,6 +77,18 @@ function assignedName(node: ts.Node): string {
 
 const strictThresholdName = /(timeout|deadline|delay|wait|interval|duration|cooldown|backoff|retry|retries|attempt|tries|max|min|limit|cap|budget|quota|window|ttl|depth|hop|concurr|parallel|batch|threshold|stall|idle|sigma|samples|drift)/i;
 
+function timerArgument(call: ts.CallExpression, node: ts.Node): boolean {
+  const name = call.expression.getText();
+  if (!timerCall.test(name)) return false;
+  const argument = call.arguments[name === "setTimeout" || name === "setInterval" ? 1 : 0];
+  return argument !== undefined && node.pos >= argument.pos && node.end <= argument.end;
+}
+
+function withinTimer(node: ts.Node): boolean {
+  for (let outer = node.parent; outer; outer = outer.parent) if (ts.isCallExpression(outer) && timerArgument(outer, node)) return true;
+  return false;
+}
+
 function inlineThreshold(node: ts.NumericLiteral): boolean {
   if (node.getSourceFile().fileName.includes("/conformance/fakes/")) return false;
   const value = Number(node.text.replaceAll("_", ""));
@@ -90,12 +102,11 @@ function inlineThreshold(node: ts.NumericLiteral): boolean {
     if (ts.isCallExpression(current)) {
       const name = current.expression.getText();
       if (name === "Number" || name === "parseInt" || name.endsWith("toFixed")) return false;
-      if (timerCall.test(name)) {
-        const expression = inlineExpression(node);
-        const argument = current.arguments[name === "setTimeout" || name === "setInterval" ? 1 : 0];
-        return argument !== undefined && expression.pos >= argument.pos && expression.end <= argument.end;
+      if (timerCall.test(name)) return timerArgument(current, inlineExpression(node));
+      if (/^Math\.(?:min|max)$/.test(name)) {
+        if (thresholdName.test(assignedName(current))) return true;
+        return withinTimer(current);
       }
-      if (/^Math\.(?:min|max)$/.test(name)) return thresholdName.test(assignedName(current));
       if (/(?:slice|substring|substr)$/.test(name)) {
         const args = current.arguments;
         const expression = inlineExpression(node);
@@ -297,7 +308,8 @@ function extractFile(root: string, path: string): Entry[] {
         const assigned = assignedName(expression);
         const explicitUnit = /(?:_MS\b|Ms\b|_SECONDS?\b|_SECS?\b|_S\b|_s\b|_MINUTES\b|_MINS\b|_min\b|Mins?\b|_HOURS?\b|_DAYS?\b|_d\b|days\b)/.test(name);
         const unitName = explicitUnit || !assigned || !thresholdName.test(assigned) ? name : assigned;
-        entries.push({ file, line, column, name, value, unit: unitFor(unitName, value), control: name, area: areaFor(file), classification: classifications.get(key) ?? "unknown", kind: "inline" });
+        const unit = withinTimer(expression) && !explicitUnit ? "ms" : unitFor(unitName, value);
+        entries.push({ file, line, column, name, value, unit, control: name, area: areaFor(file), classification: classifications.get(key) ?? "unknown", kind: "inline" });
       }
     }
     ts.forEachChild(node, visit);

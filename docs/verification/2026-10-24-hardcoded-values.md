@@ -8,22 +8,22 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 
 | Classification | Items |
 | --- | ---: |
-| operational | 2169 |
-| safety floor | 198 |
-| contract | 229 |
+| operational | 2197 |
+| safety floor | 200 |
+| contract | 231 |
 | test seam | 82 |
-| **total** | **2678** |
+| **total** | **2710** |
 
 ## Follow-up areas
 
 | Area | Operational items | All items |
 | --- | ---: | ---: |
-| tasks/routing | 351 | 363 |
-| bus/delivery | 86 | 93 |
-| recovery/upgrade waits | 145 | 164 |
-| adapters/handshakes | 219 | 328 |
-| model relay/inference | 237 | 262 |
-| UI/console | 1131 | 1468 |
+| tasks/routing | 355 | 367 |
+| bus/delivery | 85 | 93 |
+| recovery/upgrade waits | 147 | 167 |
+| adapters/handshakes | 231 | 342 |
+| model relay/inference | 239 | 264 |
+| UI/console | 1140 | 1477 |
 
 ## Inventory
 
@@ -195,6 +195,7 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | scripts/benchmarks/teardown.ts:534:100 | inline | `resets < 1e12` | `1e12` | ms | resets < 1e12 | UI/console | operational |
 | scripts/benchmarks/teardown.ts:534:116 | inline | `resetsMs` | `1000` | ms | resetsMs | UI/console | operational |
 | scripts/benchmarks/teardown.ts:556:102 | inline | `boundMs` | `1500` | ms | boundMs | UI/console | test seam |
+| scripts/benchmarks/teardown.ts:565:34 | inline | `Math.min` | `25` | ms | Math.min | UI/console | operational |
 | scripts/check-citations.ts:5:31 | inline | `statSync(document).size > 256 * 1024` | `256 * 1024` | count | statSync(document).size > 256 * 1024 | UI/console | operational |
 | scripts/check-citations.ts:5:75 | inline | `statSync(bibliography).size > 4 * 1024 * 1024` | `4 * 1024 * 1024` | count | statSync(bibliography).size > 4 * 1024 * 1024 | UI/console | operational |
 | scripts/check-docs.mjs:20:209 | inline | `timeout` | `2000` | ms | timeout | UI/console | operational |
@@ -293,6 +294,8 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/adapters/acp.ts:516:200 | inline | `activityText(title).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ).slice` | `80` | characters | activityText(title).replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, ).slice | adapters/handshakes | operational |
 | src/adapters/acp.ts:705:31 | inline | `full.length > 600` | `600` | characters | full.length > 600 | adapters/handshakes | operational |
 | src/adapters/acp.ts:706:72 | inline | `full.slice` | `600` | characters | full.slice | adapters/handshakes | operational |
+| src/adapters/acp.ts:721:107 | inline | `Math.max` | `10` | ms | Math.max | adapters/handshakes | operational |
+| src/adapters/acp.ts:721:120 | inline | `Math.min` | `30_000` | ms | Math.min | adapters/handshakes | operational |
 | src/adapters/acp.ts:721:139 | inline | `Math.floor` | `this.watchdogMs / 3` | ms | Math.floor | adapters/handshakes | operational |
 | src/adapters/adapter-api.ts:2:14 | constant | `ADAPTER_API` | `1` | unitless | ADAPTER_API | adapters/handshakes | contract |
 | src/adapters/agy/entry.ts:59:80 | inline | `timeout` | `5000` | ms | timeout | adapters/handshakes | operational |
@@ -320,6 +323,12 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/adapters/claude-channel.ts:103:7 | constant | `HELD_CLOSE` | `4000` | unitless | HELD_CLOSE | adapters/handshakes | contract |
 | src/adapters/claude-channel.ts:105:7 | constant | `INBOX_CAP` | `200` | count | INBOX_CAP | adapters/handshakes | operational |
 | src/adapters/claude-channel.ts:253:22 | inline | `attempt` | `0` | unitless | attempt | adapters/handshakes | operational |
+| src/adapters/claude-channel.ts:256:55 | inline | `Math.min` | `1000` | ms | Math.min | adapters/handshakes | operational |
+| src/adapters/claude-channel.ts:256:62 | inline | `2 ** Math.max(attempt, 0)` | `2` | ms | 2 ** Math.max(attempt, 0) | adapters/handshakes | operational |
+| src/adapters/claude-channel.ts:256:85 | inline | `Math.max` | `0` | ms | Math.max | adapters/handshakes | operational |
+| src/adapters/claude-channel.ts:317:53 | inline | `Math.min` | `1000` | ms | Math.min | adapters/handshakes | operational |
+| src/adapters/claude-channel.ts:317:60 | inline | `2 ** Math.max(attempt, 0)` | `2` | ms | 2 ** Math.max(attempt, 0) | adapters/handshakes | operational |
+| src/adapters/claude-channel.ts:317:83 | inline | `Math.max` | `0` | ms | Math.max | adapters/handshakes | operational |
 | src/adapters/claude-channel.ts:333:44 | inline | `tries < 2` | `2` | unitless | tries < 2 | adapters/handshakes | operational |
 | src/adapters/claude-channel.ts:333:86 | inline | `setTimeout` | `1000` | ms | setTimeout | adapters/handshakes | operational |
 | src/adapters/claude-channel.ts:352:46 | inline | `minLength` | `1` | count | minLength | adapters/handshakes | operational |
@@ -344,6 +353,8 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/adapters/codex-appserver.ts:355:116 | inline | `this.opts.steerTimeoutMs ?? 10_000` | `10_000` | ms | this.opts.steerTimeoutMs ?? 10_000 | adapters/handshakes | operational |
 | src/adapters/codex-appserver.ts:448:23 | inline | `Bun.sleep` | `100` | ms | Bun.sleep | adapters/handshakes | operational |
 | src/adapters/codex-appserver.ts:621:34 | inline | `link.approvalIds.size >= 1024` | `1024` | count | link.approvalIds.size >= 1024 | adapters/handshakes | operational |
+| src/adapters/codex-appserver.ts:635:77 | inline | `Math.max` | `10` | ms | Math.max | adapters/handshakes | operational |
+| src/adapters/codex-appserver.ts:635:90 | inline | `Math.min` | `30_000` | ms | Math.min | adapters/handshakes | operational |
 | src/adapters/codex-appserver.ts:635:109 | inline | `Math.floor` | `this.watchdogMs / 3` | ms | Math.floor | adapters/handshakes | operational |
 | src/adapters/codex-appserver.ts:678:84 | inline | `this.opts.usagePollMs ?? 600_000` | `600_000` | ms | this.opts.usagePollMs ?? 600_000 | adapters/handshakes | operational |
 | src/adapters/codex-appserver.ts:691:115 | inline | `setTimeout` | `30_000` | ms | setTimeout | adapters/handshakes | operational |
@@ -359,6 +370,8 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/adapters/codex-review-isolation.ts:162:21 | inline | `rows.length > 512` | `512` | count | rows.length > 512 | adapters/handshakes | safety floor |
 | src/adapters/codex-review-isolation.ts:190:42 | inline | `deadline` | `12_000` | ms | deadline | adapters/handshakes | safety floor |
 | src/adapters/codex-review-isolation.ts:199:32 | inline | `bytes` | `0` | bytes | bytes | adapters/handshakes | safety floor |
+| src/adapters/codex-review-isolation.ts:201:102 | inline | `Math.max` | `1` | ms | Math.max | adapters/handshakes | safety floor |
+| src/adapters/codex-review-isolation.ts:201:114 | inline | `Math.min` | `2000` | ms | Math.min | adapters/handshakes | safety floor |
 | src/adapters/codex-review-isolation.ts:205:68 | inline | `termMs` | `100` | ms | termMs | adapters/handshakes | safety floor |
 | src/adapters/codex-review-isolation.ts:205:81 | inline | `killMs` | `500` | ms | killMs | adapters/handshakes | safety floor |
 | src/adapters/codex-review-isolation.ts:221:77 | inline | `ctx.privatePaths.length > 128` | `128` | count | ctx.privatePaths.length > 128 | adapters/handshakes | safety floor |
@@ -448,6 +461,7 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/adapters/local-worker.ts:204:119 | inline | `e.message.slice` | `200` | characters | e.message.slice | adapters/handshakes | operational |
 | src/adapters/local-worker.ts:248:29 | inline | `captureInvocation` | `0` | count | captureInvocation | adapters/handshakes | operational |
 | src/adapters/local-worker.ts:267:104 | inline | `setInterval` | `30_000` | ms | setInterval | adapters/handshakes | operational |
+| src/adapters/local-worker.ts:360:19 | inline | `Math.max` | `0` | ms | Math.max | adapters/handshakes | operational |
 | src/adapters/local-worker.ts:441:19 | inline | `step + 1 < maxSteps` | `1` | count | step + 1 < maxSteps | adapters/handshakes | operational |
 | src/adapters/local-worker.ts:482:59 | inline | `(m.content?.length ?? 0) > 200` | `200` | characters | (m.content?.length ?? 0) > 200 | adapters/handshakes | operational |
 | src/adapters/pi.ts:62:7 | constant | `TERMINAL_OWNER_MAX_AGE_MS` | `1000` | ms | TERMINAL_OWNER_MAX_AGE_MS | adapters/handshakes | operational |
@@ -455,13 +469,14 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/adapters/pi.ts:182:42 | inline | `this.waitRpc` | `15_000` | ms | this.waitRpc | adapters/handshakes | operational |
 | src/adapters/pi.ts:240:282 | inline | `this.activeTools > 0` | `0` | unitless | this.activeTools > 0 | adapters/handshakes | operational |
 | src/adapters/pi.ts:240:312 | inline | `this.activeEnvs.length > 0` | `0` | characters | this.activeEnvs.length > 0 | adapters/handshakes | operational |
-| src/adapters/pi.ts:248:114 | inline | `Math.max` | `0` | unitless | Math.max | adapters/handshakes | operational |
+| src/adapters/pi.ts:248:114 | inline | `Math.max` | `0` | ms | Math.max | adapters/handshakes | operational |
 | src/adapters/pi.ts:303:12 | inline | `setTimeout` | `10` | ms | setTimeout | adapters/handshakes | operational |
 | src/adapters/pi.ts:318:166 | inline | `this.activeTools === 0` | `0` | unitless | this.activeTools === 0 | adapters/handshakes | operational |
 | src/adapters/pi.ts:318:198 | inline | `this.activeEnvs.length === 0` | `0` | unitless | this.activeEnvs.length === 0 | adapters/handshakes | operational |
 | src/adapters/pi.ts:323:104 | inline | `this.activeTools > 0` | `0` | unitless | this.activeTools > 0 | adapters/handshakes | operational |
 | src/adapters/pi.ts:323:134 | inline | `this.activeEnvs.length > 0` | `0` | characters | this.activeEnvs.length > 0 | adapters/handshakes | operational |
 | src/adapters/pi.ts:330:105 | inline | `expiresAt` | `30_000` | unitless | expiresAt | adapters/handshakes | operational |
+| src/adapters/pi.ts:340:23 | inline | `Math.max` | `0` | ms | Math.max | adapters/handshakes | operational |
 | src/adapters/pi.ts:367:61 | inline | `port` | `0` | port | port | adapters/handshakes | operational |
 | src/adapters/pi.ts:367:77 | inline | `idleTimeout` | `60` | seconds | idleTimeout | adapters/handshakes | operational |
 | src/adapters/pi.ts:367:101 | inline | `maxRequestBodySize` | `2_000_000` | bytes | maxRequestBodySize | adapters/handshakes | safety floor |
@@ -500,6 +515,8 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/cli/agy-mcp.ts:232:96 | inline | `timeout` | `3000` | ms | timeout | UI/console | operational |
 | src/cli/attention.ts:30:96 | inline | `Math.floor` | `1000` | unitless | Math.floor | UI/console | operational |
 | src/cli/attention.ts:36:105 | inline | `Math.floor` | `1000` | unitless | Math.floor | UI/console | operational |
+| src/cli/bench.ts:59:54 | inline | `Math.min` | `200` | ms | Math.min | UI/console | operational |
+| src/cli/bench.ts:59:68 | inline | `Math.max` | `1` | ms | Math.max | UI/console | operational |
 | src/cli/bench.ts:62:54 | inline | `killMs` | `500` | ms | killMs | UI/console | operational |
 | src/cli/bench.ts:130:137 | inline | `paths.slice` | `5` | characters | paths.slice | UI/console | operational |
 | src/cli/bench.ts:130:168 | inline | `paths.length > 5` | `5` | count | paths.length > 5 | UI/console | operational |
@@ -608,6 +625,7 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/cli/console.ts:377:290 | inline | `[...(state.attentionMessages ?? []), { id: msg.e.env.id, peer: msg.e.env.from, important: msg.e.env.priority === important, since: msg.e.env.ts }].slice` | `-1000` | characters | [...(state.attentionMessages ?? []), { id: msg.e.env.id, peer: msg.e.env.from, important: msg.e.env.priority === important, since: msg.e.env.ts }].slice | UI/console | operational |
 | src/cli/console.ts:420:204 | inline | `(edit.text + terminalText(text.replace(/\x1b\[20[01]~/g, )).replace(/[\r\n]/g, )).slice` | `1000` | characters | (edit.text + terminalText(text.replace(/\x1b\[20[01]~/g, )).replace(/[\r\n]/g, )).slice | UI/console | operational |
 | src/cli/console.ts:441:177 | inline | `setInterval` | `1000` | ms | setInterval | UI/console | operational |
+| src/cli/console.ts:442:60 | inline | `Math.max` | `2000` | ms | Math.max | UI/console | operational |
 | src/cli/console.ts:442:84 | inline | `options.pollMs ?? 4000` | `4000` | ms | options.pollMs ?? 4000 | UI/console | operational |
 | src/cli/facts-hook.ts:62:92 | inline | `timeoutMs` | `2000` | ms | timeoutMs | UI/console | test seam |
 | src/cli/help.ts:172:7 | constant | `DESCRIPTION` | `34` | unitless | DESCRIPTION | UI/console | operational |
@@ -791,6 +809,7 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/cli/terminal-recovery.ts:842:23 | inline | `Bun.sleep` | `100` | ms | Bun.sleep | recovery/upgrade waits | operational |
 | src/cli/terminal-recovery.ts:854:127 | inline | `timeoutMs` | `600_000` | ms | timeoutMs | recovery/upgrade waits | test seam |
 | src/cli/terminal-recovery.ts:905:43 | inline | `code` | `0` | unitless | code | recovery/upgrade waits | operational |
+| src/cli/terminal-recovery.ts:928:32 | inline | `Math.max` | `1` | ms | Math.max | recovery/upgrade waits | operational |
 | src/cli/terminal-recovery.ts:941:77 | inline | `timeoutMs` | `600_000` | ms | timeoutMs | recovery/upgrade waits | test seam |
 | src/cli/upgrade-interactive.ts:64:27 | inline | `lines.slice` | `-1` | characters | lines.slice | recovery/upgrade waits | operational |
 | src/cli/upgrade-interactive.ts:65:26 | inline | `lines.at` | `-1` | lines | lines.at | recovery/upgrade waits | operational |
@@ -831,6 +850,8 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/cli/upgrade-runtime.ts:412:61 | inline | `waitForIdle` | `120_000` | unitless | waitForIdle | recovery/upgrade waits | operational |
 | src/cli/upgrade-runtime.ts:510:45 | inline | `waitForIdle` | `120_000` | unitless | waitForIdle | recovery/upgrade waits | operational |
 | src/cli/upgrade-runtime.ts:513:49 | inline | `closeTerminal` | `0` | count | closeTerminal | recovery/upgrade waits | operational |
+| src/cli/upgrade-runtime.ts:562:32 | inline | `Math.min` | `1000` | ms | Math.min | recovery/upgrade waits | operational |
+| src/cli/upgrade-runtime.ts:579:28 | inline | `Math.min` | `1000` | ms | Math.min | recovery/upgrade waits | operational |
 | src/cli/upgrade-runtime.ts:583:125 | inline | `timeoutMs` | `3000` | ms | timeoutMs | recovery/upgrade waits | operational |
 | src/cli/upgrade-runtime.ts:698:49 | inline | `waitForIdle` | `600_000` | unitless | waitForIdle | recovery/upgrade waits | operational |
 | src/cli/upgrade-runtime.ts:708:53 | inline | `closeTerminal` | `0` | count | closeTerminal | recovery/upgrade waits | operational |
@@ -973,7 +994,7 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/hub/bus.ts:365:17 | inline | `delay` | `1` | ms | delay | bus/delivery | operational |
 | src/hub/bus.ts:372:24 | inline | `Math.min` | `delay * 2` | ms | Math.min | bus/delivery | operational |
 | src/hub/bus.ts:372:35 | inline | `Math.min` | `50` | ms | Math.min | bus/delivery | operational |
-| src/hub/bus.ts:398:74 | inline | `schemaVersion` | `1` | unitless | schemaVersion | bus/delivery | operational |
+| src/hub/bus.ts:398:74 | inline | `schemaVersion` | `1` | unitless | schemaVersion | bus/delivery | contract |
 | src/hub/bus.ts:398:87 | inline | `revision` | `1` | unitless | revision | bus/delivery | operational |
 | src/hub/bus.ts:470:52 | inline | `env.body.slice` | `1` | characters | env.body.slice | bus/delivery | operational |
 | src/hub/bus.ts:492:72 | inline | `this.queues.get(record.peer)?.length ?? 0` | `0` | characters | this.queues.get(record.peer)?.length ?? 0 | bus/delivery | operational |
@@ -991,6 +1012,8 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/hub/check-runner.ts:70:28 | inline | `lines.slice` | `-40` | characters | lines.slice | UI/console | operational |
 | src/hub/check-runner.ts:71:43 | inline | `lines.length > 40` | `40` | lines | lines.length > 40 | UI/console | operational |
 | src/hub/check-runner.ts:71:77 | inline | `Buffer.byteLength(result) > 4096` | `4096` | bytes | Buffer.byteLength(result) > 4096 | UI/console | operational |
+| src/hub/check-runner.ts:81:68 | inline | `Math.max` | `1` | ms | Math.max | UI/console | operational |
+| src/hub/check-runner.ts:81:80 | inline | `Math.min` | `600_000` | ms | Math.min | UI/console | operational |
 | src/hub/check-runner.ts:81:110 | inline | `options.timeoutMs ?? 15_000` | `15_000` | ms | options.timeoutMs ?? 15_000 | UI/console | operational |
 | src/hub/check-runner.ts:85:138 | inline | `(stdout + data.toString()).slice` | `-1_048_576` | characters | (stdout + data.toString()).slice | UI/console | operational |
 | src/hub/check-runner.ts:118:72 | inline | `setInterval` | `60_000` | ms | setInterval | UI/console | operational |
@@ -1067,6 +1090,8 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/hub/code-facts.ts:118:74 | inline | `Bun.sleep` | `500` | ms | Bun.sleep | model relay/inference | operational |
 | src/hub/code-facts.ts:120:61 | inline | `termMs` | `50` | ms | termMs | model relay/inference | operational |
 | src/hub/code-facts.ts:120:71 | inline | `killMs` | `500` | ms | killMs | model relay/inference | operational |
+| src/hub/code-facts.ts:125:46 | inline | `Math.max` | `1` | ms | Math.max | model relay/inference | operational |
+| src/hub/code-facts.ts:125:57 | inline | `Math.min` | `5000` | ms | Math.min | model relay/inference | operational |
 | src/hub/code-facts.ts:125:88 | inline | `this.options.timeoutMs ?? 5000` | `5000` | ms | this.options.timeoutMs ?? 5000 | model relay/inference | operational |
 | src/hub/code-facts.ts:129:70 | inline | `control.length>64` | `64` | unitless | control.length>64 | model relay/inference | operational |
 | src/hub/code-facts.ts:154:188 | inline | `timeout` | `5000` | ms | timeout | model relay/inference | operational |
@@ -1309,7 +1334,7 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/hub/daemon.ts:2561:139 | inline | `a.superseded_by.length > 2000` | `2000` | characters | a.superseded_by.length > 2000 | UI/console | operational |
 | src/hub/daemon.ts:2614:81 | inline | `a.release.length > 100` | `100` | characters | a.release.length > 100 | UI/console | operational |
 | src/hub/daemon.ts:2724:224 | inline | `String(view.detail).slice` | `1000` | characters | String(view.detail).slice | UI/console | operational |
-| src/hub/daemon.ts:2816:89 | inline | `setInterval` | `1_000` | count | setInterval | UI/console | operational |
+| src/hub/daemon.ts:2816:89 | inline | `setInterval` | `1_000` | ms | setInterval | UI/console | operational |
 | src/hub/daemon.ts:2833:79 | inline | `Date.now() - since < config.budget.stale_min * 60_000` | `60_000` | minutes | Date.now() - since < config.budget.stale_min * 60_000 | UI/console | operational |
 | src/hub/daemon.ts:2834:88 | inline | `Math.floor` | `60_000` | count | Math.floor | UI/console | operational |
 | src/hub/daemon.ts:2835:105 | inline | `count === 1` | `1` | ms | count === 1 | UI/console | operational |
@@ -1394,7 +1419,9 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/hub/daemon.ts:5650:120 | inline | `setTimeout` | `0` | ms | setTimeout | UI/console | operational |
 | src/hub/daemon.ts:5841:74 | inline | `msg.launchId.length <= 128` | `128` | characters | msg.launchId.length <= 128 | UI/console | operational |
 | src/hub/daemon.ts:5871:76 | inline | `important` | `0` | port | important | UI/console | operational |
-| src/hub/daemon.ts:5889:204 | inline | `Math.floor` | `config.watchdog_ms / 3` | unitless | Math.floor | UI/console | operational |
+| src/hub/daemon.ts:5889:174 | inline | `Math.max` | `10` | ms | Math.max | UI/console | operational |
+| src/hub/daemon.ts:5889:187 | inline | `Math.min` | `1000` | ms | Math.min | UI/console | operational |
+| src/hub/daemon.ts:5889:204 | inline | `Math.floor` | `config.watchdog_ms / 3` | ms | Math.floor | UI/console | operational |
 | src/hub/daemon.ts:5927:91 | inline | `msg.reason.length > 2000` | `2000` | characters | msg.reason.length > 2000 | UI/console | operational |
 | src/hub/daemon.ts:5943:70 | inline | `msg.id.length > 256` | `256` | characters | msg.id.length > 256 | UI/console | operational |
 | src/hub/daemon.ts:5948:150 | inline | `msg.revision < 0` | `0` | unitless | msg.revision < 0 | UI/console | operational |
@@ -1881,7 +1908,7 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/hub/restart.ts:74:74 | inline | `e.id.length <= 256` | `256` | characters | e.id.length <= 256 | recovery/upgrade waits | operational |
 | src/hub/restart.ts:74:152 | inline | `e.trace.length <= 256` | `256` | characters | e.trace.length <= 256 | recovery/upgrade waits | operational |
 | src/hub/restart.ts:74:259 | inline | `(e.hop as number) >= 0` | `0` | unitless | (e.hop as number) >= 0 | recovery/upgrade waits | operational |
-| src/hub/restart.ts:77:29 | inline | `bus.schemaVersion !== 1` | `1` | unitless | bus.schemaVersion !== 1 | recovery/upgrade waits | operational |
+| src/hub/restart.ts:77:29 | inline | `bus.schemaVersion !== 1` | `1` | unitless | bus.schemaVersion !== 1 | recovery/upgrade waits | contract |
 | src/hub/restart.ts:78:373 | inline | `id.length > 0` | `0` | characters | id.length > 0 | recovery/upgrade waits | operational |
 | src/hub/restart.ts:78:452 | inline | `n > 0` | `0` | unitless | n > 0 | recovery/upgrade waits | operational |
 | src/hub/review-brief.ts:35:7 | constant | `MAX_FILES` | `500` | count | MAX_FILES | tasks/routing | safety floor |
@@ -2004,6 +2031,8 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/hub/sdlc-release-authorization.ts:133:198 | inline | `this.ports.gh` | `10000` | port | this.ports.gh | tasks/routing | operational |
 | src/hub/sdlc-release-authorization.ts:154:28 | inline | `updates.length > 128` | `128` | characters | updates.length > 128 | tasks/routing | operational |
 | src/hub/sdlc-release.ts:37:59 | inline | `timeoutMs` | `10_000` | ms | timeoutMs | tasks/routing | test seam |
+| src/hub/sdlc-release.ts:42:45 | inline | `Math.max` | `1` | ms | Math.max | tasks/routing | operational |
+| src/hub/sdlc-release.ts:42:57 | inline | `Math.min` | `10_000` | ms | Math.min | tasks/routing | operational |
 | src/hub/sdlc-release.ts:49:99 | inline | `data.documents.length > 128` | `128` | characters | data.documents.length > 128 | tasks/routing | operational |
 | src/hub/sdlc-release.ts:57:71 | inline | `liveIssues.length > 32` | `32` | characters | liveIssues.length > 32 | tasks/routing | operational |
 | src/hub/sdlc-release.ts:59:40 | inline | `deadline` | `20_000` | ms | deadline | tasks/routing | operational |
@@ -2041,6 +2070,8 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/hub/sdlc.ts:322:71 | inline | `Math.min` | `2 * 1024 * 1024` | count | Math.min | tasks/routing | operational |
 | src/hub/sdlc.ts:322:97 | inline | `Math.max` | `1` | count | Math.max | tasks/routing | operational |
 | src/hub/sdlc.ts:322:119 | inline | `outputLimit` | `256 * 1024` | count | outputLimit | tasks/routing | operational |
+| src/hub/sdlc.ts:329:43 | inline | `Math.max` | `1` | ms | Math.max | tasks/routing | operational |
+| src/hub/sdlc.ts:329:55 | inline | `Math.min` | `10_000` | ms | Math.min | tasks/routing | operational |
 | src/hub/sdlc.ts:344:72 | inline | `v.length <= 40` | `40` | characters | v.length <= 40 | tasks/routing | operational |
 | src/hub/sdlc.ts:361:48 | inline | `rows.length >= 100` | `100` | count | rows.length >= 100 | tasks/routing | operational |
 | src/hub/sdlc.ts:448:42 | inline | `deadline` | `20_000` | ms | deadline | tasks/routing | operational |
@@ -2342,6 +2373,7 @@ Scope: module-level numeric and duration constants, plus inline numeric threshol
 | src/hub/usage.ts:28:56 | inline | `Math.min` | `1200` | unitless | Math.min | UI/console | operational |
 | src/hub/usage.ts:28:71 | inline | `Math.max` | `0` | unitless | Math.max | UI/console | operational |
 | src/hub/usage.ts:28:88 | inline | `budget` | `1200` | unitless | budget | UI/console | operational |
+| src/hub/usage.ts:45:30 | inline | `Math.min` | `40` | ms | Math.min | UI/console | operational |
 | src/hub/usage.ts:64:41 | inline | `statSync(transcriptPath).size > 32 * 1024 * 1024` | `32 * 1024 * 1024` | count | statSync(transcriptPath).size > 32 * 1024 * 1024 | UI/console | operational |
 | src/hub/usage.ts:75:14 | constant | `COMPLETION_TAIL_BYTES` | `4 * 1024 * 1024` | bytes | COMPLETION_TAIL_BYTES | UI/console | operational |
 | src/hub/usage.ts:80:14 | constant | `COMPLETION_SCAN_BYTES` | `64 * 1024 * 1024` | bytes | COMPLETION_SCAN_BYTES | UI/console | operational |
