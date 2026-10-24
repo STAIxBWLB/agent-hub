@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspectRecovery, makeRecoveryDriver } from "../src/cli/upgrade-runtime.ts";
 import { RecoveryDatabaseBusy } from "../src/hub/recovery-error.ts";
-import { PROTOCOL, ControlClient } from "../src/hub/control-client.ts";
+import { PROTOCOL, ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "../src/hub/db-timeout.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
@@ -24,7 +24,7 @@ async function fixture() {
       inference: { ...DEFAULT_CONFIG.inference, enabled: false }, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [] } } };
   const source = await startDaemon({ ...options, instanceId });
   const client = await ControlClient.connect(stateDir, { role: "console" });
-  const rpc = (op: string) => client.request({ t: "recovery", op, operationId, expectedInstanceId: instanceId });
+  const rpc = (op: string) => client.request({ t: "recovery", op, operationId, expectedInstanceId: instanceId, targetFeatures: DAEMON_FEATURES });
   expect((await client.request({ t: "task", op: "hub_task_propose", args: { title: "Preserve this task through a busy recovery", class: "implement" } })).ok).not.toBe(false);
   const before = JSON.parse((await client.request({ t: "task", op: "hub_task_list", args: {} })).text);
   expect(before).toHaveLength(1);

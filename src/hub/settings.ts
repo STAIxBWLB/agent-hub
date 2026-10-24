@@ -56,7 +56,7 @@ export const SETTINGS: readonly SettingDef[] = [
   ...["interval_s", "unaccepted_min", "idle_min", "review_min", "ready_min", "ladder_min"].map((key): SettingDef => ({ key: `task_sweep.${key}`, group: "Switches", label: `Task sweep: ${key}`, type: "number", min: 1, max: 2_147_483_647 / (key === "interval_s" ? 1000 : 60_000), store: "config", applies: "live", risk: "raises", path: ["task_sweep", key] })),
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `tasks.wip_limits.${peer}`, group: "Routing", label: `${peer}: planner WIP limit`, type: "integer", min: 0, max: 32, store: "config", applies: "live", risk: "raises", floor: 0, path: ["tasks", "wip_limits", peer] })),
   { key: "tasks.escalate_after", group: "Routing", label: "Escalate after N consecutive changes_requested", type: "integer", min: 1, max: 10, store: "config", applies: "live", risk: "raises", path: ["tasks", "escalate_after"] },
-  { key: "planner", group: "Roles", label: "Planner (the one peer that plans)", type: "enum", values: PLANNER_PEERS, store: "config", applies: "live", risk: "raises", path: ["planner"] },
+  { key: "planner", group: "Roles", label: "Planners (task-local selection)", type: "peers", values: PLANNER_PEERS, store: "config", applies: "live", risk: "raises", path: ["planner"] },
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `catalog_roles.${peer}`, group: "Roles", label: `${peer}: catalog guidance`, type: "roles", store: "config", applies: "next use", risk: "safe", path: ["catalog_roles", peer] })),
   { key: "scoped_grants.protect_instructions", group: "Permissions", label: "Ask before writing instruction files", type: "boolean", store: "config", applies: "live", risk: "raises", floor: true, path: ["protect_instruction_files"] },
   ...SETTING_PEERS.map((peer): SettingDef => ({ key: `roster.${peer}`, group: "Roster", label: `${peer}: participates`, type: "boolean", store: "config", applies: "live", risk: "raises", floor: false, path: ["roster", peer] })),
@@ -84,6 +84,7 @@ export const NEVER_EDITABLE = ["kimi_cmd", "qwen_cmd", "jcode_cmd", "jcode_home"
 export function projectSettings(instances?: KindMap, adapterCatalog?: ProjectAdapterCatalog): readonly SettingDef[] {
   const resolve = adapterCatalog?.definitionOf ?? definitionOf;
   const extra: SettingDef[] = [];
+  const plannerValues = [...PLANNER_PEERS];
   const headless = (peer: string): SettingDef => Object.freeze({ key: `peers.${peer}.start_mode`, group: "Start", label: `${peer}: start mode (headless only)`,
     type: "enum", values: Object.freeze(["headless"]), store: "config", applies: "next use", risk: "raises", floor: "headless", path: Object.freeze(["peers", peer, "start_mode"]) });
   for (const adapter of adapterCatalog?.definitions ?? []) {
@@ -108,6 +109,10 @@ export function projectSettings(instances?: KindMap, adapterCatalog?: ProjectAda
     const adapter = resolve(peer, instances);
     if (!adapter) continue;
     const entry = Object.getOwnPropertyDescriptor(instances!, peer)?.value;
+    if (PEER.test(peer) && peer.startsWith(`${adapter.kind}-`) && /^[a-z0-9][a-z0-9-]*$/.test(peer.slice(adapter.kind.length + 1))
+      && adapter.projection?.plannerEligible === true
+      && (!adapter.instances?.roles || adapter.instances.roles.includes("planner"))
+      && (!adapter.routing?.allowedRoles || adapter.routing.allowedRoles.includes("planner"))) plannerValues.push(peer);
     const readOnly = entry && typeof entry === "object" && !types.isProxy(entry) && Object.getOwnPropertyDescriptor(entry, "readOnly")?.value === true && !!adapter.permission.genericAcp?.readOnly;
     const copy = (base: SettingDef, key: string): SettingDef => Object.freeze({ ...base, key,
       label: base.label.replace(`${adapter.kind}:`, `${peer}:`),
@@ -126,7 +131,9 @@ export function projectSettings(instances?: KindMap, adapterCatalog?: ProjectAda
     } satisfies SettingDef));
     extra.push(headless(peer));
   }
-  return extra.length ? Object.freeze([...SETTINGS, ...extra]) : SETTINGS;
+  const settings = plannerValues.length === PLANNER_PEERS.length ? SETTINGS : SETTINGS.map(def => def.key === "planner"
+    ? Object.freeze({ ...def, values: Object.freeze(plannerValues) }) : def);
+  return extra.length ? Object.freeze([...settings, ...extra]) : settings;
 }
 
 /** The definition of a key, or why there is none. */
@@ -159,6 +166,14 @@ export function checkSettingValue(def: SettingDef, raw: unknown, routes: readonl
     return [...raw] as string[];
   }
   if (def.type === "peers") {
+    if (def.key === "planner") {
+      const peers = typeof raw === "string" ? [raw] : raw;
+      if (!Array.isArray(peers) || peers.length === 0 || peers.length > PEERS_MAX || new Set(peers).size !== peers.length
+        || peers.some(peer => typeof peer !== "string" || !PEER.test(peer) || !(def.values ?? PLANNER_PEERS).includes(peer))) {
+        throw new Error(`${def.key} must be one of ${(def.values ?? PLANNER_PEERS).join(", ")}, or a list of one to ${PEERS_MAX} distinct eligible planner peer ids`);
+      }
+      return peers.length === 1 ? peers[0] as string : [...peers] as string[];
+    }
     if (!Array.isArray(raw) || raw.length > PEERS_MAX || raw.some((p) => typeof p !== "string" || !PEER.test(p)) || new Set(raw).size !== raw.length) throw new Error(`${def.key} takes up to ${PEERS_MAX} distinct peer ids`);
     return [...(raw as string[])];
   }

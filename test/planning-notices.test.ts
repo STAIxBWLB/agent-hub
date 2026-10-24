@@ -24,6 +24,8 @@ function rig(options: { secondPlanner?: boolean; queueCap?: number } = {}) {
   const roles = { claude: ["planner"], codex: ["implementer"], kimi: ["planner"], ...(options.secondPlanner ? { pi: ["planner"] } : {}) };
   const deps = { board, bus, roles, routing: () => { const routing = loadRouting(dir); if (options.secondPlanner) routing.classes.implement!.peers = []; return routing; }, cwd: dir, project: "notices", notify: () => {} };
   const tasks = new Tasks(deps), notices: Envelope[] = [];
+  // These recovery/broadcast fixtures model legacy unbound rows; bound-planner notices have their own regressions.
+  board.proposalPlanner = () => ({ planner: null, plannerReason: "none" });
   bus.tap(event => { if (event.t === "envelope" && event.env.body.startsWith("Backlog items ")) notices.push(event.env); });
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
   return { tasks, board, bus, notices, deps };
@@ -110,6 +112,7 @@ test("planner recovery coalesces unsettled journal originals without a queued co
 test("configured off-roster planners retain incoming ids until roster admission returns", async () => {
  const {deps,board}=rig({secondPlanner:true});let piRostered=false;let tasks:Tasks;
  const bus=new Bus({batchMs:0,rostered:peer=>peer!=="pi"||piRostered,relevant:(peer,env)=>tasks.relevant(peer,env)});tasks=new Tasks({...deps,board,bus});cleanup.push(()=>bus.closeJournal());
+ board.proposalPlanner = () => ({ planner: null, plannerReason: "none" });
  for(const id of ["claude","pi"]){const peer=new NoticePeer(id);bus.add(peer);await peer.start();peer.busy()}
  const task=await tasks.propose(USER,{title:"staged during roster absence",class:"implement",backlog:true});
  expect(tasks.flushPlannerNotices()).toBe(1);expect(bus.pull("claude")![0]!.refs?.backlog).toEqual([task.id]);expect(bus.queued("pi")).toBe(0);
