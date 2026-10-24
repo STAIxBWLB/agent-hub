@@ -163,6 +163,14 @@ function outside(target: string, root: string, cwd: string): boolean {
   const rel = relative(resolve(root), resolve(cwd, target));
   return rel === ".." || rel.startsWith("../") || isAbsolute(rel);
 }
+/**
+ * A word that starts with an expansion may expand to a dash word (`$OPTS` as `-rf`), so a class that depends on a flag counts it as that flag
+ * (#762). Only the words before `--` can be options. A word that merely has an expansion later (`build/$X`, `--name=$X`) cannot start one.
+ */
+function mayBeFlag(words: readonly string[]): boolean {
+  const end = words.indexOf("--");
+  return words.slice(0, end < 0 ? undefined : end).some(w => w.startsWith(OPAQUE));
+}
 function flags(words: string[], letter: string): boolean {
   const end = words.indexOf("--");
   return words.slice(0, end < 0 ? undefined : end).some(w => /^-[^-]/.test(w) && w.slice(1).includes(letter));
@@ -219,6 +227,7 @@ function forcedClean(words: string[]): boolean {
         if (flag === "n") dry = true;
       }
     }
+    else if (word.startsWith(OPAQUE)) force = true;   // an expansion may be `-f`; a literal dry run still wins (#762)
   }
   return force && !dry;
 }
@@ -445,9 +454,9 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
     if (heads.some(head => opaque(head.name))) { found.add("publish"); found.add("destroy"); }   // `git $CMD`: the strictest classes git reaches (#762)
     for (const { name: sub, args } of heads) {
       if (sub === "push") found.add("publish");
-      if (sub === "reset" && args.some(w => w === "--hard" || w.startsWith("--hard="))) found.add("destroy");
+      if (sub === "reset" && (args.some(w => w === "--hard" || w.startsWith("--hard=")) || mayBeFlag(args))) found.add("destroy");
       if (sub === "clean" && forcedClean(args)) found.add("destroy");
-      if (sub === "branch" && (flags(args, "D") || args.includes("--delete") && args.includes("--force"))) found.add("destroy");
+      if (sub === "branch" && (flags(args, "D") || args.includes("--delete") && args.includes("--force") || mayBeFlag(args))) found.add("destroy");
     }
   }
   if (["npm", "cargo", "pnpm", "yarn", "bun"].includes(program)) {
@@ -467,7 +476,7 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
       for (const { name: sub, args } of candidates) {
         if (opaque(sub) && program !== "bun") { found.add("publish"); found.add("install"); }   // `npm $CMD`; bun runs a file by default, so its expansion is no subcommand (#762)
         if (sub === "publish") found.add("publish");
-        const global = words.includes("--global") || flags(words, "g");
+        const global = words.includes("--global") || flags(words, "g") || mayBeFlag(words);
         if ((program === "cargo" && sub === "install") || (["install", "i", "add"].includes(sub) && global) || (program === "yarn" && sub === "global" && args[0] === "add")) found.add("install");
       }
     }
@@ -491,8 +500,8 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
   if (["http", "https"].includes(program) && words.some(w => /^(?:POST|PUT|PATCH|DELETE|OPTIONS|TRACE|CONNECT)$/.test(w))) found.add("external-write");
   if (["mail", "mailx", "sendmail"].includes(program) && operands(words).length > 0) found.add("external-write");
   if (["slack", "telegram", "discord"].includes(program) && words.some(w => ["send", "post", "chat.postMessage"].includes(w))) found.add("external-write");
-  if (program === "rm" && (flags(words, "r") || flags(words, "R") || words.includes("--recursive")) && operands(words).some(p => opaque(p) /* an expansion may hold `..` or an absolute path (#762) */ || cwd.some(at => outside(p, root, at)))) found.add("destroy");
-  if (["cp", "mv"].includes(program) && (flags(words, "f") || words.includes("--force"))) {
+  if (program === "rm" && (flags(words, "r") || flags(words, "R") || words.includes("--recursive") || operands(words).length > 1 && mayBeFlag(words)) && operands(words).some(p => opaque(p) /* an expansion may hold `..` or an absolute path (#762) */ || cwd.some(at => outside(p, root, at)))) found.add("destroy");
+  if (["cp", "mv"].includes(program) && (flags(words, "f") || words.includes("--force") || words.length > 2 && mayBeFlag(words.slice(0, -1)))) {   // with two words the first cannot be a flag: `cp -f x` has no target
     const target = option(words, "-t", "--target-directory") ?? operands(words).at(-1);
     if (target && (opaque(target) || cwd.some(at => outside(target, root, at)))) found.add("destroy");
   }

@@ -96,7 +96,14 @@ publish and external-write, `gh <group> $ACTION` is external-write (publish for
 `release`), `gh api` with a dynamic method (`-X $M`), a dynamic option word, or a
 trailing operand that is an expansion, is external-write, a GraphQL query with an
 expansion in it is never a read, and `rm`, `cp -f` and `mv -f` with an opaque
-target are destroy (an expansion may hold `..` or an absolute path). A command
+target are destroy (an expansion may hold `..` or an absolute path). A word that
+starts with an expansion may be a flag (`$OPTS` as `-rf`), so where a class
+depends on a flag it counts as that flag: `rm $OPTS "$DIR"`, `git reset $MODE`,
+`git clean $F`, `git branch $F topic`, `cp $F a /etc/x` and `npm install $G pkg`
+are classed (a literal `-n`, or a word after `--`, still decides). The cost of
+failing closed is a prompt for a call that may be harmless: `git branch "$NAME"`
+and `npm install "$PKG"` ask, while `rm "$F"` (one operand), `git log $RANGE` and
+`cp "$A" b` do not. A command
 with no classed literal prefix (`echo $X`, `cat "$F"`, `sudo $CMD`,
 `bash -c "$CMD"`) stays unclassed, and so does an opaque value in a position that
 is data (the endpoint of `gh api`, a header, a `--jq` filter, a read-only
