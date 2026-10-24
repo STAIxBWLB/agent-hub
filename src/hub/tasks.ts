@@ -28,7 +28,7 @@ import { isAbsolute, relative } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
 import { candidateTargetRevision, type CandidateInput, type CandidateStore, extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type Scope, type Tier } from "@staix/agent-mem";
-import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs } from "./board.ts";
+import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type PlannerBinding } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
@@ -319,6 +319,7 @@ export class Tasks {
   constructor(private readonly d: TasksDeps) {
     d.board.trackPlanRevisions = () => (d.sdlc?.config().mode ?? "off") !== "off";
     this.repositories = new TaskRepositories(d.cwd, d.repository);
+    d.board.proposalPlanner = task => this.proposalPlanner(task);
     for (const task of d.board.list()) this.warmRepository(task);
     if (d.coordination) {
       const mode = d.coordination();
@@ -913,7 +914,7 @@ export class Tasks {
   }
 
   private planningAuthority(by: PeerId, task?: Pick<Task, "planner">): void {
-    if (by !== USER && (!this.d.roles?.[by]?.includes("planner") || task !== undefined && !this.taskPlanner(task).includes(by))) throw new PreEffectToolRefusal("planning requires the task's planner or the person (configured planner role)");
+    if (by !== USER && (!this.d.roles?.[by]?.includes("planner") || task !== undefined && !this.taskPlanner(task).includes(by))) throw new PreEffectToolRefusal(`planning requires a person or configured planner role${task ? "; only the task's effective planner may act" : ""}`);
   }
 
   private plannerWriteAuthority(by: PeerId, task?: Pick<Task, "planner">): void {
@@ -921,12 +922,10 @@ export class Tasks {
     this.planningAuthority(by, task);
   }
 
-  /** Also binds proposals that cannot yet acquire an owner; selection itself stays in the pure assignment walk. */
-  private selectProposalPlanner(task: Task, by: PeerId): Task {
-    if (task.planner != null || this.isPii(task)) return task;
+  /** Every new host proposal, including split children, consumes the same pure walk before its first notification. */
+  private proposalPlanner(task: Task): PlannerBinding {
     const choice = assign({ ...task, state: "proposed" }, this.states(), this.d.routing(), { ...this.weights(task.class, task), candidates: [] });
-    if (!choice.planner) return task;
-    return this.d.board.update(task.id, by, "planner selected", { planner: choice.planner }, undefined, { plannerReason: choice.plannerReason ?? "none" });
+    return { planner: this.isPii(task) ? null : choice.planner ?? null, plannerReason: this.isPii(task) ? "none" : choice.plannerReason ?? "none" };
   }
 
   private planAuthor(task: Task): PeerId | null {
@@ -954,7 +953,7 @@ export class Tasks {
     if (this.planReviewRequests.get(task.id) === signature) return;
     const view = this.publicView(task);
     const queued = this.d.bus.publish(newEnvelope(HUB, `Independent plan review requested for task #${view.id}, revision ${revision}. Record hub_plan_review for that revision.`, {
-      to: [selected], kind: "task", refs: { task: String(task.id), planReview: revision, planAuthor: author }, ...(this.isPii(task) ? { private: true } : {}),
+      to: [selected], kind: "task", refs: { task: String(task.id), planReview: revision, planReviewFlow: task.history.length, planAuthor: author }, ...(this.isPii(task) ? { private: true } : {}),
     }));
     if (queued.includes(selected)) this.planReviewRequests.set(task.id, signature);
   }
@@ -1049,7 +1048,7 @@ export class Tasks {
           if (checked.task.history.length !== current.task.history.length || checked.owner !== current.owner) throw new PreEffectToolRefusal("planner pull changed during admission");
         } } });
     }
-    const pulled = this.d.board.pullPlanned(current.task.id, by, current.owner, input.revision, input.reason.trim(), withheld, { planner: current.assignment.planner ?? null, plannerReason: current.assignment.plannerReason ?? "none" });
+    const pulled = this.d.board.pullPlanned(current.task.id, by, current.owner, input.revision, input.reason.trim(), withheld, { planner: current.task.planner ?? current.assignment.planner ?? null, plannerReason: current.task.planner ? "kept" : current.assignment.plannerReason ?? "none" });
     this.planningRecorded({ by, task: pulled.id, fields: ["pull", "reserved"], revision: pulled.planningRevision! });
     return pulled;
   }
@@ -1106,9 +1105,6 @@ export class Tasks {
     for (const peer of planners) {
       const pending = this.plannerBacklog.get(peer);
       if (!pending) continue;
-      const blockedQueue = this.plannerBlockedQueue.get(peer);
-      if (blockedQueue !== undefined && blockedQueue === JSON.stringify(this.d.bus.queueIds(peer))) continue;
-      this.plannerBlockedQueue.delete(peer);
       for (const id of pending) {
         const task = this.d.board.get(id);
         if (task?.state !== "backlog") pending.delete(id);
@@ -1117,6 +1113,9 @@ export class Tasks {
           for (const recipient of this.taskPlanner(task)) this.addPlannerBacklog(recipient, [id]);
         }
       }
+      const blockedQueue = this.plannerBlockedQueue.get(peer);
+      if (blockedQueue !== undefined && blockedQueue === JSON.stringify(this.d.bus.queueIds(peer))) continue;
+      this.plannerBlockedQueue.delete(peer);
       const ids = [...pending].sort((a, b) => a - b).slice(0, 64);
       if (!ids.length) continue;
       // Remove before publish: an immediate overflow callback may put this recipient's ids back.
@@ -1592,7 +1591,6 @@ export class Tasks {
     if (goal) this.linkNative(task, goal, by);
     if (triaged) task = this.d.board.update(task.id, "hub", "triaged", {}, `class ${cls} named by the hub's model`);
     if (defaulted) task = this.d.board.update(task.id, "hub", "class defaulted", {}, "class implement for a claim without one");
-    task = this.selectProposalPlanner(task, by);
     if (backlog) {
       this.incomingBacklog.add(task.id);
       this.releaseNotice(`task ${this.publicTitle(task)} backlogged by ${by} [${profileTaskLabel(task)}]`);
@@ -1873,7 +1871,8 @@ export class Tasks {
       if (task?.state === "cancelled") return env.kind === "task" && typeof env.refs.taskCancelled === "number" && env.refs.taskCancelled === task.cancelled?.flowRevision;
       if (env.refs.taskRecipient === "planner") return !!task && this.taskPlanner(task).includes(peer);
       if (env.refs.planReview !== undefined) return !!task && !isClosedTaskState(task.state) && (task.planningRevision ?? 0) === env.refs.planReview
-        && this.plannerHolders().includes(peer) && this.planAuthor(task) !== peer && (task.sdlc?.planReview?.recordedAt ?? 0) < env.ts;
+        && this.plannerHolders().includes(peer) && this.planAuthor(task) !== peer && Number.isSafeInteger(env.refs.planReviewFlow)
+        && !task.history.slice(env.refs.planReviewFlow).some(entry => entry.event === "plan reviewed");
     }
     const c = this.conditional.get(env.id);
     if (!c || c.peer !== peer) return true;
@@ -4251,7 +4250,9 @@ export class Tasks {
       if (isClosedTaskState(task.state) || this.isPii(task)) throw new PreEffectToolRefusal("closed or private work cannot name a planner");
       const choice = assign({ ...task, state: "proposed" }, this.states(), this.d.routing(), { ...this.weights(task.class, task), candidates: [], namedPlanner: peer });
       if (choice.planner !== peer) throw new PreEffectToolRefusal("named planner must be a rostered settled planner holder");
-      return this.d.board.update(task.id, by, "planner changed", { planner: peer }, "named", { plannerReason: "named" }, expectedFlowRevision);
+      const next = this.d.board.update(task.id, by, "planner changed", { planner: peer }, "named", { plannerReason: "named" }, expectedFlowRevision);
+      if (next.state === "backlog") { this.incomingBacklog.add(next.id); this.addPlannerBacklog(peer, [next.id]); }
+      return next;
     }
     if (role === "reviewer" && by !== USER) {
       const conductors = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([actor]) => actor);

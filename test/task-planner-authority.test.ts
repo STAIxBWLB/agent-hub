@@ -149,3 +149,47 @@ test("proposals bind the pure planner choice for backlog and unavailable owner, 
   const pii = await r.tasks.propose(USER, { title: "PII_FIXTURE private work", class: "implement", backlog: true });
   expect(pii.signals).toContain("pii"); expect(pii.planner).toBeNull();
 });
+
+test("split children bind their pure planner in initial history and immediate person undo remains valid", async () => {
+  const r = await rig(), parent = await r.tasks.propose(USER, { title: "split parent", class: "implement", backlog: true });
+  const split = await r.tasks.splitBacklog(USER, { id: parent.id, revision: 0, parts: [{ title: "first child" }, { title: "second child", afterParts: [0] }], reason: "two independent pieces" });
+  expect(split.children).toHaveLength(2);
+  for (const child of split.children) {
+    const planner = ["claude", "codex"][child.id % 2];
+    expect(child.planner).toBe(planner);
+    expect(child.history).toHaveLength(1);
+    expect(child.history[0]).toMatchObject({ event: "backlogged", planner, plannerReason: "rotation" });
+    expect(r.board.get(child.id)).toEqual(child);
+  }
+  const undone = await r.tasks.undoPlanning(USER, parent.id, split.parent.planningRevision!);
+  expect(undone.state).toBe("backlog"); expect(undone.deps ?? []).toEqual(parent.deps ?? []); expect(undone.planner).toBe(parent.planner);
+  expect(r.board.list().map(task => task.id)).toEqual([parent.id]);
+});
+
+test("host Board proposals bind before their first onChange while explicit null bypasses planner selection", async () => {
+  const r = await rig(), selected = r.board.proposalPlanner!, changes: Task[] = [];
+  let calls = 0;
+  r.board.proposalPlanner = task => { calls++; return selected(task); };
+  r.board.onChange = task => { changes.push(task); };
+  const chosen = r.board.propose(USER, { title: "direct host card", class: "plan", backlog: true });
+  const planner = ["claude", "codex"][chosen.id % 2];
+  expect(calls).toBe(1); expect(chosen.planner).toBe(planner);
+  expect(chosen.history).toHaveLength(1); expect(chosen.history[0]).toMatchObject({ event: "backlogged", planner, plannerReason: "rotation" });
+  expect(changes).toHaveLength(1); expect(changes[0]).toEqual(chosen); expect(r.board.get(chosen.id)).toEqual(chosen);
+  const legacy = r.board.propose(USER, { title: "explicit legacy card", class: "plan", planner: null });
+  expect(calls).toBe(1); expect(legacy.planner).toBeNull(); expect(legacy.history[0]?.planner).toBeNull();
+  expect(changes).toEqual([chosen, legacy]);
+});
+
+test("a throwing proposal planner rolls back the row, revision and callbacks with no leaked inserted identity", async () => {
+  const r = await rig(), before = r.snapshot(), revision = r.board.statusRevision(), selected = r.board.proposalPlanner!;
+  const changes: number[] = []; let failedId: number | undefined;
+  r.board.onChange = task => { changes.push(task.id); };
+  r.board.proposalPlanner = task => { failedId = task.id; expect(r.board.get(task.id)?.title).toBe("failed host proposal"); throw new Error("fixture planner selection failed"); };
+  expect(() => r.board.propose(USER, { title: "failed host proposal", class: "plan" })).toThrow("fixture planner selection failed");
+  expect(failedId).toBeDefined(); expect(r.board.get(failedId!)).toBeUndefined(); expect(r.snapshot()).toEqual(before);
+  expect(r.board.statusRevision()).toBe(revision); expect(changes).toEqual([]);
+  r.board.proposalPlanner = selected;
+  const retry = r.board.propose(USER, { title: "successful retry", class: "plan" });
+  expect(retry.id).toBe(failedId); expect(retry.planner).toBe(["claude", "codex"][retry.id % 2]); expect(changes).toEqual([retry.id]);
+});

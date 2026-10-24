@@ -191,9 +191,10 @@ export function validateRawConfig(raw: unknown, declarations?: InstancesConfig, 
   block({ ...schema,
     instances: v => { validateInstances(v, catalog); },
     planner: v => {
+      if (v === null) fail("config.planner", "takes a peer id or a nonempty list");
       const def = settingDef("planner", instances, catalog);
-      if (typeof def === "string") fail("config.planner", def);
-      checkSettingValue(def as import("./settings.ts").SettingDef, v);
+      if (typeof def === "string") return fail("config.planner", def);
+      checkSettingValue(def, v);
     },
     permission_modes: v => { permissionDefaults(v, instances, catalog); },
     roster: v => { peerRosterConfig(v, instances, catalog, inertModuleRoster); },

@@ -202,6 +202,8 @@ export class Board {
   onChange?: (task: Task, entry: HistoryEntry) => void;
   /** Host lifecycle policy, installed by Tasks; off projects keep their original history shape. */
   trackPlanRevisions?: () => boolean;
+  /** Fixed host-owned pure selection; no model, network or asynchronous work is admitted inside the insert. */
+  proposalPlanner?: (task: Task) => PlannerBinding;
   private changed(task: Task, entry: HistoryEntry): void {
     if (this.pendingChanges) { this.pendingChanges.push({ task, entry }); return; }
     try { this.onChange?.(task, entry); } catch { /* never throw after a board write */ }
@@ -291,9 +293,18 @@ export class Board {
     const now = Date.now(), planner = plannerValue(t.planner);
     const chosen = Object.hasOwn(t, "planner") || t.plannerReason !== undefined ? plannerMetadata(planner, t.plannerReason) : {};
     const history: HistoryEntry[] = [{ at: now, by, ...chosen, event: t.backlog ? "backlogged" : "proposed", ...(this.trackPlanRevisions?.() && t.plan && Object.keys(t.plan).length ? { planRevision: { revision: 1, fingerprint: planFingerprint(t.plan) } } : {}) }];
-    const { lastInsertRowid } = this.taskWrite(() => this.db
+    const { lastInsertRowid } = this.taskWrite(() => {
+      const inserted = this.db
       .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated, project_profile, task_role, external_repo, external_issue, planner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(t.title, t.detail ?? "", t.class, t.backlog ? "backlog" : "proposed", JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now, t.profile && (t.profile !== "dev" || t.customProfile || t.profileClass !== undefined && t.profileClass !== t.class) ? JSON.stringify({ profile: t.profile, profileClass: t.profileClass ?? t.class }) : null, t.role ?? null, t.external?.repo.toLowerCase() ?? null, t.external?.issue ?? null, planner));
+      .run(t.title, t.detail ?? "", t.class, t.backlog ? "backlog" : "proposed", JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now, t.profile && (t.profile !== "dev" || t.customProfile || t.profileClass !== undefined && t.profileClass !== t.class) ? JSON.stringify({ profile: t.profile, profileClass: t.profileClass ?? t.class }) : null, t.role ?? null, t.external?.repo.toLowerCase() ?? null, t.external?.issue ?? null, planner);
+      if (this.proposalPlanner && !Object.hasOwn(t, "planner") && t.plannerReason === undefined) {
+        const selected = this.proposalPlanner(this.get(Number(inserted.lastInsertRowid))!);
+        const binding = plannerMetadata(selected.planner, selected.plannerReason);
+        Object.assign(history[0]!, binding);
+        this.db.query("UPDATE tasks SET planner=?,history=? WHERE id=?").run(binding.planner ?? null, JSON.stringify(history), inserted.lastInsertRowid);
+      }
+      return inserted;
+    });
     const task = this.get(Number(lastInsertRowid))!;
     this.changed(task, history[0]!);
     return task;

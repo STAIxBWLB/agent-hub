@@ -2264,7 +2264,8 @@ async function runConductorCommand(): Promise<void> {
     op = args[0] === "assign" ? "hub_task_assign" : "hub_task_escalate";
     const { one, rest: positional } = takeFlags(args.slice(1), args[0] === "assign" ? ["--role"] : [], []);
     const role = one["--role"] ?? "owner";
-    if (!positional[0] || positional.length !== (args[0] === "assign" ? 2 : 1) || !["owner", "reviewer"].includes(role)) fail("usage: ahub task assign <id> <peer> [--role owner|reviewer] | escalate <id>");
+    if (!positional[0] || positional.length !== (args[0] === "assign" ? 2 : 1) || !["owner", "reviewer", "planner"].includes(role)) fail("usage: ahub task assign <id> <peer> [--role owner|reviewer|planner] | escalate <id>");
+    if (role === "planner") fail("only the person may name a task planner");
     input = { id: Number(positional[0]), ...(args[0] === "assign" ? { peer: positional[1], ...(role === "reviewer" ? { role } : {}) } : {}) };
   } else if (cmd === "pause" || cmd === "resume") {
     if (args.length !== 1) fail(`usage: ahub ${cmd} <peer>`);

@@ -1732,7 +1732,7 @@
     {
       "id": "planning-configured-role",
       "file": "src/hub/tasks.ts",
-      "search": "if (by !== USER && !this.d.roles?.[by]?.includes(\"planner\"))",
+      "search": "if (by !== USER && (!this.d.roles?.[by]?.includes(\"planner\") || task !== undefined && !this.taskPlanner(task).includes(by)))",
       "replacement": "if (false)",
       "testFile": "test/planning.test.ts",
       "testName": "planning validates the whole patch and persists revision dates priority and release (#263)"

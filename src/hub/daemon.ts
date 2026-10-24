@@ -310,6 +310,7 @@ export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]
       }
     }
     if (file.planner !== undefined) {
+      if (file.planner === null) throw new Error("planner takes a peer id or a nonempty list of up to eight ids");
       const def = instanceSettingDef("planner", scope.instances, scope.catalog);
       if (typeof def === "string") throw new Error(def);
       const normalized = checkSettingValue(def, file.planner) as string | string[];
