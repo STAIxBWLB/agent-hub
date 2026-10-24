@@ -42,7 +42,7 @@ test("the planner key is validated and exclusive at load (#455)", () => {
   mkdirSync(join(dir, ".agenthub"));
   for (const bad of ["pi", "local", "nobody", 3]) {
     writeFileSync(join(dir, ".agenthub/config.json"), JSON.stringify({ planner: bad }));
-    expect(() => loadConfig(dir)).toThrow("planner must be one of");
+    expect(() => loadConfig(dir)).toThrow("distinct eligible planner peer ids");
   }
   writeFileSync(join(dir, ".agenthub/config.json"), JSON.stringify({ planner: "claude" }));
   writeFileSync(join(dir, ".agenthub/config.local.json"), JSON.stringify({ planner: "kimi" }));

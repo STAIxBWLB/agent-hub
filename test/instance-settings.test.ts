@@ -16,7 +16,15 @@ function projectSettings(map?: typeof instances): readonly SettingDef[] {
 }
 
 test("#450 settings keep legacy definitions and recognize only exact project declarations", () => {
-  for (const entry of SETTINGS) { expect(settingDef(entry.key)).toBe(entry); expect(settingDef(entry.key, instances)).toBe(entry); }
+  for (const entry of SETTINGS) {
+    expect(settingDef(entry.key)).toBe(entry);
+    if (entry.key === "planner") {
+      const bound = def(entry.key);
+      expect(bound).toEqual({ ...entry, values: [...entry.values!, "codex-worker"] });
+      expect(checkSettingValue(bound, "codex-worker")).toBe("codex-worker");
+      expect(() => checkSettingValue(entry, "codex-worker")).toThrow();
+    } else expect(settingDef(entry.key, instances)).toBe(entry);
+  }
   for (const scope of ["roster", "permission", "permission_modes"]) {
     expect(typeof settingDef(`${scope}.codex-worker`)).toBe("string");
     expect(typeof settingDef(`${scope}.codex-undeclared`, instances)).toBe("string");
@@ -49,8 +57,10 @@ test("#450 lookup and row rendering share the same instance setting definitions"
     const input = { cwd, routing: parseRouting('[local]\nfixed_model = "fixture"\n'), running: () => undefined, next: () => undefined, mode: () => ({ value: "ask" }) };
     const legacy = settingRows({ ...input, adapterCatalog: builtinProjectCatalog() });
     expect(settingRows({ adapterCatalog: builtinProjectCatalog(), ...input, instances: {} })).toEqual(legacy);
-    const rows = settingRows({ adapterCatalog: builtinProjectCatalog(), ...input, instances }), expected = projectSettings(instances).filter(entry => !SETTINGS.includes(entry));
-    expect(rows.slice(0, legacy.length)).toEqual(legacy);
+    const rows = settingRows({ adapterCatalog: builtinProjectCatalog(), ...input, instances }), expected = projectSettings(instances).filter(entry => !SETTINGS.some(base => base.key === entry.key));
+    expect(rows.slice(0, legacy.length).filter(row => row.key !== "planner")).toEqual(legacy.filter(row => row.key !== "planner"));
+    const legacyPlanner = legacy.find(row => row.key === "planner")!;
+    expect(rows.find(row => row.key === "planner")).toEqual({ ...legacyPlanner, values: [...legacyPlanner.values!, "codex-worker"] });
     expect(rows.slice(legacy.length).map(row => row.key)).toEqual(expected.map(entry => entry.key));
     for (const row of rows.slice(legacy.length)) {
       const entry = def(row.key);

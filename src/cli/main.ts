@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import type { DeliverableRow } from "../hub/tasks.ts";
 import { kimiSourceRow } from "../hub/budget-notes.ts";
 import { hubGitSync, hubGitEnv } from "../hub/git.ts";
 import { parseReleaseGuardArgv, parseReleasePushUpdates } from "./sdlc-release-guard.ts";
@@ -1195,6 +1196,27 @@ const commands: Record<string, () => Promise<void> | void> = {
     console.log(await taskOp("release_change", { name, revision: Number(revision), fields }));
   },
 
+  deliverables: async () => {
+    // #317: what each task delivered and what a reviewer approved, by id, hash and size (a path only where the PII screen allows it). Person only: the daemon refuses an agent.
+    const options = outputOptions();
+    const { one, rest } = takeFlags(args, ["--task"], []);
+    const approved = rest.includes("--approved"), check = rest.includes("--check");
+    const extra = rest.filter(arg => !["--json", "--full", "--approved", "--check"].includes(arg) && !arg.startsWith("--color="));
+    const task = one["--task"] === undefined ? undefined : Number(one["--task"]);
+    // takeFlags keeps the last of a repeated flag: for a command that selects a task that would silently drop one of two named tasks.
+    if (args.filter(arg => arg === "--task").length > 1) fail("usage: ahub deliverables [--task <id>] [--approved] [--check] [--json] [--color=auto|always|never] (--task takes one id)");
+    if (extra.length || (one["--task"] !== undefined && !/^[1-9]\d*$/.test(one["--task"])) || (task !== undefined && !Number.isSafeInteger(task))) fail("usage: ahub deliverables [--task <id>] [--approved] [--check] [--json] [--color=auto|always|never]");
+    const rows = JSON.parse(await taskOp("deliverables", { ...(task === undefined ? {} : { task }), ...(approved ? { approved: true } : {}), ...(check ? { check: true } : {}) })) as DeliverableRow[];
+    if (options.json) return console.log(JSON.stringify(rows, null, 2));
+    if (!rows.length) return console.log(task === undefined ? `no ${approved ? "approved " : ""}deliverables on the board` : `task #${task} has no ${approved ? "approved " : ""}deliverables`);
+    for (const row of rows) {
+      const flag = row.checked ? ({ changed: " (changed since review)", missing: " (a file is missing)", unknown: " (could not be measured)", unchanged: " (unchanged)" } as const)[row.result ?? "unknown"] : "";
+      console.log(`${row.title} [${row.state}${flag}]`);                                   // `title` is the hub's publicTitle: it already starts with `#<id>`
+      for (const file of row.files) console.log(`  ${file.id}  ${file.path ?? "(private)"}  ${file.format}${file.version ? ` ${file.version}` : ""}  ${file.bytes} B  sha256 ${file.sha256}${file.state ? `  ${file.state}` : ""}`);
+    }
+    if (!check) console.log("(hashes are the board's records; add --check to measure the files now)");
+  },
+
   board: async () => {
     if (args[0] === "import") {
       if (args[1] !== "github" || (args.length - 2) % 2 !== 0) fail("usage: ahub board import github --label <label> [--milestone <milestone>] [--repo <owner/repo>]");
@@ -1380,8 +1402,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (sub === "assign") {
       const { one, rest: positional } = takeFlags(rest, ["--role", "--revision"], []);
       const role = one["--role"] ?? "owner", rawRevision = one["--revision"], revision = rawRevision === undefined ? undefined : Number(rawRevision);
-      if (positional.length !== 2 || !["owner", "reviewer"].includes(role) || (rawRevision !== undefined && (!/^\d+$/.test(rawRevision) || !Number.isSafeInteger(revision)))) fail("usage: ahub task assign <id> <peer> [--role owner|reviewer] [--revision N]");
-      return console.log(await taskOp(revision === undefined ? "task_assign" : "task_assign_checked", { id: positional[0], peer: positional[1], ...(role === "reviewer" ? { role } : {}), ...(revision === undefined ? {} : { revision }) }));
+      if (positional.length !== 2 || !["owner", "reviewer", "planner"].includes(role) || (rawRevision !== undefined && (!/^\d+$/.test(rawRevision) || !Number.isSafeInteger(revision)))) fail("usage: ahub task assign <id> <peer> [--role owner|reviewer|planner] [--revision N]");
+      return console.log(await taskOp(revision === undefined ? "task_assign" : "task_assign_checked", { id: positional[0], peer: positional[1], ...(role !== "owner" ? { role } : {}), ...(revision === undefined ? {} : { revision }) }));
     }
     if (sub === "unassign") {
       const { one, rest: positional } = takeFlags(rest, ["--role", "--revision"], []);
@@ -2264,7 +2286,8 @@ async function runConductorCommand(): Promise<void> {
     op = args[0] === "assign" ? "hub_task_assign" : "hub_task_escalate";
     const { one, rest: positional } = takeFlags(args.slice(1), args[0] === "assign" ? ["--role"] : [], []);
     const role = one["--role"] ?? "owner";
-    if (!positional[0] || positional.length !== (args[0] === "assign" ? 2 : 1) || !["owner", "reviewer"].includes(role)) fail("usage: ahub task assign <id> <peer> [--role owner|reviewer] | escalate <id>");
+    if (!positional[0] || positional.length !== (args[0] === "assign" ? 2 : 1) || !["owner", "reviewer", "planner"].includes(role)) fail("usage: ahub task assign <id> <peer> [--role owner|reviewer|planner] | escalate <id>");
+    if (role === "planner") fail("only the person may name a task planner");
     input = { id: Number(positional[0]), ...(args[0] === "assign" ? { peer: positional[1], ...(role === "reviewer" ? { role } : {}) } : {}) };
   } else if (cmd === "pause" || cmd === "resume") {
     if (args.length !== 1) fail(`usage: ahub ${cmd} <peer>`);
