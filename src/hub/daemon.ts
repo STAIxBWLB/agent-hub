@@ -5142,7 +5142,7 @@ export async function startDaemon(opts: DaemonOptions) {
       },
     });
     const undo = pendingUndo(opts.stateDir);
-    const planner = `In force: ${plannerPeers().join(", ") || "nobody"} (${plannerSource}). Setting it makes that peer the only planner; agents cannot change it.`;
+    const planner = `In force: ${plannerPeers().join(", ") || "nobody"} (${plannerSource}). Setting it pins the listed peers as the only planners; new tasks select one of those holders. Agents cannot change this setting.`;
     return { pendingRestart: allPendingRestart(), retainedConfig, rows: rows.map(row => row.key === "planner" ? { ...row, hint: planner } : row), ...(undo ? { undo } : {}) };
   }
   /** The same announcement whatever surface made the change: events.jsonl, hub.log and every open console. */

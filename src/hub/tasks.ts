@@ -929,10 +929,17 @@ export class Tasks {
     return { planner: this.isPii(task) ? null : choice.planner ?? null, plannerReason: this.isPii(task) ? "none" : choice.plannerReason ?? "none" };
   }
 
+  private plannerBinding(task: Task, assignment: Assignment, bindNull = false): PlannerBinding | undefined {
+    if (bindNull && task.planner == null) return { planner: this.isPii(task) ? null : assignment.planner ?? null, plannerReason: assignment.plannerReason ?? "none" };
+    return task.planner && this.plannerHolders().includes(task.planner) ? { planner: task.planner, plannerReason: "kept" } : undefined;
+  }
+
   private planAuthor(task: Task): PeerId | null {
-    return task.history.findLast(entry => entry.planRevision !== undefined)?.by
-      ?? task.history.findLast(entry => (entry.planning?.fields as readonly string[] | undefined)?.includes("plan"))?.by
-      ?? (Object.values(task.plan ?? {}).some(value => value != null && (Array.isArray(value) ? value.length : true)) ? task.history[0]?.by ?? null : null);
+    // Review scope bookkeeping preserves the existing plan-content author.
+    const authored = task.history.findLast(entry => entry.event !== "plan reviewed" && entry.planRevision !== undefined)
+      ?? task.history.findLast(entry => entry.event !== "plan reviewed" && (entry.planning?.fields as readonly string[] | undefined)?.includes("plan"));
+    if (authored && authored !== task.history[0]) return authored.by;
+    return ALL_PLAN_KEYS.some(key => !!task.plan?.[key]?.length) ? authored?.by ?? task.history[0]?.by ?? null : null;
   }
 
   private planReviewAuthority(by: PeerId, task: Task): { planAuthor: PeerId | null; selfReview?: true } {
@@ -1049,7 +1056,7 @@ export class Tasks {
           if (checked.task.history.length !== current.task.history.length || checked.owner !== current.owner) throw new PreEffectToolRefusal("planner pull changed during admission");
         } } });
     }
-    const pulled = this.d.board.pullPlanned(current.task.id, by, current.owner, input.revision, input.reason.trim(), withheld, { planner: current.task.planner ?? current.assignment.planner ?? null, plannerReason: current.task.planner ? "kept" : current.assignment.plannerReason ?? "none" });
+    const pulled = this.d.board.pullPlanned(current.task.id, by, current.owner, input.revision, input.reason.trim(), withheld, this.plannerBinding(current.task, current.assignment, true));
     this.planningRecorded({ by, task: pulled.id, fields: ["pull", "reserved"], revision: pulled.planningRevision! });
     return pulled;
   }
@@ -2164,9 +2171,7 @@ export class Tasks {
     const lasting = opts.event === "escalated" && task.owner && (opts.reason === "rejections" || opts.reason === "manual");
     opts.plannerPull?.guard();
     const assignmentNote = this.assignmentNote(`${opts.note ?? `to ${a.owner}`}${passed}`, a);
-    const binding = opts.plannerPull && task.planner == null
-      ? { planner: this.isPii(task) ? null : a.planner ?? null, plannerReason: a.plannerReason ?? "none" as const }
-      : task.planner && this.plannerHolders().includes(task.planner) ? { planner: task.planner, plannerReason: "kept" as const } : undefined;
+    const binding = this.plannerBinding(task, a, !!opts.plannerPull);
     const assignmentExtra = { ...this.reviewMetadata(a), ...(binding ? { plannerReason: binding.plannerReason } : {}), ...(profile ? { profile } : {}), ...(opts.reason ? { reason: opts.reason } : {}), ...(lasting ? { from: task.owner! } : {}) };
     const next = opts.plannerPull
       ? this.d.board.pullAssigned(task.id, by, a.owner, opts.plannerPull.revision, opts.plannerPull.note, opts.plannerPull.withheld, a.reviewer ?? null, assignmentNote, assignmentExtra, task.history.length, binding)

@@ -8,6 +8,7 @@ import { BasePeer } from "../src/hub/peers.ts";
 import { USER, type Envelope } from "../src/hub/envelope.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
+import { sdlcConfig } from "../src/hub/sdlc.ts";
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 
 class FakePeer extends BasePeer {
@@ -19,12 +20,12 @@ class FakePeer extends BasePeer {
 }
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
-async function rig(trackPlans = false, forTask?: () => Promise<undefined>) {
+async function rig(trackPlans = false, forTask?: () => Promise<undefined>, config?: ReturnType<typeof sdlcConfig>) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-task-planner-")), board = new Board(join(dir, "hub.db")), roster = new Set(["claude", "codex", "kimi"]);
   const bus = new Bus({ batchMs: 0, rostered: peer => roster.has(peer) });
   const roles: Record<string, string[]> = { claude: ["planner", "reviewer"], codex: ["planner", "reviewer"], kimi: ["implementer"] };
   const routing = loadRouting(dir), screen = { enabled: false, run: async () => {} };
-  const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture/task-planner", roles, ...(forTask ? { briefs: { forTask } as never } : {}), notify: () => {}, wipLimit: () => 16,
+  const tasks = new Tasks({ board, bus, cwd: dir, project: "fixture/task-planner", roles, ...(config ? { sdlc: { config: () => config } } : {}), ...(forTask ? { briefs: { forTask } as never } : {}), notify: () => {}, wipLimit: () => 16,
     routing: () => ({ ...routing, signals: { ...routing.signals, pii_patterns: [...routing.signals.pii_patterns, "PII_FIXTURE"], pii_screen: screen.enabled ? "local" : "off" } }),
     piiScreen: async () => { await screen.run(); return { label: "clear", ms: 0 }; },
     releaseWindow: async () => ({ at: Date.now(), host: true, quota: true, idle: true, reasons: [] }) });
@@ -217,4 +218,39 @@ test("planner-only changes while an owner brief awaits preserve the exact owner 
   expect(handed).toHaveLength(1);
   expect(r.board.get(before.id)?.offer?.envelopeId).toBe(handed[0]!.id);
   expect(r.tasks.relevant("kimi", handed[0]!)).toBe(true);
+});
+
+
+for (const mode of ["off", "enforce"] as const) test(`I4 scoped review keeps the plan-content author in ${mode} mode`, async () => {
+  const r = await rig(true, undefined, sdlcConfig({ mode, required_checks: [] }));
+  const task = await r.bound("claude", { paths: ["authored.ts"] });
+  const scope = { review: { scope: "full" as const, reviewers: 1 }, ci: "full" as const };
+  const reviewed = await r.tasks.recordPlanReview("codex", task.id, { revision: 0, reason: "independent scoped review", ...scope });
+  expect(reviewed.sdlc?.planReview).toMatchObject({ planner: "codex", planAuthor: "claude" });
+  expect(reviewed.history.at(-1)).toMatchObject({ event: "plan reviewed", by: "codex", planRevision: expect.any(Object) });
+  await refusesWithoutWrite(r, () => r.tasks.recordPlanReview("claude", task.id, { revision: 0, reason: "author tries to replace independent review", ...scope }));
+  const repeated = await r.tasks.recordPlanReview("codex", task.id, { revision: 0, reason: "independent review repeated", ...scope });
+  expect(repeated.sdlc?.planReview).toMatchObject({ planner: "codex", planAuthor: "claude" });
+  expect(repeated.sdlc?.planReview?.selfReview).not.toBe(true);
+  r.board.update(task.id, "codex", "fixture real plan edit", { plan: { ...repeated.plan, paths: ["new-intent.ts"] } });
+  await refusesWithoutWrite(r, () => r.tasks.recordPlanReview("codex", task.id, { revision: 0, reason: "new actual author", ...scope }));
+  expect((await r.tasks.recordPlanReview("claude", task.id, { revision: 0, reason: "review real new intent", ...scope })).sdlc?.planReview?.planAuthor).toBe("codex");
+});
+
+for (const initialScopes of [false, true]) test(`I4 cost scopes alone do not invent a plan-content author (initialScopes=${initialScopes})`, async () => {
+  const r = await rig(true);
+  const scope = { review: { scope: "full" as const, reviewers: 1 }, ci: "full" as const };
+  const task = await r.bound("claude", initialScopes ? scope : undefined);
+  expect((await r.tasks.recordPlanReview("codex", task.id, { revision: 0, reason: "scope only", ...scope })).sdlc?.planReview?.planAuthor).toBeNull();
+  expect((await r.tasks.recordPlanReview("claude", task.id, { revision: 0, reason: "scope only again", ...scope })).sdlc?.planReview?.planAuthor).toBeNull();
+});
+
+for (const reserved of [false, true]) test(`pull of a removed planner binding does not record a false kept reason (reserved=${reserved})`, async () => {
+  const r = await rig();
+  const task = r.board.propose(USER, { title: "stale planner pull", class: "implement", backlog: true, planner: "claude", ...(reserved ? { reserved: "kimi" } : {}) });
+  r.roles.claude = ["reviewer"];
+  const pulled = await r.tasks.pullPlanned("codex", { id: task.id, revision: 0, reason: "effective holder fallback" });
+  expect(pulled.planner).toBe("claude");
+  expect(r.tasks.taskPlanner(pulled)).toEqual(["codex"]);
+  expect(pulled.history.filter(entry => entry.event === "backlog pulled" || entry.event === "assigned").every(entry => entry.plannerReason !== "kept")).toBe(true);
 });
