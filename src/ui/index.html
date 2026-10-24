@@ -2258,7 +2258,7 @@ function memoryInput() {
   }
   const out = {tier:memoryQuery.tier, hops:memoryQuery.hops};
   for (const key of ['q', 'kind', 'peer', 'machine', 'node']) if (memoryQuery[key]) out[key] = memoryQuery[key];
-  if (memoryQuery.codeNeighbours === true && memoryQuery.node.startsWith('symbol:')) out.codeNeighbours = true;
+  if (memoryQuery.codeNeighbours === true && memoryQuery.node.startsWith('symbol:') && currentView === 'memory' && !document.hidden) out.codeNeighbours = true;
   // A whole timestamp, floored to the hour so the query stays the same between polls.
   if (memoryQuery.since) out.since = new Date(Math.floor((Date.now() - Number(memoryQuery.since) * 86400000) / 3600000) * 3600000).toISOString();
   return out;
@@ -2293,7 +2293,7 @@ function memoryPresentation(memory) {
     connected.add(edge.from); connected.add(edge.to);
   }
   for (const [id, node] of candidateNodes) if ((connected.has(id) || id === memory.node) && !nodes.has(id)) nodes.set(id, node);
-  const notes = (code.notes || []).filter(note => /^mem:[a-f0-9]{32}$/.test(note.id) && typeof note.line === 'string' && Array.isArray(note.about) && note.about.some(id => connected.has(id)));
+  const notes = (code.notes || []).filter(note => (!memoryQuery.kind || note.kind === memoryQuery.kind) && (!memoryQuery.tier || note.tier === memoryQuery.tier) && (!memoryQuery.peer || note.peer === memoryQuery.peer) && (!memoryQuery.machine || note.machine === memoryQuery.machine) && /^mem:[a-f0-9]{32}$/.test(note.id) && typeof note.line === 'string' && Array.isArray(note.about) && note.about.some(id => connected.has(id)));
   const noteIds = [...new Set(notes.map(note => note.id))], highlightIds = new Set(noteIds), byId = new Map(entries.map(entry => [entry.id, entry]));
   for (const note of notes) {
     const id = note.id.slice(4), existing = byId.get(id);
@@ -2314,6 +2314,7 @@ function memoryPresentation(memory) {
 }
 function memoryCodeToggle() {
   const toggle = $('memory-code-neighbours'), eligible = memoryQuery.node.startsWith('symbol:');
+  if (!eligible) memoryQuery.codeNeighbours = false;
   toggle.disabled = !eligible; toggle.checked = memoryQuery.codeNeighbours === true;
   $('memory-code-help').textContent = eligible ? 'Optional current-head caller/callee context; dashed edges are derived.' : 'Select a symbol to inspect derived code neighbours.';
 }

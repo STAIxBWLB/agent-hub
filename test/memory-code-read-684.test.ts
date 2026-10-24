@@ -29,6 +29,7 @@ test("#367 production graph read composes SHA-stamped calls and authored neighbo
   expect(output.error).toBeUndefined(); expect(output.code).toEqual({ state: "known", head: HEAD, truncated: false, countsFloor: true });
   expect(output.edges).toContainEqual({ from: NEAR, to: SEED, rel: "calls", derived: true, head: HEAD });
   expect(output.nodes.find(node => node.id === NEAR)).toMatchObject({ derived: true, head: HEAD });
+  expect(output.nodes.find(node => node.id === SEED)?.derived).toBeUndefined();
   expect(output.nodes.find(node => node.id === `mem:${fail}`)).toMatchObject({ kind: "fail", codeNeighbour: true });
   expect(output.nodes[0]?.id).toBe(`mem:${fail}`);
   expect(output.edges).toContainEqual({ from: `mem:${fail}`, to: NEAR, rel: "rules_out" });

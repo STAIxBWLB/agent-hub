@@ -110,7 +110,7 @@ export function memoryRead(store: MemoryStore | undefined, project: string, scre
     }
     const overlay = code && /^[a-f0-9]{40}$/.test(code.head ?? "") && starts.some(id => id.startsWith("symbol:")) ? code : undefined;
     if (overlay) {
-      for (const node of overlay.nodes) if (node.head === overlay.head && node.derived && safe(node)) nodes.set(node.id, node);
+      for (const node of overlay.nodes) if (!nodes.has(node.id) && node.head === overlay.head && node.derived && safe(node)) nodes.set(node.id, node);
       for (const edge of overlay.edges) if (edge.head === overlay.head && edge.derived && edge.rel === "calls" && safe(edge)) edges.set(JSON.stringify(edge), edge);
       for (const note of overlay.notes) {
         const value = visible.get(note.id);

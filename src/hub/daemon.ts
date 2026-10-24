@@ -1,5 +1,5 @@
 import { deriveMemoryCodeOverlay, unavailableMemoryCodeOverlay } from "./memory-code-overlay.ts";
-import { hubGitSync } from "./git.ts";
+import { readMemoryCodeHead, type MemoryCodeHead } from "./memory-code-head.ts";
 import { canonicalMemorySymbolNode, resolveMemorySymbolNodes, type MemorySymbolNodes } from "./memory-symbols.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { normalizeUsage } from "../omniroute/usage.ts";
@@ -1131,50 +1131,68 @@ export async function startDaemon(opts: DaemonOptions) {
   const taskNodes = (t: { id?: number; created?: number; title?: string; refs: { paths?: string[] }; plan?: { paths?: string[]; symbols?: string[] } }) =>
     taskMemoryQueryNodes({ ...t, title: t.title ?? "" }, { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny });
 
-  function memoryCodeHead(): string | undefined {
-    try { const result = hubGitSync(["-C", opts.cwd, "rev-parse", "--verify", "HEAD"], { encoding: "utf8", timeout: 250 });
-      const head = result.stdout.trim(); return result.status === 0 && /^[a-f0-9]{40}$/.test(head) ? head : undefined;
-    } catch { return undefined; }
-  }
-  async function memoryCode(starts: readonly string[], valid: () => boolean = () => true) {
+  const memoryCodeCache = new Map<string, { code: import("./memory-code-overlay.ts").MemoryCodeOverlay; proof: MemoryCodeHead; expires: number }>();
+  const memoryCodeProofs = new Map<string, MemoryCodeHead>();
+  const memoryCodeSeeds = new WeakMap<object, Set<string>>();
+  let memoryCodeNextStart = 0;
+  async function memoryCode(starts: readonly string[], valid: () => boolean = () => true, cacheOnly = false) {
     if (!memoryStore || !starts.length || !valid()) return unavailableMemoryCodeOverlay();
-    return deriveMemoryCodeOverlay(starts, {
+    const key = JSON.stringify([memoryRepo, starts]), now = performance.now(), cached = memoryCodeCache.get(key);
+    if (cached && cached.expires > now && cached.proof.current() === cached.code.head) return cached.code;
+    if (cacheOnly || now < memoryCodeNextStart) return unavailableMemoryCodeOverlay();
+    memoryCodeNextStart = now + 5000;
+    const proof = readMemoryCodeHead(opts.cwd); if (!proof) return unavailableMemoryCodeOverlay();
+    const head = proof.head; memoryCodeProofs.set(head, proof);
+    if (memoryCodeProofs.size > 32) memoryCodeProofs.delete(memoryCodeProofs.keys().next().value!);
+    const code = await deriveMemoryCodeOverlay(starts, {
       context: () => ({ cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny }),
-      head: memoryCodeHead,
-      valid: () => { checkMemory(); return !stopping && valid(); },
+      head: () => head,
+      valid: () => { checkMemory(); return !stopping && valid() && proof.current() === head; },
       publicMetadataText: text => tasks.publicMetadataText(text) && boundedSafe(text),
-      neighbours: (root, head, selector, depth) => codeFacts.neighbours(root, head, selector, depth),
+      neighbours: (root, head, selector, depth) => codeFacts.neighbours(root, head, selector, depth, { priority: "optional" }),
       related: (nodes, limit) => screenMemory(memoryStore!.related(memoryProject, [...nodes], limit)).map(v => ({ id: `mem:${v.id}`, line: memoryLine(v), kind: v.kind, about: v.about })),
     });
+    memoryCodeSeeds.set(code, new Set(starts.map(raw => canonicalMemorySymbolNode(raw, { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny, allowed: tasks.publicMetadataText })).filter((id): id is string => !!id)));
+    memoryCodeCache.set(key, { code, proof, expires: performance.now() + (code.state === "known" ? 30_000 : 5000) });
+    if (memoryCodeCache.size > 32) memoryCodeCache.delete(memoryCodeCache.keys().next().value!);
+    return code;
   }
   function currentMemoryCode(code: import("./memory-code-overlay.ts").MemoryCodeOverlay) {
     try {
       checkMemory();
-      if (!code.head || code.head !== memoryCodeHead() || !tasks.publicMetadataText(JSON.stringify(code)) || !boundedSafe(JSON.stringify(code))) return unavailableMemoryCodeOverlay();
+      if (!code.head || memoryCodeProofs.get(code.head)?.current() !== code.head || !tasks.publicMetadataText(JSON.stringify({ ...code, notes: [] })) || !boundedSafe(JSON.stringify({ ...code, notes: [] }))) return unavailableMemoryCodeOverlay();
       const context = { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny, allowed: (text: string) => tasks.publicMetadataText(text) && boundedSafe(text) };
       if (code.nodes.some(node => canonicalMemorySymbolNode(node.id, context) !== node.id)) return unavailableMemoryCodeOverlay();
       for (const note of code.notes) {
         const row = memoryStore?.get(note.id.slice(4), memoryProject);
         if (!row || `mem:${row.id}` !== note.id || !screenMemory([row]).length || !boundedSafe(JSON.stringify(row))) return unavailableMemoryCodeOverlay();
       }
-      return code;
+      const seeds = memoryCodeSeeds.get(code) ?? new Set<string>();
+      const neighbours = code.nodes.map(node => node.id).filter(id => !seeds.has(id));
+      const rows = memoryStore && neighbours.length ? screenMemory(memoryStore.related(memoryProject, neighbours, 128)) : [];
+      const notes = rows.filter(row => row.about.some(id => neighbours.includes(id)) && boundedSafe(JSON.stringify(row)))
+        .sort((a, b) => Number(b.kind === "fail") - Number(a.kind === "fail") || b.at.localeCompare(a.at)).slice(0, 16)
+        .map(row => ({ id: `mem:${row.id}`, line: memoryLine(row), kind: row.kind, about: row.about, tier: row.tier, peer: row.peer, machine: row.machine, at: row.at }));
+      return { ...code, notes };
     } catch { return unavailableMemoryCodeOverlay(); }
   }
-  async function taskMemoryResult(task: import("../memory/brief.ts").BriefTask) {
+  async function taskMemoryResult(task: import("../memory/brief.ts").BriefTask, cacheOnly = false) {
+    const maximum = config.memory.brief_items;
     const current = () => task.id === undefined ? undefined : board.get(task.id), initial = current();
-    const unavailable = () => ({ items: [] as import("../memory/brief.ts").NativeItem[], state: "unknown" as "known" | "unknown" });
     const valid = () => { const value = current(); return !!initial && !!value && value.created === task.created && value.updated === initial.updated && value.history.length === initial.history.length && value.owner === initial.owner && tasks.memoryCodeEligible(value) && !turns.get(value.owner ?? "")?.private && !contextPii(value.owner ?? ""); };
-    if (!memoryStore || !valid()) return unavailable();
-    checkMemory();
+    if (!memoryStore || initial && tasks.isPii(initial)) return { items: [], state: "unknown" as const };
     const starts = taskNodes(task).filter(node => node.startsWith("symbol:"));
-    const code = starts.length ? currentMemoryCode(await memoryCode(starts, valid)) : unavailableMemoryCodeOverlay();
-    if (!valid()) return unavailable();
+    let code = unavailableMemoryCodeOverlay();
+    try { if (valid() && starts.length) { const prepared = await memoryCode(starts, valid, cacheOnly); if (valid()) code = currentMemoryCode(prepared); } }
+    catch { /* Optional code failure must not discard existing direct memory advice. */ }
     checkMemory();
+    const latest = current(); if (latest && tasks.isPii(latest)) return { items: [], state: "unknown" as const };
+    // Optional code evidence never suppresses the existing direct path/title/symbol memory brief.
     const direct = screenMemory(memoryStore.related(memoryProject, taskNodes(task), 128)).map(v => ({ id: `mem:${v.id}`, line: memoryLine(v), kind: v.kind, about: v.about }));
     const items = [...new Map([...direct, ...code.notes].map(row => [row.id, row])).values()]
       .filter(row => [row.line, ...(row.about ?? [])].every(tasks.publicMetadataText))
       .sort((a, b) => Number(b.kind === "fail") - Number(a.kind === "fail") || Number(b.kind === "decision") - Number(a.kind === "decision"))
-      .slice(0, config.memory.brief_items);
+      .slice(0, maximum);
     return { items, state: starts.length ? code.state : "known" as const, ...(code.head ? { head: code.head } : {}) };
   }
   async function taskMemoryItems(task: import("../memory/brief.ts").BriefTask) { return (await taskMemoryResult(task)).items; }
@@ -2489,7 +2507,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const generation = connectionGeneration(by);
       const valid = () => may(by, "memory_read") && connectionGeneration(by) === generation && !turns.get(by)?.private && !contextPii(by);
       const symbolStarts = op === "hub_memory_graph" ? (a.starts as string[]).filter(node => node.startsWith("symbol:")) : [];
-      const code = symbolStarts.length ? await memoryCode(symbolStarts, valid) : undefined;
+      const code = symbolStarts.length ? await memoryCode(symbolStarts, valid).catch(() => unavailableMemoryCodeOverlay()) : undefined;
       if (!valid()) throw new PreEffectToolRefusal("memory read unavailable");
       checkMemory();
       return memoryRead(memoryStore, memoryProject, screenMemory, op, a, staleness(), code ? currentMemoryCode(code) : undefined);
@@ -2739,7 +2757,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const { codeSymbols: _storedCodeSymbols, ...detail } = task;
         const codeSymbols = tasks.publicView(task).codeSymbols;
         const consoleDeliverables = await tasks.deliverableStatus(task);
-        const related = tasks.isPii(task) ? undefined : await taskMemoryResult(task).catch(() => ({ items: [], state: "unknown" as const }));
+        const related = tasks.isPii(task) ? undefined : await taskMemoryResult(task, true).catch(() => ({ items: [], state: "unknown" as const }));
         const fresh = board.get(task.id);
         const relatedMemory = related && fresh?.updated === task.updated && !tasks.isPii(fresh) ? { state: related.state, count: related.items.length, ...("head" in related ? { head: related.head } : {}) } : { state: "unknown" };
         return JSON.stringify({ ...detail, relatedMemory, ...(codeSymbols ? { codeSymbols } : {}), ...(consoleDeliverables ? { deliverables: consoleDeliverables } : {}), symbolOverlaps: tasks.symbolOverlaps(task), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
@@ -4829,10 +4847,17 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function uiMemorySnapshot(after: number, input?: Record<string, unknown>, session?: DashboardSession) {
     const query = input?.memory as Record<string, unknown> | undefined;
-    const start = query && query.codeNeighbours === true && typeof query.node === "string" && query.node.startsWith("symbol:") && Buffer.byteLength(query.node) <= 512 ? query.node : undefined;
-    const code = start ? await memoryCode([start]) : undefined;
+    const start = input?.view === "memory" && query && query.codeNeighbours === true && typeof query.node === "string" && query.node.startsWith("symbol:") && Buffer.byteLength(query.node) <= 512 ? query.node : undefined;
+    const code = start ? await memoryCode([start]).catch(() => unavailableMemoryCodeOverlay()) : undefined;
     const snapshot = uiSnapshot(after, input, session);
-    if (code && "memory" in snapshot && snapshot.memory && typeof snapshot.memory === "object") Object.assign(snapshot.memory, { code: currentMemoryCode(code) });
+    if (code && "memory" in snapshot && snapshot.memory && typeof snapshot.memory === "object") {
+      const published = currentMemoryCode(code), tier = query?.tier === "goals" ? "goals" : query?.tier === "short" ? "short" : "long";
+      const search = typeof query?.q === "string" ? query.q.toLowerCase() : undefined;
+      published.notes = published.notes.filter(note => note.tier === tier && (!query?.kind || note.kind === query.kind) && (!query?.peer || note.peer === query.peer) && (!query?.machine || note.machine === query.machine)
+        && (!query?.since || typeof query.since !== "string" || !note.at || note.at >= query.since)
+        && (!search || (() => { const row = memoryStore?.get(note.id.slice(4), memoryProject); return !!row && `${row.title ?? ""} ${row.text}`.toLowerCase().includes(search); })()));
+      Object.assign(snapshot.memory, { code: published });
+    }
     return snapshot;
   }
   function uiSnapshot(after: number, _input?: Record<string, unknown>, session?: DashboardSession) {

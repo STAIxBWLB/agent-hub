@@ -18,17 +18,17 @@ class Node {
 function rig() {
   const nodes = new Map<string, Node>(), get = (id: string) => { let node = nodes.get(id); if (!node) { node = new Node(id); nodes.set(id, node); } return node; };
   const el = (tag: string, text?: unknown, cls?: string) => { const node = new Node(tag); if (text !== undefined) node.textContent = String(text); if (cls) node.className = cls; return node; };
-  const context = { $: get, el, viewGeneration: 0, document: { createElementNS: (_ns: string, tag: string) => new Node(tag) }, time: (at: string) => at,
+  const context = { $: get, el, viewGeneration: 0, currentView: "memory", document: { hidden: false, createElementNS: (_ns: string, tag: string) => new Node(tag) }, time: (at: string) => at,
     badge: (text: string) => el("span", text), empty: (target: Node, text: string) => target.append(el("p", text)),
     update: (id: string, _data: unknown, render: (target: Node) => void) => { get(id).replaceChildren(); render(get(id)); },
     keyedStart: () => Object.assign((_id: string, _signature: string, make: () => Node) => make(), { end() {} }),
   };
   const start = html.indexOf("const memoryQuery ="), end = html.indexOf("let memorySearch;", start);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
-  const api = runInNewContext(`${html.slice(start, end)};({memoryQuery,memoryInput,memoryPresentation,memoryCodeToggle,renderMemory})`, context) as {
-    memoryQuery: { node: string; codeNeighbours: boolean; tier: string }; memoryInput(): Record<string, unknown>;
+  const api = runInNewContext(`${html.slice(start, end)};({memoryQuery,memoryInput,memoryPresentation,memoryCodeToggle,renderMemory,selectMemoryNode})`, context) as {
+    memoryQuery: { node: string; codeNeighbours: boolean; tier: string; kind: string; peer: string }; memoryInput(): Record<string, unknown>;
     memoryPresentation(memory: unknown): { graph: { nodes: any[]; edges: any[] }; entries: any[]; noteIds: string[]; coverage: string };
-    memoryCodeToggle(): void; renderMemory(memory: unknown): void;
+    memoryCodeToggle(): void; renderMemory(memory: unknown): void; selectMemoryNode(node: string): void;
   };
   api.memoryInput();
   return { api, get, context };
@@ -36,7 +36,7 @@ function rig() {
 function fixture() {
   return { node: SEED, tier: "long", counts: { long: 1, short: 0 }, peers: [], machines: [], machine: "local", entries: [{ id: ID, title: "Existing failure", text: "authored note", kind: "fail", peer: "person", at: "2026-10-24", machine: "local" }],
     graph: { nodes: [{ id: SEED, type: "symbol", label: "target" }, { id: `mem:${ID}`, type: "memory", label: "Existing failure", kind: "fail" }], edges: [{ from: `mem:${ID}`, to: SEED, rel: "rules_out" }] },
-    code: { state: "known", head: HEAD, truncated: false, countsFloor: true, nodes: [SEED, NEAR].map(id => ({ id, type: "symbol", label: id.slice(7), derived: true, head: HEAD })), edges: [{ from: NEAR, to: SEED, rel: "calls", derived: true, head: HEAD }], notes: [{ id: `mem:${ID}`, line: "existing failure", kind: "fail", about: [NEAR] }] } };
+    code: { state: "known", head: HEAD, truncated: false, countsFloor: true, nodes: [SEED, NEAR].map(id => ({ id, type: "symbol", label: id.slice(7), derived: true, head: HEAD })), edges: [{ from: NEAR, to: SEED, rel: "calls", derived: true, head: HEAD }], notes: [{ id: `mem:${ID}`, line: "existing failure", kind: "fail", tier: "long", peer: "person", machine: "local", about: [NEAR] }] } };
 }
 function enable(api: ReturnType<typeof rig>["api"]) { api.memoryQuery.node = SEED; api.memoryQuery.codeNeighbours = true; }
 test("#367 UI code-neighbour toggle is opt-in, symbol-only and reset on project change", () => {
@@ -66,7 +66,7 @@ test("#367 derived call edges are dashed and SHA-labelled; authored note relatio
 });
 test("#367 fallback neighbour notes use literal text and existing about/rules_out semantics", () => {
   const { api, get } = rig(), memory = fixture(); enable(api);
-  memory.code.notes.push({ id: `mem:${"2".repeat(32)}`, line: '<img src=x onerror="throw 1">', kind: "finding", about: [NEAR] });
+  memory.code.notes.push({ id: `mem:${"2".repeat(32)}`, line: '<img src=x onerror="throw 1">', kind: "finding", tier: "long", peer: "person", machine: "local", about: [NEAR] });
   api.renderMemory(memory);
   const list = get("memory-list"); expect(list.text()).toContain('<img src=x onerror="throw 1">'); expect(list.all().some(node => node.tag === "img")).toBe(false); expect(list.text()).toContain("via code neighbour at " + HEAD);
   const presentation = api.memoryPresentation(memory);
@@ -96,4 +96,16 @@ test("#367 derived edges and highlights use theme tokens with phone-friendly wra
     expect(contrast(colour("ink"), colour("panel-soft"))).toBeGreaterThanOrEqual(3);
     expect(contrast(colour("focus"), colour("panel-soft"))).toBeGreaterThanOrEqual(3);
   }
+});
+
+test("#367 hidden or non-Memory views request no code work and note filters are respected", () => {
+  const { api, context } = rig(), memory = fixture(); enable(api);
+  context.currentView = "board"; expect(api.memoryInput().codeNeighbours).toBeUndefined();
+  context.currentView = "memory"; context.document.hidden = true; expect(api.memoryInput().codeNeighbours).toBeUndefined();
+  context.document.hidden = false; expect(api.memoryInput().codeNeighbours).toBe(true);
+  api.memoryQuery.kind = "decision"; expect(api.memoryPresentation(memory).noteIds).toEqual([]);
+  api.memoryQuery.kind = ""; api.memoryQuery.peer = "someone-else"; expect(api.memoryPresentation(memory).noteIds).toEqual([]);
+  api.memoryQuery.peer = ""; api.memoryQuery.tier = "short"; expect(api.memoryPresentation(memory).noteIds).toEqual([]);
+  api.memoryQuery.tier = "long"; expect(api.memoryPresentation(memory).noteIds).toContain(`mem:${ID}`);
+  api.selectMemoryNode(`mem:${ID}`); expect(api.memoryQuery.codeNeighbours).toBe(false);
 });

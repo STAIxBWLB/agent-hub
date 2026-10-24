@@ -10,7 +10,8 @@ import { releaseTrackedClean } from "./release-worktree.ts";
 
 export interface CodeSymbol { name: string; kind: string; path: string; line: number; endLine?: number; ambiguous: boolean; change: "unknown" }
 export type CodeFactResult<T> = { state: "known"; value: T } | { state: "unknown" };
-export interface CodeLocation { repo: string; head: string; private?: boolean }
+export interface CodeLocation { repo: string; head: string; private?: boolean; priority?: "optional" }
+export const OPTIONAL_CODE_UNKNOWN_TTL_MS = 5000;
 const unknown = (): {state:"unknown"} => ({state:"unknown"});
 const SHA = /^[a-f0-9]{40}$/;
 /** These host anchor spellings have no indexed-name lookup attestation in ripwire 0.6.7. */
@@ -78,6 +79,9 @@ function changed(raw:string,head:string,base:string,cwd:string): CodeSymbol[] {
 /** Sole optional ripwire boundary. No model/config-selected command, no raw output in results or errors. */
 export class CodeFacts {
   private readonly cache=new Map<string,Promise<CodeFactResult<unknown>>>();
+  private readonly optionalUnknown=new Map<string,number>();
+  private priorityWaiting=0;
+  private active?:{id:string;optional:boolean;cancelled:boolean;done:Promise<void>};
   private busy=false;
   private closing=false;
   private pending?:Promise<CodeFactResult<unknown>>;
@@ -85,13 +89,13 @@ export class CodeFacts {
   private failedChild?:ReturnType<typeof spawn>;
   private retained?:{tree:{cwd:string;close:()=>void};child:ReturnType<typeof spawn>};
   async close():Promise<void> {
-    this.closing=true;this.cancelActive?.();await this.pending;
+    this.closing=true;this.cancelActive?.();await (this.active?.done ?? this.pending);
     if(this.retained){
       try{await stopOwnedProcess(this.retained.child,{group:true,termMs:50,killMs:500});this.retained.tree.close();this.retained=undefined;}
       catch{throw Error("code facts cleanup unconfirmed");}
     }
   }
-  constructor(private readonly options:{env?:NodeJS.ProcessEnv;timeoutMs?:number}={}) {}
+  constructor(private readonly options:{env?:NodeJS.ProcessEnv;timeoutMs?:number;now?:()=>number}={}) {}
   private git(repo:string,args:string[]) {
     return hubGitSync(["-C",repo,...args],{encoding:"utf8",env:hubGitEnv(childEnv(),{repositoryIsolation:true}),timeout:5000,maxBuffer:1024*1024});
   }
@@ -109,7 +113,7 @@ export class CodeFacts {
     return env;
   }
   private async run(bin:string,args:string[],cwd:string):Promise<{code:number;out:string}> {
-    if(this.closing)return {code:1,out:""};
+    if(this.closing || this.active?.cancelled)return {code:1,out:""};
     return new Promise(resolve=>{
       let child:ReturnType<typeof spawn>;
       try{child=spawn(process.execPath,["-e",LAUNCHER,"--",bin,...args],{cwd,env:this.nativeEnv(cwd),detached:true,stdio:["ignore","pipe","ignore","pipe"]});}catch{resolve({code:1,out:""});return;}
@@ -166,29 +170,58 @@ export class CodeFacts {
       return{cwd,close};
     }catch{close();throw Error();}
   }
-  private query<T>(at:CodeLocation,key:string,read:(cwd:string,bin:string)=>Promise<T>):Promise<CodeFactResult<T>> {
-    if(this.closing || this.retained || at.private || !SHA.test(at.head))return Promise.resolve(unknown());
-    let repo:string;try{repo=realPath(at.repo);}catch{return Promise.resolve(unknown());}
-    const id=JSON.stringify([repo,at.head,key]),hit=this.cache.get(id);if(hit)return (hit as Promise<CodeFactResult<T>>).then(value=>structuredClone(value));
-    if(this.busy)return Promise.resolve(unknown());
-    this.busy=true;this.failedChild=undefined;
+  private async query<T>(at:CodeLocation,key:string,read:(cwd:string,bin:string)=>Promise<T>):Promise<CodeFactResult<T>> {
+    if(this.closing || this.retained || at.private || !SHA.test(at.head))return unknown();
+    const optional=at.priority==="optional";
+    // A read-time graph poll must never take the next slot from review/completion work.
+    if(optional && (this.priorityWaiting>0 || this.active && !this.active.optional))return unknown();
+    let repo:string;try{repo=realPath(at.repo);}catch{return unknown();}
+    const id=JSON.stringify([repo,at.head,key]),hit=this.cache.get(id);
+    if(hit && !(this.active?.optional && !optional && this.active.id===id))return structuredClone(await hit) as CodeFactResult<T>;
+    if(!optional && this.active?.optional) {
+      const interrupted=this.active;
+      this.priorityWaiting++;
+      interrupted.cancelled=true;this.cache.delete(interrupted.id);this.cancelActive?.();
+      try{await interrupted.done;}finally{this.priorityWaiting--;}
+      return this.query(at,key,read);
+    }
+    if(optional) {
+      const now=(this.options.now ?? performance.now.bind(performance))(),until=this.optionalUnknown.get(id);
+      if(until!==undefined && until>now)return unknown();
+      this.optionalUnknown.delete(id);
+    }
+    if(this.busy)return unknown(); // Preserve default-vs-default contention semantics.
+    let finished!:()=>void;
+    const active={id,optional,cancelled:false,done:new Promise<void>(resolve=>{finished=resolve;})};
+    this.active=active;this.busy=true;this.failedChild=undefined;
     const job=(async()=>{
       let tree:ReturnType<CodeFacts["tree"]>|undefined;let answer:CodeFactResult<T>=unknown();
       try{
         const found=Bun.which("ripwire",{PATH:(this.options.env??process.env).PATH});if(!found)throw Error();const bin=realPath(found);if(within(repo,bin))throw Error();
         tree=this.tree(repo,at.head);
-        const version=await this.run(bin,["--version"],tree.cwd);if(version.code!==0 || !/^ripwire 0\.6\.7(?:\s|$)/.test(version.out))throw Error();
+        const version=await this.run(bin,["--version"],tree.cwd);if(active.cancelled || version.code!==0 || !/^ripwire 0\.6\.7(?:\s|$)/.test(version.out))throw Error();
         const value=await read(tree.cwd,bin);
-        if(this.value(tree.cwd,["rev-parse","HEAD"])!==at.head || !releaseTrackedClean(tree.cwd,args=>{const r=this.git(tree!.cwd,args);return{code:r.status??1,stdout:r.stdout};}))throw Error();
+        if(active.cancelled || this.value(tree.cwd,["rev-parse","HEAD"])!==at.head || !releaseTrackedClean(tree.cwd,args=>{const r=this.git(tree!.cwd,args);return{code:r.status??1,stdout:r.stdout};}))throw Error();
         answer={state:"known",value};
       }catch{/* Optional derived evidence is unknown, never a review refusal. */}
-      finally{if(tree && this.failedChild){this.retained={tree,child:this.failedChild};answer=unknown();}else try{tree?.close();}catch{answer=unknown();}this.busy=false;}
+      finally{
+        if(tree && this.failedChild){this.retained={tree,child:this.failedChild};answer=unknown();}else try{tree?.close();}catch{answer=unknown();}
+        this.busy=false;if(this.active===active)this.active=undefined;finished();
+      }
       return answer;
     })();
     this.pending=job;this.cache.set(id,job);
     if(this.cache.size>128)this.cache.delete(this.cache.keys().next().value!);
-    void job.then(answer=>{if(answer.state==="unknown" && this.cache.get(id)===job)this.cache.delete(id);});
-    return job.then(value=>structuredClone(value));
+    void job.then(answer=>{
+      if(answer.state==="unknown") {
+        if(this.cache.get(id)===job)this.cache.delete(id);
+        if(optional && !this.closing) {
+          this.optionalUnknown.set(id,(this.options.now ?? performance.now.bind(performance))()+OPTIONAL_CODE_UNKNOWN_TTL_MS);
+          if(this.optionalUnknown.size>128)this.optionalUnknown.delete(this.optionalUnknown.keys().next().value!);
+        }
+      } else this.optionalUnknown.delete(id);
+    });
+    return structuredClone(await job);
   }
   changedSymbols(repo:string,base:string,head:string,options:Omit<CodeLocation,"repo"|"head">={}):Promise<CodeFactResult<CodeSymbol[]>> {
     if(!SHA.test(base))return Promise.resolve(unknown());

@@ -28,7 +28,7 @@ export async function related(client: MemoryClient, project: string, query: stri
 }
 
 /** A native memory line for a brief (#258): `mem:<id8> <kind> <tier>: <title or text>`, fails first. */
-export interface NativeItem { id: string; line: string; kind?: string; about?: readonly string[] }
+export interface NativeItem { id: string; line: string; kind?: string; about?: readonly string[]; tier?: string; peer?: string; machine?: string; at?: string }
 export type NativeBrief = (task: BriefTask) => NativeItem[] | Promise<NativeItem[]>;
 export interface BriefTask { id?: number; created?: number; title: string; refs: { paths?: string[] }; plan?: { paths?: string[]; symbols?: string[] } }
 
