@@ -85,6 +85,19 @@ it. The classifier reads command text: unknown syntax keeps native handling, and
 an agent with an unrestricted shell can still reach the same effect another way
 (the hostile-agent boundary above).
 
+The `gh` classes (#636, #756). `publish`: `gh release create|upload|edit|delete`.
+`external-write`: `gh issue|pr|gist create|comment|edit|close|reopen|merge|review|delete`,
+`gh run rerun|cancel|delete`, `gh workflow run|enable|disable`, and `gh api` with a
+non-GET method or any field or `--input`. `gh api graphql` is the one exception,
+classed by its operation: a call with exactly one literal `query` field whose
+every operation is a `query` (shorthand `{...}` included; fragments allowed) is a
+read and is not asked about, so a reviewer's unresolved-thread check does not
+prompt. A `mutation`, a `subscription`, a second `query` field, a document from a
+file or stdin (`-F query=@file`, `--input`), an unknown option, a non-POST method
+and any document the hub cannot parse stay `external-write`: unknown is never a
+read. Read-only `gh` commands (`view`, `list`, `status`, `watch`, REST GET) are
+unclassed.
+
 Config defaults apply automatically only up to ask-when-needed. A never-ask
 request from an applied untracked config is held as ask until the person
 confirms its source file in the console at hub start. Git-tracked mode defaults

@@ -52,6 +52,30 @@ test("Claude: the PreToolUse reply names the classes for a classed call in every
   }
 });
 
+test("Claude: the PreToolUse hook does not ask for a GraphQL query and still asks for a mutation, a file query and a workflow write (#756)", async () => {
+  const r = await rig();
+  await ControlClient.connect(r.stateDir, { role: "peer", peer: "claude" }).then(c => cleanup.push(() => c.close()));
+  await until(() => r.daemon.bus.peers.get("claude")?.state === "idle");
+  const status = (await r.client.request({ t: "status" })).status;
+  const hook = await ControlClient.connect(r.stateDir, { role: "tools", peer: "claude" }); cleanup.push(() => hook.close());
+  const launcher = { instanceId: status.instanceId, launchId: "gql-launch", permissionHook: true, hookPurpose: "permission", unattended: false };
+  writeFileSync(join(r.stateDir, "claude-launch.json"), JSON.stringify(launcher));
+  const input = { t: "facts", phase: "pre", sessionId: "gql-session", nativeInstanceId: status.instanceId, nativeLaunchId: launcher.launchId, hookPurpose: "permission" };
+  expect((await hook.request({ ...input, phase: "session" })).ok).toBe(true);
+  for (const mode of ["ask", "ask-when-needed", "never-ask"]) {
+    expect((await r.client.request({ t: "permission", peer: "claude", mode, confirmed: true })).permissionMode).toBe(mode);
+    const run = async (command: string) => hook.request({ ...input, tool: "Bash", input: { command } });
+    const read = await run("gh api graphql -f query='query{repository(owner:\"o\",name:\"r\"){pullRequest(number:1){reviewThreads(first:50){nodes{isResolved}}}}}'");
+    expect(read).toMatchObject({ ok: true, permission: mode }); expect(read.actionClasses).toBeUndefined();   // a query is not asked about, in any mode
+    expect((await run("gh api graphql -f query='{viewer{login}}'")).actionClasses).toBeUndefined();
+    expect((await run("gh api graphql -f query='mutation{addStar(input:{starrableId:\"x\"}){clientMutationId}}'")).actionClasses).toEqual(["external-write"]);
+    expect((await run("gh api graphql -f query='query{viewer{login}} mutation{x}'")).actionClasses).toEqual(["external-write"]);
+    expect((await run("gh api graphql -F query=@thread.graphql")).actionClasses).toEqual(["external-write"]);
+    expect((await run("gh run rerun 1 --failed")).actionClasses).toEqual(["external-write"]);
+    expect((await run("gh workflow run ci.yml")).actionClasses).toEqual(["external-write"]);
+  }
+});
+
 test("Claude: a narrowed or disabled machine-local policy classes less, and an unattended launch is listed as not enforceable (#636)", async () => {
   const narrow = await rig({ policy: { always_ask: ["destroy"] } });
   await ControlClient.connect(narrow.stateDir, { role: "peer", peer: "claude" }).then(c => cleanup.push(() => c.close()));
