@@ -1,3 +1,4 @@
+import type { MemoryCodeOverlay } from "./memory-code-overlay.ts";
 import type { MemoryStore, View, Graph } from "@staix/agent-mem";
 import { looksSecret } from "@staix/agent-mem";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
@@ -29,7 +30,7 @@ export function validateMemoryRead(op: string, a: Record<string, unknown>): void
 }
 
 /** Read-only model projection. Counts and caps are computed only after screening whole records and metadata. */
-export function memoryRead(store: MemoryStore | undefined, project: string, screen: MemoryScreen, op: string, a: Record<string, unknown>, stale: (about: readonly string[]) => boolean = () => false): string {
+export function memoryRead(store: MemoryStore | undefined, project: string, screen: MemoryScreen, op: string, a: Record<string, unknown>, stale: (about: readonly string[]) => boolean = () => false, code?: MemoryCodeOverlay): string {
   validateMemoryRead(op, a);
   const safe = (v: unknown): boolean => {
     try {
@@ -93,7 +94,9 @@ export function memoryRead(store: MemoryStore | undefined, project: string, scre
       if (n.startsWith("goal:") && !goals.has(n)) reject();
       return n;
     });
-    const nodes = new Map<string, Graph["nodes"][number]>(), edges = new Map<string, Graph["edges"][number]>();
+    type Node = Graph["nodes"][number] & { derived?: true; head?: string; codeNeighbour?: true };
+    type Edge = Omit<Graph["edges"][number], "rel"> & { rel: string; derived?: true; head?: string };
+    const nodes = new Map<string, Node>(), edges = new Map<string, Edge>();
     for (const start of starts) {
       const graph = store.graph(project, start, Number(a.hops ?? 1), Number.MAX_SAFE_INTEGER);
       for (const n of graph.nodes) {
@@ -105,12 +108,27 @@ export function memoryRead(store: MemoryStore | undefined, project: string, scre
       }
       for (const e of graph.edges) if (safe(e)) edges.set(JSON.stringify(e), e);
     }
+    const overlay = code && /^[a-f0-9]{40}$/.test(code.head ?? "") && starts.some(id => id.startsWith("symbol:")) ? code : undefined;
+    if (overlay) {
+      for (const node of overlay.nodes) if (node.head === overlay.head && node.derived && safe(node)) nodes.set(node.id, node);
+      for (const edge of overlay.edges) if (edge.head === overlay.head && edge.derived && edge.rel === "calls" && safe(edge)) edges.set(JSON.stringify(edge), edge);
+      for (const note of overlay.notes) {
+        const value = visible.get(note.id);
+        if (!value || !safe(note)) continue;
+        nodes.set(note.id, { id: note.id, type: "memory", label: excerpt(value.title ?? value.text), kind: value.kind, codeNeighbour: true });
+        for (const about of value.about) if (overlay.nodes.some(node => node.id === about)) {
+          const edge = { from: note.id, to: about, rel: value.kind === "fail" ? "rules_out" : "about" };
+          edges.set(JSON.stringify(edge), edge);
+        }
+      }
+    }
     const screenedEdges = [...edges.values()].filter(e => nodes.has(e.from) && nodes.has(e.to));
     const connected = new Set(screenedEdges.flatMap(e => [e.from, e.to]));
     const rank = (n: Graph["nodes"][number]) => n.kind === "fail" ? 0 : starts.includes(n.id) ? 1 : n.type !== "memory" ? 2 : 3;
     const eligibleNodes = [...nodes.values()].filter(n => connected.has(n.id) || starts.includes(n.id)).sort((x, y) => rank(x) - rank(y) || x.id.localeCompare(y.id));
     const eligibleEdges = screenedEdges.sort((x, y) => JSON.stringify(x).localeCompare(JSON.stringify(y)));
-    const out: Graph & { truncated: number } = { nodes: [], edges: [], truncated: eligibleNodes.length + eligibleEdges.length };
+    const out: { nodes: Node[]; edges: Edge[]; truncated: number; code?: { state: "known" | "unknown"; head?: string; truncated: boolean; countsFloor: boolean } } = { nodes: [], edges: [], truncated: eligibleNodes.length + eligibleEdges.length,
+      ...(code ? { code: { state: overlay?.state ?? "unknown", ...(overlay?.head ? { head: overlay.head } : {}), truncated: code.truncated, countsFloor: code.countsFloor } } : {}) };
     for (const n of eligibleNodes) {
       if (out.nodes.length >= Number(a.limit ?? 60)) break;
       out.nodes.push(n); out.truncated--;

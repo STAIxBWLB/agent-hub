@@ -4381,3 +4381,9 @@ A task completion note stores actually observed, existing symbol nodes instead o
 `doctor --stale-anchors` may create transient detached Git worktrees for exact-head analysis. A Ctrl-C or interrupted cleanup can leave a prunable registration. Inspect `git worktree list --porcelain`; remove or prune only an entry confirmed abandoned, through the person's normal Git maintenance. The report performs no automatic prune. Repeated optional cleanup failure is reported as unknown rather than escaping as a second error.
 
 An absence row says "absent from indexed definitions". Imported package APIs/types and unsupported host qualification are not proof of removed source. Names containing `#`, `->` or `:` remain unknown. Existing raw-signature and normalized note associations are queried together without changing stored entries. See [symbol preparation and query compatibility](memory.md#symbol-preparation-and-historical-query-compatibility-684-follow-ups).
+
+## Inspecting memory code neighbours
+
+After #684 phase 4 is released, select a symbol in Memory and enable Code neighbours. Dashed calls are read-time caller/callee evidence at the displayed commit SHA; solid note associations still come from authored metadata. Unknown, lower-bound and truncated coverage are advisory, never a proof of no callers. The accessible edge list carries the same SHA and direction. Toggle off to view the stored graph alone.
+
+`hub_memory_graph` includes the same bounded derived context for symbol starts within its existing 6 KB output budget. Task briefs prioritize attached fails and decisions within `brief_items`; the console related-note count refers to that bounded selection. Code facts remain optional: no index is copied into memory, no graph edges are persisted and no PII task/turn starts a query.

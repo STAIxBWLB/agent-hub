@@ -240,3 +240,13 @@ Plan-guard and related-memory queries include both an explicit raw symbol input 
 The stale report leaves unsupported `#`, `->` and `:` lookup spellings unknown. A plain name not found by the index is labelled "absent from indexed definitions", not proof that an imported package API or type was removed. The JSON state/reason fields retain their existing meaning, with an additive label only on final validated absence rows.
 
 Code-facts queries can register transient detached Git worktrees. Interrupted cleanup, including Ctrl-C, can leave a prunable registration. Inspection does not auto-prune: inspect `git worktree list --porcelain` and clean only a confirmed abandoned entry. A repeated owned cleanup failure returns neutral unknown coverage; borrowed handles remain caller-owned. Note and candidate bytes are unchanged by inspection.
+
+## Read-time code neighbours (#684 phase 4)
+
+Select a symbol in the dashboard Memory view and enable Code neighbours to inspect one hop of callers and callees. Dashed `calls` edges are computed through the optional code-facts boundary at the displayed full commit SHA; they are never stored in amem. Attached notes are highlighted, fails first. Turning the toggle off returns the stored graph. An ambiguous seed or name-only relation is withheld; unavailable or partial evidence is explicitly unknown.
+
+`hub_memory_graph` also prepares this overlay for symbol starts. Stored and derived nodes share its existing maximum 120 nodes, 240 edges and 6144-byte serialized response budget (default 60 nodes). Omitted nodes/edges contribute to truncation. Authored note associations remain ordinary `about` or `rules_out` edges; only code calls carry the derived SHA stamp.
+
+A preparation starts at most four canonical, path-qualified seeds and no new query after two seconds. It retains at most 32 distinct neighbours, 64 call edges and 16 screened attached notes. In-flight work retains the existing code-facts timeout and cleanup bounds. The file:name selector must attest exactly one definition; ambiguous/name-only seeds are unknown even when their relation lists are empty. Queries run outside the synchronous dashboard snapshot Git budget, and current HEAD, profile, policy and caller/task privacy are rechecked across awaits. PII tasks and turns do not query code facts.
+
+Task briefs merge direct and neighbour-attached fail/decision notes first, deduplicate IDs and retain the existing combined `brief_items` cap and line excerpts. The console task detail's related-note line counts this bounded brief selection, not all notes in the store; unknown code coverage remains unknown. This does not persist a code index, extend completion-note TTLs, or change amem's graph API.

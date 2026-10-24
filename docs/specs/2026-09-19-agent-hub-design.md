@@ -5102,3 +5102,11 @@ Ceiling: a scan lists the board once per status revision (at most one per flush)
 - Query explicit raw and normalized symbol forms together for historical recall; never copy, supersede or rewrite old notes.
 - Unsupported `#`, `->` and `:` name forms remain unknown. Final absence rows are labelled "absent from indexed definitions", retaining existing state/reason compatibility; no imported-package existence claim is inferred.
 - The doctor may use transient detached worktrees. Interrupted cleanup can leave prunable registrations; no automatic prune is added. Repeated owned cleanup failure remains neutral and borrowed handles retain caller ownership.
+
+## Amendment: memory code-neighbour projection (#684 phase 4)
+
+- Optional caller/callee edges are computed at read time through code-facts, one hop only, and stamped with the exact current HEAD. Require a unique path-qualified seed; hide ambiguous and name-only edges. Store no code structure or edges in amem.
+- Dashboard Memory's default is the stored graph. An explicit Code neighbours toggle adds dashed calls and highlights attached notes, fails first; the accessible edge list includes direction and SHA. Prepare asynchronously outside the synchronous snapshot budget, then recheck current policy/profile/HEAD.
+- Symbol-start `hub_memory_graph` merges the overlay inside the existing node/edge and 6144-byte response caps. Code coverage and truncation are explicit, including unknown evidence. Authored about/rules_out associations remain distinct from derived calls.
+- Preparation bounds: four seeds, 32 distinct neighbours, 64 call edges, 16 screened notes and a two-second query-start allowance; existing in-flight code-facts timeouts remain. PII tasks/turns query nothing, and names pass publicMetadataText before disclosure.
+- Native task briefs may prepare asynchronously, merge direct and neighbour-attached fails/decisions first, and preserve their current combined item/line cap, deduplication and fail-open policy. The console detail reports the bounded selected-note count, not a complete inventory.

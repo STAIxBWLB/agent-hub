@@ -15,7 +15,7 @@ function setup() {
   const calls: string[] = [];
   let head: string | undefined = HEAD, valid = true, privateTask = false, allowed = (_: string) => true, cwd = "/fixture";
   const options: MemoryCodeOverlayOptions = { context: () => ({ cwd, project: "fixture", repo: "owner/repo" }), head: () => head, valid: () => valid, private: () => privateTask, publicMetadataText: value => allowed(value), now: () => 0,
-    neighbours: async (repo, at, selector, depth) => { expect(repo).toBe("/fixture"); expect(at).toBe(HEAD); expect(depth).toBe(1); calls.push(selector); return { state: "known", value: neighbourhood([symbol("caller")], [symbol("callee")]) }; };
+    neighbours: async (repo, at, selector, depth) => { expect(repo).toBe("/fixture"); expect(at).toBe(HEAD); expect(depth).toBe(1); calls.push(selector); return { state: "known", value: neighbourhood([symbol("caller")], [symbol("callee")]) }; } };
   return { options, calls, head(value: string | undefined) { head = value; }, valid(value: boolean) { valid = value; }, private(value: boolean) { privateTask = value; }, allowed(value: typeof allowed) { allowed = value; }, cwd(value: string) { cwd = value; } };
 }
 test("#367 path-qualified one-hop derived calls keep canonical identity, direction and SHA", async () => {

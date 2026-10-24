@@ -4116,6 +4116,13 @@ export class Tasks {
     } catch { return undefined; }
   }
 
+  /** Read-time code advice uses this project's tree only; declared foreign or inconsistent scope is unknown. */
+  memoryCodeEligible(task: Task): boolean {
+    if (this.isPii(task)) return false;
+    const repository = this.codeSymbolsRepository(task);
+    return !!repository && repository.key === this.repositories.project.key && !this.repositories.mismatch(task.refs, task.plan);
+  }
+
   /** Read-only host input for exists verification; private/foreign/stale observations supply nothing. */
   memorySymbolCandidates(task: Task): string[] | undefined {
     if (this.isPii(task) || !this.d.store) return undefined;

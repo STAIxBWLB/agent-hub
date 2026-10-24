@@ -40,8 +40,9 @@ export function classifySymbols(task: any): SymbolBlock {
 export function symbolFields(task: any): [string, unknown][] {
   // Only a task as `task_show` shapes it (a numeric id and a state): any other detail an agent or a test hands the Tasks panel keeps its own layout.
   if (!task || typeof task.id !== "number" || typeof task.state !== "string" || isPrivate(task)) return [];
+  const related: [string, unknown][] = task.relatedMemory ? [["related notes", task.relatedMemory.state === "known" && Number.isSafeInteger(task.relatedMemory.count) && task.relatedMemory.count >= 0 ? task.relatedMemory.count : "unknown"]] : [];
   const block = classifySymbols(task);
-  if (block.state === "unknown") return [["symbols", "changed symbols: unknown (no code facts)"]];
+  if (block.state === "unknown") return [...related, ["symbols", "changed symbols: unknown (no code facts)"]];
   const items: Record<string, string>[] = [
     ...block.matching.map(s => ({ matching: s.name, in: s.path })), ...block.unplanned.map(s => ({ unplanned: s.name, in: s.path })), ...block.untouched.map(name => ({ untouched: name })),
   ];
@@ -49,7 +50,7 @@ export function symbolFields(task: any): [string, unknown][] {
   const note = [`changed symbols: ${block.matching.length} matching, ${block.unplanned.length} unplanned, ${block.untouched.length} untouched${block.head ? ` at ${block.head}` : ""}`,
     block.complete ? "" : "incomplete: some changed symbols were not listed, so an untouched one may have changed",
     "advisory: deleted symbols are not reported"].filter(Boolean).join("; ");
-  return [["symbols", shown.length ? shown : "none observed"], ["symbols note", items.length > shown.length ? `${note}; ${items.length - shown.length} more not shown` : note]];
+  return [...related, ["symbols", shown.length ? shown : "none observed"], ["symbols note", items.length > shown.length ? `${note}; ${items.length - shown.length} more not shown` : note]];
 }
 
 
