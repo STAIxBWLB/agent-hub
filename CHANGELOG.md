@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add per-task and release planners (#525-2): one or up to eight explicit planner holders, person-only planner reassignment, scoped planner tools and notices, independent plan review with recorded authorship/self-review, and a persisted-authority recovery floor. Legacy null bindings retain their existing authority; singleton settings remain strings.
+
 - `ahub deliverables [--task <id>] [--approved] [--check] [--json]` and a dashboard badge (#509b, #317): the person's list of what each task delivered and a reviewer approved (id, hash, size, and a path only where the PII screen allows), `--check` measures the files now and marks one `changed since review`. The dashboard card shows a `Deliverables n` chip and the task sheet a Deliverables group from the board's records, never a file read on the poll; a measurement shows only after a live read. An agent's shell is refused. No new stored data.
 - Replace claude-mem worker runtime calls with exact-pinned amem 0.6.0 (agent-mem#13 P4): curated recall, briefs and ask use in-process storage; local capture is deterministic and model-free. Privacy and selected-profile fences remain; raw capture is excluded from evidence. Auxiliary model/checkpoint writes become pending candidates. Claude-mem remains an explicit import source only.
 

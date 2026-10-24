@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
-import { ControlClient } from "../src/hub/control-client.ts";
+import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { newEnvelope, type Envelope, type PeerState } from "../src/hub/envelope.ts";
@@ -211,7 +211,7 @@ test("a recovery commit waits for a completion check, whose result would land af
   const console_ = await ControlClient.connect(stateDir, { role: "console" });
   await console_.request({ t: "task", op: "hub_task_propose", args: { title: "x", class: "review" } });
   expect((await console_.request({ t: "task", op: "hub_task_done", args: { id: 1, summary: "s" } })).text).toContain("its check is queued or running");
-  const op = (o: string) => console_.request({ t: "recovery", op: o, operationId: "op-check", expectedInstanceId: "instance-1" });
+  const op = (o: string) => console_.request({ t: "recovery", op: o, operationId: "op-check", expectedInstanceId: "instance-1", targetFeatures: DAEMON_FEATURES });
   await op("prepare");
   expect((await op("commit")).error).toContain("completion checks have finished");
   writeFileSync(gate, "");

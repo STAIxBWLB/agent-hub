@@ -92,7 +92,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub deliverables [--task <id>] [--approved] [--check] [--json] [--color=auto|always|never]", "person only: what each task delivered and a reviewer approved, by id, hash and size (a path only where the PII screen allows); --check measures the files now and marks one changed since review"],
     ["ahub task show|escalate <id>", "full task with history (PII text included) / hand it to the next peer in escalate_to"],
     ["ahub task role <id> <role|none>", "person only: change bounded catalog guidance on an open task; routing and authority are unchanged"],
-    ["ahub task assign <id> <peer> [--role owner|reviewer] [--revision N]", "name the owner (default) or reviewer; a task that still waits reserves its owner; a peer that cannot take it is refused with the reason; --revision refuses stale console actions"],
+    ["ahub task assign <id> <peer> [--role owner|reviewer|planner] [--revision N]", "name the owner (default), reviewer or person-only planner; a task that still waits reserves its owner; a peer that cannot take it is refused with the reason; --revision refuses stale console actions"],
     ["ahub task unassign <id> [--role owner|reviewer] [--revision N]", "person only: remove the owner/reservation or reviewer without routing a replacement or stopping native work"],
     ["ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N]", "person only: close obsolete work with a reason; retain its history without stopping native work or releasing dependents"],
     ["ahub task label <id> ok|regressed|reverted|incomplete|wrong|abandoned [--created <time>]", "your later verdict on an approved task, kept in the research records (research must be on)"],

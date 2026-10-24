@@ -36,6 +36,8 @@ export type SdlcMode = "off" | "advise" | "enforce";
 export interface SdlcConfig { workflow?: "gsd-lite"; maxNits?: number; /** #481 S7: optional control bands per metric; absent means none. */ bands?: BandsConfig; mode: SdlcMode; requiredChecks: string[]; stages: SdlcStage[]; definitions?: Record<string, StageDefinition>; deprecations?: string[]; }
 export interface PlanReviewReceipt {
   planner: string;
+  planAuthor?: string | null;
+  selfReview?: true;
   planningRevision: number;
   recordedAt: number;
   scope?: CostPlan;

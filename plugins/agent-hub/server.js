@@ -20741,6 +20741,7 @@ var CONTRADICTION_WINDOW_MS = 7 * 86400000;
 var QUIET_EVENTS = new Set(["answer", "reviewer changed", "idle sweep", "memory reference started"]);
 QUIET_EVENTS.add("ready held");
 QUIET_EVENTS.add("plan observed");
+QUIET_EVENTS.add("planner changed");
 var OWNERSHIP_EVENTS = new Set(["assigned", "escalated", "reassigned", "unassigned"]);
 
 // src/hub/conductor.ts

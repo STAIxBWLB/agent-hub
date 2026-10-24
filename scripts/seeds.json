@@ -1732,7 +1732,7 @@
     {
       "id": "planning-configured-role",
       "file": "src/hub/tasks.ts",
-      "search": "if (by !== USER && !this.d.roles?.[by]?.includes(\"planner\"))",
+      "search": "if (by !== USER && (!this.d.roles?.[by]?.includes(\"planner\") || task !== undefined && !this.taskPlanner(task).includes(by)))",
       "replacement": "if (false)",
       "testFile": "test/planning.test.ts",
       "testName": "planning validates the whole patch and persists revision dates priority and release (#263)"
@@ -1964,8 +1964,8 @@
     {
       "id": "planner-pull-role-floor",
       "file": "src/hub/tasks.ts",
-      "search": "    const authorized = () => this.planningAuthority(by);\n    authorized();",
-      "replacement": "    const authorized = () => void by;\n    authorized();",
+      "search": "if (by !== USER && (!this.d.roles?.[by]?.includes(\"planner\") || task !== undefined && !this.taskPlanner(task).includes(by)))",
+      "replacement": "if (false)",
       "testFile": "test/planner-pull.test.ts",
       "testName": "planner pull reserves WIP atomically and undo stops at owner assignment (#263)"
     },

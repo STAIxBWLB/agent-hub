@@ -834,7 +834,7 @@ function settingRow(row, raise) {
     const input=el('input');input.type='number';input.id=id;input.step=row.type === 'number' ? 'any' : '1';input.min=String(row.min ?? 0);input.max=String(row.max ?? Number.MAX_SAFE_INTEGER);const current=fileValue;input.value=current===null ? '' : String(current);input.placeholder='Empty inherits';
     read=()=>input.value==='' ? null : Number(input.value);actions.append(input);
   } else if (row.type === 'peers') {
-    const input = el('input'); input.type = 'text'; input.id = id; input.value = Array.isArray(fileValue) ? fileValue.join(', ') : ''; input.placeholder = 'peer ids, comma-separated; empty inherits'; input.autocomplete = 'off'; input.spellcheck = false;
+    const input = el('input'); input.type = 'text'; input.id = id; input.value = Array.isArray(fileValue) ? fileValue.join(', ') : typeof fileValue === 'string' ? fileValue : ''; input.placeholder = 'peer ids, comma-separated; empty inherits'; input.autocomplete = 'off'; input.spellcheck = false;
     read = () => { const list = input.value.split(',').map((value) => value.trim()).filter(Boolean); return list.length ? list : null; };
     actions.append(input);
   } else {
