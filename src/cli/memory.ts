@@ -16,7 +16,7 @@ import { detectCliIdentity } from "./identity.ts";
 import { createStalenessProbe } from "../hub/memory-staleness.ts";
 import { looksSecret, memoryProjectKey, pathCandidates, readProfileJSON, resolveShardProfile, type MemoryStore } from "@staix/agent-mem";
 import type { SyncOptions } from "@staix/agent-mem";
-import { MEMORY_USAGE as CORE_MEMORY_USAGE, rawMemoryCommand, rawGoalCommand } from "@staix/agent-mem";
+import { memoryUsage, goalUsage, rawMemoryCommand, rawGoalCommand } from "@staix/agent-mem";
 
 /** The hub's command names in agent-mem usage and refusal text (agent-mem 0.7.0 defaults to `amem`). */
 const AHUB_NAMES = { memory: "ahub memory", goal: "ahub goal" };
@@ -25,8 +25,8 @@ import { currentRouting, detectSignals } from "../hub/routing.ts";
 import { loadConfig } from "../hub/daemon.ts";
 import { bindProfileMemory, memoryProjectFor, memoryProjectForStore, openProfileMemory, MemoryProfileBinding, MEMORY_PROFILE_UNAVAILABLE, MEMORY_SPLIT_INCOMPLETE, type MemoryProfileReceipt, type ProfileMemoryOptions } from "../hub/memory-profile.ts";
 
-export { GOAL_USAGE } from "@staix/agent-mem";
-export const MEMORY_USAGE = `${CORE_MEMORY_USAGE} | decay [--days N] [--json] | profile-check [--json]`;
+export const GOAL_USAGE = goalUsage(AHUB_NAMES.goal);
+export const MEMORY_USAGE = `${memoryUsage(AHUB_NAMES.memory)} | decay [--days N] [--json] | profile-check [--json]`;
 
 const fail = (message: string): never => { throw new Error(message); };
 /** The project's config, or none when there is no valid one (reading memory needs none). */

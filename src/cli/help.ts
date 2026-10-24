@@ -131,7 +131,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub bench export [--format jsonl|csv]", "benchmark records for outside analysis: ids, outcomes and counts, never suite text"],
     ["ahub check-path <file> [--peer <id>]", "other owners' open tasks that claim or changed a file"],
     ["ahub memory [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] [--json]", "the hub's own memory for this project: decisions, contracts, fails and findings, short- and long-term (docs/memory.md)"],
-    ["ahub memory search <words> | show <id> | graph <id|node> [--hops 1|2] [--json]", "find entries, read one with its provenance, or list its graph neighbourhood"],
+    ["ahub memory search <words> | show <id> | graph <id|node> [--hops 1|2] [--history | --as-of <iso>] [--json]", "find entries, read one with its provenance, or list its graph neighbourhood; superseded and expired entries are hidden unless a person asks for --history or --as-of"],
     ["ahub memory promote|demote|forget <id> | supersede <old> <new> | rebuild", "a person's changes to memory: move an entry between tiers, forget it, mark it superseded, or rebuild the index from the logs"],
     ["ahub memory sync [--remote <private git url>] | machine [--label <name>]", "sync hub memory with your other machines through a private git remote (a person's), or show or name this machine"],
     ["ahub memory import claude-mem [--db <path>] [--limit N] [--restart] | dedupe [--apply] | suggestions | confirm|reject <id>", "copy the hub's notes from claude-mem into hub memory (a person's); review the model's suggested edges"],
