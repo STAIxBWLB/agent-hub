@@ -1,3 +1,4 @@
+import { normalizeMemorySymbolInput } from "./memory-symbols.ts";
 import { extractNodes, nodePath, type View } from "@staix/agent-mem";
 import type { BriefTask } from "../memory/brief.ts";
 
@@ -13,7 +14,7 @@ export function planGuardNodes(task: BriefTask, context: PlanGuardContext): stri
   }
   const onlyPath = nodes.size === 1 ? nodePath([...nodes][0]!) : undefined;
   for (const symbol of task.plan?.symbols ?? []) {
-    for (const node of extractNodes("", { ...context, paths: onlyPath ? [onlyPath] : [], symbols: [symbol], checkExists: false })) nodes.add(node);
+    for (const node of extractNodes("", { ...context, paths: onlyPath ? [onlyPath] : [], symbols: [normalizeMemorySymbolInput(symbol)], checkExists: false })) nodes.add(node);
   }
   return [...nodes].sort();
 }

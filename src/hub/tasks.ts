@@ -1,3 +1,4 @@
+import { canonicalMemorySymbolNode, normalizeMemorySymbolInput, MEMORY_SYMBOL_LIMIT, type MemorySymbolNodes } from "./memory-symbols.ts";
 import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, HOST_CODE_SYMBOLS } from "./task-code-symbols.ts";
 import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
 import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
@@ -87,6 +88,8 @@ export interface TasksDeps {
   /** #520: the review brief for a task's commit (git only, bounded); undefined when the task names no commit. */
   prepareReviewBrief?: (task: Task) => Promise<void>;
   reviewBrief?: (task: Task) => ReviewBrief | { unavailable: string } | undefined;
+  /** Host-verified existing symbols at this task's admitted completion head; never plan guesses. */
+  memorySymbolNodes?: (task: Task) => MemorySymbolNodes | undefined;
   sdlc?: { config: () => SdlcConfig; gh?: SdlcGh };
   briefs?: Briefs;
   /** Screened live fail notes directly intersecting the task plan or refs; read-only advice. */
@@ -3783,7 +3786,8 @@ export class Tasks {
     const noWrites = this.noWritesRecorded({ ...task, refs: { ...task.refs, ...completedRefs } });
     const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...completedRefs } }), state: reviewer ? "in_review" : "approved", ...(selection ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...this.planObservation(task), withheld: withheld || undefined, ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
-    this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\n${summary ?? ""}`, withheld);
+    const memorySymbols = this.completionMemorySymbols(next);
+    this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\nChanged-symbol memory anchors: ${memorySymbols.state === "known" ? memorySymbols.nodes.length : "unknown (no complete code facts)"}\n${summary ?? ""}`, withheld, memorySymbols);
     this.tellCompleted(next, summary, withheld);
     if (!reviewer) {
       this.settleMemory(next);
@@ -4049,6 +4053,32 @@ export class Tasks {
       if (task.sdlc?.repo && this.repositories.scope({ repo: task.sdlc.repo }).key !== repository.key) return undefined;
       return repository;
     } catch { return undefined; }
+  }
+
+  /** Read-only host input for exists verification; private/foreign/stale observations supply nothing. */
+  memorySymbolCandidates(task: Task): string[] | undefined {
+    if (this.isPii(task) || !this.d.store) return undefined;
+    const observed = this.observedCodeSymbols(task);
+    return observed?.state === "known" ? observed.symbols.map(symbol => symbol.id) : undefined;
+  }
+
+  /** Only current host observations and positive exists checks may anchor the completion note. */
+  private completionMemorySymbols(task: Task): MemorySymbolNodes {
+    const unknown: MemorySymbolNodes = { state: "unknown", nodes: [], unknown: 0, truncated: false };
+    if (this.isPii(task) || !this.d.store) return unknown;
+    const repository = this.codeSymbolsRepository(task);
+    if (!repository || repository.key !== this.repositories.project.key) return unknown;
+    const observed = publicTaskCodeSymbols(task.codeSymbols, this.reviewHead(task), repository.key, this.publicMetadataText);
+    if (!observed || observed.state !== "known") return unknown;
+    try {
+      const verified = this.d.memorySymbolNodes?.(task);
+      if (!verified) return unknown;
+      const context = { cwd: this.d.cwd, project: this.d.store.project, repo: this.d.store.repo, deny: this.d.store.deny, allowed: this.publicMetadataText };
+      const actual = new Set(observed.symbols.map(symbol => canonicalMemorySymbolNode(symbol.id, context)).filter(Boolean));
+      const nodes = [...new Set(verified.nodes)].filter(node => actual.has(node) && canonicalMemorySymbolNode(node, context) === node).slice(0, MEMORY_SYMBOL_LIMIT);
+      const complete = observed.complete && verified.state === "known" && nodes.length === verified.nodes.length;
+      return { state: complete ? "known" : "unknown", nodes, unknown: verified.unknown, truncated: verified.truncated || nodes.length !== verified.nodes.length };
+    } catch { return unknown; }
   }
 
   /** Host observations are saved only with an admitted transition, never by an optional read. */
@@ -4586,7 +4616,7 @@ export class Tasks {
    * long, decisions, contracts and fails are long-term. Fail-open: a store that cannot be written costs one notice.
    * The caller has screened the text for PII; never a PII task's.
    */
-  private saveNative(by: PeerId, kind: Kind, text: string, title: string, task: Task | undefined, horizon?: Tier, scope: Scope = "project"): { id: string; tier: Tier } | undefined {
+  private saveNative(by: PeerId, kind: Kind, text: string, title: string, task: Task | undefined, horizon?: Tier, scope: Scope = "project", symbols?: MemorySymbolNodes): { id: string; tier: Tier } | undefined {
     const st = this.d.store;
     if (!st || (task && this.isPii(task))) return undefined;
     try { // never throws: callers run after a board write
@@ -4594,7 +4624,12 @@ export class Tasks {
       // Approved, or settled in the store already: the snapshot the caller holds can predate an approval made while it awaited.
       const approved = !!task && (task.state === "approved" || st.store.settled(this.memoryKey(task)));
       const tier: Tier = horizon ?? (approved && PROMOTED_KINDS.includes(kind) ? "long" : "short");
-      const about = extractNodes(`${title}\n${text}`, { cwd: this.d.cwd, project: st.project, repo: st.repo, deny: st.deny, paths: [...(task?.refs.paths ?? []), ...(task?.plan?.paths ?? [])], symbols: task?.plan?.symbols, ...(task ? { task: { id: task.id, created: task.created } } : {}) });
+      const about = extractNodes(`${title}\n${text}`, { cwd: this.d.cwd, project: st.project, repo: st.repo, deny: st.deny, paths: [...(task?.refs.paths ?? []), ...(task?.plan?.paths ?? [])], symbols: symbols ? [] : task?.plan?.symbols?.map(normalizeMemorySymbolInput), ...(task ? { task: { id: task.id, created: task.created } } : {}) });
+      // Existing notes remain immutable; the completion note connects actual symbols through the shared task node.
+      if (symbols && task) {
+        const taskNode = `task:${this.memoryKey(task)}`;
+        about.splice(0, about.length, ...[...new Set([taskNode, ...symbols.nodes, ...about])].slice(0, 64).sort());
+      }
       // A short-term note on a task already approved (before hub memory existed, or late): the task is settled first, so
       // the note gets its own deadline and is never taken for a source waiting for promotion.
       if (task && approved && tier === "short" && !st.store.settled(this.memoryKey(task))) st.store.settle(this.memoryKey(task), by);
@@ -4644,14 +4679,14 @@ export class Tasks {
   }
 
   /** Auto notes: only transitions that carry content, never for PII. */
-  private note(task: Task, by: PeerId, kind: Kind, text: string, withheld = false): void {
+  private note(task: Task, by: PeerId, kind: Kind, text: string, withheld = false, symbols?: MemorySymbolNodes): void {
     if (this.isPii(task) || (!this.d.memory && !this.d.store)) return;
     // Model-written text must clear the host PII screen (#198/#69); long-term memory may sync (#258). No secrets.
     if (withheld || !this.nameable(text)) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (${this.whyWithheld(text)})`);
     if (looksSecret(text)) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (it looks like it holds a secret)`);
     const title = `agent-hub task #${task.id}: ${task.title}`.slice(0, 120);
     if (this.aboutPrivatePath(title, text, task)) return this.releaseNotice(`task #${task.id}: a ${kind} note was not saved to shared memory (it is about a private path)`);
-    const native = this.saveNative(by, kind, text, title, task);
+    const native = this.saveNative(by, kind, text, title, task, undefined, "project", symbols);
     if (!native && this.d.memory) {
       try { this.markMemoryReference(task, by); } catch { return this.releaseNotice(`task #${task.id}: memory reference could not be recorded; note was not saved`); }
       void this.d.memory.save({ text, title, project: this.d.project, metadata: { peer: by, task: task.id, kind } });

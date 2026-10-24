@@ -20422,95 +20422,9 @@ init_registry();
 init_hub_tools();
 init_envelope();
 
-// src/hub/tasks.ts
-init_task_code_symbols();
-init_test_integrity();
-init_plan_conformance();
-
-// src/hub/sdlc-release.ts
-init_child_process();
-init_git();
-
-// src/hub/tasks.ts
-init_spec_read();
-init_sdlc_metrics();
-// package.json
-var package_default = {
-  name: "@staix/agent-hub",
-  version: "0.15.0",
-  description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
-  license: "MIT",
-  type: "module",
-  bin: {
-    ahub: "src/cli/main.js",
-    "agent-hub": "src/cli/main.js"
-  },
-  scripts: {
-    check: "scripts/check.sh",
-    build: "bun scripts/build.mjs",
-    test: "bun test"
-  },
-  engines: {
-    bun: ">=1.4.2"
-  },
-  dependencies: {
-    "@staix/agent-mem": "0.6.0"
-  },
-  devDependencies: {
-    "@modelcontextprotocol/sdk": "^1.27.1",
-    "@types/bun": "^1.3.0",
-    typescript: "^5.8.0"
-  },
-  files: [
-    ".claude-plugin",
-    "src",
-    "src/pet/window.jxa.js",
-    "src/pet/window.html",
-    "plugins",
-    "templates",
-    "scripts/check-docs.mjs",
-    "docs",
-    "README.md",
-    "LICENSE",
-    "CHANGELOG.md",
-    "THIRD_PARTY_NOTICES.md",
-    "LICENSES"
-  ],
-  repository: {
-    type: "git",
-    url: "git+https://github.com/STAIxBWLB/agent-hub.git"
-  },
-  homepage: "https://github.com/STAIxBWLB/agent-hub",
-  publishConfig: {
-    access: "public"
-  },
-  exports: {
-    "./adapter": "./src/adapters/public.ts",
-    "./conformance": "./src/adapters/conformance/index.ts"
-  }
-};
-
-// src/version.ts
-var VERSION = package_default.version;
-
-// src/hub/no-writes.ts
-var OWNER_TOOL_EFFECTS = new Set(["hub_task_propose", "hub_task_decline", "hub_task_done", "hub_task_cancel", "hub_task_assign", "hub_task_escalate", "hub_review", "hub_checkpoint", "hub_remember", "hub_memory_correct", "hub_check_start", "hub_check_cancel", "hub_sdlc_record", "hub_plan_review", "hub_backlog_plan", "hub_backlog_pull", "hub_backlog_undo", "hub_backlog_split", "hub_backlog_return_untouched", "hub_release_new", "hub_release_configure", "hub_release_assign", "hub_release_cut"]);
-
-// src/hub/github-import.ts
-init_sdlc();
-
-// src/hub/tasks.ts
-init_planning();
-
-// src/hub/sdlc-queue.ts
-init_test_integrity();
-init_plan_conformance();
-init_review_findings();
-init_sdlc();
-
-// src/hub/tasks.ts
-init_review_findings();
-init_roles();
+// src/hub/memory-symbols.ts
+init_deny();
+init_permission_mode();
 init_path_policy();
 
 // node_modules/@staix/agent-mem/src/index.ts
@@ -20689,6 +20603,96 @@ var MAX_RECORD = 256 * 1024;
 
 // node_modules/@staix/agent-mem/src/index.ts
 init_session_brief();
+// src/hub/tasks.ts
+init_task_code_symbols();
+init_test_integrity();
+init_plan_conformance();
+
+// src/hub/sdlc-release.ts
+init_child_process();
+init_git();
+
+// src/hub/tasks.ts
+init_spec_read();
+init_sdlc_metrics();
+// package.json
+var package_default = {
+  name: "@staix/agent-hub",
+  version: "0.15.0",
+  description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
+  license: "MIT",
+  type: "module",
+  bin: {
+    ahub: "src/cli/main.js",
+    "agent-hub": "src/cli/main.js"
+  },
+  scripts: {
+    check: "scripts/check.sh",
+    build: "bun scripts/build.mjs",
+    test: "bun test"
+  },
+  engines: {
+    bun: ">=1.4.2"
+  },
+  dependencies: {
+    "@staix/agent-mem": "0.6.0"
+  },
+  devDependencies: {
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@types/bun": "^1.3.0",
+    typescript: "^5.8.0"
+  },
+  files: [
+    ".claude-plugin",
+    "src",
+    "src/pet/window.jxa.js",
+    "src/pet/window.html",
+    "plugins",
+    "templates",
+    "scripts/check-docs.mjs",
+    "docs",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "THIRD_PARTY_NOTICES.md",
+    "LICENSES"
+  ],
+  repository: {
+    type: "git",
+    url: "git+https://github.com/STAIxBWLB/agent-hub.git"
+  },
+  homepage: "https://github.com/STAIxBWLB/agent-hub",
+  publishConfig: {
+    access: "public"
+  },
+  exports: {
+    "./adapter": "./src/adapters/public.ts",
+    "./conformance": "./src/adapters/conformance/index.ts"
+  }
+};
+
+// src/version.ts
+var VERSION = package_default.version;
+
+// src/hub/no-writes.ts
+var OWNER_TOOL_EFFECTS = new Set(["hub_task_propose", "hub_task_decline", "hub_task_done", "hub_task_cancel", "hub_task_assign", "hub_task_escalate", "hub_review", "hub_checkpoint", "hub_remember", "hub_memory_correct", "hub_check_start", "hub_check_cancel", "hub_sdlc_record", "hub_plan_review", "hub_backlog_plan", "hub_backlog_pull", "hub_backlog_undo", "hub_backlog_split", "hub_backlog_return_untouched", "hub_release_new", "hub_release_configure", "hub_release_assign", "hub_release_cut"]);
+
+// src/hub/github-import.ts
+init_sdlc();
+
+// src/hub/tasks.ts
+init_planning();
+
+// src/hub/sdlc-queue.ts
+init_test_integrity();
+init_plan_conformance();
+init_review_findings();
+init_sdlc();
+
+// src/hub/tasks.ts
+init_review_findings();
+init_roles();
+init_path_policy();
 
 // src/hub/memory-candidates.ts
 init_tool_refusal();

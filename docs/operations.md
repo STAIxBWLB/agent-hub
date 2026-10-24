@@ -4369,3 +4369,9 @@ After #759 is released, the card's effective planner or the person can relink an
 Omit tool `fields`, or use `{}`, to record only the bounded reason as a new revision. The person CLI retains its JSON argument: `ahub backlog plan <id> <revision> '{}' '<reason>'`. Existing planner scope, pins, frozen releases and stale-revision checks still apply. Undo restores identity members without restoring old consent; null members represent an absent previous repo or issue.
 
 The grooming digest no longer calls ordered dependency phases duplicate merely because they share a design issue. It still reports path/symbol overlap, unrelated same-issue cards and references requiring attention. It uses dependency edges only, including bounded public context for approved intermediate phases.
+
+## Inspecting memory symbol anchors
+
+After #684 phase 3 is released, `ahub doctor --stale-anchors [--json]` checks a bounded set of this project's screened symbol anchors through the optional code-facts boundary. Stale means positively absent at the reported head; unavailable or ambiguous evidence stays unknown. Read the coverage/truncation fields before treating the report as complete. This command performs no note mutation or automatic repair.
+
+A task completion note stores actually observed, existing symbol nodes instead of plan guesses. Earlier notes remain connected through the same reset-safe task node. Related-memory retrieval reaches those earlier notes at memory hop two; the graph's literal two-edge view shows the completion note and task node. Unknown observations are labelled and never substituted with the plan. See [canonical symbol anchors](memory.md#canonical-symbol-anchors-684-phase-3) for bounds.
