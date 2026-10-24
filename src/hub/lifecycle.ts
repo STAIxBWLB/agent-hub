@@ -84,6 +84,9 @@ async function available(base: number): Promise<boolean> {
   }
 }
 
+/** The signals the project daemon stops on (see `runProjectDaemon`). */
+export const STOP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"] as const;
+
 /** Called only in the detached daemon process. A competing starter exits without touching state. */
 export async function runProjectDaemon(project: Project, unattended = false): Promise<void> {
   assertLifecycleAvailable();
@@ -92,8 +95,8 @@ export async function runProjectDaemon(project: Project, unattended = false): Pr
   let claimed = false;
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined;
   // ponytail: shutdown is bounded as a whole, not per peer; a peer whose stop never settles
-  // escapes only through this process-level deadline (issue #56). 15 s leaves the claude-mem
-  // session-end work awaited in stop() its chance. Upgrade path: per-peer stop deadlines.
+  // escapes only through this process-level deadline (issue #56). 15 s leaves the amem
+  // SessionEnd capture row each peer's stop() awaits (`Capture.end`) its chance. Upgrade path: per-peer stop deadlines.
   const SHUTDOWN_DEADLINE_MS = 15_000;
   let forcedExit: ReturnType<typeof setTimeout> | undefined;
   const onShutdownStart = () => {
@@ -128,10 +131,12 @@ export async function runProjectDaemon(project: Project, unattended = false): Pr
     }
     if (!daemon) throw new Error("no free hub port range after 100 attempts");
     const stop = () => { void daemon!.stop().catch((error) => console.error(`shutdown incomplete: ${(error as Error).message}`)); };
-    process.on("SIGINT", stop);
-    process.on("SIGTERM", stop);
+    // Every signal the hub exits on goes through stop(), never the default action: a default action ends the process with no `exit` event and no stop(), so memory sync's git (which
+    // agent-mem 0.7.0 runs in its own process group, stopped only through the daemon's `syncStop` signal) would outlive the hub holding the memory repository. SIGHUP is a closing
+    // terminal, SIGQUIT is Ctrl-\; a handler also keeps SIGQUIT from its default core dump (agent-mem #435: Bun honours it, and a core file of the whole image delays the exit).
+    for (const name of STOP_SIGNALS) process.on(name, stop);
     try { await daemon.stopped; }
-    finally { if (forcedExit) clearTimeout(forcedExit); process.off("SIGINT", stop); process.off("SIGTERM", stop); }
+    finally { if (forcedExit) clearTimeout(forcedExit); for (const name of STOP_SIGNALS) process.off(name, stop); }
   } finally {
     if (claimed) registry.release(project.id, instanceId);
     registry.close();
