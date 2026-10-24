@@ -43,7 +43,7 @@ async function fixture(options: { planner?: HubConfig["planner"]; instance?: boo
         approvals: { ...DEFAULT_CONFIG.approvals, notify: false } } });
     client = await ControlClient.connect(stateDir, { role: "console", projectRoot: root });
     const status = (await client.request({ t: "status" })).status;
-    const withoutFloor = status.features.filter((feature: string) => feature !== "role_stages");
+    const withoutFloor = status.features.filter((feature: string) => feature !== "task_planners");
     return { client, status, withoutFloor, close };
   } catch (error) { await close(); throw error; }
 }
@@ -54,19 +54,19 @@ const cases: Array<{ name: string; planner?: HubConfig["planner"]; instance?: bo
   { name: "named capable instance", planner: "codex-floor", instance: true },
   ...(["task", "release", "plan-author-null", "self-review", "history-plan-author-null", "history-self-review"] as Evidence[]).map(evidence => ({ name: `persisted ${evidence}`, evidence })),
 ];
-for (const input of cases) test(`#525 R3 ${input.name} requires role_stages before every recovery effect`, async () => {
+for (const input of cases) test(`#525 R3 ${input.name} requires task_planners before every recovery effect`, async () => {
   const f = await fixture(input);
   try {
-    expect(DAEMON_FEATURES).toContain("role_stages");
-    expect(f.status.features).toContain("role_stages");
+    expect(DAEMON_FEATURES).toContain("task_planners");
+    expect(f.status.features).toContain("task_planners");
     const message = { t: "recovery", operationId: "planner-floor", expectedInstanceId: f.status.instanceId };
     for (const op of ["inspect", "prepare", "commit"]) {
-      expect(await f.client.request({ ...message, op, targetFeatures: f.withoutFloor })).toMatchObject({ ok: false, error: expect.stringContaining("target lacks role_stages") });
+      expect(await f.client.request({ ...message, op, targetFeatures: f.withoutFloor })).toMatchObject({ ok: false, error: expect.stringContaining("target lacks task_planners") });
       expect((await f.client.request({ t: "recovery", op: "inspect", expectedInstanceId: f.status.instanceId })).recovery.phase).toBeUndefined();
     }
     // A compatible target may prepare, but may not downgrade before its next effect. No compatible commit is sent.
     expect(await f.client.request({ ...message, op: "prepare", targetFeatures: f.status.features })).toMatchObject({ ok: true });
-    expect(await f.client.request({ ...message, op: "commit", targetFeatures: f.withoutFloor })).toMatchObject({ ok: false, error: expect.stringContaining("target lacks role_stages") });
+    expect(await f.client.request({ ...message, op: "commit", targetFeatures: f.withoutFloor })).toMatchObject({ ok: false, error: expect.stringContaining("target lacks task_planners") });
     expect(await f.client.request({ ...message, op: "abort" })).toMatchObject({ ok: true });
     expect((await f.client.request({ t: "status" })).status.instanceId).toBe(f.status.instanceId);
   } finally { await f.close(); }
@@ -88,6 +88,7 @@ test("#525 R3 a published 0.15.0 role_stages claim cannot restore task planner a
   const f = await fixture({ evidence: "task" });
   try {
     expect(oldFeatures).toContain("role_stages");
+    expect(oldFeatures).not.toContain("task_planners");
     const result = await f.client.request({ t: "recovery", op: "inspect", operationId: "old-planner-target", expectedInstanceId: f.status.instanceId, targetFeatures: oldFeatures });
     expect(result).toMatchObject({ ok: false });
     expect(result.error).toContain("planner");

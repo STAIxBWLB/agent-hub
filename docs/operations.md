@@ -2322,7 +2322,7 @@ An agent author cannot self-review while another rostered non-offline planner
 exists. With no independent holder, the receipt says `selfReview: true`; it
 also records `planAuthor` (null when unknown). A person's own-plan override is
 marked self-review too. Independent requests contain ids only. Controlled
-recovery requires `role_stages` once a list/instance planner is configured or
+recovery requires `task_planners` once a list/instance planner is configured or
 any task/release binding or plan-review authorship marker is stored, even after
 that configuration is removed.
 
