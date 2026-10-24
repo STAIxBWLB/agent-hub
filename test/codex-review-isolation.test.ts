@@ -15,7 +15,7 @@ function fixture(mode = "ok") {
   writeFileSync(script, `import { appendFileSync } from "node:fs";
 const [mode, calls, ...a] = process.argv.slice(2);
 appendFileSync(calls!, JSON.stringify(a) + "\\n");
-if(a[0] === "--version") { console.log(mode === "version" ? "codex-cli 0.164.0" : mode === "modern" ? "codex-cli 0.163.0" : "codex-cli 0.146.0"); process.exit(0); }
+if(a[0] === "--version") { console.log(mode === "version" ? "codex-cli 0.165.0" : mode === "modern" ? "codex-cli 0.163.0" : "codex-cli 0.146.0"); process.exit(0); }
 if(a[0] === "exec") { throw new Error("model must not run in isolation prepare"); }
 if(mode === "abort" || mode === "hang") await new Promise(() => {});
 if(mode === "overflow") { console.log("x".repeat(140000)); process.exit(0); }
@@ -291,17 +291,17 @@ test("Codex isolation names an unverified version, and the person's trust lifts 
   try {
     const refused = await codexReviewerBackend.prepare(f.ctx);
     expect(refused).toHaveProperty("unavailable");
-    expect((refused as { unavailable: string }).unavailable).toContain("codex-cli) 0.164.0 (verified 0.146.0, 0.163.0)");
-    expect((refused as { unavailable: string }).unavailable).toContain("ahub agents trust codex-review 0.164.0");
-    writeTrust("codex-review", "0.164.0", false);
+    expect((refused as { unavailable: string }).unavailable).toContain("codex-cli) 0.165.0 (verified 0.146.0, 0.163.0, 0.164.0)");
+    expect((refused as { unavailable: string }).unavailable).toContain("ahub agents trust codex-review 0.165.0");
+    writeTrust("codex-review", "0.165.0", false);
     const admitted = await codexReviewerBackend.prepare(f.ctx);
     expect(admitted).not.toHaveProperty("unavailable");
     const launch = admitted as Exclude<typeof admitted, { unavailable: string }>;
-    expect(launch.isolation?.version).toBe("0.164.0");
+    expect(launch.isolation?.version).toBe("0.165.0");
     const proofs = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line)[0]);
     for (const step of ["features", "mcp", "sandbox"]) expect(proofs).toContain(step);
     await launch.cleanup?.();
-  } finally { writeTrust("codex-review", "0.164.0", true); f.close(); }
+  } finally { writeTrust("codex-review", "0.165.0", true); f.close(); }
 });
 
 
