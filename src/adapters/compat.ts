@@ -31,8 +31,8 @@ export const COMPAT = {
   "claude-implementer": { label: "Claude headless implementer", verified: ["2.1.309"], gate: "contract", probe: ["claude", "--version"],
     parse: out => plain(out.trim().replace(/ \(Claude Code\)$/, "")),
     trustNote: "The native prompt-tool allow, deny, MCP error/disconnect and hook-failure fallthrough have an isolated receipt. No dontAsk/bypass fallback exists; another version's permission behavior is unverified." },
-  // 0.163.0 receipt: docs/verification/2026-10-22-codex-reviewer-isolation.md
-  "codex-review": { label: "Codex reviewer (codex-cli)", verified: ["0.146.0", "0.163.0"], gate: "isolation", probe: ["codex", "--version"], config: "codex_bin",
+  // 0.163.0 receipt: docs/verification/2026-10-22-codex-reviewer-isolation.md; 0.164.0 receipt: docs/verification/2026-10-24-codex-0164-reviewer-isolation.md
+  "codex-review": { label: "Codex reviewer (codex-cli)", verified: ["0.146.0", "0.163.0", "0.164.0"], gate: "isolation", probe: ["codex", "--version"], config: "codex_bin",
     parse: out => plain(out.trim().replace(/^codex-cli /, "")),
     trustNote: "Every launch still proves the MCP inventory, Apps/plugins/hooks disabled, sandbox read/write denial and the binary fence; a failed leg still refuses. Trust covers only the source-level claims those probes cannot see (docs/verification/2026-10-19-reviewer-isolation.md)." },
   // Kimi 2.3.0 / Qwen 0.26.0 receipt: docs/verification/2026-10-22-kimi-qwen-compat.md

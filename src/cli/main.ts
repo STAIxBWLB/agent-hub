@@ -76,7 +76,8 @@ import { parseSince, readEvents } from "../hub/events.ts";
 import { armRuns, benchCompare, benchCsv, benchReport, formatCompare, formatReport as formatBenchReport, formatRuns, MEMORY_MODES, readRuns, runSummary, sameSuite, type MemoryMode } from "../hub/bench.ts";
 import { benchPreflight, defaultIo, runBench } from "./bench.ts";
 import { ADDONS, isAddon, type AddonName } from "../hub/tooling.ts";
-import { goalCommand, memoryCommand } from "./memory.ts";
+import { goalCommand, memoryCommand, memoryStaleAnchorsCommand } from "./memory.ts";
+import { formatMemoryStaleAnchors } from "../hub/memory-stale-anchors.ts";
 import { AGENT_MEM_VERSION, assertAgentMemVersion, selectedMemoryProfile } from "../hub/memory-profile.ts";
 import { checkMemoryProfiles, formatMemoryProfileCheck } from "../hub/memory-profile-check.ts";
 import { addonReport, appendRecords, formatAddons, formatResearch, LABELS, labelTarget, RESEARCH_SCHEMA, projectKey, readStores, researchReport, taskRecords, toCsv, type Label, type TaskRecord } from "../hub/research.ts";
@@ -2123,6 +2124,12 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   doctor: async () => {
     const options = outputOptions();
+    if (args.includes("--stale-anchors")) {
+      if (args.some(arg => arg !== "--stale-anchors" && arg !== "--json")) fail("usage: ahub doctor --stale-anchors [--json]");
+      const report = await memoryStaleAnchorsCommand(cwd, { stateDir });
+      console.log(options.json ? JSON.stringify(report, null, 2) : formatMemoryStaleAnchors(report));
+      return;
+    }
     if (args.includes("--orphans")) return orphanDoctor(args.includes("--kill"), options);
     const version = (bin: string) => {
       const res = spawnSync(bin, ["--version"], { encoding: "utf8" });
