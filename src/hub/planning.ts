@@ -29,6 +29,8 @@ export function planningWipLimits(input: unknown): Record<string, number> {
 export const RELEASE_STATES = ["planning", "active", "frozen", "shipped", "dropped"] as const;
 export type ReleaseState = (typeof RELEASE_STATES)[number];
 export interface Release {
+  /** Null for rows created before task-scoped planners; no inferred backfill. */
+  planner?: string | null;
   train?: ReleaseTrainData;
   id: number; name: string; goal: string; order: number; state: ReleaseState;
   plannedStart: number | null; cut: number | null; ship: number | null;

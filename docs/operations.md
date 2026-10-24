@@ -1843,7 +1843,7 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | Switches | `task_sweep.enabled`, `.auto_reassign`, `.interval_s`, `.unaccepted_min`, `.idle_min`, `.review_min`, `.ready_min`, `.ladder_min`, `.no_writes_turns` | `config.local.json` | live; `.no_writes_turns` sets the turn threshold independently; other keys reschedule the sweep timer |
 | Routing | `tasks.wip_limits.<peer>` | `config.local.json` | live |
 | Routing | `tasks.escalate_after` (1-10, default 3: consecutive `changes_requested` before a task moves to the next `escalate_to` peer) | `config.local.json` | live; the next verdict uses it |
-| Roles | `planner` (the one peer that plans) | `config.local.json` | at once |
+| Roles | `planner` (one or up to eight planner holders) | `config.local.json` | at once |
 
 - Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,
   the machine-local files (`ahub init` ignores both in git). The shared
@@ -2281,14 +2281,16 @@ dashboard manager does the same when its home directory vanishes.
 
 ## The planner (#455)
 
-One peer plans: it proposes and splits tasks, grooms the backlog and gets the
-backlog and sweep notices. `ahub status` prints it with its source, the
-dashboard's Agents view shows a Planner badge, and the console marks its row.
+Planner holders propose and split tasks and read project-wide grooming. Each
+task's effective planner gets its backlog and sweep notices. `ahub status`
+prints the holders with their source, the dashboard's Agents view shows a
+Planner badge, and the console marks their rows.
 
 - `setting`: `planner` in `.agenthub/config.json` or `config.local.json` (the
-  machine's file wins). That peer is the only planner; every other peer loses
-  the role. It is one of `claude`, `codex`, `kimi`, `qwen` or `jcode`: the
-  hub-sandboxed `pi` and `local` never plan.
+  machine's file wins), either one id or a list of up to eight distinct ids.
+  Only those peers hold the role. Builtins are `claude`, `codex`, `kimi`, `qwen`
+  and `jcode`; a declared planner-capable instance is also eligible. A singleton
+  settings write stores a string for older configuration readers.
 - `roles`: with no `planner` key, the `roles` planners stand. That is `claude`
   by default.
 - `automatic`: when no rostered peer holds the role, the hub gives it to the
@@ -2297,9 +2299,32 @@ dashboard's Agents view shows a Planner badge, and the console marks its row.
 
 Change it with `ahub settings set planner codex`, the dashboard Settings row
 (a settings session, `ahub ui --settings`) or `l` in the console. Planning
-authority and the backlog notices move at once. The new planner's role text
-updates at its next start. `ahub settings undo` puts the previous planner
-back. Agents cannot change it.
+holders and their backlog notices update at once. Use a comma list, for example
+`ahub settings set planner claude,codex`, to select several holders and follow
+any displayed holder-change confirmation. Role text updates at the next peer
+start. `ahub settings undo` restores the previous designation. Agents cannot
+change it.
+
+New tasks record their planner through the same pure assignment walk shown by
+`ahub route explain`. Only that effective planner or the person changes their
+planning. A bound holder keeps authority while busy, offline or paused. If it
+is removed or leaves the roster, authority falls back to the current holders;
+the stored binding remains available for audit. Old tasks and releases with a
+null planner retain the legacy holder-wide authority. PII tasks keep null.
+The person names a different holder with
+`ahub task assign <id> <peer> --role planner`; this leaves the owner, reviewer,
+state and delivery offer intact. A planner-created release belongs to that
+planner; a person-created release keeps null.
+
+A plan review is the exception: another settled holder may review a plan even
+when it is not that task's planner, without gaining its other planning powers.
+An agent author cannot self-review while another rostered non-offline planner
+exists. With no independent holder, the receipt says `selfReview: true`; it
+also records `planAuthor` (null when unknown). A person's own-plan override is
+marked self-review too. Independent requests contain ids only. Controlled
+recovery requires `task_planners` once a list/instance planner is configured or
+any task/release binding or plan-review authorship marker is stored, even after
+that configuration is removed.
 
 ## Resetting a project's hub
 
@@ -4321,14 +4346,11 @@ reattachment or TUI detachment clears it. The notice contains fixed guidance, wi
 
 The design for planner, implementer and reviewer instances per stage is in the spec section "Amendment: roles per SDLC stage (#525)". Slice 525-1 is available: role capability per kind and form, Claude channel instances as implementer or verifier in their own worktree, and `planner` refused on builtin kinds that cannot plan (pi, local and agy): an instance declaring it is refused with `this kind cannot plan`, and a `roles` entry keeps its other roles with the notice `roles.<peer>: ignored roles outside the adapter ceiling`. A configured ACP agent (`adapters`) is different: it may hold `planner` in its `roles` or in a `roles` entry and then plans like any peer, but it can never be pinned with the `planner` setting or chosen as the automatic planner, because it has no host projection (#735). Slices 525-3, 525-4 and 525-5 are available too:
 
-- 525-3: `assign()` walks the planner holders (rotation by task id over every holder, never renumbered by availability; a named planner exact; a recorded planner kept; none for a PII task) and `ahub route explain <id>` prints that walk. Nothing records the planner yet, so the walk is information only. A peer that accepted or finished a task never reviews it, a named reviewer and the declared reviewer pool included; when no other candidate is left the person reviews.
+- 525-3: `assign()` walks the planner holders (rotation by task id over every holder, never renumbered by availability; a named planner exact; a recorded planner kept; none for a PII task) and `ahub route explain <id>` prints that walk. Task planner bindings are recorded by 525-2. A peer that accepted or finished a task never reviews it, a named reviewer and the declared reviewer pool included; when no other candidate is left the person reviews.
 - 525-4: a headless Claude implementer runs one owned child per turn in its declared worktree, with a separate persisted session per task (`start_mode: "headless"`, permission `ask` or `ask-when-needed`; `never-ask` refused).
 - 525-5: terminal Claude implementer instances own write-class tasks once the daemon has verified their execution root.
 
-The operator steps for 525-1, 525-4 and 525-5 are in "Additional headless peer instances" above; each later slice (525-2, 525-6) adds its own here when it ships, and until then those instance rules are current. The planned changes an operator will see:
-
-- The `planner` setting accepts a list of peers or instance ids; each task records its own planner, and only that planner or the person runs planner tools on it.
-- A plan's author does not record its own plan review while another planner is available.
+The operator steps for 525-1, 525-4 and 525-5 are in "Additional headless peer instances" above. Slice 525-2 adds the planner settings, task/release bindings, independent plan review and recovery floor described in "The planner" above. Slice 525-6 (Codex planner-only visibility) remains separate.
 
 ## Daemon responsiveness and launch connects (#719)
 

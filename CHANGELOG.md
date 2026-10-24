@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Add per-task and release planners (#525-2): one or up to eight explicit planner holders, person-only planner reassignment, scoped planner tools and notices, independent plan review with recorded authorship/self-review, and a persisted-authority recovery floor. Legacy null bindings retain their existing authority; singleton settings remain strings.
+
 - Replace claude-mem worker runtime calls with exact-pinned amem 0.6.0 (agent-mem#13 P4): curated recall, briefs and ask use in-process storage; local capture is deterministic and model-free. Privacy and selected-profile fences remain; raw capture is excluded from evidence. Auxiliary model/checkpoint writes become pending candidates. Claude-mem remains an explicit import source only.
 
 - Budget window kinds, precedence and notes (#285 phase 4, AC6, AC7, AC8, AC10): `UsageWindow` gains an optional `kind` (`native`, `count`, `manual`). `ahub budget` prints each window's kind, source and age, marks a hub count that a native or manual reading outranks as `info only`, and says why a peer shows no number (Pi and local have no quota and show the hub's own 5 h token count; Kimi without `budget.kimi_tokens_5h`, or with an unreadable wire log, says so). A fresh `ahub budget set` value replaces the provider's and the hub's for its window at the gate and in routing headroom, and a provider refusal clears it. The console peer and Usage details and the dashboard Usage budgets row show kind and source, and `ahub doctor` gains `kimi usage source`. `PROTOCOL` is unchanged.

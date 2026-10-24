@@ -179,7 +179,7 @@ export interface HubConfig {
   roster: PeerRoster;
   roles: Record<string, string[]>;
   /** #455: the one peer that holds the planner role; unset, the `roles` planners stand, or the hub assigns one. */
-  planner?: string;
+  planner?: string | string[];
   profile?: ProfileName;
   profile_overrides?: Record<string, unknown>;
   pii?: { paths: string[] };
@@ -288,11 +288,11 @@ export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<st
 const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "pet"];
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
-export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]): { roles: Record<string, string[]>; conductor: HubConfig["conductor"]; planner?: string; notices?: string[] } {
+export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[], scope: Pick<ReturnType<typeof readInstanceConfig>, "instances" | "catalog"> = readInstanceConfig(cwd, layers)): { roles: Record<string, string[]>; conductor: HubConfig["conductor"]; planner?: string | string[]; notices?: string[] } {
   const roles: Record<string, string[]> = { ...DEFAULT_ROLES };
   const conductor = { ...DEFAULT_CONFIG.conductor };
   const notices: string[] = [];
-  let planner: string | undefined;
+  let planner: string | string[] | undefined;
   for (const name of CONFIG_FILES) {
     let file: Record<string, unknown>;
     if (layers && !layers.some(layer => layer.name === name)) continue;
@@ -310,8 +310,11 @@ export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[]
       }
     }
     if (file.planner !== undefined) {
-      if (!(PLANNER_PEERS as readonly unknown[]).includes(file.planner)) throw new Error(`planner must be one of ${PLANNER_PEERS.join(", ")}`);
-      planner = file.planner as string;
+      if (file.planner === null) throw new Error("planner takes a peer id or a nonempty list of up to eight ids");
+      const def = instanceSettingDef("planner", scope.instances, scope.catalog);
+      if (typeof def === "string") throw new Error(def);
+      const normalized = checkSettingValue(def, file.planner) as string | string[];
+      planner = Array.isArray(file.planner) ? [...file.planner] as string[] : normalized;
     }
     if (file.conductor !== undefined) {
       if (!file.conductor || typeof file.conductor !== "object" || Array.isArray(file.conductor)) throw new Error("conductor must be an object");
@@ -420,7 +423,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     throw new Error("legacy MLX configuration requires explicit mlx.provider=legacy; migrate to provider=ollama to avoid Python serving");
   }
   const mlx = { ...(file.mlx?.provider === "legacy" ? { enabled: true, provider: "legacy" as const, maxInputTokens: 16_000, maxTokens: 2048 } : DEFAULT_CONFIG.mlx), ...file.mlx };
-  const conductorPolicy = loadConductorPolicy(cwd, captured);
+  const conductorPolicy = loadConductorPolicy(cwd, captured, instanceConfig);
   retired.push(...conductorPolicy.notices ?? []);
   const configuredRoles = Object.fromEntries(adapterCatalog.definitions.filter(d => !definitionOf(d.kind)).map(d => [d.kind, [...d.roles]]));
   const extraRoles = Object.fromEntries(Object.keys(instances ?? {}).map(id => [id, effectiveInstanceRoles(id, instances, conductorPolicy.roles, adapterCatalog)]));
@@ -739,8 +742,9 @@ export async function startDaemon(opts: DaemonOptions) {
   let policyRoles = structuredClone(config.roles);
   let plannerSource: "setting" | "roles" | "automatic" | "none" = "none";
   let plannerLogged = "";
+  const plannerEligible = new Set(projectSettings(declarations, adapterCatalog).find(def => def.key === "planner")?.values ?? []);
   const settlePlanner = () => {
-    const { roles, source } = resolveSettledRoles(policyRoles, config.planner, onRoster);
+    const { roles, source } = resolveSettledRoles(policyRoles, config.planner, onRoster, peer => plannerEligible.has(peer));
     for (const key of Object.keys(config.roles)) delete config.roles[key];
     Object.assign(config.roles, roles);
     plannerSource = source;
@@ -748,7 +752,6 @@ export async function startDaemon(opts: DaemonOptions) {
     if (line !== plannerLogged) { log(`planner: ${line}${source === "automatic" ? "; pin it with ahub settings set planner <peer>" : ""}`); plannerLogged = line; }
   };
   const plannerPeers = () => Object.keys(config.roles).filter(peer => config.roles[peer]!.includes("planner"));
-  if (config.planner !== undefined && !(PLANNER_PEERS as readonly string[]).includes(config.planner)) log(`planner: ${JSON.stringify(config.planner)} is not one of ${PLANNER_PEERS.join(", ")}; ignored`);
   settlePlanner();
   const catalog = loadRoleCatalog(opts.cwd);
   for (const error of catalog.errors) log(`catalog role ${error.id}: ${error.reason}`);
@@ -2667,7 +2670,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "task_assign_checked": {
         const peer = peerArg(a.peer, "peer");
         if (!peer) throw new Error("peer is required");
-        if (a.role !== undefined && a.role !== "owner" && a.role !== "reviewer") throw new Error("role must be owner or reviewer");
+        if (a.role !== undefined && a.role !== "owner" && a.role !== "reviewer" && a.role !== "planner") throw new Error("role must be owner, reviewer or planner");
         if (op === "task_assign_checked" && (typeof a.revision !== "number" || !Number.isSafeInteger(a.revision) || a.revision < 0)) throw new Error("revision must be a nonnegative integer");
         return line(await tasks.assignTo(a.id, peer, USER, true, a.role, op === "task_assign_checked" ? a.revision : undefined));
       }
@@ -4882,7 +4885,7 @@ export async function startDaemon(opts: DaemonOptions) {
   function roleHolders(candidate: HubConfig): { planners: string[]; conductors: string[] } {
     // A valid transfer may briefly have two conductors while its leaves are planned. Validate the final map later.
     const policy = Object.fromEntries(Object.entries(candidate.roles).map(([peer, roles]) => [peer, roles.filter(role => role !== "conductor")]));
-    const settled = resolveSettledRoles(policy, candidate.planner, peer => projectRosterAllows(candidate.roster, peer, candidate.pi.enabled));
+    const settled = resolveSettledRoles(policy, candidate.planner, peer => projectRosterAllows(candidate.roster, peer, candidate.pi.enabled), peer => plannerEligible.has(peer));
     return { planners: settled.planners, conductors: Object.keys(candidate.roles).filter(peer => candidate.roles[peer]!.includes("conductor")).sort() };
   }
   function prepareConfiguration(sources: ConfigSources, authority: SettingAuthority, scope?: string, confirmed: readonly string[] = []) {
@@ -5139,7 +5142,7 @@ export async function startDaemon(opts: DaemonOptions) {
       },
     });
     const undo = pendingUndo(opts.stateDir);
-    const planner = `In force: ${plannerPeers().join(", ") || "nobody"} (${plannerSource}). Setting it makes that peer the only planner; agents cannot change it.`;
+    const planner = `In force: ${plannerPeers().join(", ") || "nobody"} (${plannerSource}). Setting it pins the listed peers as the only planners; new tasks select one of those holders. Agents cannot change this setting.`;
     return { pendingRestart: allPendingRestart(), retainedConfig, rows: rows.map(row => row.key === "planner" ? { ...row, hint: planner } : row), ...(undo ? { undo } : {}) };
   }
   /** The same announcement whatever surface made the change: events.jsonl, hub.log and every open console. */
@@ -5555,6 +5558,8 @@ export async function startDaemon(opts: DaemonOptions) {
       if (configuredIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("configured_acp"))) return "target lacks configured_acp; project adapter definitions cannot be preserved by that daemon";
       if (extraIds.length && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("peer_instances"))) return "target lacks peer_instances; declared instance identities cannot be restored by that daemon";
       if (extraIds.some(id => adapterCatalog.definitionOf(declarations[id]!.kind)?.transport === "claude-channel" && declarations[id]!.roles?.includes("implementer")) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("role_stages"))) return "target lacks role_stages; declared Claude implementer authority cannot be restored by that daemon";
+      if ((Array.isArray(config.planner) || typeof config.planner === "string" && extraIds.includes(config.planner) || extraIds.some(id => declarations[id]!.roles?.includes("planner")) || board.hasPlannerState())
+        && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("task_planners"))) return "target lacks task_planners; configured or persisted planner authority cannot be restored by that daemon";
       if (board.releases().some(release => release.train && ["active", "frozen"].includes(release.state)) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("release_trains"))) return "target lacks release_trains; active or frozen train safeguards cannot be preserved";
       if ((extraIds.some(id => !!definitionOf(id)?.reviewer) || config.review.pool !== undefined) && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("reviewer_pool"))) return "target lacks reviewer_pool; fresh review-only variants and pool policy cannot be preserved";
       return undefined;
