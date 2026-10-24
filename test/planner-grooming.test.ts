@@ -20,6 +20,7 @@ test("planner grooming derives all candidate kinds without leaking task text or 
     task(3, { history: [{ at: 2, by: "user", event: "superseded", supersededBy: "#2" }] }),
     task(4, { external: { provider: "github", repo: "owner/repo", issue: 12, url: "https://github.com/owner/repo/issues/12" } }),
     task(5, { state: "approved", refs: { paths: ["src/same.ts"] } }),
+    task(6, { sdlc: { stage: "intent", repo: "owner/repo", issue: 11 } }),
   ];
   const opts = { ...options(), blockers: [{ task: 1, code: "tests" }], issues: new Map([
     ["owner/repo#11", { repo: "owner/repo", issue: 11, state: "OPEN", editedAt: "2026-10-18T01:00:00Z" }],
@@ -28,7 +29,8 @@ test("planner grooming derives all candidate kinds without leaking task text or 
   const before = JSON.stringify(tasks), result = groom(tasks, opts);
   expect(result.items).toContainEqual({ kind: "text-dependency", task: 1, related: [3] });
   expect(result.items).toContainEqual({ kind: "overlap", task: 1, related: [2] });
-  expect(result.items).toContainEqual({ kind: "duplicate", task: 1, related: [2] });
+  expect(result.items).not.toContainEqual({ kind: "duplicate", task: 1, related: [2] });
+  expect(result.items).toContainEqual({ kind: "duplicate", task: 1, related: [6] });
   expect(result.items).toContainEqual(expect.objectContaining({ kind: "over-wip", task: 1 }));
   expect(result.items).toContainEqual({ kind: "stale", task: 1 });
   expect(result.items).toContainEqual({ kind: "superseded", task: 3, related: [2] });
