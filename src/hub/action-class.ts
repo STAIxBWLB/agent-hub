@@ -5,7 +5,8 @@ export type ActionClass = typeof ACTION_CLASSES[number];
 
 const SHELL_TOOLS = new Set(["bash", "shell", "shell_command", "exec_command", "run_shell_command"]);
 const LIMIT = 16_384;
-type Command = { words: string[]; outputs: string[] };
+/** `nested`: the commands of each substitution in the segment (`$(...)`, a backtick). They run in a subshell, so their `cd` never moves the outer cwd. */
+type Command = { words: string[]; outputs: string[]; nested?: Command[][] };
 
 /** Bound the whole input before accepting any prefix, including unsupported suffixes. */
 function segmentLimit(text: string): boolean {
@@ -28,8 +29,79 @@ function segmentLimit(text: string): boolean {
   return true;
 }
 
-/** Literal shell words only; unsupported syntax discards only its unfinished segment. */
-function commands(text: string): Command[] | undefined {
+/**
+ * An expansion (`$VAR`, `${...}`, `$(...)`, a backtick) stands in a word as this one character. The input itself may not contain it
+ * (`commands` refuses a NUL), so a word has it only where the hub put it: the word's value is unknown (#762).
+ */
+const OPAQUE = "\0";
+const opaque = (word: string | undefined): boolean => word !== undefined && word.includes(OPAQUE);
+
+/** The index after the bracket that closes `text[at]` (`(` or `{`), quotes and nested expansions respected, or -1 when it never closes. */
+function matching(text: string, at: number, nest = 0): number {
+  if (nest > 16) return -1;
+  const open = text[at]!, close = open === "(" ? ")" : "}";
+  let depth = 0;
+  for (let i = at; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === "\\") { i++; continue; }
+    if (c === "'") { const end = text.indexOf("'", i + 1); if (end < 0) return -1; i = end; continue; }
+    if (c === "`") { const end = text.indexOf("`", i + 1); if (end < 0) return -1; i = end; continue; }
+    if (c === '"') {
+      for (i++; i < text.length && text[i] !== '"'; i++) {
+        if (text[i] === "\\") i++;
+        else if (text[i] === "$" && (text[i + 1] === "(" || text[i + 1] === "{")) { const end = matching(text, i + 1, nest + 1); if (end < 0) return -1; i = end - 1; }
+      }
+      if (i >= text.length) return -1;
+      continue;
+    }
+    if (c === "$" && (text[i + 1] === "(" || text[i + 1] === "{") && i + 1 !== at) { const end = matching(text, i + 1, nest + 1); if (end < 0) return -1; i = end - 1; continue; }
+    if (c === open) depth++;
+    else if (c === close && --depth === 0) return i + 1;
+  }
+  return -1;
+}
+
+/**
+ * The expansion that starts at `text[at]` (a `$` or a backtick): where it ends, the command texts it runs (`inners`: `$(...)` and a backtick
+ * run their text; `${...}` runs only the substitutions nested in its parameter text, never the text itself), and `drop` for a `$"` that only
+ * opens a quote. Undefined for a `$` that is a literal dollar. An expansion that never closes ends at the end of the text.
+ */
+function expansion(text: string, at: number, quoted: boolean, nest = 0): { end: number; inners: string[]; drop?: true } | undefined {
+  if (text[at] === "`") {
+    for (let i = at + 1; i < text.length; i++) {
+      if (text[i] === "\\") { i++; continue; }
+      if (text[i] === "`") return { end: i + 1, inners: [text.slice(at + 1, i)] };
+    }
+    return { end: text.length, inners: [] };
+  }
+  const next = text[at + 1];
+  if (next === "(") {
+    const end = matching(text, at + 1);
+    return end < 0 ? { end: text.length, inners: [] } : { end, inners: [text.slice(at + 2, end - 1)] };
+  }
+  if (next === "{") {                                       // parameter text is data: only the substitutions inside it run
+    const end = matching(text, at + 1);
+    const body = end < 0 ? text.slice(at + 2) : text.slice(at + 2, end - 1), inners: string[] = [];
+    for (let i = 0; i < body.length && nest < 4; i++) {
+      if (body[i] === "\\") { i++; continue; }
+      if (body[i] !== "$" && body[i] !== "`") continue;
+      const inner = expansion(body, i, false, nest + 1);
+      if (inner) { inners.push(...inner.inners); i = inner.end - 1; }
+    }
+    return { end: end < 0 ? text.length : end, inners };
+  }
+  if (next === "'") {                                       // $'...': ANSI-C quoting, whose escapes build the word
+    for (let i = at + 2; i < text.length; i++) { if (text[i] === "\\") i++; else if (text[i] === "'") return { end: i + 1, inners: [] }; }
+    return { end: text.length, inners: [] };
+  }
+  if (next === '"') return quoted ? undefined : { end: at + 1, inners: [], drop: true };
+  if (next !== undefined && /[A-Za-z_]/.test(next)) { let end = at + 2; while (end < text.length && /[A-Za-z0-9_]/.test(text[end]!)) end++; return { end, inners: [] }; }
+  if (next !== undefined && /[0-9@*#?$!-]/.test(next)) return { end: at + 2, inners: [] };
+  return undefined;
+}
+
+/** Shell words, literal where they can be read. An expansion becomes an opaque word and the commands it runs are read too; unsupported syntax discards only its unfinished segment. */
+function commands(text: string, nest = 0): Command[] | undefined {
   if (text.length > LIMIT || text.includes("\0") || !segmentLimit(text)) return;
   const result: Command[] = [];
   let words: string[] = [], outputs: string[] = [], word = "", active = false, quote = "";
@@ -40,7 +112,8 @@ function commands(text: string): Command[] | undefined {
     else if (!redirect) words.push(word);
     word = ""; active = false; redirect = false;
   };
-  const finish = () => { flush(); if (words.length || outputs.length) result.push({ words, outputs }); words = []; outputs = []; };
+  let nested: Command[][] = [];
+  const finish = () => { flush(); if (words.length || outputs.length || nested.length) result.push({ words, outputs, ...(nested.length ? { nested } : {}) }); words = []; outputs = []; nested = []; };
   for (let i = 0; i < text.length; i++) {
     const c = text[i]!;
     if (quote === "'") { if (c === "'") quote = ""; else word += c; continue; }
@@ -51,7 +124,13 @@ function commands(text: string): Command[] | undefined {
       if (next !== "\n") word += next;
       active = true; continue;
     }
-    if (c === "$" || c === "`") return result;
+    if (c === "$" || c === "`") {
+      const found = expansion(text, i, quote === '"');
+      if (!found) { word += c; active = true; continue; }         // a lone `$` is a literal dollar
+      if (nest < 4) for (const text of found.inners) { const inner = commands(text, nest + 1); if (inner?.length) nested.push(inner); }
+      if (!found.drop) { word += OPAQUE; active = true; }
+      i = found.end - 1; continue;
+    }
     if (quote) { if (c === quote) quote = ""; else word += c; continue; }
     if (c === "'" || c === '"') { quote = c; active = true; continue; }
     if (c === "#" && !active) { while (i < text.length && text[i] !== "\n") i++; finish(); continue; }
@@ -97,6 +176,14 @@ function outside(target: string, root: string, cwd: string): boolean {
   const rel = relative(resolve(root), resolve(cwd, target));
   return rel === ".." || rel.startsWith("../") || isAbsolute(rel);
 }
+/**
+ * A word that starts with an expansion may expand to a dash word (`$OPTS` as `-rf`), so a class that depends on a flag counts it as that flag
+ * (#762). Only the words before `--` can be options. A word that merely has an expansion later (`build/$X`, `--name=$X`) cannot start one.
+ */
+function mayBeFlag(words: readonly string[]): boolean {
+  const end = words.indexOf("--");
+  return words.slice(0, end < 0 ? undefined : end).some(w => w.startsWith(OPAQUE));
+}
 function flags(words: string[], letter: string): boolean {
   const end = words.indexOf("--");
   return words.slice(0, end < 0 ? undefined : end).some(w => /^-[^-]/.test(w) && w.slice(1).includes(letter));
@@ -130,7 +217,7 @@ function commandHeads(words: string[], values: readonly string[], booleans: read
       continue;
     }
     if (!uncertain) return [{ name: word, args: words.slice(i + 1) }];
-    if (actions.includes(word)) heads.push({ name: word, args: words.slice(i + 1) });
+    if (actions.includes(word) || opaque(word)) heads.push({ name: word, args: words.slice(i + 1) });
   }
   return heads;
 }
@@ -153,6 +240,7 @@ function forcedClean(words: string[]): boolean {
         if (flag === "n") dry = true;
       }
     }
+    else if (word.startsWith(OPAQUE)) force = true;   // an expansion may be `-f`; a literal dry run still wins (#762)
   }
   return force && !dry;
 }
@@ -182,7 +270,8 @@ function unwrapped(input: string[]): string[] {
       else if (flag.startsWith("--") && !flag.includes("=") && !["--ignore-environment", "--foreground", "--preserve-status", "--no-run-if-empty", "--verbose"].includes(flag)) return [];
     }
     if (name === "timeout") {
-      if (!/^\d+(?:\.\d+)?[smhd]?$/.test(words.shift() ?? "")) return [];
+      const duration = words.shift() ?? "";
+      if (!/^\d+(?:\.\d+)?[smhd]?$/.test(duration) && !opaque(duration)) return [];
     }
   }
   return [];
@@ -263,8 +352,26 @@ function ghGraphqlRead(words: string[]): boolean | undefined {
   const method = option(rest, "-X", "--method");
   if (method !== undefined && method.toUpperCase() !== "POST") return false;
   const [query] = queries;
+  if (queries.some(opaque)) return false;                                 // an expansion can close a brace or add an operation: unknown is never a read
   if (positional.length !== 1 || positional[0] !== "graphql" || queries.length !== 1 || query === undefined || query.startsWith("@")) return false;
   return graphqlQueryOnly(query);
+}
+
+/**
+ * `gh api` with a word the hub cannot read where an option may stand (#762): an option name with an expansion in it, or a later operand that
+ * starts with one (`gh api repos/o/r $FLAGS`, which can hold `-X POST`). The endpoint (the first operand) and the values of the known valued
+ * options are data. Method, field and query values are judged by the ordinary rules, where an unknown method is never GET.
+ */
+function ghApiDynamic(words: string[]): boolean {
+  const valued = ["-H", "--header", "--hostname", "-q", "--jq", "-t", "--template", "--cache", "-p", "--preview", "-X", "--method", "-f", "-F", "--field", "--raw-field", "--input"];
+  let operands = 0;
+  for (let i = 1; i < words.length; i++) {
+    const word = words[i]!;
+    if (word === "--") return words.slice(i + 1).some((w, n) => opaque(w) && operands + n > 0);
+    if (word.startsWith("-")) { if (opaque(word)) return true; if (valued.includes(word)) i++; continue; }
+    if (operands++ > 0 && word.startsWith(OPAQUE)) return true;
+  }
+  return false;
 }
 
 /** Scan curl options once: data, headers and other option values never become options. */
@@ -328,7 +435,7 @@ function sequence(parsed: Command[], root: string, initial: string[], found: Set
     const [program, ...args] = unwrapped(command.words);
     const target = args[0] === "--" ? args[1] : args[0];
     // Retain both outcomes: cd may fail, or be in a pipeline/conditional branch.
-    if (program === "cd" && (!target || target.startsWith("~"))) {
+    if (program === "cd" && (!target || target.startsWith("~") || opaque(target))) {   // an unknown directory is an unknown cwd
       if (!cwd.has("") && cwd.size >= 128) cwd.delete(cwd.values().next().value!);
       cwd.add("");
     }
@@ -341,6 +448,7 @@ function sequence(parsed: Command[], root: string, initial: string[], found: Set
   }
 }
 function classify(command: Command, root: string, cwd: string[], found: Set<ActionClass>, depth = 0): void {
+  for (const group of command.nested ?? []) sequence(group, root, cwd, found, depth);   // a substitution's own cwd state; only its classes come back
   const words = unwrapped(command.words);
   const program = basename(words.shift() ?? "");
   if (["sh", "bash", "zsh"].includes(program) && depth < 2) {
@@ -349,7 +457,7 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
     const mode = shell.shift();
     if (mode && /^-[A-Za-z]*c[A-Za-z]*$/.test(mode)) {
       if (shell[0] === "--") shell.shift();
-      const nested = shell[0] === undefined ? undefined : commands(shell[0]);
+      const nested = shell[0] === undefined ? undefined : commands(shell[0].replaceAll(OPAQUE, "$_"));
       if (nested) sequence(nested, root, cwd, found, depth + 1);
     }
   }
@@ -357,11 +465,12 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
   if (program === "git") {
     const heads = commandHeads(words, ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"],
       ["-P", "-p", "--no-pager", "--paginate", "--literal-pathspecs", "--bare", "--no-optional-locks", "--no-replace-objects"], ["push", "reset", "clean", "branch"]);
+    if (heads.some(head => opaque(head.name))) { found.add("publish"); found.add("destroy"); }   // `git $CMD`: the strictest classes git reaches (#762)
     for (const { name: sub, args } of heads) {
       if (sub === "push") found.add("publish");
-      if (sub === "reset" && args.some(w => w === "--hard" || w.startsWith("--hard="))) found.add("destroy");
+      if (sub === "reset" && (args.some(w => w === "--hard" || w.startsWith("--hard=")) || mayBeFlag(args))) found.add("destroy");
       if (sub === "clean" && forcedClean(args)) found.add("destroy");
-      if (sub === "branch" && (flags(args, "D") || args.includes("--delete") && args.includes("--force"))) found.add("destroy");
+      if (sub === "branch" && (flags(args, "D") || args.includes("--delete") && args.includes("--force") || mayBeFlag(args))) found.add("destroy");
     }
   }
   if (["npm", "cargo", "pnpm", "yarn", "bun"].includes(program)) {
@@ -379,8 +488,9 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
     for (const head of heads) {
       const candidates = program === "yarn" && head.name === "npm" ? commandHeads(head.args, values, booleans, actions) : [head];
       for (const { name: sub, args } of candidates) {
+        if (opaque(sub) && program !== "bun") { found.add("publish"); found.add("install"); }   // `npm $CMD`; bun runs a file by default, so its expansion is no subcommand (#762)
         if (sub === "publish") found.add("publish");
-        const global = words.includes("--global") || flags(words, "g");
+        const global = words.includes("--global") || flags(words, "g") || mayBeFlag(words);
         if ((program === "cargo" && sub === "install") || (["install", "i", "add"].includes(sub) && global) || (program === "yarn" && sub === "global" && args[0] === "add")) found.add("install");
       }
     }
@@ -389,21 +499,25 @@ function classify(command: Command, root: string, cwd: string[], found: Set<Acti
   if (program === "gh") {
     if (words[0] === "release" && ["create", "upload", "edit", "delete"].includes(words[1] ?? "")) found.add("publish");
     if (["issue", "pr", "gist"].includes(words[0] ?? "") && ["create", "comment", "edit", "close", "reopen", "merge", "review", "delete"].includes(words[1] ?? "")) found.add("external-write");
+    if (opaque(words[0])) { found.add("publish"); found.add("external-write"); }   // `gh $GROUP ...`: the strictest classes gh reaches (#762)
+    else if (opaque(words[1]) && ["release"].includes(words[0] ?? "")) found.add("publish");
+    else if (opaque(words[1]) && ["issue", "pr", "gist", "run", "workflow", "repo", "secret", "variable", "label"].includes(words[0] ?? "")) found.add("external-write");
+    if (words[0] === "repo" && ["delete", "archive", "edit"].includes(words[1] ?? "") || ["secret", "variable"].includes(words[0] ?? "") && ["set", "delete"].includes(words[1] ?? "") || words[0] === "label" && ["create", "edit", "delete"].includes(words[1] ?? "")) found.add("external-write");
     if (words[0] === "run" && ["rerun", "cancel", "delete"].includes(words[1] ?? "") || words[0] === "workflow" && ["run", "enable", "disable"].includes(words[1] ?? "")) found.add("external-write");
     if (words[0] === "api" && ghGraphqlRead(words) !== true) {   // a GraphQL document of queries only is a read (#756); everything else keeps the REST rule
       const method = option(words, "-X", "--method");
       const field = words.some(w => w === "-f" || w === "-F" || w.startsWith("-f") || w.startsWith("-F") || w === "--input" || w.startsWith("--input=") || w.startsWith("--field") || w.startsWith("--raw-field"));
-      if (method ? !["GET", "HEAD"].includes(method.toUpperCase()) : field) found.add("external-write");
+      if (method ? !["GET", "HEAD"].includes(method.toUpperCase()) : field || ghApiDynamic(words)) found.add("external-write");
     }
   }
   if (program === "curl" && curlWrites(words)) found.add("external-write");
   if (["http", "https"].includes(program) && words.some(w => /^(?:POST|PUT|PATCH|DELETE|OPTIONS|TRACE|CONNECT)$/.test(w))) found.add("external-write");
   if (["mail", "mailx", "sendmail"].includes(program) && operands(words).length > 0) found.add("external-write");
   if (["slack", "telegram", "discord"].includes(program) && words.some(w => ["send", "post", "chat.postMessage"].includes(w))) found.add("external-write");
-  if (program === "rm" && (flags(words, "r") || flags(words, "R") || words.includes("--recursive")) && operands(words).some(p => cwd.some(at => outside(p, root, at)))) found.add("destroy");
-  if (["cp", "mv"].includes(program) && (flags(words, "f") || words.includes("--force"))) {
+  if (program === "rm" && (flags(words, "r") || flags(words, "R") || words.includes("--recursive") || operands(words).length > 1 && mayBeFlag(words)) && operands(words).some(p => opaque(p) /* an expansion may hold `..` or an absolute path (#762) */ || cwd.some(at => outside(p, root, at)))) found.add("destroy");
+  if (["cp", "mv"].includes(program) && (flags(words, "f") || words.includes("--force") || words.length > 2 && mayBeFlag(words.slice(0, -1)))) {   // with two words the first cannot be a flag: `cp -f x` has no target
     const target = option(words, "-t", "--target-directory") ?? operands(words).at(-1);
-    if (target && cwd.some(at => outside(target, root, at))) found.add("destroy");
+    if (target && (opaque(target) || cwd.some(at => outside(target, root, at)))) found.add("destroy");
   }
 }
 
