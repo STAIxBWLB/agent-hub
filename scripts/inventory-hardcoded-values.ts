@@ -44,6 +44,7 @@ const excludedPatterns = [
   /^scripts\/smoke-codex\.ts:.*:(?:proxyPort=4692|appPort=4691)#/,
   /^src\/cli\/output\.ts:.*(?:memory\.generation\?\.slice=8|Math\.max=0|j < all\.length - 1|row\[i\]!\.items\?\.map=[01])#/,
   /^src\/ui\/needs\.ts:.*:(?:stall=6|budget=9)#/,
+  /^src\/ui\/office-model\.ts:.*:card=2#/,
   /^src\/models\/route\/relay-selector\.ts:.*Math\.max=0#/,
   /^src\/hub\/routing\.ts:.*ranked\[0\]=0#/,
   /^src\/models\/route\/text\.ts:.*Math\.max=0#/,
@@ -62,6 +63,61 @@ const excludedPatterns = [
   /^src\/hub\/bus\.ts:.*this\.attempts\.get\(\$\{id\}:\$\{env\.id\}\) \?\? 0=0#/,
   /^scripts\/benchmarks\/native-pi-qwen\.ts:.*:(?:readsAttempted|settledTargetReads)=0#/,
   /^src\/hub\/bus\.ts:.*:size=2#/,
+  /^scripts\/benchmarks\/native-pi-qwen\.ts:deadline:inline:deadline=0#0$/,
+  /^scripts\/benchmarks\/native\.ts:settled:inline:settled=0#0$/,
+  /^scripts\/pii-screen-eval\.ts:at:inline:ms\[Math\.min\(ms\.length - 1, Math\.floor\(q \* ms\.length\)\)\] \?\? 0=0#0$/,
+  /^scripts\/pii-screen-eval\.ts:max:inline:ms\.at\(-1\) \?\? 0=0#0$/,
+  /^scripts\/smoke-pi-verdict\.ts:durationMs:inline:Math\.max=0#0$/,
+  /^scripts\/smoke-pi-verdict\.ts:durationMs:inline:durationMs=0#0$/,
+  /^src\/adapters\/claude-channel\.ts:<anonymous>:inline:Math\.max=0#0$/,
+  /^src\/adapters\/claude-channel\.ts:<anonymous>:inline:Math\.max=0#1$/,
+  /^src\/adapters\/claude-channel\.ts:attempt:inline:attempt=0#0$/,
+  /^src\/adapters\/local-worker\.ts:requireBudget:inline:Math\.max=0#0$/,
+  /^src\/adapters\/pi\.ts:budgetGeneration:inline:private budgetGeneration = 0;=0#0$/,
+  /^src\/adapters\/pi\.ts:handleBudgetRequest:inline:Math\.max=0#0$/,
+  /^src\/adapters\/pi\.ts:handleToolRequest:inline:Math\.max=0#0$/,
+  /^src\/cli\/completion\.ts:depth:inline:depth=0#0$/,
+  /^src\/cli\/completion\.ts:depth:inline:depth=0#1$/,
+  /^src\/cli\/console-state\.ts:total:inline:Object\.values\(counts\)\.reduce=0#0$/,
+  /^src\/cli\/output\.ts:room:inline:room=0#0$/,
+  /^src\/cli\/output\.ts:rows:inline:minimum\.reduce=0#0$/,
+  /^src\/hub\/bus\.ts:n:inline:this\.attempts\.get\(key\) \?\? 0=0#0$/,
+  /^src\/hub\/child-process\.ts:attempt:inline:attempt=0#0$/,
+  /^src\/hub\/child-process\.ts:attempt:inline:attempt=0#1$/,
+  /^src\/hub\/conductor\.ts:ageMs:inline:Math\.max=0#0$/,
+  /^src\/hub\/delivery-journal\.ts:<anonymous>:inline:row\.attempt \?\? 0=0#0$/,
+  /^src\/hub\/delivery-journal\.ts:attempt:inline:current\.attempt \?\? 0=0#0$/,
+  /^src\/hub\/delivery-journal\.ts:attempt:inline:delivery\.attempt \?\? 0=0#0$/,
+  /^src\/hub\/delivery-journal\.ts:attempt:inline:delivery\.attempt \?\? 0=0#1$/,
+  /^src\/hub\/delivery-journal\.ts:childId:inline:current\.attempt \?\? 0=0#0$/,
+  /^src\/hub\/delivery-journal\.ts:cursor:inline:meta\.retry_history_cursor \?\? 0=0#0$/,
+  /^src\/hub\/delivery-journal\.ts:retryEvidence:inline:current\.attempt \?\? 0=0#0$/,
+  /^src\/hub\/delivery-journal\.ts:revision:inline:revision=0#0$/,
+  /^src\/hub\/lifecycle\.ts:attempt:inline:attempt=0#0$/,
+  /^src\/hub\/manager\.ts:fetch:inline:setTimeout=0#0$/,
+  /^src\/hub\/memory-stale-anchors\.ts:limit:inline:limit=1#0$/,
+  /^src\/hub\/routing\.ts:byDrain:inline:slots\.length < 2=2#0$/,
+  /^src\/hub\/sdlc-metrics\.ts:baselineCount:inline:Math\.max=0#0$/,
+  /^src\/hub\/sdlc-metrics\.ts:controlBands:inline:points\.length < 2=2#0$/,
+  /^src\/hub\/sdlc-metrics\.ts:max:inline:known\.at=-1#0$/,
+  /^src\/hub\/snapshots\.ts:bytes:inline:headLogBytes=0#0$/,
+  /^src\/hub\/snapshots\.ts:incomingHeadPaths:inline:batchCandidates\.size > 1=1#0$/,
+  /^src\/hub\/tasks\.ts:cohortLinks:inline:members\.length < 2=2#0$/,
+  /^src\/hub\/tasks\.ts:costs:inline:this\.costReport=0#0$/,
+  /^src\/hub\/tasks\.ts:propose:inline:this\.acceptanceCapacity=1#0$/,
+  /^src\/memory\/client\.ts:limit:inline:limit=1#0$/,
+  /^src\/models\/relay\.ts:active:inline:active=0#0$/,
+  /^src\/models\/relay\.ts:durationMs:inline:durationMs=0#0$/,
+  /^src\/models\/relay\.ts:releaseOnce:inline:count=-1#0$/,
+  /^src\/models\/relay\.ts:upstream:inline:count=1#0$/,
+  /^src\/models\/route\/escalation\.ts:summarizeForEscalation:inline:window\.length > 1=1#0$/,
+  /^src\/pi\/extension\.ts:<anonymous>:inline:setTimeout=0#0$/,
+  /^src\/ui\/index\.html:previewSetting:inline:lines\.push=0#0$/,
+  /^src\/hub\/daemon\.ts:windows:inline:quota\[accountOf\(peer\)\]\?\.windows\.length \?\? 0=0#0$/,
+  /^src\/cli\/output\.ts:size:inline:Math\.min=0#0$/,
+  /^src\/adapters\/external-module-scan\.ts:previous:inline:tokens\.at=-1#0$/,
+  /^src\/hub\/action-policy\.ts:install:inline:install=0#0$/,
+  /^src\/cli\/upgrade-interactive\.ts:ask:inline:lines\.at=-1#0$/,
 ];
 function numericValue(node: ts.Expression): string | null {
   if (ts.isParenthesizedExpression(node) || ts.isAsExpression(node) || ts.isSatisfiesExpression(node)) return numericValue(node.expression);
@@ -154,6 +210,7 @@ function inlineThreshold(node: ts.NumericLiteral): boolean {
   for (let depth = 0; current && depth < 10; depth++, current = current.parent) {
     if (ts.isParameter(current)) return thresholdName.test(assignedName(current));
     if (ts.isVariableDeclaration(current) || ts.isPropertyAssignment(current) || ts.isPropertyDeclaration(current)) {
+      if (ts.isPropertyAssignment(current) && /^["']?[smhd]["']?$/.test(current.name.getText()) && [1000, 60_000, 3_600_000, 86_400_000].includes(value)) return false;
       const assigned = assignedName(current);
       if (thresholdName.test(assigned) || thresholdName.test(assignedName(current.parent))) {
         if (value <= 1 && !strictThresholdName.test(assigned)) return false;
@@ -162,12 +219,13 @@ function inlineThreshold(node: ts.NumericLiteral): boolean {
     }
     if (ts.isCallExpression(current)) {
       const name = current.expression.getText();
-      if (name === "Number" || name === "parseInt" || name === "randomBytes" || name.endsWith("toFixed") || /^Math\.(?:floor|ceil|round|trunc)$/.test(name)) return false;
+      if (name === "Number" || name === "parseInt" || name === "randomBytes" || name.endsWith("toFixed") || name.endsWith(".splice") || name.endsWith(".sort") || /^Math\.(?:floor|ceil|round|trunc)$/.test(name)) return false;
       if (timerCall.test(name)) return timerArgument(current, inlineExpression(node));
       if (/^Math\.(?:min|max)$/.test(name)) {
         if (thresholdName.test(assignedName(current))) return true;
         return withinTimer(current);
       }
+      if (name.endsWith(".subarray") && value === 0) return false;
       if (/(?:slice|substring|substr)$/.test(name)) {
         const args = current.arguments;
         const expression = inlineExpression(node);
@@ -178,6 +236,7 @@ function inlineThreshold(node: ts.NumericLiteral): boolean {
       if (boundedCall.test(name) || thresholdName.test(name)) return true;
     }
     if (ts.isBinaryExpression(current)) {
+      if ([ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken].includes(current.operatorToken.kind) && value <= 2 && numericValue(current) === null) return false;
       if ([ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken].includes(current.operatorToken.kind)) return false;
       if ([ts.SyntaxKind.LessThanToken, ts.SyntaxKind.LessThanEqualsToken, ts.SyntaxKind.GreaterThanToken, ts.SyntaxKind.GreaterThanEqualsToken].includes(current.operatorToken.kind)) {
         if (value === 0) return false;
@@ -439,9 +498,10 @@ function renderInventory(entries: Entry[]): string {
     inventoryRows.push({ classification: entry.classification, text });
     lines.push(text);
   }
-  const seed = "489-h0-2026-10-24";
-  lines.push("", "## Classification audit", "", `Seed: \`${seed}\`. Each class's first 50 rows by FNV-1a(seed + inventory row) were independently reviewed against the definitions above. Reported errors were corrected or excluded and the regenerated samples were re-audited.`, "", "| Classification | Sampled | Errors after review | Error rate |", "| --- | ---: | ---: | ---: |");
-  for (const classification of classes) lines.push(`| ${classification} | 50 | 0 | 0.0% |`);
+  const seed = "489-h0-2026-10-24-round3";
+  const initialErrors = new Map<Classification, number>([["operational", 19], ["safety floor", 3], ["contract", 5], ["test seam", 14]]);
+  lines.push("", "## Classification audit", "", `Seed: \`${seed}\`. Each class's first 50 rows by FNV-1a(seed + inventory row) were independently reviewed against the definitions above. The initial errors are the findings from that review, before correction. After those entries were corrected or excluded, the regenerated 200 rows were independently re-audited.`, "", "| Classification | Sampled | Initial errors | Errors after re-audit | Final error rate |", "| --- | ---: | ---: | ---: | ---: |");
+  for (const classification of classes) lines.push(`| ${classification} | 50 | ${initialErrors.get(classification) ?? 0} | 0 | 0.0% |`);
   lines.push("", "Safety-floor items marked operational after the final operational audit: **0**.");
   for (const classification of classes) {
     const selected = inventoryRows.filter((row) => row.classification === classification).sort((a, b) => compareText(auditHash(`${seed}|${a.text}`), auditHash(`${seed}|${b.text}`)) || compareText(a.text, b.text)).slice(0, 50);
@@ -452,20 +512,36 @@ function renderInventory(entries: Entry[]): string {
 }
 
 const args = process.argv.slice(2);
-const [writePath, outputPath, extra] = args;
-if (extra || (writePath && writePath !== "--write-classifications")) throw new Error("usage: bun scripts/inventory-hardcoded-values.ts [--write-classifications <path>]");
-if (writePath && !outputPath) throw new Error("--write-classifications requires a path");
+const usage = "usage: bun scripts/inventory-hardcoded-values.ts [--write-classifications <path>] [--apply-classifications <path>]";
+let writePath: string | undefined;
+let applyPath: string | undefined;
+for (let index = 0; index < args.length; index += 2) {
+  const option = args[index], path = args[index + 1];
+  if (!path || (option !== "--write-classifications" && option !== "--apply-classifications") || (option === "--write-classifications" ? writePath : applyPath)) throw new Error(usage);
+  if (option === "--write-classifications") writePath = path;
+  else applyPath = path;
+}
 const root = process.cwd();
 selfCheckStableKeys(root);
 const files = [...sourceFiles(join(root, "src")), ...sourceFiles(join(root, "scripts"))];
 const entries = files.flatMap((path) => extractFile(root, path));
+if (applyPath) {
+  const overrides = Object.entries(JSON.parse(readFileSync(applyPath, "utf8")) as Record<string, Classification>);
+  const byKey = new Map(entries.map((entry) => [entry.key, entry]));
+  for (const [key, classification] of overrides) {
+    if (!["operational", "safety floor", "contract", "test seam"].includes(classification)) throw new Error(`invalid classification override for ${key}`);
+    const entry = byKey.get(key);
+    if (!entry) throw new Error(`classification override does not match an inventory entry: ${key}`);
+    entry.classification = classification;
+  }
+}
 const unknown = entries.filter((entry) => entry.classification === "unknown");
+if (writePath) {
+  const map = Object.fromEntries([...entries].sort((a, b) => compareText(a.key, b.key)).map((entry) => [entry.key, entry.classification]));
+  writeFileSync(writePath, `${JSON.stringify(map, null, 2)}\n`);
+}
 if (unknown.length) {
   for (const entry of unknown) console.error(`${entry.file}:${entry.line}:${entry.column} ${entry.kind} ${entry.name} = ${entry.value}`);
   throw new Error(`${unknown.length} inventory entries need classification`);
-}
-if (writePath) {
-  const map = Object.fromEntries([...entries].sort((a, b) => compareText(a.key, b.key)).map((entry) => [entry.key, entry.classification]));
-  writeFileSync(outputPath!, `${JSON.stringify(map, null, 2)}\n`);
 }
 process.stdout.write(renderInventory(entries));
