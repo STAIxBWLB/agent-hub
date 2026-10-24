@@ -43,7 +43,7 @@ import { coverageGap, renderReviewBrief, type ReviewBrief } from "./review-brief
 import { definitionOf as builtinDefinitionOf } from "../adapters/registry.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
-import { linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
+import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
 
 export type TaskAssignmentRole = "owner" | "reviewer" | "planner";
 
@@ -1195,7 +1195,7 @@ export class Tasks {
     });
   }
 
-  async planBacklog(by: PeerId, input: { id: number; revision: number; fields: unknown; reason: string }): Promise<Task> {
+  async planBacklog(by: PeerId, input: { id: number; revision: number; fields?: unknown; reason: string }): Promise<Task> {
     this.planningAuthority(by);
     if (!Number.isSafeInteger(input.id) || input.id <= 0 || !Number.isSafeInteger(input.revision) || input.revision < 0) throw new PreEffectToolRefusal("invalid planning identity or revision");
     if (typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("planning needs a bounded reason");
@@ -1205,6 +1205,11 @@ export class Tasks {
       const task = this.d.board.get(input.id);
       if (!task || (task.planningRevision ?? 0) !== input.revision) throw new PreEffectToolRefusal("planning revision changed");
       this.planningAuthority(by, task);
+      if (patch.sdlc !== undefined) {
+        if (task.state !== "backlog" || task.owner || taskHasStarted(task)) throw new PreEffectToolRefusal("issue identity changes require unstarted backlog work");
+        if (by !== USER && this.isPii(task)) throw new PreEffectToolRefusal("private issue identity changes require the person");
+        if (!this.isPii(task) && !this.publicMetadataText(JSON.stringify(patch.sdlc))) throw new PreEffectToolRefusal("planning identity metadata is private or sensitive");
+      }
       if (isClosedTaskState(task.state)) throw new PreEffectToolRefusal("closed work is final");
       if (by !== USER && (task.state !== "backlog" || !taskCanPlan(task) || task.pinned || Object.hasOwn(patch, "pinned"))) throw new PreEffectToolRefusal("planner changes only unpinned backlog work");
       if (by !== USER && patch.rank !== undefined && task.history.some(entry => entry.by === USER && entry.planning?.fields.includes("rank"))) throw new PreEffectToolRefusal("a person's backlog order is retained");
@@ -1245,8 +1250,11 @@ export class Tasks {
     };
     const task = validate(), withheld = await this.withholds("note", input.reason, task);
     this.planningAuthority(by); // #455: or moved the planner
-    validate(); // a person may have changed planning or frozen a release while the screen ran
-    const updated = this.d.board.plan(task.id, by, patch, input.revision, input.reason.trim(), withheld);
+    const latest = validate(); // a person may have changed planning or frozen a release while the screen ran
+    let receipt: Task["sdlc"];
+    try { receipt = patch.sdlc === undefined ? undefined : planningIssueReceipt(patch.sdlc, latest.sdlc, this.d.sdlc?.config() ?? sdlcConfig(undefined)); }
+    catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
+    const updated = this.d.board.plan(task.id, by, patch, input.revision, input.reason.trim(), withheld, receipt);
     this.planningRecorded({ by, task: task.id, fields: Object.keys(patch), revision: updated.planningRevision! });
     return updated; // persistence/readback failures must never claim no effect
   }
@@ -2680,7 +2688,16 @@ export class Tasks {
       if (issue) issues.set(key, issue);
     }
     this.planningAuthority(by);
-    const current = this.d.board.list().filter(included), visible = current.filter(task => !this.isPii(task));
+    const all = this.d.board.list(), current = all.filter(included), visible = current.filter(task => !this.isPii(task));
+    // Include only bounded public dependency context, so approved intermediate phases do not disappear from reachability.
+    const indexed = new Map(all.map(task => [task.id, task])), dependencies = new Map<number, readonly number[]>();
+    const pending = visible.slice(0, 500).map(task => task.id).reverse(), visited = new Set<number>();
+    while (pending.length && visited.size < 500) {
+      const id = pending.pop()!; if (visited.has(id)) continue; visited.add(id);
+      const task = indexed.get(id); if (!task || this.isPii(task)) continue;
+      dependencies.set(id, task.deps ?? []); pending.push(...task.deps ?? []);
+    }
+    const dependencyTruncated = pending.some(id => !visited.has(id));
     const peers = [...new Set([...Object.keys(this.states()), ...current.flatMap(task => task.owner ? [task.owner] : [])])];
     const reviewedIssues = new Map(visible.flatMap(task => task.sdlc?.planReview?.issue ? [[task.id, task.sdlc.planReview.issue] as const] : []));
     const acceptedIssues = new Map(visible.flatMap(task => task.sdlc?.acceptance ? [[task.id, task.sdlc.acceptance] as const] : []));
@@ -2694,7 +2711,7 @@ export class Tasks {
       if (!result.owner) for (const refusal of result.refusals ?? []) if (refusal.role === "owner") blockers.push({ task: task.id, code: refusal.code === "instance" || refusal.code === "family" ? "policy" : refusal.code });
       if (this.waitsFor(task).length) blockers.push({ task: task.id, code: "dependency" });
     }
-    const digest = plannerGrooming(visible, { repository: this.d.repository ?? `path:${realPath(this.d.cwd)}`,
+    const digest = plannerGrooming(visible, { dependencies, dependencyTruncated, repository: this.d.repository ?? `path:${realPath(this.d.cwd)}`,
       limits: Object.fromEntries(peers.map(peer => [peer, this.wipLimit(peer)])), wip: Object.fromEntries(peers.map(peer => [peer, this.wip(peer)])),
       states, issues, reviewedIssues, acceptedIssues, blockers });
     return { ...digest, truncated: digest.truncated || incomplete, ...(current.some(task => this.isPii(task)) ? { privateTasks: "withheld" } : {}) };

@@ -78,6 +78,9 @@ export interface PlannerGroomingOptions {
   limits: Record<string, number>;
   wip: Record<string, number>;
   states: Record<string, string>;
+  /** Public ID/dependency context may include approved intermediate phases. */
+  dependencies?: ReadonlyMap<number, readonly number[]>;
+  dependencyTruncated?: boolean;
   blockers?: readonly { task: number; code: string }[];
   issues?: ReadonlyMap<string, { repo: string; issue: number; state: "OPEN" | "CLOSED"; editedAt: string; lastEditedAt?: string | null }>;
   reviewedIssues?: ReadonlyMap<number, { editedAt: string }>;
@@ -105,10 +108,28 @@ function groomingPath(value: string): string | undefined {
 /** Read-only ids/codes projection. Callers retain authority, privacy screening and the current metadata snapshot. */
 export function plannerGrooming(tasks: readonly Task[], options: PlannerGroomingOptions): { items: GroomingItem[]; unknown: number[]; truncated: boolean } {
   const items: GroomingItem[] = [], unknown = new Set<number>(), seen = new Set<string>();
-  let truncated = tasks.length > GROOMING_TASK_LIMIT;
+  let truncated = tasks.length > GROOMING_TASK_LIMIT || options.dependencyTruncated === true;
   const repository = groomingRepo(options.repository);
   // ponytail: bounded O(500²) snapshot; add revision-keyed paging/indexing before supporting larger complete boards.
-  const snapshot = tasks.slice(0, GROOMING_TASK_LIMIT).filter(task => task.state !== "approved" && (task.state !== "cancelled" || task.history.some(entry => entry.supersededBy))).sort((a, b) => a.id - b.id);
+  const graphRows = tasks.slice(0, GROOMING_TASK_LIMIT);
+  const graph = new Map<number, readonly number[]>(graphRows.map(task => [task.id, task.deps ?? []]));
+  let context = 0;
+  for (const [id, deps] of options.dependencies ?? []) {
+    if (context++ >= GROOMING_TASK_LIMIT) { truncated = true; break; }
+    if (!graph.has(id)) graph.set(id, deps);
+  }
+  const reach = new Map<number, Set<number>>();
+  const dependencies = (id: number): Set<number> => {
+    const cached = reach.get(id); if (cached) return cached;
+    const found = new Set<number>(), pending = [...graph.get(id) ?? []];
+    while (pending.length) {
+      const next = pending.pop()!;
+      if (found.has(next) || !graph.has(next)) continue;
+      found.add(next); pending.push(...graph.get(next) ?? []);
+    }
+    reach.set(id, found); return found;
+  };
+  const snapshot = graphRows.filter(task => task.state !== "approved" && (task.state !== "cancelled" || task.history.some(entry => entry.supersededBy))).sort((a, b) => a.id - b.id);
   const add = (item: GroomingItem) => {
     const key = JSON.stringify(item);
     if (seen.has(key)) return;
@@ -198,7 +219,8 @@ export function plannerGrooming(tasks: readonly Task[], options: PlannerGrooming
     if (repositories.get(task.id) !== repositories.get(right.id)) continue;
     const a = positions.get(task.id)!, b = positions.get(right.id)!;
     if ([...a.paths].some(path => [...b.paths].some(other => overlaps(path, other))) || [...a.symbols].some(symbol => [...b.symbols].some(other => symbolsOverlap(symbol, other)))) add({ kind: "overlap", task: task.id, related: [right.id] });
-    if ([...issueIds.get(task.id)!].some(issue => issueIds.get(right.id)!.has(issue))) add({ kind: "duplicate", task: task.id, related: [right.id] });
+    if (!dependencies(task.id).has(right.id) && !dependencies(right.id).has(task.id)
+      && [...issueIds.get(task.id)!].some(issue => issueIds.get(right.id)!.has(issue))) add({ kind: "duplicate", task: task.id, related: [right.id] });
   }
   for (const blocker of (options.blockers ?? []).slice(0, GROOMING_TASK_LIMIT)) {
     if (!positions.has(blocker.task)) continue;
