@@ -53,12 +53,12 @@ export class Briefs {
   ) {}
 
   async forTask(peer: PeerId, task: BriefTask, priority: readonly NativeItem[] = []): Promise<string | undefined> {
-    const readMaximum = () => typeof this.maxItems === "function" ? this.maxItems() : this.maxItems;
+    // A brief snapshots its configured cap once, before either optional source is selected.
+    const maximum = typeof this.maxItems === "function" ? this.maxItems() : this.maxItems;
     const seen = this.seen.get(peer) ?? new Set<string>();
     this.seen.set(peer, seen);
     let native: NativeItem[] = [];
     try { native = await (this.native?.(task) ?? []); } catch { /* fail-open: the store and derived code context are optional */ }
-    let maximum = readMaximum();
     const own: NativeItem[] = [];
     // A plan fail is task-specific guidance even when a previous task already carried it.
     const priorityIds = new Set(priority.map(item => item.id));
@@ -66,8 +66,7 @@ export class Briefs {
     // Native order is host-supplied (linked fails, then nearer/newer); preserve it for synchronous callers too.
     try { for (const item of native) if (!seen.has(item.id) && !own.some(existing => existing.id === item.id) && own.length < maximum) own.push(item); } catch { /* optional native iteration stays fail-open */ }
     const found = this.client && own.length < maximum ? await related(this.client, this.project, [task.title, ...(task.refs.paths ?? [])].join(" ")) : [];
-    // A reload or another brief for this peer may finish while either optional source is awaited.
-    maximum = readMaximum();
+    // Another brief for this peer may finish while either optional source is awaited.
     const currentOwn = own.filter(item => priorityIds.has(item.id) || !seen.has(item.id)).slice(0, maximum);
     own.splice(0, own.length, ...currentOwn);
     const items: BriefItem[] = [];

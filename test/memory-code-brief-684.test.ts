@@ -29,21 +29,22 @@ test("#367 awaited native notes dedupe within the brief and across peer deliveri
   expect(lines(await briefs.forTask("claude", task))).toEqual([a.line, b.line]);
   expect(lines(await briefs.forTask("codex", { ...task, id: 4 }, [a]))).toEqual([a.line]);
 });
-test("#367 dynamic item budget is read after the code-neighbour await and remains shared with curated memory", async () => {
+test("#367 item budget is snapshotted before code-neighbour selection and shared with curated memory", async () => {
   const gate = deferred(), client = new Curated(); let budget = 4;
   const a = item("direct", "fail"), b = item("neighbour");
   const briefs = new Briefs(client, "fixture", () => budget, async () => { await gate.promise; return [a, b]; });
   const pending = briefs.forTask("codex", task); budget = 1; gate.resolve();
-  expect(lines(await pending)).toEqual([a.line]); expect(client.calls).toBe(0);
+  expect(lines(await pending)).toEqual([a.line, b.line, `mem:${A} now finding curated A`, `mem:${B} now decision curated B`]); expect(client.calls).toBe(1);
   budget = 2;
-  expect(lines(await briefs.forTask("codex", { ...task, id: 2 }))).toEqual([b.line, `mem:${A} now finding curated A`]);
+  expect(await briefs.forTask("codex", { ...task, id: 2 })).toBeUndefined();
 });
-test("#367 a budget tightened during curated lookup caps the combined final projection", async () => {
+test("#367 a budget change during curated lookup applies to the next brief, with zero respected", async () => {
   const gate = deferred(), client = new Curated(); client.gate = gate.promise; let budget = 3;
   const a = item("direct", "fail"), briefs = new Briefs(client, "fixture", () => budget, async () => [a]);
   const pending = briefs.forTask("codex", task); await client.started.promise; budget = 1; gate.resolve();
-  expect(lines(await pending)).toEqual([a.line]);
-  const zero = new Briefs(undefined, "fixture", () => budget, async () => { budget = 0; return [a]; });
+  expect(lines(await pending)).toEqual([a.line, `mem:${A} now finding curated A`, `mem:${B} now decision curated B`]);
+  budget = 0;
+  const zero = new Briefs(undefined, "fixture", () => budget, async () => [a]);
   expect(await zero.forTask("codex", task)).toBeUndefined();
 });
 test("#367 rejected async native context fails open to plan priority and curated notes", async () => {
