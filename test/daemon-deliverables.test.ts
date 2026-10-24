@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { USER } from "../src/hub/envelope.ts";
+import { realPath } from "../src/hub/project.ts";
 
 // #509a through the real daemon and its control socket: the tool ops pass `deliverables` through, the owner's root is the project here, and
 // `task_show` reports the live state. A plain folder: no git repository is initialised.
@@ -14,7 +15,7 @@ const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const fn of cleanup.splice(0).reverse()) await fn(); });
 
 async function rig() {
-  const root = mkdtempSync(join(tmpdir(), "ahub-daemon-deliverables-")); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+  const root = realPath(mkdtempSync(join(tmpdir(), "ahub-daemon-deliverables-"))); cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   const stateDir = join(root, "state");
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, peers: { kimi: { start_mode: "headless" } }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false },
