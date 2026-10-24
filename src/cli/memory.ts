@@ -139,7 +139,9 @@ function existingInspectionProfile(project: string, cwd: string): boolean {
       if (!machine.isFile() || machine.isSymbolicLink()) return false;
       const metadata = readProfileJSON(machineFile, 4096) as { id?: unknown } | undefined;
       if (!metadata || typeof metadata.id !== "string" || !/^[a-f0-9]{16}$/.test(metadata.id)) return false;
-      for (const name of ["log", "local"]) { const folder = lstatSync(join(profile.dir, name)); if (!folder.isDirectory() || folder.isSymbolicLink()) return false; }
+      const logDirectory = lstatSync(join(profile.dir, "log"));
+      const localDirectory = lstatSync(join(profile.dir, "local"));
+      if (!logDirectory.isDirectory() || logDirectory.isSymbolicLink() || !localDirectory.isDirectory() || localDirectory.isSymbolicLink()) return false;
     }
     binding.assertCurrent(); return true;
   } catch { return false; }
