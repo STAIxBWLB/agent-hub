@@ -134,10 +134,12 @@ test("#684 note inventory and code-facts starts have explicit bounds, including 
 function gitProject() { const cwd = temp(); expect(hubGitSync(["-C", cwd, "init", "-q"], { encoding: "utf8" }).status).toBe(0); return cwd; }
 function logs(store: MemoryStore): string[] { return ["log", "local"].flatMap(folder => readdirSync(join(store.dir, folder)).sort().map(name => readFileSync(join(store.dir, folder, name), "utf8"))); }
 test("#684 existing injected-store inspection defers promotions and preserves log and candidate bytes", async () => {
-  const cwd = gitProject(), home = temp(), store = new MemoryStore({ home, screen: () => "promote" }); cleanup.push(() => store.close());
+  let screen: "keep" | "promote" = "keep";
+  const cwd = gitProject(), home = temp(), store = new MemoryStore({ home, screen: () => screen }); cleanup.push(() => store.close());
   const project = memoryProjectKey(cwd), key = taskKey(project, { id: 3, created: 100 });
   const id = store.note({ op: "note", project, scope: "project", tier: "short", kind: "decision", peer: "person", source: "person", text: "public retained memory", task: key, about: ["symbol:A.run@src/a.ts", `task:${project}#3`, `task:${key}`] });
   store.withDeferredPromotions(() => store.settle(key, "person"));
+  screen = "promote"; // Settlement used the keep screen; inspection must not promote now.
   const candidate = join(store.dir, "candidates.db"); writeFileSync(candidate, "private candidate sentinel"); const before = logs(store), bytes = readFileSync(candidate);
   const report = await memoryStaleAnchorsCommand(cwd, { store, facts: { exists: absent }, head: () => HEAD, taskPrivacy: () => "public", now: () => 0 });
   expect(report).toMatchObject({ stale: 1, unknown: 0 }); expect(report.rows[0]?.id).toBe(id);
