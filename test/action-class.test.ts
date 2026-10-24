@@ -194,6 +194,16 @@ const cases: Array<[string, ActionClass[]]> = [
   ["git log $RANGE", []],
   ["git status $X", []],
   ["git -C $D reset $M", ["destroy"]],
+  // #762 round 1 (codex-connector): parameter text is data, and a substitution's cd stays in its subshell
+  ["echo \"${HINT:-run; git push}\"", []],
+  ["echo ${HINT:-git push}", []],
+  ["echo \"${HINT:-$(git push)}\"", ["publish"]],
+  ["echo ${A:-${B:-`rm -rf /etc/x`}}", ["destroy"]],
+  ["echo $(cd /tmp); rm -rf build", []],
+  ["echo $(cd /tmp && rm -rf build)", ["destroy"]],
+  ["cd /tmp; echo $(rm -rf build)", ["destroy"]],
+  ["x=$(git push); cd /tmp; rm -rf build", ["publish", "destroy"]],
+  ["echo $(echo $(cd /tmp)); rm -rf build", []],
   ["gh api graphql -f query='query{a}'; git push", ["publish"]],
   ["gh api graphql -f query='query{a}; git push'", ["external-write"]],   // the `;` is inside the document, which is then not a query
   ["gh api repos/o/r/actions/runs -X GET -f per_page=5", []],

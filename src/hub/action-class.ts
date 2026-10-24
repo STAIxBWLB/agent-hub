@@ -5,7 +5,8 @@ export type ActionClass = typeof ACTION_CLASSES[number];
 
 const SHELL_TOOLS = new Set(["bash", "shell", "shell_command", "exec_command", "run_shell_command"]);
 const LIMIT = 16_384;
-type Command = { words: string[]; outputs: string[] };
+/** `nested`: the commands of each substitution in the segment (`$(...)`, a backtick). They run in a subshell, so their `cd` never moves the outer cwd. */
+type Command = { words: string[]; outputs: string[]; nested?: Command[][] };
 
 /** Bound the whole input before accepting any prefix, including unsupported suffixes. */
 function segmentLimit(text: string): boolean {
@@ -61,30 +62,41 @@ function matching(text: string, at: number, nest = 0): number {
 }
 
 /**
- * The expansion that starts at `text[at]` (a `$` or a backtick): where it ends, the command text it runs (`$(...)`, a backtick, and the
- * parameter text of `${...}`, which can hold one), and `drop` for a `$"` that only opens a quote. Undefined for a `$` that is a literal dollar.
- * An expansion that never closes ends at the end of the text.
+ * The expansion that starts at `text[at]` (a `$` or a backtick): where it ends, the command texts it runs (`inners`: `$(...)` and a backtick
+ * run their text; `${...}` runs only the substitutions nested in its parameter text, never the text itself), and `drop` for a `$"` that only
+ * opens a quote. Undefined for a `$` that is a literal dollar. An expansion that never closes ends at the end of the text.
  */
-function expansion(text: string, at: number, quoted: boolean): { end: number; inner?: string; drop?: true } | undefined {
+function expansion(text: string, at: number, quoted: boolean, nest = 0): { end: number; inners: string[]; drop?: true } | undefined {
   if (text[at] === "`") {
     for (let i = at + 1; i < text.length; i++) {
       if (text[i] === "\\") { i++; continue; }
-      if (text[i] === "`") return { end: i + 1, inner: text.slice(at + 1, i) };
+      if (text[i] === "`") return { end: i + 1, inners: [text.slice(at + 1, i)] };
     }
-    return { end: text.length };
+    return { end: text.length, inners: [] };
   }
   const next = text[at + 1];
-  if (next === "(" || next === "{") {
+  if (next === "(") {
     const end = matching(text, at + 1);
-    return end < 0 ? { end: text.length } : { end, inner: text.slice(at + 2, end - 1) };
+    return end < 0 ? { end: text.length, inners: [] } : { end, inners: [text.slice(at + 2, end - 1)] };
+  }
+  if (next === "{") {                                       // parameter text is data: only the substitutions inside it run
+    const end = matching(text, at + 1);
+    const body = end < 0 ? text.slice(at + 2) : text.slice(at + 2, end - 1), inners: string[] = [];
+    for (let i = 0; i < body.length && nest < 4; i++) {
+      if (body[i] === "\\") { i++; continue; }
+      if (body[i] !== "$" && body[i] !== "`") continue;
+      const inner = expansion(body, i, false, nest + 1);
+      if (inner) { inners.push(...inner.inners); i = inner.end - 1; }
+    }
+    return { end: end < 0 ? text.length : end, inners };
   }
   if (next === "'") {                                       // $'...': ANSI-C quoting, whose escapes build the word
-    for (let i = at + 2; i < text.length; i++) { if (text[i] === "\\") i++; else if (text[i] === "'") return { end: i + 1 }; }
-    return { end: text.length };
+    for (let i = at + 2; i < text.length; i++) { if (text[i] === "\\") i++; else if (text[i] === "'") return { end: i + 1, inners: [] }; }
+    return { end: text.length, inners: [] };
   }
-  if (next === '"') return quoted ? undefined : { end: at + 1, drop: true };
-  if (next !== undefined && /[A-Za-z_]/.test(next)) { let end = at + 2; while (end < text.length && /[A-Za-z0-9_]/.test(text[end]!)) end++; return { end }; }
-  if (next !== undefined && /[0-9@*#?$!-]/.test(next)) return { end: at + 2 };
+  if (next === '"') return quoted ? undefined : { end: at + 1, inners: [], drop: true };
+  if (next !== undefined && /[A-Za-z_]/.test(next)) { let end = at + 2; while (end < text.length && /[A-Za-z0-9_]/.test(text[end]!)) end++; return { end, inners: [] }; }
+  if (next !== undefined && /[0-9@*#?$!-]/.test(next)) return { end: at + 2, inners: [] };
   return undefined;
 }
 
@@ -100,7 +112,8 @@ function commands(text: string, nest = 0): Command[] | undefined {
     else if (!redirect) words.push(word);
     word = ""; active = false; redirect = false;
   };
-  const finish = () => { flush(); if (words.length || outputs.length) result.push({ words, outputs }); words = []; outputs = []; };
+  let nested: Command[][] = [];
+  const finish = () => { flush(); if (words.length || outputs.length || nested.length) result.push({ words, outputs, ...(nested.length ? { nested } : {}) }); words = []; outputs = []; nested = []; };
   for (let i = 0; i < text.length; i++) {
     const c = text[i]!;
     if (quote === "'") { if (c === "'") quote = ""; else word += c; continue; }
@@ -114,7 +127,7 @@ function commands(text: string, nest = 0): Command[] | undefined {
     if (c === "$" || c === "`") {
       const found = expansion(text, i, quote === '"');
       if (!found) { word += c; active = true; continue; }         // a lone `$` is a literal dollar
-      if (found.inner !== undefined && nest < 4) { const inner = commands(found.inner, nest + 1); if (inner) result.push(...inner); }
+      if (nest < 4) for (const text of found.inners) { const inner = commands(text, nest + 1); if (inner?.length) nested.push(inner); }
       if (!found.drop) { word += OPAQUE; active = true; }
       i = found.end - 1; continue;
     }
@@ -435,6 +448,7 @@ function sequence(parsed: Command[], root: string, initial: string[], found: Set
   }
 }
 function classify(command: Command, root: string, cwd: string[], found: Set<ActionClass>, depth = 0): void {
+  for (const group of command.nested ?? []) sequence(group, root, cwd, found, depth);   // a substitution's own cwd state; only its classes come back
   const words = unwrapped(command.words);
   const program = basename(words.shift() ?? "");
   if (["sh", "bash", "zsh"].includes(program) && depth < 2) {
