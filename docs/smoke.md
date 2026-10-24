@@ -1979,4 +1979,4 @@ Kimi usage ceiling: 2.2.0 print stream-json exposes no token counts. Keep unobse
 
 ## Held deliveries and peer retries (#434 AC8, 2026-10-24)
 
-See [delivery holds and peer retry verification](verification/2026-10-24-delivery-holds-ac8.md) for live evidence of hub-settled held deliveries (38 superseded notices in `resolution_history`) and peer retries (2 peer retry rows in `resolution_history`, 27 rows across Claude, Jcode, and Kimi in `delivery_retry_evidence`), alongside daemon status and queue readbacks.
+See [delivery holds and peer retry verification](verification/2026-10-24-delivery-holds-ac8.md) for live evidence of hub-settled held deliveries (39 superseded notices in `resolution_history`) and peer retries (2 peer retry rows in `resolution_history`, 27 rows across Claude, Jcode, and Kimi in `delivery_retry_evidence`), alongside daemon status and queue readbacks.

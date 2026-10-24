@@ -4,7 +4,7 @@ Live evidence for issue #434 AC8 collected from `.agenthub/state/hub.db` and dae
 
 ## Result
 
-- **Leg 1 (Hub-settled held deliveries):** Evidenced. 38 rows recorded in `resolution_history` with `actor = 'hub'` and `action = 'completed'`, all representing automated settlements of superseded notices across peers `claude` and `codex-review`.
+- **Leg 1 (Hub-settled held deliveries):** Evidenced. 39 rows recorded in `resolution_history` with `actor = 'hub'` and `action = 'completed'`, all representing automated settlements of superseded notices across peers `claude` and `codex-review`.
 - **Leg 2 (Peer retries and retry evidence):** Evidenced. 2 peer retry rows recorded in `resolution_history` (`actor = 'peer:claude'`, `action = 'retry'`), and 27 rows recorded in `delivery_retry_evidence` across peers `claude` (18), `jcode` (8), and `kimi` (1).
 - **Daemon readbacks:** Captured `ahub status` (daemon 0.15.0 active on control port 4600) and `ahub queue` (both honest agent refusal and queue status snapshot).
 
@@ -21,15 +21,16 @@ WHERE r.actor = 'hub' AND r.action = 'completed'
 ORDER BY r.id;
 ```
 
-Total count: 38 rows.
+Total count: 39 rows.
 
 Summary by peer:
-- `claude`: 21 rows
-- `codex-review`: 17 rows
+- `claude`: 19 rows
+- `codex-review`: 20 rows
 
 Distinct reason categories:
-- Superseded review moved notices: 23 rows (tasks #120, #307, #317, #343, #362, #367, #391, #405, #406, #407, #408, #409, #410, #411)
-- Superseded task approved notices: 15 rows (tasks #113, #199, #202, #236, #238, #245, #267, #271, #272, #273, #302, #343, #368, #383)
+- Superseded review moved notices: 20 rows (tasks #120, #307, #317, #343, #362, #367, #391, #405, #406, #407, #408, #409, #410, #411)
+- Superseded task approved notices: 20 rows (tasks #113, #199, #202, #236, #238, #245, #267, #271, #272, #273, #302, #343, #368, #383)
+- Row 82 carries both reasons, so it counts in both categories.
 
 | ID | Delivery ID | Peer | Action | Reason | Observed Rev | Result Rev | Result State | Created At (epoch ms) | Updated At (epoch ms) |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -106,7 +107,7 @@ ORDER BY peer, original_id;
 Total count: 27 rows.
 
 Counts by peer:
-- `claude`: 18 rows (8 warning, 10 non-warning)
+- `claude`: 18 rows (10 warning, 8 non-warning)
 - `jcode`: 8 rows (0 warning, 8 non-warning)
 - `kimi`: 1 row (0 warning, 1 non-warning)
 
