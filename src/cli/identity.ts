@@ -17,7 +17,7 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
   if (command === "sdlc" && (args[0] === "authorize-release" || args[0] === "plan-review" || args[0] === "release-assign" || args[0] === "train" && args[1] !== "report")) return true;
   if (args.some(arg => arg === "--as-user" || arg.startsWith("--as-user="))) return true;
   const sub = command === "recovery" ? recoveryAction(args) : args.find(arg => arg !== "--json");
-  return ["task", "role", "goal"].includes(command)
+  return ["task", "role", "goal", "deliverables"].includes(command)
     || (command === "backlog" && sub !== "list") || (command === "release" && !["list", "show"].includes(sub ?? ""))
     || (command === "memory" && sub !== "graph")
     || (command === "recovery" && (sub === "reattach" || sub === "dispose" && context.repairedFresh === true))
@@ -68,6 +68,8 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
     if (["assign", "escalate"].includes(args[0] ?? "")) return "conductor";
     return "console";
   }
+  // #317: the deliverable list is the person's view of the board (it can name files); an agent reads its own tasks through hub_task_show.
+  if (command === "deliverables") return "console";
   if (command === "route") return args[0] === "explain" ? "allowed" : "console";
   // #691: reading agent CLI versions is harmless; trusting an untested version on this machine is a person's.
   if (command === "agents") return args.every(arg => arg === "--json") ? "allowed" : "console";

@@ -89,6 +89,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub backlog split <id> <revision> <parts-json> <reason...>", "person only: stage2..8 child prerequisites; original task retains integration, undo refuses used or changed children"],
     ["ahub backlog pull-ready <id> <revision> <reason...>", "person only: reserve an eligible WIP slot before routing; pending unowned work can be undone"],
     ["ahub backlog pull|return <id>", "person only: pull backlog into To Do or return ownerless proposed work; --backlog on task propose stages unoffered work"],
+    ["ahub deliverables [--task <id>] [--approved] [--check] [--json] [--color=auto|always|never]", "person only: what each task delivered and a reviewer approved, by id, hash and size (a path only where the PII screen allows); --check measures the files now and marks one changed since review"],
     ["ahub task show|escalate <id>", "full task with history (PII text included) / hand it to the next peer in escalate_to"],
     ["ahub task role <id> <role|none>", "person only: change bounded catalog guidance on an open task; routing and authority are unchanged"],
     ["ahub task assign <id> <peer> [--role owner|reviewer|planner] [--revision N]", "name the owner (default), reviewer or person-only planner; a task that still waits reserves its owner; a peer that cannot take it is refused with the reason; --revision refuses stale console actions"],

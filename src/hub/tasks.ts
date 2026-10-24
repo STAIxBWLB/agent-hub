@@ -303,6 +303,21 @@ const RESCREEN_MAX = 10;
 /** #694: a PR staged at done with the commit or branch it was read for. */
 interface IdentityLink { repo: string; pr: number; basis: { commit?: string; branch?: string } }
 
+/** What one live check of a task's files says as a whole (#317): `unchanged` only when EVERY file measured unchanged. A change outranks a missing file, which outranks one the hub could not read. */
+export type DeliverableResult = "changed" | "missing" | "unknown" | "unchanged";
+export const deliverableResult = (states: readonly DeliverableStatus["state"][]): DeliverableResult =>
+  states.includes("changed") ? "changed" : states.includes("missing") ? "missing" : states.includes("unknown") || !states.length ? "unknown" : "unchanged";
+
+/** One row of `ahub deliverables` and one card's badge (#317): ids, hashes and sizes always; a path only where `publicDeliverables` allows it. */
+export interface DeliverableRow {
+  task: number; title: string; taskState: string; state: "delivered" | "approved";
+  /** True only when the files were measured for this row. Without it `changedSinceReview` is absent: the board alone cannot know. */
+  checked: boolean; changedSinceReview?: boolean;
+  /** Present only when `checked`: the whole-row reading of the measurement (never `unchanged` while any file is missing or unreadable). */
+  result?: DeliverableResult;
+  files: { id: string; path?: string; format: string; version?: string; sha256: string; bytes: number; private?: true; state?: DeliverableStatus["state"] }[];
+}
+
 export class Tasks {
   private readonly planReviewRequests = new Map<number, string>();
   private readonly repositories: TaskRepositories;
@@ -3424,7 +3439,49 @@ export class Tasks {
       const { sha256, id, format, version, path, private: hidden } = shown[i]!;
       return { id, sha256, state: check.state, ...(path ? { path } : {}), format, ...(version ? { version } : {}), ...(hidden ? { private: true as const } : {}) };
     });
-    return { state: approved ? "approved" : "delivered", changedSinceReview: files.some(file => file.state === "changed"), files };
+    const changedSinceReview = files.some(file => file.state === "changed");
+    this.deliverableSeen.set(task.id, { key: Tasks.deliverableKey(basis), at: Date.now(), result: deliverableResult(files.map(file => file.state)) });
+    return { state: approved ? "approved" : "delivered", changedSinceReview, files };
+  }
+
+  /** The last live check per task (#317): what the dashboard may say about "changed since review" without hashing on its 1 s poll. Keyed by the records it measured. */
+  private deliverableSeen = new Map<number, { key: string; at: number; result: DeliverableResult }>();
+  private static deliverableKey = (records: readonly DeliverableRecord[]) => records.map(record => `${record.id}:${record.sha256}`).join(",");
+
+  /**
+   * #317: the deliverables of the board's tasks, newest task first, for `ahub deliverables`. `approved` is what a reviewer's approval bound (else what was delivered).
+   * Without `check` this reads the board only: no file is opened, so no row claims `changedSinceReview`. With `check` every file is measured now (one task at a time).
+   * Every path goes through `publicDeliverables`, so a PII task or a path under `pii.paths` shows id, hash and size only.
+   */
+  async deliverableList(opts: { task?: number; approvedOnly?: boolean; check?: boolean } = {}): Promise<DeliverableRow[]> {
+    const rows: DeliverableRow[] = [];
+    const tasks = (opts.task !== undefined ? [this.d.board.get(opts.task)].filter((task): task is Task => !!task) : this.d.board.list()).sort((a, b) => b.id - a.id);
+    for (const task of tasks) {
+      const delivered = latestDeliverables(task.history);
+      if (!delivered) continue;
+      const approved = task.state === "approved" ? approvedDeliverables(task.history) : undefined;
+      if (opts.approvedOnly && !approved) continue;
+      const basis = approved ?? delivered, shown = publicDeliverables(basis, this.nameable)!;
+      const row: DeliverableRow = { task: task.id, title: this.publicTitle(task), taskState: task.state, state: approved ? "approved" : "delivered", checked: false,
+        files: shown.map(({ id, path, format, version, sha256, bytes, private: hidden }) => ({ id, ...(path ? { path } : {}), format, ...(version ? { version } : {}), sha256, bytes, ...(hidden ? { private: true as const } : {}) })) };
+      if (opts.check) {
+        const status = await this.deliverableStatus(task);
+        if (status) { row.checked = true; row.changedSinceReview = status.changedSinceReview; row.result = deliverableResult(status.files.map(file => file.state)); row.files = row.files.map((file, i) => ({ ...file, state: status.files[i]!.state })); }
+      }
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  /** What the dashboard card shows: the board's records, plus the last live check when it measured exactly these records. Opens no file. */
+  deliverableBadge(task: Task): { state: "delivered" | "approved"; files: DeliverableRow["files"]; checked?: { at: number; result: DeliverableResult } } | undefined {
+    const delivered = latestDeliverables(task.history);
+    if (!delivered) return undefined;
+    const approved = task.state === "approved" ? approvedDeliverables(task.history) : undefined;
+    const basis = approved ?? delivered, seen = this.deliverableSeen.get(task.id);
+    return { state: approved ? "approved" : "delivered",
+      files: publicDeliverables(basis, this.nameable)!.map(({ id, path, format, version, sha256, bytes, private: hidden }) => ({ id, ...(path ? { path } : {}), format, ...(version ? { version } : {}), sha256, bytes, ...(hidden ? { private: true as const } : {}) })),
+      ...(seen && seen.key === Tasks.deliverableKey(basis) ? { checked: { at: seen.at, result: seen.result } } : {}) };
   }
 
   /** Check records against the owner's root; with that root unproven every file is `unknown` (never `unchanged`, never an exception). */
