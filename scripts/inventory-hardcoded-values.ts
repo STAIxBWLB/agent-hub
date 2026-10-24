@@ -466,6 +466,6 @@ if (unknown.length) {
 }
 if (writePath) {
   const map = Object.fromEntries([...entries].sort((a, b) => compareText(a.key, b.key)).map((entry) => [entry.key, entry.classification]));
-  writeFileSync(outputPath, `${JSON.stringify(map, null, 2)}\n`);
+  writeFileSync(outputPath!, `${JSON.stringify(map, null, 2)}\n`);
 }
 process.stdout.write(renderInventory(entries));
