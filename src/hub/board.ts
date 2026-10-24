@@ -453,17 +453,18 @@ export class Board {
   }
 
   /** Internal persistence; caller authority and frozen scope are owned by Tasks. */
-  plan(id: number, by: PeerId, input: PlanningFields, revision: number, note?: string, withheld = false): Task {
+  plan(id: number, by: PeerId, input: PlanningFields, revision: number, note?: string, withheld = false, receipt?: SdlcReceipt): Task {
     const patch = planningPatch(input);
     const task = this.get(id);
     if (!task || (task.planningRevision ?? 0) !== revision) throw new Error("planning revision changed");
-    const next = { ...task, ...patch };
+    if ((patch.sdlc !== undefined) !== (receipt !== undefined)) throw new Error("planning issue identity requires a normalized host receipt");
+    const next = { ...task, ...patch, sdlc: receipt ?? task.sdlc };
     if (next.plannedStart != null && next.due != null && next.plannedStart > next.due) throw new Error("planned start must not follow due");
     if (next.release != null && !this.release(next.release)) throw new Error("no such release");
-    const fields = Object.keys(patch) as (keyof PlanningFields)[], previous = Object.fromEntries(fields.map(key => [key, task[key] ?? (key === "pinned" ? false : key === "deps" ? [] : null)])) as PlanningFields;
+    const fields = Object.keys(patch) as (keyof PlanningFields)[], previous = Object.fromEntries(fields.map(key => [key, key === "sdlc" ? { repo: task.sdlc?.repo ?? null, issue: task.sdlc?.issue ?? null } : task[key] ?? (key === "pinned" ? false : key === "deps" ? [] : null)])) as PlanningFields;
     const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "planned", planning: { revision: revision + 1, fields, previous }, ...(note ? { note } : {}), ...(withheld && note ? { withheld: true as const } : {}) };
-    const result = this.taskWrite(() => this.db.query(`UPDATE tasks SET rank=?, priority=?, "release"=?, planned_start=?, due=?, pinned=?, deps=?, reserved=?, planning_revision=planning_revision+1, history=?, updated=? WHERE id=? AND planning_revision=?`)
-      .run(next.rank ?? null, next.priority ?? null, next.release ?? null, next.plannedStart ?? null, next.due ?? null, next.pinned ? 1 : 0, JSON.stringify(next.deps ?? []), next.reserved ?? null, JSON.stringify([...task.history, entry]), now, id, revision));
+    const result = this.taskWrite(() => this.db.query(`UPDATE tasks SET rank=?, priority=?, "release"=?, planned_start=?, due=?, pinned=?, deps=?, reserved=?, planning_revision=planning_revision+1, history=?, updated=?, sdlc=? WHERE id=? AND planning_revision=?`)
+      .run(next.rank ?? null, next.priority ?? null, next.release ?? null, next.plannedStart ?? null, next.due ?? null, next.pinned ? 1 : 0, JSON.stringify(next.deps ?? []), next.reserved ?? null, JSON.stringify([...task.history, entry]), now, next.sdlc === undefined ? null : JSON.stringify(next.sdlc), id, revision));
     if (result.changes !== 1) throw new Error("planning revision changed");
     const updated = this.get(id)!; this.changed(updated, entry); return updated;
   }

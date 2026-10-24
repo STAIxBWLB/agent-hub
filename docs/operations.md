@@ -4361,3 +4361,11 @@ Native launcher connections retry transport timeouts/unclean closes with bounded
 ## amem runtime (agent-mem#13 P4)
 
 The hub exact-pins @staix/agent-mem 0.6.0 for recall, curated evidence and local deterministic capture. No runtime call reaches a claude-mem worker; `memory.worker_url` is ignored. The person's `ahub memory import claude-mem` remains explicit and off by default. Existing profile, alias, PII and private-turn fences still apply. `ask --remember` and context checkpoints propose machine-local candidates, never automatic curated evidence. See [memory integration](memory.md#in-process-recall-and-capture-agent-mem13-p4) for changed behavior and bounded-view ceilings.
+
+## Backlog issue identity and notes
+
+After #759 is released, the card's effective planner or the person can relink an unstarted backlog card through `hub_backlog_plan`, using `fields: {sdlc: {repo: "owner/repo", issue: 525}}`. The change is one planning revision and clears the old spec acceptance. Stage, reviewed heads, checklists and other lifecycle evidence cannot be supplied through this path; `hub_sdlc_record` still refuses backlog work.
+
+Omit tool `fields`, or use `{}`, to record only the bounded reason as a new revision. The person CLI retains its JSON argument: `ahub backlog plan <id> <revision> '{}' '<reason>'`. Existing planner scope, pins, frozen releases and stale-revision checks still apply. Undo restores identity members without restoring old consent; null members represent an absent previous repo or issue.
+
+The grooming digest no longer calls ordered dependency phases duplicate merely because they share a design issue. It still reports path/symbol overlap, unrelated same-issue cards and references requiring attention. It uses dependency edges only, including bounded public context for approved intermediate phases.

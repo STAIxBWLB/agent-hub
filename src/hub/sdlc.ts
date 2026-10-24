@@ -208,6 +208,11 @@ export function sdlcReceipt(value: unknown, previous: SdlcReceipt | undefined = 
     next.localResult = raw.localResult as SdlcReceipt["localResult"];
   }
   if (raw.redFirst !== undefined) next.redFirst = parseRedFirst(raw.redFirst);
+  return receiptIdentity(next, previous, raw);
+}
+
+function receiptIdentity(next: SdlcReceipt, previous: SdlcReceipt, raw: Record<string, unknown>): SdlcReceipt {
+  const checklist = raw.criteria ?? raw.phase;
   // A test receipt never carries across a different linked issue or artifact.
   if (raw.redFirst === undefined && (next.repo !== previous.repo || next.issue !== previous.issue || next.pr !== previous.pr)) delete next.redFirst;
   // An acceptance names one spec issue; relinking the receipt to another drops it (#481 S1).
@@ -222,6 +227,33 @@ export function sdlcReceipt(value: unknown, previous: SdlcReceipt | undefined = 
   }
   return next;
 }
+
+export interface PlanningIssueIdentity { repo?: string | null; issue?: number | null }
+/** Planning can change only the linked issue identity, never lifecycle evidence. */
+export function planningIssueIdentity(value: unknown): PlanningIssueIdentity {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("planning sdlc identity must be an object");
+  const raw = value as Record<string, unknown>, keys = Object.keys(raw);
+  if (!keys.length || keys.some(key => key !== "repo" && key !== "issue")) throw new Error("planning sdlc identity takes repo/issue only");
+  const result: PlanningIssueIdentity = {};
+  if (Object.hasOwn(raw, "repo")) {
+    if (raw.repo !== null && (!repo(raw.repo) || raw.repo.length > 400)) throw new Error("planning sdlc.repo: expected owner/repository or null");
+    result.repo = raw.repo as string | null;
+  }
+  if (Object.hasOwn(raw, "issue")) {
+    if (raw.issue !== null && !id(raw.issue)) throw new Error("planning sdlc.issue: expected a positive integer or null");
+    result.issue = raw.issue as number | null;
+  }
+  return result;
+}
+export function planningIssueReceipt(value: unknown, previous: SdlcReceipt | undefined, config: SdlcConfig): SdlcReceipt {
+  const identity = planningIssueIdentity(value);
+  if (identity.repo !== null && identity.issue !== null) return sdlcReceipt(identity, previous, config);
+  const old = previous ?? { stage: config.stages[0] ?? "spec" }, next = { ...old };
+  if (Object.hasOwn(identity, "repo")) { if (identity.repo === null) delete next.repo; else next.repo = identity.repo!; }
+  if (Object.hasOwn(identity, "issue")) { if (identity.issue === null) delete next.issue; else next.issue = identity.issue!; }
+  return receiptIdentity(next, old, {});
+}
+
 
 export function parsePrEvidence(value: unknown): PrEvidence {
   const p = value as Record<string, any>;

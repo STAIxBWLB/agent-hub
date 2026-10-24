@@ -1,0 +1,28 @@
+name: closing-refs
+
+# #760: fail a PR that GitHub will use to close an issue its title and body only mention (`Refs #N`, or "Does not close #N", which GitHub
+# reads as a closing keyword). The logic and its tests are scripts/check-closing-refs.mjs and test/closing-refs.test.ts; the rule is the
+# "Closing keywords" bullet in AGENTS.md, and docs/agent-notes/tests.md says how to run the check by hand.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  closing-refs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Compare closing references with the PR text
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node scripts/check-closing-refs.mjs

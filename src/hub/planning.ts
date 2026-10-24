@@ -1,9 +1,10 @@
 import type { ReleaseTrainData } from "./sdlc-release.ts";
+import { planningIssueIdentity, type PlanningIssueIdentity } from "./sdlc.ts";
 import type { Task } from "./board.ts";
 
 export const BACKLOG_SPLIT_SCREEN_TIMEOUT_MS = 8000;
 
-export const PLANNING_FIELDS = ["rank", "priority", "release", "plannedStart", "due", "pinned", "deps", "reserved"] as const;
+export const PLANNING_FIELDS = ["rank", "priority", "release", "plannedStart", "due", "pinned", "deps", "reserved", "sdlc"] as const;
 export interface PlanningFields {
   rank?: number | null;
   priority?: number | null;
@@ -13,6 +14,7 @@ export interface PlanningFields {
   pinned?: boolean;
   deps?: number[];
   reserved?: string | null;
+  sdlc?: PlanningIssueIdentity;
 }
 export interface PlanningPatch extends PlanningFields {}
 /** Machine-local capacity settings; ids never grant roster membership or authority. */
@@ -39,15 +41,17 @@ export interface Release {
 }
 
 /** Validate the entire planning input before a write; actual dates are never caller input. */
-export function planningPatch(input: unknown): PlanningPatch {
+export function planningPatch(input: unknown = {}): PlanningPatch {
   if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("planning fields must be an object");
   const fields = input as Record<string, unknown>;
-  if (!Object.keys(fields).length || Object.keys(fields).some(key => !(PLANNING_FIELDS as readonly string[]).includes(key))) throw new Error("unknown or empty planning fields");
+  if (Object.keys(fields).some(key => !(PLANNING_FIELDS as readonly string[]).includes(key))) throw new Error("unknown planning fields");
   const result: PlanningPatch = {};
   for (const key of PLANNING_FIELDS) {
     if (!Object.hasOwn(fields, key)) continue;
     const value = fields[key];
-    if (key === "deps") {
+    if (key === "sdlc") {
+      result.sdlc = planningIssueIdentity(value);
+    } else if (key === "deps") {
       if (!Array.isArray(value) || value.length > 64 || value.some(id => !Number.isSafeInteger(id) || id <= 0) || new Set(value).size !== value.length) throw new Error("deps must be at most 64 unique positive task ids");
       result.deps = [...value];
     } else if (key === "reserved") {
