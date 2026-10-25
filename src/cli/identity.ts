@@ -54,7 +54,65 @@ export function detectCliIdentity(env: Readonly<Record<string, string | undefine
 
 export type PeerCommandAccess = "allowed" | "conductor" | "console";
 
-/** A closed list: unknown commands cannot acquire console authority through an agent shell. */
+/** Flags the read-only forms of #812 accept: display options that change no behaviour. */
+const peerReadFlags = (args: readonly string[]): boolean =>
+  args.every((arg) => ["--json", "--full", "--verbose", "--color=always", "--color=never", "--color=auto"].includes(arg) || arg.startsWith("--color="));
+
+/**
+ * The read-only command forms #812 makes Allowed: command -> subcommand -> what the rest of argv may hold.
+ * positional: bare words naming what to read (an operation id, a task, a release, a repo);
+ * valueFlags: options consuming one value an agent may name (--peer, --to, --since).
+ * A subcommand of "" is the bare form: display flags only. dryRun is checked separately for upgrade and restart.
+ */
+const peerReadForms: Readonly<Record<string, Readonly<Record<string, { positional?: number; valueFlags?: readonly string[] }>>>> = {
+  queue: { list: { valueFlags: ["--peer"] } },
+  roster: { "": {} },
+  projects: { "": {} },
+  models: { status: {} },
+  recovery: { status: { positional: 1 } },
+  settings: { "": {}, list: {}, get: { positional: 1 } },
+  sdlc: { status: { positional: 1 }, explain: { positional: 1 }, queue: { positional: 1 }, release: { positional: 1 }, costs: { positional: 1 }, metrics: { valueFlags: ["--since"] } },
+  backlog: { list: {} },
+  release: { list: {}, show: { positional: 1 } },
+};
+
+/** Whether argv matches one Allowed read-form of this command: display flags, the subcommand shape's values only. */
+const readFormArgs = (args: readonly string[], { valueFlags = [], positional = 0 }: { valueFlags?: readonly string[]; positional?: number } = {}): boolean => {
+  let positionals = 0;
+  let expectValue: string | undefined;
+  for (const arg of args) {
+    if (expectValue !== undefined) {
+      if (arg.startsWith("-")) return false;
+      expectValue = undefined;
+    } else if (valueFlags.includes(arg)) {
+      expectValue = arg;
+    } else if (arg.startsWith("--")) {
+      if (!peerReadFlags([arg])) return false;
+    } else if (positionals >= positional) {
+      return false;
+    } else {
+      positionals++;
+    }
+  }
+  return expectValue === undefined;
+};
+
+const isPeerReadForm = (command: string, args: readonly string[]): boolean => {
+  const subs = peerReadForms[command];
+  if (subs === undefined) return false;
+  // The bare form ("") carries no subcommand: args empty or all display flags; otherwise args[0] is the subcommand.
+  const first = args[0];
+  const bare = first === undefined || first.startsWith("--");
+  const sub = bare ? "" : first;
+  if (!Object.hasOwn(subs, sub)) return false;
+  return readFormArgs(bare ? args : args.slice(1), subs[sub]!);
+};
+
+/**
+ * A closed list: unknown commands cannot acquire console authority through an agent shell.
+ * #812: the read-only forms matched by the branches just above the catch-alls are Allowed for any agent.
+ * The branches above them are the older authority rules and stay unchanged.
+ */
 export function classifyPeerCommand(command: string, args: readonly string[], catalog?: ProjectAdapterCatalog): PeerCommandAccess {
   if (command === "recovery" && recoveryAction(args) === "reattach") return "console";
   const native = catalog?.definitionOf(command) ?? definitionOf(command);
@@ -87,6 +145,16 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   // The subcommand is the first argument that is not --json, which the command accepts anywhere.
   if (command === "bench") return args.find((arg) => arg !== "--json") === "run" ? "console" : "allowed";
   if (command === "budget") return !args.length || args.every((arg) => arg === "--json" || arg === "--full" || arg.startsWith("--color=")) ? "allowed" : "console";
+  // #812 Allowed: the read-only forms below print what the person sees and change nothing. Each command's
+  // other forms fall to the existing rules underneath, so every older branch above and below keeps its class.
+  if (command === "doctor") {
+    if (peerReadFlags(args)) return "allowed"; // no args, or only --json, --full, --color=...
+    if (args[0] === "--stale-anchors" && peerReadFlags(args.slice(1))) return "allowed"; // a bounded read-only anchor report
+    // --orphans (it can kill) and anything else stay as today.
+  }
+  if ((command === "upgrade" || command === "restart") && !args.includes("--yes") && args.includes("--dry-run")
+    && readFormArgs(args.filter((arg) => arg !== "--dry-run"), { valueFlags: ["--to"] })) return "allowed"; // a preview that applies nothing; --yes stays console
+  if (isPeerReadForm(command, args)) return "allowed"; // queue list, bare roster and projects, models status, recovery status, settings reads, sdlc reads, backlog list, release list|show
   if (native?.cli.authority === "person") return "console";
   if (native || ["pause", "resume"].includes(command)) return "conductor";
   if (command === "board" && args[0] === "import") return "console";

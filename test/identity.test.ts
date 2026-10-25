@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, liveTestRefusal, peerCommandRefusal } from "../src/cli/identity.ts";
+import { classifyPeerCommand, cliCommandLabel, detectCliIdentity, liveTestRefusal, peerCommandRefusal, type PeerCommandAccess } from "../src/cli/identity.ts";
+import { HELP, helpCommands } from "../src/cli/help.ts";
 
 test("plain terminals keep console identity and native markers select tools identity", () => {
   expect(detectCliIdentity({})).toEqual({ role: "console" });
@@ -20,8 +21,11 @@ test("malformed and conflicting native identity never falls back to the person",
 });
 
 test("agent command classification refuses all human authority and keeps ordinary tools", () => {
-  for (const command of ["permit", "queue", "kill", "recovery", "recovery-run", "upgrade", "restart", "up", "ask", "console", "ui", "tail", "undo", "unknown"]) expect(classifyPeerCommand(command, [])).toBe("console");
+  for (const command of ["permit", "kill", "recovery-run", "up", "ask", "console", "ui", "tail", "undo", "unknown"]) expect(classifyPeerCommand(command, [])).toBe("console");
+  // #812 moved queue list, bare recovery's screen forms and the dry-run previews to Allowed; these bare forms stay console.
+  for (const command of ["queue", "recovery", "upgrade", "restart"]) expect(classifyPeerCommand(command, [])).toBe("console");
   for (const sub of ["resume", "set", "execution"]) expect(classifyPeerCommand("budget", [sub])).toBe("console");
+  // #812: the queue reads stay console until the daemon admits them (#812 T1b); the writes are the conductor's (#818).
   expect(classifyPeerCommand("queue", ["list"])).toBe("console");
   for (const sub of ["show", "resolve", "discard"]) expect(classifyPeerCommand("queue", [sub])).toBe("conductor");
   for (const command of ["say", "status", "board", "report", "turns", "review", "remember", "help", "version", "facts", "check-path"]) expect(classifyPeerCommand(command, [])).toBe("allowed");
@@ -59,6 +63,7 @@ test("audit labels and human-action hints contain command names only", () => {
 });
 
 test("roster mutation requires conductor authority while direct roster settings stay person-only (#812)", () => {
+  // #812: the daemon refuses roster reads for a tools connection (settings_get), so the bare read stays console too.
   for (const args of [[], ["--json"]]) expect(classifyPeerCommand("roster", args)).toBe("console");
   for (const args of [["add", "kimi"], ["remove", "kimi", "--yes", "--now"]]) expect(classifyPeerCommand("roster", args)).toBe("conductor");
   for (const args of [["set", "roster.kimi", "true"], ["set", "roster.kimi", "false", "--yes"]]) expect(classifyPeerCommand("settings", args)).toBe("console");
@@ -111,4 +116,91 @@ test("release authorization stays person-only while exact release preflights are
   // #786: the guarded merge is the person's or the configured conductor's (the daemon checks the role); live-test never delegates it.
   expect(classifyPeerCommand("sdlc", ["merge", "1"])).toBe("conductor"); expect(classifyPeerCommand("sdlc", ["merge", "1", "--dry-run"])).toBe("conductor");
   expect(liveTestRefusal("sdlc", ["merge", "1"])).toBe(true);
+});
+
+// #812 Allowed: each read-only form and the neighbour that keeps its class, as one table.
+const allowedForms: readonly [string, readonly string[], PeerCommandAccess][] = [
+  ["doctor", [], "allowed"],
+  ["doctor", ["--json"], "allowed"],
+  ["doctor", ["--full"], "allowed"],
+  ["doctor", ["--color=always"], "allowed"],
+  ["doctor", ["--stale-anchors"], "allowed"],
+  ["doctor", ["--stale-anchors", "--json"], "allowed"],
+  ["doctor", ["--orphans"], "console"],
+  ["doctor", ["--orphans", "--kill", "--json"], "console"],
+  ["queue", ["list"], "allowed"],
+  ["queue", ["list", "--peer", "kimi", "--json", "--color=never"], "allowed"],
+  ["queue", ["show", "d1"], "console"],
+  ["queue", ["resolve", "d1", "--action", "completed", "--reason", "done"], "console"],
+  ["queue", ["discard", "--peer", "kimi", "--reason", "all"], "console"],
+  ["roster", [], "allowed"],
+  ["roster", ["--json"], "allowed"],
+  ["roster", ["--color=always"], "allowed"],
+  ["roster", ["add", "kimi"], "console"],
+  ["roster", ["remove", "kimi", "--yes", "--now"], "console"],
+  ["projects", [], "allowed"],
+  ["projects", ["--json"], "allowed"],
+  ["projects", ["remove", "p1"], "console"],
+  ["models", ["status"], "allowed"],
+  ["models", ["status", "--json", "--color=auto"], "allowed"],
+  ["models", ["setup"], "console"],
+  ["models", ["start"], "console"],
+  ["models", ["stop"], "console"],
+  ["recovery", ["status"], "allowed"],
+  ["recovery", ["status", "op-1", "--json"], "allowed"],
+  ["recovery", [], "console"],
+  ["recovery", ["resume", "op-1"], "console"],
+  ["recovery", ["abort", "op-1"], "console"],
+  ["recovery", ["reattach", "op-1", "codex"], "console"],
+  ["upgrade", ["--dry-run"], "allowed"],
+  ["upgrade", ["--dry-run", "--json"], "allowed"],
+  ["upgrade", ["--to", "1.2.3", "--dry-run"], "allowed"],
+  ["upgrade", [], "console"],
+  ["upgrade", ["--dry-run", "--yes"], "console"],
+  ["upgrade", ["--yes"], "console"],
+  ["restart", ["--dry-run"], "allowed"],
+  ["restart", ["--dry-run", "--json", "--color=never"], "allowed"],
+  ["restart", [], "console"],
+  ["restart", ["--yes"], "console"],
+  ["restart", ["--dry-run", "--yes"], "console"],
+  ["settings", [], "allowed"],
+  ["settings", ["list"], "allowed"],
+  ["settings", ["list", "--json"], "allowed"],
+  ["settings", ["get", "routing.claude"], "allowed"],
+  ["settings", ["get", "routing.claude", "--json"], "allowed"],
+  ["settings", ["set", "routing.claude", "implement"], "console"],
+  ["settings", ["undo"], "console"],
+  ["settings", ["reload"], "console"],
+  ["settings", ["edit", "sdlc.toml", "set", "mode", "\"off\"", "--yes"], "console"],
+  ["settings", ["backups"], "console"],
+  ["sdlc", ["status"], "allowed"],
+  ["sdlc", ["status", "42"], "allowed"],
+  ["sdlc", ["explain", "42"], "allowed"],
+  ["sdlc", ["queue", "STAIXBWLB/agent-hub"], "allowed"],
+  ["sdlc", ["release", "STAIXBWLB/agent-hub"], "allowed"],
+  ["sdlc", ["costs"], "allowed"],
+  ["sdlc", ["metrics", "--since", "2026-10-01"], "allowed"],
+  ["sdlc", ["export", "42"], "console"],
+  ["sdlc", ["record", "42", "{}"], "console"],
+  ["sdlc", ["train", "report"], "console"],
+  ["sdlc", ["release-assign", "42", "1", "none", "reason"], "console"],
+  ["backlog", ["list"], "allowed"],
+  ["backlog", ["list", "--json", "--full", "--color=always"], "allowed"],
+  ["backlog", ["add", "implement", "a title"], "console"],
+  ["backlog", ["pull", "42"], "console"],
+  ["release", ["list"], "allowed"],
+  ["release", ["show", "0.18.0"], "allowed"],
+  ["release", ["new", "0.18.0", "goal", "1"], "console"],
+  ["release", ["freeze", "0.18.0", "1"], "console"],
+];
+
+test("#812 Allowed: every read-only form classifies allowed and each listed neighbour keeps its class", () => {
+  for (const [command, args, access] of allowedForms) expect([command, args.join(" "), classifyPeerCommand(command, args)]).toEqual([command, args.join(" "), access]);
+});
+
+test("#812 AC1: every ahub help command has a class, so classification never throws", () => {
+  const classes: readonly PeerCommandAccess[] = ["allowed", "conductor", "console"];
+  for (const entry of HELP) {
+    for (const word of helpCommands(entry)) expect(classes).toContain(classifyPeerCommand(word, []));
+  }
 });
