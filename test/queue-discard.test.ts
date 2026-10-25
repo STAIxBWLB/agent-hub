@@ -126,9 +126,9 @@ test("a busy pull-only peer's queued deliveries can be discarded one by one, and
   expect(JSON.stringify([stale, unknown])).not.toContain("resolution refused: refresh the delivery revision");   // the old generic sentence is gone
 });
 
-test("queue discard is person only, validated, and refused for an agent identity (#713 acceptance)", async () => {
+test("queue discard requires the configured conductor or person, stays validated, and refuses other agents (#713 acceptance)", async () => {
   const f = await rig();
-  expect(classifyPeerCommand("queue", ["discard"])).toBe("console");
+  expect(classifyPeerCommand("queue", ["discard"])).toBe("conductor");
   const agent = await cli(f.root, ["queue", "discard", "--peer", "claude", "--reason", "x", "--yes"], { AGENTHUB_PEER_ID: "claude", CLAUDECODE: "1" });
   expect(agent.code).toBe(1); expect(agent.stderr).toContain("cannot run ahub queue"); expect(agent.stdout).toBe("");
   const bad = await f.person.request({ t: "queue", op: "discard", peer: "../etc", confirmed: true, reason: "x" });

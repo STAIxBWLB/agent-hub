@@ -9,6 +9,7 @@ import { requireConductor } from "../src/hub/conductor.ts";
 import { inspectSelectedOrphans, stopSelectedOrphan, exactOrphanCommand, type OrphanPorts } from "../src/hub/orphan-process.ts";
 import { operationalView, redactBusEvent } from "../src/hub/operational-view.ts";
 import { Board } from "../src/hub/board.ts";
+import { BasePeer } from "../src/hub/peers.ts";
 import { Bus, type BusEvent } from "../src/hub/bus.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
@@ -17,7 +18,9 @@ import { AcpPeer } from "../src/adapters/acp.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { classifyPeerCommand, liveTestRefusal } from "../src/cli/identity.ts";
 import { startDaemon, DEFAULT_CONFIG } from "../src/hub/daemon.ts";
-import { ControlClient } from "../src/hub/control-client.ts";
+import { drainCliAudits } from "../src/cli/identity-audit.ts";
+import { processSignature } from "../src/pi/process-signature.ts";
+import { ControlClient, PROTOCOL } from "../src/hub/control-client.ts";
 import { readEvents } from "../src/hub/events.ts";
 import { emulatedBoundedTools } from "./fakes/bounded-capabilities.ts";
 
@@ -95,9 +98,9 @@ test("public operational projection uses actual Tasks privacy and never emits pr
   } finally {bus.closeJournal();board.close();rmSync(root,{recursive:true,force:true});}
 });
 
-async function operationalFixture() {
+async function operationalFixture(piiPaths?:string[]) {
   const root=temp(),stateDir=join(root,".agenthub/state");mkdirSync(join(root,".agenthub"),{recursive:true});
-  const config={roles:{...DEFAULT_CONFIG.roles,codex:["conductor","planner"],claude:["implementer"]},planner:"codex",memory:{...DEFAULT_CONFIG.memory,enabled:false},inference:{...DEFAULT_CONFIG.inference,enabled:false},snapshots:{enabled:false,keep:20},pi:{...DEFAULT_CONFIG.pi,enabled:false,auto_start:false},mlx:{...DEFAULT_CONFIG.mlx,enabled:false}};
+  const config={roles:{...DEFAULT_CONFIG.roles,codex:["conductor","planner"],claude:["implementer"]},planner:"codex",memory:{...DEFAULT_CONFIG.memory,enabled:false},inference:{...DEFAULT_CONFIG.inference,enabled:false},snapshots:{enabled:false,keep:20},pi:{...DEFAULT_CONFIG.pi,enabled:false,auto_start:false},mlx:{...DEFAULT_CONFIG.mlx,enabled:false},...(piiPaths?{pii:{paths:piiPaths}}:{})};
   writeFileSync(join(root,".agenthub/config.json"),JSON.stringify(config));
   const daemon=await startDaemon({cwd:root,stateDir,controlPort:0,codexAppPort:0,codexProxyPort:0,boundedTools:emulatedBoundedTools(),config:{...DEFAULT_CONFIG,...config,batch_ms:0}});
   const clients:ControlClient[]=[];
@@ -135,8 +138,10 @@ test("operational CLI roster settings queue logs export and doctor work as condu
       const result=await runOperationalCli(f.root,args);expect(result.code,result.stderr).toBe(0);expect(result.stdout).not.toMatch(/PRIVATE_TITLE_CANARY|PRIVATE_BODY_CANARY/);
       const refused=await runOperationalCli(f.root,args,"claude");expect(refused.code).toBe(1);expect(refused.stderr).toMatch(/conductor/);expect(refused.stderr).toContain("console");
     }
+    const recipient=new class extends BasePeer {async start(){} async stop(){} async deliver(){throw new Error("offline fixture must never deliver");}}("codex");
+    f.daemon.bus.add(recipient);
     const env=newEnvelope("user","PRIVATE_BODY_CANARY",{to:["codex"],private:true});f.daemon.bus.publish(env);
-    const row=f.daemon.bus.queueList("codex").find(r=>r.originals.some(e=>e.id===env.id)) ?? f.daemon.bus.queueList("codex").find(r=>r.state==="queued")!;
+    const row=f.daemon.bus.queueList("codex").find(r=>r.originals.some(e=>e.id===env.id))!;
     expect(row).toBeDefined();
     const shown=await runOperationalCli(f.root,["queue","show",row.id,"--json"]);expect(shown.code,shown.stderr).toBe(0);expect(shown.stdout).not.toContain("PRIVATE_BODY_CANARY");
     const resolved=await runOperationalCli(f.root,["queue","resolve",row.id,"--action","discard","--reason","fixture discard"]);expect(resolved.code,resolved.stderr).toBe(0);
@@ -222,3 +227,79 @@ test("conductor roster RPC passes its live initiating authority into the awaited
     expect(f.daemon.bus.queueList().flatMap(row=>row.originals).some(env=>env.kind==="task" && [String(one.id),String(two.id)].includes(env.refs?.task??""))).toBe(false);
   } finally {release();await pending?.catch(()=>{});Tasks.prototype.reassignForRoster=original;board.close();await f.close();}
 },20000);
+
+
+test("role-declined operational CLI records only refused audit and retains exact person guidance",async()=>{
+  const f=await operationalFixture();try {
+    const result=await runOperationalCli(f.root,["roster","add","kimi"],"claude");
+    expect(result.code).toBe(1);expect(result.stderr).toContain("the person runs it in ahub console or a terminal");
+    const events=readEvents(join(f.stateDir,"events.jsonl")).filter(e=>e.type==="agent_cli" && e.peer==="claude" && e.command==="roster add");
+    const queued=drainCliAudits(f.stateDir).filter(e=>e.peer==="claude" && e.command==="roster add");
+    expect(events.filter(e=>e.type==="agent_cli" && !e.refused)).toHaveLength(0);expect(queued.some(e=>e.outcome==="run")).toBe(false);
+    expect(events.filter(e=>e.type==="agent_cli" && e.refused).length+queued.filter(e=>e.outcome==="refused").length).toBe(1);
+    expect(readFileSync(join(f.stateDir,"hub.log"),"utf8")).not.toContain("claude ran ahub roster add");
+  } finally {await f.close();}
+},3000);
+
+test("later operational parser refusal retains refused audit after accepted pre-effect authorization",async()=>{
+  const f=await operationalFixture();try {
+    const result=await runOperationalCli(f.root,["settings","set","research.enabled","not_boolean"]);expect(result.code).toBe(1);
+    const events=readEvents(join(f.stateDir,"events.jsonl")).filter(e=>e.type==="agent_cli" && e.peer==="codex" && e.command==="settings set");
+    const queued=drainCliAudits(f.stateDir).filter(e=>e.peer==="codex" && e.command==="settings set");
+    expect(events.some(e=>e.type==="agent_cli" && e.refused)||queued.some(e=>e.outcome==="refused")).toBe(true);expect(queued.some(e=>e.outcome==="run")).toBe(false);
+    expect(()=>readFileSync(join(f.root,".agenthub/config.local.json"))).toThrow();
+  } finally {await f.close();}
+},3000);
+
+test("conductor setting and roster writes name the actual peer and preserve the person's undo bytes and stale-digest refusal",async()=>{
+  const f=await operationalFixture();try {
+    const person=await f.connect(),lead=await f.connect("codex");
+    expect((await person.request({t:"settings_set",key:"approvals.notify",value:false})).ok).toBe(true);
+    const undo=join(f.stateDir,"settings-undo.json"),before=readFileSync(undo);
+    expect((await lead.request({t:"settings_set",key:"research.enabled",value:true})).ok).toBe(true);expect(readFileSync(undo)).toEqual(before);
+    expect((await lead.request({t:"settings_set",key:"roster.kimi",value:false,confirm:"kimi"})).ok).toBe(true);expect(readFileSync(undo)).toEqual(before);
+    const changed=readEvents(join(f.stateDir,"events.jsonl")).filter(e=>e.type==="settings" && ["research.enabled","roster.kimi"].includes(e.key));
+    expect(changed).toHaveLength(2);expect(changed.every(e=>e.type==="settings" && e.source==="conductor" && e.peer==="codex")).toBe(true);
+    expect(readFileSync(join(f.stateDir,"hub.log"),"utf8")).toContain("(conductor codex)");
+    const refused=await person.request({t:"settings_undo"});expect(refused.ok).toBe(false);expect(refused.error).toContain("changed since");expect(readFileSync(undo)).toEqual(before);
+    expect(JSON.parse(readFileSync(join(f.root,".agenthub/config.local.json"),"utf8")).research.enabled).toBe(true);
+  } finally {await f.close();}
+},3000);
+
+test("bare operational op refuses before admission and incomplete privacy inventory is explicit",async()=>{
+  const f=await operationalFixture();const board=new Board(join(f.stateDir,"hub.db"));try {
+    const lead=await f.connect("codex"),before=readEvents(join(f.stateDir,"events.jsonl")).length;
+    const refused=await lead.request({t:"conductor_operational",op:"queue show"});expect(refused.ok).toBe(false);
+    expect(readEvents(join(f.stateDir,"events.jsonl")).slice(before).some(e=>e.type==="agent_cli" && !e.refused)).toBe(false);
+    for(let i=0;i<501;i++)board.propose("user",{title:`metadata row ${i}`,class:"plan"});
+    const shown=await lead.request({t:"conductor_operational",op:"logs"});expect(shown.ok).toBe(true);expect(shown.complete).toBe(false);
+  } finally {board.close();await f.close();}
+},3000);
+
+for(const mode of ["missing","stale","silent"] as const)test(`operational ${mode} control refuses promptly and keeps a refused audit`,async()=>{
+  const root=temp(),stateDir=join(root,".agenthub/state");mkdirSync(stateDir,{recursive:true});writeFileSync(join(root,".agenthub/config.json"),"{}");
+  let server:ReturnType<typeof Bun.serve>|undefined;
+  try {
+    if(mode!=="missing") {
+      server=Bun.serve({hostname:"127.0.0.1",port:0,fetch:(req,server)=>server.upgrade(req)?undefined:new Response("no"),websocket:{message(sock,message){const request=JSON.parse(String(message));if(mode==="silent" && request.t==="hello")sock.send(JSON.stringify({rid:request.rid,t:"welcome",projectId:"fixture",instanceId:"fixture",cwd:root,protocol:PROTOCOL,features:[]}));}}});
+      writeFileSync(join(stateDir,"control-token"),"fixture-token");writeFileSync(join(stateDir,"status.json"),JSON.stringify({cwd:root,controlPort:server.port,protocol:PROTOCOL,projectId:"fixture",instanceId:"fixture",pid:mode==="stale"?99999999:process.pid,pidSignature:mode==="stale"?"synthetic-stale":processSignature(process.pid)}));
+    }
+    const started=Date.now(),result=await runOperationalCli(root,["logs"]);expect(result.code).toBe(1);expect(result.stderr).toContain("the person runs it in ahub console or a terminal");expect(Date.now()-started).toBeLessThan(2500);
+    const audits=drainCliAudits(stateDir);expect(audits.filter(e=>e.command==="logs")).toHaveLength(1);expect(audits.every(e=>e.outcome==="refused")).toBe(true);
+  } finally {server?.stop(true);rmSync(root,{recursive:true,force:true});}
+},3000);
+
+
+test("conductor setting reason uses actual private-path and secret metadata policy without changing person undo",async()=>{
+  const f=await operationalFixture(["private"]);try {
+    mkdirSync(join(f.root,"private"));writeFileSync(join(f.root,"private/notes.md"),"fixture private content");
+    const person=await f.connect(),lead=await f.connect("codex");expect((await person.request({t:"settings_set",key:"approvals.notify",value:false})).ok).toBe(true);
+    const local=join(f.root,".agenthub/config.local.json"),undo=join(f.stateDir,"settings-undo.json"),before=readFileSync(local),receipt=readFileSync(undo);
+    for(const reason of ["private/notes.md","token: abcdefgh12345"]) {
+      const result=await lead.request({t:"settings_set",key:"research.enabled",value:true,reason});expect(result.ok).toBe(false);expect(result.error).toContain("reason withheld");expect(result.error).not.toContain(reason);
+      expect(readFileSync(local)).toEqual(before);expect(readFileSync(undo)).toEqual(receipt);expect(readFileSync(join(f.stateDir,"events.jsonl"),"utf8")).not.toContain(reason);
+    }
+    expect((await lead.request({t:"settings_set",key:"research.enabled",value:true,reason:"public operational reason"})).ok).toBe(true);
+    expect(readFileSync(undo)).toEqual(receipt);const event=readEvents(join(f.stateDir,"events.jsonl")).findLast(e=>e.type==="settings" && e.key==="research.enabled");expect(event).toMatchObject({source:"conductor",peer:"codex",reason:"public operational reason"});
+  } finally {await f.close();}
+},3000);

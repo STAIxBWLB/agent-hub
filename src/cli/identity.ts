@@ -1,4 +1,4 @@
-import { conductorOperation } from "../hub/operational-authority.ts";
+import { conductorOperation, OPERATIONAL_PERSON_GUIDANCE } from "../hub/operational-authority.ts";
 import { nativeCliMarkerPeer } from "../adapters/definitions/native-identity-defaults.ts";
 import { recoveryPresentationFlag } from "./recovery-presentation-options.ts";
 import { definitionOf, kindOf, type KindMap, type ProjectAdapterCatalog } from "../adapters/registry.ts";
@@ -125,5 +125,5 @@ export function agentShellCause(identity: CliIdentity, error: string, env: Reado
 
 export function peerCommandRefusal(peer: string, command: string, env: Readonly<Record<string, string | undefined>> = process.env): string {
   const markers = ["CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "AGENTHUB_PEER_ID", "CODEX_THREAD_ID"].filter(name => env[name] !== undefined);
-  return `${peer} cannot run ahub ${command}; the person runs it in ahub console or a terminal. Refused because inherited agent markers${markers.length ? ` (${markers.join(", ")})` : ""} identify this shell as an agent. A ! command in an agent session runs as that agent; use a separate terminal outside the agent session`;
+  return `${peer} cannot run ahub ${command}; ${OPERATIONAL_PERSON_GUIDANCE}. Refused because inherited agent markers${markers.length ? ` (${markers.join(", ")})` : ""} identify this shell as an agent. A ! command in an agent session runs as that agent; use a separate terminal outside the agent session`;
 }

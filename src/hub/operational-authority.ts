@@ -39,3 +39,22 @@ export function conductorOperation(command:string,args:readonly string[]): Condu
   if (command==="settings" && sub==="set" && operationalSettingKey(words[1])) return "settings set";
   return undefined;
 }
+
+
+export const OPERATIONAL_PERSON_GUIDANCE="the person runs it in ahub console or a terminal";
+export function operationalRefusal(peer:string,command:string):string {
+  return `${peer} cannot run ahub ${command}; ${OPERATIONAL_PERSON_GUIDANCE}; this operation requires the explicit conductor role`;
+}
+/** Fixed labels only; refused requests never put argument text in the audit. */
+export function operationalRequestLabel(value:unknown):string|undefined {
+  if(!value || typeof value!=="object" || Array.isArray(value))return undefined;
+  const message=value as Record<string,unknown>;
+  if(message.t==="conductor_operational") {
+    if(message.op==="authorize")return typeof message.command==="string" && ["roster add","roster remove","stop","queue show","queue resolve","queue discard","task cancel","settings set","doctor orphans kill","logs","export"].includes(message.command)?message.command:"unknown";
+    return message.op==="orphans"?"doctor orphans kill":message.op==="logs"||message.op==="export"?message.op:"unknown";
+  }
+  if(message.t==="peer_stop")return "stop";
+  if(message.t==="queue" && typeof message.op==="string" && ["show","resolve","discard"].includes(message.op))return `queue ${message.op}`;
+  if(message.t==="settings_set"||message.t==="settings_preview")return "settings set";
+  return undefined;
+}

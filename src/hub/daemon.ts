@@ -1,4 +1,4 @@
-import { operationalRosterSetting, operationalSetting } from "./operational-authority.ts";
+import { operationalRosterSetting, operationalSetting, operationalRefusal, operationalRequestLabel } from "./operational-authority.ts";
 import { operationalView, redactBusEvent } from "./operational-view.ts";
 import { inspectSelectedOrphans, stopSelectedOrphan, orphanProcessPorts } from "./orphan-process.ts";
 import { dogfoodLines } from "./dogfood-read.ts";
@@ -121,7 +121,7 @@ import { AssignmentUndeliveredError, ESCALATE_AFTER, Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig } from "./inference.ts";
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, loadRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
-import { projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
+import { projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
@@ -711,7 +711,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const logFile = join(opts.stateDir, "hub.log");
   // The state dir can vanish under a running hub (issue #56): a log line must never take a handler down with it.
   const log = (line: string) => { const text=`${new Date().toISOString()} ${line}`;try { appendFileSync(logFile, `${text}\n`); } catch { /* the state dir is gone; the watchdog is stopping the hub */ }
-    for(const [sock,current] of operationalLogSubscribers)try {current();if(sock.getBufferedAmount()>64*1024)throw new Error("slow log consumer");sock.send(JSON.stringify({t:"operational_log",line:publicOperationalView().line(text)}));}catch{operationalLogSubscribers.delete(sock);try{sock.close(4403,"operational log authority ended");}catch{/* The subscription is already gone. */}}
+    let publicLine:string|undefined;
+    for(const [sock,current] of operationalLogSubscribers)try {current();if(sock.getBufferedAmount()>64*1024)throw new Error("slow log consumer");publicLine??=publicOperationalView().line(text);sock.send(JSON.stringify({t:"operational_log",line:publicLine}));}catch{operationalLogSubscribers.delete(sock);try{sock.close(4403,"operational log authority ended");}catch{/* The subscription is already gone. */}}
   };
   let runningRouting = currentRouting(opts.cwd, log);
   let acceptedSources = parseConfigSources(configSourceTexts(opts.cwd), runningRouting, opts.cwd, externalAdapters);
@@ -4931,13 +4932,13 @@ export async function startDaemon(opts: DaemonOptions) {
     return ()=>{
       if(!peer || sock.data!==client || client.role!=="tools" || !acceptedAfterClose && sock.readyState!==WebSocket.OPEN || client.toolsOwner || readOnlyPeer(peer) || stopping || !membershipAllowed(peer) || contextPii(peer))throw new Error("operational conductor authority unavailable");
       try {requireConductor(peer,config.roles);}
-      catch {throw new Error("this operation requires the explicit conductor role; otherwise the console user runs it");}
+      catch {throw new Error(operationalRefusal(peer,"operational command"));}
     };
   }
   function admitOperational(sock:Sock,command:string):()=>void {
     const current=operationalCurrent(sock);current();
     if(!event({type:"agent_cli",peer:sock.data.peer!,command,refused:false}))throw new Error("CLI audit event was not retained");
-    auditConduct({kind:"conduct",actor:sock.data.peer!,action:command});
+    auditConduct({kind:"conduct",actor:sock.data.peer!,action:`admitted ${command}`});
     current();return current;
   }
 
@@ -5406,11 +5407,12 @@ export async function startDaemon(opts: DaemonOptions) {
     return { pendingRestart: allPendingRestart(), retainedConfig, rows: rows.map(row => row.key === "planner" ? { ...row, hint: planner } : row), ...(undo ? { undo } : {}) };
   }
   /** The same announcement whatever surface made the change: events.jsonl, hub.log and every open console. */
-  const recordSetting = (key: string, from: SettingValue, to: SettingValue, source: "dashboard" | "terminal", undo = false, reason?: string) => {
-    event({ type: "settings", key, from, to, source, ...(undo ? { undo: true } : {}), ...(reason ? { reason } : {}) });
-    try { notify(`setting ${key}: ${settingText(from)} -> ${settingText(to)} (${undo ? "undo, " : ""}${source})`); } catch { /* the write stands */ }
+  const recordSetting = (key: string, from: SettingValue, to: SettingValue, source: SettingSource, undo = false, reason?: string) => {
+    const peer=source==="conductor"?operationalContext.getStore()!.actor:undefined;
+    event({ type: "settings", key, from, to, source, ...(peer?{peer}:{}), ...(undo ? { undo: true } : {}), ...(reason ? { reason } : {}) });
+    try { notify(`setting ${key}: ${settingText(from)} -> ${settingText(to)} (${undo ? "undo, " : ""}${peer?`conductor ${peer}`:source})`); } catch { /* the write stands */ }
   };
-  const settingSource = (authority: SettingAuthority) => authority === "terminal" || authority === "conductor" ?  "terminal" as const : "dashboard" as const;
+  const settingSource = (authority: SettingAuthority) => authority === "conductor" ? "conductor" as const : authority === "terminal" ? "terminal" as const : "dashboard" as const;
   function rosterView() {
     const open = board.list().filter(task => !isClosedTaskState(task.state));
     return [...KNOWN_PEERS, ...OPTIONAL_PEERS.filter(peer => config.roster?.[peer] !== undefined)].map(peer => ({ peer, on: onRoster(peer), startMode: startMode(peer), state: bus.stateOf(peer), queued: bus.queued(peer), tasks: open.filter(task => task.owner === peer || task.reviewer === peer).length }));
@@ -5442,7 +5444,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return definitionOf(peer)?.cli.retainedTerminalNotice?.(peer, isPiPeer(owner) ? owner.mode : undefined, codexResumeCommand(peer));
   }
 
-  async function changeRosterSetting(def: SettingDef, value: SettingValue, source: "dashboard" | "terminal", confirm: unknown, now: boolean, undo = false, authority: SettingAuthority = "ordinary", reason?: string, undoIdentity?: UndoIdentity): Promise<Record<string, unknown>> {
+  async function changeRosterSetting(def: SettingDef, value: SettingValue, source: SettingSource, confirm: unknown, now: boolean, undo = false, authority: SettingAuthority = "ordinary", reason?: string, undoIdentity?: UndoIdentity): Promise<Record<string, unknown>> {
     if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };
     checkOperational(authority);
     const peer = def.path[1]!;
@@ -5461,7 +5463,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding roster changes" };
       rosterChanging = peer;
       if (undo) undoSetting(opts.cwd, opts.stateDir, scratch => configWriteCheck(scratch, authority, `roster.${peer}`), (_routing, overlay) => routingWriteCheck(authority, overlay), undoIdentity);
-      else writeConfigSetting(opts.cwd, opts.stateDir, def, value, scratch => configWriteCheck(scratch, authority, `roster.${peer}`));
+      else writeConfigSetting(opts.cwd, opts.stateDir, def, value, scratch => configWriteCheck(scratch, authority, `roster.${peer}`), {preserveUndo:authority==="conductor"});
       // Apply exactly the authorized key. Other file edits stay pending until the next hub start.
       config.roster = next;
       settlePlanner(); // #455: an automatic planner follows the roster
@@ -5532,6 +5534,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding settings" };
     let reason: string | undefined;
     try { reason = settingReason(rawReason); } catch (error) { return { ok: false, error: (error as Error).message }; }
+    if(authority==="conductor" && reason && !tasks.publicMetadataText(reason))return {ok:false,error:"setting reason withheld by privacy policy"};
     const input = settingInput(key, raw);
     if ("error" in input) return { ok: false, error: input.error };
     const { def, value } = input;
@@ -5566,7 +5569,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       if (peer && value === null && storedLocally(opts.cwd, def) && restoredValue(opts.cwd, opts.stateDir, def, true) === "never-ask" && confirm !== peer) return { ok: false, error: `removing the machine-local value leaves never-ask from config.json for ${peer}: it needs the peer id as the confirmation; nothing was changed` };
       const from = settingScalar(valueAt(storedConfig(), def.path));
-      if (!writeConfigSetting(opts.cwd, opts.stateDir, def, value, scratch => configWriteCheck(scratch, authority, def.path.join(".")))) return { ok: true, text: `${def.key}: config.local.json already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
+      if (!writeConfigSetting(opts.cwd, opts.stateDir, def, value, scratch => configWriteCheck(scratch, authority, def.path.join(".")), {preserveUndo:authority==="conductor"})) return { ok: true, text: `${def.key}: config.local.json already ${value === null ? "leaves it unset" : `holds ${settingText(value)}`}; nothing was written` };
       saved = true;
       const result = await reloadConfig(authority, def.path.join("."));
       if (result.ok !== true) return { ...result, saved: true };
@@ -6064,8 +6067,14 @@ export async function startDaemon(opts: DaemonOptions) {
 
   function onMessage(sock: Sock, msg: any): void {
     const c = sock.data;
+    let refusalRecorded=false;
     const reply = (body: Record<string, unknown>) => {
       if (c.toolsOwner && !currentImplementerTools(c)) body = { ok: false, error: "Claude child generation or execution root changed" };
+      const label=operationalRequestLabel(msg);
+      if(c.authed && c.role==="tools" && c.peer && body.ok===false && label) {
+        if(!refusalRecorded)refusalRecorded=event({type:"agent_cli",peer:c.peer,command:label,refused:true});
+        body={...body,error:`${String(body.error??"operational request refused")}; ${operationalRefusal(c.peer,label)}`,refusalAudited:refusalRecorded};
+      }
       if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ rid: msg.rid, ...body }));
     };
     if (!c.authed) {
@@ -6173,6 +6182,7 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       case "conductor_operational": {
         try {
+          if(!["authorize","logs","export","orphans"].includes(msg.op))return void reply({ok:false,error:"unknown operational request"});
           const commands=["roster add","roster remove","stop","queue show","queue resolve","queue discard","task cancel","settings set","doctor orphans kill","logs","export"];
           const command=msg.op==="authorize"?msg.command:msg.op==="orphans"?"doctor orphans kill":msg.op;
           if(!commands.includes(command))return void reply({ok:false,error:"unknown operational command"});
@@ -6185,11 +6195,11 @@ export async function startDaemon(opts: DaemonOptions) {
             if(msg.op==="logs") {
               if(msg.follow!==undefined && typeof msg.follow!=="boolean")return void reply({ok:false,error:"invalid log subscription"});
               if(msg.follow)operationalLogSubscribers.set(sock,current);
-              return void reply({ok:true,lines:lines.data.slice(-100).map(view.line),truncated:!lines.complete || lines.data.length>100});
+              return void reply({ok:true,lines:lines.data.slice(-100).map(view.line),complete:lines.complete&&view.complete,truncated:!lines.complete || lines.data.length>100});
             }
             if(msg.since!==undefined && (typeof msg.since!=="number" || !Number.isFinite(msg.since) || msg.since<0))return void reply({ok:false,error:"invalid export window"});
             const records=lines.data.flatMap(line=>{try{const row=JSON.parse(line);return typeof row?.at==="string" && Date.parse(row.at)>=(msg.since??0)?[view.event(row)]:[];}catch{return [{type:"withheld"}];}});
-            return void reply({ok:true,events:records.slice(-1000),truncated:!lines.complete || records.length>1000});
+            return void reply({ok:true,events:records.slice(-1000),complete:lines.complete&&view.complete,truncated:!lines.complete || records.length>1000});
           }
           if(msg.op!=="orphans")return void reply({ok:false,error:"unknown operational request"});
           const selection={root:opts.cwd,projectId,instanceId,pid:process.pid,executable:process.execPath,programs:[CLI_ENTRY,fileURLToPath(new URL("../cli/main.js",import.meta.url))]},ports={...orphanProcessPorts,current};
