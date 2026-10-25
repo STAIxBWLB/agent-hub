@@ -249,6 +249,78 @@ test("Tasks.guardedMerge flips: the real board is read at dispatch, and a person
   expect(watcher.merges()).toHaveLength(0);
 });
 
+test("Tasks.guardedMerge fences every local queue input after the last awaited PR read", async () => {
+  type Move = (context: {board: Board; tasks: Tasks; subject: number; dependency: number; holder: number; changeConfig: () => void; withdrawConductor: () => void}) => void;
+  const run = async (move: Move, by=USER) => {
+    const prs: Record<number, World> = {1:pr(),2:pr({state:"MERGED",paths:["src/dep.ts"]}),3:pr({paths:["src/other.ts"]})};
+    const dir=mkdtempSync(join(tmpdir(),"ahub-merge-queue-fence-")),board=new Board(join(dir,"hub.db")),bus=new Bus({batchMs:0});
+    cleanups.push(()=>{bus.closeJournal();board.close();rmSync(dir,{recursive:true,force:true});});
+    const roles: Record<string,"conductor"[]>={claude:["conductor"]};
+    let subjectReads=0, moved=false, mutationError:unknown;
+    const gh=fakeGh(prs,{onCall:args=>{
+      if (args[0]==="pr" && args[1]==="view" && args[2]==="1" && ++subjectReads===3) {
+        moved=true;try {move({board,tasks,subject:subject.id,dependency:dependency.id,holder:holder.id,changeConfig:()=>{cfg=config({required_checks:["gate","new gate"]});},withdrawConductor:()=>{delete roles.claude;}});} catch(error) {mutationError=error;}
+      }
+    }});
+    let cfg=config();
+    const tasks=new Tasks({board,bus,cwd:dir,project:"test",repository:"owner/repo",roles,routing:()=>loadRouting(dir),notify:()=>{},sdlc:{config:()=>cfg,gh:gh.run}});
+    const approve = (title:string,deps:number[]=[]) => {
+      const t=board.propose(USER,{title,class:"implement",deps});
+      board.update(t.id,USER,"accepted",{state:"in_progress",owner:"codex",reviewer:USER});
+      board.update(t.id,USER,"done",{state:"in_review"});
+      return board.update(t.id,USER,"approved",{state:"approved"});
+    };
+    const dependency=approve("dependency"),subject=approve("subject",[dependency.id]),holder=approve("other queue holder");
+    tasks.recordLifecycle(USER,dependency.id,{repo:"owner/repo",issue:10,pr:2,stage:"merge"});
+    tasks.recordLifecycle(USER,subject.id,{repo:"owner/repo",issue:11,pr:1,stage:"merge",reviewedHead:A,localHead:A,localResult:"passed"});
+    tasks.recordLifecycle(USER,holder.id,{repo:"owner/repo",issue:12,pr:3,stage:"merge",reviewedHead:A,localHead:A,localResult:"passed"});
+    const result=await tasks.guardedMerge(by,subject.id);
+    expect(mutationError).toBeUndefined();
+    expect(moved).toBe(true);
+    expect(board.get(dependency.id)?.state).toBe("approved");
+    return {result,gh};
+  };
+  const unchanged=await run(()=>{});
+  expect(unchanged.result).toMatchObject({ran:true,decision:"merge"});
+  expect(unchanged.gh.merges()).toEqual([mergeArgv("owner/repo",1,A)]);
+  const conductor=await run(()=>{},"claude");
+  expect(conductor.result).toMatchObject({ran:true,decision:"merge"});
+  expect(conductor.gh.merges()).toEqual([mergeArgv("owner/repo",1,A)]);
+  const withdrawn=await run(({withdrawConductor})=>withdrawConductor(),"claude");
+  expect(withdrawn.result).toMatchObject({ran:false,decision:"refused",refused:["authority or hub availability changed during the merge check: nothing was run"]});
+  expect(withdrawn.gh.merges()).toHaveLength(0);
+  const queueChanged="merge queue inputs changed during the merge check: nothing was run";
+  const cases: [Move,string][] = [
+    // Legitimate approved-task receipt mutation: the cached queue verified PR2 merged, but the dependency now names open PR3.
+    [({tasks,dependency})=>{tasks.recordLifecycle(USER,dependency,{repo:"owner/repo",issue:10,pr:3,stage:"merge"});},queueChanged],
+    [({board,subject,holder})=>{board.plan(subject,USER,{deps:[holder]},0);},"task dependencies changed during the merge check: nothing was run"],
+    [({board,holder,subject})=>{board.plan(holder,USER,{deps:[subject]},0);},queueChanged],
+    [({board,holder})=>{board.update(holder,USER,"plan changed",{plan:{paths:["src/new.ts"]}});},queueChanged],
+    [({board,holder})=>{board.update(holder,USER,"approved",{state:"approved"},undefined,{reviewFindings:{head:A,items:[{id:"queue-important",pass:"bugs",severity:"important",disposition:"open"}]}});},queueChanged],
+    [({board,holder})=>{board.update(holder,USER,"privacy changed",{signals:["pii"]});},queueChanged],
+    [({board,tasks})=>{const added=board.propose(USER,{title:"new queue holder",class:"implement"});tasks.recordLifecycle(USER,added.id,{stage:"merge",repo:"owner/repo",pr:3});},queueChanged],
+    [({board,holder})=>{board.update(holder,USER,"receipt removed",{sdlc:undefined});},queueChanged],
+    [({board})=>{board.propose(USER,{title:"unrelated unlinked task",class:"triage"});},queueChanged],
+    [({changeConfig})=>{changeConfig();},"required checks changed during the merge check: nothing was run"],
+  ];
+  for (const [move,reason] of cases) {
+    const {result,gh}=await run(move);
+    expect(result).toMatchObject({ran:false,decision:"refused",refused:[reason]});
+    expect(gh.merges()).toHaveLength(0);
+  }
+});
+
+test("the final merge callback fences a mutation made by the fresh provider before dispatch", async () => {
+  const subject=task(1,1),i=input({1:pr()},[subject]);
+  let callbackSawFresh=false;
+  const outcome=await guardedMerge({...i.args,mode:"on",
+    fresh:()=>{i.args.tasks.push(task(2,2));return {subject,state:"approved",config:i.args.config,mode:"on",allowed:true};},
+    beforeMerge:()=>{callbackSawFresh=i.args.tasks.length===2;return callbackSawFresh?"queue input changed by fresh provider":undefined;}});
+  expect(callbackSawFresh).toBe(true);
+  expect(outcome).toMatchObject({ran:false,decision:{refused:["queue input changed by fresh provider"]}});
+  expect(i.gh.merges()).toHaveLength(0);
+});
+
 test("AC2: touching PRs merge in order, and a dependency task that is not approved refuses", async () => {
   const prs = { 1: pr({ paths: ["src/shared.ts"] }), 2: pr({ paths: ["src/shared.ts"] }) };
   // Same files and no declared order: a person orders them.

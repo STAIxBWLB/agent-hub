@@ -24,6 +24,8 @@ export interface MergeInput {
   tasks: DeliveryTask[];
   run: SdlcGh;
   readableMetadata?: (path: string) => boolean;
+  /** Final synchronous authority and queue-input fence, after fresh gates and immediately before the gh call. */
+  beforeMerge?: () => string | undefined;
   /**
    * The board and the authority to act, read NOW and synchronously: `guardedMerge` calls it once, after the last PR read and in the same synchronous segment as the
    * `gh pr merge` call (nothing is awaited between them), and refuses unless every input still equals what the decision judged. Absent (a library caller): the
@@ -208,6 +210,8 @@ export async function guardedMerge(input: MergeInput & { mode: AutoMergeMode }):
     if (refused.length) return { mode: input.mode, decision: { refused }, ran: false };
   }
   let started: Promise<{ code: number; stdout: string }>;
+  const moved = input.beforeMerge?.();
+  if (moved) return { mode: input.mode, decision: { refused: [moved] }, ran: false };
   try { started = Promise.resolve(input.run(decision.argv, 10_000)); } catch { started = Promise.resolve({ code: 1, stdout: "" }); }
   // ---- end of the synchronous segment ----
   let exit = 1;

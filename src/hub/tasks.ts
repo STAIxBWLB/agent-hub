@@ -3127,7 +3127,15 @@ export class Tasks {
     this.mergesInFlight.add(task.id);
     try {
       const links = this.deliveryLinks(config), subject = links.find(link => link.id === task.id)!;
+      const queueIdentity = workflowHash({ config, links });
       const outcome = await guardedMerge({ mode, subject, state: task.state, taskState: n => this.d.board.get(n)?.state, config, tasks: links, run: this.d.sdlc?.gh ?? sdlcGh, readableMetadata: this.publicMetadataText,
+        beforeMerge: () => {
+          if (!this.mergeAuthority(by)) return "merge authority changed during the merge check: nothing was run";
+          // The queue used every link, not only the subject. A changed dependency artifact or ordering edge invalidates that remote evidence.
+          const currentConfig = this.d.sdlc?.config() ?? sdlcConfig(undefined);
+          return workflowHash({ config: currentConfig, links: this.deliveryLinks(currentConfig) }) === queueIdentity
+            ? undefined : "merge queue inputs changed during the merge check: nothing was run";
+        },
         // Read synchronously at dispatch, after the last PR read: the task (state, receipt, privacy, dependencies, findings), the configuration and mode in force, and whether
         // the asker may still act and the hub may still write. Nothing is awaited between this read and the gh call.
         fresh: () => {
