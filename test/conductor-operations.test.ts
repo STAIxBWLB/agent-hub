@@ -281,7 +281,7 @@ for(const mode of ["missing","stale","silent"] as const)test(`operational ${mode
   let server:ReturnType<typeof Bun.serve>|undefined;
   try {
     if(mode!=="missing") {
-      server=Bun.serve({hostname:"127.0.0.1",port:0,fetch:(req,server)=>server.upgrade(req)?undefined:new Response("no"),websocket:{message(sock,message){const request=JSON.parse(String(message));if(mode==="silent" && request.t==="hello")sock.send(JSON.stringify({rid:request.rid,t:"welcome",projectId:"fixture",instanceId:"fixture",cwd:root,protocol:PROTOCOL,features:[]}));}}});
+      server=Bun.serve({hostname:"127.0.0.1",port:0,fetch:(req,server)=>server.upgrade(req,{data:undefined})?undefined:new Response("no"),websocket:{message(sock,message){const request=JSON.parse(String(message));if(mode==="silent" && request.t==="hello")sock.send(JSON.stringify({rid:request.rid,t:"welcome",projectId:"fixture",instanceId:"fixture",cwd:root,protocol:PROTOCOL,features:[]}));}}});
       writeFileSync(join(stateDir,"control-token"),"fixture-token");writeFileSync(join(stateDir,"status.json"),JSON.stringify({cwd:root,controlPort:server.port,protocol:PROTOCOL,projectId:"fixture",instanceId:"fixture",pid:mode==="stale"?99999999:process.pid,pidSignature:mode==="stale"?"synthetic-stale":processSignature(process.pid)}));
     }
     const started=Date.now(),result=await runOperationalCli(root,["logs"]);expect(result.code).toBe(1);expect(result.stderr).toContain("the person runs it in ahub console or a terminal");expect(Date.now()-started).toBeLessThan(2500);

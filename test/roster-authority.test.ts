@@ -50,7 +50,8 @@ for(const revocation of ["role","membership"] as const)test(`roster handoff rech
 for(const rejectBrief of [false,true])test(`roster brief ${rejectBrief?"rejection":"completion"} cannot swallow initiating revocation or continue another task`,async()=>{
   const entered=deferred<void>(),brief=deferred<string|undefined>();let calls=0;
   // This seam supplies brief data only. Authorization is the real mutable conductor/membership policy above.
-  const briefs={forTask:async()=>{calls++;entered.resolve();return brief.promise;}} as TasksDeps["briefs"];
+  const briefSource={forTask:async()=>{calls++;entered.resolve();return brief.promise;}} satisfies Pick<NonNullable<TasksDeps["briefs"]>,"forTask">;
+  const briefs=briefSource as unknown as TasksDeps["briefs"];
   const f=await fixture({briefs});let pending:Promise<unknown>|undefined;
   try {
     const first=f.owned("first saved assignment"),second=f.owned("second untouched assignment");f.off.add("kimi");
