@@ -133,7 +133,7 @@ test("operational CLI roster settings queue logs export and doctor work as condu
     appendFileSync(join(f.stateDir,"events.jsonl"),JSON.stringify({v:1,at:new Date().toISOString(),type:"task",id:privateTask.id,event:"proposed",class:"plan",pii:true,title:"PRIVATE_TITLE_CANARY",body:"PRIVATE_BODY_CANARY"})+"\n");
     for(const args of [["roster","add","kimi"],["roster","remove","kimi","--yes"],["settings","set","task_sweep.enabled","false"],["doctor","--orphans","--kill","--json"],["logs"],["export"]]) {
       const result=await runOperationalCli(f.root,args);expect(result.code,result.stderr).toBe(0);expect(result.stdout).not.toMatch(/PRIVATE_TITLE_CANARY|PRIVATE_BODY_CANARY/);
-      const refused=await runOperationalCli(f.root,args,"claude");expect(refused.code).toBe(1);expect(refused.stderr).toMatch(/conductor/);
+      const refused=await runOperationalCli(f.root,args,"claude");expect(refused.code).toBe(1);expect(refused.stderr).toMatch(/conductor/);expect(refused.stderr).toContain("console");
     }
     const env=newEnvelope("user","PRIVATE_BODY_CANARY",{to:["codex"],private:true});f.daemon.bus.publish(env);
     const row=f.daemon.bus.queueList("codex").find(r=>r.originals.some(e=>e.id===env.id)) ?? f.daemon.bus.queueList("codex").find(r=>r.state==="queued")!;
@@ -188,4 +188,37 @@ test("committed roster write is acknowledged after awaited role revocation and l
     expect((await person.request({t:"settings_set",key:"roster.codex",value:false,confirm:"codex"})).ok).toBe(true);
     const offRoster=await lead.request({t:"conductor_operational",op:"logs"});expect(offRoster.ok).toBe(false);expect(offRoster.error).toContain("off roster");
   } finally {release();await pending?.catch(()=>{});peer.stop=originalStop;await peer.stop();await f.close();}
+},20000);
+
+
+test("non-conductor roster CLI refusal retains console guidance and requires the configured conductor",async()=>{
+  const f=await operationalFixture();try {
+    const result=await runOperationalCli(f.root,["roster","add","kimi"],"claude");
+    expect(result.code).toBe(1);expect(result.stderr).toContain("conductor");expect(result.stderr).toContain("console");expect(f.daemon.bus.isRostered("kimi")).toBe(true);
+  } finally {await f.close();}
+},20000);
+
+test("conductor roster RPC passes its live initiating authority into the awaited Tasks handoff",async()=>{
+  const f=await operationalFixture(),board=new Board(join(f.stateDir,"hub.db"));
+  const original=Tasks.prototype.reassignForRoster;
+  let entered!:()=>void,release!:()=>void,captured:(()=>void)|undefined;
+  const paused=new Promise<void>(resolve=>{release=resolve;}),waiting=new Promise<void>(resolve=>{entered=resolve;});
+  let pending:Promise<any>|undefined;
+  Tasks.prototype.reassignForRoster=async function(this:Tasks,peer,current){captured=current;entered();await paused;return original.call(this,peer,current);};
+  try {
+    const one=board.propose("user",{title:"first handoff remains",class:"implement"}),two=board.propose("user",{title:"second handoff remains",class:"implement"});
+    board.update(one.id,"kimi","accepted",{owner:"kimi",reviewer:"claude",state:"in_progress"});board.update(two.id,"kimi","accepted",{owner:"kimi",reviewer:"claude",state:"in_progress"});
+    const before=[board.get(one.id),board.get(two.id)];const lead=await f.connect("codex"),person=await f.connect();
+    pending=lead.request({t:"settings_set",key:"roster.kimi",value:false,confirm:"kimi"},5000);pending.catch(()=>{});
+    let timer:ReturnType<typeof setTimeout>|undefined;
+    try {await Promise.race([waiting,new Promise<never>((_resolve,reject)=>{timer=setTimeout(()=>reject(new Error("task handoff barrier not reached")),2000);})]);}finally{clearTimeout(timer);}
+    expect(typeof captured).toBe("function");
+    const file=join(f.root,".agenthub/config.local.json"),saved=JSON.parse(readFileSync(file,"utf8"));expect(saved.roster.kimi).toBe(false);
+    writeFileSync(file,JSON.stringify({...saved,roles:{...DEFAULT_CONFIG.roles,codex:["planner"],claude:["conductor"]}}));
+    let reload=await person.request({t:"settings_reload"});if(reload.confirmation)reload=await person.request({t:"settings_reload",confirm:reload.confirmation.token});expect(reload.ok).toBe(true);
+    expect(()=>captured!()).toThrow("conductor");release();
+    expect(await pending).toMatchObject({ok:true,saved:true,authorityEnded:true});
+    expect([board.get(one.id),board.get(two.id)]).toEqual(before);
+    expect(f.daemon.bus.queueList().flatMap(row=>row.originals).some(env=>env.kind==="task" && [String(one.id),String(two.id)].includes(env.refs?.task??""))).toBe(false);
+  } finally {release();await pending?.catch(()=>{});Tasks.prototype.reassignForRoster=original;board.close();await f.close();}
 },20000);

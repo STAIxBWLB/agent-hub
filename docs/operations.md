@@ -4449,7 +4449,7 @@ Optional code work runs only while Memory is open and visible. A cold console co
 
 ### Conductor operations (#812 T2)
 
-The selected project's configured conductor may run the commands below through its ordinary peer identity. Other peers retain their refusal. The daemon checks the authenticated connection, current role and project membership before effects and after asynchronous boundaries. It records an `agent_cli` admission with the initiating peer before proceeding; audit failure refuses the operation. Admission records are not a unique invocation counter.
+The selected project's configured conductor may run the commands below through its ordinary peer identity. Other peers retain their refusal. The daemon checks the authenticated connection, current role and project membership before effects and after asynchronous boundaries. Roster handoffs carry that same authority check through plan admission, owner delivery and each later task; a saved assignment is never rolled back when delivery is interrupted. It records an `agent_cli` admission with the initiating peer before proceeding; audit failure refuses the operation. Admission records are not a unique invocation counter.
 
 | Command | Conductor scope |
 | --- | --- |

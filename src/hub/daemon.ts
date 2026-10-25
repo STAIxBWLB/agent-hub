@@ -4930,7 +4930,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const client=sock.data,peer=client.peer;
     return ()=>{
       if(!peer || sock.data!==client || client.role!=="tools" || !acceptedAfterClose && sock.readyState!==WebSocket.OPEN || client.toolsOwner || readOnlyPeer(peer) || stopping || !membershipAllowed(peer) || contextPii(peer))throw new Error("operational conductor authority unavailable");
-      requireConductor(peer,config.roles);
+      try {requireConductor(peer,config.roles);}
+      catch {throw new Error("this operation requires the explicit conductor role; otherwise the console user runs it");}
     };
   }
   function admitOperational(sock:Sock,command:string):()=>void {
@@ -5483,7 +5484,8 @@ export async function startDaemon(opts: DaemonOptions) {
         permissionModeSources.set(peer, defaultSources[peer]?.source ?? "embedded configuration");
         pendingPermissionDefaults.delete(peer);
         if (mode === "never-ask") pendingPermissionDefaults.set(peer, defaultSources[peer]?.source ?? "embedded configuration");
-        handoff = await tasks.reassignForRoster(peer);
+        const handoffCurrent = authority === "conductor" ? operationalContext.getStore()!.current : undefined;
+        handoff = await tasks.reassignForRoster(peer, handoffCurrent);
       } else {
         const owner = bus.peers.get(peer);
         if (isPiPeer(owner) && owner.mode === "tui") await owner.resumeFromRoster();

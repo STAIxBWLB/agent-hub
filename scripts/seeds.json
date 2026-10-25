@@ -212,8 +212,8 @@
     {
       "id": "roster-result-task-moves",
       "file": "src/hub/daemon.ts",
-      "search": "handoff = await tasks.reassignForRoster(peer);",
-      "replacement": "await tasks.reassignForRoster(peer);",
+      "search": "handoff = await tasks.reassignForRoster(peer, handoffCurrent);",
+      "replacement": "await tasks.reassignForRoster(peer, handoffCurrent);",
       "testFile": "test/roster.test.ts",
       "testName": "native removal preview and result name the retained terminal and list its saved task handoff (#315)"
     },
