@@ -216,7 +216,7 @@ test("person commands and unverifiable operational commands refuse promptly with
   writeFileSync(join(stateDir, "status.json"), JSON.stringify({ cwd: root, controlPort: server.port, protocol: PROTOCOL }));
   writeFileSync(join(stateDir, "control-token"), "fixture-token");
   try {
-    for (const args of [["stop", "sensitive-peer"], ["permission", "pi", "never-ask", "--yes", "--as-user"], ["permit", "sensitive-id", "allow"], ["queue", "resolve", "sensitive-id"], ["queue", "list"], ["budget", "resume", "kimi"], ["budget", "set", "kimi", "0"], ["budget", "execution"], ["kill"], ["recovery", "status", "sensitive-id"], ["upgrade"], ["restart"], ["up", "--unattended"], ["ask", "sensitive-question"]]) {
+    for (const args of [["stop", "sensitive-peer"], ["permission", "pi", "never-ask", "--yes", "--as-user"], ["permit", "sensitive-id", "allow"], ["queue", "resolve", "sensitive-id"], ["queue", "list"], ["budget", "resume", "kimi"], ["budget", "set", "kimi", "0"], ["budget", "execution"], ["kill"], ["recovery", "reattach", "sensitive-id"], ["upgrade"], ["restart"], ["up", "--unattended"], ["ask", "sensitive-question"]]) {
       const result = await cli(root, args, { AGENTHUB_PEER_ID: "claude" });
       expect(result.code).toBe(1);
       expect(result.stderr).toContain("ahub console or a terminal");
