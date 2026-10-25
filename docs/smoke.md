@@ -56,6 +56,16 @@ operationId, console hello and initiating-peer audit (225 related tests passed).
 This is fixture/CLI proof, not an actual native Pi restoration; that live leg
 remains owed in #273.
 
+## Kimi usage counting (#285 AC11)
+
+The [2026-10-25 Kimi 2.3.1 receipt](verification/2026-10-25-kimi-usage-ac11.md)
+records an isolated-HOME ACP session. Native `/usage` exactly matched the
+main-agent four-counter wire total but excluded subagent usage; neither
+`/usage` call added a `usage.record`. The ordinary main row appeared after the
+prompt-result read and within 1,000 ms, while the subagent turn's main and
+subagent rows were present at its result. See the receipt for the counts,
+occupancy timing and isolation boundary.
+
 ## Console task and queue operations (#424)
 
 2026-10-16, macOS, source `691f00ac`: a disposable Git project and fake ACP
