@@ -5,7 +5,7 @@ import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { readPrCostHistory, sdlcGh, type SdlcGh } from "./sdlc.ts";
 import { dogfoodScorecard, missing, source, type DogfoodTask, type DogfoodPr, type FeatureEvidence, type Source } from "./dogfood.ts";
 import type { HistoryEntry } from "./board.ts";
-import { dogfoodAlias, dogfoodProfileName, type ProfileTaskMetadata } from "./dogfood-profile.ts";
+import { dogfoodAlias, dogfoodProfileName, profileEventValid, type ProfileTaskMetadata } from "./dogfood-profile.ts";
 import { CLASSES } from "./board.ts";
 import type { ProfileName } from "./profiles.ts";
 import type { StampedEvent } from "./events.ts";
@@ -40,14 +40,10 @@ export function dogfoodEvents(lines: Source<string[]>, since: number, until: num
     try {
       const e = JSON.parse(line);
       if (!e || typeof e !== "object" || e.v !== 1 || typeof e.type !== "string" || date(e.at) === undefined) { complete = false; continue; }
-      const number = (n:unknown) => typeof n === "number" && Number.isFinite(n) && n >= 0;
-      const peer = typeof e.peer === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(e.peer) && !Object.hasOwn(Object.prototype,e.peer);
-      const malformed = ["tokens","usage","turn_end","task","overflow","undeliverable"].includes(e.type) &&
-        (e.type === "task" ? !id(e.id) || typeof e.class !== "string" || typeof e.event !== "string" || typeof e.state !== "string" : !peer ||
-          e.type === "tokens" && !number(e.n) || e.type === "turn_end" && !number(e.ms) ||
-          e.type === "usage" && (typeof e.id !== "string" || typeof e.source !== "string") ||
-          ["overflow","undeliverable"].includes(e.type) && typeof e.id !== "string");
-      if (malformed) {complete=false;continue;}
+      // Other dogfood rows retain their existing validation; profile-consumed types share one predicate.
+      const malformed = ["overflow","undeliverable"].includes(e.type) &&
+        (typeof e.peer!=="string" || !/^[a-z][a-z0-9-]{0,63}$/.test(e.peer) || Object.hasOwn(Object.prototype,e.peer) || typeof e.id!=="string");
+      if (malformed || !profileEventValid(e)) {complete=false;continue;}
       const at = e.type === "usage" && date(e.measuredAt) !== undefined ? date(e.measuredAt)! : date(e.at)!;
       if (at >= since && at <= until) out.push({ ...e, at: new Date(at).toISOString() });
     } catch { complete = false; }

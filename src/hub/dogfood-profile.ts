@@ -18,6 +18,57 @@ export const dogfoodProfileName = (s: unknown): s is ProfileName => typeof s ===
 const baseClass = (s: unknown): s is string => typeof s === "string" && (CLASSES as readonly string[]).includes(s);
 const criterion = (s: unknown): s is string => typeof s === "string" && /^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(s);
 
+/** One validation boundary for the profile consumer and its bounded collector. Unknown event types stay forward compatible. */
+export function profileEventValid(value: unknown): boolean {
+  if (!value || typeof value!=="object" || Array.isArray(value)) return false;
+  const e=value as Record<string,unknown>;
+  if (e.v!==1 || typeof e.at!=="string" || !Number.isFinite(Date.parse(e.at)) || typeof e.type!=="string") return false;
+  const optional = (key:string, valid:(value:unknown)=>boolean) => e[key]===undefined || valid(e[key]);
+  const text = (value:unknown): value is string => typeof value==="string" && value.length>0;
+  const peerId = (value:unknown) => typeof value==="string" && peer(value);
+  const strings = (value:unknown) => Array.isArray(value) && value.every(v=>typeof v==="string");
+  const bool = (value:unknown) => typeof value==="boolean";
+  const oneOf = (value:unknown, choices:readonly string[]) => typeof value==="string" && choices.includes(value);
+  const taskId = () => optional("task",positive);
+  if (e.type==="task") {
+    return positive(e.id) && baseClass(e.class) && text(e.event)
+      && oneOf(e.state,["backlog","proposed","in_progress","in_review","approved","changes_requested","cancelled"])
+      && optional("profile",dogfoodProfileName) && optional("profileClass",v=>typeof v==="string" && /^[a-z][a-z0-9_]{0,47}$/.test(v))
+      // Older metadata projections may omit privacy; absence remains conservative at event-only binding.
+      && optional("pii",bool) && optional("by",peerId)
+      && optional("owner",v=>v===null || peerId(v)) && optional("reviewer",v=>v===null || peerId(v));
+  }
+  if (e.type==="overlap") {
+    return positive(e.task) && optional("owner",peerId) && Array.isArray(e.others) && e.others.every(other=>{
+      if (!other || typeof other!=="object" || Array.isArray(other)) return false;
+      return positive(other.task) && strings(other.paths) && (other.owner===undefined || peerId(other.owner))
+        && (other.symbols===undefined || strings(other.symbols));
+    });
+  }
+  if (e.type==="conflict") {
+    return taskId() && positive(e.other) && strings(e.paths) && bool(e.concurrent)
+      && optional("peer",peerId) && optional("owner",peerId)
+      && optional("turns",v=>Array.isArray(v) && v.length===2 && v.every(text));
+  }
+  if (e.type==="tokens" || e.type==="usage" || e.type==="turn_end") {
+    if (!peerId(e.peer) || !taskId() || !optional("pii",bool)
+      || !optional("attribution",v=>oneOf(v,["delivery","single_open","unattributed"]))) return false;
+    if ((e.attribution==="delivery" || e.attribution==="single_open") && !positive(e.task)) return false;
+    if (e.type==="tokens") return number(e.n);
+    if (e.type==="turn_end") return number(e.ms) && optional("turn",text) && optional("snapshotMs",number) && optional("tokens",number) && optional("files",number);
+    return text(e.id) && oneOf(e.source,["omniroute","claude_transcript","claude_result","codex_appserver","kimi_wire"])
+      && ["inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens","totalTokens","reasoningTokens"].every(key=>optional(key,number))
+      && optional("measuredAt",v=>typeof v==="string" && Number.isFinite(Date.parse(v)));
+  }
+  if (e.type==="pii_screen") {
+    return taskId() && oneOf(e.item,["task","summary","review note","handoff","note"]) && oneOf(e.label,["pii","clear"])
+      && oneOf(e.source,["regex","screen","unknown","inherited"]) && optional("ms",number)
+      && optional("category",v=>oneOf(v,["name","student_id","phone","address","grade","health","other"]))
+      && optional("miss",v=>oneOf(v,["too long","off campus","timeout","unreadable","failed"]));
+  }
+  return true;
+}
+
 /** Private custom aliases never become grouping keys; public aliases remain bounded stored identifiers. */
 export function dogfoodAlias(profile: ProfileName, base: string, raw: unknown, privateTask: boolean): string | null {
   if (raw == null) return baseClass(base) ? base : null;
@@ -35,6 +86,9 @@ function quantiles(values: number[]) {
 
 /** Additive metadata projection. No PR, file, model or config execution and no telemetry inference from prose. */
 export function profileScorecard(input: DogfoodInput) {
+  // Do not trust a direct Source caller's completeness claim after a malformed consumed record.
+  const validEvents=input.events.data.filter(profileEventValid);
+  input={...input,events:{...input.events,data:validEvents,complete:input.events.complete && validEvents.length===input.events.data.length}};
   const inWindow = (at: number) => number(at) && at >= input.since && at <= input.until;
   const events = input.events.data.filter(e => inWindow(Date.parse(e.at)));
   const bindingLimit = 500;

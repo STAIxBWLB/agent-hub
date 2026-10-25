@@ -13,7 +13,7 @@ import type { StampedEvent } from "../src/hub/events.ts";
 import type { ProfileTaskMetadata } from "../src/hub/dogfood-profile.ts";
 
 const input = (): DogfoodInput => ({since:100,until:1000,projectProfile:source("writing"),tasks:source([]),events:source([]),prs:source([]),log:source([]),features:source([])});
-const event = (at:number,value:object) => ({v:1,at:new Date(at).toISOString(),...value}) as StampedEvent;
+const event = (at:number,value:object) => ({v:1,at:new Date(at).toISOString(),...((value as {type?:string}).type==="conflict" ? {concurrent:false} : {}),...value}) as StampedEvent;
 const task = (id:number,profile:ProfileTaskMetadata["profile"]="writing",alias="draft",pii=false) => ({id,pii,history:[],profileMetadata:{profile,class:"implement",alias,history:[{at:10,event:"proposed"},{at:120,event:"accepted"},{at:150,event:"done"},{at:200,event:"changes_requested",criteria:["AC1"]},{at:250,event:"done"},{at:300,event:"approved"}]}});
 function fixture() {const root=mkdtempSync(join(tmpdir(),"ahub-profile-report-"));return {root,close:()=>rmSync(root,{recursive:true,force:true})};}
 const aggregate = (i:DogfoodInput,profile="writing") => dogfoodScorecard(i).profile!.rows.find(r=>r.profile===profile && r.alias===null)!;
@@ -40,7 +40,7 @@ test("profile window retains proposal before window, excludes future verdicts an
 
 test("private aliases and criteria are counted without echoing syntactically valid private text",()=>{
   const i=input();const t=task(7,"writing","private_client",true);t.profileMetadata.history[3]!.criteria=["ClientIdentity"];i.tasks=source([t]);
-  i.events=source([event(150,{type:"task",id:7,event:"done",class:"implement",profile:"writing",profileClass:"private_client",pii:true,title:"PRIVATE_TITLE",paths:["PRIVATE_PATH"]})]);
+  i.events=source([event(150,{type:"task",id:7,event:"done",state:"in_review",class:"implement",profile:"writing",profileClass:"private_client",pii:true,title:"PRIVATE_TITLE",paths:["PRIVATE_PATH"]})]);
   const r=dogfoodScorecard(i),text=JSON.stringify(r);
   expect(text).not.toMatch(/private_client|ClientIdentity|PRIVATE_/);
   expect(r.profile!.rows.find(r=>r.alias==="withheld")?.baseClass).toBe("implement");
@@ -234,4 +234,73 @@ test("profile event binding cap bounds identities and aliases, preserves non-dev
   expect(r.rows.every(r=>r.tasks.every(id=>id<=500))).toBe(true);expect(JSON.stringify(r)).not.toContain("beyond_cap_alias");
   const writing=r.rows.find(r=>r.profile==="writing")!;expect(writing).toBeDefined();expect(writing.tasks).toEqual([]);expect(writing.flow.proposed).toBeNull();expect(writing.snapshots.durationMs.samples).toBeNull();expect(writing.cost.perTask).toBeNull();
   expect(r.rows.every(r=>r.flow.proposed===null)).toBe(true);expect(r.sources.events.bindingsComplete).toBe(false);
+});
+
+test("profile collector and direct Source share fail-closed consumed-event validation with mixed valid evidence",()=>{
+  const f=fixture();try {
+    const file=join(f.root,"events.jsonl");
+    const overlap={type:"overlap",task:1,owner:"codex",others:[{task:2,owner:"claude",paths:[],symbols:[]}]};
+    const conflict={type:"conflict",task:1,other:2,paths:[],concurrent:false};
+    const attributed={peer:"codex",task:1,attribution:"delivery",pii:false};
+    const malformed:object[]=[
+      {...overlap,others:"MALFORMED"},{...overlap,others:[{task:2,paths:"MALFORMED"}]},{...overlap,others:[{task:2,paths:[7]}]},
+      {...overlap,others:[{task:2,paths:[],symbols:"MALFORMED"}]},{...overlap,others:[{task:0,paths:[]}]},{...overlap,others:[null]},
+      {...conflict,paths:"MALFORMED"},{...conflict,other:0},{...conflict,task:"MALFORMED"},{...conflict,concurrent:"MALFORMED"},{...conflict,turns:["one"]},
+      {type:"task",id:1,event:"proposed",state:"MALFORMED",class:"implement",profile:"writing",pii:false},
+      {type:"task",id:1,event:"proposed",state:"proposed",class:"MALFORMED",profile:"writing",pii:false},
+      {type:"task",id:1,event:"proposed",state:"proposed",class:"implement",profile:"MALFORMED",pii:false},
+      {type:"task",id:1,event:"proposed",state:"proposed",class:"implement",profile:"writing",profileClass:[],pii:false},
+      {type:"task",id:1,event:"proposed",state:"proposed",class:"implement",profile:"writing",pii:"MALFORMED"},
+      {type:"tokens",...attributed,n:-1},{type:"tokens",...attributed,n:1,task:0},{type:"tokens",...attributed,n:1,attribution:"MALFORMED"},
+      {type:"turn_end",...attributed,ms:10,snapshotMs:"MALFORMED"},{type:"turn_end",...attributed,ms:-1},{type:"turn_end",...attributed,ms:10,files:-1},
+      {type:"usage",...attributed,source:"omniroute",id:"u",inputTokens:-1},{type:"usage",...attributed,source:"MALFORMED",id:"u"},
+      {type:"usage",...attributed,source:"omniroute",id:"u",cacheReadTokens:"MALFORMED"},{type:"usage",...attributed,source:"omniroute",id:"u",measuredAt:"MALFORMED"},
+      {type:"pii_screen",task:1,item:"note",label:"unknown",source:"screen"},{type:"pii_screen",task:1,item:"MALFORMED",label:"pii",source:"screen"},
+      {type:"pii_screen",task:1,item:"note",label:"pii",source:"MALFORMED"},{type:"pii_screen",task:0,item:"note",label:"pii",source:"screen"},
+      {type:"pii_screen",task:1,item:"note",label:"pii",source:"screen",ms:-1},{type:"pii_screen",task:1,item:"note",label:"pii",source:"screen",category:"MALFORMED"},
+      {type:"pii_screen",task:1,item:"note",label:"pii",source:"screen",miss:"MALFORMED"},
+    ];
+    const valid=event(120,overlap);
+    for (const value of malformed) {
+      const bad=event(130,value);writeFileSync(file,[valid,bad].map(e=>JSON.stringify(e)).join("\n")+"\n");
+      const collected=dogfoodEvents(dogfoodLines(file),100,1000);expect(collected.complete).toBe(false);expect(collected.data).toEqual([valid]);
+      for (const events of [collected,source([valid,bad])]) {
+        const i=input();i.tasks=source([task(1)]);i.events=events;
+        const report=dogfoodScorecard(i).profile!,r=report.rows.find(r=>r.profile==="writing" && r.alias===null)!;
+        expect(report.sources.events.complete).toBe(false);expect(r.overlap.pathNotices).toBeNull();expect(r.overlap.observedPathEditPairs).toBeNull();expect(r.snapshots.durationMs.samples).toBeNull();expect(r.cost.perTask![0]!.peers).toBeNull();
+        expect(r.flow.accepted).toBe(1);expect(JSON.stringify(report)).not.toContain("MALFORMED");
+      }
+      // Direct-source validation neither mutates the caller's completeness claim nor deletes its rows.
+      const direct=source([valid,bad]);const i=input();i.events=direct;dogfoodScorecard(i);expect(direct.complete).toBe(true);expect(direct.data).toHaveLength(2);
+    }
+  } finally {f.close();}
+});
+
+test("profile event validation accepts legacy optional privacy, unattributed records and conflict without task",()=>{
+  const f=fixture();try {
+    const file=join(f.root,"events.jsonl"),values=[
+      event(120,{type:"task",id:1,event:"proposed",state:"proposed",class:"implement",profile:"research",profileClass:"analyze"}),
+      event(130,{type:"conflict",other:2,paths:[],concurrent:false}),
+      event(140,{type:"tokens",peer:"codex",n:5}),
+      event(150,{type:"turn_end",peer:"codex",ms:10,attribution:"unattributed"}),
+      event(160,{type:"pii_screen",item:"note",label:"pii",source:"unknown",miss:"failed",category:"other",ms:0}),
+    ];
+    writeFileSync(file,values.map(e=>JSON.stringify(e)).join("\n")+"\n");expect(dogfoodEvents(dogfoodLines(file),100,1000)).toMatchObject({available:true,complete:true,data:values});
+    const i=input();i.projectProfile=source("research");i.tasks=missing([]);i.events=source(values);expect(aggregate(i,"research").flow.proposed).toBe(1);expect(aggregate(i,"research").cost.perTask![0]!.peers).toBeNull();
+  } finally {f.close();}
+});
+
+test("research fixtures cover all shipped aliases and all nine metric groups with explicit missing-source unknowns",()=>{
+  const i=input();i.projectProfile=source("research");
+  const aliases:[string,string][]=[["question","plan"],["survey","summarize"],["extract","bulk_edit"],["analyze","implement"],["synthesize","summarize"],["draft","implement"],["fact_check","test"],["review","review"],["triage","triage"]];
+  i.tasks=source(aliases.map(([alias,base],index)=>({...task(index+1,"research",alias),profileMetadata:{...task(index+1,"research",alias).profileMetadata,class:base}})));
+  const all=dogfoodScorecard(i).profile!.rows;expect(all).toHaveLength(10);expect(all.filter(r=>r.alias!==null).map(r=>[r.alias,r.baseClass])).toEqual(aliases);
+  for (const row of all) {
+    expect(Object.keys(row).filter(key=>!["profile","alias","baseClass","tasks"].includes(key))).toEqual(["flow","review","overlap","deliverables","privacy","undo","snapshots","profileErrors","cost"]);
+    expect(row.flow.approved).toBe(row.alias===null?9:1);expect(row.undo.requests).toBeNull();expect(row.deliverables.changedSinceApproval).toBeNull();expect(row.profileErrors.unknownAlias).toBeNull();
+  }
+  i.tasks=source(i.tasks.data,false);i.events=missing([]);
+  for (const row of dogfoodScorecard(i).profile!.rows) {
+    expect(row.flow.proposed).toBeNull();expect(row.flow.proposeToApproveMs.samples).toBeNull();expect(row.review.changesRequested).toBeNull();expect(row.overlap.pathNotices).toBeNull();expect(row.deliverables.recordedCount).toBeNull();expect(row.privacy.privateTasks).toBeNull();expect(row.undo.requests).toBeNull();expect(row.snapshots.durationMs.samples).toBeNull();expect(row.profileErrors.unknownAlias).toBeNull();expect(row.cost.perTask!.every(t=>t.peers===null)).toBe(true);
+  }
 });
