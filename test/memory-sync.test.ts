@@ -238,3 +238,13 @@ test("legacy duplicate dedupe syncs append-only and divergent prior relations co
   a.forget(a.list()[0]!.id, "user", "work/app"); await syncMemory(a, privately); await syncMemory(b, privately);
   expect(b.list()).toEqual([]);
 }, 60_000);
+
+test("the hub logs no sync failure for a missing remote in either agent-mem wording, and still logs a real one", async () => {
+  const { quietSyncError } = await import("../src/hub/daemon.ts");
+  expect(quietSyncError("no sync remote: a person sets one with ahub memory sync --remote <private git url>")).toBe(true);
+  expect(quietSyncError("no generation sync remote configured")).toBe(true);
+  expect(quietSyncError("stopped")).toBe(true);
+  expect(quietSyncError("fetch failed: remote unreachable")).toBe(false);
+  expect(quietSyncError("generation sync remote is invalid")).toBe(false);
+  expect(quietSyncError(undefined)).toBe(false);
+});
