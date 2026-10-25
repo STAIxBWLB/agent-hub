@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- The hub no longer logs `hub memory sync failed: no generation sync remote configured` every sync interval: agent-mem's generation sync words a missing remote this way, and no remote is not a failure (#401).
+
 ## 0.16.0
 
 - The project daemon stops through its normal stop on SIGHUP and SIGQUIT too, not only SIGINT and SIGTERM, so memory sync git (detached since agent-mem 0.7.0) never outlives the hub; SIGQUIT no longer reaches its default core dump (#438).
