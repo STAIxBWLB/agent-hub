@@ -31,8 +31,8 @@ test("remote checks schema validates strict tokens and all remote leaves retain 
   for (const [key, after] of [["checks.runner", "remote"], ["checks.remote", remote], ["checks.remote.host", remote.host]]) {
     expect(configApply(key as string)).toMatchObject({ applies: "restart" });
     for (const tracked of [true, undefined]) expect(authorizeConfigLeaf({ key: key as string, after, before: after, source: "config", sourceFile: "config.local.json", tracked, authority: "terminal", confirmed: true }).allowed).toBe(false);
-    expect(authorizeConfigLeaf({ key: key as string, after, source: "config", sourceFile: "config.json", tracked: false, authority: "terminal", confirmed: true }).allowed).toBe(false);
-    expect(authorizeConfigLeaf({ key: key as string, after, source: "config", sourceFile: "config.local.json", tracked: false, authority: "terminal", confirmed: true }).allowed).toBe(true);
+    expect(authorizeConfigLeaf({ key: key as string, before: undefined, after, source: "config", sourceFile: "config.json", tracked: false, authority: "terminal", confirmed: true }).allowed).toBe(false);
+    expect(authorizeConfigLeaf({ key: key as string, before: undefined, after, source: "config", sourceFile: "config.local.json", tracked: false, authority: "terminal", confirmed: true }).allowed).toBe(true);
   }
 });
 test("daemon feeds remote unavailability into sandboxed tests capability without selecting a local runner", async () => {
