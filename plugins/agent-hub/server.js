@@ -12514,7 +12514,11 @@ var init_native_recovery = __esm(() => {
   QWEN_RECOVERY_SESSION = {
     legacyTargetSupport: { file: "src/hub/peer-catalog.ts", exportName: "OPTIONAL_PEERS", refusal: "target does not support Qwen; end Qwen and make a new plan, or choose a supporting target; runtimes unchanged" },
     restoreArgs: (peer) => ({ ...startupArgs(peer), ...peer.sessionId ? { "session-id": peer.sessionId } : {} }),
-    recoveryRefusal: (peer, phase = "plan") => peer.args?.mode === "tui" ? phase === "restore" ? "Qwen's own terminal cannot be restored as a headless worker; end it in that terminal and make a new recovery plan" : "qwen: its own terminal has no automatic restore; end it in that terminal, then make a new recovery plan (restart it with ahub qwen --mode tui, which resumes its session)" : undefined
+    recoveryRefusal: (peer, phase = "plan") => {
+      if (peer.args?.mode !== "tui")
+        return;
+      return phase === "restore" ? "Qwen's own terminal cannot be restored as a headless worker; end it in that terminal and make a new recovery plan" : "qwen: its own terminal has no automatic restore; end it in that terminal, then make a new recovery plan (restart it with ahub qwen --mode tui, which resumes its session)";
+    }
   };
 });
 
