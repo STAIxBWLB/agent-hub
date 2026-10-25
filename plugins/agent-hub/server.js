@@ -1332,7 +1332,7 @@ var DEFAULT_WATCHDOG_MS = 300000;
 
 // src/adapters/reviewer-print.ts
 import { randomUUID as randomUUID2 } from "crypto";
-var ReviewerUnavailableError, reviewTarget = (env) => {
+var ReviewerUnavailableError, ReviewerAdmissionError, reviewTarget = (env) => {
   const task = reviewTask(env);
   if (task === undefined || env.private)
     return;
@@ -1354,6 +1354,13 @@ var init_reviewer_print = __esm(() => {
       super(message);
       this.causeClass = causeClass;
       this.detail = detail;
+    }
+  };
+  ReviewerAdmissionError = class ReviewerAdmissionError extends Error {
+    reason;
+    constructor(reason) {
+      super("review admission changed");
+      this.reason = reason;
     }
   };
   ReviewerPrintPeer = class ReviewerPrintPeer extends BasePeer {
@@ -1510,6 +1517,17 @@ var init_reviewer_print = __esm(() => {
         } catch (error) {
           if (generation !== this.generation)
             return;
+          if (error instanceof ReviewerAdmissionError) {
+            this.opts.log?.(`[${this.id}] review of task #${task} skipped: ${error.reason === "stale_binding" ? "stale binding" : "review policy changed"}`);
+            if (error.reason === "policy_changed") {
+              missing.push(task);
+              const target = batch.targets[index];
+              if (target)
+                reroute.push({ ...target, cause: "no_verdict" });
+            }
+            batch.next = index + 1;
+            continue;
+          }
           if (error instanceof PrintChildCleanupError) {
             this.opts.log?.(`[${this.id}] review of task #${task}: ${error.message}`);
             this.settle("needs_review", `review process group still running: ${error.message}`);
@@ -1607,9 +1625,16 @@ var init_reviewer_print = __esm(() => {
       }).catch(() => {});
       return done;
     }
-    async review(env, task, generation) {
+    assertAdmission(env, task, binding) {
+      if (this.opts.bindingCurrent?.(task, binding) === false)
+        throw new ReviewerAdmissionError("stale_binding");
       if (this.opts.admit?.(env) === false)
-        throw new Error("review admission changed");
+        throw new ReviewerAdmissionError(this.opts.bindingCurrent?.(task, binding) === false ? "stale_binding" : "policy_changed");
+    }
+    async review(env, task, generation) {
+      const revision = Number(env.refs?.reviewRevision);
+      const binding = Object.freeze({ head: env.refs?.commit, flowRevision: Number.isSafeInteger(revision) && revision > 0 ? revision : undefined });
+      this.assertAdmission(env, task, binding);
       let facts;
       try {
         facts = this.opts.facts?.(env);
@@ -1620,8 +1645,6 @@ var init_reviewer_print = __esm(() => {
 
 ${facts}` : ""}`;
       let launch;
-      const revision = Number(env.refs?.reviewRevision);
-      const binding = Object.freeze({ head: env.refs?.commit, flowRevision: Number.isSafeInteger(revision) && revision > 0 ? revision : undefined });
       const mcp = this.opts.backend.taskMcp ? this.opts.taskMcp?.(task, () => generation === this.generation && this.reviewToken(task) !== undefined && this.opts.bindingCurrent?.(task, binding) !== false) : undefined;
       let mcpClosed = false;
       const closeMcp = () => {
@@ -1638,8 +1661,11 @@ ${facts}` : ""}`;
       const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
       try {
         launch = await this.prepare(randomUUID2(), input, task, mcp?.config);
-        if (generation !== this.generation || this.opts.admit?.(env) === false || launch.current?.() === false)
-          throw new ReviewerUnavailableError("reviewer isolation or admission changed before child spawn", launch.current?.() === false ? "binary" : "unknown");
+        if (generation !== this.generation)
+          throw new ReviewerAdmissionError("stale_binding");
+        this.assertAdmission(env, task, binding);
+        if (launch.current?.() === false)
+          throw new ReviewerUnavailableError("reviewer isolation changed before child spawn", "binary");
         this.receipt = launch.isolation;
         let quota = false;
         const child = new OwnedPrintChild({
