@@ -108,4 +108,7 @@ test("release authorization stays person-only while exact release preflights are
   expect(liveTestRefusal("sdlc", ["authorize-release", "1.2.3"])).toBe(true);
   for (const sub of ["release-guard", "release-guard-hook"]) expect(classifyPeerCommand("sdlc", [sub])).toBe("allowed");
   for (const sub of ["record", "accept", "plan-review", "unknown"]) expect(classifyPeerCommand("sdlc", [sub])).toBe("console");
+  // #786: the guarded merge is the person's or the configured conductor's (the daemon checks the role); live-test never delegates it.
+  expect(classifyPeerCommand("sdlc", ["merge", "1"])).toBe("conductor"); expect(classifyPeerCommand("sdlc", ["merge", "1", "--dry-run"])).toBe("conductor");
+  expect(liveTestRefusal("sdlc", ["merge", "1"])).toBe(true);
 });

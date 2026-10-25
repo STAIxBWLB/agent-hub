@@ -26,6 +26,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub pet --palette <blue|teal|violet|ochre>", "save the floating window's base color to pet.palette in .agenthub/config.local.json"],
     ["ahub sdlc status [task] | explain <task> | export <task> | record <task> <receipt-json>", "read head-bound lifecycle gates and the next actor/action (person only)"],
     ["ahub sdlc queue <owner/repo> | release <owner/repo> [live-issue...]", "read-only merge and release evidence (person only)"],
+    ["ahub sdlc merge <task> [--dry-run]", "guarded squash merge of an approved task at its approved head after every gate is re-read; follows sdlc.toml auto_merge (off, dry-run, on); --dry-run only reports (person or conductor)"],
     ["ahub sdlc authorize-release <version>", "approve this daemon checkout commit, version and fresh docs (person only; restart revokes)"],
     ["ahub sdlc release-guard -- <literal git push|gh release create|npm publish argv>", "read-only authorization preflight; init --release-guard installs the tag pre-push hook"],
     ["ahub sdlc release-guard-hook <remote-name> <remote-url>", "internal pre-push readback; validates version tags and forwards exact stdin on success"],

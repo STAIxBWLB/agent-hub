@@ -13,7 +13,8 @@ import { VERSION } from "../version.ts";
 import { NoWriteTurns } from "./no-writes.ts";
 import { readGitHubImport, type GitHubSource, type GitHubImportSelection } from "./github-import.ts";
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
-import { readMergeQueue } from "./sdlc-queue.ts";
+import { readMergeQueue, type DeliveryTask } from "./sdlc-queue.ts";
+import { guardedMerge, mergeModeFor, mergeView, type MergeView } from "./sdlc-merge.ts";
 import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
 import { readReleaseReadiness } from "./sdlc-release.ts";
 import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
@@ -3068,10 +3069,15 @@ export class Tasks {
     return this.d.board.update(task.id, by, "lifecycle", { sdlc: next }, undefined, { ...this.planObservation({ ...task, sdlc: next }), ...(invalidatesDeparture ? { planDepartureInvalidated: true } : {}), ...(deliverables ? { deliverables } : {}) });
   }
 
+  /** The board as the merge queue and the guarded merge read it (#786): ids, dependencies, privacy, receipts, findings and plans. */
+  private deliveryLinks(config: SdlcConfig): DeliveryTask[] {
+    return this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t), plan: config.mode === "off" || this.isPii(t) ? undefined : { paths: this.planPaths(t), revision: t.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(t.plan ?? {}), accepted: this.validPlanDepartures(t) } }));
+  }
+
   async deliveryQueue(repo: string) {
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     const before = workflowHash(this.d.board.list().map(t => ({ id: t.id, state: t.state, after: t.deps, sdlc: t.sdlc, history: t.history.length })));
-    const links = this.d.board.list().map(t => ({ id: t.id, after: t.deps ?? [], private: this.isPii(t), receipt: t.sdlc, phase: this.isPii(t) ? undefined : this.workflowView(t), findings: this.isPii(t) ? undefined : this.reviewFindingSets(t), plan: config.mode === "off" || this.isPii(t) ? undefined : { paths: this.planPaths(t), revision: t.history.findLast(h => h.planRevision)?.planRevision?.revision ?? 0, fingerprint: planFingerprint(t.plan ?? {}), accepted: this.validPlanDepartures(t) } }));
+    const links = this.deliveryLinks(config);
     const report = await readMergeQueue(repo, config, links, this.d.sdlc?.gh, this.publicMetadataText);
     // Policy can change across remote awaits without any board write. Never return its stale public projection.
     const currentPrivacy = this.d.board.list().map(task => ({ id: task.id, private: this.isPii(task) }));
@@ -3096,6 +3102,50 @@ export class Tasks {
       }
     }
     return report;
+  }
+  private readonly mergesInFlight = new Set<number>();
+  /** #786: who may ask for a guarded merge. The hub's own approval trigger acts as HUB; a peer must be the one configured conductor. */
+  private mergeAuthority(by: PeerId): boolean {
+    if (by === USER || by === HUB) return true;
+    const holders = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([actor]) => actor);
+    return holders.length === 1 && holders[0] === by;
+  }
+  /**
+   * #786 T1: the guarded merge of one approved task. `sdlc.auto_merge` (or the repository's table) says whether it only reports (`dry-run`) or acts (`on`);
+   * `opts.dryRun` forces a report. Every gate is re-read right now (`sdlc-merge.ts`); this method owns authority, privacy and the notices, which name the task
+   * and the gates only (a PII task shows its stub and is never merged by the hub). It writes nothing to the board: recording the result is a later task.
+   */
+  async guardedMerge(by: PeerId, id: unknown, opts: { dryRun?: boolean; trigger?: "review" | "command" } = {}): Promise<{ task: number } & MergeView> {
+    if (!this.mergeAuthority(by)) throw new Error("only the console user or the configured conductor may merge");
+    const task = this.need(id), label = `#${task.id}`;   // the number only: a notice about a merge never carries a title (a PII task has none to show)
+    const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
+    const mode = opts.dryRun ? "dry-run" as const : mergeModeFor(config, task.sdlc?.repo);
+    const refuse = (gate: string) => ({ task: task.id, ...mergeView({ mode, decision: { refused: [gate] }, ran: false }) });
+    if (this.isPii(task)) return refuse("private task: a person merges");
+    if (mode === "off") return refuse("auto_merge is off for this repository");
+    if (this.mergesInFlight.has(task.id)) return refuse("a merge check for this task is already running");
+    this.mergesInFlight.add(task.id);
+    try {
+      // What the check was about: a verdict, a new head or a relink during the reads makes the decision stale, so nothing runs.
+      const identity = (t: Task) => JSON.stringify([t.state, t.sdlc?.repo, t.sdlc?.pr, t.sdlc?.reviewedHead, this.isPii(t)]);
+      const start = identity(task), links = this.deliveryLinks(config), subject = links.find(link => link.id === task.id)!;
+      const outcome = await guardedMerge({ mode, subject, state: task.state, taskState: n => this.d.board.get(n)?.state, config, tasks: links, run: this.d.sdlc?.gh ?? sdlcGh, readableMetadata: this.publicMetadataText,
+        beforeMerge: () => { const now = this.d.board.get(task.id); return now && identity(now) === start ? undefined : "task changed during the merge check: nothing was run"; } });
+      const view = mergeView(outcome);
+      const head = (text?: string) => text ? text.slice(0, 8) : "unknown";
+      if (outcome.result) this.releaseNotice(outcome.result.state === "merged" ? `task ${label}: merged (squash, commit ${head(outcome.result.mergeCommit)})` : `task ${label}: gh pr merge exited ${outcome.result.exit}; GitHub reports it ${outcome.result.state === "unknown" ? "unreadable" : "not merged"}`);
+      else if (opts.trigger === "review") this.releaseNotice("action" in outcome.decision ? `task ${label}: auto-merge dry-run: would merge at ${head(outcome.decision.head)}` : `task ${label}: auto-merge refused: ${outcome.decision.refused.join("; ")}`);
+      return { task: task.id, ...view };
+    } finally { this.mergesInFlight.delete(task.id); }
+  }
+  /** After an approving verdict, never blocking or failing it: the check runs on a later tick and reports through a notice. */
+  private autoMerge(task: Task): void {
+    try {
+      if (!task.sdlc?.repo || !task.sdlc.pr || mergeModeFor(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc.repo) === "off") return;
+      const label = `#${task.id}`;
+      // Promise.resolve().then also catches a synchronous throw, which would otherwise escape a microtask.
+      void Promise.resolve().then(() => this.guardedMerge(HUB, task.id, { trigger: "review" })).catch(() => this.releaseNotice(`task ${label}: auto-merge check unavailable`));
+    } catch { /* an approval never fails because of the merge check */ }
   }
   async releaseReadiness(repo: string, liveIssues: number[]) {
     const report = await readReleaseReadiness(this.d.cwd, repo, liveIssues, { gh: this.d.sdlc?.gh });
@@ -4348,6 +4398,7 @@ export class Tasks {
       this.releaseNotice(`task ${this.publicTitle(next)}: could not tell ${next.owner ?? "its owner"} it was approved`, () =>
         this.tell(next, `Task #${next.id} approved by ${by}.${note ? ` ${this.screen(next, note, "review note", next.owner, withheld)}` : ""}`, pii));
       await this.releaseDependents(next);
+      this.autoMerge(next);
       // A proposal storage failure cannot roll back the saved verdict; another matching verdict retries it.
       this.releaseNotice(`task #${next.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(next, by, parsed, withheld));
       return next;

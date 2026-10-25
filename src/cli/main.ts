@@ -1362,6 +1362,20 @@ const commands: Record<string, () => Promise<void> | void> = {
       } finally { hub.close(); }
       return;
     }
+    if (sub === "merge") {
+      // #786 T1: the guarded merge of one approved task; a person or the configured conductor asks, the daemon re-reads every gate.
+      const flags = takeFlags(args.slice(2), [], []);
+      const dryRun = flags.rest.includes("--dry-run");
+      if (flags.rest.some(arg => arg !== "--dry-run") || !Number.isSafeInteger(id) || id! <= 0) fail("usage: ahub sdlc merge <task> [--dry-run]");
+      const hub = await connect();
+      try {
+        const reply = await hub.request({ t: "sdlc", op: "merge", id, ...(dryRun ? { dryRun: true } : {}) }, 60_000);
+        if (!reply.ok) fail(reply.error);
+        console.log(JSON.stringify({ task: reply.task, mode: reply.mode, ran: reply.ran, decision: reply.decision, ...(reply.argv ? { argv: reply.argv } : {}), ...(reply.refused ? { refused: reply.refused } : {}), ...(reply.result ? { result: reply.result } : {}) }, null, 2));
+        if (reply.decision === "refused" || reply.ran && reply.result?.state !== "merged") process.exitCode = 1;
+      } finally { hub.close(); }
+      return;
+    }
     if (sub === "accept") {
       // #481 S1: the person accepts the task's spec issue at its current body; agent shells are refused before this runs.
       const flags = takeFlags(args.slice(2), ["--issue", "--repo"], []);
@@ -2338,6 +2352,7 @@ async function runConductorCommand(): Promise<void> {
   }
   let op: string;
   let input: Record<string, unknown>;
+  if (cmd === "sdlc") return commands.sdlc!(); // #786: `sdlc merge` is the one conductor-class sdlc subcommand; the daemon checks the role.
   if (cmd === "task") {
     op = args[0] === "assign" ? "hub_task_assign" : "hub_task_escalate";
     const { one, rest: positional } = takeFlags(args.slice(1), args[0] === "assign" ? ["--role"] : [], []);
