@@ -4006,12 +4006,12 @@ export class Tasks {
     return admitted;
   }
 
-  private sendReview(task: Task, reviewer: PeerId, why = "", admission?: ReviewReadiness): void {
+  private sendReview(task: Task, reviewer: PeerId, why = "", admission?: ReviewReadiness): boolean {
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
     if (mode === "enforce" && !admission?.ready) {
       // Background roster/quota role changes are retained, but never invent a remotely admitted review request.
       this.releaseNotice(`task ${this.publicTitle(task)}: premature review held; retry the reviewer assignment after current CI and bot replies are verified`);
-      return;
+      return false;
     }
 
     const r = task.refs;
@@ -4073,7 +4073,7 @@ export class Tasks {
     // #572 AC3: advisory only, from git state never from task text, so it is safe for a PII task too.
     const checkout = mainCheckoutWarning(this.d.cwd, this.publicMetadataText);
     const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${last?.noWrites ? "no writes recorded since acceptance\n" : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${carriedText}${conformanceText}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet, findings: [{id, pass: "bugs" | "security" | "compliance", severity: "important" | "nit", path?, disposition: "open" | "fixed" | "false_positive"}]}. Reuse finding ids when updating their disposition; only the person may accept a finding with a rationale.`;
-    this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, ...(this.reviewHead(task) ? { commit: this.reviewHead(task)! } : {}), task: String(task.id), reviewRevision: String(this.reviewRequestRevision(task)) }, ...(this.isPii(task) ? { private: true } : {}) }));
+    return this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, ...(this.reviewHead(task) ? { commit: this.reviewHead(task)! } : {}), task: String(task.id), reviewRevision: String(this.reviewRequestRevision(task)) }, ...(this.isPii(task) ? { private: true } : {}) })).includes(reviewer);
   }
 
   private reviewRequestRevision(task: Task): number {
@@ -4089,25 +4089,35 @@ export class Tasks {
   }
 
   /** Host-only failure report, bound to the exact review request and its still-current child generation. */
-  async retryReviewer(id: number, failedPeer: PeerId, failure: { head?: string; flowRevision?: number; cause: "start_failed" | "quota" | "no_verdict" }, current: () => boolean): Promise<Task> {
+  async retryReviewer(id: number, failedPeer: PeerId, failure: { head?: string; flowRevision?: number; cause: "start_failed" | "quota" | "no_verdict" }, current: () => boolean, onReoffered?: () => void): Promise<Task> {
     if (!failure || !["start_failed", "quota", "no_verdict"].includes(failure.cause) || !/^[a-z][a-z0-9-]{0,63}$/.test(failedPeer) || !Number.isSafeInteger(failure.flowRevision) || failure.flowRevision! < 1 || failure.head !== undefined && (typeof failure.head !== "string" || text(failure.head) !== failure.head || Buffer.byteLength(failure.head) > 1200 || /\p{Cc}/u.test(failure.head))) throw new PreEffectToolRefusal("invalid reviewer failure binding");
     const valid = () => {
       const task = this.need(id, false, true);
-      if (!current() || task.state !== "in_review" || task.reviewer !== failedPeer || this.reviewRequestRevision(task) !== failure.flowRevision || this.reviewHead(task) !== failure.head || this.isPii(task) || this.manuallyNamedReviewer(task)) throw new PreEffectToolRefusal("reviewer failure is no longer current");
+      if (!current() || task.state !== "in_review" || task.reviewer !== failedPeer || this.reviewRequestRevision(task) !== failure.flowRevision || this.reviewHead(task) !== failure.head || this.isPii(task) || this.manuallyNamedReviewer(task) && failure.cause !== "no_verdict") throw new PreEffectToolRefusal("reviewer failure is no longer current");
       return task;
     };
     const before = valid();
     const admission = await this.reviewRequestAdmission(before, undefined, true, before.owner ?? USER, undefined, () => { valid(); return true; });
     const task = valid();
     const options = this.reviewPoolOptions(task);
-    const selection = assign(task, this.states(), this.d.routing(), { ...this.weights(task.class, task), candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}), reviewPool: { ...options, failed: [...options.failed, failedPeer] } });
-    if (!selection.reviewSelection) throw new PreEffectToolRefusal("no declared reviewer pool can receive the fallback");
-    const reviewer = selection.reviewer ?? USER;
+    // A person-selected reviewer never falls through to an agent the person did not select.
+    const manual = this.manuallyNamedReviewer(task);
+    const selection = manual ? undefined : assign(task, this.states(), this.d.routing(), { ...this.weights(task.class, task), candidates: [], ...(task.owner ? { notReviewer: task.owner } : {}), reviewPool: { ...options, failed: [...options.failed, failedPeer] } });
+    if (!selection?.reviewSelection && failure.cause !== "no_verdict") throw new PreEffectToolRefusal("no declared reviewer pool can receive the fallback");
+    const reviewer = selection?.reviewSelection ? selection.reviewer ?? USER : USER;
     valid();
-    const next = this.d.board.update(task.id, HUB, "reviewer unavailable", { reviewer }, this.assignmentNote(`reviewer unavailable: ${failure.cause}`, selection), { ...this.reviewMetadata(selection), reviewerFailure: { peer: failedPeer, cause: failure.cause, ...(failure.head ? { head: failure.head } : {}) } }, task.history.length);
+    const note = manual ? "named reviewer recorded no verdict; the person must review"
+      : selection?.reviewSelection ? this.assignmentNote(`reviewer unavailable: ${failure.cause}`, selection) : "no declared reviewer pool can receive the fallback; the person must review";
+    const next = this.d.board.update(task.id, HUB, "reviewer unavailable", { reviewer }, note, { ...this.reviewMetadata(selection), ...(reviewer === USER ? { reviewBlocked: true } : {}), reviewerFailure: { peer: failedPeer, cause: failure.cause, ...(failure.head ? { head: failure.head } : {}) } }, task.history.length);
     this.releaseNotice(`task ${this.publicTitle(next)}: former review request withdrawal incomplete`, () => this.withdrawRoleRequest(task, next, "reviewer"));
-    if (reviewer === USER) this.releaseNotice(`task ${this.publicTitle(next)}: blocked: no reviewer can run; the planner or person must review`);
-    else this.releaseNotice(`task ${this.publicTitle(next)}: fallback review request unavailable`, () => this.sendReview(next, reviewer, "", admission));
+    let offered = false;
+    if (reviewer === USER) {
+      const notice = `task ${this.publicTitle(next)}: blocked: the person must review`;
+      this.releaseNotice(notice, () => { this.d.notify(notice); offered = true; });
+    } else this.releaseNotice(`task ${this.publicTitle(next)}: fallback review request unavailable`, () => { offered = this.sendReview(next, reviewer, "", admission); });
+    if (offered && current() && this.reviewBindingCurrent(reviewer, next.id, { head: this.reviewHead(next), flowRevision: this.reviewRequestRevision(next) })) {
+      try { onReoffered?.(); } catch { /* Unconfirmed host settlement retains the delivery hold. */ }
+    }
     return next;
   }
 

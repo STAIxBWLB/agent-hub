@@ -55,6 +55,48 @@ test("manual named reviewer survives complete-time automatic pool selection", as
   expect((await tasks.done("codex", task.id, "ready")).reviewer).toBe("claude-two");
 });
 
+test("a current manually named no-verdict reviewer escalates only to the person and confirms the offer", async () => {
+  const { tasks, task } = await rig();
+  await tasks.done("codex", task.id, "ready");
+  const named = await tasks.assignTo(task.id, "claude-review", "user", false, "reviewer");
+  let confirmed = false;
+  const moved = await tasks.retryReviewer(task.id, "claude-review", { head: named.refs.commit, flowRevision: named.history.length, cause: "no_verdict" }, () => true, () => { confirmed = true; });
+  expect(moved).toMatchObject({ state: "in_review", reviewer: "user" });
+  expect(moved.history.at(-1)).toMatchObject({ reviewBlocked: true, reviewerFailure: { peer: "claude-review", cause: "no_verdict" } });
+  expect(confirmed).toBe(true);
+});
+
+test("no-verdict without a declared pool offers the review to the person", async () => {
+  let instances = { "claude-review": { kind: "claude", roles: ["reviewer"], start_mode: "headless" as const }, "claude-two": { kind: "claude", roles: ["reviewer"], start_mode: "headless" as const }, "codex-review": { kind: "codex", roles: ["reviewer"], start_mode: "headless" as const, review_mode: "fresh" as const } };
+  const { tasks, task } = await rig({ instances: () => instances, review: { adaptive: false, min_reviews: 5 } });
+  const done = await tasks.done("codex", task.id, "ready");
+  instances = {} as typeof instances;
+  let confirmed = false;
+  const moved = await tasks.retryReviewer(task.id, done.reviewer!, { head: done.refs.commit, flowRevision: done.history.length, cause: "no_verdict" }, () => true, () => { confirmed = true; });
+  expect(moved).toMatchObject({ state: "in_review", reviewer: "user" });
+  expect(confirmed).toBe(true);
+});
+
+test("a saved fallback with failed publication remains unconfirmed", async () => {
+  const { tasks, task, bus, board } = await rig();
+  const done = await tasks.done("codex", task.id, "ready"), publish = bus.publish.bind(bus);
+  bus.publish = env => { if (env.kind === "review" && env.to?.includes("claude-two")) throw new Error("fixture publication unavailable"); return publish(env); };
+  let confirmed = false;
+  const moved = await tasks.retryReviewer(task.id, done.reviewer!, { head: done.refs.commit, flowRevision: done.history.length, cause: "no_verdict" }, () => true, () => { confirmed = true; });
+  expect(moved.reviewer).toBe("claude-two"); expect(board.get(task.id)?.reviewer).toBe("claude-two");
+  expect(confirmed).toBe(false);
+});
+
+test("a changed binding during fallback publication cannot confirm the old request", async () => {
+  const { tasks, task, bus, board } = await rig();
+  const done = await tasks.done("codex", task.id, "ready"), publish = bus.publish.bind(bus);
+  bus.publish = env => { const result = publish(env); if (env.kind === "review" && env.to?.includes("claude-two")) board.update(task.id, "user", "fixture head changed", { refs: { commit: "b".repeat(40) } }); return result; };
+  let confirmed = false;
+  await tasks.retryReviewer(task.id, done.reviewer!, { head: done.refs.commit, flowRevision: done.history.length, cause: "no_verdict" }, () => true, () => { confirmed = true; });
+  expect(board.get(task.id)?.refs.commit).toBe("b".repeat(40));
+  expect(confirmed).toBe(false);
+});
+
 test("current same-head reviewer failure records evidence and reroutes once without approving", async () => {
   const { tasks, board, task } = await rig();
   const done = await tasks.done("codex", task.id, "ready");

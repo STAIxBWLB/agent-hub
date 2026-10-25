@@ -302,6 +302,14 @@ async function prepare(ctx: ReviewerPrepareContext): Promise<ReviewerLaunch | { 
 
 export const codexReviewerBackend: ReviewerBackend = {
   id: "codex", prepare,
+  toolTrace(event) {
+    const row = event as { type?: string; item?: { type?: string; server?: string; tool?: string; error?: { message?: unknown } | string; result?: { isError?: boolean; content?: { type?: string; text?: unknown }[] } } };
+    const item = row?.item;
+    if (row?.type !== "item.completed" || item?.type !== "mcp_tool_call" || item.server !== "agent-hub" || (item.tool !== "hub_review" && item.tool !== "hub_task_show")) return undefined;
+    const failure = typeof item.error === "string" ? item.error : item.error?.message;
+    const refused = item.result?.isError === true && Array.isArray(item.result.content) ? item.result.content.filter(value => value?.type === "text" && typeof value.text === "string").map(value => value.text).join("\n") : undefined;
+    return { tool: item.tool, ...(typeof failure === "string" ? { refusal: failure } : typeof refused === "string" ? { refusal: refused } : {}) };
+  },
   usage(event) {
     const row = event as { type?: string; usage?: { input_tokens?: number; output_tokens?: number; cached_input_tokens?: number } };
     return row?.type === "turn.completed" && row.usage ? { input_tokens: row.usage.input_tokens, output_tokens: row.usage.output_tokens, cache_read_input_tokens: row.usage.cached_input_tokens } : undefined;

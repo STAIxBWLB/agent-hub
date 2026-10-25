@@ -90,8 +90,8 @@ import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
 import { runTool, toolResultFailed, TOOL_SCHEMAS, type ToolApproval, type ApprovalObserver, type ToolContext } from "../local/tools.ts";
 import { isLocalPeer, type LocalPeer } from "../adapters/local-worker.ts";
-import { isReviewerPrintPeer, reviewerUnavailableReason, ReviewerUnavailableError, type ReviewerPrintPeer } from "../adapters/reviewer-print.ts";
-import { createReviewerMcpSession } from "../adapters/reviewer-mcp.ts";
+import { isReviewerPrintPeer, reviewerNoVerdictLine, reviewerUnavailableReason, ReviewerUnavailableError, REVIEWER_FALLBACK_UNCONFIRMED, type ReviewerPrintPeer } from "../adapters/reviewer-print.ts";
+import { createReviewerMcpSession, type ReviewerToolName } from "../adapters/reviewer-mcp.ts";
 import { reviewerPoolConfig } from "./reviewer-pool-config.ts";
 import { reviewDiff } from "../adapters/claude-print.ts";
 import { Capture } from "../memory/capture.ts";
@@ -634,6 +634,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const executionOwners = new Map<string, { owner: PeerAdapter; cwd: string; socket?: Sock; launchId?: string; generation?: string | number }>();
   const verifiedTerminalRootsThisTurn = new Set<object>();
   const reviewerUnavailable = new Map<string, string>();
+  const reviewerToolObservers = new Map<string, (task: number, tool: ReviewerToolName, refusal?: string) => void>();
   const roles = { ...Object.fromEntries(adapterCatalog.definitions.filter(d => configuredIds.includes(d.kind)).map(d => [d.kind, [...d.roles]])), ...loadedConfig.roles };
   const permissionModesFromInstances: Record<string, PermissionMode> = {};
   const startModesFromInstances: PeerStartConfig = {};
@@ -2470,6 +2471,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (nativeTurn && effectful) nativeTurn.effectsPending = (nativeTurn.effectsPending ?? 0) + 1;
     const conducted = conductorPeer(config.roles) === by && conductedMutations.has(op);
     const admittedId = typeof input?.id === "number" && Number.isSafeInteger(input.id) && input.id > 0 ? input.id : undefined;
+    const reviewTool = op === "hub_review" || op === "hub_task_show" ? op : undefined;
+    const traceId = admittedId ?? (typeof input?.id === "string" && /^[1-9][0-9]{0,15}$/.test(input.id) && Number.isSafeInteger(Number(input.id)) ? Number(input.id) : undefined);
+    if (reviewTool && traceId !== undefined) reviewerToolObservers.get(by)?.(traceId, reviewTool);
     taskOpsInFlight++;
     try {
       const readAuthority=op==="hub_task_show"?runningReviewAuthority(by,Number(input?.id)):undefined;
@@ -2485,6 +2489,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const hint = args[3] ? ownHeldHint(by) : "";
       return hint ? `${text}\n\n${hint}` : text;
     } catch (error) {
+      if (reviewTool && traceId !== undefined) reviewerToolObservers.get(by)?.(traceId, reviewTool, error instanceof Error ? error.message : "review tool refused");
       if (nativeTurn && effectful && !(error instanceof PreEffectToolRefusal) && turns.get(by) === nativeTurn) nativeTurn.taskEffect = true;
       // Keep proven pre-effect refusal identity/code for native receipts; only add body-free metadata.
       const hint = args[3] ? ownHeldHint(by) : "";
@@ -3312,7 +3317,7 @@ export async function startDaemon(opts: DaemonOptions) {
     settlingSuperseded = true;
     try {
       for (const row of bus.queueList(undefined, true)) {
-        if (row.state !== "needs_review" || row.reason?.startsWith("requested stop:")) continue;
+        if (row.state !== "needs_review" || row.reason?.startsWith("requested stop:") || row.reason?.startsWith(REVIEWER_FALLBACK_UNCONFIRMED)) continue;
         const reason = supersededDeliveryReason(row.originals, board, row.peer);
         if (!reason) continue;
         try { bus.resolveDelivery(row.id, row.revision, "completed", reason, "hub"); }
@@ -4729,7 +4734,8 @@ export async function startDaemon(opts: DaemonOptions) {
         privatePaths: [opts.stateDir, ...(config.pii?.paths ?? []), ...config.local.deny],
         bindingCurrent: (task,binding) => tasks.reviewBindingCurrent(peer,task,binding),
         taskMcp: (task, current) => createReviewerMcpSession({ task, current, tools: [...TASK_TOOLS, ...CONDUCTOR_TOOLS],
-          call: (name, args) => taskOp(peer, name, args, true, contextPii(peer)) }),
+          call: (name, args) => taskOp(peer, name, args, true, contextPii(peer)),
+          onTool: (tool, refusal) => { if (bus.peers.get(peer) === reviewer) reviewer.recordToolTrace(task, { tool, ...(refusal === undefined ? {} : { refusal }) }); } }),
         admit: env => {
           if (env.private || contextPii(peer) || !reviewOnlyPeer(peer) || !tasks.reviewBindingCurrent(peer, Number(env.refs?.task),
             { head: env.refs?.commit, flowRevision: Number(env.refs?.reviewRevision) })) return false;
@@ -4743,16 +4749,26 @@ export async function startDaemon(opts: DaemonOptions) {
         facts: env => env.private ? undefined : reviewDiff(executionCwd, env.refs?.commit, { privatePath: path => isDenied(path, config.local.deny) || matchesPolicy(executionCwd, path, config.pii?.paths ?? [], true), nameable: tasks.nameable }),
         verdictSince: (task, since) => board.get(task)?.history.some(h => h.by === peer && h.at >= since && (h.event === "approved" || h.event === "changes_requested")) === true,
         onUsage: usage => void addTokens(peer, (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)),
+        onNoVerdict: (diagnostic, current) => {
+          const task = board.get(diagnostic.task);
+          const visible = current() && bus.peers.get(peer) === reviewer && !!task && !tasks.isPii(task) && !contextPii(peer)
+            && tasks.reviewBindingCurrent(peer, diagnostic.task, diagnostic);
+          // Screen the complete refusal before any sanitization or bound; no task text or model output is logged.
+          const hostSafe = visible && !diagnostic.refusalUncertain && (diagnostic.hostRefusal === undefined || boundedSafe(diagnostic.hostRefusal) && tasks.publicMetadataText(diagnostic.hostRefusal));
+          const safe = visible && hostSafe && diagnostic.refusal !== undefined && boundedSafe(diagnostic.refusal) && tasks.publicMetadataText(diagnostic.refusal) ? diagnostic.refusal : undefined;
+          log(reviewerNoVerdictLine(peer, diagnostic, safe, !visible));
+        },
         onUnavailable: (failure, current) => {
           const attached = () => current() && bus.peers.get(peer) === reviewer;
-          if (!attached()) return;
+          if (!attached()) return false;
           if (failure.cause === "start_failed") {
             // #722: the class (a closed list) is the only detail; never a path, native text or token.
             const reason = reviewerUnavailableReason(failure.causeClass ?? "unknown", failure.causeDetail);
             log(`reviewer ${peer} unavailable for task #${failure.task}: ${sanitize(reason).slice(0, 300)}`);
             reviewerUnavailable.set(peer, sanitize(reason).slice(0, 1000));
           }
-          return tasks.retryReviewer(failure.task, peer, failure, attached).then(() => undefined);
+          let confirmed = false;
+          return tasks.retryReviewer(failure.task, peer, failure, attached, () => { confirmed = true; }).then(() => confirmed);
         },
         log,
       }) }) as ReviewerPrintPeer;
@@ -4768,6 +4784,10 @@ export async function startDaemon(opts: DaemonOptions) {
       }
       reviewerUnavailable.delete(peer);
       executionOwners.set(peer, { owner: reviewer, cwd: executionCwd });
+      reviewerToolObservers.set(peer, (task, tool, refusal) => {
+        try { if (bus.peers.get(peer) === reviewer) reviewer.recordToolTrace(task, { tool, ...(refusal === undefined ? {} : { refusal }) }); }
+        catch { /* Diagnostics never change a host tool's result or authority. */ }
+      });
       bus.add(reviewer);
       return { ok: true };
     }
