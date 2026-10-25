@@ -457,9 +457,9 @@ export class ContainerRunner {
     await this.command(["kill", name]).catch(() => {});
     await this.command(["rm", name]).catch(() => {});
     try {
-      const list = await this.command(this.transport?.listArgs ?? ["list", "--all", "--format", "json"]);
+      const list = await this.command(["list", "--all", "--format", "json"]);
       if (list.code !== 0) return false;
-      const entries: unknown = this.transport?.list(list.stdout) ?? JSON.parse(list.stdout);
+      const entries: unknown = JSON.parse(list.stdout);
       return Array.isArray(entries) && !entries.some(c => c?.id === name || c?.configuration?.id === name);
     } catch { return false; }
   }

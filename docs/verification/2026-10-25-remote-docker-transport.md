@@ -7,7 +7,7 @@ Date: 2026-10-25. Refs #793, transport slice AC1/AC2/AC4/AC5. This is a local Do
 - Docker daemon 29.5.2, Linux arm64, through an existing Colima VM.
 - Preinstalled image: oven/bun@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895. The fixture asserted the actual container Bun version was 1.4.2. No image pull occurred.
 - Host Bun 1.4.3; macOS bsdtar 3.5.3, libarchive 3.7.4.
-- Tested src/hub/check-runner.ts SHA-256: ad539161bd1b3ee593aecf701200485da7d8ba8367eb34ca4f5f6291f3a78c46.
+- Tested src/hub/check-runner.ts SHA-256: 58f6a9f2a86acbf4fb9165ca2315c8df2aaca27b871e6ed3eaef79a28d94f3ad.
 - Private driver SHA-256: 07000fd8aadf00625255784f5ac7b27f6ec6f56166c1e6118031bf963545f091.
 
 The existing VM exposes only two CPUs. Two initial attempts with the unchanged production four-CPU argument failed before transfer, and both cleaned their owned resources. The final component driver therefore lowered only the CPU cap from four to two. This is a stricter native-test limit; the product still requests four CPUs. The VM was not reconfigured or restarted. The exact four-CPU launch on the eventual remote host remains unverified.
@@ -18,8 +18,8 @@ The driver used the production remoteRunnerTransport with ContainerRunner's shar
 
 A private synthetic Git fixture contained a nested canary, a lockfile and a bare bun:test file. The working-tree canary was changed after commit. The component returned the committed content, not the dirty working-tree version:
 
-- Source commit: c40ef8ff93f557478628e3515d94b10e19117840.
-- Tree: 692bba0c91135a4cf7e790f8ffe6a98d5fcdbbe3.
+- Source commit: abac005b3a543eb3f7d10c74222009e027055776.
+- Tree: 7cb96483df51495ff14e3ae2ad58b1f1398e2385.
 - Lockfile SHA-256: 87b7aa7d4cc3d62bbabeb5971dac92dcf6f0a52815d11afb027fbed4b769c946.
 
 Before extraction, the driver attached a benign macOS extended attribute to the staged canary. A baseline host archive retained that attribute, and the former docker cp - ...:/work path failed against the same running, read-only-root/tmpfs container. The production normalized archive omitted the custom attribute, macOS provenance metadata and host username. Its headers used uid/gid 65532 and static check owner/group names.
