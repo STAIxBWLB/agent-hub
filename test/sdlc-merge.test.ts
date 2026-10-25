@@ -458,7 +458,8 @@ test("the verdict still returns when the merge check throws or the merge fails, 
   const failing = rig({ auto_merge: "on" }, { 1: pr() }, { mergeExit: 1 });
   await failing.tasks.done("codex", failing.id, "done");
   expect((await failing.tasks.review(USER, failing.id, "approved", undefined, undefined, A)).state).toBe("approved");
-  await settle(); expect(failing.notices.join("\n")).toContain("gh pr merge exited 1; GitHub reports it not merged");
+  for (let attempt = 0; attempt < 100 && !failing.notices.some(line => line.includes("gh pr merge exited 1; GitHub reports it not merged")); attempt++) await Bun.sleep(10);
+  expect(failing.notices.join("\n")).toContain("gh pr merge exited 1; GitHub reports it not merged");
 });
 
 test("Tasks.guardedMerge: only the person or the one conductor asks, --dry-run forces a report, and a PII task and its title never appear", async () => {
