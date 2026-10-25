@@ -159,6 +159,46 @@ test("the other sdlc subcommands keep their argv: --json is not stripped from th
   expect(f.requests.some(r => r.t === "sdlc" && r.op === "record")).toBe(false);
 });
 
+// A realistic wide reply for every table: a PR linked to thirty tasks, a long dependency list, many documents, issues and repositories.
+const MANY = Array.from({ length: 30 }, (_, i) => i + 1);
+const wide = {
+  queue: { report: { repo: "owner/a-repository-with-a-long-name", complete: true, truncated: false, order: [830, 831, 832], unordered: [833],
+    rows: [{ pr: 830, tasks: MANY, head: A, ready: true, blockers: [], after: [] }, { pr: 831, tasks: [31, 32], head: B, ready: false, blockers: ["x"], after: MANY.map(n => n + 800) }, { pr: 832, tasks: [33], private: true, ready: false, blockers: [], after: [830, 831] }],
+    conflicts: [{ left: 830, right: 831, files: 12, order: "dependency" }] } },
+  release: { report: { ...releaseReply.report, liveIssues: MANY.map(id => ({ id: 800 + id, state: id % 2 ? "open" : "closed" })), mergedPrs: MANY.map(pr => ({ pr: 700 + pr, commit: A })) } },
+  status: { mode: "advise", rows: MANY.map(id => ({ id, title: "task " + id, stage: "implementation-review", mode: "advise", ready: id % 2 === 0, actor: "owner/planner", next: "wait", blockers: [], receipt: { pr: 800 + id } })) },
+  costs: { rows: MANY.flatMap(pr => ["owner/first-long-repository-name", "owner/second-long-repository-name"].map(repo => ({ repo, pr: 1000 + pr, reviewRounds: 12, ciRuns: 345, ciReruns: 67, fullReReviews: 8, deltaReviews: 9, reviewMs: 987_654_321, unknownReviewScopes: 3, githubReviews: 4, complete: pr % 2 === 0 }))), truncated: false },
+  metrics: metricsReply,
+};
+test("AC3 a realistic wide reply fits every width, keeps every identifier and never cuts a word", () => {
+  const renderers = { queue: renderSdlcQueue, release: renderSdlcRelease, status: renderSdlcStatus, costs: renderSdlcCosts, metrics: renderSdlcMetrics } as const;
+  for (const [name, render] of Object.entries(renderers)) {
+    const reference = render((wide as any)[name], 400, NOW).map(line => paint(line, false)).join("\n");
+    const identifiers: string[] = reference.match(/#\d+/g) ?? [];
+    for (const columns of [80, 60, 40, 24]) {
+      const lines = render((wide as any)[name], columns, NOW).map(line => paint(line, false));
+      for (const line of lines) expect(Bun.stringWidth(line), `${name} at ${columns}: ${line}`).toBeLessThanOrEqual(columns);
+      const text = lines.join("\n");
+      // every task, PR and issue number survives as a whole token, in the same multiset
+      expect([...(text.match(/#\d+/g) ?? [])].sort(), `${name} at ${columns}`).toEqual([...identifiers].sort());
+      // no word of the wide rendering is split or dropped, whichever layout the width chose. Two honest exceptions: a column
+      // header (the block layout replaces a header row with per-row headings and labels) and a single token wider than the
+      // terminal, which can only be broken to fit.
+      const words = (value: string) => value.split(/\s+/).filter(word => word && !/^[-]+$/.test(word));
+      const headers = new Set(["PR", "TASKS", "READY", "HEAD", "AFTER", "ID", "STAGE", "ACTOR", "ISSUE", "STATE", "ROUNDS", "CI", "RERUNS", "FULL", "DELTA", "REVIEW", "UNK", "OK", "METRIC", "N", "UNKNOWN", "MEAN", "MEDIAN", "P90", "MAX", "RATE", "VALUE", "BAND", "TIER", "BASELINE", "LAST", "Z", "TASK"]);
+      const present = new Set(words(text));
+      for (const word of new Set(words(reference))) if (!headers.has(word) && word.length <= columns - 2) expect(present.has(word) || present.has(word.toLowerCase()), `${name} at ${columns}: ${word}`).toBe(true);
+    }
+  }
+  // the reviewer's exact case: one PR linked to tasks 1..30 at 80 columns no longer pushes the table to 138
+  const queue = renderSdlcQueue(wide.queue, 80, NOW).map(line => paint(line, false));
+  expect(Math.max(...queue.map(line => Bun.stringWidth(line)))).toBeLessThanOrEqual(80);
+  expect(queue.join("\n")).toContain("#30");
+  // a terminal too narrow for any column falls back to one labelled block per row, still whole
+  const tiny = renderSdlcQueue(wide.queue, 24, NOW).map(line => paint(line, false)).join("\n");
+  expect(tiny).toMatch(/^#830$/m); expect(tiny).toContain("  tasks  #1 #2");
+});
+
 test("renderers are pure and tolerate an empty or partial reply", () => {
   for (const render of [renderSdlcStatus, renderSdlcExplain, renderSdlcQueue, renderSdlcRelease, renderSdlcMetrics, renderSdlcCosts, renderAuthorization]) {
     for (const input of [undefined, null, {}, { rows: [] }, { report: {} }]) {

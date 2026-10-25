@@ -24,23 +24,62 @@ const span = (ms: unknown) => typeof ms === "number" && Number.isFinite(ms) ? du
 function para(text: string, columns: number | undefined, tone?: Tone, indent = "", hang = 2): Line[] {
   return wrap(indent + text, room(columns), hang).map(line => [s(line, tone)]);
 }
-/** `label  value`, the value wrapped beside its own label so narrow terminals never separate them. */
+/**
+ * `label  value`, the value wrapped beside its own label so narrow terminals never separate them. When the longest word of
+ * the value does not fit in the room left of the label column, the value moves under the label instead, so a path or id
+ * is broken only when it is wider than the whole terminal.
+ */
 function pair(label: string, value: unknown, columns: number | undefined, labelWidth: number, tone?: Tone, indent = ""): Line[] {
+  const text = terminalText(value).replace(/[\n\t]/g, " ");
   const head = indent + label.padEnd(labelWidth) + "  ";
-  const lines = wrap(head + terminalText(value).replace(/[\n\t]/g, " "), room(columns), head.length);
+  const longest = Math.max(0, ...text.split(/\s+/).map(textWidth));
+  if (columns !== undefined && head.length + longest > columns && text) {
+    const under = indent.length + 1 + longest <= columns ? indent + " " : "";
+    return [[s(indent + label, "muted")], ...wrap(under + text, columns, under.length).map((line): Line => [s(line, tone)])];
+  }
+  const lines = wrap(head + text, room(columns), head.length);
   return lines.map((line, i) => i === 0 ? [s(line.slice(0, head.length), "muted"), s(line.slice(head.length), tone)] : [s(line, tone)]);
 }
 /** Items under a label, one per line, wrapped under the dash. */
 function bullets(label: string, items: readonly unknown[], columns: number | undefined, tone?: Tone, indent = ""): Line[] {
   if (!items.length) return [];
-  return [[s(indent + label, "muted")], ...items.flatMap(item => para(`- ${terminalText(item)}`, columns, tone, indent + "  ", 2))];
+  return [[s(indent + label, "muted")], ...items.flatMap(item => para(`- ${terminalText(item)}`, columns, tone, indent + (columns !== undefined && indent.length + 2 + 2 + Math.max(0, ...terminalText(item).split(/\s+/).map(textWidth)) > columns ? "" : "  "), 2))];
 }
-/** A table at its natural widths: every column here is short by construction, so no cell is ever cut. */
+const GAP = 2;
+const textWidth = (text: string) => Bun.stringWidth(text);
+/**
+ * A table that fits the terminal and never cuts a character. At its natural widths when they fit; otherwise the
+ * widest cells wrap inside their column (a PR linked to thirty tasks wraps its TASKS cell, it does not push the
+ * table to 134 columns); and when even each column's longest unbreakable word cannot fit, one labelled block per row.
+ */
 function grid(head: string[], data: Span[][], columns: number | undefined): Line[] {
-  const widths = head.map((name, i) => Math.max(Bun.stringWidth(name), ...data.map(row => Bun.stringWidth(row[i]?.text ?? ""))));
-  return table(head, data, room(columns), widths);
+  const natural = head.map((name, i) => Math.max(textWidth(name), ...data.map(row => textWidth(row[i]?.text ?? ""))));
+  const gaps = GAP * (head.length - 1);
+  if (columns === undefined || natural.reduce((sum, n) => sum + n, 0) + gaps <= columns) return table(head, data, room(columns), natural);
+  const floor = head.map((name, i) => Math.max(textWidth(name), ...data.flatMap(row => (row[i]?.text ?? "").split(/\s+/).map(textWidth))));
+  if (floor.reduce((sum, n) => sum + n, 0) + gaps > columns) return blocks(head, data, columns);
+  // Hand the spare width to the column that is cut most, one cell at a time, so the wide list cell wraps and the short ones do not.
+  const widths = [...floor];
+  for (let spare = columns - widths.reduce((sum, n) => sum + n, 0) - gaps; spare > 0; spare--) {
+    let at = -1;
+    for (let i = 0; i < widths.length; i++) if (widths[i]! < natural[i]! && (at < 0 || natural[i]! - widths[i]! > natural[at]! - widths[at]!)) at = i;
+    if (at < 0) break;
+    widths[at]!++;
+  }
+  const physical = data.flatMap(row => {
+    const cells = row.map((cell, i) => wrap(cell.text, widths[i]!, 0));
+    return Array.from({ length: Math.max(1, ...cells.map(lines => lines.length)) }, (_, n) => head.map((_, i): Span => ({ ...(row[i] ?? s("")), text: cells[i]?.[n] ?? "" })));
+  });
+  return table(head, physical, columns, widths);
 }
-const heading = (text: string): Line => [s(text, "strong")];
+/** Narrow terminal: each row becomes its own block, the first column as its heading and every other column beside its label. */
+function blocks(head: string[], data: Span[][], columns: number): Line[] {
+  const label = Math.max(...head.slice(1).map(textWidth));
+  return data.flatMap((row, n) => [...(n ? [blank] : []), ...wrap(row[0]?.text ?? "", columns, 2).map((line): Line => [{ ...(row[0] ?? s("")), text: line }]),
+    ...head.slice(1).flatMap((name, i) => pair(name.toLowerCase(), row[i + 1]?.text ?? "", columns, label, row[i + 1]?.tone, "  "))]);
+}
+/** A heading wraps to the width like any paragraph; a long repository name never pushes it past the terminal. */
+const heading = (text: string, columns?: number): Line[] => wrap(text, room(columns), 2).map(line => [s(line, "strong")]);
 const blank: Line = [s("")];
 const readyTone = (ready: unknown): Tone => ready === true ? "success" : "attention";
 
@@ -85,7 +124,7 @@ function taskBlock(row: any, columns: number | undefined, detail: boolean): Line
 }
 function lifecycleView(reply: any, columns: number | undefined, detail: boolean): Line[] {
   const rows = list(reply?.rows);
-  const out: Line[] = [heading(`SDLC lifecycle, mode ${reply?.mode ?? "unknown"}`)];
+  const out: Line[] = [...heading(`SDLC lifecycle, mode ${reply?.mode ?? "unknown"}`, columns)];
   if (!rows.length) return [...out, [s("no task has lifecycle state yet", "muted")]];
   if (!detail || rows.length > 1) {
     out.push(...grid(["ID", "STAGE", "READY", "ACTOR", "PR"], rows.map(row => [s(`#${row.id}`, "taskRef"), s(row.stage ?? "unknown"), s(yes(row.ready), readyTone(row.ready)), s(row.actor ?? "-"), s(row.receipt?.pr ? `#${row.receipt.pr}` : "-")]), columns));
@@ -105,7 +144,7 @@ export const renderSdlcExplain = (reply: unknown, columns?: number, _now = Date.
 export function renderSdlcQueue(reply: unknown, columns?: number, _now = Date.now()): Span[][] {
   const report = (reply as any)?.report ?? {};
   const rows = list(report.rows);
-  const out: Line[] = [heading(`Merge queue ${report.repo ?? "unknown repository"}`)];
+  const out: Line[] = [...heading(`Merge queue ${report.repo ?? "unknown repository"}`, columns)];
   if (report.complete === false) out.push(...para("incomplete: a read failed or the board changed during it; do not merge from this order", columns, "attention"));
   if (report.truncated) out.push(...para("truncated: more open PRs than one read covers", columns, "attention"));
   if (!rows.length) return [...out, [s("no open PR is linked to a task", "muted")]];
@@ -122,7 +161,7 @@ export function renderSdlcQueue(reply: unknown, columns?: number, _now = Date.no
 /** `ahub sdlc release <repo> [live-issue...]`: source, document, issue and authorization evidence, then what blocks the release. */
 export function renderSdlcRelease(reply: unknown, columns?: number, now = Date.now()): Span[][] {
   const r = (reply as any)?.report ?? {};
-  const out: Line[] = [heading(`Release readiness ${r.repo ?? "unknown repository"}`)];
+  const out: Line[] = [...heading(`Release readiness ${r.repo ?? "unknown repository"}`, columns)];
   const w = 12;
   out.push(...pair("version", r.version ?? "unknown", columns, w), ...pair("head", short(r.head), columns, w), ...pair("tag", r.tag ? `${r.tag} at ${short(r.tagCommit)}` : "none", columns, w));
   out.push(...pair("source ready", yes(r.sourceReady), columns, w, readyTone(r.sourceReady)), ...pair("native", String(r.native ?? "unverified"), columns, w, "attention"), ...pair("release ready", yes(r.ready), columns, w, readyTone(r.ready)));
@@ -150,7 +189,7 @@ const BAND_TONE: Record<string, Tone> = { ok: "success", log: "muted", diagnose:
 /** `ahub sdlc metrics [--since ...]`: times and counts from board history, the two approval rates, stalls and band tiers. */
 export function renderSdlcMetrics(result: unknown, columns?: number, now = Date.now()): Span[][] {
   const m = result as any;
-  const out: Line[] = [heading("SDLC metrics")];
+  const out: Line[] = [...heading("SDLC metrics", columns)];
   out.push(...pair("window", m?.since === null || m?.since === undefined ? "all recorded history" : `since ${moment(m.since, now)}`, columns, 10),
     ...pair("tasks", `${m?.tasks ?? 0} counted${m?.withheldPrivate ? `, ${m.withheldPrivate} private withheld` : ""}`, columns, 10));
   const metrics = m?.metrics ?? {};
@@ -176,11 +215,11 @@ export function renderSdlcMetrics(result: unknown, columns?: number, now = Date.
 export function renderSdlcCosts(result: unknown, columns?: number, _now = Date.now()): Span[][] {
   const c = result as any;
   const rows = list(c?.rows);
-  const out: Line[] = [heading("SDLC costs")];
+  const out: Line[] = [...heading("SDLC costs", columns)];
   if (!rows.length) out.push([s("no linked merged PR has cost evidence", "muted")]);
   const repos = [...new Set(rows.map(row => String(row.repo)))];
   for (const repo of repos) {
-    out.push(...(out.length > 1 ? [blank] : []), [s(repo, "info")], ...grid(["PR", "ROUNDS", "CI", "RERUNS", "FULL", "DELTA", "REVIEW", "UNK", "OK"], rows.filter(row => String(row.repo) === repo).map(row => [
+    out.push(...(out.length > 1 ? [blank] : []), ...wrap(repo, room(columns), 2).map((line): Line => [s(line, "info")]), ...grid(["PR", "ROUNDS", "CI", "RERUNS", "FULL", "DELTA", "REVIEW", "UNK", "OK"], rows.filter(row => String(row.repo) === repo).map(row => [
       s(`#${row.pr}`, "issueRef"), s(count(row.reviewRounds)), s(count(row.ciRuns)), s(count(row.ciReruns)), s(count(row.fullReReviews)), s(count(row.deltaReviews)), s(span(row.reviewMs)),
       s(count(row.unknownReviewScopes), row.unknownReviewScopes ? "attention" : "muted"), s(row.complete ? "yes" : "no", row.complete ? "success" : "attention")]), columns));
   }
@@ -195,7 +234,7 @@ export function renderSdlcCosts(result: unknown, columns?: number, _now = Date.n
 export function renderAuthorization(authorization: unknown, columns?: number, now = Date.now()): Span[][] {
   const a = authorization as any;
   const w = 8;
-  return [heading("Release authorized"),
+  return [...heading("Release authorized", columns),
     ...pair("version", a?.version ?? "unknown", columns, w), ...pair("commit", short(a?.commit), columns, w), ...pair("by", a?.by ?? "unknown", columns, w),
     ...pair("at", moment(a?.at, now), columns, w), ...pair("docs", a?.docs ? `${a.docs.fresh ? "fresh" : "not fresh"}, ${plural(a.docs.documents ?? 0, "document")}, digest ${short(a.docs.digest)}` : "unknown", columns, w),
     ...pair("id", a?.id ?? "unknown", columns, w, "muted"), blank,

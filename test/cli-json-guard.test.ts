@@ -29,12 +29,18 @@ const NOT_YET_CONVERTED: Record<Key, string> = {
   "main.ts :: commands.models :: console.log(JSON.stringify(handle.status(), null, 2)) #1": "#814 task 3: models start",
   "main.ts :: commands.models :: console.log(JSON.stringify(handle.status(), null, 2)) #2": "#814 task 3: models setup",
   "main.ts :: commands.queue :: console.log(JSON.stringify(result.delivery, null, 2)) #1": "#814 task 3: queue resolve",
+  "main.ts :: commands.budget :: console.log(JSON.stringify(data, null, 2)) #1": "#814 task 3: budget execution configure|disable (`op !== \"status\" || options.json` prints JSON for them by default)",
   // Not in #814 Context: both predate it or were added after it was verified. Listed so the guard passes now; #814 should name them.
   "main.ts :: commands.sdlc :: console.log(JSON.stringify({ task: reply.task, mode: reply.mode, ran: reply.ran, decision: #1": "sdlc merge (#786, after #814's Context was verified): a result to convert in a later #814 task",
   "main.ts :: commands.doctor :: console.log(JSON.stringify(result,null,2)) #1": "doctor --orphans --kill for a conductor shell: not listed in #814 Context",
 };
 
-const JSON_CONDITION = /--json|\bjson\b|\.json\b|jsonApply/i;
+/** Names that hold the parsed `--json` flag: the option objects of `outputOptions()`, the recovery display options and the sdlc `present`. */
+const OPTION_HOLDERS = new Set(["options", "display", "present"]);
+/** Argument lists a bare `--json` is looked for in. */
+const ARGUMENT_LISTS = new Set(["args", "flags"]);
+/** Local aliases defined as a conjunction that includes `display.json` (`const jsonApply = display.json && yes && !dry`). */
+const JSON_ALIASES = new Set(["jsonApply"]);
 const flat = (text: string) => text.replace(/\s+/g, " ").trim();
 
 interface Site { key: Key; line: number; guarded: boolean }
@@ -45,9 +51,9 @@ export function sitesOf(file: string, text: string): Site[] {
     if (!arg || !ts.isCallExpression(arg) || arg.expression.getText(source) !== "JSON.stringify") continue;
     let guarded = false, child: ts.Node = call, node: ts.Node | undefined = call.parent;
     while (node && !guarded) {
-      if (ts.isIfStatement(node) && node.thenStatement === child) guarded = isJson(node.expression, source);
-      else if (ts.isConditionalExpression(node) && node.whenTrue === child) guarded = isJson(node.condition, source);
-      else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken && node.right === child) guarded = isJson(node.left, source);
+      if (ts.isIfStatement(node) && node.thenStatement === child) guarded = selectsJson(node.expression, source);
+      else if (ts.isConditionalExpression(node) && node.whenTrue === child) guarded = selectsJson(node.condition, source);
+      else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken && node.right === child) guarded = selectsJson(node.left, source);
       child = node; node = node.parent;
     }
     const fn = enclosingFunction(source, call.getStart(source))?.name ?? "(top level)";
@@ -57,11 +63,40 @@ export function sitesOf(file: string, text: string): Site[] {
   }
   return sites;
 }
-/** The condition selects `--json` on its true side: it names json and is not a bare negation of it. */
-function isJson(condition: ts.Expression, source: ts.SourceFile): boolean {
-  const text = condition.getText(source);
-  if (!JSON_CONDITION.test(text)) return false;
-  return !(ts.isPrefixUnaryExpression(condition) && condition.operator === ts.SyntaxKind.ExclamationToken);
+/**
+ * True only when the condition being truthy PROVES `--json` was given. Conservative by construction: a form this does not
+ * recognise is not a guard, so a new shape fails the test until it is written one of these ways or named in a list.
+ *   X.json, X!.json (X an option holder)   args.includes("--json")   a known alias
+ *   A && B  proves json if either side does        A || B  only if both sides do
+ *   (A)  !!A  A === true  A == true
+ * Never a guard: !A, A === false, A !== false, A ?? B, A ? B : C, comparisons, calls other than includes("--json"), any other name.
+ */
+export function selectsJson(node: ts.Expression, source: ts.SourceFile): boolean {
+  if (ts.isParenthesizedExpression(node)) return selectsJson(node.expression, source);
+  if (ts.isNonNullExpression(node)) return selectsJson(node.expression, source);
+  if (ts.isIdentifier(node)) return JSON_ALIASES.has(node.text);
+  if (ts.isPropertyAccessExpression(node)) {
+    let base: ts.Expression = node.expression;
+    while (ts.isNonNullExpression(base) || ts.isParenthesizedExpression(base)) base = base.expression;
+    return node.name.text === "json" && ts.isIdentifier(base) && OPTION_HOLDERS.has(base.text);
+  }
+  if (ts.isCallExpression(node)) {
+    const callee = node.expression;
+    return ts.isPropertyAccessExpression(callee) && callee.name.text === "includes" && ts.isIdentifier(callee.expression) && ARGUMENT_LISTS.has(callee.expression.text)
+      && node.arguments.length === 1 && ts.isStringLiteral(node.arguments[0]!) && (node.arguments[0] as ts.StringLiteral).text === "--json";
+  }
+  if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) {
+    const inner = ts.isParenthesizedExpression(node.operand) ? node.operand.expression : node.operand;
+    return ts.isPrefixUnaryExpression(inner) && inner.operator === ts.SyntaxKind.ExclamationToken && selectsJson(inner.operand, source);
+  }
+  if (ts.isBinaryExpression(node)) {
+    const op = node.operatorToken.kind;
+    if (op === ts.SyntaxKind.AmpersandAmpersandToken) return selectsJson(node.left, source) || selectsJson(node.right, source);
+    if (op === ts.SyntaxKind.BarBarToken) return selectsJson(node.left, source) && selectsJson(node.right, source);
+    if (op === ts.SyntaxKind.EqualsEqualsEqualsToken || op === ts.SyntaxKind.EqualsEqualsToken)
+      return node.right.kind === ts.SyntaxKind.TrueKeyword && selectsJson(node.left, source);
+  }
+  return false;
 }
 const allSites = () => readdirSync(CLI_DIR).filter(name => name.endsWith(".ts")).sort().flatMap(name => sitesOf(name, readFileSync(join(CLI_DIR, name), "utf8")));
 
@@ -78,16 +113,26 @@ test("AC2 the exception and debt lists hold only sites that exist, so each task'
   for (const [key, reason] of [...Object.entries(DATA_FORMAT), ...Object.entries(NOT_YET_CONVERTED)]) expect(reason.length, key).toBeGreaterThan(10);
 });
 
-test("AC2 the guard itself: guarded forms pass, unguarded and negated forms fail, a rewritten site no longer matches its key", () => {
-  const sites = (code: string) => sitesOf("fixture.ts", `function f(options: any, display: any) { ${code} }`);
-  const guarded = ["if (options.json) console.log(JSON.stringify(x));", "if (options.json) { console.log(JSON.stringify(x, null, 2)); }", "options.json ? console.log(JSON.stringify(x)) : print(x);",
-    "options.json && console.log(JSON.stringify(x));", "if (display.json && code === 0) console.log(JSON.stringify(x));", "if (args.includes(\"--json\")) return console.log(JSON.stringify(x));", "if (jsonApply) console.log(JSON.stringify(x));"];
+test("AC2 the guard itself: only a condition that PROVES --json guards; negated, equal-to-false, OR-bypass and unrelated forms do not", () => {
+  const sites = (code: string) => sitesOf("fixture.ts", `function f(options: any, display: any, present: any, args: string[], flags: string[]) { ${code} }`);
+  const print = "console.log(JSON.stringify(x))";
+  const guarded = [
+    `if (options.json) ${print};`, `if (options.json) { ${print}; }`, `options.json ? ${print} : show(x);`, `options.json && ${print};`, `if (display.json && code === 0) ${print};`,
+    `if (args.includes("--json")) return ${print};`, `if (flags.includes("--json")) ${print};`, `if (jsonApply) ${print};`, `if (present!.json) ${print};`, `if ((options.json)) ${print};`,
+    `if (!!options.json) ${print};`, `if (options.json === true) ${print};`, `if (options.json && !byColumn) ${print};`, `if (ready && options.json) ${print};`, `if (options.json || display.json) ${print};`,
+  ];
   for (const code of guarded) expect(sites(code).map(site => site.guarded), code).toEqual([true]);
-  const unguarded = ["console.log(JSON.stringify(x));", "if (!options.json) console.log(JSON.stringify(x));", "if (options.json) print(x); else console.log(JSON.stringify(x));", "options.json ? print(x) : console.log(JSON.stringify(x));",
-    "if (options.full) console.log(JSON.stringify(x));", "console.error(JSON.stringify(x));"];
-  expect(unguarded.map(code => sites(code).some(site => site.guarded))).toEqual(unguarded.map(() => false));
+  const unguarded = [
+    `${print};`, `if (!options.json) ${print};`, `if ((!options.json)) ${print};`, `if (!(options.json)) ${print};`, `if (options.json === false) ${print};`, `if (options.json !== true) ${print};`,
+    `if (options.json || true) ${print};`, `if (options.json || other) ${print};`, `if (other || options.json) ${print};`, `if (options.json ?? true) ${print};`, `if (op !== "status" || options.json) ${print};`,
+    `if (options.json) show(x); else ${print};`, `options.json ? show(x) : ${print};`, `if (options.full) ${print};`, `if (args.includes("--full")) ${print};`, `if (args.includes("--json", 1)) ${print};`,
+    `if (somethingElse.json) ${print};`, `if (jsonish) ${print};`, `if (options.jsonApply) ${print};`, `if (options.json == false) ${print};`, `if (!!!options.json) ${print};`,
+    `if (options.json && false || other) ${print};`, `options.json || ${print};`,
+  ];
+  for (const code of unguarded) expect(sites(code).some(site => site.guarded), code).toBe(false);
   expect(sites("console.error(JSON.stringify(x));")).toEqual([]);
   expect(sites("console.log(JSON.stringify(x))")[0]!.key).not.toBe(sites("console.log(JSON.stringify(y))")[0]!.key);
+  expect(sites(`${print}; ${print};`).map(site => site.key.split(" #")[1])).toEqual(["1", "2"]);
 });
 
 test("AC2 the scanner sees the real CLI: it finds the converted sdlc sites guarded and at least one site per guarded family", () => {
