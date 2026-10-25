@@ -1,4 +1,4 @@
-import { operationalRosterSetting, operationalSetting, operationalRefusal, operationalRequestLabel } from "./operational-authority.ts";
+import { OperationalAuthorityError, OPERATIONAL_PERSON_GUIDANCE, operationalRosterSetting, operationalSetting, operationalRefusal, operationalRequestLabel } from "./operational-authority.ts";
 import { operationalView, redactBusEvent } from "./operational-view.ts";
 import { inspectSelectedOrphans, stopSelectedOrphan, orphanProcessPorts } from "./orphan-process.ts";
 import { dogfoodLines } from "./dogfood-read.ts";
@@ -720,12 +720,12 @@ export async function startDaemon(opts: DaemonOptions) {
   mkdirSync(opts.stateDir, { recursive: true });
   const operationalLogSubscribers=new Map<Sock,()=>void>();
   const operationalContext=new AsyncLocalStorage<{actor:string;current:()=>void}|undefined>();
-  const checkOperational=(authority:SettingAuthority)=>{if(authority==="conductor"){const scope=operationalContext.getStore();if(!scope)throw new Error("operational conductor authority unavailable");scope.current();}};
+  const checkOperational=(authority:SettingAuthority)=>{if(authority==="conductor"){const scope=operationalContext.getStore();if(!scope)throw new OperationalAuthorityError("operational conductor authority unavailable");scope.current();}};
   const logFile = join(opts.stateDir, "hub.log");
   // The state dir can vanish under a running hub (issue #56): a log line must never take a handler down with it.
   const log = (line: string) => { const text=`${new Date().toISOString()} ${line}`;try { appendFileSync(logFile, `${text}\n`); } catch { /* the state dir is gone; the watchdog is stopping the hub */ }
-    let publicLine:string|undefined;
-    for(const [sock,current] of operationalLogSubscribers)try {current();if(sock.getBufferedAmount()>64*1024)throw new Error("slow log consumer");publicLine??=publicOperationalView().line(text);sock.send(JSON.stringify({t:"operational_log",line:publicLine}));}catch{operationalLogSubscribers.delete(sock);try{sock.close(4403,"operational log authority ended");}catch{/* The subscription is already gone. */}}
+    let publicLine:string|undefined,view:ReturnType<typeof operationalView>|undefined;
+    for(const [sock,current] of operationalLogSubscribers)try {current();if(sock.getBufferedAmount()>64*1024)throw new Error("slow log consumer");view??=publicOperationalView();publicLine??=view.line(text);sock.send(JSON.stringify({t:"operational_log",line:publicLine,complete:view.complete,...(!view.complete?{incompleteReason:view.incompleteReason}:{})}));}catch{operationalLogSubscribers.delete(sock);try{sock.close(4403,"operational log authority ended");}catch{/* The subscription is already gone. */}}
   };
   let runningRouting = currentRouting(opts.cwd, log);
   let acceptedSources = parseConfigSources(configSourceTexts(opts.cwd), runningRouting, opts.cwd, externalAdapters);
@@ -4976,8 +4976,17 @@ export async function startDaemon(opts: DaemonOptions) {
     };
   }
 
+  let operationalViewCache: { board: number; config: number; routing: ReturnType<typeof activeRouting>; privacy: string; view: ReturnType<typeof operationalView> } | undefined;
   function publicOperationalView() {
-    return operationalView({tasks:board.list(),isPii:task=>tasks.isPii(task),publicView:task=>tasks.publicView(task),publicMetadataText:tasks.publicMetadataText,redact:record=>redact(record as BusEvent)});
+    const revision=board.statusRevision(),routing=activeRouting(),privacy=JSON.stringify([config.pii?.paths??[],config.local.deny]);
+    if(operationalViewCache && operationalViewCache.board===revision && operationalViewCache.config===configRevision && operationalViewCache.routing===routing && operationalViewCache.privacy===privacy)return operationalViewCache.view;
+    const privatePaths=[...(config.pii?.paths??[]),...config.local.deny];
+    const currentPrivate=(task:Task)=>tasks.isPii(task) || [...(task.refs.paths??[]),...(task.plan?.paths??[])].some(path=>matchesPolicy(opts.cwd,path,privatePaths,true));
+    const view=operationalView({tasks:board.list(),isPii:currentPrivate,publicView:task=>tasks.publicView(task),publicMetadataText:text=>tasks.publicMetadataText(text) && boundedSafe(text),redact:record=>redact(record as BusEvent)});
+    operationalViewCache={board:revision,config:configRevision,routing,privacy,view};return view;
+  }
+  function operationalFailure(error: unknown, fallback?: string): Record<string, unknown> {
+    return {ok:false,error:error instanceof OperationalAuthorityError?error.message:fallback??(error instanceof Error?error.message:"operational request refused"),...(error instanceof OperationalAuthorityError?{authorityRefused:true,authorityScope:error.scope}: {})};
   }
   /** Ordinary read authority never borrows the console identity or conductor admission. */
   function publicReadCurrent(sock: Sock): () => void {
@@ -5056,9 +5065,9 @@ export async function startDaemon(opts: DaemonOptions) {
   function operationalCurrent(sock:Sock,acceptedAfterClose=false):()=>void {
     const client=sock.data,peer=client.peer;
     return ()=>{
-      if(!peer || sock.data!==client || client.role!=="tools" || !acceptedAfterClose && sock.readyState!==WebSocket.OPEN || client.toolsOwner || readOnlyPeer(peer) || stopping || !membershipAllowed(peer) || contextPii(peer))throw new Error("operational conductor authority unavailable");
+      if(!peer || sock.data!==client || client.role!=="tools" || !acceptedAfterClose && sock.readyState!==WebSocket.OPEN || client.toolsOwner || readOnlyPeer(peer) || stopping || !membershipAllowed(peer) || contextPii(peer))throw new OperationalAuthorityError("operational conductor authority unavailable");
       try {requireConductor(peer,config.roles);}
-      catch {throw new Error(operationalRefusal(peer,"operational command"));}
+      catch {throw new OperationalAuthorityError("this operation requires the explicit conductor role","conductor");}
     };
   }
   function admitOperational(sock:Sock,command:string):()=>void {
@@ -5486,7 +5495,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const message = sanitize(error instanceof Error ? error.message : "configuration reload could not be confirmed").slice(0, 600);
       const failure = `${fingerprint}:${message}`;
       if (lastReloadFailure !== failure) { lastReloadFailure = failure; try { notify(`configuration reload ${published ? "unconfirmed" : "refused"}: ${message}; run ahub settings reload after reviewing or reverting the file`); } catch { log("configuration reload notice unavailable"); } }
-      return { ok: false, error: message, ...(published ? { applied: true } : {}), pendingRestart };
+      return { ok: false, error: message, ...(error instanceof OperationalAuthorityError ? { authorityRefused: true, authorityScope: error.scope } : {}), ...(published ? { applied: true } : {}), pendingRestart };
     }
   }
 
@@ -5633,7 +5642,7 @@ export async function startDaemon(opts: DaemonOptions) {
           return {ok:true,saved:true,authorityEnded:true,text:`${peer}: roster write saved; authority ended before remaining lifecycle work; inspect status before continuing`};
         }
       }
-      return { ok: false, error: sanitize((error as Error).message), ...(saved ? { saved: true } : {}) };
+      return { ok: false, error: sanitize((error as Error).message), ...(error instanceof OperationalAuthorityError ? { authorityRefused: true, authorityScope: error.scope } : {}), ...(saved ? { saved: true } : {}) };
     } finally { if (rosterChanging === peer) { rosterChanging = undefined; bus.rosterChanged(peer); if (configWatchPending && !stopping) { configWatchPending = false; clearTimeout(reloadDebounce); reloadDebounce = setTimeout(runConfigWatch, 100); reloadDebounce.unref?.(); } } }
   }
   /** A checked definition and value, or the refusal. Every settings write and preview starts here. */
@@ -5706,7 +5715,7 @@ export async function startDaemon(opts: DaemonOptions) {
         : ["permission_modes", "catalog_roles", "peers"].includes(def.path[0]!) ? "applies at the peer's next start" : def.key === "coordination" ? "applies to new tasks" : "applies at next use";
       return { ok: true, text: `${def.key}: ${settingText(to)} (${timing})` };
     } catch (error) {
-      return { ok: false, error: sanitize((error as Error).message), ...(saved ? { saved: true } : {}) };
+      return { ok: false, error: sanitize((error as Error).message), ...(error instanceof OperationalAuthorityError ? { authorityRefused: true, authorityScope: error.scope } : {}), ...(saved ? { saved: true } : {}) };
     }
   }
 
@@ -6195,11 +6204,14 @@ export async function startDaemon(opts: DaemonOptions) {
     const c = sock.data;
     let refusalRecorded=false;
     const reply = (body: Record<string, unknown>) => {
-      if (c.toolsOwner && !currentImplementerTools(c)) body = { ok: false, error: "Claude child generation or execution root changed" };
       const label=operationalRequestLabel(msg);
+      if (c.toolsOwner && !currentImplementerTools(c)) body = { ok: false, error: "Claude child generation or execution root changed", ...(label ? {authorityRefused:true,authorityScope:"operational"}: {}) };
       if(c.authed && c.role==="tools" && c.peer && body.ok===false && label) {
-        if(!refusalRecorded)refusalRecorded=event({type:"agent_cli",peer:c.peer,command:label,refused:true});
-        body={...body,error:`${String(body.error??"operational request refused")}; ${operationalRefusal(c.peer,label)}`,refusalAudited:refusalRecorded};
+        if(body.authorityRefused===true) {
+          if(!refusalRecorded)refusalRecorded=event({type:"agent_cli",peer:c.peer,command:label,refused:true});
+          const error=body.authorityScope==="conductor"?operationalRefusal(c.peer,label):body.authorityScope==="person"?String(body.error):`${String(body.error??"operational authority unavailable")}; ${OPERATIONAL_PERSON_GUIDANCE}`;
+          body={...body,error,refusalAudited:refusalRecorded};
+        } else body={...body,authorityRefused:false};
       }
       if (sock.readyState === WebSocket.OPEN) sock.send(JSON.stringify({ rid: msg.rid, ...body }));
     };
@@ -6312,7 +6324,7 @@ export async function startDaemon(opts: DaemonOptions) {
           const commands=["roster add","roster remove","stop","queue show","queue resolve","queue discard","task cancel","settings set","doctor orphans kill","logs","export"];
           const command=msg.op==="authorize"?msg.command:msg.op==="orphans"?"doctor orphans kill":msg.op;
           if(!commands.includes(command))return void reply({ok:false,error:"unknown operational command"});
-          const current=admitOperational(sock,command);
+          const current=msg.op==="authorize"?operationalCurrent(sock):admitOperational(sock,command);current();
           if(msg.op==="authorize")return void reply({ok:true,instanceId});
           if(msg.op==="logs" || msg.op==="export") {
             const lines=dogfoodLines(join(opts.stateDir,msg.op==="logs"?"hub.log":"events.jsonl"),128*1024);
@@ -6321,11 +6333,11 @@ export async function startDaemon(opts: DaemonOptions) {
             if(msg.op==="logs") {
               if(msg.follow!==undefined && typeof msg.follow!=="boolean")return void reply({ok:false,error:"invalid log subscription"});
               if(msg.follow)operationalLogSubscribers.set(sock,current);
-              return void reply({ok:true,lines:lines.data.slice(-100).map(view.line),complete:lines.complete&&view.complete,truncated:!lines.complete || lines.data.length>100});
+              return void reply({ok:true,lines:lines.data.slice(-100).map(view.line),complete:lines.complete&&view.complete,...(!view.complete?{incompleteReason:view.incompleteReason}:!lines.complete?{incompleteReason:"history read limit"}:{}),truncated:!lines.complete || lines.data.length>100});
             }
             if(msg.since!==undefined && (typeof msg.since!=="number" || !Number.isFinite(msg.since) || msg.since<0))return void reply({ok:false,error:"invalid export window"});
             const records=lines.data.flatMap(line=>{try{const row=JSON.parse(line);return typeof row?.at==="string" && Date.parse(row.at)>=(msg.since??0)?[view.event(row)]:[];}catch{return [{type:"withheld"}];}});
-            return void reply({ok:true,events:records.slice(-1000),complete:lines.complete&&view.complete,truncated:!lines.complete || records.length>1000});
+            return void reply({ok:true,events:records.slice(-1000),complete:lines.complete&&view.complete,...(!view.complete?{incompleteReason:view.incompleteReason}:!lines.complete?{incompleteReason:"history read limit"}:{}),truncated:!lines.complete || records.length>1000});
           }
           if(msg.op!=="orphans")return void reply({ok:false,error:"unknown operational request"});
           const selection={root:opts.cwd,projectId,instanceId,pid:process.pid,executable:process.execPath,programs:[CLI_ENTRY,fileURLToPath(new URL("../cli/main.js",import.meta.url))]},ports={...orphanProcessPorts,current};
@@ -6339,8 +6351,8 @@ export async function startDaemon(opts: DaemonOptions) {
               const fresh=inspectSelectedOrphans(selection,undefined,readControl(opts.stateDir),{...ports,current:accepted});
               if(fresh.candidates.some(candidate=>candidate.pid===process.pid))void stop().catch(()=>{});
             }catch{/* Changed authority, instance or ownership never stops the hub. */}},0);
-          })().catch(()=>reply({ok:false,error:"operational orphan cleanup unconfirmed"}));
-        } catch(error) {reply({ok:false,error:error instanceof Error?error.message:"operational request refused"});}
+          })().catch(error=>reply(operationalFailure(error,"operational orphan cleanup unconfirmed")));
+        } catch(error) {reply(operationalFailure(error));}
         return;
       }
       case "permission_default": {
@@ -6362,7 +6374,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "console" && msg.op === "list") {
           try { publicReadCurrent(sock)(); } catch { return void reply({ ok: false, error: "public queue read unavailable for this caller" }); }
         } else if(c.role!=="console") {
-          try {if(!["show","resolve","discard"].includes(msg.op))throw new Error("queue inspection and resolution are console-only");admitOperational(sock,`queue ${msg.op}`);}catch(error){return void reply({ok:false,error:(error as Error).message});}
+          try {if(!["show","resolve","discard"].includes(msg.op))throw new Error("queue inspection and resolution are console-only");const current=msg.op==="show"?operationalCurrent(sock):admitOperational(sock,`queue ${msg.op}`);current();}catch(error){return void reply(operationalFailure(error));}
         }
         if(c.role!=="console" && msg.reason!==undefined && (typeof msg.reason!=="string" || !tasks.publicMetadataText(msg.reason)))return void reply({ok:false,error:"queue reason withheld by privacy policy"});
         if (msg.op === "list") {
@@ -6959,12 +6971,12 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person command" });
         return void reloadConfig("terminal", undefined, msg.confirm).then(reply, () => reply({ ok: false, error: "configuration reload could not be confirmed; inspect hub.log" }));
       case "settings_preview":
-        if(c.role!=="console")try {const def=settingDef(msg.key);if(msg.undo===true || typeof def==="string" || !(operationalSetting(def)||operationalRosterSetting(def)))throw new Error("setting is a person command");admitOperational(sock,"settings set");}catch(error){return void reply({ok:false,error:(error as Error).message});}
+        if(c.role!=="console")try {const def=settingDef(msg.key);if(msg.undo===true || typeof def==="string" || !(operationalSetting(def)||operationalRosterSetting(def)))throw new OperationalAuthorityError(`this setting is reserved for the person; ${OPERATIONAL_PERSON_GUIDANCE}`,"person");operationalCurrent(sock)();}catch(error){return void reply(operationalFailure(error));}
         return void reply(msg.undo === true ? settingsUndoPreview() : settingsPreview(msg.key, msg.value));
       case "settings_set":
         let settingsCurrent:(()=>void)|undefined;
-        if(c.role!=="console")try {const def=settingDef(msg.key);if(typeof def==="string" || !(operationalSetting(def)||operationalRosterSetting(def)))throw new Error("setting is a person command");settingsCurrent=admitOperational(sock,"settings set");}catch(error){return void reply({ok:false,error:(error as Error).message});}
-        void operationalContext.run(settingsCurrent?{actor:c.peer!,current:settingsCurrent}:undefined,()=>settingsSet(msg.key,msg.value,settingsCurrent?"conductor":"terminal",msg.confirm,msg.now,msg.reason)).then(reply, () => reply({ ok: false, error: "the setting could not be changed; inspect hub.log" }));
+        if(c.role!=="console")try {const def=settingDef(msg.key);if(typeof def==="string" || !(operationalSetting(def)||operationalRosterSetting(def)))throw new OperationalAuthorityError(`this setting is reserved for the person; ${OPERATIONAL_PERSON_GUIDANCE}`,"person");settingsCurrent=admitOperational(sock,"settings set");}catch(error){return void reply(operationalFailure(error));}
+        void operationalContext.run(settingsCurrent?{actor:c.peer!,current:settingsCurrent}:undefined,()=>settingsSet(msg.key,msg.value,settingsCurrent?"conductor":"terminal",msg.confirm,msg.now,msg.reason)).then(reply, error => reply(operationalFailure(error,"the setting could not be changed; inspect hub.log")));
         return;
       case "settings_undo":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
@@ -7014,8 +7026,8 @@ export async function startDaemon(opts: DaemonOptions) {
         return;
       case "peer_stop":
         let stopCurrent:(()=>void)|undefined;
-        if(c.role!=="console")try{stopCurrent=admitOperational(sock,"stop");}catch(error){return void reply({ok:false,error:(error as Error).message});}
-        void stopPeer(msg.peer,false,stopCurrent?{actor:c.peer!,current:stopCurrent}:undefined).then(reply).catch(() => reply({ ok: false, error: "peer stop failed; inspect ahub status and logs before retrying" }));
+        if(c.role!=="console")try{stopCurrent=admitOperational(sock,"stop");}catch(error){return void reply(operationalFailure(error));}
+        void stopPeer(msg.peer,false,stopCurrent?{actor:c.peer!,current:stopCurrent}:undefined).then(reply).catch(error => reply(operationalFailure(error,"peer stop failed; inspect ahub status and logs before retrying")));
         return;
       case "start":
         if (c.role !== "console") return void reply({ t: "started", ok: false, error: "start is a console command; use hub_peer_start with the conductor role" });
