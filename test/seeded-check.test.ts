@@ -55,6 +55,40 @@ test("seed context absence never hides exact-match failure (#684)", () => {
     expect(() => applySeedInRepo(root, "absent", seed)).toThrow("seed rot: expected one exact source match, found 0; anchor context unavailable");
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
+
+test("shallow seed diagnostics require a fetched explicit base and never substitute broken HEAD (#684)", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-seed-shallow-")), source = join(root, "source"), shallow = join(root, "shallow");
+  mkdirSync(source);
+  const git = (cwd: string, ...args: string[]) => {
+    const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+    if (result.status !== 0) throw new Error(result.stderr);
+    return result.stdout.trim();
+  };
+  const commit = () => git(source, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture");
+  const seed = { id: "fixture", file: "guard.ts", search: "return allowed;", replacement: "return true;", testFile: "test/guard.ts", testName: "guard" };
+  try {
+    git(source, "init", "-qb", "base");
+    writeFileSync(join(source, seed.file), "function guarded() { return allowed; }\nfunction other() { return false; }\n");
+    git(source, "add", seed.file); commit();
+    const base = git(source, "rev-parse", "HEAD");
+    git(source, "checkout", "-qb", "rot");
+    const current = "\n\nfunction guarded() { return changed; }\n";
+    writeFileSync(join(source, seed.file), current);
+    git(source, "add", seed.file); commit();
+    const head = git(source, "rev-parse", "HEAD");
+    git(root, "clone", "-q", "--no-local", "--depth=1", "--branch", "rot", source, shallow);
+    expect(git(shallow, "rev-parse", "--is-shallow-repository")).toBe("true");
+    expect(seedRotContext(shallow, seed, current)).toContain("base unavailable");
+    expect(seedRotContext(shallow, seed, current)).not.toContain(head);
+    expect(() => applySeedInRepo(shallow, current, seed, base)).toThrow("found 0; anchor context unavailable: base unavailable");
+    git(shallow, "fetch", "-q", "--depth=1", "origin", base);
+    expect(seedRotContext(shallow, seed, current, base)).toContain(`base ${base} guard.ts:1 symbol guarded; current guard.ts:3`);
+    expect(() => applySeedInRepo(shallow, current, seed, base)).toThrow("symbol guarded");
+    expect(seedRotContext(shallow, seed, current, "refs/missing")).toContain("base unavailable");
+    expect(seedRotContext(shallow, { ...seed, search: "absent anchor" }, current, base)).toContain("search absent at base");
+    expect(seedRotContext(shallow, { ...seed, search: "function" }, current, base)).toContain("search ambiguous at base");
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 test("seed verdict requires the same named assertion and distinguishes survivors from invalid failures", () => {
   const green = "(pass) guard [1.00ms]\n 1 pass\n 0 fail\n";
   const red = "error: expect(received).toBe(expected)\n(fail) guard [1.00ms]\n 0 pass\n 1 fail\n";

@@ -13,10 +13,11 @@ export function parseSource(file: string, text: string): ts.SourceFile {
   // Inline HTML scripts keep original UTF-16 offsets and line numbers; markup is not TypeScript.
   if (/\.html?$/i.test(file)) {
     let masked = text.replace(/[^\r\n]/g, " ");
-    for (const match of text.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)) {
-      const opening = match[0].slice(0, match[0].indexOf(">") + 1);
-      if (/\bsrc\s*=/i.test(opening)) continue;
-      const start = match.index + opening.length, script = match[1]!;
+    for (const match of text.matchAll(/<script\b((?:[^"'<>]|"[^"]*"|'[^']*')*)>([\s\S]*?)<\/script\s*>/gi)) {
+      const attributes = match[1]!, script = match[2]!;
+      const names = [...attributes.matchAll(/([^\s=/>]+)(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/g)].map(attribute => attribute[1]!.toLowerCase());
+      if (names.includes("src")) continue;
+      const start = match.index + "<script".length + attributes.length + 1;
       masked = masked.slice(0, start) + script + masked.slice(start + script.length);
     }
     text = masked;
@@ -33,8 +34,10 @@ export function symbolSpans(source: ts.SourceFile): SymbolSpan[] {
       || ts.isPropertyAssignment(node) || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node)
       || ts.isInterfaceDeclaration(node) || ts.isTypeAliasDeclaration(node) || ts.isEnumDeclaration(node)
       || ts.isModuleDeclaration(node);
-    const name = named && node.name && !ts.isObjectBindingPattern(node.name) && !ts.isArrayBindingPattern(node.name)
-      ? node.name.getText(source).replace(/^['"]|['"]$/g, "") : undefined;
+    // Computed keys can contain arbitrary expressions or sensitive literals; diagnostics name only their shape.
+    const name = ts.isConstructorDeclaration(node) ? "constructor"
+      : named && node.name && !ts.isObjectBindingPattern(node.name) && !ts.isArrayBindingPattern(node.name)
+        ? ts.isComputedPropertyName(node.name) ? "[computed]" : node.name.getText(source).replace(/^['"]|['"]$/g, "") : undefined;
     const names = name ? [...parents, name] : parents;
     if (name) {
       const start = node.getStart(source);
@@ -48,6 +51,24 @@ export function symbolSpans(source: ts.SourceFile): SymbolSpan[] {
 
 export function enclosingSymbol(source: ts.SourceFile, offset: number): SymbolSpan | undefined {
   return symbolSpans(source).filter(span => span.start <= offset && offset < span.end)
+    .sort((a, b) => (a.end - a.start) - (b.end - b.start))[0];
+}
+
+/**
+ * Nearest named function scope, ignoring ordinary local variables. Anonymous callbacks inherit their nearest
+ * named enclosing function; variable/property-bound closures supply their binding's name instead.
+ */
+export function enclosingFunction(source: ts.SourceFile, offset: number): SymbolSpan | undefined {
+  const functionScope = (node: ts.Node): boolean => {
+    if (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) || ts.isGetAccessorDeclaration(node)
+      || ts.isSetAccessorDeclaration(node) || ts.isConstructorDeclaration(node)) return true;
+    if (!ts.isVariableDeclaration(node) && !ts.isPropertyDeclaration(node) && !ts.isPropertyAssignment(node)) return false;
+    let initializer = node.initializer;
+    while (initializer && (ts.isParenthesizedExpression(initializer) || ts.isAsExpression(initializer)
+      || ts.isTypeAssertionExpression(initializer) || ts.isNonNullExpression(initializer) || ts.isSatisfiesExpression(initializer))) initializer = initializer.expression;
+    return !!initializer && (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer));
+  };
+  return symbolSpans(source).filter(span => span.start <= offset && offset < span.end && functionScope(span.node))
     .sort((a, b) => (a.end - a.start) - (b.end - b.start))[0];
 }
 

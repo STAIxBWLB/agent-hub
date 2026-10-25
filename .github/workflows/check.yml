@@ -168,6 +168,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -176,7 +177,9 @@ jobs:
           bun-version-file: .bun-version
       - run: bun install --frozen-lockfile
       - name: Sequential green and seeded guard pairs
-        run: bun scripts/seeded-check.ts --shard ${{ matrix.shard }}/4
+        env:
+          SEED_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
+        run: bun scripts/seeded-check.ts --shard ${{ matrix.shard }}/4 --base "$SEED_BASE_REF"
       - name: Retain failed seeded-guard phase diagnostics
         if: failure()
         uses: actions/upload-artifact@v7
