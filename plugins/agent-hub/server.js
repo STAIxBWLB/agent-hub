@@ -2014,7 +2014,15 @@ function ownServer(text) {
   const env = hub.env === undefined ? {} : object2(hub.env);
   if (Object.values(env).some((value) => typeof value !== "string"))
     throw new Error("invalid hub environment");
-  return { command: hub.command, args: hub.args ?? [], env, enabled: true, required: true, enabled_tools: TOOLS };
+  return {
+    command: hub.command,
+    args: hub.args ?? [],
+    env,
+    enabled: true,
+    required: true,
+    enabled_tools: TOOLS,
+    tools: Object.fromEntries(TOOLS.map((name) => [name, { approval_mode: "approve" }]))
+  };
 }
 async function prepare(ctx) {
   let root;
