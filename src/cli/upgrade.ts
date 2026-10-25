@@ -143,7 +143,7 @@ export interface RecoveryOperation {
   /** Positive typed store observation; disposal rechecks it before accepting a repaired-session loss. */
   missingRecordedSession?: { projectId: string; peer: RecoveryNativePeer; sessionId: string; kind: "rollout" | "transcript"; checkedPath?: string };
   freshOverride?: { peer: RecoveryNativePeer; evidence: NonNullable<RecoveryOperation["missingRecordedSession"]>; checked: "missing"; at: number };
-  /** #215: every human disposition, in order. Operator reasons only; never task or message text. */
+  /** #215: every human disposition, in order. Operator reasons only; never task or message text. #776: `cause` is the operation's own `error` at that moment, the text the receipt already held. */
   audit?: { at: number; action: "fresh-session" | "stop-and-archive"; reason: string; peer?: string; cause?: string; projects: string[] }[];
   disposition?: { choice: "stop-and-archive"; at: number; projects: Record<string, string>; continuity?: Record<string, "not-archived" | "unavailable"> };
   /** #215: a refusal no resume can get past was recorded (FinalRefusal); `next` no longer offers resume. */
