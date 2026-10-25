@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { changedPaths, dirtySubmodules, parseDirtySubmodules, planUndo, repoOf, restore, snapshot, Turns, type Repo } from "../src/hub/snapshots.ts";
@@ -291,7 +291,9 @@ test("legacy snapshot stores leave a missing task baseline unknown without a mig
   const {Database}=await import("bun:sqlite"), db=new Database(file); db.run("CREATE TABLE legacy (id INTEGER)"); db.close();
   const turns=new Turns(file,true); try {expect(turns.taskStart(1,100)).toBeUndefined();} finally {turns.close();}
   const verify=new Database(file,{readonly:true}); try {expect(verify.query("SELECT name FROM sqlite_master WHERE name = 'task_snapshots'").get()).toBeNull();} finally {verify.close();}
-});// #798 step 1 (D2/D4): dirty-submodule detection. Wiring into turn facts is a later task.
+});
+
+// #798 step 1 (D2/D4): dirty-submodule detection. Wiring into turn facts is a later task.
 test("parseDirtySubmodules keeps submodule paths and drops everything else (#798)", () => {
   // Shapes measured on git 2.56 `status --porcelain=v2 -z`: a type 1 entry carries eight
   // space-separated fields before the path (1 XY SUB mH mI mW hH hI), a type 2 adds Xscore.
