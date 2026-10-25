@@ -1,3 +1,5 @@
+import { profileScorecard, type ProfileTaskMetadata } from "./dogfood-profile.ts";
+import type { ProfileName } from "./profiles.ts";
 import { costMetrics, type CostPr, type CostTask } from "./cost-governance.ts";
 import type { HistoryEntry } from "./board.ts";
 import { parseSince } from "./events.ts";
@@ -22,7 +24,7 @@ export function dogfoodSince(args: string[], now = Date.now()): number {
 export interface Source<T> { data: T; complete: boolean; available: boolean }
 export const source = <T>(data: T, complete = true): Source<T> => ({ data, complete, available: true });
 export const missing = <T>(data: T): Source<T> => ({ data, complete: false, available: false });
-export interface DogfoodTask { id: number; repo?: string; pr?: number; pii: boolean; history: HistoryEntry[] }
+export interface DogfoodTask { id: number; repo?: string; pr?: number; pii: boolean; history: HistoryEntry[]; profileMetadata?: ProfileTaskMetadata }
 export interface DogfoodPr extends CostPr {
   firstPassCi?: boolean;
   sameHeadReruns?: number;
@@ -32,6 +34,7 @@ export interface DogfoodPr extends CostPr {
 export interface FeatureEvidence { id: number; types: string[] | null; taskEvents?: string[] }
 export interface DogfoodInput {
   since: number; until: number;
+  projectProfile?: Source<ProfileName | null>;
   events: Source<StampedEvent[]>; tasks: Source<DogfoodTask[]>; prs: Source<DogfoodPr[]>;
   journal?: Source<{ digests: number; held: number; rows: number }>;
   log: Source<string[]>; features: Source<FeatureEvidence[]>;
@@ -154,6 +157,7 @@ export function dogfoodScorecard(input: DogfoodInput) {
     adoption: input.features.data.map(feature => ({ id: feature.id, events: feature.types && known(input.events) ? events.filter(e => feature.types!.includes(e.type) && (!feature.taskEvents || e.type === "task" && feature.taskEvents.includes(e.event))).length : null })),
     journalSource: input.journal ? {available:input.journal.available,complete:input.journal.complete,rows:input.journal.data.rows} : {available:false,complete:false,rows:0},
     piiTasks: known(input.tasks) ? tasks.filter(t => t.pii).length : null,
+    ...profileScorecard(input),
   };
 }
 export type DogfoodScorecard = ReturnType<typeof dogfoodScorecard>;

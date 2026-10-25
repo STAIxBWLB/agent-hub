@@ -1,0 +1,171 @@
+{
+  "since": 0,
+  "until": 10000,
+  "events": {
+    "data": [
+      {
+        "v": 1,
+        "at": "1970-01-01T00:00:02.000Z",
+        "type": "task",
+        "id": 1,
+        "event": "accepted",
+        "by": "hub",
+        "state": "in_progress",
+        "owner": "codex",
+        "reviewer": "claude",
+        "class": "implement",
+        "pii": false
+      },
+      {
+        "v": 1,
+        "at": "1970-01-01T00:00:06.000Z",
+        "type": "tokens",
+        "peer": "codex",
+        "task": 1,
+        "pii": false,
+        "attribution": "delivery",
+        "n": 20
+      },
+      {
+        "v": 1,
+        "at": "1970-01-01T00:00:06.000Z",
+        "type": "usage",
+        "peer": "codex",
+        "task": 1,
+        "pii": false,
+        "attribution": "delivery",
+        "source": "codex_appserver",
+        "id": "fixture-usage",
+        "inputTokens": 12,
+        "outputTokens": 8,
+        "cacheReadTokens": 2,
+        "totalTokens": 20
+      }
+    ],
+    "complete": true,
+    "available": true
+  },
+  "tasks": {
+    "data": [
+      {
+        "id": 1,
+        "repo": "example/fixture",
+        "pr": 4,
+        "pii": false,
+        "history": [
+          {
+            "at": 1000,
+            "by": "hub",
+            "event": "proposed"
+          },
+          {
+            "at": 2000,
+            "by": "hub",
+            "event": "accepted"
+          },
+          {
+            "at": 5000,
+            "by": "hub",
+            "event": "done",
+            "reviewCost": {
+              "review": {
+                "scope": "full",
+                "reviewers": 1
+              }
+            }
+          },
+          {
+            "at": 6000,
+            "by": "hub",
+            "event": "changes_requested"
+          },
+          {
+            "at": 7000,
+            "by": "hub",
+            "event": "done",
+            "reviewCost": {
+              "review": {
+                "scope": "delta",
+                "reviewers": 1
+              }
+            }
+          },
+          {
+            "at": 8000,
+            "by": "hub",
+            "event": "approved"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "pii": true,
+        "history": [
+          {
+            "at": 1500,
+            "by": "hub",
+            "event": "proposed"
+          }
+        ]
+      }
+    ],
+    "complete": true,
+    "available": true
+  },
+  "prs": {
+    "data": [
+      {
+        "repo": "example/fixture",
+        "pr": 4,
+        "state": "MERGED",
+        "mergedAt": 9000,
+        "complete": true,
+        "ciRuns": [
+          {
+            "id": 1,
+            "attempt": 1
+          }
+        ],
+        "reviews": 2,
+        "firstPassCi": true,
+        "sameHeadReruns": 0,
+        "connectorThreads": [],
+        "bugIssues": []
+      }
+    ],
+    "complete": true,
+    "available": true
+  },
+  "journal": {
+    "data": {
+      "digests": 2,
+      "held": 1,
+      "rows": 3
+    },
+    "complete": true,
+    "available": true
+  },
+  "log": {
+    "data": [
+      "snapshot unavailable: shared snapshot Git budget exhausted"
+    ],
+    "complete": true,
+    "available": true
+  },
+  "features": {
+    "data": [
+      {
+        "id": 1,
+        "types": [
+          "task"
+        ]
+      },
+      {
+        "id": 2,
+        "types": null
+      }
+    ],
+    "complete": true,
+    "available": true
+  }
+}

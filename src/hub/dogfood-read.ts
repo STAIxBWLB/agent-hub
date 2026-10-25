@@ -5,6 +5,9 @@ import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
 import { readPrCostHistory, sdlcGh, type SdlcGh } from "./sdlc.ts";
 import { dogfoodScorecard, missing, source, type DogfoodTask, type DogfoodPr, type FeatureEvidence, type Source } from "./dogfood.ts";
 import type { HistoryEntry } from "./board.ts";
+import { dogfoodAlias, dogfoodProfileName, type ProfileTaskMetadata } from "./dogfood-profile.ts";
+import { CLASSES } from "./board.ts";
+import type { ProfileName } from "./profiles.ts";
 import type { StampedEvent } from "./events.ts";
 
 export const DOGFOOD_BYTE_CAP = 16 * 1024 * 1024;
@@ -57,14 +60,20 @@ export function dogfoodTasks(file: string): Source<DogfoodTask[]> {
   try {
     db = new Database(file, { readonly: true });
     db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
-    const rows = db.query(`SELECT id, (sdlc IS NOT NULL AND length(sdlc) > 65536) AS receipt_cut, CASE WHEN length(sdlc) <= 65536 THEN sdlc END AS sdlc,
+    const columns = new Set((db.query("PRAGMA table_info(tasks)").all() as {name:string}[]).map(c=>c.name));
+    const metadata = columns.has("class") ? "CASE WHEN length(class) <= 48 THEN class END" : "NULL";
+    const profile = columns.has("project_profile") ? "CASE WHEN length(project_profile) <= 65536 THEN project_profile END" : "NULL";
+    const state = columns.has("state") ? "CASE WHEN length(state) <= 32 THEN state END" : "NULL";
+    const metadataCut = [columns.has("class") ? "(class IS NOT NULL AND length(class) > 48)" : "0", columns.has("state") ? "(state IS NOT NULL AND length(state) > 32)" : "0"].join(" OR ");
+    const profileCut = columns.has("project_profile") ? "(project_profile IS NOT NULL AND length(project_profile) > 65536)" : "0";
+    const rows = db.query(`SELECT (${metadataCut}) AS metadata_cut, ${state} AS current_state, ${metadata} AS base_class, ${profileCut} AS profile_cut, ${profile} AS project_profile, id, (sdlc IS NOT NULL AND length(sdlc) > 65536) AS receipt_cut, CASE WHEN length(sdlc) <= 65536 THEN sdlc END AS sdlc,
       CASE WHEN length(signals) <= 65536 THEN signals END AS signals,
-      CASE WHEN length(history) <= 131072 THEN history END AS history FROM tasks ORDER BY id DESC LIMIT ?`).all(MAX_TASKS + 1) as { id: number; receipt_cut: number; sdlc: string | null; signals: string | null; history: string | null }[];
+      CASE WHEN length(history) <= 131072 THEN history END AS history FROM tasks ORDER BY id DESC LIMIT ?`).all(MAX_TASKS + 1) as { metadata_cut: number; current_state: string | null; profile_cut: number; base_class: string | null; project_profile: string | null; id: number; receipt_cut: number; sdlc: string | null; signals: string | null; history: string | null }[];
     let complete = rows.length <= MAX_TASKS, bytes = 0;
     const tasks: DogfoodTask[] = [];
     for (const row of rows.slice(0,MAX_TASKS)) {
-      if (row.receipt_cut) complete = false;
-      bytes += (row.sdlc?.length ?? 0) + (row.signals?.length ?? 0) + (row.history?.length ?? 0);
+      if (row.receipt_cut || row.profile_cut || row.metadata_cut) complete = false;
+      bytes += Buffer.byteLength(row.base_class ?? "") + Buffer.byteLength(row.current_state ?? "") + (row.project_profile?.length ?? 0) + (row.sdlc?.length ?? 0) + (row.signals?.length ?? 0) + (row.history?.length ?? 0);
       if (bytes > DOGFOOD_BYTE_CAP) { complete = false; break; }
       try {
         const signals = JSON.parse(row.signals ?? "null"), history = JSON.parse(row.history ?? "null"), receipt = JSON.parse(row.sdlc ?? "{}");
@@ -75,7 +84,20 @@ export function dogfoodTasks(file: string): Source<DogfoodTask[]> {
           if (!h || !Number.isFinite(h.at) || typeof h.event !== "string") { complete = false; continue; }
           clean.push({ at: h.at, by: "hub", event: h.event, ...(h.reviewCost && typeof h.reviewCost === "object" ? { reviewCost: { ...(h.reviewCost.review && ["none","delta","full"].includes(h.reviewCost.review.scope) ? {review:{scope:h.reviewCost.review.scope,reviewers:1}} : {}) } } : {}), ...(Array.isArray(h.reviewFindings?.items) ? { reviewFindings: { items:h.reviewFindings.items.filter((f:any)=>f && typeof f.id === "string" && ["important","nit"].includes(f.severity)).map((f:any)=>({id:f.id,severity:f.severity,pass:"bugs",disposition:"open"})) } } : {}) });
         }
-        tasks.push({ id: row.id, pii: signals.includes("pii") || signals.includes("pii_path"), ...(repoName(receipt?.repo) ? { repo: receipt.repo } : {}), ...(id(receipt?.pr) ? { pr: receipt.pr } : {}), history: clean });
+        const pii = signals.includes("pii") || signals.includes("pii_path");
+        let profileMetadata: ProfileTaskMetadata | undefined;
+        if (!row.profile_cut && row.base_class && (CLASSES as readonly string[]).includes(row.base_class)) {
+          const raw = row.project_profile === null ? {profile:"dev",profileClass:row.base_class} : JSON.parse(row.project_profile);
+          if (!dogfoodProfileName(raw?.profile)) complete = false;
+          else {
+            if (history.some((h:any) => h.unmetCriteria !== undefined && (!Array.isArray(h.unmetCriteria) || h.unmetCriteria.length>32 || new Set(h.unmetCriteria).size!==h.unmetCriteria.length || h.unmetCriteria.some((v:unknown)=>typeof v!=="string" || !/^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(v))) || h.deliverables !== undefined && (!Array.isArray(h.deliverables) || h.deliverables.length>16 || h.deliverables.some((v:any)=>typeof v?.id!=="string" || !/^d-[0-9a-f]{12}$/.test(v.id))))) complete=false;
+            const projection = history.map((h:any) => ({at:h.at,event:h.event,
+              ...(Array.isArray(h.unmetCriteria) ? {criteria:h.unmetCriteria.slice(0,32).filter((v:unknown)=>typeof v === "string" && /^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(v)).map((v:string)=>pii || h.withheld ? "withheld" : v), ...(h.withheld ? {criteriaPrivate:true as const} : {})} : {}),
+              ...(Array.isArray(h.deliverables) ? {deliverables:h.deliverables.slice(0,16).filter((v:any)=>typeof v?.id==="string" && /^d-[0-9a-f]{12}$/.test(v.id)).map((v:any)=>v.id)} : {})}));
+            profileMetadata = {...(row.current_state ? {state:row.current_state} : {}),profile:raw.profile,class:row.base_class,alias:dogfoodAlias(raw.profile,row.base_class,raw.profileClass,pii),history:projection};
+          }
+        }
+        tasks.push({ id: row.id, pii, ...(profileMetadata ? {profileMetadata} : {}), ...(repoName(receipt?.repo) ? { repo: receipt.repo } : {}), ...(id(receipt?.pr) ? { pr: receipt.pr } : {}), history: clean });
       } catch { complete = false; }
     }
     return source(tasks, complete);
@@ -184,6 +206,26 @@ export function dogfoodFeatures(file: string): Source<FeatureEvidence[]> {
   const rows = text.data.filter(line=>line.startsWith("| ") && !line.startsWith("| Feature ") && !line.startsWith("| ---"));
   return {available:text.available,complete:text.complete,data:rows.map((row,index)=>{const rule=mappings.find(([re])=>re.test(row.split("|")[1] ?? ""));return {id:index+1,types:rule?.[1] ?? null,...(rule?.[2] ? {taskEvents:rule[2]} : {})};})};
 }
+/** Data-only profile selection; never load daemon configuration or project adapter modules. */
+export function dogfoodProjectProfile(root: string): Source<ProfileName | null> {
+  let selected: ProfileName = "dev";
+  for (const name of ["config.json", "config.local.json"]) {
+    const file = join(root,".agenthub",name);
+    let fd: number | undefined;
+    try {
+      fd = openSync(file,constants.O_RDONLY | constants.O_NONBLOCK);
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || stat.size > 128*1024) return missing(null);
+      const buffer = Buffer.alloc(stat.size), n = readSync(fd,buffer,0,buffer.length,0);
+      if (n !== stat.size) return missing(null);
+      const raw = JSON.parse(buffer.toString("utf8"));
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) return missing(null);
+      if (raw.profile !== undefined) { if (!dogfoodProfileName(raw.profile)) return missing(null); selected = raw.profile; }
+    } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") continue; return missing(null); }
+    finally { if (fd !== undefined) closeSync(fd); }
+  }
+  return source(selected);
+}
 export async function readDogfood(root: string, stateDir: string, since: number, until = Date.now(), run: SdlcGh = sdlcGh) {
   const tasks = dogfoodTasks(join(stateDir,"hub.db"));
   let repo = "";
@@ -195,5 +237,5 @@ export async function readDogfood(root: string, stateDir: string, since: number,
     if (at === undefined) { log.complete = false; return false; }
     return at >= since && at <= until;
   });
-  return dogfoodScorecard({since,until,tasks,events,log,journal:dogfoodJournal(join(stateDir,"hub.db"),since,until),prs:await dogfoodPrs(repo,tasks,since,until,run),features:dogfoodFeatures(join(root,"docs/dogfood.md"))});
+  return dogfoodScorecard({since,until,tasks,events,log,projectProfile:dogfoodProjectProfile(root),journal:dogfoodJournal(join(stateDir,"hub.db"),since,until),prs:await dogfoodPrs(repo,tasks,since,until,run),features:dogfoodFeatures(join(root,"docs/dogfood.md"))});
 }

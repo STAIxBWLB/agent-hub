@@ -56,3 +56,35 @@
 - `role_text` is bounded guidance for existing flow roles (2000 characters each); it grants no authority. `catalog_roles` supplies bounded compatible guidance ids; the existing explicit catalog selections take precedence. Actual flow maps remain in `roles` and retain their existing validation.
 - `agents` replaces only the managed AGENTS block (16000 characters maximum); surrounding instructions remain. Init previews contain paths/actions only. `example_checks` is at most 16 display strings of 2000 characters, shown as advisory examples by init and never selected as executable checks. `review_checklist` is at most 16 non-empty strings of 500 characters, customizing the checklist items in review requests with `{target}` and `{check}` interpolations. Existing `checks` trust remains authoritative.
 - No override mutates shipped profile data or another project. Unknown fields, base remapping and invalid/oversized data are refused. Headers are quoted. Daemon/MCP restart is required for config changes; no native model consumption or research measurement is claimed.
+
+# Profile scorecard (#799)
+
+The existing ahub report --dogfood command adds a profile section when the selected profile is non-dev, or bound non-dev tasks have evidence in the requested window. Dev-only JSON and readable output retain their prior bytes. Existing flow, quality, cost and other fields keep their meanings; the profile section does not require merged PRs.
+
+Rows include profile totals and class-alias groups with the stored base class. A task keeps its recorded profile across later configuration changes. Public custom aliases remain bounded identifiers; private custom aliases are withheld. Task titles, paths, notes, checklist prose and model text are not exported. Private pii/pii_path tasks are counted by id and number.
+
+A missing, incomplete or unsupported source produces JSON null, rendered as unknown in the readable report. A complete source can prove zero recorded events; it cannot prove zero events for a category that has no recorder. Source completeness and flow scope distinguish history-backed totals from recorded-window observations. Profile bindings, including event-only fallback, are capped at 500; a capped window reports incomplete/unknown totals rather than extrapolating. Automatic approvals are flow transitions, not reviewer rounds or first-pass review samples.
+
+| Row group | Existing evidence | Unmeasured ceiling |
+| --- | --- | --- |
+| Flow | Bound task history and complete task-event windows; observed automatic approvals | Undated approvals, incomplete history and first-pass review without history remain unknown |
+| Review | Explicit verdicts and structured public unmet-criteria ids | Profile checklist prose has no item-id recorder; private criterion ids are withheld |
+| Overlap | Recorded path/section notices and later matching pair/path edit facts | Observed path-edit pairs imply no authorship or causation; section edit confirmation remains unknown |
+| Deliverables | Deduplicated ids in recorded deliverable histories | No new file reads; changed-since-approval and current unknown states remain unknown |
+| Privacy | Private task flags and confirmed, attributed memory-note screen refusals | Total refusals, dropped notes and capture rows remain unknown without complete counters |
+| Undo | No additional recorder introduced | Request, completion and guard-refusal totals remain unknown |
+| Snapshots | Already-recorded, attributed snapshot durations | No new recording; budget exhaustion and absent durations remain unknown |
+| Profile errors | No additional recorder introduced | Unknown/foreign alias-refusal totals remain unknown |
+| Cost | Existing task-attributed token/usage summaries | Missing usage and attribution remain unknown; no provider/model prose is exported |
+
+The weekly writing, general and research receipt templates are in the verification/profiles directory. Copy only the emitted profile subsection, preserve null values, and include no project/person names or paths. A template is not a completed measurement or a live acceptance claim.
+
+The following verification claim ids collect the still-unverified statements above. A weekly receipt gives each a verdict of supported, partly supported or not supported, tied to recorded ids and remaining unknowns. Profile counts alone do not prove native ingestion, context retention or account acceptance; those verdicts need corresponding native/account receipt ids and independent judgment. None becomes verified merely because this reporting section exists:
+
+- writing-live-example: an observed writing workflow.
+- general-live-example: an observed general workflow.
+- research-live-example: the live three-source/two-agent research example.
+- native-model-ingestion: native peers consuming profile guidance and tasks.
+- context-retention: profile/task context retained through the relevant native turns.
+- native-account-research: a real native/model/account research workflow.
+- research-measurement: observed research-profile measurements.
