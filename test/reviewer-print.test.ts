@@ -13,6 +13,43 @@ const request = (id: number) => newEnvelope(HUB, `Review task #${id}`, { kind: "
 const plan = (ctx: ReviewerPrepareContext, log: string): ReviewerLaunch => ({ command: [process.execPath, fake, log], args: ["--fresh", ctx.sessionId, "--mcp", ctx.mcpConfig],
   isolation: { backend: "fixture", version: "test", binary: process.execPath, profile: "fixture-profile", readOnly: true, strictMcp: true, ephemeral: true, evidence: ["fixture only, not native isolation evidence"] } });
 
+for (const refusal of ["stale_binding", "policy_changed"] as const) test(`a ${refusal} admission refusal skips only its request without poisoning the reviewer`, async () => {
+  const dir = scratch(), log = join(dir, "calls.jsonl"), failures: ReviewerFailure[] = [], diagnostics: string[] = [];
+  let preparations = 0;
+  const peer = new ReviewerPrintPeer("fixture-review", { cwd: dir, mcpConfig: "{}", systemPrompt: "role", watchdogMs: 5000,
+    backend: { id: "fixture", prepare: async ctx => { preparations++; return plan(ctx, log); } },
+    verdictSince: () => true, bindingCurrent: task => task !== 1 || refusal !== "stale_binding", admit: env => env.refs?.task !== "1",
+    log: line => diagnostics.push(line), onUnavailable: failure => { failures.push(failure); } });
+  cleanup.push(() => peer.stop());
+  await peer.start(); await peer.deliver([request(1), request(2)], "mixed-admission");
+  await until(() => peer.state === "idle");
+  expect(preparations).toBe(2); // startup plus only the second request
+  expect(readFileSync(log, "utf8").trim().split("\n")).toHaveLength(1);
+  expect(failures).toEqual(refusal === "stale_binding" ? [] : [{ task: 1, head: "a".repeat(40), flowRevision: 7, cause: "no_verdict" }]);
+  expect(diagnostics.filter(line => line.includes("task #1 skipped"))).toHaveLength(1);
+  expect(diagnostics.join("\n")).not.toContain("could not start");
+});
+
+for (const refusal of ["stale_binding", "policy_changed"] as const) test(`a ${refusal} after awaited preparation cleans up without a start failure`, async () => {
+  const dir = scratch(), log = join(dir, "calls.jsonl"), failures: ReviewerFailure[] = [];
+  let preparations = 0, preparing = false, current = true, admitted = true, closed = 0, cleaned = 0, release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const peer = new ReviewerPrintPeer("fixture-review", { cwd: dir, mcpConfig: "{}", systemPrompt: "role", watchdogMs: 5000,
+    backend: { id: "fixture", taskMcp: true, prepare: async ctx => {
+      if (++preparations > 1) { preparing = true; await held; }
+      return { ...plan(ctx, log), cleanup: () => { cleaned++; } };
+    } }, verdictSince: () => false, bindingCurrent: () => current, admit: () => admitted,
+    taskMcp: () => ({ config: "{}", close: () => { closed++; } }), onUnavailable: failure => { failures.push(failure); } });
+  cleanup.push(() => peer.stop()); cleanup.push(() => release());
+  await peer.start(); await peer.deliver([request(1)], "awaited-admission");
+  await until(() => preparing);
+  if (refusal === "stale_binding") current = false; else admitted = false;
+  release(); await until(() => peer.state === "idle");
+  expect(existsSync(log)).toBe(false); expect(closed).toBe(1); expect(cleaned).toBe(2);
+  expect(peer.reviewToken(1)).toBeUndefined();
+  expect(failures).toEqual(refusal === "stale_binding" ? [] : [{ task: 1, head: "a".repeat(40), flowRevision: 7, cause: "no_verdict" }]);
+});
+
 test("fresh reviewer honors its verified backend plan and keeps each review in a separate child", async () => {
   const dir = scratch(), log = join(dir, "calls.jsonl"), verified: string[] = [], usage: number[] = [];
   const backend: ReviewerBackend = { id: "fixture", prepare: async ctx => { verified.push(ctx.sessionId); return plan(ctx, log); }, usage: event => (event as { usage?: { input_tokens?: number } }).usage };

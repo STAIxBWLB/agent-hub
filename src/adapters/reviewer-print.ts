@@ -27,6 +27,10 @@ export function reviewerUnavailableReason(cause: ReviewerCauseClass, detail?: st
 export class ReviewerUnavailableError extends Error {
   constructor(message: string, readonly causeClass: ReviewerCauseClass, readonly detail?: string) { super(message); }
 }
+/** A refused request says nothing about the reviewer's native isolation or ability to start. */
+class ReviewerAdmissionError extends Error {
+  constructor(readonly reason: "stale_binding" | "policy_changed") { super("review admission changed"); }
+}
 
 export interface ReviewerPrintUsage { input_tokens?: number; output_tokens?: number; cache_creation_input_tokens?: number; cache_read_input_tokens?: number }
 export interface ReviewerIsolationReceipt {
@@ -238,6 +242,16 @@ export class ReviewerPrintPeer extends BasePeer {
       try { result = await this.review(env, task, generation); }
       catch (error) {
         if (generation !== this.generation) return;
+        if (error instanceof ReviewerAdmissionError) {
+          this.opts.log?.(`[${this.id}] review of task #${task} skipped: ${error.reason === "stale_binding" ? "stale binding" : "review policy changed"}`);
+          if (error.reason === "policy_changed") {
+            missing.push(task);
+            const target = batch.targets[index];
+            if (target) reroute.push({ ...target, cause: "no_verdict" });
+          }
+          batch.next = index + 1;
+          continue;
+        }
         if (error instanceof PrintChildCleanupError) {
           // Unavailable until a stop confirms the group gone: no new review runs beside the survivors.
           this.opts.log?.(`[${this.id}] review of task #${task}: ${error.message}`);
@@ -313,14 +327,19 @@ export class ReviewerPrintPeer extends BasePeer {
     return done;
   }
 
+  private assertAdmission(env: Envelope, task: number, binding: ReviewerReviewBinding): void {
+    if (this.opts.bindingCurrent?.(task, binding) === false) throw new ReviewerAdmissionError("stale_binding");
+    if (this.opts.admit?.(env) === false) throw new ReviewerAdmissionError(this.opts.bindingCurrent?.(task, binding) === false ? "stale_binding" : "policy_changed");
+  }
+
   private async review(env: Envelope, task: number, generation: number): Promise<{ code: number | null; quota: boolean }> {
-    if (this.opts.admit?.(env) === false) throw new Error("review admission changed");
+    const revision=Number(env.refs?.reviewRevision);
+    const binding: ReviewerReviewBinding=Object.freeze({head:env.refs?.commit,flowRevision:Number.isSafeInteger(revision)&&revision>0?revision:undefined});
+    this.assertAdmission(env, task, binding);
     let facts: string | undefined;
     try { facts = this.opts.facts?.(env); } catch (error) { this.opts.log?.(`[${this.id}] review facts for task #${task} failed: ${(error as Error).message}`); }
     const input = `${frame(env)}${facts ? `\n\n${facts}` : ""}`;
     let launch: ReviewerLaunch | undefined;
-    const revision=Number(env.refs?.reviewRevision);
-    const binding: ReviewerReviewBinding=Object.freeze({head:env.refs?.commit,flowRevision:Number.isSafeInteger(revision)&&revision>0?revision:undefined});
     const mcp = this.opts.backend.taskMcp ? this.opts.taskMcp?.(task, () => generation === this.generation && this.reviewToken(task) !== undefined && this.opts.bindingCurrent?.(task,binding) !== false) : undefined;
     let mcpClosed=false;
     const closeMcp=()=>{ if(mcpClosed)return; mcpClosed=true; mcp?.close(); if(this.reviewMcpClose===closeMcp)this.reviewMcpClose=undefined; };
@@ -330,7 +349,9 @@ export class ReviewerPrintPeer extends BasePeer {
     const release = () => releasing ??= Promise.resolve().then(() => launch?.cleanup?.()).then(() => {});
     try {
     launch = await this.prepare(randomUUID(), input, task, mcp?.config);
-    if (generation !== this.generation || this.opts.admit?.(env) === false || launch.current?.() === false) throw new ReviewerUnavailableError("reviewer isolation or admission changed before child spawn", launch.current?.() === false ? "binary" : "unknown");
+    if (generation !== this.generation) throw new ReviewerAdmissionError("stale_binding");
+    this.assertAdmission(env, task, binding);
+    if (launch.current?.() === false) throw new ReviewerUnavailableError("reviewer isolation changed before child spawn", "binary");
     this.receipt = launch.isolation;
     let quota = false;
     const child = new OwnedPrintChild({ peer: this.id, command: launch.command, args: launch.args,
