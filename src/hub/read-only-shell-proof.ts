@@ -30,7 +30,7 @@ function ancestors(path:string,stop:string):string[] {
   const out=[path];for(let n=0;path!==stop && n<64;n++){const parent=dirname(path);if(parent===path)break;path=parent;out.push(path);}return out;
 }
 // Git's subsection names retain case. Expand the literal letters so the entire anchored key pattern is case-insensitive.
-const GIT_HELPER_KEYS = /^(core\.fsmonitor|log\.showsignature|gpg\.(program|.+\.program)|diff\.(external|.+\.(command|textconv)))$/.source
+const GIT_HELPER_KEYS = /^(core\.fsmonitor|log\.showsignature|gpg\.(program|.+\.program)|diff\.(external|.+\.(command|textconv))|format\.pretty|pretty\..+)$/.source
   .replace(/[a-z]/g, letter => `[${letter}${letter.toUpperCase()}]`);
 /** No config values escape this predicate. Accept only the two exact helper overrides injected by the core. */
 export function gitHelpersUnconfigured(git:string,cwd:string,env:NodeJS.ProcessEnv,current:()=>boolean):boolean {

@@ -115,7 +115,7 @@ export function readOnlyShellForm(command:unknown,root:string,readPath:(path:str
       else if(sub==="ls-files")rule=flags(["-z","--cached","--deleted","--modified","--others","--exclude-standard","--stage","--error-unmatch"]);
       else if(sub==="describe")rule=flags(["--always","--tags","--long","--all","--dirty"],{"--abbrev":"number","--match":"pattern","--exclude":"pattern"});
       else if(sub==="log"||sub==="diff"||sub==="show") {
-        rule=flags(["--no-ext-diff","--no-textconv","--no-patch","--oneline","--all","--decorate","--no-decorate","--name-only","--name-status","--stat","-p","--patch","--cached","--staged"],{"-n":"number","--max-count":"number","--format":"pattern","--pretty":"pattern"});
+        rule=flags(["--no-ext-diff","--no-textconv","--no-patch","--oneline","--all","--decorate","--no-decorate","--name-only","--name-status","--stat","-p","--patch","--cached","--staged"],{"-n":"number","--max-count":"number"});
       } else return undefined;
       const parsedArgs=options(rest,rule,value=>path(value,cwd));if(!parsedArgs)return undefined;
       const patch=sub==="diff" || sub==="show" || sub==="log" && ["-p","--patch","--stat"].some(flag=>parsedArgs.seen.has(flag));

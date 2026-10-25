@@ -69,3 +69,10 @@ test("Git clustered patch flags require both helper-disabling flags after option
   }
   expect(form("git log -n1 --oneline")).toBeDefined();
 });
+
+// Signature placeholders invoke GPG even when gpg.program/log.showSignature are absent.
+test("custom pretty formats cannot trigger default signature helpers automatically", () => {
+  for (const command of ["git log --format='%G?'", "git log --format=%GS", "git log --pretty='format:%G?'", "git show --no-ext-diff --no-textconv --format='%G?'"])
+    expect(form(command), command).toBeUndefined();
+  expect(form("git log --oneline -n 1")).toBeDefined();
+});

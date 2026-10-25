@@ -75,6 +75,8 @@ for (const [section, key, value] of [
   ['gpg "openpgp"', "program", "synthetic-helper"],
   ['GPG "SSH"', "PROGRAM", "synthetic-helper"],
   ["diff", "external", "synthetic-helper"],
+  ["format", "pretty", "format:%G?"],
+  ["pretty", "audit", "format:%G?"],
   ['diff "x"', "command", "synthetic-helper"],
   ['diff "x.y"', "textconv", "synthetic-helper"],
 ] as const) test(`Git helper config [${section}] ${key} keeps every git form asking`, () => {
@@ -90,6 +92,24 @@ for (const [section, key, value] of [
   for (const command of ["git log -n 1", "git status --short", "git diff --no-ext-diff --no-textconv"])
     expect(proveReadOnlyShell({ command }, options, current), command).toBeUndefined();
   expect(proofs.check(input)).toBe("ask"); // A newly configured helper also invalidates the execution proof.
+});
+
+test("a signed-object fixture invokes default GPG through pretty placeholders, never through automatic forms", () => {
+  const root = fixture(), bin = join(root, "bin"), gpg = join(bin, "gpg");
+  mkdirSync(bin);
+  writeFileSync(gpg, '#!/bin/sh\nprintf called > "$0.called"\nexit 1\n', { mode: 0o755 });
+  const env = { PATH: `${bin}:/usr/bin:/bin`, HOME: root, LANG: "C", TERM: "dumb", GIT_CONFIG_NOSYSTEM: "1" };
+  const run = (args: string[], input?: string) => hubGitSync(args, { cwd: root, env, input, encoding: "utf8", timeout: 1000 });
+  expect(run(["init", "-q"]).status).toBe(0);
+  const tree = run(["mktree"], "").stdout.trim();
+  const raw = `tree ${tree}\nauthor Fixture <fixture@example.invalid> 1 +0000\ncommitter Fixture <fixture@example.invalid> 1 +0000\ngpgsig -----BEGIN PGP SIGNATURE-----\n dummy\n -----END PGP SIGNATURE-----\n\nfixture\n`;
+  const commit = run(["hash-object", "-t", "commit", "-w", "--stdin"], raw).stdout.trim();
+  expect(commit).toMatch(/^[0-9a-f]{40}$/);
+  const options = { root, deny: [], env };
+  expect(proveReadOnlyShell({ command: `git log --oneline -n 1 ${commit}` }, options, current)?.program).toBe("git");
+  expect(proveReadOnlyShell({ command: `git log --format='%G?' ${commit}` }, options, current)).toBeUndefined();
+  expect(run(["log", "--format=%G?", commit]).status).toBe(0);
+  expect(readFileSync(`${gpg}.called`, "utf8")).toBe("called"); // Positive control: no helper-bearing config is needed.
 });
 
 test("proof revalidation catches root and path rebinding, preserves ordinary authority, and rejects ended owners",()=>{
