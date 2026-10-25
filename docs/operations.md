@@ -796,9 +796,12 @@ initialization pair `AGENTHUB_PROJECT_DIR` / `AGENTHUB_STATE_DIR`.
 
 Manager-started hubs use attended mode and project configuration, including
 credential-file references. They do not inherit the launching project's gateway
-URL/key overrides. Native memory remains shared according to claude-mem aliases;
-worktrees recall their parent and composite identity. A shared-alias notice does
-not mean that task boards or agent sessions are shared. Provider quota readings
+URL/key overrides. Native memory is shared by memory project key: the project's
+normalized `origin` remote (without one, its git chain and main working root),
+mapped through the person's `amem alias` log, so a worktree or subdirectory uses
+its main checkout's key. The manager's shared-alias notice compares project-name
+chains instead (superprojects down to the repository, `<parent>/<worktree>` for a
+worktree). Neither means that task boards or agent sessions are shared. Provider quota readings
 may describe the same account and should not be added across projects.
 
 Before upgrading an older hub, inspect the plan with the matching CLI.
@@ -830,7 +833,8 @@ what the hub runs, which files it sends as credentials, where task text goes,
 how far the local worker's sandbox reaches, or how often a peer asks before it
 acts (`kimi_cmd`, `permission_modes`, `codex_bin`,
 `pi.cmd`, `checks`, `mlx.bin`, `mlx.runtimeDir`, `mlx.modelPath`, `omniroute.urls`,
-`omniroute.access_hosts`, the `omniroute` key files, `memory.worker_url`,
+`omniroute.access_hosts`, the `omniroute` key files, `memory.worker_url` (still
+accepted, ignored since 0.16.0),
 `local.read_allow`, `local.bash_network`, `local.network_allow`) are machine-local:
 they apply only from a file git confirms nobody committed. Put them in
 `.agenthub/config.local.json` (`ahub init` adds it to `.gitignore`), which is
@@ -1324,6 +1328,8 @@ ahub goal new "native memory"                                        # a long-te
 ahub goal                                                            # open ones, who holds each and until when
 ahub goal take 1a2b3c4d --force                                      # take one over from another machine
 ```
+
+Without a remote the periodic sync stays quiet; any other sync failure writes `hub memory sync failed: <reason>` to `hub.log` (#401).
 
 ## Benchmarks
 
@@ -2453,7 +2459,7 @@ Rows without a live process are stale registrations; forget them with
 
 ## Agent CLI versions
 
-Agent CLIs update themselves often, and a hub release cannot follow every one. One policy decides each gated CLI: the Codex and Kimi fresh reviewers, Jcode, agy and Qwen (#691).
+Agent CLIs update themselves often, and a hub release cannot follow every one. One policy decides each gated CLI: the Codex and Kimi fresh reviewers, Jcode, agy and Qwen (#691). Qwen has two entries: `qwen` for headless ACP and `qwen-dual` for the dual-output TUI (#286).
 
 - `ahub agents [--json]` lists each gated CLI with its version, verdict and verified versions.
   - **verified:** a receipt exists.
@@ -2465,7 +2471,7 @@ Agent CLIs update themselves often, and a hub release cannot follow every one. O
   - For the reviewers, trust lifts only the version pin. The MCP inventory, Apps/plugins/hooks readback, sandbox denial fixtures and binary fence still run before every child, and a failed leg still refuses.
   - What trust cannot prove is printed when you trust.
 - `ahub doctor` shows one line for each installed CLI that is not on a verified version.
-- A weekly workflow (`.github/workflows/agent-compat.yml`) compares the latest npm versions of Codex, Kimi Code and Qwen Code with the verified sets, keeps one `agent-compat` issue up to date while one is ahead and closes it when none is. The next step for each listed version is a model-free receipt in `docs/verification/`, then adding it to `verified` in the same PR. Jcode and agy are not watched.
+- A weekly workflow (`.github/workflows/agent-compat.yml`) compares the latest npm versions of Codex, Kimi Code and Qwen Code with the verified sets, keeps one `agent-compat` issue up to date while one is ahead and closes it when none is. The next step for each listed version is a model-free receipt in `docs/verification/`, then adding it to `verified` in the same PR. Jcode, agy and `qwen-dual` are not watched.
 
 ## Upgrade and crash recovery
 
@@ -2991,7 +2997,9 @@ next actions").
   AND pid = <pid>"` (`ahub projects --json` shows the id). A
   project whose directory is
   gone is only recorded (`ahub doctor --orphans` lists a hub left running
-  there). It records its decision before it acts. It releases a source hold of
+  there). It records its decision before it acts; that audit entry keeps the
+  operation's error at that moment as `cause`, because disposal clears the
+  error itself (#776). It releases a source hold of
   its own (that hub keeps running), stops a target hub it started and has not
   released (one an older coordinator started is stopped at that release's
   control protocol), moves that operation's
@@ -3367,7 +3375,11 @@ protection (sandbox, text projection) is covered by its regression test. Each na
 checkout bytes, then must fail an assertion with the corresponding guard weakened.
 Seed rot (anything other than one exact replacement), a surviving seed and an
 invalid detection have distinct errors. Compiler, setup, unrelated-test and timeout
-failures never count as detection.
+failures never count as detection. When the anchor text is missing, the seed-rot
+error also names the base commit, the symbol that held the anchor there and that
+symbol's current file and line, or says which part is unknown (#778). This is
+evidence only: the exact-match rule still fails the pair. `--base <commit>` names
+the base; without it the runner uses the merge base with `origin/main`.
 
 Each seed has a private temporary checkout without Git metadata, state, output
 directories or user untracked files. Installed dependency packages are linked,
@@ -3377,8 +3389,9 @@ registry directories and a scrubbed environment. The normal 20-second test timeo
 both legs. Successful fixtures are removed; a failed pair prints its preserved
 fixture location with test and leak evidence for inspection.
 
-CI runs the pairs as four Linux shards (`bun scripts/seeded-check.ts --shard i/4`,
-every fourth pair, still sequential within a shard) beside the ordinary checks; the
+CI runs the pairs as four Linux shards (`bun scripts/seeded-check.ts --shard i/4 --base <ref>`,
+every fourth pair, still sequential within a shard; the base is the PR's base commit
+or the push's previous one, on a full-history checkout) beside the ordinary checks; the
 required job `seeded guards` passes only when all four shards passed (#457). The pairs
 do not repeat on macOS or run recursively inside `bun test`. The runner reports every
 pair's elapsed seconds and the total runtime. A green ordinary check alone does
@@ -3650,7 +3663,7 @@ selected roster and existing capabilities; the TUI is always a person's start.
 
 ### Qwen's own TUI, driven through dual output (#286 Part 3)
 
-`ahub qwen --mode tui` runs `qwen --input-file <in> --json-file <out> --mcp-config <hub server> --approval-mode default` in the terminal you ran it from. The daemon prepares the two files (mode 0600, under `<state dir>/qwen/qwen-dual/`) and returns the launch; the hub then appends one `submit` line per delivery and tails the event file from a saved offset. It needs a Qwen the dual-output compat entry verifies (`ahub agents` shows `qwen-dual`, verified 0.26.1 only; the headless `qwen` entry is separate and unchanged) and refuses another version before it creates a file. The TUI is explicit only: `ahub qwen` without `--mode` is still headless, Qwen is not a start-mode peer, and the hub never opens this terminal by itself.
+`ahub qwen --mode tui` runs `qwen --input-file <in> --json-file <out> --mcp-config <hub server> --approval-mode default` in the terminal you ran it from. The daemon prepares the two files (mode 0600, under `<state dir>/qwen/qwen-dual/`) and returns the launch; the hub then appends one `submit` line per delivery and tails the event file from a saved offset. It needs a Qwen the dual-output compat entry verifies (`ahub agents` shows `qwen-dual`, verified 0.26.1 only; the headless `qwen` entry is separate and unchanged) and refuses another version before it creates a file. The TUI is explicit only: `ahub qwen` without `--mode` is still headless, Qwen is not a start-mode peer, and the hub never opens this terminal by itself. The TUI start is refused for an extra Qwen instance, off roster, outside a terminal, and while a headless Qwen runs (`ahub stop qwen` first); a headless start is refused while the TUI holds its terminal.
 
 - What the hub does: a delivery becomes a `submit`; the last assistant message of the turn (an `assistant` event whose `stop_reason` is not `tool_use`, then `message_stop`) is shared as the answer; busy and idle follow the events. A `can_use_tool` request goes to the console approval path (`ahub permit`, the dashboard), and the hub's own tools are approved only by their exact `mcp__agent-hub__<tool>` name. If you answer a prompt in the Qwen terminal first, the hub's pending approval is withdrawn.
 - **Limit 1, a deny ends the turn without an answer.** Qwen emits nothing when the hub denies: it cancels the whole turn. The hub ends the turn itself, shares no answer, settles the delivery as `completed` (a deny is a known outcome, and a `needs_review` would hold every later message to Qwen until a person resolved it) and says so in a notice. A turn whose outcome is not known (Qwen exited, an Esc followed by a new prompt, an event file that became unreadable) is the one that settles `needs_review`.
@@ -4301,7 +4314,7 @@ From 0.12.37 reviews can rotate across fresh headless Claude and Codex reviewers
 
 Start them with `ahub claude --as claude-review`, `ahub codex --as codex-review` and `ahub kimi --as kimi-review`; stop with `ahub stop <id>`. For the Claude and Codex reviewers the command asks the running hub to start the reviewer and returns: nothing runs in that terminal, it takes no launch arguments, and `--print-command` or `--dry-run` prints a hub-start note instead of a launch (#720). Fresh Claude and Codex variants share the project checkout; the Kimi variant runs in a clean temporary working directory and reviews only the screened brief and host facts. All fresh variants refuse a custom worktree or permission mode. Codex and Kimi require `review_mode: "fresh"`; without it, an existing headless instance with the reviewer role keeps its native app-server/ACP behavior, worktree and permission options and does not join this pool. Claude retains its #223 automatic headless-reviewer declaration. The agy reviewer slot remains automatically unavailable (`agy is an implementer peer (#485)`). A failed or unsupported fresh start never downgrades to a native continuing session. Ordinary implementer instances retain their own adapters. The default logical pool order is Claude, Codex, Kimi. Only configured kinds with at least one declared reviewer count as slots, including declared ones that are offline, paused, quota-limited or failing, so availability never renumbers them; configured kinds with no declaration are listed after the walk as `no declared reviewer`. `review.rerotate` defaults to false. Pool selection starts at PR number modulo the number of declared kind slots, or task id when there is no PR, then skips the implementer's family and unavailable candidates. Delta review prefers the preceding eligible independent family in a fresh child. A preceding same-family fallback does not outrank a newly available independent family. `ahub route explain` shows the same pure walk.
 
-Codex requires a verified `codex-cli` (0.146.0, 0.163.0 or 0.164.0) or one the person trusts on this machine, and a passing bounded runtime receipt before its model child starts. 0.146.0 and 0.163.0 passed the [2026-10-22 model-free production admission](verification/2026-10-22-codex-reviewer-isolation.md) and 0.164.0 the [2026-10-24 one](verification/2026-10-24-codex-0164-reviewer-isolation.md). A refusal names the installed and verified versions. Either set `codex_bin` to a verified executable, or run `ahub agents trust codex-review <version>`: trust lifts only the version pin, and every proof below still runs before each child (#691). The producer checks native binary/config stability, configured MCP inventory with only the two hub tools, effective Apps/plugins/hooks disablement, an explicit empty legacy `notify` command and a named filesystem profile. Apps needs separate feature readback because configured inventory omits runtime connectors. Web search is requested disabled; its effective turn mode is not read back and managed requirements can select Cached (see the verification ceiling). Each launch proves public-read, exact/glob/symlink private-denial, standard host credential denial and write-denial in temporary fixtures. Standard credential and configured tool-home/XDG subtrees are denied independently of project `local.deny`. Its sandboxed shell is filesystem read-only with private paths denied and network configured disabled; it is not Claude's Read/Grep/Glob-only tool whitelist. No credential home is copied.
+Codex requires a verified `codex-cli` (0.146.0, 0.163.0 or 0.164.0) or one the person trusts on this machine, and a passing bounded runtime receipt before its model child starts. 0.146.0 and 0.163.0 passed the [2026-10-22 model-free production admission](verification/2026-10-22-codex-reviewer-isolation.md) and 0.164.0 the [2026-10-24 one](verification/2026-10-24-codex-0164-reviewer-isolation.md). A refusal names the installed and verified versions. Either set `codex_bin` to a verified executable, or run `ahub agents trust codex-review <version>`: trust lifts only the version pin, and every proof below still runs before each child (#691). Each launch approves exactly `hub_review` and `hub_task_show` per tool (`approval_mode = "approve"`), never through a server-wide default: without it Codex 0.164.0 listed the tools but refused the call, so reviews ended with no verdict (#783). A model-free receipt proves the inventory, not that a verdict reaches the hub; a [model-backed 0.164.0 run](verification/2026-10-25-codex-0164-reviewer-tool-call.md) recorded one verdict through that path. The producer checks native binary/config stability, configured MCP inventory with only the two hub tools, effective Apps/plugins/hooks disablement, an explicit empty legacy `notify` command and a named filesystem profile. Apps needs separate feature readback because configured inventory omits runtime connectors. Web search is requested disabled; its effective turn mode is not read back and managed requirements can select Cached (see the verification ceiling). Each launch proves public-read, exact/glob/symlink private-denial, standard host credential denial and write-denial in temporary fixtures. Standard credential and configured tool-home/XDG subtrees are denied independently of project `local.deny`. Its sandboxed shell is filesystem read-only with private paths denied and network configured disabled; it is not Claude's Read/Grep/Glob-only tool whitelist. No credential home is copied.
 
 Kimi requires a compat-admitted Kimi Code on the hub's PATH (receipt-verified 2.2.0, 2.3.0 and 2.3.1), signed in through its managed OAuth provider, and a passing runtime preparation before each child; an unverified/untrusted version or a failed preparation is unavailable with its reason. The [2.3.0](verification/2026-10-22-kimi-qwen-compat.md) and [2.3.1](verification/2026-10-25-kimi-231-reviewer-compat.md) receipts are model-free and do not verify real login/provider readiness. Each review runs a new `kimi -p` child without Seatbelt, in a private `KIMI_CODE_HOME` with managed-provider-only config, a clean temporary working directory and an empty skills directory. Its agent may call only `hub_review` and `hub_task_show`, through a task-bound loopback MCP session that never carries the hub's control token, and has no native read, file or shell tool: it reviews the screened brief and host facts only. Its `credentials/`, `oauth/` and `device_id` link to the person's native Kimi files, so it shares the native login, refresh lock and the Kimi account's budget; no token is copied. A stop revokes its verdict authority first, then waits briefly while an OAuth refresh holds the lock; a forced stop mid-refresh may require a native re-login. The Kimi backend records no measured token counts here, so its usage stays unknown; the 2.3.0 receipt makes no usage claim. This is a native tool-authority boundary, not filesystem or network isolation.
 
@@ -4309,7 +4322,7 @@ A dangling or unreadable standard/configured credential root makes the Codex rev
 
 agy is not a reviewer (person decision, 2026-10-19): it is an optional implementer peer (see [Optional Antigravity peer](#optional-antigravity-agy-peer)), and its retained reviewer slot is outside the default pool and always unavailable with `agy is an implementer peer (#485)`. A manual pool accepts only registered reviewer kinds (Claude, Codex, Kimi, agy), so local/Pi are refused. An explicit pool without declared candidates blocks for person action; an omitted pool retains legacy routing without declarations and falls back to an eligible planner when fresh candidates are exhausted. The exhausted pool walk remains recorded; without an eligible planner, the person reviews. A manual pool may name agy, or a Kimi reviewer whose preparation fails; the reason appears as an unavailable skip, and they never run or count as approval. Do not substitute plan mode for isolation.
 
-A failed start or any child ending without a saved verdict advances to the remaining eligible candidates; no quota meaning is guessed from text. A same-family fallback is a distinct fresh reviewer session. Exhaustion records `blocked: no reviewer can run`; with no explicit pool the eligible planner fallback is retained, while an explicit pool or absent eligible planner leaves person action. It never auto-approves. A per-review isolation preparation failure excludes that peer from later tasks until a verified restart. Its reason names one cause from a closed list (`version`, `binary`, `mcp_inventory`, `plugins_hooks_apps`, `sandbox_proof`, `credential_root`, `timeout`, `unknown`) with a fixed hint, on the peer's `reviewer` line in `ahub status` and in a `hub.log` line, and never a path, native CLI text or token (#722). Only the Codex preparation classifies its failures; other reviewers report `unknown`. Recovery targets must advertise `reviewer_pool` when a pool is explicitly configured or fresh reviewer instances are declared. Verdict history retains `reviewContext` and adds `reviewerFamily` and `reviewerReason` from the host.
+A failed start or any child ending without a saved verdict advances to the remaining eligible candidates; no quota meaning is guessed from text. A request that went stale before its child started (a new head, review revision or reviewer) is skipped with one `hub.log` line; a still-current request whose review policy changed moves on as `no_verdict`. Neither marks the reviewer unavailable (#781). A same-family fallback is a distinct fresh reviewer session. Exhaustion records `blocked: no reviewer can run`; with no explicit pool the eligible planner fallback is retained, while an explicit pool or absent eligible planner leaves person action. It never auto-approves. A per-review isolation preparation failure excludes that peer from later tasks until a verified restart. Its reason names one cause from a closed list (`version`, `binary`, `mcp_inventory`, `plugins_hooks_apps`, `sandbox_proof`, `credential_root`, `timeout`, `unknown`) with a fixed hint, on the peer's `reviewer` line in `ahub status` and in a `hub.log` line, and never a path, native CLI text or token (#722). Only the Codex preparation classifies its failures; other reviewers report `unknown`. Recovery targets must advertise `reviewer_pool` when a pool is explicitly configured or fresh reviewer instances are declared. Verdict history retains `reviewContext` and adds `reviewerFamily` and `reviewerReason` from the host.
 
 Fake-CLI tests and CI cover these host contracts. [Offline isolation evidence](verification/2026-10-19-reviewer-isolation.md) and fake-CLI tests do not prove an account/model review or observed network denial. Native acceptance remains a separate [manual smoke leg](smoke.md#reviewer-pool-native-legs-519-2026-10-19); existing #223 Claude behavior has no new live proof here. Kimi's authenticated fresh-verdict receipts, and its still-open interactive-TUI coexistence and usage checks, are tracked in [Kimi smoke legs](smoke.md#kimi-reviewer-and-task-bound-mcp-533).
 

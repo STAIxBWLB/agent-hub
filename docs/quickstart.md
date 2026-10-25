@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.16.0
+bun add -g github:STAIxBWLB/agent-hub#v0.17.0
 ahub setup
 ```
 
@@ -29,6 +29,10 @@ For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
+
+## Upgrading to 0.17.0
+
+`ahub qwen --mode tui` runs Qwen Code's own TUI in your terminal, driven by the hub through its dual-output files (#286). It is opt-in: the hub never opens it by itself, `roster.qwen` stays off by default, and headless Qwen works as before. It needs Qwen Code 0.26.1 (a new `qwen-dual` compat entry; the headless entry is not widened), refuses an extra instance (`--as`) and refuses while a headless Qwen runs (`ahub stop qwen` first). It has two limits: a hub deny ends the turn without an answer, and a stalled turn is never cancelled; the hub reports it and you press Esc in the Qwen terminal. `ahub stop qwen` does not end the TUI, and `ahub upgrade` and recovery do not restore it: end it in its terminal before you upgrade, then run `ahub qwen --mode tui` again, which resumes its session. The `codex-review` reviewer now approves exactly `hub_review` and `hub_task_show`, per tool: on Codex 0.164.0 `exec` refused every MCP tool call, so its reviews ended without a verdict (#783). A stale review request that the hub refuses at admission no longer marks the reviewer unavailable: a request whose binding changed is skipped, and one whose policy changed is rerouted as no verdict (#781). An unavailable reviewer slot no longer stops the agy TUI from reading its own task (#794). An `ahub recovery dispose --stop-and-archive` audit entry now keeps the error that blocked the upgrade as `cause` (#776). A task counts toward a recurring finding only where that finding was recorded open or accepted, so a fix-only record no longer files a "Review policy amendment" card (#328), and a missing generation sync remote no longer logs a failure every sync interval (#401). Upgrade running hubs with `ahub upgrade` and restart Claude sessions so they load the 0.17.0 plugin. Coming from 0.15.0 or older, the notes below apply too.
 
 ## Upgrading to 0.16.0
 
