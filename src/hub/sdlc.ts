@@ -33,7 +33,12 @@ export type StageGate = "issue" | "pr" | "local" | "review" | "checks" | "criter
 export interface StageDefinition { base: SdlcBaseStage; actor: string; entry_gates: StageGate[]; exit_gates: StageGate[]; after: string[]; }
 export type SdlcMode = "off" | "advise" | "enforce";
 /** `workflow: "gsd-lite"` marks the retired setting during its window (#481 S8): every task then needs a criteria checklist. */
-export interface SdlcConfig { workflow?: "gsd-lite"; maxNits?: number; /** #481 S7: optional control bands per metric; absent means none. */ bands?: BandsConfig; mode: SdlcMode; requiredChecks: string[]; stages: SdlcStage[]; definitions?: Record<string, StageDefinition>; deprecations?: string[]; }
+/** #786: `off` never merges, `dry-run` reports the decision and runs nothing, `on` runs the guarded `gh pr merge`. */
+export type AutoMergeMode = "off" | "dry-run" | "on";
+export const AUTO_MERGE_MODES: readonly AutoMergeMode[] = ["off", "dry-run", "on"];
+/** #786: one repository's own gate: its required checks (before the top-level list) and its own merge mode. */
+export interface RepoMergePolicy { requiredChecks?: string[]; autoMerge?: AutoMergeMode }
+export interface SdlcConfig { workflow?: "gsd-lite"; maxNits?: number; /** #481 S7: optional control bands per metric; absent means none. */ bands?: BandsConfig; mode: SdlcMode; requiredChecks: string[]; /** #786: absent reads as "off"; written only when the file names it. */ autoMerge?: AutoMergeMode; /** #786: per-repository tables, keyed by lowercase owner/name. */ repos?: Record<string, RepoMergePolicy>; stages: SdlcStage[]; definitions?: Record<string, StageDefinition>; deprecations?: string[]; }
 export interface PlanReviewReceipt {
   planner: string;
   planAuthor?: string | null;
@@ -78,6 +83,8 @@ export interface PrEvidence {
   base?: string;
   baseHead?: string;
   mergeCommit?: string;
+  /** #786: the PR's head branch name, read so a release branch is refused; never used as an identity. */
+  headBranch?: string;
 }
 const sha = (value: unknown): value is string => typeof value === "string" && /^[0-9a-f]{40}$/.test(value);
 const repo = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && !value.startsWith("-");
@@ -131,12 +138,37 @@ function definitions(raw: unknown, stages: unknown, phaseAlias: { allowed: boole
   return { stages: [...stages], definitions: result };
 }
 
+const checkList = (value: unknown, what: string): string[] => {
+  if (!Array.isArray(value) || value.length > 32 || value.some(c => typeof c !== "string" || !c.trim() || c.length > 120 || /[\r\n\x00-\x1f]/.test(c)) || new Set(value).size !== value.length) throw new Error(`${what}: expected at most 32 unique nonempty names`);
+  return [...value] as string[];
+};
+const autoMergeMode = (value: unknown, what: string): AutoMergeMode => {
+  if (!AUTO_MERGE_MODES.includes(value as AutoMergeMode)) throw new Error(`${what}: expected off, dry-run or on`);
+  return value as AutoMergeMode;
+};
+/** #786: `[repos."owner/name"]` tables. Unknown keys are refused like everywhere else in this file. */
+function mergeRepos(value: unknown): Record<string, RepoMergePolicy> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length > 16) throw new Error("sdlc.repos: expected at most 16 tables named owner/repository");
+  const result: Record<string, RepoMergePolicy> = Object.create(null);
+  for (const [name, table] of Object.entries(value)) {
+    if (!repo(name)) throw new Error(`sdlc.repos: "${String(name).slice(0, 60)}" is not an owner/repository name`);
+    if (!table || typeof table !== "object" || Array.isArray(table)) throw new Error(`sdlc.repos.${name}: expected a table`);
+    const row = table as Record<string, unknown>;
+    for (const key of Object.keys(row)) if (!["required_checks", "auto_merge"].includes(key)) throw new Error(`sdlc.repos.${name}.${key}: unknown field`);
+    const key = name.toLowerCase();
+    if (result[key]) throw new Error(`sdlc.repos.${name}: repeats another table (names are case-insensitive)`);
+    result[key] = { ...(row.required_checks === undefined ? {} : { requiredChecks: checkList(row.required_checks, `sdlc.repos.${name}.required_checks`) }), ...(row.auto_merge === undefined ? {} : { autoMerge: autoMergeMode(row.auto_merge, `sdlc.repos.${name}.auto_merge`) }) };
+  }
+  return result;
+}
+
 /** `version` is the running hub's, which closes the #481 S8 window; the daemon and Tasks pass it. Without one the window is open. */
 export function sdlcConfig(value: unknown, version?: string): SdlcConfig {
   if (value === undefined) return { mode: "off", requiredChecks: [], stages: [...SDLC_STAGES] };
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("sdlc: expected a table");
   const raw = value as Record<string, unknown>;
-  for (const key of Object.keys(raw)) if (!["mode", "required_checks", "stages", "workflow", "definitions", "max_nits", "bands"].includes(key)) throw new Error(`sdlc.${key}: unknown field`);
+  for (const key of Object.keys(raw)) if (!["mode", "required_checks", "stages", "workflow", "definitions", "max_nits", "bands", "auto_merge", "repos"].includes(key)) throw new Error(`sdlc.${key}: unknown field`);
   const maxNits = raw.max_nits === undefined ? DEFAULT_MAX_NITS : raw.max_nits;
   if (typeof maxNits !== "number" || !Number.isSafeInteger(maxNits) || maxNits < 0 || maxNits > 64) throw new Error("sdlc.max_nits: expected an integer from 0 to 64");
   const bands = bandsConfig(raw.bands), bandConfig = Object.keys(bands).length ? { bands } : {};
@@ -150,12 +182,13 @@ export function sdlcConfig(value: unknown, version?: string): SdlcConfig {
   if (workflow !== "none" && workflow !== "gsd-lite") throw new Error("sdlc.workflow: expected none or gsd-lite");
   const notes = workflow === "gsd-lite" ? [`sdlc.workflow = "gsd-lite" is deprecated and stops loading in ${RETIRED_WORKFLOW_FROM} (#481): remove it; every task then needs a criteria checklist recorded with hub_sdlc_record`] : [];
   const phaseAlias = { allowed: window, used: false };
-  const checks = raw.required_checks ?? [];
-  if (!Array.isArray(checks) || checks.length > 32 || checks.some(c => typeof c !== "string" || !c.trim() || c.length > 120 || /[\r\n\x00-\x1f]/.test(c)) || new Set(checks).size !== checks.length) throw new Error("sdlc.required_checks: expected at most 32 unique nonempty names");
+  const checks = checkList(raw.required_checks ?? [], "sdlc.required_checks");
+  // #786: absent keys add nothing to the config, so the off-mode default keeps its #257 shape byte for byte.
+  const mergeConfig = { ...(raw.auto_merge === undefined ? {} : { autoMerge: autoMergeMode(raw.auto_merge, "sdlc.auto_merge") }), ...(raw.repos === undefined ? {} : { repos: mergeRepos(raw.repos)! }) };
   if (raw.definitions !== undefined) {
     const custom = definitions(raw.definitions, raw.stages, phaseAlias);
     if (phaseAlias.used) notes.push(`the sdlc phase gate is deprecated and stops loading in ${RETIRED_WORKFLOW_FROM} (#481): name it criteria`);
-    return { mode, ...findingConfig, requiredChecks: [...checks] as string[], ...custom, ...(workflow === "gsd-lite" ? { workflow } : {}), ...(notes.length ? { deprecations: notes } : {}) };
+    return { mode, ...findingConfig, ...mergeConfig, requiredChecks: [...checks] as string[], ...custom, ...(workflow === "gsd-lite" ? { workflow } : {}), ...(notes.length ? { deprecations: notes } : {}) };
   }
   // Off keeps the #257 seven stages byte for byte; an enabled lifecycle defaults to the playbook (#481 S0).
   const given = raw.stages ?? (mode === "off" ? [...SDLC_STAGES] : [...PLAYBOOK_STAGES]);
@@ -163,7 +196,7 @@ export function sdlcConfig(value: unknown, version?: string): SdlcConfig {
   // An enabled #257 list keeps its order under canonical ids, so implement/verify stay read-only aliases there too.
   const stages = mode !== "off" && exactly(SDLC_STAGES) ? SDLC_STAGES.map(canonicalStage) : given;
   if (!exactly(SDLC_STAGES) && !exactly(PLAYBOOK_STAGES)) throw new Error(`sdlc.stages: use ${PLAYBOOK_STAGES.join(", ")} in that order (or the #257 list ${SDLC_STAGES.join(", ")}); other lists need definitions`);
-  return { mode, ...findingConfig, requiredChecks: [...checks] as string[], stages: [...stages as string[]], ...(workflow === "gsd-lite" ? { workflow } : {}), ...(notes.length ? { deprecations: notes } : {}) };
+  return { mode, ...findingConfig, ...mergeConfig, requiredChecks: [...checks] as string[], stages: [...stages as string[]], ...(workflow === "gsd-lite" ? { workflow } : {}), ...(notes.length ? { deprecations: notes } : {}) };
 }
 
 export function loadSdlc(cwd: string, version?: string): SdlcConfig {
@@ -272,7 +305,8 @@ export function parsePrEvidence(value: unknown): PrEvidence {
     review: p.reviewDecision === "APPROVED" ? "approved" : p.reviewDecision === "CHANGES_REQUESTED" ? "changes_requested" : "unknown",
     pendingReviews: Array.isArray(p.reviewRequests) && p.reviewRequests.length <= 100 && p.reviewRequests.every((r: unknown) => !!r && typeof r === "object") ? p.reviewRequests.length : null,
     unresolved: Number.isSafeInteger(p.unresolvedThreads) && p.unresolvedThreads >= 0 ? p.unresolvedThreads : null,
-    ...(sha(p.mergeCommit?.oid) ? { mergeCommit: p.mergeCommit.oid } : {}) };
+    ...(sha(p.mergeCommit?.oid) ? { mergeCommit: p.mergeCommit.oid } : {}),
+    ...(typeof p.headRefName === "string" && p.headRefName && p.headRefName.length <= 200 && !/[\x00-\x1f\x7f]/.test(p.headRefName) ? { headBranch: p.headRefName } : {}) };
 }
 
 /** Issue identity and edit times only; no body is fetched or stored. `lastEditedAt` moves on a body edit, not on comments. */
@@ -351,7 +385,7 @@ export function touchingPrs(prs: { pr: number; paths: string[] }[]): { before: n
 }
 
 export type SdlcGh = (args: string[], timeoutMs?: number, cwd?: string, maxOutputBytes?: number) => Promise<{ code: number; stdout: string }>;
-/** Read-only, fixed argv. Output and time are bounded; diagnostics never expose credentials or remote text. */
+/** Fixed argv and bounded output and time; diagnostics never expose credentials or remote text. Reads, except the one guarded `gh pr merge` that `sdlc-merge.ts` builds (#786). */
 export const sdlcGh: SdlcGh = (args, timeoutMs = 10_000, cwd, maxOutputBytes = 256 * 1024) => new Promise((resolve) => {
   const outputLimit = Number.isSafeInteger(maxOutputBytes) ? Math.min(2 * 1024 * 1024, Math.max(1, maxOutputBytes)) : 256 * 1024;
   let child: ReturnType<typeof spawn>;
@@ -409,7 +443,7 @@ export function linkedReceipt(previous: SdlcReceipt | undefined, link: { repo: s
 export async function readSdlcPr(receipt: SdlcReceipt, run: SdlcGh = sdlcGh, withIntegrity = false): Promise<PrEvidence | undefined> {
   if (!repo(receipt.repo) || !id(receipt.pr)) return undefined;
   try {
-    const view = await run(["pr", "view", String(receipt.pr), "--repo", receipt.repo, "--json", "headRefOid,state,statusCheckRollup,reviewDecision,reviewRequests,files,changedFiles,mergeCommit,isDraft,baseRefName,baseRefOid"]);
+    const view = await run(["pr", "view", String(receipt.pr), "--repo", receipt.repo, "--json", "headRefOid,state,statusCheckRollup,reviewDecision,reviewRequests,files,changedFiles,mergeCommit,isDraft,baseRefName,baseRefOid,headRefName"]);
     if (view.code !== 0) return undefined;
     const [owner, name] = receipt.repo.split("/");
     // The enabled S4 label read shares the existing thread snapshot, never a second readback for a known non-bug.

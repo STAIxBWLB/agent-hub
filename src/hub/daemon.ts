@@ -6689,6 +6689,18 @@ export async function startDaemon(opts: DaemonOptions) {
           }
           return;
         }
+        if (msg.op === "merge") {
+          // #786 T1: the person or the one configured conductor asks for a guarded merge. Every request gets a reply, a refusal included.
+          const asker = c.role === "console" ? USER : c.role === "tools" && c.peer && conductorPeer(config.roles) === c.peer && !c.toolsOwner && !turns.get(c.peer)?.private && !contextPii(c.peer) ? c.peer : undefined;
+          if (!asker) return void reply({ ok: false, error: "only the console user or the configured conductor may merge" });
+          if (recoveryActive()) return void reply({ ok: false, error: "recovery is holding mutations" });
+          if (!Number.isSafeInteger(msg.id) || msg.id <= 0 || (msg.dryRun !== undefined && typeof msg.dryRun !== "boolean")) return void reply({ ok: false, error: "usage: ahub sdlc merge <task> [--dry-run]" });
+          tasks.guardedMerge(asker, msg.id, { dryRun: msg.dryRun === true, trigger: "command" }).then(
+            result => reply({ ok: true, ...result }),
+            (error: Error) => reply({ ok: false, error: sanitize(error.message).slice(0, 200) }),
+          );
+          return;
+        }
         if (c.role !== "console") return void reply({ ok: false, error: "SDLC readback is console only; task owners record ids through hub_sdlc_record" });
         if (msg.op === "authorize-release") {
           void releaseAuthorizations.authorize(USER, msg.version, msg.commit).then(

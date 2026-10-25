@@ -21747,6 +21747,10 @@ init_plan_conformance();
 init_review_findings();
 init_sdlc();
 
+// src/hub/sdlc-merge.ts
+init_review_findings();
+init_sdlc();
+
 // src/hub/tasks.ts
 init_review_findings();
 init_roles();
