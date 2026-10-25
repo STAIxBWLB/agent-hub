@@ -55,12 +55,13 @@ function fakeGh(prs: Record<number, World>, options: { mergeExit?: number; merge
 const config = (extra: Record<string, unknown> = {}) => sdlcConfig({ mode: "advise", required_checks: ["gate"], auto_merge: "on", ...extra });
 const task = (id: number, n: number, over: Partial<DeliveryTask> = {}, receipt: Partial<NonNullable<DeliveryTask["receipt"]>> = {}): DeliveryTask => ({ id, after: [], private: false, receipt: { repo: "owner/repo", issue: id, pr: n, stage: "merge", reviewedHead: A, localHead: A, localResult: "passed", ...receipt }, ...over });
 
-interface Options {autoMode?:"off"|"dry-run";mergeExit?:number;lands?:boolean;serverLandsOnFailure?:boolean;gone?:boolean;branch?:string;fork?:boolean;protected?:boolean;rules?:unknown;refHead?:string;deleteFails?:boolean;lag?:number;commitMissing?:boolean;readbackFails?:boolean;mergeThrowsAfterLanding?:boolean;casHeadMoves?:boolean;afterMergeRead?:()=>void;beforeDeleteRead?:()=>void;notifyFails?:boolean}
+interface Options {cleanupMetaFails?:"initial"|"current";readbacks?:("missing_commit"|"fail"|"open"|"merged")[];autoMode?:"off"|"dry-run";mergeExit?:number;lands?:boolean;serverLandsOnFailure?:boolean;gone?:boolean;branch?:string;fork?:boolean;protected?:boolean;rules?:unknown;refHead?:string;deleteFails?:boolean;lag?:number;commitMissing?:boolean;readbackFails?:boolean;mergeThrowsAfterLanding?:boolean;casHeadMoves?:boolean;afterMergeRead?:()=>void;beforeDeleteRead?:()=>void;notifyFails?:boolean}
 function fixture(o:Options={}) {
   const dir=mkdtempSync(join(tmpdir(),"ahub-merge-record-")),db=join(dir,"hub.db"),board=new Board(db),bus=new Bus({batchMs:0});
   const prs={1:pr()},gh=fakeGh(prs,{mergeExit:o.mergeExit,mergeLands:o.lands});
   const calls:string[][]=[],notices:string[]=[];let deleted=!!o.gone,lag=o.lag??0,observed=false;
   const branch=o.branch??"feat/recording";
+  const readbacks=[...(o.readbacks??[])];
   const metadata=(withRef:boolean)=>({data:{repository:{id:"R_fixture",nameWithOwner:"owner/repo",defaultBranchRef:{name:"main"},pullRequest:{state:"MERGED",headRefName:branch,headRefOid:A,headRepository:{nameWithOwner:o.fork?"other/repo":"owner/repo"},mergeCommit:{oid:MERGED}},...(withRef?{ref:deleted?null:{name:branch,prefix:"refs/heads/",target:{oid:o.refHead??A},branchProtectionRule:o.protected?{id:"protected"}:null}}:{})}}});
   const run:SdlcGh=async args=>{
     calls.push(args);
@@ -74,17 +75,18 @@ function fixture(o:Options={}) {
       if(o.deleteFails)return {code:1,stdout:"PRIVATE_REMOTE_ERROR"};
       deleted=true;return {code:0,stdout:JSON.stringify({data:{updateRefs:{clientMutationId:"agent-hub-post-merge-cleanup"}}})};
     }
-    if(query.includes("headRepository")) {if(query.includes("qualifiedName"))o.beforeDeleteRead?.();return {code:0,stdout:JSON.stringify(metadata(query.includes("qualifiedName")))};}
+    if(query.includes("headRepository")) {const current=query.includes("qualifiedName");if(o.cleanupMetaFails===(current?"current":"initial"))return {code:1,stdout:"PRIVATE_METADATA_TIMEOUT"};if(current)o.beforeDeleteRead?.();return {code:0,stdout:JSON.stringify(metadata(current))};}
     if(args[0]==="api" && args[1]?.includes("/rules/branches/"))return {code:0,stdout:JSON.stringify(o.rules??[])};
     if(o.mergeThrowsAfterLanding && args[0]==="pr"&&args[1]==="merge"){prs[1].state="MERGED";throw new Error("PRIVATE_TRANSPORT_ERROR");}
     const r=await gh.run(args);
     if(o.serverLandsOnFailure && args[0]==="pr"&&args[1]==="merge")prs[1].state="MERGED";
     if(prs[1].state==="MERGED" && args[0]==="pr" && args[1]==="view") {
       if(!observed){observed=true;o.afterMergeRead?.();}
-      if(o.readbackFails)return {code:1,stdout:"PRIVATE_READBACK_FAILURE"};
+      const step=readbacks.shift();
+      if(o.readbackFails || step==="fail")return {code:1,stdout:"PRIVATE_READBACK_FAILURE"};
       const body=JSON.parse(r.stdout);
-      if(lag-->0)body.state="OPEN";
-      if(o.commitMissing)delete body.mergeCommit;
+      if(lag-->0 || step==="open")body.state="OPEN";
+      if(o.commitMissing || step==="missing_commit" || step==="open")delete body.mergeCommit;
       return {code:r.code,stdout:JSON.stringify(body)};
     }
     return r;
@@ -135,7 +137,7 @@ test("nonzero merge exit still cleans after authoritative merged readback and la
 
 test("already gone unsafe protected fork default or moved head branches are never deleted",async()=>{
   for(const [o,cleanup,reason] of [
-    [{gone:true},"already_gone",undefined],[{fork:true},"skipped","identity_changed"],[{branch:"main"},"skipped","default_branch"],
+    [{gone:true},"already_gone",undefined],[{cleanupMetaFails:"initial"},"skipped","metadata_unknown"],[{cleanupMetaFails:"current"},"skipped","metadata_unknown"],[{fork:true},"skipped","identity_changed"],[{branch:"main"},"skipped","default_branch"],
     [{protected:true},"skipped","protected_branch"],[{rules:[{type:"deletion"}]},"skipped","protected_branch"],[{rules:{}},"skipped","metadata_unknown"],[{refHead:B},"skipped","head_changed"],[{branch:"../main"},"skipped","metadata_unknown"],
   ] as [Options,MergeRecord["cleanup"],MergeRecord["reason"]][]) {
     const f=fixture(o),r=await f.tasks.guardedMerge(USER,1);
@@ -277,4 +279,25 @@ test("initial artifact identity fences local head observed head and refs commit 
     else if(field==="head")expect(f.board.get(1)!.sdlc!.head).toBe(B);
     else expect(f.board.get(1)!.refs.commit).toBe(B);
   }
+});
+
+
+test("readback retains confirmed MERGED through failed or weaker reads and upgrades only with its commit", async () => {
+  const sequences: NonNullable<Options["readbacks"]>[] = [
+    ["missing_commit", "fail", "fail"],
+    ["missing_commit", "open", "fail"],
+    ["missing_commit", "fail", "open"],
+  ];
+  for (const readbacks of sequences) {
+    const f = fixture({ readbacks });
+    const result = await f.tasks.guardedMerge(USER, 1);
+    expect(result.result).toMatchObject({ state: "merged", cleanup: "skipped", reason: "missing_commit" });
+    expect(result.result?.mergeCommit).toBeUndefined();
+    expect(f.board.get(1)?.sdlc?.merge).toMatchObject({ state: "merged", reason: "missing_commit" });
+    expect(f.deletes()).toHaveLength(0);
+    expect(f.notices.some(line => line.includes("Remove your local worktree"))).toBe(false);
+  }
+  const upgraded = fixture({ readbacks: ["missing_commit", "fail", "merged"] });
+  expect((await upgraded.tasks.guardedMerge(USER, 1)).result).toMatchObject({ state: "merged", mergeCommit: MERGED, cleanup: "deleted" });
+  expect(upgraded.deletes()).toHaveLength(1);
 });

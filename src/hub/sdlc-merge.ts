@@ -220,15 +220,19 @@ export async function guardedMerge(input: MergeInput & { mode: AutoMergeMode }):
   let exit = 1;
   try { exit = (await started).code; } catch { exit = 1; }
   // A transport failure can still have merged. Bound lag readback within this one invocation; never repeat the merge.
-  const deadline = performance.now()+6000;
-  const bounded: SdlcGh = (args,timeout,cwd,cap) => {
-    const left=deadline-performance.now();
-    return left>0 ? input.run(args,Math.min(timeout??2000,left),cwd,Math.min(cap??65536,65536)) : Promise.resolve({code:1,stdout:""});
+  const deadline = performance.now() + 6000;
+  const bounded: SdlcGh = (args, timeout, cwd, cap) => {
+    const left = deadline - performance.now();
+    return left > 0 ? input.run(args, Math.min(timeout ?? 2000, left), cwd, Math.min(cap ?? 65536, 65536)) : Promise.resolve({ code: 1, stdout: "" });
   };
   let after: PrEvidence | undefined;
-  for (let attempt=0;attempt<3 && performance.now()<deadline;attempt++) {
-    after=await readSdlcPr({stage:input.subject.receipt!.stage,repo:decision.repo,pr:decision.pr},bounded).catch(()=>undefined);
-    if (after?.state==="MERGED" && after.mergeCommit || after?.state==="CLOSED") break;
+  for (let attempt = 0; attempt < 3 && performance.now() < deadline; attempt++) {
+    const observed = await readSdlcPr({ stage: input.subject.receipt!.stage, repo: decision.repo, pr: decision.pr }, bounded).catch(() => undefined);
+    // MERGED is terminal evidence. Retry for its commit without losing that fact to a stale or failed read.
+    if (observed && (after?.state !== "MERGED" || observed.state === "MERGED" && observed.mergeCommit)) after = observed;
+    if (after?.state === "MERGED" && after.mergeCommit || after?.state === "CLOSED") break;
+    const left = deadline - performance.now();
+    if (attempt < 2 && left > 0) await Bun.sleep(Math.min(100, left));
   }
   const result: NonNullable<MergeOutcome["result"]> = after?.state === "MERGED" ? {exit,state:"merged",...(after.mergeCommit?{mergeCommit:after.mergeCommit}:{})} : after ? {exit,state:"not_merged"} : {exit,state:"unknown"};
   if (input.recordMerge) {
@@ -254,6 +258,7 @@ async function cleanupMergedBranch(decision:{repo:string;pr:number;head:string},
   const query="query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){id nameWithOwner defaultBranchRef{name} pullRequest(number:$pr){state headRefName headRefOid headRepository{nameWithOwner} mergeCommit{oid}}}}";
   const args=["api","graphql","-f",`query=${query}`,"-f",`owner=${owner}`,"-f",`name=${name}`,"-F",`pr=${decision.pr}`];
   const initial=(await read(args))?.data?.repository,p=initial?.pullRequest;
+  if (!initial) return skip("metadata_unknown");
   if (!initial || p?.state!=="MERGED" || p.mergeCommit?.oid!==mergeCommit || p.headRefOid!==decision.head || p.headRepository?.nameWithOwner?.toLowerCase()!==decision.repo.toLowerCase()) return skip("identity_changed");
   const branch=p.headRefName;
   // ponytail: cleanup accepts only this ASCII 200-character ref subset; use a shared validated Git ref-name parser before widening it. Unknown spelling never reaches a mutation.
@@ -263,7 +268,8 @@ async function cleanupMergedBranch(decision:{repo:string;pr:number;head:string},
   const lastQuery=query.replace("mergeCommit{oid}}}}","mergeCommit{oid}} ref(qualifiedName:$ref){name prefix target{oid} branchProtectionRule{id}}}}").replace("$pr:Int!","$pr:Int!,$ref:String!");
   const current=(await read(["api","graphql","-f",`query=${lastQuery}`,"-f",`owner=${owner}`,"-f",`name=${name}`,"-F",`pr=${decision.pr}`,"-f",`ref=refs/heads/${branch}`]))?.data?.repository;
   const now=current?.pullRequest;
-  if(!current || typeof current.id!=="string" || !current.id || current.nameWithOwner?.toLowerCase()!==decision.repo.toLowerCase() || now?.state!=="MERGED" || now.mergeCommit?.oid!==mergeCommit || now.headRefName!==branch || now.headRefOid!==decision.head || now.headRepository?.nameWithOwner?.toLowerCase()!==decision.repo.toLowerCase())return skip("identity_changed");
+  if (!current) return skip("metadata_unknown");
+  if(typeof current.id!=="string" || !current.id || current.nameWithOwner?.toLowerCase()!==decision.repo.toLowerCase() || now?.state!=="MERGED" || now.mergeCommit?.oid!==mergeCommit || now.headRefName!==branch || now.headRefOid!==decision.head || now.headRepository?.nameWithOwner?.toLowerCase()!==decision.repo.toLowerCase())return skip("identity_changed");
   if(typeof current.defaultBranchRef?.name!=="string")return skip("metadata_unknown");
   if(current.defaultBranchRef.name===branch)return skip("default_branch");
   if(!Object.hasOwn(current,"ref"))return skip("metadata_unknown");
