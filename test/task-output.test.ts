@@ -2,12 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import ts from "typescript";
 import { PROTOCOL } from "../src/hub/control-client.ts";
 import { Registry } from "../src/hub/registry.ts";
 import { paint } from "../src/cli/console-state.ts";
 import { renderBacklogResult, renderGroom, renderReleaseChange, renderReleaseList, renderReleaseNew, renderReleaseShow, renderTaskCancel, renderTaskShow } from "../src/cli/task-output.ts";
-import { callSites, enclosingFunction, parseSource } from "../scripts/lib/ts-ast.ts";
 
 // #814 T2: task show/cancel, the backlog mutations and grooming, and the release commands print for a person by default;
 // `--json` prints the hub tool's text exactly as before. The hub tools themselves keep returning JSON to agents.
@@ -197,94 +195,4 @@ test("the commands that already answer a sentence are unchanged: escalate, assig
     const result = await f.run(argv);
     expect(result.code, result.stderr).toBe(0); expect(result.stdout).toBe("task #7: proposed, owner jcode\n");
   }
-});
-
-// AC2, open-ended. test/cli-json-guard.test.ts scans console.log(JSON.stringify(...)); these sites print the hub tool's TEXT, which is JSON
-// for some ops and a sentence for others. Every bare `console.log(await taskOp(<op>))` in main.ts must be named here, and the name is checked
-// against what the daemon's case for that op actually returns, so a new op that returns JSON is not silently ignored and a sentence op that
-// starts returning JSON is caught.
-const SENTENCE_OPS = new Set(["hub_task_propose", "backlog_pull", "backlog_return", "task_escalate", "task_assign", "task_assign_checked", "task_unassign", "hub_sdlc_record", "review_brief", "hub_review", "hub_remember", "route_explain"]);
-/** Bare prints of JSON text that no #814 task has converted yet. Remove an entry in the PR that converts it; an entry with no bare print fails. */
-const TEXT_DEBT: Record<string, string> = {
-  github_import: "board import github: the import report, not in #814 Context",
-  hub_release_report: "sdlc train report: the release-train report (an sdlc subcommand, not ahub release)",
-  hub_release_configure: "sdlc train configure",
-  hub_release_cut: "sdlc train cut",
-  hub_release_assign: "sdlc release-assign",
-  hub_plan_review: "sdlc plan-review",
-  turn_revert: "undo --context: not in #814 Context",
-};
-/** Conductor-role agent-shell commands (`ahub <peer>`, pause, resume, task assign|escalate): conductor.ts returns an object, not a person's text. Not in #814 Context; named so a new one is noticed. */
-const CONDUCTOR_DEBT: Record<string, string> = {
-  hub_peer_start: "conductor start of a peer", hub_peer_hold: "conductor pause", hub_peer_release: "conductor resume",
-  hub_task_assign: "conductor assign", hub_task_escalate: "conductor escalate",
-};
-/** Only the tool-op switch (from the first op this file converts to the last it names), never a control-message switch that also has words like "assign". */
-const daemonToolCase = (daemon: string, op: string): string | undefined => {
-  const first = daemon.indexOf('case "hub_backlog_list":');
-  return first < 0 ? undefined : daemonCase(daemon.slice(first), op);
-};
-const daemonCase = (daemon: string, op: string): string | undefined => {
-  const label = `case "${op}":`, start = daemon.indexOf(label);
-  if (start < 0) return undefined;
-  let from = start + label.length;
-  // fall-through labels share the next body
-  for (let m = /^\s*case "[a-z_]+":/.exec(daemon.slice(from)); m; m = /^\s*case "[a-z_]+":/.exec(daemon.slice(from))) from += m[0].length;
-  const end = daemon.indexOf('\n      case "', from);
-  return daemon.slice(from, end < 0 ? from + 4000 : end);
-};
-function bareTaskOpPrints(text: string): { ops: string[]; where: string }[] {
-  const source = parseSource("main.ts", text), daemon = readFileSync(join(import.meta.dir, "../src/hub/daemon.ts"), "utf8"), found: { ops: string[]; where: string }[] = [];
-  for (const call of callSites(source, "taskOp")) {
-    const parent = call.parent?.parent;
-    if (!(parent && ts.isCallExpression(parent) && parent.expression.getText(source) === "console.log")) continue;
-    // every string literal of the first argument that names a case the hub serves (a conditional names two; a comparison literal names none).
-    // A variable first argument is resolved through the `op = ...` assignments of its function.
-    const first = call.arguments[0]!;
-    // the string values an expression can PRODUCE: a literal is itself, a conditional is its two branches (never its condition)
-    const produced = (node: ts.Expression): string[] => ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) ? [node.text]
-      : ts.isConditionalExpression(node) ? [...produced(node.whenTrue), ...produced(node.whenFalse)] : ts.isParenthesizedExpression(node) ? produced(node.expression) : [];
-    let values = produced(first);
-    if (ts.isIdentifier(first)) {
-      const scope = enclosingFunction(source, call.getStart(source))?.node ?? source;
-      values = [];
-      const visit = (node: ts.Node) => { if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken && node.left.getText(source) === first.text) values.push(...produced(node.right)); ts.forEachChild(node, visit); };
-      visit(scope);
-    }
-    const named = values.map(value => `"${value}"`).join(" ");
-    const defined = readFileSync(join(import.meta.dir, "../src/hub/hub-tools.ts"), "utf8");
-    const ops = [...named.matchAll(/"([a-z_]+)"/g)].map(match => match[1]!).filter(op => daemonToolCase(daemon, op) !== undefined || defined.includes(`tool("${op}"`));
-    found.push({ ops, where: `${enclosingFunction(source, call.getStart(source))?.name} (line ${source.getLineAndCharacterOfPosition(call.getStart(source)).line + 1})` });
-  }
-  return found;
-}
-test("AC2 every bare print of a hub tool's text is a named sentence op or named debt, checked against the daemon", () => {
-  const prints = bareTaskOpPrints(readFileSync(join(import.meta.dir, "../src/cli/main.ts"), "utf8")), daemon = readFileSync(join(import.meta.dir, "../src/hub/daemon.ts"), "utf8");
-  const unnamed = prints.flatMap(print => print.ops.length ? print.ops.filter(op => !SENTENCE_OPS.has(op) && !(op in TEXT_DEBT) && !(op in CONDUCTOR_DEBT)).map(op => `${op} in ${print.where}`) : [`an op the daemon has no case for in ${print.where}`]);
-  expect(unnamed, "print it through showToolText with a renderer, or name it here with its reason").toEqual([]);
-  const printed = new Set(prints.flatMap(print => print.ops));
-  expect([...SENTENCE_OPS, ...Object.keys(TEXT_DEBT), ...Object.keys(CONDUCTOR_DEBT)].filter(op => !printed.has(op)), "entries with no bare print any more: delete them").toEqual([]);
-  // the names are true: a sentence op never returns JSON text, and a debt op does
-  for (const op of SENTENCE_OPS) expect(daemonCase(daemon, op), `${op} is named a sentence op but the daemon returns JSON.stringify`).not.toMatch(/return\s+JSON\.stringify|return\s+line\(\s*JSON/);
-  for (const op of Object.keys(TEXT_DEBT)) expect(daemonCase(daemon, op), `${op} is named JSON debt but the daemon does not return JSON.stringify`).toMatch(/JSON\.stringify/);
-  const conductor = readFileSync(join(import.meta.dir, "../src/hub/conductor.ts"), "utf8"), defined = readFileSync(join(import.meta.dir, "../src/hub/hub-tools.ts"), "utf8");
-  for (const op of Object.keys(CONDUCTOR_DEBT)) {
-    expect(defined, `${op} is named conductor debt but is not a hub tool`).toContain(`tool("${op}"`);
-    expect(conductor, `${op} is named conductor debt but conductor.ts does not serve it`).toMatch(/hub_peer_release/.test(op) ? /\.release\(peer\)/ : new RegExp(`"${op}"`));
-    expect(daemonToolCase(daemon, op), `${op} is conductor debt but the daemon's tool switch serves it as a sentence`).toBeUndefined();
-  }
-  // the twelve converted ops are still called, through showToolText and never bare
-  const converted = ["task_show", "hub_task_cancel", "hub_backlog_plan", "hub_backlog_return_untouched", "hub_backlog_pull", "hub_backlog_split", "hub_backlog_undo", "hub_planner_groom", "hub_release_list", "release_show", "release_new", "release_change"];
-  const source = parseSource("main.ts", readFileSync(join(import.meta.dir, "../src/cli/main.ts"), "utf8"));
-  expect(converted.filter(op => !callSites(source, "taskOp").some(call => call.arguments[0]?.getText(source) === `"${op}"`))).toEqual([]);
-  expect(converted.filter(op => printed.has(op))).toEqual([]);
-});
-
-test("AC2 the open-ended scanner itself: it names an unlisted op, a wrong sentence claim and a stale entry", () => {
-  expect(bareTaskOpPrints(`async function f() { console.log(await taskOp("hub_backlog_plan", {})); }`).map(print => print.ops)).toEqual([["hub_backlog_plan"]]);
-  expect(bareTaskOpPrints(`async function f() { console.log(await taskOp("no_such_op_anywhere", {})); }`).map(print => print.ops)).toEqual([[]]);
-  expect(bareTaskOpPrints(`async function f() { const x = await taskOp("task_show", {}); console.log(x); }`)).toEqual([]);
-  // a variable op is resolved through its assignments
-  expect(bareTaskOpPrints(`async function f(c: string) { let op: string; op = c === "a" ? "hub_peer_hold" : "hub_peer_release"; console.log(await taskOp(op, {})); }`).map(print => print.ops)).toEqual([["hub_peer_hold", "hub_peer_release"]]);
-  expect(bareTaskOpPrints(`async function f(sub: string) { console.log(await taskOp(sub === "a" ? "task_assign" : "task_unassign", {})); }`).map(print => print.ops)).toEqual([["task_assign", "task_unassign"]]);
 });

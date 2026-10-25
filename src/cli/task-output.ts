@@ -3,10 +3,80 @@
 // renders it, and `--json` prints that text untouched. Built from the same primitives as sdlc-output.ts (#814 T1), so
 // every table fits the terminal and no identifier is cut. A private task arrives from the hub as a stub (`[pii]` title
 // and detail, empty refs and plan): this module shows that stub and never asks for more.
-import { type Span, type Tone, plural } from "./console-state.ts";
-import { blank, bullets, count, grid, heading, list, moment, pair, para, s, short, yes } from "./sdlc-output.ts";
+import { type Span, type Tone, plural, table, terminalText, wrap } from "./console-state.ts";
+import { moment } from "./sdlc-output.ts";
 
 type Line = Span[];
+// Local copies of the layout primitives of sdlc-output.ts (#814 T1), the source of these helpers: that file stays untouched by this task
+// (its plan names no edit), so a change to a primitive there is made here too. `moment` is already exported there and imported.
+const s = (value: unknown, tone?: Tone): Span => ({ text: terminalText(value).replace(/[\n\t]/g, " "), ...(tone ? { tone } : {}) });
+const room = (columns?: number) => columns ?? Infinity;
+const list = (value: unknown): any[] => Array.isArray(value) ? value : [];
+const yes = (value: unknown) => value === true ? "yes" : value === false ? "no" : "unknown";
+const short = (sha: unknown) => typeof sha === "string" && sha ? sha.slice(0, 8) : "-";
+const count = (n: unknown) => typeof n === "number" && Number.isFinite(n) ? (Number.isInteger(n) ? String(n) : n.toFixed(1)) : "unknown";
+
+/** Text wrapped to the width, continuation lines hanging under `indent`. */
+function para(text: string, columns: number | undefined, tone?: Tone, indent = "", hang = 2): Line[] {
+  return wrap(indent + text, room(columns), hang).map(line => [s(line, tone)]);
+}
+/**
+ * `label  value`, the value wrapped beside its own label so narrow terminals never separate them. When the longest word of
+ * the value does not fit in the room left of the label column, the value moves under the label instead, so a path or id
+ * is broken only when it is wider than the whole terminal.
+ */
+function pair(label: string, value: unknown, columns: number | undefined, labelWidth: number, tone?: Tone, indent = ""): Line[] {
+  const text = terminalText(value).replace(/[\n\t]/g, " ");
+  const head = indent + label.padEnd(labelWidth) + "  ";
+  const longest = Math.max(0, ...text.split(/\s+/).map(textWidth));
+  if (columns !== undefined && head.length + longest > columns && text) {
+    const under = indent.length + 1 + longest <= columns ? indent + " " : "";
+    return [[s(indent + label, "muted")], ...wrap(under + text, columns, under.length).map((line): Line => [s(line, tone)])];
+  }
+  const lines = wrap(head + text, room(columns), head.length);
+  return lines.map((line, i) => i === 0 ? [s(line.slice(0, head.length), "muted"), s(line.slice(head.length), tone)] : [s(line, tone)]);
+}
+/** Items under a label, one per line, wrapped under the dash. */
+function bullets(label: string, items: readonly unknown[], columns: number | undefined, tone?: Tone, indent = ""): Line[] {
+  if (!items.length) return [];
+  return [[s(indent + label, "muted")], ...items.flatMap(item => para(`- ${terminalText(item)}`, columns, tone, indent + (columns !== undefined && indent.length + 2 + 2 + Math.max(0, ...terminalText(item).split(/\s+/).map(textWidth)) > columns ? "" : "  "), 2))];
+}
+const GAP = 2;
+const textWidth = (text: string) => Bun.stringWidth(text);
+/**
+ * A table that fits the terminal and never cuts a character. At its natural widths when they fit; otherwise the
+ * widest cells wrap inside their column (a PR linked to thirty tasks wraps its TASKS cell, it does not push the
+ * table to 134 columns); and when even each column's longest unbreakable word cannot fit, one labelled block per row.
+ */
+function grid(head: string[], data: Span[][], columns: number | undefined): Line[] {
+  const natural = head.map((name, i) => Math.max(textWidth(name), ...data.map(row => textWidth(row[i]?.text ?? ""))));
+  const gaps = GAP * (head.length - 1);
+  if (columns === undefined || natural.reduce((sum, n) => sum + n, 0) + gaps <= columns) return table(head, data, room(columns), natural);
+  const floor = head.map((name, i) => Math.max(textWidth(name), ...data.flatMap(row => (row[i]?.text ?? "").split(/\s+/).map(textWidth))));
+  if (floor.reduce((sum, n) => sum + n, 0) + gaps > columns) return blocks(head, data, columns);
+  // Hand the spare width to the column that is cut most, one cell at a time, so the wide list cell wraps and the short ones do not.
+  const widths = [...floor];
+  for (let spare = columns - widths.reduce((sum, n) => sum + n, 0) - gaps; spare > 0; spare--) {
+    let at = -1;
+    for (let i = 0; i < widths.length; i++) if (widths[i]! < natural[i]! && (at < 0 || natural[i]! - widths[i]! > natural[at]! - widths[at]!)) at = i;
+    if (at < 0) break;
+    widths[at]!++;
+  }
+  const physical = data.flatMap(row => {
+    const cells = row.map((cell, i) => wrap(cell.text, widths[i]!, 0));
+    return Array.from({ length: Math.max(1, ...cells.map(lines => lines.length)) }, (_, n) => head.map((_, i): Span => ({ ...(row[i] ?? s("")), text: cells[i]?.[n] ?? "" })));
+  });
+  return table(head, physical, columns, widths);
+}
+/** Narrow terminal: each row becomes its own block, the first column as its heading and every other column beside its label. */
+function blocks(head: string[], data: Span[][], columns: number): Line[] {
+  const label = Math.max(...head.slice(1).map(textWidth));
+  return data.flatMap((row, n) => [...(n ? [blank] : []), ...wrap(row[0]?.text ?? "", columns, 2).map((line): Line => [{ ...(row[0] ?? s("")), text: line }]),
+    ...head.slice(1).flatMap((name, i) => pair(name.toLowerCase(), row[i + 1]?.text ?? "", columns, label, row[i + 1]?.tone, "  "))]);
+}
+/** A heading wraps to the width like any paragraph; a long repository name never pushes it past the terminal. */
+const heading = (text: string, columns?: number): Line[] => wrap(text, room(columns), 2).map(line => [s(line, "strong")]);
+const blank: Line = [s("")];
 const dash = (value: unknown) => value === undefined || value === null || value === "" ? "-" : String(value);
 const ids = (values: unknown) => list(values).map(id => `#${id}`).join(" ") || "none";
 const when = (at: unknown, now: number) => typeof at === "number" && Number.isFinite(at) ? moment(at, now) : "-";
