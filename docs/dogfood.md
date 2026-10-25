@@ -59,7 +59,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Feature | State here | Measured by |
 | --- | --- | --- |
 | amem runtime integration (agent-mem#13 P4) | on after release; no claude-mem worker dependency | no-worker tripwire requests (must be 0), screened capture rows, profile refusals, all-author short-term recall, bounded-view truncation notices and curated-only ask citations |
-| Shared memory through amem, briefs, recall preface | on | notes saved per week, brief hits, fails that prevented a retry |
+| Shared memory through amem, briefs, recall preface | on; library intent briefs and plan guard (#436) take effect after release and hub upgrade; legacy index/timeline reads and worker notices retire in intent mode | notes saved per week, brief hits, fails that prevented a retry; same-input hub/library brief equality, host privacy refusals and front-of-brief plan fails despite the library byte cap or standalone screen |
 | `ahub ask` | on | answers with cited ids |
 | Code structure in the memory graph (#684) | pending | stale anchors, briefs with related notes |
 

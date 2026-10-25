@@ -152,7 +152,7 @@ import { detectTooling } from "./tooling.ts";
 import { looksSecret, DEFAULT_LEASE_MS, memoryHome, SUGGESTED, taskKey, type CandidateStore, type MemoryStore, type GoalView, type Suggested, type View as MemoryView } from "@staix/agent-mem";
 import { memoryProjectKey } from "@staix/agent-mem";
 import { AGENT_MEM_VERSION, MEMORY_SPLIT_INCOMPLETE, memoryProjectFor, openProfileMemory, openProfileCandidates, MemoryProfileBinding, type UnboundMemoryProfileReceipt } from "./memory-profile.ts";
-import { syncMemory } from "@staix/agent-mem";
+import { syncMemory, createIntentBriefSource, createStandalonePolicy } from "@staix/agent-mem";
 import { MEMORY_READ_TOOLS, memoryRead, validateMemoryRead } from "./read-tools.ts";
 import { nativeRecall } from "../memory/recall.ts";
 import { promotionScreen, withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
@@ -1200,6 +1200,47 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function taskMemoryItems(task: import("../memory/brief.ts").BriefTask) { return (await taskMemoryResult(task)).items; }
 
+  async function taskIntentBrief(task: import("../memory/brief.ts").BriefTask): Promise<import("../memory/brief.ts").IntentBriefContext> {
+    checkMemory();
+    const initial = task.id === undefined ? undefined : board.get(task.id), revision = configRevision;
+    const allowed = () => {
+      const current = task.id === undefined ? undefined : board.get(task.id);
+      return !stopping && configRevision === revision && !!initial && !!current && current.created === task.created && current.updated === initial.updated
+        && current.history.length === initial.history.length && current.owner === initial.owner && !tasks.isPii(current)
+        && !turns.get(current.owner ?? "")?.private && !contextPii(current.owner ?? "");
+    };
+    const assertCurrent = () => { checkMemory(); if (!allowed()) throw Error("memory brief context changed"); };
+    assertCurrent();
+    // Derived code neighbours are additional read-time selectors, never persisted memory or authority.
+    const starts = taskNodes(task).filter(node => node.startsWith("symbol:"));
+    let extra: string[] = [];
+    if (starts.length && tasks.memoryCodeEligible(initial!)) {
+      try {
+        const prepared = await memoryCode(starts, allowed);
+        assertCurrent();
+        extra = currentMemoryCode(prepared).nodes.map(node => node.id).filter(node => node.startsWith("symbol:")).map(node => node.slice(7));
+      } catch { /* Optional code evidence never removes direct intent memory. */ }
+    }
+    assertCurrent();
+    const stale = staleness();
+    const policy = createStandalonePolicy({ denyPaths: config.local.deny, host: { screen: async value => {
+      assertCurrent();
+      if (value && typeof value === "object" && "id" in value) {
+        const row = value as MemoryView;
+        return screenMemory([row]).length === 1 && tasks.publicMetadataText(JSON.stringify(row));
+      }
+      // The trusted host locator is not note content (a private directory can contain this project).
+      const { cwd: _cwd, ...query } = value as Record<string, unknown>;
+      return boundedSafe(JSON.stringify(query));
+    } } });
+    return { source: createIntentBriefSource(memoryStore!, memoryProject), options: {
+      project: memoryProject, cwd: opts.cwd, repo: memoryRepo, intent: task.title,
+      paths: [...task.refs.paths ?? [], ...task.plan?.paths ?? []], symbols: [...task.plan?.symbols ?? [], ...extra],
+      policy: () => policy, policyVersion: () => String(configRevision), allowed, assertCurrent,
+      stale: row => stale(row.about), now: () => memoryStore!.readNow(),
+    } };
+  }
+
   const leaseNoticed = new Set<string>();
   const goalLine = (g: GoalView) => `goal:${g.id.slice(0, 8)} ${g.state} ${g.title}${g.lease.holder ? ` (held by ${g.lease.holder === memoryStore?.machine.id ? "this machine" : `machine ${g.lease.holder.slice(0, 8)}`} until ${g.lease.until}${g.lease.conflict.length ? `; conflicting claim from ${g.lease.conflict.map((m) => m.slice(0, 8)).join(", ")}` : ""})` : ""}`;
   /**
@@ -1587,7 +1628,8 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(config.memory.enabled || memoryStore ? { briefs: new Briefs(config.memory.enabled ? memory : undefined, chain.at(-1)!, () => config.memory.brief_items,
       memoryStore ? taskMemoryItems : undefined,
       (peer, task, counts) => event({ type: "memory_brief", source: "amem", peer, task, ...counts }),
-      items => { const stale = staleness(); return items.map(item => `${item.line}${stale(item.about ?? []) ? " (stale?)" : ""}`); }) } : {}),
+      items => { const stale = staleness(); return items.map(item => `${item.line}${stale(item.about ?? []) ? " (stale?)" : ""}`); },
+      memoryStore ? taskIntentBrief : undefined) } : {}),
     ...(memoryStore ? { planFails: (task: import("./board.ts").Task) => {
       checkMemory();
       const context = { cwd: opts.cwd, project: memoryProject, repo: memoryRepo, deny: config.local.deny };
