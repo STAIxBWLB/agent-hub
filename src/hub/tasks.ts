@@ -45,7 +45,7 @@ import { coverageGap, renderReviewBrief, type ReviewBrief } from "./review-brief
 import { definitionOf as builtinDefinitionOf } from "../adapters/registry.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
-import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
+import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type MergeRecord, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
 
 export type TaskAssignmentRole = "owner" | "reviewer" | "planner";
 
@@ -3111,24 +3111,36 @@ export class Tasks {
     return holders.length === 1 && holders[0] === by;
   }
   /**
-   * #786 T1: the guarded merge of one approved task. `sdlc.auto_merge` (or the repository's table) says whether it only reports (`dry-run`) or acts (`on`);
+   * #786 T1/T2: the guarded merge of one approved task. `sdlc.auto_merge` (or the repository's table) says whether it only reports (`dry-run`) or acts (`on`);
    * `opts.dryRun` forces a report. Every gate is re-read right now (`sdlc-merge.ts`); this method owns authority, privacy and the notices, which name the task
-   * and the gates only (a PII task shows its stub and is never merged by the hub). It writes nothing to the board: recording the result is a later task.
+   * and the gates only (a PII task shows its stub and is never merged by the hub). Off/dry-run write nothing to the board; on-mode records gate refusals
+   * and post-run host observations, claiming eligible post-MERGED remote cleanup and owner notices durably.
    */
   async guardedMerge(by: PeerId, id: unknown, opts: { dryRun?: boolean; trigger?: "review" | "command" } = {}): Promise<{ task: number } & MergeView> {
     if (!this.mergeAuthority(by)) throw new Error("only the console user or the configured conductor may merge");
     const task = this.need(id), label = `#${task.id}`;   // the number only: a notice about a merge never carries a title (a PII task has none to show)
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     const mode = opts.dryRun ? "dry-run" as const : mergeModeFor(config, task.sdlc?.repo);
-    const refuse = (gate: string) => ({ task: task.id, ...mergeView({ mode, decision: { refused: [gate] }, ran: false }) });
+    const refuse = (gate: string) => {
+      if(mode==="on")this.recordMergeRefusal(task.id,by,[gate]);
+      return { task: task.id, ...mergeView({ mode, decision: { refused: [gate] }, ran: false }) };
+    };
     if (this.isPii(task)) return refuse("private task: a person merges");
     if (mode === "off") return refuse("auto_merge is off for this repository");
     if (this.mergesInFlight.has(task.id)) return refuse("a merge check for this task is already running");
+    const previous=task.sdlc?.merge;
+    if(previous && !(opts.trigger==="command" && previous.state==="not_merged") && previous.repo===task.sdlc?.repo && previous.pr===task.sdlc.pr && previous.head===task.sdlc.reviewedHead)
+      return refuse("merge attempt already recorded: inspect its result and any uncertain cleanup before acting");
+    // Ephemeral identity excludes merge progress so our own durable writes cannot rebind the observation.
+    const artifactIdentity=(row:Task)=>JSON.stringify([row.sdlc?.repo,row.sdlc?.pr,row.sdlc?.issue,row.sdlc?.head,row.sdlc?.reviewedHead,row.sdlc?.localHead,row.refs.repo,row.refs.commit]);
+    const initialArtifact=artifactIdentity(task);
+    const artifactCurrent=()=>{const row=this.d.board.get(task.id);return !!row && artifactIdentity(row)===initialArtifact;};
     this.mergesInFlight.add(task.id);
     try {
       const links = this.deliveryLinks(config), subject = links.find(link => link.id === task.id)!;
       const queueIdentity = workflowHash({ config, links });
       const outcome = await guardedMerge({ mode, subject, state: task.state, taskState: n => this.d.board.get(n)?.state, config, tasks: links, run: this.d.sdlc?.gh ?? sdlcGh, readableMetadata: this.publicMetadataText,
+        recordMerge: record=>this.recordMergeResult(task.id,by,record,artifactCurrent),
         beforeMerge: () => {
           if (!this.mergeAuthority(by)) return "merge authority changed during the merge check: nothing was run";
           // The queue used every link, not only the subject. A changed dependency artifact or ordering edge invalidates that remote evidence.
@@ -3143,12 +3155,68 @@ export class Tasks {
           const current = now && this.deliveryLinks(cfg).find(link => link.id === now.id);
           return now && current ? { subject: current, state: now.state, config: cfg, mode: opts.dryRun ? "dry-run" : mergeModeFor(cfg, now.sdlc?.repo), allowed: this.mergeAuthority(by) && !this.d.bus.isRecoveryHeld && !this.d.bus.storageError } : undefined;
         } });
+      if(mode==="on" && !outcome.ran && "refused" in outcome.decision)this.recordMergeRefusal(task.id,by,outcome.decision.refused);
+      if(outcome.result?.state==="merged") {
+        try {this.mergeOwnerNotice(task.id,by,artifactCurrent);} catch {this.releaseNotice(`task ${label}: merge owner notice unconfirmed`);}
+      }
       const view = mergeView(outcome);
       const head = (text?: string) => text ? text.slice(0, 8) : "unknown";
-      if (outcome.result) this.releaseNotice(outcome.result.state === "merged" ? `task ${label}: merged (squash, commit ${head(outcome.result.mergeCommit)})` : `task ${label}: gh pr merge exited ${outcome.result.exit}; GitHub reports it ${outcome.result.state === "unknown" ? "unreadable" : "not merged"}`);
+      if (outcome.result && (this.isPii(this.d.board.get(task.id) ?? task) || this.d.privateTurn?.(by))) this.releaseNotice(`task ${label}: merge result withheld`);
+      else if (outcome.result) this.releaseNotice(outcome.result.state === "merged" ? `task ${label}: merged (squash, commit ${head(outcome.result.mergeCommit)})` : `task ${label}: gh pr merge exited ${outcome.result.exit}; GitHub reports it ${outcome.result.state === "unknown" ? "unreadable" : "not merged"}`);
       else if (opts.trigger === "review") this.releaseNotice("action" in outcome.decision ? `task ${label}: auto-merge dry-run: would merge at ${head(outcome.decision.head)}` : `task ${label}: auto-merge refused: ${outcome.decision.refused.join("; ")}`);
       return { task: task.id, ...view };
     } finally { this.mergesInFlight.delete(task.id); }
+  }
+  private recordMergeRefusal(id:number,by:PeerId,gates:string[]):void {
+    const current=this.d.board.get(id);
+    if(!current)return;
+    const note=JSON.stringify({gates:gates.slice(0,32).map(g=>this.publicMetadataText(g)?g.slice(0,256):"merge gate withheld")});
+    if(!current.history.some(h=>h.by===HUB && h.event==="merge refused" && h.note===note))
+      this.d.board.update(id,HUB,"merge refused",{},note,{...(this.isPii(current)||this.d.privateTurn?.(by)?{withheld:true}:{})});
+  }
+  private mergeRecordCurrent(id:number,by:PeerId,record:MergeRecord,artifactCurrent:()=>boolean):Task|undefined {
+    const now=this.d.board.get(id);
+    return artifactCurrent() && now && now.sdlc?.repo===record.repo && now.sdlc.pr===record.pr && now.sdlc.reviewedHead===record.head
+      && now.state==="approved" && !this.isPii(now) && !this.d.privateTurn?.(by) && this.mergeAuthority(by)
+      && !this.d.bus.isRecoveryHeld && !this.d.bus.storageError ? now : undefined;
+  }
+  /** Save host facts without ever rebinding an old result to a replacement artifact. */
+  private recordMergeResult(id: number, by: PeerId, record: MergeRecord,artifactCurrent:()=>boolean): boolean {
+    const now=this.d.board.get(id);
+    if(!now)return false;
+    const allowed=this.mergeRecordCurrent(id,by,record,artifactCurrent)!==undefined;
+    // A bounded old-attempt fact remains history even after a relink or privacy/authority change. No remote prose or branch name is retained.
+    const note=JSON.stringify(record);
+    if(allowed) {
+      if(JSON.stringify(now.sdlc!.merge)!==note)this.d.board.update(id,HUB,"merge result",{sdlc:{...now.sdlc!,merge:record}},note);
+    } else if(!now.history.some(h=>h.by===HUB && h.event==="merge result (detached)" && h.note===note)) {
+      this.d.board.update(id,HUB,"merge result (detached)",{},note,{...(this.isPii(now)||this.d.privateTurn?.(by)?{withheld:true}:{})});
+    }
+    // Board observers run synchronously. A claim write can itself revoke authority, privacy or artifact identity.
+    return this.mergeRecordCurrent(id,by,record,artifactCurrent)!==undefined && JSON.stringify(this.d.board.get(id)?.sdlc?.merge)===note;
+  }
+
+  /** Claim before publishing: a lost acknowledgement remains unknown and is never automatically sent twice. */
+  private mergeOwnerNotice(id:number,by:PeerId,artifactCurrent:()=>boolean):void {
+    const task=this.d.board.get(id),record=task?.sdlc?.merge;
+    if(!task || !record || record.state!=="merged" || !record.mergeCommit || record.ownerNotice!=="not_started")return;
+    const claimed:MergeRecord={...record,ownerNotice:"claimed"};
+    if(!this.recordMergeResult(id,by,claimed,artifactCurrent))return;
+    const current=this.mergeRecordCurrent(id,by,claimed,artifactCurrent);
+    if(!current)return;
+    const view=this.publicView(current);
+    if(view.title==="[pii]")return;
+    const owner=typeof view.owner==="string"?view.owner:undefined;
+    const body=`Task #${id}: GitHub reports the PR merged (commit ${record.mergeCommit.slice(0,8)}). Remote branch cleanup: ${record.cleanup}. Remove your local worktree and local branch when safe; the hub leaves them in place.`;
+    // Public projection and a synchronous claim observer must not let stale owner text escape.
+    const last=this.mergeRecordCurrent(id,by,claimed,artifactCurrent);
+    if(!last || (last.owner??undefined)!==owner)return;
+    let sent=false;
+    try {
+      if(owner && owner!==USER)sent=this.d.bus.publish(newEnvelope(HUB,body,{to:[owner],kind:"task",refs:{task:String(id),taskRecipient:"owner"}})).includes(owner);
+      else {this.d.notify(body);sent=true;}
+    } catch { /* The durable claim keeps an uncertain publication from being repeated. */ }
+    this.recordMergeResult(id,by,{...claimed,ownerNotice:sent?"sent":"unknown"},artifactCurrent);
   }
   /** After an approving verdict, never blocking or failing it: the check runs on a later tick and reports through a notice. */
   private autoMerge(task: Task): void {

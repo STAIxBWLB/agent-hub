@@ -1,14 +1,15 @@
 import { findingsForHead, findingHead, findingTally } from "./review-findings.ts";
 import { readMergeQueue, type DeliveryTask, type MergeQueue } from "./sdlc-queue.ts";
-import { readSdlcPr, stageDefinition, type AutoMergeMode, type PrEvidence, type SdlcConfig, type SdlcGh } from "./sdlc.ts";
+import { readSdlcPr, stageDefinition, type AutoMergeMode, type PrEvidence, type SdlcConfig, type SdlcGh, type MergeRecord } from "./sdlc.ts";
 
 /**
- * #786 T1: the one guarded merge. Given a task and the head its reviewer approved, it re-reads the PR (`readSdlcPr`) and the merge queue
+ * #786 T1/T2: the one guarded merge. Given a task and the head its reviewer approved, it re-reads the PR (`readSdlcPr`) and the merge queue
  * (`readMergeQueue`) and answers either `{ action: "merge", argv }` or `{ refused: [gate, ...] }` naming every gate that fails. In `on` mode
  * it runs exactly that argv; in `dry-run` it runs nothing. Nothing here writes the board: `Tasks.guardedMerge` owns authority, privacy and notices.
  *
- * The only GitHub write the hub makes is `gh pr merge <pr> --repo <repo> --squash --match-head-commit <head>`. Never `--admin` (it bypasses branch
- * protection), never a ref-update API, and no `--auto` while the repository does not allow auto-merge (a person's repository setting, #786 Out of scope).
+ * The only merge method is `gh pr merge <pr> --repo <repo> --squash --match-head-commit <head>`. Never `--admin` (it bypasses branch protection),
+ * and no `--auto` while the repository does not allow auto-merge. The sole ref write is a post-MERGED CAS deletion of that PR's eligible remote head;
+ * a ref-update API never performs the merge. Off/dry-run write neither GitHub nor the board; Tasks owns on-mode host result records.
  * `assertMergeArgv` pins that shape right before the call, so a later edit cannot widen it without failing a test.
  */
 
@@ -26,6 +27,8 @@ export interface MergeInput {
   readableMetadata?: (path: string) => boolean;
   /** Final synchronous authority and queue-input fence, after fresh gates and immediately before the gh call. */
   beforeMerge?: () => string | undefined;
+  /** Post-run host fence and durable progress record. False or a throw withholds cleanup. No remote text is supplied. */
+  recordMerge?: (record: MergeRecord) => boolean;
   /**
    * The board and the authority to act, read NOW and synchronously: `guardedMerge` calls it once, after the last PR read and in the same synchronous segment as the
    * `gh pr merge` call (nothing is awaited between them), and refuses unless every input still equals what the decision judged. Absent (a library caller): the
@@ -42,7 +45,7 @@ export interface MergeOutcome {
   /** True only when `gh pr merge` was started. A dry-run and every refusal leave it false. */
   ran: boolean;
   /** After a run: what GitHub reports when read back. `merged` is the only success; a nonzero exit can still end merged, so the PR is read again. */
-  result?: { exit: number; state: "merged" | "not_merged" | "unknown"; mergeCommit?: string };
+  result?: { exit: number; state: "merged" | "not_merged" | "unknown"; mergeCommit?: string; cleanup?: MergeRecord["cleanup"]; reason?: MergeRecord["reason"] };
 }
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -216,10 +219,76 @@ export async function guardedMerge(input: MergeInput & { mode: AutoMergeMode }):
   // ---- end of the synchronous segment ----
   let exit = 1;
   try { exit = (await started).code; } catch { exit = 1; }
-  // The exit code alone is not the result: a timed-out call may still have merged, and a refused one has not.
-  const after = await readSdlcPr({ stage: input.subject.receipt!.stage, repo: decision.repo, pr: decision.pr }, input.run).catch(() => undefined);
-  const result: NonNullable<MergeOutcome["result"]> = after?.state === "MERGED" ? { exit, state: "merged", ...(after.mergeCommit ? { mergeCommit: after.mergeCommit } : {}) } : after ? { exit, state: "not_merged" } : { exit, state: "unknown" };
+  // A transport failure can still have merged. Bound lag readback within this one invocation; never repeat the merge.
+  const deadline = performance.now() + 6000;
+  const bounded: SdlcGh = (args, timeout, cwd, cap) => {
+    const left = deadline - performance.now();
+    return left > 0 ? input.run(args, Math.min(timeout ?? 2000, left), cwd, Math.min(cap ?? 65536, 65536)) : Promise.resolve({ code: 1, stdout: "" });
+  };
+  let after: PrEvidence | undefined;
+  for (let attempt = 0; attempt < 3 && performance.now() < deadline; attempt++) {
+    const observed = await readSdlcPr({ stage: input.subject.receipt!.stage, repo: decision.repo, pr: decision.pr }, bounded).catch(() => undefined);
+    // MERGED is terminal evidence. Retry for its commit without losing that fact to a stale or failed read.
+    if (observed && (after?.state !== "MERGED" || observed.state === "MERGED" && observed.mergeCommit)) after = observed;
+    if (after?.state === "MERGED" && after.mergeCommit || after?.state === "CLOSED") break;
+    const left = deadline - performance.now();
+    if (attempt < 2 && left > 0) await Bun.sleep(Math.min(100, left));
+  }
+  const result: NonNullable<MergeOutcome["result"]> = after?.state === "MERGED" ? {exit,state:"merged",...(after.mergeCommit?{mergeCommit:after.mergeCommit}:{})} : after ? {exit,state:"not_merged"} : {exit,state:"unknown"};
+  if (input.recordMerge) {
+    let record: MergeRecord={repo:decision.repo,pr:decision.pr,head:decision.head,at:Date.now(),...result,cleanup:"not_started",ownerNotice:"not_started"};
+    const save = () => {try {return input.recordMerge!({...record});}catch{return false;}};
+    if (!save()) {record={...record,cleanup:"skipped",reason:"authority_changed"};save();}
+    else if (result.state!=="merged" || !result.mergeCommit) {record={...record,cleanup:"skipped",reason:result.state==="merged"?"missing_commit":"not_merged"};save();}
+    else {
+      const cleanup=await cleanupMergedBranch(decision,result.mergeCommit,bounded,progress=>{record={...record,...progress};return save();});
+      record={...record,...cleanup};save();
+    }
+    result.cleanup=record.cleanup;
+    if(record.reason)result.reason=record.reason;
+  }
   return { mode: "on", decision, ran: true, result };
+}
+
+/** Only the merged PR's exact same-repository, unprotected nondefault head can be deleted. No local git command is used. */
+async function cleanupMergedBranch(decision:{repo:string;pr:number;head:string},mergeCommit:string,run:SdlcGh,claim:(progress:Pick<MergeRecord,"cleanup"> & Partial<Pick<MergeRecord,"reason">>)=>boolean):Promise<Pick<MergeRecord,"cleanup"> & Partial<Pick<MergeRecord,"reason">>> {
+  const skip=(reason:NonNullable<MergeRecord["reason"]>)=>({cleanup:"skipped" as const,reason});
+  const read=async(args:string[])=>{try{const r=await run(args);if(r.code!==0)return;const data=JSON.parse(r.stdout);return data?.errors?undefined:data;}catch{return;}};
+  const [owner,name]=decision.repo.split("/");
+  const query="query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){id nameWithOwner defaultBranchRef{name} pullRequest(number:$pr){state headRefName headRefOid headRepository{nameWithOwner} mergeCommit{oid}}}}";
+  const args=["api","graphql","-f",`query=${query}`,"-f",`owner=${owner}`,"-f",`name=${name}`,"-F",`pr=${decision.pr}`];
+  const initial=(await read(args))?.data?.repository,p=initial?.pullRequest;
+  if (!initial) return skip("metadata_unknown");
+  if (!initial || p?.state!=="MERGED" || p.mergeCommit?.oid!==mergeCommit || p.headRefOid!==decision.head || p.headRepository?.nameWithOwner?.toLowerCase()!==decision.repo.toLowerCase()) return skip("identity_changed");
+  const branch=p.headRefName;
+  // ponytail: cleanup accepts only this ASCII 200-character ref subset; use a shared validated Git ref-name parser before widening it. Unknown spelling never reaches a mutation.
+  if(typeof branch!=="string" || !/^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(branch) || branch.includes("..") || branch.includes("//") || branch.endsWith("/") || branch.endsWith(".") || branch.endsWith(".lock"))return skip("metadata_unknown");
+  if(typeof initial.defaultBranchRef?.name!=="string")return skip("metadata_unknown");
+  if(branch===initial.defaultBranchRef.name)return skip("default_branch");
+  const lastQuery=query.replace("mergeCommit{oid}}}}","mergeCommit{oid}} ref(qualifiedName:$ref){name prefix target{oid} branchProtectionRule{id}}}}").replace("$pr:Int!","$pr:Int!,$ref:String!");
+  const current=(await read(["api","graphql","-f",`query=${lastQuery}`,"-f",`owner=${owner}`,"-f",`name=${name}`,"-F",`pr=${decision.pr}`,"-f",`ref=refs/heads/${branch}`]))?.data?.repository;
+  const now=current?.pullRequest;
+  if (!current) return skip("metadata_unknown");
+  if(typeof current.id!=="string" || !current.id || current.nameWithOwner?.toLowerCase()!==decision.repo.toLowerCase() || now?.state!=="MERGED" || now.mergeCommit?.oid!==mergeCommit || now.headRefName!==branch || now.headRefOid!==decision.head || now.headRepository?.nameWithOwner?.toLowerCase()!==decision.repo.toLowerCase())return skip("identity_changed");
+  if(typeof current.defaultBranchRef?.name!=="string")return skip("metadata_unknown");
+  if(current.defaultBranchRef.name===branch)return skip("default_branch");
+  if(!Object.hasOwn(current,"ref"))return skip("metadata_unknown");
+  if(current.ref===null)return {cleanup:"already_gone"};
+  if(current.ref?.name!==branch || current.ref?.prefix!=="refs/heads/" || !Object.hasOwn(current.ref,"branchProtectionRule"))return skip("metadata_unknown");
+  if(current.ref.branchProtectionRule!==null)return skip("protected_branch");
+  if(current.ref.target?.oid!==decision.head)return skip("head_changed");
+  // This endpoint includes all active repository/organization rulesets; any active rule conservatively protects the branch.
+  const rules=await read(["api",`repos/${decision.repo}/rules/branches/${encodeURIComponent(branch)}?per_page=100`]);
+  if(!Array.isArray(rules))return skip("metadata_unknown");
+  if(rules.length)return skip("protected_branch");
+  // Persist the claim after every await and immediately before the sole ref write. A lost acknowledgement is never retried.
+  if(!claim({cleanup:"claimed"}))return skip("authority_changed");
+  const mutation='mutation($repo:ID!,$ref:GitRefname!,$before:GitObjectID!,$after:GitObjectID!){updateRefs(input:{repositoryId:$repo,clientMutationId:"agent-hub-post-merge-cleanup",refUpdates:[{name:$ref,beforeOid:$before,afterOid:$after}]}){clientMutationId}}';
+  const reply=await read(["api","graphql","-f",`query=${mutation}`,"-f",`repo=${current.id}`,"-f",`ref=refs/heads/${branch}`,"-f",`before=${decision.head}`,"-f",`after=${"0".repeat(40)}`]);
+  if(reply?.data?.updateRefs?.clientMutationId==="agent-hub-post-merge-cleanup")return {cleanup:"deleted"};
+  const recheck=(await read(["api","graphql","-f",`query=${lastQuery}`,"-f",`owner=${owner}`,"-f",`name=${name}`,"-F",`pr=${decision.pr}`,"-f",`ref=refs/heads/${branch}`]))?.data?.repository;
+  if(recheck?.nameWithOwner?.toLowerCase()===decision.repo.toLowerCase() && recheck.ref?.name===branch && recheck.ref?.prefix==="refs/heads/" && typeof recheck.ref.target?.oid==="string" && SHA.test(recheck.ref.target.oid) && recheck.ref.target.oid!==decision.head)return skip("head_changed");
+  return {cleanup:"unknown",reason:"delete_unconfirmed"};
 }
 
 /** What a caller (the control op, the CLI, a test) sees: the decision and, after a run, GitHub's own readback. No remote text, no titles. */
