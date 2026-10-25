@@ -123,6 +123,7 @@ import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig }
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, loadRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
 import { NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
+import { githubOriginRepository } from "./task-repository.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
@@ -5037,7 +5038,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (typeof repo !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || repo.startsWith("-") || !tasks.publicMetadataText(repo)) return false;
     const identity = repo.toLowerCase();
     return Object.keys(lifecycleConfig.repos ?? {}).some(key => key.toLowerCase() === identity)
-      || board.list().some(task => !tasks.isPii(task) && (task.sdlc?.repo?.toLowerCase() === identity || task.external?.repo.toLowerCase() === identity));
+      || board.list().some(task => !tasks.isPii(task) && task.external?.repo.toLowerCase() === identity)
+      || githubOriginRepository(opts.cwd) === identity;
   }
   const publicReadPrivacy = () => JSON.stringify(board.list().map(task => [task.id, tasks.isPii(task), task.history.length]));
   function operationalCurrent(sock:Sock,acceptedAfterClose=false):()=>void {
@@ -6821,12 +6823,14 @@ export async function startDaemon(opts: DaemonOptions) {
           try { current = publicReadCurrent(sock); current(); } catch { return void reply({ ok: false, error: "public lifecycle read unavailable for this caller" }); }
           if (msg.op === "queue" || msg.op === "release") {
             if (!publicDeliveryRepository(msg.repo)) return void reply({ ok: false, error: "public repository unavailable for this project" });
+            current(); // An isolated Git probe can service pending callbacks before it returns.
             if (!Array.isArray(msg.liveIssues ?? []) || (msg.liveIssues ?? []).length > 32) return void reply({ ok: false, error: "invalid delivery readback arguments" });
             const before = publicReadPrivacy();
             const read = msg.op === "queue" ? tasks.deliveryQueue(msg.repo) : tasks.releaseReadiness(msg.repo, msg.liveIssues ?? []);
             void read.then(report => {
               current();
               if (!publicDeliveryRepository(msg.repo)) return void reply({ ok: false, error: "public repository unavailable for this project" });
+              current();
               if (before !== publicReadPrivacy()) throw new Error("privacy changed");
               reply({ ok: true, public: true, report: msg.op === "queue" ? publicDeliveryQueue(report as Awaited<ReturnType<typeof tasks.deliveryQueue>>) : publicReadValue(report) });
             }).catch(() => reply({ ok: false, error: "public delivery readback unavailable" }));

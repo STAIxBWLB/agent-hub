@@ -7,7 +7,8 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
-import { newEnvelope } from "../src/hub/envelope.ts";
+import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
+import { BasePeer } from "../src/hub/peers.ts";
 
 const cleanup: (() => unknown)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -20,7 +21,7 @@ async function rig() {
   process.env.HOME = join(temp, "home"); mkdirSync(process.env.HOME); process.env.AGENTHUB_HOME = join(temp, "hubs");
   cleanup.push(() => { for (const key of ["HOME", "AGENTHUB_HOME", "PATH"] as const) { if (prior[key] === undefined) delete process.env[key]; else process.env[key] = prior[key]; } });
   const git = (args: string[]) => { const result = hubGitSync(args, { cwd: root, encoding: "utf8", timeout: 1000 }); expect(result.status).toBe(0); };
-  git(["init", "-q"]); writeFileSync(join(root, "package.json"), '{"name":"fixture","version":"1.0.0"}'); git(["add", "package.json"]); git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
+  git(["init", "-q"]); git(["remote", "add", "origin", "https://github.com/Owner/Repo.git"]); writeFileSync(join(root, "package.json"), '{"name":"fixture","version":"1.0.0"}'); git(["add", "package.json"]); git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
   mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/sdlc.toml"), 'mode = "advise"\nrequired_checks = ["gate"]\n[repos."Configured/Repo"]\nrequired_checks = ["gate"]\n');
   const template = readFileSync(new URL("../templates/routing.toml", import.meta.url), "utf8").replaceAll("hub/stage", "hub/secret-location-alias").replaceAll('pi_backend = "mlx"', 'pi_backend = "dgx"');
   writeFileSync(join(root, ".agenthub/routing.toml"), template);
@@ -77,13 +78,15 @@ for (const peer of ["codex", "pi"] as const) test(`${peer} public GitHub reads a
   const board = new Board(join(r.stateDir, "hub.db"));
   try {
     board.propose("user", { title: "public imported task", class: "implement", external: { provider: "github", repo: "External/Repo", issue: 3, url: "https://github.com/External/Repo/issues/3" } });
+    const receiptOnly = board.propose("user", { title: "receipt is not host authorization", class: "implement" });
+    board.update(receiptOnly.id, "user", "fixture lifecycle", { sdlc: { stage: "implement", repo: "Receipt-Only/Repo" } });
     const privateOnly = board.propose("user", { title: "private source", class: "implement", signals: ["pii_path"] });
     board.update(privateOnly.id, "user", "fixture lifecycle", { sdlc: { stage: "implement", repo: "Private-Only/Repo", pr: 2 } });
     board.propose("user", { title: "private external source", class: "implement", signals: ["pii_path"], external: { provider: "github", repo: "Private-External/Repo", issue: 4, url: "https://github.com/Private-External/Repo/issues/4" } });
     board.propose("user", { title: "refs do not authorize GitHub reads", class: "implement", refs: { repo: "Refs-Only/Repo" } });
   } finally { board.close(); }
   for (const op of ["queue", "release"] as const) {
-    for (const repo of ["unknown/repo", "PRIVATE-ONLY/REPO", "private-external/repo", "refs-only/repo", " owner/repo", "https://github.com/owner/repo"]) {
+    for (const repo of ["unknown/repo", "receipt-only/repo", "PRIVATE-ONLY/REPO", "private-external/repo", "refs-only/repo", " owner/repo", "https://github.com/owner/repo"]) {
       const before = readFileSync(r.calls, "utf8");
       const result = await agent.request({ t: "sdlc", op, repo, ...(op === "release" ? { liveIssues: [1, 2] } : {}) });
       expect(result).toMatchObject({ ok: false, error: "public repository unavailable for this project" });
@@ -96,6 +99,36 @@ for (const peer of ["codex", "pi"] as const) test(`${peer} public GitHub reads a
       expect(readFileSync(r.calls, "utf8")).not.toBe(before);
     }
   }
+});
+
+class ClaimFixturePeer extends BasePeer {
+  async start() { this.setState("idle"); }
+  async stop() { this.setState("offline"); }
+  async deliver(_envelopes: Envelope[]) { /* An owned transport fixture receives task context without running a native account. */ }
+}
+
+test("agent-owned lifecycle receipts and forged external fields cannot mint repository authority", async () => {
+  const r = await rig(), agent = await r.agent();
+  const peer = new ClaimFixturePeer("codex"); r.daemon.bus.add(peer); await peer.start();
+  const created = await agent.request({ t: "task", op: "hub_task_propose", args: { title: "agent-originated repo claim", class: "implement", owner: "codex", external: { provider: "github", repo: "forged-external/repo", issue: 5, url: "https://github.com/forged-external/repo/issues/5" } } });
+  expect(created.ok, String(created.error)).toBe(true);
+  const inspect = new Board(join(r.stateDir, "hub.db"));
+  let id: number;
+  try {
+    const task = inspect.list().find(row => row.title === "agent-originated repo claim")!;
+    expect(task.owner).toBe("codex"); expect(task.external).toBeUndefined(); id = task.id;
+  } finally { inspect.close(); }
+  const recorded = await agent.request({ t: "task", op: "hub_sdlc_record", args: { id, receipt: { repo: "agent-recorded/repo" } } });
+  expect(recorded.ok, String(recorded.error)).toBe(true);
+  const check = new Board(join(r.stateDir, "hub.db"));
+  try { expect(check.get(id)?.sdlc?.repo).toBe("agent-recorded/repo"); expect(check.get(id)?.external).toBeUndefined(); } finally { check.close(); }
+  const before = readFileSync(r.calls, "utf8");
+  for (const repo of ["agent-recorded/repo", "forged-external/repo"]) {
+    for (const op of ["queue", "release"] as const) expect(await agent.request({ t: "sdlc", op, repo })).toMatchObject({ ok: false, error: "public repository unavailable for this project" });
+  }
+  expect(readFileSync(r.calls, "utf8")).toBe(before);
+  expect((await agent.request({ t: "task", op: "github_import", args: { repo: "forged-external/repo", label: "task" } })).ok).toBe(false);
+  expect(readFileSync(r.calls, "utf8")).toBe(before);
 });
 
 test("ordinary public read access never grants adjacent mutations or planner-only reports", async () => {
