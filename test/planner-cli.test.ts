@@ -7,20 +7,21 @@ import { classifyPeerCommand } from "../src/cli/identity.ts";
 
 function source() {
   const text = readFileSync(new URL("../src/cli/main.ts", import.meta.url), "utf8"), ast = ts.createSourceFile("main.ts", text, ts.ScriptTarget.Latest, true);
-  let task: ts.ArrowFunction | undefined, flags: ts.FunctionDeclaration | undefined;
+  let task: ts.ArrowFunction | undefined, flags: ts.FunctionDeclaration | undefined, splitter: ts.FunctionDeclaration | undefined;
   const visit = (node: ts.Node) => {
     if (ts.isPropertyAssignment(node) && node.name.getText(ast) === "task" && ts.isArrowFunction(node.initializer)) task = node.initializer;
     if (ts.isFunctionDeclaration(node) && node.name?.text === "takeFlags") flags = node;
+    if (ts.isFunctionDeclaration(node) && node.name?.text === "splitPresentation") splitter = node;
     ts.forEachChild(node, visit);
   };
-  visit(ast); expect(task).toBeDefined(); expect(flags).toBeDefined();
+  visit(ast); expect(task).toBeDefined(); expect(flags).toBeDefined(); expect(splitter).toBeDefined();
   // main.ts dispatches at import. Run its real command and flag parser against a recording control port.
-  return ts.transpileModule(`${flags!.getText(ast)}\nconst execute=${task!.getText(ast)};execute();`, { compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext } }).outputText;
+  return ts.transpileModule(`${flags!.getText(ast)}\n${splitter!.getText(ast)}\nconst execute=${task!.getText(ast)};execute();`, { compilerOptions: { target: ts.ScriptTarget.ESNext, module: ts.ModuleKind.ESNext } }).outputText;
 }
 async function execute(args: string[]) {
   const calls: { op: string; args: unknown }[] = []; let error: string | undefined;
   try {
-    await runInNewContext(source(), { args, console: { log: () => {} }, fail: (message: string): never => { throw new Error(message); },
+    await runInNewContext(source(), { args, console: { log: () => {} }, outputOptions: () => ({ json: false, color: false, full: false, columns: undefined }), showToolText: () => {}, fail: (message: string): never => { throw new Error(message); },
       taskOp: async (op: string, input: unknown) => { calls.push({ op, args: JSON.parse(JSON.stringify(input)) }); return "fixture"; },
     });
   } catch (failure) { error = (failure as Error).message; }

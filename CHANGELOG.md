@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - `ahub restart` and `upgrade` off a terminal (a pipe or `--dry-run`), `recovery status` and the results of `recovery reattach|resume|abort|dispose`, `models setup|start`, `queue resolve` and `budget execution configure|disable` print readable output by default; scripts must pass `--json`, which prints exactly the previous document (#814). The readable plan names every blocker, reconnect-only session and fresh start in stdout instead of stderr.
+- `ahub task show|cancel`, `backlog groom|return|plan|pin|split|undo|pull-ready` and `release list|show|new|plan|activate|freeze|ship|drop` print readable output by default; scripts must pass `--json`, which prints the hub tool's text exactly as before (#814). `--json` and `--color=` are flags only at the start or end of a command that takes free text.
 - `ahub sdlc status|explain|queue|release|metrics|costs|authorize-release` print readable output by default; scripts must pass `--json`, which prints exactly the previous document (#814). A guard test fails when a CLI path prints JSON outside `--json` or a named data format.
 - Pin @staix/agent-mem 0.8.0 (native-memory import, Korean recall set, consolidation and sync fixes).
 

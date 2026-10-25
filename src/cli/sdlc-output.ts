@@ -5,12 +5,12 @@
 import { duration, plural, relative, table, terminalText, wrap, type Span, type Tone } from "./console-state.ts";
 
 type Line = Span[];
-const s = (value: unknown, tone?: Tone): Span => ({ text: terminalText(value).replace(/[\n\t]/g, " "), ...(tone ? { tone } : {}) });
-const room = (columns?: number) => columns ?? Infinity;
-const list = (value: unknown): any[] => Array.isArray(value) ? value : [];
-const yes = (value: unknown) => value === true ? "yes" : value === false ? "no" : "unknown";
-const short = (sha: unknown) => typeof sha === "string" && sha ? sha.slice(0, 8) : "-";
-const count = (n: unknown) => typeof n === "number" && Number.isFinite(n) ? (Number.isInteger(n) ? String(n) : n.toFixed(1)) : "unknown";
+export const s = (value: unknown, tone?: Tone): Span => ({ text: terminalText(value).replace(/[\n\t]/g, " "), ...(tone ? { tone } : {}) });
+export const room = (columns?: number) => columns ?? Infinity;
+export const list = (value: unknown): any[] => Array.isArray(value) ? value : [];
+export const yes = (value: unknown) => value === true ? "yes" : value === false ? "no" : "unknown";
+export const short = (sha: unknown) => typeof sha === "string" && sha ? sha.slice(0, 8) : "-";
+export const count = (n: unknown) => typeof n === "number" && Number.isFinite(n) ? (Number.isInteger(n) ? String(n) : n.toFixed(1)) : "unknown";
 const percent = (rate: unknown) => typeof rate === "number" && Number.isFinite(rate) ? `${Math.round(rate * 100)}%` : "unknown";
 /** `2026-10-25 14:20 UTC (3h05m ago)`: an absolute minute and how long ago, never the raw ISO string. */
 export function moment(at: unknown, now: number): string {
@@ -18,10 +18,10 @@ export function moment(at: unknown, now: number): string {
   const iso = new Date(at).toISOString();
   return `${iso.slice(0, 10)} ${iso.slice(11, 16)} UTC (${relative(at, now)})`;
 }
-const span = (ms: unknown) => typeof ms === "number" && Number.isFinite(ms) ? duration(ms) : "unknown";
+export const span = (ms: unknown) => typeof ms === "number" && Number.isFinite(ms) ? duration(ms) : "unknown";
 
 /** Text wrapped to the width, continuation lines hanging under `indent`. */
-function para(text: string, columns: number | undefined, tone?: Tone, indent = "", hang = 2): Line[] {
+export function para(text: string, columns: number | undefined, tone?: Tone, indent = "", hang = 2): Line[] {
   return wrap(indent + text, room(columns), hang).map(line => [s(line, tone)]);
 }
 /**
@@ -29,7 +29,7 @@ function para(text: string, columns: number | undefined, tone?: Tone, indent = "
  * the value does not fit in the room left of the label column, the value moves under the label instead, so a path or id
  * is broken only when it is wider than the whole terminal.
  */
-function pair(label: string, value: unknown, columns: number | undefined, labelWidth: number, tone?: Tone, indent = ""): Line[] {
+export function pair(label: string, value: unknown, columns: number | undefined, labelWidth: number, tone?: Tone, indent = ""): Line[] {
   const text = terminalText(value).replace(/[\n\t]/g, " ");
   const head = indent + label.padEnd(labelWidth) + "  ";
   const longest = Math.max(0, ...text.split(/\s+/).map(textWidth));
@@ -41,18 +41,18 @@ function pair(label: string, value: unknown, columns: number | undefined, labelW
   return lines.map((line, i) => i === 0 ? [s(line.slice(0, head.length), "muted"), s(line.slice(head.length), tone)] : [s(line, tone)]);
 }
 /** Items under a label, one per line, wrapped under the dash. */
-function bullets(label: string, items: readonly unknown[], columns: number | undefined, tone?: Tone, indent = ""): Line[] {
+export function bullets(label: string, items: readonly unknown[], columns: number | undefined, tone?: Tone, indent = ""): Line[] {
   if (!items.length) return [];
   return [[s(indent + label, "muted")], ...items.flatMap(item => para(`- ${terminalText(item)}`, columns, tone, indent + (columns !== undefined && indent.length + 2 + 2 + Math.max(0, ...terminalText(item).split(/\s+/).map(textWidth)) > columns ? "" : "  "), 2))];
 }
 const GAP = 2;
-const textWidth = (text: string) => Bun.stringWidth(text);
+export const textWidth = (text: string) => Bun.stringWidth(text);
 /**
  * A table that fits the terminal and never cuts a character. At its natural widths when they fit; otherwise the
  * widest cells wrap inside their column (a PR linked to thirty tasks wraps its TASKS cell, it does not push the
  * table to 134 columns); and when even each column's longest unbreakable word cannot fit, one labelled block per row.
  */
-function grid(head: string[], data: Span[][], columns: number | undefined): Line[] {
+export function grid(head: string[], data: Span[][], columns: number | undefined): Line[] {
   const natural = head.map((name, i) => Math.max(textWidth(name), ...data.map(row => textWidth(row[i]?.text ?? ""))));
   const gaps = GAP * (head.length - 1);
   if (columns === undefined || natural.reduce((sum, n) => sum + n, 0) + gaps <= columns) return table(head, data, room(columns), natural);
@@ -79,8 +79,8 @@ function blocks(head: string[], data: Span[][], columns: number): Line[] {
     ...head.slice(1).flatMap((name, i) => pair(name.toLowerCase(), row[i + 1]?.text ?? "", columns, label, row[i + 1]?.tone, "  "))]);
 }
 /** A heading wraps to the width like any paragraph; a long repository name never pushes it past the terminal. */
-const heading = (text: string, columns?: number): Line[] => wrap(text, room(columns), 2).map(line => [s(line, "strong")]);
-const blank: Line = [s("")];
+export const heading = (text: string, columns?: number): Line[] => wrap(text, room(columns), 2).map(line => [s(line, "strong")]);
+export const blank: Line = [s("")];
 const readyTone = (ready: unknown): Tone => ready === true ? "success" : "attention";
 
 // ---- sdlc status / explain ----------------------------------------------------------------------------------------
