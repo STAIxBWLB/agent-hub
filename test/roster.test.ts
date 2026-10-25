@@ -176,9 +176,11 @@ test("roster writes use the existing human settings fence and dashboard authorit
   const hub = await legacyHub(root, false), actors: ControlClient[] = [];
   try {
     for (const role of ["peer", "tools"] as const) {
-      const actor = await ControlClient.connect(hub.stateDir, { role, peer: "external" }); actors.push(actor);
+      const actor = await ControlClient.connect(hub.stateDir, { role, peer: role === "tools" ? "codex" : "external" }); actors.push(actor);
       expect((await actor.request({ t: "settings_set", key: "roster.kimi", value: false, confirm: "kimi" })).ok).toBe(false);
-      expect((await actor.request({ t: "settings_get" })).ok).toBe(false);
+      const read = await actor.request({ t: "settings_get" });
+      expect(read.ok).toBe(role === "tools");
+      if (role === "tools") expect(read.public).toBe(true);
     }
     const post = (origin: string, path: string, body: unknown, cookie?: string) => fetch(`${origin}${path}`, { method: "POST", headers: { origin, "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
     const session = async (settings: boolean) => {
@@ -259,7 +261,8 @@ test("the real roster CLI uses settings for live changes, stable JSON, and refus
     expect(hub.daemon.bus.isRostered("kimi")).toBe(false);
     expect((await cli(["roster", "add", "kimi"])).code).toBe(0);
     expect(hub.daemon.bus.isRostered("kimi")).toBe(true);
-    for (const args of [["roster", "--json"], ["roster", "remove", "kimi", "--yes"], ["roster", "add", "kimi"], ["settings", "set", "roster.kimi", "false", "--yes"]]) {
+    const agentRoster = await cli(["roster", "--json"], true); expect(agentRoster.code).toBe(0); expect(JSON.parse(agentRoster.stdout)).toEqual((await hub.client.request({ t: "settings_get" })).roster);
+    for (const args of [["roster", "remove", "kimi", "--yes"], ["roster", "add", "kimi"], ["settings", "set", "roster.kimi", "false", "--yes"]]) {
       const refused = await cli(args, true); expect(refused.code).toBe(1); expect(refused.stderr).toContain("console");
     }
     expect(hub.daemon.bus.isRostered("kimi")).toBe(true);

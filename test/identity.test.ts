@@ -25,8 +25,8 @@ test("agent command classification refuses all human authority and keeps ordinar
   // #812 moved bare recovery's screen forms and the dry-run previews to Allowed; these bare forms stay console.
   for (const command of ["queue", "recovery", "upgrade", "restart"]) expect(classifyPeerCommand(command, [])).toBe("console");
   for (const sub of ["resume", "set", "execution"]) expect(classifyPeerCommand("budget", [sub])).toBe("console");
-  // #812: the queue reads stay console until the daemon admits them (#812 T1b); the writes are the conductor's (#818).
-  expect(classifyPeerCommand("queue", ["list"])).toBe("console");
+  // #812 T1b: queue list is public; held bodies and writes remain conductor-only.
+  expect(classifyPeerCommand("queue", ["list"])).toBe("allowed");
   for (const sub of ["show", "resolve", "discard"]) expect(classifyPeerCommand("queue", [sub])).toBe("conductor");
   for (const command of ["say", "status", "board", "report", "turns", "review", "remember", "help", "version", "facts", "check-path"]) expect(classifyPeerCommand(command, [])).toBe("allowed");
   expect(classifyPeerCommand("task", ["propose"])).toBe("allowed");
@@ -63,8 +63,8 @@ test("audit labels and human-action hints contain command names only", () => {
 });
 
 test("roster mutation requires conductor authority while direct roster settings stay person-only (#812)", () => {
-  // #812: the daemon refuses roster reads for a tools connection (settings_get), so the bare read stays console too.
-  for (const args of [[], ["--json"]]) expect(classifyPeerCommand("roster", args)).toBe("console");
+  // #494: roster reads use the public settings projection; roster mutations retain their existing gate.
+  for (const args of [[], ["--json"]]) expect(classifyPeerCommand("roster", args)).toBe("allowed");
   for (const args of [["add", "kimi"], ["remove", "kimi", "--yes", "--now"]]) expect(classifyPeerCommand("roster", args)).toBe("conductor");
   for (const args of [["set", "roster.kimi", "true"], ["set", "roster.kimi", "false", "--yes"]]) expect(classifyPeerCommand("settings", args)).toBe("console");
 });
@@ -129,14 +129,14 @@ const allowedForms: readonly [string, readonly string[], PeerCommandAccess][] = 
   ["doctor", ["--stale-anchors", "--json"], "allowed"],
   ["doctor", ["--orphans"], "console"],
   ["doctor", ["--orphans", "--kill", "--json"], "conductor"], // #818 routes doctor orphans kill to the conductor
-  ["queue", ["list"], "console"],
-  ["queue", ["list", "--peer", "kimi", "--json", "--color=never"], "console"],
+  ["queue", ["list"], "allowed"],
+  ["queue", ["list", "--peer", "kimi", "--json", "--color=never"], "allowed"],
   ["queue", ["show", "d1"], "conductor"],
   ["queue", ["resolve", "d1", "--action", "completed", "--reason", "done"], "conductor"],
   ["queue", ["discard", "--peer", "kimi", "--reason", "all"], "conductor"],
-  ["roster", [], "console"],
-  ["roster", ["--json"], "console"],
-  ["roster", ["--color=always"], "console"],
+  ["roster", [], "allowed"],
+  ["roster", ["--json"], "allowed"],
+  ["roster", ["--color=always"], "allowed"],
   ["roster", ["add", "kimi"], "conductor"],
   ["roster", ["remove", "kimi", "--yes", "--now"], "conductor"],
   ["projects", [], "allowed"],
@@ -164,21 +164,21 @@ const allowedForms: readonly [string, readonly string[], PeerCommandAccess][] = 
   ["restart", [], "console"],
   ["restart", ["--yes"], "console"],
   ["restart", ["--dry-run", "--yes"], "console"],
-  ["settings", [], "console"],
-  ["settings", ["list"], "console"],
-  ["settings", ["list", "--json"], "console"],
-  ["settings", ["get", "routing.claude"], "console"],
-  ["settings", ["get", "routing.claude", "--json"], "console"],
+  ["settings", [], "allowed"],
+  ["settings", ["list"], "allowed"],
+  ["settings", ["list", "--json"], "allowed"],
+  ["settings", ["get", "routing.claude"], "allowed"],
+  ["settings", ["get", "routing.claude", "--json"], "allowed"],
   ["settings", ["set", "routing.claude", "implement"], "console"],
   ["settings", ["undo"], "console"],
   ["settings", ["reload"], "console"],
   ["settings", ["edit", "sdlc.toml", "set", "mode", "\"off\"", "--yes"], "console"],
   ["settings", ["backups"], "console"],
-  ["sdlc", ["status"], "console"],
-  ["sdlc", ["status", "42"], "console"],
-  ["sdlc", ["explain", "42"], "console"],
-  ["sdlc", ["queue", "STAIXBWLB/agent-hub"], "console"],
-  ["sdlc", ["release", "STAIXBWLB/agent-hub"], "console"],
+  ["sdlc", ["status"], "allowed"],
+  ["sdlc", ["status", "42"], "allowed"],
+  ["sdlc", ["explain", "42"], "allowed"],
+  ["sdlc", ["queue", "STAIXBWLB/agent-hub"], "allowed"],
+  ["sdlc", ["release", "STAIXBWLB/agent-hub"], "allowed"],
   ["sdlc", ["costs"], "console"],
   ["sdlc", ["metrics", "--since", "2026-10-01"], "console"],
   ["sdlc", ["export", "42"], "console"],
@@ -190,7 +190,7 @@ const allowedForms: readonly [string, readonly string[], PeerCommandAccess][] = 
   ["backlog", ["add", "implement", "a title"], "console"],
   ["backlog", ["pull", "42"], "console"],
   ["release", ["list"], "console"],
-  ["release", ["show", "0.18.0"], "console"],
+  ["release", ["show", "0.18.0"], "allowed"],
   ["release", ["new", "0.18.0", "goal", "1"], "console"],
   ["release", ["freeze", "0.18.0", "1"], "console"],
 ];
@@ -204,4 +204,20 @@ test("#812 AC1: every ahub help command has a class, so classification never thr
   for (const entry of HELP) {
     for (const word of helpCommands(entry)) expect(classes).toContain(classifyPeerCommand(word, []));
   }
+});
+
+
+test("#494 read forms keep planner reports and malformed/mutating neighbours closed", () => {
+  for (const [command, args] of [
+    ["queue", ["list", "--peer", "pi", "--json"]], ["roster", ["--json"]],
+    ["settings", ["get", "research.enabled", "--json"]],
+    ["sdlc", ["release", "owner/repository", "1", "2"]], ["release", ["show", "version"]],
+  ] as [string, string[]][]) expect(classifyPeerCommand(command, args)).toBe("allowed");
+  for (const [command, args] of [
+    ["queue", ["list", "--peer"]], ["queue", ["list", "--yes"]], ["queue", ["list", "--verbose"]], ["roster", ["--now"]], ["roster", ["--verbose"]],
+    ["settings", ["get"]], ["settings", ["get", "x", "y"]], ["settings", ["list", "--now"]],
+    ["sdlc", ["queue"]], ["sdlc", ["status", "1", "2"]], ["sdlc", ["authorize-release", "1.0.0"]],
+    ["sdlc", ["costs"]], ["sdlc", ["metrics"]], ["release", ["show"]],
+    ["release", ["list"]], ["backlog", ["list"]],
+  ] as [string, string[]][]) expect(classifyPeerCommand(command, args)).toBe("console");
 });

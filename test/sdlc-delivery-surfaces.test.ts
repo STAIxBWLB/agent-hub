@@ -12,20 +12,20 @@ import { loadRouting } from "../src/hub/routing.ts";
 import { sdlcConfig, type SdlcGh } from "../src/hub/sdlc.ts";
 const cleanup:(()=>unknown)[]=[];afterEach(async()=>{for(const f of cleanup.splice(0).reverse())await f()});
 const root=()=>{const dir=mkdtempSync(join(tmpdir(),"ahub-delivery-surface-"));cleanup.push(()=>rmSync(dir,{recursive:true,force:true}));return dir};
-test("delivery queue RPC and dashboard readbacks are console-only and perform no task mutation (#257)",async()=>{
+test("delivery queue RPC is public while dashboard actions stay console-only and perform no task mutation (#257)",async()=>{
  const dir=root(),bin=mkdtempSync(join(tmpdir(),"ahub-delivery-host-gh-")),record=join(dir,"calls");cleanup.push(()=>rmSync(bin,{recursive:true,force:true}));const program=join(bin,"gh");writeFileSync(program,'#!/bin/sh\nprintf call >> "'+record+'"\nprintf "[]\\n"\n');chmodSync(program,0o755);
  const old=process.env.PATH;process.env.PATH=bin+":"+old;cleanup.push(()=>{process.env.PATH=old});
  const stateDir=join(dir,"state"),daemon=await startDaemon({cwd:dir,stateDir,controlPort:0,codexAppPort:0,codexProxyPort:0,config:{...DEFAULT_CONFIG,memory:{...DEFAULT_CONFIG.memory,enabled:false},inference:{...DEFAULT_CONFIG.inference,enabled:false},mlx:{...DEFAULT_CONFIG.mlx,enabled:false},snapshots:{...DEFAULT_CONFIG.snapshots,enabled:false}}});cleanup.push(()=>daemon.stop());
  const client=await ControlClient.connect(stateDir,{role:"console"});cleanup.push(()=>client.close());
  const tools=await ControlClient.connect(stateDir,{role:"tools",peer:"codex"});cleanup.push(()=>tools.close());
- expect((await tools.request({t:"sdlc",op:"queue",repo:"owner/repo"})).ok).toBe(false);
+ expect((await tools.request({t:"sdlc",op:"queue",repo:"owner/repo"})).ok).toBe(true);
  const before=await client.request({t:"task",op:"hub_task_list",args:{}});
  const queue=await client.request({t:"sdlc",op:"queue",repo:"owner/repo"});expect(queue.ok).toBe(true);expect(queue.report.rows).toEqual([]);expect(queue.report.complete).toBe(true);
  const status=(await client.request({t:"status"})).status;
  expect((await client.request({t:"ui_action",instanceId:status.instanceId,action:{action:"sdlc_queue",repo:"owner/repo"}})).ok).toBe(true);
  expect((await tools.request({t:"ui_action",instanceId:status.instanceId,action:{action:"sdlc_queue",repo:"owner/repo"}})).ok).toBe(false);
  expect(await client.request({t:"task",op:"hub_task_list",args:{}})).toMatchObject({text:before.text});
- expect(readFileSync(record,"utf8")).toBe("callcall");
+ expect(readFileSync(record,"utf8")).toBe("callcallcall");
 });
 test("queue board revision fence invalidates late evidence instead of offering stale merge readiness (#257)",async()=>{
  const dir=root(),board=new Board(join(dir,"hub.db"));cleanup.push(()=>board.close());const t=board.propose(USER,{title:"PRIVATE_TITLE_MARKER",class:"implement"});
