@@ -4444,3 +4444,27 @@ In the dashboard Memory view (#684 phase 4), select a symbol and enable Code nei
 `hub_memory_graph` includes the same bounded derived context for symbol starts within its existing 6 KB output budget. Task briefs prioritize attached fails and decisions within `brief_items`; the console related-note count refers to that bounded selection. Code facts remain optional: no index is copied into memory, no graph edges are persisted and no PII task/turn starts a query.
 
 Optional code work runs only while Memory is open and visible. A cold console count reports unknown immediately; it does not prepare code facts. Direct task memory remains available when optional code facts are ineligible, interrupted or unavailable. Review/completion queries pre-empt optional native work after its owned process/tree cleanup. Unknown lookups have a five-second retry floor; topology caches are commit-bound and note bodies are refreshed under current policy. These are advisory coverage bounds, not empty-result proofs.
+
+## Authority by command
+
+### Conductor operations (#812 T2)
+
+The selected project's configured conductor may run the commands below through its ordinary peer identity. Other peers retain the guidance "the person runs it in ahub console or a terminal". A daemon round trip is permitted, but an unreachable hub refuses promptly rather than waiting for the ordinary connection timeout. Refused operations are audited as refused. The daemon checks the authenticated connection, current role and project membership before effects and after asynchronous boundaries. Roster handoffs carry that same authority check through plan admission, owner delivery and each later task; a saved assignment is never rolled back when delivery is interrupted. It records an `agent_cli` admission with the initiating peer before proceeding; audit failure refuses the operation. Admission records are not a unique invocation counter.
+
+| Command | Conductor scope |
+| --- | --- |
+| roster add/remove | Existing roster lifecycle and confirmations; no role or permission-mode grant |
+| stop peer | Existing hub-owned peer stop, ownership and recovery guards |
+| queue show/resolve/discard | Public queue projection and existing revision/confirmation guards |
+| task cancel | Existing hub_task_cancel with the real peer; eligibility follows the task-board policy |
+| doctor --orphans --kill | Selected project's positively identified hub-owned process only; no cross-project registrations or unsigned process files |
+| logs / export | Bounded daemon projections, with unsupported/private records withheld; logs -f ends when authority ends |
+| settings set | Only the twelve existing live registry keys listed below |
+
+The exact settings keys are `task_sweep.enabled`, `task_sweep.auto_reassign`, `task_sweep.no_writes_turns`, `task_sweep.interval_s`, `task_sweep.unaccepted_min`, `task_sweep.idle_min`, `task_sweep.review_min`, `task_sweep.ready_min`, `task_sweep.ladder_min`, `snapshots.enabled`, `research.enabled` and `approvals.notify`. New keys receive no authority by prefix. Generic roster setting writes still use the dedicated roster lifecycle. Conductor setting records name the initiating peer, and conductor writes preserve the person's pending undo record. An intervening write can still invalidate that undo through the existing file-digest guard; preserving the record does not bypass that guard. Permission modes, roles, `pet.window`, arbitrary configuration reload and undo remain person commands.
+
+Log history is limited to the last 100 retained lines and export to the last 1000 retained events, each within a 128 KiB read. Truncation is explicit. Export accepts closed metadata shapes; unknown fields and nested records are withheld rather than copied. Task titles, paths and private delivery bodies are not part of this projection. It does not change the person's ordinary logs/export output.
+
+Orphan cleanup requires a missing selected root, signed process identity and the host-known hub executable/entrypoint and argv. An inaccessible root or unavailable proof remains unknown; there is no offline config-based role grant. The daemon rechecks authority and process ownership before signals. A confirmed self candidate uses the existing lifecycle stop after its reply. A roster write already committed before authority ends is acknowledged as saved, without authorizing further lifecycle work or commands.
+
+`restart --yes` and `recovery resume/abort` await a project-scoped continuation proof. `task unassign` follows #481, and legacy models start/stop awaits a project that needs it. This slice adds no task eligibility rule and no MLX/recovery-driver changes. Person authority and the separately authorized `--live-test` path retain their existing behavior.

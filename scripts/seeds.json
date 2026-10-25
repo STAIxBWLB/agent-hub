@@ -212,8 +212,8 @@
     {
       "id": "roster-result-task-moves",
       "file": "src/hub/daemon.ts",
-      "search": "handoff = await tasks.reassignForRoster(peer);",
-      "replacement": "await tasks.reassignForRoster(peer);",
+      "search": "handoff = await tasks.reassignForRoster(peer, handoffCurrent);",
+      "replacement": "await tasks.reassignForRoster(peer, handoffCurrent);",
       "testFile": "test/roster.test.ts",
       "testName": "native removal preview and result name the retained terminal and list its saved task handoff (#315)"
     },
@@ -276,8 +276,8 @@
     {
       "id": "roster-transaction-serialized",
       "file": "src/hub/daemon.ts",
-      "search": "  async function changeRosterSetting(def: SettingDef, value: SettingValue, source: \"dashboard\" | \"terminal\", confirm: unknown, now: boolean, undo = false, authority: SettingAuthority = \"ordinary\", reason?: string, undoIdentity?: UndoIdentity): Promise<Record<string, unknown>> {\n    if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };",
-      "replacement": "  async function changeRosterSetting(def: SettingDef, value: SettingValue, source: \"dashboard\" | \"terminal\", confirm: unknown, now: boolean, undo = false, authority: SettingAuthority = \"ordinary\", reason?: string, undoIdentity?: UndoIdentity): Promise<Record<string, unknown>> {\n    if (false) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };",
+      "search": "  async function changeRosterSetting(def: SettingDef, value: SettingValue, source: SettingSource, confirm: unknown, now: boolean, undo = false, authority: SettingAuthority = \"ordinary\", reason?: string, undoIdentity?: UndoIdentity): Promise<Record<string, unknown>> {\n    if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };",
+      "replacement": "  async function changeRosterSetting(def: SettingDef, value: SettingValue, source: SettingSource, confirm: unknown, now: boolean, undo = false, authority: SettingAuthority = \"ordinary\", reason?: string, undoIdentity?: UndoIdentity): Promise<Record<string, unknown>> {\n    if (false) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };",
       "testFile": "test/roster-pi.test.ts",
       "testName": "Pi roster verification serializes roster writes and holds dispatch through its idle replay (#315)"
     },

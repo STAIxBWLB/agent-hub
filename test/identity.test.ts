@@ -22,7 +22,8 @@ test("malformed and conflicting native identity never falls back to the person",
 test("agent command classification refuses all human authority and keeps ordinary tools", () => {
   for (const command of ["permit", "queue", "kill", "recovery", "recovery-run", "upgrade", "restart", "up", "ask", "console", "ui", "tail", "undo", "unknown"]) expect(classifyPeerCommand(command, [])).toBe("console");
   for (const sub of ["resume", "set", "execution"]) expect(classifyPeerCommand("budget", [sub])).toBe("console");
-  for (const sub of ["list", "show", "resolve"]) expect(classifyPeerCommand("queue", [sub])).toBe("console");
+  expect(classifyPeerCommand("queue", ["list"])).toBe("console");
+  for (const sub of ["show", "resolve", "discard"]) expect(classifyPeerCommand("queue", [sub])).toBe("conductor");
   for (const command of ["say", "status", "board", "report", "turns", "review", "remember", "help", "version", "facts", "check-path"]) expect(classifyPeerCommand(command, [])).toBe("allowed");
   expect(classifyPeerCommand("task", ["propose"])).toBe("allowed");
   expect(classifyPeerCommand("task", ["show"])).toBe("allowed");
@@ -42,7 +43,8 @@ test("starts, holds and assignment require daemon conductor authority, never an 
 test("audit labels and human-action hints contain command names only", () => {
   expect(cliCommandLabel("say", ["private-text"])).toBe("say");
   expect(cliCommandLabel("stop", ["private-peer"])).toBe("stop");
-  for (const args of [[], ["pi"], ["pi", "--as-user"]]) expect(classifyPeerCommand("stop", args)).toBe("console");
+  for (const args of [[], ["pi", "--as-user"]]) expect(classifyPeerCommand("stop", args)).toBe("console");
+  expect(classifyPeerCommand("stop", ["pi"])).toBe("conductor");
   expect(cliCommandLabel("task", ["private-text"])).toBe("task");
   expect(cliCommandLabel("task", ["assign", "42", "private-text"])).toBe("task assign");
   expect(cliCommandLabel("task", ["unassign", "42"])).toBe("task unassign");
@@ -56,8 +58,9 @@ test("audit labels and human-action hints contain command names only", () => {
   expect(cliCommandLabel("permission", ["private-peer"])).toBe("permission");
 });
 
-test("the roster and its settings remain human-only for an agent identity (#315)", () => {
-  for (const args of [[], ["--json"], ["add", "kimi"], ["remove", "kimi", "--yes", "--now"]]) expect(classifyPeerCommand("roster", args)).toBe("console");
+test("roster mutation requires conductor authority while direct roster settings stay person-only (#812)", () => {
+  for (const args of [[], ["--json"]]) expect(classifyPeerCommand("roster", args)).toBe("console");
+  for (const args of [["add", "kimi"], ["remove", "kimi", "--yes", "--now"]]) expect(classifyPeerCommand("roster", args)).toBe("conductor");
   for (const args of [["set", "roster.kimi", "true"], ["set", "roster.kimi", "false", "--yes"]]) expect(classifyPeerCommand("settings", args)).toBe("console");
 });
 

@@ -208,7 +208,7 @@ test("the human stop CLI leaves a real daemon's local peer offline and the hub r
   } finally { console_?.close(); await daemon.stop(); model.stop(); rmSync(root, { recursive: true, force: true }); }
 }, 20_000);
 
-test("all human-only agent CLI commands refuse before a control connection and preserve ids-only audits", async () => {
+test("person commands and unverifiable operational commands refuse promptly without control connections and preserve refused audits", async () => {
   const root = project(), stateDir = join(root, ".agenthub/state");
   mkdirSync(stateDir);
   let connections = 0;

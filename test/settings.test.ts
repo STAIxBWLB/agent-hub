@@ -306,10 +306,12 @@ test("AC4 and AC8: an agent shell cannot open a settings session or write a sett
   const rig = await hub();
   const tools = await ControlClient.connect(rig.stateDir, { role: "tools", peer: "claude" }); cleanup.push(() => tools.close());
   expect(await tools.request({ t: "ui", settings: true })).toMatchObject({ ok: false, error: "ui is a console command" });
-  for (const t of ["settings_get", "settings_set", "settings_undo", "settings_preview"]) expect((await tools.request({ t, key: "research.enabled", value: true })).error).toContain("run ahub settings in a terminal");
+  for (const t of ["settings_get", "settings_undo"]) expect((await tools.request({ t, key: "research.enabled", value: true })).error).toContain("run ahub settings in a terminal");
+  for (const t of ["settings_set", "settings_preview"]) {const reply=await tools.request({t,key:"research.enabled",value:true});expect(reply.ok).toBe(false);expect(reply.error).toContain("the person runs it in ahub console or a terminal");expect(reply.error).toContain("conductor");}
   expect(text(rig.file("config.local.json"))).toBeNull();
   for (const args of [["--settings"], ["--settings", "--no-open"], []]) expect(classifyPeerCommand("ui", args)).toBe("console");
-  for (const args of [[], ["list"], ["get", "research.enabled"], ["set", "research.enabled", "true"], ["undo"]]) expect(classifyPeerCommand("settings", args)).toBe("console");
+  for (const args of [[], ["list"], ["get", "research.enabled"], ["undo"]]) expect(classifyPeerCommand("settings", args)).toBe("console");
+  expect(classifyPeerCommand("settings", ["set", "research.enabled", "true"])).toBe("conductor");
   // The dashboard's other authority is unchanged: an unknown action is still refused, whatever the session.
   expect(await (await rig.page(true)).act({ action: "setting_everything" })).toMatchObject({ ok: false });
 });
@@ -539,7 +541,7 @@ test("AC8: ahub settings list, get, set, undo and ahub ui --settings work from a
   expect((await cli(rig.cwd, ["ui", "--settings", "--all"])).stderr).toContain("run it without --all");
   expect(readFileSync(join(rig.stateDir, "hub.log"), "utf8")).toContain("settings session opened from ahub ui --settings");
 
-  // An agent shell: refused by the identity gate before any connection, for reads and writes alike.
+  // Non-conductor shells retain person guidance; operational writes require fresh daemon conductor authority.
   const before = text(local);
   for (const args of [["settings"], ["settings", "get", "research.enabled"], ["settings", "set", "research.enabled", "false"], ["settings", "undo"], ["ui", "--settings", "--no-open"]]) {
     for (const markers of [{ AGENTHUB_PEER_ID: "kimi" }, { CLAUDECODE: "1" }] as Record<string, string>[]) {

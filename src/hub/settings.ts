@@ -1,3 +1,4 @@
+import { operationalRosterSetting, operationalSetting } from "./operational-authority.ts";
 import { ACTION_CLASSES } from "./action-class.ts";
 import { definitionOf, type KindMap, type ProjectAdapterCatalog, ADAPTERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS } from "../adapters/registry.ts";
 import { createHash } from "node:crypto";
@@ -193,12 +194,15 @@ export function parseSettingText(def: SettingDef, text: string): unknown {
 }
 export const settingText = (value: unknown): string => value === null || value === undefined ? "(not set)" : Array.isArray(value) ? value.join(",") || "(none)" : String(value);
 
+export type SettingSource = "dashboard" | "terminal" | "conductor";
+export type SettingWriteOptions = { preserveUndo?: boolean };
 /** `ordinary`: a dashboard session from `ahub ui`. `settings`: one from `ahub ui --settings`. `terminal`: `ahub settings`. */
-export type SettingAuthority = "ordinary" | "settings" | "terminal";
+export type SettingAuthority = "ordinary" | "settings" | "terminal" | "conductor";
 /** Why this authority may not set this value, or undefined. Removing a stored value can raise, so it counts as one. */
 export function settingRefusal(def: SettingDef | string, value: SettingValue, authority: SettingAuthority): string | undefined {
   if (typeof def === "string") return def || "invalid setting definition";
   if (def.locked) return def.locked;
+  if (authority === "conductor") return operationalSetting(def) || operationalRosterSetting(def) ? undefined : `${def.key} is not an operational conductor setting`;
   if (def.risk === "safe" || authority !== "ordinary") return undefined;
   if (value !== null && value === def.floor) return undefined;
   return `${def.key} can widen what agents do without asking: open a settings session with ahub ui --settings, or use ahub settings in a terminal`;
@@ -244,10 +248,12 @@ function refuseTracked(cwd: string, file: StoredFile): void {
   // Unknown is not untracked where there is a repository to ask; only a project outside git has nothing tracked.
   if (tracked === undefined && configRepositoryPresent(cwd)) throw new Error(`git could not confirm that .agenthub/${file} is untracked; nothing was written`);
 }
-/** Keeps the one previous version, then replaces (or removes) the file. */
-function store(cwd: string, stateDir: string, file: StoredFile, key: string, previous: string | null, next: string | null): void {
+/** Person writes keep the one previous version; conductor writes preserve that existing receipt. */
+function store(cwd: string, stateDir: string, file: StoredFile, key: string, previous: string | null, next: string | null, options: SettingWriteOptions = {}): void {
   refuseTracked(cwd, file);
   replaceFile(join(cwd, ".agenthub", file), file, next);
+  // A conductor write never replaces, deletes or rebases the person's undo receipt. The ordinary digest fence still applies.
+  if(options.preserveUndo)return;
   // The record follows the file: a write that failed leaves the earlier record valid, because the file is as it left it.
   const record: UndoRecord = { file, key, previous, written: digest(next), at: Date.now() };
   try {
@@ -282,7 +288,7 @@ export function valueAt(doc: unknown, path: readonly string[]): unknown {
  * Sets (or with null removes) one key of `.agenthub/config.local.json`. `validate` gets a scratch project that holds
  * the shared config and the candidate, and throws when the hub's own loader would refuse it: nothing is written then.
  */
-export function writeConfigSetting(cwd: string, stateDir: string, def: SettingDef, value: SettingValue, validate: (scratch: string) => unknown): boolean {
+export function writeConfigSetting(cwd: string, stateDir: string, def: SettingDef, value: SettingValue, validate: (scratch: string) => unknown, options: SettingWriteOptions = {}): boolean {
   const file = join(cwd, ".agenthub", CONFIG_LOCAL);
   const before = readText(file);
   const doc = before === null ? {} : parseObject(before, CONFIG_LOCAL);
@@ -315,7 +321,7 @@ export function writeConfigSetting(cwd: string, stateDir: string, def: SettingDe
   } else node[leaf] = value;
   const text = `${JSON.stringify(doc, null, 2)}\n`;
   checkConfigText(cwd, text, validate);
-  store(cwd, stateDir, CONFIG_LOCAL, def.key, before, text);
+  store(cwd, stateDir, CONFIG_LOCAL, def.key, before, text, options);
   return true;
 }
 /** Runs `validate` on a scratch project holding the shared config and this candidate for the machine-local one. */

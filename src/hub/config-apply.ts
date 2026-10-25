@@ -1,3 +1,4 @@
+import { operationalSettingKey } from "./operational-authority.ts";
 import { remoteRunnerConfig } from "./check-runner.ts";
 import { ACTION_CLASSES } from "./action-class.ts";
 import { actionPolicyConfig } from "./action-policy.ts";
@@ -40,7 +41,7 @@ export interface ConfigAuthorizationInput {
   /** Captured host filename, not the requested setting or a caller-provided authority. */
   sourceFile?: string;
   tracked: boolean | undefined;
-  authority: "ordinary" | "settings" | "terminal";
+  authority: "ordinary" | "settings" | "terminal" | "conductor";
   /** The daemon supplies this only for the selected setting or an explicitly confirmed reload key. */
   confirmed?: boolean;
   /** Root proved the destination equals an unchanged, effective startup declaration in this origin. */
@@ -67,6 +68,8 @@ export function authorizeConfigLeaf(input: ConfigAuthorizationInput): ConfigAuth
   if (same(before, after)) return result(true, false, "unchanged");
   const supplied = input.guard;
   const guard = supplied && (key === supplied.key || key === `${supplied.store === "routing" ? "routing." : ""}${supplied.path.join(".")}`) ? supplied : undefined;
+  if (input.authority === "conductor" && (!guard || input.source !== "config" || guard.store !== "config" || input.structural
+    || !(operationalSettingKey(key) || /^roster\.[a-z][a-z0-9-]{0,31}$/.test(key)))) return result(false, true, "conductor changes require one selected operational registry setting");
   const machine = input.source === "config" && ALL_MACHINE_LOCAL.some(path => key === path || key.startsWith(`${path}.`));
   const strings = (value: unknown): value is string[] => Array.isArray(value) && value.every(item => typeof item === "string");
   const subset = (smaller: unknown, larger: unknown) => strings(larger) && (smaller === undefined || strings(smaller) && smaller.every(item => larger.includes(item)));
@@ -92,7 +95,7 @@ export function authorizeConfigLeaf(input: ConfigAuthorizationInput): ConfigAuth
   if (input.source === "config" && (key === "pet" || key.startsWith("pet."))) return result(true, false, "console-local presentation");
   if (guard?.risk === "safe" && !machine) return result(true, false, "safe registered setting");
   if (input.acceptedFallback && !machine) {
-    const person = input.authority === "terminal" || input.authority === "settings" && !!guard;
+    const person = input.authority === "terminal" || (input.authority === "settings" || input.authority === "conductor") && !!guard;
     return result(person && input.confirmed === true, true, "restoring an unchanged effective startup value needs this key to be explicitly confirmed");
   }
   // Every other policy change is conservative: person intent never turns tracked or unknown code into host authority.
@@ -105,7 +108,7 @@ export function authorizeConfigLeaf(input: ConfigAuthorizationInput): ConfigAuth
   return result(true, true, guard ? "confirmed registered setting" : "confirmed terminal reload");
 }
 type TrustLayer = ConfigLayer | { name: "routing.toml" | "routing.local.toml"; raw: Record<string, unknown> };
-type Authority = "ordinary" | "settings" | "terminal";
+type Authority = "ordinary" | "settings" | "terminal" | "conductor";
 type Check = (value: unknown, key: string) => void;
 const fail = (key: string, reason = "invalid value"): never => { throw new Error(`${key}: ${reason}`); };
 const object = (value: unknown, key: string): Record<string, unknown> => {
@@ -303,6 +306,7 @@ export function assertReloadTrust(cwd: string, layers: readonly TrustLayer[], pr
       if (!guard.machine && value !== undefined && same(value, guard.floor)) continue;
       // Empty machine-local declarations choose no program/path and are stripped at startup.
       if (!inherit && guard.machine && (value === undefined || value === null || value === "" || Array.isArray(value) && !value.length)) continue;
+      if (authority === "conductor" && (!guard.registered || !(operationalSettingKey(key) || /^roster\.[a-z][a-z0-9-]{0,31}$/.test(key)))) fail(`${layer.name}:${key}`, "conductor changes require an operational registry setting");
       let tracked = configTracked(cwd, layer.name);
       if (!guard.machine && tracked === undefined && !configRepositoryPresent(cwd)) tracked = false;
       if (tracked !== false) fail(`${layer.name}:${key}`, tracked ? "guarded change is tracked" : "guarded source trust is unknown");

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { conductorOperation } from "../hub/operational-authority.ts";
 import type { DeliverableRow } from "../hub/tasks.ts";
 import { kimiSourceRow } from "../hub/budget-notes.ts";
 import { hubGitSync, hubGitEnv } from "../hub/git.ts";
@@ -201,6 +202,7 @@ const projectConfig = () => {
   return config;
 };
 const stateDir = selected.stateDir;
+var operationalAuditReady=false, operationalRefusalRecorded=false;
 const caller = declaredInstances ? detectCliIdentity(process.env, declaredInstances) : unboundCaller;
 const commandLabel = cliCommandLabel(cmd, args, projectCatalog);
 const commandAccess = classifyPeerCommand(cmd, args, projectCatalog);
@@ -208,8 +210,10 @@ const commandAccess = classifyPeerCommand(cmd, args, projectCatalog);
 const delegationRefused = liveTest && caller.role === "tools" && commandAccess !== "allowed" && liveTestRefusal(cmd, args);
 const delegatedPeer = liveTest && caller.role === "tools" && commandAccess !== "allowed" && !delegationRefused ? caller.peer : undefined;
 const identity = delegatedPeer ? { role: "console" as const } : caller;
+operationalAuditReady=identity.role==="tools" && commandAccess==="conductor" && conductorOperation(cmd,args)!==undefined;
 function audit(outcome: "run" | "refused" | "invalid"): void {
   if (caller.role === "console") return;
+  if(outcome==="refused" && operationalAuditReady){if(operationalRefusalRecorded)return;operationalRefusalRecorded=true;}
   try { recordCliAudit(stateDir, caller.role === "tools" ? caller.peer : "unknown", commandLabel, outcome); }
   catch {
     if (delegatedPeer) fail("live-test delegation audit unavailable; nothing was executed");
@@ -249,7 +253,7 @@ if (delegatedPeer && !recoveryAudit && !noAuditConsumer) {
     }
     fail((error as Error).message);
   }
-} else if (identity.role === "tools" || delegatedPeer) audit("run");
+} else if ((identity.role === "tools" || delegatedPeer) && !operationalAuditReady) audit("run");
 function assertDelegatedAuditConsumer(): void {
   if (delegatedAuditHub && ((!delegatedConnectionTaken && !delegatedAuditHub.isOpen) || readControl(stateDir)?.instanceId !== delegatedAuditHub.instanceId)) {
     throw new Error("delegated audit consumer changed; refusing further actions; inspect the result before retrying");
@@ -447,7 +451,8 @@ function startupDiagnostic(error: unknown): string {
   return message.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 512) || "invalid startup configuration";
 }
 
-function fail(message: string): never {
+function fail(message: string, refusalAudited=false): never {
+  if(operationalAuditReady){if(refusalAudited)operationalRefusalRecorded=true;if(!operationalRefusalRecorded)audit("refused");}
   console.error(`ahub: ${message}`);
   process.exit(1);
 }
@@ -459,6 +464,7 @@ async function taskOp(op: string, a: Record<string, unknown>, throwOnError = fal
     const res = await hub.request({ t: "task", op, args: a }, timeoutMs ?? (op === "github_import" ? 60_000 : 30_000));
     if (!res.ok) {
       if (throwOnError) throw new Error(res.error);
+      if(res.refusalAudited===true)operationalRefusalRecorded=true;
       audit("refused");
       // #711: an agent shell refused something only the person may do is told why it counts as an agent. The refusal and the authority stay as they were.
       const cause = agentShellCause(identity, String(res.error));
@@ -1024,7 +1030,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         const { one, rest: flags } = takeFlags(rest, ["--peer"], []);
         if (flags.length) fail("usage: ahub queue list [--peer <id>] [--json] [--full] [--color=auto|always|never]");
         const result = await hub.request({ t: "queue", op: "list", ...(one["--peer"] ? { peer: one["--peer"] } : {}) });
-        if (!result.ok) fail(result.error);
+        if (!result.ok) fail(result.error,result.refusalAudited===true);
         if (options.json) return console.log(JSON.stringify(result.deliveries, null, 2));
         printOutput(renderQueue(result.deliveries, options.columns, Date.now()), options.color);
         return;
@@ -1036,7 +1042,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         if (others.length || !one["--peer"] || (one["--state"] !== undefined && !["queued", "needs_review"].includes(one["--state"]))) fail("usage: ahub queue discard --peer <id> --reason <text> [--state queued|needs_review] [--yes]");
         if (yes && !one["--reason"]?.trim()) fail("ahub queue discard needs --reason <text> with --yes: it is recorded on every discarded delivery");
         const result = await hub.request({ t: "queue", op: "discard", peer: one["--peer"], ...(one["--state"] ? { state: one["--state"] } : {}), ...(yes ? { confirmed: true, reason: one["--reason"] } : {}) }, 60_000);
-        if (!result.ok) fail(result.error);
+        if (!result.ok) fail(result.error,result.refusalAudited===true);
         if (options.json) return console.log(JSON.stringify(result, null, 2));
         if (!yes) return console.log(`${result.count} ${result.state} deliver${result.count === 1 ? "y" : "ies"} for ${result.peer}; nothing discarded. Run again with --reason <text> --yes to discard them.`);
         console.log(`discarded ${result.discarded} of ${result.count} ${result.state} deliver${result.count === 1 ? "y" : "ies"} for ${result.peer}${result.refused ? `; ${result.refused} refused (${Object.entries(result.refusedBy ?? {}).map(([why, n]) => `${why} ${n}`).join(", ")})` : ""}`);
@@ -1047,7 +1053,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (operation === "show") {
         if (flags.length) fail("usage: ahub queue show <id>");
         const shown = await hub.request({ t: "queue", op: "show", id });
-        if (!shown.ok) fail(shown.error);
+        if (!shown.ok) fail(shown.error,shown.refusalAudited===true);
         if (options.json) return console.log(JSON.stringify(shown.delivery, null, 2));
         return printOutput(renderQueueShow(shown.delivery, options.columns, Date.now()), options.color);
       }
@@ -1057,11 +1063,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       let revision = parsedRevision;
       if (revision === undefined) {
         const shown = await hub.request({ t: "queue", op: "show", id });
-        if (!shown.ok) fail(shown.error);
+        if (!shown.ok) fail(shown.error,shown.refusalAudited===true);
         revision = shown.delivery.revision;
       }
       const result = await hub.request({ t: "queue", op: "resolve", id, revision, action: one["--action"], reason: one["--reason"] });
-      if (!result.ok) fail(result.error);
+      if (!result.ok) fail(result.error,result.refusalAudited===true);
       console.log(JSON.stringify(result.delivery, null, 2));
     } finally { hub.close(); }
   },
@@ -1489,7 +1495,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const reply = await hub.request({ t: "peer_stop", peer }, 35_000);
       if (reply.ok !== true) {
         const error = String(reply.error ?? "peer stop request refused");
-        fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "peer_stop"/i.test(error) ? `${error}; upgrade the running hub to use ahub stop` : error);
+        fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "peer_stop"/i.test(error) ? `${error}; upgrade the running hub to use ahub stop` : error,reply.refusalAudited===true);
       }
       console.log(`${peer}: ${reply.state}`);
     } finally { hub.close(); }
@@ -1525,7 +1531,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const hub = await connect();
     try {
       requireNamedPeerFeature(hub, peer);
-      const request = async (message: Record<string, unknown>) => { const reply = await hub.request(message, 35_000); if (reply.ok !== true) fail(String(reply.error ?? "roster request refused")); return reply; };
+      const request = async (message: Record<string, unknown>) => { const reply = await hub.request(message, 35_000); if (reply.ok !== true) fail(String(reply.error ?? "roster request refused"),reply.refusalAudited===true); return reply; };
       if (sub === "list") {
         const view = await request({ t: "settings_get" });
         if (!Array.isArray(view.roster)) fail("upgrade the running hub to use ahub roster");
@@ -1591,7 +1597,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         const reply = await hub.request(message, 35_000);
         if (reply.ok !== true) {
           const error = String(reply.error ?? "settings request refused");
-          fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "settings_/i.test(error) ? `${error}; upgrade the running hub to use ahub settings` : error);
+          fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "settings_/i.test(error) ? `${error}; upgrade the running hub to use ahub settings` : error,reply.refusalAudited===true);
         }
         return reply;
       };
@@ -1719,8 +1725,29 @@ const commands: Record<string, () => Promise<void> | void> = {
     } finally { hub.close(); }
   },
 
-  logs: () => exec("tail", [args.includes("-f") ? "-f" : "-n100", join(stateDir, "hub.log")]),
-  export: () => {
+  logs: async () => {
+    if (identity.role !== "tools") return exec("tail", [args.includes("-f") ? "-f" : "-n100", join(stateDir, "hub.log")]);
+    const hub=await connect();const pending:string[]=[];let ready=false;
+    hub.onPush=message=>{if(message.t==="operational_log" && typeof message.line==="string"){if(ready)console.log(message.line);else if(pending.length<100)pending.push(message.line);}};
+    try {
+      const result=await hub.request({t:"conductor_operational",op:"logs",follow:args.includes("-f")});
+      if(result.ok!==true)fail(String(result.error??"operational logs unavailable"),result.refusalAudited===true);
+      for(const line of result.lines??[])console.log(line);
+      ready=true;for(const line of pending)console.log(line);
+      if(result.truncated)console.error("ahub: operational log history is truncated");
+      if(args.includes("-f"))await new Promise<void>(resolve=>{
+        const finish=()=>{process.off("SIGINT",finish);resolve();};
+        hub.onClose=finish;process.once("SIGINT",finish);
+      });
+    } finally {hub.close();}
+  },
+  export: async () => {
+    if(identity.role==="tools") {
+      const hub=await connect();
+      try {const result=await hub.request({t:"conductor_operational",op:"export",since:since()});if(result.ok!==true)fail(String(result.error??"operational export unavailable"),result.refusalAudited===true);for(const row of result.events??[])console.log(JSON.stringify(row));if(result.truncated)console.error("ahub: operational event history is truncated");}
+      finally {hub.close();}
+      return;
+    }
     for (const e of readEvents(join(stateDir, "events.jsonl"), since())) console.log(JSON.stringify(e));
   },
   bench: async () => {
@@ -2130,7 +2157,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       console.log(options.json ? JSON.stringify(report, null, 2) : formatMemoryStaleAnchors(report));
       return;
     }
-    if (args.includes("--orphans")) return orphanDoctor(args.includes("--kill"), options);
+    if (args.includes("--orphans")) {
+      if(identity.role==="tools" && args.includes("--kill")) {
+        const hub=await connect();try {const result=await hub.request({t:"conductor_operational",op:"orphans"},10_000);if(result.ok!==true)fail(String(result.error??"orphan inspection unavailable"),result.refusalAudited===true);console.log(JSON.stringify(result,null,2));}finally{hub.close();}return;
+      }
+      return orphanDoctor(args.includes("--kill"), options);
+    }
     const version = (bin: string) => {
       const res = spawnSync(bin, ["--version"], { encoding: "utf8" });
       return res.status === 0 ? res.stdout.trim().split("\n")[0]! : undefined;
@@ -2287,6 +2319,23 @@ function inspectDoctorRouting(cwd: string): { routing?: Routing; errors: string[
 }
 
 async function runConductorCommand(): Promise<void> {
+  const operation=conductorOperation(cmd,args);
+  if(operation) {
+    const denial=()=>peerCommandRefusal(identity.role==="tools"?identity.peer:"unknown",commandLabel);
+    const descriptor=readControl(stateDir);
+    if(!descriptor?.instanceId || !descriptor.projectId || !descriptor.pid || !descriptor.pidSignature || processLiveness(descriptor.pid,descriptor.pidSignature)!=="live")fail(denial());
+    let hub:ControlClient;
+    try {hub=await connect(750);} catch {fail(denial());}
+    let release:(()=>void)|undefined;
+    try {
+      let result:any;
+      try {result=await hub.request({t:"conductor_operational",op:"authorize",command:operation},750);} catch {fail(denial());}
+      if(result.ok!==true || !hub.instanceId)fail(`${denial()}${result.error?`; ${String(result.error)}`:""}`,result.refusalAudited===true);
+      release=ControlClient.pinInstance(stateDir,hub.instanceId);
+      await commands[cmd]!();
+    } finally {release?.();hub.close();}
+    return;
+  }
   let op: string;
   let input: Record<string, unknown>;
   if (cmd === "task") {
