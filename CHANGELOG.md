@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Pin @staix/agent-mem 0.8.0 (native-memory import, Korean recall set, consolidation and sync fixes).
+
 ## 0.17.0
 
 - Every open live leg in `docs/smoke.md` carries one class (`agent-executable`, `agent-evidence / person-verdict`, `person-only`, `external-blocked`), the SDLC stage table names the class per stage, and this repository's AGENTS.md has the reviewer that approves a PR at its head merge it under the existing gates and clean up; the shipped AGENTS block, catalog roles and flow role contracts are unchanged (#784).

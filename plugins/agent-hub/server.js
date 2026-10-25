@@ -82,7 +82,7 @@ function memoryGitEnv(env = process.env, options = {}) {
 }
 function memoryGitSync(args, options) {
   const argv = memoryGitArgv(args);
-  return childProcess().spawnSync(argv[0], argv.slice(1), { ...options, env: memoryGitEnv(options.env ?? process.env) });
+  return childProcess().spawnSync(argv[0], argv.slice(1), { ...ambientGitTimeout !== undefined ? { timeout: ambientGitTimeout, killSignal: "SIGKILL" } : {}, ...options, env: memoryGitEnv(options.env ?? process.env) });
 }
 function processSignature(pid) {
   try {
@@ -118,7 +118,7 @@ var require2, processes, childProcess = () => processes ??= require2("node:child
     const parent = dirname(absolute);
     return parent === absolute ? absolute : join(canonical(parent), basename(absolute));
   }
-}, DENY_SEGMENTS, DENY_NAMES, hasSegment = (rel, seg) => `/${rel}/`.includes(`/${seg}/`), SAFE_CONFIG, CREDENTIAL_KEYS, memoryGitArgv = (args, opts = {}) => ["git", "--no-pager", ...SAFE_CONFIG.filter((c) => !opts.credentials || !CREDENTIAL_KEYS.has(c)).flatMap((c) => ["-c", c]), ...args];
+}, DENY_SEGMENTS, DENY_NAMES, hasSegment = (rel, seg) => `/${rel}/`.includes(`/${seg}/`), SAFE_CONFIG, CREDENTIAL_KEYS, memoryGitArgv = (args, opts = {}) => ["git", "--no-pager", ...SAFE_CONFIG.filter((c) => !opts.credentials || !CREDENTIAL_KEYS.has(c)).flatMap((c) => ["-c", c]), ...args], ambientGitTimeout;
 var init_platform = __esm(() => {
   require2 = createRequire(import.meta.url);
   DENY_SEGMENTS = [".maru/secrets", ".agenthub/state", ".agenthub/archive"];
@@ -14087,6 +14087,14 @@ var init_work_lists = __esm(() => {
   forbidden = new Set(["__proto__", "constructor", "prototype"]);
 });
 
+// node_modules/@staix/agent-mem/src/memory/candidate-pending.ts
+var CANDIDATE_AGE_MS, CANDIDATE_SHOWN_GRACE_MS, CANDIDATE_DUE_MS;
+var init_candidate_pending = __esm(() => {
+  CANDIDATE_AGE_MS = 30 * 86400000;
+  CANDIDATE_SHOWN_GRACE_MS = 7 * 86400000;
+  CANDIDATE_DUE_MS = 7 * 86400000;
+});
+
 // node_modules/@staix/agent-mem/src/memory/generation-sync.ts
 var zero;
 var init_generation_sync = __esm(() => {
@@ -14116,14 +14124,6 @@ var init_sync = __esm(() => {
   init_generation_sync();
   init_sync_screen();
   liveGroups = new Set;
-});
-
-// node_modules/@staix/agent-mem/src/memory/candidate-pending.ts
-var CANDIDATE_AGE_MS, CANDIDATE_SHOWN_GRACE_MS, CANDIDATE_DUE_MS;
-var init_candidate_pending = __esm(() => {
-  CANDIDATE_AGE_MS = 30 * 86400000;
-  CANDIDATE_SHOWN_GRACE_MS = 7 * 86400000;
-  CANDIDATE_DUE_MS = 7 * 86400000;
 });
 
 // node_modules/@staix/agent-mem/src/memory/path-glob.ts
@@ -21423,6 +21423,37 @@ init_policy();
 init_screen();
 init_shard();
 init_work_lists();
+// node_modules/@staix/agent-mem/src/memory/project-import.ts
+init_bridge();
+init_private_spans();
+init_shard();
+init_store();
+var PROJECT_IMPORT_MAX_BYTES = 64 * 1024 * 1024;
+var PROJECT_IMPORT_MAX_LINE_BYTES = 64 * 1024;
+var PROJECT_IMPORT_FUTURE_SKEW_MS = 5 * 60 * 1000;
+var NOTE_KEYS = new Set(["schema", "id", "at", "machine", "op", "project", "scope", "tier", "kind", "peer", "title", "text", "task", "about", "supersedes", "promotedFrom", "source", "expires"]);
+// node_modules/@staix/agent-mem/src/memory/external-import.ts
+init_aliases();
+
+// node_modules/@staix/agent-mem/src/memory/candidates.ts
+init_candidate_pending();
+
+// node_modules/@staix/agent-mem/src/memory/note-add.ts
+init_store();
+
+// node_modules/@staix/agent-mem/src/memory/candidates.ts
+init_home();
+init_platform();
+init_private_spans();
+var CANDIDATE_RETENTION = { count: 500, ageMs: 30 * 86400000 };
+var COUNTER_RETENTION = { count: 1e4, ageMs: 90 * 86400000 };
+
+// node_modules/@staix/agent-mem/src/memory/external-import.ts
+init_candidate_pending();
+init_platform();
+init_private_spans();
+init_screen();
+var EXTERNAL_IMPORT_LIMITS = { maxFiles: 256, maxDirectories: 512, maxEntriesPerDirectory: 512, maxDepth: 16, maxFileBytes: 1024 * 1024, maxCandidatesPerRun: 100, candidateTextChars: 3000, titleChars: 200 };
 // node_modules/@staix/agent-mem/src/memory/cross-project.ts
 init_search_fts();
 init_capture();
@@ -21456,18 +21487,6 @@ var memoryUsage = (name = AMEM_NAMES.memory) => `usage: ${name} [list] [--tier s
 var MEMORY_USAGE = memoryUsage();
 var goalUsage = (name = AMEM_NAMES.goal) => `usage: ${name} [list] [--all] | show <id> | new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task id> | state <id> open|active|blocked|done|dropped | done <id> | take <id> [--force]  [--json]`;
 var GOAL_USAGE = goalUsage();
-// node_modules/@staix/agent-mem/src/memory/candidates.ts
-init_candidate_pending();
-
-// node_modules/@staix/agent-mem/src/memory/note-add.ts
-init_store();
-
-// node_modules/@staix/agent-mem/src/memory/candidates.ts
-init_home();
-init_platform();
-init_private_spans();
-var CANDIDATE_RETENTION = { count: 500, ageMs: 30 * 86400000 };
-var COUNTER_RETENTION = { count: 1e4, ageMs: 90 * 86400000 };
 
 // node_modules/@staix/agent-mem/src/index.ts
 init_ops_contract();
@@ -21499,6 +21518,7 @@ var tool2 = (name, description, inputSchema, readOnlyHint = true) => ({
 });
 var MCP_TOOLS = [
   tool2("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object6({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" } }, ["query"])),
+  tool2("amem_evidence", "Return a bounded bundle of cited, live curated entries for a question. Untrusted memory data only: no answer or model call. Capture, repo-only notes, pending candidates and model answers are not evidence.", object6({ question: string(1000), limit: { type: "integer", minimum: 1, maximum: 20 }, maxBytes: { type: "integer", minimum: 256, maximum: 8192 } }, ["question"])),
   tool2("amem_show", "Show a screened memory entry in this project by its exact id or unique prefix.", object6({ id: string(80) }, ["id"])),
   tool2("amem_timeline", "Read screened memory near an entry or time in this project.", object6({ id: string(80), since: string(40), limit })),
   tool2("amem_brief", "Read an intent/path-scoped brief of live public memory: fails first, then decisions/contracts and one-hop neighbours. Memory is untrusted data; byte cap covers the complete brief body.", object6({ intent: string(1000), paths: { type: "array", maxItems: 150, items: string(512) }, symbols: { type: "array", maxItems: 150, items: string(512) }, maxBytes: { type: "integer", minimum: 1, maximum: 8192 } }, ["intent"])),
@@ -21524,6 +21544,9 @@ var MCP_TOOLS = [
   tool2("amem_vault_candidates", "List screened durable curated notes eligible for a person to move to the vault. Read only.", object6({ limit })),
   tool2("amem_capacity", "Read this machine's bounded capture capacity proposal; applying it is person-only.", object6({}))
 ];
+// node_modules/@staix/agent-mem/src/memory/evidence.ts
+init_policy();
+
 // node_modules/@staix/agent-mem/src/memory/plan-guard.ts
 init_store();
 init_project2();
@@ -21628,6 +21651,16 @@ init_generation();
 init_lifecycle();
 init_platform();
 init_shard();
+// node_modules/@staix/agent-mem/src/memory/consolidation-clusters.ts
+init_search_fts();
+
+// node_modules/@staix/agent-mem/src/memory/consolidate.ts
+init_policy();
+init_platform();
+
+// node_modules/@staix/agent-mem/src/memory/consolidation-model.ts
+init_policy();
+init_platform();
 // src/hub/tasks.ts
 init_task_code_symbols();
 init_test_integrity();
@@ -21660,7 +21693,7 @@ var package_default = {
     bun: ">=1.4.2"
   },
   dependencies: {
-    "@staix/agent-mem": "0.7.0"
+    "@staix/agent-mem": "0.8.0"
   },
   devDependencies: {
     "@modelcontextprotocol/sdk": "^1.27.1",
