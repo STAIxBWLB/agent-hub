@@ -172,7 +172,8 @@ function ownServer(text: string): Record<string, unknown> {
   if (Object.keys(hub).some(key => !["command", "args", "env"].includes(key)) || typeof hub.command !== "string" || !hub.command || hub.args !== undefined && (!Array.isArray(hub.args) || hub.args.some(arg => typeof arg !== "string"))) throw new Error("invalid hub transport");
   const env = hub.env === undefined ? {} : object(hub.env);
   if (Object.values(env).some(value => typeof value !== "string")) throw new Error("invalid hub environment");
-  return { command: hub.command, args: hub.args ?? [], env, enabled: true, required: true, enabled_tools: TOOLS };
+  return { command: hub.command, args: hub.args ?? [], env, enabled: true, required: true, enabled_tools: TOOLS,
+    tools: Object.fromEntries(TOOLS.map(name => [name, { approval_mode: "approve" }])) };
 }
 
 /** All reads are model-free and bounded; stdout/config/env values never become diagnostic text. */
