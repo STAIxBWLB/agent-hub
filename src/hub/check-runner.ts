@@ -2,7 +2,8 @@ import { Readable } from "node:stream";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants, closeSync, fstatSync, openSync, readFileSync } from "node:fs";
-import { chmod, lstat, mkdir, readdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { hubGitEnv, hubGitSync } from "./git.ts";
 import { stopOwnedProcess, trackGroup } from "./child-process.ts";
@@ -48,11 +49,14 @@ export interface RunnerOptions {
 export interface RemoteRunnerConfig { host: string; image: string; root: string }
 /** Only the backend mechanics vary; task authority, staging, receipts and leases remain one lifecycle. */
 interface RunnerTransport {
+  command: ContainerCommand;
   kind: "remote"; image: string; platform: string;
   probe(command: ContainerCommand, cleanup: ContainerCommand): Promise<RunnerState>;
   isolate(command: ContainerCommand): Promise<void>;
   runArgs(receipt: RunReceipt, labels: string[]): string[];
   copy(command: ContainerCommand, source: string, container: string, signal: AbortSignal): Promise<void>;
+  execArgs(container: string, words: readonly string[]): string[];
+  cleanup(command: ContainerCommand, name: string): Promise<boolean>;
   listArgs: string[];
   list(stdout: string): unknown[];
   redact(text: string): string;
@@ -124,7 +128,7 @@ export class ContainerRunner {
   private readonly retentionTimer: ReturnType<typeof setInterval>;
   constructor(private readonly options: RunnerOptions, private readonly transport?: RunnerTransport) {
     if (!/^[A-Za-z0-9_-]+$/.test(options.projectKey)) throw new Error("invalid project key");
-    this.command = options.command ?? (async (args, opts) => runContainer(hostExecutable("container", options.projectDir), args, opts));
+    this.command = transport?.command ?? options.command ?? (async (args, opts) => runContainer(hostExecutable("container", options.projectDir), args, opts));
     this.now = options.now ?? Date.now;
     this.signature = (options.signature ?? processSignature)(process.pid) ?? "";
     this.records = join(options.stateDir, "checks");
@@ -367,7 +371,8 @@ export class ContainerRunner {
     try {
       this.ensureCurrent(entry);
       await this.save(r); this.ensureCurrent(entry);
-      const state = await this.available(entry.abort.signal); this.ensureCurrent(entry); if (!state.available) throw new Error(`runner unavailable: ${state.reason}`);
+      const state = await this.available(entry.abort.signal); this.ensureCurrent(entry);
+      if (!state.available) { if (this.transport && state.reason === "remote runner unavailable") throw new RemoteTransportError(); throw new Error(`runner unavailable: ${state.reason}`); }
       r.platform = state.platform!;
       release = await this.heavy(entry); this.ensureCurrent(entry);
       if (entry.abort.signal.aborted) throw new Error("cancelled");
@@ -406,7 +411,7 @@ export class ContainerRunner {
       const labels = ["--label", `agenthub.project=${this.options.projectKey}`, "--label", `agenthub.hub=${process.pid}:${this.signature}`, "--label", `agenthub.run=${r.run}`];
       const run = await command(this.transport?.runArgs(r, labels) ?? ["run", "--detach", "--rm", "--name", r.container, ...labels, "--network", NETWORK, "--no-dns", "--cpus", "2", "--memory", "4g", "--workdir", "/work", CHECK_IMAGE, "sleep", "600"], 120_000);
       this.ensureCurrent(entry);
-      if (run.code !== 0) throw new Error("runner unavailable: container start failed");
+      if (run.code !== 0) { if (this.transport) throw new RemoteTransportError(); throw new Error("runner unavailable: container start failed"); }
       if (this.transport) await this.transport.copy(transportCommand, src, r.container, entry.abort.signal);
       else {
         const copy = await command(["cp", `${src}/.`, `${r.container}:/work`], 180_000);
@@ -415,19 +420,19 @@ export class ContainerRunner {
       this.ensureCurrent(entry);
       if (entry.abort.signal.aborted) throw new Error("cancelled");
       const words = r.check === "test" ? ["bun", "test", ...r.files!] : ["bun", "x", "--no-install", "tsc", "--noEmit"];
-      const result = await command(["exec", "--workdir", "/work", r.container, ...words], 600_000, data => {
+      const result = await command(this.transport?.execArgs(r.container, words) ?? ["exec", "--workdir", "/work", r.container, ...words], 600_000, data => {
         r.output_bytes += data.length;
         if (output.length < MAX_OUTPUT) output = Buffer.concat([output, data.subarray(0, MAX_OUTPUT - output.length)]);
         outputTail = Buffer.concat([outputTail, data]).subarray(-16_384);
         r.truncated = r.output_bytes > MAX_OUTPUT;
       });
       this.ensureCurrent(entry);
-      if (this.transport && result.code === 255) { r.output_withheld = true; throw new Error("remote runner unavailable"); }
+      if (this.transport && result.code === 255) { r.output_withheld = true; throw new RemoteTransportError(); }
       if (result.outputBytes !== undefined) { r.output_bytes = result.outputBytes; r.truncated = r.output_bytes > MAX_OUTPUT; }
       r.exit = entry.abort.signal.aborted ? null : result.code;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
-      r.error = entry.abort.signal.aborted ? "check stopped" : this.transport ? "remote runner unavailable" : code ? "check filesystem or runtime unavailable" : error instanceof Error ? error.message : "check unavailable";
+      r.error = entry.abort.signal.aborted ? "check stopped" : error instanceof RemoteTransportError ? "remote runner unavailable" : code ? "check filesystem or runtime unavailable" : error instanceof Error ? error.message : "check unavailable";
     }
     finally {
       cancelDeadline?.();
@@ -448,6 +453,7 @@ export class ContainerRunner {
     }
   }
   private async cleanup(name: string): Promise<boolean> {
+    if (this.transport) return this.transport.cleanup(this.command, name);
     await this.command(["kill", name]).catch(() => {});
     await this.command(["rm", name]).catch(() => {});
     try {
@@ -574,7 +580,7 @@ export function remoteRunnerConfig(value: unknown): RemoteRunnerConfig {
 /** OpenSSH joins its remote argv into a shell command. Quote every token, including fixed Docker arguments. */
 export function remoteDockerArgs(host: string, args: readonly string[]): string[] {
   const quote = (word: string) => `'${word.replaceAll("'", `'"'"'`)}'`;
-  return ["-T", "-a", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", host, `docker ${args.map(quote).join(" ")}${args[0] === "exec" ? " 2>&1" : ""}`];
+  return ["-T", "-a", "-x", "-o", "ClearAllForwardings=yes", "-o", "PermitLocalCommand=no", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", host, `docker ${args.map(quote).join(" ")}${args[0] === "exec" ? " 2>&1" : ""}`];
 }
 function runRemoteDocker(executable: string, remote: RemoteRunnerConfig, args: string[], options: Parameters<ContainerCommand>[1] = {}): Promise<CommandResult> {
   return new Promise((resolveResult, reject) => {
@@ -612,83 +618,117 @@ function runRemoteDocker(executable: string, remote: RemoteRunnerConfig, args: s
     });
   });
 }
-function remoteTransport(options: RunnerOptions, remote: RemoteRunnerConfig): RunnerTransport {
-  const digest = remote.image.slice(remote.image.indexOf("@") + 1);
+/** Distinguish transport failures from deterministic request/snapshot refusals without leaking remote stderr. */
+class RemoteTransportError extends Error { constructor() { super("remote runner unavailable"); } }
+
+/** Same production strategy for transport-only component/native checks; production uses RemoteRunner's dependency gate. */
+export function remoteRunnerTransport(options: RunnerOptions): RunnerTransport {
+  if (!/^[A-Za-z0-9_-]+$/.test(options.projectKey)) throw new Error("invalid project key");
+  const remote = remoteRunnerConfig(options.remote), digest = remote.image.slice(remote.image.indexOf("@") + 1);
+  const command: ContainerCommand = async (args, opts) => {
+    try { return await (options.command ? options.command(args, opts) : runRemoteDocker(hostExecutable("ssh", options.projectDir), remote, args, opts)); }
+    catch { throw new RemoteTransportError(); }
+  };
   const privateValues = [...new Set([remote.host, ...remote.host.split("@"), remote.root])].sort((a, b) => b.length - a.length);
   const redact = (text: string) => {
     for (const value of privateValues) {
       text = text.replaceAll(value, "***");
-      // A retained output prefix can end partway through a private value.
       for (let length = Math.min(value.length - 1, text.length); length > 0; length--) if (text.endsWith(value.slice(0, length))) { text = text.slice(0, -length) + "***"; break; }
     }
     return text;
   };
-  const listArgs = ["ps", "--all", "--format", "{{json .}}"];
-  const list = (stdout: string): unknown[] => {
+  const format = '{"id":{{json .Names}},"project":{{json (.Label "agenthub.project")}},"hub":{{json (.Label "agenthub.hub")}},"run":{{json (.Label "agenthub.run")}},"probe":{{json (.Label "agenthub.probe")}}}';
+  const inventoryArgs = (name?: string, project = true) => ["ps", "--all", "--no-trunc", ...(project ? ["--filter", `label=agenthub.project=${options.projectKey}`] : []), ...(name ? ["--filter", `name=^/${name}$`] : []), "--format", format];
+  const listArgs = inventoryArgs();
+  const list = (stdout: string): { id: string; labels: Record<string, string> }[] => {
     const lines = stdout.trim() ? stdout.trim().split("\n") : [];
-    if (lines.length > 10_000) throw new Error("remote runner unavailable");
+    if (lines.length > 10_000) throw new RemoteTransportError();
     return lines.map(line => {
-      const value = JSON.parse(line) as { Names?: unknown; Labels?: unknown };
-      if (typeof value.Names !== "string" || typeof value.Labels !== "string") throw new Error("remote runner unavailable");
-      const labels = Object.fromEntries(value.Labels.split(",").filter(Boolean).map(label => { const at = label.indexOf("="); if (at < 1) throw new Error("remote runner unavailable"); return [label.slice(0, at), label.slice(at + 1)]; }));
-      return { id: value.Names, labels };
+      let value: Record<string, unknown>;
+      try { value = JSON.parse(line) as Record<string, unknown>; } catch { throw new RemoteTransportError(); }
+      if (!["id", "project", "hub", "run", "probe"].every(key => typeof value[key] === "string")) throw new RemoteTransportError();
+      return { id: value.id as string, labels: { "agenthub.project": value.project as string, "agenthub.hub": value.hub as string, "agenthub.run": value.run as string, "agenthub.probe": value.probe as string } };
     });
   };
-  const hardening = ["--network", "none", "--user", "65532:65532", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m,mode=1777", "--tmpfs", "/home/check:rw,nosuid,nodev,size=16m,uid=65532,gid=65532", "--env", "HOME=/home/check", "--env", "TMPDIR=/tmp", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "64", "--cpus", "4", "--memory", "4g"];
+  const cleanup = async (command: ContainerCommand, name: string): Promise<boolean> => {
+    if (!/^agenthub-check-(?:probe-)?[a-f0-9-]{36}$/.test(name)) return false;
+    try {
+      const before = await command(inventoryArgs(name));
+      if (before.code !== 0) return false;
+      const owned = list(before.stdout).filter(row => row.id === name && row.labels["agenthub.project"] === options.projectKey);
+      if (owned.length > 1) return false;
+      if (owned.length === 1) { await command(["kill", name]).catch(() => {}); await command(["rm", name]).catch(() => {}); }
+      // Exact-name absence, even if a same-name container has different labels; never kill that other owner.
+      const after = await command(inventoryArgs(name, false));
+      return after.code === 0 && !list(after.stdout).some(row => row.id === name);
+    } catch { return false; }
+  };
+  const hardening = ["--pull", "never", "--network", "none", "--user", "65532:65532", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m,mode=1777", "--tmpfs", "/home/check:rw,nosuid,nodev,size=16m,uid=65532,gid=65532", "--tmpfs", "/work:rw,nosuid,nodev,size=512m,mode=0755,uid=65532,gid=65532", "--env", "HOME=/home/check", "--env", "TMPDIR=/tmp", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "64", "--cpus", "4", "--memory", "4g"];
+  const execArgs = (container: string, words: readonly string[]) => ["exec", "--user", "65532:65532", "--workdir", "/work", container, ...words];
+  const copy = async (command: ContainerCommand, source: string, container: string, signal: AbortSignal) => {
+    try {
+    const executable = hostExecutable("tar", options.projectDir);
+    const metadata = process.platform === "darwin"
+      ? ["--format=gnutar", "--no-xattrs", "--no-acls", "--no-fflags", "--disable-copyfile", "--uid", "65532", "--gid", "65532", "--uname", "check", "--gname", "check"]
+      : ["--format=gnu", "--no-xattrs", "--no-acls", "--owner=65532", "--group=65532", "--numeric-owner"];
+    const archive = Bun.spawn([executable, ...metadata, "-cf", "-", "-C", source, "."], { env: { PATH: dirname(executable), COPYFILE_DISABLE: "1" }, stdout: "pipe", stderr: "ignore" });
+    const abort = () => { if (archive.exitCode === null) try { archive.kill("SIGKILL"); } catch { /* Exit promise confirms this owned producer. */ } };
+    const timer = setTimeout(abort, 180_000);
+    signal.addEventListener("abort", abort, { once: true }); if (signal.aborted) abort();
+    try {
+      // docker cp cannot write a read-only container filesystem, even where a writable tmpfs is mounted.
+      const result = await command(["exec", "-i", "--user", "65532:65532", container, "tar", "--no-same-owner", "-xf", "-", "-C", "/work"], { timeoutMs: 180_000, input: archive.stdout });
+      if (result.code !== 0 || await archive.exited !== 0) throw new RemoteTransportError();
+    } finally { clearTimeout(timer); signal.removeEventListener("abort", abort); abort(); await archive.exited; }
+    } catch { throw new RemoteTransportError(); }
+  };
   return {
-    kind: "remote", image: digest, platform: "linux/unknown (remote docker unknown)", listArgs, list, redact,
-    async probe(command, cleanup) {
+    command, kind: "remote", image: digest, platform: "linux/unknown (remote docker unknown)", listArgs, list, redact, execArgs, cleanup, copy,
+    async probe(command, teardown) {
+      let probeRoot: string | undefined;
       try {
         const version = await command(["version", "--format", "{{json .Server}}"]);
-        if (version.code !== 0) throw new Error();
+        if (version.code !== 0) throw new RemoteTransportError();
         const server = JSON.parse(version.stdout) as { Version?: string; Os?: string; Arch?: string };
-        if (server.Os !== "linux" || !["amd64", "arm64"].includes(server.Arch ?? "") || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(server.Version ?? "")) throw new Error();
+        if (server.Os !== "linux" || !["amd64", "arm64"].includes(server.Arch ?? "") || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(server.Version ?? "")) throw new RemoteTransportError();
         const image = await command(["image", "inspect", remote.image, "--format", '{"digests":{{json .RepoDigests}},"arch":{{json .Architecture}},"os":{{json .Os}}}']);
         const metadata = image.code === 0 ? JSON.parse(image.stdout) as { digests?: unknown; arch?: string; os?: string } : undefined;
-        if (metadata?.os !== "linux" || !["amd64", "arm64"].includes(metadata.arch ?? "") || !Array.isArray(metadata.digests) || !metadata.digests.some(value => typeof value === "string" && value.endsWith(`@${digest}`))) throw new Error();
+        if (metadata?.os !== "linux" || !["amd64", "arm64"].includes(metadata.arch ?? "") || !Array.isArray(metadata.digests) || !metadata.digests.some(value => typeof value === "string" && value.endsWith(`@${digest}`))) throw new RemoteTransportError();
         let architecture: string | undefined;
-        const name = `agenthub-check-probe-${randomUUID()}`;
+        const probeId = randomUUID(), name = `agenthub-check-probe-${probeId}`;
+        probeRoot = await mkdtemp(join(tmpdir(), "ahub-remote-probe-"));
+        const source = join(probeRoot, "src"); await mkdir(source, { mode: 0o755 }); await chmod(source, 0o755);
+        await writeFile(join(source, "source-proof"), "AHUB_REMOTE_SOURCE", { mode: 0o644 }); await chmod(join(source, "source-proof"), 0o644);
         let clean = false;
         try {
-          const result = await command(["run", "--rm", "--name", name, ...hardening, remote.image, "bun", "-e", 'const {networkInterfaces}=await import("node:os"); if(process.getuid?.()!==65532||Object.keys(networkInterfaces()).some(name=>name!=="lo"))process.exit(2); await Bun.write("/tmp/ready","ok"); try{await Bun.write("/root-write-proof","no");process.exit(3)}catch{} console.log(JSON.stringify({marker:"AHUB_REMOTE_READY",arch:process.arch,platform:process.platform}));']);
+          const launched = await command(["run", "--detach", "--rm", "--name", name, "--label", `agenthub.project=${options.projectKey}`, "--label", `agenthub.probe=${probeId}`, ...hardening, remote.image, "sleep", "600"]);
+          if (launched.code !== 0) throw new RemoteTransportError();
+          await copy(command, source, name, new AbortController().signal);
+          const result = await command(execArgs(name, ["bun", "-e", 'const {networkInterfaces}=await import("node:os"); if(process.getuid?.()!==65532||Object.keys(networkInterfaces()).some(name=>name!=="lo")||await Bun.file("/work/source-proof").text()!=="AHUB_REMOTE_SOURCE")process.exit(2); await Bun.write("/tmp/ready","ok"); try{await Bun.write("/root-write-proof","no");process.exit(3)}catch{} console.log(JSON.stringify({marker:"AHUB_REMOTE_READY",arch:process.arch,platform:process.platform}));']));
           const observed = result.code === 0 ? JSON.parse(result.stdout) as { marker?: string; arch?: string; platform?: string } : undefined;
           architecture = observed?.arch === "x64" ? "amd64" : observed?.arch;
-          if (observed?.marker !== "AHUB_REMOTE_READY" || observed.platform !== "linux" || architecture !== metadata.arch) throw new Error();
-        } finally {
-          // Cancellation revokes the probe, never its separate bounded cleanup proof.
-          await cleanup(["kill", name]).catch(() => {}); await cleanup(["rm", name]).catch(() => {});
-          const after = await cleanup(listArgs);
-          clean = after.code === 0 && !(list(after.stdout) as { id: string }[]).some(row => row.id === name);
-        }
-        if (!clean) throw new Error();
+          if (observed?.marker !== "AHUB_REMOTE_READY" || observed.platform !== "linux" || architecture !== metadata.arch) throw new RemoteTransportError();
+        } finally { clean = await cleanup(teardown, name); }
+        if (!clean) throw new RemoteTransportError();
         return { available: true, platform: `linux/${architecture} (remote docker ${server.Version!.match(/^\d+\.\d+\.\d+/)![0]})` };
       } catch { return { available: false, reason: "remote runner unavailable" }; }
+      finally { if (probeRoot) await rm(probeRoot, { recursive: true, force: true }).catch(() => {}); }
     },
-    async isolate() { /* Docker's fixed --network none needs no mutable host network or network-create authority. */ },
+    async isolate() { /* Fixed --network none needs no mutable host network. */ },
     runArgs(receipt, labels) {
-      // ponytail: root is reserved for 793b's admitted dependency preparation. This slice uses no host path.
-      // The empty, read-only named volume is a placeholder; 793b keys prepared volumes by lockfile and Bun version.
+      // ponytail: root and prepared dependency readiness remain reserved until 793b; no host path is used.
       return ["run", "--detach", "--rm", "--name", receipt.container, ...labels, ...hardening,
-        "--tmpfs", "/work:rw,nosuid,nodev,size=512m,mode=0755,uid=65532,gid=65532", "--mount", `type=volume,src=agenthub-check-deps-unprepared-${options.projectKey},dst=/work/node_modules,readonly`, "--workdir", "/work", remote.image, "sleep", "600"];
-    },
-    async copy(command, source, container, signal) {
-      const executable = hostExecutable("tar", options.projectDir);
-      const archive = Bun.spawn([executable, "-cf", "-", "-C", source, "."], { env: { PATH: dirname(executable) }, stdout: "pipe", stderr: "ignore" });
-      const abort = () => { if (archive.exitCode === null) try { archive.kill("SIGKILL"); } catch { /* The exit promise still confirms the owned producer. */ } };
-      const timer = setTimeout(abort, 180_000);
-      signal.addEventListener("abort", abort, { once: true }); if (signal.aborted) abort();
-      try {
-        const result = await command(["cp", "-", `${container}:/work`], { timeoutMs: 180_000, input: archive.stdout });
-        if (result.code !== 0 || await archive.exited !== 0) throw new Error("remote runner unavailable");
-      } finally { clearTimeout(timer); signal.removeEventListener("abort", abort); abort(); await archive.exited; }
+        "--mount", `type=volume,src=agenthub-check-deps-unprepared-${options.projectKey},dst=/work/node_modules,readonly`, "--workdir", "/work", remote.image, "sleep", "600"];
     },
   };
 }
-/** Same bounded lifecycle as ContainerRunner; no SSH destination or remote path enters a receipt. */
+/** Same lifecycle, but no production checks capability until 793b proves prepared dependencies. */
 export class RemoteRunner extends ContainerRunner {
   constructor(options: RunnerOptions) {
-    const remote = remoteRunnerConfig(options.remote);
-    const command = options.command ?? ((args, opts) => runRemoteDocker(hostExecutable("ssh", options.projectDir), remote, args, opts));
-    super({ ...options, command }, remoteTransport(options, remote));
+    super(options, remoteRunnerTransport(options));
+  }
+  override async available(signal?: AbortSignal): Promise<RunnerState> {
+    const transport = await super.available(signal);
+    return transport.available ? { ...transport, available: false, reason: "remote dependencies unprepared" } : transport;
   }
 }
