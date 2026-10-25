@@ -15,6 +15,7 @@ import { readGitHubImport, type GitHubSource, type GitHubImportSelection } from 
 import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type PlanningFields, type Release, type ReleaseState } from "./planning.ts";
 import { readMergeQueue, type DeliveryTask } from "./sdlc-queue.ts";
 import { guardedMerge, mergeModeFor, mergeView, type MergeView } from "./sdlc-merge.ts";
+import { mirrorVerdict as mirrorToGitHub, type MirrorVerdict } from "./sdlc-mirror.ts";
 import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
 import { readReleaseReadiness } from "./sdlc-release.ts";
 import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
@@ -3218,13 +3219,33 @@ export class Tasks {
     } catch { /* The durable claim keeps an uncertain publication from being repeated. */ }
     this.recordMergeResult(id,by,{...claimed,ownerNotice:sent?"sent":"unknown"},artifactCurrent);
   }
-  /** After an approving verdict, never blocking or failing it: the check runs on a later tick and reports through a notice. */
-  private autoMerge(task: Task): void {
+  /**
+   * #786 T3 (AC1): mirror a saved verdict as ONE `COMMENT` review on the head it was given for (`sdlc-mirror.ts`). Gated by the same `auto_merge` setting as the merge: off posts
+   * nothing, dry-run only reports, on posts. Never awaited by the verdict and never throws: the returned promise always resolves, and a failure is a notice naming the task number.
+   * The note goes out only when it is public: not a PII task, not withheld by the review screen, not in a private turn and matching no private pattern; otherwise the review is its headline alone.
+   */
+  private mirrorVerdict(task: Task, by: PeerId, verdict: MirrorVerdict, head: string | undefined, note: string | undefined, withheld: boolean): Promise<void> {
+    try {
+      const repo = task.sdlc?.repo, pr = task.sdlc?.pr;
+      if (!repo || !pr || !head) return Promise.resolve();
+      const mode = mergeModeFor(this.d.sdlc?.config() ?? sdlcConfig(undefined), repo);
+      if (mode === "off") return Promise.resolve();
+      const text = note && !withheld && !this.isPii(task) && !this.d.privateTurn?.(by) && this.publicMetadataText(note) ? note : undefined;
+      const label = `#${task.id}`;
+      return Promise.resolve().then(() => mirrorToGitHub({ repo, pr, head, verdict, task: task.id, reviewer: by, ...(text !== undefined ? { note: text } : {}), mode, run: this.d.sdlc?.gh ?? sdlcGh })).then(out => {
+        if (out.reason === "posted") this.releaseNotice(`task ${label}: ${verdict} mirrored to GitHub as a comment review`);
+        else if (out.reason === "post failed") this.releaseNotice(`task ${label}: verdict mirror could not be posted`);
+        else if (out.reason === "dry-run") this.releaseNotice(`task ${label}: verdict mirror dry-run: would post one ${verdict} comment review at ${head.slice(0, 8)}`);
+      }).catch(() => this.releaseNotice(`task ${label}: verdict mirror unavailable`));
+    } catch { return Promise.resolve(); }
+  }
+  /** After an approving verdict, never blocking or failing it: the check runs on a later tick and reports through a notice. `after` (the verdict mirror) settles first, so the review lands before the PR can merge. */
+  private autoMerge(task: Task, after?: Promise<void>): void {
     try {
       if (!task.sdlc?.repo || !task.sdlc.pr || mergeModeFor(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc.repo) === "off") return;
       const label = `#${task.id}`;
       // Promise.resolve().then also catches a synchronous throw, which would otherwise escape a microtask.
-      void Promise.resolve().then(() => this.guardedMerge(HUB, task.id, { trigger: "review" })).catch(() => this.releaseNotice(`task ${label}: auto-merge check unavailable`));
+      void Promise.resolve(after).then(() => this.guardedMerge(HUB, task.id, { trigger: "review" })).catch(() => this.releaseNotice(`task ${label}: auto-merge check unavailable`));
     } catch { /* an approval never fails because of the merge check */ }
   }
   async releaseReadiness(repo: string, liveIssues: number[]) {
@@ -4478,12 +4499,13 @@ export class Tasks {
       this.releaseNotice(`task ${this.publicTitle(next)}: could not tell ${next.owner ?? "its owner"} it was approved`, () =>
         this.tell(next, `Task #${next.id} approved by ${by}.${note ? ` ${this.screen(next, note, "review note", next.owner, withheld)}` : ""}`, pii));
       await this.releaseDependents(next);
-      this.autoMerge(next);
+      this.autoMerge(next, this.mirrorVerdict(next, by, "approved", reviewedHead ?? next.sdlc?.reviewedHead, note, withheld));
       // A proposal storage failure cannot roll back the saved verdict; another matching verdict retries it.
       this.releaseNotice(`task #${next.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(next, by, parsed, withheld));
       return next;
     }
     const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: task.rejections + 1 }, note, flag);
+    void this.mirrorVerdict(rejected, by, "changes_requested", reviewedHead ?? rejected.sdlc?.reviewedHead, note, withheld);
     this.releaseNotice(`task #${rejected.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(rejected, by, parsed, withheld));
     if (candidate && !pii && !this.d.privateTurn?.(by) && this.candidateTextAllowed(JSON.stringify({ candidate, refs: rejected.refs, plan: rejected.plan }), rejected)) {
       try { this.d.memoryCheck?.(); this.d.candidates?.put({ ...candidate, evidenceRefs: [...candidate.evidenceRefs, `review:${rejected.id}:${rejected.history.length}`] }, "public"); } catch { /* a saved review remains authoritative if the optional sidecar fails */ }
