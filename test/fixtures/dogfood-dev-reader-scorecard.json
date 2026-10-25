@@ -1,0 +1,221 @@
+{
+  "schemaVersion": 1,
+  "since": 0,
+  "until": 10000,
+  "sources": {
+    "events": {
+      "available": true,
+      "complete": true,
+      "records": 3
+    },
+    "tasks": {
+      "available": true,
+      "complete": true,
+      "records": 2
+    },
+    "prs": {
+      "available": true,
+      "complete": true,
+      "records": 1
+    },
+    "log": {
+      "available": true,
+      "complete": true,
+      "records": 1
+    },
+    "features": {
+      "available": true,
+      "complete": true,
+      "records": 2
+    }
+  },
+  "flow": {
+    "prs": [
+      {
+        "repo": "example/fixture",
+        "pr": 4,
+        "tasks": [
+          1
+        ],
+        "mergedAt": 9000,
+        "proposeToApproveMs": 7000,
+        "doneToMergeMs": 2000,
+        "reviewRounds": 2,
+        "firstPassApproval": 0,
+        "escalations": 0,
+        "importantFindings": 0,
+        "connectorThreadsAfterApproval": 0,
+        "bugIssuesWithin14d": 0,
+        "bugObservationDays": 0.000011574074074074073,
+        "firstPassCi": 1,
+        "ciRuns": 1,
+        "ciReruns": 0,
+        "sameHeadReruns": 0
+      }
+    ],
+    "coverage": {
+      "mergedPrs": 1,
+      "linkedPrs": 1
+    }
+  },
+  "quality": {
+    "adviseBlockers": {
+      "S1": {
+        "value": 0,
+        "samples": 0
+      },
+      "S2": {
+        "value": 0,
+        "samples": 0
+      },
+      "S3": {
+        "value": 0,
+        "samples": 0
+      },
+      "S4": {
+        "value": 0,
+        "samples": 0
+      },
+      "S9": {
+        "value": 0,
+        "samples": 0
+      }
+    },
+    "realBlockers": null
+  },
+  "cost": {
+    "eventSourceComplete": true,
+    "usageComplete": false,
+    "attributionComplete": true,
+    "perTask": [
+      {
+        "task": 1,
+        "pii": 0,
+        "peers": {
+          "codex": {
+            "tokens": 20,
+            "input": 12,
+            "output": 8,
+            "cacheRead": 2,
+            "cacheWrite": null,
+            "total": 20,
+            "records": 1,
+            "inputRecords": 1,
+            "outputRecords": 1,
+            "cacheReadRecords": 1,
+            "cacheWriteRecords": 0,
+            "totalRecords": 1
+          }
+        }
+      }
+    ],
+    "perPr": [
+      {
+        "repo": "example/fixture",
+        "pr": 4,
+        "peers": {
+          "codex": {
+            "tokens": 20,
+            "input": 12,
+            "output": 8,
+            "cacheRead": 2,
+            "cacheWrite": null,
+            "total": 20,
+            "records": 1,
+            "inputRecords": 1,
+            "outputRecords": 1,
+            "cacheReadRecords": 1,
+            "cacheWriteRecords": 0,
+            "totalRecords": 1
+          }
+        }
+      }
+    ],
+    "unattributed": {},
+    "beforeAttribution": {}
+  },
+  "delivery": {
+    "envelopeToDeliveryMs": {
+      "samples": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "digests": {
+      "value": 2,
+      "scope": "retained_journal"
+    },
+    "overflow": {
+      "value": 0,
+      "samples": 3
+    },
+    "undeliverable": {
+      "value": 0,
+      "samples": 3
+    },
+    "held": {
+      "value": 1,
+      "scope": "retained_journal"
+    },
+    "emptyInboxPollingStreaks": {
+      "value": 0,
+      "samples": 1
+    }
+  },
+  "performance": {
+    "controlRequestMs": {
+      "samples": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "connectionTimeouts": null,
+    "snapshotBudgetExhaustions": null,
+    "snapshotBudgetNotices": {
+      "value": 1,
+      "samples": 1
+    },
+    "cpu": {
+      "samples": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "rss": {
+      "samples": 0,
+      "p50": null,
+      "p95": null,
+      "p99": null
+    },
+    "errors": {
+      "database": {
+        "value": 0,
+        "samples": 1
+      },
+      "storage": {
+        "value": 0,
+        "samples": 1
+      },
+      "transport": {
+        "value": 0,
+        "samples": 1
+      }
+    }
+  },
+  "adoption": [
+    {
+      "id": 1,
+      "events": 1
+    },
+    {
+      "id": 2,
+      "events": null
+    }
+  ],
+  "journalSource": {
+    "available": true,
+    "complete": true,
+    "rows": 3
+  },
+  "piiTasks": 1
+}

@@ -84,7 +84,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Feature | State here | Measured by |
 | --- | --- | --- |
 | Dogfood scorecard (#687) | on after release; read-only weekly receipt | `ahub report --dogfood --since 7d --json`; bounded evidence and explicit unknowns |
-| Profile scorecard (#799) | source/fixture coverage; live writing/general/research pilot remains unverified | ahub report --dogfood profile rows; dev byte golden, private-text exclusion and per-source unknown tests; anonymous weekly receipt templates |
+| Profile scorecard (#799) | source/fixture coverage; live writing/general/research pilot remains unverified | ahub report --dogfood profile rows; pure and reader dev byte goldens, private-text exclusion, research declarations/unknown verdicts and per-source unknown tests; anonymous weekly receipt templates |
 | Console and dashboard | on; #719 pending-history reads and bounded native launch retries take effect after release | control-request latency, connection timeouts and launch retry notices; daemon CPU/RSS samples, measured separately from lifetime CPU |
 | Usage view (#683) | CLI (`ahub usage`, U2), console Usage tab `7` (U3) and dashboard Usage view (U4) shipped | its own panels |
 | Kimi usage from its wire log (#285 phase 2) | on after the release when `budget.kimi_tokens_5h` is set; this repository sets it | `tokens` and `usage` (`kimi_wire`) events per Kimi turn, the `tokens` window in `ahub budget`, and the count of `kimi usage unknown` notices; the live check against Kimi's `/usage` (AC11) stays opens |
