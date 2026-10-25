@@ -174,11 +174,13 @@ const daemonCase = (daemon: string, op: string): string | undefined => {
   const end = daemon.indexOf('\n      case "', from);
   return daemon.slice(from, end < 0 ? from + 4000 : end);
 };
-interface TaskPrint { ops: string[]; where: string; site: string; guarded: boolean }
-/** A print of text that is not the op's JSON: reached only after the same text failed to parse as the JSON the table renders, so it is the hub's refusal sentence printed as it came. Keyed `op in file :: function`. */
+interface TaskPrint { ops: string[]; where: string; site: string; guarded: boolean; refusalContext: string }
+/** Refusal prints are keyed to their exact parse-failure branch as well as op/function. An occurrence number also prevents a copied branch from inheriting its twin's exception. */
 const REFUSAL_FALLBACK: Record<string, string> = {
-  "hub_backlog_list in main.ts :: commands.backlog": "backlog list: a reply that is not a JSON array (a refusal) is printed as it came, after --json and the table were handled",
+  "hub_backlog_list in main.ts :: commands.backlog :: try { cards = JSON.parse(raw); } catch { return console.log(raw); } #1": "backlog list: the same raw reply failed JSON parsing",
+  "hub_backlog_list in main.ts :: commands.backlog :: if (!Array.isArray(cards)) return console.log(raw); #1": "backlog list: the parsed reply is not an array",
 };
+const refusalKey = (print: TaskPrint, op: string) => `${op} in ${print.site} :: ${print.refusalContext}`;
 /** True when the call sits on the true side of a condition that proves `--json` (the same walk the JSON.stringify scan uses). */
 function underJson(call: ts.Node, source: ts.SourceFile): boolean {
   let child: ts.Node = call, node: ts.Node | undefined = call.parent;
@@ -191,8 +193,8 @@ function underJson(call: ts.Node, source: ts.SourceFile): boolean {
   return false;
 }
 /**
- * Every print of a hub tool's text in `text`: `console.log(await taskOp(<op>))` and `console.log(x)` where `x` is bound from
- * `await taskOp(<op>)` in the same function. The ops are the string values the first argument can produce (a conditional is its
+ * Every console.log argument is checked after unwrapping parentheses: an awaited taskOp result, or an identifier
+ * bound from one by a declaration initializer or plain assignment in the same named function. The ops are the string values the first argument can produce (a conditional is its
  * two branches, a variable is its assignments), kept only when they name a hub tool.
  */
 export function taskOpPrints(file: string, text: string): TaskPrint[] {
@@ -214,21 +216,52 @@ export function taskOpPrints(file: string, text: string): TaskPrint[] {
   };
   const siteOf = (node: ts.Node) => `${file} :: ${enclosingFunction(source, node.getStart(source))?.name ?? "(top level)"}`;
   const where = (node: ts.Node) => `${siteOf(node)} (line ${source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1})`;
+  const unwrap = (expression: ts.Expression): ts.Expression => {
+    while (ts.isParenthesizedExpression(expression)) expression = expression.expression;
+    return expression;
+  };
+  const resultCall = (expression: ts.Expression): ts.CallExpression | undefined => {
+    const awaited = unwrap(expression);
+    if (!ts.isAwaitExpression(awaited)) return undefined;
+    const call = unwrap(awaited.expression);
+    return ts.isCallExpression(call) && unwrap(call.expression).getText(source) === "taskOp" ? call : undefined;
+  };
+  const refusalContext = (print: ts.Node): string => {
+    let child = print, node = print.parent;
+    while (node && !ts.isFunctionLike(node)) {
+      if (ts.isCatchClause(node) && ts.isTryStatement(node.parent)) return flat(node.parent.getText(source));
+      if (ts.isIfStatement(node) && node.thenStatement === child) return flat(node.getText(source));
+      child = node; node = node.parent;
+    }
+    return "";
+  };
+  const refusalOccurrences = new Map<string, number>();
   for (const print of callSites(source, "console.log")) {
-    const arg = print.arguments[0];
-    if (!arg) continue;
-    if (ts.isAwaitExpression(arg) && ts.isCallExpression(arg.expression) && arg.expression.expression.getText(source) === "taskOp") {
-      found.push({ ops: opsOf(arg.expression), where: where(print), site: siteOf(print), guarded: underJson(print, source) });
-    } else if (ts.isIdentifier(arg)) {
-      const scope = enclosingFunction(source, print.getStart(source))?.node ?? source;
-      const bound: ts.CallExpression[] = [];
-      const visit = (node: ts.Node) => {
-        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === arg.text && node.initializer && ts.isAwaitExpression(node.initializer)
-          && ts.isCallExpression(node.initializer.expression) && node.initializer.expression.expression.getText(source) === "taskOp") bound.push(node.initializer.expression);
-        ts.forEachChild(node, visit);
-      };
-      visit(scope);
-      if (bound.length) found.push({ ops: bound.flatMap(opsOf), where: where(print), site: siteOf(print), guarded: underJson(print, source) });
+    const context = refusalContext(print), base = `${siteOf(print)} :: ${context}`;
+    const occurrence = (refusalOccurrences.get(base) ?? 0) + 1;
+    refusalOccurrences.set(base, occurrence);
+    const contextAtSite = `${context} #${occurrence}`;
+    for (const argument of print.arguments) {
+      const arg = unwrap(argument), direct = resultCall(arg);
+      if (direct) {
+        found.push({ ops: opsOf(direct), where: where(print), site: siteOf(print), guarded: underJson(print, source), refusalContext: contextAtSite });
+      } else if (ts.isIdentifier(arg)) {
+        const scope = enclosingFunction(source, print.getStart(source))?.node ?? source;
+        const bound: ts.CallExpression[] = [];
+        const visit = (node: ts.Node) => {
+          let value: ts.Expression | undefined;
+          if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === arg.text) value = node.initializer;
+          else if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+            const target = unwrap(node.left);
+            if (ts.isIdentifier(target) && target.text === arg.text) value = node.right;
+          }
+          const call = value && resultCall(value);
+          if (call) bound.push(call);
+          ts.forEachChild(node, visit);
+        };
+        visit(scope);
+        if (bound.length) found.push({ ops: bound.flatMap(opsOf), where: where(print), site: siteOf(print), guarded: underJson(print, source), refusalContext: contextAtSite });
+      }
     }
   }
   return found;
@@ -238,11 +271,11 @@ const allTaskPrints = () => readdirSync(CLI_DIR).filter(name => name.endsWith(".
 test("AC2 every print of a hub tool's text in src/cli is behind --json, a named sentence op, or named debt, checked against the daemon", () => {
   const prints = allTaskPrints(), daemon = readFileSync(join(import.meta.dir, "../src/hub/daemon.ts"), "utf8");
   const unnamed = prints.filter(print => !print.guarded).flatMap(print => print.ops.length
-    ? print.ops.filter(op => !SENTENCE_OPS.has(op) && !(op in TEXT_DEBT) && !(op in CONDUCTOR_DEBT) && !(`${op} in ${print.site}` in REFUSAL_FALLBACK)).map(op => `${op} in ${print.where}`) : [`an op the hub has no tool for in ${print.where}`]);
+    ? print.ops.filter(op => !SENTENCE_OPS.has(op) && !(op in TEXT_DEBT) && !(op in CONDUCTOR_DEBT) && !(refusalKey(print, op) in REFUSAL_FALLBACK)).map(op => `${op} in ${print.where}`) : [`an op the hub has no tool for in ${print.where}`]);
   expect(unnamed, "print it through showToolText with a renderer, behind --json, or name it with its reason").toEqual([]);
   const printed = new Set(prints.filter(print => !print.guarded).flatMap(print => print.ops));
   expect([...SENTENCE_OPS, ...Object.keys(TEXT_DEBT), ...Object.keys(CONDUCTOR_DEBT)].filter(op => !printed.has(op)), "entries with no unguarded print any more: delete them").toEqual([]);
-  const sites = new Set(prints.filter(print => !print.guarded).flatMap(print => print.ops.map(op => `${op} in ${print.site}`)));
+  const sites = new Set(prints.filter(print => !print.guarded).flatMap(print => print.ops.map(op => refusalKey(print, op))));
   expect(Object.keys(REFUSAL_FALLBACK).filter(key => !sites.has(key)), "REFUSAL_FALLBACK entries with no print any more: delete them").toEqual([]);
   // the names are true: a sentence op never returns JSON text, and a debt op does
   for (const op of SENTENCE_OPS) expect(daemonCase(daemon, op), `${op} is named a sentence op but the daemon returns JSON.stringify`).not.toMatch(/return\s+JSON\.stringify|return\s+line\(\s*JSON/);
@@ -261,7 +294,7 @@ test("AC2 every print of a hub tool's text in src/cli is behind --json, a named 
 });
 
 test("AC2 the print scanner itself: a new unlisted JSON-returning op fails, a --json branch passes, and a sentence claim is checked", () => {
-  const unlisted = (code: string) => taskOpPrints("fixture.ts", code).filter(print => !print.guarded).flatMap(print => print.ops.map(op => ({ op, site: print.site }))).filter(({ op, site }) => !SENTENCE_OPS.has(op) && !(op in TEXT_DEBT) && !(op in CONDUCTOR_DEBT) && !(`${op} in ${site}` in REFUSAL_FALLBACK)).map(({ op }) => op);
+  const unlisted = (code: string) => taskOpPrints("fixture.ts", code).filter(print => !print.guarded).flatMap(print => print.ops.filter(op => !SENTENCE_OPS.has(op) && !(op in TEXT_DEBT) && !(op in CONDUCTOR_DEBT) && !(refusalKey(print, op) in REFUSAL_FALLBACK)));
   // a converted JSON op printed bare is unlisted, directly or through a variable
   expect(unlisted(`async function f() { console.log(await taskOp("hub_backlog_plan", {})); }`)).toEqual(["hub_backlog_plan"]);
   expect(unlisted(`async function f() { const text = await taskOp("hub_backlog_plan", {}); console.log(text); }`)).toEqual(["hub_backlog_plan"]);
@@ -278,4 +311,54 @@ test("AC2 the print scanner itself: a new unlisted JSON-returning op fails, a --
   // a variable op resolves through its assignments, a conditional through both branches
   expect(taskOpPrints("fixture.ts", `async function f(c: string) { let op: string; op = c === "a" ? "hub_peer_hold" : "hub_peer_release"; console.log(await taskOp(op, {})); }`).map(print => print.ops)).toEqual([["hub_peer_hold", "hub_peer_release"]]);
   expect(taskOpPrints("fixture.ts", `async function f(sub: string) { console.log(await taskOp(sub === "a" ? "task_assign" : "task_unassign", {})); }`).map(print => print.ops)).toEqual([["task_assign", "task_unassign"]]);
+});
+
+// #500: each shape below was invisible to the original task-result guard.
+const unlistedTaskFixture = (file: string, code: string) => taskOpPrints(file, code).filter(print => !print.guarded)
+  .flatMap(print => print.ops.filter(op => !SENTENCE_OPS.has(op) && !(op in TEXT_DEBT) && !(op in CONDUCTOR_DEBT)
+    && !(refusalKey(print, op) in REFUSAL_FALLBACK)));
+
+test("#500 regression: parenthesized task results are still guarded", () => {
+  expect(unlistedTaskFixture("fixture.ts", `async function f() { console.log((await taskOp("hub_backlog_plan", {}))); }`)).toEqual(["hub_backlog_plan"]);
+});
+
+test("#500 regression: later log arguments cannot hide task results", () => {
+  expect(unlistedTaskFixture("fixture.ts", `async function f() { console.log("%s", await taskOp("hub_backlog_plan", {})); }`)).toEqual(["hub_backlog_plan"]);
+});
+
+test("#500 regression: a plain assignment preserves the task-result binding", () => {
+  expect(unlistedTaskFixture("fixture.ts", `async function f() { let text; text = await taskOp("hub_backlog_plan", {}); console.log(text); }`)).toEqual(["hub_backlog_plan"]);
+});
+
+test("#500 regression: refusal fallback does not exempt a new unconditional print in backlog", () => {
+  const code = `const commands = { backlog: async () => {
+    const raw = await taskOp("hub_backlog_list", {});
+    let cards: unknown;
+    try { cards = JSON.parse(raw); } catch { return console.log(raw); }
+    if (!Array.isArray(cards)) return console.log(raw);
+    console.log(raw);
+  } };`;
+  expect(unlistedTaskFixture("main.ts", code)).toEqual(["hub_backlog_list"]);
+});
+
+test("#500 supported result wrappers remain visible and JSON branches stay valid", () => {
+  expect(unlistedTaskFixture("fixture.ts", `async function f() { console.log(((await (taskOp("hub_backlog_plan", {}))))); }`)).toEqual(["hub_backlog_plan"]);
+  expect(unlistedTaskFixture("fixture.ts", `async function f() { let text; text = (await taskOp("hub_backlog_plan", {})); console.log("%s", (text)); }`)).toEqual(["hub_backlog_plan"]);
+  expect(unlistedTaskFixture("fixture.ts", `async function f() { console.log(await taskOp("hub_backlog_plan", {}), await taskOp("hub_release_list", {})); }`)).toEqual(["hub_backlog_plan", "hub_release_list"]);
+  expect(unlistedTaskFixture("fixture.ts", `async function f(options: any) { let text; text = await taskOp("hub_backlog_plan", {}); if (options.json) console.log("%s", (text)); }`)).toEqual([]);
+});
+
+test("#500 only the exact approved refusal branches retain their exception", () => {
+  const allowed = `const commands = { backlog: async () => {
+    const raw = await taskOp("hub_backlog_list", {});
+    let cards: unknown;
+    try { cards = JSON.parse(raw); } catch { return console.log(raw); }
+    if (!Array.isArray(cards)) return console.log(raw);
+  } };`;
+  expect(unlistedTaskFixture("main.ts", allowed)).toEqual([]);
+  expect(taskOpPrints("main.ts", allowed).filter(print => refusalKey(print, "hub_backlog_list") in REFUSAL_FALLBACK)).toHaveLength(2);
+  const duplicate = allowed.replace("if (!Array.isArray(cards)) return console.log(raw);", "if (!Array.isArray(cards)) return console.log(raw); if (!Array.isArray(cards)) return console.log(raw);");
+  expect(unlistedTaskFixture("main.ts", duplicate)).toEqual(["hub_backlog_list"]);
+  const changed = allowed.replace("catch { return console.log(raw); }", "catch { console.log(raw); return console.log(raw); }");
+  expect(unlistedTaskFixture("main.ts", changed)).toEqual(["hub_backlog_list", "hub_backlog_list"]);
 });
