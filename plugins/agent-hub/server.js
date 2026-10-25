@@ -21751,6 +21751,10 @@ init_sdlc();
 init_review_findings();
 init_sdlc();
 
+// src/hub/sdlc-mirror.ts
+init_envelope();
+var inFlight = new Set;
+
 // src/hub/tasks.ts
 init_review_findings();
 init_roles();
