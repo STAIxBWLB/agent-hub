@@ -78,6 +78,38 @@ test("never, legacy path: same-family siblings are not candidates; the planner r
   expect(legacy("fallback", { reviewPool: undefined }, { ...legacyStates, claude: "offline" })).toMatchObject({ reviewer: "codex-b", sameFamilyFallback: true });
 });
 
+test("never, legacy path: offline sibling and offline planner reproduce the review finding and route to the person", () => {
+  const result = legacy("never", {}, { ...legacyStates, "codex-b": "offline", claude: "offline" });
+  expect(result).toMatchObject({ owner: "codex-a", reviewer: "user", reviewBlocked: true });
+  expect(result.trace).not.toContain("reviewer: none, done will approve directly");
+});
+
+test("never, legacy path: an exhausted choice goes to the person, never to direct approval", () => {
+  const cases: [string, Options, Record<string, PeerState>][] = [
+    ["sibling and planner offline", {}, { ...legacyStates, "codex-b": "offline", claude: "offline" }],
+    ["no reviewer-role peer and the class reviewer is offline", { roles: { "codex-a": ["implementer"] } }, { ...legacyStates, claude: "offline" }],
+    ["a same-family sibling is the only reviewer and the other family is offline", { roles: { "codex-a": ["implementer"], "codex-b": ["reviewer"] } }, { ...legacyStates, claude: "offline" }],
+  ];
+  for (const [name, extra, state] of cases) {
+    const result = legacy("never", extra, state);
+    expect(result, name).toMatchObject({ owner: "codex-a", reviewer: "user", reviewBlocked: true });
+    expect(result.sameFamilyFallback, name).toBeUndefined();
+    expect(result.trace, name).not.toContain("reviewer: none, done will approve directly");
+    expect(result.trace.join("\n"), name).toContain("the person reviews");
+  }
+  // the default keeps approving directly when nobody at all is left, as before
+  expect(legacy(undefined, { roles: { "codex-a": ["implementer"] } }, { ...legacyStates, "codex-b": "offline", claude: "offline" }).trace).toContain("reviewer: none, done will approve directly");
+});
+
+test("never without declared instances still never approves unreviewed work when nobody can review", () => {
+  const exhausted = assign(work, { codex: "idle" }, routing, { candidates: ["codex"], reviewPool: { pool: ["codex"], sameFamily: "never" } });
+  expect(exhausted).toMatchObject({ owner: "codex", reviewer: "user", reviewBlocked: true });
+  expect(exhausted.trace).not.toContain("reviewer: none, done will approve directly");
+  // an available class reviewer still reviews, and the default still approves directly
+  expect(assign(work, { codex: "idle", claude: "idle" }, routing, { candidates: ["codex"], reviewPool: { pool: ["codex"], sameFamily: "never" } }).reviewer).toBe("claude");
+  expect(assign(work, { codex: "idle" }, routing, { candidates: ["codex"], reviewPool: { pool: ["codex"] } }).trace).toContain("reviewer: none, done will approve directly");
+});
+
 test("AC3 never refuses a manually named same-family reviewer with the stated text, in both paths", () => {
   const refused = (result: ReturnType<typeof assign>, peer: string, owner = "codex") => {
     expect(result.reviewer).toBeUndefined();

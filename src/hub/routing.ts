@@ -664,10 +664,11 @@ export function assign(
         sameFamilyFallback = true;
         trace.push(`  same-family fallback: ${reviewer} and ${reviewOwner} share ${ownerFamily}; no eligible other family`);
       }
-      if (neverSame && !reviewer && named === undefined && !reviewSelection && automatic.some(peer => peer !== reviewOwner && sameFamily(peer) && !blocked(peer, "reviewer"))) {
+      // Under never an exhausted automatic choice (nobody eligible, all offline, no candidate at all) is the person's, never an approval without review.
+      if (opts.reviewPool?.sameFamily === "never" && reviewOwner !== undefined && !reviewer && named === undefined && !reviewSelection) {
         reviewer = "user";
         reviewBlocked = true;
-        trace.push("  review.same_family = never: only reviewers of the owner's family remain; the person reviews");
+        trace.push("  review.same_family = never: no reviewer of another family and no eligible planner; the person reviews");
       }
       // I-2 (#525-3): when the peers that implemented this task were the only candidates left, the person reviews. Never a fallback to an implementer.
       if (!reviewer && [...refusals.values()].some(row => row.role === "reviewer" && row.code === "policy" && row.reason === "implemented this task")) {
