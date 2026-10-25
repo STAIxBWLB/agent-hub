@@ -1471,7 +1471,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (positional.length !== 1 || !/^[1-9]\d*$/.test(positional[0]!) || !one["--reason"]?.trim() || (revision !== undefined && (!/^\d+$/.test(one["--revision"]!) || !Number.isSafeInteger(revision)))) fail("usage: ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N]");
       return shownTask(renderTaskCancel)(taskOp("hub_task_cancel", { id: Number(positional[0]), reason: one["--reason"], ...(one["--superseded-by"] === undefined ? {} : { superseded_by: one["--superseded-by"] }), ...(revision === undefined ? {} : { revision }) }));
     }
-    if (sub === "show") return shownTask(renderTaskShow)(taskOp("task_show", { id: rest[0] }));
+    if (sub === "show") {
+      // a stray operand (for example the value of a `--color always` that is not the `--color=` form) is a usage error, never silently ignored
+      if (rest.length !== 1) fail("usage: ahub task show <id> [--json] [--full] [--color=auto|always|never]");
+      return shownTask(renderTaskShow)(taskOp("task_show", { id: rest[0] }));
+    }
     if (sub === "escalate") return console.log(await taskOp("task_escalate", { id: rest[0] }));
     if (sub === "assign") {
       const { one, rest: positional } = takeFlags(rest, ["--role", "--revision"], []);
