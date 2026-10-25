@@ -1,3 +1,4 @@
+import { buildIntentBrief, type IntentBriefOptions, type IntentBriefSource } from "@staix/agent-mem";
 import type { PeerId } from "../hub/envelope.ts";
 import type { MemoryClient } from "./client.ts";
 
@@ -30,17 +31,19 @@ export async function related(client: MemoryClient, project: string, query: stri
 /** A native memory line for a brief (#258): `mem:<id8> <kind> <tier>: <title or text>`, fails first. */
 export interface NativeItem { id: string; line: string; kind?: string; about?: readonly string[]; tier?: string; peer?: string; machine?: string; at?: string }
 export type NativeBrief = (task: BriefTask) => NativeItem[] | Promise<NativeItem[]>;
+export interface IntentBriefContext { source: IntentBriefSource; options: IntentBriefOptions }
+/** Host-owned policy and store binding; the library owns relevance, ordering and text. */
+export type IntentBriefHost = (task: BriefTask) => IntentBriefContext | Promise<IntentBriefContext>;
 export interface BriefTask { id?: number; created?: number; title: string; refs: { paths?: string[] }; plan?: { paths?: string[]; symbols?: string[] } }
 
 /**
- * Task briefs: what memory already knows about a piece of work, handed over with it. The hub's own store first (#258:
- * entries one or two hops from the task's paths, symbols, issue and task, a linked fail first, superseded entries
- * dropped), then amem: index first (search), then the neighbourhood of the top hit (timeline); details stay in
- * the store for the receiver to fetch by id. `brief_items` caps both together. A peer is never shown the same entry
- * twice in one hub run, except a directly matching plan fail that must accompany a new task.
+ * Production task briefs use the library's intent retrieval and rendering with host policy and bindings.
+ * The hub applies its per-peer delivery dedupe and item cap to complete library rows. Injected clients without
+ * the library port retain the legacy index/timeline bridge. Matching plan fails may recur with a new task.
  */
 export class Briefs {
   private readonly seen = new Map<PeerId, Set<string>>();
+  private readonly libraryRuns = new Map<PeerId, Promise<unknown>>();
 
   constructor(
     private readonly client: MemoryClient | undefined,
@@ -50,11 +53,40 @@ export class Briefs {
     /** Counts of what a brief carried, for the research records (#258 AC11); never its text. */
     private readonly observe?: (peer: PeerId, task: number, counts: { native: number; fails: number; claudeMem: number }) => void,
     private readonly displayNative?: (items: readonly NativeItem[]) => string[],
+    private readonly intent?: IntentBriefHost,
   ) {}
 
   async forTask(peer: PeerId, task: BriefTask, priority: readonly NativeItem[] = []): Promise<string | undefined> {
     // A brief snapshots its configured cap once, before either optional source is selected.
     const maximum = typeof this.maxItems === "function" ? this.maxItems() : this.maxItems;
+    if (this.intent) {
+      // Serialize only this peer's library reads, so awaited policy cannot duplicate a delivered note.
+      const previous = this.libraryRuns.get(peer);
+      const run = (async () => {
+        await previous?.catch(() => undefined);
+        if (maximum < 1) return undefined;
+        try {
+          const context = await this.intent!(task);
+          const seen = this.seen.get(peer) ?? new Set<string>();
+          this.seen.set(peer, seen);
+          const result = await buildIntentBrief(context.source, context.options);
+          const priorityIds = new Set(priority.map(item => item.id));
+          const eligible = result.items.filter(item => priorityIds.has(`mem:${item.id}`) || !seen.has(`mem:${item.id}`));
+          const selectedIds = new Set([...eligible.filter(item => priorityIds.has(`mem:${item.id}`)), ...eligible.filter(item => !priorityIds.has(`mem:${item.id}`))].slice(0, maximum).map(item => item.id));
+          const selected = eligible.filter(item => selectedIds.has(item.id));
+          if (!result.text || !selected.length) return undefined;
+          // Delivery policy removes complete library-rendered rows only. Never rank, clip or format them again:
+          // a neighbour can remain relevant even when its original direct bridge was already delivered.
+          const lines = result.text.split("\n");
+          const text = [lines[0]!, ...selected.map(item => lines[result.items.indexOf(item) + 1]!)].join("\n");
+          for (const item of selected) seen.add(`mem:${item.id}`);
+          if (task.id !== undefined) try { this.observe?.(peer, task.id, { native: selected.length, fails: selected.filter(item => item.kind === "fail").length, claudeMem: 0 }); } catch { /* telemetry never fails a brief */ }
+          return text;
+        } catch { return undefined; }
+      })();
+      this.libraryRuns.set(peer, run);
+      try { return await run; } finally { if (this.libraryRuns.get(peer) === run) this.libraryRuns.delete(peer); }
+    }
     const seen = this.seen.get(peer) ?? new Set<string>();
     this.seen.set(peer, seen);
     let native: NativeItem[] = [];
