@@ -602,11 +602,13 @@ export function assign(
       trace.push(opts.namedReviewer === undefined ? `  reviewer candidates: [classes.review] peers ${classPeers.join(", ") || "none"}${rolePeers.length ? `; reviewer role ${rolePeers.join(", ")}` : ""}` : `  reviewer candidate explicitly named: ${opts.namedReviewer}`);
       const reviewOwner = owner ?? opts.notReviewer;
       const automatic = [...new Set([...expandClassPeers(classPeers, states, opts), ...rolePeers])];
-      const ownerFamily = instanceMode && reviewOwner ? (opts.adapterCatalog?.familyOf ?? familyOf)(reviewOwner, opts.instances) : undefined;
+      // #820: the rule needs the owner's family even when no instance is declared (builtin peers have families too).
+      const never = opts.reviewPool?.sameFamily === "never" && reviewOwner !== undefined;
+      const ownerFamily = (instanceMode || never) && reviewOwner ? (opts.adapterCatalog?.familyOf ?? familyOf)(reviewOwner, opts.instances) : undefined;
       const sameFamily = (peer: PeerId) => ownerFamily !== undefined && (opts.adapterCatalog?.familyOf ?? familyOf)(peer, opts.instances) === ownerFamily;
       // #820: with review.same_family = never, a reviewer of the owner's family is never chosen; the planner or the person reviews instead.
-      const neverSame = opts.reviewPool?.sameFamily === "never" && ownerFamily !== undefined;
-      if (neverSame) trace.push(`  review.same_family = never: no reviewer of the owner's family (${ownerFamily}) is chosen; another family, the planner or the person reviews`);
+      const neverSame = never;
+      if (neverSame) trace.push(`  review.same_family = never: no reviewer of the owner's family (${ownerFamily ?? "unknown"}) is chosen; another family, the planner or the person reviews`);
       const independent = ownerFamily === undefined ? [] : automatic.filter(peer => peer !== reviewOwner && !blocked(peer, "reviewer") && !sameFamily(peer));
       const named = opts.namedReviewer;
       const declaredPool = opts.reviewPool && named === undefined ? Object.keys(opts.instances ?? {}).flatMap(id => {
@@ -667,7 +669,7 @@ export function assign(
         trace.push(`  same-family fallback: ${reviewer} and ${reviewOwner} share ${ownerFamily}; no eligible other family`);
       }
       // Under never an exhausted automatic choice (nobody eligible, all offline, no candidate at all) is the person's, never an approval without review.
-      if (opts.reviewPool?.sameFamily === "never" && reviewOwner !== undefined && !reviewer && named === undefined && !reviewSelection) {
+      if (neverSame && !reviewer && named === undefined && !reviewSelection) {
         reviewer = "user";
         reviewBlocked = true;
         trace.push("  review.same_family = never: no reviewer of another family and no eligible planner; the person reviews");

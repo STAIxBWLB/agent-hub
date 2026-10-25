@@ -101,6 +101,23 @@ test("never, legacy path: an exhausted choice goes to the person, never to direc
   expect(legacy(undefined, { roles: { "codex-a": ["implementer"] } }, { ...legacyStates, "codex-b": "offline", claude: "offline" }).trace).toContain("reviewer: none, done will approve directly");
 });
 
+test("never without declared instances: the rule, its trace and the planner reviewer-role filter still apply", () => {
+  const never = { candidates: ["codex"], reviewPool: { pool: ["codex"], sameFamily: "never" as const } };
+  const planOnly = assign(work, { codex: "idle", claude: "idle" }, routing, { ...never, roles: { claude: ["planner"] } });
+  expect(planOnly).toMatchObject({ owner: "codex", reviewer: "user", reviewBlocked: true });
+  expect(planOnly.trace.join("\n")).toContain("review.same_family = never");
+  // with the reviewer role the other-family planner reviews, and a class peer without a planner role is unaffected
+  expect(assign(work, { codex: "idle", claude: "idle" }, routing, { ...never, roles: { claude: ["planner", "reviewer"] } }).reviewer).toBe("claude");
+  expect(assign(work, { codex: "idle", claude: "idle" }, routing, { ...never, roles: {} }).reviewer).toBe("claude");
+  // the owner's own family is never chosen: a codex-family class peer is dropped even without instances
+  const ownerClaude = assign(work, { claude: "idle", codex: "idle" }, routing, { candidates: ["claude"], reviewPool: { pool: ["claude"], sameFamily: "never" } });
+  expect(ownerClaude).toMatchObject({ owner: "claude", reviewer: "codex" });
+  // the default keeps today's choice and prints no rule
+  const fallback = assign(work, { codex: "idle", claude: "idle" }, routing, { candidates: ["codex"], roles: { claude: ["planner"] }, reviewPool: { pool: ["codex"] } });
+  expect(fallback.reviewer).toBe("claude");
+  expect(fallback.trace.join("\n")).not.toContain("review.same_family");
+});
+
 test("never, legacy path: a planner without the reviewer role is not a reviewer, the person is", () => {
   const planOnly = { roles: { claude: ["planner"], "codex-a": ["implementer"], "codex-b": ["reviewer"] } };
   expect(legacy("never", planOnly, legacyStates)).toMatchObject({ owner: "codex-a", reviewer: "user", reviewBlocked: true });
