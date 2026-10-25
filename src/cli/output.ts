@@ -19,7 +19,8 @@ export interface StatusOutput {
   isolatedChecks?: { pending?: number; orphans?: string[]; unknownReceipts?: readonly string[]; maintenanceUnavailable?: boolean };
   memoryRead?: { truncated: boolean; scanned: number; limit: number };
   memoryProfile?: { profile?: string; generation?: string; state?: string; agentMemVersion?: string; skippedRows?: number; error?: string };
-  taskWip?: Record<string, { wip: number; wipLimit: number }>;
+  /** #784 AC3: `active`, `reviewWait` and `reserved` add up to `wip`; absent from an older hub. */
+  taskWip?: Record<string, { wip: number; wipLimit: number; active?: number; reviewWait?: number; reserved?: number }>;
   pid?: number; controlPort?: number; cwd?: string; version?: string; peers: Record<string, any>; roleInfo?: Record<string, any>; actionPolicyInfo?: Record<string, { note: string; enforceable: boolean }>; budget?: Record<string, any>; planner?: { peers?: string[]; source?: string };
   tasks?: Record<string, number>; models?: { backends?: any[] }; permissionDefaults?: any[]; deliveryError?: string; crash?: string[];
 }
@@ -185,6 +186,10 @@ function rows(head: string[], data: OutputCell[][], columns?: number, details?: 
   }
   return renderAtWidths(widths);
 }
+/** #784 AC3: ` (active 1, review-wait 2, reserved 0)`; nothing from an older hub that sends no breakdown. */
+function wipSplit(value: { active?: number; reviewWait?: number; reserved?: number }): string {
+  return [value.active, value.reviewWait, value.reserved].every(n => Number.isSafeInteger(n)) ? ` (active ${value.active}, review-wait ${value.reviewWait}, reserved ${value.reserved})` : "";
+}
 function detail(label: string, text: unknown, columns?: number, tone?: Tone): Span[][] {
   return lines(`${label}  ${flat(text)}`, columns, tone, "  ");
 }
@@ -265,7 +270,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   if (peerRows.length) out.push([], ...rows(head, peerRows, columns, peerDetails));
   else out.push(...lines("no peers attached yet (ahub claude | ahub codex | ahub kimi)", columns));
   if (settling) out.push([], ...lines("settling: the adapter has not confirmed these deliveries yet (Claude: reply or hub_delivery_done). Task state is independent.", columns, "muted"));
-  if (data.taskWip) for (const [peer, value] of Object.entries(data.taskWip)) out.push(...detail(`${peer} planner WIP`, `${value.wip}/${value.wipLimit}`, columns));
+  if (data.taskWip) for (const [peer, value] of Object.entries(data.taskWip)) out.push(...detail(`${peer} planner WIP`, `${value.wip}/${value.wipLimit}${wipSplit(value)}`, columns));
   if (data.models?.backends?.length) {
     out.push([], ...rows(["MODEL", "STATE", "ACTIVE", "REQUESTED", "ACTUAL", "PROVIDER"], data.models.backends.map(b => [span(backendLabel(b)), span(b.state ?? "unknown", stateTone(b.state ?? "")), span(b.active || "-"), span(b.requestedModel ?? "-"), span(b.actualModel ?? "-"), span(b.provider ?? "-")]), columns));
     for (const b of data.models.backends) for (const [key, label] of [["coolingUntil", "cooling"], ["failingUntil", "dispatch held"]]) if (b[key!]) { const at = Date.parse(b[key!]); out.push(...detail(`${backendLabel(b)} ${label}`, `${Number.isFinite(at) ? relative(at, now) : "unknown"}${key === "coolingUntil" && typeof b.failures === "number" ? ` after ${b.failures} failures` : key === "failingUntil" ? "; no load moves until then" : ""}`, columns, "attention")); }

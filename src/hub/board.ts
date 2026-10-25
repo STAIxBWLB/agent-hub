@@ -339,6 +339,23 @@ export class Board {
     return row.n;
   }
 
+  /**
+   * #784 AC3: what `plannerWip` counts, split per peer in ONE grouped query (no per-peer or per-task reads on the status hot path). `active` is owned work that is not
+   * waiting for review, `reviewWait` is owned work in `in_review`, `reserved` is unowned proposed work a planner pull reserved. For every peer the three add up to
+   * `plannerWip(peer)`: this is a read-only view, admission keeps using `plannerWip` unchanged.
+   */
+  plannerWipBreakdown(): Record<string, { active: number; reviewWait: number; reserved: number }> {
+    const rows = this.db.query(`SELECT peer, kind, COUNT(*) AS n FROM (
+      SELECT owner AS peer, CASE WHEN state = 'in_review' THEN 'reviewWait' ELSE 'active' END AS kind FROM tasks WHERE state NOT IN ('approved', 'cancelled', 'backlog') AND owner IS NOT NULL
+      UNION ALL
+      SELECT reserved AS peer, 'reserved' AS kind FROM tasks WHERE state = 'proposed' AND owner IS NULL AND reserved IS NOT NULL AND
+        json_extract((SELECT value FROM json_each(tasks.history) WHERE json_extract(value, '$.event') IN ('backlog pulled', 'backlog returned') ORDER BY CAST(key AS INTEGER) DESC LIMIT 1), '$.planning.pull') = 1
+    ) GROUP BY peer, kind`).all() as { peer: string; kind: "active" | "reviewWait" | "reserved"; n: number }[];
+    const result: Record<string, { active: number; reviewWait: number; reserved: number }> = {};
+    for (const row of rows) (result[row.peer] ??= { active: 0, reviewWait: 0, reserved: 0 })[row.kind] = row.n;
+    return result;
+  }
+
   recordTaskOffer(id: number, offer: TaskOffer, expectedFlowRevision: number): void {
     const task = this.get(id);
     if (!task || task.owner !== offer.owner || isClosedTaskState(task.state) || task.history.length !== expectedFlowRevision || offer.assignmentFlowRevision !== expectedFlowRevision) throw new Error("task offer changed");

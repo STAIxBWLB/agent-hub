@@ -1015,6 +1015,14 @@ export class Tasks {
   wip(peer: PeerId, except?: number): number {
     return this.d.board.plannerWip(peer, except);
   }
+  /** #784 AC3: the read-only breakdown of `wip` for status, the console and the dashboard: one grouped query for every peer. Admission still reads `wip()`. */
+  wipBreakdown(peers: readonly PeerId[]): Record<string, { wip: number; active: number; reviewWait: number; reserved: number; wipLimit: number }> {
+    const grouped = this.d.board.plannerWipBreakdown();
+    return Object.fromEntries(peers.map(peer => {
+      const row = grouped[peer] ?? { active: 0, reviewWait: 0, reserved: 0 };
+      return [peer, { wip: row.active + row.reviewWait + row.reserved, ...row, wipLimit: this.wipLimit(peer) }];
+    }));
+  }
   private prerequisiteOf(task: Task, prerequisite: number): boolean {
     const pending = [...(task.deps ?? [])], seen = new Set<number>();
     while (pending.length) { const id = pending.pop()!; if (id === prerequisite) return true; if (seen.has(id)) continue; seen.add(id); pending.push(...(this.d.board.get(id)?.deps ?? [])); }
