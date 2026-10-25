@@ -54,7 +54,11 @@ test("registry policy data is immutable across projects", async () => {
 
 test("Qwen's definition owns its headless refusal and rejects another transport's factory ports", async () => {
   const r = await registry(), qwen = r.definitionOf("qwen");
-  expect(qwen.start.preflight({ instance: "qwen", form: "tui" })).toBe("Qwen TUI is not offered before its native verification; use ahub qwen --mode headless");
+  // #286 Part 3: the TUI is offered, explicitly and through its own driver; any other form is refused, and the headless `create` still rejects a foreign port.
+  expect(qwen.start.preflight({ instance: "qwen", form: "tui" })).toBeUndefined();
+  expect(qwen.start.preflight({ instance: "qwen", form: "other" })).toBe("unknown Qwen mode; usage: ahub qwen [--mode headless|tui]");
+  expect(qwen.start.forms).toEqual(["headless"]); // never a start-mode peer: the hub does not open Qwen's TUI by itself
+  expect(() => qwen.start.createTui({ instance: "qwen", projectRoot: "/fixture", stateDir: "/fixture/state", kindConfig: {}, permission: "ask", mcpServers: [], daemon: { local: {} } })).toThrow("dual-output");
   expect(qwen.start.preflight({ instance: "qwen", form: "headless" })).toBeUndefined();
   expect(() => qwen.start.create({ instance: "qwen", projectRoot: "/fixture", stateDir: "/fixture/state", kindConfig: {}, permission: "ask", mcpServers: [], daemon: { local: {} } })).toThrow("ACP");
 });

@@ -15,13 +15,14 @@ import type { CodexOptions } from "./codex-appserver.ts";
 import type { JcodeOptions } from "./jcode.ts";
 import type { LocalOptions } from "./local-worker.ts";
 import type { PiOptions } from "./pi.ts";
+import type { QwenDualOptions } from "./qwen-dual.ts";
 import type { ClaudePrintOptions } from "./claude-print.ts";
 
 import type { BuiltinCliEntry } from "./definitions/native-cli-entry-types.ts";
 import type { NativePreviewBuilder } from "./definitions/native-cli-preview-common.ts";
 
 export type StartForm = "tui" | "headless";
-export type DaemonEngine = "codex-appserver" | "acp" | "owned-acp" | "pi-rpc" | "local-worker" | "claude-print" | "reviewer-print" | "claude-implementer";
+export type DaemonEngine = "codex-appserver" | "acp" | "qwen-dual" | "owned-acp" | "pi-rpc" | "local-worker" | "claude-print" | "reviewer-print" | "claude-implementer";
 
 /** Existing buildLaunch inputs plus the startup-bound instance and project identity. */
 export interface LaunchContext {
@@ -59,6 +60,7 @@ export type LaunchPlan = Launch & { env?: NodeJS.ProcessEnv; metadata: LaunchMet
 export type DaemonPorts =
   | { codex: CodexOptions }
   | { acp: AcpOptions }
+  | { qwenDual: QwenDualOptions }
   | { jcode: JcodeOptions }
   | { pi: PiOptions }
   | { local: LocalOptions }
@@ -185,6 +187,8 @@ export interface AdapterDefinition {
     /** A real native argv planner; absent when startup belongs to a separate verified host port. */
     launch?(ctx: LaunchContext): LaunchPlan;
     create?(ctx: CreateContext): PeerAdapter;
+    /** A second, explicit-only TUI driver for a kind whose default form stays headless (Qwen's dual-output TUI, #286 Part 3). Fixed builtins only; never an extra start mode. */
+    createTui?(ctx: CreateContext): PeerAdapter;
     daemonPort?: DaemonEngine;
     preflight?(ctx: StartRequest): string | undefined;
     version?(ctx: VersionContext): string | undefined;
