@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
-import { applySeed, classifyRun, copyTracked, readSeeds, shardSeeds } from "../scripts/seeded-check.ts";
+import { applySeed, applySeedInRepo, classifyRun, copyTracked, readSeeds, seedRotContext, shardSeeds } from "../scripts/seeded-check.ts";
 
 test("seed manifest and exact source replacement reject rot and ambiguous matches", () => {
   expect(applySeed("a guard b", { search: "guard", replacement: "$& weakened" })).toBe("a $& weakened b");
@@ -11,6 +11,48 @@ test("seed manifest and exact source replacement reject rot and ambiguous matche
   expect(() => applySeed("guard guard", { search: "guard", replacement: "false" })).toThrow("found 2");
   expect(() => readSeeds('{"schemaVersion":1,"seeds":[]}')).toThrow("invalid seed manifest");
   expect(() => readSeeds(JSON.stringify({ schemaVersion: 1, seeds: [{ id: "bad", file: "../outside", search: "a", replacement: "b", testFile: "test/a.ts", testName: "a" }] }))).toThrow("invalid");
+});
+
+test("seed rot reports the base symbol and its current locations, while exact matching still fails (#684)", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-seed-symbol-"));
+  const seed = { id: "fixture", file: "guard.ts", search: "return allowed;", replacement: "return true;", testFile: "test/guard.ts", testName: "guard" };
+  const git = (...args: string[]) => {
+    const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+    if (result.status !== 0) throw new Error(result.stderr);
+    return result.stdout.trim();
+  };
+  try {
+    git("init", "-q");
+    writeFileSync(join(root, seed.file), "class Guard { check() { return allowed; } }\n");
+    git("add", "-f", seed.file);
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "base");
+    const base = git("rev-parse", "HEAD");
+    git("update-ref", "refs/remotes/origin/main", base);
+    const current = "\n\nclass Guard { check() { return permitted; } }\n";
+    writeFileSync(join(root, seed.file), current);
+    // Commit the edit too: the report must use the merge base, not the broken HEAD.
+    git("add", seed.file);
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "move anchor");
+    expect(seedRotContext(root, seed, current)).toContain(`base ${base} guard.ts:1 symbol Guard.check; current guard.ts:3`);
+    expect(() => applySeedInRepo(root, current, seed)).toThrow("seed rot: expected one exact source match, found 0");
+    expect(() => applySeedInRepo(root, current, seed)).toThrow("symbol Guard.check");
+    writeFileSync(join(root, seed.file), "// moved\n");
+    writeFileSync(join(root, "moved.ts"), current);
+    git("add", "-f", "moved.ts");
+    expect(seedRotContext(root, seed, "// moved\n")).toContain("current moved.ts:3");
+    writeFileSync(join(root, "moved.ts"), "// deleted\n");
+    expect(seedRotContext(root, seed, "// moved\n")).toContain("symbol not found");
+    expect(() => applySeedInRepo(root, seed.search.repeat(2), seed)).toThrow("found 2");
+    expect(applySeedInRepo(root, seed.search, seed)).toBe(seed.replacement);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test("seed context absence never hides exact-match failure (#684)", () => {
+  const root = mkdtempSync(join(tmpdir(), "ahub-seed-no-base-"));
+  const seed = { id: "fixture", file: "guard.ts", search: "old", replacement: "new", testFile: "test/guard.ts", testName: "guard" };
+  try {
+    expect(() => applySeedInRepo(root, "absent", seed)).toThrow("seed rot: expected one exact source match, found 0; anchor context unavailable");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 test("seed verdict requires the same named assertion and distinguishes survivors from invalid failures", () => {
   const green = "(pass) guard [1.00ms]\n 1 pass\n 0 fail\n";

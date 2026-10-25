@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { realPath } from "../src/hub/project.ts";
+import { enclosingSymbol, findSymbol, parseSource } from "./lib/ts-ast.ts";
 
 export interface Seed { id: string; file: string; search: string; replacement: string; testFile: string; testName: string }
 const safe = (path: string) => !!path && !path.startsWith("/") && !path.split("/").some((part) => part === ".." || part === ".git") && !path.includes("\\");
@@ -20,6 +21,38 @@ export function applySeed(text: string, seed: Pick<Seed, "search" | "replacement
   const matches = text.split(seed.search).length - 1;
   if (matches !== 1) throw new Error(`seed rot: expected one exact source match, found ${matches}`);
   return text.replace(seed.search, () => seed.replacement);
+}
+/** Diagnostic evidence only: a missing anchor still fails the unchanged exact-match rule. */
+export function seedRotContext(root: string, seed: Pick<Seed, "file" | "search">, current: string): string {
+  const git = (...args: string[]) => spawnSync("git", args, { cwd: root, encoding: "utf8", timeout: 5000, maxBuffer: 8_000_000 });
+  const merge = git("merge-base", "origin/main", "HEAD");
+  const revision = merge.status === 0 ? merge.stdout.trim() : git("rev-parse", "HEAD").stdout.trim();
+  if (!revision) return "anchor context unavailable: no base commit";
+  const base = git("show", `${revision}:${seed.file}`);
+  if (base.status !== 0) return `anchor context unavailable: ${seed.file} absent at base ${revision}`;
+  const offset = base.stdout.indexOf(seed.search);
+  if (offset < 0 || base.stdout.indexOf(seed.search, offset + 1) >= 0) return `anchor context unavailable: search is not unique at base ${revision}`;
+  const old = enclosingSymbol(parseSource(seed.file, base.stdout), offset);
+  if (!old) return `anchor at base ${revision} ${seed.file} is at module scope; current symbol unknown`;
+  const describe = (file: string, text: string) => findSymbol(parseSource(file, text), old.name).map(span => `${file}:${span.line}`);
+  let locations = describe(seed.file, current);
+  if (!locations.length) {
+    const listed = git("ls-files", "-z", "--", "*.ts", "*.tsx", "*.js", "*.jsx", "*.mts", "*.cts");
+    if (listed.status !== 0) return `base ${revision} ${seed.file}:${old.line} symbol ${old.name}; current location unknown (cannot enumerate tracked sources)`;
+    locations = listed.stdout.split("\0").filter(file => file && file !== seed.file && safe(file))
+      .flatMap(file => describe(file, readFileSync(join(root, file), "utf8")));
+  }
+  return `base ${revision} ${seed.file}:${old.line} symbol ${old.name}; current ${locations.length ? locations.join(", ") : "symbol not found in tracked sources"}`;
+}
+export function applySeedInRepo(root: string, text: string, seed: Seed): string {
+  try { return applySeed(text, seed); }
+  catch (error) {
+    if (text.includes(seed.search)) throw error; // Ambiguous matches are not missing anchors.
+    let context: string;
+    try { context = seedRotContext(root, seed, text); }
+    catch { context = "anchor context unavailable: cannot read base or current sources"; }
+    throw new Error(`${error instanceof Error ? error.message : String(error)}; ${context}`);
+  }
 }
 export function copyTracked(root: string, destination: string): void {
   const listed = spawnSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" });
@@ -114,7 +147,7 @@ export async function seededCheck(root: string, shard?: string): Promise<void> {
       const source = join(checkout, seed.file);
       if (!source.startsWith(`${checkout}${sep}`)) throw new Error("seed path escapes private checkout");
       const original = readFileSync(source, "utf8");
-      const changed = applySeed(original, seed); // rot is checked before either test run
+      const changed = applySeedInRepo(root, original, seed); // rot is checked before either test run
       const green = await runNamed(checkout, seed, own, "green"); classifyRun(green.output, green.code, seed.testName, false);
       writeFileSync(source, changed);
       const red = await runNamed(checkout, seed, own, "seeded"); classifyRun(red.output, red.code, seed.testName, true);
