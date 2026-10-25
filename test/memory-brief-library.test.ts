@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
-import { buildIntentBrief, createIntentBriefSource, createStandalonePolicy, looksSecret, MemoryStore } from "@staix/agent-mem";
+import { buildIntentBrief, createIntentBriefSource, createStandalonePolicy, looksSecret, MemoryStore, type View } from "@staix/agent-mem";
 import { Briefs, type BriefTask, type IntentBriefHost } from "../src/memory/brief.ts";
 import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
@@ -44,11 +44,11 @@ function fixture(now?: () => number) {
   // Extract both production predicates verbatim, binding every host helper they reference.
   const derived = runInNewContext(new Bun.Transpiler({ loader: "ts" }).transformSync(
     declaration("screenMemory") + "\n" + declaration("boundedSafe") + "\n" + source.slice(start, end)
-    + "\nglobalThis.fixture = { host: taskIntentBrief, boundedSafe };") + "\nfixture", ports) as { host: IntentBriefHost; boundedSafe: (text: string) => boolean };
+    + "\nglobalThis.fixture = { host: taskIntentBrief, boundedSafe, screenMemory };") + "\nfixture", ports) as { host: IntentBriefHost; boundedSafe: (text: string) => boolean; screenMemory: (rows: View[]) => View[] };
   const proposed = board.propose(USER, { title: "repair writer", class: "implement", refs: { paths: ["src/writer.ts"] } });
   const task = board.update(proposed.id, USER, "fixture assignment", { owner: "codex", state: "in_progress" });
   const note = (text: string, about = ["path:src/writer.ts"], kind: "fail" | "decision" = "fail") => store.note({ op: "note", project: "fixture", scope: "project", tier: "long", peer: "person", source: "person", kind, text, about });
-  return { cwd, store, board, task, host: derived.host, boundedSafe: derived.boundedSafe, note, ports, private(value: boolean) { privateTurn = value; } };
+  return { cwd, store, board, task, host: derived.host, boundedSafe: derived.boundedSafe, screenMemory: derived.screenMemory, note, ports, private(value: boolean) { privateTurn = value; } };
 }
 
 test("AC6 hub production brief port equals the released library for the same source and intent", async () => {
@@ -93,11 +93,15 @@ test("assignment briefs retain an older plan fail at the front when the library 
   expect((await briefs.forTask("codex", f.task, priority))?.split("\n")[1]).toBe(priority[0]!.line);
 });
 
-test("host-screened plan advice survives a narrower standalone library scope screen", async () => {
-  const f = fixture(), id = f.store.note({ op: "note", project: "fixture", scope: "local", tier: "long", peer: "person", source: "person", kind: "fail", text: "local writer plan advice", about: ["path:src/writer.ts"] });
+test("host-screened plan advice survives a narrower standalone library screen", async () => {
+  const f = fixture(), id = f.note("writer public maintainer contact maintainer@example.test");
+  const row = f.store.get(id);
+  expect(row).toBeDefined();
+  expect(f.screenMemory([row!]).map(item => item.id)).toEqual([id]);
+  expect(f.ports.tasks.publicMetadataText(JSON.stringify(row))).toBe(true);
   const context = await f.host(f.task), result = await buildIntentBrief(context.source, context.options);
   expect(result.state).toBe("known"); expect(result.items).toHaveLength(0);
-  const priority = [{ id: `mem:${id}`, line: `mem:${id} fail long: local writer plan advice`, kind: "fail" }];
+  const priority = [{ id: `mem:${id}`, line: `mem:${id} fail long: writer public maintainer contact maintainer@example.test`, kind: "fail" }];
   expect((await new Briefs(undefined, "fixture", 1, undefined, undefined, undefined, f.host).forTask("codex", f.task, priority))?.split("\n")[1]).toBe(priority[0]!.line);
 });
 
