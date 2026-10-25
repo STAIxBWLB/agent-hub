@@ -40,12 +40,12 @@ const LEGACY_GRANTS = {
   },
   pi: {
     ask: "every write, edit and shell command asks",
-    "ask-when-needed": "write and edit inside the project run without asking; shell and git writes still ask",
+    "ask-when-needed": "write, edit and proven bounded read-only shell commands inside the project run without asking; other shell commands and git writes still ask",
     "never-ask": "every tool runs without asking, inside the hub sandbox and path guard",
   },
   local: {
     ask: "every write, edit and shell command asks",
-    "ask-when-needed": "write and edit inside the project run without asking; shell and git writes still ask",
+    "ask-when-needed": "write, edit and proven bounded read-only shell commands inside the project run without asking; other shell commands and git writes still ask",
     "never-ask": "every tool runs without asking, inside the hub sandbox and path guard",
   },
   jcode: {
