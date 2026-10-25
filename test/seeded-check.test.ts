@@ -23,12 +23,13 @@ test("seed rot reports the base symbol and its current locations, while exact ma
   };
   try {
     git("init", "-q");
-    writeFileSync(join(root, seed.file), "class Guard { check() { return allowed; } }\n");
+    writeFileSync(join(root, seed.file), "class Guard { check() { return allowed; } }\nexport const LIMIT = 3;\n");
     git("add", "-f", seed.file);
     git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "-c", "core.hooksPath=/dev/null", "commit", "-qm", "base");
     const base = git("rev-parse", "HEAD");
     git("update-ref", "refs/remotes/origin/main", base);
     const current = "\n\nclass Guard { check() { return permitted; } }\n";
+    expect(seedRotContext(root, { file: seed.file, search: "export const LIMIT = 3;" }, "export const LIMIT = 4;")).toContain("symbol LIMIT; current guard.ts:1");
     writeFileSync(join(root, seed.file), current);
     // Commit the edit too: the report must use the merge base, not the broken HEAD.
     git("add", seed.file);

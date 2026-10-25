@@ -10,6 +10,17 @@ export interface SymbolSpan {
 }
 
 export function parseSource(file: string, text: string): ts.SourceFile {
+  // Inline HTML scripts keep original UTF-16 offsets and line numbers; markup is not TypeScript.
+  if (/\.html?$/i.test(file)) {
+    let masked = text.replace(/[^\r\n]/g, " ");
+    for (const match of text.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script\s*>/gi)) {
+      const opening = match[0].slice(0, match[0].indexOf(">") + 1);
+      if (/\bsrc\s*=/i.test(opening)) continue;
+      const start = match.index + opening.length, script = match[1]!;
+      masked = masked.slice(0, start) + script + masked.slice(start + script.length);
+    }
+    text = masked;
+  }
   return ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
 }
 

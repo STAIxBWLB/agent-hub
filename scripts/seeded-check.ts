@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { realPath } from "../src/hub/project.ts";
-import { enclosingSymbol, findSymbol, parseSource } from "./lib/ts-ast.ts";
+import { enclosingSymbol, findSymbol, parseSource, symbolSpans } from "./lib/ts-ast.ts";
 
 export interface Seed { id: string; file: string; search: string; replacement: string; testFile: string; testName: string }
 const safe = (path: string) => !!path && !path.startsWith("/") && !path.split("/").some((part) => part === ".." || part === ".git") && !path.includes("\\");
@@ -32,12 +32,14 @@ export function seedRotContext(root: string, seed: Pick<Seed, "file" | "search">
   if (base.status !== 0) return `anchor context unavailable: ${seed.file} absent at base ${revision}`;
   const offset = base.stdout.indexOf(seed.search);
   if (offset < 0 || base.stdout.indexOf(seed.search, offset + 1) >= 0) return `anchor context unavailable: search is not unique at base ${revision}`;
-  const old = enclosingSymbol(parseSource(seed.file, base.stdout), offset);
+  const parsed = parseSource(seed.file, base.stdout);
+  // A whole declaration anchor can begin at `export const`, before its named AST node.
+  const old = enclosingSymbol(parsed, offset) ?? symbolSpans(parsed).find(span => span.start >= offset && span.start < offset + seed.search.length);
   if (!old) return `anchor at base ${revision} ${seed.file} is at module scope; current symbol unknown`;
   const describe = (file: string, text: string) => findSymbol(parseSource(file, text), old.name).map(span => `${file}:${span.line}`);
   let locations = describe(seed.file, current);
   if (!locations.length) {
-    const listed = git("ls-files", "-z", "--", "*.ts", "*.tsx", "*.js", "*.jsx", "*.mts", "*.cts");
+    const listed = git("ls-files", "-z", "--", "*.ts", "*.tsx", "*.js", "*.jsx", "*.mts", "*.cts", "*.mjs", "*.cjs", "*.html", "*.htm");
     if (listed.status !== 0) return `base ${revision} ${seed.file}:${old.line} symbol ${old.name}; current location unknown (cannot enumerate tracked sources)`;
     locations = listed.stdout.split("\0").filter(file => file && file !== seed.file && safe(file))
       .flatMap(file => describe(file, readFileSync(join(root, file), "utf8")));
