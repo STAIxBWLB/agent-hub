@@ -5039,9 +5039,11 @@ var init_qwen_dual = __esm(() => {
         return;
       const flag = `--input-file ${this.inputFile}`;
       const matches = rows.filter((row) => row.pid !== process.pid && row.command.includes(flag));
-      if (matches.length !== 1)
+      const pids = new Set(matches.map((row) => row.pid));
+      const roots = matches.filter((row) => !pids.has(row.ppid));
+      if (roots.length !== 1)
         return;
-      const pid = matches[0].pid, signature = this.signature(pid);
+      const pid = roots[0].pid, signature = this.signature(pid);
       if (!signature)
         return;
       this.state_.ownerPid = pid;
@@ -5347,14 +5349,14 @@ ${text}`;
           this.setState("idle");
       }
     }
-    failTurn(reason, notIdle = false) {
+    failTurn(reason, notIdle = false, known = false) {
       const turn = this.turn;
       if (!turn)
         return;
       this.turn = undefined;
       this.owner = undefined;
       if (turn.deliveryId) {
-        const receipt = { id: turn.deliveryId, state: "needs_review", reason };
+        const receipt = { id: turn.deliveryId, state: known ? "completed" : "needs_review", reason };
         this.delivery(receipt);
       }
       try {
@@ -5433,7 +5435,7 @@ ${text}`;
         return;
       this.owner = undefined;
       this.abortApprovals();
-      this.failTurn(why ?? "a hub deny cancelled the Qwen turn (Qwen emits nothing for it); the turn ended without an answer");
+      this.failTurn(why ?? "a hub deny cancelled the Qwen turn (Qwen emits nothing for it); the turn ended without an answer", false, true);
     }
     onControlResponse(event) {
       const response = event.response;
@@ -13138,7 +13140,7 @@ async function runQwenEntry(ctx) {
   const verified = verifiedLaunch(launch);
   if (!verified)
     return fail("Qwen TUI launch metadata was not verified");
-  const env = { ...verified.env };
+  const env = { ...process.env, ...verified.env };
   delete env.AGENTHUB_RECOVERY_OPERATION;
   delete env.AGENTHUB_UNATTENDED;
   console.error("Qwen runs in this terminal, driven by the hub through its dual-output files. Limits: a hub deny ends the turn without an answer, and a stalled turn is stopped only by pressing Esc here.");

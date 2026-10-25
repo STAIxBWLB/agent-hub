@@ -250,8 +250,12 @@ export class QwenDualPeer extends BasePeer {
     if (!rows) return;
     const flag = `--input-file ${this.inputFile}`;
     const matches = rows.filter(row => row.pid !== process.pid && row.command.includes(flag));
-    if (matches.length !== 1) return;
-    const pid = matches[0]!.pid, signature = this.signature(pid);
+    // The real Qwen is a small tree, every member of which names the file: the person's `script` or shell wrapper, Qwen's own node launcher and its `cli.js` child (measured on
+    // 0.26.1). The owner is the root of that tree, the one match whose parent is not also a match. Two separate roots (another Qwen on the same file) is ambiguous: no owner.
+    const pids = new Set(matches.map(row => row.pid));
+    const roots = matches.filter(row => !pids.has(row.ppid));
+    if (roots.length !== 1) return;
+    const pid = roots[0]!.pid, signature = this.signature(pid);
     if (!signature) return;
     this.state_.ownerPid = pid; this.state_.ownerSignature = signature; this.saveState();
   }
@@ -470,12 +474,15 @@ export class QwenDualPeer extends BasePeer {
     if (owner === "personal") { this.stalled_ = false; this.opts.onStalled?.(false); if (!this.turn) this.setState("idle"); }
   }
 
-  /** Settle the current hub turn without an answer. `notIdle`: the caller goes on to mark the peer busy itself. */
-  private failTurn(reason: string, notIdle = false): void {
+  /**
+   * Settle the current hub turn without an answer. `notIdle`: the caller goes on to mark the peer busy itself. `known`: the outcome is certain (a person's deny, a refused request),
+   * so the delivery completes. Anything uncertain stays `needs_review`, which holds the peer's whole queue until a person resolves it: a deny must not wedge Qwen that way.
+   */
+  private failTurn(reason: string, notIdle = false, known = false): void {
     const turn = this.turn;
     if (!turn) return;
     this.turn = undefined; this.owner = undefined;
-    if (turn.deliveryId) { const receipt: DeliveryReceipt = { id: turn.deliveryId, state: "needs_review", reason }; this.delivery(receipt); }
+    if (turn.deliveryId) { const receipt: DeliveryReceipt = { id: turn.deliveryId, state: known ? "completed" : "needs_review", reason }; this.delivery(receipt); }
     try { this.opts.onNotice?.(`${this.id}: ${reason}`); } catch { /* notice only */ }
     if (this.stalled_) { this.stalled_ = false; this.opts.onStalled?.(false); }
     if (!notIdle && this.state === "busy") this.setState("idle");
@@ -536,7 +543,7 @@ export class QwenDualPeer extends BasePeer {
     // Limit 1: a deny cancels Qwen's whole turn and Qwen emits nothing for it. The turn ends here, with no answer shared.
     this.owner = undefined;
     this.abortApprovals();
-    this.failTurn(why ?? "a hub deny cancelled the Qwen turn (Qwen emits nothing for it); the turn ended without an answer");
+    this.failTurn(why ?? "a hub deny cancelled the Qwen turn (Qwen emits nothing for it); the turn ended without an answer", false, true);
   }
 
   private onControlResponse(event: Json): void {

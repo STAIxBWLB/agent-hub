@@ -9,6 +9,7 @@ import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import type { DeliveryReceipt } from "../src/hub/peers.ts";
 import type { ProcRow } from "../src/hub/child-process.ts";
 import type { PermissionRequest } from "../src/adapters/acp.ts";
+import type { NativeCliEntryContext } from "../src/adapters/definitions/native-cli-entry-types.ts";
 
 const FAKE = join(import.meta.dir, "fakes/qwen-dual.ts");
 const cleanups: (() => unknown)[] = [];
@@ -165,7 +166,9 @@ test("a deny ends the turn itself: Qwen emits nothing, so the adapter goes idle 
   expect(events(r).length).toBe(before);   // the fake (like Qwen) wrote nothing for the deny: no control_response, no tool_result, no assistant
   expect(events(r).map(event => event.type)).toEqual(["system", "user", "control_request"]);
   expect(r.answers).toHaveLength(0);
-  expect(r.receipts.at(-1)!).toMatchObject({ id: "d1", state: "needs_review" });
+  // A deny is a known outcome: it completes, so the hub does not hold the peer's queue behind a needs_review (measured against the real Qwen: it wedged every later message).
+  expect(r.receipts.at(-1)!).toMatchObject({ id: "d1", state: "completed" });
+  expect(r.receipts.some(receipt => receipt.state === "needs_review")).toBe(false);
   expect(r.notices.some(text => text.includes("deny cancelled the Qwen turn"))).toBe(true);
   // and the peer takes the next delivery
   await r.peer.deliver(env("after the deny"), "d2"); await until(() => r.answers.length === 1);
@@ -195,6 +198,7 @@ test("a write or command that names the hub state dir is refused without asking 
   await until(() => r.peer.state === "idle");
   expect(r.requests).toHaveLength(0);
   expect(inputLines(r).find(line => line.type === "confirmation_response").allowed).toBe(false);
+  expect(r.receipts.at(-1)!.state).toBe("completed");   // a refusal is a known outcome too
   expect(r.notices.some(text => text.includes("input file is a prompt channel"))).toBe(true);
   expect(qwenDualNamesStateDir({ file_path: `${stateDir}/qwen-dual/input.jsonl` }, stateDir)).toBe(true);
   expect(qwenDualNamesStateDir({ command: "cat ./.agenthub/state/hub.log" }, stateDir)).toBe(true);
@@ -398,6 +402,52 @@ test("an approval answer that could not be written does not settle the turn: the
   expect(r.receipts.some(receipt => receipt.state === "needs_review")).toBe(false);
   expect(r.notices.some(text => text.includes("deny cancelled the Qwen turn"))).toBe(false);
   expect(r.peer.holdsTerminal()).toBe(true);
+});
+
+test("the owner is the root of the process tree that names the input file: the real Qwen is a script wrapper, a node launcher and a cli.js child, all three naming it (measured on 0.26.1)", async () => {
+  const sig = (pid: number) => `sig-${pid}`;   // the pids below are not real processes
+  const r = rig({ signature: sig }, {}); await r.peer.start();
+  const input = join(r.dir, "input.jsonl"), named = (pid: number, ppid: number, head: string): ProcRow => ({ pid, ppid, pgid: pid, started: "x", command: `${head} --input-file ${input} --json-file ${join(r.dir, "events.jsonl")}` });
+  const own = (r.peer as any).opts as QwenDualOptions & { table?: () => ProcRow[] | undefined };
+  const real: ProcRow[] = [named(300, 299, "script -q /dev/null qwen"), named(301, 300, "node /bin/qwen"), named(302, 301, "node --expose-gc cli.js"), { pid: 5, ppid: 1, pgid: 5, started: "x", command: "unrelated" }];
+  own.table = () => real;
+  (r.peer as any).sessionSeen = true; (r.peer as any).discoverOwner();
+  expect((r.peer as any).state_.ownerPid).toBe(300);   // the root, so the person's terminal is what the hub watches
+  // Two separate trees naming the same file is ambiguous: no owner is bound, and nothing is guessed.
+  const second = rig({ signature: sig }, {}); await second.peer.start();
+  const file = join(second.dir, "input.jsonl"), both: ProcRow[] = [{ pid: 400, ppid: 1, pgid: 400, started: "x", command: `qwen --input-file ${file}` }, { pid: 500, ppid: 1, pgid: 500, started: "x", command: `qwen --input-file ${file}` }];
+  (second.peer as any).opts.table = () => both; (second.peer as any).sessionSeen = true; (second.peer as any).discoverOwner();
+  expect((second.peer as any).state_.ownerPid).toBeUndefined();
+});
+
+test("the CLI entry runs the daemon's launch in the person's own environment, with the hub's marker over it and no recovery or unattended authority", async () => {
+  const { runQwenEntry } = await import("../src/adapters/definitions/native-cli-entry-qwen.ts");
+  const { definitionOf } = await import("../src/adapters/registry.ts");
+  const requests: Record<string, unknown>[] = [], launched: { bin?: string; argv?: string[]; env?: NodeJS.ProcessEnv } = {};
+  const saved = { PATH: process.env.PATH, FAKE_PROVIDER_KEY: process.env.FAKE_PROVIDER_KEY, AGENTHUB_RECOVERY_OPERATION: process.env.AGENTHUB_RECOVERY_OPERATION };
+  process.env.FAKE_PROVIDER_KEY = "person-key"; process.env.AGENTHUB_RECOVERY_OPERATION = "op-1";
+  const tty = { in: process.stdin.isTTY, out: process.stdout.isTTY };
+  Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true }); Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+  const args = ["--mode", "tui"];
+  const context = { args, cwd: "/project", stateDir: "/state", cliDir: "/pkg", unattendedEnv: false, definition: definitionOf("qwen"),
+    fail: (message: string): never => { throw new Error(message); }, projectConfig: () => ({}),
+    connect: async () => ({ close() {}, request: async (message: Record<string, unknown>) => { requests.push(message); return message.t === "status" ? { status: { peers: { qwen: { state: "offline" } } } }
+      : { ok: true, mode: "tui", launch: { cmd: "qwen", args: ["--input-file", "/state/qwen/qwen-dual/input.jsonl"], env: { AGENTHUB_PEER_ID: "qwen", AGENTHUB_RECOVERY_OPERATION: "daemon-op", AGENTHUB_UNATTENDED: "1" } } }; } }),
+    takeFlags: () => ({ one: { "--mode": "tui" }, rest: [], many: {} }),
+    execWithEnv: (bin: string, argv: string[], env: NodeJS.ProcessEnv): never => { Object.assign(launched, { bin, argv, env }); throw new Error("exec boundary"); },
+    helpers: {} } as unknown as NativeCliEntryContext;
+  try { await expect(runQwenEntry(context)).rejects.toThrow("exec boundary"); }
+  finally {
+    for (const [key, value] of Object.entries(saved)) if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    Object.defineProperty(process.stdin, "isTTY", { value: tty.in, configurable: true }); Object.defineProperty(process.stdout, "isTTY", { value: tty.out, configurable: true });
+  }
+  expect(requests.find(request => request.t === "start")).toMatchObject({ peer: "qwen", args: { mode: "tui" } });
+  expect(launched.bin).toBe("qwen");
+  expect(launched.env!.PATH).toBe(saved.PATH);                       // without the person's PATH the exec finds no qwen (measured against the real CLI)
+  expect(launched.env!.FAKE_PROVIDER_KEY).toBe("person-key");        // and their provider key reaches Qwen without passing through the daemon
+  expect(launched.env!.AGENTHUB_PEER_ID).toBe("qwen");               // the hub's marker is over it
+  expect(launched.env!.AGENTHUB_RECOVERY_OPERATION).toBeUndefined(); // recovery and unattended authority never reach the native child
+  expect(launched.env!.AGENTHUB_UNATTENDED).toBeUndefined();
 });
 
 // ---- through the daemon: the start, the launch the person's terminal runs, the status surface and the stop refusal ----

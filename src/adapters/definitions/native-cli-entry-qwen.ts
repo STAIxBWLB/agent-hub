@@ -39,7 +39,9 @@ export async function runQwenEntry(ctx: NativeCliEntryContext): Promise<void> {
   if (mode !== "tui") return;
   const verified = verifiedLaunch(launch);
   if (!verified) return fail("Qwen TUI launch metadata was not verified");
-  const env = { ...verified.env };
+  // The daemon's launch env carries only the peer marker: Qwen runs in the person's own terminal and needs their PATH, HOME (its settings and sessions) and the key its provider
+  // names, none of which the daemon may copy. So the person's environment is the base and the daemon's marker goes over it. (Measured: without this the exec found no `qwen`.)
+  const env = { ...process.env, ...verified.env };
   delete env.AGENTHUB_RECOVERY_OPERATION; delete env.AGENTHUB_UNATTENDED;
   console.error("Qwen runs in this terminal, driven by the hub through its dual-output files. Limits: a hub deny ends the turn without an answer, and a stalled turn is stopped only by pressing Esc here.");
   return execWithEnv(verified.cmd, verified.args, env);
