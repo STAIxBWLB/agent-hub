@@ -32,7 +32,7 @@ terminal: it reviews the plan with you, applies it and follows it.
 
 ## Upgrading to the next release
 
-The `ahub sdlc` read commands (`status`, `explain`, `queue`, `release`, `metrics`, `costs`, `authorize-release`) now print readable output by default, no longer a JSON document (#814). A script that parses their output must pass `--json`: it prints exactly what the command printed before. `sdlc export` stays JSON. More commands follow in later releases.
+The `ahub sdlc` read commands (`status`, `explain`, `queue`, `release`, `metrics`, `costs`, `authorize-release`) now print readable output by default, no longer a JSON document (#814). A script that parses their output must pass `--json`: it prints exactly what the command printed before. `sdlc export` stays JSON. `restart` and `upgrade` off a terminal (a pipe or `--dry-run`), `recovery status` and its results, `models setup|start`, `queue resolve` and `budget execution configure|disable` follow (#814): pass `--json` for the old document. More commands follow in later releases.
 
 ## Upgrading to 0.17.0
 

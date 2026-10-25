@@ -68,6 +68,7 @@ smoke ledger; the presence of this option proves no outstanding #273 live leg.
 `report --by task` keeps the attribution and coverage sentences with section headings and aligned counters.
 Use `--json` for scripts; it returns the fetched data without color, and `status --json` keeps its existing document.
 `sdlc status`, `sdlc explain`, `sdlc queue`, `sdlc release`, `sdlc metrics`, `sdlc costs` and `sdlc authorize-release` print readable output by default (#814: aligned columns, wrapped text, readable times, `--color=auto|always|never`). A script that parsed their JSON must pass `--json`, which prints exactly the document they printed before. `sdlc export` is a data format and stays JSON, as do `export`, `research export` and `bench export`.
+`restart` and `upgrade` off an interactive terminal (a pipe, `--dry-run`), `recovery status` and the results of `recovery reattach`, `resume`, `abort` and `dispose`, `models setup` and `start`, `queue resolve`, and `budget execution configure` and `disable` print readable text by default (#814); a script that parsed their JSON must pass `--json`, which prints exactly the document they printed before, including `restart --json --yes`. A readable plan lists each project, each peer with how it runs and what happens to it, every blocker, every reconnect-only session and every fresh start, and says nothing was changed; `--json` keeps those as stderr lines. A pipe wraps at `COLUMNS` when it is set, else at 80 columns.
 In `projects --json` and `status --all --json`, an unavailable hub that explicitly refuses an inspection for SQLite contention also carries `failure: { "code": "database_busy" }`; it is additive metadata alongside the neutral `error` sentence.
 Text columns are a human interface, not a scripting contract. An identifier accepted as a command argument is whole wherever its available column can hold its own length:
 turn ids, queue ids, project ids, execution budget ids and ids in labelled views. Only status's informational settlement and hold ids are shortened;
@@ -2703,15 +2704,14 @@ plugin, daemon, or terminal mutation.
 
 `ahub upgrade` and `ahub restart` are interactive when standard input and output
 are a terminal and neither `--dry-run` nor `--yes` is given. With either flag, or
-through a pipe, the JSON plan, the `ahub: blocker:` lines and the exit codes are
-unchanged. The screens add no way to change an operation: every choice runs one
+through a pipe, the plan is printed as readable text (#814) and `--json` keeps the JSON plan and the `ahub: blocker:` lines; the exit codes are unchanged. The screens add no way to change an operation: every choice runs one
 of the commands in this section for you, so that command's refusals decide.
 
 The screens use the console palette and `--color=auto|always|never`, with the
 same `NO_COLOR` and `TERM=dumb` precedence. Auto colours a suitable TTY; explicit
 always has the console's override behaviour. Raw JSON bypasses colour and width
-handling. Default and never preserve the existing pipe, dry-run, status and
-dispose output byte for byte. Presentation flags go after the command, for
+handling. Default and never print the same readable pipe, dry-run, status and
+dispose text, and `--json` keeps the previous documents byte for byte. Presentation flags go after the command, for
 example `ahub recovery --color=never` or
 `ahub recovery status <operation-id> --json`. An explicit `--json` returns only
 the raw document, without a human suffix. `upgrade --json` reviews a JSON plan;

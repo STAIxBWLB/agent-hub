@@ -228,7 +228,8 @@ test("execution disable after an output flag performs the exact requested operat
   const result = await f.run(["budget", "--color=never", "execution", "disable", id]);
   expect(result.code, result.stderr).toBe(0);
   expect(f.requests.filter(request => request.t === "execution_budget")).toMatchObject([{ op: "disable", id }]);
-  expect(result.stdout).toContain("disabled"); expect(result.stdout).toContain("true");
+  // #814: the default tells a person what happened; --json keeps the document.
+  expect(() => JSON.parse(result.stdout)).toThrow(); expect(result.stdout).toContain("Disabled"); expect(result.stdout).not.toContain("{");
   expect(result.stdout).not.toContain("no quota readings");
   const json = await f.run(["budget", "--json", "execution", "disable", id]);
   expect(json.code, json.stderr).toBe(0); expect(json.stdout).toBe(JSON.stringify({ disabled: true }, null, 2) + "\n");

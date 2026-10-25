@@ -39,7 +39,11 @@ await new Promise(() => {});
 `);
   chmodSync(fake, 0o755);
 
-  const started = JSON.parse(cli(project, home, ["models", "start"]));
+  const started = JSON.parse(cli(project, home, ["models", "start", "--json"]));
+  // #814: without --json a person reads the same labelled fields `models status` prints
+  const readable = cli(project, home, ["models", "start"]);
+  expect(() => JSON.parse(readable)).toThrow(); expect(readable).toContain("Models"); expect(readable).toContain("ready");
+  expect(readable.replace(/\s+/g, " ")).toContain(`http://127.0.0.1:${port}/v1`);
   expect(started.state).toBe("ready");
   expect(started.url).toBe(`http://127.0.0.1:${port}/v1`);
   expect(started.model).toBe(modelPath);
@@ -72,7 +76,7 @@ test("Ollama CLI uses an external model and refuses shared-service shutdown", as
   mkdirSync(join(project, ".agenthub"));
   writeFileSync(join(project, ".agenthub/config.json"), JSON.stringify({ mlx: { provider: "ollama", port: server.port, model } }));
   const run = async (action: string) => {
-    const process_ = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", project, "models", action, ...(action === "status" ? ["--json"] : [])], {
+    const process_ = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", project, "models", action, ...(action === "stop" ? [] : ["--json"])], {
       cwd: project, env: { ...process.env, AGENTHUB_HOME: home }, stdout: "pipe", stderr: "pipe",
     });
     const [stdout, stderr, code] = await Promise.all([new Response(process_.stdout).text(), new Response(process_.stderr).text(), process_.exited]);
@@ -84,6 +88,10 @@ test("Ollama CLI uses an external model and refuses shared-service shutdown", as
     expect(JSON.parse(result.stdout)).toMatchObject({ provider: "ollama", model, modelAvailable: true, modelResident: false });
     expect(JSON.parse(result.stdout).pid).toBeUndefined();
   }
+  // #814: the same start without --json is the readable Models fields, naming the same model
+  const human = await Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli/main.ts"), "--project", project, "models", "start"], { cwd: project, env: { ...process.env, AGENTHUB_HOME: home }, stdout: "pipe", stderr: "pipe" });
+  const readable = await new Response(human.stdout).text(); await human.exited;
+  expect(() => JSON.parse(readable)).toThrow(); expect(readable).toContain("Models"); expect(readable.replace(/\s+/g, " ")).toContain(model);
   const stopped = await run("stop");
   expect(stopped.code).not.toBe(0);
   expect(stopped.stderr).toContain("externally managed");

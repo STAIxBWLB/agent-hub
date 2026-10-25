@@ -161,9 +161,15 @@ test("installed-layout detached restart completes in an isolated project and pre
     expect((await cli(["up"])).code).toBe(0);
     expect((await cli(["task", "propose", "--class", "implement", "Keep this task through restart"])).code).toBe(0);
     const before = await status();
-    const plan = await cli(["restart", "--dry-run"]);
+    const plan = await cli(["restart", "--dry-run", "--json"]);
     expect(plan.code).toBe(0);
     expect(JSON.parse(plan.out).projects[0].blockers).toEqual([]);
+    // #814: the same plan for a person, from a real running hub: its project, a clean plan, and what to do next
+    const readable = await cli(["restart", "--dry-run"]);
+    expect(readable.code).toBe(0);
+    expect(() => JSON.parse(readable.out)).toThrow();
+    expect(readable.out.replace(/\s+/g, " ")).toContain(JSON.parse(plan.out).projects[0].project.id);
+    expect(readable.out).toContain("Apply with `--yes`"); expect(readable.out).not.toContain("Blocked:");
     const applied = await cli(["restart", "--yes"]);
     expect(applied.code).toBe(0);
     operation = /Recovery operation ([a-f0-9-]{36}) scheduled/.exec(applied.out)?.[1];
@@ -181,7 +187,7 @@ test("installed-layout detached restart completes in an isolated project and pre
     expect(after.tasks).toEqual(before.tasks);
     expect((await cli(["board"])).out).toContain("Keep this task through restart");
     expect((await cli(["task", "propose", "--class", "implement", "Normal writes after recovery"])).code).toBe(0);
-    const second = await cli(["restart", "--dry-run"]);
+    const second = await cli(["restart", "--dry-run", "--json"]);
     expect(JSON.parse(second.out).projects[0].blockers).toEqual([]);
     // #272: on a terminal, with no flag, the same restart is reviewed, applied with one key and followed to its end.
     const wrapper = join(temp, "terminal.ts");
@@ -254,8 +260,11 @@ test("a refused restart lists every blocker before its final line", async () => 
     return { code, err: err.trim().split("\n") };
   };
   try {
-    expect(await cli(["restart", "--dry-run"])).toEqual({ code: 0, err: ["ahub: blocker: no running registered projects in scope"] });
-    expect(await cli(["restart", "--yes"])).toEqual({ code: 1, err: ["ahub: blocker: no running registered projects in scope", "ahub: plan has blockers; no runtime was changed"] });
+    // --json keeps the stderr blocker lines exactly (#206); the default prints the blocker on stdout, in the plan, and keeps only the final refusal on stderr.
+    expect(await cli(["restart", "--dry-run", "--json"])).toEqual({ code: 0, err: ["ahub: blocker: no running registered projects in scope"] });
+    expect(await cli(["restart", "--dry-run"])).toEqual({ code: 0, err: [""] });
+    expect(await cli(["restart", "--yes", "--json"])).toEqual({ code: 1, err: ["ahub: blocker: no running registered projects in scope", "ahub: plan has blockers; no runtime was changed"] });
+    expect(await cli(["restart", "--yes"])).toEqual({ code: 1, err: ["ahub: plan has blockers; no runtime was changed"] });
   } finally { rmSync(temp, { recursive: true, force: true }); }
 });
 
@@ -295,7 +304,7 @@ test("resume declines while a runner holds the operation", async () => {
     // Never the bare global ahub, which may be the older release mid-upgrade (#215); a coordinator without the #215
     // commands (as this one, which does not exist) is replaced by the running release.
     expect(await cli(["recovery", "resume", id])).toEqual({ code: 0, out: `runner ${process.pid} is still working on this operation; bun ${join(import.meta.dir, "../src/cli/main.js")} recovery status ${id}\n` });
-    expect(JSON.parse((await cli(["recovery", "status", id])).out)).toMatchObject({ runner: { state: "running", pid: process.pid } });
+    expect(JSON.parse((await cli(["recovery", "status", id, "--json"])).out)).toMatchObject({ runner: { state: "running", pid: process.pid } });
   } finally { release(); rmSync(temp, { recursive: true, force: true }); }
 });
 
@@ -349,7 +358,7 @@ await import(${JSON.stringify(main)});
     // A range never reaches a package spec.
     expect(await cli(["upgrade", "--to", "99", "--dry-run"])).toEqual({ code: 1, out: "", err: ["ahub: --to requires an exact package version"], ran: undefined });
     // A target that is not newer is planned by this coordinator.
-    const here = await cli(["upgrade", "--to", "0.0.1", "--dry-run"]);
+    const here = await cli(["upgrade", "--to", "0.0.1", "--dry-run", "--json"]);
     expect({ code: here.code, ran: here.ran, version: JSON.parse(here.out).version }).toEqual({ code: 0, ran: undefined, version: "0.0.1" });
     expect(here.err).toContain("ahub: blocker: no running registered projects in scope");
   } finally { rmSync(temp, { recursive: true, force: true }); }
@@ -373,7 +382,7 @@ test("recovery commands without an id use the operation that holds the lock", as
     writeOperation(id, { schema: 1, id, phase: "completed", step: "completed", sourceRoot: "/preserved/coordinator", plan: { version: "0.0.0" }, projects: [], updatedAt: 1 }, home);
     expect(await cli(["recovery", "status"])).toEqual({ code: 1, out: "", err: "ahub: no recovery operation holds the lock; name one by its id" });
     acquireRecoveryLock(id, home);
-    expect(JSON.parse((await cli(["recovery", "status"])).out)).toMatchObject({ id, phase: "completed", next: [] });
+    expect(JSON.parse((await cli(["recovery", "status", "--json"])).out)).toMatchObject({ id, phase: "completed", next: [] });
     expect((await cli(["recovery", "resume"])).out).toBe("recovery is already completed\n");
     // abort and dispose reach the same operation as with its id (this bare receipt has no plan to abort), and
     // dispose's flags are still its flags.
@@ -385,7 +394,7 @@ test("recovery commands without an id use the operation that holds the lock", as
     // Not a terminal: the bare command has no screen to open, and a word that is no id is not taken for one.
     expect((await cli(["recovery"])).err).toStartWith("ahub: usage: ahub recovery [status|resume|abort] [<operation-id>]");
     expect((await cli(["recovery", "status", "latest"])).err).toStartWith("ahub: usage: ahub recovery");
-    expect(JSON.parse((await cli(["recovery", "status", id])).out)).toMatchObject({ id });
+    expect(JSON.parse((await cli(["recovery", "status", id, "--json"])).out)).toMatchObject({ id });
   } finally { rmSync(temp, { recursive: true, force: true }); }
 });
 
@@ -664,7 +673,7 @@ test("installed-layout restart preserves an off-roster peer queue and open task 
       const originals = queueBefore.flatMap((row: any) => row.envelopeIds).sort();
       expect(originals.length).toBeGreaterThanOrEqual(2);
       const before = await status(); expect(before.peers.claude).toMatchObject({ state: "offline", rostered: false });
-      const plan = await cli(["restart", "--dry-run"]); expect(plan.code).toBe(0);
+      const plan = await cli(["restart", "--dry-run", "--json"]); expect(plan.code).toBe(0);
       const planned = JSON.parse(plan.out).projects[0]; expect(planned.blockers).toEqual([]);
       expect(planned.source.peers.find((row: any) => row.id === "claude").state).toBe("offline");
       expect(planned.reconnectOnly ?? []).not.toContain("claude"); expect(planned.terminals).toEqual([]);

@@ -50,7 +50,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub reset [--all] [--yes]", "list, then with --yes stop the hub and discard every queued and needs_review delivery, clear holds and pauses and drop session pointers; --all moves the state directory to .agenthub/archive instead"],
     ["ahub restart [--dry-run] [--yes] [--json] [--verbose] [--color=auto|always|never]", "recover this project's runtime; on a terminal without a flag it reviews the plan with you, follows the progress and offers the next steps"],
     ["ahub upgrade [--to <version>] [--dry-run] [--yes] [--json] [--verbose] [--color=auto|always|never]", "review and upgrade running projects; --to defaults to the latest release (--yes needs it), and a newer release's own coordinator takes over; on a terminal without --dry-run or --yes: review, end agents first if you choose, apply, follow, and resume, cancel, end or reset on the spot"],
-    ["ahub recovery [status|resume|abort] [<operation-id>]", "inspect, resume or cancel a preflight; status names the next actions; without an id, the operation that holds the lock, and with nothing else on a terminal its screen"],
+    ["ahub recovery [status|resume|abort] [<operation-id>] [--json] [--color=auto|always|never]", "inspect, resume or cancel a preflight; status names the next actions; without an id, the operation that holds the lock, and with nothing else on a terminal its screen"],
     ["ahub recovery reattach <operation-id> codex|claude|pi", "person only: repair that blocked peer with its recorded session; leaves the rest for recovery resume"],
     ["ahub recovery dispose [<operation-id>] --fresh-session codex|claude --reason <text>", "end a partial operation by starting that peer as a new session, recording the lost conversation"],
     ["ahub recovery dispose [<operation-id>] --stop-and-archive --reason <text>", "end a partial operation: stop its own targets, archive its snapshot and release the lock; the upgrade is abandoned, not completed"],
@@ -63,7 +63,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub role assign <peer> <id> | clear <peer> [<id>]", "person only: add or clear catalog guidance, applied at the next peer start"],
     ["ahub stop <peer>", "person or configured conductor: stop a hub-owned headless peer; end TUI agents in their terminals"],
     ["ahub models status [--json] [--color=auto|always|never]", "inspect local model state as labelled fields"],
-    ["ahub models setup|start|stop", "prepare or inspect local Ollama MLX (legacy stop is explicit)"],
+    ["ahub models setup|start [--json] [--color=auto|always|never] | stop", "prepare or inspect local Ollama MLX; setup and start print the model state like status (legacy stop is explicit)"],
   ]],
   ["Messages and approvals", [
     ["ahub say [@peer ...] <text>", "send as the console user (no @peer = broadcast); delivered at once, start the text with [STATUS] to let it batch or [FYI] for the record only"],
@@ -79,7 +79,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub pause|resume <peer>", "hold a peer's deliveries in its queue / release them"],
     ["ahub queue list [--peer <id>] [--json] [--color=auto|always|never]", "inspect durable deliveries"],
     ["ahub queue show <delivery-id> [--json] [--color=auto|always|never]", "person or configured conductor: inspect one delivery and revision; agent output uses the public view"],
-    ["ahub queue resolve <delivery-id> --action completed|retry|discard --reason <text> [--revision N]", "person or configured conductor: resolve a queued or needs_review delivery; --revision binds the displayed row instead of a fresh show; a queued delivery can be discarded while its peer is busy, and a refusal names its cause"],
+    ["ahub queue resolve <delivery-id> --action completed|retry|discard --reason <text> [--revision N] [--json] [--color=auto|always|never]", "person or configured conductor: resolve a queued or needs_review delivery; --revision binds the displayed row instead of a fresh show; a queued delivery can be discarded while its peer is busy, and a refusal names its cause"],
     ["ahub queue discard --peer <id> --reason <text> [--state queued|needs_review] [--yes] [--json]", "person or configured conductor: without --yes count one peer's queued (default) deliveries; with --yes discard them all with the reason, one recorded discard each; other peers' queues are untouched"],
   ]],
   ["Tasks and review", [
@@ -110,7 +110,7 @@ const SECTIONS: [string, [usage: string, description: string][]][] = [
     ["ahub budget set <peer> <0..1> [--resets-in 30m] [--window 5h|week]", "feed a reading by hand (also: test the relay)"],
     ["ahub budget resume <peer>", "override a budget pause; readings are ignored for that peer until the window resets"],
     ["ahub budget execution status [id] [--json] [--color=auto|always|never]", "read execution counters and limits"],
-    ["ahub budget execution configure <config.json> | disable <id>", "opt-in limits on model calls, tool calls, time and tokens for pi and local"],
+    ["ahub budget execution configure <config.json> | disable <id> [--json] [--color=auto|always|never]", "opt-in limits on model calls, tool calls, time and tokens for pi and local"],
   ]],
   ["History and reports", [
     ["ahub turns [peer] [--limit N] [--json] [--color=auto|always|never]", "recent turns and the files each changed (a git work tree only)"],
