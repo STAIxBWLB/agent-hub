@@ -10,17 +10,17 @@ A reviewed head is a full lowercase 40-character SHA observed through a successf
 
 The built-in lifecycle follows the [AI-Native SDLC Playbook](https://claude.com/resources/articles/the-ai-native-sdlc-playbook). Stage ids describe the hub's artifacts and handoffs; the playbook labels group them into Plan, Design, Build, Test, Deploy and Maintain.
 
-| Stage id | Playbook stage | Acting role | Artifact or exit gate | Current enforcement |
-| --- | --- | --- | --- | --- |
-| intent | Plan | person/planner | intent or backlog identity | person spec acceptance required at build entry in enforce |
-| spec | Design | person/planner | issue identity and scope | spec acceptance/body drift checked at build entry |
-| plan | Build | planner/owner | plan, branch, existing predecessor gates | current planner review required at build admission; literal-path conformance gates approval in enforce |
-| build | Build | owner | PR identity/current head and local check on that head | entering review, when enabled |
-| test | Test | verifier/reviewer | required checks and local gate on the reviewed head | approval, when enabled; bug test integrity below, evals pending S5 |
-| review | Deploy | assigned reviewer | current head-bound verdict, no pending change request/open thread; AC checklist under Compliance | approval, when enabled; open Important findings block in enforce |
-| merge | Deploy | person | current-head readiness, ordered touching PRs | shown; no mutation |
-| release | Deploy | person | merged commit, version/tag, docs freshness/live receipt checklist | person authorization and optional tag hook below |
-| maintain | Maintain | person/planner | follow-up intent and operational evidence | shown; metrics and control bands from S7 (`ahub sdlc metrics`) |
+| Stage id | Playbook stage | Acting role | Artifact or exit gate | Current enforcement | Class (#784) |
+| --- | --- | --- | --- | --- | --- |
+| intent | Plan | person/planner | intent or backlog identity | person spec acceptance required at build entry in enforce | person-only (acceptance) |
+| spec | Design | person/planner | issue identity and scope | spec acceptance/body drift checked at build entry | person-only (acceptance) |
+| plan | Build | planner/owner | plan, branch, existing predecessor gates | current planner review required at build admission; literal-path conformance gates approval in enforce | agent-executable |
+| build | Build | owner | PR identity/current head and local check on that head | entering review, when enabled | agent-executable |
+| test | Test | verifier/reviewer | required checks and local gate on the reviewed head | approval, when enabled; bug test integrity below, evals pending S5 | agent-executable |
+| review | Deploy | assigned reviewer | current head-bound verdict, no pending change request/open thread; AC checklist under Compliance | approval, when enabled; open Important findings block in enforce | agent-executable |
+| merge | Deploy | reviewer | current-head readiness, ordered touching PRs | shown; the approving reviewer merges once exact-head CI is green, no thread is unresolved and no change request is pending | agent-executable (the approving reviewer, under the gates) |
+| release | Deploy | person | merged commit, version/tag, docs freshness/live receipt checklist | person authorization and optional tag hook below | agent-evidence / person-verdict (consent) |
+| maintain | Maintain | person/planner | follow-up intent and operational evidence | shown; metrics and control bands from S7 (`ahub sdlc metrics`) | agent-executable |
 
 Stored `implement` and `verify` stage ids read as `build` and `test`. A write that names the old id stores the id the configuration lists, so new enabled-lifecycle receipts use the canonical ids. The default remains off, preserving existing off-mode output, receipt and schema shapes. Status, explain, console and dashboard name the playbook stage beside enabled lifecycle ids.
 

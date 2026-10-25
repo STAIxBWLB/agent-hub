@@ -1,6 +1,44 @@
 # Live smoke checklist
 
-`scripts/check.sh` covers everything against fakes. The legs below need real accounts and an interactive terminal, so they are run by hand and recorded here.
+`scripts/check.sh` covers everything against fakes. The legs below need real accounts, a real terminal or a person's judgement, and their results are recorded here. An explicitly authorized agent runs most of them itself with `ahub --live-test` in a disposable project (see [Agent-operated verification](#agent-operated-verification-408)); each open leg carries one class (#784):
+
+- `agent-executable`: an authorized agent runs it and records the result.
+- `agent-evidence / person-verdict`: an agent runs it and collects the evidence; the person gives the verdict named in the row.
+- `person-only`: only the person can do it (a login, a native choice, a consent).
+- `external-blocked`: waiting on something outside the hub; the row names it.
+
+## Open live legs by class
+
+| Leg | Section | Class | Person verdict or blocker |
+| --- | --- | --- | --- |
+| Off-campus Cloudflare Access headers (#1) | Issue #7 verification ledger | external-blocked | Access credential files; then agent-executable |
+| Natural Codex budget pause with a TUI attached (#1) | Issue #7 verification ledger | external-blocked | a natural weekly reading above the gate |
+| Native Pi restoration and the operator plan (#273) | Issue #273 operator execution plan | agent-executable | |
+| Hub memory live run (#258) | Hub memory | agent-executable | |
+| Office view look (#264) | Office view | agent-evidence / person-verdict | the look in a browser, light and dark |
+| Add-on arms and fingerprints (#248) | Add-on arms and fingerprints | agent-executable | |
+| Settings from the dashboard and the terminal (#269) | Settings from the dashboard and the terminal | agent-evidence / person-verdict | the dashboard controls as a person sees them |
+| Codex resumed approval policy stickiness (#270) | Codex resumed approval policy | person-only | the explicit native choice in the person's TUI |
+| Interactive upgrade screens (#272) | Interactive upgrade | agent-executable | |
+| `ahub reset` on a scratch project (#214) | ahub reset on a scratch project | agent-executable | |
+| Claude without channel evidence (#205) | Claude without channel evidence | agent-executable | |
+| Console layout and readability (#213, #201) | Console layout and readability | agent-evidence / person-verdict | readability at 80 and 120 columns |
+| `ahub bench` live run (#251) | `ahub bench` live run | agent-executable | |
+| Codex and Pi permission-mode legs (#240, #242) | Permission modes | agent-executable | |
+| Dashboard themes (#246) | Whole-board task progress and dashboard themes | agent-evidence / person-verdict | light and dark legibility |
+| Command output (#284) | One-shot command output; Remaining command output | agent-evidence / person-verdict | terminal rendering at 80 and 120 columns |
+| Qwen and Kimi cancellation timing (#304) | ACP cancellation settlement | agent-executable | |
+| Kimi TUI pull mode (#316) | Kimi TUI pull mode | agent-executable | |
+| One issue through merge and release in advise mode (#257) | SDLC gates | agent-evidence / person-verdict | release consent |
+| Qwen native turn and recovery (#256) | Qwen Code production peer | agent-executable | |
+| Jcode instance sign-in per `jcode_home` (#332, #529) | Jcode peer | person-only | signing in to each instance's account |
+| Planner grooms a backlog into two releases (#263) | Project board; Planning and release controls | agent-executable | |
+| Character glyphs in real terminals and tmux (#280) | Console attention; Dashboard character | agent-evidence / person-verdict | glyph rendering in physical terminals |
+| Console Settings panel in a native terminal (#439) | Settings reload and console fixture | agent-evidence / person-verdict | the panel as a person sees it |
+| Reviewer pool native legs (#519) | Reviewer pool native legs | agent-executable | after #783 ships |
+| Antigravity TUI close (#485) | Antigravity P1 | agent-executable | |
+| Managed Pi live receipts (#418 AC8) | Agent-operated verification | person-only, then agent-executable | the person opts in to a check runner and answers the approvals |
+| Kimi credential probe (#285 AC9) | Kimi usage counting | person-only | the owner's approval of the probe |
 
 ## Issue #273 operator execution plan (2026-10-16)
 

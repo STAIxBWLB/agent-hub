@@ -1,6 +1,7 @@
 # Role catalog (#295)
 
 - Flow roles remain conductor, planner, implementer, verifier and reviewer. Only the existing `roles` block controls their authority and routing. Catalog roles are bounded guidance selected through `catalog_roles`; they add no tool, capability, permission mode, sandbox reach or routing preference.
+- Reviewer completion (#784): the reviewer that approves a PR at its head merges it once exact-head CI is green, no review thread is unresolved and no change request is pending, then removes the branch and worktree, or names the open gate. A release PR waits for the person's release consent. The duty is in the AGENTS block (`templates/AGENTS.block.md`) and the `code-reviewer` catalog role; the flow role contracts stay byte-identical.
 - Default catalog assignments are absent. Existing flow contracts are byte-identical to main d83cb8dd when no catalog role is selected.
 
 # Definitions and layers
