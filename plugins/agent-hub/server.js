@@ -12637,6 +12637,9 @@ function immutable(value, seen = new WeakSet) {
     immutable(member, seen);
   return Object.freeze(value);
 }
+function isFixedBuiltinDefinition(definition) {
+  return definition !== undefined && fixedBuiltinDefinitions.has(definition);
+}
 function deriveAdapterLists(definitions) {
   const ordered = (field, eligible = (_definition) => true) => definitions.map((definition, index) => ({ definition, index })).filter(({ definition }) => eligible(definition)).sort((left, right) => {
     const a = left.definition.projection?.[field], b = right.definition.projection?.[field];
@@ -12806,7 +12809,7 @@ function assertDefinitionCoherence(definition) {
     fail("reviewer", "unavailable reviewer must remain metadata-only");
 }
 function assertNativeCapabilityScope(definition) {
-  if (fixedBuiltinDefinitions.has(definition))
+  if (isFixedBuiltinDefinition(definition))
     return;
   const declared = (block, key) => block !== undefined && (key in block);
   const restricted = [
@@ -12814,6 +12817,7 @@ function assertNativeCapabilityScope(definition) {
     ["attach.admission", declared(definition.attach, "admission")],
     ["budget.resetSoftTokensOnResume", declared(definition.budget, "resetSoftTokensOnResume")],
     ["session.crashIdentity", declared(definition.session, "crashIdentity")],
+    ["session.nativeRevert", declared(definition.session, "nativeRevert")],
     ["start.daemonPort pi-rpc", definition.start.daemonPort === "pi-rpc"],
     ["routing", definition.routing !== undefined],
     ["projection", definition.projection !== undefined],

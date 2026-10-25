@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { ADAPTERS, assertDaemonEngine, assertNativeCapabilityScope, definitionOf, type AdapterDefinition } from "../src/adapters/registry.ts";
+import { ADAPTERS, assertDaemonEngine, assertNativeCapabilityScope, definitionOf, isFixedBuiltinDefinition, type AdapterDefinition } from "../src/adapters/registry.ts";
 
 function external(): AdapterDefinition {
   // A generic ACP fixture does not inherit the builtin-only catalog or native CLI projections.
@@ -12,6 +12,7 @@ for (const [field, set] of [
   ["start.acpCommand", (definition: AdapterDefinition) => { definition.start.acpCommand = () => ["fixture"]; }],
   ["attach.admission", (definition: AdapterDefinition) => { definition.attach = { admission: { reservedRefusal: "reserved", watchRefusal: "watch" } }; }],
   ["budget.resetSoftTokensOnResume", (definition: AdapterDefinition) => { definition.budget = { account: "fixture", resetSoftTokensOnResume: true }; }],
+  ["session.nativeRevert", (definition: AdapterDefinition) => { definition.session.nativeRevert = true; }],
   ["session.crashIdentity", (definition: AdapterDefinition) => { definition.session.crashIdentity = () => ({ sessionId: "fixture" }); }],
   ["start.daemonPort pi-rpc", (definition: AdapterDefinition) => { definition.start.daemonPort = "pi-rpc"; }],
   ["routing", (definition: AdapterDefinition) => { definition.routing = { preferredTier: true }; }],
@@ -34,4 +35,24 @@ test("#451 R4 a builtin name cannot authorize a foreign definition's native quir
   const definition = external(); definition.kind = "kimi";
   definition.start.acpCommand = () => ["fixture"];
   expect(() => assertNativeCapabilityScope(definition)).toThrow("start.acpCommand is restricted");
+});
+
+
+test("#625 fixed builtin proof authority uses object identity including reviewer and implementer variants", () => {
+  for (const definition of ADAPTERS) {
+    expect(isFixedBuiltinDefinition(definition)).toBe(true);
+    if (definition.reviewerVariant) expect(isFixedBuiltinDefinition(definition.reviewerVariant)).toBe(true);
+    if (definition.headlessVariant) expect(isFixedBuiltinDefinition(definition.headlessVariant)).toBe(true);
+    expect(isFixedBuiltinDefinition({ ...definition })).toBe(false);
+  }
+  expect(isFixedBuiltinDefinition(undefined)).toBe(false);
+  const forged = external(); forged.kind = "codex";
+  expect(isFixedBuiltinDefinition(forged)).toBe(false);
+});
+
+test("#625 a configured nativeRevert declaration is refused even when explicitly false or undefined", () => {
+  for (const value of [true, false, undefined]) {
+    const definition = external(); definition.session.nativeRevert = value;
+    expect(() => assertNativeCapabilityScope(definition)).toThrow("session.nativeRevert is restricted");
+  }
 });

@@ -54,3 +54,20 @@ test("A4 public factory calls the supplied definition rather than a builtin or a
   expect((calls[0] as { daemon: unknown }).daemon).toBe(daemon);
   expect(() => kit.createFromDefinition({ ...definition, start: { ...definition.start, create: undefined } }, daemon)).toThrow(/factory|external/);
 });
+
+for (const port of ["frontendProxy", "statusNotice", "revertTurn"] as const) test(`A4 conformance rejects foreign product native proof port ${port} by presence`, async () => {
+  const kit = await publicKit(), original = (await import("../../src/adapters/registry.ts")).definitionOf("codex")!;
+  for (const value of [undefined, { unsafe: "foreign proof" }]) {
+    const product = { id: "foreign", state: "offline" as const, start: async () => {}, stop: async () => {}, deliver: async () => {}, [port]: value };
+    const definition: AdapterDefinition = { ...original, start: { ...original.start, create: () => product } };
+    expect(() => kit.createFromDefinition(definition, { codex: { cwd: "/unopened/fixture", appPort: 0, proxyPort: 0 } })).toThrow(`${port} is restricted`);
+  }
+});
+
+test("A4 conformance admits ordinary foreign products but cannot skip their active proof leg", async () => {
+  const kit = await publicKit(), original = (await import("../../src/adapters/registry.ts")).definitionOf("codex")!;
+  const product = { id: "foreign", state: "offline" as const, start: async () => {}, stop: async () => {}, deliver: async () => {} };
+  const definition: AdapterDefinition = { ...original, kind: "foreign", start: { ...original.start, create: () => product } };
+  expect(kit.createFromDefinition(definition, { codex: { cwd: "/unopened/fixture", appPort: 0, proxyPort: 0 } })).toBe(product);
+  expect(() => kit.assertEnrollment([definition], [definition.kind], {}, { "foreign:native-proof-ports": "pretend native proof does not apply" })).toThrow("only fixed builtin proof legs");
+});

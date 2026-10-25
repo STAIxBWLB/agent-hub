@@ -131,7 +131,7 @@ test("#451 all registry kinds and reviewer variants have explicit conformance en
 });
 for (const definition of ADAPTERS) {
   const create = fixtures[definition.kind];
-  if (create) (definition.attach?.externalHello ? registerExternalChannelConformance : registerConformance)({ kind: definition.kind, create: () => create(definition) });
+  if (create) (definition.attach?.externalHello ? registerExternalChannelConformance : registerConformance)({ kind: definition.kind, definition, create: () => create(definition) });
   else test(`P4 ${definition.kind}: explicitly unsupported generic driven legs`, () => {
     expect(UNSUPPORTED[definition.kind]?.trim()).not.toBeEmpty();
   });

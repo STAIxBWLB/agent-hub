@@ -4716,7 +4716,21 @@ export interface ClaudeLaunchProof {
 
 ### Call-site inventory
 
-Counts are call occurrences in `src/hub/daemon.ts` (`grep -o`). `ripwire . --callers=<predicate>` lists the same functions and lines.
+The following inventory is historical, audited at `bab87cb2` (2026-10-22). Counts are call occurrences in `src/hub/daemon.ts` (`grep -o`). `ripwire . --callers=<predicate>` lists the same functions and lines.
+
+Slice 2a freezes the current baseline at `f11a2a1c3e24d1c431937941ecd40b07ca00a5cc` in `test/daemon-native-branches.json`, with executable checking in `test/daemon-native-branches.test.ts` using the shared `scripts/lib/ts-ast.ts` helper. The JSON has 61 predicate/function rows and 85 calls across `src/hub/daemon.ts` and `src/hub/claude-launch-proof.ts` (the launch-proof reader currently contributes zero native predicate calls). Each row carries its current reason; additions and removals both require an explicit reviewed table edit. Tests never regenerate the table.
+
+| Predicate | Historical count | Current count | Delta |
+|---|---|---|---|
+| `isCodexPeer` | 12 | 13 | +1 |
+| `isPiPeer` | 20 | 21 | +1 |
+| `isWsPeer` | 25 | 27 | +2 |
+| `isAcpPeer` | 12 | 13 | +1 |
+| `isLocalPeer` | 6 | 8 | +2 |
+| `isJcodePeer` | 1 | 1 | 0 |
+| `isReviewerPrintPeer` | 2 | 2 | 0 |
+
+The seven additional calls retain later native proof behavior: `actionEnforcement` adds one call each for Codex, Pi, Ws, ACP and Local; `actionSession` adds Local's intentionally separate action-allowance session; `currentExecutionOwner` adds the terminal Claude socket-generation/worktree proof. Slice 2a removes none of these calls to match the historical plan. The detailed historical assignments below remain context for later slices; the committed table is the current per-function ratchet.
 
 | Predicate | Count | Ported | Intentional |
 |---|---|---|---|
@@ -4835,15 +4849,15 @@ Common acceptance criteria:
 
 1. **2a: Ratchet and trust gate.** Area note: `tests.md`. Size S.
    - Paths:
-     - new `test/daemon-native-branches.test.ts` and `test/daemon-native-branches.json` (rows `{predicate, function, count, reason}`; TypeScript AST over `src/hub/daemon.ts` and `src/hub/claude-launch-proof.ts`, reusing the source walk in `test/helpers/registry-inventory.ts`; never imports daemon code);
+     - new `test/daemon-native-branches.test.ts` and `test/daemon-native-branches.json` (rows `{predicate, function, count, reason}`; TypeScript AST over `src/hub/daemon.ts` and `src/hub/claude-launch-proof.ts`, reusing `scripts/lib/ts-ast.ts` from #684 phase 5; never imports daemon code);
      - `src/adapters/registry.ts` (`isFixedBuiltinDefinition`; `session.nativeRevert` restricted);
      - `test/adapter-capability-scope.test.ts`;
      - `src/adapters/conformance/kit.ts` and `enrollment.ts`, with a ports leg.
    - ACs:
-     - The table equals today's counts (the inventory above).
+     - The table equals the current baseline above (61 predicate/function rows, 85 calls at `f11a2a1c`); the older inventory remains historical context.
      - An inline fixture with one extra predicate call fails, and so does a row with an empty reason.
      - A configured definition that declares `session.nativeRevert` is refused.
-     - Kit leg: a non-fixed-builtin definition whose product has `frontendProxy`, `statusNotice` or `revertTurn` fails the kit. (Today no product has these members, so the leg passes at 2a and starts biting from 2d.)
+     - Kit leg: a non-fixed-builtin definition whose product has `frontendProxy`, `statusNotice` or `revertTurn` fails the kit. (The proposed `frontendProxy` and `revertTurn` members arrive in 2d; Codex already has `statusNotice`. The foreign-product check is active in 2a and rejects presence even when a value is undefined.)
      - The ACP ports leg (`deliveryOnly`, `hubOwned`, `form: "headless"`) is not part of 2a: no ACP product exposes those members until 2b adds them, so 2a cannot assert them. 2a only reserves the leg in `UNSUPPORTED_LEGS` with the reason "ports added in 2b".
      - Builtins that do not apply name their reason in `UNSUPPORTED_LEGS`.
 2. **2b: Delivery-only, owned stop, form and roster detach.** Area note: `adapters.md` (Spawned processes; Turns). Size M.

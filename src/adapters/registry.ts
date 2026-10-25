@@ -29,6 +29,11 @@ for (const definition of [...fixedBuiltinDefinitions]) {
   if (definition.headlessVariant) fixedBuiltinDefinitions.add(definition.headlessVariant);
 }
 
+/** Native proof authority belongs only to the original fixed definition objects, variants included. */
+export function isFixedBuiltinDefinition(definition: AdapterDefinition | undefined): boolean {
+  return definition !== undefined && fixedBuiltinDefinitions.has(definition);
+}
+
 /** Keep the native catalog's order, independently of the legacy default-role object order. */
 export const ADAPTERS: readonly AdapterDefinition[] = immutable([
   ...NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN.filter(definition => definition.kind !== "jcode"),
@@ -231,13 +236,14 @@ export function assertDefinitionCoherence(definition: AdapterDefinition): void {
 
 /** Host-global native quirks are not capabilities a config-only or external definition may opt into. */
 export function assertNativeCapabilityScope(definition: AdapterDefinition): void {
-  if (fixedBuiltinDefinitions.has(definition)) return;
+  if (isFixedBuiltinDefinition(definition)) return;
   const declared = (block: object | undefined, key: string): boolean => block !== undefined && key in block;
   const restricted: [string, boolean][] = [
     ["start.acpCommand", declared(definition.start, "acpCommand")],
     ["attach.admission", declared(definition.attach, "admission")],
     ["budget.resetSoftTokensOnResume", declared(definition.budget, "resetSoftTokensOnResume")],
     ["session.crashIdentity", declared(definition.session, "crashIdentity")],
+    ["session.nativeRevert", declared(definition.session, "nativeRevert")],
     ["start.daemonPort pi-rpc", definition.start.daemonPort === "pi-rpc"],
     ["routing", definition.routing !== undefined],
     ["projection", definition.projection !== undefined],
