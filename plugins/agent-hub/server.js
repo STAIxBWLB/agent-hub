@@ -13140,13 +13140,16 @@ async function runQwenEntry(ctx) {
   const verified = verifiedLaunch(launch);
   if (!verified)
     return fail("Qwen TUI launch metadata was not verified");
-  const env = { ...process.env, ...verified.env };
+  const person = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("AGENTHUB_") || name === "AGENTHUB_HOME"));
+  const env = { ...peerChildEnv(peer, person), ...verified.env };
   delete env.AGENTHUB_RECOVERY_OPERATION;
   delete env.AGENTHUB_UNATTENDED;
   console.error("Qwen runs in this terminal, driven by the hub through its dual-output files. Limits: a hub deny ends the turn without an answer, and a stalled turn is stopped only by pressing Esc here.");
   return execWithEnv(verified.cmd, verified.args, env);
 }
-var init_native_cli_entry_qwen = () => {};
+var init_native_cli_entry_qwen = __esm(() => {
+  init_child_process();
+});
 
 // src/adapters/definitions/native-cli-preview-qwen.ts
 import { join as join27 } from "path";

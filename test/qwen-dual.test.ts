@@ -424,8 +424,11 @@ test("the CLI entry runs the daemon's launch in the person's own environment, wi
   const { runQwenEntry } = await import("../src/adapters/definitions/native-cli-entry-qwen.ts");
   const { definitionOf } = await import("../src/adapters/registry.ts");
   const requests: Record<string, unknown>[] = [], launched: { bin?: string; argv?: string[]; env?: NodeJS.ProcessEnv } = {};
-  const saved = { PATH: process.env.PATH, FAKE_PROVIDER_KEY: process.env.FAKE_PROVIDER_KEY, AGENTHUB_RECOVERY_OPERATION: process.env.AGENTHUB_RECOVERY_OPERATION };
-  process.env.FAKE_PROVIDER_KEY = "person-key"; process.env.AGENTHUB_RECOVERY_OPERATION = "op-1";
+  const saved = { PATH: process.env.PATH, FAKE_PROVIDER_KEY: process.env.FAKE_PROVIDER_KEY, AGENTHUB_RECOVERY_OPERATION: process.env.AGENTHUB_RECOVERY_OPERATION, AGENTHUB_HOME: process.env.AGENTHUB_HOME,
+    AGENTHUB_CHANNEL: process.env.AGENTHUB_CHANNEL, AGENTHUB_LAUNCH_ID: process.env.AGENTHUB_LAUNCH_ID, AGENTHUB_MODE: process.env.AGENTHUB_MODE, CLAUDECODE: process.env.CLAUDECODE };
+  process.env.FAKE_PROVIDER_KEY = "person-key"; process.env.AGENTHUB_RECOVERY_OPERATION = "op-1"; process.env.AGENTHUB_HOME = "/person-hub";
+  // the person ran it from a shell inside an `ahub claude` session
+  process.env.AGENTHUB_CHANNEL = "1"; process.env.AGENTHUB_LAUNCH_ID = "claude-launch"; process.env.AGENTHUB_MODE = "tools"; process.env.CLAUDECODE = "1";
   const tty = { in: process.stdin.isTTY, out: process.stdout.isTTY };
   Object.defineProperty(process.stdin, "isTTY", { value: true, configurable: true }); Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
   const args = ["--mode", "tui"];
@@ -448,6 +451,8 @@ test("the CLI entry runs the daemon's launch in the person's own environment, wi
   expect(launched.env!.AGENTHUB_PEER_ID).toBe("qwen");               // the hub's marker is over it
   expect(launched.env!.AGENTHUB_RECOVERY_OPERATION).toBeUndefined(); // recovery and unattended authority never reach the native child
   expect(launched.env!.AGENTHUB_UNATTENDED).toBeUndefined();
+  expect(launched.env!.AGENTHUB_HOME).toBe("/person-hub");           // the person's hub home is theirs to keep
+  for (const name of ["AGENTHUB_CHANNEL", "AGENTHUB_LAUNCH_ID", "AGENTHUB_MODE", "CLAUDECODE"]) expect(launched.env![name]).toBeUndefined(); // another agent's identity never reaches Qwen
 });
 
 // ---- through the daemon: the start, the launch the person's terminal runs, the status surface and the stop refusal ----
