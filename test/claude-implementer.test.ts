@@ -8,6 +8,7 @@ import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { realPath } from "../src/hub/project.ts";
 import { stopOwnedProcess } from "../src/hub/child-process.ts";
+import { completeJsonLines } from "./fakes/jsonl.ts";
 import type { DeliveryReceipt } from "../src/hub/peers.ts";
 const fake = resolve(import.meta.dir, "fakes/fake-claude-implementer.ts"), cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -20,7 +21,7 @@ function rig(mode = "success", extra: Partial<ClaudeImplementerOptions> = {}) {
     command, admit: () => true, chatTask: () => undefined, prove: async () => () => true, onUsage: (row, task) => usage.push({ row, task }), ...extra });
   peer.onDelivery = receipt => { receipts.push(receipt); };
   cleanup.push(() => peer.stop());
-  return { dir, log, command, peer, receipts, usage, calls: () => existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").map(line => JSON.parse(line)) : [] };
+  return { dir, log, command, peer, receipts, usage, calls: () => (existsSync(log) ? completeJsonLines(readFileSync(log, "utf8")) : []) as any[] };
 }
 const message = (task?: number) => newEnvelope("hub", "fixture only", { kind: "task", to: ["claude-worker"], ...(task ? { refs: { task: String(task) } } : {}) });
 const arg = (args: string[], name: string) => args[args.indexOf(name) + 1];
@@ -237,4 +238,10 @@ test("an entirely inadmissible batch settles failed_safe without a native child"
   const r = rig("success", { admit: () => false }); await r.peer.start();
   await r.peer.deliver([message(60)], "notice-only"); await until(() => r.peer.state === "idle");
   expect(r.receipts.map(row => row.state)).toEqual(["accepted", "failed_safe"]); expect(r.calls()).toHaveLength(0);
+});
+
+test("completeJsonLines reads only whole lines: an empty file and a half-written last line parse", () => {
+  expect(completeJsonLines("")).toEqual([]);
+  expect(completeJsonLines('{"a":1}\n{"b"')).toEqual([{ a: 1 }]);
+  expect(completeJsonLines('{"a":1}\n')).toEqual([{ a: 1 }]);
 });

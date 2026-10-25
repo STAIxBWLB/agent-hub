@@ -8,6 +8,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
+import { completeJsonLines } from "./fakes/jsonl.ts";
 
 async function until(condition: () => boolean, leg: string) { for (let n = 0; n < 300 && !condition(); n++) await Bun.sleep(5); expect(condition(), leg).toBe(true); }
 async function fixture(taskBound = false) {
@@ -35,8 +36,8 @@ async function fixture(taskBound = false) {
     } else {
       const sent = daemon.bus.publish(newEnvelope("user", "fixture only", { to: [peer] })); expect(sent).toContain(peer);
     }
-    await until(() => existsSync(log), "owned native child log");
-    const call = JSON.parse(readFileSync(log, "utf8").trim().split("\n")[0]!), session = call.args[call.args.indexOf("--session-id") + 1];
+    await until(() => completeJsonLines(existsSync(log) ? readFileSync(log, "utf8") : "").length > 0, "owned native child log");
+    const call = completeJsonLines(readFileSync(log, "utf8"))[0] as any, session = call.args[call.args.indexOf("--session-id") + 1];
     const tools = await ControlClient.connect(stateDir, { role: "tools", peer, launchId: call.launchId, projectRoot: root }); clients.push(tools);
     const connect = async (launchId: string) => { const client = await ControlClient.connect(stateDir, { role: "tools", peer, launchId, projectRoot: root }); clients.push(client); return client; };
     return { taskId, root, peer, tree, stateDir, log, home, daemon, console_, tools, call, session, instanceId, connect, async close() { for (const client of clients) client.close(); await daemon!.stop(); for (const [key, value] of Object.entries(oldEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } rmSync(root, { recursive: true, force: true }); } };
