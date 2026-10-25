@@ -12,8 +12,9 @@ import { Board } from "../src/hub/board.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { Bus, type BusEvent } from "../src/hub/bus.ts";
 import { Tasks } from "../src/hub/tasks.ts";
-import { loadRouting } from "../src/hub/routing.ts";
+import { loadRouting, routingText } from "../src/hub/routing.ts";
 import { realPath } from "../src/hub/project.ts";
+import { hubGitSync } from "../src/hub/git.ts";
 import { AcpPeer } from "../src/adapters/acp.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
 import { classifyPeerCommand, liveTestRefusal } from "../src/cli/identity.ts";
@@ -98,9 +99,13 @@ test("public operational projection uses actual Tasks privacy and never emits pr
   } finally {bus.closeJournal();board.close();rmSync(root,{recursive:true,force:true});}
 });
 
-async function operationalFixture(piiPaths?:string[]) {
+async function operationalFixture(piiPaths?:string[],options:{git?:boolean;deny?:string[]}={}) {
   const root=temp(),stateDir=join(root,".agenthub/state");mkdirSync(join(root,".agenthub"),{recursive:true});
-  const config={roles:{...DEFAULT_CONFIG.roles,codex:["conductor","planner"],claude:["implementer"]},planner:"codex",memory:{...DEFAULT_CONFIG.memory,enabled:false},inference:{...DEFAULT_CONFIG.inference,enabled:false},snapshots:{enabled:false,keep:20},pi:{...DEFAULT_CONFIG.pi,enabled:false,auto_start:false},mlx:{...DEFAULT_CONFIG.mlx,enabled:false},...(piiPaths?{pii:{paths:piiPaths}}:{})};
+  if(options.git){
+    expect(hubGitSync(["init","-q"],{cwd:root,encoding:"utf8",timeout:1000}).status).toBe(0);
+    writeFileSync(join(root,".agenthub/routing.toml"),routingText(root).replaceAll('pi_backend = "mlx"','pi_backend = "dgx"'));
+  }
+  const config={...(options.deny?{local:{...DEFAULT_CONFIG.local,deny:options.deny}}:{}),roles:{...DEFAULT_CONFIG.roles,codex:["conductor","planner"],claude:["implementer"]},planner:"codex",memory:{...DEFAULT_CONFIG.memory,enabled:false},inference:{...DEFAULT_CONFIG.inference,enabled:false},snapshots:{enabled:false,keep:20},pi:{...DEFAULT_CONFIG.pi,enabled:false,auto_start:false},mlx:{...DEFAULT_CONFIG.mlx,enabled:false},...(piiPaths?{pii:{paths:piiPaths}}:{})};
   writeFileSync(join(root,".agenthub/config.json"),JSON.stringify(config));
   const daemon=await startDaemon({cwd:root,stateDir,controlPort:0,codexAppPort:0,codexProxyPort:0,boundedTools:emulatedBoundedTools(),config:{...DEFAULT_CONFIG,...config,batch_ms:0}});
   const clients:ControlClient[]=[];
@@ -243,7 +248,7 @@ test("role-declined operational CLI records only refused audit and retains exact
 
 test("later operational parser refusal retains refused audit after accepted pre-effect authorization",async()=>{
   const f=await operationalFixture();try {
-    const result=await runOperationalCli(f.root,["settings","set","research.enabled","not_boolean"]);expect(result.code).toBe(1);
+    const result=await runOperationalCli(f.root,["settings","set","research.enabled","true","--unknown"]);expect(result.code).toBe(1);
     const events=readEvents(join(f.stateDir,"events.jsonl")).filter(e=>e.type==="agent_cli" && e.peer==="codex" && e.command==="settings set");
     const queued=drainCliAudits(f.stateDir).filter(e=>e.peer==="codex" && e.command==="settings set");
     expect(events.some(e=>e.type==="agent_cli" && e.refused)||queued.some(e=>e.outcome==="refused")).toBe(true);expect(queued.some(e=>e.outcome==="run")).toBe(false);
@@ -340,18 +345,23 @@ test("operational inventory classifies once and explicitly names incomplete priv
   }finally{bus.closeJournal();board.close();rmSync(root,{recursive:true,force:true});}
 });
 
-test("daemon operational cache invalidates on task privacy and live PII config reload",async()=>{
-  const f=await operationalFixture(),board=new Board(join(f.stateDir,"hub.db")),original=Tasks.prototype.publicView;let projections=0;
+test("daemon operational cache invalidates on task privacy and live PII routing reload while paths stay restart-bound",async()=>{
+  const deniedPath="custom-deny/file.txt",f=await operationalFixture(undefined,{git:true,deny:[deniedPath]}),board=new Board(join(f.stateDir,"hub.db")),original=Tasks.prototype.publicView;let projections=0;
   Tasks.prototype.publicView=function(...args){projections++;return original.apply(this,args);};
   try{
     const lead=await f.connect("codex"),person=await f.connect(),file=join(f.stateDir,"hub.log"),path="new-private/file.txt",title="CACHE_TASK_TITLE";
-    const task=board.propose("user",{title,class:"plan"}),pathTask=board.propose("user",{title:"INNOCUOUS_PATH_TASK_TITLE",class:"plan",refs:{paths:[path]}});appendFileSync(file,`task #${task.id} ${title}\ntask #${pathTask.id} INNOCUOUS_PATH_TASK_TITLE\n${path}\n`);
-    const first=await lead.request({t:"conductor_operational",op:"logs"});expect(first.lines.some((line:string)=>line.includes(title))).toBe(true);expect(first.lines).toContain(path);
+    const task=board.propose("user",{title,class:"plan"}),pathTask=board.propose("user",{title:"INNOCUOUS_PATH_TASK_TITLE",class:"plan",refs:{paths:[path]}}),deniedTask=board.propose("user",{title:"DENIED_REF_TASK_TITLE",class:"plan",refs:{paths:[deniedPath]}});appendFileSync(file,`task #${task.id} ${title}\ntask #${pathTask.id} INNOCUOUS_PATH_TASK_TITLE\ntask #${deniedTask.id} DENIED_REF_TASK_TITLE\n${path}\n${deniedPath}\n`);
+    const first=await lead.request({t:"conductor_operational",op:"logs"});expect(first.lines.some((line:string)=>line.includes(title))).toBe(true);expect(first.lines).toContain(path);expect(first.lines).not.toContain(deniedPath);expect(first.lines.some((line:string)=>line.includes("DENIED_REF_TASK_TITLE"))).toBe(false);
     expect(first.lines.some((line:string)=>line.includes("INNOCUOUS_PATH_TASK_TITLE"))).toBe(true);const before=projections;await lead.request({t:"conductor_operational",op:"logs"});expect(projections).toBe(before);
     board.update(task.id,"user","fixture privacy",{signals:["pii_path"]});
     const privateTask=await lead.request({t:"conductor_operational",op:"logs"});expect(privateTask.lines.some((line:string)=>line.includes(title))).toBe(false);expect(privateTask.lines).toContain(path);
     const configFile=join(f.root,".agenthub/config.local.json");writeFileSync(configFile,JSON.stringify({pii:{paths:[path]}}));
-    let reloaded=await person.request({t:"settings_reload"});if(reloaded.confirmation!==undefined)reloaded=await person.request({t:"settings_reload",confirm:reloaded.confirmation});expect(reloaded.ok).toBe(true);
+    let reloaded=await person.request({t:"settings_reload"});if(reloaded.confirmation!==undefined)reloaded=await person.request({t:"settings_reload",confirm:reloaded.confirmation.token});expect(reloaded.ok).toBe(true);expect(reloaded.rejected).toEqual([]);expect(reloaded.pendingRestart.some((row:{key:string})=>row.key==="pii" || row.key==="pii.paths")).toBe(true);
+    const retained=await lead.request({t:"conductor_operational",op:"logs"});expect(retained.lines).toContain(path);expect(retained.lines.some((line:string)=>line.includes("INNOCUOUS_PATH_TASK_TITLE"))).toBe(true);
+    // pii.paths retains native startup bounds. Exercise the live routing policy instead of forcing a restart key into effect.
+    const patterns=[...loadRouting(f.root).signals.pii_patterns,"new-private/file[.]txt|INNOCUOUS_PATH_TASK_TITLE"];
+    writeFileSync(join(f.root,".agenthub/routing.toml"),routingText(f.root).replace(/^pii_patterns\s*=.*$/m,`pii_patterns = ${JSON.stringify(patterns)}`));
+    let routingReload=await person.request({t:"settings_reload"});if(routingReload.confirmation!==undefined)routingReload=await person.request({t:"settings_reload",confirm:routingReload.confirmation.token});expect(routingReload.ok,String(routingReload.error)).toBe(true);
     const privatePath=await lead.request({t:"conductor_operational",op:"logs"});expect(privatePath.lines).not.toContain(path);expect(privatePath.lines.some((line:string)=>line.includes(title))).toBe(false);expect(privatePath.lines.some((line:string)=>line.includes("INNOCUOUS_PATH_TASK_TITLE"))).toBe(false);expect(projections).toBeGreaterThan(before);
   }finally{Tasks.prototype.publicView=original;board.close();await f.close();}
 });

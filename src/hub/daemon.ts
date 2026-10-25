@@ -4980,8 +4980,9 @@ export async function startDaemon(opts: DaemonOptions) {
   function publicOperationalView() {
     const revision=board.statusRevision(),routing=activeRouting(),privacy=JSON.stringify([config.pii?.paths??[],config.local.deny]);
     if(operationalViewCache && operationalViewCache.board===revision && operationalViewCache.config===configRevision && operationalViewCache.routing===routing && operationalViewCache.privacy===privacy)return operationalViewCache.view;
-    const currentPrivate=(task:Task)=>tasks.isPii(task) || [...(task.refs.paths??[]),...(task.plan?.paths??[])].some(path=>matchesPolicy(opts.cwd,path,config.pii?.paths??[],true));
-    const view=operationalView({tasks:board.list(),isPii:currentPrivate,publicView:task=>tasks.publicView(task),publicMetadataText:text=>tasks.publicMetadataText(text) && withoutPii([{title:"",text}],routing,opts.cwd,config.pii?.paths??[]).length===1,redact:record=>redact(record as BusEvent)});
+    const privatePaths=[...(config.pii?.paths??[]),...config.local.deny];
+    const currentPrivate=(task:Task)=>tasks.isPii(task) || [...(task.refs.paths??[]),...(task.plan?.paths??[])].some(path=>matchesPolicy(opts.cwd,path,privatePaths,true));
+    const view=operationalView({tasks:board.list(),isPii:currentPrivate,publicView:task=>tasks.publicView(task),publicMetadataText:text=>tasks.publicMetadataText(text) && boundedSafe(text),redact:record=>redact(record as BusEvent)});
     operationalViewCache={board:revision,config:configRevision,routing,privacy,view};return view;
   }
   function operationalFailure(error: unknown, fallback?: string): Record<string, unknown> {
