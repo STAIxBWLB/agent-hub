@@ -48,7 +48,17 @@ export interface PlanReviewReceipt {
   scope?: CostPlan;
   issue?: PlanIssueMetadata;
 }
+/** Host-observed guarded merge evidence. Never accepted from a tool or restored across an artifact relink. */
+export interface MergeRecord {
+  repo: string; pr: number; head: string; at: number;
+  state: "merged" | "not_merged" | "unknown";
+  exit: number; mergeCommit?: string;
+  cleanup: "not_started" | "claimed" | "deleted" | "already_gone" | "skipped" | "unknown";
+  reason?: "not_merged" | "missing_commit" | "metadata_unknown" | "identity_changed" | "protected_branch" | "default_branch" | "head_changed" | "authority_changed" | "delete_unconfirmed";
+  ownerNotice: "not_started" | "claimed" | "sent" | "unknown";
+}
 export interface SdlcReceipt {
+  merge?: MergeRecord;
   stage: SdlcStage;
   planReview?: PlanReviewReceipt;
   criteria?: CriteriaReceipt;
@@ -246,6 +256,7 @@ export function sdlcReceipt(value: unknown, previous: SdlcReceipt | undefined = 
 
 function receiptIdentity(next: SdlcReceipt, previous: SdlcReceipt, raw: Record<string, unknown>): SdlcReceipt {
   const checklist = raw.criteria ?? raw.phase;
+  if (next.repo !== previous.repo || next.pr !== previous.pr || next.head !== previous.head || next.reviewedHead !== previous.reviewedHead || next.localHead !== previous.localHead) delete next.merge;
   // A test receipt never carries across a different linked issue or artifact.
   if (raw.redFirst === undefined && (next.repo !== previous.repo || next.issue !== previous.issue || next.pr !== previous.pr)) delete next.redFirst;
   // An acceptance names one spec issue; relinking the receipt to another drops it (#481 S1).
