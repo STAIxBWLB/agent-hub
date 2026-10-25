@@ -22,7 +22,7 @@ test("split tools HTTP and CLI share role revision and unused-child undo (#263)"
     expect(await request(other,"hub_backlog_split",{id,revision:0,parts,reason:"parts"})).toMatchObject({ok:false});
     const result=await request(planner,"hub_backlog_split",{id,revision:0,parts,reason:"parts"});expect(result.ok).toBe(true);expect(JSON.parse(result.text).children).toHaveLength(2);
     expect(await request(person,"hub_backlog_undo",{id,revision:1})).toMatchObject({ok:true});
-    const viaCli=await cli(root,["backlog","split",String(id),"2",JSON.stringify(parts),"parts via CLI"]);expect(viaCli.code).toBe(0);expect(JSON.parse(viaCli.stdout).children).toHaveLength(2);
+    const viaCli=await cli(root,["backlog","split",String(id),"2",JSON.stringify(parts),"parts via CLI","--json"]);expect(viaCli.code).toBe(0);expect(JSON.parse(viaCli.stdout).children).toHaveLength(2);
     expect(await request(person,"hub_backlog_undo",{id,revision:3})).toMatchObject({ok:true});
     const opened=await person.request({t:"ui"}),url=new URL(opened.url),origin=url.origin;
     const session=await fetch(origin+"/session",{method:"POST",headers:{origin,"content-type":"application/json"},body:JSON.stringify({ticket:url.hash.slice(1)})});expect(session.status).toBe(200);const cookie=session.headers.get("set-cookie")!.split(";")[0]!;

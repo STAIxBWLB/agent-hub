@@ -95,6 +95,7 @@ import { runConsole } from "./console.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
 import { outputWidth, renderRoster, renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
 import { renderHelp, configuredAcpHelp } from "./help.ts";
+import { renderBacklogResult, renderGroom, renderReleaseChange, renderReleaseList, renderReleaseNew, renderReleaseShow, renderTaskCancel, renderTaskShow } from "./task-output.ts";
 import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus } from "./sdlc-output.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
@@ -265,13 +266,37 @@ const liveTestArgs = liveTest ? ["--live-test"] : [];
 const invokedFrom = process.cwd(); // relative paths a person types (a bench suite) are theirs, not the project's
 try { process.chdir(cwd); } catch { fail(`project directory is unavailable: ${cwd}`); }
 /** One-shot output flags do not alter the fetched JSON document. */
-function outputOptions() {
-  const flags = args.filter(arg => arg.startsWith("--color="));
-  if (flags.length > 1 || args.includes("--color")) fail(`usage: ahub ${cmd} [--color=auto|always|never] [--json] [--full]`);
+function outputOptions(source: readonly string[] = args) {
+  const flags = source.filter(arg => arg.startsWith("--color="));
+  if (flags.length > 1 || source.includes("--color")) fail(`usage: ahub ${cmd} [--color=auto|always|never] [--json] [--full]`);
   const color = resolveColor(flags[0]?.slice("--color=".length), { isTTY: !!process.stdout.isTTY, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR });
   if (color instanceof Error) fail(`usage: ahub ${cmd} [--color=auto|always|never] [--json] [--full]`);
-  return { color: color === true, json: args.includes("--json"), full: args.includes("--full"),
+  return { color: color === true, json: source.includes("--json"), full: source.includes("--full"),
     columns: outputWidth({ isTTY: !!process.stdout.isTTY, columns: process.stdout.columns, COLUMNS: process.env.COLUMNS }) };
+}
+/**
+ * #814 T2: split `--json`, `--full` and `--color=` from a command that also takes free text. A value flag's value is never a
+ * presentation flag (`task cancel --reason --json` records the reason `--json`), and with `edges` only a leading or trailing run
+ * counts, so a reason that mentions `--json` in the middle of a sentence keeps its words. A reason that ENDS in a bare
+ * presentation flag loses it: the documented cost of accepting the flag after the reason.
+ */
+function splitPresentation(argv: readonly string[], opts: { valueFlags?: readonly string[]; edges?: boolean } = {}): { operands: string[]; flags: string[] } {
+  const isFlag = (arg: string) => arg === "--json" || arg === "--full" || arg.startsWith("--color=");
+  const operands: string[] = [], flags: string[] = [], value = new Set(opts.valueFlags ?? []);
+  let lead = true;
+  const middle: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (value.has(arg)) { (opts.edges ? middle : operands).push(arg); if (i + 1 < argv.length) (opts.edges ? middle : operands).push(argv[++i]!); lead = false; continue; }
+    if (!isFlag(arg)) { (opts.edges ? middle : operands).push(arg); lead = false; continue; }
+    if (!opts.edges || lead) flags.push(arg); else middle.push(arg);
+  }
+  if (!opts.edges) return { operands, flags };
+  // a trailing run of presentation flags moves out of the middle; anything earlier stays operand text
+  let end = middle.length;
+  const trailing: string[] = [];
+  while (end > 0 && isFlag(middle[end - 1]!) && !value.has(middle[end - 2] ?? "")) trailing.unshift(middle[--end]!);
+  return { operands: middle.slice(0, end), flags: [...flags, ...trailing] };
 }
 /** Remove only presentation flags from read-only command positional arguments. */
 function outputArguments(): string[] {
@@ -1166,7 +1191,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   backlog: async () => {
-    const [sub, id, revision, value, ...reason] = args;
+    const split = splitPresentation(args, { edges: true }), operands = split.operands;
+    const [sub, id, revision, value, ...reason] = operands;
+    const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
+    const shown = (render: (data: any, columns?: number, now?: number) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, present);
     if (sub === "list" && outputArguments().length === 1) {
       // #399: a table by default; --json prints the hub's listing unchanged, and a refusal is printed as it came.
       const options = outputOptions(), raw = await taskOp("hub_backlog_list", {});
@@ -1176,43 +1204,44 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (!Array.isArray(cards)) return console.log(raw);
       return printOutput(renderBacklog(cards, options.columns, Date.now(), options.full), options.color);
     }
-    if (sub === "groom" && args.length === 1) return console.log(await taskOp("hub_planner_groom", {}));
-    if (["return", "return-untouched"].includes(sub ?? "") && /^[1-9]\d*$/.test(id ?? "") && /^\d+$/.test(revision ?? "") && args.length >= 4) {
-      return console.log(await taskOp("hub_backlog_return_untouched", { id: Number(id), revision: Number(revision), reason: args.slice(3).join(" ") }));
+    if (sub === "groom" && operands.length === 1) return shown(renderGroom)(taskOp("hub_planner_groom", {}));
+    if (["return", "return-untouched"].includes(sub ?? "") && /^[1-9]\d*$/.test(id ?? "") && /^\d+$/.test(revision ?? "") && operands.length >= 4) {
+      return shown((data, columns, now) => renderBacklogResult("return-untouched", data, columns, now))(taskOp("hub_backlog_return_untouched", { id: Number(id), revision: Number(revision), reason: operands.slice(3).join(" ") }));
     }
     if (sub === "add" && args.length >= 3) return console.log(await taskOp("hub_task_propose", { class: id, title: args.slice(2).join(" "), backlog: true }));
     if (!/^[1-9]\d*$/.test(id ?? "")) fail("usage: ahub backlog list|add <class> <title...>|pull|return <id>|plan|pin <id> <revision> <value> <reason...>|undo <id> <revision>");
-    if (["pull", "return"].includes(sub ?? "") && args.length === 2) return console.log(await taskOp(sub === "pull" ? "backlog_pull" : "backlog_return", { id }));
+    if (["pull", "return"].includes(sub ?? "") && operands.length === 2) return console.log(await taskOp(sub === "pull" ? "backlog_pull" : "backlog_return", { id }));
     if (!/^\d+$/.test(revision ?? "")) fail("planning revision is required");
-    if (sub === "pull-ready" && args.length >= 4) return console.log(await taskOp("hub_backlog_pull", { id: Number(id), revision: Number(revision), reason: args.slice(3).join(" ") }));
+    if (sub === "pull-ready" && operands.length >= 4) return shown((data, columns, now) => renderBacklogResult("pull-ready", data, columns, now))(taskOp("hub_backlog_pull", { id: Number(id), revision: Number(revision), reason: operands.slice(3).join(" ") }));
     if (sub === "split" && value && reason.length) {
       let parts: unknown;try { parts=JSON.parse(value); } catch { return fail("split parts must be JSON"); }
-      return console.log(await taskOp("hub_backlog_split", { id: Number(id), revision: Number(revision), parts, reason: reason.join(" ") }));
+      return shown((data, columns, now) => renderBacklogResult("split", data, columns, now))(taskOp("hub_backlog_split", { id: Number(id), revision: Number(revision), parts, reason: reason.join(" ") }));
     }
-    if (sub === "undo" && args.length === 3) return console.log(await taskOp("hub_backlog_undo", { id: Number(id), revision: Number(revision) }));
+    if (sub === "undo" && operands.length === 3) return shown((data, columns, now) => renderBacklogResult("undo", data, columns, now))(taskOp("hub_backlog_undo", { id: Number(id), revision: Number(revision) }));
     if (!["plan", "pin"].includes(sub ?? "") || !value || !reason.length) fail("planning needs fields and a reason");
     let fields: unknown;
     try { fields = sub === "pin" ? { pinned: value === "true" ? true : value === "false" ? false : undefined } : JSON.parse(value); }
     catch { return fail("planning fields must be JSON"); }
     if (sub === "pin" && value !== "true" && value !== "false") fail("pin must be true or false");
-    console.log(await taskOp("hub_backlog_plan", { id: Number(id), revision: Number(revision), fields, reason: reason.join(" ") }));
+    return shown((data, columns, now) => renderBacklogResult(sub as "plan" | "pin", data, columns, now))(taskOp("hub_backlog_plan", { id: Number(id), revision: Number(revision), fields, reason: reason.join(" ") }));
   },
 
   release: async () => {
-    const [sub, name, revision, value] = args;
-    if (sub === "list" && args.length === 1) return console.log(await taskOp("hub_release_list", {}));
-    if (sub === "show" && name && args.length === 2) {
-      return console.log(await taskOp("release_show", { name }));
-    }
-    if (sub === "new" && name && revision && args.length === 4 && /^\d+$/.test(value ?? "")) return console.log(await taskOp("release_new", { name, goal: revision, order: Number(value) }));
+    const split = splitPresentation(args, { edges: true }), operands = split.operands;
+    const [sub, name, revision, value] = operands;
+    const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
+    const shown = (render: (data: any, columns?: number, now?: number) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, present);
+    if (sub === "list" && operands.length === 1) return shown(renderReleaseList)(taskOp("hub_release_list", {}));
+    if (sub === "show" && name && operands.length === 2) return shown(renderReleaseShow)(taskOp("release_show", { name }));
+    if (sub === "new" && name && revision && operands.length === 4 && /^\d+$/.test(value ?? "")) return shown(renderReleaseNew)(taskOp("release_new", { name, goal: revision, order: Number(value) }));
     if (!name || !/^\d+$/.test(revision ?? "")) fail("usage: ahub release new <name> <goal> <order>|list|show <name>|plan <name> <revision> <dates-json>|activate|freeze|ship|drop <name> <revision>");
     const states: Record<string, string> = { activate: "active", freeze: "frozen", ship: "shipped", drop: "dropped" };
     let fields: unknown;
-    if (sub === "plan" && value && args.length === 4) {
+    if (sub === "plan" && value && operands.length === 4) {
       try { fields = JSON.parse(value); } catch { return fail("release dates must be JSON"); }
-    } else if (sub && Object.hasOwn(states, sub) && args.length === 3) fields = { state: states[sub] };
+    } else if (sub && Object.hasOwn(states, sub) && operands.length === 3) fields = { state: states[sub] };
     else return fail("invalid release command");
-    console.log(await taskOp("release_change", { name, revision: Number(revision), fields }));
+    return shown(renderReleaseChange)(taskOp("release_change", { name, revision: Number(revision), fields }));
   },
 
   deliverables: async () => {
@@ -1424,7 +1453,11 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   task: async () => {
-    const [sub, ...rest] = args;
+    const presentation = splitPresentation(args, { valueFlags: ["--reason", "--superseded-by", "--revision"], edges: true });
+    const shownTask = (render: (data: any, columns?: number, now?: number) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, outputOptions(presentation.flags));
+    // task show and task cancel read their presentation options before the request goes out (a refusal after a cancel would invite a retry of work already done)
+    if (["show", "cancel"].includes(args[0] ?? "")) outputOptions(presentation.flags);
+    const [sub, ...rest] = ["show", "cancel"].includes(args[0] ?? "") ? presentation.operands : args;
     if (sub === "role") {
       if (rest.length !== 2 || !/^[1-9]\d*$/.test(rest[0]!)) fail("usage: ahub task role <id> <role|none>");
       const hub = await connect();
@@ -1436,9 +1469,13 @@ const commands: Record<string, () => Promise<void> | void> = {
       const { one, rest: positional } = takeFlags(rest, ["--reason", "--superseded-by", "--revision"], []);
       const revision = one["--revision"] === undefined ? undefined : Number(one["--revision"]);
       if (positional.length !== 1 || !/^[1-9]\d*$/.test(positional[0]!) || !one["--reason"]?.trim() || (revision !== undefined && (!/^\d+$/.test(one["--revision"]!) || !Number.isSafeInteger(revision)))) fail("usage: ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N]");
-      return console.log(await taskOp("hub_task_cancel", { id: Number(positional[0]), reason: one["--reason"], ...(one["--superseded-by"] === undefined ? {} : { superseded_by: one["--superseded-by"] }), ...(revision === undefined ? {} : { revision }) }));
+      return shownTask(renderTaskCancel)(taskOp("hub_task_cancel", { id: Number(positional[0]), reason: one["--reason"], ...(one["--superseded-by"] === undefined ? {} : { superseded_by: one["--superseded-by"] }), ...(revision === undefined ? {} : { revision }) }));
     }
-    if (sub === "show") return console.log(await taskOp("task_show", { id: rest[0] }));
+    if (sub === "show") {
+      // a stray operand (for example the value of a `--color always` that is not the `--color=` form) is a usage error, never silently ignored
+      if (rest.length !== 1) fail("usage: ahub task show <id> [--json] [--full] [--color=auto|always|never]");
+      return shownTask(renderTaskShow)(taskOp("task_show", { id: rest[0] }));
+    }
     if (sub === "escalate") return console.log(await taskOp("task_escalate", { id: rest[0] }));
     if (sub === "assign") {
       const { one, rest: positional } = takeFlags(rest, ["--role", "--revision"], []);

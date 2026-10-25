@@ -31,7 +31,7 @@ await import(${JSON.stringify(CLI)});
 
 describe("ahub help (#212)", () => {
   test("#437 help lists person-only task cancellation and its complete syntax", () => {
-    const usage = "ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N]";
+    const usage = "ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N] [--json] [--color=auto|always|never]";
     const entry = HELP.find(entry => entry.usage === usage);
     expect(entry?.section).toBe("Tasks and review");
     expect(entry?.description).toContain("person only");

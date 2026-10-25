@@ -41,11 +41,23 @@ test("planning tools and human CLI enforce actor revisions frozen scope and publ
     const pinned = await cli(root, ["backlog", "pin", String(id), "1", "true", "person hold"]); expect(pinned.code).toBe(0);
     expect(await request(planner, "hub_backlog_plan", { id, revision: 2, fields: { priority: 0 }, reason: "override" })).toMatchObject({ ok: false });
     const refused = await cli(root, ["release", "new", "next", "Deliver", "0"], { CODEX_THREAD_ID: "fixture" }); expect(refused.code).toBe(1);
-    const created = await cli(root, ["release", "new", "next", "Deliver", "0"]); expect(created.code).toBe(0);
+    const created = await cli(root, ["release", "new", "next", "Deliver", "0", "--json"]); expect(created.code).toBe(0);
     expect(JSON.parse(created.stdout).state).toBe("planning");
+    // #814: the same release for a person; a second one so the name is free
+    const readable = await cli(root, ["release", "new", "after-next", "Deliver later", "1"]); expect(readable.code).toBe(0);
+    expect(() => JSON.parse(readable.stdout)).toThrow(); expect(readable.stdout).toContain("Release created"); expect(readable.stdout).toContain("after-next"); expect(readable.stdout).toContain("planning");
     expect((await cli(root, ["release", "activate", "next", "0"])).code).toBe(0);
     expect((await cli(root, ["release", "freeze", "next", "1"])).code).toBe(0);
     expect((await cli(root, ["release", "ship", "next", "2"])).code).toBe(0);
+    // #814: the read-only commands against this real hub, as a person reads them and as a script does
+    const shownTask = await cli(root, ["task", "show", String(id)]); expect(shownTask.code).toBe(0);
+    expect(() => JSON.parse(shownTask.stdout)).toThrow(); expect(shownTask.stdout).toContain(`#${id}`); expect(shownTask.stdout).toContain("future"); expect(shownTask.stdout).toContain("backlog");
+    expect(JSON.parse((await cli(root, ["task", "show", String(id), "--json"])).stdout).id).toBe(id);
+    const releases = await cli(root, ["release", "list"]); expect(releases.code).toBe(0);
+    expect(() => JSON.parse(releases.stdout)).toThrow(); expect(releases.stdout).toContain("next"); expect(releases.stdout).toContain("shipped");
+    expect(JSON.parse((await cli(root, ["release", "list", "--json"])).stdout).map((row: { name: string }) => row.name)).toContain("next");
+    const shownRelease = await cli(root, ["release", "show", "next"]); expect(shownRelease.code).toBe(0);
+    expect(() => JSON.parse(shownRelease.stdout)).toThrow(); expect(shownRelease.stdout).toContain("shipped");
     const marker = "patient 900101-1234567";
     expect(await request(person, "hub_task_propose", { title: marker, class: "implement", backlog: true })).toMatchObject({ ok: true });
     const publicList = await request(planner, "hub_backlog_list"); expect(publicList.text).not.toContain(marker); expect(publicList.text).toContain("[pii]");

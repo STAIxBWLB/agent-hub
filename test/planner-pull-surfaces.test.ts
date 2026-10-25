@@ -49,7 +49,7 @@ test("planner pull surfaces enforce role revisions and shared WIP status through
     expect(await post("action",{action:"planner_pull",id,revision:2,reason:"person queued ready work"})).toMatchObject({ok:true});
     expect(await post("action",{action:"planner_pull",id,revision:2,reason:"stale"})).toMatchObject({ok:false});
     expect(await post("action",{action:"planning_undo",id,revision:3})).toMatchObject({ok:true});
-    const pulled=await cli(root,["backlog","pull-ready",String(id),"4","person queued via CLI"]);expect(pulled.code).toBe(0);expect(JSON.parse(pulled.stdout)).toMatchObject({id,state:"proposed",owner:null,reserved:"codex",planningRevision:5});
+    const pulled=await cli(root,["backlog","pull-ready",String(id),"4","person queued via CLI","--json"]);expect(pulled.code).toBe(0);expect(JSON.parse(pulled.stdout)).toMatchObject({id,state:"proposed",owner:null,reserved:"codex",planningRevision:5});
     expect(classifyPeerCommand("backlog",["pull-ready",String(id),"2","ready"])).toBe("console");expect(cliCommandLabel("backlog",["pull-ready","private"])).toBe("backlog pull-ready");
   } finally {other.close();planner.close();person.close();await daemon.stop();rmSync(root,{recursive:true,force:true});}
 },20_000);
