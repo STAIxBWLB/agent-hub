@@ -1,0 +1,20 @@
+# Qwen dual-output TUI verification, 2026-10-25
+
+- Scope: #286 Part 3 gate, T0 checks Q2 to Q7 for a Qwen TUI the hub drives through dual output (`--input-file`, `--json-file`). Supersedes the Q2-Q7 "Unverified" rows of `2026-10-11-acp-watch-t0.md`.
+- Base: main beea9b19, agent-hub 0.16.0. Qwen Code 0.26.1 (fnm global install; the same command reported 0.25.0 earlier the same day, so the install changed underneath).
+- Isolation: every run used a scratch `HOME` holding only `.qwen/settings.json` (OpenAI-compatible auth, one model, auto-update off, usage statistics off, no hooks, no MCP servers except the T0 one), a scratch git project as cwd, and an environment of `HOME`, `PATH`, `TERM`, `LANG`, `TMPDIR` and the gateway key only. The person's real `~/.qwen` was not read or written.
+- Model: `flashnext/qwen3.8-flash-next` through the campus gateway, `--approval-mode default`.
+- Harness: the TUI ran on a pseudo-terminal (120x40). The harness appended JSONL to the input file, read the event file, and sent keys or signals only where a row says so. Driving a TUI by typing into its terminal is out of scope for #286; the key presses below only stand in for the person.
+
+| Check | Verdict | Evidence and consequence |
+| --- | --- | --- |
+| Q2 | Pass | A `{"type":"submit","text"}` record shows as a `user` event and a user turn in the TUI, then `stream_event`s, an `assistant` event and `message_stop`. A submit written while a 60-line turn was streaming waited and started after that turn's `message_stop` (queued, not interleaved). The TUI emits no `result` event per turn: the end of a turn is an `assistant` event whose `stop_reason` is not `tool_use`, followed by `message_stop`. `system/session_start` lists `supported_events` and carries `session_id` and `version`. |
+| Q3 | Pass, with one gap | A tool that needs approval emits `control_request` `can_use_tool` with `request_id`, the exact `tool_name` (`run_shell_command`; an MCP tool from `--mcp-config` as `mcp__t0__t0_echo`), `tool_use_id`, input and `permission_suggestions`. `confirmation_response` `allowed:true` answers `control_response` success and the tool runs. An answer given in the TUI (Enter) emits `control_response` success with the same `request_id`, so a pending hub approval can be withdrawn. A later answer for a settled id gets `control_response` error "unknown request_id (already resolved, cancelled, or never issued)". Gap: `allowed:false` cancels the whole turn and emits no event at all (no `control_response`, no `tool_result`, no `assistant`); the file was not created and the model later called it cancelled. Read-only commands (`echo`) ran without any approval in default mode. |
+| Q4 | Fail | The input protocol has only `submit` and `confirmation_response` (source: the RemoteInput reader; any other `type` is logged as unknown). SIGINT to the qwen process during a 400-line turn did not stop it: the turn completed all 400 lines. Esc pressed in the TUI stopped a turn at 88 lines, and the next submit ran normally, but that is the person's key, not something the hub may send. A hub watchdog cannot stop a running Qwen TUI turn. |
+| Q5 | Pass | With `--json-file` a FIFO that nobody opened for reading, the TUI started, took a submit from the input file and answered it on screen. Nothing blocked. |
+| Q6 | Pass | After the process was stopped, `qwen -r <session_id>` with the same input and event files resumed the conversation (it recalled a code word from before the restart), did not replay any earlier `submit`, and appended to the event file. |
+| Q7 | Recorded | `qwen --version` under the isolated environment: 0.26.1. `COMPAT.qwen.verified` lists 0.25.0 and 0.26.0, so 0.26.1 is outside the verified set. |
+
+## Consequence for #286 AC9
+
+AC9 is conditional on Q2 to Q6 passing. Q4 fails, so the condition does not hold as written. Building Part 3 anyway needs an owner decision and a spec amendment that names the two limits: the watchdog reports a stalled Qwen TUI turn to the person instead of stopping it, and the adapter itself marks the turn ended when the hub sends a deny, because Qwen emits nothing for it.

@@ -245,6 +245,8 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
     ["session.crashIdentity", declared(definition.session, "crashIdentity")],
     ["session.nativeRevert", declared(definition.session, "nativeRevert")],
     ["start.daemonPort pi-rpc", definition.start.daemonPort === "pi-rpc"],
+    ["start.daemonPort qwen-dual", definition.start.daemonPort === "qwen-dual"],
+    ["start.createTui", declared(definition.start, "createTui")],
     ["routing", definition.routing !== undefined],
     ["projection", definition.projection !== undefined],
     ["instances.nativeHome", declared(definition.instances, "nativeHome")], // #685: a fixed-builtin assumption, one native data home per declared instance

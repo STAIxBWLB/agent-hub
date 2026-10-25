@@ -352,7 +352,16 @@ External adapter modules (#451 A4) are the one way to run adapter code that ship
 
 - Watch activity can contain file contents, thoughts and command output. It is console-role only, kept in a bounded in-memory ring and exposed only through the `watch` control request. Agent shells, conductor tools, dashboard snapshots, hub tools and memory observers cannot read it. Terminal bodies pass through the console's sanitization and wrapping helpers. Slow sockets close instead of accumulating unbounded output.
 - Private/PII turns show a single stub; the adapter latches privacy for that turn. The existing final-answer bus and native approval paths (console and dashboard) remain independent, with their existing privacy rules. Watch never adds activity to either path or any disk log.
-- There is no Qwen dual-output input file or TUI transport in this slice; Q2-Q6 are unverified and TUI mode stays refused.
+- Qwen's dual-output TUI (#286 Part 3, [receipt](verification/2026-10-25-qwen-dual-output-t0.md)) is a separate transport, covered next.
+
+# Qwen dual-output input file (#286 Part 3)
+
+- **The input file is a prompt channel.** Whatever is appended to `<state dir>/qwen/qwen-dual/input.jsonl` is read by Qwen as typed input: a `submit` line is a prompt, a `confirmation_response` line answers a tool approval. The files are created 0600 in a 0700 directory owned by the person running the hub, opened without following links, refused if they are not regular files owned by that person with no group or other access, and written only by the daemon's adapter. No other peer can write them through a hub tool.
+- Qwen's own write and shell tools can reach the file, but only through approval. The hub's approval path therefore refuses, without asking anyone, any Qwen tool request whose input names the hub state directory, its real path, `.agenthub/state`, the `qwen-dual` directory or `input.jsonl`. That check is a lexical one on the request, as the managed local and Pi tools' state-dir guards are: it is not a sandbox, and a Qwen started with `--approval-mode yolo` by a person in their own terminal is outside it.
+- Text another agent wrote reaches Qwen only inside a hub-framed digest. A digest that would begin with `/`, `!`, `@` or `?` (a slash command, a shell line, a file include or a help key in Qwen's prompt) is prefixed with a hub line first.
+- Hub tools are auto-approved by the exact `mcp__agent-hub__<tool>` name Qwen reports for the call and never by prefix, title or argument text. Everything else asks the console, and an always-ask class call (#636) is never auto-approved. A prompt answered in the Qwen terminal withdraws the hub's pending approval: a late answer finds nothing to grant.
+- Identity: the adapter attaches only a Qwen whose `session_start` states a verified version, protocol 2 and the events the hub reads, and it binds the running owner from the host's process table (the one process whose argv names this adapter's input file; two matches is no owner), never from a message the launcher sends. The hub never signals that process and never types into its terminal; the person's terminal owns it.
+- Not defended: a person who gives Qwen yolo mode, an agent that Qwen runs and that writes the file through a path this lexical check does not recognise, and another process of the same user (the usual same-user boundary of the state directory).
 
 ## Global attention metadata (#280, phase 3)
 

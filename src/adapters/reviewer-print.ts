@@ -1,10 +1,10 @@
 import type { ChildProcess } from "node:child_process";
 import { OwnedPrintChild, PrintChildCleanupError } from "./claude-print-child.ts";
 import { randomUUID } from "node:crypto";
-import { HUB, frame } from "../hub/envelope.ts";
+import { HUB, frame, sanitize } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
 import type { Envelope } from "../hub/envelope.ts";
-import type { ReviewerMcpSession } from "./reviewer-mcp.ts";
+import type { ReviewerMcpSession, ReviewerToolName } from "./reviewer-mcp.ts";
 
 /** #722: the closed list of legs a reviewer's per-review start can fail on. A class names a leg, never a path, content or token. */
 export const REVIEWER_CAUSE_CLASSES = ["version", "binary", "mcp_inventory", "plugins_hooks_apps", "sandbox_proof", "credential_root", "timeout", "unknown"] as const;
@@ -80,6 +80,31 @@ export interface ReviewerBackend {
   prepare(context: ReviewerPrepareContext): Promise<ReviewerLaunch | { unavailable: string; causeClass?: ReviewerCauseClass; detail?: string }>;
   usage?(event: unknown): ReviewerPrintUsage | undefined;
   failure?(event: unknown): "quota" | undefined;
+  /** Structured native MCP events only, never model messages or tool arguments. */
+  toolTrace?(event: unknown): ReviewerToolTrace | undefined;
+}
+export interface ReviewerToolTrace { tool: ReviewerToolName; refusal?: string }
+export interface ReviewerNoVerdict extends ReviewerReviewBinding {
+  task: number;
+  exitCode: number | null;
+  reviewCalled: boolean;
+  lastTool?: ReviewerToolName;
+  refusal?: string;
+  /** Preserve the first full host error across later truncated native echoes; differing host errors stay uncertain. */
+  hostRefusal?: string;
+  refusalUncertain?: true;
+}
+type ReviewerTraceState = Pick<ReviewerNoVerdict, "reviewCalled" | "lastTool" | "refusal" | "hostRefusal" | "refusalUncertain">;
+/** Host-produced receipt reason: an unconfirmed normal review fallback still needs a person's settlement. */
+export const REVIEWER_FALLBACK_UNCONFIRMED = "reviewer fallback unconfirmed: ";
+/** `safeRefusal` must have passed the host's complete privacy/secret screen before truncation. */
+export function reviewerNoVerdictLine(peer: string, diagnostic: ReviewerNoVerdict, safeRefusal?: string, withheld = false): string {
+  const prefix = `[${peer}] review of task #${diagnostic.task}: no verdict exit=${diagnostic.exitCode ?? "unknown"}; `;
+  if (withheld) return prefix + "diagnostic withheld";
+  const detail = diagnostic.lastTool ? `last hub tool ${diagnostic.lastTool}; ${diagnostic.reviewCalled ? "hub_review called" : "no hub_review call"}` : "no hub_review call";
+  const line = safeRefusal === undefined ? undefined : Array.from(sanitize(safeRefusal).replace(/\s+/g, " "))
+    .filter(char => !/\p{C}/u.test(char)).slice(0, 240).join("");
+  return prefix + detail + (diagnostic.refusal === undefined && diagnostic.hostRefusal === undefined ? "" : `; refusal: ${line ?? "withheld"}`);
 }
 export interface ReviewerFailure {
   task: number;
@@ -103,7 +128,9 @@ export interface ReviewerPrintOptions {
   facts?(env: Envelope): string | undefined;
   verdictSince(task: number, since: number): boolean;
   onUsage?(usage: ReviewerPrintUsage, task: number): void;
-  onUnavailable?(failure: ReviewerFailure, current: () => boolean): void | Promise<void>;
+  /** True confirms that the host re-offered the current review; void/false retains uncertainty. */
+  onUnavailable?(failure: ReviewerFailure, current: () => boolean): boolean | void | Promise<boolean | void>;
+  onNoVerdict?(diagnostic: ReviewerNoVerdict, current: () => boolean): void;
   log?(line: string): void;
   taskMcp?(task: number, current: () => boolean): ReviewerMcpSession;
   /** Synchronous host task/privacy/policy fence, checked again after awaited preparation. */
@@ -143,6 +170,24 @@ export class ReviewerPrintPeer extends BasePeer {
   reviewing: number | undefined;
   private reviewSeq = 0;
   private runningBinding: { task: number; binding: ReviewerReviewBinding } | undefined;
+  private activeTrace: { task: number; generation: number; value: ReviewerTraceState } | undefined;
+  /** Host observations are diagnostic data and never grant tool or verdict authority. */
+  recordToolTrace(task: number, trace: ReviewerToolTrace): void {
+    if (trace.tool !== "hub_review" && trace.tool !== "hub_task_show") return;
+    const active = this.activeTrace, binding = this.runningBinding;
+    if (!active || active.task !== task || active.generation !== this.generation || this.reviewing !== task || binding?.task !== task || this.opts.bindingCurrent?.(task, binding.binding) === false) return;
+    if (typeof trace.refusal === "string") {
+      if (active.value.hostRefusal === undefined) active.value.hostRefusal = trace.refusal;
+      else if (active.value.hostRefusal !== trace.refusal) active.value.refusalUncertain = true;
+    }
+    this.observeTool(active.value, trace);
+  }
+  private observeTool(value: ReviewerTraceState, trace: ReviewerToolTrace): void {
+    if (trace.tool !== "hub_review" && trace.tool !== "hub_task_show") return;
+    value.lastTool = trace.tool;
+    value.refusal = typeof trace.refusal === "string" ? trace.refusal : undefined;
+    if (trace.tool === "hub_review") value.reviewCalled = true;
+  }
   /** Immutable envelope identity of this running child, never the board's later head. */
   reviewBinding(task: number): ReviewerReviewBinding | undefined {
     return this.reviewing === task && this.runningBinding?.task === task ? this.runningBinding.binding : undefined;
@@ -238,7 +283,7 @@ export class ReviewerPrintPeer extends BasePeer {
       if (task === undefined) continue; // a withdrawal or other notice: nothing to review
       if (env.private) { failure = { state: "needs_review", reason: "a private review is the person's, never a cloud reviewer's" }; break; }
       const since = Date.now();
-      let result: { code: number | null; quota: boolean };
+      let result: { code: number | null; quota: boolean; trace: ReviewerTraceState };
       try { result = await this.review(env, task, generation); }
       catch (error) {
         if (generation !== this.generation) return;
@@ -273,6 +318,11 @@ export class ReviewerPrintPeer extends BasePeer {
       if (!recorded) {
         missing.push(task);
         const target = batch.targets[index];
+        const diagnostic = { ...target, task, exitCode: result.code, ...result.trace };
+        try {
+          if (this.opts.onNoVerdict) this.opts.onNoVerdict(diagnostic, () => generation === this.generation);
+          else this.opts.log?.(reviewerNoVerdictLine(this.id, diagnostic));
+        } catch { this.opts.log?.(reviewerNoVerdictLine(this.id, { task, exitCode: result.code, reviewCalled: false }, undefined, true)); }
         if (target) reroute.push({ ...target, cause: result.quota ? "quota" : "no_verdict" });
         if (result.quota) {
           reroute.push(...remainingFailures(batch, index + 1, "quota"));
@@ -281,25 +331,30 @@ export class ReviewerPrintPeer extends BasePeer {
         }
       }
       batch.next = index + 1;
-      if (result.code !== 0) this.opts.log?.(`[${this.id}] review of task #${task} exited ${result.code}`);
+      if (recorded && result.code !== 0) this.opts.log?.(`[${this.id}] review of task #${task} exited ${result.code}`);
     }
     if (generation !== this.generation) return;
     this.clearWatchdog(); // the child is gone; keep busy while the host settles the remaining walk
-    this.settle(failure?.state ?? (missing.length ? "needs_review" : "completed"), failure?.reason ?? (missing.length ? `no verdict recorded for task ${missing.map(id => `#${id}`).join(", ")}` : undefined));
-    await this.reportFailures(reroute, generation);
+    const reoffered = await this.reportFailures(reroute, generation);
+    if (generation !== this.generation) return;
+    const unresolved = missing.length > 0 && !reoffered;
+    const normalNoVerdict = !failure && reroute.length > 0 && reroute.every(value => value.cause === "no_verdict");
+    this.settle(failure?.state ?? (unresolved ? "needs_review" : "completed"), failure?.reason ?? (unresolved ? `${normalNoVerdict ? REVIEWER_FALLBACK_UNCONFIRMED : ""}no verdict recorded for task ${missing.map(id => `#${id}`).join(", ")}` : undefined));
     if (generation === this.generation) { this.batch = undefined; this.setState("idle"); }
   }
 
-  private async reportFailures(failures: readonly ReviewerFailure[], generation: number): Promise<void> {
+  private async reportFailures(failures: readonly ReviewerFailure[], generation: number): Promise<boolean> {
     const seen = new Set<string>();
+    let reoffered = true;
     for (const failed of failures) {
-      if (generation !== this.generation) return;
+      if (generation !== this.generation) return false;
       const identity = JSON.stringify([failed.task, failed.head, failed.flowRevision]);
       if (seen.has(identity)) continue;
       seen.add(identity);
-      try { await this.opts.onUnavailable?.(failed, () => generation === this.generation); }
-      catch { this.opts.log?.(`[${this.id}] reviewer fallback could not be recorded; inspect the task`); }
+      try { if (await this.opts.onUnavailable?.(failed, () => generation === this.generation) !== true) reoffered = false; }
+      catch { reoffered = false; this.opts.log?.(`[${this.id}] reviewer fallback could not be recorded; inspect the task`); }
     }
+    return reoffered;
   }
 
   private prepare(sessionId: string, input?: string, task?: number, mcpConfig?: string): Promise<ReviewerLaunch> {
@@ -332,7 +387,7 @@ export class ReviewerPrintPeer extends BasePeer {
     if (this.opts.admit?.(env) === false) throw new ReviewerAdmissionError(this.opts.bindingCurrent?.(task, binding) === false ? "stale_binding" : "policy_changed");
   }
 
-  private async review(env: Envelope, task: number, generation: number): Promise<{ code: number | null; quota: boolean }> {
+  private async review(env: Envelope, task: number, generation: number): Promise<{ code: number | null; quota: boolean; trace: ReviewerTraceState }> {
     const revision=Number(env.refs?.reviewRevision);
     const binding: ReviewerReviewBinding=Object.freeze({head:env.refs?.commit,flowRevision:Number.isSafeInteger(revision)&&revision>0?revision:undefined});
     this.assertAdmission(env, task, binding);
@@ -340,6 +395,8 @@ export class ReviewerPrintPeer extends BasePeer {
     try { facts = this.opts.facts?.(env); } catch (error) { this.opts.log?.(`[${this.id}] review facts for task #${task} failed: ${(error as Error).message}`); }
     const input = `${frame(env)}${facts ? `\n\n${facts}` : ""}`;
     let launch: ReviewerLaunch | undefined;
+    const trace: ReviewerTraceState = { reviewCalled: false };
+    this.activeTrace = { task, generation, value: trace };
     const mcp = this.opts.backend.taskMcp ? this.opts.taskMcp?.(task, () => generation === this.generation && this.reviewToken(task) !== undefined && this.opts.bindingCurrent?.(task,binding) !== false) : undefined;
     let mcpClosed=false;
     const closeMcp=()=>{ if(mcpClosed)return; mcpClosed=true; mcp?.close(); if(this.reviewMcpClose===closeMcp)this.reviewMcpClose=undefined; };
@@ -364,6 +421,10 @@ export class ReviewerPrintPeer extends BasePeer {
         if (this.childCurrent) policyTimer = setInterval(() => { this.reviewToken(task); }, 100);
       },
       onFrame: event => {
+        try {
+          const observed = this.opts.backend.toolTrace?.(event);
+          if (observed && generation === this.generation) this.observeTool(trace, observed);
+        } catch { /* Optional trace metadata never changes review execution. */ }
         const usage = this.opts.backend.usage?.(event);
         if (usage) this.opts.onUsage?.(usage, task);
         if (this.opts.backend.failure?.(event) === "quota") quota = true;
@@ -380,8 +441,9 @@ export class ReviewerPrintPeer extends BasePeer {
     this.childCurrent = launch.watchCurrent ? launch.current : undefined;
     const code = await child.done;
     if (this.child === child) this.child = undefined;
-    return { code, quota };
+    return { code, quota, trace };
     } finally {
+      if (this.activeTrace?.value === trace) this.activeTrace = undefined;
       closeMcp();
       if (policyTimer) clearInterval(policyTimer);
       try { if (!ownedChild || this.child !== ownedChild) { await release(); if (this.childCleanup === release) this.childCleanup = undefined; } }

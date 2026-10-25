@@ -48,6 +48,11 @@ export const COMPAT = {
   qwen: { label: "Qwen Code", verified: ["0.25.0", "0.26.0"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
     parse: out => plain(out.trim()),
     trustNote: "Native ACP identity and mode ids have dated receipts; 0.26.0 permission callbacks were checked without inference. Another version may change those contracts." },
+  // Receipt: docs/verification/2026-10-25-qwen-dual-output-t0.md. The dual-output contract (input file, event file, can_use_tool control requests) is its own entry:
+  // the ACP receipts of the headless `qwen` entry say nothing about it, so that entry is not widened and this one carries no `line`.
+  "qwen-dual": { label: "Qwen Code dual-output TUI", verified: ["0.26.1"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
+    parse: out => plain(out.trim()),
+    trustNote: "The dual-output file contract (submit and confirmation_response input, user/assistant/stream_event/control events, session_start identity) was verified on 0.26.1 only. A hub deny ends the turn without any Qwen event, and no external stop of a running turn exists; another version may change either." },
 } as const satisfies Record<string, CompatPolicy>;
 export type CompatId = keyof typeof COMPAT;
 type CommandConfig = { codex_bin: string; jcode_cmd: string[]; qwen_cmd: string[] };

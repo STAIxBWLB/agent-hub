@@ -59,13 +59,17 @@ test("Qwen is optional on the roster, role-guided, previewed without execution a
   expect(permissionGrant("qwen", "never-ask")).toContain("every tool");
   const preview = launcherPreview("qwen", ["--print-command"], root, stateDir, false);
   expect(preview.cmd).toBe("qwen"); expect(preview.args).toEqual(["--acp"]);
-  expect(() => launcherPreview("qwen", ["--mode", "tui"], root, stateDir, false)).toThrow("not offered");
+  expect(() => launcherPreview("qwen", ["--mode", "bogus"], root, stateDir, false)).toThrow("unknown Qwen mode");
+  const tui = launcherPreview("qwen", ["--mode", "tui", "--print-command"], root, stateDir, false);   // #286 Part 3: previewed without creating a file
+  expect(tui.cmd).toBe("qwen"); expect(tui.args).toContain("--input-file"); expect(tui.args).toContain("--json-file"); expect(tui.args).not.toContain("--acp");
+  expect(tui.args[tui.args.indexOf("--approval-mode") + 1]).toBe("default"); expect(existsSync(join(stateDir, "qwen"))).toBe(false);
   const daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
     config: { ...DEFAULT_CONFIG, qwen_cmd: FAKE, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false } } }); cleanups.push(() => daemon.stop());
   const client = await ControlClient.connect(stateDir, { role: "console" }); cleanups.push(() => client.close());
   expect((await client.request({ t: "start", peer: "qwen" })).error).toContain("ahub roster add qwen");
   expect((await client.request({ t: "settings_set", key: "roster.qwen", value: true })).ok).toBe(true);
-  expect((await client.request({ t: "start", peer: "qwen", args: { mode: "tui" } })).error).toContain("not offered");
+  // #286 Part 3: a TUI start is admitted only for a Qwen the dual-output compat entry verifies (0.26.1). This stand-in prints no version, so it is refused with the version reason.
+  expect((await client.request({ t: "start", peer: "qwen", args: { mode: "tui" } })).error).toContain("Version not verified");
   expect((await client.request({ t: "start", peer: "qwen" })).ok).toBe(true);
   const replies: string[] = []; daemon.bus.tap(event => { if (event.t === "envelope" && event.env.from === "qwen") replies.push(event.env.body); });
   daemon.bus.publish(newEnvelope("user", "qwen ping", { to: ["qwen"] })); await until(() => replies.length === 1);

@@ -5,7 +5,8 @@ function external(): AdapterDefinition {
   // A generic ACP fixture does not inherit the builtin-only catalog or native CLI projections.
   const { projection: _projection, cli, ...base } = definitionOf("qwen")!;
   const { entry: _entry, preview: _preview, usage: _usage, ...genericCli } = cli ?? {};
-  return { ...base, cli: genericCli, kind: "fixture", family: "fixture", start: { ...base.start }, session: { idField: base.session.idField, currentId: base.session.currentId } };
+  const { createTui: _createTui, ...start } = base.start; // the Qwen TUI driver (#286 Part 3) is a fixed-builtin capability too
+  return { ...base, cli: genericCli, kind: "fixture", family: "fixture", start: { ...start }, session: { idField: base.session.idField, currentId: base.session.currentId } };
 }
 
 for (const [field, set] of [
@@ -15,6 +16,8 @@ for (const [field, set] of [
   ["session.nativeRevert", (definition: AdapterDefinition) => { definition.session.nativeRevert = true; }],
   ["session.crashIdentity", (definition: AdapterDefinition) => { definition.session.crashIdentity = () => ({ sessionId: "fixture" }); }],
   ["start.daemonPort pi-rpc", (definition: AdapterDefinition) => { definition.start.daemonPort = "pi-rpc"; }],
+  ["start.daemonPort qwen-dual", (definition: AdapterDefinition) => { definition.start.daemonPort = "qwen-dual"; }],
+  ["start.createTui", (definition: AdapterDefinition) => { definition.start.createTui = () => { throw new Error("fixture"); }; }],
   ["routing", (definition: AdapterDefinition) => { definition.routing = { preferredTier: true }; }],
   ["reviewerVariant", (definition: AdapterDefinition) => { definition.reviewerVariant = { ...definition }; }],
   ["instances.nativeHome", (definition: AdapterDefinition) => { definition.instances = { mode: "headless", nativeHome: true }; }],

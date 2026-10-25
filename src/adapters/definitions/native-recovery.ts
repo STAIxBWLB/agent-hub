@@ -82,6 +82,14 @@ export const JCODE_RECOVERY_SESSION: SessionPolicy = {
 export const QWEN_RECOVERY_SESSION: SessionPolicy = {
   legacyTargetSupport: { file: "src/hub/peer-catalog.ts", exportName: "OPTIONAL_PEERS", refusal: "target does not support Qwen; end Qwen and make a new plan, or choose a supporting target; runtimes unchanged" },
   restoreArgs: peer => ({ ...startupArgs(peer), ...(peer.sessionId ? { "session-id": peer.sessionId } : {}) }),
+  // #286 Part 3: the Qwen TUI belongs to the person's terminal. It is never restored as a headless worker; `ahub qwen --mode tui` resumes it (qwen -r <session>) from its saved offset.
+  // Worded and shaped unlike Kimi's refusal on purpose: the `kimi-recovery-tui-fence` seed anchors on that exact first line and must still match once.
+  recoveryRefusal: (peer, phase = "plan") => {
+    if (peer.args?.mode !== "tui") return undefined;
+    return phase === "restore"
+      ? "Qwen's own terminal cannot be restored as a headless worker; end it in that terminal and make a new recovery plan"
+      : "qwen: its own terminal has no automatic restore; end it in that terminal, then make a new recovery plan (restart it with ahub qwen --mode tui, which resumes its session)";
+  },
 };
 
 /** Fixed legacy native probes: callers retain their existing source-text capability checks. */

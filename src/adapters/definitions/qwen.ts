@@ -7,6 +7,7 @@ import { AcpPeer } from "../acp.ts";
 import type { AdapterDefinition } from "../registry-types.ts";
 import { buildQwenLaunch, qwenSessionId } from "./qwen-native.ts";
 import { shellQuote } from "../../cli/shell-quote.ts";
+import { createQwenDual } from "./native-factories.ts";
 
 /** Production Qwen policy. Legacy AcpPeer callers opt in separately through qwen025. */
 export const QWEN_DEFINITION: AdapterDefinition = {
@@ -27,10 +28,12 @@ export const QWEN_DEFINITION: AdapterDefinition = {
     conductorStartable: true,
     hubSwitches: [],
     ownedFlags: [],
-    preflight: request => request.form !== undefined && request.form !== "headless"
-      ? "Qwen TUI is not offered before its native verification; use ahub qwen --mode headless" : undefined,
+    // The TUI (#286 Part 3) is explicit only: forms stays headless, so Qwen never becomes a start-mode peer and the hub never opens it by itself.
+    preflight: request => request.form !== undefined && request.form !== "headless" && request.form !== "tui"
+      ? "unknown Qwen mode; usage: ahub qwen [--mode headless|tui]" : undefined,
+    createTui: createQwenDual,
     launch: context => {
-      if (context.form !== "headless") throw new Error("Qwen TUI is not offered before its native verification; use ahub qwen --mode headless");
+      if (context.form !== "headless") throw new Error("the Qwen TUI is launched from the files the daemon prepares; use ahub qwen --mode tui");
       const launch = buildQwenLaunch(context.nativeCommand ?? ["qwen", "--acp"], context.model);
       const argv = [launch.cmd, ...launch.args];
       return { ...launch, metadata: { packageEntrypoint: context.entrypoint, argv, command: argv.map(shellQuote).join(" "), env: {} } };
@@ -68,7 +71,7 @@ export const QWEN_DEFINITION: AdapterDefinition = {
   turnEnd: "adapter",
   budget: { account: "qwen" },
   capabilities: { watch: true },
-  cli: { command: "qwen", entry: { lifecycleAdmission: true, execute: runQwenEntry }, preview: previewQwen, usage: [["ahub qwen [--mode headless] [--model <alias>] [--session-id <id>] [--print-command]", `start optional Qwen Code ACP (${describe("qwen")}; roster.qwen, default off)`]], launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
+  cli: { command: "qwen", entry: { lifecycleAdmission: true, execute: runQwenEntry }, preview: previewQwen, usage: [["ahub qwen [--mode headless|tui] [--model <alias>] [--session-id <id>] [--print-command]", `start optional Qwen Code ACP (${describe("qwen")}; roster.qwen, default off); --mode tui runs Qwen's own TUI in this terminal, driven through its dual-output files (${describe("qwen-dual")}); a hub deny ends the turn without an answer and a stalled turn is stopped with Esc in the Qwen terminal`]], launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
   display: QWEN_DISPLAY,
   hooks: { recallPlatform: "qwen" },
 };

@@ -12,7 +12,11 @@ test("#451 Qwen definition preserves its optional headless ACP policy", () => {
   expect(QWEN_DEFINITION.transport).toBe("acp"); expect(QWEN_DEFINITION.optional).toBe(true); expect(QWEN_DEFINITION.defaultOnRoster).toBe(false);
   expect(QWEN_DEFINITION.roles).toEqual(["implementer", "verifier"]); expect(QWEN_DEFINITION.start.forms).toEqual(["headless"]);
   expect(QWEN_DEFINITION.start.defaultForm).toBe("headless"); expect(QWEN_DEFINITION.start).not.toHaveProperty("ownsTerminal");
-  expect(QWEN_DEFINITION.start.preflight?.({ instance: "qwen", form: "tui" })).toContain("not offered");
+  // #286 Part 3: the TUI is explicit-only (forms stays headless); preflight admits it, refuses an unknown form, and the launch plan never builds a TUI argv.
+  expect(QWEN_DEFINITION.start.preflight?.({ instance: "qwen", form: "tui" })).toBeUndefined();
+  expect(QWEN_DEFINITION.start.preflight?.({ instance: "qwen", form: "other" as never })).toContain("unknown Qwen mode");
+  expect(() => QWEN_DEFINITION.start.launch!({ ...launchContext, form: "tui" })).toThrow("ahub qwen --mode tui");
+  expect(typeof QWEN_DEFINITION.start.createTui).toBe("function");
   expect(QWEN_DEFINITION.identity.mcp).toBe("acp-session"); expect(QWEN_DEFINITION.capabilities?.watch).toBe(true);
   expect(QWEN_DEFINITION.trust.onPrem).toBe(false); expect(QWEN_DEFINITION.trust.hubSandboxed).toBe(false);
   expect(QWEN_DEFINITION.permission).not.toHaveProperty("readOnly"); expect(QWEN_DEFINITION.turnEnd).toBe("adapter");
