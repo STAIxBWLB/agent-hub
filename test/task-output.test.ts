@@ -27,7 +27,8 @@ const task = { id: 7, title: LONG_TITLE, detail: "The detail text of the task, w
   plan: { paths: ["src/cli/task-output.ts"], symbols: ["renderTaskShow"], signatures: ["renderTaskShow(task: unknown, columns?: number): Span[][]"] },
   deps: MANY, signals: [], rejections: 0, created: NOW - 7_200_000, updated: NOW - 60_000, rank: 3, priority: 1, release: 2,
   sdlc: { stage: "review", repo: "STAIxBWLB/agent-hub", issue: 814, pr: 833, head: A },
-  relatedMemory: { state: "ready", count: 2 }, symbolOverlaps: [{ task: 8, symbols: ["Tasks.review"] }], flowRevision: 9,
+  relatedMemory: { state: "ready", count: 2 }, symbolOverlaps: [{ task: 8, files: ["src/hub/tasks.ts", "src/cli/task-output.ts"], sameFileDifferentSymbols: true }, { task: 12, files: [], sameFileDifferentSymbols: false }], flowRevision: 9,
+  deliverables: { state: "approved", changedSinceReview: true, files: [{ id: "d1", sha256: "b".repeat(64), state: "changed", path: "docs/report-with-a-fairly-long-name.md", format: "md", version: "v2" }, { id: "d2", sha256: "c".repeat(64), state: "unchanged", format: "csv", private: true }] },
   reviews: [{ kind: "approved", reviewer: "codex-review", at: NOW - 3_600_000 }],
   history: [{ at: NOW - 7_000_000, by: "claude", event: "proposed" }, { at: NOW - 6_000_000, by: "jcode", event: "accepted", note: "plan: renderers in task-output.ts" }, { at: NOW - 60_000, by: "codex-review", event: "changes_requested", note: "a long review note that has to wrap in the NOTE column without being cut at eighty columns" }] };
 const piiTask = { id: 9, title: "[pii]", detail: "[pii]", class: "implement", owner: "local", reviewer: null, state: "in_progress", refs: {}, plan: {}, deps: [], signals: ["pii"], rejections: 0, created: NOW - 600_000, updated: NOW - 1_000, actualDates: {}, history: [] };
@@ -39,7 +40,7 @@ const groom = { items: [{ kind: "overlap", task: 7, related: MANY, code: "tests"
 /** Each command: its argv, the hub op it calls with the args it must send, what the fake hub answers (the exact text), and what a person must see. */
 type Case = { name: string; argv: string[]; op: string; args: Record<string, unknown>; text: string; must: string[] };
 const cases: Case[] = [
-  { name: "task show", argv: ["task", "show", "7"], op: "task_show", args: { id: "7" }, text: JSON.stringify(task, null, 2), must: ["#7", "in_review", "jcode", "codex-review", "#30", "renderTaskShow", "changes_requested", "feat/814-task-output"] },
+  { name: "task show", argv: ["task", "show", "7"], op: "task_show", args: { id: "7" }, text: JSON.stringify(task, null, 2), must: ["#7", "in_review", "jcode", "codex-review", "#30", "renderTaskShow", "changes_requested", "feat/814-task-output", "#8 touches src/hub/tasks.ts", "same file, different symbols", "#12 touches files withheld", "deliverables", "changed since review", "docs/report-with-a-fairly-long-name.md", "(private)"] },
   { name: "task show of a private task", argv: ["task", "show", "9"], op: "task_show", args: { id: "9" }, text: JSON.stringify(piiTask, null, 2), must: ["#9", "[pii]", "private task", "withheld"] },
   { name: "task show of a task that does not exist", argv: ["task", "show", "99"], op: "task_show", args: { id: "99" }, text: JSON.stringify("no task #99"), must: ["no task #99"] },
   { name: "task cancel", argv: ["task", "cancel", "7", "--reason", "superseded by the new plan", "--superseded-by", "#8"], op: "hub_task_cancel", args: { id: 7, reason: "superseded by the new plan", superseded_by: "#8" }, text: JSON.stringify({ ...task, state: "cancelled", cancelled: { reason: "superseded by the new plan", supersededBy: "#8" }, history: undefined }), must: ["cancelled", "superseded by the new plan", "#8"] },

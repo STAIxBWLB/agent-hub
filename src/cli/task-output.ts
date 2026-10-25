@@ -49,7 +49,14 @@ function taskBlock(task: any, columns: number | undefined, now: number, detail: 
   const sdlc = task?.sdlc;
   if (sdlc) out.push(blank, ...pair("lifecycle", [sdlc.stage ? `stage ${sdlc.stage}` : "", sdlc.repo && sdlc.issue ? `${sdlc.repo}#${sdlc.issue}` : "", sdlc.pr ? `PR #${sdlc.pr}` : "", sdlc.head ? `head ${short(sdlc.head)}` : ""].filter(Boolean).join(", ") || "recorded", columns, w, undefined, "  "));
   if (task?.relatedMemory) out.push(...pair("memory", `${task.relatedMemory.state}${typeof task.relatedMemory.count === "number" ? `, ${plural(task.relatedMemory.count, "related note")}` : ""}`, columns, w, undefined, "  "));
-  if (list(task?.symbolOverlaps).length) out.push(...bullets("symbol overlaps", list(task.symbolOverlaps).map((o: any) => typeof o === "object" ? `${o.task ? `#${o.task} ` : ""}${list(o.symbols).join(", ")}` : String(o)), columns, "attention", "  "));
+  // Tasks.symbolOverlaps: { task, files, sameFileDifferentSymbols } per overlapping task, public file names only.
+  if (list(task?.symbolOverlaps).length) out.push(...bullets("overlaps", list(task.symbolOverlaps).map((o: any) => `#${o?.task ?? "?"} touches ${list(o?.files).join(", ") || "files withheld"}${o?.sameFileDifferentSymbols ? " (same file, different symbols)" : ""}`), columns, "attention", "  "));
+  // Tasks.deliverableStatus: { state, changedSinceReview, files: [{ id, sha256, state, path?, format, version?, private? }] }.
+  const delivered = task?.deliverables;
+  if (delivered) {
+    out.push(blank, ...pair("deliverables", `${dash(delivered.state)}${delivered.changedSinceReview ? ", changed since review" : ""}`, columns, w, delivered.changedSinceReview ? "attention" : undefined, "  "));
+    out.push(...grid(["FILE", "FORMAT", "STATE", "SHA256"], list(delivered.files).map((file: any) => [s(file.private ? "(private)" : dash(file.path ?? file.id)), s(`${dash(file.format)}${file.version ? ` ${file.version}` : ""}`), s(dash(file.state), file.state === "changed" || file.state === "missing" ? "attention" : undefined), s(short(file.sha256))]), columns));
+  }
   const reviews = list(task?.reviews);
   if (reviews.length) out.push(blank, [s("reviews", "muted")], ...grid(["KIND", "REVIEWER", "AT"], reviews.map((r: any) => [s(r.kind, r.kind === "approved" ? "success" : "attention"), s(r.reviewer), s(when(r.at, now), "muted")]), columns));
   const history = list(task?.history);
