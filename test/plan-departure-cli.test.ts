@@ -23,7 +23,7 @@ async function run(args: string[], ok = true) {
   let connections = 0, closed = 0;
   let error: string | undefined;
   try {
-    await runInNewContext(source, { args, Buffer, Number, console: { log: (value: unknown) => output.push(value) },
+    await runInNewContext(source, { args, SDLC_READ: ["status", "explain", "queue", "release", "metrics", "costs", "authorize-release"], sdlcOperands: () => args, Buffer, Number, console: { log: (value: unknown) => output.push(value) },
       fail: (message: string) => { throw new Error(message); },
       connect: async () => { connections++; return { request: async (body: unknown, timeout: number) => { requests.push({ body: JSON.parse(JSON.stringify(body)), timeout }); return { ok, error: "departure refused" }; }, close: () => { closed++; } }; },
     });

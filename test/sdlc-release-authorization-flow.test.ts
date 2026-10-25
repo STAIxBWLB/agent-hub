@@ -50,7 +50,7 @@ test("S6 actual pre-push hook requires person consent for its captured commit an
     expect((await run([process.execPath, cli, "sdlc", "authorize-release", "1.2.3"])).code).toBe(1);
     expect((await run([process.execPath, cli, "--live-test", "sdlc", "authorize-release", "1.2.3"])).code).toBe(1);
     expect((await hookRun()).code).toBe(1); expect(existsSync(saved)).toBe(false);
-    const approval = await run([process.execPath, cli, "sdlc", "authorize-release", "1.2.3"], undefined, true);
+    const approval = await run([process.execPath, cli, "sdlc", "authorize-release", "1.2.3", "--json"], undefined, true);
     expect(approval.code, approval.stderr).toBe(0); expect(JSON.parse(approval.stdout)).toMatchObject({ by: "user", version: "1.2.3", commit: first, docs: { fresh: true } });
     expect((await hookRun()).code).toBe(0); expect(readFileSync(saved, "utf8")).toBe(input);
     rmSync(saved);

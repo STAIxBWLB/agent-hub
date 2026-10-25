@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- `ahub sdlc status|explain|queue|release|metrics|costs|authorize-release` print readable output by default; scripts must pass `--json`, which prints exactly the previous document (#814). A guard test fails when a CLI path prints JSON outside `--json` or a named data format.
 - Pin @staix/agent-mem 0.8.0 (native-memory import, Korean recall set, consolidation and sync fixes).
 
 ## 0.17.0
