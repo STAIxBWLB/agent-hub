@@ -95,6 +95,7 @@ import { runConsole } from "./console.ts";
 import { paint, permissionBoundary, resolveColor, wrap, type Span } from "./console-state.ts";
 import { outputWidth, renderRoster, renderStatus, renderBoard, renderBacklog, renderBoardColumns, boardColumnModel, renderBudget, renderDoctor, renderProjects, renderQueue, renderTurns, renderOrphans, renderQueueShow, renderModelsStatus, renderExecutionBudgetStatus, renderReport, renderUsage, renderLimits, renderTotal, type DoctorCheck } from "./output.ts";
 import { renderHelp, configuredAcpHelp } from "./help.ts";
+import { renderAuthorization, renderSdlcCosts, renderSdlcExplain, renderSdlcMetrics, renderSdlcQueue, renderSdlcRelease, renderSdlcStatus } from "./sdlc-output.ts";
 import { renderTailEvent } from "./tail-render.ts";
 import { archiveProblem, archiveState, damagedState, failureText, MANIFEST, planReset, resetLines, resetRuntime, startState, type ResetPlan } from "./reset.ts";
 
@@ -276,6 +277,16 @@ function outputOptions() {
 function outputArguments(): string[] {
   return args.filter(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color="));
 }
+/** `sdlc` operands: the read subcommands that print for a person (#814) drop `--json`, `--full` and `--color=`; every other subcommand keeps its argv exactly. */
+/** A hub tool answers JSON text. Text that does not parse is printed as it came: a renderer never sees it, so it cannot read as an empty report. */
+function showToolText(render: (data: any, columns?: number, now?: number) => Span[][], text: string, present: ReturnType<typeof outputOptions>): void {
+  let data: unknown;
+  try { data = JSON.parse(text); } catch { return console.log(text); }
+  if (present.json) return console.log(text);
+  printOutput(render(data, present.columns, Date.now()), present.color);
+}
+const SDLC_READ = ["status", "explain", "queue", "release", "metrics", "costs", "authorize-release"];
+function sdlcOperands(): string[] { return SDLC_READ.includes(args[0] ?? "") ? outputArguments() : args; }
 function printOutput(lines: Span[][], color: boolean): void {
   for (const line of lines) console.log(paint(line, color));
 }
@@ -1262,6 +1273,9 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   sdlc: async () => {
+    const args = sdlcOperands(), present = SDLC_READ.includes(args[0] ?? "") ? outputOptions() : undefined;
+    /** The human form (#814). Each site keeps its own `if (present.json) console.log(JSON.stringify(...))`, so the JSON branch stays visible to the guard test. */
+    const human = (render: (data: any, columns?: number, now?: number) => Span[][], data: unknown) => printOutput(render(data, present!.columns, Date.now()), present!.color);
     const sub = args[0], id = args[1] === undefined ? undefined : Number(args[1]);
     if (sub === "authorize-release") {
       if (args.length !== 2 || !validReleaseVersion(args[1])) fail("usage: ahub sdlc authorize-release <version>");
@@ -1269,7 +1283,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const commit = result.stdout?.trim();
       if (result.status !== 0 || !commit || !/^[a-f0-9]{40}$/.test(commit)) fail("candidate commit unavailable");
       const hub = await connect();
-      try { const reply = await hub.request({ t: "sdlc", op: sub, version: args[1], commit }, 30_000); if (!reply.ok) fail(reply.error); console.log(JSON.stringify(reply.authorization, null, 2)); }
+      try { const reply = await hub.request({ t: "sdlc", op: sub, version: args[1], commit }, 30_000); if (!reply.ok) fail(reply.error); if (present!.json) console.log(JSON.stringify(reply.authorization, null, 2)); else human(renderAuthorization, reply.authorization); }
       finally { hub.close(); }
       return;
     }
@@ -1311,7 +1325,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const repo = args[1], liveIssues = args.slice(2).map(Number);
       if (!repo || args.length > 34 || (sub === "queue" && args.length !== 2) || liveIssues.some(id => !Number.isSafeInteger(id) || id <= 0)) fail("usage: ahub sdlc queue <owner/repository> | release <owner/repository> [live-issue...]");
       const hub = await connect();
-      try { const reply = await hub.request({ t: "sdlc", op: sub, repo, liveIssues }, 30_000); if (!reply.ok) fail(reply.error); console.log(JSON.stringify(reply, null, 2)); }
+      try { const reply = await hub.request({ t: "sdlc", op: sub, repo, liveIssues }, 30_000); if (!reply.ok) fail(reply.error); if (present!.json) console.log(JSON.stringify(reply, null, 2)); else human(sub === "queue" ? renderSdlcQueue : renderSdlcRelease, reply); }
       finally { hub.close(); }
       return;
     }
@@ -1336,12 +1350,14 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     if (sub === "costs") {
       if (args.length > 2) fail("usage: ahub sdlc costs [owner/repository]");
-      return console.log(await taskOp("hub_sdlc_costs", { ...(args[1] ? { repo: args[1] } : {}) }));
+      const text = await taskOp("hub_sdlc_costs", { ...(args[1] ? { repo: args[1] } : {}) });
+      return showToolText(renderSdlcCosts, text, present!);
     }
     if (sub === "metrics") {
       const flags = takeFlags(args.slice(1), ["--since"], []);
       if (flags.rest.length) fail("usage: ahub sdlc metrics [--since <YYYY-MM-DD|ISO time>]");
-      return console.log(await taskOp("hub_sdlc_metrics", { ...(flags.one["--since"] !== undefined ? { since: flags.one["--since"] } : {}) }));
+      const text = await taskOp("hub_sdlc_metrics", { ...(flags.one["--since"] !== undefined ? { since: flags.one["--since"] } : {}) });
+      return showToolText(renderSdlcMetrics, text, present!);
     }
     if (sub === "plan-review") {
       const revision = Number(args[2]);
@@ -1399,7 +1415,10 @@ const commands: Record<string, () => Promise<void> | void> = {
     try {
       const reply = await hub.request({ t: "sdlc", op: sub, ...(id === undefined ? {} : { id }) }, 30_000);
       if (!reply.ok) fail(reply.error);
-      console.log(JSON.stringify(reply, null, 2));
+      // `sdlc export` is a data format by purpose (#814): it stays JSON and never reaches a renderer.
+      if (sub === "export") console.log(JSON.stringify(reply, null, 2));
+      else if (present!.json) console.log(JSON.stringify(reply, null, 2));
+      else human(sub === "explain" ? renderSdlcExplain : renderSdlcStatus, reply);
     } finally { hub.close(); }
   },
 
