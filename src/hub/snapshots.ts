@@ -546,6 +546,66 @@ export interface TurnRecord {
   native: string | null;
 }
 
+/**
+ * Parse `git status --porcelain=v2 -z` output into the paths of dirty submodules (#798 D2). A submodule's
+ * uncommitted edits never move the superproject's gitlink, so a diff of two snapshot trees cannot see them.
+ * Submodule entries are the only ones whose mode field starts with `S`; `N` (normal) entries never qualify.
+ */
+export function parseDirtySubmodules(z: string): string[] {
+  const entries = z.split("\0");
+  const found = new Set<string>();
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]!;
+    if (entry === "") continue;
+    const kind = entry[0];
+    if (kind === "1") {
+      // `1 XY SUB mH mI mW hH hI PATH`: the rest carries 7 spaces, so the path starts after the last one.
+      const rest = entry.slice(2);
+      const cut = nthSpace(rest, 6);
+      const path = cut < 0 ? "" : rest.slice(cut + 1);
+      if (path && submoduleField(rest.slice(0, cut))) found.add(path);
+    } else if (kind === "2") {
+      // `2 XY SUB mH mI mW hH hI Xscore PATH`, then the next entry is the original path: skip it.
+      const rest = entry.slice(2);
+      const cut = nthSpace(rest, 7);
+      const path = cut < 0 ? "" : rest.slice(cut + 1);
+      if (path && submoduleField(rest.slice(0, cut))) found.add(path);
+      i++;
+    } else if (kind === "u") {
+      // `u XY SUB m1 m2 m3 mW h1 h2 h3 PATH`: nine spaces in the rest, then the path.
+      const rest = entry.slice(2);
+      const cut = nthSpace(rest, 8);
+      const path = cut < 0 ? "" : rest.slice(cut + 1);
+      if (path && submoduleField(rest.slice(0, cut))) found.add(path);
+    }
+    // `?`, `!` and `#` entries carry no mode field: ignore them.
+  }
+  return [...found].sort();
+}
+
+/** porcelain-v2 fields are `XY SUB ...`: the submodule marker is the first character of the second field. */
+const submoduleField = (fields: string): boolean => fields.slice(3, 4) === "S";
+/** Index of the nth space (0-based) after the leading kind character, or -1 when the entry is malformed. */
+function nthSpace(rest: string, n: number): number {
+  let at = -1;
+  for (let seen = 0; seen <= n; seen++) {
+    at = rest.indexOf(" ", at + 1);
+    if (at < 0) return -1;
+  }
+  return at;
+}
+
+/**
+ * Dirty submodules of a repository: modified, untracked or new commits inside a submodule worktree are invisible
+ * to snapshot tree diffs (#798 D2). Returns undefined when git cannot answer. A project without `.gitmodules`
+ * pays no git call at all (D4).
+ */
+export function dirtySubmodules(repo: Repo, budget?: SnapshotBudget): string[] | undefined {
+  if (repo.shadow || !existsSync(join(repo.top, ".gitmodules"))) return [];
+  const result = git(repo, ["status", "--porcelain=v2", "-z", "--ignore-submodules=none", "--", scope(repo)], {}, budget, 1024 * 1024);
+  return result.status === 0 ? parseDirtySubmodules(result.stdout) : undefined;
+}
+
 /** Turn records in hub.db: the daemon writes them, `ahub turns` and `ahub undo` read them. */
 export class Turns {
   private readonly db: Database;
