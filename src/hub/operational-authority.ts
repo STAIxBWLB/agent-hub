@@ -41,6 +41,12 @@ export function conductorOperation(command:string,args:readonly string[]): Condu
 }
 
 
+/** Only a failed conductor/operational authority fence carries this marker, never an ordinary operation error. */
+export class OperationalAuthorityError extends Error {
+  readonly code = "AHUB_OPERATIONAL_AUTHORITY";
+  constructor(message:string,readonly scope:"conductor"|"person"|"operational"="operational") { super(message); }
+}
+
 export const OPERATIONAL_PERSON_GUIDANCE="the person runs it in ahub console or a terminal";
 export function operationalRefusal(peer:string,command:string):string {
   return `${peer} cannot run ahub ${command}; ${OPERATIONAL_PERSON_GUIDANCE}; this operation requires the explicit conductor role`;
@@ -54,6 +60,7 @@ export function operationalRequestLabel(value:unknown):string|undefined {
     return message.op==="orphans"?"doctor orphans kill":message.op==="logs"||message.op==="export"?message.op:"unknown";
   }
   if(message.t==="peer_stop")return "stop";
+  if(message.t==="task" && message.op==="hub_task_cancel")return "task cancel";
   if(message.t==="queue" && typeof message.op==="string" && ["show","resolve","discard"].includes(message.op))return `queue ${message.op}`;
   if(message.t==="settings_set"||message.t==="settings_preview")return "settings set";
   return undefined;

@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { CONDUCTOR_SETTING_KEYS, conductorOperation, operationalSetting, operationalRosterSetting } from "../src/hub/operational-authority.ts";
+import { CONDUCTOR_SETTING_KEYS, OperationalAuthorityError, operationalRequestLabel, conductorOperation, operationalSetting, operationalRosterSetting } from "../src/hub/operational-authority.ts";
 import { SETTINGS, settingRefusal } from "../src/hub/settings.ts";
 import { authorizeConfigLeaf } from "../src/hub/config-apply.ts";
 import { requireConductor } from "../src/hub/conductor.ts";
@@ -266,13 +266,14 @@ test("conductor setting and roster writes name the actual peer and preserve the 
   } finally {await f.close();}
 },3000);
 
-test("bare operational op refuses before admission and incomplete privacy inventory is explicit",async()=>{
+test("bare operational op refuses before admission and complete privacy inventory works beyond 500 tasks",async()=>{
   const f=await operationalFixture();const board=new Board(join(f.stateDir,"hub.db"));try {
     const lead=await f.connect("codex"),before=readEvents(join(f.stateDir,"events.jsonl")).length;
     const refused=await lead.request({t:"conductor_operational",op:"queue show"});expect(refused.ok).toBe(false);
     expect(readEvents(join(f.stateDir,"events.jsonl")).slice(before).some(e=>e.type==="agent_cli" && !e.refused)).toBe(false);
     for(let i=0;i<501;i++)board.propose("user",{title:`metadata row ${i}`,class:"plan"});
-    const shown=await lead.request({t:"conductor_operational",op:"logs"});expect(shown.ok).toBe(true);expect(shown.complete).toBe(false);
+    appendFileSync(join(f.stateDir,"hub.log"),"PUBLIC_501_TASK_MARKER\n");
+    const shown=await lead.request({t:"conductor_operational",op:"logs"});expect(shown.ok).toBe(true);expect(shown.complete).toBe(true);expect(shown.lines).toContain("PUBLIC_501_TASK_MARKER");
   } finally {board.close();await f.close();}
 },3000);
 
@@ -284,10 +285,10 @@ for(const mode of ["missing","stale","silent"] as const)test(`operational ${mode
       server=Bun.serve({hostname:"127.0.0.1",port:0,fetch:(req,server)=>server.upgrade(req,{data:undefined})?undefined:new Response("no"),websocket:{message(sock,message){const request=JSON.parse(String(message));if(mode==="silent" && request.t==="hello")sock.send(JSON.stringify({rid:request.rid,t:"welcome",projectId:"fixture",instanceId:"fixture",cwd:root,protocol:PROTOCOL,features:[]}));}}});
       writeFileSync(join(stateDir,"control-token"),"fixture-token");writeFileSync(join(stateDir,"status.json"),JSON.stringify({cwd:root,controlPort:server.port,protocol:PROTOCOL,projectId:"fixture",instanceId:"fixture",pid:mode==="stale"?99999999:process.pid,pidSignature:mode==="stale"?"synthetic-stale":processSignature(process.pid)}));
     }
-    const started=Date.now(),result=await runOperationalCli(root,["logs"]);expect(result.code).toBe(1);expect(result.stderr).toContain("the person runs it in ahub console or a terminal");expect(Date.now()-started).toBeLessThan(2500);
+    const started=Date.now(),result=await runOperationalCli(root,["logs"]);expect(result.code).toBe(1);expect(result.stderr).toContain("the person runs it in ahub console or a terminal");expect(result.stderr).toContain("conductor authorization unavailable");expect(result.stderr).not.toContain("requires the explicit conductor role");expect(Date.now()-started).toBeLessThan(mode==="silent"?4500:2500);
     const audits=drainCliAudits(stateDir);expect(audits.filter(e=>e.command==="logs")).toHaveLength(1);expect(audits.every(e=>e.outcome==="refused")).toBe(true);
   } finally {server?.stop(true);rmSync(root,{recursive:true,force:true});}
-},3000);
+},5000);
 
 
 test("conductor setting reason uses actual private-path and secret metadata policy without changing person undo",async()=>{
@@ -303,3 +304,54 @@ test("conductor setting reason uses actual private-path and secret metadata poli
     expect(readFileSync(undo)).toEqual(receipt);const event=readEvents(join(f.stateDir,"events.jsonl")).findLast(e=>e.type==="settings" && e.key==="research.enabled");expect(event).toMatchObject({source:"conductor",peer:"codex",reason:"public operational reason"});
   } finally {await f.close();}
 },3000);
+
+
+test("operational authority marker is explicit and ordinary conductor domain errors retain their reason",async()=>{
+  expect(new OperationalAuthorityError("fence")).toBeInstanceOf(Error);expect(new OperationalAuthorityError("fence").code).toBe("AHUB_OPERATIONAL_AUTHORITY");
+  expect(operationalRequestLabel({t:"conductor_operational",op:"queue show"})).toBe("unknown");
+  const f=await operationalFixture();try{
+    const lead=await f.connect("codex"),other=await f.connect("claude");
+    const missing=await lead.request({t:"queue",op:"show",id:"missing"});expect(missing).toMatchObject({ok:false,error:"delivery not found",authorityRefused:false});expect(missing).not.toHaveProperty("refusalAudited");
+    const stopped=await lead.request({t:"peer_stop",peer:"kimi"});expect(stopped.ok).toBe(false);expect(stopped.authorityRefused).toBe(false);expect(stopped.error).not.toContain("explicit conductor role");expect(stopped.error).not.toContain("the person runs");
+    const denied=await other.request({t:"queue",op:"show",id:"missing"});expect(denied).toMatchObject({ok:false,authorityRefused:true,refusalAudited:true});expect(String(denied.error).split("the person runs it in ahub console or a terminal")).toHaveLength(2);
+    const protectedSetting=await lead.request({t:"settings_set",key:"permission_modes.codex",value:"never-ask"});expect(protectedSetting).toMatchObject({ok:false,authorityRefused:true,authorityScope:"person",refusalAudited:true});expect(protectedSetting.error).toContain("this setting is reserved for the person");expect(protectedSetting.error).toContain("the person runs it in ahub console or a terminal");expect(protectedSetting.error).not.toContain("explicit conductor role");
+    const scopeAudit=readEvents(join(f.stateDir,"events.jsonl")).filter(row=>row.type==="agent_cli" && row.peer==="codex" && row.command==="settings set" && row.refused);expect(scopeAudit).toHaveLength(1);
+  }finally{await f.close();}
+});
+
+test("settings preview queue inspection and authorization read create no admission event or conduct notice",async()=>{
+  const f=await operationalFixture();try{
+    const lead=await f.connect("codex"),file=join(f.stateDir,"events.jsonl"),before=readEvents(file).length,log=readFileSync(join(f.stateDir,"hub.log"),"utf8");
+    expect((await lead.request({t:"conductor_operational",op:"authorize",command:"settings set"})).ok).toBe(true);
+    expect((await lead.request({t:"settings_preview",key:"snapshots.enabled",value:true})).ok).toBe(true);
+    expect((await lead.request({t:"queue",op:"show",id:"missing"})).error).toBe("delivery not found");
+    const reads=readEvents(file).slice(before);expect(reads.some(row=>row.type==="agent_cli" || row.type==="conduct")).toBe(false);expect(readFileSync(join(f.stateDir,"hub.log"),"utf8")).toBe(log);
+    expect((await lead.request({t:"settings_set",key:"snapshots.enabled",value:true})).ok).toBe(true);
+    expect(readEvents(file).slice(before).some(row=>row.type==="agent_cli" && row.command==="settings set" && !row.refused)).toBe(true);
+  }finally{await f.close();}
+});
+
+test("operational inventory classifies once and explicitly names incomplete privacy coverage",()=>{
+  const root=temp(),board=new Board(join(root,"hub.db")),bus=new Bus({batchMs:0});try{
+    const tasks=new Tasks({board,bus,cwd:root,project:"fixture",routing:()=>loadRouting(root),notify:()=>{}}),task=board.propose("user",{title:"ordinary",class:"plan"});let projections=0;
+    const ports={tasks:board.list(),isPii:tasks.isPii,publicView:(row:typeof task)=>{projections++;return tasks.publicView(row);},publicMetadataText:tasks.publicMetadataText,redact:(row:unknown)=>redactBusEvent(row as BusEvent)};
+    const view=operationalView(ports);for(let n=0;n<10;n++)expect(view.line(`task #${task.id} ordinary`)).toContain("ordinary");expect(projections).toBe(1);
+    const missing=operationalView({...ports,publicView:()=>{throw new Error("unavailable projection");}});expect(missing.complete).toBe(false);expect(missing.incompleteReason).toBe("privacy inventory unavailable");expect(missing.line("ordinary")).toContain("withheld");
+  }finally{bus.closeJournal();board.close();rmSync(root,{recursive:true,force:true});}
+});
+
+test("daemon operational cache invalidates on task privacy and live PII config reload",async()=>{
+  const f=await operationalFixture(),board=new Board(join(f.stateDir,"hub.db")),original=Tasks.prototype.publicView;let projections=0;
+  Tasks.prototype.publicView=function(...args){projections++;return original.apply(this,args);};
+  try{
+    const lead=await f.connect("codex"),person=await f.connect(),file=join(f.stateDir,"hub.log"),path="new-private/file.txt",title="CACHE_TASK_TITLE";
+    const task=board.propose("user",{title,class:"plan"}),pathTask=board.propose("user",{title:"INNOCUOUS_PATH_TASK_TITLE",class:"plan",refs:{paths:[path]}});appendFileSync(file,`task #${task.id} ${title}\ntask #${pathTask.id} INNOCUOUS_PATH_TASK_TITLE\n${path}\n`);
+    const first=await lead.request({t:"conductor_operational",op:"logs"});expect(first.lines.some((line:string)=>line.includes(title))).toBe(true);expect(first.lines).toContain(path);
+    expect(first.lines.some((line:string)=>line.includes("INNOCUOUS_PATH_TASK_TITLE"))).toBe(true);const before=projections;await lead.request({t:"conductor_operational",op:"logs"});expect(projections).toBe(before);
+    board.update(task.id,"user","fixture privacy",{signals:["pii_path"]});
+    const privateTask=await lead.request({t:"conductor_operational",op:"logs"});expect(privateTask.lines.some((line:string)=>line.includes(title))).toBe(false);expect(privateTask.lines).toContain(path);
+    const configFile=join(f.root,".agenthub/config.local.json");writeFileSync(configFile,JSON.stringify({pii:{paths:[path]}}));
+    let reloaded=await person.request({t:"settings_reload"});if(reloaded.confirmation!==undefined)reloaded=await person.request({t:"settings_reload",confirm:reloaded.confirmation});expect(reloaded.ok).toBe(true);
+    const privatePath=await lead.request({t:"conductor_operational",op:"logs"});expect(privatePath.lines).not.toContain(path);expect(privatePath.lines.some((line:string)=>line.includes(title))).toBe(false);expect(privatePath.lines.some((line:string)=>line.includes("INNOCUOUS_PATH_TASK_TITLE"))).toBe(false);expect(projections).toBeGreaterThan(before);
+  }finally{Tasks.prototype.publicView=original;board.close();await f.close();}
+});

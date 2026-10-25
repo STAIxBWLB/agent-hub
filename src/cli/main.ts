@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { conductorOperation } from "../hub/operational-authority.ts";
+import { conductorOperation, OPERATIONAL_PERSON_GUIDANCE } from "../hub/operational-authority.ts";
 import type { DeliverableRow } from "../hub/tasks.ts";
 import { kimiSourceRow } from "../hub/budget-notes.ts";
 import { hubGitSync, hubGitEnv } from "../hub/git.ts";
@@ -487,10 +487,15 @@ function startupDiagnostic(error: unknown): string {
   return message.replace(/[\p{Cc}\p{Cf}]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 512) || "invalid startup configuration";
 }
 
-function fail(message: string, refusalAudited=false): never {
-  if(operationalAuditReady){if(refusalAudited)operationalRefusalRecorded=true;if(!operationalRefusalRecorded)audit("refused");}
+function fail(message: string, refusalAudited=false, authorityRefused?:boolean): never {
+  if(operationalAuditReady && authorityRefused!==false){if(refusalAudited)operationalRefusalRecorded=true;if(!operationalRefusalRecorded)audit("refused");}
   console.error(`ahub: ${message}`);
   process.exit(1);
+}
+
+function operationalIncomplete(result: {complete?:boolean;incompleteReason?:unknown;truncated?:boolean}, history: "log"|"event"): void {
+  if(result.complete===false)console.error(`ahub: operational output is incomplete: ${typeof result.incompleteReason==="string"?terminalText(result.incompleteReason).replace(/[\r\n]+/g," ").slice(0,200):"public privacy or history coverage unavailable"}`);
+  else if(result.truncated)console.error(`ahub: operational ${history} history is truncated`);
 }
 
 async function taskOp(op: string, a: Record<string, unknown>, throwOnError = false, connection?: ControlClient, timeoutMs?: number): Promise<string> {
@@ -501,11 +506,11 @@ async function taskOp(op: string, a: Record<string, unknown>, throwOnError = fal
     if (!res.ok) {
       if (throwOnError) throw new Error(res.error);
       if(res.refusalAudited===true)operationalRefusalRecorded=true;
-      audit("refused");
+      if(!operationalAuditReady || res.authorityRefused!==false)audit("refused");
       // #711: an agent shell refused something only the person may do is told why it counts as an agent. The refusal and the authority stay as they were.
       const cause = agentShellCause(identity, String(res.error));
       if (cause) console.error(`ahub: ${res.error}\n${cause}`), process.exit(1);
-      fail(res.error);
+      fail(res.error,res.refusalAudited===true,res.authorityRefused);
     }
     return res.text;
   } finally { if (!connection) hub.close(); }
@@ -1065,7 +1070,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         const { one, rest: flags } = takeFlags(rest, ["--peer"], []);
         if (flags.length) fail("usage: ahub queue list [--peer <id>] [--json] [--full] [--color=auto|always|never]");
         const result = await hub.request({ t: "queue", op: "list", ...(one["--peer"] ? { peer: one["--peer"] } : {}) });
-        if (!result.ok) fail(result.error,result.refusalAudited===true);
+        if (!result.ok) fail(result.error,result.refusalAudited===true,result.authorityRefused);
         if (options.json) return console.log(JSON.stringify(result.deliveries, null, 2));
         printOutput(renderQueue(result.deliveries, options.columns, Date.now()), options.color);
         return;
@@ -1077,7 +1082,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         if (others.length || !one["--peer"] || (one["--state"] !== undefined && !["queued", "needs_review"].includes(one["--state"]))) fail("usage: ahub queue discard --peer <id> --reason <text> [--state queued|needs_review] [--yes]");
         if (yes && !one["--reason"]?.trim()) fail("ahub queue discard needs --reason <text> with --yes: it is recorded on every discarded delivery");
         const result = await hub.request({ t: "queue", op: "discard", peer: one["--peer"], ...(one["--state"] ? { state: one["--state"] } : {}), ...(yes ? { confirmed: true, reason: one["--reason"] } : {}) }, 60_000);
-        if (!result.ok) fail(result.error,result.refusalAudited===true);
+        if (!result.ok) fail(result.error,result.refusalAudited===true,result.authorityRefused);
         if (options.json) return console.log(JSON.stringify(result, null, 2));
         if (!yes) return console.log(`${result.count} ${result.state} deliver${result.count === 1 ? "y" : "ies"} for ${result.peer}; nothing discarded. Run again with --reason <text> --yes to discard them.`);
         console.log(`discarded ${result.discarded} of ${result.count} ${result.state} deliver${result.count === 1 ? "y" : "ies"} for ${result.peer}${result.refused ? `; ${result.refused} refused (${Object.entries(result.refusedBy ?? {}).map(([why, n]) => `${why} ${n}`).join(", ")})` : ""}`);
@@ -1088,7 +1093,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (operation === "show") {
         if (flags.length) fail("usage: ahub queue show <id>");
         const shown = await hub.request({ t: "queue", op: "show", id });
-        if (!shown.ok) fail(shown.error,shown.refusalAudited===true);
+        if (!shown.ok) fail(shown.error,shown.refusalAudited===true,shown.authorityRefused);
         if (options.json) return console.log(JSON.stringify(shown.delivery, null, 2));
         return printOutput(renderQueueShow(shown.delivery, options.columns, Date.now()), options.color);
       }
@@ -1098,11 +1103,11 @@ const commands: Record<string, () => Promise<void> | void> = {
       let revision = parsedRevision;
       if (revision === undefined) {
         const shown = await hub.request({ t: "queue", op: "show", id });
-        if (!shown.ok) fail(shown.error,shown.refusalAudited===true);
+        if (!shown.ok) fail(shown.error,shown.refusalAudited===true,shown.authorityRefused);
         revision = shown.delivery.revision;
       }
       const result = await hub.request({ t: "queue", op: "resolve", id, revision, action: one["--action"], reason: one["--reason"] });
-      if (!result.ok) fail(result.error,result.refusalAudited===true);
+      if (!result.ok) fail(result.error,result.refusalAudited===true,result.authorityRefused);
       if (options.json) console.log(JSON.stringify(result.delivery, null, 2));
       else printOutput(renderQueueShow(result.delivery, options.columns, Date.now()), options.color);
     } finally { hub.close(); }
@@ -1566,7 +1571,7 @@ const commands: Record<string, () => Promise<void> | void> = {
       const reply = await hub.request({ t: "peer_stop", peer }, 35_000);
       if (reply.ok !== true) {
         const error = String(reply.error ?? "peer stop request refused");
-        fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "peer_stop"/i.test(error) ? `${error}; upgrade the running hub to use ahub stop` : error,reply.refusalAudited===true);
+        fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "peer_stop"/i.test(error) ? `${error}; upgrade the running hub to use ahub stop` : error,reply.refusalAudited===true,reply.authorityRefused);
       }
       console.log(`${peer}: ${reply.state}`);
     } finally { hub.close(); }
@@ -1602,7 +1607,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const hub = await connect();
     try {
       requireNamedPeerFeature(hub, peer);
-      const request = async (message: Record<string, unknown>) => { const reply = await hub.request(message, 35_000); if (reply.ok !== true) fail(String(reply.error ?? "roster request refused"),reply.refusalAudited===true); return reply; };
+      const request = async (message: Record<string, unknown>) => { const reply = await hub.request(message, 35_000); if (reply.ok !== true) fail(String(reply.error ?? "roster request refused"),reply.refusalAudited===true,reply.authorityRefused); return reply; };
       if (sub === "list") {
         const view = await request({ t: "settings_get" });
         if (!Array.isArray(view.roster)) fail("upgrade the running hub to use ahub roster");
@@ -1668,7 +1673,7 @@ const commands: Record<string, () => Promise<void> | void> = {
         const reply = await hub.request(message, 35_000);
         if (reply.ok !== true) {
           const error = String(reply.error ?? "settings request refused");
-          fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "settings_/i.test(error) ? `${error}; upgrade the running hub to use ahub settings` : error,reply.refusalAudited===true);
+          fail(/unknown (?:control )?(?:message|request|command)(?:\b|:)|this hub does not know "settings_/i.test(error) ? `${error}; upgrade the running hub to use ahub settings` : error,reply.refusalAudited===true,reply.authorityRefused);
         }
         return reply;
       };
@@ -1798,14 +1803,14 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   logs: async () => {
     if (identity.role !== "tools") return exec("tail", [args.includes("-f") ? "-f" : "-n100", join(stateDir, "hub.log")]);
-    const hub=await connect();const pending:string[]=[];let ready=false;
-    hub.onPush=message=>{if(message.t==="operational_log" && typeof message.line==="string"){if(ready)console.log(message.line);else if(pending.length<100)pending.push(message.line);}};
+    const hub=await connect();const pending:string[]=[];let ready=false,incompleteShown=false;
+    hub.onPush=message=>{if(message.t==="operational_log" && typeof message.line==="string"){if(message.complete===false && !incompleteShown){operationalIncomplete(message,"log");incompleteShown=true;}if(ready)console.log(message.line);else if(pending.length<100)pending.push(message.line);}};
     try {
       const result=await hub.request({t:"conductor_operational",op:"logs",follow:args.includes("-f")});
-      if(result.ok!==true)fail(String(result.error??"operational logs unavailable"),result.refusalAudited===true);
+      if(result.ok!==true)fail(String(result.error??"operational logs unavailable"),result.refusalAudited===true,result.authorityRefused);
       for(const line of result.lines??[])console.log(line);
       ready=true;for(const line of pending)console.log(line);
-      if(result.truncated)console.error("ahub: operational log history is truncated");
+      if(!incompleteShown){operationalIncomplete(result,"log");if(result.complete===false)incompleteShown=true;}
       if(args.includes("-f"))await new Promise<void>(resolve=>{
         const finish=()=>{process.off("SIGINT",finish);resolve();};
         hub.onClose=finish;process.once("SIGINT",finish);
@@ -1815,7 +1820,7 @@ const commands: Record<string, () => Promise<void> | void> = {
   export: async () => {
     if(identity.role==="tools") {
       const hub=await connect();
-      try {const result=await hub.request({t:"conductor_operational",op:"export",since:since()});if(result.ok!==true)fail(String(result.error??"operational export unavailable"),result.refusalAudited===true);for(const row of result.events??[])console.log(JSON.stringify(row));if(result.truncated)console.error("ahub: operational event history is truncated");}
+      try {const result=await hub.request({t:"conductor_operational",op:"export",since:since()});if(result.ok!==true)fail(String(result.error??"operational export unavailable"),result.refusalAudited===true,result.authorityRefused);for(const row of result.events??[])console.log(JSON.stringify(row));operationalIncomplete(result,"event");}
       finally {hub.close();}
       return;
     }
@@ -2230,7 +2235,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     }
     if (args.includes("--orphans")) {
       if(identity.role==="tools" && args.includes("--kill")) {
-        const hub=await connect();try {const result=await hub.request({t:"conductor_operational",op:"orphans"},10_000);if(result.ok!==true)fail(String(result.error??"orphan inspection unavailable"),result.refusalAudited===true);console.log(JSON.stringify(result,null,2));}finally{hub.close();}return;
+        const hub=await connect();try {const result=await hub.request({t:"conductor_operational",op:"orphans"},10_000);if(result.ok!==true)fail(String(result.error??"orphan inspection unavailable"),result.refusalAudited===true,result.authorityRefused);console.log(JSON.stringify(result,null,2));}finally{hub.close();}return;
       }
       return orphanDoctor(args.includes("--kill"), options);
     }
@@ -2392,16 +2397,17 @@ function inspectDoctorRouting(cwd: string): { routing?: Routing; errors: string[
 async function runConductorCommand(): Promise<void> {
   const operation=conductorOperation(cmd,args);
   if(operation) {
-    const denial=()=>peerCommandRefusal(identity.role==="tools"?identity.peer:"unknown",commandLabel);
+    const unavailable=`conductor authorization unavailable; nothing was executed; ${OPERATIONAL_PERSON_GUIDANCE}`;
     const descriptor=readControl(stateDir);
-    if(!descriptor?.instanceId || !descriptor.projectId || !descriptor.pid || !descriptor.pidSignature || processLiveness(descriptor.pid,descriptor.pidSignature)!=="live")fail(denial());
+    if(!descriptor?.instanceId || !descriptor.projectId || !descriptor.pid || !descriptor.pidSignature || processLiveness(descriptor.pid,descriptor.pidSignature)!=="live")fail(unavailable);
     let hub:ControlClient;
-    try {hub=await connect(750);} catch {fail(denial());}
+    try {hub=await connect(3000);} catch {fail(unavailable);}
     let release:(()=>void)|undefined;
     try {
       let result:any;
-      try {result=await hub.request({t:"conductor_operational",op:"authorize",command:operation},750);} catch {fail(denial());}
-      if(result.ok!==true || !hub.instanceId)fail(`${denial()}${result.error?`; ${String(result.error)}`:""}`,result.refusalAudited===true);
+      try {result=await hub.request({t:"conductor_operational",op:"authorize",command:operation},3000);} catch {fail(unavailable);}
+      if(result.ok!==true)fail(result.authorityRefused===true || result.authorityRefused===false?String(result.error??unavailable):unavailable,result.refusalAudited===true,result.authorityRefused);
+      if(!hub.instanceId)fail(unavailable);
       release=ControlClient.pinInstance(stateDir,hub.instanceId);
       await commands[cmd]!();
     } finally {release?.();hub.close();}

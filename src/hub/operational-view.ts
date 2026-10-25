@@ -87,16 +87,12 @@ const positive=(value:unknown):value is number=>Number.isSafeInteger(value) && (
 
 /** Bind the existing task/privacy projections once per read; no private title or path leaves this closure. */
 export function operationalView(ports:OperationalViewPorts) {
-  const tasks=new Map(ports.tasks.map(task=>[task.id,task]));
+  const publicTasks=new Set<number>();
   const privateTitles:string[]=[];
-  // ponytail: a complete privacy inventory is capped at 500 tasks; indexed scoped log records can extend it.
-  let known=ports.tasks.length<=500;
-  try {for(const task of ports.tasks.slice(0,500)) {const view=ports.publicView(task);if(ports.isPii(task) || view.title!==task.title) privateTitles.push(task.title);}} catch {known=false;}
-  const safeTask=(id:number):boolean=>{
-    const task=tasks.get(id);
-    if (!task) return false;
-    try {return !ports.isPii(task) && ports.publicView(task).title===task.title;} catch {return false;}
-  };
+  // The caller caches this complete inventory by board/privacy revision; there is no task-count display ceiling.
+  let known=true;
+  try {for(const task of ports.tasks) {const view=ports.publicView(task);if(ports.isPii(task) || view.title!==task.title) privateTitles.push(task.title);else publicTasks.add(task.id);}} catch {known=false;}
+  const safeTask=(id:number):boolean=>known && publicTasks.has(id);
   const safeText=(text:string):boolean=>{
     if (!known || Buffer.byteLength(text)>65536 || privateTitles.some(title=>title && text.includes(title))) return false;
     try {return ports.publicMetadataText(text);} catch {return false;}
@@ -137,5 +133,5 @@ export function operationalView(ports:OperationalViewPorts) {
       return JSON.parse(text,(_key,item)=>typeof item==="string"?sanitize(item):item) as Record<string,unknown>;
     } catch {return withheld;}
   };
-  return {line,event,complete:known};
+  return {line,event,complete:known,...(!known?{incompleteReason:"privacy inventory unavailable"}: {})};
 }
