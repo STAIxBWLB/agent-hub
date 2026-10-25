@@ -419,7 +419,7 @@ export function assign(
     namedPlanner?: PeerId;
     /** The planner already recorded on the task (525-2): kept while it is still a holder. */
     keptPlanner?: PeerId;
-    reviewPool?: { pool: readonly string[]; rerotate?: boolean; failed?: readonly string[]; required?: boolean };
+    reviewPool?: { pool: readonly string[]; rerotate?: boolean; failed?: readonly string[]; required?: boolean; sameFamily?: "fallback" | "never" };
     candidates?: PeerId[];
     notReviewer?: PeerId;
     waitsFor?: number[];
@@ -604,6 +604,9 @@ export function assign(
       const automatic = [...new Set([...expandClassPeers(classPeers, states, opts), ...rolePeers])];
       const ownerFamily = instanceMode && reviewOwner ? (opts.adapterCatalog?.familyOf ?? familyOf)(reviewOwner, opts.instances) : undefined;
       const sameFamily = (peer: PeerId) => ownerFamily !== undefined && (opts.adapterCatalog?.familyOf ?? familyOf)(peer, opts.instances) === ownerFamily;
+      // #820: with review.same_family = never, a reviewer of the owner's family is never chosen; the planner or the person reviews instead.
+      const neverSame = opts.reviewPool?.sameFamily === "never" && ownerFamily !== undefined;
+      if (neverSame) trace.push(`  review.same_family = never: no reviewer of the owner's family (${ownerFamily}) is chosen; another family, the planner or the person reviews`);
       const independent = ownerFamily === undefined ? [] : automatic.filter(peer => peer !== reviewOwner && !blocked(peer, "reviewer") && !sameFamily(peer));
       const named = opts.namedReviewer;
       const declaredPool = opts.reviewPool && named === undefined ? Object.keys(opts.instances ?? {}).flatMap(id => {
@@ -622,21 +625,25 @@ export function assign(
         const continuityFamily = last && "reviewerFamily" in last && typeof last.reviewerFamily === "string" ? last.reviewerFamily : last ? (opts.adapterCatalog?.familyOf ?? familyOf)(last.by, opts.instances) : undefined;
         const pr = task.sdlc?.pr;
         const seed = typeof pr === "number" && Number.isSafeInteger(pr) && pr > 0 ? pr : task.id ?? 0;
-        reviewSelection = selectReviewerPool({ pool: opts.reviewPool!.pool, candidates: declaredPool, seed, implementerFamily: ownerFamily, continuityFamily, rerotate: opts.reviewPool!.rerotate, failed: opts.reviewPool!.failed });
+        reviewSelection = selectReviewerPool({ pool: opts.reviewPool!.pool, candidates: declaredPool, seed, implementerFamily: ownerFamily, continuityFamily, rerotate: opts.reviewPool!.rerotate, failed: opts.reviewPool!.failed, ...(neverSame ? { sameFamily: "never" as const } : {}) });
         for (const row of reviewSelection.walk) trace.push(row.id ? `  reviewer pool candidate ${row.id} (${row.family}): ${row.reason}` : `  reviewer pool kind ${row.kind}: ${row.reason}`);
         reviewer = reviewSelection.reviewer ?? "user";
         if (reviewSelection.blocked) {
           trace.push("blocked: no reviewer can run");
           // Optional defaults retain the legacy planner escape when no fresh reviewer can run.
-          const planners = opts.reviewPool?.required ? [] : automatic.filter(peer => peer !== reviewOwner && peerEntry(opts.roles, peer)?.includes("planner") && !(opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.routing?.reviewOnly && !blocked(peer, "reviewer"));
+          const planners = opts.reviewPool?.required && !neverSame ? [] : automatic.filter(peer => peer !== reviewOwner && peerEntry(opts.roles, peer)?.includes("planner") && (!neverSame || peerEntry(opts.roles, peer)?.includes("reviewer") === true) && !(opts.adapterCatalog?.definitionOf ?? definitionOf)(peer, opts.instances)?.routing?.reviewOnly && !blocked(peer, "reviewer"));
           const otherFamily = planners.filter(peer => !sameFamily(peer));
-          const planner = pick(otherFamily.length ? otherFamily : planners, "reviewer", reviewOwner);
+          const planner = pick(neverSame || otherFamily.length ? otherFamily : planners, "reviewer", reviewOwner);
           if (planner) {
             reviewer = planner;
             plannerFallback = true;
             trace.push(`  planner fallback: no declared reviewer-only instance is eligible; ${planner} reviews`);
           } else reviewBlocked = true;
         }
+      } else if (neverSame && named !== undefined && named !== reviewOwner && !blocked(named, "reviewer") && sameFamily(named)) {
+        const reason = `same family as ${reviewOwner}; review.same_family is never`;
+        refusals.set(`reviewer:${named}`, { peer: named, role: "reviewer", code: "family", reason });
+        trace.push(`  reviewer candidate ${named}: skipped, ${reason}`);
       } else if (named !== undefined && named !== reviewOwner && !blocked(named, "reviewer") && sameFamily(named) && independent.length) {
         const reason = `same family as ${reviewOwner}; eligible other-family reviewer available`;
         refusals.set(`reviewer:${named}`, { peer: named, role: "reviewer", code: "family", reason });
@@ -645,7 +652,7 @@ export function assign(
         // #223 R1: a declared instance that reviews and does not plan goes first, busy or not.
         const holds = (peer: PeerId, role: string) => opts.roles?.[peer]?.includes(role) === true;
         const dedicated = (peer: PeerId) => !!opts.instances && Object.hasOwn(opts.instances, peer) && holds(peer, "reviewer") && !holds(peer, "planner");
-        const pool = independent.length ? independent : automatic;
+        const pool = independent.length || neverSame ? independent : automatic;
         const ready = named === undefined ? pool.filter(peer => dedicated(peer) && peer !== reviewOwner && !blocked(peer, "reviewer")) : [];
         reviewer = pick(named === undefined ? ready.length ? ready : pool : [named], "reviewer", reviewOwner, named === undefined);
         if (named === undefined && !ready.length && reviewer && holds(reviewer, "planner") && Object.keys(opts.roles ?? {}).some(dedicated)) {
@@ -656,6 +663,11 @@ export function assign(
       if (reviewer && sameFamily(reviewer)) {
         sameFamilyFallback = true;
         trace.push(`  same-family fallback: ${reviewer} and ${reviewOwner} share ${ownerFamily}; no eligible other family`);
+      }
+      if (neverSame && !reviewer && named === undefined && !reviewSelection && automatic.some(peer => peer !== reviewOwner && sameFamily(peer) && !blocked(peer, "reviewer"))) {
+        reviewer = "user";
+        reviewBlocked = true;
+        trace.push("  review.same_family = never: only reviewers of the owner's family remain; the person reviews");
       }
       // I-2 (#525-3): when the peers that implemented this task were the only candidates left, the person reviews. Never a fallback to an implementer.
       if (!reviewer && [...refusals.values()].some(row => row.role === "reviewer" && row.code === "policy" && row.reason === "implemented this task")) {

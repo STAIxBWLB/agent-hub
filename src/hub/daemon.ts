@@ -224,7 +224,7 @@ export interface HubConfig {
   /** Per-sender rate limits and repeat suppression for what agents send (issue #38). */
   limits: LimitsConfig;
   /** Reviewer choice from recorded review outcomes, once a reviewer has `min_reviews` of an implementer (issue #35). */
-  review: { adaptive: boolean; min_reviews: number; pool?: string[]; rerotate?: boolean };
+  review: { adaptive: boolean; min_reviews: number; pool?: string[]; rerotate?: boolean; same_family?: "fallback" | "never" };
   /** After an unplanned stop, start Kimi, Pi and the local worker again with their recorded sessions (issue #37). */
   recovery: { auto_resume_after_crash: boolean };
   /** Per peer, the hub-tool capabilities it has (issue #39); a peer not listed has all of them. */
