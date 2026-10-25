@@ -21,7 +21,7 @@ async function rig() {
   cleanup.push(() => { for (const key of ["HOME", "AGENTHUB_HOME", "PATH"] as const) { if (prior[key] === undefined) delete process.env[key]; else process.env[key] = prior[key]; } });
   const git = (args: string[]) => { const result = hubGitSync(args, { cwd: root, encoding: "utf8", timeout: 1000 }); expect(result.status).toBe(0); };
   git(["init", "-q"]); writeFileSync(join(root, "package.json"), '{"name":"fixture","version":"1.0.0"}'); git(["add", "package.json"]); git(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture"]);
-  mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/sdlc.toml"), 'mode = "advise"\nrequired_checks = ["gate"]\n');
+  mkdirSync(join(root, ".agenthub")); writeFileSync(join(root, ".agenthub/sdlc.toml"), 'mode = "advise"\nrequired_checks = ["gate"]\n[repos."Configured/Repo"]\nrequired_checks = ["gate"]\n');
   const template = readFileSync(new URL("../templates/routing.toml", import.meta.url), "utf8").replaceAll("hub/stage", "hub/secret-location-alias").replaceAll('pi_backend = "mlx"', 'pi_backend = "dgx"');
   writeFileSync(join(root, ".agenthub/routing.toml"), template);
   writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify({ codex_bin: "SECRET_PROGRAM_LOCATOR", jcode_home: join(temp, "SECRET_ACCOUNT_LOCATOR"), memory: { worker_url: "https://secret-location.invalid" } }));
@@ -70,6 +70,32 @@ for (const peer of ["codex", "pi"] as const) test(`${peer} ordinary tools reads 
   for (const result of [status, privateStatus, delivery, release, shown]) { const text = JSON.stringify(result); for (const hidden of ["PRIVATE_TITLE_CANARY", "PRIVATE_BODY_CANARY", "private-note.txt", PRIVATE_HEAD]) expect(text).not.toContain(hidden); }
   const full = await r.person.request({ t: "task", op: "release_show", args: { name: "public-train" } }); expect(JSON.parse(full.text).train.scope).toEqual([r.priv.id]);
   const personSettings = await r.person.request({ t: "settings_get" }); expect(personSettings.rows.find((row: any) => row.key === "routing.classes.implement.route").value).toBe("hub/secret-location-alias"); expect(personSettings).toHaveProperty("configEdit");
+});
+
+for (const peer of ["codex", "pi"] as const) test(`${peer} public GitHub reads are limited to repositories already named by this project`, async () => {
+  const r = await rig(), agent = await r.agent(peer);
+  const board = new Board(join(r.stateDir, "hub.db"));
+  try {
+    board.propose("user", { title: "public imported task", class: "implement", external: { provider: "github", repo: "External/Repo", issue: 3, url: "https://github.com/External/Repo/issues/3" } });
+    const privateOnly = board.propose("user", { title: "private source", class: "implement", signals: ["pii_path"] });
+    board.update(privateOnly.id, "user", "fixture lifecycle", { sdlc: { stage: "implement", repo: "Private-Only/Repo", pr: 2 } });
+    board.propose("user", { title: "private external source", class: "implement", signals: ["pii_path"], external: { provider: "github", repo: "Private-External/Repo", issue: 4, url: "https://github.com/Private-External/Repo/issues/4" } });
+    board.propose("user", { title: "refs do not authorize GitHub reads", class: "implement", refs: { repo: "Refs-Only/Repo" } });
+  } finally { board.close(); }
+  for (const op of ["queue", "release"] as const) {
+    for (const repo of ["unknown/repo", "PRIVATE-ONLY/REPO", "private-external/repo", "refs-only/repo", " owner/repo", "https://github.com/owner/repo"]) {
+      const before = readFileSync(r.calls, "utf8");
+      const result = await agent.request({ t: "sdlc", op, repo, ...(op === "release" ? { liveIssues: [1, 2] } : {}) });
+      expect(result).toMatchObject({ ok: false, error: "public repository unavailable for this project" });
+      expect(readFileSync(r.calls, "utf8"), `${op}: ${repo}`).toBe(before); // Refusal precedes every host gh call.
+      expect(JSON.stringify(result)).not.toContain(repo);
+    }
+    for (const repo of ["OWNER/REPO", "external/REPO", "CONFIGURED/repo"]) {
+      const before = readFileSync(r.calls, "utf8");
+      expect((await agent.request({ t: "sdlc", op, repo })).ok).toBe(true);
+      expect(readFileSync(r.calls, "utf8")).not.toBe(before);
+    }
+  }
 });
 
 test("ordinary public read access never grants adjacent mutations or planner-only reports", async () => {

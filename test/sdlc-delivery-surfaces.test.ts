@@ -15,6 +15,7 @@ const root=()=>{const dir=mkdtempSync(join(tmpdir(),"ahub-delivery-surface-"));c
 test("delivery queue RPC is public while dashboard actions stay console-only and perform no task mutation (#257)",async()=>{
  const dir=root(),bin=mkdtempSync(join(tmpdir(),"ahub-delivery-host-gh-")),record=join(dir,"calls");cleanup.push(()=>rmSync(bin,{recursive:true,force:true}));const program=join(bin,"gh");writeFileSync(program,'#!/bin/sh\nprintf call >> "'+record+'"\nprintf "[]\\n"\n');chmodSync(program,0o755);
  const old=process.env.PATH;process.env.PATH=bin+":"+old;cleanup.push(()=>{process.env.PATH=old});
+ mkdirSync(join(dir,".agenthub"));writeFileSync(join(dir,".agenthub/sdlc.toml"),'[repos."owner/repo"]\nrequired_checks = []\n');
  const stateDir=join(dir,"state"),daemon=await startDaemon({cwd:dir,stateDir,controlPort:0,codexAppPort:0,codexProxyPort:0,config:{...DEFAULT_CONFIG,memory:{...DEFAULT_CONFIG.memory,enabled:false},inference:{...DEFAULT_CONFIG.inference,enabled:false},mlx:{...DEFAULT_CONFIG.mlx,enabled:false},snapshots:{...DEFAULT_CONFIG.snapshots,enabled:false}}});cleanup.push(()=>daemon.stop());
  const client=await ControlClient.connect(stateDir,{role:"console"});cleanup.push(()=>client.close());
  const tools=await ControlClient.connect(stateDir,{role:"tools",peer:"codex"});cleanup.push(()=>tools.close());

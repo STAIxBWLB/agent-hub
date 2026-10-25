@@ -5032,6 +5032,13 @@ export async function startDaemon(opts: DaemonOptions) {
           ...(row.findings ? { findings: row.findings } : {}), ...(row.planConformance ? { planConformance: row.planConformance } : {}), ...(row.testIntegrity ? { testIntegrity: row.testIntegrity } : {}) }),
       order: mixed ? [] : report.order, ...(report.unordered ? { unordered: mixed ? [] : report.unordered } : {}), conflicts: mixed ? [] : report.conflicts });
   }
+  /** A public read may use host GitHub authentication only for this project's current public scope. */
+  function publicDeliveryRepository(repo: unknown): repo is string {
+    if (typeof repo !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || repo.startsWith("-") || !tasks.publicMetadataText(repo)) return false;
+    const identity = repo.toLowerCase();
+    return Object.keys(lifecycleConfig.repos ?? {}).some(key => key.toLowerCase() === identity)
+      || board.list().some(task => !tasks.isPii(task) && (task.sdlc?.repo?.toLowerCase() === identity || task.external?.repo.toLowerCase() === identity));
+  }
   const publicReadPrivacy = () => JSON.stringify(board.list().map(task => [task.id, tasks.isPii(task), task.history.length]));
   function operationalCurrent(sock:Sock,acceptedAfterClose=false):()=>void {
     const client=sock.data,peer=client.peer;
@@ -6813,11 +6820,14 @@ export async function startDaemon(opts: DaemonOptions) {
           let current: () => void;
           try { current = publicReadCurrent(sock); current(); } catch { return void reply({ ok: false, error: "public lifecycle read unavailable for this caller" }); }
           if (msg.op === "queue" || msg.op === "release") {
-            if (typeof msg.repo !== "string" || !tasks.publicMetadataText(msg.repo) || !Array.isArray(msg.liveIssues ?? []) || (msg.liveIssues ?? []).length > 32) return void reply({ ok: false, error: "invalid delivery readback arguments" });
+            if (!publicDeliveryRepository(msg.repo)) return void reply({ ok: false, error: "public repository unavailable for this project" });
+            if (!Array.isArray(msg.liveIssues ?? []) || (msg.liveIssues ?? []).length > 32) return void reply({ ok: false, error: "invalid delivery readback arguments" });
             const before = publicReadPrivacy();
             const read = msg.op === "queue" ? tasks.deliveryQueue(msg.repo) : tasks.releaseReadiness(msg.repo, msg.liveIssues ?? []);
             void read.then(report => {
-              current(); if (before !== publicReadPrivacy()) throw new Error("privacy changed");
+              current();
+              if (!publicDeliveryRepository(msg.repo)) return void reply({ ok: false, error: "public repository unavailable for this project" });
+              if (before !== publicReadPrivacy()) throw new Error("privacy changed");
               reply({ ok: true, public: true, report: msg.op === "queue" ? publicDeliveryQueue(report as Awaited<ReturnType<typeof tasks.deliveryQueue>>) : publicReadValue(report) });
             }).catch(() => reply({ ok: false, error: "public delivery readback unavailable" }));
             return;

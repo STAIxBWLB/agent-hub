@@ -545,7 +545,7 @@ and so is every help entry the gate has no class for yet;
 | `ahub roster [--json] [--color=...]` | Allowed | public roster status; add/remove retain conductor admission |
 | `ahub settings [list] [--json]`, `ahub settings get <key> [--json]` | Allowed | public registry values; secret-locating values, paths, undo records and config-editor details are withheld |
 | `ahub sdlc status\|explain [<task>]` | Allowed | public lifecycle status; private tasks stay stubs, without private evidence or receipts |
-| `ahub sdlc queue <owner/repo>`, `ahub sdlc release <owner/repo> [live-issue...]` | Allowed | public delivery/release readback; no release authorization or mutation |
+| `ahub sdlc queue <owner/repo>`, `ahub sdlc release <owner/repo> [live-issue...]` | Allowed | public delivery/release readback for repos already named by a public project task or its SDLC config; no release authorization or mutation |
 | `ahub release show <name>` | Allowed | public release metadata; private scope and internal history remain withheld |
 | `ahub projects [--json] [--color=...]` | Allowed | lists registered projects; `projects remove` stays Console |
 | `ahub models status [--json] [--color=...]` | Allowed | reads local model state; `setup\|start\|stop` stay Console |
