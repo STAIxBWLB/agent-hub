@@ -36,6 +36,10 @@ function taskBlock(task: any, columns: number | undefined, now: number, detail: 
   out.push(...pair("after", ids(task?.deps), columns, w, undefined, "  "));
   if (typeof task?.release === "number") out.push(...pair("release", `#${task.release}`, columns, w, undefined, "  "));
   if (typeof task?.rank === "number" || typeof task?.priority === "number") out.push(...pair("planning", [typeof task.rank === "number" ? `rank ${task.rank}` : "", typeof task.priority === "number" ? `priority P${task.priority}` : "", task.pinned ? "pinned" : ""].filter(Boolean).join(", "), columns, w, undefined, "  "));
+  // The operands the next command needs: backlog plan|pin|split|pull-ready|undo take the planning revision (0 on an unedited card),
+  // task cancel and assign --revision take the flow revision. A person must not have to switch to --json to read them.
+  if (task?.state === "backlog" || typeof task?.planningRevision === "number") out.push(...pair("planning rev", count(task?.planningRevision ?? 0), columns, w, undefined, "  "));
+  if (typeof task?.flowRevision === "number") out.push(...pair("flow rev", count(task.flowRevision), columns, w, undefined, "  "));
   out.push(...pair("created", when(task?.created, now), columns, w, undefined, "  "), ...pair("updated", when(task?.updated, now), columns, w, undefined, "  "));
   if (!detail) return out;
   out.push(...stubNote(task, columns));

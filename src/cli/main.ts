@@ -1193,7 +1193,8 @@ const commands: Record<string, () => Promise<void> | void> = {
   backlog: async () => {
     const split = splitPresentation(args, { edges: true }), operands = split.operands;
     const [sub, id, revision, value, ...reason] = operands;
-    const shown = (render: (data: any, columns?: number, now?: number) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, outputOptions(split.flags));
+    const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
+    const shown = (render: (data: any, columns?: number, now?: number) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, present);
     if (sub === "list" && outputArguments().length === 1) {
       // #399: a table by default; --json prints the hub's listing unchanged, and a refusal is printed as it came.
       const options = outputOptions(), raw = await taskOp("hub_backlog_list", {});
@@ -1228,7 +1229,8 @@ const commands: Record<string, () => Promise<void> | void> = {
   release: async () => {
     const split = splitPresentation(args, { edges: true }), operands = split.operands;
     const [sub, name, revision, value] = operands;
-    const shown = (render: (data: any, columns?: number, now?: number) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, outputOptions(split.flags));
+    const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
+    const shown = (render: (data: any, columns?: number, now?: number) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, present);
     if (sub === "list" && operands.length === 1) return shown(renderReleaseList)(taskOp("hub_release_list", {}));
     if (sub === "show" && name && operands.length === 2) return shown(renderReleaseShow)(taskOp("release_show", { name }));
     if (sub === "new" && name && revision && operands.length === 4 && /^\d+$/.test(value ?? "")) return shown(renderReleaseNew)(taskOp("release_new", { name, goal: revision, order: Number(value) }));
@@ -1453,6 +1455,8 @@ const commands: Record<string, () => Promise<void> | void> = {
   task: async () => {
     const presentation = splitPresentation(args, { valueFlags: ["--reason", "--superseded-by", "--revision"], edges: true });
     const shownTask = (render: (data: any, columns?: number, now?: number) => Span[][]) => async (text: Promise<string>) => showToolText(render, await text, outputOptions(presentation.flags));
+    // task show and task cancel read their presentation options before the request goes out (a refusal after a cancel would invite a retry of work already done)
+    if (["show", "cancel"].includes(args[0] ?? "")) outputOptions(presentation.flags);
     const [sub, ...rest] = ["show", "cancel"].includes(args[0] ?? "") ? presentation.operands : args;
     if (sub === "role") {
       if (rest.length !== 2 || !/^[1-9]\d*$/.test(rest[0]!)) fail("usage: ahub task role <id> <role|none>");
