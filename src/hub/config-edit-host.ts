@@ -47,7 +47,7 @@ export interface ConfigEditView {
   fields: { instance: readonly string[]; tier3Instance: readonly string[] };
 }
 const REASON_BYTES = 400;
-const BLOCKS: readonly (readonly string[])[] = [["review", "adaptive"], ["review", "min_reviews"], ["review", "pool"], ["review", "rerotate"], ["snapshots", "keep"], ["approvals", "timeout_s"], ["context", "gate"]];
+const BLOCKS: readonly (readonly string[])[] = [["review", "adaptive"], ["review", "min_reviews"], ["review", "pool"], ["review", "rerotate"], ["review", "same_family"], ["snapshots", "keep"], ["approvals", "timeout_s"], ["context", "gate"]];
 
 export const CONFIG_EDIT_OPS = ["config_edit_get", "config_edit_preview", "config_edit_apply"] as const;
 

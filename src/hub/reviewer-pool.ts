@@ -8,6 +8,8 @@ export interface ReviewerPoolInput {
   continuityFamily?: string;
   rerotate?: boolean;
   failed?: readonly string[];
+  /** `never` (#820): an implementer-family candidate is never selected, not even as the last resort. */
+  sameFamily?: "fallback" | "never";
 }
 export interface ReviewerPoolSelection {
   reviewer: string | null;
@@ -65,6 +67,7 @@ export function selectReviewerPool(input: ReviewerPoolInput): ReviewerPoolSelect
     return finish({ reviewer: candidate.id, family: candidate.family, reason });
   }
   // The caller supplies separate fresh reviewer instances; this does not authorize an implementer's own session.
+  if (input.sameFamily === "never") return finish({ reviewer: null, blocked: "no reviewer can run" });
   for (const candidate of ordered) {
     if (!candidate.id || input.implementerFamily === undefined || candidate.family !== input.implementerFamily) continue;
     const blocked = unavailable(candidate);

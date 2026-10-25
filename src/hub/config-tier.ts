@@ -19,7 +19,7 @@ export const TIER3_INSTANCE_FIELDS = ["jcode_home", "provider", "model", "provid
 /** Every NEVER_EDITABLE key except `instances`, which splits by field. */
 export const TIER3_PREFIXES: readonly string[] = NEVER_EDITABLE.filter(key => key !== "instances");
 const TIER2_BLOCKS: Readonly<Record<string, readonly string[]>> = {
-  review: ["adaptive", "min_reviews", "pool", "rerotate"],
+  review: ["adaptive", "min_reviews", "pool", "rerotate", "same_family"],
   snapshots: ["keep"],
   approvals: ["timeout_s"],
   context: ["gate"],

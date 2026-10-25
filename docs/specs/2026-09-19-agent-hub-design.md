@@ -4029,7 +4029,7 @@ pure decision and name the chosen instance. Reviewer independence compares
 families (the kind); an eligible other family takes precedence even when busy.
 Only when no other family is eligible may an assignment use its own family,
 recording `sameFamilyFallback=true` in assignment history. This independence rule
-also applies to an explicit same-family reviewer nomination. A declared owner of
+also applies to an explicit same-family reviewer nomination. `review.same_family = "never"` (#820, default `"fallback"`) removes that last resort in the pool and the legacy path: the planner reviews when it holds the reviewer role, is not the owner, is of another family and is not blocked, else the person, and a same-family nomination is refused with `same family as <owner>; review.same_family is never`. A declared owner of
 implement, bulk-edit or test work requires the current implementer role and positive
 host evidence tied to the actual adapter generation started in a verified noncanonical
 worktree; a role-only reload cannot promote a canonical reviewer process. External
