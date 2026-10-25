@@ -208,14 +208,14 @@ export function profileScorecard(input: DogfoodInput) {
       const accounting = selected.filter(e => (e.type==="tokens" || e.type==="usage" || e.type==="turn_end") && peer(e.peer) && (e.attribution==="delivery" || e.attribution==="single_open") && (e.type!=="tokens" || number(e.n)));
       const report = summarizeByTask(accounting);
       const costs = [...ids].sort((a,b)=>a-b).map(task=>({task,peers:complete(input.events) && report.tasks[String(task)] ? Object.fromEntries(Object.entries(report.tasks[String(task)]!.peers).map(([id,p])=>[id,{tokens:p.tokens,input:p.usage.inputTokens,output:p.usage.outputTokens,cacheRead:p.usage.cacheReadTokens,cacheWrite:p.usage.cacheWriteTokens,total:p.usage.totalTokens,records:p.usage.records}])) : null}));
-      const screened = selected.filter(e=>e.type==="pii_screen" && e.item==="note" && e.label==="pii" && (e.source==="screen" || e.source==="unknown"));
+      const screened = selected.filter(e=>e.type==="pii_screen" && e.item==="note" && e.label==="pii");
       const eventCount = (n:number) => full && complete(input.events) ? n : null;
       return {profile, alias:group.alias, baseClass:group.base, tasks:[...ids].sort((a,b)=>a-b),
         flow:{scope,autoApprovalTransitions:{scope:"recorded_events",value:eventsFull?new Set(autoApprovals.map(e=>e.id)).size:null},proposed:count("proposed"),accepted:count("accepted"),approved:milestoneKnown&&!approvalUnknown?approvalIds.size:null,cancelled:count("cancelled"),proposeToApproveMs:full&&!approvalUnknown?quantiles(leads):{samples:null,p50:null,p90:null},reviewRounds:milestoneKnown?rounds:null,firstPassApproval:full&&!approvalUnknown&&first.length?first.reduce((a,b)=>a+b,0)/first.length:null,escalations:count("escalated")},
         review:{changesRequested:milestoneKnown?rejectionCount:null,checklistItems:null,criteria:criteriaKnown?[...criteria].sort(([a],[b])=>a.localeCompare(b)).map(([id,count])=>({id,count})):null,privateCriteria:criteriaKnown?privateCriteria:null},
         overlap:{pathNotices:eventCount(warnings.filter(w=>w.paths.length).length),sectionNotices:eventCount(warnings.filter(w=>w.sections).length),observedPathEditPairs:eventCount(confirmed.size),sectionEditPairs:null},
         deliverables:{recordedCount:full&&history.some(h=>h.deliverables!==undefined)?group.tasks.reduce((n,t)=>n+new Set(history.filter(h=>h.task.id===t.id).flatMap(h=>h.deliverables??[])).size,0):null,changedSinceApproval:null,unknownStates:null},
-        privacy:{privateTasks:full?group.tasks.filter(t=>t.pii).length:null,refusals:null,memoryNotesDropped:null,observedMemoryNoteScreenDrops:!bindingsTruncated&&complete(input.events)&&screened.length?screened.length:null,captureRowsDropped:null},
+        privacy:{privateTasks:full?group.tasks.filter(t=>t.pii).length:null,refusals:null,memoryNotesDropped:null,observedPiiNoteScreens:!bindingsTruncated&&complete(input.events)&&screened.length?screened.length:null,captureRowsDropped:null},
         undo:{requests:null,completed:null,guardRefused:null},snapshots:{budgetExhaustions:null,durationMs:!bindingsTruncated&&complete(input.events)?quantiles(snapshots):{samples:null,p50:null,p90:null}},profileErrors:{unknownAlias:null,otherProfileAlias:null},cost:{perTask:ids.size || bindingsComplete || eventsFull ? costs : null}};
     });
   });

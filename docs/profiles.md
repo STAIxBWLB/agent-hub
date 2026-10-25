@@ -71,7 +71,7 @@ A missing, incomplete or unsupported source produces JSON null, rendered as unkn
 | Review | Explicit verdicts and structured public unmet-criteria ids | Profile checklist prose has no item-id recorder; private criterion ids are withheld |
 | Overlap | Recorded path/section notices and later matching pair/path edit facts | Observed path-edit pairs imply no authorship or causation; section edit confirmation remains unknown |
 | Deliverables | Deduplicated ids in recorded deliverable histories | No new file reads; changed-since-approval and current unknown states remain unknown |
-| Privacy | Private task flags and confirmed, attributed memory-note screen refusals | Total refusals, dropped notes and capture rows remain unknown without complete counters |
+| Privacy | Private task flags and generic attributed PII note-screen records | Screen records do not identify the operation; memory drops, refusals and capture totals remain unknown without operation-specific counters |
 | Undo | No additional recorder introduced | Request, completion and guard-refusal totals remain unknown |
 | Snapshots | Already-recorded, attributed snapshot durations | No new recording; budget exhaustion and absent durations remain unknown |
 | Profile errors | No additional recorder introduced | Unknown/foreign alias-refusal totals remain unknown |

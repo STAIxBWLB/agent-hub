@@ -58,7 +58,7 @@ test("missing incomplete and unrecorded sources are unknown, including intact em
   i.tasks=source([task(1)]);i.events=source([]);
   const known=aggregate(i);expect(known.flow.accepted).toBe(1);expect(known.overlap.pathNotices).toBe(0);
   expect(known.undo).toEqual({requests:null,completed:null,guardRefused:null});expect(known.profileErrors).toEqual({unknownAlias:null,otherProfileAlias:null});
-  expect(known.privacy).toMatchObject({refusals:null,memoryNotesDropped:null,observedMemoryNoteScreenDrops:null,captureRowsDropped:null});
+  expect(known.privacy).toMatchObject({refusals:null,memoryNotesDropped:null,observedPiiNoteScreens:null,captureRowsDropped:null});
   expect(known.deliverables).toEqual({recordedCount:null,changedSinceApproval:null,unknownStates:null});expect(known.snapshots.durationMs.p90).toBeNull();expect(formatDogfood(dogfoodScorecard(i)).join("\n")).toContain('"unknown"');
 });
 
@@ -133,10 +133,10 @@ test("collector detects oversized profile binding and malformed evidence without
   } finally {f.close();}
 });
 
-test("deliverable IDs dedupe repeated done approval records and note screen drops stay observed not total",()=>{
+test("deliverable IDs dedupe repeated done approval records and PII note screens stay generic",()=>{
   const i=input();const t=task(1);i.tasks=source([{...t,profileMetadata:{...t.profileMetadata,history:[...t.profileMetadata.history,{at:250,event:"done",deliverables:["d-123456789abc"]},{at:300,event:"approved",deliverables:["d-123456789abc"]}]}}]);
   i.events=source([event(150,{type:"pii_screen",task:1,item:"note",label:"pii",source:"screen"}),event(160,{type:"pii_screen",task:1,item:"note",label:"pii",source:"unknown"}),event(170,{type:"pii_screen",task:1,item:"note",label:"pii",source:"regex"}),event(180,{type:"pii_screen",task:1,item:"summary",label:"pii",source:"screen"})]);
-  expect(aggregate(i).deliverables.recordedCount).toBe(1);expect(aggregate(i).privacy.observedMemoryNoteScreenDrops).toBe(2);expect(aggregate(i).privacy.memoryNotesDropped).toBeNull();
+  expect(aggregate(i).deliverables.recordedCount).toBe(1);expect(aggregate(i).privacy.observedPiiNoteScreens).toBe(3);expect(aggregate(i).privacy.memoryNotesDropped).toBeNull();
 });
 
 test("actual reviewer-less Tasks.done records approved state with only done history, counted once from production-shaped events",async()=>{
@@ -303,4 +303,16 @@ test("research fixtures cover all shipped aliases and all nine metric groups wit
   for (const row of dogfoodScorecard(i).profile!.rows) {
     expect(row.flow.proposed).toBeNull();expect(row.flow.proposeToApproveMs.samples).toBeNull();expect(row.review.changesRequested).toBeNull();expect(row.overlap.pathNotices).toBeNull();expect(row.deliverables.recordedCount).toBeNull();expect(row.privacy.privateTasks).toBeNull();expect(row.undo.requests).toBeNull();expect(row.snapshots.durationMs.samples).toBeNull();expect(row.profileErrors.unknownAlias).toBeNull();expect(row.cost.perTask!.every(t=>t.peers===null)).toBe(true);
   }
+});
+
+test("planning and memory note screens are indistinguishable classifications and never prove memory drops",()=>{
+  const i=input();i.tasks=source([task(1)]);
+  // Both Tasks.planBacklog(reason) and Tasks.remember(title/text) call withholds('note', ..., task).
+  // ScreenRecord carries no operation identity, so these producer-shaped records cannot support a drop claim.
+  const shape={type:"pii_screen",task:1,item:"note",label:"pii",source:"screen"};
+  const planning=event(150,shape),memory=event(160,shape);
+  const {at:planningAt,...planningRecord}=planning,{at:memoryAt,...memoryRecord}=memory;
+  expect(planningRecord).toEqual(memoryRecord);expect(planningAt).not.toBe(memoryAt);
+  i.events=source([planning,memory,event(170,{...shape,source:"regex"}),event(180,{...shape,source:"inherited"}),event(190,{...shape,item:"summary"}),event(200,{...shape,label:"clear"}),event(210,{type:"pii_screen",item:"note",label:"pii",source:"unknown"})]);
+  const privacy=aggregate(i).privacy;expect(privacy.observedPiiNoteScreens).toBe(4);expect(privacy.memoryNotesDropped).toBeNull();expect(privacy.refusals).toBeNull();expect(privacy).not.toHaveProperty("observedMemoryNoteScreenDrops");
 });
