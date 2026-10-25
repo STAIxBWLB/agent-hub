@@ -77,7 +77,7 @@ A missing, incomplete or unsupported source produces JSON null, rendered as unkn
 | Profile errors | No additional recorder introduced | Unknown/foreign alias-refusal totals remain unknown |
 | Cost | Existing task-attributed token/usage summaries | Missing usage and attribution remain unknown; no provider/model prose is exported |
 
-Research rows also expose bounded current-plan source and claim counts per task. Claim slots are anonymous ordinal numbers; declaration text and identifiers are never exported. Missing or malformed declarations remain unknown, while an explicit empty list proves zero declarations. These are current-plan counts, not a reconstruction of past plans.
+Research rows also expose bounded current-plan source and claim counts per task. Claim slots are anonymous ordinal numbers; declaration text and identifiers are never exported. In a stored board plan a key the plan omits counts as zero declarations, as an explicit empty list does; a cut or malformed plan leaves that one task's declarations unknown without affecting the rest of the board. These are current-plan counts, not a reconstruction of past plans.
 
 Each research class alias retains its own recorded task-check pass/fail counts under `observedCheckOutcomes`. Those history events do not record which check key ran. Consequently `factCheck` pass/fail, check selection and missing-key counts per run remain unknown until that provenance is recorded. No new telemetry is collected. Model labels, person verdicts, claims reaching a person verdict and per-label agreement also remain unknown because no claim-level verdict source exists. Task approval never supplies a claim verdict. Research uses the same recorded section-overlap rows as writing.
 

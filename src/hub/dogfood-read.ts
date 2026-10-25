@@ -70,8 +70,9 @@ export function dogfoodTasks(file: string): Source<DogfoodTask[]> {
     let complete = rows.length <= MAX_TASKS, bytes = 0;
     const tasks: DogfoodTask[] = [];
     for (const row of rows.slice(0,MAX_TASKS)) {
-      if (row.receipt_cut || row.profile_cut || row.metadata_cut || row.plan_cut) complete = false;
-      bytes += Buffer.byteLength(row.plan ?? "") + Buffer.byteLength(row.base_class ?? "") + Buffer.byteLength(row.current_state ?? "") + (row.project_profile?.length ?? 0) + (row.sdlc?.length ?? 0) + (row.signals?.length ?? 0) + (row.history?.length ?? 0);
+      // A cut plan nulls only that task's declarations and stays out of the byte cap: the dev scorecard never reads the plan column, so a plan nobody consumes cannot blank every PR row.
+      if (row.receipt_cut || row.profile_cut || row.metadata_cut) complete = false;
+      bytes += Buffer.byteLength(row.base_class ?? "") + Buffer.byteLength(row.current_state ?? "") + (row.project_profile?.length ?? 0) + (row.sdlc?.length ?? 0) + (row.signals?.length ?? 0) + (row.history?.length ?? 0);
       if (bytes > DOGFOOD_BYTE_CAP) { complete = false; break; }
       try {
         const signals = JSON.parse(row.signals ?? "null"), history = JSON.parse(row.history ?? "null"), receipt = JSON.parse(row.sdlc ?? "{}");
@@ -89,6 +90,9 @@ export function dogfoodTasks(file: string): Source<DogfoodTask[]> {
             const raw = row.project_profile === null ? {profile:"dev",profileClass:row.base_class} : JSON.parse(row.project_profile);
             if (!dogfoodProfileName(raw?.profile)) complete = false;
             else {
+              // A plan that parses but holds a malformed declaration list is this task's bad plan only:
+              // its declarations go unknown, the source stays complete (#799 nit 1).
+              let planBad=false;
               if (history.some((h:any) => h && (h.unmetCriteria !== undefined && (!Array.isArray(h.unmetCriteria) || h.unmetCriteria.length>32 || new Set(h.unmetCriteria).size!==h.unmetCriteria.length || h.unmetCriteria.some((v:unknown)=>typeof v!=="string" || !/^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(v))) || h.deliverables !== undefined && (!Array.isArray(h.deliverables) || h.deliverables.length>16 || h.deliverables.some((v:any)=>typeof v?.id!=="string" || !/^d-[0-9a-f]{12}$/.test(v.id)))))) complete=false;
               const projection = history.filter((h:any)=>h && Number.isFinite(h.at) && typeof h.event==="string").map((h:any) => ({at:h.at,event:h.event,
                 ...(Array.isArray(h.unmetCriteria) ? {criteria:h.unmetCriteria.slice(0,32).filter((v:unknown)=>typeof v === "string" && /^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(v)).map((v:string)=>pii || h.withheld ? "withheld" : v), ...(h.withheld ? {criteriaPrivate:true as const} : {})} : {}),
@@ -97,17 +101,18 @@ export function dogfoodTasks(file: string): Source<DogfoodTask[]> {
               if (!row.plan_cut && row.plan !== null) {
                 try {
                   const rawPlan = JSON.parse(row.plan);
-                  if (!rawPlan || typeof rawPlan!=="object" || Array.isArray(rawPlan)) complete=false;
+                  if (!rawPlan || typeof rawPlan!=="object" || Array.isArray(rawPlan)) planBad=true;
                   else {
                     const count = (key:"sources"|"claims") => {
                       const value=rawPlan[key];
-                      if (value===undefined) return null;
-                      if (!Array.isArray(value) || value.length>50 || value.some((v:unknown)=>typeof v!=="string" || v.length>300)) {complete=false;return null;}
+                      // cleanPlan never stores an empty list, so a board plan omitting a key is an explicit zero, not an unknown (#799 nit 2).
+                      if (value===undefined) return 0;
+                      if (!Array.isArray(value) || value.length>50 || value.some((v:unknown)=>typeof v!=="string" || v.length>300)) throw new Error("plan list malformed");
                       return value.length;
                     };
                     declarations={sources:count("sources"),claims:count("claims")};
                   }
-                } catch {complete=false;}
+                } catch {planBad=true;}
               }
               profileMetadata = {...(declarations?{plan:declarations}:{}),...(row.current_state ? {state:row.current_state} : {}),profile:raw.profile,class:row.base_class,alias:dogfoodAlias(raw.profile,row.base_class,raw.profileClass,pii),history:projection};
             }
