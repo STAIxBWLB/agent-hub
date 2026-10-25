@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { Envelope } from "../../hub/envelope.ts";
 import { newEnvelope } from "../../hub/envelope.ts";
 import type { PeerAdapter } from "../../hub/peers.ts";
+import { isFixedBuiltinDefinition, type AdapterDefinition } from "../registry.ts";
 
 export async function until(condition: () => boolean, label: string): Promise<void> {
   const deadline = Date.now() + 5000;
@@ -19,7 +20,16 @@ export interface ConformanceFixture {
 }
 export interface AdapterConformance {
   kind: string;
+  definition?: AdapterDefinition;
   create(): Promise<ConformanceFixture>;
+}
+
+/** Presence itself is forbidden on a foreign product: even an undefined native proof port must fail the kit. */
+export function assertNativeProofPorts(definition: AdapterDefinition | undefined, product: PeerAdapter): void {
+  if (isFixedBuiltinDefinition(definition)) return;
+  for (const port of ["frontendProxy", "statusNotice", "revertTurn"] as const) {
+    if (port in product) throw new Error(`${definition?.kind ?? product.id}: ${port} is restricted to fixed builtin adapter products`);
+  }
 }
 
 /** Shared observable contract; every invocation uses the real adapter and its fake native transport. */
@@ -27,6 +37,7 @@ export function registerConformance(adapter: AdapterConformance): void {
   test(`P4 ${adapter.kind}: transport delivery, synchronous occupancy and owned teardown`, async () => {
     const f = await adapter.create();
     try {
+      assertNativeProofPorts(adapter.definition, f.peer);
       expect(f.peer.id).toBe(adapter.kind);
       expect(f.peer.state).toBe("idle");
       const envelope: Envelope = newEnvelope("user", "conformance ping", { to: [adapter.kind] });

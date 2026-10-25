@@ -204,3 +204,24 @@ test("#525 headless implementer cannot disappear from conformance enrollment", a
   const reasons = { ...UNSUPPORTED }; delete reasons["claude:implementer"];
   expect(() => assertEnrollment(ADAPTERS, primary(), reasons)).toThrow(/claude:implementer/);
 });
+
+test("#625 slice 2a reserves ACP restrictive ports until 2b instead of claiming executable coverage", async () => {
+  const { assertEnrollment, UNSUPPORTED, UNSUPPORTED_LEGS } = await enrollment();
+  for (const definition of ADAPTERS.filter(definition => definition.transport === "acp")) {
+    const key = `${definition.kind}:restrictive-ports`;
+    expect(UNSUPPORTED_LEGS[key]).toBe("ports added in 2b");
+    const missing = { ...UNSUPPORTED_LEGS }; delete missing[key];
+    expect(() => assertEnrollment(ADAPTERS, primary(), UNSUPPORTED, missing)).toThrow(/restrictive ports/);
+    expect(() => assertEnrollment(ADAPTERS, primary(), UNSUPPORTED, { ...UNSUPPORTED_LEGS, [key]: "not implemented" })).toThrow("ports added in 2b");
+  }
+});
+
+test("#625 slice 2a fixed builtin proof legs require concrete named nonapplicable reasons", async () => {
+  const { assertEnrollment, definitionIdentities, UNSUPPORTED, UNSUPPORTED_LEGS } = await enrollment();
+  for (const { id } of definitionIdentities(ADAPTERS)) {
+    const key = `${id}:native-proof-ports`, missing = { ...UNSUPPORTED_LEGS }; delete missing[key];
+    expect(UNSUPPORTED_LEGS[key]?.trim()).not.toBeEmpty();
+    expect(() => assertEnrollment(ADAPTERS, primary(), UNSUPPORTED, missing)).toThrow(/proof ports/);
+  }
+  expect(() => assertEnrollment(ADAPTERS, primary(), UNSUPPORTED, { ...UNSUPPORTED_LEGS, "codex:native-proof-ports": " " })).toThrow(/concrete reason/);
+});
