@@ -950,6 +950,24 @@ export class Tasks {
     return task.planner && holders.includes(task.planner) && this.d.bus.isRostered(task.planner) ? [task.planner] : holders;
   }
 
+  /** Current planner rulings amend review context, never person-only plan-departure acceptance. */
+  plannerRulings(task: Task, recipient: PeerId): { historyIndex: number; by: PeerId; at: number; note: string }[] {
+    if (this.isPii(task)) return [];
+    const boundary = task.history.findLastIndex(entry => entry.event === "accepted" || entry.event === "claimed");
+    if (boundary < 0) return [];
+    const planners = new Set(this.taskPlanner(task));
+    const rulings: { historyIndex: number; by: PeerId; at: number; note: string }[] = [];
+    for (let historyIndex = boundary + 1; historyIndex < task.history.length && rulings.length < 5; historyIndex++) {
+      const entry = task.history[historyIndex]!;
+      if (entry.event !== "plan reviewed" || !planners.has(entry.by) || !this.d.roles?.[entry.by]?.includes("planner")
+        || typeof entry.note !== "string" || !entry.note.trim() || !Number.isFinite(entry.at)) continue;
+      // Screen the entire original note before the display bound, including a sensitive suffix past 1000 characters.
+      const note = sanitize(this.screen(task, entry.note, "planner ruling", recipient, entry.withheld)).slice(0, 1000);
+      rulings.push({ historyIndex, by: entry.by, at: entry.at, note });
+    }
+    return rulings;
+  }
+
   private planningAuthority(by: PeerId, task?: Pick<Task, "planner">): void {
     if (by !== USER && (!this.d.roles?.[by]?.includes("planner") || task !== undefined && !this.taskPlanner(task).includes(by))) throw new PreEffectToolRefusal(`planning requires a person or configured planner role${task ? "; only the task's effective planner may act" : ""}`);
   }
@@ -4242,10 +4260,16 @@ export class Tasks {
       ? ["Deliverables (the hub hashed these files when the task was done; approval binds these hashes):",
         ...delivered.map(d => `- ${d.id}: ${d.path ?? "(path withheld)"} [${d.format}${d.version ? ` ${d.version}` : ""}] sha256 ${d.sha256.slice(0, 16)}, ${d.bytes} bytes`)].join("\n") + "\n"
       : "";
+    const rulings = this.plannerRulings(task, reviewer);
+    const rulingsBlock = rulings.length ? rulings.map(ruling => [
+      `Planner rulings (recorded by the configured planner ${ruling.by}; they amend the plan for this review):`,
+      `- ${new Date(ruling.at).toISOString()}: ${ruling.note.replace(/[\r\n]+/g, " ")}`,
+    ].join("\n")).join("\n") + "\n" : "";
     const checklist = deliverablesBlock + criteriaBlock + [
       "Checklist:",
       ...this.planGuardItems(task).map(item => `- Check the plan against this live fail before the remaining checks: ${item.line}`),
       ...checklistLines.map(line => `- ${line}`),
+      ...(rulings.length ? ["- a departure a listed ruling names is not an unmet item by itself; judge its code."] : []),
     ].join("\n");
     // #223 R2: a reviewer-only instance judges from facts; the builder's narrative stays out, earlier findings go in.
     const reviewOnly = this.d.reviewOnly?.(reviewer) === true;
@@ -4263,7 +4287,7 @@ export class Tasks {
     const brief = this.briefText(task);
     // #572 AC3: advisory only, from git state never from task text, so it is safe for a PII task too.
     const checkout = mainCheckoutWarning(this.d.cwd, this.publicMetadataText);
-    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${last?.noWrites ? "no writes recorded since acceptance\n" : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${carriedText}${conformanceText}${verified}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet, findings: [{id, pass: "bugs" | "security" | "compliance", severity: "important" | "nit", path?, disposition: "open" | "fixed" | "false_positive"}]}. Reuse finding ids when updating their disposition; only the person may accept a finding with a rationale.`;
+    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${last?.noWrites ? "no writes recorded since acceptance\n" : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${carriedText}${conformanceText}${rulingsBlock}${verified}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet, findings: [{id, pass: "bugs" | "security" | "compliance", severity: "important" | "nit", path?, disposition: "open" | "fixed" | "false_positive"}]}. Reuse finding ids when updating their disposition; only the person may accept a finding with a rationale.`;
     return this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, ...(this.reviewHead(task) ? { commit: this.reviewHead(task)! } : {}), task: String(task.id), reviewRevision: String(this.reviewRequestRevision(task)) }, ...(this.isPii(task) ? { private: true } : {}) })).includes(reviewer);
   }
 
