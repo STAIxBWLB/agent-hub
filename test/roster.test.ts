@@ -259,8 +259,7 @@ test("the real roster CLI uses settings for live changes, stable JSON, and refus
     expect(hub.daemon.bus.isRostered("kimi")).toBe(false);
     expect((await cli(["roster", "add", "kimi"])).code).toBe(0);
     expect(hub.daemon.bus.isRostered("kimi")).toBe(true);
-    // #812 moved the bare roster read to Allowed, so an agent shell no longer refuses `roster --json`; only the writes keep the refusal.
-    for (const args of [["roster", "remove", "kimi", "--yes"], ["roster", "add", "kimi"], ["settings", "set", "roster.kimi", "false", "--yes"]]) {
+    for (const args of [["roster", "--json"], ["roster", "remove", "kimi", "--yes"], ["roster", "add", "kimi"], ["settings", "set", "roster.kimi", "false", "--yes"]]) {
       const refused = await cli(args, true); expect(refused.code).toBe(1); expect(refused.stderr).toContain("console");
     }
     expect(hub.daemon.bus.isRostered("kimi")).toBe(true);

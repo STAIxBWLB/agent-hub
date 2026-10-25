@@ -65,15 +65,9 @@ const peerReadFlags = (args: readonly string[]): boolean =>
  * A subcommand of "" is the bare form: display flags only. dryRun is checked separately for upgrade and restart.
  */
 const peerReadForms: Readonly<Record<string, Readonly<Record<string, { positional?: number; valueFlags?: readonly string[] }>>>> = {
-  queue: { list: { valueFlags: ["--peer"] } },
-  roster: { "": {} },
   projects: { "": {} },
   models: { status: {} },
   recovery: { status: { positional: 1 } },
-  settings: { "": {}, list: {}, get: { positional: 1 } },
-  sdlc: { status: { positional: 1 }, explain: { positional: 1 }, queue: { positional: 1 }, release: { positional: 1 }, costs: { positional: 1 }, metrics: { valueFlags: ["--since"] } },
-  backlog: { list: {} },
-  release: { list: {}, show: { positional: 1 } },
 };
 
 /** Whether argv matches one Allowed read-form of this command: display flags, the subcommand shape's values only. */
@@ -154,7 +148,7 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   }
   if ((command === "upgrade" || command === "restart") && !args.includes("--yes") && args.includes("--dry-run")
     && readFormArgs(args.filter((arg) => arg !== "--dry-run"), { valueFlags: ["--to"] })) return "allowed"; // a preview that applies nothing; --yes stays console
-  if (isPeerReadForm(command, args)) return "allowed"; // queue list, bare roster and projects, models status, recovery status, settings reads, sdlc reads, backlog list, release list|show
+  if (isPeerReadForm(command, args)) return "allowed"; // bare projects, models status, recovery status
   if (native?.cli.authority === "person") return "console";
   if (native || ["pause", "resume"].includes(command)) return "conductor";
   if (command === "board" && args[0] === "import") return "console";

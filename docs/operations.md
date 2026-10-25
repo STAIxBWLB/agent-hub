@@ -524,9 +524,9 @@ launch, nested console, setup, UI, logs and tail commands are refused.
 run from an agent shell. It gives every command one of three classes:
 **Allowed** means any agent may run it; **Conductor** means only the
 configured conductor peer may (actor-preserving and audited); **Console** means
-only the person's own terminal. A command the gate does not name is Console.
-`test/identity.test.ts` pins each form below, so a new help entry with no class
-fails CI.
+only the person's own terminal. A command the gate does not name is Console,
+and so is every help entry the gate has no class for yet;
+`test/identity.test.ts` pins each classed form below.
 
 ### Allowed (any agent)
 
@@ -534,19 +534,18 @@ fails CI.
 | --- | --- | --- |
 | `ahub doctor [--json] [--full] [--color=...]` | Allowed | a read-only check of tools, daemon, plugin, gateway, models and memory |
 | `ahub doctor --stale-anchors [--json]` | Allowed | a bounded read-only report of memory symbol anchors at current HEAD |
-| `ahub queue list [--peer <id>] [--json] [--color=...]` | Allowed | inspects durable deliveries; writes stay Console |
-| `ahub roster [--json] [--color=...]` | Allowed | reads participation and start modes; `roster add\|remove` stay Console |
 | `ahub projects [--json] [--color=...]` | Allowed | lists registered projects; `projects remove` stays Console |
 | `ahub models status [--json] [--color=...]` | Allowed | reads local model state; `setup\|start\|stop` stay Console |
 | `ahub recovery status [<op-id>] [--json]` | Allowed | reads a preflight operation; the bare interactive screen, `resume`, `abort` and `reattach` stay Console |
 | `ahub upgrade ... --dry-run` (no `--yes`) | Allowed | reviews the upgrade plan and applies nothing; `--yes` stays Console |
 | `ahub restart --dry-run [--json]` (no `--yes`) | Allowed | reviews the restart plan and applies nothing; `--yes` stays Console |
-| `ahub settings [list] [--json]` \| `get <key> [--json]` | Allowed | reads settings values (secret-locating keys stay redacted); `set`, `undo`, `reload`, `edit`, `backups` stay Console |
-| `ahub sdlc status\|explain\|queue\|release\|costs\|metrics ...` | Allowed | read-only lifecycle, merge and release evidence; the other `sdlc` subcommands keep their class |
-| `ahub backlog list [--json] [--full] [--color=...]` | Allowed | reads the backlog by rank; the other `backlog` forms stay Console |
-| `ahub release list` \| `show <name>` | Allowed | reads planned releases; the other `release` forms stay Console |
 
-Conductor and Person rows follow in agent-hub#812.
+`ahub queue list`, bare `roster` (with or without display flags), `settings`
+(read, `list`, `get`), `sdlc status\|explain\|queue\|release\|costs\|metrics`,
+`release show`, `backlog list` and `release list` are read-only in spirit but
+the daemon still refuses their control request for a tools connection, so they
+stay Console until that check is extended: needs a daemon check (#812
+follow-up). Conductor and Person rows follow in agent-hub#812.
 
 ## Conducting a team from Claude Code or Codex
 

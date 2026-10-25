@@ -22,7 +22,7 @@ test("malformed and conflicting native identity never falls back to the person",
 
 test("agent command classification refuses all human authority and keeps ordinary tools", () => {
   for (const command of ["permit", "kill", "recovery-run", "up", "ask", "console", "ui", "tail", "undo", "unknown"]) expect(classifyPeerCommand(command, [])).toBe("console");
-  // #812 moved queue list, bare recovery's screen forms and the dry-run previews to Allowed; these bare forms stay console.
+  // #812 moved bare recovery's screen forms and the dry-run previews to Allowed; these bare forms stay console.
   for (const command of ["queue", "recovery", "upgrade", "restart"]) expect(classifyPeerCommand(command, [])).toBe("console");
   for (const sub of ["resume", "set", "execution"]) expect(classifyPeerCommand("budget", [sub])).toBe("console");
   // #812: the queue reads stay console until the daemon admits them (#812 T1b); the writes are the conductor's (#818).
@@ -118,7 +118,8 @@ test("release authorization stays person-only while exact release preflights are
   expect(liveTestRefusal("sdlc", ["merge", "1"])).toBe(true);
 });
 
-// #812 Allowed: each read-only form and the neighbour that keeps its class, as one table.
+// #812 Allowed (round 2): only the forms the daemon admits for a tools connection; every demoted row sits in its command's block as a console expectation.
+// queue list, bare roster (+ display flags), settings/list/get, sdlc status|explain|queue|release|costs|metrics, release show, backlog list and release list need a daemon check (#812 follow-up).
 const allowedForms: readonly [string, readonly string[], PeerCommandAccess][] = [
   ["doctor", [], "allowed"],
   ["doctor", ["--json"], "allowed"],
@@ -128,14 +129,14 @@ const allowedForms: readonly [string, readonly string[], PeerCommandAccess][] = 
   ["doctor", ["--stale-anchors", "--json"], "allowed"],
   ["doctor", ["--orphans"], "console"],
   ["doctor", ["--orphans", "--kill", "--json"], "console"],
-  ["queue", ["list"], "allowed"],
-  ["queue", ["list", "--peer", "kimi", "--json", "--color=never"], "allowed"],
+  ["queue", ["list"], "console"],
+  ["queue", ["list", "--peer", "kimi", "--json", "--color=never"], "console"],
   ["queue", ["show", "d1"], "console"],
   ["queue", ["resolve", "d1", "--action", "completed", "--reason", "done"], "console"],
   ["queue", ["discard", "--peer", "kimi", "--reason", "all"], "console"],
-  ["roster", [], "allowed"],
-  ["roster", ["--json"], "allowed"],
-  ["roster", ["--color=always"], "allowed"],
+  ["roster", [], "console"],
+  ["roster", ["--json"], "console"],
+  ["roster", ["--color=always"], "console"],
   ["roster", ["add", "kimi"], "console"],
   ["roster", ["remove", "kimi", "--yes", "--now"], "console"],
   ["projects", [], "allowed"],
@@ -163,33 +164,33 @@ const allowedForms: readonly [string, readonly string[], PeerCommandAccess][] = 
   ["restart", [], "console"],
   ["restart", ["--yes"], "console"],
   ["restart", ["--dry-run", "--yes"], "console"],
-  ["settings", [], "allowed"],
-  ["settings", ["list"], "allowed"],
-  ["settings", ["list", "--json"], "allowed"],
-  ["settings", ["get", "routing.claude"], "allowed"],
-  ["settings", ["get", "routing.claude", "--json"], "allowed"],
+  ["settings", [], "console"],
+  ["settings", ["list"], "console"],
+  ["settings", ["list", "--json"], "console"],
+  ["settings", ["get", "routing.claude"], "console"],
+  ["settings", ["get", "routing.claude", "--json"], "console"],
   ["settings", ["set", "routing.claude", "implement"], "console"],
   ["settings", ["undo"], "console"],
   ["settings", ["reload"], "console"],
   ["settings", ["edit", "sdlc.toml", "set", "mode", "\"off\"", "--yes"], "console"],
   ["settings", ["backups"], "console"],
-  ["sdlc", ["status"], "allowed"],
-  ["sdlc", ["status", "42"], "allowed"],
-  ["sdlc", ["explain", "42"], "allowed"],
-  ["sdlc", ["queue", "STAIXBWLB/agent-hub"], "allowed"],
-  ["sdlc", ["release", "STAIXBWLB/agent-hub"], "allowed"],
-  ["sdlc", ["costs"], "allowed"],
-  ["sdlc", ["metrics", "--since", "2026-10-01"], "allowed"],
+  ["sdlc", ["status"], "console"],
+  ["sdlc", ["status", "42"], "console"],
+  ["sdlc", ["explain", "42"], "console"],
+  ["sdlc", ["queue", "STAIXBWLB/agent-hub"], "console"],
+  ["sdlc", ["release", "STAIXBWLB/agent-hub"], "console"],
+  ["sdlc", ["costs"], "console"],
+  ["sdlc", ["metrics", "--since", "2026-10-01"], "console"],
   ["sdlc", ["export", "42"], "console"],
   ["sdlc", ["record", "42", "{}"], "console"],
   ["sdlc", ["train", "report"], "console"],
   ["sdlc", ["release-assign", "42", "1", "none", "reason"], "console"],
-  ["backlog", ["list"], "allowed"],
-  ["backlog", ["list", "--json", "--full", "--color=always"], "allowed"],
+  ["backlog", ["list"], "console"],
+  ["backlog", ["list", "--json", "--full", "--color=always"], "console"],
   ["backlog", ["add", "implement", "a title"], "console"],
   ["backlog", ["pull", "42"], "console"],
-  ["release", ["list"], "allowed"],
-  ["release", ["show", "0.18.0"], "allowed"],
+  ["release", ["list"], "console"],
+  ["release", ["show", "0.18.0"], "console"],
   ["release", ["new", "0.18.0", "goal", "1"], "console"],
   ["release", ["freeze", "0.18.0", "1"], "console"],
 ];
