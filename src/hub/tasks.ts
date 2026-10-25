@@ -954,6 +954,9 @@ export class Tasks {
     if (by !== USER && (!this.d.roles?.[by]?.includes("planner") || task !== undefined && !this.taskPlanner(task).includes(by))) throw new PreEffectToolRefusal(`planning requires a person or configured planner role${task ? "; only the task's effective planner may act" : ""}`);
   }
 
+  /** #812 AC5: a peer holding the configured planner role. The conductor's task reads accept it; it grants no write. */
+  isConfiguredPlanner(peer: PeerId): boolean { return peer !== USER && peer !== HUB && !!this.d.roles?.[peer]?.includes("planner"); }
+
   private plannerWriteAuthority(by: PeerId, task?: Pick<Task, "planner">): void {
     if (by !== USER && this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("planner writes are unavailable during a private turn");
     this.planningAuthority(by, task);
@@ -2580,7 +2583,8 @@ export class Tasks {
       if (by !== USER) {
         this.planningAuthority(by, task);
         const proposer = task.history.find(h => h.event === "proposed" || h.event === "backlogged")?.by;
-        if (proposer !== by || !["backlog", "proposed"].includes(task.state) || taskHasStarted(task)) throw new PreEffectToolRefusal("planner may cancel only its own historically unaccepted backlog or proposed work");
+        // #812 AC5: back in proposed or backlog with no execution evidence (the `hub_backlog_return_untouched` test: no branch, commit, PR, local check, done, verdict or reopen), an accepted-then-declined task is cancellable; any such evidence keeps today's refusal.
+        if (proposer !== by || !["backlog", "proposed"].includes(task.state) || taskHasWorkEvidence(task)) throw new PreEffectToolRefusal("planner may cancel only its own historically unaccepted backlog or proposed work");
       }
       return task;
     };

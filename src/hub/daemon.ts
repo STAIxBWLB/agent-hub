@@ -4878,7 +4878,7 @@ export async function startDaemon(opts: DaemonOptions) {
         taskCounts: board.counts(), approvals: [...permissions.values()].map(p => ({ peer: p.peer, tool: p.tool, at: p.createdAt })),
       };
     },
-    task: id => board.get(id), publicView: task => tasks.publicView(task, true),
+    task: id => board.get(id), publicView: task => tasks.publicView(task, true), isPlanner: peer => tasks.isConfiguredPlanner(peer),
     assign: (actor, id, peer, role) => tasks.assignTo(id, peer, actor, true, role), escalate: (actor, id) => tasks.escalate(actor, id, undefined, undefined, true),
     preview: peer => {
       // The operator wrapper runs the same planner again at launch, with runtime endpoints then resolved.

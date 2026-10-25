@@ -1032,7 +1032,9 @@ includes), read the check result, and list what is
 unmet (`hub_review` takes `unmet`, `ahub review ... --unmet <item>`). A reviewer
 that missed the request, and the owner, read the done summary and check result
 with `hub_task_show {id}`: the task's public view with its history, as the
-conductor sees it, and only a stub for a PII task. Other peers are refused. Each
+conductor sees it, and only a stub for a PII task. The configured planner reads any
+task outside the backlog the same way (#812); a staged backlog row stays hidden from agent
+task tools and is read through the planner tools. Other peers are refused. Each
 request also carries the hub's review brief for the task's commit: reviewable and
 excluded files with reasons, the `REVIEW.md` and `ahub-review-rules` rules read at
 the merge base, and a cross-check list; `ahub review brief <id>` prints it.
@@ -3275,7 +3277,7 @@ The person can retain superseded work as closed history:
 ahub task cancel <id> --reason <text> [--superseded-by <ref>] [--revision N]
 ```
 
-The console also offers cancellation with the selected task's flow revision. Approved tasks cannot be cancelled. The planner's `hub_task_cancel` tool is limited to its own unaccepted backlog/proposed work; previously accepted work requires the person. Cancellation sends the former owner/reviewer a stop notice, releases overlap/reservation participation and keeps dependents blocked with a cancelled-dependency notice. It does not stop a native turn, delete a worktree or write an outcome memory note. Cancelled work is closed history, counted separately from approved work; it does not satisfy an approval dependency. A still-running private turn keeps its privacy fence after cancellation. Use the displayed revision to avoid acting on a task that changed while it was selected.
+The console also offers cancellation with the selected task's flow revision. Approved tasks cannot be cancelled. The planner's `hub_task_cancel` tool is limited to work it proposed that is in backlog or proposed with no execution evidence: never started, or accepted by an owner and then declined or returned untouched (no branch, commit, PR, local check, done, verdict or reopen, the same test as `hub_backlog_return_untouched`, #812). Work with any such evidence requires the person. Cancellation sends the former owner/reviewer a stop notice, releases overlap/reservation participation and keeps dependents blocked with a cancelled-dependency notice. It does not stop a native turn, delete a worktree or write an outcome memory note. Cancelled work is closed history, counted separately from approved work; it does not satisfy an approval dependency. A still-running private turn keeps its privacy fence after cancellation. Use the displayed revision to avoid acting on a task that changed while it was selected.
 
 The daemon advertises `task_cancel`; a current CLI refuses cancellation against older daemons. Recovery retains verified target features beside its immutable root/digest, reuses them on resume and on each lease renewal before a terminal is closed, and checks only sources not yet past commit; a legacy receipt without that evidence needs a target probe only before commit. Upgrade/restart refuses a target without this feature while cancelled rows exist and names their ids. No cancelled row is rewritten as approved. An old binary launched by hand remains unsupported: it can count cancelled work as open or fail to move it. Use a compatible coordinator instead. Live task cancellation and sweep enablement are separate post-release operations.
 
