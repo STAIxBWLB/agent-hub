@@ -79,6 +79,7 @@ import type { ServerWebSocket } from "bun";
 import { isAcpPeer, type AcpPeer, QwenIdentityError, ACTION_BUDGET_OPTION, type PermissionRequest, type ActionGateVerdict } from "../adapters/acp.ts";
 import { isCodexPeer, type CodexPeer } from "../adapters/codex-appserver.ts";
 import { isPiPeer, type PiPeer } from "../adapters/pi.ts";
+import { isQwenDualPeer, qwenDualVersionAsync, type QwenDualPeer } from "../adapters/qwen-dual.ts";
 import { startModelRelay, type ModelRelay } from "../models/relay.ts";
 import { ensureMlx, type MlxOptions } from "../models/mlx.ts";
 import { PiToolReceipts, packPiShellResult } from "../pi/tool-receipts.ts";
@@ -3236,7 +3237,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(isFixedBuiltinDefinition(definitionOf(id)) && isCodexPeer(p) && p.statusNotice ? { statusNotice: p.statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: !!ownerWriteRoot(id) && ownerWriteRoot(id) !== opts.cwd, ...(!ownerWriteRoot(id) ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) && p.claiming ? { claiming: true } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
+      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(isFixedBuiltinDefinition(definitionOf(id)) && (isCodexPeer(p) || isQwenDualPeer(p)) && p.statusNotice ? { statusNotice: p.statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: !!ownerWriteRoot(id) && ownerWriteRoot(id) !== opts.cwd, ...(!ownerWriteRoot(id) ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) && p.claiming ? { claiming: true } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
     ),
     taskWip: Object.fromEntries(peerIds.map(id => [id, { wip: tasks.wip(id), wipLimit: tasks.wipLimit(id) }])),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
@@ -4030,6 +4031,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const owner = bus.peers.get(peer);
     const stopNotice = definitionOf(peer)?.cli.stopNotice?.(isWsPeer(owner) ? "tui" : !owner ? startMode(peer) : "headless", owner);
     if (stopNotice) return { ok: false, error: stopNotice };
+    if (isQwenDualPeer(owner)) return { ok: false, error: "Qwen belongs to its own terminal; end it there (the hub never signals a person's Qwen)" };
     if (!(isAcpPeer(owner) || isPiPeer(owner) || isLocalPeer(owner) || isReviewerPrintPeer(owner) || definitionOf(peer)?.start.daemonPort === "claude-implementer" && !!owner?.ownedTools)) return { ok: false, error: "unknown or non-owned peer; run ahub status and choose a hub-owned headless peer" };
     if (isPiPeer(owner) && owner.mode !== "headless") return { ok: false, error: "Pi belongs to a native TUI terminal; end it in its terminal" };
     if (owner.state === "offline" && !(isAcpPeer(owner) && owner.pendingOwnedProcess)) return { ok: false, error: `peer is already offline; start it with ${startCommand(peer)} before stopping it` };
@@ -4129,6 +4131,12 @@ export async function startDaemon(opts: DaemonOptions) {
       if (args.model !== undefined && !["dgx/coding", "dgx/fast", "mlx/fast"].includes(args.model)) return { ok: false, error: "unknown Pi model alias" };
     }
     const existing = bus.peers.get(peer);
+    if (adapter?.start.createTui && existing) {
+      // One Qwen at a time, in one form: a headless worker and the person's TUI would both read the same session's work. The TUI is judged by the process it holds, not by peer
+      // state: a detached TUI reads offline while the person's Qwen keeps running, and replacing that adapter would strand it and admit a second Qwen beside it.
+      if (isQwenDualPeer(existing) && existing.holdsTerminal()) return args.mode === "tui" ? { ok: true, already: true } : { ok: false, error: "Qwen runs in its own terminal; end it there before starting a headless one" };
+      if (args.mode === "tui" && !isQwenDualPeer(existing) && existing.state !== "offline") return { ok: false, error: "Qwen is running headless; run ahub stop qwen before starting its TUI" };
+    }
     if (args.replaceSession) {
       if (recoveryActive()) return { ok: false, error: "recovery is holding session replacement" };
       if (!args.sessionFile || args.sessionId || args.fresh) return { ok: false, error: "Pi replacement requires --replace-session --session-file <managed-file>, without --session-id or fresh" };
@@ -4181,6 +4189,43 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!adapter?.start.reconfigureWhileAttached) {
       if (isPiPeer(existing)) await stopPiForReplacement(existing);
       else await existing?.stop();
+    }
+    if (adapter?.start.createTui && args.mode === "tui") {
+      // #286 Part 3: Qwen's own TUI, driven through its dual-output files. The person's terminal runs it; the hub prepares the files and returns the launch.
+      if (declarations[peer]) return { ok: false, error: "declared instances support headless starts only" };
+      if (!onRoster(peer)) return { ok: false, error: "qwen is off roster; a person can add it with ahub roster add qwen" };
+      if (existing && existing.state !== "offline") return { ok: false, error: "Qwen is running headless; run ahub stop qwen before starting its TUI" };
+      // The compat entry of the dual-output contract, not the headless ACP entry: 0.26.1 only.
+      const verdict = await qwenDualVersionAsync(config.qwen_cmd, executionCwd);
+      if (!verdict.ok) return { ok: false, error: verdict.reason };
+      if (verdict.note) log(verdict.note);
+      if (args.sessionId !== undefined && !adapter.session.crashIdentity?.({ sessionId: args.sessionId }).sessionId) return { ok: false, error: "invalid Qwen session identity" };
+      actionBudgets.revoke(peer);
+      const nativeRoot = nativeStateDir(peer);
+      mkdirSync(nativeRoot, { recursive: true });
+      const qwenState = join(nativeRoot, "qwen");
+      const tui: QwenDualPeer = adapter.start.createTui({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["qwen-dual"]({
+        cwd: executionCwd, stateDir: qwenState, cmd: config.qwen_cmd, ...(args.model ? { model: args.model } : {}), ...(args.sessionId ? { sessionId: args.sessionId } : {}),
+        mcpServers: [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: toolEnv(peer, true) }],
+        watchdogMs: config.watchdog_ms, preamble: sessionRoleContract(peer),
+        // The hub's own tools only, by their exact `mcp__agent-hub__<name>`; everything else asks the console. Never a prefix, never a title.
+        autoApprove: name => !stopping && HUB_TOOL_TITLES.has(name),
+        // `stateDir` is the hub's own state dir: the adapter refuses any Qwen write or command that names it (the input file is a prompt channel).
+        guardDir: opts.stateDir,
+        onPermission, actionGate: (call, session) => acpActionGate(peer)({ names: call.names, input: call.input }, session),
+        onStalled: () => writeStatus(),
+        onNotice: text => { try { notify(text); } catch { /* the notice is advisory */ } },
+        onExit: () => { notify(`Qwen's terminal ended; start it again with ahub qwen --mode tui`); writeStatus(); },
+        log,
+      }) }) as QwenDualPeer;
+      recoveryTaskPreface(peer); await ensurePreface(peer);
+      executionOwners.set(peer, { owner: tui, cwd: executionCwd });
+      try {
+        await tui.start();
+        bus.add(tui);
+        if (tui.state !== "offline") tui.onState?.(tui.state);
+      } catch (error) { await tui.stop().catch(stop => log(`qwen tui stop after a failed start: ${(stop as Error).message}`)); throw error; }
+      return { ok: true, mode: "tui", ...(tui.adopted ? { adopted: true } : { launch: tui.launch }) };
     }
     if (adapter?.start.daemonPort === "owned-acp") {
       if (!jcodeMcpReady(opts.cwd, opts.stateDir, SERVER_JS)) return { ok: false, error: "Jcode project MCP entry missing or stale; the person runs ahub jcode to configure it" };

@@ -3642,10 +3642,22 @@ The playbook lifecycle (#257, #481) is off without `.agenthub/sdlc.toml`. When e
 ## Optional Qwen Code peer
 
 Select Qwen per project with `ahub roster add qwen`; it defaults off and is absent
-from default class preferences. `ahub qwen [--mode headless] [--model <alias>]`
-starts its ACP peer. `--print-command` previews; TUI is refused until #286's
-verification. `ahub stop qwen` stops the owned process group. A conductor may start
-it only through the selected roster and existing capabilities.
+from default class preferences. `ahub qwen [--mode headless|tui] [--model <alias>]`
+starts its ACP peer (headless) or Qwen's own TUI in your terminal (below).
+`--print-command` previews either. `ahub stop qwen` stops the owned process group
+of a headless Qwen. A conductor may start the headless form only through the
+selected roster and existing capabilities; the TUI is always a person's start.
+
+### Qwen's own TUI, driven through dual output (#286 Part 3)
+
+`ahub qwen --mode tui` runs `qwen --input-file <in> --json-file <out> --mcp-config <hub server> --approval-mode default` in the terminal you ran it from. The daemon prepares the two files (mode 0600, under `<state dir>/qwen/qwen-dual/`) and returns the launch; the hub then appends one `submit` line per delivery and tails the event file from a saved offset. It needs a Qwen the dual-output compat entry verifies (`ahub agents` shows `qwen-dual`, verified 0.26.1 only; the headless `qwen` entry is separate and unchanged) and refuses another version before it creates a file. The TUI is explicit only: `ahub qwen` without `--mode` is still headless, Qwen is not a start-mode peer, and the hub never opens this terminal by itself.
+
+- What the hub does: a delivery becomes a `submit`; the last assistant message of the turn (an `assistant` event whose `stop_reason` is not `tool_use`, then `message_stop`) is shared as the answer; busy and idle follow the events. A `can_use_tool` request goes to the console approval path (`ahub permit`, the dashboard), and the hub's own tools are approved only by their exact `mcp__agent-hub__<tool>` name. If you answer a prompt in the Qwen terminal first, the hub's pending approval is withdrawn.
+- **Limit 1, a deny ends the turn without an answer.** Qwen emits nothing when the hub denies: it cancels the whole turn. The hub ends the turn itself, shares no answer, settles the delivery as `needs_review` and says so in a notice.
+- **Limit 2, the hub cannot stop a Qwen turn.** The input protocol has only `submit` and `confirmation_response`, and a signal does not stop a running turn. The inactivity watchdog therefore never cancels: after `watchdog_ms` of silence it marks the turn stalled (`ahub status`, the console and the dashboard say "press Esc in the Qwen terminal") and keeps the peer busy. The hub never types into your terminal and never signals Qwen to stop a turn.
+- A Qwen write or shell command that names the hub state directory is refused (see [security](security.md): the input file is a prompt channel).
+- If the hub cannot read the event file the peer is `detached`, shown as offline with a notice, never idle: Qwen itself keeps working, and the hub reattaches when the file is readable again.
+- Restart: if the hub restarts while your Qwen keeps running, it reads on from its saved offset (no event twice, no launch). If Qwen is gone, `ahub qwen --mode tui` starts `qwen -r <session id>` on the same two files; the earlier submits are not replayed and the recorded answers are not shared again. Recovery never restores this terminal as a headless worker, and `ahub stop qwen` refuses: end Qwen in its own terminal.
 
 Receipt-verified native ACP identities are qwen-code 0.25.0 and 0.26.0 ([dated receipt](verification/2026-10-22-kimi-qwen-compat.md)). A CLI version label alone
 is insufficient: startup verifies its native identity/version and advertised mode
@@ -3742,7 +3754,7 @@ A bundled adapter module is authorized by the person with `adapter_modules` (at 
 
 - A person opens `ahub watch kimi` or `ahub watch qwen` in a second terminal. `--no-thoughts` hides thought items; `--color=auto|always|never` controls colour. `q` or Ctrl+C leaves the view, keeping the peer running. Answer approvals in `ahub console` or with `ahub permit`.
 - Watch replays bounded memory history from this daemon, then displays live updates. It is the hub's read-only view, with no prompt input. It does not read native session files.
-- Kimi's default is its own pull-only TUI (#316). Watch requires `ahub kimi --mode headless`; its own TUI remains visible in its native terminal. Qwen requires roster participation and a receipt-verified ACP identity. `ahub qwen --mode tui` remains refused.
+- Kimi's default is its own pull-only TUI (#316). Watch requires `ahub kimi --mode headless`; its own TUI remains visible in its native terminal. Qwen requires roster participation and a receipt-verified ACP identity. Watch is for headless Qwen; `ahub qwen --mode tui` is Qwen's own terminal (see Optional Qwen Code peer) and has no watch view.
 - Protocol stays 16; a same-protocol older daemon answers the new request as unknown, which the CLI reports. Since 0.12.44 a headless start that the hub itself makes for Kimi or Qwen opens this view automatically through the terminal provider (see Start modes; #286).
 - Native T0 limits: [ACP watch verification](verification/2026-10-11-acp-watch-t0.md).
 

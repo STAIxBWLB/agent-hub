@@ -350,6 +350,15 @@ var init_compat = __esm(() => {
       config: "qwen_cmd",
       parse: (out) => plain(out.trim()),
       trustNote: "Native ACP identity and mode ids have dated receipts; 0.26.0 permission callbacks were checked without inference. Another version may change those contracts."
+    },
+    "qwen-dual": {
+      label: "Qwen Code dual-output TUI",
+      verified: ["0.26.1"],
+      gate: "contract",
+      probe: ["qwen", "--version"],
+      config: "qwen_cmd",
+      parse: (out) => plain(out.trim()),
+      trustNote: "The dual-output file contract (submit and confirmation_response input, user/assistant/stream_event/control events, session_start identity) was verified on 0.26.1 only. A hub deny ends the turn without any Qwen event, and no external stop of a running turn exists; another version may change either."
     }
   };
   MAX_BYTES = 64 * 1024;
@@ -791,6 +800,17 @@ function parseProcessTable(text) {
     const m = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\w{3} \w{3} [ \d]\d \d\d:\d\d:\d\d \d{4})\s+(.*)$/.exec(line);
     return m && !m[4].startsWith("Z") ? [{ pid: Number(m[1]), ppid: Number(m[2]), pgid: Number(m[3]), started: m[5], command: m[6] }] : [];
   });
+}
+function processTable() {
+  for (let attempt = 0;attempt < 2; attempt++) {
+    try {
+      const r = Bun.spawnSync(PS, { ...PS_OPTIONS, stdout: "pipe", stderr: "pipe", timeout: 1e4 });
+      const rows = r.exitCode === 0 ? own(r.stdout.toString()) : undefined;
+      if (rows)
+        return rows;
+    } catch {}
+  }
+  return;
 }
 async function readProcessTable() {
   for (let attempt = 0;attempt < 2; attempt++) {
@@ -4704,12 +4724,694 @@ var init_jcode = __esm(() => {
   };
 });
 
-// src/pi/launch.ts
+// src/pi/process-signature.ts
+var init_process_signature = __esm(() => {
+  init_platform();
+});
+
+// src/adapters/qwen-dual.ts
+import { closeSync as closeSync4, constants as constants3, fstatSync as fstatSync4, lstatSync as lstatSync7, mkdirSync as mkdirSync5, openSync as openSync4, readSync as readSync3, realpathSync as realpathSync2, renameSync as renameSync3, writeFileSync as writeFileSync5, writeSync } from "fs";
 import { join as join8 } from "path";
+function qwenDualNamesStateDir(input, stateDir) {
+  const needles = new Set([".agenthub/state", ".agenthub\\state", "qwen-dual", "input.jsonl", stateDir]);
+  try {
+    needles.add(realpathSync2(stateDir));
+  } catch {}
+  const seen = (value, depth) => {
+    if (depth > 8)
+      return true;
+    if (typeof value === "string") {
+      const flat = value.replaceAll("\\", "/");
+      return [...needles].some((n) => n && (value.includes(n) || flat.includes(n.replaceAll("\\", "/"))));
+    }
+    if (Array.isArray(value))
+      return value.some((item) => seen(item, depth + 1));
+    if (value && typeof value === "object")
+      return Object.entries(value).some(([key, item]) => seen(key, depth + 1) || seen(item, depth + 1));
+    return false;
+  };
+  return seen(input, 0);
+}
+var SUBMIT_CAP, READ_CAP, ANSWERED_CAP = 256, QWEN_STALLED_NOTE = "stalled: Qwen has said nothing for a while; the hub cannot stop a Qwen turn, press Esc in the Qwen terminal", QWEN_DETACHED_NOTE = "detached: the hub cannot read Qwen's event file; Qwen keeps working in its terminal and the hub reattaches when the file is readable again", DIR = "qwen-dual", QwenDualPeer;
+var init_qwen_dual = __esm(() => {
+  init_envelope();
+  init_child_process();
+  init_process_signature();
+  init_compat();
+  init_qwen_native();
+  SUBMIT_CAP = 256 * 1024;
+  READ_CAP = 1024 * 1024;
+  QwenDualPeer = class QwenDualPeer extends BasePeer {
+    opts;
+    permissionModeState = "unmanaged";
+    dir;
+    inputFile;
+    eventFile;
+    stateFile;
+    mcpFile;
+    signature;
+    poller;
+    monitor;
+    state_ = { v: 1, offset: 0, generation: 0 };
+    resume = false;
+    _launch;
+    stopping = true;
+    requestedStopReason;
+    detached = false;
+    sessionSeen = false;
+    primed = false;
+    turn;
+    owner;
+    lastAssistant;
+    pending = new Map;
+    answered = new Set;
+    stalled_ = false;
+    exited = false;
+    pollFailures = 0;
+    discarding = false;
+    constructor(id, opts) {
+      super(id, opts.watchdogMs);
+      this.opts = opts;
+      this.dir = join8(opts.stateDir, DIR);
+      this.inputFile = join8(this.dir, "input.jsonl");
+      this.eventFile = join8(this.dir, "events.jsonl");
+      this.stateFile = join8(this.dir, "state.json");
+      this.mcpFile = join8(this.dir, "mcp.json");
+      this.signature = opts.signature ?? processSignature;
+    }
+    get launch() {
+      return this._launch;
+    }
+    get adopted() {
+      return this.adopting;
+    }
+    adopting = false;
+    get stalled() {
+      return this.stalled_;
+    }
+    get statusNotice() {
+      if (this.detached)
+        return { code: "qwen-detached", message: QWEN_DETACHED_NOTE };
+      return this.stalled_ ? { code: "qwen-stalled", message: QWEN_STALLED_NOTE } : undefined;
+    }
+    get isDetached() {
+      return this.detached;
+    }
+    holdsTerminal() {
+      if (this.stopping || this.exited)
+        return false;
+      if (this.state_.ownerPid !== undefined)
+        return this.ownerAlive();
+      return this.sessionSeen;
+    }
+    get sessionId() {
+      return this.state_.sessionId;
+    }
+    get offset() {
+      return this.state_.offset;
+    }
+    recoveryMetadata() {
+      return { ...this.state_.sessionId ? { sessionId: this.state_.sessionId } : {}, launch: { mode: "tui" } };
+    }
+    ensureFile(path, create) {
+      const found = lstatSync7(path, { throwIfNoEntry: false });
+      if (!found) {
+        if (!create)
+          throw new Error("Qwen dual-output file is missing");
+        writeFileSync5(path, "", { mode: 384, flag: "wx" });
+        return;
+      }
+      if (!found.isFile() || found.isSymbolicLink())
+        throw new Error("Qwen dual-output path is not a plain file");
+      if (typeof process.getuid === "function" && found.uid !== process.getuid())
+        throw new Error("Qwen dual-output file is not owned by the person running the hub");
+      if ((found.mode & 63) !== 0)
+        throw new Error("Qwen dual-output file is readable or writable by others");
+    }
+    loadState() {
+      let fd;
+      try {
+        fd = openSync4(this.stateFile, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
+        const info = fstatSync4(fd);
+        if (!info.isFile() || info.size > 4096)
+          return;
+        const buffer = Buffer.alloc(info.size);
+        readSync3(fd, buffer, 0, info.size, 0);
+        const raw = JSON.parse(buffer.toString("utf8"));
+        if (raw.v !== 1 || !Number.isSafeInteger(raw.offset) || raw.offset < 0 || !Number.isSafeInteger(raw.generation))
+          return;
+        this.state_ = {
+          v: 1,
+          offset: raw.offset,
+          generation: raw.generation,
+          ...qwenSessionId(raw.sessionId) ? { sessionId: raw.sessionId } : {},
+          ...Number.isSafeInteger(raw.ownerPid) && typeof raw.ownerSignature === "string" ? { ownerPid: raw.ownerPid, ownerSignature: raw.ownerSignature } : {}
+        };
+      } catch {} finally {
+        if (fd !== undefined)
+          try {
+            closeSync4(fd);
+          } catch {}
+      }
+    }
+    saveState() {
+      const temp = `${this.stateFile}.${process.pid}.tmp`;
+      try {
+        writeFileSync5(temp, `${JSON.stringify(this.state_)}
+`, { mode: 384 });
+        renameSync3(temp, this.stateFile);
+      } catch {
+        this.opts.log?.(`[${this.id}] could not record its Qwen read position`);
+      }
+    }
+    ownerAlive() {
+      const { ownerPid, ownerSignature } = this.state_;
+      if (ownerPid === undefined || ownerSignature === undefined)
+        return false;
+      return this.signature(ownerPid) === ownerSignature;
+    }
+    async start() {
+      mkdirSync5(this.dir, { recursive: true, mode: 448 });
+      const dir = lstatSync7(this.dir);
+      if (!dir.isDirectory() || dir.isSymbolicLink() || typeof process.getuid === "function" && dir.uid !== process.getuid() || (dir.mode & 63) !== 0)
+        throw new Error("Qwen dual-output directory is not private to the person running the hub");
+      this.loadState();
+      for (const path of [this.inputFile, this.eventFile])
+        this.ensureFile(path, true);
+      this.stopping = false;
+      this.exited = false;
+      if (this.ownerAlive()) {
+        this.adopting = true;
+        const probe = openSync4(this.eventFile, constants3.O_RDONLY | constants3.O_NOFOLLOW);
+        let size = 0;
+        try {
+          size = fstatSync4(probe).size;
+        } finally {
+          closeSync4(probe);
+        }
+        if (size < this.state_.offset) {
+          this.state_.offset = 0;
+          this.state_.generation++;
+        }
+        this.sessionSeen = this.state_.sessionId !== undefined;
+        this.primed = true;
+        this.saveState();
+      } else {
+        this.adopting = false;
+        this.resume = this.opts.sessionId !== undefined || this.state_.sessionId !== undefined;
+        const resumeId = this.opts.sessionId ?? this.state_.sessionId;
+        const previous = lstatSync7(this.eventFile);
+        if (previous.size > 0) {
+          try {
+            renameSync3(this.eventFile, join8(this.dir, "events.prev.jsonl"));
+          } catch {}
+          this.ensureFile(this.eventFile, true);
+        }
+        closeSync4(openSync4(this.inputFile, constants3.O_WRONLY | constants3.O_NOFOLLOW | constants3.O_TRUNC));
+        this.state_ = { v: 1, offset: 0, generation: this.state_.generation + 1, ...resumeId ? { sessionId: resumeId } : {} };
+        this.sessionSeen = false;
+        this.saveState();
+        this.writeLaunch(resumeId);
+      }
+      this.poller = setInterval(() => this.poll(), this.opts.pollMs ?? 100);
+      this.poller.unref?.();
+      if (!this.monitor) {
+        this.monitor = setInterval(() => this.checkOwner(), this.opts.ownerMs ?? 1000);
+        this.monitor.unref?.();
+      }
+      this.poll();
+      if (this.adopting && !this.detached && this.sessionSeen)
+        this.setState("idle");
+    }
+    writeLaunch(resumeId) {
+      const [bin, ...rest] = this.opts.cmd.filter((word) => word !== "--acp");
+      if (!bin)
+        throw new Error("qwen_cmd must name an executable");
+      const servers = Object.fromEntries(this.opts.mcpServers.map((server) => [server.name, { command: server.command, args: server.args, env: server.env }]));
+      writeFileSync5(this.mcpFile, JSON.stringify({ mcpServers: servers }), { mode: 384 });
+      const args = [
+        ...rest,
+        "--input-file",
+        this.inputFile,
+        "--json-file",
+        this.eventFile,
+        "--mcp-config",
+        this.mcpFile,
+        "--approval-mode",
+        "default",
+        ...this.opts.model ? ["--model", this.opts.model] : [],
+        ...resumeId ? ["-r", resumeId] : []
+      ];
+      this._launch = { cmd: bin, args, env: peerChildEnv(this.id, {}) };
+    }
+    discoverOwner() {
+      if (this.stopping || this.state_.ownerPid !== undefined)
+        return;
+      const rows = (this.opts.table ?? processTable)();
+      if (!rows)
+        return;
+      const flag = `--input-file ${this.inputFile}`;
+      const matches = rows.filter((row) => row.pid !== process.pid && row.command.includes(flag));
+      if (matches.length !== 1)
+        return;
+      const pid = matches[0].pid, signature = this.signature(pid);
+      if (!signature)
+        return;
+      this.state_.ownerPid = pid;
+      this.state_.ownerSignature = signature;
+      this.saveState();
+    }
+    checkOwner() {
+      if (this.stopping || this.exited)
+        return;
+      if (this.state_.ownerPid === undefined) {
+        if (this.sessionSeen)
+          this.discoverOwner();
+        return;
+      }
+      if (this.ownerAlive())
+        return;
+      if (this.state === "offline" && !this.sessionSeen)
+        return;
+      this.exited = true;
+      this.opts.log?.(`[${this.id}] the Qwen TUI exited`);
+      this.failTurn("the Qwen terminal ended before the turn settled; inspect it before retrying");
+      this.abortApprovals();
+      delete this.state_.ownerPid;
+      delete this.state_.ownerSignature;
+      this.saveState();
+      this.setState("offline");
+      this.opts.onExit?.();
+    }
+    appendInput(record) {
+      const line = `${JSON.stringify(record)}
+`;
+      if (Buffer.byteLength(line) > SUBMIT_CAP)
+        throw new Error("Qwen submit exceeds its size bound");
+      const fd = openSync4(this.inputFile, constants3.O_WRONLY | constants3.O_APPEND | constants3.O_NOFOLLOW);
+      try {
+        const info = fstatSync4(fd);
+        if (!info.isFile() || (info.mode & 63) !== 0 || typeof process.getuid === "function" && info.uid !== process.getuid())
+          throw new Error("Qwen input file is not private");
+        writeSync(fd, line);
+      } finally {
+        closeSync4(fd);
+      }
+    }
+    async deliver(envs, deliveryId) {
+      if (this.state !== "idle" || this.stopping || this.detached) {
+        if (deliveryId)
+          this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is ${this.state}` });
+        throw new Error(`${this.id} is ${this.state}`);
+      }
+      let text = this.primed || !this.opts.preamble ? renderDigest(envs, this.primed) : `${this.opts.preamble}
+
+${renderDigest(envs, false)}`;
+      if (/^\s*[\/!@?]/.test(text))
+        text = `[agent-hub]
+${text}`;
+      const turn = { envs, ...deliveryId ? { deliveryId } : {}, text, started: false, accepted: false };
+      this.turn = turn;
+      this.owner = undefined;
+      this.lastAssistant = undefined;
+      this.setState("busy");
+      try {
+        this.appendInput({ type: "submit", text });
+      } catch (error) {
+        this.turn = undefined;
+        if (deliveryId)
+          this.delivery({ id: deliveryId, state: "failed_safe", reason: "Qwen input file could not be written" });
+        this.setState("idle");
+        throw error instanceof Error ? error : new Error("Qwen input file could not be written");
+      }
+      this.primed = true;
+    }
+    onWatchdog() {
+      if (this.state !== "busy" || this.stalled_)
+        return;
+      if (this.pending.size > 0) {
+        this.touch();
+        return;
+      }
+      this.stalled_ = true;
+      this.opts.log?.(`[${this.id}] turn stalled; the hub cannot stop it (press Esc in the Qwen terminal)`);
+      this.opts.onStalled?.(true);
+      try {
+        this.opts.onNotice?.(`${this.id}: ${QWEN_STALLED_NOTE}`);
+      } catch {}
+    }
+    alive() {
+      if (this.stalled_) {
+        this.stalled_ = false;
+        this.opts.onStalled?.(false);
+      }
+      if (this.state === "busy")
+        this.touch();
+    }
+    detach(reason) {
+      if (this.detached)
+        return;
+      this.detached = true;
+      this.opts.log?.(`[${this.id}] event file ${reason}: detached`);
+      this.failTurn("the Qwen event file became unreadable before the turn settled; inspect the Qwen terminal before retrying");
+      this.abortApprovals();
+      if (this.state !== "offline")
+        this.setState("offline");
+    }
+    poll() {
+      if (this.stopping)
+        return;
+      let fd;
+      try {
+        fd = openSync4(this.eventFile, constants3.O_RDONLY | constants3.O_NOFOLLOW | constants3.O_NONBLOCK);
+        const info = fstatSync4(fd);
+        if (!info.isFile())
+          throw new Error("not a regular file");
+        if (this.detached) {
+          this.detached = false;
+          this.pollFailures = 0;
+          this.opts.log?.(`[${this.id}] event file readable again: reattached`);
+          if (this.sessionSeen && this.state === "offline" && !this.exited)
+            this.setState("idle");
+        }
+        let offset = this.state_.offset;
+        if (info.size < offset) {
+          offset = 0;
+          this.discarding = false;
+          this.state_.generation++;
+          this.opts.log?.(`[${this.id}] event file was replaced; reading from its start`);
+        }
+        while (offset < info.size) {
+          const want = Math.min(info.size - offset, READ_CAP), buffer = Buffer.alloc(want);
+          const got = readSync3(fd, buffer, 0, want, offset);
+          if (got <= 0)
+            break;
+          if (this.discarding) {
+            const newline = buffer.subarray(0, got).indexOf(10);
+            offset += newline < 0 ? got : newline + 1;
+            this.state_.offset = offset;
+            if (newline >= 0)
+              this.discarding = false;
+            continue;
+          }
+          const end = buffer.subarray(0, got).lastIndexOf(10) + 1;
+          if (end === 0) {
+            if (got < READ_CAP)
+              break;
+            this.opts.log?.(`[${this.id}] dropped an event line over ${READ_CAP} bytes`);
+            this.discarding = true;
+            offset += got;
+            this.state_.offset = offset;
+            continue;
+          }
+          offset += end;
+          this.state_.offset = offset;
+          for (const line of buffer.subarray(0, end).toString("utf8").split(`
+`))
+            if (line.trim())
+              this.parse(line);
+          if (this.stopping)
+            break;
+        }
+        this.saveState();
+      } catch (error) {
+        this.pollFailures++;
+        if (!this.detached)
+          this.detach(`could not be read (${error.code ?? "error"})`);
+      } finally {
+        if (fd !== undefined)
+          try {
+            closeSync4(fd);
+          } catch {}
+      }
+    }
+    parse(line) {
+      let event;
+      try {
+        event = JSON.parse(line);
+      } catch {
+        this.opts.log?.(`[${this.id}] skipped an unreadable event line`);
+        return;
+      }
+      if (!event || typeof event !== "object" || typeof event.type !== "string")
+        return;
+      try {
+        this.handle(event);
+      } catch (error) {
+        this.opts.log?.(`[${this.id}] event handling failed: ${sanitize(error.message)}`);
+      }
+    }
+    handle(event) {
+      this.alive();
+      switch (event.type) {
+        case "system":
+          return this.onSystem(event);
+        case "user":
+          return this.onUser(event);
+        case "assistant":
+          return this.onAssistant(event);
+        case "stream_event":
+          if (event.event?.type === "message_stop")
+            this.onMessageStop();
+          return;
+        case "result":
+          return this.onResult(event);
+        case "control_request":
+          return this.onControlRequest(event);
+        case "control_response":
+          return this.onControlResponse(event);
+        default:
+          return;
+      }
+    }
+    onSystem(event) {
+      if (event.subtype !== "session_start")
+        return;
+      const data = event.data ?? {};
+      const id = event.session_id ?? data.session_id;
+      if (!qwenSessionId(id))
+        return;
+      const verdict = assessVersion("qwen-dual", data.version);
+      const supported = data.supported_events;
+      if (!verdict.ok || data.protocol_version !== 2 || !Array.isArray(supported) || !["user", "assistant", "stream_event", "control_request", "control_response"].every((name) => supported.includes(name))) {
+        this.opts.log?.(`[${this.id}] the Qwen TUI's dual-output contract is not verified; not attached`);
+        try {
+          this.opts.onNotice?.(`${this.id}: this Qwen's dual-output contract is not verified (${verdict.ok ? "protocol or event set" : verdict.reason}); the hub did not attach it`);
+        } catch {}
+        return;
+      }
+      this.state_.sessionId = id;
+      this.sessionSeen = true;
+      this.saveState();
+      this.discoverOwner();
+      if (!this.stopping && !this.detached && this.state === "offline")
+        this.setState("idle");
+    }
+    promptText(event) {
+      const content = event.message?.content;
+      if (typeof content === "string")
+        return content;
+      if (!Array.isArray(content))
+        return;
+      const blocks = content.filter((block) => block?.type === "text" && typeof block.text === "string");
+      return blocks.length ? blocks.map((block) => block.text).join("") : undefined;
+    }
+    onUser(event) {
+      const text = this.promptText(event);
+      if (text === undefined)
+        return;
+      const turn = this.turn;
+      if (turn && !turn.started && (text.trim() === turn.text.trim() || text.trim().startsWith(turn.text.trim().slice(0, 200)))) {
+        turn.started = true;
+        this.owner = "hub";
+        this.lastAssistant = undefined;
+        if (turn.deliveryId && !turn.accepted) {
+          turn.accepted = true;
+          this.delivery({ id: turn.deliveryId, state: "accepted" });
+        }
+        return;
+      }
+      if (turn?.started)
+        this.failTurn("the Qwen turn ended without a result (it was likely stopped in the terminal); inspect it before retrying", true);
+      this.owner = "personal";
+      this.lastAssistant = undefined;
+      if (this.state === "idle")
+        this.setState("busy");
+    }
+    onAssistant(event) {
+      const content = event.message?.content;
+      const blocks = Array.isArray(content) ? content : [];
+      const text = blocks.filter((block) => block?.type === "text" && typeof block.text === "string").map((block) => block.text).join("");
+      const toolUse = event.message?.stop_reason === "tool_use" || blocks.some((block) => block?.type === "tool_use");
+      this.lastAssistant = { text, toolUse };
+    }
+    onMessageStop() {
+      const last = this.lastAssistant;
+      this.lastAssistant = undefined;
+      if (!last || last.toolUse)
+        return;
+      this.endTurn(last.text);
+    }
+    onResult(event) {
+      const text = typeof event.result === "string" ? event.result : this.lastAssistant?.text ?? "";
+      this.endTurn(text);
+    }
+    endTurn(text) {
+      const turn = this.turn, owner = this.owner;
+      this.owner = undefined;
+      this.lastAssistant = undefined;
+      this.abortApprovals();
+      if (owner === "hub" && turn?.started) {
+        this.turn = undefined;
+        const body = text.trim();
+        if (body)
+          this.onMessage?.(body, { inReplyTo: replyParent(turn.envs), to: replyAudience(turn.envs) });
+        if (turn.deliveryId)
+          this.delivery({ id: turn.deliveryId, state: "completed" });
+        this.stalled_ = false;
+        this.opts.onStalled?.(false);
+        this.setState("idle");
+        return;
+      }
+      if (owner === "personal") {
+        this.stalled_ = false;
+        this.opts.onStalled?.(false);
+        if (!this.turn)
+          this.setState("idle");
+      }
+    }
+    failTurn(reason, notIdle = false) {
+      const turn = this.turn;
+      if (!turn)
+        return;
+      this.turn = undefined;
+      this.owner = undefined;
+      if (turn.deliveryId) {
+        const receipt = { id: turn.deliveryId, state: "needs_review", reason };
+        this.delivery(receipt);
+      }
+      try {
+        this.opts.onNotice?.(`${this.id}: ${reason}`);
+      } catch {}
+      if (this.stalled_) {
+        this.stalled_ = false;
+        this.opts.onStalled?.(false);
+      }
+      if (!notIdle && this.state === "busy")
+        this.setState("idle");
+    }
+    abortApprovals() {
+      for (const { controller } of this.pending.values())
+        controller.abort();
+      this.pending.clear();
+    }
+    onControlRequest(event) {
+      const { request_id: requestId, request } = event;
+      if (typeof requestId !== "string" || !request || request.subtype !== "can_use_tool")
+        return;
+      const turn = this.turn;
+      if (!turn?.started || this.owner !== "hub" || this.stopping || this.state !== "busy")
+        return;
+      const name = typeof request.tool_name === "string" ? request.tool_name : "";
+      const input = request.input ?? {};
+      const hubTool = name !== "" && this.opts.autoApprove?.(name) === true;
+      if (!hubTool && qwenDualNamesStateDir({ input, path: request.blocked_path }, this.opts.guardDir ?? this.opts.stateDir)) {
+        this.opts.log?.(`[${this.id}] approval refused: the call names the hub state dir`);
+        return this.answer(requestId, false, turn, "a Qwen write or command that names the hub state dir was refused: the input file is a prompt channel");
+      }
+      let gate;
+      try {
+        gate = this.state_.sessionId ? this.opts.actionGate?.({ names: [name], input }, this.state_.sessionId) : undefined;
+      } catch {
+        gate = { title: "Action approval: the always-ask check failed; command withheld", denyOnly: true };
+      }
+      if (hubTool && !gate) {
+        this.opts.log?.(`permission auto-approved for ${this.id}: ${name}`);
+        return this.answer(requestId, true, turn);
+      }
+      const full = JSON.stringify(input), cut = full.length > 600;
+      const title = gate ? gate.title : `${sanitize(name || "tool")}: ${cut ? `${full.slice(0, 600)} [cut, ${full.length} chars]` : full}`;
+      const options = [...gate?.denyOnly ? [] : [{ optionId: "allow", name: "Allow", kind: "allow_once" }], { optionId: "deny", name: "Deny", kind: "reject_once" }];
+      const controller = new AbortController;
+      this.pending.set(requestId, { controller, turn });
+      const tool = /^[\w.:@-]{1,80}$/.test(name) ? name : undefined;
+      (async () => {
+        let picked;
+        try {
+          picked = await this.opts.onPermission?.({ peer: this.id, title, options, ...tool ? { tool } : {}, ...gate ? { classed: true } : {} }, controller.signal);
+        } catch {
+          picked = undefined;
+        }
+        const still = this.pending.get(requestId);
+        if (!still || still.controller !== controller || controller.signal.aborted || this.turn !== turn || this.stopping)
+          return;
+        this.pending.delete(requestId);
+        this.answer(requestId, picked === "allow" && options.some((option) => option.optionId === "allow"), turn);
+      })();
+    }
+    answer(requestId, allowed, turn, why) {
+      try {
+        this.appendInput({ type: "confirmation_response", request_id: requestId, allowed });
+      } catch {
+        this.opts.log?.(`[${this.id}] could not write an approval answer`);
+        try {
+          this.opts.onNotice?.(`${this.id}: the hub could not write its approval answer (the input file is unwritable); answer the prompt in the Qwen terminal`);
+        } catch {}
+        return;
+      }
+      this.answered.add(requestId);
+      while (this.answered.size > ANSWERED_CAP)
+        this.answered.delete(this.answered.values().next().value);
+      if (allowed || this.turn !== turn)
+        return;
+      this.owner = undefined;
+      this.abortApprovals();
+      this.failTurn(why ?? "a hub deny cancelled the Qwen turn (Qwen emits nothing for it); the turn ended without an answer");
+    }
+    onControlResponse(event) {
+      const response = event.response;
+      const id = response?.request_id;
+      if (typeof id !== "string")
+        return;
+      if (response.subtype === "error") {
+        this.opts.log?.(`[${this.id}] Qwen refused an approval answer (stale or unknown request); not retried`);
+        return;
+      }
+      const waiting = this.pending.get(id);
+      if (waiting && !this.answered.has(id)) {
+        this.pending.delete(id);
+        waiting.controller.abort();
+        this.opts.log?.(`[${this.id}] an approval was answered in the Qwen terminal; the hub's was withdrawn`);
+      }
+    }
+    async stop(reason) {
+      if (reason !== undefined)
+        this.requestedStopReason = reason;
+      this.stopping = true;
+      if (this.poller)
+        clearInterval(this.poller);
+      this.poller = undefined;
+      if (this.monitor)
+        clearInterval(this.monitor);
+      this.monitor = undefined;
+      this.abortApprovals();
+      const turn = this.turn;
+      this.turn = undefined;
+      this.owner = undefined;
+      if (turn?.deliveryId)
+        this.delivery({ id: turn.deliveryId, state: "needs_review", reason: reason ?? "Qwen session stopped before settlement" });
+      this.saveState();
+      this.setState("offline");
+    }
+  };
+});
+
+// src/pi/launch.ts
+import { join as join9 } from "path";
 function buildPiLaunch(opts, inherited, extension, bridgePort, bridgeToken) {
   const adapter = ADAPTERS.find((adapter) => adapter.start.daemonPort === "pi-rpc");
-  const env = { ...peerChildEnv(opts.instance ?? adapter.kind, inherited), ...opts.hubStateDir !== undefined ? { AGENTHUB_STATE_DIR: opts.hubStateDir } : {}, PI_CODING_AGENT_DIR: join8(opts.stateDir, "pi"), AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`, AGENTHUB_PI_BRIDGE_TOKEN: bridgeToken, AGENTHUB_PI_OWNER_TOKEN: bridgeToken, AGENTHUB_PI_RELAY_URL: opts.relay.url, AGENTHUB_PI_RELAY_TOKEN: opts.relay.token, AGENTHUB_PI_MODELS: JSON.stringify(opts.relay.models), AGENTHUB_PI_TOOLS: JSON.stringify(opts.tools), AGENTHUB_PI_MAX_STEPS: String(opts.maxSteps ?? 30) };
-  const args = [...opts.mode === "headless" ? ["--mode", "rpc"] : [], "--provider", "agent-hub-local", "--model", opts.model ?? modelFor(opts.backend, opts.relay.models), "--models", opts.relay.models.map((model) => `agent-hub-local/${model.id}`).join(","), "--no-builtin-tools", "--no-skills", "--no-prompt-templates", "--no-extensions", "--extension", extension, ...opts.preamble ? ["--append-system-prompt", opts.preamble] : [], "--session-dir", join8(opts.stateDir, "pi-sessions")];
+  const env = { ...peerChildEnv(opts.instance ?? adapter.kind, inherited), ...opts.hubStateDir !== undefined ? { AGENTHUB_STATE_DIR: opts.hubStateDir } : {}, PI_CODING_AGENT_DIR: join9(opts.stateDir, "pi"), AGENTHUB_PI_BRIDGE_URL: `http://127.0.0.1:${bridgePort}`, AGENTHUB_PI_BRIDGE_TOKEN: bridgeToken, AGENTHUB_PI_OWNER_TOKEN: bridgeToken, AGENTHUB_PI_RELAY_URL: opts.relay.url, AGENTHUB_PI_RELAY_TOKEN: opts.relay.token, AGENTHUB_PI_MODELS: JSON.stringify(opts.relay.models), AGENTHUB_PI_TOOLS: JSON.stringify(opts.tools), AGENTHUB_PI_MAX_STEPS: String(opts.maxSteps ?? 30) };
+  const args = [...opts.mode === "headless" ? ["--mode", "rpc"] : [], "--provider", "agent-hub-local", "--model", opts.model ?? modelFor(opts.backend, opts.relay.models), "--models", opts.relay.models.map((model) => `agent-hub-local/${model.id}`).join(","), "--no-builtin-tools", "--no-skills", "--no-prompt-templates", "--no-extensions", "--extension", extension, ...opts.preamble ? ["--append-system-prompt", opts.preamble] : [], "--session-dir", join9(opts.stateDir, "pi-sessions")];
   if (opts.sessionFile)
     args.push("--session", opts.sessionFile);
   else if (opts.sessionId)
@@ -4733,21 +5435,16 @@ var init_launch = __esm(() => {
   init_child_process();
 });
 
-// src/pi/process-signature.ts
-var init_process_signature = __esm(() => {
-  init_platform();
-});
-
 // src/hub/recovery-store.ts
-import { chmodSync, existsSync as existsSync5, mkdirSync as mkdirSync5, readFileSync as readFileSync5, renameSync as renameSync3, rmSync as rmSync4, writeFileSync as writeFileSync5 } from "fs";
+import { chmodSync, existsSync as existsSync5, mkdirSync as mkdirSync6, readFileSync as readFileSync5, renameSync as renameSync4, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "fs";
 import { randomUUID as randomUUID3 } from "crypto";
 function atomicPrivateJSON(file, value) {
   const temporary = `${file}.${randomUUID3()}.tmp`;
   try {
-    writeFileSync5(temporary, `${JSON.stringify(value, null, 2)}
+    writeFileSync6(temporary, `${JSON.stringify(value, null, 2)}
 `, { mode: 384, flag: "wx" });
     chmodSync(temporary, 384);
-    renameSync3(temporary, file);
+    renameSync4(temporary, file);
   } finally {
     rmSync4(temporary, { force: true });
   }
@@ -4758,8 +5455,8 @@ var init_recovery_store = __esm(() => {
 });
 
 // src/pi/session.ts
-import { readFileSync as readFileSync6, openSync as openSync4, closeSync as closeSync4, fsyncSync, mkdirSync as mkdirSync6 } from "fs";
-import { join as join9, relative as relative2, resolve as resolve7, dirname as dirname6 } from "path";
+import { readFileSync as readFileSync6, openSync as openSync5, closeSync as closeSync5, fsyncSync, mkdirSync as mkdirSync7 } from "fs";
+import { join as join10, relative as relative2, resolve as resolve7, dirname as dirname6 } from "path";
 function sessionReadFailure(error) {
   if (error.code === "ENOENT")
     throw new PiSessionUnresumable("missing", error.message, { cause: error });
@@ -4769,7 +5466,7 @@ function validatePiSession(stateDir, cwd, sessionFile, sessionId) {
   let file, sessions;
   try {
     file = realPath(sessionFile);
-    sessions = realPath(join9(stateDir, "pi-sessions"));
+    sessions = realPath(join10(stateDir, "pi-sessions"));
   } catch (error) {
     return sessionReadFailure(error);
   }
@@ -4827,11 +5524,11 @@ var init_permission_mode = __esm(() => {
 });
 
 // src/hub/path-policy.ts
-import { accessSync, constants as constants3, lstatSync as lstatSync7, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
-import { dirname as dirname7, isAbsolute as isAbsolute5, join as join10, relative as relative3, resolve as resolve8, sep as sep2 } from "path";
+import { accessSync, constants as constants4, lstatSync as lstatSync8, opendirSync, readlinkSync, statSync as statSync2 } from "fs";
+import { dirname as dirname7, isAbsolute as isAbsolute5, join as join11, relative as relative3, resolve as resolve8, sep as sep2 } from "path";
 function existing(path) {
   try {
-    lstatSync7(path);
+    lstatSync8(path);
     return true;
   } catch (error) {
     if (error.code === "ENOENT")
@@ -4847,7 +5544,7 @@ function policyRealPath(path) {
       throw new Error("path cannot be resolved");
     ancestor = parent;
   }
-  return join10(realPath(ancestor), relative3(ancestor, path));
+  return join11(realPath(ancestor), relative3(ancestor, path));
 }
 function policyTargets(cwd, paths) {
   const root = realPath(cwd);
@@ -4875,14 +5572,14 @@ function directAliasTarget(path) {
         return;
       ancestor = parent;
     }
-    if (!lstatSync7(ancestor).isSymbolicLink())
+    if (!lstatSync8(ancestor).isSymbolicLink())
       return;
     target = resolve8(dirname7(ancestor), readlinkSync(ancestor), relative3(ancestor, target));
   }
   return;
 }
 function aliasScope(dir, lexical, actual, includeParents, budget) {
-  accessSync(dir, constants3.R_OK);
+  accessSync(dir, constants4.R_OK);
   const handle = opendirSync(dir);
   let matched = false;
   try {
@@ -4894,7 +5591,7 @@ function aliasScope(dir, lexical, actual, includeParents, budget) {
       budget.entries++;
       if (!entry.isSymbolicLink())
         continue;
-      const target = directAliasTarget(join10(dir, entry.name));
+      const target = directAliasTarget(join11(dir, entry.name));
       if (target !== undefined && (beneath(lexical, target) || beneath(actual, target) || includeParents && (beneath(target, lexical) || beneath(target, actual))))
         matched = true;
     }
@@ -4990,7 +5687,7 @@ function globScope(root, lexical, actual, path, includeParents, budget, roots, a
         if (++budget.entries > 4096)
           throw new Error("policy glob discovery unavailable");
         const next = advance(pattern, states, entry.name);
-        if (next.size && visit(join10(dir, entry.name), next, depth + 1, chain))
+        if (next.size && visit(join11(dir, entry.name), next, depth + 1, chain))
           return true;
       }
     } finally {
@@ -5088,7 +5785,7 @@ var init_deny = __esm(() => {
 import { spawn as spawn8, spawnSync as spawnSync3 } from "child_process";
 import { existsSync as existsSync6, mkdtempSync as mkdtempSync4, readdirSync, rmSync as rmSync5 } from "fs";
 import { homedir as homedir4, tmpdir as tmpdir4 } from "os";
-import { dirname as dirname9, join as join11, resolve as resolve9 } from "path";
+import { dirname as dirname9, join as join12, resolve as resolve9 } from "path";
 function developerDir() {
   const out = spawnSync3("xcode-select", ["-p"], { encoding: "utf8" });
   let dir = out.status === 0 ? out.stdout.trim() : "";
@@ -5109,7 +5806,7 @@ function moduleGitDirs(root) {
   const out = memoryGitSync(["-C", root, "rev-parse", "--git-common-dir"], { encoding: "utf8" });
   if (out.status !== 0)
     return;
-  const modulesRoot = join11(resolve9(root, out.stdout.trim()), "modules");
+  const modulesRoot = join12(resolve9(root, out.stdout.trim()), "modules");
   const dirs = [];
   const walk = (dir, depth) => {
     if (depth > 8)
@@ -5123,14 +5820,14 @@ function moduleGitDirs(root) {
     const names = new Set(entries.map((e) => e.name));
     if (names.has("HEAD") && names.has("config")) {
       dirs.push(dir);
-      const nested = join11(dir, "modules");
+      const nested = join12(dir, "modules");
       if (names.has("modules"))
         walk(nested, depth + 1);
       return;
     }
     for (const e of entries)
       if (e.isDirectory())
-        walk(join11(dir, e.name), depth + 1);
+        walk(join12(dir, e.name), depth + 1);
   };
   walk(modulesRoot, 0);
   const entries = new Set([modulesRoot]);
@@ -5141,13 +5838,13 @@ function moduleGitDirs(root) {
 }
 function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
   const home = homedir4();
-  const inHome = (p) => p.startsWith("~/") ? join11(home, p.slice(2)) : p;
+  const inHome = (p) => p.startsWith("~/") ? join12(home, p.slice(2)) : p;
   const root = realPath(cwd);
   const gitDirs = externalGitDirs(root);
   const moduleGit = moduleGitDirs(root);
   const creds = [".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube", ".docker", ".netrc", ".npmrc", ".omniroute", ".claude", ".codex", ".kimi-code", "Library/Keychains"];
   const dev = developerDir();
-  const readable = [root, ...HOME_READABLE.map((p) => join11(home, p)), ...readAllow.map(inHome), ...gitDirs, ...dev ? [dev] : []];
+  const readable = [root, ...HOME_READABLE.map((p) => join12(home, p)), ...readAllow.map(inHome), ...gitDirs, ...dev ? [dev] : []];
   const subpaths = (paths) => paths.map((p) => `(subpath ${q(p)})`).join(" ");
   const globals = (names) => names.map((n) => `(global-name ${q(n)})`).join(" ");
   const proxy = typeof network === "object" ? `(allow network-outbound (remote ip ${q(`localhost:${network.proxyPort}`)}))` : undefined;
@@ -5165,14 +5862,14 @@ function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
     '(allow file-ioctl (regex #"^/dev/"))',
     ...proxy ? [proxy] : network ? ["(allow network*)"] : []
   ];
-  const places = `${creds.map((c) => `(subpath ${q(join11(home, c))})`).join(" ")} ${denyRegexes(root, deny, false).join(" ")}`;
+  const places = `${creds.map((c) => `(subpath ${q(join12(home, c))})`).join(" ")} ${denyRegexes(root, deny, false).join(" ")}`;
   return [
     "(version 1)",
     ...start,
     "(deny file-write*)",
     ...readOnly.length ? ['(allow file-write* (literal "/dev/null"))'] : [`(allow file-write* (subpath ${q(root)}) (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`],
     `(deny file-write* ${hubWriteRegexes(root, gitDirs, moduleGit).join(" ")})`,
-    `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join11(home, c))})`).join(" ")})`,
+    `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join12(home, c))})`).join(" ")})`,
     `(deny file-read* file-write* ${denyRegexes(root, deny).join(" ")})`,
     ...network ? [`(allow file-read* ${CA_BUNDLES.map((p) => `(literal ${q(p)})`).join(" ")} (regex ${q("/certifi/cacert\\.pem$")}))`, `(deny file-read* file-write* ${places})`] : []
   ].join(`
@@ -5186,7 +5883,7 @@ function sandboxedExec(argv, opts) {
   if (opts.signal?.aborted)
     return Promise.resolve({ code: null, output: "error: command cancelled before execution" });
   return new Promise((resolve) => {
-    const own = realPath(mkdtempSync4(join11(tmpdir4(), "ahub-cmd-")));
+    const own = realPath(mkdtempSync4(join12(tmpdir4(), "ahub-cmd-")));
     const sandbox = `${opts.profile}
 (allow file-read* ${opts.readOnlyData ? "" : "file-write* "}process-exec (subpath ${q(own)}))`;
     const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: homedir4(), LANG: process.env.LANG ?? "en_US.UTF-8", TERM: "dumb", ...opts.env, TMPDIR: `${own}/` };
@@ -5261,8 +5958,8 @@ var init_sandbox = __esm(() => {
 });
 
 // src/local/tools.ts
-import { lstatSync as lstatSync8, mkdirSync as mkdirSync7, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync6 } from "fs";
-import { dirname as dirname10, join as join12, relative as relative4, resolve as resolve10 } from "path";
+import { lstatSync as lstatSync9, mkdirSync as mkdirSync8, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync7 } from "fs";
+import { dirname as dirname10, join as join13, relative as relative4, resolve as resolve10 } from "path";
 function guardPath(ctx, path, mode) {
   const root = realPath(ctx.cwd);
   const abs = resolve10(root, path);
@@ -5275,7 +5972,7 @@ function guardPath(ctx, path, mode) {
   } catch {
     throw new Error(`${path} goes through a dangling symlink`);
   }
-  const real = join12(realExisting, relative4(existing, abs));
+  const real = join13(realExisting, relative4(existing, abs));
   const rel = relative4(root, real);
   if (rel.startsWith("..") || resolve10(root, rel) !== real)
     throw new Error(`${path} is outside the project directory`);
@@ -5283,7 +5980,7 @@ function guardPath(ctx, path, mode) {
     throw new Error(`${path} is on the secrets denylist`);
   if (mode === "write" && isHubWritePath(rel))
     throw new Error(`${path} is not writable by the local worker`);
-  if (mode === "write" && ctx.readOnly?.length && (lstatSync8(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
+  if (mode === "write" && ctx.readOnly?.length && (lstatSync9(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
     throw new Error("hardlinked write target cannot be verified with data.readonly");
   if (mode === "write" && matchesPolicy(root, path, ctx.readOnly ?? []))
     throw new Error("target is protected by data.readonly");
@@ -5354,8 +6051,8 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
         file = guardPath(ctx, String(a.path), "write");
         if (file !== approvedTarget)
           return "error: path target changed during approval; inspect before retrying";
-        mkdirSync7(dirname10(file), { recursive: true });
-        writeFileSync6(file, content);
+        mkdirSync8(dirname10(file), { recursive: true });
+        writeFileSync7(file, content);
         return `wrote ${a.path}`;
       }
       case "edit": {
@@ -5379,7 +6076,7 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
         count = text.split(String(a.old)).length - 1;
         if (count !== 1)
           return `error: file changed during approval; \`old\` must match exactly once, it matched ${count} times`;
-        writeFileSync6(file, text.replace(String(a.old), () => String(a.new ?? "")));
+        writeFileSync7(file, text.replace(String(a.old), () => String(a.new ?? "")));
         return `edited ${a.path}`;
       }
       case "bash": {
@@ -5429,7 +6126,7 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
 }
 var APPROVAL_EXPIRED_TEXT = "error: approval expired: no person answered; do not retry this call; hand the task off or stop", ApprovalWaitStop, approvalError = (picked, denied) => picked === true ? undefined : picked === "expired" ? APPROVAL_EXPIRED_TEXT : picked === "aborted" ? "error: approval withdrawn because the turn ended; no operation was executed" : denied, lexists = (p) => {
   try {
-    lstatSync8(p);
+    lstatSync9(p);
     return true;
   } catch {
     return false;
@@ -5483,8 +6180,8 @@ var PI_CEILING_KIND = "tool-step-ceiling", PI_CEILING_UNIT = "tool-step";
 
 // src/adapters/pi.ts
 import { randomUUID as randomUUID4 } from "crypto";
-import { existsSync as existsSync7, mkdirSync as mkdirSync8 } from "fs";
-import { join as join13, resolve as resolve11 } from "path";
+import { existsSync as existsSync7, mkdirSync as mkdirSync9 } from "fs";
+import { join as join14, resolve as resolve11 } from "path";
 import { spawn as spawn9 } from "child_process";
 function ownerStillAlive(pid, signature) {
   const current = processSignature(pid);
@@ -5850,9 +6547,9 @@ var init_pi = __esm(() => {
       this.approvalAnswerEpoch = undefined;
       this.approvalStopReason = "";
       this.approvalAbortSent = false;
-      mkdirSync8(this.opts.stateDir, { recursive: true });
-      const sessions = join13(this.opts.stateDir, "pi-sessions");
-      mkdirSync8(sessions, { recursive: true, mode: 448 });
+      mkdirSync9(this.opts.stateDir, { recursive: true });
+      const sessions = join14(this.opts.stateDir, "pi-sessions");
+      mkdirSync9(sessions, { recursive: true, mode: 448 });
       if (this.opts.sessionFile) {
         try {
           validatePiSession(this.opts.stateDir, this.opts.cwd, this.opts.sessionFile, this.opts.sessionId);
@@ -5909,7 +6606,7 @@ var init_pi = __esm(() => {
         return new Response("not found", { status: 404 });
       } });
       this.server = bridge;
-      const extension = resolve11(join13(import.meta.dir, "../pi/extension.ts"));
+      const extension = resolve11(join14(import.meta.dir, "../pi/extension.ts"));
       const inherited = {};
       for (const key of ["PATH", "HOME", "USER", "SHELL", "TMPDIR", "TERM", "TERM_PROGRAM", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "CODEX_HOME"])
         if (process.env[key])
@@ -8838,8 +9535,8 @@ var init_shipped_roles = __esm(() => {
 
 // src/hub/roles.ts
 import { createHash as createHash5 } from "crypto";
-import { constants as constants4, closeSync as closeSync5, fstatSync as fstatSync4, lstatSync as lstatSync9, openSync as openSync5, readSync as readSync3, readdirSync as readdirSync2 } from "fs";
-import { join as join14 } from "path";
+import { constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync10, openSync as openSync6, readSync as readSync4, readdirSync as readdirSync2 } from "fs";
+import { join as join15 } from "path";
 function parseRole(text, stem, layer) {
   if (Buffer.byteLength(text) > 8192 || text.includes("\r") || !ID.test(stem))
     throw new Error("invalid role size, encoding or file id");
@@ -8886,24 +9583,24 @@ function parseRole(text, stem, layer) {
   return { id: stem, name: header.name, group: header.group, summary: header.summary, source: header.source, base: list("base", BASES2), classes: list("classes", CLASSES2), body, review, layer, hash: createHash5("sha256").update(text).digest("hex") };
 }
 function projectRole(file) {
-  const fd = openSync5(file, constants4.O_RDONLY | constants4.O_NOFOLLOW | constants4.O_NONBLOCK);
+  const fd = openSync6(file, constants5.O_RDONLY | constants5.O_NOFOLLOW | constants5.O_NONBLOCK);
   try {
-    const before = fstatSync4(fd);
+    const before = fstatSync5(fd);
     if (!before.isFile() || before.nlink !== 1 || before.size > 8192)
       throw new Error("role must be a bounded regular file");
     const bytes = Buffer.alloc(8193);
     let length = 0, n = 0;
-    while ((n = readSync3(fd, bytes, length, bytes.length - length, null)) > 0) {
+    while ((n = readSync4(fd, bytes, length, bytes.length - length, null)) > 0) {
       length += n;
       if (length > 8192)
         throw new Error("role exceeds file cap");
     }
-    const after = fstatSync4(fd);
+    const after = fstatSync5(fd);
     if (before.size !== after.size || before.mtimeMs !== after.mtimeMs || length !== after.size)
       throw new Error("role changed during read");
     return bytes.subarray(0, length).toString("utf8");
   } finally {
-    closeSync5(fd);
+    closeSync6(fd);
   }
 }
 function loadRoleCatalog(cwd) {
@@ -8918,9 +9615,9 @@ function loadRoleCatalog(cwd) {
   if (!cwd)
     return { roles, errors };
   try {
-    const config = join14(cwd, ".agenthub"), dir = join14(config, "roles");
+    const config = join15(cwd, ".agenthub"), dir = join15(config, "roles");
     for (const path of [config, dir]) {
-      const stat = lstatSync9(path);
+      const stat = lstatSync10(path);
       if (!stat.isDirectory() || stat.isSymbolicLink())
         throw new Error("unsafe role directory");
     }
@@ -8930,7 +9627,7 @@ function loadRoleCatalog(cwd) {
     for (const file of files) {
       const id = file.slice(0, -3);
       try {
-        roles.set(id, parseRole(projectRole(join14(dir, file)), id, "project"));
+        roles.set(id, parseRole(projectRole(join15(dir, file)), id, "project"));
       } catch {
         errors.push({ id: ID.test(id) ? id : "invalid-file-id", reason: "invalid or unsafe project role" });
       }
@@ -9323,7 +10020,7 @@ var init_config = __esm(() => {
 });
 
 // src/hub/routing.ts
-import { join as join15, resolve as resolve12 } from "path";
+import { join as join16, resolve as resolve12 } from "path";
 function effectiveLocalRoute(defaultRoute, classRoute, classFixedModel) {
   return classRoute ?? (classFixedModel === undefined ? defaultRoute : undefined);
 }
@@ -9334,7 +10031,7 @@ var init_routing = __esm(() => {
   init_spec_read();
   init_config();
   init_stage();
-  TEMPLATE = join15(import.meta.dir, "..", "..", "templates", "routing.toml");
+  TEMPLATE = join16(import.meta.dir, "..", "..", "templates", "routing.toml");
   cache = new Map;
 });
 
@@ -9885,7 +10582,7 @@ var init_launch2 = __esm(() => {
 
 // src/adapters/claude-task-sessions.ts
 import { randomUUID as randomUUID7 } from "crypto";
-import { mkdirSync as mkdirSync9, readFileSync as readFileSync8 } from "fs";
+import { mkdirSync as mkdirSync10, readFileSync as readFileSync8 } from "fs";
 import { dirname as dirname11 } from "path";
 function readState(file) {
   let text;
@@ -9923,7 +10620,7 @@ class ClaudeTaskSessions {
   }
   write(sessions) {
     const next = { version: 1, sessions };
-    mkdirSync9(dirname11(this.file), { recursive: true, mode: 448 });
+    mkdirSync10(dirname11(this.file), { recursive: true, mode: 448 });
     atomicPrivateJSON(this.file, next);
     this.state = next;
   }
@@ -9968,9 +10665,9 @@ var init_claude_task_sessions = __esm(() => {
 
 // src/adapters/claude-implementer.ts
 import { randomUUID as randomUUID8 } from "crypto";
-import { lstatSync as lstatSync10, mkdtempSync as mkdtempSync5, rmSync as rmSync6, writeFileSync as writeFileSync7 } from "fs";
+import { lstatSync as lstatSync11, mkdtempSync as mkdtempSync5, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
-import { join as join16 } from "path";
+import { join as join17 } from "path";
 function claudeImplementerArgs(turn, mcp, settings, prompt) {
   return [
     "-p",
@@ -10002,10 +10699,10 @@ function claudeImplementerArgs(turn, mcp, settings, prompt) {
 async function proveClaudeImplementer(peer, command) {
   const binary = Bun.which(command[0], { PATH: process.env.PATH }) ?? command[0];
   const fingerprint = () => {
-    const file = realPath(binary), stat = lstatSync10(file);
+    const file = realPath(binary), stat = lstatSync11(file);
     return [file, stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
   };
-  const binding = fingerprint(), home = mkdtempSync5(join16(tmpdir5(), "ahub-claude-proof-"));
+  const binding = fingerprint(), home = mkdtempSync5(join17(tmpdir5(), "ahub-claude-proof-"));
   let version = "", timedOut = false;
   const child = new OwnedPrintChild({
     peer,
@@ -10014,7 +10711,7 @@ async function proveClaudeImplementer(peer, command) {
     cwd: home,
     input: "",
     envMode: "replace",
-    env: { PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: join16(home, ".claude") },
+    env: { PATH: process.env.PATH, HOME: home, CLAUDE_CONFIG_DIR: join17(home, ".claude") },
     maxFrameBytes: 4096,
     maxOutputBytes: 4096,
     onLine: (line) => {
@@ -10085,7 +10782,7 @@ var init_claude_implementer = __esm(() => {
       if (options.mode !== undefined && options.mode !== "ask" && options.mode !== "ask-when-needed")
         throw new Error("Claude implementer refuses unsupported permission mode");
       this.mode = options.mode ?? "ask";
-      this.sessions = new ClaudeTaskSessions(join16(options.stateDir, claudeStateFile("claude-task-sessions", id)));
+      this.sessions = new ClaudeTaskSessions(join17(options.stateDir, claudeStateFile("claude-task-sessions", id)));
     }
     get permissionModeState() {
       return this.mode;
@@ -10231,9 +10928,9 @@ var init_claude_implementer = __esm(() => {
               this.options.notify?.(`${this.id}: task #${group.task} session fresh; recorded transcript is missing`);
             }
           }
-          const launchId = randomUUID8(), directory = mkdtempSync5(join16(this.options.stateDir, "claude-child-")), settings = join16(directory, "settings.json");
+          const launchId = randomUUID8(), directory = mkdtempSync5(join17(this.options.stateDir, "claude-child-")), settings = join17(directory, "settings.json");
           this.cleanup = () => rmSync6(directory, { recursive: true, force: true });
-          writeFileSync7(settings, sessionSettings(undefined, { script: this.options.factsHook, stateDir: this.options.stateDir, purpose: "permission" }), { mode: 384, flag: "wx" });
+          writeFileSync8(settings, sessionSettings(undefined, { script: this.options.factsHook, stateDir: this.options.stateDir, purpose: "permission" }), { mode: 384, flag: "wx" });
           const env = {
             AGENTHUB_MODE: "tools",
             AGENTHUB_PEER_ID: this.id,
@@ -10367,6 +11064,14 @@ function createJcode(ctx) {
   init_jcode();
   return new JcodePeer(ctx.daemon.jcode);
 }
+function createQwenDual(ctx) {
+  if (!("qwenDual" in ctx.daemon))
+    throw new Error("Qwen TUI requires its dual-output transport options");
+  if (ctx.permission === "read-only")
+    throw new Error("Qwen has no verified read-only permission mapping");
+  init_qwen_dual();
+  return new QwenDualPeer(ctx.instance, ctx.daemon.qwenDual);
+}
 function createPi(ctx) {
   if (!("pi" in ctx.daemon))
     throw new Error("Pi requires its Pi transport options");
@@ -10418,6 +11123,7 @@ var init_native_factories = __esm(() => {
   DAEMON_PORTS = {
     "codex-appserver": (options) => ({ codex: options }),
     acp: (options) => ({ acp: options }),
+    "qwen-dual": (options) => ({ qwenDual: options }),
     "owned-acp": (options) => ({ jcode: options }),
     "pi-rpc": (options) => ({ pi: options }),
     "local-worker": (options) => ({ local: options }),
@@ -10489,9 +11195,9 @@ var init_reviewer_variants = __esm(() => {
 });
 
 // src/adapters/agy/hooks.ts
-import { closeSync as closeSync6, constants as constants5, fstatSync as fstatSync5, lstatSync as lstatSync11, openSync as openSync6, readSync as readSync4 } from "fs";
+import { closeSync as closeSync7, constants as constants6, fstatSync as fstatSync6, lstatSync as lstatSync12, openSync as openSync7, readSync as readSync5 } from "fs";
 import { homedir as homedir5 } from "os";
-import { isAbsolute as isAbsolute6, join as join17, relative as relative5 } from "path";
+import { isAbsolute as isAbsolute6, join as join18, relative as relative5 } from "path";
 import { createHash as createHash6 } from "crypto";
 function decodeAgyHook(event, value) {
   if (!EVENTS2.includes(event) || !record3(value) || typeof value.conversationId !== "string" || !UUID2.test(value.conversationId) || typeof value.transcriptPath !== "string" || !isAbsolute6(value.transcriptPath) || value.transcriptPath.length > 4096 || !Array.isArray(value.workspacePaths) || !value.workspacePaths.length || value.workspacePaths.length > 32 || !value.workspacePaths.every((path) => typeof path === "string" && path.length <= 4096 && isAbsolute6(path)))
@@ -10529,19 +11235,19 @@ function readAgyTranscript(session, transcript) {
   if (!UUID2.test(session))
     return empty;
   const home = process.env.HOME ?? homedir5();
-  const candidates = ["antigravity-cli", "antigravity", "antigravity-ide"].map((surface) => join17(home, ".gemini", surface, "brain", session, ".system_generated/logs/transcript_full.jsonl"));
+  const candidates = ["antigravity-cli", "antigravity", "antigravity-ide"].map((surface) => join18(home, ".gemini", surface, "brain", session, ".system_generated/logs/transcript_full.jsonl"));
   if (!candidates.includes(transcript))
     return empty;
   let fd;
   try {
     let cursor = home;
     for (const name of relative5(home, transcript).split("/")) {
-      cursor = join17(cursor, name);
-      if (lstatSync11(cursor).isSymbolicLink())
+      cursor = join18(cursor, name);
+      if (lstatSync12(cursor).isSymbolicLink())
         return empty;
     }
-    fd = openSync6(transcript, constants5.O_RDONLY | constants5.O_NOFOLLOW);
-    const stat = fstatSync5(fd);
+    fd = openSync7(transcript, constants6.O_RDONLY | constants6.O_NOFOLLOW);
+    const stat = fstatSync6(fd);
     if (!stat.isFile() || stat.nlink !== 1)
       return empty;
     const cap = 4 * 1024 * 1024;
@@ -10550,7 +11256,7 @@ function readAgyTranscript(session, transcript) {
       const buffer = Buffer.alloc(stat.size - from);
       let bytes = 0;
       while (bytes < buffer.length) {
-        const count = readSync4(fd, buffer, bytes, buffer.length - bytes, from + bytes);
+        const count = readSync5(fd, buffer, bytes, buffer.length - bytes, from + bytes);
         if (!count)
           break;
         bytes += count;
@@ -10583,7 +11289,7 @@ function readAgyTranscript(session, transcript) {
     return empty;
   } finally {
     if (fd !== undefined)
-      closeSync6(fd);
+      closeSync7(fd);
   }
 }
 var EVENTS2, UUID2, record3 = (value) => !!value && typeof value === "object" && !Array.isArray(value), AGY_FACTS_HOOK;
@@ -10662,7 +11368,7 @@ function builtinCliEntries(definitions) {
 }
 // src/adapters/definitions/native-cli-entry-claude.ts
 import { readFileSync as readFileSync9 } from "fs";
-import { join as join18 } from "path";
+import { join as join19 } from "path";
 import { randomUUID as randomUUID9 } from "crypto";
 async function runClaudeEntry(ctx) {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, fail } = ctx;
@@ -10713,17 +11419,17 @@ async function runClaudeEntry(ctx) {
     }
   }
   let original;
-  for (const file of [join18(executionCwd, ".claude", "settings.local.json"), join18(executionCwd, ".claude", "settings.json"), join18(process.env.HOME ?? "", ".claude", "settings.json")]) {
+  for (const file of [join19(executionCwd, ".claude", "settings.local.json"), join19(executionCwd, ".claude", "settings.json"), join19(process.env.HOME ?? "", ".claude", "settings.json")]) {
     try {
       original ??= JSON.parse(readFileSync9(file, "utf8")).statusLine;
     } catch {}
   }
-  const facts = claudeObservationHooks(projectConfig(), { script: join18(cliDir, "facts-hook.ts"), stateDir });
+  const facts = claudeObservationHooks(projectConfig(), { script: join19(cliDir, "facts-hook.ts"), stateDir });
   let previousLaunch;
   try {
-    previousLaunch = JSON.parse(readFileSync9(join18(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
+    previousLaunch = JSON.parse(readFileSync9(join19(stateDir, claudeStateFile("claude-launch", peer)), "utf8"));
   } catch {}
-  const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join18(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
+  const launch = buildLaunch("claude", args, { unattended: unattendedEnv, statusLine: { script: join19(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original } : {} }, ...facts ? { facts } : {} });
   let result;
   try {
     let launchRecord;
@@ -11208,7 +11914,7 @@ var init_native_cli_entry_jcode = () => {};
 
 // src/adapters/definitions/native-cli-preview-claude.ts
 import { readFileSync as readFileSync10 } from "fs";
-import { join as join19 } from "path";
+import { join as join20 } from "path";
 function previewClaude(ctx) {
   const { args, cwd, stateDir, cliDir, unattended, config } = ctx;
   const { buildLaunch, claudeObservationHooks } = ctx.helpers;
@@ -11216,13 +11922,13 @@ function previewClaude(ctx) {
   let envNames = state.envNames;
   let launch;
   let original;
-  for (const file of [join19(cwd, ".claude/settings.local.json"), join19(cwd, ".claude/settings.json"), join19(process.env.HOME ?? "", ".claude/settings.json")]) {
+  for (const file of [join20(cwd, ".claude/settings.local.json"), join20(cwd, ".claude/settings.json"), join20(process.env.HOME ?? "", ".claude/settings.json")]) {
     try {
       original ??= JSON.parse(readFileSync10(file, "utf8")).statusLine;
     } catch {}
   }
-  const facts = claudeObservationHooks(config, { script: join19(cliDir, "facts-hook.ts"), stateDir });
-  launch = buildLaunch("claude", args, { preview: true, unattended, statusLine: { script: join19(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {} }, ...facts ? { facts } : {} });
+  const facts = claudeObservationHooks(config, { script: join20(cliDir, "facts-hook.ts"), stateDir });
+  launch = buildLaunch("claude", args, { preview: true, unattended, statusLine: { script: join20(cliDir, "statusline-tee.ts"), stateDir, ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {} }, ...facts ? { facts } : {} });
   const safeArgs = args.map((arg, i) => {
     if (args[i - 1] === "--settings")
       return "{}";
@@ -11233,7 +11939,7 @@ function previewClaude(ctx) {
     return publicArg(arg);
   });
   const publicLaunch = buildLaunch("claude", safeArgs, { preview: true, unattended, statusLine: {
-    script: join19(cliDir, "statusline-tee.ts"),
+    script: join20(cliDir, "statusline-tee.ts"),
     stateDir,
     ...original ? { original: { command: original.command ? REDACTED : "", ...typeof original.refreshInterval === "number" && Number.isFinite(original.refreshInterval) ? { refreshInterval: original.refreshInterval } : {}, ...typeof original.padding === "number" && Number.isFinite(original.padding) ? { padding: original.padding } : {} } } : {}
   }, facts });
@@ -11266,7 +11972,7 @@ function previewCodex(ctx) {
 var init_native_cli_preview_codex = () => {};
 
 // src/adapters/definitions/native-cli-preview-kimi.ts
-import { join as join20 } from "path";
+import { join as join21 } from "path";
 function previewKimi(ctx) {
   const { args, cwd, stateDir, cliDir, config } = ctx;
   const { childEnv, startModeOf, buildKimiLaunch, buildKimiTuiLaunch, nativeLaunchEnv, kimiMcpPlan } = ctx.helpers;
@@ -11289,14 +11995,14 @@ function previewKimi(ctx) {
     launch = { ...native, cmd: native.cmd === "kimi" ? "kimi" : REDACTED, args: native.args.map((arg) => arg === "--model" || arg === REDACTED ? arg : REDACTED) };
     envNames = Object.keys(nativeLaunchEnv("kimi", childEnv())).concat(["AGENTHUB_STATE_DIR", "AGENTHUB_PROJECT_DIR"]);
   }
-  const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join20(cliDir, "../../plugins/agent-hub/server.js"), mode);
+  const { file, action, changed, tracked } = kimiMcpPlan(cwd, stateDir, join21(cliDir, "../../plugins/agent-hub/server.js"), mode);
   kimiMetadata = { mode, mcp: { file, action, changed, tracked } };
   return finishPreview(ctx, launch, envNames, unresolved, kimiMetadata);
 }
 var init_native_cli_preview_kimi = () => {};
 
 // src/adapters/definitions/native-cli-preview-pi.ts
-import { join as join21, resolve as resolve15 } from "path";
+import { join as join22, resolve as resolve15 } from "path";
 function previewPi(ctx) {
   const { args, stateDir, cliDir, config } = ctx;
   const { relayModelIds, buildPiLaunch, startModeOf } = ctx.helpers;
@@ -11331,7 +12037,7 @@ function previewPi(ctx) {
     tools: [],
     preamble: REDACTED,
     maxSteps: config.pi.max_steps
-  }, {}, resolve15(join21(cliDir, "../pi/extension.ts")), UNRESOLVED, UNRESOLVED);
+  }, {}, resolve15(join22(cliDir, "../pi/extension.ts")), UNRESOLVED, UNRESOLVED);
   launch = pi;
   envNames = Object.keys(pi.env).concat(["PATH", "HOME", "USER", "SHELL", "TMPDIR", "TERM", "TERM_PROGRAM", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "CODEX_HOME"].filter((key) => process.env[key] !== undefined));
   if (mode === "tui")
@@ -11416,8 +12122,8 @@ var init_native_config_policy = __esm(() => {
 });
 
 // src/adapters/definitions/native-policy-aux.ts
-import { closeSync as closeSync7, constants as constants6, fstatSync as fstatSync6, openSync as openSync7, readdirSync as readdirSync3, readFileSync as readFileSync11 } from "fs";
-import { isAbsolute as isAbsolute7, join as join22, normalize } from "path";
+import { closeSync as closeSync8, constants as constants7, fstatSync as fstatSync7, openSync as openSync8, readdirSync as readdirSync3, readFileSync as readFileSync11 } from "fs";
+import { isAbsolute as isAbsolute7, join as join23, normalize } from "path";
 function claudeCrashPlan(_meta) {
   return { how: "claude: the Claude Code plugin reconnects by itself while that session is still open" };
 }
@@ -11462,13 +12168,13 @@ function localCrashPlan(meta) {
 }
 function claudePlugins(root, cwd) {
   const enabled = new Map;
-  for (const file of [join22(root, "settings.json"), ...cwd ? [join22(cwd, ".claude", "settings.json"), join22(cwd, ".claude", "settings.local.json")] : []]) {
+  for (const file of [join23(root, "settings.json"), ...cwd ? [join23(cwd, ".claude", "settings.json"), join23(cwd, ".claude", "settings.local.json")] : []]) {
     const map = json(file)?.enabledPlugins;
     if (map && typeof map === "object")
       for (const [key, on] of Object.entries(map))
         enabled.set(key, on === true);
   }
-  const installed = json(join22(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
+  const installed = json(join23(root, "plugins", "installed_plugins.json"))?.plugins ?? {};
   const out = [];
   for (const [key, on] of enabled) {
     if (!on)
@@ -11482,7 +12188,7 @@ function claudePlugins(root, cwd) {
   return out;
 }
 function codexPlugins(root) {
-  const config = text(join22(root, "config.toml"));
+  const config = text(join23(root, "config.toml"));
   if (config === undefined)
     return [];
   const found = new Map, disabled = new Set;
@@ -11501,7 +12207,7 @@ function codexPlugins(root) {
       continue;
     let versions = [];
     try {
-      versions = readdirSync3(join22(root, "plugins", "cache", market, plugin));
+      versions = readdirSync3(join23(root, "plugins", "cache", market, plugin));
     } catch {}
     out.push({ name, version: versions.length === 1 ? version2(versions[0]) : null });
   }
@@ -11521,8 +12227,8 @@ function absoluteContinuityPath(value) {
 var str3 = (value) => typeof value === "string" && value ? value : undefined, PLUGINS, CLAUDE_ONLY, text = (file) => {
   let fd;
   try {
-    fd = openSync7(file, constants6.O_RDONLY | constants6.O_NONBLOCK);
-    const st = fstatSync6(fd);
+    fd = openSync8(file, constants7.O_RDONLY | constants7.O_NONBLOCK);
+    const st = fstatSync7(fd);
     if (!st.isFile() || st.size > 1024 * 1024)
       return;
     return readFileSync11(fd, "utf8");
@@ -11530,7 +12236,7 @@ var str3 = (value) => typeof value === "string" && value ? value : undefined, PL
     return;
   } finally {
     if (fd !== undefined)
-      closeSync7(fd);
+      closeSync8(fd);
   }
 }, json = (file) => {
   try {
@@ -11539,7 +12245,7 @@ var str3 = (value) => typeof value === "string" && value ? value : undefined, PL
   } catch {
     return;
   }
-}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join22(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join22(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
+}, version2 = (v) => typeof v === "string" && /^[0-9A-Za-z.+_-]{1,40}$/.test(v) ? v : null, claudePluginInventory = (ctx) => claudePlugins(ctx.env.CLAUDE_CONFIG_DIR?.trim() || join23(ctx.home, ".claude"), ctx.cwd), codexPluginInventory = (ctx) => codexPlugins(ctx.env.CODEX_HOME?.trim() || join23(ctx.home, ".codex")), codexToolSemantic = (name, _command) => name.toLowerCase() === "filechange" ? "edit" : undefined;
 var init_native_policy_aux = __esm(() => {
   PLUGINS = new Map([["claude-mem", "claude-mem"], ["ponytail", "ponytail"], ["open-code-review", "open-code-review"]]);
   CLAUDE_ONLY = new Map([["codex@openai-codex", "codex-plugin"]]);
@@ -11582,9 +12288,9 @@ var init_native_cli_launch_common = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-claude-launch.ts
-import { mkdirSync as mkdirSync10, writeFileSync as writeFileSync8, renameSync as renameSync4, unlinkSync as unlinkSync3, readFileSync as readFileSync12 } from "fs";
+import { mkdirSync as mkdirSync11, writeFileSync as writeFileSync9, renameSync as renameSync5, unlinkSync as unlinkSync3, readFileSync as readFileSync12 } from "fs";
 import { randomUUID as randomUUID10 } from "crypto";
-import { resolve as resolve16, join as join23 } from "path";
+import { resolve as resolve16, join as join24 } from "path";
 function claudeChannel(userArgs) {
   const bundle = resolve16(import.meta.dir, "../../../plugins/agent-hub/server.js");
   for (let i = 0;i < userArgs.length; i++) {
@@ -11646,11 +12352,11 @@ function claudeNativeLaunch(ctx) {
       const stateDir = ctx.facts?.stateDir ?? ctx.statusLine?.stateDir;
       if (!stateDir)
         throw new Error("Claude session settings require the hub state directory");
-      const file = join23(stateDir, `claude-settings-${randomUUID10()}.json`);
+      const file = join24(stateDir, `claude-settings-${randomUUID10()}.json`);
       try {
-        mkdirSync10(stateDir, { recursive: true, mode: 448 });
-        writeFileSync8(`${file}.tmp`, settingsArgs[1], { mode: 384, flag: "wx" });
-        renameSync4(`${file}.tmp`, file);
+        mkdirSync11(stateDir, { recursive: true, mode: 448 });
+        writeFileSync9(`${file}.tmp`, settingsArgs[1], { mode: 384, flag: "wx" });
+        renameSync5(`${file}.tmp`, file);
       } catch {
         try {
           unlinkSync3(`${file}.tmp`);
@@ -11703,7 +12409,7 @@ var init_native_cli_codex_launch = __esm(() => {
 });
 
 // src/hub/events.ts
-import { appendFileSync, closeSync as closeSync8, existsSync as existsSync8, fstatSync as fstatSync7, openSync as openSync8, readFileSync as readFileSync13, readSync as readSync5 } from "fs";
+import { appendFileSync, closeSync as closeSync9, existsSync as existsSync8, fstatSync as fstatSync8, openSync as openSync9, readFileSync as readFileSync13, readSync as readSync6 } from "fs";
 function readEvents(file, since = 0) {
   if (!existsSync8(file))
     return [];
@@ -11725,13 +12431,13 @@ var init_events = () => {};
 // src/cli/recovery-session-file.ts
 import { statSync as statSync4 } from "fs";
 import { homedir as homedir6 } from "os";
-import { join as join24 } from "path";
+import { join as join25 } from "path";
 function checkedSessionPath(binding, kind) {
   if (kind === "rollout")
-    return join24(binding.launch.env.CODEX_HOME ?? join24(homedir6(), ".codex"), "sessions");
-  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join24(homedir6(), ".claude");
+    return join25(binding.launch.env.CODEX_HOME ?? join25(homedir6(), ".codex"), "sessions");
+  const config = binding.launch.env.CLAUDE_CONFIG_DIR ?? join25(homedir6(), ".claude");
   const slug = binding.projectRoot.replace(/[^a-zA-Z0-9]/g, "-");
-  return join24(config, "projects", slug, `${binding.sessionId}.jsonl`);
+  return join25(config, "projects", slug, `${binding.sessionId}.jsonl`);
 }
 function recordedFileState(file) {
   try {
@@ -11744,7 +12450,7 @@ var init_recovery_session_file = () => {};
 
 // src/adapters/definitions/native-recovery.ts
 import { readdirSync as readdirSync4 } from "fs";
-import { basename as basename5, join as join25 } from "path";
+import { basename as basename5, join as join26 } from "path";
 var rolloutState = (binding) => {
   try {
     return readdirSync4(checkedSessionPath(binding, "rollout"), { recursive: true }).some((name) => String(name).endsWith(".jsonl") && basename5(String(name)).includes(binding.sessionId));
@@ -11768,7 +12474,7 @@ var init_native_recovery = __esm(() => {
       if (phase !== "plan")
         return false;
       let current, started = false, turned = false;
-      for (const e of readEvents(join25(stateDir, "events.jsonl"))) {
+      for (const e of readEvents(join26(stateDir, "events.jsonl"))) {
         if (e.type === "native_thread" && e.peer === binding.peer) {
           current = e.thread;
           if (e.thread === binding.sessionId && e.fresh)
@@ -11832,7 +12538,12 @@ var init_native_recovery = __esm(() => {
   };
   QWEN_RECOVERY_SESSION = {
     legacyTargetSupport: { file: "src/hub/peer-catalog.ts", exportName: "OPTIONAL_PEERS", refusal: "target does not support Qwen; end Qwen and make a new plan, or choose a supporting target; runtimes unchanged" },
-    restoreArgs: (peer) => ({ ...startupArgs(peer), ...peer.sessionId ? { "session-id": peer.sessionId } : {} })
+    restoreArgs: (peer) => ({ ...startupArgs(peer), ...peer.sessionId ? { "session-id": peer.sessionId } : {} }),
+    recoveryRefusal: (peer, phase = "plan") => {
+      if (peer.args?.mode !== "tui")
+        return;
+      return phase === "restore" ? "Qwen's own terminal cannot be restored as a headless worker; end it in that terminal and make a new recovery plan" : "qwen: its own terminal has no automatic restore; end it in that terminal, then make a new recovery plan (restart it with ahub qwen --mode tui, which resumes its session)";
+    }
   };
 });
 
@@ -12305,9 +13016,15 @@ var init_builtin_metadata = __esm(() => {
 });
 
 // src/adapters/definitions/native-cli-entry-qwen.ts
+function verifiedLaunch(value) {
+  const launch = value;
+  if (!launch || typeof launch.cmd !== "string" || !launch.cmd || !Array.isArray(launch.args) || !launch.args.every((word) => typeof word === "string") || !launch.env || typeof launch.env !== "object" || Array.isArray(launch.env))
+    return;
+  return { cmd: launch.cmd, args: launch.args, env: launch.env };
+}
 async function runQwenEntry(ctx) {
   const peer = ctx.instance ?? "qwen";
-  const { args, cwd, stateDir, unattendedEnv, connect, fail, takeFlags } = ctx;
+  const { args, cwd, stateDir, unattendedEnv, connect, fail, takeFlags, execWithEnv } = ctx;
   const { launcherPreview } = ctx.helpers;
   if (args.includes("--print-command") || args.includes("--dry-run")) {
     try {
@@ -12318,28 +13035,52 @@ async function runQwenEntry(ctx) {
   }
   const { one, rest } = takeFlags(args, ["--mode", "--model", "--session-id"], []);
   const adapter = ctx.definition;
+  const usage = "usage: ahub qwen [--mode headless|tui] [--model <alias>] [--session-id <id>]";
   if (one["--session-id"] !== undefined && !adapter.session.crashIdentity?.({ sessionId: one["--session-id"] }).sessionId)
     fail("invalid Qwen session identity");
-  if (rest.length || one["--mode"] !== undefined && !adapter.start.forms.includes(one["--mode"]))
-    fail("Qwen TUI is not offered before verification; usage: ahub qwen [--mode headless] [--model <alias>] [--session-id <id>]");
+  if (rest.length || one["--mode"] !== undefined && !["headless", "tui"].includes(one["--mode"]))
+    fail(usage);
+  const mode = one["--mode"] === "tui" ? "tui" : "headless";
+  if (mode === "tui" && ctx.instance)
+    fail("extra Qwen instances require headless mode");
+  if (mode === "tui" && !(process.stdin.isTTY && process.stdout.isTTY))
+    fail("Qwen's TUI needs a terminal: run ahub qwen --mode tui in one, or use --mode headless");
   const hub = await connect();
+  let launch;
   try {
     const snapshot = (await hub.request({ t: "status" })).status;
     const warning = retainedLaunchWarning(snapshot, peer, ctx.definition);
     if (warning)
       console.error(warning);
-    const reply = await hub.request({ t: "start", peer, args: { mode: "headless", ...one["--model"] ? { model: one["--model"] } : {}, ...one["--session-id"] ? { sessionId: one["--session-id"] } : {} }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35000);
+    const reply = await hub.request({ t: "start", peer, args: { mode, ...one["--model"] ? { model: one["--model"] } : {}, ...one["--session-id"] ? { sessionId: one["--session-id"] } : {} }, operationId: process.env.AGENTHUB_RECOVERY_OPERATION }, 35000);
     if (!reply.ok)
       fail(reply.error);
-    console.log(reply.already ? `${peer} is already attached` : `${peer} attached (headless); use ahub say @${peer} and the console for approvals`);
+    if (mode === "tui") {
+      if (reply.already)
+        return console.log("qwen is already attached (its TUI is running); use that terminal");
+      if (reply.adopted)
+        return console.log("qwen: the hub read on from its saved position; the Qwen terminal it was driving is still running");
+      launch = reply.launch;
+    } else
+      console.log(reply.already ? `${peer} is already attached` : `${peer} attached (headless); use ahub say @${peer} and the console for approvals`);
   } finally {
     hub.close();
   }
+  if (mode !== "tui")
+    return;
+  const verified = verifiedLaunch(launch);
+  if (!verified)
+    return fail("Qwen TUI launch metadata was not verified");
+  const env = { ...verified.env };
+  delete env.AGENTHUB_RECOVERY_OPERATION;
+  delete env.AGENTHUB_UNATTENDED;
+  console.error("Qwen runs in this terminal, driven by the hub through its dual-output files. Limits: a hub deny ends the turn without an answer, and a stalled turn is stopped only by pressing Esc here.");
+  return execWithEnv(verified.cmd, verified.args, env);
 }
 var init_native_cli_entry_qwen = () => {};
 
 // src/adapters/definitions/native-cli-preview-qwen.ts
-import { join as join26 } from "path";
+import { join as join27 } from "path";
 function previewQwen(ctx) {
   const { tool, args, cwd, stateDir, cliDir, config } = ctx;
   const state = previewState(args, ctx.baseEnvNames), { unresolved, value } = state;
@@ -12347,8 +13088,8 @@ function previewQwen(ctx) {
   let launch;
   const mode = value("--mode") ?? "headless", model = value("--model");
   const adapter = ctx.definition;
-  if (!adapter.start.forms.includes(mode))
-    throw new Error("Qwen TUI is not offered before verification");
+  if (!["headless", "tui"].includes(mode))
+    throw new Error("unknown Qwen mode");
   for (let i = 0;i < args.length; i += 2)
     if (!["--model", "--mode", "--session-id"].includes(args[i]) || !args[i + 1])
       throw new Error("unknown Qwen option");
@@ -12357,12 +13098,19 @@ function previewQwen(ctx) {
     throw new Error("invalid Qwen session identity");
   if (sessionId)
     unresolved.push({ field: "sessionId", reason: "requested through ACP session/load at start; preview does not load or expose it" });
+  if (mode === "tui") {
+    const [bin = "qwen", ...prefix] = nativeCommand(config.qwen_cmd, ["qwen"]).filter((word) => word !== "--acp");
+    launch = { cmd: bin, args: [...prefix, "--input-file", "<state dir>/qwen/qwen-dual/input.jsonl", "--json-file", "<state dir>/qwen/qwen-dual/events.jsonl", "--mcp-config", "<state dir>/qwen/qwen-dual/mcp.json", "--approval-mode", "default", ...model ? ["--model", REDACTED] : [], ...sessionId ? ["-r", REDACTED] : []] };
+    unresolved.push({ field: "files", reason: "the daemon prepares the input and event files (0600) when the start is admitted; preview creates nothing" });
+    unresolved.push({ field: "nativeIdentity", reason: `Qwen Code (${describe("qwen-dual")}) is checked before the start and again from its session_start event; preview starts nothing` });
+    return finishPreview(ctx, launch, envNames, unresolved, undefined);
+  }
   launch = adapter.start.launch({
     instance: tool,
     form: "headless",
     projectRoot: cwd,
     stateDir,
-    entrypoint: join26(cliDir, "main.js"),
+    entrypoint: join27(cliDir, "main.js"),
     userArgs: [],
     unattended: false,
     env: {},
@@ -12387,6 +13135,7 @@ var init_qwen = __esm(() => {
   init_native_recovery();
   init_acp();
   init_qwen_native();
+  init_native_factories();
   QWEN_DEFINITION = {
     api: 1,
     kind: "qwen",
@@ -12405,10 +13154,11 @@ var init_qwen = __esm(() => {
       conductorStartable: true,
       hubSwitches: [],
       ownedFlags: [],
-      preflight: (request) => request.form !== undefined && request.form !== "headless" ? "Qwen TUI is not offered before its native verification; use ahub qwen --mode headless" : undefined,
+      preflight: (request) => request.form !== undefined && request.form !== "headless" && request.form !== "tui" ? "unknown Qwen mode; usage: ahub qwen [--mode headless|tui]" : undefined,
+      createTui: createQwenDual,
       launch: (context) => {
         if (context.form !== "headless")
-          throw new Error("Qwen TUI is not offered before its native verification; use ahub qwen --mode headless");
+          throw new Error("the Qwen TUI is launched from the files the daemon prepares; use ahub qwen --mode tui");
         const launch = buildQwenLaunch(context.nativeCommand ?? ["qwen", "--acp"], context.model);
         const argv = [launch.cmd, ...launch.args];
         return { ...launch, metadata: { packageEntrypoint: context.entrypoint, argv, command: argv.map(shellQuote3).join(" "), env: {} } };
@@ -12448,7 +13198,7 @@ var init_qwen = __esm(() => {
     turnEnd: "adapter",
     budget: { account: "qwen" },
     capabilities: { watch: true },
-    cli: { command: "qwen", entry: { lifecycleAdmission: true, execute: runQwenEntry }, preview: previewQwen, usage: [["ahub qwen [--mode headless] [--model <alias>] [--session-id <id>] [--print-command]", `start optional Qwen Code ACP (${describe("qwen")}; roster.qwen, default off)`]], launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
+    cli: { command: "qwen", entry: { lifecycleAdmission: true, execute: runQwenEntry }, preview: previewQwen, usage: [["ahub qwen [--mode headless|tui] [--model <alias>] [--session-id <id>] [--print-command]", `start optional Qwen Code ACP (${describe("qwen")}; roster.qwen, default off); --mode tui runs Qwen's own TUI in this terminal, driven through its dual-output files (${describe("qwen-dual")}); a hub deny ends the turn without an answer and a stalled turn is stopped with Esc in the Qwen terminal`]], launchConfigKeys: ["qwen_cmd"], startWords: () => ["qwen"] },
     display: QWEN_DISPLAY,
     hooks: { recallPlatform: "qwen" }
   };
@@ -12827,6 +13577,8 @@ function assertNativeCapabilityScope(definition) {
     ["session.crashIdentity", declared(definition.session, "crashIdentity")],
     ["session.nativeRevert", declared(definition.session, "nativeRevert")],
     ["start.daemonPort pi-rpc", definition.start.daemonPort === "pi-rpc"],
+    ["start.daemonPort qwen-dual", definition.start.daemonPort === "qwen-dual"],
+    ["start.createTui", declared(definition.start, "createTui")],
     ["routing", definition.routing !== undefined],
     ["projection", definition.projection !== undefined],
     ["instances.nativeHome", declared(definition.instances, "nativeHome")],
@@ -20230,7 +20982,7 @@ init_project();
 // src/hub/instance-config.ts
 init_registry();
 import { readFileSync as readFileSync15 } from "fs";
-import { join as join29 } from "path";
+import { join as join30 } from "path";
 
 // src/adapters/external-metadata.ts
 import { types as types3 } from "util";
@@ -20307,8 +21059,8 @@ init_registry();
 // src/hub/config-trust.ts
 init_child_process();
 init_git();
-import { lstatSync as lstatSync12, statSync as statSync5 } from "fs";
-import { dirname as dirname12, join as join27 } from "path";
+import { lstatSync as lstatSync13, statSync as statSync5 } from "fs";
+import { dirname as dirname12, join as join28 } from "path";
 var MACHINE_LOCAL = [
   "kimi_cmd",
   "permission_modes",
@@ -20340,7 +21092,7 @@ function configTracked(cwd, name) {
     return;
   let opened;
   try {
-    opened = statSync5(join27(cwd, ".agenthub", name));
+    opened = statSync5(join28(cwd, ".agenthub", name));
   } catch {}
   return r.stdout.split("\x00").filter(Boolean).some((row) => {
     const path = row.slice(row.indexOf("\t") + 1);
@@ -20349,7 +21101,7 @@ function configTracked(cwd, name) {
     if (!opened)
       return path === `.agenthub/${name}`;
     try {
-      const s = statSync5(join27(cwd, path));
+      const s = statSync5(join28(cwd, path));
       return !!opened && s.dev === opened.dev && s.ino === opened.ino;
     } catch {
       return false;
@@ -20406,7 +21158,7 @@ function readAdapterModuleDeclarations(cwd, layers) {
 // src/hub/control-client.ts
 init_project();
 import { readFileSync as readFileSync14 } from "fs";
-import { join as join28, resolve as resolve17 } from "path";
+import { join as join29, resolve as resolve17 } from "path";
 function stateDirFor(cwd) {
   return projectContext(cwd).stateDir;
 }
@@ -20414,8 +21166,8 @@ var PROTOCOL = 16;
 var RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, PROTOCOL];
 function readControl(stateDir) {
   try {
-    const status = JSON.parse(readFileSync14(join28(stateDir, "status.json"), "utf8"));
-    const token = readFileSync14(join28(stateDir, "control-token"), "utf8").trim();
+    const status = JSON.parse(readFileSync14(join29(stateDir, "status.json"), "utf8"));
+    const token = readFileSync14(join29(stateDir, "control-token"), "utf8").trim();
     if (!Number.isInteger(status.controlPort) || status.controlPort < 1 || status.controlPort > 65535 || !token)
       return;
     const startModes = status.startModes && typeof status.startModes === "object" && !Array.isArray(status.startModes) ? Object.fromEntries(Object.entries(status.startModes).filter((entry) => entry[1] === "tui" || entry[1] === "headless")) : undefined;
@@ -20908,13 +21660,13 @@ init_workflow();
 init_deliverables();
 
 // src/hub/deliverable-files.ts
-import { constants as constants7, lstatSync as lstatSync13 } from "fs";
+import { constants as constants8, lstatSync as lstatSync14 } from "fs";
 init_tools();
 init_permission_mode();
 init_project();
 init_deliverables();
 var CHUNK = 1024 * 1024;
-var NOFOLLOW = constants7.O_NOFOLLOW ?? 0;
+var NOFOLLOW = constants8.O_NOFOLLOW ?? 0;
 
 // src/hub/tasks.ts
 init_board();
@@ -21146,7 +21898,7 @@ var INSTANCE_CONFIG_FILES = ["config.json", "config.local.json"];
 function readInstanceConfigLayers(cwd) {
   return INSTANCE_CONFIG_FILES.flatMap((name) => {
     try {
-      return [{ name, raw: JSON.parse(readFileSync15(join29(cwd, ".agenthub", name), "utf8")) }];
+      return [{ name, raw: JSON.parse(readFileSync15(join30(cwd, ".agenthub", name), "utf8")) }];
     } catch (error) {
       if (error.code === "ENOENT")
         return [];
@@ -29500,7 +30252,7 @@ class StdioServerTransport {
 
 // src/adapters/claude-channel.ts
 import { readFileSync as readFileSync16 } from "fs";
-import { join as join30 } from "path";
+import { join as join31 } from "path";
 init_hub_tools();
 init_envelope();
 
@@ -29542,7 +30294,7 @@ var channel = !toolsMode && process.env.AGENTHUB_CHANNEL === "1";
 function roles2() {
   const read = (name) => {
     try {
-      return JSON.parse(readFileSync16(join30(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
+      return JSON.parse(readFileSync16(join31(projectRoot2, ".agenthub", name), "utf8")).roles ?? {};
     } catch {
       return {};
     }
@@ -29561,7 +30313,7 @@ function sessionProfile() {
     for (const name of ["config.json", "config.local.json"]) {
       let data;
       try {
-        data = JSON.parse(readFileSync16(join30(projectRoot2, ".agenthub", name), "utf8"));
+        data = JSON.parse(readFileSync16(join31(projectRoot2, ".agenthub", name), "utf8"));
       } catch (error) {
         if (error.code === "ENOENT")
           continue;
@@ -29588,7 +30340,7 @@ function sessionRoles() {
     const read = (name) => {
       let raw;
       try {
-        raw = JSON.parse(readFileSync16(join30(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
+        raw = JSON.parse(readFileSync16(join31(projectRoot2, ".agenthub", name), "utf8")).catalog_roles;
       } catch {
         return {};
       }
@@ -29618,7 +30370,7 @@ var HELD = `another session is attached to the hub as "${peerId}"; this one is s
 var INBOX_CAP = 200;
 function peerHeld() {
   try {
-    const status = JSON.parse(readFileSync16(join30(stateDir, "status.json"), "utf8"));
+    const status = JSON.parse(readFileSync16(join31(stateDir, "status.json"), "utf8"));
     const peer = status.peers?.[peerId];
     if (channel && peer?.toolsOnly && !peer.claiming)
       return false;

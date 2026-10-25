@@ -24,6 +24,13 @@ export function createJcode(ctx: CreateContext): PeerAdapter {
   return new JcodePeer(ctx.daemon.jcode);
 }
 
+export function createQwenDual(ctx: CreateContext): PeerAdapter {
+  if (!("qwenDual" in ctx.daemon)) throw new Error("Qwen TUI requires its dual-output transport options");
+  if (ctx.permission === "read-only") throw new Error("Qwen has no verified read-only permission mapping");
+  const { QwenDualPeer } = require("../qwen-dual.ts") as typeof import("../qwen-dual.ts");
+  return new QwenDualPeer(ctx.instance, ctx.daemon.qwenDual);
+}
+
 export function createPi(ctx: CreateContext): PeerAdapter {
   if (!("pi" in ctx.daemon)) throw new Error("Pi requires its Pi transport options");
   if (ctx.permission === "read-only") throw new Error("Pi has no verified read-only permission mapping");
@@ -71,6 +78,7 @@ export function createClaudeImplementer(ctx: CreateContext): PeerAdapter {
 export const DAEMON_PORTS = {
   "codex-appserver": (options: Extract<DaemonPorts, { codex: unknown }>["codex"]) => ({ codex: options }),
   acp: (options: Extract<DaemonPorts, { acp: unknown }>["acp"]) => ({ acp: options }),
+  "qwen-dual": (options: Extract<DaemonPorts, { qwenDual: unknown }>["qwenDual"]) => ({ qwenDual: options }),
   "owned-acp": (options: Extract<DaemonPorts, { jcode: unknown }>["jcode"]) => ({ jcode: options }),
   "pi-rpc": (options: Extract<DaemonPorts, { pi: unknown }>["pi"]) => ({ pi: options }),
   "local-worker": (options: Extract<DaemonPorts, { local: unknown }>["local"]) => ({ local: options }),
