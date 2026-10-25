@@ -4177,6 +4177,21 @@ export class Tasks {
     return admitted;
   }
 
+  /**
+   * #824: one `Hub-verified at <head>` line from the review admission, for every reviewer. Ready: the required checks that passed at this exact head (and an identical-tree run when the hub
+   * reused one) and that no bot review thread is waiting for a reply (the readiness rule: an unresolved thread a person already answered does not block, so the line says exactly that). Not ready (advise mode sends anyway): its blockers. No admission (sdlc off, or a request sent without one) and a PII task: no block, the
+   * admission of a PII task being only a stub. Every word comes from the hub's own readiness read; blockers are fixed hub strings, never PR text.
+   */
+  private hubVerifiedBlock(task: Task, admission?: ReviewReadiness): string {
+    if (!admission || this.isPii(task)) return "";
+    const head = admission.head ?? this.reviewHead(task) ?? "unknown head";
+    if (admission.ready) {
+      const names = admission.checks?.length ? admission.checks.join(", ") : "the required checks";
+      return `Hub-verified at ${head}: required checks ${names} passed at this exact head${admission.reusedRun !== undefined ? ` via identical-tree run ${admission.reusedRun}` : ""}; no bot review thread is waiting for a reply.\n`;
+    }
+    return `Hub-verified at ${head}: not ready: ${admission.blockers.join("; ")}.\n`;
+  }
+
   private sendReview(task: Task, reviewer: PeerId, why = "", admission?: ReviewReadiness): boolean {
     const mode = (this.d.sdlc?.config() ?? sdlcConfig(undefined)).mode;
     if (mode === "enforce" && !admission?.ready) {
@@ -4201,7 +4216,12 @@ export class Tasks {
       : profile.name === "general"
         ? "No check ran for this class: verify the outcome yourself."
         : "No check ran for this class: run the affected tests yourself.";
-    const checkResult = check ? `Check result: ${(check.note ?? "").split("\n")[0]}` : noCheckWording;
+    // #824: the hub's own exact-head CI evidence, from the admission this request already carries (no new gh call). Nothing here comes from the builder's summary or a recorded claim.
+    const verified = this.hubVerifiedBlock(task, admission);
+    const ciPassed = admission?.ready === true && !this.isPii(task);
+    const checkResult = check ? `Check result: ${(check.note ?? "").split("\n")[0]}`
+      : ciPassed ? "CI passed at this exact head (see the Hub-verified line above); do not list test execution or CI evidence as unmet: name the specific missing test or behaviour instead."
+      : noCheckWording;
     const checklistTemplates = profile.review_checklist ?? [
       "Map the changed signatures and call sites to {target}, and name each one that does not match.",
       "{check}",
@@ -4243,7 +4263,7 @@ export class Tasks {
     const brief = this.briefText(task);
     // #572 AC3: advisory only, from git state never from task text, so it is safe for a PII task too.
     const checkout = mainCheckoutWarning(this.d.cwd, this.publicMetadataText);
-    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${last?.noWrites ? "no writes recorded since acceptance\n" : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${carriedText}${conformanceText}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet, findings: [{id, pass: "bugs" | "security" | "compliance", severity: "important" | "nit", path?, disposition: "open" | "fixed" | "false_positive"}]}. Reuse finding ids when updating their disposition; only the person may accept a finding with a rationale.`;
+    const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${last?.noWrites ? "no writes recorded since acceptance\n" : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${carriedText}${conformanceText}${verified}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet, findings: [{id, pass: "bugs" | "security" | "compliance", severity: "important" | "nit", path?, disposition: "open" | "fixed" | "false_positive"}]}. Reuse finding ids when updating their disposition; only the person may accept a finding with a rationale.`;
     return this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, ...(this.reviewHead(task) ? { commit: this.reviewHead(task)! } : {}), task: String(task.id), reviewRevision: String(this.reviewRequestRevision(task)) }, ...(this.isPii(task) ? { private: true } : {}) })).includes(reviewer);
   }
 
