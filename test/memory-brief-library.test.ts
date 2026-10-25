@@ -3,44 +3,52 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runInNewContext } from "node:vm";
-import { buildIntentBrief, createIntentBriefSource, createStandalonePolicy, MemoryStore } from "@staix/agent-mem";
+import { buildIntentBrief, createIntentBriefSource, createStandalonePolicy, looksSecret, MemoryStore } from "@staix/agent-mem";
 import { Briefs, type BriefTask, type IntentBriefHost } from "../src/memory/brief.ts";
 import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { USER } from "../src/hub/envelope.ts";
 import { loadRouting } from "../src/hub/routing.ts";
-import { withoutPii } from "../src/hub/memory-policy.ts";
+import { mentionsPrivatePath, withoutPii } from "../src/hub/memory-policy.ts";
+import { ASK_NOTE_TITLE } from "../src/hub/ask.ts";
 import { taskMemoryQueryNodes } from "../src/hub/memory-plan-guard.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
-function fixture() {
-  const cwd = mkdtempSync(join(tmpdir(), "ahub-library-brief-")), store = new MemoryStore({ home: join(cwd, "memory") });
+function fixture(now?: () => number) {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-library-brief-")), store = new MemoryStore({ home: join(cwd, "memory"), ...(now ? { now } : {}) });
   const board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 }), routing = loadRouting(cwd);
   const tasks = new Tasks({ cwd, board, bus, project: "fixture", repository: "o/r", routing: () => routing, notify: () => {} });
   cleanup.push(() => { bus.closeJournal(); board.close(); store.close(); rmSync(cwd, { recursive: true, force: true }); });
   let privateTurn = false;
-  const screenMemory = <T extends { title: string | null; text: string }>(rows: T[]) => withoutPii(rows, routing, cwd, ["private/"]);
   const source = readFileSync(new URL("../src/hub/daemon.ts", import.meta.url), "utf8");
   const start = source.indexOf("  async function taskIntentBrief("), end = source.indexOf("  const leaseNoticed", start);
   expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+  const declaration = (name: string) => {
+    const at = source.indexOf(`  const ${name} =`), until = source.indexOf(";\n", at);
+    expect(at).toBeGreaterThan(0); expect(until).toBeGreaterThan(at);
+    return source.slice(at, until + 1);
+  };
   const ports = { board, tasks, memoryStore: store, memoryProject: "fixture", memoryRepo: "o/r", opts: { cwd },
-    config: { local: { deny: [] } }, configRevision: 1, stopping: false,
+    config: { local: { deny: ["denied/"] }, pii: { paths: ["private/"] } }, configRevision: 1, stopping: false,
     turns: new Map(), contextPii: () => privateTurn, checkMemory: () => {}, createIntentBriefSource,
+    looksSecret, ASK_NOTE_TITLE, mentionsPrivatePath, withoutPii, activeRouting: () => routing,
     // Copy only the VM container into this realm; retain the real standalone and host policy checks.
     createStandalonePolicy: (options: Parameters<typeof createStandalonePolicy>[0]) => createStandalonePolicy({ denyPaths: Array.from(options?.denyPaths ?? []), host: { screen: value => options!.host!.screen(value) } }),
     taskNodes: (task: BriefTask) => taskMemoryQueryNodes(task, { cwd, project: "fixture", repo: "o/r" }),
-    screenMemory, boundedSafe: (text: string) => screenMemory([{ title: null, text }]).length === 1,
     staleness: () => () => false,
     // Tests below use explicit paths. A code lookup here would be an unintended host effect.
     memoryCode: () => { throw Error("unexpected code lookup"); }, currentMemoryCode: () => { throw Error("unexpected code publication"); },
   };
-  const host = runInNewContext(new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end) + "\nglobalThis.host = taskIntentBrief;") + "\nhost", ports) as IntentBriefHost;
+  // Extract both production predicates verbatim, binding every host helper they reference.
+  const derived = runInNewContext(new Bun.Transpiler({ loader: "ts" }).transformSync(
+    declaration("screenMemory") + "\n" + declaration("boundedSafe") + "\n" + source.slice(start, end)
+    + "\nglobalThis.fixture = { host: taskIntentBrief, boundedSafe };") + "\nfixture", ports) as { host: IntentBriefHost; boundedSafe: (text: string) => boolean };
   const proposed = board.propose(USER, { title: "repair writer", class: "implement", refs: { paths: ["src/writer.ts"] } });
   const task = board.update(proposed.id, USER, "fixture assignment", { owner: "codex", state: "in_progress" });
   const note = (text: string, about = ["path:src/writer.ts"], kind: "fail" | "decision" = "fail") => store.note({ op: "note", project: "fixture", scope: "project", tier: "long", peer: "person", source: "person", kind, text, about });
-  return { cwd, store, board, task, host, note, ports, private(value: boolean) { privateTurn = value; } };
+  return { cwd, store, board, task, host: derived.host, boundedSafe: derived.boundedSafe, note, ports, private(value: boolean) { privateTurn = value; } };
 }
 
 test("AC6 hub production brief port equals the released library for the same source and intent", async () => {
@@ -51,6 +59,46 @@ test("AC6 hub production brief port equals the released library for the same sou
   const actual = await new Briefs(undefined, "fixture", 8, undefined, undefined, undefined, f.host).forTask("codex", f.task);
   expect(expected.state).toBe("known"); expect(expected.items.map(row => row.id)).toEqual([failure, decision]);
   expect(actual).toBe(expected.text); expect(actual).not.toContain("private/records");
+});
+
+test("the production brief predicates exclude model answers, secrets, private paths and denied queries", async () => {
+  const f = fixture(), publicNote = f.note("public writer advice");
+  const model = f.store.note({ op: "note", project: "fixture", scope: "project", tier: "long", peer: "hub", source: "person", kind: "fail", title: `${ASK_NOTE_TITLE}: writer`, text: "model writer answer", about: ["path:src/writer.ts"] });
+  const secret = f.note("writer token: abcdefgh12345678"), privatePath = f.note("writer private/records advice");
+  const denied = f.note("writer advice", ["path:src/writer.ts", "path:denied/records.ts"]);
+  expect(looksSecret("writer token: abcdefgh12345678")).toBe(true);
+  const context = await f.host(f.task), result = await buildIntentBrief(context.source, context.options);
+  expect(result.items.map(item => item.id)).toEqual([publicNote]);
+  const text = await new Briefs(undefined, "fixture", 8, undefined, undefined, undefined, f.host).forTask("codex", f.task);
+  for (const id of [model, secret, privatePath, denied]) expect(text).not.toContain(`mem:${id}`);
+  expect(f.boundedSafe("private/records.ts")).toBe(false);
+  expect(f.boundedSafe("denied/records.ts")).toBe(false);
+  expect(f.boundedSafe("token: abcdefgh12345678")).toBe(false);
+  const deniedContext = await f.host({ ...f.task, refs: { paths: ["denied/records.ts"] } });
+  expect((await buildIntentBrief(deniedContext.source, deniedContext.options)).text).toBe("");
+});
+
+test("assignment briefs retain an older plan fail at the front when the library byte cap omits it", async () => {
+  let now = Date.parse("2026-01-01T00:00:00Z");
+  const f = fixture(() => now), older = f.note("older plan fail");
+  for (let index = 0; index < 3; index++) { now += 1000; f.note(`${index} newer writer fail ` + "x".repeat(700)); }
+  const context = await f.host(f.task), ranked = await buildIntentBrief(context.source, context.options);
+  expect(ranked.items.map(item => item.id)).not.toContain(older);
+  expect(ranked.truncated).toBe(true); expect(ranked.state).toBe("known");
+  const priority = [{ id: `mem:${older}`, kind: "fail", line: `mem:${older} fail long: original host-screened older plan fail` }];
+  const briefs = new Briefs(undefined, "fixture", 2, undefined, undefined, undefined, f.host);
+  const text = await briefs.forTask("codex", f.task, priority);
+  expect(text?.split("\n")[1]).toBe(priority[0]!.line);
+  expect(text?.split("\n")).toHaveLength(3);
+  expect((await briefs.forTask("codex", f.task, priority))?.split("\n")[1]).toBe(priority[0]!.line);
+});
+
+test("host-screened plan advice survives a narrower standalone library scope screen", async () => {
+  const f = fixture(), id = f.store.note({ op: "note", project: "fixture", scope: "local", tier: "long", peer: "person", source: "person", kind: "fail", text: "local writer plan advice", about: ["path:src/writer.ts"] });
+  const context = await f.host(f.task), result = await buildIntentBrief(context.source, context.options);
+  expect(result.state).toBe("known"); expect(result.items).toHaveLength(0);
+  const priority = [{ id: `mem:${id}`, line: `mem:${id} fail long: local writer plan advice`, kind: "fail" }];
+  expect((await new Briefs(undefined, "fixture", 1, undefined, undefined, undefined, f.host).forTask("codex", f.task, priority))?.split("\n")[1]).toBe(priority[0]!.line);
 });
 
 test("hub delivery removes library rows without losing a neighbour whose direct bridge was already shown", async () => {
@@ -68,7 +116,7 @@ test("hub delivery removes library rows without losing a neighbour whose direct 
 
 test("hub production brief checks current task privacy and policy revision across library awaits", async () => {
   for (const change of ["task", "turn", "policy"] as const) {
-    const f = fixture(); f.note("ordinary writer advice");
+    const f = fixture(), id = f.note("ordinary writer advice");
     const host: IntentBriefHost = async task => {
       const context = await f.host(task), policy = context.options.policy();
       return { ...context, options: { ...context.options, policy: () => ({ ...policy, screen: async value => {
@@ -81,7 +129,8 @@ test("hub production brief checks current task privacy and policy revision acros
         return allowed;
       } }) } };
     };
-    expect(await new Briefs(undefined, "fixture", 8, undefined, undefined, undefined, host).forTask("codex", f.task)).toBeUndefined();
+    const priority = [{ id: `mem:${id}`, line: `mem:${id} fail long: ordinary writer advice`, kind: "fail" }];
+    expect(await new Briefs(undefined, "fixture", 8, undefined, undefined, undefined, host).forTask("codex", f.task, priority)).toBeUndefined();
   }
 });
 

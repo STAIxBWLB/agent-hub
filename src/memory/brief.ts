@@ -38,8 +38,9 @@ export interface BriefTask { id?: number; created?: number; title: string; refs:
 
 /**
  * Production task briefs use the library's intent retrieval and rendering with host policy and bindings.
- * The hub applies its per-peer delivery dedupe and item cap to complete library rows. Injected clients without
- * the library port retain the legacy index/timeline bridge. Matching plan fails may recur with a new task.
+ * The hub applies its per-peer delivery dedupe and item cap to complete library rows, reserving the front
+ * for host-screened plan fails even when the library's byte cap omitted them. Injected clients without
+ * the library port retain the legacy index/timeline bridge; intent mode retires its related/readNotice path.
  */
 export class Briefs {
   private readonly seen = new Map<PeerId, Set<string>>();
@@ -69,17 +70,24 @@ export class Briefs {
           const context = await this.intent!(task);
           const seen = this.seen.get(peer) ?? new Set<string>();
           this.seen.set(peer, seen);
+          const revision = context.options.policyVersion();
           const result = await buildIntentBrief(context.source, context.options);
-          const priorityIds = new Set(priority.map(item => item.id));
-          const eligible = result.items.filter(item => priorityIds.has(`mem:${item.id}`) || !seen.has(`mem:${item.id}`));
-          const selectedIds = new Set([...eligible.filter(item => priorityIds.has(`mem:${item.id}`)), ...eligible.filter(item => !priorityIds.has(`mem:${item.id}`))].slice(0, maximum).map(item => item.id));
-          const selected = eligible.filter(item => selectedIds.has(item.id));
-          if (!result.text || !selected.length) return undefined;
-          // Delivery policy removes complete library-rendered rows only. Never rank, clip or format them again:
-          // a neighbour can remain relevant even when its original direct bridge was already delivered.
+          if (result.state === "unknown" || context.options.allowed?.() === false || context.options.policyVersion() !== revision) return undefined;
+          context.options.assertCurrent?.();
           const lines = result.text.split("\n");
-          const text = [lines[0]!, ...selected.map(item => lines[result.items.indexOf(item) + 1]!)].join("\n");
-          for (const item of selected) seen.add(`mem:${item.id}`);
+          const rendered = new Map(result.items.map((item, index) => [`mem:${item.id}`, lines[index + 1]!]));
+          const selected: NativeItem[] = [];
+          // Priority is already screened and sanitized by the host's plan guard. Its advice must survive
+          // the standalone library's byte cap or narrower retrieval policy, and recur with the next task.
+          for (const item of priority) if (selected.length < maximum && !selected.some(row => row.id === item.id)) selected.push({ ...item, line: rendered.get(item.id) ?? item.line });
+          for (const item of result.items) {
+            const id = `mem:${item.id}`;
+            if (selected.length < maximum && !seen.has(id) && !selected.some(row => row.id === id)) selected.push({ id, line: rendered.get(id)!, kind: item.kind });
+          }
+          if (!selected.length) return undefined;
+          // Preserve complete library rows (including graph neighbours after a seen direct bridge).
+          const text = [lines[0] || "Live fail notes for this plan (advice, not a block):", ...selected.map(item => item.line)].join("\n");
+          for (const item of selected) seen.add(item.id);
           if (task.id !== undefined) try { this.observe?.(peer, task.id, { native: selected.length, fails: selected.filter(item => item.kind === "fail").length, claudeMem: 0 }); } catch { /* telemetry never fails a brief */ }
           return text;
         } catch { return undefined; }
