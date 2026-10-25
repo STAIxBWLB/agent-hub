@@ -71,7 +71,10 @@
         "src/hub/roster.ts",
         "src/hub/instances.ts",
         "src/hub/action-enforce.ts",
-        "src/hub/permission-payload.ts"
+        "src/hub/permission-payload.ts",
+        "src/hub/read-only-shell.ts",
+        "src/hub/read-only-shell-proof.ts",
+        "src/hub/operational-authority.ts"
       ]
     },
     "docs/agent-notes/benchmarks.md": {
@@ -251,7 +254,9 @@
         "src/hub/spec-read.ts",
         "src/hub/workflow.ts",
         "src/hub/deliverables.ts",
-        "src/hub/deliverable-files.ts"
+        "src/hub/deliverable-files.ts",
+        "src/hub/sdlc-merge.ts",
+        "src/hub/sdlc-mirror.ts"
       ]
     },
     "docs/agent-notes/tests.md": {
@@ -274,7 +279,8 @@
         "scripts/changed-tests.mjs",
         "scripts/check-closing-refs.mjs",
         ".github/workflows/closing-refs.yml",
-        "scripts/lib/ts-ast.ts"
+        "scripts/lib/ts-ast.ts",
+        "test/cli-json-guard.test.ts"
       ]
     },
     "docs/agent-notes/README.md": {
