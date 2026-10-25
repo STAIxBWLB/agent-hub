@@ -7,7 +7,7 @@ import { Bus } from "../src/hub/bus.ts";
 import { USER } from "../src/hub/envelope.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
-import { sdlcConfig,sdlcReceipt,type SdlcGh } from "../src/hub/sdlc.ts";
+import { sdlcConfig,sdlcReceipt,type SdlcGh,type MergeRecord } from "../src/hub/sdlc.ts";
 import type { DeliveryTask } from "../src/hub/sdlc-queue.ts";
 const A="a".repeat(40),B="b".repeat(40),BASE="c".repeat(40),MERGED="d".repeat(40);
 const cleanups:(()=>void)[]=[],allCalls:string[][]=[];
@@ -137,7 +137,7 @@ test("already gone unsafe protected fork default or moved head branches are neve
   for(const [o,cleanup,reason] of [
     [{gone:true},"already_gone",undefined],[{fork:true},"skipped","identity_changed"],[{branch:"main"},"skipped","default_branch"],
     [{protected:true},"skipped","protected_branch"],[{rules:[{type:"deletion"}]},"skipped","protected_branch"],[{rules:{}},"skipped","metadata_unknown"],[{refHead:B},"skipped","head_changed"],[{branch:"../main"},"skipped","metadata_unknown"],
-  ] as [Options,string,string|undefined][]) {
+  ] as [Options,MergeRecord["cleanup"],MergeRecord["reason"]][]) {
     const f=fixture(o),r=await f.tasks.guardedMerge(USER,1);
     expect(r.result?.cleanup).toBe(cleanup);if(reason)expect(r.result?.reason).toBe(reason);expect(f.deletes()).toHaveLength(0);
   }
