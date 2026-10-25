@@ -166,6 +166,8 @@ export interface ConductorHooks {
   status(): ConductorStatusInput;
   task(id: number): Task | undefined;
   publicView(task: Task): Record<string, unknown>;
+  /** #812 AC5: true for a peer holding the configured planner role; it may read any task's public view. */
+  isPlanner?(actor: string): boolean;
   /** These callbacks must call Tasks, never Board.update. */
   assign(actor: string, id: number, peer: string, role?: TaskAssignmentRole): Promise<unknown>;
   escalate(actor: string, id: number): Promise<unknown>;
@@ -202,6 +204,8 @@ export class Conductor {
       const task = id === undefined ? undefined : this.hooks.task(id);
       // A task's current owner and reviewer read its public view without the role (#208); nobody else does.
       if (task && task.state !== "backlog" && tool === "hub_task_show" && (task.owner === actor || task.reviewer === actor)) return publicConductorTask(task, this.hooks.publicView);
+      // #812 AC5: the configured planner reads any task, backlog included, through the same public view (a PII task stays a stub). Read only: no hold, assignment or audit of a conduct.
+      if (task && tool === "hub_task_show" && this.hooks.isPlanner?.(actor)) return publicConductorTask(task, this.hooks.publicView);
       // Its proposer (the first history entry) redirects it while nobody ever accepted it (#207: a decline or a release puts
       // worked tasks back in proposed); work that waits gets a reserved owner. Never over the person: a console assign or
       // reservation stands until the conductor or the console moves it, also once the hub carried it out (the hub's own

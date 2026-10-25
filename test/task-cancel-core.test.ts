@@ -77,8 +77,11 @@ test("planner cancellation requires original authorship and no historical accept
     await expect(f.tasks.cancel(t.id, "planner", { reason: "obsolete" })).rejects.toBeInstanceOf(PreEffectToolRefusal);
     expect(f.board.get(t.id)).toEqual(before);
   }
-  const reverted = f.task("in_progress"); f.board.update(reverted.id, "user", "released", { state: "proposed", owner: null });
+  // #812 AC5: an accepted task released back to proposed with NO execution evidence is cancellable by its planner (see test/planner-show-cancel.test.ts); with a branch ref it keeps the refusal.
+  const reverted = f.task("in_progress"); f.board.update(reverted.id, "pi", "lifecycle", { refs: { ...f.board.get(reverted.id)!.refs, branch: "feat/started" } }); f.board.update(reverted.id, "user", "released", { state: "proposed", owner: null });
   await expect(f.tasks.cancel(reverted.id, "planner", { reason: "obsolete" })).rejects.toThrow("historically unaccepted");
+  const untouched = f.task("in_progress"); f.board.update(untouched.id, "user", "released", { state: "proposed", owner: null });
+  expect((await f.tasks.cancel(untouched.id, "planner", { reason: "obsolete" })).state).toBe("cancelled");
   const t = f.task();
   await expect(f.tasks.cancel(t.id, "user", { reason: "obsolete", expectedFlowRevision: 0 })).rejects.toThrow("revision");
   f.screen(() => f.hold(true));
