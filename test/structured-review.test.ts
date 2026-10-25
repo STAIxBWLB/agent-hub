@@ -335,6 +335,16 @@ test("#328 a finding recorded only as fixed on separate work is not a recurrence
   expect(cards[0]?.detail).toContain("Review finding key: security:follow-up-fixed");
 });
 
+test("#328 a finding raised open and reclassified before it is fixed still occurred on that task", async () => {
+  const r = rig();
+  await submit(r.tasks, r.create().id, [finding("reclassified", { pass: "bugs" })]);
+  const second = r.create().id;
+  await submit(r.tasks, second, [finding("reclassified", { pass: "security" })]);
+  r.reopen(second);
+  await submit(r.tasks, second, [finding("reclassified", { pass: "bugs", disposition: "fixed" })]);
+  expect(r.board.list("backlog").map(card => card.title)).toContain("Review policy amendment for recurring finding bugs:reclassified");
+});
+
 test("#736 a free-form superseded_by joins the replacement, and repository identity comes from the board resolver", async () => {
   const r = rig();
   const loose = (title: string) => { const row = r.board.propose("user", { title, class: "implement", plan: { paths: ["src/hub/tasks.ts"] } }); r.board.update(row.id, "user", "accepted", { state: "in_progress", owner: "codex", reviewer: "claude" }); return r.board.update(row.id, "codex", "done", { state: "in_review", refs: { commit: A }, sdlc: { stage: "review", repo: "o/r", issue: 1, localHead: A, localResult: "passed" } }); };
