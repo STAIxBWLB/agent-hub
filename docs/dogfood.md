@@ -76,6 +76,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Context gate | off: `context.gate = 0` | context-pressure events |
 | Always-ask action classes (#636) | on after release for managed Claude forms, hub-owned ACP in ask mode, local/Pi tools and received Codex command approvals; Codex native bypass stays not enforceable | classed permission requests (a `gh api graphql` query is a read, a mutation, `gh run` or `gh workflow` write and every command with a shell expansion in a classed position (`git push $B`, `rm -rf "$DIR"`) is asked about: #756, #762; `test/action-class.test.ts` holds the table), full local/Pi command visibility and denied effects for incomplete native views; actionPolicyInfo current-child enforceability, remaining class budgets and weakening attention; Codex native no-request and Kimi non-ask ceilings are explicit |
 | Permission modes | on, person-chosen | approval prompts and their wait times |
+| Pi/local read-only shell class (#816 T1) | source/fixture coverage; person setting and live Pi receipt (AC4) remain unverified | automatic read-only class versus approval requests, parser/allowlist/proof revalidation tests, unchanged Seatbelt/path-guard byte checks |
 | Pi and the local worker on DGX | off: DGX unreachable recently; Pi is off the roster | turns served on-prem, relay errors |
 | PII routing | on | PII tasks and where they ran |
 | Multiple Jcode instances (#685) | pending | turns per instance |

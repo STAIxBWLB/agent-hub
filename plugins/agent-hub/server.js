@@ -6154,9 +6154,26 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
           return "error: empty command";
         if (command.length > 4000)
           return "error: command longer than 4000 characters; put it in a script file with write, then run that";
-        const refused = approvalError(await ctx.permit(`bash: ${command}`, "bash", ctx.signal, undefined, undefined, undefined, a), "error: the user did not approve this command");
-        if (refused)
-          return refused;
+        const input = Object.freeze({ ...a, command });
+        for (let attempt = 0;; attempt++) {
+          const refused = approvalError(await ctx.permit(`bash: ${command}`, "bash", ctx.signal, undefined, undefined, undefined, input, attempt ? { forceAsk: true } : undefined), "error: the user did not approve this command");
+          if (refused)
+            return refused;
+          if (ctx.signal?.aborted)
+            return "error: turn cancelled before shell execution";
+          let check = "valid";
+          try {
+            check = ctx.shellExecutionCheck?.(input) ?? "valid";
+          } catch {
+            check = "ask";
+          }
+          if (check === "aborted" || ctx.signal?.aborted)
+            return "error: turn cancelled before shell execution";
+          if (check === "valid")
+            break;
+          if (attempt)
+            return "error: read-only shell proof remained unstable; no command was executed";
+        }
         const res = await sandboxedExec(["/bin/bash", "-c", command], { cwd: ctx.cwd, profile: ctx.sandboxProfile, readOnlyData: !!ctx.readOnly?.length, timeoutMs: (Number(a.timeout_s) || 120) * 1000, ...ctx.sandboxEnv ? { env: ctx.sandboxEnv } : {}, ...ctx.signal ? { signal: ctx.signal } : {} });
         try {
           ctx.onProcessExit?.(res.code);
@@ -6220,7 +6237,7 @@ var init_tools = __esm(() => {
     fn("read", "Read a text file inside the project. Returns numbered lines.", { path: str, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1 } }, ["path"]),
     fn("write", "Create or overwrite a file inside the project. Needs the user's approval.", { path: str, content: str }, ["path", "content"]),
     fn("edit", "Replace one exact, unique occurrence of `old` with `new` in a file. Needs the user's approval.", { path: str, old: str, new: str }, ["path", "old", "new"]),
-    fn("bash", "Run a shell command in the project directory, sandboxed: no writes outside the project, no credential reads, no network unless the hub enables it. Needs the user's approval.", { command: str, timeout_s: { type: "integer", minimum: 1, maximum: 600 } }, ["command"]),
+    fn("bash", "Run a shell command in the project directory, sandboxed: no writes outside the project, no credential reads, no network unless the hub enables it. Follows hub permission policy: proven bounded read-only commands may run automatically in ask-when-needed; other commands ask.", { command: str, timeout_s: { type: "integer", minimum: 1, maximum: 600 } }, ["command"]),
     fn("git", "Run git in the project. status, diff, log, show, ls-files, blame, rev-parse run freely; add, commit, restore, checkout, switch, stash, mv, rm, branch, merge, rebase, cherry-pick, revert, tag need approval; everything else (push, fetch, config, remote ...) is refused.", { args: { type: "array", items: str, minItems: 1 } }, ["args"]),
     fn("hub_send", "Send a message to the other agents now, before your turn ends. Conclusions only. Your final answer is shared anyway; use this for something that cannot wait.", { text: str, to: { type: "array", items: str } }, ["text"])
   ];
@@ -10367,11 +10384,12 @@ var init_local_worker = __esm(() => {
       return `(stopped after ${maxSteps} steps) ${progress.last}`.trim();
     }
     toolContext(envs, turnSignal, pii, reply) {
+      const executionGeneration = this.turn;
       return {
         cwd: this.opts.cwd,
         deny: this.opts.tools.deny,
         readOnly: this.opts.tools.readOnly,
-        permit: async (title, tool, _signal, canonicalTarget, _observe, originalPath, input) => {
+        permit: async (title, tool, _signal, canonicalTarget, _observe, originalPath, input, policy) => {
           if (turnSignal.aborted)
             return "aborted";
           const generation = this.turn;
@@ -10400,7 +10418,7 @@ var init_local_worker = __esm(() => {
             };
             const onAbort = () => finish("aborted");
             turnSignal.addEventListener("abort", onAbort, { once: true });
-            this.opts.tools.permit(title, tool, turnSignal, canonicalTarget, observe, originalPath, input).then(finish, (error) => {
+            this.opts.tools.permit(title, tool, turnSignal, canonicalTarget, observe, originalPath, input, policy).then(finish, (error) => {
               turnSignal.removeEventListener("abort", onAbort);
               reject(error);
             });
@@ -10413,6 +10431,7 @@ var init_local_worker = __esm(() => {
             observe({ source: "expired", answerEpoch: this.approvalAnswerEpoch ?? 0, eligibleExpiry: true });
           return picked;
         },
+        shellExecutionCheck: (input) => turnSignal.aborted || executionGeneration !== this.turn ? "aborted" : this.opts.tools.shellExecutionCheck?.(input) ?? "valid",
         sandboxProfile: this.sandboxProfile,
         sandboxEnv: { ...proxyEnv(this.opts.tools.bashNetwork ?? false), AGENTHUB_PEER_ID: this.id },
         signal: turnSignal,
@@ -12704,7 +12723,7 @@ var init_builtin_metadata = __esm(() => {
   headlessForms = Object.freeze(["headless"]);
   hubGrants = {
     ask: "every write, edit and shell command asks",
-    "ask-when-needed": "write and edit inside the project run without asking; shell and git writes still ask",
+    "ask-when-needed": "write, edit and proven bounded read-only shell commands inside the project run without asking; other shell commands and git writes still ask",
     "never-ask": "every tool runs without asking, inside the hub sandbox and path guard"
   };
   CLAUDE_REVIEWER_VARIANT = {
