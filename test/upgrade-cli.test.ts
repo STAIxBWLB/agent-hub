@@ -164,6 +164,12 @@ test("installed-layout detached restart completes in an isolated project and pre
     const plan = await cli(["restart", "--dry-run", "--json"]);
     expect(plan.code).toBe(0);
     expect(JSON.parse(plan.out).projects[0].blockers).toEqual([]);
+    // #814: the same plan for a person, from a real running hub: its project, a clean plan, and what to do next
+    const readable = await cli(["restart", "--dry-run"]);
+    expect(readable.code).toBe(0);
+    expect(() => JSON.parse(readable.out)).toThrow();
+    expect(readable.out.replace(/\s+/g, " ")).toContain(JSON.parse(plan.out).projects[0].project.id);
+    expect(readable.out).toContain("Apply with `--yes`"); expect(readable.out).not.toContain("Blocked:");
     const applied = await cli(["restart", "--yes"]);
     expect(applied.code).toBe(0);
     operation = /Recovery operation ([a-f0-9-]{36}) scheduled/.exec(applied.out)?.[1];
