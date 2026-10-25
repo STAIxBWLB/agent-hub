@@ -1,3 +1,7 @@
+import { operationalRosterSetting, operationalSetting } from "./operational-authority.ts";
+import { operationalView, redactBusEvent } from "./operational-view.ts";
+import { inspectSelectedOrphans, stopSelectedOrphan, orphanProcessPorts } from "./orphan-process.ts";
+import { dogfoodLines } from "./dogfood-read.ts";
 import { deriveMemoryCodeOverlay, unavailableMemoryCodeOverlay } from "./memory-code-overlay.ts";
 import { readMemoryCodeHead, type MemoryCodeHead } from "./memory-code-head.ts";
 import { canonicalMemorySymbolNode, resolveMemorySymbolNodes, type MemorySymbolNodes } from "./memory-symbols.ts";
@@ -109,7 +113,7 @@ import { realPath, hubHome } from "./project.ts";
 import { mainCheckoutBranch, mainCheckoutWarning } from "./main-checkout.ts";
 import type { BusEvent, PublishResult } from "./bus.ts";
 import { CONDUCTOR_TOOLS, CONDUCTOR_TOOL_NAMES, DEFAULT_ROLES, IMPLEMENTER_HUB_TOOL_NAMES, roleContract, TASK_TOOL_NAMES, TASK_TOOLS, BOUNDED_TASK_TOOLS, profileTaskTools } from "./hub-tools.ts";
-import { Conductor, ConductorHolds, conductorPeer, conductorProgressSink, publicConductorTask, publicPeerBudget, type ConductEvent } from "./conductor.ts";
+import { Conductor, ConductorHolds, conductorPeer, requireConductor, conductorProgressSink, publicConductorTask, publicPeerBudget, type ConductEvent } from "./conductor.ts";
 import { SupervisionFeed } from "./supervision.ts";
 import { drainCliAudits } from "../cli/identity-audit.ts";
 import { launcherPreview } from "../cli/preview.ts";
@@ -123,7 +127,7 @@ import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts"
 import { DeliveryJournal } from "./delivery-journal.ts";
 import { startDashboard, dashboardView, type DashboardSession } from "./ui.ts";
 import { codeGroup } from "./task-code-group.ts";
-import { DAEMON_FEATURES, PROTOCOL, stateDirFor } from "./control-client.ts";
+import { DAEMON_FEATURES, PROTOCOL, readControl, stateDirFor } from "./control-client.ts";
 import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
 import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
 import { MemoryClient } from "../memory/client.ts";
@@ -701,9 +705,14 @@ export async function startDaemon(opts: DaemonOptions) {
   const mlxConfigProblem = mlxLaunchProblem(config, config.pi) ?? disabledMlxPolicyProblem(config, opts.cwd);
   if (mlxConfigProblem) throw new Error(mlxConfigProblem);
   mkdirSync(opts.stateDir, { recursive: true });
+  const operationalLogSubscribers=new Map<Sock,()=>void>();
+  const operationalContext=new AsyncLocalStorage<{actor:string;current:()=>void}|undefined>();
+  const checkOperational=(authority:SettingAuthority)=>{if(authority==="conductor"){const scope=operationalContext.getStore();if(!scope)throw new Error("operational conductor authority unavailable");scope.current();}};
   const logFile = join(opts.stateDir, "hub.log");
   // The state dir can vanish under a running hub (issue #56): a log line must never take a handler down with it.
-  const log = (line: string) => { try { appendFileSync(logFile, `${new Date().toISOString()} ${line}\n`); } catch { /* the state dir is gone; the watchdog is stopping the hub */ } };
+  const log = (line: string) => { const text=`${new Date().toISOString()} ${line}`;try { appendFileSync(logFile, `${text}\n`); } catch { /* the state dir is gone; the watchdog is stopping the hub */ }
+    for(const [sock,current] of operationalLogSubscribers)try {current();if(sock.getBufferedAmount()>64*1024)throw new Error("slow log consumer");sock.send(JSON.stringify({t:"operational_log",line:publicOperationalView().line(text)}));}catch{operationalLogSubscribers.delete(sock);try{sock.close(4403,"operational log authority ended");}catch{/* The subscription is already gone. */}}
+  };
   let runningRouting = currentRouting(opts.cwd, log);
   let acceptedSources = parseConfigSources(configSourceTexts(opts.cwd), runningRouting, opts.cwd, externalAdapters);
   const startupSources = structuredClone(acceptedSources.trustLayers);
@@ -878,6 +887,7 @@ export async function startDaemon(opts: DaemonOptions) {
       close(sock) {
         nativeHookLaunches.endOwner(sock);
         consoles.delete(sock);
+        operationalLogSubscribers.delete(sock);
         sock.data.tail?.();
         sock.data.watch?.();
         const peer = sock.data.peer ? bus.peers.get(sock.data.peer) : undefined;
@@ -2449,13 +2459,7 @@ export async function startDaemon(opts: DaemonOptions) {
   startupCleanup.push(() => { for (const i of intervals) clearInterval(i); });
 
   /** What the console stream and the log may show: a private envelope (PII task) keeps its body to its recipients. */
-  const redact = (e: BusEvent): BusEvent => {
-    if (!("env" in e) || !e.env.private) return e;
-    const { refs, ...env } = e.env;
-    // Private task refs can quote names in paths/branches too. Only the numeric task link is public.
-    const task = refs?.task && /^[0-9]+$/.test(refs.task) ? refs.task : undefined;
-    return { ...e, env: { ...env, ...(task ? { refs: { task } } : {}), body: `[private${task ? `: task #${task}, see ahub task show ${task}` : ""}]` } };
-  };
+  const redact = redactBusEvent;
   const SERVER_JS = join(import.meta.dir, "..", "..", "plugins", "agent-hub", "server.js");
   // What the hub's MCP server offers a native peer. Codex approves them in config, Kimi's requests for exactly these
   // names are answered by the hub; every call still passes daemon role/capability checks before its effects.
@@ -4035,7 +4039,8 @@ export async function startDaemon(opts: DaemonOptions) {
   /** The CLI command that starts a peer: `ahub <kind> --as <id>` for a declared instance. */
   const startCommand = (peer: string): string => { const kind = definitionOf(peer)?.kind; return kind && kind !== peer ? `ahub ${kind} --as ${peer}` : `ahub ${peer}`; };
 
-  async function stopPeer(peer: unknown, rosterRemoval = false): Promise<Record<string, unknown>> {
+  async function stopPeer(peer: unknown, rosterRemoval = false, operational?: {actor:string;current:()=>void}): Promise<Record<string, unknown>> {
+    operational?.current();
     if (!rosterRemoval && rosterChanging !== undefined && rosterChanging === peer) return { ok: false, error: `${String(peer)} roster change is in progress` };
     if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding peer stops; finish the operation before retrying" };
     if (typeof peer !== "string" || !PEER_ID.test(peer)) return { ok: false, error: "unknown peer; run ahub status and choose a hub-owned headless peer" };
@@ -4051,18 +4056,20 @@ export async function startDaemon(opts: DaemonOptions) {
     try {
       return await permissionChange(peer, async () => {
         if (stopping || recoveryActive() || bus.peers.get(peer) !== owner) return { ok: false, error: "peer or recovery changed; refresh ahub status before retrying" };
+        operational?.current();
         const reason = `requested stop: ahub stop ${peer}`; // ids only, never task or message text
         // Pi persists a session only after its first message: take live empty-session proof before stopping.
         if (isPiPeer(owner) && owner.state === "idle") {
           try { await owner.captureResume(); }
           catch { log(`requested stop ${peer}: resume evidence unavailable; later start requires verified persisted history`); }
         }
+        operational?.current();
         for (const pending of permissions.values()) if (pending.peer === peer) pending.done(undefined);
         await owner.stop(reason);
         writeStatus();
         const state = bus.stateOf(peer);
         if (state !== "offline" || bus.peers.get(peer) !== owner) return { ok: false, error: "peer stop did not reach offline on its owner; inspect ahub status and its terminal before retrying" };
-        try { notify(rosterRemoval ? `${peer} stopped for roster removal; add it with ahub roster add ${peer} before starting it again` : `${peer} stopped by the console; start it again with ${startCommand(peer)}`); } catch { /* owner stop and readback remain authoritative */ }
+        try { notify(rosterRemoval ? `${peer} stopped for roster removal; add it with ahub roster add ${peer} before starting it again` : `${peer} stopped by ${operational?.actor ?? "the console"}; start it again with ${startCommand(peer)}`); } catch { /* owner stop and readback remain authoritative */ }
         return { ok: true, state };
       });
     } catch {
@@ -4900,10 +4907,10 @@ export async function startDaemon(opts: DaemonOptions) {
   });
 
   // Queue diagnostics are public metadata by default. Private bodies stay behind the existing task console.
-  function queueView(row: ReturnType<Bus["queueShow"]>, detail = false) {
+  function queueView(row: ReturnType<Bus["queueShow"]>, detail = false, publicOnly = false) {
     if (!row) return undefined;
     const originals = row.originals;
-    const privateDelivery = originals.some((env) => env.private);
+    const privateDelivery = originals.some((env) => env.private || publicOnly && env.refs?.task && (()=>{const task=board.get(Number(env.refs!.task));return !task || tasks.isPii(task);})());
     return {
       id: row.id, peer: row.peer, state: row.state, revision: row.revision,
       ...(!membershipAllowed(row.peer) ? { rostered: false, holdReason: "off roster" } : {}),
@@ -4911,9 +4918,26 @@ export async function startDaemon(opts: DaemonOptions) {
       envelopeIds: originals.map((env) => env.id),
       important: originals.some((env) => env.priority === "important"),
       ...(detail ? { messages: originals.map((env) => ({ id: env.id, from: env.from, priority: env.priority, kind: env.kind,
-        body: privateDelivery ? "[private: inspect the associated task with ahub task show]" : sanitize(env.body),
+        body: privateDelivery ? "[private: inspect the associated task with ahub task show]" : publicOnly && !tasks.publicMetadataText(env.body) ? "[withheld]" : sanitize(env.body),
       })) } : {}),
     };
+  }
+
+  function publicOperationalView() {
+    return operationalView({tasks:board.list(),isPii:task=>tasks.isPii(task),publicView:task=>tasks.publicView(task),publicMetadataText:tasks.publicMetadataText,redact:record=>redact(record as BusEvent)});
+  }
+  function operationalCurrent(sock:Sock,acceptedAfterClose=false):()=>void {
+    const client=sock.data,peer=client.peer;
+    return ()=>{
+      if(!peer || sock.data!==client || client.role!=="tools" || !acceptedAfterClose && sock.readyState!==WebSocket.OPEN || client.toolsOwner || readOnlyPeer(peer) || stopping || !membershipAllowed(peer) || contextPii(peer))throw new Error("operational conductor authority unavailable");
+      requireConductor(peer,config.roles);
+    };
+  }
+  function admitOperational(sock:Sock,command:string):()=>void {
+    const current=operationalCurrent(sock);current();
+    if(!event({type:"agent_cli",peer:sock.data.peer!,command,refused:false}))throw new Error("CLI audit event was not retained");
+    auditConduct({kind:"conduct",actor:sock.data.peer!,action:command});
+    current();return current;
   }
 
   /** #251: this machine's benchmark runs for the dashboard: summaries and per-arm measures, never suite text. */
@@ -5270,6 +5294,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   /** The only publication path; named writes are scoped, full guarded reloads need person confirmation. */
   async function reloadConfig(authority: SettingAuthority, scope?: string, confirm?: unknown): Promise<Record<string, unknown>> {
+    checkOperational(authority);
     if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding configuration reload" };
     let fingerprint = "unavailable", published = false;
     try {
@@ -5384,7 +5409,7 @@ export async function startDaemon(opts: DaemonOptions) {
     event({ type: "settings", key, from, to, source, ...(undo ? { undo: true } : {}), ...(reason ? { reason } : {}) });
     try { notify(`setting ${key}: ${settingText(from)} -> ${settingText(to)} (${undo ? "undo, " : ""}${source})`); } catch { /* the write stands */ }
   };
-  const settingSource = (authority: SettingAuthority) => authority === "terminal" ? "terminal" as const : "dashboard" as const;
+  const settingSource = (authority: SettingAuthority) => authority === "terminal" || authority === "conductor" ?  "terminal" as const : "dashboard" as const;
   function rosterView() {
     const open = board.list().filter(task => !isClosedTaskState(task.state));
     return [...KNOWN_PEERS, ...OPTIONAL_PEERS.filter(peer => config.roster?.[peer] !== undefined)].map(peer => ({ peer, on: onRoster(peer), startMode: startMode(peer), state: bus.stateOf(peer), queued: bus.queued(peer), tasks: open.filter(task => task.owner === peer || task.reviewer === peer).length }));
@@ -5418,6 +5443,7 @@ export async function startDaemon(opts: DaemonOptions) {
 
   async function changeRosterSetting(def: SettingDef, value: SettingValue, source: "dashboard" | "terminal", confirm: unknown, now: boolean, undo = false, authority: SettingAuthority = "ordinary", reason?: string, undoIdentity?: UndoIdentity): Promise<Record<string, unknown>> {
     if (rosterChanging) return { ok: false, error: `roster change for ${rosterChanging} is in progress` };
+    checkOperational(authority);
     const peer = def.path[1]!;
     let saved = false;
     // #225: a stale key has no peer behind it. What changes is that the key is deleted, not whether the peer is on the roster.
@@ -5448,9 +5474,10 @@ export async function startDaemon(opts: DaemonOptions) {
         else if (isCodexPeer(owner)) owner.detachForRoster(config.permission_modes[peer] === "never-ask" ? "ask" : config.permission_modes[peer] ?? "ask");
         else if (isPiPeer(owner) && owner.mode === "tui") await owner.detachForRoster();
         else if (owner && owner.state !== "offline") {
-          const result = await stopPeer(peer, true);
+          const result = await stopPeer(peer, true, authority==="conductor"?operationalContext.getStore():undefined);
           if (result.ok !== true) throw new Error(`roster saved; ${peer} stop is unconfirmed; permission reset and task handoff were not attempted; inspect ahub status and reapply ${def.key} false to retry`);
         }
+        checkOperational(authority);
         const mode = config.permission_modes[peer] ?? "ask";
         permissionModes.set(peer, mode === "never-ask" ? "ask" : mode);
         permissionModeSources.set(peer, defaultSources[peer]?.source ?? "embedded configuration");
@@ -5461,6 +5488,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const owner = bus.peers.get(peer);
         if (isPiPeer(owner) && owner.mode === "tui") await owner.resumeFromRoster();
       }
+      checkOperational(authority);
       const reloaded = await reloadConfig(authority, `roster.${peer}`);
       if (reloaded.ok !== true) return { ...reloaded, saved: true };
       writeStatus();
@@ -5469,6 +5497,12 @@ export async function startDaemon(opts: DaemonOptions) {
       return { ok: true, text: [`${peer}: ${after ? "on" : "off"} roster (in force now)`, ...(!after && terminalNotice ? [terminalNotice] : []), ...(after && definitionOf(peer)?.cli.rosterReturnNotice ? [definitionOf(peer)!.cli.rosterReturnNotice!(codexResumeCommand(peer))] : []), ...(!after ? handoff.map(move => sanitize(`task ${move.title}: ${move.role} assignment moved to ${move.to}`)) : []), ...stayed.map(task => sanitize(`task ${tasks.publicTitle(task)} stays with ${peer} as ${[task.owner === peer ? "owner" : "", task.reviewer === peer ? "reviewer" : ""].filter(Boolean).join(" and ")} (${task.state})`)), ...(!after && !handoff.length && !stayed.length ? ["No open tasks to hand over."] : [])].join("\n"), ...(!after ? { handoff } : {}) };
     } catch (error) {
       if (saved) writeStatus();
+      if(saved && authority==="conductor") {
+        try {checkOperational(authority);} catch {
+          // A committed roster write is acknowledged, but the ended authority permits no later lifecycle/handoff work.
+          return {ok:true,saved:true,authorityEnded:true,text:`${peer}: roster write saved; authority ended before remaining lifecycle work; inspect status before continuing`};
+        }
+      }
       return { ok: false, error: sanitize((error as Error).message), ...(saved ? { saved: true } : {}) };
     } finally { if (rosterChanging === peer) { rosterChanging = undefined; bus.rosterChanged(peer); if (configWatchPending && !stopping) { configWatchPending = false; clearTimeout(reloadDebounce); reloadDebounce = setTimeout(runConfigWatch, 100); reloadDebounce.unref?.(); } } }
   }
@@ -5492,6 +5526,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return sanitize(reason.trim());
   };
   async function settingsSet(key: unknown, raw: unknown, authority: SettingAuthority, confirm?: unknown, now?: unknown, rawReason?: unknown): Promise<Record<string, unknown>> {
+    checkOperational(authority);
     if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding settings" };
     let reason: string | undefined;
     try { reason = settingReason(rawReason); } catch (error) { return { ok: false, error: (error as Error).message }; }
@@ -6134,6 +6169,42 @@ export async function startDaemon(opts: DaemonOptions) {
         }, () => reply({ ok: true, behavior: "deny", message: "hub permission unavailable" })).finally(() => { clearInterval(heartbeat); launch.signal.removeEventListener("abort", abortPending); }).catch(() => {});
         return;
       }
+      case "conductor_operational": {
+        try {
+          const commands=["roster add","roster remove","stop","queue show","queue resolve","queue discard","task cancel","settings set","doctor orphans kill","logs","export"];
+          const command=msg.op==="authorize"?msg.command:msg.op==="orphans"?"doctor orphans kill":msg.op;
+          if(!commands.includes(command))return void reply({ok:false,error:"unknown operational command"});
+          const current=admitOperational(sock,command);
+          if(msg.op==="authorize")return void reply({ok:true,instanceId});
+          if(msg.op==="logs" || msg.op==="export") {
+            const lines=dogfoodLines(join(opts.stateDir,msg.op==="logs"?"hub.log":"events.jsonl"),128*1024);
+            if(!lines.available)return void reply({ok:false,error:"operational history unavailable"});
+            const view=publicOperationalView();current();
+            if(msg.op==="logs") {
+              if(msg.follow!==undefined && typeof msg.follow!=="boolean")return void reply({ok:false,error:"invalid log subscription"});
+              if(msg.follow)operationalLogSubscribers.set(sock,current);
+              return void reply({ok:true,lines:lines.data.slice(-100).map(view.line),truncated:!lines.complete || lines.data.length>100});
+            }
+            if(msg.since!==undefined && (typeof msg.since!=="number" || !Number.isFinite(msg.since) || msg.since<0))return void reply({ok:false,error:"invalid export window"});
+            const records=lines.data.flatMap(line=>{try{const row=JSON.parse(line);return typeof row?.at==="string" && Date.parse(row.at)>=(msg.since??0)?[view.event(row)]:[];}catch{return [{type:"withheld"}];}});
+            return void reply({ok:true,events:records.slice(-1000),truncated:!lines.complete || records.length>1000});
+          }
+          if(msg.op!=="orphans")return void reply({ok:false,error:"unknown operational request"});
+          const selection={root:opts.cwd,projectId,instanceId,pid:process.pid,executable:process.execPath,programs:[CLI_ENTRY,fileURLToPath(new URL("../cli/main.js",import.meta.url))]},ports={...orphanProcessPorts,current};
+          const inspected=inspectSelectedOrphans(selection,undefined,readControl(opts.stateDir),ports);
+          void (async()=>{
+            const stopped:number[]=[];let self=false,unknown=inspected.state==="unknown";
+            for(const candidate of inspected.candidates){const result=await stopSelectedOrphan(candidate,selection,ports);current();if(result==="stopped")stopped.push(candidate.pid);else if(result==="self")self=true;else unknown=true;}
+            current();reply({ok:true,stopped,unknown,self});
+            if(self)setTimeout(()=>{try{
+              const accepted=operationalCurrent(sock,true);accepted();
+              const fresh=inspectSelectedOrphans(selection,undefined,readControl(opts.stateDir),{...ports,current:accepted});
+              if(fresh.candidates.some(candidate=>candidate.pid===process.pid))void stop().catch(()=>{});
+            }catch{/* Changed authority, instance or ownership never stops the hub. */}},0);
+          })().catch(()=>reply({ok:false,error:"operational orphan cleanup unconfirmed"}));
+        } catch(error) {reply({ok:false,error:error instanceof Error?error.message:"operational request refused"});}
+        return;
+      }
       case "permission_default": {
         if (typeof msg.peer === "string" && rosterChanging === msg.peer) return void reply({ ok: false, error: `${msg.peer} roster change is in progress` });
         if (c.role !== "console") return void reply({ ok: false, error: "permission default confirmation is a human console action" });
@@ -6150,10 +6221,13 @@ export async function startDaemon(opts: DaemonOptions) {
         return;
       }
       case "queue": {
-        if (c.role !== "console") return void reply({ ok: false, error: "queue inspection and resolution are console-only" });
+        if(c.role!=="console") {
+          try {if(!["show","resolve","discard"].includes(msg.op))throw new Error("queue inspection and resolution are console-only");admitOperational(sock,`queue ${msg.op}`);}catch(error){return void reply({ok:false,error:(error as Error).message});}
+        }
+        if(c.role!=="console" && msg.reason!==undefined && (typeof msg.reason!=="string" || !tasks.publicMetadataText(msg.reason)))return void reply({ok:false,error:"queue reason withheld by privacy policy"});
         if (msg.op === "list") {
           if (msg.peer !== undefined && (typeof msg.peer !== "string" || !PEER_ID.test(msg.peer))) return void reply({ ok: false, error: "invalid peer" });
-          return void reply({ ok: true, deliveries: bus.queueList(msg.peer).map((row) => queueView(row)) });
+          return void reply({ ok: true, deliveries: bus.queueList(msg.peer).map((row) => queueView(row,false,c.role!=="console")) });
         }
         if (msg.op === "discard") {
           // #713: the person's bulk clear of one peer's backlog. Without `confirmed` it only counts; with it, every queued (or needs_review) delivery of that peer is discarded
@@ -6183,14 +6257,14 @@ export async function startDaemon(opts: DaemonOptions) {
         if (typeof msg.id !== "string" || !msg.id || msg.id.length > 256) return void reply({ ok: false, error: "invalid delivery ID" });
         if (msg.op === "show") {
           const row = bus.queueShow(msg.id);
-          return void reply(row ? { ok: true, delivery: queueView(row, true) } : { ok: false, error: "delivery not found" });
+          return void reply(row ? { ok: true, delivery: queueView(row, true,c.role!=="console") } : { ok: false, error: "delivery not found" });
         }
         if (msg.op !== "resolve" || !["completed", "retry", "discard"].includes(msg.action) || !Number.isSafeInteger(msg.revision) || msg.revision < 0 || typeof msg.reason !== "string" || !msg.reason.trim() || msg.reason.length > 2000) return void reply({ ok: false, error: "resolution needs an action, observed revision and reason" });
         if (recoveryActive() || stopping) return void reply({ ok: false, error: "recovery or shutdown is holding queue mutations" });
         try {
           bus.resolveDelivery(msg.id, msg.revision, msg.action, msg.reason.trim());
           writeStatus();
-          return void reply({ ok: true, delivery: queueView(bus.queueShow(msg.id)) });
+          return void reply({ ok: true, delivery: queueView(bus.queueShow(msg.id),false,c.role!=="console") });
         } catch (error) { return void reply({ ok: false, error: resolutionRefusal(error) }); }
       }
       case "delivery_holds": {
@@ -6691,11 +6765,12 @@ export async function startDaemon(opts: DaemonOptions) {
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person command" });
         return void reloadConfig("terminal", undefined, msg.confirm).then(reply, () => reply({ ok: false, error: "configuration reload could not be confirmed; inspect hub.log" }));
       case "settings_preview":
-        if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
+        if(c.role!=="console")try {const def=settingDef(msg.key);if(msg.undo===true || typeof def==="string" || !(operationalSetting(def)||operationalRosterSetting(def)))throw new Error("setting is a person command");admitOperational(sock,"settings set");}catch(error){return void reply({ok:false,error:(error as Error).message});}
         return void reply(msg.undo === true ? settingsUndoPreview() : settingsPreview(msg.key, msg.value));
       case "settings_set":
-        if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
-        void settingsSet(msg.key, msg.value, "terminal", msg.confirm, msg.now, msg.reason).then(reply, () => reply({ ok: false, error: "the setting could not be changed; inspect hub.log" }));
+        let settingsCurrent:(()=>void)|undefined;
+        if(c.role!=="console")try {const def=settingDef(msg.key);if(typeof def==="string" || !(operationalSetting(def)||operationalRosterSetting(def)))throw new Error("setting is a person command");settingsCurrent=admitOperational(sock,"settings set");}catch(error){return void reply({ok:false,error:(error as Error).message});}
+        void operationalContext.run(settingsCurrent?{actor:c.peer!,current:settingsCurrent}:undefined,()=>settingsSet(msg.key,msg.value,settingsCurrent?"conductor":"terminal",msg.confirm,msg.now,msg.reason)).then(reply, () => reply({ ok: false, error: "the setting could not be changed; inspect hub.log" }));
         return;
       case "settings_undo":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
@@ -6744,8 +6819,9 @@ export async function startDaemon(opts: DaemonOptions) {
         void hubStart(msg.peer, "the console").then(result => reply(includeRetainedLaunchConfig(String(msg.peer), result)), (error) => { log(`peer_start ${String(msg.peer)} failed: ${(error as Error).message}`); reply({ ok: false, error: "peer start failed; inspect ahub status and hub.log" }); });
         return;
       case "peer_stop":
-        if (c.role !== "console") return void reply({ ok: false, error: "peer_stop is a console command; the person runs ahub stop in a terminal" });
-        void stopPeer(msg.peer).then(reply).catch(() => reply({ ok: false, error: "peer stop failed; inspect ahub status and logs before retrying" }));
+        let stopCurrent:(()=>void)|undefined;
+        if(c.role!=="console")try{stopCurrent=admitOperational(sock,"stop");}catch(error){return void reply({ok:false,error:(error as Error).message});}
+        void stopPeer(msg.peer,false,stopCurrent?{actor:c.peer!,current:stopCurrent}:undefined).then(reply).catch(() => reply({ ok: false, error: "peer stop failed; inspect ahub status and logs before retrying" }));
         return;
       case "start":
         if (c.role !== "console") return void reply({ t: "started", ok: false, error: "start is a console command; use hub_peer_start with the conductor role" });

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { conductorOperation } from "../hub/operational-authority.ts";
 import type { DeliverableRow } from "../hub/tasks.ts";
 import { kimiSourceRow } from "../hub/budget-notes.ts";
 import { hubGitSync, hubGitEnv } from "../hub/git.ts";
@@ -1719,8 +1720,29 @@ const commands: Record<string, () => Promise<void> | void> = {
     } finally { hub.close(); }
   },
 
-  logs: () => exec("tail", [args.includes("-f") ? "-f" : "-n100", join(stateDir, "hub.log")]),
-  export: () => {
+  logs: async () => {
+    if (identity.role !== "tools") return exec("tail", [args.includes("-f") ? "-f" : "-n100", join(stateDir, "hub.log")]);
+    const hub=await connect();const pending:string[]=[];let ready=false;
+    hub.onPush=message=>{if(message.t==="operational_log" && typeof message.line==="string"){if(ready)console.log(message.line);else if(pending.length<100)pending.push(message.line);}};
+    try {
+      const result=await hub.request({t:"conductor_operational",op:"logs",follow:args.includes("-f")});
+      if(result.ok!==true)fail(String(result.error??"operational logs unavailable"));
+      for(const line of result.lines??[])console.log(line);
+      ready=true;for(const line of pending)console.log(line);
+      if(result.truncated)console.error("ahub: operational log history is truncated");
+      if(args.includes("-f"))await new Promise<void>(resolve=>{
+        const finish=()=>{process.off("SIGINT",finish);resolve();};
+        hub.onClose=finish;process.once("SIGINT",finish);
+      });
+    } finally {hub.close();}
+  },
+  export: async () => {
+    if(identity.role==="tools") {
+      const hub=await connect();
+      try {const result=await hub.request({t:"conductor_operational",op:"export",since:since()});if(result.ok!==true)fail(String(result.error??"operational export unavailable"));for(const row of result.events??[])console.log(JSON.stringify(row));if(result.truncated)console.error("ahub: operational event history is truncated");}
+      finally {hub.close();}
+      return;
+    }
     for (const e of readEvents(join(stateDir, "events.jsonl"), since())) console.log(JSON.stringify(e));
   },
   bench: async () => {
@@ -2130,7 +2152,12 @@ const commands: Record<string, () => Promise<void> | void> = {
       console.log(options.json ? JSON.stringify(report, null, 2) : formatMemoryStaleAnchors(report));
       return;
     }
-    if (args.includes("--orphans")) return orphanDoctor(args.includes("--kill"), options);
+    if (args.includes("--orphans")) {
+      if(identity.role==="tools" && args.includes("--kill")) {
+        const hub=await connect();try {const result=await hub.request({t:"conductor_operational",op:"orphans"},10_000);if(result.ok!==true)fail(String(result.error??"orphan inspection unavailable"));console.log(JSON.stringify(result,null,2));}finally{hub.close();}return;
+      }
+      return orphanDoctor(args.includes("--kill"), options);
+    }
     const version = (bin: string) => {
       const res = spawnSync(bin, ["--version"], { encoding: "utf8" });
       return res.status === 0 ? res.stdout.trim().split("\n")[0]! : undefined;
@@ -2287,6 +2314,17 @@ function inspectDoctorRouting(cwd: string): { routing?: Routing; errors: string[
 }
 
 async function runConductorCommand(): Promise<void> {
+  const operation=conductorOperation(cmd,args);
+  if(operation) {
+    const hub=await connect();let release:(()=>void)|undefined;
+    try {
+      const result=await hub.request({t:"conductor_operational",op:"authorize",command:operation});
+      if(result.ok!==true || !hub.instanceId)fail(String(result.error??"conductor authorization unavailable"));
+      release=ControlClient.pinInstance(stateDir,hub.instanceId);
+      await commands[cmd]!();
+    } finally {release?.();hub.close();}
+    return;
+  }
   let op: string;
   let input: Record<string, unknown>;
   if (cmd === "task") {

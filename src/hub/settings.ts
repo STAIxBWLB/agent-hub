@@ -1,3 +1,4 @@
+import { operationalRosterSetting, operationalSetting } from "./operational-authority.ts";
 import { ACTION_CLASSES } from "./action-class.ts";
 import { definitionOf, type KindMap, type ProjectAdapterCatalog, ADAPTERS, PLANNER_PEERS, SUPPORTED_PEERS, START_MODE_PEERS } from "../adapters/registry.ts";
 import { createHash } from "node:crypto";
@@ -194,11 +195,12 @@ export function parseSettingText(def: SettingDef, text: string): unknown {
 export const settingText = (value: unknown): string => value === null || value === undefined ? "(not set)" : Array.isArray(value) ? value.join(",") || "(none)" : String(value);
 
 /** `ordinary`: a dashboard session from `ahub ui`. `settings`: one from `ahub ui --settings`. `terminal`: `ahub settings`. */
-export type SettingAuthority = "ordinary" | "settings" | "terminal";
+export type SettingAuthority = "ordinary" | "settings" | "terminal" | "conductor";
 /** Why this authority may not set this value, or undefined. Removing a stored value can raise, so it counts as one. */
 export function settingRefusal(def: SettingDef | string, value: SettingValue, authority: SettingAuthority): string | undefined {
   if (typeof def === "string") return def || "invalid setting definition";
   if (def.locked) return def.locked;
+  if (authority === "conductor") return operationalSetting(def) || operationalRosterSetting(def) ? undefined : `${def.key} is not an operational conductor setting`;
   if (def.risk === "safe" || authority !== "ordinary") return undefined;
   if (value !== null && value === def.floor) return undefined;
   return `${def.key} can widen what agents do without asking: open a settings session with ahub ui --settings, or use ahub settings in a terminal`;

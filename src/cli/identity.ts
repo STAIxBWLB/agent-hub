@@ -1,3 +1,4 @@
+import { conductorOperation } from "../hub/operational-authority.ts";
 import { nativeCliMarkerPeer } from "../adapters/definitions/native-identity-defaults.ts";
 import { recoveryPresentationFlag } from "./recovery-presentation-options.ts";
 import { definitionOf, kindOf, type KindMap, type ProjectAdapterCatalog } from "../adapters/registry.ts";
@@ -59,8 +60,10 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   const native = catalog?.definitionOf(command) ?? definitionOf(command);
   if (native?.cli.personOnlyFlags?.some(flag => args.includes(flag))) return "console";
   if (command === "pet" && args.includes("--window")) return "console";
-  if (command === "permission" || command === "stop" || command === "watch") return "console";
+  if (command === "permission" || command === "watch") return "console";
   if (args.some((arg) => arg === "--as-user" || arg.startsWith("--as-user="))) return "console";
+  if (conductorOperation(command,args)) return "conductor";
+  if (command === "stop") return "console";
   if (command === "sdlc" && ["release-guard", "release-guard-hook"].includes(args[0] ?? "")) return "allowed";
   if (command === "role") return ["list", "show"].includes(args[0] ?? "") ? "allowed" : "console";
   if (command === "task") {
@@ -95,9 +98,9 @@ export function cliCommandLabel(command: string, args: readonly string[], catalo
   if (command === "board" && args[0] === "import") return "board import";
   if (command === "release") return ["new", "list", "show", "plan", "activate", "freeze", "ship", "drop"].includes(args[0] ?? "") ? `release ${args[0]}` : "release";
   if (!(catalog?.definitionOf(command) ?? definitionOf(command)) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "reset", "doctor", "agents"].includes(command)) return "unknown";
-  if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "memory", "goal", "bench", "agents"].includes(command)) {
+  if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "memory", "goal", "bench", "agents", "roster", "settings"].includes(command)) {
     const sub = command === "bench" || command === "memory" || command === "goal" ? args.find((arg) => arg !== "--json") : args[0];
-    if (sub && ["propose", "show", "assign", "unassign", "escalate", "label", "list", "resolve", "resume", "set", "execution", "explain", "status", "abort", "dispose", "reattach", "setup", "start", "stop", "remove", "discard", "export", "backfill", "addons", "run", "report", "compare", "search", "graph", "promote", "demote", "forget", "supersede", "dedupe", "decay", "rebuild", "sync", "machine", "import", "suggestions", "confirm", "reject", "new", "link", "state", "done", "take", "trust"].includes(sub)) return `${command} ${sub}`;
+    if (sub && ["propose", "show", "assign", "unassign", "escalate", "cancel", "label", "list", "add", "resolve", "resume", "set", "execution", "explain", "status", "abort", "dispose", "reattach", "setup", "start", "stop", "remove", "discard", "export", "backfill", "addons", "run", "report", "compare", "search", "graph", "promote", "demote", "forget", "supersede", "dedupe", "decay", "rebuild", "sync", "machine", "import", "suggestions", "confirm", "reject", "new", "link", "state", "done", "take", "trust"].includes(sub)) return `${command} ${sub}`;
   }
   return (/^[a-z][a-z0-9-]*$/.test(command) && !/\s/.test(command)) || ["--help", "--version"].includes(command) ? command : "unknown";
 }
