@@ -19,14 +19,15 @@ const cleanups: (() => void)[] = [];
 const allCalls: string[][] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
 
-interface World { head: string; draft: boolean; branch: string; state: "OPEN" | "MERGED"; review: "APPROVED" | "CHANGES_REQUESTED" | null; threads: number; paths: string[]; checks: { name: string; conclusion?: string; status?: string }[] }
-const pr = (patch: Partial<World> = {}): World => ({ head: A, draft: false, branch: "feat/786", state: "OPEN", review: null, threads: 0, paths: ["src/a.ts"], checks: [{ name: "gate", conclusion: "SUCCESS" }], ...patch });
+interface World { head: string; draft: boolean; branch: string; state: "OPEN" | "MERGED"; review: "APPROVED" | "CHANGES_REQUESTED" | null; threads: number; requests: number | null; paths: string[]; checks: { name: string; conclusion?: string; status?: string }[] }
+const pr = (patch: Partial<World> = {}): World => ({ head: A, draft: false, branch: "feat/786", state: "OPEN", review: null, threads: 0, requests: 0, paths: ["src/a.ts"], checks: [{ name: "gate", conclusion: "SUCCESS" }], ...patch });
 
-function fakeGh(prs: Record<number, World>, options: { mergeExit?: number; mergeLands?: boolean; hold?: Promise<void> } = {}) {
+function fakeGh(prs: Record<number, World>, options: { mergeExit?: number; mergeLands?: boolean; hold?: Promise<void>; /** Runs before each call is answered: how a test moves GitHub between two reads. */ onCall?: (args: string[], index: number) => void } = {}) {
   const calls: string[][] = [];
-  const view = (n: number) => { const p = prs[n]!; return { headRefOid: p.head, headRefName: p.branch, isDraft: p.draft, baseRefName: "main", baseRefOid: BASE, state: p.state, changedFiles: p.paths.length, statusCheckRollup: p.checks, reviewDecision: p.review, reviewRequests: [], files: p.paths.map(path => ({ path, changeType: "MODIFIED" })), mergeCommit: p.state === "MERGED" ? { oid: MERGED } : undefined }; };
+  const view = (n: number) => { const p = prs[n]!; return { headRefOid: p.head, headRefName: p.branch, isDraft: p.draft, baseRefName: "main", baseRefOid: BASE, state: p.state, changedFiles: p.paths.length, statusCheckRollup: p.checks, reviewDecision: p.review, ...(p.requests === null ? {} : { reviewRequests: Array.from({ length: p.requests }, () => ({ requestedReviewer: { __typename: "User" } })) }), files: p.paths.map(path => ({ path, changeType: "MODIFIED" })), mergeCommit: p.state === "MERGED" ? { oid: MERGED } : undefined }; };
   const run: SdlcGh = async args => {
     await options.hold;
+    options.onCall?.(args, calls.length);
     calls.push(args); allCalls.push(args);
     if (args[0] === "pr" && args[1] === "merge") {
       const n = Number(args[2]);
@@ -42,7 +43,7 @@ function fakeGh(prs: Record<number, World>, options: { mergeExit?: number; merge
       for (const match of finalQuery.matchAll(/queue_p([0-9]+):/g)) {
         const n = Number(match[1]), p = prs[n]!;
         repository[`queue_p${n}`] = { headRefOid: p.head, state: p.state, isDraft: p.draft, baseRefName: "main", baseRefOid: BASE, changedFiles: p.paths.length, reviewDecision: p.review,
-          reviewRequests: { nodes: [], pageInfo: { hasNextPage: false } }, reviewThreads: { nodes: Array.from({ length: p.threads }, () => ({ isResolved: false })), pageInfo: { hasNextPage: false } },
+          reviewRequests: { nodes: Array.from({ length: p.requests ?? 0 }, () => ({ requestedReviewer: { __typename: "User" } })), pageInfo: { hasNextPage: false } }, reviewThreads: { nodes: Array.from({ length: p.threads }, () => ({ isResolved: false })), pageInfo: { hasNextPage: false } },
           statusCheckRollup: { contexts: { nodes: p.checks, pageInfo: { hasNextPage: false } } } };
       }
       for (const match of finalQuery.matchAll(/queue_i([0-9]+):issue\(number:([0-9]+)\)/g)) repository[`queue_i${match[1]}`] = { number: Number(match[2]), labels: { nodes: [], pageInfo: { hasNextPage: false } } };
@@ -100,6 +101,55 @@ test("AC2: every gate refuses and names itself: head, checks (failing, pending, 
   // GitHub unavailable is a refusal, never a pass.
   const down = input({ 1: pr() }, [task(1, 1)], { run: async () => ({ code: 1, stdout: "" }) });
   expect(await refusals(down)).toEqual(["PR evidence unavailable"]);
+});
+
+/** Which read of one PR this call is: the 1st `pr view` is the decision's, the 2nd the queue's, the 3rd the last one. */
+const viewCounter = () => { let n = 0; return { next: (args: string[]) => (args[0] === "pr" && args[1] === "view" ? ++n : n) }; };
+
+test("review requests: a pending request, and an unknown count, refuse", async () => {
+  expect(await refusals(input({ 1: pr({ requests: 1 }) }, [task(1, 1)]))).toEqual(["1 review request pending"]);
+  expect(await refusals(input({ 1: pr({ requests: 3 }) }, [task(1, 1)]))).toEqual(["3 review requests pending"]);
+  expect(await refusals(input({ 1: pr({ requests: null }) }, [task(1, 1)]))).toEqual(expect.arrayContaining(["review requests unknown"]));
+  expect(await refusals(input({ 1: pr({ requests: 0 }) }, [task(1, 1)]))).toEqual(["MERGE"]);
+});
+
+test("a gate that changes between the reads refuses at the SAME head: check, review request, thread, draft, change request", async () => {
+  // Each case: the first read sees a clean PR, and GitHub moves at the given read; the head never changes, so `--match-head-commit` would not catch any of it.
+  const cases: [string, number, Partial<World>, string][] = [
+    ["a check fails before the queue read", 2, { checks: [{ name: "gate", conclusion: "FAILURE" }] }, "required check gate: failing"],
+    ["a check fails after the queue read", 3, { checks: [{ name: "gate", conclusion: "FAILURE" }] }, "required check gate: failing"],
+    ["a check turns pending before the queue read", 2, { checks: [{ name: "gate", status: "IN_PROGRESS" }] }, "required check gate: pending"],
+    ["a review is requested before the queue read", 2, { requests: 1 }, "1 review request pending"],
+    ["a review is requested after the queue read", 3, { requests: 1 }, "1 review request pending"],
+    ["a thread opens before the queue read", 2, { threads: 1 }, "1 unresolved review thread"],
+    ["a thread opens after the queue read", 3, { threads: 1 }, "1 unresolved review thread"],
+    ["the PR becomes a draft before the queue read", 2, { draft: true }, "draft (or draft status unknown)"],
+    ["the PR becomes a draft after the queue read", 3, { draft: true }, "draft (or draft status unknown)"],
+    ["a change request lands before the queue read", 2, { review: "CHANGES_REQUESTED" }, "change request pending"],
+    ["a change request lands after the queue read", 3, { review: "CHANGES_REQUESTED" }, "change request pending"],
+  ];
+  for (const [label, at, change, gate] of cases) {
+    for (const protectedRepo of [true, false]) {
+      // An unprotected repository is gated by its [repos] table, which the queue never reads: only the final read can catch a failing repo-table check.
+      const prs = { 1: pr() }, counter = viewCounter();
+      const gh = fakeGh(prs, { onCall: args => { if (args[0] === "pr" && args[1] === "view" && counter.next(args) === at) Object.assign(prs[1]!, change); } });
+      const cfg = protectedRepo ? config() : sdlcConfig({ mode: "advise", auto_merge: "on", repos: { "owner/repo": { required_checks: ["gate"] } } });
+      const result = await refusals(input(prs, [task(1, 1)], { config: cfg }, gh));
+      expect(result, `${label} (${protectedRepo ? "top-level" : "repo table"} checks)`).toContain(gate);
+      expect(result).not.toContain("MERGE");
+      // The same case through guardedMerge in on mode: nothing is run.
+      const prs2 = { 1: pr() }, counter2 = viewCounter();
+      const gh2 = fakeGh(prs2, { onCall: args => { if (args[0] === "pr" && args[1] === "view" && counter2.next(args) === at) Object.assign(prs2[1]!, change); } });
+      const outcome = await guardedMerge({ ...input(prs2, [task(1, 1)], { config: cfg }, gh2).args, mode: "on" });
+      expect(outcome.ran, label).toBe(false); expect(gh2.merges(), label).toHaveLength(0);
+    }
+  }
+  // A final read that fails is a refusal too, never a pass.
+  const prs = { 1: pr() }, counter = viewCounter();
+  const gh = fakeGh(prs, { onCall: args => { if (args[0] === "pr" && args[1] === "view" && counter.next(args) === 3) prs[1]!.head = "e".repeat(40); } });
+  expect(await refusals(input(prs, [task(1, 1)], {}, gh))).toEqual(expect.arrayContaining([expect.stringContaining("head changed")]));
+  const dead = fakeGh({ 1: pr() }, { onCall: args => { if (args[0] === "pr" && args[1] === "view" && counter.next(args) >= 4) throw new Error("gh vanished"); } });
+  expect(await decideMerge(input({ 1: pr() }, [task(1, 1)], {}, dead).args).catch(() => ({ refused: ["threw"] }))).not.toHaveProperty("action");
 });
 
 test("AC2: touching PRs merge in order, and a dependency task that is not approved refuses", async () => {

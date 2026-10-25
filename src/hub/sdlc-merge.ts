@@ -39,8 +39,12 @@ export interface MergeOutcome {
 
 const SHA = /^[0-9a-f]{40}$/;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-/** Queue blockers that are about order or about the open set, not about this task's own gates (those are re-read here). */
-const ORDER_BLOCKERS = [/^touching PRs require a person order$/, /^dependency /, /^artifact dependency cycle/, /^open PR /, /^PR file coverage is incomplete/];
+/**
+ * Queue blockers this decision keeps: order and open-set facts, and the queue's own reading of the gates that can change between reads (checks, review requests,
+ * threads, draft). Its other blockers (identity, local gate, GitHub approval) are the lifecycle's, not this merge's, and are not repeated here.
+ */
+const QUEUE_BLOCKERS = [/^touching PRs require a person order$/, /^dependency /, /^artifact dependency cycle/, /^open PR /, /^PR file coverage is incomplete/,
+  /^required check .*: not successful on current head$/, /^review requests pending or unknown$/, /^review threads unresolved or unknown$/, /^PR is draft or draft status unknown$/];
 
 /** The mode that applies to one repository: its own table first, then the top-level key, default off. */
 export function mergeModeFor(config: SdlcConfig, repo: string | undefined): AutoMergeMode {
@@ -77,7 +81,7 @@ function checkGates(evidence: PrEvidence, required: readonly string[]): string[]
 function queueGates(queue: MergeQueue | undefined, pr: number): string[] {
   const row = queue?.rows.find(r => r.pr === pr);
   if (!queue || !row) return ["merge queue unavailable: this PR is not in the open snapshot"];
-  const gates: string[] = row.blockers.filter(text => ORDER_BLOCKERS.some(re => re.test(text))).map(text => `queue: ${text}`);
+  const gates: string[] = row.blockers.filter(text => QUEUE_BLOCKERS.some(re => re.test(text))).map(text => `queue: ${text}`);
   const place = queue.order.indexOf(pr);
   for (const conflict of queue.conflicts) {
     if (conflict.left !== pr && conflict.right !== pr) continue;
@@ -86,6 +90,38 @@ function queueGates(queue: MergeQueue | undefined, pr: number): string[] {
   }
   if (queue.unordered?.includes(pr) && !gates.length) gates.push("queue: touching PR order is unresolved");
   return [...new Set(gates)];
+}
+
+/** A queue blocker that only repeats a gate the evidence already named adds nothing: drop it, and keep the ones that say something new (a disagreement between reads). */
+function dropEchoes(gates: string[]): string[] {
+  const named = (re: RegExp) => gates.some(g => !g.startsWith("queue: ") && re.test(g));
+  return gates.filter(gate => {
+    if (!gate.startsWith("queue: ")) return true;
+    const check = /^queue: required check (.*): not successful on current head$/.exec(gate);
+    if (check) return !named(new RegExp(`^required check ${check[1]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}: `));
+    if (gate === "queue: review requests pending or unknown") return !named(/review requests? (unknown|pending)|^\d+ review requests? pending$/);
+    if (gate === "queue: review threads unresolved or unknown") return !named(/review threads unknown|unresolved review thread/);
+    if (gate === "queue: PR is draft or draft status unknown") return !named(/^draft /);
+    return true;
+  });
+}
+
+/** The gates one reading of the PR can fail. Run on every reading this decision takes, so a gate that changes between reads is never judged on the older one. */
+function evidenceGates(evidence: PrEvidence, approved: string | undefined, required: readonly string[], subject: DeliveryTask): string[] {
+  const gates: string[] = [];
+  if (approved && evidence.head !== approved) gates.push(`head changed: reviewed ${approved.slice(0, 8)}, PR is at ${evidence.head.slice(0, 8)}`);
+  if (evidence.state !== "OPEN") gates.push(`PR is ${evidence.state.toLowerCase()}`);
+  if (evidence.draft !== false) gates.push("draft (or draft status unknown)");
+  gates.push(...checkGates(evidence, required));
+  if (evidence.review === "changes_requested") gates.push("change request pending");
+  if (evidence.pendingReviews === null) gates.push("review requests unknown");
+  else if (evidence.pendingReviews > 0) gates.push(`${evidence.pendingReviews} review request${evidence.pendingReviews === 1 ? "" : "s"} pending`);
+  if (evidence.unresolved === null) gates.push("review threads unknown");
+  else if (evidence.unresolved > 0) gates.push(`${evidence.unresolved} unresolved review thread${evidence.unresolved === 1 ? "" : "s"}`);
+  if (findingTally(findingsForHead(subject.findings ?? [], findingHead(subject.receipt, evidence))).openImportant > 0) gates.push("open Important finding");
+  // A release goes out with the person's consent, whatever the other gates say (#784 release consent).
+  if (/^release[/-]/i.test(evidence.headBranch ?? "")) gates.push("release PR: person consent required");
+  return gates;
 }
 
 /**
@@ -101,26 +137,24 @@ export async function decideMerge(input: MergeInput): Promise<MergeDecision> {
   if (!approved || !SHA.test(approved)) gates.push("reviewed head not recorded: the approving verdict must name the head");
   const evidence = await readSdlcPr(receipt, run);
   if (!evidence) return { refused: [...gates, "PR evidence unavailable"] };
-  if (approved && evidence.head !== approved) gates.push(`head changed: reviewed ${approved.slice(0, 8)}, PR is at ${evidence.head.slice(0, 8)}`);
-  if (evidence.state !== "OPEN") gates.push(`PR is ${evidence.state.toLowerCase()}`);
-  if (evidence.draft !== false) gates.push("draft (or draft status unknown)");
-  gates.push(...checkGates(evidence, requiredChecksFor(config, repo)));
-  if (evidence.review === "changes_requested") gates.push("change request pending");
-  if (evidence.unresolved === null) gates.push("review threads unknown");
-  else if (evidence.unresolved > 0) gates.push(`${evidence.unresolved} unresolved review thread${evidence.unresolved === 1 ? "" : "s"}`);
-  if (findingTally(findingsForHead(subject.findings ?? [], findingHead(receipt, evidence))).openImportant > 0) gates.push("open Important finding");
+  const required = requiredChecksFor(config, repo);
+  gates.push(...evidenceGates(evidence, approved, required, subject));
   for (const id of subject.after) {
     const state = input.taskState(id);
     if (state !== "approved") gates.push(`dependency task #${id} is not approved (${state ?? "unknown"})`);
   }
-  // A release goes out with the person's consent, whatever the other gates say (#784 release consent).
-  if (/^release[/-]/i.test(evidence.headBranch ?? "") || stageDefinition(config, receipt.stage)?.base === "release") gates.push("release PR: person consent required");
+  if (stageDefinition(config, receipt.stage)?.base === "release") gates.push("release PR: person consent required");
   let queue: MergeQueue | undefined;
   try { queue = await readMergeQueue(repo, config, input.tasks, run, input.readableMetadata); } catch { queue = undefined; }
   gates.push(...queueGates(queue, pr));
+  // The queue read newer evidence than the first read. Read the PR once more, last, and judge every gate on it too: a check, review request, thread, draft or
+  // head that moved between the reads refuses here. `--match-head-commit` pins the head only, never these gates.
+  const last = await readSdlcPr(receipt, run);
+  if (!last) gates.push("PR evidence unavailable on the final read");
+  else gates.push(...evidenceGates(last, approved, required, subject));
   const row = queue?.rows.find(r => r.pr === pr);
   if (row?.head !== undefined && approved && row.head !== approved && !gates.some(g => g.startsWith("head changed"))) gates.push(`head changed: the queue read ${row.head.slice(0, 8)}`);
-  if (gates.length) return { refused: [...new Set(gates)] };
+  if (gates.length) return { refused: dropEchoes([...new Set(gates)]) };
   return { action: "merge", argv: mergeArgv(repo, pr, approved!), repo, pr, head: approved! };
 }
 
