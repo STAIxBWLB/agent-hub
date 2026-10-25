@@ -49,6 +49,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Plan conformance (#481 S2) | advise | PRs with files outside the plan |
 | Test integrity for bug fixes (#481 S4) | advise | bug PRs without a red-first receipt, modified pre-existing tests |
 | Required checks | advise (`check (ubuntu-latest)`, `check (macos-latest)`, `seeded guards`) | first-pass CI rate, same-head reruns (`hub_sdlc_costs`) |
+| Seed anchor diagnostics (#684) | on in the seeded checker; exact-match failure remains mandatory | missing anchors report the base commit, enclosing symbol and current file/line or explicit unknown; `test/seeded-check.test.ts` |
 | Release authorization (#481 S6) | pending (#199) | releases with a receipt |
 | SDLC metrics and control bands (#481 S7) | `ahub sdlc metrics` on; bands off until `[bands]` is set in `.agenthub/sdlc.toml`, and they write cards only in advise or enforce (in off the report still shows tiers). Completion checks are off here, so `first_pass_check` and the PR-based figures read unknown | its own report; breach episodes per week by tier, and band cards the planner accepted rather than dropped |
 | Fresh headless reviewers (#223, #519) | off: needs an `instances` entry in the person's `config.local.json` | reviews by fresh sessions, findings they add; a per-review start failure names a closed cause class (#722): `ahub status` reviewer line and hub.log `[cause: ...]`, with the share of failures that are `unknown` |

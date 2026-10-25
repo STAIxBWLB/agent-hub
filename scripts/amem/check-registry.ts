@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import ts from "typescript";
+import { callSites, parseSource } from "../lib/ts-ast.ts";
 
 type Case = { id: string; mode: string; status: string };
 type Row = { id: string; mode: string; status: string; owner: string; phase: string; evidence: string };
@@ -67,18 +68,16 @@ function testNames(path: string): Set<string> {
   namesByFile.set(path, names);
   const text = read(path);
   if (text === undefined) return names;
-  const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest, true);
-  function visit(node: ts.Node): void {
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && ["test", "it"].includes(node.expression.text)) {
+  const source = parseSource(path, text);
+  for (const node of callSites(source)) {
+    if (ts.isIdentifier(node.expression) && ["test", "it"].includes(node.expression.text)) {
       const arg = node.arguments[0];
       if (arg && (ts.isStringLiteral(arg) || ts.isNoSubstitutionTemplateLiteral(arg) || ts.isTemplateExpression(arg))) {
         // Preserve exactly what was written between the source delimiters, including template substitutions.
         names.add(arg.getText(source).slice(1, -1));
       }
     }
-    ts.forEachChild(node, visit);
   }
-  visit(source);
   return names;
 }
 

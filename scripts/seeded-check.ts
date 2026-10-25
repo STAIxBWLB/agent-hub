@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { spawnSync } from "node:child_process";
 import { realPath } from "../src/hub/project.ts";
+import { enclosingSymbol, findSymbol, parseSource, symbolSpans } from "./lib/ts-ast.ts";
 
 export interface Seed { id: string; file: string; search: string; replacement: string; testFile: string; testName: string }
 const safe = (path: string) => !!path && !path.startsWith("/") && !path.split("/").some((part) => part === ".." || part === ".git") && !path.includes("\\");
@@ -20,6 +21,44 @@ export function applySeed(text: string, seed: Pick<Seed, "search" | "replacement
   const matches = text.split(seed.search).length - 1;
   if (matches !== 1) throw new Error(`seed rot: expected one exact source match, found ${matches}`);
   return text.replace(seed.search, () => seed.replacement);
+}
+/** Diagnostic evidence only: a missing anchor still fails the unchanged exact-match rule. */
+export function seedRotContext(root: string, seed: Pick<Seed, "file" | "search">, current: string, baseRef?: string): string {
+  const git = (...args: string[]) => spawnSync("git", args, { cwd: root, encoding: "utf8", timeout: 5000, maxBuffer: 8_000_000 });
+  // A shallow checkout's HEAD is the broken source, never evidence of the lost anchor.
+  const resolved = baseRef === undefined
+    ? git("merge-base", "origin/main", "HEAD")
+    : git("rev-parse", "--verify", "--end-of-options", `${baseRef}^{commit}`);
+  const revision = resolved.status === 0 ? resolved.stdout.trim() : undefined;
+  if (!revision) return "anchor context unavailable: base unavailable";
+  const base = git("show", `${revision}:${seed.file}`);
+  if (base.status !== 0) return `anchor context unavailable: ${seed.file} absent at base ${revision}`;
+  const offset = base.stdout.indexOf(seed.search);
+  if (offset < 0) return `anchor context unavailable: search absent at base ${revision}`;
+  if (base.stdout.indexOf(seed.search, offset + 1) >= 0) return `anchor context unavailable: search ambiguous at base ${revision}`;
+  const parsed = parseSource(seed.file, base.stdout);
+  // A whole declaration anchor can begin at `export const`, before its named AST node.
+  const old = enclosingSymbol(parsed, offset) ?? symbolSpans(parsed).find(span => span.start >= offset && span.start < offset + seed.search.length);
+  if (!old) return `anchor at base ${revision} ${seed.file} is at module scope; current symbol unknown`;
+  const describe = (file: string, text: string) => findSymbol(parseSource(file, text), old.name).map(span => `${file}:${span.line}`);
+  let locations = describe(seed.file, current);
+  if (!locations.length) {
+    const listed = git("ls-files", "-z", "--", "*.ts", "*.tsx", "*.js", "*.jsx", "*.mts", "*.cts", "*.mjs", "*.cjs", "*.html", "*.htm");
+    if (listed.status !== 0) return `base ${revision} ${seed.file}:${old.line} symbol ${old.name}; current location unknown (cannot enumerate tracked sources)`;
+    locations = listed.stdout.split("\0").filter(file => file && file !== seed.file && safe(file))
+      .flatMap(file => describe(file, readFileSync(join(root, file), "utf8")));
+  }
+  return `base ${revision} ${seed.file}:${old.line} symbol ${old.name}; current ${locations.length ? locations.join(", ") : "symbol not found in tracked sources"}`;
+}
+export function applySeedInRepo(root: string, text: string, seed: Seed, baseRef?: string): string {
+  try { return applySeed(text, seed); }
+  catch (error) {
+    if (text.includes(seed.search)) throw error; // Ambiguous matches are not missing anchors.
+    let context: string;
+    try { context = seedRotContext(root, seed, text, baseRef); }
+    catch { context = "anchor context unavailable: cannot read base or current sources"; }
+    throw new Error(`${error instanceof Error ? error.message : String(error)}; ${context}`);
+  }
 }
 export function copyTracked(root: string, destination: string): void {
   const listed = spawnSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8" });
@@ -102,7 +141,7 @@ export function shardSeeds(seeds: Seed[], spec: string | undefined): Seed[] {
   if (!match || index > count || count > 64) throw new Error(`invalid shard ${JSON.stringify(spec)}: use i/n with 1 <= i <= n <= 64`);
   return seeds.filter((_seed, position) => position % count === index - 1);
 }
-export async function seededCheck(root: string, shard?: string): Promise<void> {
+export async function seededCheck(root: string, shard?: string, baseRef?: string): Promise<void> {
   const start = performance.now();
   const seeds = shardSeeds(readSeeds(readFileSync(join(root, "scripts/seeds.json"), "utf8")), shard);
   for (const seed of seeds) {
@@ -114,7 +153,7 @@ export async function seededCheck(root: string, shard?: string): Promise<void> {
       const source = join(checkout, seed.file);
       if (!source.startsWith(`${checkout}${sep}`)) throw new Error("seed path escapes private checkout");
       const original = readFileSync(source, "utf8");
-      const changed = applySeed(original, seed); // rot is checked before either test run
+      const changed = applySeedInRepo(root, original, seed, baseRef); // rot is checked before either test run
       const green = await runNamed(checkout, seed, own, "green"); classifyRun(green.output, green.code, seed.testName, false);
       writeFileSync(source, changed);
       const red = await runNamed(checkout, seed, own, "seeded"); classifyRun(red.output, red.code, seed.testName, true);
@@ -129,8 +168,13 @@ export async function seededCheck(root: string, shard?: string): Promise<void> {
 if (import.meta.main) {
   const args = process.argv.slice(2);
   try {
-    if (args.length && (args.length !== 2 || args[0] !== "--shard")) throw new Error("usage: bun scripts/seeded-check.ts [--shard i/n]");
-    await seededCheck(resolve(import.meta.dir, ".."), args[1]);
+    const options = new Map<string, string>();
+    for (let index = 0; index < args.length; index += 2) {
+      const key = args[index], value = args[index + 1];
+      if (!key || !["--shard", "--base"].includes(key) || !value || value.startsWith("--") || options.has(key)) throw new Error("usage: bun scripts/seeded-check.ts [--shard i/n] [--base commit]");
+      options.set(key, value);
+    }
+    await seededCheck(resolve(import.meta.dir, ".."), options.get("--shard"), options.get("--base"));
   }
   catch (error) { console.error(`seeded: ERROR ${error instanceof Error ? error.message : String(error)}`); process.exitCode = 1; }
 }
