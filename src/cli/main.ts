@@ -67,6 +67,7 @@ import { exactVersion, latestRelease, newerVersion } from "./recovery-package.ts
 import { operationScreen, planScreen, type ScreenIO, type UpgradeHost } from "./upgrade-interactive.ts";
 import { readRecoveryPresentationFlags } from "./upgrade-presentation-flags.ts";
 import { renderOperation, renderBlocked, renderSummary, type RecoveryPresentationOptions } from "./upgrade-presentation.ts";
+import { renderBudgetResult, renderRecoveryStatus, renderUpgradePlan } from "./upgrade-output.ts";
 import { recordTerminalLaunch, prepareTerminalLaunch, registerTerminalLaunch, type TerminalPeer } from "./terminal-recovery.ts";
 import { stopAndArchiveSummary } from "./recovery-guidance.ts";
 import { ensureMlx, inspectMlx, stopMlx } from "../models/mlx.ts";
@@ -526,7 +527,9 @@ async function hold(t: "pause" | "resume"): Promise<void> {
 }
 
 function recoveryDisplay() {
-  return readRecoveryPresentationFlags(args, { isTTY: !!process.stdout.isTTY, columns: process.stdout.columns ?? 80, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR });
+  // A terminal gives its own width; a pipe gives COLUMNS when set, else 80 (#814: a person reads a pipe too).
+  const width = process.stdout.columns ?? outputWidth({ isTTY: false, COLUMNS: process.env.COLUMNS }) ?? 80;
+  return readRecoveryPresentationFlags(args, { isTTY: !!process.stdout.isTTY, columns: width, TERM: process.env.TERM, NO_COLOR: process.env.NO_COLOR });
 }
 const humanRecovery = (json: boolean) => !json && !!process.stdin.isTTY && !!process.stdout.isTTY;
 const printRecovery = (lines: readonly string[]) => { for (const line of lines) console.log(line); };
@@ -673,12 +676,15 @@ async function upgrade(kind: "restart" | "upgrade"): Promise<void> {
   if (interactive) return onTerminal((io) => planScreen(upgradeHost(kind, to ?? VERSION), io), display.options);
   const plan = await makeUpgradePlan(kind, to ?? VERSION, kind === "restart" ? cwd : undefined);
   const jsonApply = display.json && yes && !dry;
-  if (!jsonApply) console.log(JSON.stringify(plan, null, 2));
-  // #206: name every blocker and reconnect-only session on stderr, not only inside the JSON above.
-  for (const p of plan.projects) for (const peer of p.reconnectOnly ?? []) console.error(`ahub: ${p.project.id}: ${peer} is reconnect-only (unmanaged session): its plugin reattaches to the new hub; no terminal is closed or relaunched`);
-  for (const p of plan.projects) for (const peer of p.freshStart ?? []) console.error(`ahub: ${p.project.id}: ${peer} restarts as a new session: its thread has no rollout and the hub recorded no turn on it, so nothing is lost`);
+  // #814: a person reading a pipe or a dry run gets the plan screen's rows, with every blocker, reconnect-only session and
+  // fresh start in them. `--json` keeps the document and the stderr lines (#206) exactly as they were.
+  if (display.json) {
+    if (!jsonApply) console.log(JSON.stringify(plan, null, 2));
+    for (const p of plan.projects) for (const peer of p.reconnectOnly ?? []) console.error(`ahub: ${p.project.id}: ${peer} is reconnect-only (unmanaged session): its plugin reattaches to the new hub; no terminal is closed or relaunched`);
+    for (const p of plan.projects) for (const peer of p.freshStart ?? []) console.error(`ahub: ${p.project.id}: ${peer} restarts as a new session: its thread has no rollout and the hub recorded no turn on it, so nothing is lost`);
+  } else printRecovery(renderUpgradePlan(plan, VERSION, display.options));
   const blockers = [...plan.blockers, ...plan.projects.flatMap((p) => p.blockers.map((b) => `${p.project.id}: ${b}`))];
-  for (const blocker of blockers) console.error(`ahub: blocker: ${blocker}`);
+  if (display.json) for (const blocker of blockers) console.error(`ahub: blocker: ${blocker}`);
   if (dry) return;
   if (blockers.length) { if (jsonApply) console.log(JSON.stringify(plan, null, 2)); fail("plan has blockers; no runtime was changed"); }
   assertLifecycleAvailable();
@@ -741,14 +747,10 @@ const commands: Record<string, () => Promise<void> | void> = {
         return;
       }
       const result = await reattachRecovery(selected.id, selected.peer, makeRecoveryDriver());
-      if (humanRecovery(display.json)) {
-        printRecovery(renderOperation(result, undefined, display.options));
-        const live = await liveProjects(result, makeRecoveryDriver(undefined, delegatedPeer).inspect);
-        printRecovery(renderBlocked(result, nextChoices(result, undefined, live), display.options));
-      } else {
-        console.log(JSON.stringify(publicOperation(result), null, 2));
-        if (!display.json) console.log(nextActionsText(result));
-      }
+      if (display.json) { console.log(JSON.stringify(publicOperation(result), null, 2)); return; }
+      printRecovery(renderOperation(result, undefined, display.options));
+      const live = await liveProjects(result, makeRecoveryDriver(undefined, delegatedPeer).inspect);
+      printRecovery(renderBlocked(result, nextChoices(result, undefined, live), display.options));
       return;
     }
     // #272: without an id, the operation that holds the machine's lock; bare on a terminal, its screen.
@@ -778,7 +780,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (action === "status") {
       // #215: abort and resume are offered by what the open sources show, read as the runner's errors read them.
       const live = runner ? {} : await liveProjects(operation, makeRecoveryDriver(undefined, delegatedPeer).inspect);
-      console.log(JSON.stringify(publicOperation(operation, runner, live), null, 2));
+      if (display.json) console.log(JSON.stringify(publicOperation(operation, runner, live), null, 2));
+      else printRecovery(renderRecoveryStatus(operation, runner, nextChoices(operation, runner, live), display.options));
     }
     else if (action === "abort") {
       await abortRecovery(id, makeRecoveryDriver(undefined, delegatedPeer));
@@ -797,11 +800,8 @@ const commands: Record<string, () => Promise<void> | void> = {
         console.log(`${one["--fresh-session"]}: a fresh session is accepted and the lost one is recorded; resuming`);
         return spawnRecovery(result, false, humanRecovery(false) ? display.options : undefined);
       }
-      if (humanRecovery(display.json)) printRecovery(renderSummary(result, await recoveryEndInspection(result), display.options));
-      else {
-        console.log(JSON.stringify(publicOperation(result), null, 2));
-        if (!display.json) for (const line of stopAndArchiveSummary(result)) console.log(line);
-      }
+      if (display.json) console.log(JSON.stringify(publicOperation(result), null, 2));
+      else printRecovery(renderSummary(result, await recoveryEndInspection(result), display.options));
     }
     else if (["completed", "cancelled"].includes(operation.phase)) console.log(display.json ? JSON.stringify(publicOperation(operation, runner), null, 2) : `recovery is already ${operation.phase}`);
     // #215: an operation being abandoned is never resumed, whichever coordinator started it (an older one would).
@@ -990,7 +990,7 @@ const commands: Record<string, () => Promise<void> | void> = {
 
   models: async () => {
     const action = outputArguments()[0] ?? "status";
-    const options = action === "status" ? outputOptions() : undefined;
+    const options = ["status", "start", "setup"].includes(action) ? outputOptions() : undefined;
     const showStatus = (data: unknown) => options!.json ? console.log(JSON.stringify(data, null, 2)) : printOutput(renderModelsStatus(data, options!.columns, Date.now()), options!.color);
     const configured = projectConfig().mlx;
     if (configured.enabled === false) {
@@ -1002,13 +1002,13 @@ const commands: Record<string, () => Promise<void> | void> = {
     const modelPath = configured.modelPath ? resolve(cwd, configured.modelPath) : join(homedir(), ".agenthub", "models", "qwen3-8b-mlx");
     const mlxOptions = configured.provider === "ollama" ? configured : { ...configured, runtimeDir, modelPath };
     if (action === "status") return showStatus(await inspectMlx(mlxOptions));
-    if (action === "start") { const handle = await ensureMlx(mlxOptions); return console.log(JSON.stringify(handle.status(), null, 2)); }
+    if (action === "start") { const handle = await ensureMlx(mlxOptions); return showStatus(handle.status()); }
     if (action === "stop") { await stopMlx(mlxOptions); return console.log("MLX stopped"); }
     if (action !== "setup") fail("usage: ahub models setup|status|start|stop");
     if (configured.provider === "ollama") {
       await setupOllamaModel(configured);
       const handle = await ensureMlx(configured);
-      return console.log(JSON.stringify(handle.status(), null, 2));
+      return showStatus(handle.status());
     }
     const python = join(runtimeDir, "bin", "python");
     const run = (argv: string[]) => { const result = spawnSync(argv[0]!, argv.slice(1), { cwd, stdio: "inherit" }); if (result.status !== 0) fail(`models setup failed: ${argv.join(" ")}`); };
@@ -1079,7 +1079,8 @@ const commands: Record<string, () => Promise<void> | void> = {
       }
       const result = await hub.request({ t: "queue", op: "resolve", id, revision, action: one["--action"], reason: one["--reason"] });
       if (!result.ok) fail(result.error,result.refusalAudited===true);
-      console.log(JSON.stringify(result.delivery, null, 2));
+      if (options.json) console.log(JSON.stringify(result.delivery, null, 2));
+      else printOutput(renderQueueShow(result.delivery, options.columns, Date.now()), options.color);
     } finally { hub.close(); }
   },
 
@@ -1137,7 +1138,8 @@ const commands: Record<string, () => Promise<void> | void> = {
       const result = await hub.request(request); hub.close();
       if (!result.ok) fail(result.error);
       const data = result.budgets ?? result.budget ?? { disabled: result.disabled };
-      if (op !== "status" || options.json) return console.log(JSON.stringify(data, null, 2));
+      if (options.json) return console.log(JSON.stringify(data, null, 2));
+      if (op === "configure" || op === "disable") return printOutput(renderBudgetResult(op, op === "configure" ? result.budget : result, options.columns, Date.now()), options.color);
       return printOutput(renderExecutionBudgetStatus(result.budgets, options.columns, Date.now()), options.color);
     }
     let set: Record<string, unknown> | undefined;

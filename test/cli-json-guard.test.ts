@@ -22,14 +22,6 @@ const DATA_FORMAT: Record<Key, string> = {
 };
 /** Today's not-yet-converted sites from #814 Context. Remove an entry in the PR that converts it. */
 const NOT_YET_CONVERTED: Record<Key, string> = {
-  "main.ts :: upgrade :: console.log(JSON.stringify(plan, null, 2)) #1": "#814 task 3: restart/upgrade non-interactive plan",
-  "main.ts :: commands.recovery :: console.log(JSON.stringify(publicOperation(result), null, 2)) #1": "#814 task 3: recovery non-interactive result",
-  "main.ts :: commands.recovery :: console.log(JSON.stringify(publicOperation(operation, runner, live), null, 2)) #1": "#814 task 3: recovery status",
-  "main.ts :: commands.recovery :: console.log(JSON.stringify(publicOperation(result), null, 2)) #3": "#814 task 3: recovery non-interactive result",
-  "main.ts :: commands.models :: console.log(JSON.stringify(handle.status(), null, 2)) #1": "#814 task 3: models start",
-  "main.ts :: commands.models :: console.log(JSON.stringify(handle.status(), null, 2)) #2": "#814 task 3: models setup",
-  "main.ts :: commands.queue :: console.log(JSON.stringify(result.delivery, null, 2)) #1": "#814 task 3: queue resolve",
-  "main.ts :: commands.budget :: console.log(JSON.stringify(data, null, 2)) #1": "#814 task 3: budget execution configure|disable (`op !== \"status\" || options.json` prints JSON for them by default)",
   // Not in #814 Context: both predate it or were added after it was verified. Listed so the guard passes now; #814 should name them.
   "main.ts :: commands.sdlc :: console.log(JSON.stringify({ task: reply.task, mode: reply.mode, ran: reply.ran, decision: #1": "sdlc merge (#786, after #814's Context was verified): a result to convert in a later #814 task",
   "main.ts :: commands.doctor :: console.log(JSON.stringify(result,null,2)) #1": "doctor --orphans --kill for a conductor shell: not listed in #814 Context",

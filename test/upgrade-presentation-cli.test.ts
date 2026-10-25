@@ -59,21 +59,30 @@ function fixture() {
     readReceipt: () => JSON.parse(readFileSync(join(home, "recovery", `${OPERATION}.json`), "utf8")) as RecoveryOperation };
 }
 
-test("#466 recovery status pipe output remains byte-identical to the prior raw JSON projection", async () => {
+test("#466 #814 recovery status: the pipe default is readable text, --json is the prior raw JSON projection byte for byte", async () => {
   const f = fixture(); f.reset();
+  const json = await f.cli(["recovery", "status", OPERATION, "--json"]);
+  expect(json.code, json.err).toBe(0);
+  expect(json.out).toBe(JSON.stringify(f.completedProjection, null, 2) + "\n");
   const plain = await f.cli(["recovery", "status", OPERATION]);
   expect(plain.code, plain.err).toBe(0);
-  const expected = JSON.stringify(f.completedProjection, null, 2) + "\n";
-  expect(plain.out).toBe(expected);
+  expect(() => JSON.parse(plain.out)).toThrow();
+  const flatten = (text: string) => text.replace(/\s+/g, "");
+  expect(flatten(plain.out)).toContain(OPERATION); expect(flatten(plain.out)).toContain("completed");
   const never = await f.cli(["recovery", "status", OPERATION, "--color=never"]);
   expect(never.code, never.err).toBe(0);
   expect(never.out).toBe(plain.out); expect(never.err).toBe(plain.err);
   expect(never.out).not.toMatch(ANSI);
 }, 15_000);
 
-test("#466 restart dry-run and default pipe retain the old plan document and never start a runtime", async () => {
+test("#466 #814 restart dry-run: --json keeps the old plan document and the pipe default is the readable plan; neither starts a runtime", async () => {
   const f = fixture();
-  const plain = await f.cli(["restart", "--dry-run"]);
+  const human = await f.cli(["restart", "--dry-run"]);
+  expect(human.code, human.err).toBe(0);
+  expect(() => JSON.parse(human.out)).toThrow();
+  expect(human.out.replace(/\s+/g, " ")).toContain("restart to " + VERSION); expect(human.out.replace(/\s+/g, " ")).toContain("blocker: no running registered projects in scope");
+  expect(human.err).not.toContain("blocker");
+  const plain = await f.cli(["restart", "--dry-run", "--json"]);
   expect(plain.code, plain.err).toBe(0);
   const parsed = JSON.parse(plain.out);
   expect(Object.keys(parsed)).toEqual(["schema", "kind", "version", "sourceRoot", "sourceDigest", "projects", "blockers", "fingerprint"]);
@@ -81,37 +90,46 @@ test("#466 restart dry-run and default pipe retain the old plan document and nev
   const knownPlan = { schema: 1, kind: "restart", version: VERSION, sourceRoot: PACKAGE_ROOT, sourceDigest: parsed.sourceDigest,
     projects: [], blockers: ["no running registered projects in scope"], fingerprint: parsed.fingerprint };
   expect(plain.out).toBe(JSON.stringify(knownPlan, null, 2) + "\n");
-  const never = await f.cli(["restart", "--color=never", "--dry-run"]);
+  const never = await f.cli(["restart", "--color=never", "--dry-run", "--json"]);
   expect(never.code, never.err).toBe(0); expect(never.out).toBe(plain.out); expect(never.err).toBe(plain.err);
+  const humanNever = await f.cli(["restart", "--color=never", "--dry-run"]);
+  expect(humanNever.out).toBe(human.out); expect(humanNever.out).not.toMatch(ANSI);
   const defaultPipe = await f.cli(["restart"]), neverPipe = await f.cli(["restart", "--color=never"]);
   expect(defaultPipe.code).toBe(1); expect(defaultPipe.err).toContain("plan has blockers; no runtime was changed");
   expect(neverPipe.code).toBe(defaultPipe.code); expect(neverPipe.out).toBe(defaultPipe.out); expect(neverPipe.err).toBe(defaultPipe.err);
-  expect(defaultPipe.out).toBe(plain.out);
+  expect(defaultPipe.out).toBe(human.out);
+  // --json without --yes is a dry run (exit 0, the document, the stderr blocker line); --json --yes applies and refuses on the blocker, document printed once.
+  const jsonDry = await f.cli(["restart", "--json"]);
+  expect(jsonDry.code).toBe(0); expect(jsonDry.out).toBe(plain.out); expect(jsonDry.err).toContain("ahub: blocker: no running registered projects in scope");
+  const jsonApply = await f.cli(["restart", "--json", "--yes"]);
+  expect(jsonApply.code).toBe(1); expect(jsonApply.out).toBe(plain.out); expect(jsonApply.err).toContain("ahub: blocker: no running registered projects in scope");
 }, 15_000);
 
-test("#466 explicit-version upgrade plan is identical in default and never-color pipes using closed-list metadata fakes", async () => {
+test("#466 #814 explicit-version upgrade plan: --json is identical in default and never-color pipes, the default is the readable plan, using closed-list metadata fakes", async () => {
   const f = fixture();
-  const plain = await f.cli(["upgrade", "--to", VERSION, "--dry-run"]);
+  const human = await f.cli(["upgrade", "--to", VERSION, "--dry-run"]);
+  expect(human.code, human.err).toBe(0);
+  expect(() => JSON.parse(human.out)).toThrow(); expect(human.out.replace(/\s+/g, " ")).toContain("upgrade to " + VERSION);
+  const plain = await f.cli(["upgrade", "--to", VERSION, "--dry-run", "--json"]);
   expect(plain.code, plain.err).toBe(0);
-  const never = await f.cli(["upgrade", "--to", VERSION, "--dry-run", "--color=never"]);
+  const never = await f.cli(["upgrade", "--to", VERSION, "--dry-run", "--color=never", "--json"]);
   expect(never.code, never.err).toBe(0); expect(never.out).toBe(plain.out); expect(never.err).toBe(plain.err);
   const plan = JSON.parse(plain.out);
   expect(Object.keys(plan)).toEqual(["schema", "kind", "version", "sourceRoot", "sourceDigest", "integrity", "projects", "blockers", "fingerprint"]);
   expect(plan.kind).toBe("upgrade"); expect(plan.version).toBe(VERSION); expect(plan.integrity).toBe("sha512-fixture-only");
   const calls = readFileSync(f.calls, "utf8").trim().split("\n").map(line => JSON.parse(line));
-  expect(calls).toEqual([
-    { name: "npm", args: ["view", `@staix/agent-hub@${VERSION}`, "version", "dist.integrity", "--json"] }, { name: "claude", args: ["--version"] },
-    { name: "npm", args: ["view", `@staix/agent-hub@${VERSION}`, "version", "dist.integrity", "--json"] }, { name: "claude", args: ["--version"] },
-  ]);
+  const lookup = [{ name: "npm", args: ["view", `@staix/agent-hub@${VERSION}`, "version", "dist.integrity", "--json"] }, { name: "claude", args: ["--version"] }];
+  expect(calls).toEqual([...lookup, ...lookup, ...lookup]);
 }, 15_000);
 
-test("#466 stop-and-archive of a confirmed missing project preserves default pipe bytes with color disabled", async () => {
+test("#466 #814 stop-and-archive of a confirmed missing project: the pipe default is the readable summary, identical with color disabled", async () => {
   const f = fixture(), args = ["recovery", "dispose", OPERATION, "--stop-and-archive", "--reason", "fixture exit"];
   f.reset("blocked"); const plain = await f.cli(args);
   expect(plain.code, plain.err).toBe(0);
   expect(f.readReceipt().phase).toBe("cancelled");
-  expect(plain.out).toContain('"phase": "cancelled"');
-  expect(plain.out).toContain("restart abandoned, not completed; committed transitions were not rolled back.");
+  expect(() => JSON.parse(plain.out)).toThrow(); expect(plain.out).not.toContain('"phase"');
+  expect(plain.out.replace(/\s+/g, " ")).toContain("restart abandoned, not completed");
+  expect(plain.out.replace(/\s+/g, " ")).toContain("committed transitions were not rolled back.");
   f.reset("blocked"); const never = await f.cli([...args, "--color=never"]);
   expect(never.code, never.err).toBe(0); expect(never.out).toBe(plain.out); expect(never.err).toBe(plain.err);
   expect(never.out).not.toMatch(ANSI);
@@ -148,7 +166,7 @@ test("#466 a reason whose literal value is --json is never consumed as a present
   const result = await f.cli(["recovery", "dispose", OPERATION, "--stop-and-archive", "--reason", "--json", "--color=never"]);
   expect(result.code, result.err).toBe(0);
   expect(f.readReceipt().audit?.[0]?.reason).toBe("--json");
-  expect(result.out).toContain("committed transitions were not rolled back.");
+  expect(result.out.replace(/\s+/g, " ")).toContain("committed transitions were not rolled back.");
 }, 15_000);
 
 test("#466 explicit JSON resume of a completed operation returns its receipt without scheduling", async () => {
@@ -192,3 +210,29 @@ test("#466 TTY resume with an existing runner hides internal paths unless verbos
   expect(verbose.code, verbose.err).toBe(0); expect(verbose.out).toContain("bun "); expect(verbose.out).toContain("main.js");
   for (const line of verbose.out.trimEnd().split("\n")) expect(Bun.stringWidth(line)).toBeLessThanOrEqual(80);
 }, 15_000);
+
+test("#814 recovery status of a blocked receipt: readable at 80 and 200 columns, the id and commands whole, --json untouched", async () => {
+  const f = fixture(); f.reset("blocked");
+  const argv = ["recovery", "status", OPERATION];
+  const at = async (columns: string, extra: string[] = []) => {
+    const child = Bun.spawn([process.execPath, join(f.temp, "cli.ts")], { cwd: f.root, env: { PATH: `${join(f.temp, "bin")}:/usr/bin:/bin`, HOME: join(f.temp, "home"), AGENTHUB_HOME: f.home, AMEM_HOME: join(f.temp, "amem"), TERM: "dumb", COLUMNS: columns, LANG: "C", CI: "1", FIXTURE_ARGV: JSON.stringify([...argv, ...extra]), FIXTURE_TTY: "0" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    return { code, out, err };
+  };
+  const narrow = await at("80"), wide = await at("200");
+  expect(narrow.code, narrow.err).toBe(0); expect(wide.code, wide.err).toBe(0);
+  for (const line of narrow.out.split("\n")) expect(Bun.stringWidth(line), line).toBeLessThanOrEqual(80);
+  for (const line of wide.out.split("\n")) expect(Bun.stringWidth(line), line).toBeLessThanOrEqual(200);
+  for (const text of [narrow.out, wide.out]) {
+    expect(() => JSON.parse(text)).toThrow(); expect(text).not.toMatch(ANSI);
+    const words = text.replace(/\s+/g, " ");
+    expect(words).toContain("What happened"); expect(words).toContain("What to do");
+    // which actions are offered depends on what the fixture's project shows, so assert what the coordinator offered, through its own function:
+    // every offered command carries this operation's id, whole, and at least abort is offered for a blocked, unrunning receipt
+    expect(words).toMatch(new RegExp(`recovery abort ${OPERATION}`));
+    for (const offered of words.matchAll(/recovery (resume|abort|dispose|status) ([0-9a-f-]{36})/g)) expect(offered[2]).toBe(OPERATION);
+    expect(words).toContain(OPERATION);
+  }
+  const json = await at("80", ["--json"]);
+  expect(json.code, json.err).toBe(0); expect(JSON.parse(json.out).id).toBe(OPERATION); expect(json.out).not.toMatch(ANSI);
+}, 20_000);
