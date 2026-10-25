@@ -1541,7 +1541,8 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   // Bind both legacy print transports and task-MCP calls to the child's original review request.
   const runningReviewAuthority = (by: PeerId, task: number): (() => string | undefined) | undefined => {
-    if (!definitionOf(by)?.reviewer) return undefined;
+    // #792: only a reviewer backend runs bound reviews; an unavailable placeholder slot (agy) fences nothing.
+    if (!definitionOf(by)?.reviewer?.backend) return undefined;
     const attached=bus.peers.get(by), peer=isReviewerPrintPeer(attached)?attached:undefined, token=peer?.reviewToken(task), binding=peer?.reviewBinding(task);
     return () => token!==undefined && binding!==undefined && bus.peers.get(by)===peer && peer?.reviewToken(task)===token && tasks.reviewBindingCurrent(by,task,binding)
       ? undefined : `no review of task #${task} is running for ${by} at its bound head and revision`;

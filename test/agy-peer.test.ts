@@ -119,6 +119,9 @@ for (const [version, name, args] of [["1.4.2", "view_file", (file: string) => ({
     await op(person, "hub_task_propose", { title: "agy part", class: "implement", owner: "agy", refs: { paths: ["a.txt"] } });
     await op(person, "hub_task_propose", { title: "claude part", class: "implement", owner: "claude", refs: { paths: ["a.txt"] } });
     await op(peer, "hub_task_accept", { id: 1 }); await op(claude, "hub_task_accept", { id: 2 });
+    // #792 S0: the unavailable reviewer slot must not fence agy's own task reads as if it were a running reviewer.
+    const shown = await peer.request({ t: "task", op: "hub_task_show", args: { id: 1 } });
+    expect(shown.error).toBeUndefined(); expect(shown.ok).toBe(true); expect(shown.text).toContain("agy part");
     const hook = (event: string, extra: Record<string, unknown> = {}) => tools.request({ t: "native_facts", event,
       payload: { conversationId: session, transcriptPath: transcript, workspacePaths: [root], invocationNum: 0, ...extra },
       nativeInstanceId: admission.instanceId, nativeLaunchId: admission.launchId });
