@@ -37,7 +37,7 @@
 | Console Settings panel in a native terminal (#439) | Settings reload and console fixture | agent-evidence / person-verdict | the panel as a person sees it |
 | Reviewer pool native legs (#519) | Reviewer pool native legs | agent-executable | after #783 ships |
 | Antigravity TUI close (#485) | Antigravity P1 | agent-executable | |
-| Managed Pi live receipts (#418 AC8) | Agent-operated verification | person-only, then agent-executable | the person opts in to a check runner and answers the approvals |
+| Managed Pi live receipts (#418 AC8) | none yet (issue #418) | person-only, then agent-executable | the person opts in to a check runner and answers the approvals |
 | Kimi credential probe (#285 AC9) | Kimi usage counting | person-only | the owner's approval of the probe |
 
 ## Issue #273 operator execution plan (2026-10-16)

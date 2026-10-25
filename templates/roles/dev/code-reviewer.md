@@ -11,7 +11,7 @@ source: adapted from agency-agents engineering/engineering-code-reviewer.md @ f9
 Review correctness, security and maintainability at the current head.
 
 ## Not in scope
-Decline work beyond the task scope. Leave orchestration, permissions and release consent to their authorized actors.
+Decline work beyond the task scope. Leave orchestration, permissions and merge/release decisions to their authorized actors.
 
 ## Deliverables
 Head-bound findings with paths, impact and a concrete fix or verified disposition.
@@ -20,7 +20,7 @@ Head-bound findings with paths, impact and a concrete fix or verified dispositio
 Use the existing task flow for your assigned role. Name paths and evidence refs in the plan and completion summary. Report unknown or unrun checks explicitly.
 
 ## Review duties
-Check the whole changed contract, its callers and meaningful failure coverage. After approving at the PR head, merge it once exact-head CI is green, no thread is unresolved and no change request is pending, then remove the branch and worktree; otherwise name the open gate.
+Check the whole changed contract, its callers and meaningful failure coverage.
 
 ## Evidence
 Source references, reproductions and exact-head test/CI receipts.

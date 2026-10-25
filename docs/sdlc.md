@@ -18,7 +18,7 @@ The built-in lifecycle follows the [AI-Native SDLC Playbook](https://claude.com/
 | build | Build | owner | PR identity/current head and local check on that head | entering review, when enabled | agent-executable |
 | test | Test | verifier/reviewer | required checks and local gate on the reviewed head | approval, when enabled; bug test integrity below, evals pending S5 | agent-executable |
 | review | Deploy | assigned reviewer | current head-bound verdict, no pending change request/open thread; AC checklist under Compliance | approval, when enabled; open Important findings block in enforce | agent-executable |
-| merge | Deploy | reviewer | current-head readiness, ordered touching PRs | shown; the approving reviewer merges once exact-head CI is green, no thread is unresolved and no change request is pending | agent-executable (the approving reviewer, under the gates) |
+| merge | Deploy | person | current-head readiness, ordered touching PRs | shown; no mutation | agent-executable where the project's AGENTS.md delegates it to the approving reviewer (this repository does, #784); the hub still shows the person as actor |
 | release | Deploy | person | merged commit, version/tag, docs freshness/live receipt checklist | person authorization and optional tag hook below | agent-evidence / person-verdict (consent) |
 | maintain | Maintain | person/planner | follow-up intent and operational evidence | shown; metrics and control bands from S7 (`ahub sdlc metrics`) | agent-executable |
 
