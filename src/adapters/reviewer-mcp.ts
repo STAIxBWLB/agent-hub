@@ -10,6 +10,8 @@ export interface ReviewerMcpOptions {
   tools: readonly HubTool[];
   /** Fixed host port; the host still applies Tasks' role, privacy, head and running-child fences. */
   call(name: ReviewerToolName, args: Record<string, unknown>): Promise<string>;
+  /** Diagnostic metadata only; never tool arguments or successful result text. */
+  onTool?(name: ReviewerToolName, refusal?: string): void;
 }
 const NAMES: readonly ReviewerToolName[] = ["hub_review", "hub_task_show"];
 const BODY_CAP = 256 * 1024, RESULT_CAP = 4 * 1024 * 1024;
@@ -60,20 +62,24 @@ export function createReviewerMcpSession(options: ReviewerMcpOptions): ReviewerM
       if (!record(body.params)) return error("tool parameters required");
       const name = body.params.name;
       if (name !== "hub_review" && name !== "hub_task_show") return error("tool unavailable");
+      const observe = (refusal?: string) => { try { options.onTool?.(name, refusal); } catch { /* Diagnostics never change tool authority or results. */ } };
+      const refuse = (message: string, code?: number) => { observe(message); return error(message, code); };
+      observe();
       let args = body.params.arguments;
-      if (typeof args === "string") { try { args = JSON.parse(args); } catch { return error("invalid tool arguments"); } }
-      if (!record(args) || args.id !== options.task || !Number.isSafeInteger(args.id)) return error("tool is bound to its review task");
-      if (++calls > 64) return error("review tool call limit", -32002);
-      if (!current()) return error("review authority ended", -32001);
+      if (typeof args === "string") { try { args = JSON.parse(args); } catch { return refuse("invalid tool arguments"); } }
+      if (!record(args) || args.id !== options.task || !Number.isSafeInteger(args.id)) return refuse("tool is bound to its review task");
+      if (++calls > 64) return refuse("review tool call limit", -32002);
+      if (!current()) return refuse("review authority ended", -32001);
       try {
         const result = await options.call(name, args);
         // Tasks.review rechecks its captured authority through its final write. A successful verdict
         // ends that in_review binding itself; acknowledge its committed result, never fresh reads.
-        if (name !== "hub_review" && !current()) return error("review authority ended", -32001);
-        if (Buffer.byteLength(result) > RESULT_CAP) return error("tool result exceeds review limit");
+        if (name !== "hub_review" && !current()) return refuse("review authority ended", -32001);
+        if (Buffer.byteLength(result) > RESULT_CAP) return refuse("tool result exceeds review limit");
         return reply({ content: [{ type: "text", text: result }] });
       } catch (failure) {
         // The same host tool boundary supplies refusals to the released MCP transport.
+        observe(failure instanceof Error ? failure.message : "review tool refused");
         const message = failure instanceof Error ? sanitize(failure.message).slice(0, 4000) : "review tool refused";
         return reply({ isError: true, content: [{ type: "text", text: message }] });
       }

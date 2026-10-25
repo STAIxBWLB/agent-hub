@@ -31,6 +31,25 @@ test("reviewer MCP exposes only two host tools without a control token or stdio 
   expect(f.calls).toEqual([]);
 });
 
+test("reviewer MCP diagnostics observe guarded refusals and full host errors without tool arguments", async () => {
+  const observed: { tool: string; refusal?: string }[] = [], refusal = "safe prefix ".repeat(500) + "FULL_REFUSAL_TAIL";
+  let active = true;
+  const session = createReviewerMcpSession({ task: 7, current: () => active, tools,
+    onTool: (tool, message) => observed.push({ tool, ...(message === undefined ? {} : { refusal: message }) }),
+    call: async () => { throw new Error(refusal); } });
+  sessions.push(session);
+  const config = JSON.parse(session.config).mcpServers["agent-hub"];
+  const rpc = (id: number) => fetch(config.url, { method: "POST", headers: { ...config.headers, "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "hub_review", arguments: { id, note: "PRIVATE_ARGUMENT_CANARY" } } }) });
+  expect((await json(await rpc(8))).error).toBeDefined();
+  expect(observed.at(-1)).toEqual({ tool: "hub_review", refusal: "tool is bound to its review task" });
+  await rpc(7);
+  expect(observed.at(-1)?.refusal).toBe(refusal); expect(observed.at(-1)?.refusal).toContain("FULL_REFUSAL_TAIL");
+  expect(JSON.stringify(observed)).not.toContain("PRIVATE_ARGUMENT_CANARY");
+  active = false; const count = observed.length;
+  expect((await json(await rpc(7))).error).toBeDefined(); expect(observed).toHaveLength(count);
+});
+
 test("reviewer MCP refuses browsers and missing or wrong per-session authority", async () => {
   const f = fixture();
   expect((await f.rpc("tools/list", undefined, { headers: { Origin: "https://example.test" } })).status).toBe(403);

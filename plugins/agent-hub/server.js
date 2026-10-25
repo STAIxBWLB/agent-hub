@@ -1332,7 +1332,15 @@ var DEFAULT_WATCHDOG_MS = 300000;
 
 // src/adapters/reviewer-print.ts
 import { randomUUID as randomUUID2 } from "crypto";
-var ReviewerUnavailableError, ReviewerAdmissionError, reviewTarget = (env) => {
+function reviewerNoVerdictLine(peer, diagnostic, safeRefusal, withheld = false) {
+  const prefix = `[${peer}] review of task #${diagnostic.task}: no verdict exit=${diagnostic.exitCode ?? "unknown"}; `;
+  if (withheld)
+    return prefix + "diagnostic withheld";
+  const detail = diagnostic.lastTool ? `last hub tool ${diagnostic.lastTool}; ${diagnostic.reviewCalled ? "hub_review called" : "no hub_review call"}` : "no hub_review call";
+  const line = safeRefusal === undefined ? undefined : Array.from(sanitize(safeRefusal).replace(/\s+/g, " ")).filter((char) => !/\p{C}/u.test(char)).slice(0, 240).join("");
+  return prefix + detail + (diagnostic.refusal === undefined && diagnostic.hostRefusal === undefined ? "" : `; refusal: ${line ?? "withheld"}`);
+}
+var ReviewerUnavailableError, ReviewerAdmissionError, REVIEWER_FALLBACK_UNCONFIRMED = "reviewer fallback unconfirmed: ", reviewTarget = (env) => {
   const task = reviewTask(env);
   if (task === undefined || env.private)
     return;
@@ -1381,6 +1389,29 @@ var init_reviewer_print = __esm(() => {
     reviewing;
     reviewSeq = 0;
     runningBinding;
+    activeTrace;
+    recordToolTrace(task, trace) {
+      if (trace.tool !== "hub_review" && trace.tool !== "hub_task_show")
+        return;
+      const active = this.activeTrace, binding = this.runningBinding;
+      if (!active || active.task !== task || active.generation !== this.generation || this.reviewing !== task || binding?.task !== task || this.opts.bindingCurrent?.(task, binding.binding) === false)
+        return;
+      if (typeof trace.refusal === "string") {
+        if (active.value.hostRefusal === undefined)
+          active.value.hostRefusal = trace.refusal;
+        else if (active.value.hostRefusal !== trace.refusal)
+          active.value.refusalUncertain = true;
+      }
+      this.observeTool(active.value, trace);
+    }
+    observeTool(value, trace) {
+      if (trace.tool !== "hub_review" && trace.tool !== "hub_task_show")
+        return;
+      value.lastTool = trace.tool;
+      value.refusal = typeof trace.refusal === "string" ? trace.refusal : undefined;
+      if (trace.tool === "hub_review")
+        value.reviewCalled = true;
+    }
     reviewBinding(task) {
       return this.reviewing === task && this.runningBinding?.task === task ? this.runningBinding.binding : undefined;
     }
@@ -1552,6 +1583,15 @@ var init_reviewer_print = __esm(() => {
         if (!recorded) {
           missing.push(task);
           const target = batch.targets[index];
+          const diagnostic = { ...target, task, exitCode: result.code, ...result.trace };
+          try {
+            if (this.opts.onNoVerdict)
+              this.opts.onNoVerdict(diagnostic, () => generation === this.generation);
+            else
+              this.opts.log?.(reviewerNoVerdictLine(this.id, diagnostic));
+          } catch {
+            this.opts.log?.(reviewerNoVerdictLine(this.id, { task, exitCode: result.code, reviewCalled: false }, undefined, true));
+          }
           if (target)
             reroute.push({ ...target, cause: result.quota ? "quota" : "no_verdict" });
           if (result.quota) {
@@ -1561,14 +1601,18 @@ var init_reviewer_print = __esm(() => {
           }
         }
         batch.next = index + 1;
-        if (result.code !== 0)
+        if (recorded && result.code !== 0)
           this.opts.log?.(`[${this.id}] review of task #${task} exited ${result.code}`);
       }
       if (generation !== this.generation)
         return;
       this.clearWatchdog();
-      this.settle(failure?.state ?? (missing.length ? "needs_review" : "completed"), failure?.reason ?? (missing.length ? `no verdict recorded for task ${missing.map((id) => `#${id}`).join(", ")}` : undefined));
-      await this.reportFailures(reroute, generation);
+      const reoffered = await this.reportFailures(reroute, generation);
+      if (generation !== this.generation)
+        return;
+      const unresolved = missing.length > 0 && !reoffered;
+      const normalNoVerdict = !failure && reroute.length > 0 && reroute.every((value) => value.cause === "no_verdict");
+      this.settle(failure?.state ?? (unresolved ? "needs_review" : "completed"), failure?.reason ?? (unresolved ? `${normalNoVerdict ? REVIEWER_FALLBACK_UNCONFIRMED : ""}no verdict recorded for task ${missing.map((id) => `#${id}`).join(", ")}` : undefined));
       if (generation === this.generation) {
         this.batch = undefined;
         this.setState("idle");
@@ -1576,19 +1620,23 @@ var init_reviewer_print = __esm(() => {
     }
     async reportFailures(failures, generation) {
       const seen = new Set;
+      let reoffered = true;
       for (const failed of failures) {
         if (generation !== this.generation)
-          return;
+          return false;
         const identity = JSON.stringify([failed.task, failed.head, failed.flowRevision]);
         if (seen.has(identity))
           continue;
         seen.add(identity);
         try {
-          await this.opts.onUnavailable?.(failed, () => generation === this.generation);
+          if (await this.opts.onUnavailable?.(failed, () => generation === this.generation) !== true)
+            reoffered = false;
         } catch {
+          reoffered = false;
           this.opts.log?.(`[${this.id}] reviewer fallback could not be recorded; inspect the task`);
         }
       }
+      return reoffered;
     }
     prepare(sessionId, input, task, mcpConfig) {
       const abort = new AbortController;
@@ -1645,6 +1693,8 @@ var init_reviewer_print = __esm(() => {
 
 ${facts}` : ""}`;
       let launch;
+      const trace = { reviewCalled: false };
+      this.activeTrace = { task, generation, value: trace };
       const mcp = this.opts.backend.taskMcp ? this.opts.taskMcp?.(task, () => generation === this.generation && this.reviewToken(task) !== undefined && this.opts.bindingCurrent?.(task, binding) !== false) : undefined;
       let mcpClosed = false;
       const closeMcp = () => {
@@ -1692,6 +1742,11 @@ ${facts}` : ""}`;
               }, 100);
           },
           onFrame: (event) => {
+            try {
+              const observed = this.opts.backend.toolTrace?.(event);
+              if (observed && generation === this.generation)
+                this.observeTool(trace, observed);
+            } catch {}
             const usage = this.opts.backend.usage?.(event);
             if (usage)
               this.opts.onUsage?.(usage, task);
@@ -1713,8 +1768,10 @@ ${facts}` : ""}`;
         const code = await child.done;
         if (this.child === child)
           this.child = undefined;
-        return { code, quota };
+        return { code, quota, trace };
       } finally {
+        if (this.activeTrace?.value === trace)
+          this.activeTrace = undefined;
         closeMcp();
         if (policyTimer)
           clearInterval(policyTimer);
@@ -2268,6 +2325,16 @@ var init_codex_review_isolation = __esm(() => {
   codexReviewerBackend = {
     id: "codex",
     prepare,
+    toolTrace(event) {
+      const row = event;
+      const item = row?.item;
+      if (row?.type !== "item.completed" || item?.type !== "mcp_tool_call" || item.server !== "agent-hub" || item.tool !== "hub_review" && item.tool !== "hub_task_show")
+        return;
+      const failure = typeof item.error === "string" ? item.error : item.error?.message;
+      const refused = item.result?.isError === true && Array.isArray(item.result.content) ? item.result.content.filter((value) => value?.type === "text" && typeof value.text === "string").map((value) => value.text).join(`
+`) : undefined;
+      return { tool: item.tool, ...typeof failure === "string" ? { refusal: failure } : typeof refused === "string" ? { refusal: refused } : {} };
+    },
     usage(event) {
       const row = event;
       return row?.type === "turn.completed" && row.usage ? { input_tokens: row.usage.input_tokens, output_tokens: row.usage.output_tokens, cache_read_input_tokens: row.usage.cached_input_tokens } : undefined;
