@@ -1,0 +1,23 @@
+{
+  "legacyInput": "dogfood-dev-input.json",
+  "metadata": [
+    {
+      "id": 1,
+      "class": "implement",
+      "state": "approved",
+      "projectProfile": null,
+      "plan": {}
+    },
+    {
+      "id": 2,
+      "class": "plan",
+      "state": "proposed",
+      "projectProfile": null,
+      "plan": {
+        "paths": [
+          "PRIVATE_READER_PATH"
+        ]
+      }
+    }
+  ]
+}

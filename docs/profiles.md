@@ -77,6 +77,10 @@ A missing, incomplete or unsupported source produces JSON null, rendered as unkn
 | Profile errors | No additional recorder introduced | Unknown/foreign alias-refusal totals remain unknown |
 | Cost | Existing task-attributed token/usage summaries | Missing usage and attribution remain unknown; no provider/model prose is exported |
 
+Research rows also expose bounded current-plan source and claim counts per task. Claim slots are anonymous ordinal numbers; declaration text and identifiers are never exported. Missing or malformed declarations remain unknown, while an explicit empty list proves zero declarations. These are current-plan counts, not a reconstruction of past plans.
+
+Each research class alias retains its own recorded task-check pass/fail counts under `observedCheckOutcomes`. Those history events do not record which check key ran. Consequently `factCheck` pass/fail, check selection and missing-key counts per run remain unknown until that provenance is recorded. No new telemetry is collected. Model labels, person verdicts, claims reaching a person verdict and per-label agreement also remain unknown because no claim-level verdict source exists. Task approval never supplies a claim verdict. Research uses the same recorded section-overlap rows as writing.
+
 The weekly writing, general and research receipt templates are in the verification/profiles directory. Copy only the emitted profile subsection, preserve null values, and include no project/person names or paths. A template is not a completed measurement or a live acceptance claim.
 
 The following verification claim ids collect the still-unverified statements above. A weekly receipt gives each a verdict of supported, partly supported or not supported, tied to recorded ids and remaining unknowns. Profile counts alone do not prove native ingestion, context retention or account acceptance; those verdicts need corresponding native/account receipt ids and independent judgment. None becomes verified merely because this reporting section exists:

@@ -290,13 +290,13 @@ test("profile event validation accepts legacy optional privacy, unattributed rec
   } finally {f.close();}
 });
 
-test("research fixtures cover all shipped aliases and all nine metric groups with explicit missing-source unknowns",()=>{
+test("research fixtures cover all shipped aliases and shared metric groups plus research evidence with explicit missing-source unknowns",()=>{
   const i=input();i.projectProfile=source("research");
   const aliases:[string,string][]=[["question","plan"],["survey","summarize"],["extract","bulk_edit"],["analyze","implement"],["synthesize","summarize"],["draft","implement"],["fact_check","test"],["review","review"],["triage","triage"]];
   i.tasks=source(aliases.map(([alias,base],index)=>({...task(index+1,"research",alias),profileMetadata:{...task(index+1,"research",alias).profileMetadata,class:base}})));
   const all=dogfoodScorecard(i).profile!.rows;expect(all).toHaveLength(10);expect(all.filter(r=>r.alias!==null).map(r=>[r.alias,r.baseClass])).toEqual(aliases);
   for (const row of all) {
-    expect(Object.keys(row).filter(key=>!["profile","alias","baseClass","tasks"].includes(key))).toEqual(["flow","review","overlap","deliverables","privacy","undo","snapshots","profileErrors","cost"]);
+    expect(Object.keys(row).filter(key=>!["profile","alias","baseClass","tasks"].includes(key))).toEqual(["research","flow","review","overlap","deliverables","privacy","undo","snapshots","profileErrors","cost"]);
     expect(row.flow.approved).toBe(row.alias===null?9:1);expect(row.undo.requests).toBeNull();expect(row.deliverables.changedSinceApproval).toBeNull();expect(row.profileErrors.unknownAlias).toBeNull();
   }
   i.tasks=source(i.tasks.data,false);i.events=missing([]);
@@ -315,4 +315,82 @@ test("planning and memory note screens are indistinguishable classifications and
   expect(planningRecord).toEqual(memoryRecord);expect(planningAt).not.toBe(memoryAt);
   i.events=source([planning,memory,event(170,{...shape,source:"regex"}),event(180,{...shape,source:"inherited"}),event(190,{...shape,item:"summary"}),event(200,{...shape,label:"clear"}),event(210,{type:"pii_screen",item:"note",label:"pii",source:"unknown"})]);
   const privacy=aggregate(i).privacy;expect(privacy.observedPiiNoteScreens).toBe(4);expect(privacy.memoryNotesDropped).toBeNull();expect(privacy.refusals).toBeNull();expect(privacy).not.toHaveProperty("observedMemoryNoteScreenDrops");
+});
+
+
+test("research declarations use bounded current-plan counts and opaque claim slots, never task approval as a verdict",()=>{
+  const f=fixture();try {
+    const file=join(f.root,"hub.db"),board=new Board(file);
+    const t=board.propose("user",{title:"PRIVATE_RESEARCH_TITLE",class:"test",profile:"research",profileClass:"fact_check",signals:["pii"]});
+    board.update(t.id,"user","accepted",{state:"in_progress",plan:{sources:["PRIVATE_SOURCE"],claims:["PRIVATE_CLAIM_1","PRIVATE_CLAIM_2"]}});
+    board.update(t.id,"hub","check passed",{},"PRIVATE_OUTPUT supported missing keys: 0");
+    board.update(t.id,"hub","check failed",{},"PRIVATE_OUTPUT unsupported");
+    board.update(t.id,"user","approved",{state:"approved"});board.close();
+    const i=input();i.since=0;i.until=Date.now()+1000;i.projectProfile=source("research");i.tasks=dogfoodTasks(file);
+    const r=aggregate(i,"research");
+    expect(i.tasks.complete).toBe(true);
+    expect(r.research!.declarations).toEqual({scope:"current_plan",perTask:[{task:t.id,sources:1,claims:2}]});
+    expect(r.research!.claims).toEqual({reachedPersonVerdict:null,perTask:[{task:t.id,claims:[{slot:1,modelLabel:null,personVerdict:null,agreement:null},{slot:2,modelLabel:null,personVerdict:null,agreement:null}]}]});
+    expect(r.research!.observedCheckOutcomes).toEqual({scope:"task_check_history",passed:1,failed:1});
+    expect(r.research!.factCheck).toEqual({scope:null,selection:null,passed:null,failed:null,missingKeysPerRun:null,agreement:[{label:"supported",count:null},{label:"unsupported",count:null},{label:"unclear",count:null}]});
+    expect(dogfoodScorecard(i).profile!.rows.find(r=>r.alias==="fact_check")!.research!.factCheck.passed).toBeNull();
+    expect(JSON.stringify(dogfoodScorecard(i))).not.toMatch(/PRIVATE_|missing keys/);
+    expect(formatDogfood(dogfoodScorecard(i)).join("\n")).toContain('"unknown"');
+  } finally {f.close();}
+});
+
+test("research legacy and event-only plan evidence stays unknown while explicit empty plans count zero",()=>{
+  const i=input();i.projectProfile=source("research");i.tasks=source([task(1,"research","fact_check")]);
+  expect(aggregate(i,"research").research!.declarations.perTask).toEqual([{task:1,sources:null,claims:null}]);
+  expect(aggregate(i,"research").research!.claims.perTask[0]!.claims).toBeNull();
+  i.tasks.data[0]!.profileMetadata!.plan={sources:0,claims:0};
+  expect(aggregate(i,"research").research!.claims.perTask[0]!.claims).toEqual([]);
+  i.tasks.complete=false;
+  expect(aggregate(i,"research").research!.declarations.perTask[0]!.claims).toBeNull();
+  expect(aggregate(i,"research").research!.factCheck.passed).toBeNull();
+  expect(aggregate(i,"research").research!.observedCheckOutcomes.passed).toBeNull();
+});
+
+test("research section overlap uses the same warning and edit evidence as writing",()=>{
+  const i=input();i.projectProfile=source("research");i.tasks=source([task(1,"research","fact_check"),task(2,"research","draft")]);
+  i.events=source([event(130,{type:"overlap",task:1,others:[{task:2,paths:["PRIVATE_PATH"],symbols:["section PRIVATE_SECTION"]}]}),event(140,{type:"conflict",task:1,other:2,paths:["PRIVATE_PATH"]})]);
+  expect(aggregate(i,"research").overlap).toEqual({pathNotices:1,sectionNotices:1,observedPathEditPairs:1,sectionEditPairs:null});
+  expect(JSON.stringify(dogfoodScorecard(i))).not.toMatch(/PRIVATE_/);
+});
+
+test("reader retains legacy task history when profile JSON or history metadata is malformed",()=>{
+  const f=fixture();try {
+    const file=join(f.root,"hub.db"),db=new Database(file);
+    db.run("CREATE TABLE tasks(id INTEGER,sdlc TEXT,signals TEXT,history TEXT,class TEXT,project_profile TEXT,plan TEXT)");
+    const insert=db.query("INSERT INTO tasks VALUES(?,?,?,?,?,?,?)");
+    insert.run(1,"{}","[]",JSON.stringify([{at:120,event:"accepted"}]),"implement","{broken","{}");
+    insert.run(2,"{}","[]",JSON.stringify([null,{at:120,event:"accepted"}]),"implement",JSON.stringify({profile:"research",profileClass:"draft"}),JSON.stringify({sources:[],claims:[]}));
+    insert.run(3,"{}","[]",JSON.stringify([{at:120,event:"accepted"}]),"implement",JSON.stringify({profile:"research",profileClass:"draft"}),JSON.stringify({claims:Array(51).fill("PRIVATE_CLAIM")}));
+    insert.run(4,"{}","[]",JSON.stringify([{at:120,event:"accepted"}]),"test",JSON.stringify({profile:"research",profileClass:"fact_check"}),JSON.stringify({sources:Array(50).fill("PRIVATE_SOURCE"),claims:[]}));
+    insert.run(5,"{}","[]",JSON.stringify([{at:120,event:"accepted"}]),"test",JSON.stringify({profile:"research",profileClass:"fact_check"})," ".repeat(65537));
+    db.close();const collected=dogfoodTasks(file);
+    expect(collected.complete).toBe(false);expect(collected.data.map(t=>t.id)).toEqual([5,4,3,2,1]);
+    expect(collected.data.every(t=>t.history.length===1)).toBe(true);
+    expect(collected.data.find(t=>t.id===1)!.profileMetadata).toBeUndefined();
+    expect(collected.data.find(t=>t.id===2)!.profileMetadata!.plan).toEqual({sources:0,claims:0});
+    expect(collected.data.find(t=>t.id===3)!.profileMetadata!.plan!.claims).toBeNull();
+    expect(collected.data.find(t=>t.id===4)!.profileMetadata!.plan).toEqual({sources:50,claims:0});
+    expect(collected.data.find(t=>t.id===5)!.profileMetadata!.plan).toBeUndefined();
+    expect(JSON.stringify(collected)).not.toMatch(/PRIVATE_CLAIM|PRIVATE_SOURCE|broken/);
+  } finally {f.close();}
+});
+
+
+test("research generic draft check outcomes never imply fact_check selection or results",()=>{
+  const i=input();i.projectProfile=source("research");
+  const t=task(1,"research","draft");
+  t.profileMetadata.history.push({at:350,event:"check passed"},{at:400,event:"check failed"});
+  i.tasks=source([t]);
+  const rows=dogfoodScorecard(i).profile!.rows;
+  for (const r of rows) {
+    expect(r.research!.observedCheckOutcomes).toEqual({scope:"task_check_history",passed:1,failed:1});
+    expect(r.research!.factCheck).toMatchObject({scope:null,selection:null,passed:null,failed:null,missingKeysPerRun:null});
+  }
+  expect(rows.find(r=>r.alias==="draft")).toBeDefined();
+  expect(rows.find(r=>r.alias==="fact_check")).toBeUndefined();
 });

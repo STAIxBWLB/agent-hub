@@ -59,17 +59,19 @@ export function dogfoodTasks(file: string): Source<DogfoodTask[]> {
     const columns = new Set((db.query("PRAGMA table_info(tasks)").all() as {name:string}[]).map(c=>c.name));
     const metadata = columns.has("class") ? "CASE WHEN length(class) <= 48 THEN class END" : "NULL";
     const profile = columns.has("project_profile") ? "CASE WHEN length(project_profile) <= 65536 THEN project_profile END" : "NULL";
+    const plan = columns.has("plan") ? "CASE WHEN length(plan) <= 65536 THEN plan END" : "NULL";
+    const planCut = columns.has("plan") ? "(plan IS NOT NULL AND length(plan) > 65536)" : "0";
     const state = columns.has("state") ? "CASE WHEN length(state) <= 32 THEN state END" : "NULL";
     const metadataCut = [columns.has("class") ? "(class IS NOT NULL AND length(class) > 48)" : "0", columns.has("state") ? "(state IS NOT NULL AND length(state) > 32)" : "0"].join(" OR ");
     const profileCut = columns.has("project_profile") ? "(project_profile IS NOT NULL AND length(project_profile) > 65536)" : "0";
-    const rows = db.query(`SELECT (${metadataCut}) AS metadata_cut, ${state} AS current_state, ${metadata} AS base_class, ${profileCut} AS profile_cut, ${profile} AS project_profile, id, (sdlc IS NOT NULL AND length(sdlc) > 65536) AS receipt_cut, CASE WHEN length(sdlc) <= 65536 THEN sdlc END AS sdlc,
+    const rows = db.query(`SELECT (${planCut}) AS plan_cut, ${plan} AS plan, (${metadataCut}) AS metadata_cut, ${state} AS current_state, ${metadata} AS base_class, ${profileCut} AS profile_cut, ${profile} AS project_profile, id, (sdlc IS NOT NULL AND length(sdlc) > 65536) AS receipt_cut, CASE WHEN length(sdlc) <= 65536 THEN sdlc END AS sdlc,
       CASE WHEN length(signals) <= 65536 THEN signals END AS signals,
-      CASE WHEN length(history) <= 131072 THEN history END AS history FROM tasks ORDER BY id DESC LIMIT ?`).all(MAX_TASKS + 1) as { metadata_cut: number; current_state: string | null; profile_cut: number; base_class: string | null; project_profile: string | null; id: number; receipt_cut: number; sdlc: string | null; signals: string | null; history: string | null }[];
+      CASE WHEN length(history) <= 131072 THEN history END AS history FROM tasks ORDER BY id DESC LIMIT ?`).all(MAX_TASKS + 1) as { plan_cut: number; plan: string | null; metadata_cut: number; current_state: string | null; profile_cut: number; base_class: string | null; project_profile: string | null; id: number; receipt_cut: number; sdlc: string | null; signals: string | null; history: string | null }[];
     let complete = rows.length <= MAX_TASKS, bytes = 0;
     const tasks: DogfoodTask[] = [];
     for (const row of rows.slice(0,MAX_TASKS)) {
-      if (row.receipt_cut || row.profile_cut || row.metadata_cut) complete = false;
-      bytes += Buffer.byteLength(row.base_class ?? "") + Buffer.byteLength(row.current_state ?? "") + (row.project_profile?.length ?? 0) + (row.sdlc?.length ?? 0) + (row.signals?.length ?? 0) + (row.history?.length ?? 0);
+      if (row.receipt_cut || row.profile_cut || row.metadata_cut || row.plan_cut) complete = false;
+      bytes += Buffer.byteLength(row.plan ?? "") + Buffer.byteLength(row.base_class ?? "") + Buffer.byteLength(row.current_state ?? "") + (row.project_profile?.length ?? 0) + (row.sdlc?.length ?? 0) + (row.signals?.length ?? 0) + (row.history?.length ?? 0);
       if (bytes > DOGFOOD_BYTE_CAP) { complete = false; break; }
       try {
         const signals = JSON.parse(row.signals ?? "null"), history = JSON.parse(row.history ?? "null"), receipt = JSON.parse(row.sdlc ?? "{}");
@@ -82,17 +84,35 @@ export function dogfoodTasks(file: string): Source<DogfoodTask[]> {
         }
         const pii = signals.includes("pii") || signals.includes("pii_path");
         let profileMetadata: ProfileTaskMetadata | undefined;
-        if (!row.profile_cut && row.base_class && (CLASSES as readonly string[]).includes(row.base_class)) {
-          const raw = row.project_profile === null ? {profile:"dev",profileClass:row.base_class} : JSON.parse(row.project_profile);
-          if (!dogfoodProfileName(raw?.profile)) complete = false;
-          else {
-            if (history.some((h:any) => h.unmetCriteria !== undefined && (!Array.isArray(h.unmetCriteria) || h.unmetCriteria.length>32 || new Set(h.unmetCriteria).size!==h.unmetCriteria.length || h.unmetCriteria.some((v:unknown)=>typeof v!=="string" || !/^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(v))) || h.deliverables !== undefined && (!Array.isArray(h.deliverables) || h.deliverables.length>16 || h.deliverables.some((v:any)=>typeof v?.id!=="string" || !/^d-[0-9a-f]{12}$/.test(v.id))))) complete=false;
-            const projection = history.map((h:any) => ({at:h.at,event:h.event,
-              ...(Array.isArray(h.unmetCriteria) ? {criteria:h.unmetCriteria.slice(0,32).filter((v:unknown)=>typeof v === "string" && /^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(v)).map((v:string)=>pii || h.withheld ? "withheld" : v), ...(h.withheld ? {criteriaPrivate:true as const} : {})} : {}),
-              ...(Array.isArray(h.deliverables) ? {deliverables:h.deliverables.slice(0,16).filter((v:any)=>typeof v?.id==="string" && /^d-[0-9a-f]{12}$/.test(v.id)).map((v:any)=>v.id)} : {})}));
-            profileMetadata = {...(row.current_state ? {state:row.current_state} : {}),profile:raw.profile,class:row.base_class,alias:dogfoodAlias(raw.profile,row.base_class,raw.profileClass,pii),history:projection};
+        try {
+          if (!row.profile_cut && row.base_class && (CLASSES as readonly string[]).includes(row.base_class)) {
+            const raw = row.project_profile === null ? {profile:"dev",profileClass:row.base_class} : JSON.parse(row.project_profile);
+            if (!dogfoodProfileName(raw?.profile)) complete = false;
+            else {
+              if (history.some((h:any) => h && (h.unmetCriteria !== undefined && (!Array.isArray(h.unmetCriteria) || h.unmetCriteria.length>32 || new Set(h.unmetCriteria).size!==h.unmetCriteria.length || h.unmetCriteria.some((v:unknown)=>typeof v!=="string" || !/^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(v))) || h.deliverables !== undefined && (!Array.isArray(h.deliverables) || h.deliverables.length>16 || h.deliverables.some((v:any)=>typeof v?.id!=="string" || !/^d-[0-9a-f]{12}$/.test(v.id)))))) complete=false;
+              const projection = history.filter((h:any)=>h && Number.isFinite(h.at) && typeof h.event==="string").map((h:any) => ({at:h.at,event:h.event,
+                ...(Array.isArray(h.unmetCriteria) ? {criteria:h.unmetCriteria.slice(0,32).filter((v:unknown)=>typeof v === "string" && /^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(v)).map((v:string)=>pii || h.withheld ? "withheld" : v), ...(h.withheld ? {criteriaPrivate:true as const} : {})} : {}),
+                ...(Array.isArray(h.deliverables) ? {deliverables:h.deliverables.slice(0,16).filter((v:any)=>typeof v?.id==="string" && /^d-[0-9a-f]{12}$/.test(v.id)).map((v:any)=>v.id)} : {})}));
+              let declarations: ProfileTaskMetadata["plan"];
+              if (!row.plan_cut && row.plan !== null) {
+                try {
+                  const rawPlan = JSON.parse(row.plan);
+                  if (!rawPlan || typeof rawPlan!=="object" || Array.isArray(rawPlan)) complete=false;
+                  else {
+                    const count = (key:"sources"|"claims") => {
+                      const value=rawPlan[key];
+                      if (value===undefined) return null;
+                      if (!Array.isArray(value) || value.length>50 || value.some((v:unknown)=>typeof v!=="string" || v.length>300)) {complete=false;return null;}
+                      return value.length;
+                    };
+                    declarations={sources:count("sources"),claims:count("claims")};
+                  }
+                } catch {complete=false;}
+              }
+              profileMetadata = {...(declarations?{plan:declarations}:{}),...(row.current_state ? {state:row.current_state} : {}),profile:raw.profile,class:row.base_class,alias:dogfoodAlias(raw.profile,row.base_class,raw.profileClass,pii),history:projection};
+            }
           }
-        }
+        } catch { complete=false; }
         tasks.push({ id: row.id, pii, ...(profileMetadata ? {profileMetadata} : {}), ...(repoName(receipt?.repo) ? { repo: receipt.repo } : {}), ...(id(receipt?.pr) ? { pr: receipt.pr } : {}), history: clean });
       } catch { complete = false; }
     }

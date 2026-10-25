@@ -1,5 +1,7 @@
 import type { DogfoodInput, Source } from "./dogfood.ts";
-import { CLASSES } from "./board.ts";
+import { CLASSES, type TaskState } from "./board.ts";
+import { PII_CATEGORIES, type ScreenItem, type ScreenMiss, type ScreenRecord } from "./inference.ts";
+import type { Attribution } from "./attribution.ts";
 import { PROFILE_NAMES, projectProfile, type ProfileName } from "./profiles.ts";
 import { summarizeByTask } from "./report.ts";
 import type { StampedEvent } from "./events.ts";
@@ -9,14 +11,26 @@ export interface ProfileHistory {
 }
 export interface ProfileTaskMetadata {
   profile: ProfileName; state?: string; class: string; alias: string | null; history: ProfileHistory[];
+  plan?: { sources: number | null; claims: number | null };
 }
 const complete = (s: Source<unknown>) => s.available && s.complete;
 const number = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n >= 0;
+const declarationCount = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number)>=0 && (n as number)<=50;
 const positive = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) > 0;
 const peer = (s: string) => /^[a-z][a-z0-9-]{0,63}$/.test(s) && !Object.hasOwn(Object.prototype, s);
 export const dogfoodProfileName = (s: unknown): s is ProfileName => typeof s === "string" && (PROFILE_NAMES as readonly string[]).includes(s);
 const baseClass = (s: unknown): s is string => typeof s === "string" && (CLASSES as readonly string[]).includes(s);
 const criterion = (s: unknown): s is string => typeof s === "string" && /^[A-Za-z][A-Za-z0-9-]{0,47}$/.test(s);
+
+// Exhaustive maps make producer union changes a compile-time review point.
+const taskStates: Record<TaskState,true> = {backlog:true,proposed:true,in_progress:true,in_review:true,approved:true,changes_requested:true,cancelled:true};
+const usageSources: Record<Extract<StampedEvent,{type:"usage"}>["source"],true> = {omniroute:true,claude_transcript:true,claude_result:true,codex_appserver:true,kimi_wire:true};
+const attributions: Record<Attribution,true> = {delivery:true,single_open:true,unattributed:true};
+const screenItems: Record<ScreenItem,true> = {task:true,summary:true,"review note":true,handoff:true,note:true};
+const screenMisses: Record<ScreenMiss,true> = {"too long":true,"off campus":true,timeout:true,unreadable:true,failed:true};
+const screenSources: Record<ScreenRecord["source"],true> = {regex:true,screen:true,unknown:true,inherited:true};
+const screenLabels: Record<ScreenRecord["label"],true> = {pii:true,clear:true};
+const member = (value: unknown, choices: object) => typeof value === "string" && Object.hasOwn(choices,value);
 
 /** One validation boundary for the profile consumer and its bounded collector. Unknown event types stay forward compatible. */
 export function profileEventValid(value: unknown): boolean {
@@ -32,7 +46,7 @@ export function profileEventValid(value: unknown): boolean {
   const taskId = () => optional("task",positive);
   if (e.type==="task") {
     return positive(e.id) && baseClass(e.class) && text(e.event)
-      && oneOf(e.state,["backlog","proposed","in_progress","in_review","approved","changes_requested","cancelled"])
+      && member(e.state,taskStates)
       && optional("profile",dogfoodProfileName) && optional("profileClass",v=>typeof v==="string" && /^[a-z][a-z0-9_]{0,47}$/.test(v))
       // Older metadata projections may omit privacy; absence remains conservative at event-only binding.
       && optional("pii",bool) && optional("by",peerId)
@@ -52,19 +66,19 @@ export function profileEventValid(value: unknown): boolean {
   }
   if (e.type==="tokens" || e.type==="usage" || e.type==="turn_end") {
     if (!peerId(e.peer) || !taskId() || !optional("pii",bool)
-      || !optional("attribution",v=>oneOf(v,["delivery","single_open","unattributed"]))) return false;
+      || !optional("attribution",v=>member(v,attributions))) return false;
     if ((e.attribution==="delivery" || e.attribution==="single_open") && !positive(e.task)) return false;
     if (e.type==="tokens") return number(e.n);
     if (e.type==="turn_end") return number(e.ms) && optional("turn",text) && optional("snapshotMs",number) && optional("tokens",number) && optional("files",number);
-    return text(e.id) && oneOf(e.source,["omniroute","claude_transcript","claude_result","codex_appserver","kimi_wire"])
+    return text(e.id) && member(e.source,usageSources)
       && ["inputTokens","outputTokens","cacheReadTokens","cacheWriteTokens","totalTokens","reasoningTokens"].every(key=>optional(key,number))
       && optional("measuredAt",v=>typeof v==="string" && Number.isFinite(Date.parse(v)));
   }
   if (e.type==="pii_screen") {
-    return taskId() && oneOf(e.item,["task","summary","review note","handoff","note"]) && oneOf(e.label,["pii","clear"])
-      && oneOf(e.source,["regex","screen","unknown","inherited"]) && optional("ms",number)
-      && optional("category",v=>oneOf(v,["name","student_id","phone","address","grade","health","other"]))
-      && optional("miss",v=>oneOf(v,["too long","off campus","timeout","unreadable","failed"]));
+    return taskId() && member(e.item,screenItems) && member(e.label,screenLabels)
+      && member(e.source,screenSources) && optional("ms",number)
+      && optional("category",v=>oneOf(v,PII_CATEGORIES))
+      && optional("miss",v=>member(v,screenMisses));
   }
   return true;
 }
@@ -210,7 +224,18 @@ export function profileScorecard(input: DogfoodInput) {
       const costs = [...ids].sort((a,b)=>a-b).map(task=>({task,peers:complete(input.events) && report.tasks[String(task)] ? Object.fromEntries(Object.entries(report.tasks[String(task)]!.peers).map(([id,p])=>[id,{tokens:p.tokens,input:p.usage.inputTokens,output:p.usage.outputTokens,cacheRead:p.usage.cacheReadTokens,cacheWrite:p.usage.cacheWriteTokens,total:p.usage.totalTokens,records:p.usage.records}])) : null}));
       const screened = selected.filter(e=>e.type==="pii_screen" && e.item==="note" && e.label==="pii");
       const eventCount = (n:number) => full && complete(input.events) ? n : null;
-      return {profile, alias:group.alias, baseClass:group.base, tasks:[...ids].sort((a,b)=>a-b),
+      const planCount = (t: BoundTask,key:"sources"|"claims") => {
+        const count=t.metadata.plan?.[key];
+        return full && declarationCount(count) ? count : null;
+      };
+      const research = profile === "research" ? {research:{
+        declarations:{scope:"current_plan",perTask:group.tasks.map(t=>({task:t.id,sources:planCount(t,"sources"),claims:planCount(t,"claims")}))},
+        claims:{reachedPersonVerdict:null,perTask:group.tasks.map(t=>{const count=planCount(t,"claims");return {task:t.id,claims:count===null?null:Array.from({length:count},(_,i)=>({slot:i+1,modelLabel:null,personVerdict:null,agreement:null}))};})},
+        observedCheckOutcomes:{scope:"task_check_history",passed:full?history.filter(h=>h.event==="check passed").length:null,failed:full?history.filter(h=>h.event==="check failed").length:null},
+        factCheck:{scope:null,selection:null,passed:null,failed:null,missingKeysPerRun:null,
+          agreement:["supported","unsupported","unclear"].map(label=>({label,count:null}))}
+      }} : {};
+      return {...research,profile, alias:group.alias, baseClass:group.base, tasks:[...ids].sort((a,b)=>a-b),
         flow:{scope,autoApprovalTransitions:{scope:"recorded_events",value:eventsFull?new Set(autoApprovals.map(e=>e.id)).size:null},proposed:count("proposed"),accepted:count("accepted"),approved:milestoneKnown&&!approvalUnknown?approvalIds.size:null,cancelled:count("cancelled"),proposeToApproveMs:full&&!approvalUnknown?quantiles(leads):{samples:null,p50:null,p90:null},reviewRounds:milestoneKnown?rounds:null,firstPassApproval:full&&!approvalUnknown&&first.length?first.reduce((a,b)=>a+b,0)/first.length:null,escalations:count("escalated")},
         review:{changesRequested:milestoneKnown?rejectionCount:null,checklistItems:null,criteria:criteriaKnown?[...criteria].sort(([a],[b])=>a.localeCompare(b)).map(([id,count])=>({id,count})):null,privateCriteria:criteriaKnown?privateCriteria:null},
         overlap:{pathNotices:eventCount(warnings.filter(w=>w.paths.length).length),sectionNotices:eventCount(warnings.filter(w=>w.sections).length),observedPathEditPairs:eventCount(confirmed.size),sectionEditPairs:null},
