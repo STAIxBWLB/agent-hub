@@ -24,14 +24,15 @@ export interface MergeInput {
   tasks: DeliveryTask[];
   run: SdlcGh;
   readableMetadata?: (path: string) => boolean;
-  /** Called right before `gh pr merge` runs: a returned reason means the board moved during the reads and nothing runs. */
-  beforeMerge?: () => string | undefined;
   /**
-   * The board as it is NOW: the subject (its receipt, findings and dependencies) and its state. Read again right before `gh pr merge`, so a dependency, a finding or
-   * a state that changed during the awaited reads refuses (`localGates` runs on this, not on the snapshot the decision started from). Absent: only the decision's snapshot.
+   * The board and the authority to act, read NOW and synchronously: `guardedMerge` calls it once, after the last PR read and in the same synchronous segment as the
+   * `gh pr merge` call (nothing is awaited between them), and refuses unless every input still equals what the decision judged. Absent (a library caller): the
+   * decision's own snapshot is all there is. `undefined` means the task is gone.
    */
-  fresh?: () => { subject: DeliveryTask; state: string } | undefined;
+  fresh?: () => FreshBoard | undefined;
 }
+/** What the board says at the moment of dispatch. `allowed` is the asker's authority and the hub being free to write (no recovery hold). */
+export interface FreshBoard { subject: DeliveryTask; state: string; config: SdlcConfig; mode: AutoMergeMode; allowed: boolean }
 export type MergeDecision = { action: "merge"; argv: string[]; repo: string; pr: number; head: string } | { refused: string[] };
 export interface MergeOutcome {
   mode: AutoMergeMode;
@@ -174,23 +175,43 @@ export async function decideMerge(input: MergeInput): Promise<MergeDecision> {
   return { action: "merge", argv: mergeArgv(repo, pr, approved!), repo, pr, head: approved! };
 }
 
-/** Decide, then act by mode: `on` runs the one argv and reads the PR back, `dry-run` reports the same decision and runs nothing, `off` reads nothing. */
+/**
+ * Every board-side input the decision rested on, compared with the board as it is at dispatch. Pure and synchronous. The decision's inputs are: the task's state, repo,
+ * PR and reviewed head, its privacy, its dependencies (the edges and each one's state), its open Important findings for the head, the merge mode and required checks in
+ * force, and the asker's authority. Any difference refuses: a gate checked before an await is never trusted after it.
+ */
+export function dispatchGates(input: Pick<MergeInput, "subject" | "taskState"> & { config: SdlcConfig; mode: AutoMergeMode }, decision: { repo: string; pr: number; head: string }, now: FreshBoard | undefined): string[] {
+  const moved = ["task changed during the merge check: nothing was run"];
+  if (!now) return moved;
+  const receipt = now.subject.receipt;
+  if (receipt?.repo !== decision.repo || receipt?.pr !== decision.pr || receipt?.reviewedHead !== decision.head) return moved;
+  if (now.mode !== input.mode) return ["merge mode changed during the merge check: nothing was run"];
+  if (JSON.stringify(requiredChecksFor(now.config, decision.repo)) !== JSON.stringify(requiredChecksFor(input.config, decision.repo))) return ["required checks changed during the merge check: nothing was run"];
+  if (!now.allowed) return ["authority or hub availability changed during the merge check: nothing was run"];
+  if (JSON.stringify([...now.subject.after].sort((x, y) => x - y)) !== JSON.stringify([...input.subject.after].sort((x, y) => x - y))) return ["task dependencies changed during the merge check: nothing was run"];
+  return localGates({ subject: now.subject, state: now.state, taskState: input.taskState, config: now.config, head: decision.head });
+}
+
+/**
+ * Decide, then act by mode: `on` runs the one argv and reads the PR back, `dry-run` reports the same decision and runs nothing, `off` reads nothing.
+ * The dispatch segment below has no await: the board is read (`fresh`), every input is compared with the decision, and `run` is called, all in one synchronous
+ * stretch that starts after the last PR read.
+ */
 export async function guardedMerge(input: MergeInput & { mode: AutoMergeMode }): Promise<MergeOutcome> {
   if (input.mode === "off") return { mode: "off", decision: { refused: ["auto_merge is off for this repository"] }, ran: false };
   const decision = await decideMerge(input);
   if (!("action" in decision) || input.mode !== "on") return { mode: input.mode, decision, ran: false };
-  const moved = input.beforeMerge?.();
-  if (moved) return { mode: input.mode, decision: { refused: [moved] }, ran: false };
-  // The awaited reads took time: read the board again and judge its gates once more, immediately before the one write.
-  const now = input.fresh?.();
-  if (input.fresh) {
-    const stale = !now ? ["task changed during the merge check: nothing was run"] : localGates({ subject: now.subject, state: now.state, taskState: input.taskState, config: input.config, head: decision.head });
-    const same = now && now.subject.receipt?.repo === decision.repo && now.subject.receipt?.pr === decision.pr && now.subject.receipt?.reviewedHead === decision.head;
-    if (stale.length || !same) return { mode: input.mode, decision: { refused: stale.length ? stale : ["task changed during the merge check: nothing was run"] }, ran: false };
-  }
+  // ---- synchronous dispatch segment: no await from here to the call to `run` ----
   assertMergeArgv(decision.argv, decision.head);
+  if (input.fresh) {
+    const refused = dispatchGates(input, decision, input.fresh());
+    if (refused.length) return { mode: input.mode, decision: { refused }, ran: false };
+  }
+  let started: Promise<{ code: number; stdout: string }>;
+  try { started = Promise.resolve(input.run(decision.argv, 10_000)); } catch { started = Promise.resolve({ code: 1, stdout: "" }); }
+  // ---- end of the synchronous segment ----
   let exit = 1;
-  try { exit = (await input.run(decision.argv, 10_000)).code; } catch { exit = 1; }
+  try { exit = (await started).code; } catch { exit = 1; }
   // The exit code alone is not the result: a timed-out call may still have merged, and a refused one has not.
   const after = await readSdlcPr({ stage: input.subject.receipt!.stage, repo: decision.repo, pr: decision.pr }, input.run).catch(() => undefined);
   const result: NonNullable<MergeOutcome["result"]> = after?.state === "MERGED" ? { exit, state: "merged", ...(after.mergeCommit ? { mergeCommit: after.mergeCommit } : {}) } : after ? { exit, state: "not_merged" } : { exit, state: "unknown" };

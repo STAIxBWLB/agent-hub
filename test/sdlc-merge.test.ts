@@ -152,60 +152,101 @@ test("a gate that changes between the reads refuses at the SAME head: check, rev
   expect(await decideMerge(input({ 1: pr() }, [task(1, 1)], {}, dead).args).catch(() => ({ refused: ["threw"] }))).not.toHaveProperty("action");
 });
 
-test("the board moves while GitHub is being read: a dependency, a finding, the task's state or its privacy changed before dispatch means no merge argv", async () => {
-  // The decision's board reads happen first; GitHub is then read three times. The board changes on the 3rd `pr view` (the last read), so only a fresh read right before dispatch sees it.
-  const dependency = task(2, 2), subject = task(1, 1, { after: [2] });
-  const run = async (move: (board: { states: Record<number, string>; subject: { state: string; findings: NonNullable<DeliveryTask["findings"]>; private: boolean } }) => void) => {
-    const prs: Record<number, World> = { 1: pr({ paths: ["src/a.ts"] }), 2: pr({ state: "MERGED", paths: ["src/b.ts"] }) };
-    const board = { states: { 2: "approved" } as Record<number, string>, subject: { state: "approved", findings: [] as NonNullable<DeliveryTask["findings"]>, private: false } };
-    const counter = viewCounter();
-    const gh = fakeGh(prs, { onCall: args => { if (args[0] === "pr" && args[1] === "view" && args[2] === "1" && counter.next(args) === 3) move(board); } });
-    const live = () => ({ subject: { ...subject, findings: board.subject.findings, private: board.subject.private }, state: board.subject.state });
-    const outcome = await guardedMerge({ ...input(prs, [subject, dependency], { taskState: id => board.states[id], tasks: [subject, dependency] }, gh).args, mode: "on", fresh: live, state: "approved" });
-    return { outcome, gh };
-  };
-  const quiet = await run(() => {});
-  expect(quiet.outcome.ran).toBe(true); expect(quiet.gh.merges()).toHaveLength(1);                // nothing moved: it merges
-  const dependencyMoves = await run(board => { board.states[2] = "in_progress"; });
-  expect(dependencyMoves.outcome).toMatchObject({ ran: false, decision: { refused: ["dependency task #2 is not approved (in_progress)"] } }); expect(dependencyMoves.gh.merges()).toHaveLength(0);
-  const dependencyGone = await run(board => { delete board.states[2]; });
-  expect(dependencyGone.outcome).toMatchObject({ ran: false, decision: { refused: ["dependency task #2 is not approved (unknown)"] } }); expect(dependencyGone.gh.merges()).toHaveLength(0);
-  const finding = await run(board => { board.subject.findings = [{ head: A, items: [{ id: "f9", pass: "security", severity: "important", disposition: "open" }] }]; });
-  expect(finding.outcome).toMatchObject({ ran: false, decision: { refused: ["open Important finding"] } }); expect(finding.gh.merges()).toHaveLength(0);
-  const reopened = await run(board => { board.subject.state = "changes_requested"; });
-  expect(reopened.outcome).toMatchObject({ ran: false, decision: { refused: ["task not approved (state changes_requested)"] } }); expect(reopened.gh.merges()).toHaveLength(0);
-  const madePrivate = await run(board => { board.subject.private = true; });
-  expect(madePrivate.outcome).toMatchObject({ ran: false, decision: { refused: ["private task: a person merges"] } }); expect(madePrivate.gh.merges()).toHaveLength(0);
-  // The task vanished or was relinked to another PR or head: nothing runs.
-  const vanished = fakeGh({ 1: pr() });
-  expect((await guardedMerge({ ...input({ 1: pr() }, [task(1, 1)], {}, vanished).args, mode: "on", fresh: () => undefined })).ran).toBe(false); expect(vanished.merges()).toHaveLength(0);
-  const relinked = fakeGh({ 1: pr() });
-  expect((await guardedMerge({ ...input({ 1: pr() }, [task(1, 1)], {}, relinked).args, mode: "on", fresh: () => ({ subject: task(1, 9), state: "approved" }) })).ran).toBe(false); expect(relinked.merges()).toHaveLength(0);
-  const moved = fakeGh({ 1: pr() });
-  expect((await guardedMerge({ ...input({ 1: pr() }, [task(1, 1)], {}, moved).args, mode: "on", fresh: () => ({ subject: task(1, 1, {}, { reviewedHead: B }), state: "approved" }) })).ran).toBe(false); expect(moved.merges()).toHaveLength(0);
+/**
+ * One board-side input per case flips during the HELD final PR read (the 3rd `pr view` of the subject), and the test asserts no merge argv. The inputs are the ones the
+ * decision rested on: the task's state, repo, PR and reviewed head, its privacy, every dependency's state and its edges, its open Important findings for the head, the
+ * merge mode and required checks in force, and the asker's authority. `quiet` proves the same rig merges when nothing flips.
+ */
+interface LiveBoard { states: Record<number, string>; state: string; findings: NonNullable<DeliveryTask["findings"]>; private: boolean; after: number[]; repo: string; pr: number; reviewedHead: string | undefined; stage: string; config: ReturnType<typeof config>; mode: "on" | "dry-run"; allowed: boolean; gone: boolean }
+const liveBoard = (): LiveBoard => ({ states: { 2: "approved" }, state: "approved", findings: [], private: false, after: [2], repo: "owner/repo", pr: 1, reviewedHead: A, stage: "merge", config: config(), mode: "on", allowed: true, gone: false });
+async function heldFinalRead(flip: (board: LiveBoard) => void) {
+  const prs: Record<number, World> = { 1: pr({ paths: ["src/a.ts"] }), 2: pr({ state: "MERGED", paths: ["src/b.ts"] }) };
+  const board = liveBoard(), counter = viewCounter();
+  const subject = task(1, 1, { after: [2] }), dependency = task(2, 2);
+  const gh = fakeGh(prs, { onCall: args => { if (args[0] === "pr" && args[1] === "view" && args[2] === "1" && counter.next(args) === 3) flip(board); } });
+  const fresh = () => board.gone ? undefined : { subject: { ...subject, after: board.after, findings: board.findings, private: board.private, receipt: { ...subject.receipt!, repo: board.repo, pr: board.pr, ...(board.reviewedHead ? { reviewedHead: board.reviewedHead } : { reviewedHead: undefined }), stage: board.stage } }, state: board.state, config: board.config, mode: board.mode, allowed: board.allowed };
+  const outcome = await guardedMerge({ ...input(prs, [subject, dependency], { taskState: id => board.states[id], tasks: [subject, dependency] }, gh).args, mode: "on", fresh });
+  return { outcome, gh };
+}
+const flips: [string, (board: LiveBoard) => void, string | RegExp][] = [
+  ["the task's state changes", board => { board.state = "changes_requested"; }, "task not approved (state changes_requested)"],
+  ["the task becomes private", board => { board.private = true; }, "private task: a person merges"],
+  ["a dependency leaves approved", board => { board.states[2] = "in_progress"; }, "dependency task #2 is not approved (in_progress)"],
+  ["a dependency disappears", board => { delete board.states[2]; }, "dependency task #2 is not approved (unknown)"],
+  ["a dependency edge is removed", board => { board.after = []; }, "task dependencies changed during the merge check: nothing was run"],
+  ["a dependency edge is added", board => { board.after = [2, 3]; board.states[3] = "approved"; }, "task dependencies changed during the merge check: nothing was run"],
+  ["an open Important finding appears for the head", board => { board.findings = [{ head: A, items: [{ id: "f9", pass: "security", severity: "important", disposition: "open" }] }]; }, "open Important finding"],
+  ["the reviewed head moves", board => { board.reviewedHead = B; }, "task changed during the merge check: nothing was run"],
+  ["the reviewed head is dropped", board => { board.reviewedHead = undefined; }, "task changed during the merge check: nothing was run"],
+  ["the task is relinked to another PR", board => { board.pr = 9; }, "task changed during the merge check: nothing was run"],
+  ["the task is relinked to another repository", board => { board.repo = "owner/other"; }, "task changed during the merge check: nothing was run"],
+  ["the task moves to a release stage", board => { board.stage = "release"; }, "release PR: person consent required"],
+  ["the task vanishes", board => { board.gone = true; }, "task changed during the merge check: nothing was run"],
+  ["the merge mode is turned down to dry-run", board => { board.mode = "dry-run"; }, "merge mode changed during the merge check: nothing was run"],
+  ["the required checks change", board => { board.config = config({ required_checks: ["gate", "extra"] }); }, "required checks changed during the merge check: nothing was run"],
+  ["a repository table adds a required check", board => { board.config = config({ repos: { "owner/repo": { required_checks: ["extra"] } } }); }, "required checks changed during the merge check: nothing was run"],
+  ["the asker loses authority or the hub is held", board => { board.allowed = false; }, "authority or hub availability changed during the merge check: nothing was run"],
+];
+
+test("every board-side input that flips during the held final read refuses with no merge argv, and the same rig merges when nothing flips", async () => {
+  const quiet = await heldFinalRead(() => {});
+  expect(quiet.outcome.ran).toBe(true); expect(quiet.gh.merges()).toHaveLength(1);
+  for (const [label, flip, gate] of flips) {
+    const { outcome, gh } = await heldFinalRead(flip);
+    expect(outcome.ran, label).toBe(false);
+    expect(gh.merges(), label).toHaveLength(0);
+    expect(outcome.decision, label).toMatchObject({ refused: expect.arrayContaining([gate]) });
+  }
 });
 
-test("Tasks.guardedMerge on the real board: an approved dependency cannot leave approved while the PR is read (the state machine refuses), and the merge runs from a fresh board read", async () => {
+test("the dispatch has no await between the fresh board read and the gh call", async () => {
+  // The board flips INSIDE the gh call's own first tick: if anything were awaited between the read and the call, a flip scheduled on the microtask queue by the fresh read
+  // would land before `run`. Here the flip runs when `run` starts, so the read must already have been compared: the merge goes out and records the argv.
+  const order: string[] = [];
+  const prs: Record<number, World> = { 1: pr() }, subject = task(1, 1);
+  const gh = fakeGh(prs);
+  const board = liveBoard(); board.after = []; subject.after = [];
+  const run: SdlcGh = async (args, ...rest) => { if (args[1] === "merge") order.push("run"); return gh.run(args, ...rest); };
+  const fresh = () => { order.push("fresh"); queueMicrotask(() => order.push("microtask")); return { subject, state: "approved", config: config(), mode: "on" as const, allowed: true }; };
+  await guardedMerge({ ...input(prs, [subject], { run }, gh).args, mode: "on", fresh });
+  const at = order.indexOf("fresh");
+  expect(order.slice(at, at + 3)).toEqual(["fresh", "run", "microtask"]);                          // fresh read, then the call, with nothing between them
+});
+
+test("Tasks.guardedMerge flips: the real board is read at dispatch, and a person's own refusal paths still answer", async () => {
   const prs: Record<number, World> = { 1: pr(), 2: pr({ state: "MERGED", paths: ["src/b.ts"] }) };
   const counter = viewCounter();
-  let board!: Board;
-  let attempt = "not tried";
-  const gh = fakeGh(prs, { onCall: args => { if (args[0] === "pr" && args[1] === "view" && args[2] === "1" && counter.next(args) === 3) { try { board.update(1, USER, "reopened", { state: "proposed" }, "owner took it back"); attempt = "moved"; } catch (error) { attempt = (error as Error).message; } } } });
+  let board!: Board, tasksRef!: Tasks, subjectId = 0, flip: () => void = () => {};
+  const gh = fakeGh(prs, { onCall: args => { if (args[0] === "pr" && args[1] === "view" && args[2] === "1" && counter.next(args) === 3) flip(); } });
   const dir = mkdtempSync(join(tmpdir(), "ahub-merge-dep-"));
   board = new Board(join(dir, "hub.db")); const bus = new Bus({ batchMs: 0 }), notices: string[] = [];
+  let cfg: Record<string, unknown> = { mode: "off", required_checks: ["gate"], auto_merge: "on" };
   cleanups.push(() => { board.close(); rmSync(dir, { recursive: true, force: true }); });
-  const tasks = new Tasks({ board, bus, cwd: dir, project: "test", repository: "owner/repo", roles: { claude: ["conductor"] }, routing: () => loadRouting(dir), notify: message => notices.push(message), sdlc: { config: () => sdlcConfig({ mode: "off", required_checks: ["gate"], auto_merge: "on" }), gh: gh.run } });
+  tasksRef = new Tasks({ board, bus, cwd: dir, project: "test", repository: "owner/repo", roles: { claude: ["conductor"] }, routing: () => loadRouting(dir), notify: message => notices.push(message), sdlc: { config: () => sdlcConfig(cfg), gh: gh.run } });
   const dependency = board.propose(USER, { title: "first", class: "implement" });
   board.update(dependency.id, USER, "accepted", { owner: "codex", reviewer: USER, state: "in_progress" }); board.update(dependency.id, USER, "approved", { state: "approved" });
   const subject = board.propose(USER, { title: "second", class: "implement", deps: [dependency.id] });
+  subjectId = subject.id;
   board.update(subject.id, USER, "accepted", { owner: "codex", reviewer: USER, state: "in_progress" }); board.update(subject.id, USER, "done", { state: "in_review" }); board.update(subject.id, USER, "approved", { state: "approved" });
-  tasks.recordLifecycle(USER, dependency.id, { repo: "owner/repo", issue: 3, pr: 2, stage: "merge" });
-  tasks.recordLifecycle(USER, subject.id, { repo: "owner/repo", issue: 2, pr: 1, reviewedHead: A, localHead: A, localResult: "passed", stage: "merge" });
-  expect(dependency.id).toBe(1);
-  const result = await tasks.guardedMerge(USER, subject.id);
-  expect(attempt).toContain("cannot move to proposed");                                           // approved is terminal: a dependency cannot stop being approved on the real board
-  expect(result).toMatchObject({ ran: true, decision: "merge" }); expect(gh.merges()).toHaveLength(1);
-  expect(dependency.id).toBe(1); expect(board.get(1)?.state).toBe("approved");
+  tasksRef.recordLifecycle(USER, dependency.id, { repo: "owner/repo", issue: 3, pr: 2, stage: "merge" });
+  tasksRef.recordLifecycle(USER, subject.id, { repo: "owner/repo", issue: 2, pr: 1, reviewedHead: A, localHead: A, localResult: "passed", stage: "merge" });
+  // A dependency cannot leave approved on the real board (the state machine refuses), so the merge goes out from the fresh read.
+  let attempt = "not tried"; flip = () => { try { board.update(dependency.id, USER, "reopened", { state: "proposed" }, "took it back"); attempt = "moved"; } catch (error) { attempt = (error as Error).message; } };
+  const ok = await tasksRef.guardedMerge(USER, subjectId);
+  expect(attempt).toContain("cannot move to proposed"); expect(ok).toMatchObject({ ran: true, decision: "merge" }); expect(gh.merges()).toHaveLength(1);
+  // The configuration in force at dispatch is the one that counts: auto_merge turned down during the held read means nothing runs (a second PR, same rig).
+  const third = board.propose(USER, { title: "third", class: "implement" });
+  board.update(third.id, USER, "accepted", { owner: "codex", reviewer: USER, state: "in_progress" }); board.update(third.id, USER, "done", { state: "in_review" }); board.update(third.id, USER, "approved", { state: "approved" });
+  prs[3] = pr({ paths: ["src/c.ts"] });
+  tasksRef.recordLifecycle(USER, third.id, { repo: "owner/repo", issue: 4, pr: 3, reviewedHead: A, localHead: A, localResult: "passed", stage: "merge" });
+  gh.merges().length = 0;
+  let views = 0; flip = () => {};
+  const flipOnce = () => { cfg = { mode: "off", required_checks: ["gate"], auto_merge: "dry-run" }; };
+  const watcher = fakeGh(prs, { onCall: args => { if (args[0] === "pr" && args[1] === "view" && args[2] === "3" && ++views === 3) flipOnce(); } });
+  (tasksRef as unknown as { d: { sdlc: { gh: SdlcGh } } }).d.sdlc.gh = watcher.run;
+  const turned = await tasksRef.guardedMerge(USER, third.id);
+  expect(turned).toMatchObject({ ran: false, decision: "refused" }); expect(turned.refused).toEqual(["merge mode changed during the merge check: nothing was run"]);
+  expect(watcher.merges()).toHaveLength(0);
 });
 
 test("AC2: touching PRs merge in order, and a dependency task that is not approved refuses", async () => {
