@@ -47,7 +47,8 @@ export interface ConsoleState {
   autoSelected?: boolean;
   input: string; editing: boolean; history: string[]; historyIndex: number;
   approvals: Approval[]; events: ConsoleEvent[]; peers: Record<string, any>; budget: Record<string, any>;
-  taskWip?: Record<string, { wip: number; wipLimit: number }>;
+  /** #784 AC3: the split of `wip` (active, review-wait, reserved); absent from an older hub. */
+  taskWip?: Record<string, { wip: number; wipLimit: number; active?: number; reviewWait?: number; reserved?: number }>;
   backlogView?: boolean;
   tasks: any[]; tasksKnown?: boolean; taskCounts?: Record<string, number>; queue: any[]; detail?: Detail; detailOffset: number; help: boolean; notice: string; noticeAt?: number; noticeTone?: Tone;
   peerFilter?: string; kindFilter?: string; project?: string;
@@ -347,6 +348,12 @@ export function budgetFields(budget: any, now: number): [string, unknown][] {
     return `${w.id} ${Math.round(Number(w.used) * 100)}%${typeof w.resetsAt === "number" ? ` resets ${relative(w.resetsAt, now)}` : ""}, ${windowKind({ id: String(w.id), source: typeof w.source === "string" ? w.source : "", kind: w.kind })}, ${typeof w.source === "string" ? w.source : "unknown source"}${typeof w.at === "number" ? `, measured ${relative(w.at, now)}` : ""}${stale}`;
   });
   return [["quota", lines.length ? lines : typeof budget.note === "string" ? budget.note : "no reading"], ...(lines.length && typeof budget.note === "string" ? [["quota note", budget.note] as [string, unknown]] : [])];
+}
+/** #784 AC3: the Peers detail carries the planner WIP split as one line (`1 of 2: active 1, review-wait 0, reserved 0`); a hub that sends none adds nothing. */
+function peerDetailRow(s: ConsoleState, row: any): Record<string, unknown> {
+  const wip = s.taskWip?.[row.id];
+  const split = wip && [wip.active, wip.reviewWait, wip.reserved].every(n => Number.isSafeInteger(n)) ? `${wip.wip} of ${wip.wipLimit}: active ${wip.active}, review-wait ${wip.reviewWait}, reserved ${wip.reserved}` : undefined;
+  return { ...row, ...(split ? { "planner WIP": split } : {}) };
 }
 const detailLines = (detail: Detail, columns: number, now: number, task = false): Span[][] => {
   if (typeof detail === "string") return wrap(detail, columns).map(text => [span(text)]);
@@ -794,7 +801,7 @@ export function reduceConsole(state: ConsoleState, key: string, now = Date.now()
     if (s.panel === 3 || s.panel === 4) effects.push({ type: "show", panel: s.panel, id: String(row.id) });
     else if (s.panel === 2) { s.requestDetail = row.id; s.detailOffset = 0; } // the row is the selected request
     else if (s.panel === 7) { s.detail = { usagePeer: row.id }; s.detailOffset = 0; } // rendered live from s.usage, so a refresh updates it
-    else { s.detail = s.panel === 5 ? String(row.text) : { ...row }; s.detailOffset = 0; }
+    else { s.detail = s.panel === 5 ? String(row.text) : s.panel === 1 ? peerDetailRow(s, row) : { ...row }; s.detailOffset = 0; }
     return done();
   }
   if (s.mode === "panels" && item !== undefined && item !== null) {

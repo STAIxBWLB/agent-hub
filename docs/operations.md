@@ -3956,7 +3956,12 @@ Capacity defaults to one per peer. Each declared instance has its own `tasks.wip
 uses the existing machine-local registry path; integers 0..32 apply live (the next
 admission reads the current value), with 0 disabling planner admission for that
 peer. Status and the agent legend count
-owned unfinished work plus unowned planner-pull reservations. The same limit gates
+owned unfinished work plus unowned planner-pull reservations, and show how that
+count splits (#784): `ahub status` prints `<peer> planner WIP 3/3 (active 2, review-wait 1, reserved 0)`,
+the console Peers detail (Enter) has a `planner WIP` line, and the dashboard legend shows the same split.
+`active` is owned work that is not waiting for review, `review-wait` is owned work in review (it still
+holds its slot), `reserved` is a planner-pull reservation nobody owns yet; the three add up to the count
+admission reads, and the split changes no admission decision. An older hub shows the plain count. The same limit gates
 acceptance and self-claim in every lifecycle mode, so 0 refuses new acceptances; a
 current owner's redo of sent-back work keeps its slot (#481 S9).
 

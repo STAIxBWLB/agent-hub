@@ -1399,7 +1399,8 @@ function renderBoard(snapshot, peers, ids) {
       const data=(snapshot.boardLegend || []).find(item=>item.peer===id), row=el('div',undefined,'agent-slot');
       row.append(peerMark(id),el('p',String(peers[id].state || 'unknown'),'meta'));
       const wip=data && Number.isSafeInteger(data.wip) && data.wip>=0 ? data.wip : 'unknown';
-      row.append(el('p','WIP '+wip+(Number.isSafeInteger(data?.wipLimit) ? '/'+data.wipLimit : '')+' / permission '+(data?.permissionMode || 'unknown'),'meta'));
+      const split=data?.wipBreakdown,splitText=split && [split.active,split.reviewWait,split.reserved].every(Number.isSafeInteger) ? ' (active '+split.active+', review-wait '+split.reviewWait+', reserved '+split.reserved+')' : '';
+      row.append(el('p','WIP '+wip+(Number.isSafeInteger(data?.wipLimit) ? '/'+data.wipLimit : '')+splitText+' / permission '+(data?.permissionMode || 'unknown'),'meta'));
       if (Array.isArray(data?.activeTasks) && data.activeTasks.length) row.append(el('p','Active tasks: '+data.activeTasks.map(id=>'#'+id).join(', '),'meta'));
       const filter=el('button','View '+id);filter.type='button';filter.addEventListener('click',()=>{if(!boardViewState)return;peerFilter.value=id;renderBoard(boardViewState.snapshot,boardViewState.peers,boardViewState.ids)});row.append(filter);
       if (eligible.includes(id)) dropTarget(row,card=>card.assignable,{action:'assign',peer:id});
