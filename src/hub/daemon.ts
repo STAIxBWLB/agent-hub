@@ -677,8 +677,19 @@ export async function startDaemon(opts: DaemonOptions) {
   /** #520: a task under review shows its review brief to whoever may read it (owner, reviewer, conductor). */
   const briefField = (task: Task): { brief?: string } => { if (task.state !== "in_review") return {}; const text = tasks.briefText(task); return text ? { brief: text } : {}; };
   /** #223 R2: a review-only instance reads the spec, refs and earlier verdicts of a task, never the builder's narrative. */
-  const reviewerView = (peer: string, view: Record<string, unknown>): Record<string, unknown> => !reviewOnlyPeer(peer) || !Array.isArray(view.history) ? view
-    : { ...view, history: (view.history as { event?: unknown; note?: unknown }[]).map(({ note, ...h }) => h.event === "approved" || h.event === "changes_requested" ? { ...h, note } : h) };
+  const reviewerView = (peer: string, view: Record<string, unknown>): Record<string, unknown> => {
+    if (!reviewOnlyPeer(peer) || !Array.isArray(view.history)) return view;
+    const task = typeof view.id === "number" && Number.isSafeInteger(view.id) ? board.get(view.id) : undefined;
+    // Public task views retain full original history order. A filtered/stale view cannot prove an original index.
+    const history = view.history as { event?: unknown; note?: unknown; by?: unknown; at?: unknown }[];
+    const rulings = new Map((task && history.length === task.history.length ? tasks.plannerRulings(task, peer) : []).map(ruling => [ruling.historyIndex, ruling]));
+    return { ...view, history: history.map(({ note, ...entry }, historyIndex) => {
+      if (entry.event === "approved" || entry.event === "changes_requested") return { ...entry, note };
+      const ruling = rulings.get(historyIndex), original = task?.history[historyIndex];
+      return ruling && original && entry.event === "plan reviewed" && entry.by === original.by && entry.at === original.at
+        ? { ...entry, note: ruling.note } : entry;
+    }) };
+  };
   const reviewOnlyItem = (peer: string, env: Envelope): boolean => env.from === USER || env.from === HUB && (env.kind === "review" || (env.kind === "task" && env.to?.includes(peer) === true));
   const readOnlyPeer = (peer: string): boolean => declarations[peer]?.readOnly === true;
   const SETTINGS = projectSettings(declarations, adapterCatalog);
