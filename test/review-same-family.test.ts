@@ -222,3 +222,60 @@ test("AC4 route explain names the rule under never and says nothing under fallba
   expect(lines).toContain("reviewer: claude");
   expect(fallback.tasks.explain(fallback.task.id).join("\n")).not.toContain("review.same_family");
 });
+
+// The never matrix (#820): every routing branch under review.same_family = never, as one table. Each row states the
+// reviewer, whether the planner escape or the person fallback produced it, and that the rule shows in the trace.
+type Row = { name: string; run: () => ReturnType<typeof assign>; reviewer: string; via: "planner" | "person" | "other-family" };
+const plainRouting = (extra: Options = {}) => ({ candidates: ["codex"], reviewPool: { pool: ["codex"], sameFamily: "never" as const }, ...extra });
+const plain = (state: Record<string, PeerState>, extra: Options = {}) => assign(work, state, routing, plainRouting(extra));
+const allOffline = (names: string[]): Record<string, PeerState> => Object.fromEntries(names.map(n => [n, "offline" as PeerState]));
+const rows: Row[] = [
+  // pool path: declared fresh codex-review is the owner's family
+  { name: "pool: planner holds planner+reviewer", run: () => pool("never"), reviewer: "claude", via: "planner" },
+  { name: "pool: planner holds planner only", run: () => pool("never", { roles: { ...planner, claude: ["planner"] } }), reviewer: "user", via: "person" },
+  { name: "pool: claude holds reviewer only, no planner role", run: () => pool("never", { roles: { ...planner, claude: ["reviewer"] } }), reviewer: "user", via: "person" },
+  { name: "pool: planner offline", run: () => pool("never", {}, { ...states, claude: "offline" }), reviewer: "user", via: "person" },
+  { name: "pool: every candidate offline", run: () => pool("never", { candidates: [], notReviewer: "codex" }, allOffline(["codex", "claude", "codex-review"])), reviewer: "user", via: "person" },
+  { name: "pool: required pool still allows the planner escape", run: () => pool("never", { reviewPool: { pool: ["codex"], required: true, sameFamily: "never" } }), reviewer: "claude", via: "planner" },
+  { name: "pool: planner is the owner and the pool is exhausted", run: () => assign(work, { ...states, "codex-review": "offline", "claude-review": "offline" }, routing, { instances: { ...fresh, ...freshClaude }, roles: { claude: ["planner", "reviewer", "implementer"], "codex-review": ["reviewer"], "claude-review": ["reviewer"] }, candidates: ["claude"], reviewPool: { pool: ["claude", "codex"], sameFamily: "never" } }), reviewer: "user", via: "person" },
+  { name: "pool: planner is of the owner's family", run: () => pool("never", { instances: { ...fresh, "codex-plan": { kind: "codex" } }, roles: { ...planner, claude: ["implementer"], "codex-plan": ["planner", "reviewer"] } }, { ...states, "codex-plan": "idle" }), reviewer: "user", via: "person" },
+  { name: "pool: an other-family declared reviewer is chosen before any escape", run: () => assign(work, { ...states, "claude-review": "idle" }, routing, { candidates: ["codex"], instances: { ...fresh, ...freshClaude }, roles: { ...planner, "claude-review": ["reviewer"] }, reviewPool: { pool: ["claude", "codex"], sameFamily: "never" } }), reviewer: "claude-review", via: "other-family" },
+  // legacy path with declared (non-fresh) sibling instances
+  { name: "legacy+instances: planner holds planner+reviewer", run: () => legacy("never", {}, legacyStates), reviewer: "claude", via: "planner" },
+  { name: "legacy+instances: planner holds planner only", run: () => legacy("never", { roles: { claude: ["planner"], "codex-a": ["implementer"], "codex-b": ["reviewer"] } }, legacyStates), reviewer: "user", via: "person" },
+  { name: "legacy+instances: planner offline", run: () => legacy("never", {}, { ...legacyStates, claude: "offline" }), reviewer: "user", via: "person" },
+  { name: "legacy+instances: every candidate offline", run: () => legacy("never", { candidates: [], notReviewer: "codex-a" }, allOffline(["codex-a", "codex-b", "claude"])), reviewer: "user", via: "person" },
+  { name: "legacy+instances: planner is the owner", run: () => assign(work, { claude: "idle", "codex-a": "offline", "codex-b": "offline" }, routing, { instances: siblings, ownerIsolation: { "codex-a": true }, roles: { claude: ["planner", "reviewer", "implementer"], "codex-b": ["reviewer"] }, candidates: ["claude"], reviewPool: { pool: ["claude"], sameFamily: "never" } }), reviewer: "user", via: "person" },
+  { name: "legacy+instances: planner is of the owner's family", run: () => legacy("never", { roles: { claude: ["implementer"], "codex-a": ["implementer"], "codex-b": ["planner", "reviewer"] } }, { ...legacyStates, claude: "offline" }), reviewer: "user", via: "person" },
+  // no declared instances at all (builtin peers only)
+  { name: "plain: planner holds planner+reviewer", run: () => plain({ codex: "idle", claude: "idle" }, { roles: { claude: ["planner", "reviewer"] } }), reviewer: "claude", via: "other-family" },
+  { name: "plain: planner holds planner only", run: () => plain({ codex: "idle", claude: "idle" }, { roles: { claude: ["planner"] } }), reviewer: "user", via: "person" },
+  { name: "plain: class peer without a planner role", run: () => plain({ codex: "idle", claude: "idle" }, { roles: {} }), reviewer: "claude", via: "other-family" },
+  { name: "plain: planner offline", run: () => plain({ codex: "idle", claude: "offline" }), reviewer: "user", via: "person" },
+  { name: "plain: every candidate offline", run: () => plain(allOffline(["codex", "claude"]), { candidates: [], notReviewer: "codex" }), reviewer: "user", via: "person" },
+  { name: "plain: planner is the owner", run: () => assign(work, { claude: "idle", codex: "offline" }, routing, { candidates: ["claude"], roles: { claude: ["planner", "reviewer", "implementer"] }, reviewPool: { pool: ["claude"], sameFamily: "never" } }), reviewer: "user", via: "person" },
+  { name: "plain: the only other candidate is the owner's family", run: () => assign(work, { codex: "idle" }, routing, plainRouting()), reviewer: "user", via: "person" },
+];
+
+for (const row of rows) {
+  test(`never matrix: ${row.name}`, () => {
+    const result = row.run();
+    const trace = result.trace.join("\n");
+    expect(result.reviewer).toBe(row.reviewer);
+    expect(result.sameFamilyFallback).toBeUndefined();
+    expect(trace).toContain("review.same_family = never");
+    expect(trace).not.toContain("done will approve directly");
+    if (row.via === "person") expect(result).toMatchObject({ reviewer: "user", reviewBlocked: true });
+    else expect(result.reviewBlocked).toBeUndefined();
+    if (row.via === "planner") expect(result.plannerFallback).toBe(true);
+    if (row.via === "other-family") expect(result.plannerFallback).not.toBe(true);
+  });
+}
+
+test("never matrix: the same rows under fallback never print the rule and keep sameFamilyFallback available", () => {
+  for (const result of [pool("fallback"), legacy("fallback", {}, { ...legacyStates, claude: "offline" }), assign(work, { codex: "idle" }, routing, { candidates: ["codex"], reviewPool: { pool: ["codex"], sameFamily: "fallback" } })]) {
+    expect(result.trace.join("\n")).not.toContain("review.same_family");
+  }
+  expect(pool("fallback").sameFamilyFallback).toBe(true);
+  expect(legacy("fallback", {}, { ...legacyStates, claude: "offline" }).sameFamilyFallback).toBe(true);
+});
