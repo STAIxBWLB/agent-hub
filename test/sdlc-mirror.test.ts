@@ -17,11 +17,14 @@ const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
 
 interface Review { commit_id: string; body: string }
-function fakeGh(state: { head: string; state?: string; reviews?: Review[]; postExit?: number; list?: "ok" | "fail" | "garbage" | "full"; view?: "ok" | "fail" }) {
+function fakeGh(state: { head: string; state?: string; reviews?: Review[]; postExit?: number; list?: "ok" | "fail" | "garbage" | "full"; view?: "ok" | "fail"; /** Runs as each call arrives, before it is answered: how a test moves GitHub between two reads. */ onCall?: (args: string[], index: number) => void; viewFailsFrom?: number }) {
   const calls: string[][] = [];
+  let views = 0;
   const reviews = state.reviews ?? [];
   const run: SdlcGh = async args => {
+    state.onCall?.(args, calls.length);
     calls.push(args);
+    if (args[0] === "pr" && args[1] === "view" && state.viewFailsFrom !== undefined && ++views >= state.viewFailsFrom) return { code: 1, stdout: "" };
     if (args[0] === "pr" && args[1] === "view") return state.view === "fail" ? { code: 1, stdout: "" } : { code: 0, stdout: JSON.stringify({ headRefOid: state.head, state: state.state ?? "OPEN" }) };
     if (args[0] === "api" && args[1]!.endsWith("/reviews?per_page=100")) {
       if (state.list === "fail") return { code: 1, stdout: "" };
@@ -79,6 +82,35 @@ test("a retried verdict does not post twice, in the same process, after a restar
   // The same verdict on a new head is a new mirror, and a different task's identical headline elsewhere does not count.
   const moved = fakeGh({ head: B, reviews: [{ commit_id: A, body: mirrorHeadline("approved", 42, "codex-review") }, { commit_id: B, body: mirrorHeadline("approved", 43, "codex-review") }] });
   expect((await mirrorVerdict(base(moved, { head: B }))).posted).toBe(true); expect(moved.posts()).toHaveLength(1);
+});
+
+test("a push or a close DURING the review list read posts nothing: the head and state are read again, last", async () => {
+  // The first read sees A and open; GitHub moves while the review list is being fetched.
+  const moveOnList = (change: (state: { head: string; state?: string }) => void) => {
+    const state: { head: string; state?: string; onCall?: (args: string[]) => void } = { head: A };
+    state.onCall = args => { if (args[1]?.endsWith("/reviews?per_page=100")) change(state); };
+    return state;
+  };
+  const pushed = fakeGh(moveOnList(s => { s.head = B; }));
+  expect(await mirrorVerdict(base(pushed))).toEqual({ mode: "on", posted: false, reason: "stale head" });
+  expect(pushed.posts()).toHaveLength(0);
+  const closed = fakeGh(moveOnList(s => { s.state = "CLOSED"; }));
+  expect(await mirrorVerdict(base(closed))).toEqual({ mode: "on", posted: false, reason: "pr not open" });
+  expect(closed.posts()).toHaveLength(0);
+  const merged = fakeGh(moveOnList(s => { s.state = "MERGED"; }));
+  expect(await mirrorVerdict(base(merged))).toEqual({ mode: "on", posted: false, reason: "pr not open" });
+  expect(merged.posts()).toHaveLength(0);
+  // The last read failing is unknown, never a post.
+  const unreadable = fakeGh({ head: A, viewFailsFrom: 2 });
+  expect(await mirrorVerdict(base(unreadable))).toEqual({ mode: "on", posted: false, reason: "unreadable" });
+  expect(unreadable.posts()).toHaveLength(0);
+  // dry-run judges on the same last read: it never reports a call it would not make.
+  const dry = fakeGh(moveOnList(s => { s.head = B; }));
+  expect(await mirrorVerdict(base(dry, { mode: "dry-run" }))).toEqual({ mode: "dry-run", posted: false, reason: "stale head" });
+  // Quiet control: nothing moves, one head read before the list and one after it, then the post.
+  const quiet = fakeGh({ head: A });
+  expect((await mirrorVerdict(base(quiet))).posted).toBe(true);
+  expect(quiet.calls.map(c => c[0] === "pr" ? "view" : c[1]!.endsWith("/reviews?per_page=100") ? "list" : "post")).toEqual(["view", "list", "view", "post"]);
 });
 
 test("unknown is never a post: an unreadable PR, an unreadable or full review list and a malformed list all post nothing", async () => {

@@ -93,7 +93,9 @@ async function alreadyMirrored(repo: string, pr: number, head: string, verdict: 
 
 /**
  * The mirror. `off` does nothing and reads nothing. Otherwise: the PR must still be open at the verdict's head (a stale head posts nothing), a mirror of this verdict at this
- * head must not exist yet (read from GitHub, so a restart or a retried verdict does not post twice), and then `dry-run` reports the argv it would run while `on` posts it.
+ * head must not exist yet (read from GitHub, so a restart or a retried verdict does not post twice), the head and state are read once more after that listing, and then
+ * `dry-run` reports the argv it would run while `on` posts it. Ceiling: GitHub offers no compare-and-set on a review, so a push that lands after the last read and before the
+ * post is not seen; the comment still names H in `commit_id` and in its headline, so it says truthfully which commit the verdict was about.
  */
 export async function mirrorVerdict(input: MirrorInput): Promise<MirrorOutcome> {
   if (input.mode === "off") return { mode: "off", posted: false, reason: "off" };
@@ -111,6 +113,12 @@ export async function mirrorVerdict(input: MirrorInput): Promise<MirrorOutcome> 
     const seen = await alreadyMirrored(repo, pr, head, verdict, task, run);
     if (seen === undefined) return { mode: input.mode, posted: false, reason: "unreadable" };
     if (seen) return { mode: input.mode, posted: false, reason: "already mirrored" };
+    // The review list was an await: a push or a close during it makes the first read stale. Read the head and state once more, LAST, and judge on that read; nothing is awaited
+    // between it and the post below. `commit_id` pins the comment to H but does not make H still current, so this read is what keeps "a stale head posts nothing" true.
+    const last = await readHead(repo, pr, run);
+    if (!last) return { mode: input.mode, posted: false, reason: "unreadable" };
+    if (last.head !== head) return { mode: input.mode, posted: false, reason: "stale head" };
+    if (!last.open) return { mode: input.mode, posted: false, reason: "pr not open" };
     const argv = mirrorArgv(repo, pr, head, mirrorBody({ task, reviewer, verdict, ...(input.note !== undefined ? { note: input.note } : {}) }));
     if (input.mode === "dry-run") return { mode: "dry-run", posted: false, reason: "dry-run", argv };
     assertMirrorArgv(argv, head);
