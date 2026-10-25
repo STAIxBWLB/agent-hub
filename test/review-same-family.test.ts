@@ -101,6 +101,16 @@ test("never, legacy path: an exhausted choice goes to the person, never to direc
   expect(legacy(undefined, { roles: { "codex-a": ["implementer"] } }, { ...legacyStates, "codex-b": "offline", claude: "offline" }).trace).toContain("reviewer: none, done will approve directly");
 });
 
+test("never, legacy path: a planner without the reviewer role is not a reviewer, the person is", () => {
+  const planOnly = { roles: { claude: ["planner"], "codex-a": ["implementer"], "codex-b": ["reviewer"] } };
+  expect(legacy("never", planOnly, legacyStates)).toMatchObject({ owner: "codex-a", reviewer: "user", reviewBlocked: true });
+  // with the reviewer role it reviews, and a class peer that holds no planner role is unaffected
+  expect(legacy("never", { roles: { claude: ["planner", "reviewer"], "codex-a": ["implementer"], "codex-b": ["reviewer"] } }, legacyStates).reviewer).toBe("claude");
+  expect(legacy("never", { roles: { "codex-a": ["implementer"], "codex-b": ["reviewer"] } }, legacyStates).reviewer).toBe("claude");
+  // fallback keeps today's behavior: the planner-only class peer still reviews
+  expect(legacy("fallback", planOnly, legacyStates).reviewer).toBe("claude");
+});
+
 test("never without declared instances still never approves unreviewed work when nobody can review", () => {
   const exhausted = assign(work, { codex: "idle" }, routing, { candidates: ["codex"], reviewPool: { pool: ["codex"], sameFamily: "never" } });
   expect(exhausted).toMatchObject({ owner: "codex", reviewer: "user", reviewBlocked: true });

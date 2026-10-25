@@ -652,7 +652,9 @@ export function assign(
         // #223 R1: a declared instance that reviews and does not plan goes first, busy or not.
         const holds = (peer: PeerId, role: string) => opts.roles?.[peer]?.includes(role) === true;
         const dedicated = (peer: PeerId) => !!opts.instances && Object.hasOwn(opts.instances, peer) && holds(peer, "reviewer") && !holds(peer, "planner");
-        const pool = independent.length || neverSame ? independent : automatic;
+        // Under never the planner escape needs the reviewer role: a peer that plans and does not review is not a reviewer here, class listing or not.
+        const planOnly = (peer: PeerId) => neverSame && holds(peer, "planner") && !holds(peer, "reviewer");
+        const pool = independent.length || neverSame ? independent.filter(peer => !planOnly(peer)) : automatic;
         const ready = named === undefined ? pool.filter(peer => dedicated(peer) && peer !== reviewOwner && !blocked(peer, "reviewer")) : [];
         reviewer = pick(named === undefined ? ready.length ? ready : pool : [named], "reviewer", reviewOwner, named === undefined);
         if (named === undefined && !ready.length && reviewer && holds(reviewer, "planner") && Object.keys(opts.roles ?? {}).some(dedicated)) {
