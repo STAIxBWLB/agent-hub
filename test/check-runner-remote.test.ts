@@ -5,12 +5,13 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { processTable } from "../src/hub/child-process.ts";
 import { hubGitSync } from "../src/hub/git.ts";
-import { ContainerRunner, RemoteRunner, remoteRunnerTransport, remoteRunnerConfig, remoteDockerArgs, type ContainerCommand, type RunnerOptions } from "../src/hub/check-runner.ts";
+import { realPath } from "../src/hub/project.ts";
+import { ContainerRunner, RemoteRunner, remoteRunnerTransport, remoteRunnerConfig, remoteDockerArgs, remoteArchiveArgs, type ContainerCommand, type RunnerOptions } from "../src/hub/check-runner.ts";
 const remote = { host: "fixture@runner.reserved.invalid", image: "registry.reserved.invalid/check@sha256:" + "a".repeat(64), root: "/reserved/check-root" };
 const cleanup: (() => unknown | Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 async function fixture(options: Partial<RunnerOptions> = {}, failure?: string) {
-  const root = await mkdtemp(join(tmpdir(), "ahub-remote-fixture-")), project = join(root, "project"), calls: string[][] = [];
+  const root = realPath(await mkdtemp(join(tmpdir(), "ahub-remote-fixture-"))), project = join(root, "project"), calls: string[][] = [];
   await mkdir(project); cleanup.push(() => rm(root, { recursive: true, force: true }));
   const git = (...args: string[]) => { const result = hubGitSync(["-C", project, ...args], { encoding: "utf8" }); if (result.status !== 0) throw Error("fixture git failed"); return result.stdout.trim(); };
   git("init", "-q"); git("config", "user.name", "Fixture"); git("config", "user.email", "fixture@example.invalid");
@@ -113,7 +114,7 @@ test("remote SSH arguments quote shell metacharacters and reject unsafe machine-
   for (const update of [{ host: "-oProxyCommand=bad" }, { host: "host;bad" }, { root: "/tmp/../bad" }, { root: "/tmp/$(bad)" }, { image: "mutable:latest" }, { extra: "bad" }]) expect(() => remoteRunnerConfig({ ...remote, ...update })).toThrow("invalid remote runner configuration");
 });
 
-async function fakeSshFixture(f: Awaited<ReturnType<typeof fixture>>) {
+async function fakeSshFixture(f: Awaited<ReturnType<typeof fixture>>, mode: "failure" | "stderr" = "failure") {
   const bin = join(f.root, "fake-bin"); await mkdir(bin);
   const agentSocket = join(f.root, "synthetic-agent.sock"), proof = join(f.root, "ssh-proof"), keys = join(f.root, "ssh-env-keys");
   const active = join(f.root, "ssh-active");
@@ -126,6 +127,18 @@ for arg in "$@"; do last="$arg"; done
 # The fake executes only 'set --' on production-quoted Docker words, never Docker or SSH.
 eval "set -- $last"
 shift
+if [ 'AHUB_FAKE_MODE' = 'stderr' ] && [ "$1" = exec ]; then
+  case "$last" in
+    *"'tar' "*) ;;
+    *AHUB_REMOTE_READY*)
+      case "$last" in *" 2>&1") printf '%s\\n' 'BENIGN_PROBE_WARNING' ;; *) printf '%s\\n' 'BENIGN_PROBE_WARNING' >&2 ;; esac
+      printf '%s\\n' '{"marker":"AHUB_REMOTE_READY","arch":"x64","platform":"linux"}'; exit 0 ;;
+    *)
+      printf '%s\\n' 'PUBLIC_CHECK_OUTPUT'
+      case "$last" in *" 2>&1") printf '%s\\n' 'CHECK_STDERR' ;; *) printf '%s\\n' 'CHECK_STDERR' >&2 ;; esac
+      exit 0 ;;
+  esac
+fi
 case "$1" in
   version) printf '%s\\n' '{"Version":"27.4.1-private-host","Os":"linux","Arch":"arm64"}' ;;
   image) printf '%s\\n' '{"digests":["${remote.image}"],"arch":"amd64","os":"linux"}' ;;
@@ -146,7 +159,7 @@ case "$1" in
     fi ;;
 esac
 `;
-  await writeFile(join(bin, "ssh"), script, { mode: 0o755 });
+  await writeFile(join(bin, "ssh"), script.replaceAll("AHUB_FAKE_MODE", mode), { mode: 0o755 });
   const before = process.env.PATH, previousSocket = process.env.SSH_AUTH_SOCK, previousPeer = process.env.AHUB_REMOTE_PEER_ONLY;
   process.env.PATH = `${bin}:${before ?? "/usr/bin:/bin"}`; process.env.SSH_AUTH_SOCK = agentSocket; process.env.AHUB_REMOTE_PEER_ONLY = "fixture-peer-only";
   cleanup.push(() => {
@@ -272,4 +285,59 @@ test("remote component start failure after cached readiness stays generic and fi
   expect(f.calls.some(args => args[0] === "exec" && args.includes("test"))).toBe(false);
   expect(await Bun.file(join(f.project, ".git/ahub-heavy.lock/owner")).exists()).toBe(false);
   for (const hidden of [remote.host, remote.root, "private daemon failure", "container start failed"]) expect(JSON.stringify(result)).not.toContain(hidden);
+});
+
+test("Darwin archive selection ignores a GNU tar ahead on PATH while Linux keeps the host tool guard", async () => {
+  const f = await fixture(), bin = join(f.root, "gnu-first"); await mkdir(bin);
+  await writeFile(join(bin, "tar"), "#!/bin/sh\nexit 64\n", { mode: 0o755 });
+  const previous = process.env.PATH;
+  try {
+    process.env.PATH = bin + ":" + (previous ?? "/usr/bin:/bin");
+    const darwin = remoteArchiveArgs(f.project, f.project, "darwin");
+    expect(darwin[0]).toBe("/usr/bin/tar"); expect(darwin).toContain("--disable-copyfile");
+    expect(remoteArchiveArgs(f.project, f.project, "linux")[0]).toBe(join(bin, "tar"));
+    if (process.platform === "darwin") expect((await f.runner.start(f.request).done).exit).toBe(0);
+    const peerBin = join(f.project, "bin"); await mkdir(peerBin);
+    await writeFile(join(peerBin, "tar"), "#!/bin/sh\nexit 64\n", { mode: 0o755 });
+    process.env.PATH = peerBin + ":" + bin;
+    expect(() => remoteArchiveArgs(f.project, f.project, "linux")).toThrow("tar unavailable");
+    expect(remoteArchiveArgs(f.project, f.project, "darwin")[0]).toBe("/usr/bin/tar");
+  } finally { if (previous === undefined) delete process.env.PATH; else process.env.PATH = previous; }
+});
+
+test("probe stderr stays out of JSON while actual check stderr reaches screened output", async () => {
+  const f = await fixture(), { settings } = await fakeSshFixture(f, "stderr");
+  const runner = new ContainerRunner(settings, remoteRunnerTransport(settings)); cleanup.push(() => runner.stopAll());
+  expect((await runner.available()).available).toBe(true);
+  const result = await runner.start(f.request).done;
+  expect(result.exit).toBe(0); expect(result.tail).toContain("PUBLIC_CHECK_OUTPUT"); expect(result.tail).toContain("CHECK_STDERR");
+  expect(JSON.stringify(result)).not.toContain("BENIGN_PROBE_WARNING");
+  const exec = ["exec", "container", "bun", "-e", "probe"];
+  expect(remoteDockerArgs(remote.host, exec).at(-1)).not.toEndWith(" 2>&1");
+  expect(remoteDockerArgs(remote.host, exec, true).at(-1)).toEndWith(" 2>&1");
+});
+
+test("sweep leaves exact bounded probes to expire but still reports malformed and unknown run owners", async () => {
+  const f = await fixture(), probe = "11111111-1111-4111-8111-111111111111", calls: string[][] = [];
+  const rows = [
+    { id: "agenthub-check-probe-" + probe, project: "fixture", probe, hub: "", run: "" },
+    { id: "agenthub-check-probe-bad", project: "fixture", probe: "bad", hub: "", run: "" },
+    { id: "agenthub-check-probe-22222222-2222-4222-8222-222222222222", project: "fixture", probe, hub: "", run: "" },
+    { id: "agenthub-check-probe-33333333-3333-4333-8333-333333333333", project: "fixture", probe: "33333333-3333-4333-8333-333333333333", hub: "", run: probe },
+    { id: "agenthub-check-" + probe, project: "fixture", probe: "", hub: "", run: probe },
+  ];
+  let current = rows[0]!;
+  const settings: RunnerOptions = { ...f.settings, command: async (args, opts) => {
+    calls.push(args);
+    if (args[0] === "ps") return { code: 0, stdout: JSON.stringify(current) };
+    return f.command(args, opts);
+  } };
+  const runner = new ContainerRunner(settings, remoteRunnerTransport(settings)); cleanup.push(() => runner.stopAll());
+  for (const row of rows) {
+    current = row;
+    const unknown = await runner.sweep();
+    expect(unknown).toHaveLength(row === rows[0] ? 0 : 1);
+    if (!row.probe) expect(unknown[0]).toContain("agenthub-check-" + probe);
+  }
+  expect(calls.some(args => args[0] === "kill" || args[0] === "rm")).toBe(false);
 });

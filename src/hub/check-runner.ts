@@ -519,6 +519,11 @@ export class ContainerRunner {
         const labels = c.configuration?.labels ?? c.labels;
         if (labels?.["agenthub.project"] !== this.options.projectKey) continue;
         const name = c.configuration?.id ?? c.id;
+        const probe = labels["agenthub.probe"];
+        // Probes have no task receipt and self-expire after the fixed 600-second idle process.
+        // Recognizing their exact shape is no authority to kill them or other unknown owners.
+        if (this.transport && typeof probe === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(probe)
+          && name === `agenthub-check-probe-${probe}` && !labels["agenthub.run"]) continue;
         const run = labels["agenthub.run"];
         if (!name || !run || name !== `agenthub-check-${run}`) { unknown.push("orphan check: unknown owner"); continue; }
         let r: RunReceipt | undefined;
@@ -578,16 +583,24 @@ export function remoteRunnerConfig(value: unknown): RemoteRunnerConfig {
   return { host: raw.host, image: raw.image, root: raw.root };
 }
 /** OpenSSH joins its remote argv into a shell command. Quote every token, including fixed Docker arguments. */
-export function remoteDockerArgs(host: string, args: readonly string[]): string[] {
+export function remoteDockerArgs(host: string, args: readonly string[], mergeStderr = false): string[] {
   const quote = (word: string) => `'${word.replaceAll("'", `'"'"'`)}'`;
-  return ["-T", "-a", "-x", "-o", "ClearAllForwardings=yes", "-o", "PermitLocalCommand=no", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", host, `docker ${args.map(quote).join(" ")}${args[0] === "exec" ? " 2>&1" : ""}`];
+  return ["-T", "-a", "-x", "-o", "ClearAllForwardings=yes", "-o", "PermitLocalCommand=no", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", host, `docker ${args.map(quote).join(" ")}${args[0] === "exec" && mergeStderr ? " 2>&1" : ""}`];
+}
+/** Darwin's system tar is bsdtar even when a GNU tar shim comes first on PATH. */
+export function remoteArchiveArgs(projectDir: string, source: string, platform: NodeJS.Platform = process.platform): string[] {
+  const executable = platform === "darwin" ? "/usr/bin/tar" : hostExecutable("tar", projectDir);
+  const metadata = platform === "darwin"
+    ? ["--format=gnutar", "--no-xattrs", "--no-acls", "--no-fflags", "--disable-copyfile", "--uid", "65532", "--gid", "65532", "--uname", "check", "--gname", "check"]
+    : ["--format=gnu", "--no-xattrs", "--no-acls", "--owner=65532", "--group=65532", "--numeric-owner"];
+  return [executable, ...metadata, "-cf", "-", "-C", source, "."];
 }
 function runRemoteDocker(executable: string, remote: RemoteRunnerConfig, args: string[], options: Parameters<ContainerCommand>[1] = {}): Promise<CommandResult> {
   return new Promise((resolveResult, reject) => {
     if (options.signal?.aborted) { reject(new Error("remote runner unavailable")); return; }
     // The hub's agent socket authenticates this client; -a prevents forwarding it into the remote job.
     const env = { PATH: dirname(executable), HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK };
-    const child = spawn(executable, remoteDockerArgs(remote.host, args), { env, detached: true, stdio: [options.input ? "pipe" : "ignore", "pipe", "pipe"] });
+    const child = spawn(executable, remoteDockerArgs(remote.host, args, options.output !== undefined), { env, detached: true, stdio: [options.input ? "pipe" : "ignore", "pipe", "pipe"] });
     let stdout = "", inputFailed = false, bytes = 0, first = Buffer.alloc(0), last = Buffer.alloc(0);
     let stopping: Promise<void> | undefined;
     const stop = () => stopping ??= stopOwnedProcess(child, { group: true, termMs: 100, killMs: 500 });
@@ -667,11 +680,8 @@ export function remoteRunnerTransport(options: RunnerOptions): RunnerTransport {
   const execArgs = (container: string, words: readonly string[]) => ["exec", "--user", "65532:65532", "--workdir", "/work", container, ...words];
   const copy = async (command: ContainerCommand, source: string, container: string, signal: AbortSignal) => {
     try {
-    const executable = hostExecutable("tar", options.projectDir);
-    const metadata = process.platform === "darwin"
-      ? ["--format=gnutar", "--no-xattrs", "--no-acls", "--no-fflags", "--disable-copyfile", "--uid", "65532", "--gid", "65532", "--uname", "check", "--gname", "check"]
-      : ["--format=gnu", "--no-xattrs", "--no-acls", "--owner=65532", "--group=65532", "--numeric-owner"];
-    const archive = Bun.spawn([executable, ...metadata, "-cf", "-", "-C", source, "."], { env: { PATH: dirname(executable), COPYFILE_DISABLE: "1" }, stdout: "pipe", stderr: "ignore" });
+    const argv = remoteArchiveArgs(options.projectDir, source);
+    const archive = Bun.spawn(argv, { env: { PATH: dirname(argv[0]!), COPYFILE_DISABLE: "1" }, stdout: "pipe", stderr: "ignore" });
     const abort = () => { if (archive.exitCode === null) try { archive.kill("SIGKILL"); } catch { /* Exit promise confirms this owned producer. */ } };
     const timer = setTimeout(abort, 180_000);
     signal.addEventListener("abort", abort, { once: true }); if (signal.aborted) abort();
