@@ -16,7 +16,7 @@ import { WsPeer, isWsPeer } from "../adapters/channel-peer.ts";
 import { ownerToolEffect, canonicalWriteUnknown } from "./no-writes.ts";
 import { NativeHookLaunches } from "./native-hook-launch.ts";
 import { readReleaseHostAdmission, type ReleaseHostAdmission } from "./release-admission.ts";
-import { ContainerRunner, type RunnerOptions, type RunReceipt } from "./check-runner.ts";
+import { ContainerRunner, RemoteRunner, remoteRunnerConfig, type RemoteRunnerConfig, type RunnerOptions, type RunReceipt } from "./check-runner.ts";
 import { fetchSpec, specAvailable, specRefs } from "./spec-read.ts";
 import { isDenied } from "../local/deny.ts";
 import { supersededDeliveryReason, deliveryTaskContext } from "./delivery-superseded.ts";
@@ -206,7 +206,7 @@ export interface HubConfig {
   /** Between-turn task escalation, disabled unless explicitly enabled (#186). */
   task_sweep: TaskSweepConfig;
   /** A command per task class run when the owner marks the task done, and its timeout (issue #7). */
-  checks: { timeout_s: number; runner?: "container"; [cls: string]: string | number | undefined };
+  checks: { timeout_s: number; runner?: "container" | "remote"; remote?: RemoteRunnerConfig; [cls: string]: string | number | RemoteRunnerConfig | undefined };
   /** A git tree at each turn boundary for `ahub turns` and `ahub undo`, the last `keep` per peer (issue #33). */
   snapshots: { enabled: boolean; keep: number };
   /** #247: opt-in research records of each approved task in ~/.agenthub/research (ids, counts and tokens only). */
@@ -397,6 +397,10 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     if (file.pet !== undefined) validatePetConfig(file.pet, "config.pet");
     if (file.pet && typeof file.pet === "object" && !Object.keys(file.pet).length) delete file.pet;
     delete file.permission_default_sources; // provenance is loader-owned, never a file claim
+    if (file.checks?.runner === "remote" || file.checks?.remote !== undefined) {
+      if (name !== "config.local.json" || configTracked(cwd, name) !== false) throw new Error("remote checks require untracked config.local.json");
+      if (file.checks.remote !== undefined) remoteRunnerConfig(file.checks.remote);
+    }
     const why = stripUntrusted(file, DEFAULT_CONFIG, cwd, name);
     if (why) ignored.push(why);
     for (const [peer, mode] of Object.entries(permissionDefaults(file.permission_modes, instances, adapterCatalog))) appliedPermissionSources[peer] = { mode, source: `.agenthub/${name}` };
@@ -473,7 +477,8 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     },
     tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks, ...(file.tasks?.wip_limits !== undefined ? { wip_limits: planningWipLimits(file.tasks.wip_limits) } : {}) },
     task_sweep: taskSweepConfig(file.task_sweep),
-    checks: { ...DEFAULT_CONFIG.checks, ...file.checks, runner: file.checks?.runner === "container" ? "container" : undefined },
+    checks: { ...DEFAULT_CONFIG.checks, ...file.checks, runner: file.checks?.runner === "remote" ? "remote" : file.checks?.runner === "container" ? "container" : undefined,
+      ...(file.checks?.remote !== undefined || file.checks?.runner === "remote" ? { remote: remoteRunnerConfig(file.checks?.remote) } : {}) },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
     research: { enabled: file.research?.enabled === true }, // opt-in: anything but true is off
     bench: { enabled: file.bench?.enabled === true }, // opt-in: a run resets this project's work tree
@@ -1411,8 +1416,8 @@ export async function startDaemon(opts: DaemonOptions) {
   startupCleanup.push(() => executionBudget.close());
   // Completion checks (issue #7): only from a config file git does not track, one at a time, killed on stop.
   const allowedChecks = new Set([...CLASSES, ...Object.keys(resolvedProfile.classes)]);
-  const checkCommands = Object.fromEntries(Object.entries(config.checks).filter(([k, v]) => k !== "runner" && allowedChecks.has(k) && typeof v === "string" && v.trim())) as Record<string, string>;
-  const strayChecks = Object.keys(config.checks).filter((k) => k !== "timeout_s" && k !== "runner" && !(k in checkCommands));
+  const checkCommands = Object.fromEntries(Object.entries(config.checks).filter(([k, v]) => k !== "runner" && k !== "remote" && allowedChecks.has(k) && typeof v === "string" && v.trim())) as Record<string, string>;
+  const strayChecks = Object.keys(config.checks).filter((k) => k !== "timeout_s" && k !== "runner" && k !== "remote" && !(k in checkCommands));
   if (strayChecks.length) log(`checks ignored for ${strayChecks.join(", ")}: not a task class with a command (classes: ${CLASSES.join(", ")})`);
   // Commands and the other machine-local fields came only from a file git vouched for (loadConfig, issue #17).
   for (const line of config.ignored ?? []) log(`${line}; only a config file nobody committed may set it`);
@@ -1467,7 +1472,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const checkOptions: RunnerOptions = {
     projectDir: opts.cwd, stateDir: opts.stateDir, storageDir: join(hubHome(), "checks"),
     projectKey: createHash("sha256").update(realPath(opts.cwd)).digest("hex").slice(0, 24),
-    enabled: () => config.checks.runner === "container",
+    enabled: () => config.checks.runner === "container" || config.checks.runner === "remote",
+    ...(config.checks.runner === "remote" ? { remote: config.checks.remote } : {}),
     isDenied: path => isDenied(path, config.local.deny) || matchesPolicy(opts.cwd, path, config.pii?.paths ?? [], true),
     isCurrent: currentCheck,
     onResult: async receipt => {
@@ -1481,12 +1487,12 @@ export async function startDaemon(opts: DaemonOptions) {
       log(`check ${receipt.run}: exit ${receipt.exit ?? "unknown"}, bytes ${receipt.output_bytes}`);
     },
   };
-  const checkRunner = opts.boundedTools?.runner?.(checkOptions) ?? new ContainerRunner(checkOptions);
+  const checkRunner = opts.boundedTools?.runner?.(checkOptions) ?? (config.checks.runner === "remote" ? new RemoteRunner(checkOptions) : new ContainerRunner(checkOptions));
   const runnerRefreshAbort = new AbortController();
   startupCleanup.push(() => { runnerRefreshAbort.abort(); void checkRunner.stopAll(); });
   let runnerState = await checkRunner.available(runnerRefreshAbort.signal);
   const orphanChecks = (await checkRunner.sweep()).map(line => boundedSafe(line) ? sanitize(line) : "orphan check: details withheld by privacy policy");
-  if (opts.boundedTools?.specAvailable || !opts.config && (config.pi.enabled || config.checks.runner === "container")) await ensureSpec();
+  if (opts.boundedTools?.specAvailable || !opts.config && (config.pi.enabled || config.checks.runner === "container" || config.checks.runner === "remote")) await ensureSpec();
   let runnerStateAt = runnerState.checkedAt ?? Date.now(), refreshingRunner: Promise<void> | undefined;
   const refreshRunner = (): Promise<void> => {
     if (stopping || runnerRefreshAbort.signal.aborted) return Promise.resolve();
@@ -1497,7 +1503,7 @@ export async function startDaemon(opts: DaemonOptions) {
       runnerState = value; runnerStateAt = value.checkedAt ?? Date.now();
     }, () => {
       if (stopping || runnerRefreshAbort.signal.aborted) return;
-      runnerState = { available: false, reason: "container unavailable" }; runnerStateAt = Date.now();
+      runnerState = { available: false, reason: config.checks.runner === "remote" ? "remote runner unavailable" : "container unavailable" }; runnerStateAt = Date.now();
     }).finally(() => { refreshingRunner = undefined; });
     return refreshingRunner;
   };

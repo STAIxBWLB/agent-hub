@@ -1,9 +1,12 @@
+import { Readable } from "node:stream";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants, closeSync, fstatSync, openSync, readFileSync } from "node:fs";
-import { lstat, mkdir, readdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { hubGitEnv, hubGitSync } from "./git.ts";
+import { stopOwnedProcess, trackGroup } from "./child-process.ts";
 import { hostExecutable } from "./host-executable.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
@@ -21,7 +24,7 @@ export interface CheckRequest {
 }
 export interface RunReceipt extends CheckRequest {
   run: string; sha: string; tree: string; lockfile: string; excluded: number; dependency_files: number;
-  runner: "container"; image: string; platform: string; container: string;
+  runner: "container" | "remote"; image: string; platform: string; container: string;
   hub_pid: number; hub_signature: string; created: number;
   status: "queued" | "running" | "finished" | "stale";
   exit: number | null; timed_out: boolean; cancelled: boolean; interrupted: boolean;
@@ -29,9 +32,9 @@ export interface RunReceipt extends CheckRequest {
   error?: string;
 }
 export interface RunHandle { run: string; done: Promise<RunReceipt> }
-export interface CommandResult { code: number | null; stdout: string }
+export interface CommandResult { code: number | null; stdout: string; outputBytes?: number }
 /** Fixed-argv transport seam. The production implementation below is the only container spawner. */
-export type ContainerCommand = (args: string[], options?: { signal?: AbortSignal; timeoutMs?: number; output?: (data: Buffer) => void }) => Promise<CommandResult>;
+export type ContainerCommand = (args: string[], options?: { signal?: AbortSignal; timeoutMs?: number; output?: (data: Buffer) => void; input?: ReadableStream<Uint8Array> }) => Promise<CommandResult>;
 export interface RunnerOptions {
   projectDir: string; stateDir: string; storageDir: string; projectKey: string;
   enabled: boolean | (() => boolean); isDenied: (path: string) => boolean;
@@ -39,9 +42,24 @@ export interface RunnerOptions {
   /** Daemon authority fence, re-evaluated across every asynchronous stage. */
   isCurrent?: (request: CheckRequest) => boolean;
   /** Test seams; never supplied from a tool request or config. */
-  command?: ContainerCommand; timeoutMs?: number; lockWaitMs?: number; lockPollMs?: number;
+  command?: ContainerCommand; remote?: RemoteRunnerConfig; timeoutMs?: number; lockWaitMs?: number; lockPollMs?: number;
   schedule?: (callback: () => void, ms: number) => () => void;
   now?: () => number; liveness?: typeof processLiveness; signature?: typeof processSignature;
+}
+export interface RemoteRunnerConfig { host: string; image: string; root: string }
+/** Only the backend mechanics vary; task authority, staging, receipts and leases remain one lifecycle. */
+interface RunnerTransport {
+  command: ContainerCommand;
+  kind: "remote"; image: string; platform: string;
+  probe(command: ContainerCommand, cleanup: ContainerCommand): Promise<RunnerState>;
+  isolate(command: ContainerCommand): Promise<void>;
+  runArgs(receipt: RunReceipt, labels: string[]): string[];
+  copy(command: ContainerCommand, source: string, container: string, signal: AbortSignal): Promise<void>;
+  execArgs(container: string, words: readonly string[]): string[];
+  cleanup(command: ContainerCommand, name: string): Promise<boolean>;
+  listArgs: string[];
+  list(stdout: string): unknown[];
+  redact(text: string): string;
 }
 interface Entry { receipt: RunReceipt; resolve: (receipt: RunReceipt) => void; abort: AbortController }
 function safePath(path: string): boolean {
@@ -108,9 +126,9 @@ export class ContainerRunner {
   private readonly records: string;
   private readonly root: string;
   private readonly retentionTimer: ReturnType<typeof setInterval>;
-  constructor(private readonly options: RunnerOptions) {
+  constructor(private readonly options: RunnerOptions, private readonly transport?: RunnerTransport) {
     if (!/^[A-Za-z0-9_-]+$/.test(options.projectKey)) throw new Error("invalid project key");
-    this.command = options.command ?? (async (args, opts) => runContainer(hostExecutable("container", options.projectDir), args, opts));
+    this.command = transport?.command ?? options.command ?? (async (args, opts) => runContainer(hostExecutable("container", options.projectDir), args, opts));
     this.now = options.now ?? Date.now;
     this.signature = (options.signature ?? processSignature)(process.pid) ?? "";
     this.records = join(options.stateDir, "checks");
@@ -153,6 +171,15 @@ export class ContainerRunner {
         if (this.closing || signal.aborted) throw new Error("check stopped");
         return result;
       };
+      if (this.transport) {
+        value = await this.transport.probe(async (args, options) => {
+          if (this.closing || signal.aborted) throw new Error("check stopped");
+          const result = await this.command(args, { ...options, signal, timeoutMs: 15_000 });
+          if (this.closing || signal.aborted) throw new Error("check stopped");
+          return result;
+        }, (args, options) => this.command(args, { ...options, timeoutMs: 15_000 }));
+        if (this.closing || signal.aborted) throw new Error("check stopped");
+      } else {
       const version = await probe(["--version"]);
       const service = await probe(["system", "status"]);
       const image = await probe(["image", "inspect", CHECK_IMAGE]);
@@ -164,7 +191,8 @@ export class ContainerRunner {
           : network.code === 0 && !isolatedNetwork(network.stdout)
           ? { available: false, reason: "network isolation unverified" }
           : { available: true, platform: `linux/arm64 (apple-container ${version.stdout.trim().slice(0, 80)})` };
-    } catch { if (this.closing || signal.aborted) return { available: false, reason: this.closing ? "stopping" : "check stopped" }; value = { available: false, reason: "container unavailable" }; }
+      }
+    } catch { if (this.closing || signal.aborted) return { available: false, reason: this.closing ? "stopping" : "check stopped" }; value = { available: false, reason: this.transport ? "remote runner unavailable" : "container unavailable" }; }
     const checkedAt = this.now();
     value.checkedAt = checkedAt;
     this.availableCache = { at: checkedAt, value };
@@ -179,7 +207,7 @@ export class ContainerRunner {
     if (this.entries.size >= 3) throw new PreEffectToolRefusal("busy");
     const run = randomUUID();
     const receipt: RunReceipt = { ...request, files: request.files ? [...request.files] : undefined, run, sha: "", tree: "", lockfile: "", excluded: 0, dependency_files: 0,
-      runner: "container", image: CHECK_IMAGE, platform: "linux/arm64 (apple-container unknown)", container: `agenthub-check-${run}`, hub_pid: process.pid, hub_signature: this.signature, created: this.now(), status: "queued", exit: null,
+      runner: this.transport?.kind ?? "container", image: this.transport?.image ?? CHECK_IMAGE, platform: this.transport?.platform ?? "linux/arm64 (apple-container unknown)", container: `agenthub-check-${run}`, hub_pid: process.pid, hub_signature: this.signature, created: this.now(), status: "queued", exit: null,
       timed_out: false, cancelled: false, interrupted: false, duration_ms: 0, tail: "", output_bytes: 0, truncated: false, output_withheld: false };
     let resolveResult!: (receipt: RunReceipt) => void;
     const done = new Promise<RunReceipt>(r => { resolveResult = r; });
@@ -282,13 +310,23 @@ export class ContainerRunner {
       if (data.status !== 0 || data.error) throw new Error("source blob unavailable");
       const blob = Buffer.from(data.stdout);
       bytes += blob.length; if (bytes > 512 * 1024 * 1024) throw new Error("source exceeds byte limit");
-      const dest = join(src, entry.path); await mkdir(dirname(dest), { recursive: true }); check(); await writeFile(dest, blob, { mode: entry.mode === "100755" ? 0o700 : 0o600 }); check(); paths.add(entry.path);
+      const dest = join(src, entry.path); await mkdir(dirname(dest), { recursive: true }); check(); await writeFile(dest, blob, { mode: this.transport ? entry.mode === "100755" ? 0o755 : 0o644 : entry.mode === "100755" ? 0o700 : 0o600 });
+      if (this.transport) {
+        // chmod is intentional: the hub may have umask 077, but the remote non-root uid must traverse/read.
+        await chmod(dest, entry.mode === "100755" ? 0o755 : 0o644);
+        for (let directory = dirname(dest); directory !== dirname(src); directory = dirname(directory)) await chmod(directory, 0o755);
+      }
+      check(); paths.add(entry.path);
     }
     if (receipt.files?.some(file => !paths.has(file))) throw new Error("test file unavailable in snapshot");
     if (!paths.has("bun.lock")) throw new Error("lockfile unavailable");
     const lock = await readFile(join(src, "bun.lock")); check();
-    const hostLock = await this.regularFile(join(this.options.projectDir, "bun.lock")); check();
     receipt.lockfile = hash(lock);
+    if (this.transport) {
+      // Source only: Mac dependencies must never be transported to a Linux runner.
+      await chmod(src, 0o755); check(); return;
+    }
+    const hostLock = await this.regularFile(join(this.options.projectDir, "bun.lock")); check();
     if (receipt.lockfile !== hash(hostLock)) throw new Error("lockfile differs; dependencies unavailable");
     const deps = join(this.options.projectDir, "node_modules");
     const dest = join(src, "node_modules");
@@ -333,7 +371,8 @@ export class ContainerRunner {
     try {
       this.ensureCurrent(entry);
       await this.save(r); this.ensureCurrent(entry);
-      const state = await this.available(entry.abort.signal); this.ensureCurrent(entry); if (!state.available) throw new Error(`runner unavailable: ${state.reason}`);
+      const state = await this.available(entry.abort.signal); this.ensureCurrent(entry);
+      if (!state.available) { if (this.transport && state.reason === "remote runner unavailable") throw new RemoteTransportError(); throw new Error(`runner unavailable: ${state.reason}`); }
       r.platform = state.platform!;
       release = await this.heavy(entry); this.ensureCurrent(entry);
       if (entry.abort.signal.aborted) throw new Error("cancelled");
@@ -346,43 +385,54 @@ export class ContainerRunner {
         if (!entry.abort.signal.aborted && this.now() >= deadline) expire();
         if (entry.abort.signal.aborted) throw new Error("check stopped");
       };
-      const command = async (args: string[], limit = 15_000, output?: (data: Buffer) => void) => {
+      const command = async (args: string[], limit = 15_000, output?: (data: Buffer) => void, input?: ReadableStream<Uint8Array>) => {
         checkRunning();
-        const result = await this.command(args, { signal: entry.abort.signal, timeoutMs: Math.min(limit, deadline - this.now()), ...(output ? { output } : {}) });
+        const result = await this.command(args, { signal: entry.abort.signal, timeoutMs: Math.min(limit, deadline - this.now()), ...(output ? { output } : {}), ...(input ? { input } : {}) });
         checkRunning(); // A transport may return success after cancellation; it cannot authorize another stage.
         return result;
       };
+      await mkdir(dir, { recursive: true, mode: 0o700 }); await chmod(dir, 0o700); checkRunning();
       await this.snapshot(r, src, entry.abort.signal, checkRunning);
       this.ensureCurrent(entry);
       if (entry.abort.signal.aborted) throw new Error("cancelled");
+      const transportCommand: ContainerCommand = (args, options) => command(args, options?.timeoutMs, options?.output, options?.input);
+      if (this.transport) await this.transport.isolate(transportCommand);
+      else {
       const network = await command(["network", "inspect", NETWORK]); this.ensureCurrent(entry);
       if (network.code !== 0 && (await command(["network", "create", "--internal", NETWORK])).code !== 0) throw new Error("runner unavailable: internal network unavailable");
       this.ensureCurrent(entry);
       // Refuse an existing non-internal network rather than trusting its name.
       const info = await command(["network", "inspect", NETWORK]); this.ensureCurrent(entry);
       if (info.code !== 0 || !isolatedNetwork(info.stdout)) throw new Error("runner unavailable: network isolation unverified");
+      }
       r.status = "running"; await this.save(r); this.ensureCurrent(entry);
       attemptedContainer = true;
       // Cold VM startup and a <=1.5 GiB source/dependency transfer need their own bounded allowances.
-      const run = await command(["run", "--detach", "--rm", "--name", r.container, "--label", `agenthub.project=${this.options.projectKey}`, "--label", `agenthub.hub=${process.pid}:${this.signature}`, "--label", `agenthub.run=${r.run}`, "--network", NETWORK, "--no-dns", "--cpus", "2", "--memory", "4g", "--workdir", "/work", CHECK_IMAGE, "sleep", "600"], 120_000);
+      const labels = ["--label", `agenthub.project=${this.options.projectKey}`, "--label", `agenthub.hub=${process.pid}:${this.signature}`, "--label", `agenthub.run=${r.run}`];
+      const run = await command(this.transport?.runArgs(r, labels) ?? ["run", "--detach", "--rm", "--name", r.container, ...labels, "--network", NETWORK, "--no-dns", "--cpus", "2", "--memory", "4g", "--workdir", "/work", CHECK_IMAGE, "sleep", "600"], 120_000);
       this.ensureCurrent(entry);
-      if (run.code !== 0) throw new Error("runner unavailable: container start failed");
-      const copy = await command(["cp", `${src}/.`, `${r.container}:/work`], 180_000);
+      if (run.code !== 0) { if (this.transport) throw new RemoteTransportError(); throw new Error("runner unavailable: container start failed"); }
+      if (this.transport) await this.transport.copy(transportCommand, src, r.container, entry.abort.signal);
+      else {
+        const copy = await command(["cp", `${src}/.`, `${r.container}:/work`], 180_000);
+        if (copy.code !== 0) throw new Error("container source transfer failed");
+      }
       this.ensureCurrent(entry);
-      if (copy.code !== 0) throw new Error("container source transfer failed");
       if (entry.abort.signal.aborted) throw new Error("cancelled");
       const words = r.check === "test" ? ["bun", "test", ...r.files!] : ["bun", "x", "--no-install", "tsc", "--noEmit"];
-      const result = await command(["exec", "--workdir", "/work", r.container, ...words], 600_000, data => {
+      const result = await command(this.transport?.execArgs(r.container, words) ?? ["exec", "--workdir", "/work", r.container, ...words], 600_000, data => {
         r.output_bytes += data.length;
         if (output.length < MAX_OUTPUT) output = Buffer.concat([output, data.subarray(0, MAX_OUTPUT - output.length)]);
         outputTail = Buffer.concat([outputTail, data]).subarray(-16_384);
         r.truncated = r.output_bytes > MAX_OUTPUT;
       });
       this.ensureCurrent(entry);
+      if (this.transport && result.code === 255) { r.output_withheld = true; throw new RemoteTransportError(); }
+      if (result.outputBytes !== undefined) { r.output_bytes = result.outputBytes; r.truncated = r.output_bytes > MAX_OUTPUT; }
       r.exit = entry.abort.signal.aborted ? null : result.code;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
-      r.error = entry.abort.signal.aborted ? "check stopped" : code ? "check filesystem or runtime unavailable" : error instanceof Error ? error.message : "check unavailable";
+      r.error = entry.abort.signal.aborted ? "check stopped" : error instanceof RemoteTransportError ? "remote runner unavailable" : code ? "check filesystem or runtime unavailable" : error instanceof Error ? error.message : "check unavailable";
     }
     finally {
       cancelDeadline?.();
@@ -391,8 +441,11 @@ export class ContainerRunner {
       if (!removed) { r.error = "container cleanup unconfirmed; heavy slot retained"; r.exit = null; }
       await rm(src, { recursive: true, force: true }).catch(() => {});
       if (release && removed) await release().catch(() => {});
-      r.duration_ms = Math.max(0, this.now() - begun); r.tail = tail(outputTail.toString("utf8"), r.output_bytes > outputTail.length); if (r.status !== "stale") r.status = "finished";
+      const rawTail = outputTail.toString("utf8"), safeTail = this.transport?.redact(rawTail) ?? rawTail;
+      r.output_withheld ||= safeTail !== rawTail;
+      r.duration_ms = Math.max(0, this.now() - begun); r.tail = tail(safeTail, r.output_bytes > outputTail.length); if (r.status !== "stale") r.status = "finished";
       if (!this.current(r)) { r.status = "stale"; }
+      if (this.transport) { const raw = output.toString("utf8"), safe = this.transport.redact(raw); r.output_withheld ||= safe !== raw; output = Buffer.from(safe); }
       try { await mkdir(dir, { recursive: true, mode: 0o700 }); await writeFile(join(dir, "output.log"), r.truncated ? Buffer.concat([output.subarray(0, MAX_OUTPUT - 7), Buffer.from("\n[cut]\n")]) : output, { mode: 0o600 }); await this.save(r); } catch { r.error = "check receipt storage unavailable"; r.tail = ""; r.output_withheld = true; }
       await this.maintain(); // Maintenance never changes an outcome already saved for this run.
       if (!this.current(r)) { r.status = "stale"; await this.save(r).catch(() => {}); }
@@ -400,6 +453,7 @@ export class ContainerRunner {
     }
   }
   private async cleanup(name: string): Promise<boolean> {
+    if (this.transport) return this.transport.cleanup(this.command, name);
     await this.command(["kill", name]).catch(() => {});
     await this.command(["rm", name]).catch(() => {});
     try {
@@ -458,7 +512,7 @@ export class ContainerRunner {
     if (!this.enabled()) { await this.maintain(); return unknown; }
     try {
       let containers: unknown;
-      try { const list = await this.command(["list", "--all", "--format", "json"]); if (list.code !== 0) return unknown; containers = JSON.parse(list.stdout); } catch { return unknown; }
+      try { const list = await this.command(this.transport?.listArgs ?? ["list", "--all", "--format", "json"]); if (list.code !== 0) return unknown; containers = this.transport?.list(list.stdout) ?? JSON.parse(list.stdout); } catch { return unknown; }
       if (!Array.isArray(containers)) return unknown;
       for (const container of containers) {
         const c = container as { id?: string; configuration?: { id?: string; labels?: Record<string, string> }; labels?: Record<string, string> };
@@ -510,5 +564,171 @@ export class ContainerRunner {
       const path = join(this.root, name); const st = await lstat(path);
       if (this.now() - st.mtimeMs >= DAY) await rm(path, { recursive: true, force: true });
     }
+  }
+}
+
+/** Machine-local data only; every failure is value-free so host/account names never enter diagnostics. */
+export function remoteRunnerConfig(value: unknown): RemoteRunnerConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid remote runner configuration");
+  const raw = value as Record<string, unknown>;
+  if (Object.keys(raw).sort().join(",") !== "host,image,root"
+    || typeof raw.host !== "string" || raw.host.length > 288 || !/^(?:[a-z_][a-z0-9_-]{0,31}@)?[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/.test(raw.host)
+    || typeof raw.image !== "string" || !/^[a-z0-9][a-z0-9./:_-]{0,200}@sha256:[a-f0-9]{64}$/.test(raw.image)
+    || typeof raw.root !== "string" || raw.root.length > 1024 || !/^(?:\/[A-Za-z0-9._-]+)+\/?$/.test(raw.root) || raw.root.split("/").some(part => part === "." || part === "..")) throw new Error("invalid remote runner configuration");
+  return { host: raw.host, image: raw.image, root: raw.root };
+}
+/** OpenSSH joins its remote argv into a shell command. Quote every token, including fixed Docker arguments. */
+export function remoteDockerArgs(host: string, args: readonly string[]): string[] {
+  const quote = (word: string) => `'${word.replaceAll("'", `'"'"'`)}'`;
+  return ["-T", "-a", "-x", "-o", "ClearAllForwardings=yes", "-o", "PermitLocalCommand=no", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "--", host, `docker ${args.map(quote).join(" ")}${args[0] === "exec" ? " 2>&1" : ""}`];
+}
+function runRemoteDocker(executable: string, remote: RemoteRunnerConfig, args: string[], options: Parameters<ContainerCommand>[1] = {}): Promise<CommandResult> {
+  return new Promise((resolveResult, reject) => {
+    if (options.signal?.aborted) { reject(new Error("remote runner unavailable")); return; }
+    // The hub's agent socket authenticates this client; -a prevents forwarding it into the remote job.
+    const env = { PATH: dirname(executable), HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, SSH_AUTH_SOCK: process.env.SSH_AUTH_SOCK };
+    const child = spawn(executable, remoteDockerArgs(remote.host, args), { env, detached: true, stdio: [options.input ? "pipe" : "ignore", "pipe", "pipe"] });
+    let stdout = "", inputFailed = false, bytes = 0, first = Buffer.alloc(0), last = Buffer.alloc(0);
+    let stopping: Promise<void> | undefined;
+    const stop = () => stopping ??= stopOwnedProcess(child, { group: true, termMs: 100, killMs: 500 });
+    const abort = () => { void stop().catch(() => {}); };
+    child.once("spawn", () => { trackGroup(child); if (options.signal?.aborted) abort(); });
+    const timer = setTimeout(abort, Math.max(1, Math.min(600_000, options.timeoutMs ?? 15_000)));
+    options.signal?.addEventListener("abort", abort, { once: true });
+    if (options.signal?.aborted) abort();
+    const input = options.input ? Readable.fromWeb(options.input as import("node:stream/web").ReadableStream<Uint8Array>) : undefined;
+    input?.on("error", () => { inputFailed = true; abort(); }); child.stdin?.on("error", () => { inputFailed = true; input?.destroy(); }); if (input && child.stdin) input.pipe(child.stdin);
+    child.stdout!.on("data", (data: Buffer) => {
+      bytes += data.length;
+      if (options.output) {
+        if (first.length < MAX_OUTPUT) first = Buffer.concat([first, data.subarray(0, MAX_OUTPUT - first.length)]);
+        last = Buffer.concat([last, data]).subarray(-16_384);
+      } else stdout = (stdout + data.toString()).slice(-MAX_OUTPUT);
+    });
+    // SSH diagnostics mix account/host paths with remote stderr. Never forward that channel as task output.
+    child.stderr!.resume();
+    const finish = () => { clearTimeout(timer); options.signal?.removeEventListener("abort", abort); input?.destroy(); };
+    child.once("error", () => { finish(); reject(new Error("remote runner unavailable")); });
+    child.once("close", async code => {
+      finish();
+      try { await stop(); } catch { reject(new Error("remote runner unavailable")); return; }
+      if (code === 255 || options.signal?.aborted) return resolveResult({ code, stdout: "", outputBytes: 0 });
+      if (options.output) { options.output(first); if (bytes > first.length) options.output(last); }
+      resolveResult({ code: inputFailed ? 1 : code, stdout, ...(options.output ? { outputBytes: bytes } : {}) });
+    });
+  });
+}
+/** Distinguish transport failures from deterministic request/snapshot refusals without leaking remote stderr. */
+class RemoteTransportError extends Error { constructor() { super("remote runner unavailable"); } }
+
+/** Same production strategy for transport-only component/native checks; production uses RemoteRunner's dependency gate. */
+export function remoteRunnerTransport(options: RunnerOptions): RunnerTransport {
+  if (!/^[A-Za-z0-9_-]+$/.test(options.projectKey)) throw new Error("invalid project key");
+  const remote = remoteRunnerConfig(options.remote), digest = remote.image.slice(remote.image.indexOf("@") + 1);
+  const command: ContainerCommand = async (args, opts) => {
+    try { return await (options.command ? options.command(args, opts) : runRemoteDocker(hostExecutable("ssh", options.projectDir), remote, args, opts)); }
+    catch { throw new RemoteTransportError(); }
+  };
+  const privateValues = [...new Set([remote.host, ...remote.host.split("@"), remote.root])].sort((a, b) => b.length - a.length);
+  const redact = (text: string) => {
+    for (const value of privateValues) {
+      text = text.replaceAll(value, "***");
+      for (let length = Math.min(value.length - 1, text.length); length > 0; length--) if (text.endsWith(value.slice(0, length))) { text = text.slice(0, -length) + "***"; break; }
+    }
+    return text;
+  };
+  const format = '{"id":{{json .Names}},"project":{{json (.Label "agenthub.project")}},"hub":{{json (.Label "agenthub.hub")}},"run":{{json (.Label "agenthub.run")}},"probe":{{json (.Label "agenthub.probe")}}}';
+  const inventoryArgs = (name?: string, project = true) => ["ps", "--all", "--no-trunc", ...(project ? ["--filter", `label=agenthub.project=${options.projectKey}`] : []), ...(name ? ["--filter", `name=^/${name}$`] : []), "--format", format];
+  const listArgs = inventoryArgs();
+  const list = (stdout: string): { id: string; labels: Record<string, string> }[] => {
+    const lines = stdout.trim() ? stdout.trim().split("\n") : [];
+    if (lines.length > 10_000) throw new RemoteTransportError();
+    return lines.map(line => {
+      let value: Record<string, unknown>;
+      try { value = JSON.parse(line) as Record<string, unknown>; } catch { throw new RemoteTransportError(); }
+      if (!["id", "project", "hub", "run", "probe"].every(key => typeof value[key] === "string")) throw new RemoteTransportError();
+      return { id: value.id as string, labels: { "agenthub.project": value.project as string, "agenthub.hub": value.hub as string, "agenthub.run": value.run as string, "agenthub.probe": value.probe as string } };
+    });
+  };
+  const cleanup = async (command: ContainerCommand, name: string): Promise<boolean> => {
+    if (!/^agenthub-check-(?:probe-)?[a-f0-9-]{36}$/.test(name)) return false;
+    try {
+      const before = await command(inventoryArgs(name));
+      if (before.code !== 0) return false;
+      const owned = list(before.stdout).filter(row => row.id === name && row.labels["agenthub.project"] === options.projectKey);
+      if (owned.length > 1) return false;
+      if (owned.length === 1) { await command(["kill", name]).catch(() => {}); await command(["rm", name]).catch(() => {}); }
+      // Exact-name absence, even if a same-name container has different labels; never kill that other owner.
+      const after = await command(inventoryArgs(name, false));
+      return after.code === 0 && !list(after.stdout).some(row => row.id === name);
+    } catch { return false; }
+  };
+  const hardening = ["--pull", "never", "--network", "none", "--user", "65532:65532", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m,mode=1777", "--tmpfs", "/home/check:rw,nosuid,nodev,size=16m,uid=65532,gid=65532", "--tmpfs", "/work:rw,nosuid,nodev,size=512m,mode=0755,uid=65532,gid=65532", "--env", "HOME=/home/check", "--env", "TMPDIR=/tmp", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "64", "--cpus", "4", "--memory", "4g"];
+  const execArgs = (container: string, words: readonly string[]) => ["exec", "--user", "65532:65532", "--workdir", "/work", container, ...words];
+  const copy = async (command: ContainerCommand, source: string, container: string, signal: AbortSignal) => {
+    try {
+    const executable = hostExecutable("tar", options.projectDir);
+    const metadata = process.platform === "darwin"
+      ? ["--format=gnutar", "--no-xattrs", "--no-acls", "--no-fflags", "--disable-copyfile", "--uid", "65532", "--gid", "65532", "--uname", "check", "--gname", "check"]
+      : ["--format=gnu", "--no-xattrs", "--no-acls", "--owner=65532", "--group=65532", "--numeric-owner"];
+    const archive = Bun.spawn([executable, ...metadata, "-cf", "-", "-C", source, "."], { env: { PATH: dirname(executable), COPYFILE_DISABLE: "1" }, stdout: "pipe", stderr: "ignore" });
+    const abort = () => { if (archive.exitCode === null) try { archive.kill("SIGKILL"); } catch { /* Exit promise confirms this owned producer. */ } };
+    const timer = setTimeout(abort, 180_000);
+    signal.addEventListener("abort", abort, { once: true }); if (signal.aborted) abort();
+    try {
+      // docker cp cannot write a read-only container filesystem, even where a writable tmpfs is mounted.
+      const result = await command(["exec", "-i", "--user", "65532:65532", container, "tar", "--no-same-owner", "-xf", "-", "-C", "/work"], { timeoutMs: 180_000, input: archive.stdout });
+      if (result.code !== 0 || await archive.exited !== 0) throw new RemoteTransportError();
+    } finally { clearTimeout(timer); signal.removeEventListener("abort", abort); abort(); await archive.exited; }
+    } catch { throw new RemoteTransportError(); }
+  };
+  return {
+    command, kind: "remote", image: digest, platform: "linux/unknown (remote docker unknown)", listArgs, list, redact, execArgs, cleanup, copy,
+    async probe(command, teardown) {
+      let probeRoot: string | undefined;
+      try {
+        const version = await command(["version", "--format", "{{json .Server}}"]);
+        if (version.code !== 0) throw new RemoteTransportError();
+        const server = JSON.parse(version.stdout) as { Version?: string; Os?: string; Arch?: string };
+        if (server.Os !== "linux" || !["amd64", "arm64"].includes(server.Arch ?? "") || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]+)?$/.test(server.Version ?? "")) throw new RemoteTransportError();
+        const image = await command(["image", "inspect", remote.image, "--format", '{"digests":{{json .RepoDigests}},"arch":{{json .Architecture}},"os":{{json .Os}}}']);
+        const metadata = image.code === 0 ? JSON.parse(image.stdout) as { digests?: unknown; arch?: string; os?: string } : undefined;
+        if (metadata?.os !== "linux" || !["amd64", "arm64"].includes(metadata.arch ?? "") || !Array.isArray(metadata.digests) || !metadata.digests.some(value => typeof value === "string" && value.endsWith(`@${digest}`))) throw new RemoteTransportError();
+        let architecture: string | undefined;
+        const probeId = randomUUID(), name = `agenthub-check-probe-${probeId}`;
+        probeRoot = await mkdtemp(join(tmpdir(), "ahub-remote-probe-"));
+        const source = join(probeRoot, "src"); await mkdir(source, { mode: 0o755 }); await chmod(source, 0o755);
+        await writeFile(join(source, "source-proof"), "AHUB_REMOTE_SOURCE", { mode: 0o644 }); await chmod(join(source, "source-proof"), 0o644);
+        let clean = false;
+        try {
+          const launched = await command(["run", "--detach", "--rm", "--name", name, "--label", `agenthub.project=${options.projectKey}`, "--label", `agenthub.probe=${probeId}`, ...hardening, remote.image, "sleep", "600"]);
+          if (launched.code !== 0) throw new RemoteTransportError();
+          await copy(command, source, name, new AbortController().signal);
+          const result = await command(execArgs(name, ["bun", "-e", 'const {networkInterfaces}=await import("node:os"); if(process.getuid?.()!==65532||Object.keys(networkInterfaces()).some(name=>name!=="lo")||await Bun.file("/work/source-proof").text()!=="AHUB_REMOTE_SOURCE")process.exit(2); await Bun.write("/tmp/ready","ok"); try{await Bun.write("/root-write-proof","no");process.exit(3)}catch{} console.log(JSON.stringify({marker:"AHUB_REMOTE_READY",arch:process.arch,platform:process.platform}));']));
+          const observed = result.code === 0 ? JSON.parse(result.stdout) as { marker?: string; arch?: string; platform?: string } : undefined;
+          architecture = observed?.arch === "x64" ? "amd64" : observed?.arch;
+          if (observed?.marker !== "AHUB_REMOTE_READY" || observed.platform !== "linux" || architecture !== metadata.arch) throw new RemoteTransportError();
+        } finally { clean = await cleanup(teardown, name); }
+        if (!clean) throw new RemoteTransportError();
+        return { available: true, platform: `linux/${architecture} (remote docker ${server.Version!.match(/^\d+\.\d+\.\d+/)![0]})` };
+      } catch { return { available: false, reason: "remote runner unavailable" }; }
+      finally { if (probeRoot) await rm(probeRoot, { recursive: true, force: true }).catch(() => {}); }
+    },
+    async isolate() { /* Fixed --network none needs no mutable host network. */ },
+    runArgs(receipt, labels) {
+      // ponytail: root and prepared dependency readiness remain reserved until 793b; no host path is used.
+      return ["run", "--detach", "--rm", "--name", receipt.container, ...labels, ...hardening,
+        "--mount", `type=volume,src=agenthub-check-deps-unprepared-${options.projectKey},dst=/work/node_modules,readonly`, "--workdir", "/work", remote.image, "sleep", "600"];
+    },
+  };
+}
+/** Same lifecycle, but no production checks capability until 793b proves prepared dependencies. */
+export class RemoteRunner extends ContainerRunner {
+  constructor(options: RunnerOptions) {
+    super(options, remoteRunnerTransport(options));
+  }
+  override async available(signal?: AbortSignal): Promise<RunnerState> {
+    const transport = await super.available(signal);
+    return transport.available ? { ...transport, available: false, reason: "remote dependencies unprepared" } : transport;
   }
 }

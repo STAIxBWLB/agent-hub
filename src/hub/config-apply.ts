@@ -1,3 +1,4 @@
+import { remoteRunnerConfig } from "./check-runner.ts";
 import { ACTION_CLASSES } from "./action-class.ts";
 import { actionPolicyConfig } from "./action-policy.ts";
 import { adapterModuleDeclarations } from "../adapters/external-modules.ts";
@@ -60,6 +61,9 @@ export function authorizeConfigLeaf(input: ConfigAuthorizationInput): ConfigAuth
     if (input.sourceFile !== "config.local.json") return result(false, true, "action policy requires .agenthub/config.local.json");
     if (input.tracked !== false) return result(false, true, "action policy requires an untracked machine-local source");
   }
+  const remote = key === "checks.remote" || key.startsWith("checks.remote.") || key === "checks.runner" && after === "remote"
+    || key === "checks" && !!after && typeof after === "object" && ((after as Record<string, unknown>).runner === "remote" || (after as Record<string, unknown>).remote !== undefined);
+  if (remote && after !== undefined && (input.sourceFile !== "config.local.json" || input.tracked !== false)) return result(false, true, "remote checks require untracked config.local.json");
   if (same(before, after)) return result(true, false, "unchanged");
   const supplied = input.guard;
   const guard = supplied && (key === supplied.key || key === `${supplied.store === "routing" ? "routing." : ""}${supplied.path.join(".")}`) ? supplied : undefined;
@@ -173,7 +177,8 @@ const schema: Record<string, Check> = {
   checks: (v, k) => { for (const [key, value] of Object.entries(object(v, k))) {
     if (value === undefined) continue;
     if (key === "timeout_s") timerSeconds(value, `${k}.${key}`);
-    else if (key === "runner") words(["container"])(value, `${k}.${key}`);
+    else if (key === "runner") words(["container", "remote"])(value, `${k}.${key}`);
+    else if (key === "remote") remoteRunnerConfig(value);
     else if (/^[a-z][a-z0-9_]{0,47}$/.test(key)) text(value, `${k}.${key}`); else fail(`${k}.${key}`, "unknown key");
   } },
   snapshots: block({ enabled: bool, keep: number(1, 1_000_000, true) }), research: block({ enabled: bool }), bench: block({ enabled: bool }),
@@ -206,7 +211,7 @@ export function validateEffectiveConfig(value: unknown, catalog?: ProjectAdapter
   delete raw.ignored; delete raw.retired; delete raw.permission_default_sources;
   validateRawConfig(raw, undefined, catalog);
   const profile = resolveProfile(raw.profile, raw.profile_overrides);
-  for (const key of Object.keys(object(raw.checks, "checks"))) if (!["timeout_s", "runner", ...CLASSES, ...Object.keys(profile.classes)].includes(key)) fail(`checks.${key}`, "unknown task class");
+  for (const key of Object.keys(object(raw.checks, "checks"))) if (!["timeout_s", "runner", "remote", ...CLASSES, ...Object.keys(profile.classes)].includes(key)) fail(`checks.${key}`, "unknown task class");
   for (const adapter of ADAPTERS) adapter.configuration?.validateEffective?.(raw, fail);
 }
 
@@ -231,7 +236,7 @@ export function configApply(key: string, scopes: readonly ConfigIdentityScope[] 
   if (top !== "routing" && top !== "permission" && key.includes(".")) {
     const special: Record<string, readonly string[]> = {
       task_sweep: ["enabled", "auto_reassign", "no_writes_turns", "interval_s", "unaccepted_min", "idle_min", "review_min", "ready_min", "ladder_min"],
-      checks: ["timeout_s", "runner", ...CLASSES], terminal: ["open"],
+      checks: ["timeout_s", "runner", "remote", ...CLASSES], terminal: ["open"],
     };
     let check = schema[top];
     for (const [index, part] of key.split(".").slice(1).entries()) {
