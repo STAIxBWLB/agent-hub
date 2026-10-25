@@ -460,6 +460,7 @@ test("a stop-and-archive that fails partway records what it did, keeps the lock 
   const f = failedRestore();
   Object.assign(f.operation.projects[1]!, { phase: "prepared" });
   f.states.get("beta")!.recovery = { operationId: f.operation.id, phase: "prepared", ready: true };
+  f.operation.error = "codex: terminal is not verified idle; source retained; finish or cancel its turn first";
   writeOperation(f.operation.id, f.operation, f.home);
   const abort = f.driver.abort;
   f.driver.abort = async () => { throw new Error("a committed recovery cannot be aborted"); };
@@ -481,6 +482,9 @@ test("a stop-and-archive that fails partway records what it did, keeps the lock 
   expect(op.error).toBeUndefined();
   expect(op.disposition?.projects).toEqual({ alpha: "target stopped", beta: "source hold released; source left running" });
   expect(op.audit?.map((entry) => entry.reason)).toEqual(["give up", "finish"]);
+  // #776: disposal clears the error, so each audit entry keeps the one that blocked the operation.
+  expect(op.audit?.[0]?.cause).toBe("codex: terminal is not verified idle; source retained; finish or cancel its turn first");
+  expect(op.audit?.[1]?.cause).toContain("stop-and-archive stopped partway and keeps the lock: a committed recovery cannot be aborted");
   expect(recoveryLock(f.home)).toBeUndefined();
 });
 
@@ -490,6 +494,7 @@ test("stop-and-archive gives a project whose directory is gone a true outcome in
   const op = await disposeRecovery(f.operation.id, { stop: true }, "project removed", f.driver, f.home);
   expect(op.disposition?.projects.alpha).toContain("project directory is missing; nothing was stopped or archived");
   expect(op.phase).toBe("cancelled");
+  expect(op.audit?.[0]).not.toHaveProperty("cause"); // #776: no error, no cause
 });
 
 // #215 review: a restored hub refills a Pi start from its recorded resume, so a "fresh" Pi would quietly resume.

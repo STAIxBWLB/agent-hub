@@ -327,7 +327,9 @@ the runner (refusing while one is alive) and append to the receipt's audit:
   live instance through the lifecycle stop, which verifies the instance and
   waits until its manifest and registry claim are gone, and is then inspected
   again. A daemon this operation does not own, or one already released, is left
-  running. Each project's outcome is recorded as it happens; a disposition that
+  running. Its audit entry keeps the operation's error at that moment as
+  `cause` (#776): the error itself is cleared on disposal, and without it an
+  abandoned operation could not be diagnosed. Each project's outcome is recorded as it happens; a disposition that
   stops partway keeps the lock, and resume and `--fresh-session` then refuse
   until `--stop-and-archive` is run again and finishes. A stopped project's committed
   snapshot of this operation moves to `restart.abandoned.<hash>.json`, which is
