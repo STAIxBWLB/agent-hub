@@ -136,6 +136,12 @@ asking, under the same path guard and sandbox; a Pi restart or replacement, or a
 hub restart, drops it. The hub log records each granted call by tool name only.
 The dashboard can only deny Pi's requests.
 
+In `ask-when-needed`, Pi and the local worker also grant bounded read-only shell calls at the host permit boundary (#816). The command must parse as one literal command and satisfy a closed program/flag table, trusted executable lookup and the existing root/path guard. Unknown flags, operators, expansions, pipelines, output files, unsafe helper/follow/file-list options and outside-root paths keep the ordinary approval path. Single quotes preserve literal data; double quotes containing `$`, backticks or backslashes are not automatically granted.
+
+The fixed program set is `ls`, `cat`, `head`, `tail`, `wc`, `rg`, `grep`, `stat`, `file`, `tree`, `pwd`, `find` and supported read-only `git` forms. Git patch forms need both `--no-ext-diff` and `--no-textconv` where supported; a configured `core.fsmonitor` keeps every git form asking. The host revalidates executable and path proof after each await, immediately before execution. A changed proof requires an explicit approval, including in unattended mode; persistent instability runs nothing. Neither argv nor environment is rewritten. Scoped read-only grants log the tool and class without command arguments.
+
+`ask` retains shell approval behavior; `never-ask`, existing Pi tool-wide grants and the always-ask action policy retain their precedence. Seatbelt, the path guard, read allowlists, home and network access are unchanged. The person's Pi setting and live triage receipt are separate AC4 work; this feature's tests do not certify that rollout.
+
 Tab toggles stream and panels; `ahub console --panels` starts in panels. A panel
 screen has a header (the project's directory name, then the tabs), the panel and
 a three-line footer, separated by ASCII `-` rules; the stream has one rule above
@@ -1660,7 +1666,7 @@ denylist (Pi and local), or native vendor boundaries (Claude and Codex).
 | Kimi Code CLI | ACP yolo | ACP auto | ACP default |
 | Codex | on-request for every outgoing turn/start | never for every outgoing turn/start | Restore the known native policy once, then stop overriding |
 | Claude | Allow resolving project file tools outside .agenthub/.git/.claude/.codex/.qwen/.kimi/.kimi-code/.jcode/.pi/.mcp.json/.agents/.agent/_agents/_agent/.gemini/.grok/.claude.json | Hook allow for every tool | No hook decision |
-| Pi and local | Grant write/edit outside native agent configuration paths; read never asks; shell/git writes ask | Grant each tool once within the existing sandbox/guard | Normal approval handling |
+| Pi and local | Grant write/edit outside native agent configuration paths and proven read-only shell calls; other shell/git writes ask | Grant each tool once within the existing sandbox/guard | Normal approval handling |
 
 Kimi's map applies only to the actual Kimi Code CLI identity, not another ACP
 agent configured in kimi_cmd. Qwen and other ACP agents start fresh/resumed

@@ -36,7 +36,7 @@ export function permissionGrant(peer: string, mode: PermissionMode, instances?: 
   const grant = (catalog?.definitionOf ?? definitionOf)(peer, instances)?.permission.grants?.[mode];
   if (grant !== undefined) return grant;
   if (mode === "ask") return "every write, edit and shell command asks";
-  return mode === "never-ask" ? "every tool runs without asking, inside the hub sandbox and path guard" : "write and edit inside the project run without asking; shell and git writes still ask";
+  return mode === "never-ask" ? "every tool runs without asking, inside the hub sandbox and path guard" : "write, edit and proven bounded read-only shell commands inside the project run without asking; other shell commands and git writes still ask";
 }
 export const PI_EDIT_TOOLS = new Set(["edit", "write"]);
 /** Native agent policy files are never included in scoped automatic file grants. */

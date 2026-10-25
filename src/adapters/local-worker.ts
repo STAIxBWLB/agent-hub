@@ -36,7 +36,7 @@ export interface LocalOptions {
   turnId?: () => string | undefined;
   onApprovalStop?: (reason: string) => void;
   onTool?: (observation: ToolObservation, task?: string) => void;
-  tools: { deny: string[]; permit: ToolContext["permit"]; bashNetwork?: SandboxNetwork; readAllow?: string[]; readOnly?: string[] };
+  tools: { deny: string[]; permit: ToolContext["permit"]; shellExecutionCheck?: ToolContext["shellExecutionCheck"]; bashNetwork?: SandboxNetwork; readAllow?: string[]; readOnly?: string[] };
   capture?: Capture;
   /** Runs a hub task tool (hub_task_*, hub_review, hub_remember) as this peer. Absent = the tools are not offered. */
   taskTool?: (name: string, args: Record<string, unknown>, turn: { pii: boolean }) => Promise<string>;
@@ -290,11 +290,12 @@ export class LocalPeer extends BasePeer {
   }
 
   private toolContext(envs: Envelope[], turnSignal: AbortSignal, pii: boolean, reply: EnvelopeOpts): ToolContext {
+    const executionGeneration=this.turn;
     return {
       cwd: this.opts.cwd,
       deny: this.opts.tools.deny,
       readOnly: this.opts.tools.readOnly,
-      permit: async (title, tool, _signal, canonicalTarget, _observe, originalPath, input) => {
+      permit: async (title, tool, _signal, canonicalTarget, _observe, originalPath, input, policy) => {
         if (turnSignal.aborted) return "aborted";
         const generation = this.turn;
         let observed = false;
@@ -314,7 +315,7 @@ export class LocalPeer extends BasePeer {
           const finish = (decision: ToolApproval) => { turnSignal.removeEventListener("abort", onAbort); resolve(decision); };
           const onAbort = () => finish("aborted");
           turnSignal.addEventListener("abort", onAbort, { once: true });
-          this.opts.tools.permit(title, tool, turnSignal, canonicalTarget, observe, originalPath, input).then(finish, (error) => { turnSignal.removeEventListener("abort", onAbort); reject(error); });
+          this.opts.tools.permit(title, tool, turnSignal, canonicalTarget, observe, originalPath, input, policy).then(finish, (error) => { turnSignal.removeEventListener("abort", onAbort); reject(error); });
         });
         if (generation !== this.turn || (turnSignal.aborted && picked !== "expired")) return "aborted";
         // Legacy permit callbacks can represent a person's denial without provenance. A true
@@ -323,6 +324,7 @@ export class LocalPeer extends BasePeer {
         if (!observed && picked === "expired") observe({ source: "expired", answerEpoch: this.approvalAnswerEpoch ?? 0, eligibleExpiry: true });
         return picked;
       },
+      shellExecutionCheck: input=>turnSignal.aborted||executionGeneration!==this.turn?"aborted":this.opts.tools.shellExecutionCheck?.(input)??"valid",
       sandboxProfile: this.sandboxProfile,
       sandboxEnv: { ...proxyEnv(this.opts.tools.bashNetwork ?? false), AGENTHUB_PEER_ID: this.id },
       signal: turnSignal,

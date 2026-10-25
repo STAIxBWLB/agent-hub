@@ -17,6 +17,8 @@ const approvalError = (picked: ToolApproval, denied: string): string | undefined
   : picked === "expired" ? APPROVAL_EXPIRED_TEXT
   : picked === "aborted" ? "error: approval withdrawn because the turn ended; no operation was executed" : denied;
 
+export type ShellPermitPolicy = { forceAsk?: true };
+export type ShellExecutionCheck = "valid" | "ask" | "aborted";
 export interface ToolContext {
   readOnly?: string[];
   cwd: string;
@@ -29,7 +31,9 @@ export interface ToolContext {
   /** Turn cancellation signal, including the execution-budget wall cap. */
   signal?: AbortSignal;
   /** Only true permits an effect; expiry and abort remain distinct from a person's denial. */
-  permit: (title: string, tool?: string, signal?: AbortSignal, canonicalTarget?: string, observe?: ApprovalObserver, originalPath?: string, input?: unknown) => Promise<ToolApproval>;
+  permit: (title: string, tool?: string, signal?: AbortSignal, canonicalTarget?: string, observe?: ApprovalObserver, originalPath?: string, input?: unknown, policy?: ShellPermitPolicy) => Promise<ToolApproval>;
+  /** Host-only synchronous recheck, immediately before a shell process can be spawned. */
+  shellExecutionCheck?: (input: unknown) => ShellExecutionCheck;
   /** Trusted process status, independent of what its stdout says. */
   onProcessExit?: (code: number | null) => void;
   /** Publish a message to other peers mid-turn. Returns a one-line receipt. */
@@ -102,7 +106,7 @@ export const TOOL_SCHEMAS = [
   fn("read", "Read a text file inside the project. Returns numbered lines.", { path: str, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1 } }, ["path"]),
   fn("write", "Create or overwrite a file inside the project. Needs the user's approval.", { path: str, content: str }, ["path", "content"]),
   fn("edit", "Replace one exact, unique occurrence of `old` with `new` in a file. Needs the user's approval.", { path: str, old: str, new: str }, ["path", "old", "new"]),
-  fn("bash", "Run a shell command in the project directory, sandboxed: no writes outside the project, no credential reads, no network unless the hub enables it. Needs the user's approval.", { command: str, timeout_s: { type: "integer", minimum: 1, maximum: 600 } }, ["command"]),
+  fn("bash", "Run a shell command in the project directory, sandboxed: no writes outside the project, no credential reads, no network unless the hub enables it. Follows hub permission policy: proven bounded read-only commands may run automatically in ask-when-needed; other commands ask.", { command: str, timeout_s: { type: "integer", minimum: 1, maximum: 600 } }, ["command"]),
   fn("git", "Run git in the project. status, diff, log, show, ls-files, blame, rev-parse run freely; add, commit, restore, checkout, switch, stash, mv, rm, branch, merge, rebase, cherry-pick, revert, tag need approval; everything else (push, fetch, config, remote ...) is refused.", { args: { type: "array", items: str, minItems: 1 } }, ["args"]),
   fn("hub_send", "Send a message to the other agents now, before your turn ends. Conclusions only. Your final answer is shared anyway; use this for something that cannot wait.", { text: str, to: { type: "array", items: str } }, ["text"]),
 ];
@@ -179,8 +183,17 @@ export async function runTool(name: string, rawArgs: string, ctx: ToolContext): 
         if (!command.trim()) return "error: empty command";
         // The approver sees the whole command, not a prefix: what is hidden cannot be approved.
         if (command.length > 4000) return "error: command longer than 4000 characters; put it in a script file with write, then run that";
-        const refused = approvalError(await ctx.permit(`bash: ${command}`, "bash", ctx.signal, undefined, undefined, undefined, a), "error: the user did not approve this command");
-        if (refused) return refused;
+        const input=Object.freeze({...a,command});
+        for(let attempt=0;;attempt++) {
+          const refused = approvalError(await ctx.permit(`bash: ${command}`, "bash", ctx.signal, undefined, undefined, undefined, input, attempt?{forceAsk:true}:undefined), "error: the user did not approve this command");
+          if (refused) return refused;
+          if(ctx.signal?.aborted)return "error: turn cancelled before shell execution";
+          let check:ShellExecutionCheck="valid";
+          try {check=ctx.shellExecutionCheck?.(input)??"valid";}catch{check="ask";}
+          if(check==="aborted" || ctx.signal?.aborted)return "error: turn cancelled before shell execution";
+          if(check==="valid")break;
+          if(attempt)return "error: read-only shell proof remained unstable; no command was executed";
+        }
         const res = await sandboxedExec(["/bin/bash", "-c", command], { cwd: ctx.cwd, profile: ctx.sandboxProfile, readOnlyData: !!ctx.readOnly?.length, timeoutMs: (Number(a.timeout_s) || 120) * 1000, ...(ctx.sandboxEnv ? { env: ctx.sandboxEnv } : {}), ...(ctx.signal ? { signal: ctx.signal } : {}) });
         try { ctx.onProcessExit?.(res.code); } catch { /* optional status observer never changes a tool result */ }
         return `${res.output}\n(exit ${res.code})`;
