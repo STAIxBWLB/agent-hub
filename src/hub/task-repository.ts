@@ -1,7 +1,9 @@
+import { spawnSync } from "node:child_process";
 import { statSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import type { TaskPlan, TaskRefs } from "./board.ts";
-import { hubGitSync } from "./git.ts";
+import { hubGitArgv, hubGitEnv, hubGitSync } from "./git.ts";
+import { hostExecutable } from "./host-executable.ts";
 import { canonicalPath, realPath } from "./project.ts";
 import { isGitHubRepository } from "./spec-read.ts";
 
@@ -22,6 +24,33 @@ function slug(value: string): string | undefined {
   } catch { return undefined; }
 }
 
+/** Share the advisory reader's bounds; only authority reads pin Git and isolate the actual checkout. */
+function boundedGit(dir: string, args: string[], isolated = false): string | undefined {
+  try {
+    const options = { encoding: "utf8" as const, timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BYTES };
+    const argv = ["-C", dir, ...args];
+    const found = isolated
+      ? spawnSync(hostExecutable("git", dir), hubGitArgv(argv).slice(1), { ...options, cwd: dir, env: hubGitEnv(process.env, { repositoryIsolation: true }) })
+      : hubGitSync(argv, options);
+    return found.status === 0 && typeof found.stdout === "string" && found.stdout.trim() ? isolated ? found.stdout : found.stdout.trim() : undefined;
+  } catch { return undefined; } // Unknown identity never grants; never log remote URLs or stderr.
+}
+
+/** Actual project-local GitHub origin only, never task refs, a bare slug or global-config fallback. */
+export function githubOriginRepository(cwd: string): string | undefined {
+  let root: string;
+  try { root = realPath(cwd); } catch { return undefined; }
+  const reply = boundedGit(root, ["config", "--show-scope", "--get", "remote.origin.url"], true);
+  const remote = reply && /^(?:local|worktree)\t([^\r\n]+)\n$/.exec(reply)?.[1];
+  if (!remote || /[\s?#]/.test(remote)) return undefined;
+  const scp = /^(?:[^/@:]+@)?github\.com:[^/]+\/[^/]+\/?$/i.test(remote);
+  if (!scp) {
+    if (!/^(?:https?|ssh):\/\/(?:[^/@]+@)?github\.com(?::[0-9]+)?\//i.test(remote)) return undefined;
+    try { const url = new URL(remote); if (url.search || url.hash) return undefined; } catch { return undefined; }
+  }
+  return slug(remote);
+}
+
 /** Repository metadata is advisory, never an execution root or a grant. Git reads are bounded, local and cached. */
 export class TaskRepositories {
   readonly project: TaskRepository;
@@ -37,10 +66,7 @@ export class TaskRepositories {
     this.roots.set(root, this.project);
   }
   private git(dir: string, args: string[]): string | undefined {
-    try {
-      const found = hubGitSync(["-C", dir, ...args], { encoding: "utf8", timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BYTES });
-      return found.status === 0 && typeof found.stdout === "string" && found.stdout.trim() ? found.stdout.trim() : undefined;
-    } catch { return undefined; } // Unknown identity keeps a path key; never log remote URLs or stderr.
+    return boundedGit(dir, args);
   }
   private directory(path: string): string {
     let cursor = resolve(path);

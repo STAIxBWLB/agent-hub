@@ -122,7 +122,8 @@ import { AssignmentUndeliveredError, ESCALATE_AFTER, Tasks } from "./tasks.ts";
 import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig } from "./inference.ts";
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, loadRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
-import { projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
+import { NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
+import { githubOriginRepository } from "./task-repository.ts";
 import { Bus } from "./bus.ts";
 import { attribute, deliveryTask, type TaskAttribution } from "./attribution.ts";
 import { DeliveryJournal } from "./delivery-journal.ts";
@@ -4967,6 +4968,80 @@ export async function startDaemon(opts: DaemonOptions) {
   function publicOperationalView() {
     return operationalView({tasks:board.list(),isPii:task=>tasks.isPii(task),publicView:task=>tasks.publicView(task),publicMetadataText:tasks.publicMetadataText,redact:record=>redact(record as BusEvent)});
   }
+  /** Ordinary read authority never borrows the console identity or conductor admission. */
+  function publicReadCurrent(sock: Sock): () => void {
+    const client = sock.data, peer = client.peer;
+    return () => {
+      if (sock.data !== client || sock.readyState !== WebSocket.OPEN || client.role !== "tools" || !peer || client.toolsOwner
+        || !membershipAllowed(peer) || stopping || contextPii(peer)) throw new Error("public read unavailable for this caller");
+    };
+  }
+  function publicReadValue(value: unknown, depth = 0): unknown {
+    if (depth > 10) return "[withheld]";
+    if (value === null || typeof value === "boolean" || typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string") return value.length <= 2000 && tasks.publicMetadataText(value) ? sanitize(value) : "[withheld]";
+    if (Array.isArray(value)) return value.length > 1000 ? "[withheld: read bound]" : value.map(item => publicReadValue(item, depth + 1));
+    if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).slice(0, 128).filter(([key]) => /^[A-Za-z][A-Za-z0-9_]*$/.test(key)).map(([key, item]) => [key, publicReadValue(item, depth + 1)]));
+    return null;
+  }
+  function publicSettingsView() {
+    const view = settingsView();
+    const rows = view.rows.flatMap(row => {
+      if (!tasks.publicMetadataText(row.key)) return [];
+      const def = settingDef(row.key);
+      if (typeof def === "string") return [];
+      // Program/credential/location configuration is never a public value, even when its text passes screening.
+      // Route ids locate person-defined execution configuration; keep them opaque too.
+      const opaque = NEVER_EDITABLE.some(key => def.key === key || def.key.startsWith(`${key}.`))
+        || def.store === "routing" && def.path.at(-1) === "route";
+      const safeValue = (value: unknown): unknown => {
+        if (opaque) return "[withheld]";
+        if (typeof value === "string" && (!/^[A-Za-z0-9_.:-]{1,128}$/.test(value) || !tasks.publicMetadataText(value))) return "[withheld]";
+        if (Array.isArray(value)) return value.slice(0, 128).map(safeValue);
+        return publicReadValue(value);
+      };
+      return [{ key: row.key, group: row.group, label: publicReadValue(row.label), type: row.type,
+        file: "[withheld]", source: "[withheld]", applies: row.applies, risk: row.risk,
+        value: safeValue(row.value), fileValue: safeValue(row.fileValue),
+        ...(row.pending !== undefined ? { pending: safeValue(row.pending) } : {}),
+        ...(row.values ? { values: opaque ? [] : row.values.map(safeValue) } : {}),
+        ...(row.min !== undefined ? { min: row.min } : {}), ...(row.max !== undefined ? { max: row.max } : {}),
+        ...(row.locked ? { locked: "read-only" } : {}), ...(opaque ? { withheld: true } : {}) }];
+    });
+    return { rows, roster: rosterView().map(row => ({ peer: row.peer, on: row.on, startMode: row.startMode, state: row.state, queued: row.queued, tasks: row.tasks })), public: true, withheld: ["file", "source", "notes", "undo", "configEdit"] };
+  }
+  function publicReleaseShow(input: Record<string, any>) {
+    const release = input.id !== undefined ? Number.isSafeInteger(input.id) && input.id > 0 ? board.release(input.id) : undefined
+      : board.releases().find(row => row.name === input.name);
+    if (!release) throw new PreEffectToolRefusal("no such release");
+    const shown = tasks.publicRelease(release);
+    return { id: shown.id, name: publicReadValue(shown.name), goal: publicReadValue(shown.goal), order: shown.order, state: shown.state,
+      plannedStart: shown.plannedStart, cut: shown.cut, ship: shown.ship, activatedAt: shown.activatedAt, frozenAt: shown.frozenAt,
+      shippedAt: shown.shippedAt, created: shown.created, updated: shown.updated, revision: shown.revision,
+      public: true, complete: false, withheld: ["train", "tasks", "afterCut", "afterCutUnknown", "planner"] };
+  }
+  function publicDeliveryQueue(report: Awaited<ReturnType<typeof tasks.deliveryQueue>>) {
+    const privateTasks = board.list().filter(task => tasks.isPii(task));
+    const privateIds = new Set(privateTasks.map(task => task.id));
+    const privatePrs = new Set([...report.rows.filter(row => row.private).map(row => row.pr), ...privateTasks.filter(task => task.sdlc?.repo?.toLowerCase() === report.repo.toLowerCase()).flatMap(task => task.sdlc?.pr ? [task.sdlc.pr] : [])]);
+    const mixed = privatePrs.size > 0;
+    // ponytail: mixed private repositories expose no dependency/readiness evidence. A typed per-dependency privacy projection can restore independent evidence later.
+    return publicReadValue({ repo: report.repo, complete: report.complete && !mixed, truncated: report.truncated,
+      rows: report.rows.map(row => row.private || privatePrs.has(row.pr) ? { private: true, ready: false, tasks: [], after: [], blockers: ["private lifecycle evidence unavailable"] }
+        : mixed ? { pr: row.pr, tasks: row.tasks.filter(id => !privateIds.has(id)), ready: false, after: [], blockers: ["private dependency evidence unavailable"] }
+        : { pr: row.pr, tasks: row.tasks, head: row.head, ready: row.ready, blockers: row.blockers, after: row.after,
+          ...(row.findings ? { findings: row.findings } : {}), ...(row.planConformance ? { planConformance: row.planConformance } : {}), ...(row.testIntegrity ? { testIntegrity: row.testIntegrity } : {}) }),
+      order: mixed ? [] : report.order, ...(report.unordered ? { unordered: mixed ? [] : report.unordered } : {}), conflicts: mixed ? [] : report.conflicts });
+  }
+  /** A public read may use host GitHub authentication only for this project's current public scope. */
+  function publicDeliveryRepository(repo: unknown): repo is string {
+    if (typeof repo !== "string" || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) || repo.startsWith("-") || !tasks.publicMetadataText(repo)) return false;
+    const identity = repo.toLowerCase();
+    return Object.keys(lifecycleConfig.repos ?? {}).some(key => key.toLowerCase() === identity)
+      || board.list().some(task => !tasks.isPii(task) && task.external?.repo.toLowerCase() === identity)
+      || githubOriginRepository(opts.cwd) === identity;
+  }
+  const publicReadPrivacy = () => JSON.stringify(board.list().map(task => [task.id, tasks.isPii(task), task.history.length]));
   function operationalCurrent(sock:Sock,acceptedAfterClose=false):()=>void {
     const client=sock.data,peer=client.peer;
     return ()=>{
@@ -6273,7 +6348,9 @@ export async function startDaemon(opts: DaemonOptions) {
         return;
       }
       case "queue": {
-        if(c.role!=="console") {
+        if (c.role !== "console" && msg.op === "list") {
+          try { publicReadCurrent(sock)(); } catch { return void reply({ ok: false, error: "public queue read unavailable for this caller" }); }
+        } else if(c.role!=="console") {
           try {if(!["show","resolve","discard"].includes(msg.op))throw new Error("queue inspection and resolution are console-only");admitOperational(sock,`queue ${msg.op}`);}catch(error){return void reply({ok:false,error:(error as Error).message});}
         }
         if(c.role!=="console" && msg.reason!==undefined && (typeof msg.reason!=="string" || !tasks.publicMetadataText(msg.reason)))return void reply({ok:false,error:"queue reason withheld by privacy policy"});
@@ -6741,6 +6818,45 @@ export async function startDaemon(opts: DaemonOptions) {
           );
           return;
         }
+        if (c.role !== "console" && ["status", "explain", "queue", "release"].includes(msg.op)) {
+          let current: () => void;
+          try { current = publicReadCurrent(sock); current(); } catch { return void reply({ ok: false, error: "public lifecycle read unavailable for this caller" }); }
+          if (msg.op === "queue" || msg.op === "release") {
+            if (!publicDeliveryRepository(msg.repo)) return void reply({ ok: false, error: "public repository unavailable for this project" });
+            current(); // An isolated Git probe can service pending callbacks before it returns.
+            if (!Array.isArray(msg.liveIssues ?? []) || (msg.liveIssues ?? []).length > 32) return void reply({ ok: false, error: "invalid delivery readback arguments" });
+            const before = publicReadPrivacy();
+            const read = msg.op === "queue" ? tasks.deliveryQueue(msg.repo) : tasks.releaseReadiness(msg.repo, msg.liveIssues ?? []);
+            void read.then(report => {
+              current();
+              if (!publicDeliveryRepository(msg.repo)) return void reply({ ok: false, error: "public repository unavailable for this project" });
+              current();
+              if (before !== publicReadPrivacy()) throw new Error("privacy changed");
+              reply({ ok: true, public: true, report: msg.op === "queue" ? publicDeliveryQueue(report as Awaited<ReturnType<typeof tasks.deliveryQueue>>) : publicReadValue(report) });
+            }).catch(() => reply({ ok: false, error: "public delivery readback unavailable" }));
+            return;
+          }
+          const selected = msg.id === undefined ? board.list().filter(task => (task.sdlc || lifecycleConfig.mode !== "off" || lifecycleConfig.workflow === "gsd-lite") && task.state !== "backlog") : [board.get(Number(msg.id))].filter((task): task is Task => !!task);
+          if (msg.id !== undefined && (!Number.isSafeInteger(msg.id) || msg.id <= 0 || !selected.length || selected.some(task => task.state === "backlog"))) return void reply({ ok: false, error: "invalid public lifecycle task id" });
+          void (async () => {
+            const statuses = new Map<number, Awaited<ReturnType<typeof tasks.lifecycleStatus>>>();
+            for (const task of selected.slice(0, 100)) {
+              current(); const now = board.get(task.id); if (!now || now.state === "backlog") throw new Error("task changed");
+              if (!tasks.isPii(now)) statuses.set(task.id, await tasks.lifecycleStatus(task.id, msg.id !== undefined));
+              current();
+            }
+            const rows = selected.slice(0, 100).map(task => {
+              const now = board.get(task.id); if (!now || now.state === "backlog") throw new Error("task changed");
+              if (tasks.isPii(now)) return { id: now.id, title: tasks.publicTitle(now), private: true };
+              if (task.history.length !== now.history.length || !statuses.has(task.id)) throw new Error("task changed");
+              const status = statuses.get(task.id)!;
+              const safeStatus = Object.fromEntries(["mode", "stage", "blockers", "ready", "actor", "next", "spec", "playbook", "criteria", "definition", "entry", "exit", "planConformance", "testIntegrity", "findings"].filter(key => key in status).map(key => [key, publicReadValue(status[key as keyof typeof status])]));
+              return { id: now.id, title: tasks.publicTitle(now), receipt: publicReadValue(tasks.publicView(now).sdlc), ...safeStatus };
+            });
+            current(); reply({ ok: true, public: true, mode: lifecycleConfig.mode, rows, truncated: selected.length > 100 });
+          })().catch(() => reply({ ok: false, error: "public lifecycle readback unavailable" }));
+          return;
+        }
         if (c.role !== "console") return void reply({ ok: false, error: "SDLC readback is console only; task owners record ids through hub_sdlc_record" });
         if (msg.op === "authorize-release") {
           void releaseAuthorizations.authorize(USER, msg.version, msg.commit).then(
@@ -6823,7 +6939,10 @@ export async function startDaemon(opts: DaemonOptions) {
         try { const task = tasks.setRole(USER, msg.id, msg.role); return void reply({ ok: true, text: `task #${task.id}: catalog role ${task.role ?? "none"}` }); }
         catch (error) { return void reply({ ok: false, error: (error as Error).message }); }
       case "settings_get":
-        if (c.role !== "console") return void reply({ ok: false, error: "settings are a person's: run ahub settings in a terminal" });
+        if (c.role !== "console") {
+          try { const current = publicReadCurrent(sock); current(); const view = publicSettingsView(); current(); return void reply({ ok: true, ...view }); }
+          catch { return void reply({ ok: false, error: "public settings read unavailable for this caller" }); }
+        }
         return void reply({ ok: true, ...settingsView(), roster: rosterView(), configEdit: (() => { const view = configEditor!.view(); return { revisions: view.revisions, known: view.known }; })() });
       case "settings_reload":
         if (c.role !== "console") return void reply({ ok: false, error: "settings are a person command" });
@@ -6899,6 +7018,10 @@ export async function startDaemon(opts: DaemonOptions) {
           });
         return;
       case "task":
+        if (c.role === "tools" && msg.op === "release_show") {
+          try { const current = publicReadCurrent(sock); current(); const release = publicReleaseShow(msg.args ?? {}); current(); return void reply({ t: "task", ok: true, text: JSON.stringify(release) }); }
+          catch { return void reply({ t: "task", ok: false, error: "public release read unavailable" }); }
+        }
         if (c.toolsOwner && !IMPLEMENTER_HUB_TOOL_NAMES.includes(String(msg.op))) return void reply({ t: "task", ok: false, error: "tool is not available to this Claude implementer child" });
         if (recoveryActive() && recoveryPhase !== "preparing" && String(msg.op) !== "hub_checkpoint") return void reply({ t: "task", ok: false, error: "recovery is holding mutations" });
         (c.toolsOwner ? childToolAuthority.run({ by: c.peer!, current: captureImplementerTools(c) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : taskOp(c.peer ?? USER, String(msg.op), msg.args ?? {})).then(

@@ -541,18 +541,24 @@ and so is every help entry the gate has no class for yet;
 | --- | --- | --- |
 | `ahub doctor [--json] [--full] [--color=...]` | Allowed | a read-only check of tools, daemon, plugin, gateway, models and memory |
 | `ahub doctor --stale-anchors [--json]` | Allowed | a bounded read-only report of memory symbol anchors at current HEAD |
+| `ahub queue list [--peer <id>] [--json] [--full] [--color=...]` | Allowed | public queue metadata only; held bodies and resolution remain conductor operations |
+| `ahub roster [--json] [--color=...]` | Allowed | public roster status; add/remove retain conductor admission |
+| `ahub settings [list] [--json]`, `ahub settings get <key> [--json]` | Allowed | public registry values; secret-locating values, paths, undo records and config-editor details are withheld |
+| `ahub sdlc status\|explain [<task>] [--json] [--color=...]` | Allowed | public lifecycle status; private tasks stay stubs, without private evidence or receipts |
+| `ahub sdlc queue <owner/repo> [--json] [--color=...]`, `ahub sdlc release <owner/repo> [live-issue...] [--json] [--color=...]` | Allowed | public delivery/release readback for the checkout's GitHub origin, explicit SDLC config repos or person-imported public external records; no release authorization or mutation |
+| `ahub release show <name>` | Allowed | public release metadata; private scope and internal history remain withheld |
 | `ahub projects [--json] [--color=...]` | Allowed | lists registered projects; `projects remove` stays Console |
 | `ahub models status [--json] [--color=...]` | Allowed | reads local model state; `setup\|start\|stop` stay Console |
 | `ahub recovery status [<op-id>] [--json]` | Allowed | reads a preflight operation; the bare interactive screen, `resume`, `abort` and `reattach` stay Console |
 | `ahub upgrade ... --dry-run` (no `--yes`) | Allowed | reviews the upgrade plan and applies nothing; `--yes` stays Console |
 | `ahub restart --dry-run [--json]` (no `--yes`) | Allowed | reviews the restart plan and applies nothing; `--yes` stays Console |
 
-`ahub queue list`, bare `roster` (with or without display flags), `settings`
-(read, `list`, `get`), `sdlc status\|explain\|queue\|release\|costs\|metrics`,
-`release show`, `backlog list` and `release list` are read-only in spirit but
-the daemon still refuses their control request for a tools connection, so they
-stay Console until that check is extended: needs a daemon check (#812
-follow-up). Conductor and Person rows follow in agent-hub#812.
+`backlog list`, `release list` and `sdlc costs|metrics` retain their existing
+planner/person policy. Their CLI forms stay Console for ordinary agents; a
+configured planner can use the existing planner tools without borrowing console
+authority. All newly admitted reads use the ordinary tools connection and public
+views, never console identity. The person's full readback stays unchanged.
+Conductor operations are listed in [the operational command table](#conductor-operations-812-t2).
 
 ## Conducting a team from Claude Code or Codex
 

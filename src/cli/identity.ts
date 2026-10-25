@@ -64,14 +64,28 @@ const peerReadFlags = (args: readonly string[]): boolean =>
  * valueFlags: options consuming one value an agent may name (--peer, --to, --since).
  * A subcommand of "" is the bare form: display flags only. dryRun is checked separately for upgrade and restart.
  */
-const peerReadForms: Readonly<Record<string, Readonly<Record<string, { positional?: number; valueFlags?: readonly string[] }>>>> = {
+interface PeerReadForm {
+  positional?: number;
+  minimum?: number;
+  valueFlags?: readonly string[];
+  displayFlags?: readonly string[];
+}
+const publicReadDisplayFlags = ["--json", "--full", "--color=auto", "--color=always", "--color=never"] as const;
+const sdlcReadDisplayFlags = ["--json", "--color=auto", "--color=always", "--color=never"] as const;
+const peerReadForms: Readonly<Record<string, Readonly<Record<string, PeerReadForm>>>> = {
+  queue: { list: { valueFlags: ["--peer"], displayFlags: publicReadDisplayFlags } },
+  roster: { "": { displayFlags: publicReadDisplayFlags } },
+  settings: { "": { displayFlags: ["--json"] }, list: { displayFlags: ["--json"] }, get: { positional: 1, minimum: 1, displayFlags: ["--json"] } },
+  // #814 renders these reads for people and keeps JSON as an explicit data format.
+  sdlc: { status: { positional: 1, displayFlags: sdlcReadDisplayFlags }, explain: { positional: 1, displayFlags: sdlcReadDisplayFlags }, queue: { positional: 1, minimum: 1, displayFlags: sdlcReadDisplayFlags }, release: { positional: 33, minimum: 1, displayFlags: sdlcReadDisplayFlags } },
+  release: { show: { positional: 1, minimum: 1, displayFlags: [] } },
   projects: { "": {} },
   models: { status: {} },
   recovery: { status: { positional: 1 } },
 };
 
 /** Whether argv matches one Allowed read-form of this command: display flags, the subcommand shape's values only. */
-const readFormArgs = (args: readonly string[], { valueFlags = [], positional = 0 }: { valueFlags?: readonly string[]; positional?: number } = {}): boolean => {
+const readFormArgs = (args: readonly string[], { valueFlags = [], positional = 0, minimum = 0, displayFlags }: PeerReadForm = {}): boolean => {
   let positionals = 0;
   let expectValue: string | undefined;
   for (const arg of args) {
@@ -81,14 +95,14 @@ const readFormArgs = (args: readonly string[], { valueFlags = [], positional = 0
     } else if (valueFlags.includes(arg)) {
       expectValue = arg;
     } else if (arg.startsWith("--")) {
-      if (!peerReadFlags([arg])) return false;
+      if (displayFlags === undefined ? !peerReadFlags([arg]) : !displayFlags.includes(arg)) return false;
     } else if (positionals >= positional) {
       return false;
     } else {
       positionals++;
     }
   }
-  return expectValue === undefined;
+  return expectValue === undefined && positionals >= minimum;
 };
 
 const isPeerReadForm = (command: string, args: readonly string[]): boolean => {
@@ -148,7 +162,7 @@ export function classifyPeerCommand(command: string, args: readonly string[], ca
   }
   if ((command === "upgrade" || command === "restart") && !args.includes("--yes") && args.includes("--dry-run")
     && readFormArgs(args.filter((arg) => arg !== "--dry-run"), { valueFlags: ["--to"] })) return "allowed"; // a preview that applies nothing; --yes stays console
-  if (isPeerReadForm(command, args)) return "allowed"; // bare projects, models status, recovery status
+  if (isPeerReadForm(command, args)) return "allowed"; // exact read forms; every mutating neighbour remains below its existing authority gate
   if (native?.cli.authority === "person") return "console";
   if (native || ["pause", "resume"].includes(command)) return "conductor";
   if (command === "board" && args[0] === "import") return "console";

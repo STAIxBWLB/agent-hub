@@ -21808,6 +21808,7 @@ init_project();
 
 // src/hub/task-repository.ts
 init_git();
+init_host_executable();
 init_project();
 init_spec_read();
 var GIT_MAX_BYTES = 16 * 1024;
