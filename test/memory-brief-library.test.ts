@@ -37,7 +37,8 @@ function fixture() {
     memoryCode: () => { throw Error("unexpected code lookup"); }, currentMemoryCode: () => { throw Error("unexpected code publication"); },
   };
   const host = runInNewContext(new Bun.Transpiler({ loader: "ts" }).transformSync(source.slice(start, end) + "\nglobalThis.host = taskIntentBrief;") + "\nhost", ports) as IntentBriefHost;
-  const task = board.propose(USER, { title: "repair writer", class: "implement", owner: "codex", refs: { paths: ["src/writer.ts"] } });
+  const proposed = board.propose(USER, { title: "repair writer", class: "implement", refs: { paths: ["src/writer.ts"] } });
+  const task = board.update(proposed.id, USER, "fixture assignment", { owner: "codex", state: "in_progress" });
   const note = (text: string, about = ["path:src/writer.ts"], kind: "fail" | "decision" = "fail") => store.note({ op: "note", project: "fixture", scope: "project", tier: "long", peer: "person", source: "person", kind, text, about });
   return { cwd, store, board, task, host, note, ports, private(value: boolean) { privateTurn = value; } };
 }
