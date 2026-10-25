@@ -623,12 +623,16 @@ does not automatically hand its task to a cloud peer.
 For assigned, non-private work, `hub_task_spec` reads the named GitHub issues
 through the hub's authenticated, bounded read path. `hub_check_start` runs an
 exact Git ref's permitted tests or typecheck in the opt-in isolated container
-runner (`checks.runner: "container"`); `hub_check_result` and `hub_check_cancel`
+runner (`checks.runner: "container"`, or the optional `"remote"` backend); `hub_check_result` and `hub_check_cancel`
 read or cancel that owned run. Missing spec/check capability refuses the
 assignment early; it never grants host commands, credentials or broader sandbox
 access. Receipts distinguish exact source/tree/lockfile, platform, exit and
 uncertain or cancelled outcomes. See [bounded spec and check access](security.md#bounded-task-specs-and-isolated-checks-418)
 for the authorization and resource bounds.
+
+Remote runner configuration (#793) is permitted only in the person's untracked `config.local.json`: select `checks.runner = "remote"` and supply `checks.remote.host`, `checks.remote.image` (immutable SHA-256 image reference) and `checks.remote.root` (reserved absolute metadata for the later dependency-preparation slice). No remote destination belongs in tracked project files. The runner uses the person's host SSH capability (including the hub's authentication agent socket) in BatchMode, with TTY allocation and agent forwarding disabled, and fixed Docker argv; it never installs host tools, mounts host paths or falls back to this Mac. A failed SSH, Docker, image or hardened network-none probe marks sandboxed test capability unavailable with a generic remote-runner reason. A successful platform line names only Linux architecture and numeric Docker version.
+
+The remote source is the recorded Git commit, streamed into a hardened non-root container. Mac dependencies are excluded; the project-scoped read-only named dependency volume is currently an unprepared placeholder, so dependency-requiring checks can fail until the separate admitted preparation slice lands. That future step must key the volume by lockfile and Bun version; the run itself performs no install. Remote `root` is validated but unused in this transport-only slice because no host path operation is needed. Actual remote-host opt-in and a live receipt remain unverified follow-up work. Existing local Apple-container behavior remains available by explicit selection.
 
 Retention bounds inactive valid check receipts to 200 records and the newest 20
 full outputs, excluding active runs. Full output is also consumed by the owner
