@@ -513,10 +513,11 @@ export function reviewReadinessFromEvidence(evidence: PrEvidence | undefined, ex
   else if (evidence.head !== expected) blockers.push("review head changed");
   if (evidence.state !== "OPEN") blockers.push("review PR is not open");
   if (!checks.every(name => { const matched = evidence.checks.filter(check => check.name === name); return matched.length === 1 && matched[0]?.state === "passed"; })) blockers.push("exact-head full CI is not green");
-  return { head: evidence.head, ready: blockers.length === 0, blockers };
+  return { head: evidence.head, ready: blockers.length === 0, blockers, checks };
 }
 
-export interface ReviewReadiness { head?: string; ready: boolean; blockers: string[]; reusedRun?: number }
+/** `checks` (#824) names the required checks that were judged, so a fresh reviewer can be told which ones passed at this head; absent when the read was unknown. */
+export interface ReviewReadiness { head?: string; ready: boolean; blockers: string[]; reusedRun?: number; checks?: string[] }
 /** Metadata-only pre-review admission; no remote body or comment text is requested. */
 export async function readReviewReadiness(receipt: SdlcReceipt, expected: string | undefined, run: SdlcGh = sdlcGh, requiredChecks: readonly string[] = []): Promise<ReviewReadiness> {
   const unknown = (): ReviewReadiness => ({ ready: false, blockers: ["review readiness unavailable"] });
@@ -578,7 +579,7 @@ export async function readReviewReadiness(receipt: SdlcReceipt, expected: string
       }
       if (unanswered) blockers.push("bot review threads unanswered");
     }
-    return { head: pr.headRefOid, ready: blockers.length === 0, blockers: [...new Set(blockers)], ...(reusedRun !== undefined ? { reusedRun } : {}) };
+    return { head: pr.headRefOid, ready: blockers.length === 0, blockers: [...new Set(blockers)], checks: [...full], ...(reusedRun !== undefined ? { reusedRun } : {}) };
   } catch { return unknown(); }
 }
 
