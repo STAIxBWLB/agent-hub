@@ -2649,6 +2649,20 @@ the queue.
 - Activity contains delivery ids/senders, message/thought chunks, bounded tool summaries, plans, permission request/outcome ids and turn end. It never enters persistent events/logs, UI, tools or cloud memory. Existing final answers still travel through the answer bus.
 - Kimi TUI defaults remain pull-only. Qwen TUI and native visualizer support remain gated by unverified T0 checks. See [verification](../verification/2026-10-11-acp-watch-t0.md).
 
+# Qwen dual-output TUI amendment, 2026-10-25 (#286 Part 3)
+
+- T0 ran live on Qwen Code 0.26.1 under an isolated HOME ([verification](../verification/2026-10-25-qwen-dual-output-t0.md)): Q2, Q3, Q5 and Q6 pass, Q4 fails. The owner decided on 2026-10-25 to build Part 3 with the two limits below stated, so AC9's condition reads "Q2, Q3, Q5 and Q6 pass; Q4's limit is stated".
+- Launch: `ahub qwen --mode tui` runs `qwen --input-file <in> --json-file <out> --mcp-config <hub server> --approval-mode default` in the person's terminal, as `ahub pi --mode tui` does. Both files live under the project state dir, mode 0600. The event file is a regular file the adapter tails from a saved offset.
+- Version gate: a separate compat entry for the dual-output contract, verified 0.26.1 only. It does not widen the headless `qwen` entry, whose ACP receipts are separate.
+- Delivery: `deliver()` sets busy synchronously and appends one `{"type":"submit","text"}` line with the digest. Qwen queues a submit that arrives during a turn and runs it after that turn ends.
+- Turn end: Qwen emits no `result` event in this mode. A turn ends at an `assistant` event whose `stop_reason` is not `tool_use`, followed by `message_stop`; that assistant text is the turn's shared answer. A `result` event, if a later build emits one, also ends the turn.
+- Approvals: `control_request` with `subtype: can_use_tool` goes to the hub approval path, and the answer is `{"type":"confirmation_response","request_id","allowed"}`. Allow or deny only. The hub's own tools are approved by the exact `tool_name` (`mcp__<server>__<tool>`), never by prefix. A `control_response` for a pending request that the hub did not answer means the person answered in the TUI: withdraw the hub's pending approval. A `control_response` error for a stale id is logged, never retried.
+- Limit 1, deny: a hub deny cancels Qwen's whole turn and Qwen emits nothing for it. After sending `allowed: false` the adapter ends the turn itself (idle, no shared answer, a notice that the turn was denied).
+- Limit 2, no external stop: the input protocol has only `submit` and `confirmation_response`, and SIGINT does not stop a turn. The inactivity watchdog never cancels a Qwen TUI turn. It reports the stalled turn to the person (status, console and dashboard: "stalled; press Esc in the Qwen terminal") and keeps the peer busy. The hub never types into the terminal or signals the process to stop a turn.
+- Prompt channel: the input file is a prompt channel. Qwen's own write and shell tools reach it only through approval, and the hub's approval path refuses any write or command that names the state dir. No other peer can write it.
+- Detached: the TUI keeps working when nobody reads the event file (T0 Q5). A daemon that cannot read the file treats the peer as detached, not idle; on reattach the adapter resumes from its saved offset.
+- Recovery: `qwen -r <session_id>` with the same two files resumes the conversation, does not replay earlier submits, and appends to the event file. The adapter records `session_id` from `system/session_start` and resumes from its saved offset, so events from before the restart are not processed twice.
+
 # Historical workflow amendment, 2026-10-11 (#257, superseded by #481)
 
 - The original optional workflow selector used existing SDLC receipts and Tasks authority; its current replacement is the #481 amendment below. A reviewer/person-owned checklist stores bounded criterion ids, hashed evidence refs and verified/failed/unverified claims bound to the reviewed head.
