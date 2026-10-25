@@ -204,8 +204,9 @@ export class Conductor {
       const task = id === undefined ? undefined : this.hooks.task(id);
       // A task's current owner and reviewer read its public view without the role (#208); nobody else does.
       if (task && task.state !== "backlog" && tool === "hub_task_show" && (task.owner === actor || task.reviewer === actor)) return publicConductorTask(task, this.hooks.publicView);
-      // #812 AC5: the configured planner reads any task, backlog included, through the same public view (a PII task stays a stub). Read only: no hold, assignment or audit of a conduct.
-      if (task && tool === "hub_task_show" && this.hooks.isPlanner?.(actor)) return publicConductorTask(task, this.hooks.publicView);
+      // #812 AC5: the configured planner reads any task the conductor can, through the same public view (a PII task stays a stub). A staged backlog row stays hidden from agent task
+      // tools (#263: backlog is read through planner tools), and a peer that is also the conductor takes the audited conductor path above this branch. Read only: no hold or assignment.
+      if (task && task.state !== "backlog" && tool === "hub_task_show" && this.hooks.isPlanner?.(actor)) return publicConductorTask(task, this.hooks.publicView);
       // Its proposer (the first history entry) redirects it while nobody ever accepted it (#207: a decline or a release puts
       // worked tasks back in proposed); work that waits gets a reserved owner. Never over the person: a console assign or
       // reservation stands until the conductor or the console moves it, also once the hub carried it out (the hub's own

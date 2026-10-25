@@ -1033,7 +1033,8 @@ unmet (`hub_review` takes `unmet`, `ahub review ... --unmet <item>`). A reviewer
 that missed the request, and the owner, read the done summary and check result
 with `hub_task_show {id}`: the task's public view with its history, as the
 conductor sees it, and only a stub for a PII task. The configured planner reads any
-task the same way (#812). Other peers are refused. Each
+task outside the backlog the same way (#812); a staged backlog row stays hidden from agent
+task tools and is read through the planner tools. Other peers are refused. Each
 request also carries the hub's review brief for the task's commit: reviewable and
 excluded files with reasons, the `REVIEW.md` and `ahub-review-rules` rules read at
 the merge base, and a cross-check list; `ahub review brief <id>` prints it.

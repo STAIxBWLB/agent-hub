@@ -86,7 +86,7 @@ test("AC5: the other planner limits hold: its own proposals only, backlog or pro
   expect((await r.tasks.cancel(live.id, "user", { reason: "person cancels" })).state).toBe("cancelled");
 });
 
-test("hub_task_show: the configured planner reads any task's public view, backlog included, a PII task stays a stub, and a peer with no role is still refused", async () => {
+test("hub_task_show: the configured planner reads any non-backlog task's public view, a staged backlog row stays hidden, a PII task stays a stub, and a peer with no role is still refused", async () => {
   const holds = new ConductorHolds(":memory:"); cleanups.push(() => holds.close());
   const events: ConductEvent[] = [];
   const tasksById: Record<number, Task> = {
@@ -101,16 +101,24 @@ test("hub_task_show: the configured planner reads any task's public view, backlo
     assign: async () => {}, escalate: async () => tasksById[1]!, preview: (peer: string) => `ahub ${peer}`, startMode: () => "headless" as const, start: async () => {}, known: () => true, pause: () => {}, release: () => {}, audit: (event: ConductEvent) => { events.push(event); },
   });
   const planner = new Conductor(holds, hooks(["claude"]));
-  for (const id of [1, 2]) expect(await planner.execute("claude", "hub_task_show", { id })).toMatchObject({ id, title: id === 1 ? "secret title" : "backlog title" });
+  expect(await planner.execute("claude", "hub_task_show", { id: 1 })).toMatchObject({ id: 1, title: "secret title" });
+  // A staged backlog row stays hidden from agent task tools (#263), for the planner too: backlog is read through planner tools.
+  await expect(planner.execute("claude", "hub_task_show", { id: 2 })).rejects.toThrow("explicit conductor role");
   const stub = await planner.execute("claude", "hub_task_show", { id: 3 }) as Record<string, unknown>;
   expect(stub).toMatchObject({ title: "[pii]", detail: "[pii]", history: [] }); expect(JSON.stringify(stub)).not.toContain("PRIVATE-MARKER");
+  // A peer holding BOTH roles takes the audited conductor path, which reads non-backlog work and refuses backlog work exactly as before.
+  const dual = new Conductor(holds, { ...hooks(["codex"]), roles: () => ({ codex: ["conductor", "planner"] }) });
+  const before = events.length;
+  expect(await dual.execute("codex", "hub_task_show", { id: 1 })).toMatchObject({ id: 1 });
+  expect(events.slice(before)).toEqual([{ kind: "conduct", actor: "codex", action: "task_show", task: 1 }]);
+  await expect(dual.execute("codex", "hub_task_show", { id: 2 })).rejects.toThrow("backlog is read through planner tools");
   // No planner hook (an older wiring) and a peer that is not the planner: refused with today's text.
   await expect(new Conductor(holds, { ...hooks([]), isPlanner: undefined }).execute("claude", "hub_task_show", { id: 1 })).rejects.toThrow("explicit conductor role");
   await expect(planner.execute("kimi-two", "hub_task_show", { id: 1 })).rejects.toThrow("explicit conductor role");
   // The planner's read grants nothing else: it cannot assign, escalate or hold through the conductor tools.
   await expect(planner.execute("claude", "hub_task_assign", { id: 1, peer: "kimi" })).rejects.toThrow("explicit conductor role");
   await expect(planner.execute("claude", "hub_peer_hold", { peer: "pi" })).rejects.toThrow("explicit conductor role");
-  expect(events).toEqual([]);                                                                                              // a read is no conduct action
+  expect(events.filter(event => event.actor !== "codex")).toEqual([]);                                                       // the planner's read is no conduct action (only the conductor's own is audited)
 });
 
 test("end to end through the daemon: the planner shows a task it neither owns nor reviews and cancels its declined one; a plain peer is refused", async () => {
