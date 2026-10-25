@@ -13,3 +13,6 @@ dist/
 /.agenthub/
 .qwen/
 .pi-*/
+# Python bytecode written by the benchmark tests (scripts/benchmarks/__pycache__); check-docs reads untracked files as dirt
+__pycache__/
+*.pyc
