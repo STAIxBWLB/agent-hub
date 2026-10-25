@@ -602,7 +602,7 @@ function nthSpace(rest: string, n: number): number {
  */
 export function dirtySubmodules(repo: Repo, budget?: SnapshotBudget): string[] | undefined {
   if (repo.shadow || !existsSync(join(repo.top, ".gitmodules"))) return [];
-  const result = git(repo, ["status", "--porcelain=v2", "-z", "--ignore-submodules=none", "--", scope(repo)], {}, budget, 1024 * 1024);
+  const result = git(repo, ["status", "--porcelain=v2", "-z", "--ignore-submodules=none", "--", scope(repo)], { GIT_OPTIONAL_LOCKS: "0" }, budget, 1024 * 1024);
   return result.status === 0 ? parseDirtySubmodules(result.stdout) : undefined;
 }
 
