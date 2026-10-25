@@ -4213,6 +4213,15 @@ restart the hub. For example, a reviewer can use:
 Start them with `ahub codex --as codex-review` and
 `ahub kimi --as kimi-review`. Codex keeps its native TUI and its own hub-owned
 app-server proxy; extra Kimi, Qwen, Jcode, Pi and local instances use headless starts.
+
+An extra instance of any kind that holds the `implementer` role needs its own
+registered worktree on an attached branch, at exactly `.worktrees/<id>`
+(`"worktree": ".worktrees/<id>"`). Configuration validation refuses a missing one
+only for Claude channel instances and headless writers. For other kinds, Codex and
+Jcode included, the hub accepts the declaration at startup and then refuses the start
+with `an extra implementer requires an explicit managed worktree`. Create and
+register the worktree before the start; the hub never creates it.
+
 Extra Jcode instances are supported (#685), in `.agenthub/config.local.json` only:
 
 ```json
