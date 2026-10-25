@@ -4131,10 +4131,11 @@ export async function startDaemon(opts: DaemonOptions) {
       if (args.model !== undefined && !["dgx/coding", "dgx/fast", "mlx/fast"].includes(args.model)) return { ok: false, error: "unknown Pi model alias" };
     }
     const existing = bus.peers.get(peer);
-    if (adapter?.start.createTui && existing && existing.state !== "offline") {
-      // One Qwen at a time, in one form: a headless worker and the person's TUI would both read the same session's work.
-      if (args.mode === "tui" && !isQwenDualPeer(existing)) return { ok: false, error: "Qwen is running headless; run ahub stop qwen before starting its TUI" };
-      if (args.mode !== "tui" && isQwenDualPeer(existing)) return { ok: false, error: "Qwen runs in its own terminal; end it there before starting a headless one" };
+    if (adapter?.start.createTui && existing) {
+      // One Qwen at a time, in one form: a headless worker and the person's TUI would both read the same session's work. The TUI is judged by the process it holds, not by peer
+      // state: a detached TUI reads offline while the person's Qwen keeps running, and replacing that adapter would strand it and admit a second Qwen beside it.
+      if (isQwenDualPeer(existing) && existing.holdsTerminal()) return args.mode === "tui" ? { ok: true, already: true } : { ok: false, error: "Qwen runs in its own terminal; end it there before starting a headless one" };
+      if (args.mode === "tui" && !isQwenDualPeer(existing) && existing.state !== "offline") return { ok: false, error: "Qwen is running headless; run ahub stop qwen before starting its TUI" };
     }
     if (args.replaceSession) {
       if (recoveryActive()) return { ok: false, error: "recovery is holding session replacement" };
@@ -4193,7 +4194,6 @@ export async function startDaemon(opts: DaemonOptions) {
       // #286 Part 3: Qwen's own TUI, driven through its dual-output files. The person's terminal runs it; the hub prepares the files and returns the launch.
       if (declarations[peer]) return { ok: false, error: "declared instances support headless starts only" };
       if (!onRoster(peer)) return { ok: false, error: "qwen is off roster; a person can add it with ahub roster add qwen" };
-      if (existing && existing.state !== "offline" && isQwenDualPeer(existing)) return { ok: true, already: true };
       if (existing && existing.state !== "offline") return { ok: false, error: "Qwen is running headless; run ahub stop qwen before starting its TUI" };
       // The compat entry of the dual-output contract, not the headless ACP entry: 0.26.1 only.
       const verdict = await qwenDualVersionAsync(config.qwen_cmd, executionCwd);

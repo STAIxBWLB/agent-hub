@@ -278,8 +278,8 @@
   {
     "predicate": "isQwenDualPeer",
     "function": "src/hub/daemon.ts:startDaemon.startPeerBody",
-    "count": 3,
-    "reason": "A Qwen TUI is the person's own terminal and a headless Qwen is a hub-owned process: starting one form over a live owner of the other form is refused, and an already-attached TUI answers `already`. No generic port says which form an owner runs; retain this host dispatch until a separately specified form port exists (#286 Part 3)."
+    "count": 2,
+    "reason": "A Qwen TUI is the person's own terminal and a headless Qwen is a hub-owned process: a headless start over a terminal the adapter still holds is refused, and an attached TUI answers `already`. The TUI is judged by the process it holds (`holdsTerminal`), not by peer state, since a detached TUI reads offline while Qwen keeps running. No generic port says which form an owner runs; retain this host dispatch until a separately specified form port exists (#286 Part 3)."
   },
   {
     "predicate": "isWsPeer",

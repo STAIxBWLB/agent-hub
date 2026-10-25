@@ -354,6 +354,52 @@ test("the Qwen TUI is explicit only: Qwen stays a headless-form peer and recover
   expect(QWEN_RECOVERY_SESSION.recoveryRefusal!({ id: "qwen", args: { mode: "headless" } } as any)).toBeUndefined();
 });
 
+test("an event line over the read cap is dropped through its newline and the position persists: later events are still read (review finding)", async () => {
+  const r = await attached();
+  const file = join(r.dir, "events.jsonl");
+  // 1.5 MiB with no newline yet, the way a big tool result arrives in pieces, then its newline, then a normal turn's events.
+  appendFileSync(file, `{"type":"user","message":{"content":"${"x".repeat(1_500_000)}`);
+  await until(() => r.logs.some(line => line.includes("dropped an event line over")));
+  const offsetInside = r.peer.offset;
+  expect(offsetInside).toBeGreaterThan(1_000_000);   // persisted: the next poll does not reread the first megabyte
+  await Bun.sleep(120);
+  expect(r.peer.offset).toBe(offsetInside);
+  appendFileSync(file, `y"}}\n`);   // the oversized line ends
+  await r.peer.deliver(env("after the oversized line"), "d1");
+  await until(() => r.answers.length === 1, () => r.logs.join("|"));
+  expect(r.answers[0]!.body).toContain("after the oversized line");
+  expect(r.receipts.at(-1)!.state).toBe("completed");
+  expect(JSON.parse(readFileSync(join(r.dir, "state.json"), "utf8")).offset).toBe(r.peer.offset);   // and a restart would not reread it either
+});
+
+test("a detached TUI whose Qwen is still running is not replaced by a headless start; an exited one is (review finding)", async () => {
+  const r = await attached();
+  await until(() => (r.peer as any).state_.ownerPid !== undefined, () => "owner never bound");
+  const file = join(r.dir, "events.jsonl");
+  renameSync(file, `${file}.moved`); mkdirSync(file);
+  await until(() => r.peer.isDetached);
+  expect(r.peer.state).toBe("offline");        // detached reads offline, which is exactly why state is no proof of a free terminal
+  expect(r.peer.holdsTerminal()).toBe(true);   // the person's Qwen is still alive and bound
+  r.kill(); await r.child!.exited;
+  await until(() => !r.peer.holdsTerminal(), () => r.logs.join("|"), 8000);   // once it exited, the terminal is free
+  expect(r.peer.holdsTerminal()).toBe(false);
+});
+
+test("an approval answer that could not be written does not settle the turn: the peer stays busy and the person is told to answer in the Qwen terminal (review finding)", async () => {
+  const r = await attached();
+  await r.peer.deliver(env('TOOL:run_shell_command:{"command":"touch x"}'), "d1");
+  await until(() => r.requests.length === 1);
+  chmodSync(join(r.dir, "input.jsonl"), 0o400);   // the input file becomes unwritable
+  cleanups.push(() => { try { chmodSync(join(r.dir, "input.jsonl"), 0o600); } catch { /* removed */ } });
+  if (process.getuid?.() === 0) return;
+  answered(r, 1, "deny");
+  await until(() => r.notices.some(text => text.includes("could not write its approval answer")));
+  expect(r.peer.state).toBe("busy");   // Qwen is still blocked on the approval: not idle, not cancelled
+  expect(r.receipts.some(receipt => receipt.state === "needs_review")).toBe(false);
+  expect(r.notices.some(text => text.includes("deny cancelled the Qwen turn"))).toBe(false);
+  expect(r.peer.holdsTerminal()).toBe(true);
+});
+
 // ---- through the daemon: the start, the launch the person's terminal runs, the status surface and the stop refusal ----
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
@@ -423,4 +469,24 @@ test("through the daemon: a stalled turn shows in status with the Esc instructio
   expect(status.statusNotice.message).toContain("press Esc in the Qwen terminal");
   expect(status.state).toBe("busy");   // reported, not cancelled
   expect(child.exitCode).toBeNull();
+});
+
+test("through the daemon: a headless start over a detached but still-running Qwen TUI is refused, and the adapter is not stopped (review finding)", async () => {
+  const { daemon, client } = await daemonRig();
+  const reply = await client.request({ t: "start", peer: "qwen", args: { mode: "tui" } });
+  const launch = reply.launch as { cmd: string; args: string[] };
+  const argv = launch.args.filter((word, index, all) => !(["--mcp-config", "--approval-mode"].includes(word) || ["--mcp-config", "--approval-mode"].includes(all[index - 1] ?? "")));
+  const child = Bun.spawn([launch.cmd, ...argv], { env: { PATH: process.env.PATH! }, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  cleanups.push(() => { try { child.kill("SIGKILL"); } catch { /* gone */ } });
+  const peer = daemon.bus.peers.get("qwen") as unknown as QwenDualPeer;
+  await until(() => peer.state === "idle" && peer.holdsTerminal());
+  const file = argv[argv.indexOf("--json-file") + 1]!;
+  renameSync(file, `${file}.moved`); mkdirSync(file);   // the event file becomes unreadable: the peer detaches and reads offline
+  await until(() => peer.isDetached);
+  expect(peer.state).toBe("offline");
+  const headless = await client.request({ t: "start", peer: "qwen", args: { mode: "headless" } });
+  expect(headless.ok).toBe(false); expect(String(headless.error)).toContain("end it there");
+  expect(daemon.bus.peers.get("qwen")).toBe(peer as any);   // the same adapter: nothing replaced it
+  expect(child.exitCode).toBeNull();                        // and the person's Qwen was not touched
+  expect((await client.request({ t: "start", peer: "qwen", args: { mode: "tui" } })).already).toBe(true);
 });

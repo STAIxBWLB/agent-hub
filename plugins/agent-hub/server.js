@@ -4788,6 +4788,7 @@ var init_qwen_dual = __esm(() => {
     stalled_ = false;
     exited = false;
     pollFailures = 0;
+    discarding = false;
     constructor(id, opts) {
       super(id, opts.watchdogMs);
       this.opts = opts;
@@ -4815,6 +4816,13 @@ var init_qwen_dual = __esm(() => {
     }
     get isDetached() {
       return this.detached;
+    }
+    holdsTerminal() {
+      if (this.stopping || this.exited)
+        return false;
+      if (this.state_.ownerPid !== undefined)
+        return this.ownerAlive();
+      return this.sessionSeen;
     }
     get sessionId() {
       return this.state_.sessionId;
@@ -5089,6 +5097,7 @@ ${text}`;
         let offset = this.state_.offset;
         if (info.size < offset) {
           offset = 0;
+          this.discarding = false;
           this.state_.generation++;
           this.opts.log?.(`[${this.id}] event file was replaced; reading from its start`);
         }
@@ -5097,11 +5106,23 @@ ${text}`;
           const got = readSync3(fd, buffer, 0, want, offset);
           if (got <= 0)
             break;
+          if (this.discarding) {
+            const newline = buffer.subarray(0, got).indexOf(10);
+            offset += newline < 0 ? got : newline + 1;
+            this.state_.offset = offset;
+            if (newline >= 0)
+              this.discarding = false;
+            continue;
+          }
           const end = buffer.subarray(0, got).lastIndexOf(10) + 1;
           if (end === 0) {
-            if (got >= READ_CAP)
-              offset += got;
-            break;
+            if (got < READ_CAP)
+              break;
+            this.opts.log?.(`[${this.id}] dropped an event line over ${READ_CAP} bytes`);
+            this.discarding = true;
+            offset += got;
+            this.state_.offset = offset;
+            continue;
           }
           offset += end;
           this.state_.offset = offset;
@@ -5332,7 +5353,11 @@ ${text}`;
       try {
         this.appendInput({ type: "confirmation_response", request_id: requestId, allowed });
       } catch {
-        this.opts.log?.(`[${this.id}] could not answer an approval`);
+        this.opts.log?.(`[${this.id}] could not write an approval answer`);
+        try {
+          this.opts.onNotice?.(`${this.id}: the hub could not write its approval answer (the input file is unwritable); answer the prompt in the Qwen terminal`);
+        } catch {}
+        return;
       }
       this.answered.add(requestId);
       while (this.answered.size > ANSWERED_CAP)

@@ -121,6 +121,8 @@ export class QwenDualPeer extends BasePeer {
   private stalled_ = false;
   private exited = false;
   private pollFailures = 0;
+  /** Inside an event line longer than READ_CAP: its rest is dropped through the next newline. */
+  private discarding = false;
 
   constructor(id: PeerId, private readonly opts: QwenDualOptions) {
     super(id, opts.watchdogMs);
@@ -140,6 +142,15 @@ export class QwenDualPeer extends BasePeer {
     return this.stalled_ ? { code: "qwen-stalled", message: QWEN_STALLED_NOTE } : undefined;
   }
   get isDetached(): boolean { return this.detached; }
+  /**
+   * Whether this adapter holds a person's running Qwen, whatever its state says: a detached peer reads offline while Qwen keeps working, so state is no proof. True while the bound
+   * owner is verified alive, or a session was seen and no owner could be bound; false once the owner exited, the adapter stopped, or a launch never attached anything.
+   */
+  holdsTerminal(): boolean {
+    if (this.stopping || this.exited) return false;
+    if (this.state_.ownerPid !== undefined) return this.ownerAlive();
+    return this.sessionSeen;
+  }
   get sessionId(): string | undefined { return this.state_.sessionId; }
   get offset(): number { return this.state_.offset; }
   recoveryMetadata(): Record<string, unknown> { return { ...(this.state_.sessionId ? { sessionId: this.state_.sessionId } : {}), launch: { mode: "tui" } }; }
@@ -330,13 +341,25 @@ export class QwenDualPeer extends BasePeer {
       if (!info.isFile()) throw new Error("not a regular file");
       if (this.detached) { this.detached = false; this.pollFailures = 0; this.opts.log?.(`[${this.id}] event file readable again: reattached`); if (this.sessionSeen && this.state === "offline" && !this.exited) this.setState("idle"); }
       let offset = this.state_.offset;
-      if (info.size < offset) { offset = 0; this.state_.generation++; this.opts.log?.(`[${this.id}] event file was replaced; reading from its start`); }
+      if (info.size < offset) { offset = 0; this.discarding = false; this.state_.generation++; this.opts.log?.(`[${this.id}] event file was replaced; reading from its start`); }
       while (offset < info.size) {
         const want = Math.min(info.size - offset, READ_CAP), buffer = Buffer.alloc(want);
         const got = readSync(fd, buffer, 0, want, offset);
         if (got <= 0) break;
+        if (this.discarding) {
+          // Inside a line longer than READ_CAP: drop it through its newline, and keep the position, so the events after it are read and a restart does not reread it.
+          const newline = buffer.subarray(0, got).indexOf(10);
+          offset += newline < 0 ? got : newline + 1;
+          this.state_.offset = offset;
+          if (newline >= 0) this.discarding = false;
+          continue;
+        }
         const end = buffer.subarray(0, got).lastIndexOf(10) + 1;
-        if (end === 0) { if (got >= READ_CAP) offset += got; break; } // an oversized line is dropped; a partial one waits for its newline
+        if (end === 0) {
+          if (got < READ_CAP) break;   // a partial line waits for its newline
+          this.opts.log?.(`[${this.id}] dropped an event line over ${READ_CAP} bytes`);
+          this.discarding = true; offset += got; this.state_.offset = offset; continue;
+        }
         offset += end;
         this.state_.offset = offset;
         for (const line of buffer.subarray(0, end).toString("utf8").split("\n")) if (line.trim()) this.parse(line);
@@ -501,7 +524,13 @@ export class QwenDualPeer extends BasePeer {
 
   private answer(requestId: string, allowed: boolean, turn: Turn, why?: string): void {
     try { this.appendInput({ type: "confirmation_response", request_id: requestId, allowed }); }
-    catch { this.opts.log?.(`[${this.id}] could not answer an approval`); }
+    catch {
+      // Qwen never received it: it is still blocked on the approval. Settling the turn (a deny) or reporting it answered would be a claim the hub cannot back, so the turn stays busy
+      // (the watchdog reports it if nothing moves) and the person is told to answer in the Qwen terminal, where the prompt is still open.
+      this.opts.log?.(`[${this.id}] could not write an approval answer`);
+      try { this.opts.onNotice?.(`${this.id}: the hub could not write its approval answer (the input file is unwritable); answer the prompt in the Qwen terminal`); } catch { /* notice only */ }
+      return;
+    }
     this.answered.add(requestId); while (this.answered.size > ANSWERED_CAP) this.answered.delete(this.answered.values().next().value as string);
     if (allowed || this.turn !== turn) return;
     // Limit 1: a deny cancels Qwen's whole turn and Qwen emits nothing for it. The turn ends here, with no answer shared.
