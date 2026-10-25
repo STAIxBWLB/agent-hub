@@ -5,6 +5,8 @@ results and remaining prerequisites are recorded separately in [the smoke ledger
 
 ## Agent-operated live verification
 
+Every open live leg in [smoke.md](smoke.md#open-live-legs-by-class) is classed `agent-executable`, `agent-evidence / person-verdict`, `person-only` or `external-blocked` (#784); this section is how an agent runs the first two.
+
 When the user explicitly authorizes a live test, its agent may run console
 commands using `ahub --live-test [--project <path|id>] <command> [args...]`.
 For example, `ahub --live-test --project <scratch-path> ui --no-open` starts the

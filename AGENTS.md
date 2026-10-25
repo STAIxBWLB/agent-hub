@@ -25,6 +25,7 @@ Run this before pushing a PR or reporting a task complete, and paste the output.
 - Conventional commits in English, referencing the issue. Branch + PR, never commit to main.
 - Spec first: when the implementation has to differ from the spec, amend the spec in the same PR.
 - Deliberate shortcuts carry a `ponytail:` comment naming the ceiling and the upgrade path.
+- Merging after approval (owner decision, #784): in this repository, the reviewer that approves a PR with `hub_review` at its head merges it with `gh pr merge --squash --match-head-commit <head>` once exact-head CI is green, no review thread is unresolved and no change request is pending, then deletes the branch and removes the worktree; if a gate is open, it names the gate instead. A release PR is the exception: it is merged with a merge commit after the person's release consent.
 - A PR that adds or changes a user-facing feature updates its row in `docs/dogfood.md`: whether it runs on this repository, and the metric that shows it works (#687).
 
 ## Architecture
