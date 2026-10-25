@@ -29,13 +29,16 @@ function stamp(path:string,program:boolean):unknown {
 function ancestors(path:string,stop:string):string[] {
   const out=[path];for(let n=0;path!==stop && n<64;n++){const parent=dirname(path);if(parent===path)break;path=parent;out.push(path);}return out;
 }
-/** No config values escape this predicate. The only command-scope entry must be the core's own injected false. */
-export function fsmonitorUnconfigured(git:string,cwd:string,env:NodeJS.ProcessEnv,current:()=>boolean):boolean {
+// Git's subsection names retain case. Expand the literal letters so the entire anchored key pattern is case-insensitive.
+const GIT_HELPER_KEYS = /^(core\.fsmonitor|log\.showsignature|gpg\.(program|.+\.program)|diff\.(external|.+\.(command|textconv)))$/.source
+  .replace(/[a-z]/g, letter => `[${letter}${letter.toUpperCase()}]`);
+/** No config values escape this predicate. Accept only the two exact helper overrides injected by the core. */
+export function gitHelpersUnconfigured(git:string,cwd:string,env:NodeJS.ProcessEnv,current:()=>boolean):boolean {
   if(!current() || Object.keys(env).some(key=>key==="GIT_CONFIG_COUNT"||key==="GIT_CONFIG_PARAMETERS"||key.startsWith("GIT_CONFIG_KEY_")||key.startsWith("GIT_CONFIG_VALUE_")))return false;
-  const argv=hubGitArgv(["-C",cwd,"config","--show-scope","--get-all","core.fsmonitor"]);
+  const argv=hubGitArgv(["-C",cwd,"config","--show-scope","--get-regexp",GIT_HELPER_KEYS]);
   const result=spawnSync(git,argv.slice(1),{cwd,env:hubGitEnv(env),encoding:"utf8",timeout:1000,maxBuffer:16384,stdio:["ignore","pipe","pipe"]});
   if(!current() || result.error || result.status!==0 || !result.stdout.endsWith("\n"))return false;
-  return result.stdout==="command\tfalse\n";
+  return result.stdout === "command\tcore.fsmonitor false\ncommand\tdiff.external \n";
 }
 /** A proof is private host metadata, never an argv/env rewrite or an authorization by itself. */
 export function proveReadOnlyShell(input:unknown,options:ShellProofOptions,current:()=>boolean):ReadOnlyShellProof|undefined {
@@ -49,8 +52,8 @@ export function proveReadOnlyShell(input:unknown,options:ShellProofOptions,curre
     const env={PATH:process.env.PATH??"/usr/bin:/bin",HOME:homedir(),LANG:process.env.LANG??"en_US.UTF-8",TERM:"dumb",...options.env};
     const lexical=firstProgram(form.program,root,env.PATH);if(!lexical || within(root,lexical) || within(projectRoot,lexical))return undefined;
     const executable=hostExecutable(form.program,root,env.PATH);if(realPath(lexical)!==executable || within(projectRoot,executable) || !current())return undefined;
-    if(form.gitCwd && !fsmonitorUnconfigured(executable,form.gitCwd,env,current))return undefined;
-    // ponytail: this checks core.fsmonitor and the explicit diff/textconv flags. Other config-mediated helpers need dedicated audited forms.
+    if(form.gitCwd && !gitHelpersUnconfigured(executable,form.gitCwd,env,current))return undefined;
+    // ponytail: this screens the declared helper-bearing config keys and explicit diff/textconv flags; other config-mediated helpers need dedicated audited forms before extending the allowlist.
     const paths=new Set([...names.flatMap(name=>ancestors(name,root)),...ancestors(lexical,"/"),...ancestors(executable,"/")]);
     const fingerprint=createHash("sha256").update(JSON.stringify([root,projectRoot,args.command,env.PATH,lexical,executable,[...paths].map(path=>stamp(path,path===lexical||path===executable))])).digest("hex");
     return current()?{fingerprint,program:form.program}:undefined;

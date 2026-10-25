@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, renameSync, writeFileSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { proveReadOnlyShell, ShellExecutionProofs, fsmonitorUnconfigured } from "../src/hub/read-only-shell-proof.ts";
+import { proveReadOnlyShell, ShellExecutionProofs, gitHelpersUnconfigured } from "../src/hub/read-only-shell-proof.ts";
 import { realPath } from "../src/hub/project.ts";
 import { hostExecutable } from "../src/hub/host-executable.ts";
 import { hubGitSync } from "../src/hub/git.ts";
@@ -55,17 +55,41 @@ test("raw symlink-parent paths and ambiguous PATH entries never receive automati
     expect(proveReadOnlyShell({command:"ls"},{root,deny:[],env:{PATH:path}},current),path).toBeUndefined();
 });
 
-test("Git proof reads real effective fsmonitor config without trusting injected command false",()=>{
+test("Git proof reads real effective helper config without trusting injected command overrides",()=>{
   const root=fixture();expect(hubGitSync(["init","-q",root],{encoding:"utf8"}).status).toBe(0);
   const git=hostExecutable("git",root),env={PATH:"/usr/bin:/bin",HOME:root,LANG:"C",TERM:"dumb"};
-  expect(fsmonitorUnconfigured(git,root,env,current)).toBe(true);
-  expect(fsmonitorUnconfigured(git,root,{...env,GIT_CONFIG_COUNT:"1",GIT_CONFIG_KEY_0:"core.fsmonitor",GIT_CONFIG_VALUE_0:"false"},current)).toBe(false);
-  expect(fsmonitorUnconfigured(git,root,{...env,GIT_CONFIG_PARAMETERS:"'core.fsmonitor=false'"},current)).toBe(false);
+  expect(gitHelpersUnconfigured(git,root,env,current)).toBe(true);
+  expect(gitHelpersUnconfigured(git,root,{...env,GIT_CONFIG_COUNT:"1",GIT_CONFIG_KEY_0:"core.fsmonitor",GIT_CONFIG_VALUE_0:"false"},current)).toBe(false);
+  expect(gitHelpersUnconfigured(git,root,{...env,GIT_CONFIG_PARAMETERS:"'core.fsmonitor=false'"},current)).toBe(false);
   writeFileSync(join(root,".git/config"),"[core]\nrepositoryformatversion = 0\nfsmonitor = false\n");
-  expect(fsmonitorUnconfigured(git,root,env,current)).toBe(false);
+  expect(gitHelpersUnconfigured(git,root,env,current)).toBe(false);
   writeFileSync(join(root,".git/config"),"[core]\nrepositoryformatversion = 0\n");
   writeFileSync(join(root,".gitconfig"),"[core]\nfsmonitor = synthetic-helper\n");
-  expect(fsmonitorUnconfigured(git,root,env,current)).toBe(false);
+  expect(gitHelpersUnconfigured(git,root,env,current)).toBe(false);
+});
+
+for (const [section, key, value] of [
+  ["core", "fsmonitor", "false"],
+  ["log", "showSignature", "true"],
+  ["gpg", "program", "synthetic-helper"],
+  ['gpg "openpgp"', "program", "synthetic-helper"],
+  ['GPG "SSH"', "PROGRAM", "synthetic-helper"],
+  ["diff", "external", "synthetic-helper"],
+  ['diff "x"', "command", "synthetic-helper"],
+  ['diff "x.y"', "textconv", "synthetic-helper"],
+] as const) test(`Git helper config [${section}] ${key} keeps every git form asking`, () => {
+  const root = fixture();
+  expect(hubGitSync(["init", "-q", root], { encoding: "utf8" }).status).toBe(0);
+  const options = { root, deny: [], env: { PATH: "/usr/bin:/bin", HOME: root, LANG: "C", TERM: "dumb" } };
+  const input = { command: "git log -n 1" };
+  const proofs = new ShellExecutionProofs(options);
+  const proof = proveReadOnlyShell(input, options, current);
+  expect(proof?.program).toBe("git"); // The default repository still auto-grants.
+  proofs.readonly(input, proof!, current);
+  writeFileSync(join(root, ".git/config"), `[${section}]\n${key} = ${value}\n`);
+  for (const command of ["git log -n 1", "git status --short", "git diff --no-ext-diff --no-textconv"])
+    expect(proveReadOnlyShell({ command }, options, current), command).toBeUndefined();
+  expect(proofs.check(input)).toBe("ask"); // A newly configured helper also invalidates the execution proof.
 });
 
 test("proof revalidation catches root and path rebinding, preserves ordinary authority, and rejects ended owners",()=>{
