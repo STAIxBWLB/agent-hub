@@ -144,7 +144,7 @@ export interface RecoveryOperation {
   missingRecordedSession?: { projectId: string; peer: RecoveryNativePeer; sessionId: string; kind: "rollout" | "transcript"; checkedPath?: string };
   freshOverride?: { peer: RecoveryNativePeer; evidence: NonNullable<RecoveryOperation["missingRecordedSession"]>; checked: "missing"; at: number };
   /** #215: every human disposition, in order. Operator reasons only; never task or message text. */
-  audit?: { at: number; action: "fresh-session" | "stop-and-archive"; reason: string; peer?: string; projects: string[] }[];
+  audit?: { at: number; action: "fresh-session" | "stop-and-archive"; reason: string; peer?: string; cause?: string; projects: string[] }[];
   disposition?: { choice: "stop-and-archive"; at: number; projects: Record<string, string>; continuity?: Record<string, "not-archived" | "unavailable"> };
   /** #215: a refusal no resume can get past was recorded (FinalRefusal); `next` no longer offers resume. */
   final?: boolean;
@@ -1070,7 +1070,8 @@ export async function disposeRecovery(id: string, choice: { fresh: string } | { 
     delete op.blockedReattachment;
     delete op.presentationCause;
     abandoned(op); // #227: in the same write as the disposition
-    (op.audit ??= []).push({ at, action: "stop-and-archive", reason, projects: acts.map((a) => a.planned.project.id) });
+    // #776: the error that blocked the operation is cleared on disposal, so the audit keeps it.
+    (op.audit ??= []).push({ at, action: "stop-and-archive", reason, ...(op.error ? { cause: op.error } : {}), projects: acts.map((a) => a.planned.project.id) });
     // Recorded before the first act: a crash inside a stop leaves a disposition that resume refuses to override.
     delete op.failure;
     op.updatedAt = driver.now(); writeOperation(id, op, home);
