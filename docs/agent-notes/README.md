@@ -43,3 +43,8 @@ Background moved out of the area notes for 0.15.0:
 Background moved out of the area notes for 0.16.0:
 
 - Closing-refs negation list (#760, tests.md): agent-mem PR #36 said "Does not close #15", GitHub read `close #15` as a closing keyword, and the design issue closed with T3 open. The list errs toward flagging: a false positive costs a rewrite of the PR text, a false negative closes a design issue, and a body that really means a qualified close is the author's to reword. A keyword typed into a comment or the merge dialog is out of the check's reach. At 0.16.0 `closing-refs` is not a required status check (branch rules require `check (ubuntu-latest)`, `check (macos-latest)` and `seeded guards`).
+
+Background behind the 0.18.0 rules:
+
+- CLI print guards (#814, tests.md): a command that printed JSON by default made scripts the only reader; each converted command keeps `--json` byte-identical to the old output, and the guard scans for both a bare `JSON.stringify` print and a bare print of a hub tool's text so a new unlisted command cannot slip back.
+- Agent shell authority (#812, adapters.md): reading public state is allowed for every agent, the conductor gets a closed operational family, and every other form stays the person's. An allowed read form is added only when the daemon admits it for an ordinary tools connection too.

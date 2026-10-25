@@ -4,10 +4,21 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- `ahub restart` and `upgrade` off a terminal (a pipe or `--dry-run`), `recovery status` and the results of `recovery reattach|resume|abort|dispose`, `models setup|start`, `queue resolve` and `budget execution configure|disable` print readable output by default; scripts must pass `--json`, which prints exactly the previous document (#814). The readable plan names every blocker, reconnect-only session and fresh start in stdout instead of stderr.
-- `ahub task show|cancel`, `backlog groom|return|plan|pin|split|undo|pull-ready` and `release list|show|new|plan|activate|freeze|ship|drop` print readable output by default; scripts must pass `--json`, which prints the hub tool's text exactly as before (#814). `--json` and `--color=` are flags only at the start or end of a command that takes free text.
-- `ahub sdlc status|explain|queue|release|metrics|costs|authorize-release` print readable output by default; scripts must pass `--json`, which prints exactly the previous document (#814). A guard test fails when a CLI path prints JSON outside `--json` or a named data format.
-- Pin @staix/agent-mem 0.8.0 (native-memory import, Korean recall set, consolidation and sync fixes).
+## 0.18.0
+
+- Readable output by default (#814): `ahub sdlc status|explain|queue|release|metrics|costs|authorize-release` (#831), `task show|cancel`, `backlog groom|return|plan|pin|split|undo|pull-ready` and `release list|show|new|plan|activate|freeze|ship|drop` (#834), and `restart` and `upgrade` off a terminal (a pipe or `--dry-run`), `recovery status` and the results of `recovery reattach|resume|abort|dispose`, `models setup|start`, `queue resolve` and `budget execution configure|disable` (#833) print for a person. Scripts must pass `--json`, which prints exactly the previous document (the hub tool's text for the task, backlog and release commands). `--json` and `--color=` are flags only at the start or end of a command that takes free text, and an invalid or repeated `--color` is refused before any request is sent. Guard tests fail when a CLI path prints JSON outside `--json` or a named data format, or prints a hub tool's text that is not behind `--json` or a named exception (#837).
+- Guarded merge (#786, #815, #825): `sdlc.toml` gains `auto_merge` (`off`, `dry-run`, `on`) and per-repository `required_checks` and `auto_merge`. An approving `hub_review` at the current head, or `ahub sdlc merge <task> [--dry-run]`, re-reads the PR and the merge queue and runs the one guarded `gh pr merge --squash --match-head-commit` or names every failing gate; never `--admin`. Confirmed merges are recorded and post-merge remote cleanup is guarded.
+- Each hub verdict is mirrored as one GitHub COMMENT review, never APPROVE or REQUEST_CHANGES, on the head it was given for, once per task, head and verdict, and nothing at a stale or closed PR (#786, #823). It follows `auto_merge`.
+- The review request carries the hub's exact-head CI evidence (a "Hub-verified at <head>" block, #824, #826) and the current planner rulings, bounded to five and 1000 characters each, with the builder summary still withheld from a review-only reviewer (#835, #836).
+- `review.same_family = "never"` keeps a reviewer of the owner's family from being assigned; an exhausted automatic choice goes to the person (#820, #828).
+- Agents can run read-only `ahub` commands (`doctor`, `projects`, `models status`, `recovery status`, dry-run previews) and public read controls from ordinary agent shells; a form the daemon refuses for a tools connection stays a console command, and conductor operations are authorized per scope (#812, #818, #827, #832).
+- A proven read-only shell call is granted without asking: a bounded literal parser and a proof that screens Git signature, diff and custom-format helpers (#816, #829).
+- The planner reads any task through the public view and cancels its own untouched declined task by the work-evidence test instead of "ever accepted" (#822).
+- `ahub status`, the console Peers detail and the dashboard legend show planner WIP as active, review-wait and reserved per peer (#784, #819).
+- Isolated remote Docker check runner with snapshot extraction and scoped cleanup (#793, #806, #807), and turn facts detect dirty submodules (#798, #808).
+- The dogfood scorecard reports non-dev profile evidence and research profile measurements, rejects malformed profile evidence, and keeps dev rows known when a plan is cut or malformed (#799, #810, #817, #830).
+- Pin @staix/agent-mem 0.8.0 (native-memory import, Korean recall set, consolidation and sync fixes) (#821).
+- Tests and docs: the fake Claude call log is read only as complete lines (#525, #813), an extra implementer without a worktree is refused at start (#809), and the live codex-review verdict receipt on 0.17.0 is recorded (#811).
 
 ## 0.17.0
 

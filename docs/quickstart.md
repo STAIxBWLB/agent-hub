@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.17.0
+bun add -g github:STAIxBWLB/agent-hub#v0.18.0
 ahub setup
 ```
 
@@ -30,9 +30,11 @@ and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
 
-## Upgrading to the next release
+## Upgrading to 0.18.0
 
 The `ahub sdlc` read commands (`status`, `explain`, `queue`, `release`, `metrics`, `costs`, `authorize-release`) now print readable output by default, no longer a JSON document (#814). A script that parses their output must pass `--json`: it prints exactly what the command printed before. `sdlc export` stays JSON. `restart` and `upgrade` off a terminal (a pipe or `--dry-run`), `recovery status` and its results, `models setup|start`, `queue resolve` and `budget execution configure|disable` follow (#814): pass `--json` for the old document. `task show|cancel`, `backlog groom|return|plan|pin|split|undo|pull-ready` and `release list|show|new|plan|activate|freeze|ship|drop` follow (#814): pass `--json` for the hub tool's text. More commands follow in later releases.
+
+Agents can now run the read-only `ahub` forms themselves (`doctor`, `projects`, `models status`, `recovery status`, `queue list`, `roster`, `settings` reads, `sdlc status|explain|queue|release`, `release show` and the `--dry-run` previews of `upgrade` and `restart`), and the configured conductor can run `stop`, `queue show|resolve|discard`, `task cancel`, `roster add|remove`, `logs`, `export`, `doctor --orphans --kill` and `settings set` on twelve live keys (#812). Nothing changes for a person's terminal. `sdlc.toml` gains `auto_merge` (`off` by default): set `dry-run` to see what the guarded merge and the one-per-verdict GitHub COMMENT review would do before setting `on` (#786). `review.same_family = "never"` keeps a same-family reviewer from being assigned (#820). In `ask-when-needed`, Pi and the local worker run proven bounded read-only shell commands without asking (#816). The isolated remote Docker check runner is opt-in through `checks.runner = "remote"` in the person's untracked `config.local.json` (#793). `@staix/agent-mem` is pinned at 0.8.0.
 
 ## Upgrading to 0.17.0
 

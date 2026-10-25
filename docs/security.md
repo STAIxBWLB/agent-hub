@@ -23,7 +23,7 @@ agent-hub connects agents that can each run commands. This page says what the hu
 
 ## Native memory authority and profile selection
 
-The portable core is the exact-pinned first-party `@staix/agent-mem` 0.7.0 package; it does not replace the hub's caller identity, PII policy or task-write authority. Deny, hardened git, real paths and process identity are single-sourced in its Node-safe platform entry. Current project privacy is applied by the hub before promotion and again before model-facing reads. Standalone person reads are unscreened, and the standalone `--policy-free` acknowledgement grants no hub or peer authority.
+The portable core is the exact-pinned first-party `@staix/agent-mem` 0.8.0 package; it does not replace the hub's caller identity, PII policy or task-write authority. Deny, hardened git, real paths and process identity are single-sourced in its Node-safe platform entry. Current project privacy is applied by the hub before promotion and again before model-facing reads. Standalone person reads are unscreened, and the standalone `--policy-free` acknowledgement grants no hub or peer authority.
 
 `hub_memory_search`, `hub_memory_show` and `hub_memory_graph` take the project from the daemon, require `memory_read`, refuse private turns and validate UTF-8 input before logs or storage work. Complete records and graph metadata are screened before counts and truncation. Search is at most 20 lines/4 KiB (default 8); show accepts at most 8 ids and returns at most 8 KiB; graph is at most 120 nodes/240 edges/6 KiB (default 60 nodes), with no edge lacking an endpoint. Unknown, ambiguous and withheld ids share one neutral refusal. Arguments and results are excluded from hub-managed capture; this does not govern a vendor's independent transcript or memory hooks.
 
@@ -235,9 +235,23 @@ move other than the hub's own was not made from the console (to another peer
 only with `assign` when its capabilities are listed).
 A conductor may inspect public state, assign or escalate work, start a peer in
 the start mode a person set (it cannot choose the mode) and place its own
-delivery holds. It cannot answer approvals,
-resolve durable deliveries, override budget pauses, release a human hold or stop
-a peer: `peer_stop` is taken from the console role only, and no hub tool sends it.
+delivery holds. Through the `ahub` CLI under its own peer identity it may also
+run the closed operational family of #812: `roster add|remove`, `stop <peer>`,
+`queue show|resolve|discard`, `task cancel`, `doctor --orphans --kill`, `logs`,
+`export` and `settings set` on twelve named live keys. Each is admitted by the
+daemon after a recheck of the conductor role, audited as a closed label with no
+argument text, and bounded: logs and export are public projections of the last
+100 lines and 1000 events, orphan cleanup signals only a positively identified
+hub-owned process of the selected project, and a stop keeps the existing
+ownership and recovery guards (`peer_stop` from a non-console connection is
+admitted only through this conductor check; no hub tool sends it). It still cannot answer
+approvals, override budget pauses, release a human hold, trust an agent version,
+authorize a release or run recovery resume, abort and reattach: those stay with
+the person. Other agents may run only the read-only forms of #812 (`doctor`,
+`projects`, `models status`, `recovery status`, `queue list`, `roster`,
+`settings` reads, `sdlc status|explain|queue|release`, `release show` and the
+`--dry-run` upgrade and restart previews) through the public views, never the
+console identity.
 Pending approval summaries exclude titles; PII tasks remain public stubs.
 Conduct events contain ids only. Supervision feeds use structured reasons and
 never carry check output or approval bodies.
