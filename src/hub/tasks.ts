@@ -3130,7 +3130,9 @@ export class Tasks {
       const identity = (t: Task) => JSON.stringify([t.state, t.sdlc?.repo, t.sdlc?.pr, t.sdlc?.reviewedHead, this.isPii(t)]);
       const start = identity(task), links = this.deliveryLinks(config), subject = links.find(link => link.id === task.id)!;
       const outcome = await guardedMerge({ mode, subject, state: task.state, taskState: n => this.d.board.get(n)?.state, config, tasks: links, run: this.d.sdlc?.gh ?? sdlcGh, readableMetadata: this.publicMetadataText,
-        beforeMerge: () => { const now = this.d.board.get(task.id); return now && identity(now) === start ? undefined : "task changed during the merge check: nothing was run"; } });
+        beforeMerge: () => { const now = this.d.board.get(task.id); return now && identity(now) === start ? undefined : "task changed during the merge check: nothing was run"; },
+        // Right before dispatch the board-side gates (approval, dependencies, open Important findings, privacy) are judged again on a fresh read of the board.
+        fresh: () => { const now = this.d.board.get(task.id); const current = now && this.deliveryLinks(this.d.sdlc?.config() ?? sdlcConfig(undefined)).find(link => link.id === now.id); return now && current ? { subject: current, state: now.state } : undefined; } });
       const view = mergeView(outcome);
       const head = (text?: string) => text ? text.slice(0, 8) : "unknown";
       if (outcome.result) this.releaseNotice(outcome.result.state === "merged" ? `task ${label}: merged (squash, commit ${head(outcome.result.mergeCommit)})` : `task ${label}: gh pr merge exited ${outcome.result.exit}; GitHub reports it ${outcome.result.state === "unknown" ? "unreadable" : "not merged"}`);

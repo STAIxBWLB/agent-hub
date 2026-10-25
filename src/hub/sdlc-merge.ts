@@ -26,6 +26,11 @@ export interface MergeInput {
   readableMetadata?: (path: string) => boolean;
   /** Called right before `gh pr merge` runs: a returned reason means the board moved during the reads and nothing runs. */
   beforeMerge?: () => string | undefined;
+  /**
+   * The board as it is NOW: the subject (its receipt, findings and dependencies) and its state. Read again right before `gh pr merge`, so a dependency, a finding or
+   * a state that changed during the awaited reads refuses (`localGates` runs on this, not on the snapshot the decision started from). Absent: only the decision's snapshot.
+   */
+  fresh?: () => { subject: DeliveryTask; state: string } | undefined;
 }
 export type MergeDecision = { action: "merge"; argv: string[]; repo: string; pr: number; head: string } | { refused: string[] };
 export interface MergeOutcome {
@@ -107,7 +112,7 @@ function dropEchoes(gates: string[]): string[] {
 }
 
 /** The gates one reading of the PR can fail. Run on every reading this decision takes, so a gate that changes between reads is never judged on the older one. */
-function evidenceGates(evidence: PrEvidence, approved: string | undefined, required: readonly string[], subject: DeliveryTask): string[] {
+function evidenceGates(evidence: PrEvidence, approved: string | undefined, required: readonly string[]): string[] {
   const gates: string[] = [];
   if (approved && evidence.head !== approved) gates.push(`head changed: reviewed ${approved.slice(0, 8)}, PR is at ${evidence.head.slice(0, 8)}`);
   if (evidence.state !== "OPEN") gates.push(`PR is ${evidence.state.toLowerCase()}`);
@@ -118,9 +123,25 @@ function evidenceGates(evidence: PrEvidence, approved: string | undefined, requi
   else if (evidence.pendingReviews > 0) gates.push(`${evidence.pendingReviews} review request${evidence.pendingReviews === 1 ? "" : "s"} pending`);
   if (evidence.unresolved === null) gates.push("review threads unknown");
   else if (evidence.unresolved > 0) gates.push(`${evidence.unresolved} unresolved review thread${evidence.unresolved === 1 ? "" : "s"}`);
-  if (findingTally(findingsForHead(subject.findings ?? [], findingHead(subject.receipt, evidence))).openImportant > 0) gates.push("open Important finding");
   // A release goes out with the person's consent, whatever the other gates say (#784 release consent).
   if (/^release[/-]/i.test(evidence.headBranch ?? "")) gates.push("release PR: person consent required");
+  return gates;
+}
+
+/**
+ * The gates that come from the board, not from GitHub: privacy, approval, task dependencies, open Important findings on this head and a release stage. Pure and
+ * synchronous on purpose: `decideMerge` runs it on its starting snapshot and `guardedMerge` runs it again on a fresh board read right before `gh pr merge`.
+ */
+export function localGates(input: { subject: DeliveryTask; state: string; taskState: (id: number) => string | undefined; config: SdlcConfig; head: string | undefined }): string[] {
+  const { subject, config } = input, gates: string[] = [];
+  if (subject.private) return ["private task: a person merges"];
+  if (input.state !== "approved") gates.push(`task not approved (state ${input.state})`);
+  for (const id of subject.after) {
+    const state = input.taskState(id);
+    if (state !== "approved") gates.push(`dependency task #${id} is not approved (${state ?? "unknown"})`);
+  }
+  if (findingTally(findingsForHead(subject.findings ?? [], findingHead(subject.receipt, input.head ? { head: input.head } : undefined))).openImportant > 0) gates.push("open Important finding");
+  if (subject.receipt && stageDefinition(config, subject.receipt.stage)?.base === "release") gates.push("release PR: person consent required");
   return gates;
 }
 
@@ -132,18 +153,13 @@ export async function decideMerge(input: MergeInput): Promise<MergeDecision> {
   const { subject, config, run } = input, receipt = subject.receipt, repo = receipt?.repo, pr = receipt?.pr, approved = receipt?.reviewedHead;
   const gates: string[] = [];
   if (subject.private) return { refused: ["private task: a person merges"] };
-  if (input.state !== "approved") gates.push(`task not approved (state ${input.state})`);
   if (!repo || !pr) return { refused: [...gates, "PR identity missing"] };
   if (!approved || !SHA.test(approved)) gates.push("reviewed head not recorded: the approving verdict must name the head");
   const evidence = await readSdlcPr(receipt, run);
   if (!evidence) return { refused: [...gates, "PR evidence unavailable"] };
   const required = requiredChecksFor(config, repo);
-  gates.push(...evidenceGates(evidence, approved, required, subject));
-  for (const id of subject.after) {
-    const state = input.taskState(id);
-    if (state !== "approved") gates.push(`dependency task #${id} is not approved (${state ?? "unknown"})`);
-  }
-  if (stageDefinition(config, receipt.stage)?.base === "release") gates.push("release PR: person consent required");
+  gates.push(...evidenceGates(evidence, approved, required));
+  gates.push(...localGates({ subject, state: input.state, taskState: input.taskState, config, head: evidence.head }));
   let queue: MergeQueue | undefined;
   try { queue = await readMergeQueue(repo, config, input.tasks, run, input.readableMetadata); } catch { queue = undefined; }
   gates.push(...queueGates(queue, pr));
@@ -151,7 +167,7 @@ export async function decideMerge(input: MergeInput): Promise<MergeDecision> {
   // head that moved between the reads refuses here. `--match-head-commit` pins the head only, never these gates.
   const last = await readSdlcPr(receipt, run);
   if (!last) gates.push("PR evidence unavailable on the final read");
-  else gates.push(...evidenceGates(last, approved, required, subject));
+  else { gates.push(...evidenceGates(last, approved, required)); gates.push(...localGates({ subject, state: input.state, taskState: input.taskState, config, head: last.head })); }
   const row = queue?.rows.find(r => r.pr === pr);
   if (row?.head !== undefined && approved && row.head !== approved && !gates.some(g => g.startsWith("head changed"))) gates.push(`head changed: the queue read ${row.head.slice(0, 8)}`);
   if (gates.length) return { refused: dropEchoes([...new Set(gates)]) };
@@ -165,6 +181,13 @@ export async function guardedMerge(input: MergeInput & { mode: AutoMergeMode }):
   if (!("action" in decision) || input.mode !== "on") return { mode: input.mode, decision, ran: false };
   const moved = input.beforeMerge?.();
   if (moved) return { mode: input.mode, decision: { refused: [moved] }, ran: false };
+  // The awaited reads took time: read the board again and judge its gates once more, immediately before the one write.
+  const now = input.fresh?.();
+  if (input.fresh) {
+    const stale = !now ? ["task changed during the merge check: nothing was run"] : localGates({ subject: now.subject, state: now.state, taskState: input.taskState, config: input.config, head: decision.head });
+    const same = now && now.subject.receipt?.repo === decision.repo && now.subject.receipt?.pr === decision.pr && now.subject.receipt?.reviewedHead === decision.head;
+    if (stale.length || !same) return { mode: input.mode, decision: { refused: stale.length ? stale : ["task changed during the merge check: nothing was run"] }, ran: false };
+  }
   assertMergeArgv(decision.argv, decision.head);
   let exit = 1;
   try { exit = (await input.run(decision.argv, 10_000)).code; } catch { exit = 1; }
