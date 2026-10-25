@@ -229,3 +229,8 @@ test("Kimi 2.3.0 and Qwen 0.26.0 are receipt-verified without machine trust (#37
   expect(assessVersion("kimi-review", "2.3.0", [])).toEqual({ ok: true, state: "verified", version: "2.3.0" });
   expect(assessVersion("qwen", "0.26.0", [])).toEqual({ ok: true, state: "verified", version: "0.26.0" });
 });
+
+test("Kimi 2.3.1 is receipt-verified without machine trust; its neighbours are not (#792)", () => {
+  expect(assessVersion("kimi-review", "2.3.1", [])).toEqual({ ok: true, state: "verified", version: "2.3.1" });
+  for (const near of ["2.3.2", "2.4.0", "2.3.1-rc.1"]) expect(assessVersion("kimi-review", near, []).ok).toBe(false);
+});

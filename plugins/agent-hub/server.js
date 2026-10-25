@@ -310,7 +310,7 @@ var init_compat = __esm(() => {
     },
     "kimi-review": {
       label: "Kimi reviewer (kimi-code)",
-      verified: ["2.2.0", "2.3.0"],
+      verified: ["2.2.0", "2.3.0", "2.3.1"],
       gate: "isolation",
       probe: ["kimi", "--version"],
       parse: (out) => plain(out.trim()),
