@@ -194,6 +194,7 @@ test("#684 doctor flag dispatches the host report only and preserves console ide
   const report = await run(["--stale-anchors", "--json"]); expect(report.seen).toEqual([["/fixture", { stateDir: "/state" }]]); expect(JSON.parse(report.out[0]!).state).toBe("unknown");
   expect((await run([])).result).toBe("default"); expect((await run([])).seen).toEqual([]);
   await expect(run(["--stale-anchors", "--orphans"])).rejects.toThrow("doctor --stale-anchors [--json]");
-  expect(classifyPeerCommand("doctor", ["--stale-anchors"])).toBe("console"); expect(classifyPeerCommand("doctor", [])).toBe("console");
+  // #812 Allowed: doctor and doctor --stale-anchors are read-only and the daemon admits them for a tools connection.
+  expect(classifyPeerCommand("doctor", ["--stale-anchors"])).toBe("allowed"); expect(classifyPeerCommand("doctor", [])).toBe("allowed");
   expect(HELP.some(entry => entry.usage === "ahub doctor --stale-anchors [--json]")).toBe(true);
 });
