@@ -173,10 +173,12 @@ test("agent-shell CLI exercises every promoted read form without console identit
   const before = (await r.person.request({ t: "task", op: "hub_task_list", args: {} })).text;
   for (const args of [["queue", "list", "--json"], ["queue", "list", "--peer", "codex", "--json"], ["roster", "--json"],
     ["settings", "--json"], ["settings", "list", "--json"], ["settings", "get", "research.enabled", "--json"],
-    ["sdlc", "status"], ["sdlc", "explain", String(r.pub.id)], ["sdlc", "queue", "owner/repo"], ["sdlc", "release", "owner/repo"], ["release", "show", "public-train"]]) {
+    ["sdlc", "status"], ["sdlc", "explain", String(r.pub.id)], ["sdlc", "queue", "owner/repo"], ["sdlc", "release", "owner/repo"],
+    ["sdlc", "status", "--json"], ["sdlc", "explain", String(r.pub.id), "--json"], ["sdlc", "queue", "owner/repo", "--json"], ["sdlc", "release", "owner/repo", "--json"], ["sdlc", "status", "--color=never"], ["release", "show", "public-train"]]) {
     const result = await cli(args); expect(result.code, `${args.join(" ")}: ${result.stderr}`).toBe(0); expect(result.stdout.trim()).not.toBe("");
     for (const hidden of ["PRIVATE_TITLE_CANARY", "PRIVATE_BODY_CANARY", "private-note.txt", PRIVATE_HEAD, "SECRET_ACCOUNT_LOCATOR", "SECRET_PROGRAM_LOCATOR", "secret-location-alias"]) expect(result.stdout).not.toContain(hidden);
     if (args[0] === "settings") expect(result.stdout).toContain("research.enabled");
+    if (args.includes("--json")) expect(() => JSON.parse(result.stdout)).not.toThrow();
   }
   for (const args of [["settings", "set", "research.enabled", "true"], ["roster", "remove", "codex", "--yes"], ["settings", "undo"], ["sdlc", "accept", String(r.pub.id), "--issue", "1"]]) {
     const result = await cli(args); expect(result.code).toBe(1); expect(result.stderr).toContain("the person runs it in ahub console or a terminal");

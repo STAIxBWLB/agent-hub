@@ -221,3 +221,15 @@ test("#494 read forms keep planner reports and malformed/mutating neighbours clo
     ["release", ["list"]], ["backlog", ["list"]],
   ] as [string, string[]][]) expect(classifyPeerCommand(command, args)).toBe("console");
 });
+
+
+test("#494 keeps the merged SDLC renderer flags on public reads only", () => {
+  for (const sub of ["status", "explain", "queue", "release"]) {
+    const positional = sub === "queue" || sub === "release" ? ["owner/repo"] : ["1"];
+    for (const flag of ["--json", "--color=auto", "--color=always", "--color=never"])
+      expect(classifyPeerCommand("sdlc", [sub, ...positional, flag])).toBe("allowed");
+    expect(classifyPeerCommand("sdlc", [sub, ...positional, "--full"])).toBe("console");
+  }
+  for (const sub of ["costs", "metrics", "authorize-release"])
+    expect(classifyPeerCommand("sdlc", [sub, "--json", "--color=never"])).toBe("console");
+});

@@ -71,12 +71,13 @@ interface PeerReadForm {
   displayFlags?: readonly string[];
 }
 const publicReadDisplayFlags = ["--json", "--full", "--color=auto", "--color=always", "--color=never"] as const;
+const sdlcReadDisplayFlags = ["--json", "--color=auto", "--color=always", "--color=never"] as const;
 const peerReadForms: Readonly<Record<string, Readonly<Record<string, PeerReadForm>>>> = {
   queue: { list: { valueFlags: ["--peer"], displayFlags: publicReadDisplayFlags } },
   roster: { "": { displayFlags: publicReadDisplayFlags } },
   settings: { "": { displayFlags: ["--json"] }, list: { displayFlags: ["--json"] }, get: { positional: 1, minimum: 1, displayFlags: ["--json"] } },
-  // These legacy CLI branches consume raw argv; output flags wait for their own renderer contract.
-  sdlc: { status: { positional: 1, displayFlags: [] }, explain: { positional: 1, displayFlags: [] }, queue: { positional: 1, minimum: 1, displayFlags: [] }, release: { positional: 33, minimum: 1, displayFlags: [] } },
+  // #814 renders these reads for people and keeps JSON as an explicit data format.
+  sdlc: { status: { positional: 1, displayFlags: sdlcReadDisplayFlags }, explain: { positional: 1, displayFlags: sdlcReadDisplayFlags }, queue: { positional: 1, minimum: 1, displayFlags: sdlcReadDisplayFlags }, release: { positional: 33, minimum: 1, displayFlags: sdlcReadDisplayFlags } },
   release: { show: { positional: 1, minimum: 1, displayFlags: [] } },
   projects: { "": {} },
   models: { status: {} },
