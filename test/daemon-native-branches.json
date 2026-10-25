@@ -276,6 +276,12 @@
     "reason": "Pi replacement/handover and Kimi TUI admission remain native proofs; pending ACP process state moves in 2b, Codex proxy URL in 2d, and A4 keeps AcpPeer factory identity."
   },
   {
+    "predicate": "isQwenDualPeer",
+    "function": "src/hub/daemon.ts:startDaemon.startPeerBody",
+    "count": 3,
+    "reason": "A Qwen TUI is the person's own terminal and a headless Qwen is a hub-owned process: starting one form over a live owner of the other form is refused, and an already-attached TUI answers `already`. No generic port says which form an owner runs; retain this host dispatch until a separately specified form port exists (#286 Part 3)."
+  },
+  {
     "predicate": "isWsPeer",
     "function": "src/hub/daemon.ts:startDaemon.startPeerBody",
     "count": 1,
@@ -306,6 +312,12 @@
     "reason": "Codex native status notice moves to gated statusNotice in 2d; local served-model and Pi relay telemetry and channel claiming/inbox timestamps remain native host evidence."
   },
   {
+    "predicate": "isQwenDualPeer",
+    "function": "src/hub/daemon.ts:startDaemon.status",
+    "count": 1,
+    "reason": "The stalled and detached notices come from the dual-output adapter's own event-file state (statusNotice), shown beside Codex's; no generic status-notice port exists yet (#286 Part 3)."
+  },
+  {
     "predicate": "isWsPeer",
     "function": "src/hub/daemon.ts:startDaemon.status",
     "count": 2,
@@ -328,6 +340,12 @@
     "function": "src/hub/daemon.ts:startDaemon.stopPeer",
     "count": 3,
     "reason": "Owned-runtime, native form and idle resume capture move to hubOwned/form/captureResume in 2b; pending ACP process uncertainty must continue to refuse a fresh start."
+  },
+  {
+    "predicate": "isQwenDualPeer",
+    "function": "src/hub/daemon.ts:startDaemon.stopPeer",
+    "count": 1,
+    "reason": "The hub never signals a person's Qwen TUI: a stop of that owner is refused with the instruction to end it in its own terminal, before the generic owned-process stop would run. No generic port marks an owner as person-held (#286 Part 3)."
   },
   {
     "predicate": "isReviewerPrintPeer",
