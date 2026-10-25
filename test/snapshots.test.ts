@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { changedPaths, planUndo, repoOf, restore, snapshot, Turns, type Repo } from "../src/hub/snapshots.ts";
+import { changedPaths, dirtySubmodules, parseDirtySubmodules, planUndo, repoOf, restore, snapshot, Turns, type Repo } from "../src/hub/snapshots.ts";
 
 // issue #33: per-turn snapshots as git trees, and undo that refuses to destroy work it should keep.
 const cleanup: (() => void)[] = [];
@@ -291,4 +291,95 @@ test("legacy snapshot stores leave a missing task baseline unknown without a mig
   const {Database}=await import("bun:sqlite"), db=new Database(file); db.run("CREATE TABLE legacy (id INTEGER)"); db.close();
   const turns=new Turns(file,true); try {expect(turns.taskStart(1,100)).toBeUndefined();} finally {turns.close();}
   const verify=new Database(file,{readonly:true}); try {expect(verify.query("SELECT name FROM sqlite_master WHERE name = 'task_snapshots'").get()).toBeNull();} finally {verify.close();}
+});
+
+// #798 step 1 (D2/D4): dirty-submodule detection. Wiring into turn facts is a later task.
+test("parseDirtySubmodules keeps submodule paths and drops everything else (#798)", () => {
+  // Shapes measured on git 2.56 `status --porcelain=v2 -z`: a type 1 entry carries eight
+  // space-separated fields before the path (1 XY SUB mH mI mW hH hI), a type 2 adds Xscore.
+  const z = [
+    "1 .M SC.. 160000 160000 160000 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb sub",
+    "1 M. S.M. 160000 160000 160000 cccccccccccccccccccccccccccccccccccccccc dddddddddddddddddddddddddddddddddddddddd sites/blog",
+    "1 M. S..U 160000 160000 160000 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee ffffffffffffffffffffffffffffffffffffffff mods/alpha",
+    "1 M. N.M. 160000 160000 160000 gggggggggggggggggggggggggggggggggggggggg hhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhhh normal.txt",
+    "2 R. S.M. 160000 160000 160000 iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj R100 mods/new",
+    "mods/old",
+    "1 M. S..M 160000 160000 160000 kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk llllllllllllllllllllllllllllllllllllllll old repo/vault",
+    "? untracked.txt",
+    "# branch.oid 0000000000000000000000000000000000000000",
+    "",
+  ].join("\0");
+  expect(parseDirtySubmodules(z)).toEqual(["mods/alpha", "mods/new", "old repo/vault", "sites/blog", "sub"]);
+});
+
+test("parseDirtySubmodules reads the path of an unmerged submodule entry (#798)", () => {
+  // A type u entry carries ten fields (u XY SUB m1 m2 m3 mW h1 h2 h3) before the path; SUB is four chars.
+  const hs = Array.from({ length: 3 }, (_, n) => String(n + 2).repeat(40)).join(" ");
+  const z = "u UU S..U 160000 160000 160000 160000 " + hs + " sub\0";
+  expect(parseDirtySubmodules(z)).toEqual(["sub"]);
+});
+
+test("dirtySubmodules sees edits inside a submodule and pays no git call without .gitmodules (#798)", () => {
+  const top = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-snap-sub-")));
+  cleanup.push(() => rmSync(top, { recursive: true, force: true }));
+  const superTop = join(top, "super"), origin = join(top, "origin");
+  const git = (dir: string, ...args: string[]) => Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...args], { stdout: "pipe", stderr: "pipe" });
+  mkdirSync(origin);
+  git(origin, "init", "-q");
+  writeFileSync(join(origin, "f.md"), "one\n");
+  git(origin, "add", "-A");
+  git(origin, "commit", "-qm", "sub base");
+  mkdirSync(superTop);
+  git(superTop, "init", "-q");
+  writeFileSync(join(superTop, "top.md"), "one\n");
+  git(superTop, "add", "-A");
+  git(superTop, "commit", "-qm", "base");
+  git(superTop, "-c", "protocol.file.allow=always", "submodule", "add", origin, "sub");
+  git(superTop, "commit", "-qm", "add sub");
+  const r = repoOf(superTop)!;
+  expect(dirtySubmodules(r)).toEqual([]);
+  writeFileSync(join(superTop, "sub", "f.md"), "edited\n");
+  expect(dirtySubmodules(r)).toEqual(["sub"]);
+  // D4: a project without .gitmodules never spends a git call: an expired budget would throw if git ran.
+  const plain = repo();
+  expect(dirtySubmodules(plain.r, { deadline: 0, now: () => 1 })).toEqual([]);
+});
+
+test("dirtySubmodules refreshes nothing it does not own: the superproject index is left untouched (#798)", async () => {
+  // A plain `git status` refreshes and rewrites the real .git/index under index.lock, so a turn-end snapshot could
+  // make a peer's concurrent `git add`/`commit` fail with "index.lock exists". dirtySubmodules passes
+  // GIT_OPTIONAL_LOCKS=0 (as facts.ts does) so it never does. Discriminating: without that flag the same probe
+  // rewrites the index (measured on git 2.56), so this fails if the env is dropped.
+  const top = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-snap-idx-")));
+  cleanup.push(() => rmSync(top, { recursive: true, force: true }));
+  const superTop = join(top, "super"), origin = join(top, "origin");
+  const git = (dir: string, ...args: string[]) => Bun.spawnSync(["git", "-C", dir, "-c", "user.name=t", "-c", "user.email=t@localhost", "-c", "commit.gpgsign=false", ...args], { stdout: "pipe", stderr: "pipe" });
+  mkdirSync(origin);
+  git(origin, "init", "-q");
+  writeFileSync(join(origin, "f.md"), "one\n");
+  git(origin, "add", "-A");
+  git(origin, "commit", "-qm", "sub base");
+  mkdirSync(superTop);
+  git(superTop, "init", "-q");
+  writeFileSync(join(superTop, "top.md"), "one\n");
+  writeFileSync(join(superTop, "tracked.md"), "t\n");
+  git(superTop, "add", "-A");
+  git(superTop, "commit", "-qm", "base");
+  git(superTop, "-c", "protocol.file.allow=always", "submodule", "add", origin, "sub");
+  git(superTop, "commit", "-qm", "add sub");
+  const r = repoOf(superTop)!;
+  const index = join(superTop, ".git", "index");
+  const trackedTop = join(superTop, "tracked.md");
+  // Make the index stale relative to a stat-cache entry, the condition under which git rewrites it: first take a
+  // clean reading, then a second later touch a tracked top-level file (content unchanged) so a plain `git status`
+  // would refresh and rewrite the index. The submodule edit comes after that, so only the last call sees it.
+  expect(dirtySubmodules(r)).toEqual([]);
+  await Bun.sleep(1100); // one second passes, so the touched file's mtime is no longer the second the index recorded
+  writeFileSync(trackedTop, "t\n");
+  writeFileSync(join(superTop, "sub", "f.md"), "edited\n"); // the edit this helper exists to detect
+  const bytesBefore = Buffer.from(readFileSync(index));
+  const mtimeBefore = statSync(index).mtimeMs;
+  expect(dirtySubmodules(r)).toEqual(["sub"]); // the submodule edit is detected while the index stays put
+  expect(Buffer.from(readFileSync(index))).toEqual(bytesBefore);
+  expect(statSync(index).mtimeMs).toBe(mtimeBefore);
 });
