@@ -54,9 +54,14 @@ test("Codex isolation proves bounded MCP and sandbox before returning fixed ephe
     expect(result.args).not.toContain("--sandbox");
     expect(result.args.some(arg => arg.startsWith("default_permissions="))).toBe(true);
     const override = result.args.find(arg => arg.startsWith("mcp_servers="))!;
-    const configured = Bun.TOML.parse(override) as { mcp_servers: Record<string, { enabled?: boolean; enabled_tools?: string[] }> };
+    const configured = Bun.TOML.parse(override) as { mcp_servers: Record<string, { enabled?: boolean; enabled_tools?: string[]; tools?: Record<string, { approval_mode: string }>; default_tools_approval_mode?: string }> };
     expect(configured.mcp_servers.ambient?.enabled).toBe(false);
     expect(configured.mcp_servers["agent-hub"]?.enabled_tools).toEqual(["hub_review", "hub_task_show"]);
+    expect(configured.mcp_servers["agent-hub"]?.tools).toEqual({ hub_review: { approval_mode: "approve" }, hub_task_show: { approval_mode: "approve" } });
+    for (const [name, server] of Object.entries(configured.mcp_servers)) {
+      expect(server.default_tools_approval_mode).toBeUndefined();
+      if (name !== "agent-hub") expect(server.tools).toBeUndefined();
+    }
     const permissions = Bun.TOML.parse(result.args.find(arg => arg.startsWith("permissions="))!) as { permissions: Record<string, { filesystem: Record<string, string> }> };
     const filesystem = permissions.permissions["ahub-review"]!.filesystem;
     expect(filesystem[join(realPath(f.cwd), "**", ".private")]).toBe("deny");
