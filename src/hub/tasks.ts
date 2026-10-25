@@ -653,7 +653,9 @@ export class Tasks {
         if (this.isPii(row)) return false;
         const last = row.history.findLast(entry => entry.reviewFindings?.items.some(value => value.id === item.id));
         const finding = last?.reviewFindings?.items.find(value => value.id === item.id);
-        return !last?.withheld && finding && same(finding) && finding.disposition !== "false_positive" && this.findingTextAllowed(row, [finding]);
+        // #328: a follow-up that only records an earlier task's finding as fixed never had it; it counts once seen open.
+        const occurred = row.history.some(entry => entry.reviewFindings?.items.some(value => same(value) && (value.disposition === "open" || value.disposition === "accepted")));
+        return !last?.withheld && finding && same(finding) && occurred && finding.disposition !== "false_positive" && this.findingTextAllowed(row, [finding]);
       });
       if (this.workUnits(holders) < 2) continue;
       const key = `Review finding key: ${item.pass}:${item.id}`;

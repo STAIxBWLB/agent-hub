@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- A follow-up task whose review records an earlier task's finding only as fixed no longer counts as a recurrence of that finding, so it no longer files a false "Review policy amendment" backlog card. The finding counts on a task once it was recorded open or accepted there (#328).
 - The hub no longer logs `hub memory sync failed: no generation sync remote configured` every sync interval: agent-mem's generation sync words a missing remote this way, and no remote is not a failure (#401).
 
 ## 0.16.0
