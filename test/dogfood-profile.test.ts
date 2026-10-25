@@ -373,7 +373,7 @@ test("reader retains legacy task history when profile JSON or history metadata i
     expect(collected.data.every(t=>t.history.length===1)).toBe(true);
     expect(collected.data.find(t=>t.id===1)!.profileMetadata).toBeUndefined();
     expect(collected.data.find(t=>t.id===2)!.profileMetadata!.plan).toEqual({sources:0,claims:0});
-    expect(collected.data.find(t=>t.id===3)!.profileMetadata!.plan!.claims).toBeNull();
+    expect(collected.data.find(t=>t.id===3)!.profileMetadata!.plan).toBeUndefined();
     expect(collected.data.find(t=>t.id===4)!.profileMetadata!.plan).toEqual({sources:50,claims:0});
     expect(collected.data.find(t=>t.id===5)!.profileMetadata!.plan).toBeUndefined();
     expect(JSON.stringify(collected)).not.toMatch(/PRIVATE_CLAIM|PRIVATE_SOURCE|broken/);
@@ -393,4 +393,39 @@ test("research generic draft check outcomes never imply fact_check selection or 
   }
   expect(rows.find(r=>r.alias==="draft")).toBeDefined();
   expect(rows.find(r=>r.alias==="fact_check")).toBeUndefined();
+});
+
+test("a cut or malformed plan nulls only that task's declarations and keeps dev rows known",()=>{
+  const f=fixture();try {
+    const devRow=(plan:string)=>{const g=fixture();try {
+      const file=join(g.root,"hub.db"),db=new Database(file);
+      db.run("CREATE TABLE tasks(id INTEGER,sdlc TEXT,signals TEXT,history TEXT,class TEXT,project_profile TEXT,plan TEXT)");
+      db.query("INSERT INTO tasks VALUES(?,?,?,?,?,?,?)").run(1,"{}","[]",JSON.stringify([{at:120,event:"accepted"}]),"implement",null,plan);
+      db.close();return dogfoodTasks(file);
+    } finally {g.close();}};
+    const cut=devRow(" ".repeat(65537));
+    expect(cut.complete).toBe(true);
+    expect(cut.data[0]!.profileMetadata).toBeDefined();
+    expect(cut.data[0]!.profileMetadata!.plan).toBeUndefined();
+    const malformed=devRow("[]");
+    expect(malformed.complete).toBe(true);
+    expect(malformed.data[0]!.profileMetadata!.plan).toBeUndefined();
+    expect(JSON.stringify(cut)).not.toMatch(/PRIVATE_/);
+  } finally {f.close();}
+});
+
+test("a parsed research plan counts an undeclared key as zero and a malformed list stays task-local",()=>{
+  const f=fixture();try {
+    const file=join(f.root,"hub.db"),db=new Database(file);
+    db.run("CREATE TABLE tasks(id INTEGER,sdlc TEXT,signals TEXT,history TEXT,class TEXT,project_profile TEXT,plan TEXT)");
+    const insert=db.query("INSERT INTO tasks VALUES(?,?,?,?,?,?,?)");
+    const research=JSON.stringify({profile:"research",profileClass:"fact_check"});
+    insert.run(1,"{}","[]",JSON.stringify([{at:120,event:"accepted"}]),"test",research,JSON.stringify({claims:["PRIVATE_CLAIM"]}));
+    insert.run(2,"{}","[]",JSON.stringify([{at:120,event:"accepted"}]),"test",research,JSON.stringify({claims:"PRIVATE_CLAIM"}));
+    db.close();const collected=dogfoodTasks(file);
+    expect(collected.complete).toBe(true);
+    expect(collected.data.find(t=>t.id===1)!.profileMetadata!.plan).toEqual({sources:0,claims:1});
+    expect(collected.data.find(t=>t.id===2)!.profileMetadata!.plan).toBeUndefined();
+    expect(JSON.stringify(collected)).not.toMatch(/PRIVATE_CLAIM/);
+  } finally {f.close();}
 });
