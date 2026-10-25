@@ -26,9 +26,9 @@ async function rig() {
   writeFileSync(join(root, ".agenthub/routing.toml"), template);
   writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify({ codex_bin: "SECRET_PROGRAM_LOCATOR", jcode_home: join(temp, "SECRET_ACCOUNT_LOCATOR"), memory: { worker_url: "https://secret-location.invalid" } }));
   const board = new Board(join(stateDir, "hub.db"));
-  const pub = board.propose("user", { title: "public read fixture", class: "implement" });
   const priv = board.propose("user", { title: "PRIVATE_TITLE_CANARY", detail: "PRIVATE_BODY_CANARY", class: "implement", signals: ["pii_path"], refs: { paths: ["private-note.txt"], commit: PRIVATE_HEAD } });
-  board.update(pub.id, "user", "fixture lifecycle", { deps: [priv.id], sdlc: { stage: "implement", repo: "owner/repo", issue: 1, pr: 1 } });
+  const pub = board.propose("user", { title: "public read fixture", class: "implement", deps: [priv.id] });
+  board.update(pub.id, "user", "fixture lifecycle", { sdlc: { stage: "implement", repo: "owner/repo", issue: 1, pr: 1 } });
   board.update(priv.id, "user", "fixture lifecycle", { sdlc: { stage: "release", repo: "owner/repo", issue: 999, pr: 999, reviewedHead: PRIVATE_HEAD } });
   const release = board.newRelease("public-train", "public release goal", 1);
   board.updateRelease(release.id, { train: { scope: [priv.id], history: [{ at: 1, by: "user", event: "configured", scope: [priv.id] }] } }, release.revision);
@@ -88,7 +88,7 @@ test("ordinary public read access never grants adjacent mutations or planner-onl
 test("public lifecycle reads recheck caller membership after remote awaits", async () => {
   const r = await rig(), agent = await r.agent(); writeFileSync(r.hold, "hold");
   const pending = agent.request({ t: "sdlc", op: "explain", id: r.pub.id }); await until(() => existsSync(r.entered));
-  const removed = await r.person.request({ t: "settings_set", key: "roster.codex", value: false, confirm: "codex", now: true }); expect(removed.ok, removed.error).toBe(true);
+  const removed = await r.person.request({ t: "settings_set", key: "roster.codex", value: false, confirm: "codex", now: true }); expect(removed.ok).toBe(true);
   rmSync(r.hold); const result = await pending; expect(result.ok).toBe(false); expect(JSON.stringify(result)).not.toContain(PUBLIC_HEAD);
 });
 
