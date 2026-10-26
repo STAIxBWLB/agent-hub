@@ -262,6 +262,108 @@ test("F1d already-exhausted shared deadline grants no API reads", async () => {
   expect(reads).toBe(0);
 });
 
+// #872: GitHub's runs API answers 502 on about half of all calls for stretches of time. A transient 5xx or 429 is retried inside the shared deadline and the 240-request budget; every other
+// failure stays exactly as fail-closed as before. The sleep and the clock are injected, so no test waits.
+const httpError = (status: number) => Object.assign(new Error(`GitHub read failed (${status})`), { status });
+const noWait = () => { const waits: number[] = []; return { waits, sleep: async (ms: number) => { waits.push(ms); } }; };
+
+test("#872 a 502 on the success page followed by a 200 gives the normal decision", async () => {
+  const calls: string[] = [];
+  let failures = 1;
+  const api = async (path: string) => {
+    calls.push(path);
+    if (path.includes("status=success")) { if (failures-- > 0) throw httpError(502); return successPage([successRow(1)]); }
+    return path.startsWith("git/") ? { tree: { sha: "expected" } } : verifiedJobs();
+  };
+  const { waits, sleep } = noWait();
+  expect(await gates.readFullGateAdmission(api, "expected", { sleep })).toMatchObject({ kind: "reuse", run: { id: 1 } });
+  expect(calls.filter(path => path.includes("status=success"))).toHaveLength(2);
+  expect(waits).toHaveLength(1);
+}, 15_000);
+
+test("#872 three 502s on the same read still give unknown, after exactly three attempts", async () => {
+  const calls: string[] = [];
+  const api = async (path: string) => { calls.push(path); throw httpError(502); };
+  const { waits, sleep } = noWait();
+  expect(await gates.readFullGateAdmission(api, "expected", { sleep })).toMatchObject({ kind: "unknown" });
+  expect(calls).toHaveLength(3);
+  expect(waits).toHaveLength(2);
+}, 15_000);
+
+test("#872 a 404 is lost proof as before and is not retried", async () => {
+  const calls: string[] = [];
+  const api = async (path: string) => { calls.push(path); if (path.includes("status=success")) throw httpError(404); return emptyRuns(); };
+  const { waits, sleep } = noWait();
+  expect(await gates.readFullGateAdmission(api, "expected", { sleep })).toEqual({ kind: "run" });
+  expect(calls.filter(path => path.includes("status=success"))).toHaveLength(1);
+  expect(waits).toEqual([]);
+}, 15_000);
+
+for (const status of [400, 401, 403, 409, 422]) test(`#872 a ${status} is not retried and stays unknown`, async () => {
+  const calls: string[] = [];
+  const api = async (path: string) => { calls.push(path); throw httpError(status); };
+  const { waits, sleep } = noWait();
+  expect(await gates.readFullGateAdmission(api, "expected", { sleep })).toMatchObject({ kind: "unknown" });
+  expect(calls).toHaveLength(1);
+  expect(waits).toEqual([]);
+}, 15_000);
+
+for (const status of [429, 500, 503, 504]) test(`#872 a ${status} is retried`, async () => {
+  let failures = 1;
+  const api = async (path: string) => { if (path.includes("status=success") && failures-- > 0) throw httpError(status); return emptyRuns(); };
+  const { sleep } = noWait();
+  expect(await gates.readFullGateAdmission(api, "expected", { sleep })).toEqual({ kind: "run" });
+}, 15_000);
+
+test("#872 a retry is not an escape from fail-closed: a 5xx that clears on the ACTIVE read, with the inventory then incomplete, is still unknown", async () => {
+  let failures = 2;
+  const api = async (path: string) => {
+    if (path.includes("status=success")) return emptyRuns();
+    if (failures-- > 0) throw httpError(502);
+    return { total_count: 5, workflow_runs: [] };   // 5 runs counted, none returned: truncated coverage
+  };
+  const { sleep } = noWait();
+  expect(await gates.readFullGateAdmission(api, "expected", { sleep })).toMatchObject({ kind: "unknown" });
+}, 15_000);
+
+test("#872 a retry counts against the 240-request budget", async () => {
+  let reads = 0;
+  const api = async () => { reads++; throw httpError(502); };
+  const { sleep } = noWait();
+  // Every read is a 502 that is retried: the budget, not the attempts, ends it, and never past 240 requests.
+  expect(await gates.readFullGateAdmission(api, "expected", { sleep })).toMatchObject({ kind: "unknown" });
+  expect(reads).toBeLessThanOrEqual(240);
+  const sequential = async (path: string) => {
+    reads++;
+    if (path.includes("status=success")) return successPage(Array.from({ length: 100 }, (_, index) => successRow(index + 1)));
+    throw httpError(503);
+  };
+  reads = 0;
+  expect(await gates.readFullGateAdmission(sequential, "expected", { sleep })).toMatchObject({ kind: "unknown" });
+  expect(reads).toBeLessThanOrEqual(240);
+}, 15_000);
+
+test("#872 no retry once the deadline leaves no room for the backoff", async () => {
+  let now = 0, reads = 0;
+  const api = async () => { reads++; now = 90; throw httpError(502); };   // the first attempt ends 10 ms before the deadline
+  const waits: number[] = [];
+  const sleep = async (ms: number) => { waits.push(ms); now += ms; };
+  expect(await gates.readFullGateAdmission(api, "expected", { deadline: 100, now: () => now, sleep })).toMatchObject({ kind: "unknown" });
+  expect(reads).toBe(1);
+  expect(waits).toEqual([]);
+}, 15_000);
+
+test("#872 the backoff is short and bounded, and a shared deadline that passes during it ends the read", async () => {
+  let now = 0;
+  const api = async () => { throw httpError(502); };
+  const waits: number[] = [];
+  const sleep = async (ms: number) => { waits.push(ms); now += ms; };
+  expect(await gates.readFullGateAdmission(api, "expected", { deadline: 60_000, now: () => now, sleep })).toMatchObject({ kind: "unknown" });
+  expect(waits.length).toBe(2);
+  expect(Math.max(...waits)).toBeLessThanOrEqual(2000);
+  expect(waits.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(3000);
+}, 15_000);
+
 test("F1e --require still refuses release when lost proof allows only a fresh admission", () => {
   const root = mkdtempSync(join(tmpdir(), "ahub-ci-require-"));
   try {
