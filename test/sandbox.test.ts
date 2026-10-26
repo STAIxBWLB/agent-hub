@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HFS_IGNORABLE_POINTS, hubWriteRegexes } from "../src/local/deny.ts";
+import { HFS_IGNORABLE_POINTS } from "../src/local/deny.ts";
 import { profile, sandboxAvailable, sandboxedExec } from "../src/local/sandbox.ts";
 
 /**
@@ -436,30 +436,45 @@ test.skipIf(!sandboxAvailable())("every linked worktree's git dir is protected b
   expect(existsSync(join(common, "worktrees", "later"))).toBe(false);
 });
 
-test.skipIf(!sandboxAvailable())("config.worktree is refused in every spelling that folds ignorable code points into BOTH halves of the name, and a sibling that is only named like it is not over-matched (#518 review)", () => {
-  // A rule's regexes must all match: render them and check the spellings against the real patterns with the code points HFS+ ignores, which only an HFS+ volume would open as the real name.
-  const rules = hubWriteRegexes("/proj", ["/ext/.git"], [{ root: "/ext/.git/modules", entries: ["/ext/.git/modules"] }], "/ext/.git/worktrees");
-  const sources = (rule: string) => [...rule.matchAll(/\(regex "((?:[^"\\]|\\.)*)"\)/g)].map((m) => JSON.parse(`"${m[1]!.replace(/\\\\/g, "\\\\")}"`) as string);
-  const blocked = (path: string) => rules.some((rule) => {
-    const regexes = sources(rule);
-    return regexes.length > 0 && regexes.every((source) => new RegExp(source.replace(/\(\?\!/g, "(?!")).test(path)) && !/require-not/.test(rule.replace(/\(require-not [^]*$/, "")) ;
-  });
+test.skipIf(!sandboxAvailable())("config.worktree is refused with ignorable code points in BOTH halves of the name, in the project .git, a worktree git dir and the common dir, and an unrelated name stays writable (#518 review)", async () => {
+  // The rule matches the path string, so a file named with the code points HFS+ ignores is refused wherever the volume is: on HFS+ it opens as the real name, on APFS it is another name the rule still covers.
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-wt-fold-")));
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  const ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+  const main = join(base, "main"), cwd = join(base, "wt");
+  expect(git(["init", "-q", main]).exitCode).toBe(0);
+  writeFileSync(join(main, "f.txt"), "x\n"); git(["-C", main, "add", "f.txt"]); expect(git(["-C", main, ...ident, "commit", "-qm", "one"]).exitCode).toBe(0);
+  expect(git(["-C", main, "worktree", "add", cwd]).exitCode).toBe(0);
+  const common = join(main, ".git"), own = join(common, "worktrees", "wt");
   const fold = (name: string, at: number, ch: string) => name.slice(0, at) + ch + name.slice(at);
-  const spellings = [
-    "config.worktree",
-    fold("config.worktree", 3, ZWJ),
-    fold("config.worktree", 9, ZWJ),
-    fold(fold("config.worktree", 3, ZWJ), 11, HFS_IGNORABLE_POINTS[0]!),
-    `${ZWJ}config.${ZWJ}worktree${ZWJ}`,
-    fold(fold("config.worktree", 6, ZWJ), 7, HFS_IGNORABLE_POINTS[14]!),
-  ];
-  for (const name of spellings) {
-    expect(blocked(`/ext/.git/worktrees/wt/${name}`), `worktree git dir: ${JSON.stringify(name)}`).toBe(true);
-    expect(blocked(`/ext/.git/${name}`), `common dir: ${JSON.stringify(name)}`).toBe(true);
-    expect(blocked(`/proj/.git/${name}`), `project .git: ${JSON.stringify(name)}`).toBe(true);
+  const spellings = {
+    plain: "config.worktree",
+    front: fold("config.worktree", 3, ZWJ),
+    back: fold("config.worktree", 9, ZWJ),
+    both: fold(fold("config.worktree", 3, ZWJ), 11, HFS_IGNORABLE_POINTS[0]!),
+    ends: `${ZWJ}config.${ZWJ}worktree${ZWJ}`,
+    dot: fold(fold("config.worktree", 6, ZWJ), 7, HFS_IGNORABLE_POINTS[14]!),
+  };
+  const legs: string[] = [];
+  for (const [label, name] of Object.entries(spellings)) {
+    legs.push(`(echo x > '${own}/${name}') 2>/dev/null && echo WROTE-WT-${label} || echo blocked-wt-${label}`);
+    legs.push(`(echo x > '${common}/${name}') 2>/dev/null && echo WROTE-COMMON-${label} || echo blocked-common-${label}`);
+    legs.push(`(echo x > .git/${name}) 2>/dev/null && echo WROTE-PROJECT-${label} || echo blocked-project-${label}`);
   }
-  // Not over-matched: an unrelated file in the same directories stays writable.
-  for (const name of ["index", "HEAD", "worktree", "config-worktree", "FETCH_HEAD"]) expect(blocked(`/ext/.git/worktrees/wt/${name}`), name).toBe(false);
+  // The linked worktree's own .git is a gitfile, so the project-.git leg needs a plain checkout.
+  const plain = join(base, "plain");
+  expect(git(["init", "-q", plain]).exitCode).toBe(0);
+  const run = (dir: string, commands: string[]) => sandboxedExec(["/bin/sh", "-c", commands.join("; ")], { cwd: dir, profile: profile(dir, false) });
+  const worktree = await run(cwd, legs.filter((leg) => !leg.includes("echo x > .git/")));
+  const project = await run(plain, legs.filter((leg) => leg.includes("echo x > .git/")));
+  for (const label of Object.keys(spellings)) {
+    expect(worktree.output).toContain(`blocked-wt-${label}`); expect(worktree.output).toContain(`blocked-common-${label}`);
+    expect(project.output).toContain(`blocked-project-${label}`);
+  }
+  expect(worktree.output).not.toMatch(/WROTE-/); expect(project.output).not.toMatch(/WROTE-/);
+  // Names that only look similar are not over-matched: ordinary git files in those directories stay writable where they were before.
+  const unrelated = await run(cwd, [`(echo x > '${own}/ORIG_HEAD') && echo wrote-orig-head`, `(echo x > '${own}/worktree') 2>/dev/null && echo wrote-worktree-name || echo blocked-worktree-name`, "git branch fix/config.worktree && echo branched-dotted-name", "git tag config.worktree && echo tagged-dotted-name"]);
+  expect(unrelated.output).toContain("wrote-orig-head"); expect(unrelated.output).toContain("branched-dotted-name"); expect(unrelated.output).toContain("tagged-dotted-name");
 });
 
 test.skipIf(!sandboxAvailable())("a nested bare-layout repository is not covered by the rules: the exclusion, tested (#281)", async () => {
