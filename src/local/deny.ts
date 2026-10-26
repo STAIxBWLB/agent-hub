@@ -78,9 +78,9 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
     // Every name matches whole components only: `(.*/)?` forces a boundary, so a submodule named `catalogs`
     // or `prefs` keeps the refusal and one named `webhooks` keeps its ordinary writes (#281 round 2).
     // `config.worktree` is the per-worktree config git reads next to `config`, so it gets the same refusal.
-    `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
+    `(require-all ${re(`^${sbplEscape(tree.root)}/`)} ${re(`^.*/${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
     `(require-all ${re(`^${sbplEscape(tree.root)}/`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
-    `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
+    `(require-all ${re(`^${sbplEscape(tree.root)}/`)} ${re(`^.*/${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
     // A submodule git dir as a directory entry: no rename, replace, symlink or recreate. The basename is
     // folded (HFS+ opens the folded spelling as the real entry); the plain prefix is the path as discovered.
     // The directory and the folded name are separate filters: one literal holding both grows with the path and dies at 1024 bytes (a ~520-byte git path did on main, #518 review).
@@ -97,11 +97,12 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
           `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config")}$`)})`,
           `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
           // A worktree git dir's own `hooks` directory and everything in it, which git runs for that worktree.
-          re(`^${w}/[^/]+/${hfsFoldedName("hooks")}(/|$)`),
+          // The name filter alone is not anchored to the first component, so what lives deeper is excluded: a submodule's own tree has its rule above, and a ref or log named `hooks` stays writable.
+          `(require-all ${re(`^${w}/[^/]+/`)} ${re(`^.*/${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${w}/[^/]+/(modules|refs|logs)/`)}))`,
           // Its submodule git dirs: config, config.worktree and hooks at any depth, refs and logs excepted, and the `modules` entry itself (no create, rename or replace).
-          `(require-all ${re(`^${w}/[^/]+/modules/(.*/)?${hfsFoldedName("config")}$`)} ${notRefs})`,
+          `(require-all ${re(`^${w}/[^/]+/modules/`)} ${re(`^.*/${hfsFoldedName("config")}$`)} ${notRefs})`,
           `(require-all ${re(`^${w}/[^/]+/modules/`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")} ${notRefs})`,
-          `(require-all ${re(`^${w}/[^/]+/modules/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} ${notRefs})`,
+          `(require-all ${re(`^${w}/[^/]+/modules/`)} ${re(`^.*/${hfsFoldedName("hooks")}(/|$)`)} ${notRefs})`,
           `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("modules")}$`)})`,
         ];
       })()

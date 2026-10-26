@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HFS_IGNORABLE_POINTS } from "../src/local/deny.ts";
+import { HFS_IGNORABLE_POINTS, hubWriteRegexes } from "../src/local/deny.ts";
 import { profile, sandboxAvailable, sandboxedExec } from "../src/local/sandbox.ts";
 
 /**
@@ -476,6 +476,53 @@ test.skipIf(!sandboxAvailable())("config.worktree is refused with ignorable code
   // Names that only look similar are not over-matched: ordinary git files in those directories stay writable where they were before.
   const unrelated = await run(cwd, [`(echo x > '${own}/ORIG_HEAD') && echo wrote-orig-head`, `(echo x > '${own}/worktree') 2>/dev/null && echo wrote-worktree-name || echo blocked-worktree-name`, "git branch fix/config.worktree && echo branched-dotted-name", "git tag config.worktree && echo tagged-dotted-name"]);
   expect(unrelated.output).toContain("wrote-orig-head"); expect(unrelated.output).toContain("branched-dotted-name"); expect(unrelated.output).toContain("tagged-dotted-name");
+});
+
+test("no regex literal that folds a name carries the git path, so a long path cannot push one over SBPL's 1024-byte limit (#518 review)", () => {
+  // A literal over 1024 BYTES (the HFS+ code points are 3 bytes each) makes sandbox-exec refuse the whole profile, so no sandboxed command starts. Bytes, not characters.
+  const literal = /\(regex "((?:[^"\\]|\\.)*)"\)/g;
+  const literals = (rules: string[]) => rules.flatMap((rule) => [...rule.matchAll(literal)].map((m) => m[1]!));
+  const build = (pathBytes: number) => {
+    const common = `/p${"a".repeat(pathBytes - "/p/.git".length)}/.git`;
+    return hubWriteRegexes("/proj", [common], [{ root: `${common}/modules`, entries: [`${common}/modules`, `${common}/modules/sub`, `${common}/modules/sub/modules/deep`] }], `${common}/worktrees`);
+  };
+  for (const bytes of [40, 200, 450, 520, 700]) {
+    const all = literals(build(bytes));
+    const folded = all.filter((text) => text.includes(HFS_IGNORABLE_POINTS[1]!));
+    expect(folded.length, `${bytes}: folded literals exist`).toBeGreaterThan(8);
+    // The structural guarantee: a literal that folds a name never holds the path, so it is the same size at every path length.
+    for (const text of folded) expect(text, `${bytes}: a folded literal names the path`).not.toContain("aaaa");
+    expect(Math.max(...folded.map((text) => Buffer.byteLength(text))), `${bytes}: longest folded literal`).toBeLessThan(1000);
+    // The plain root literals grow with the path and stay under the limit until a ~900-byte git path, a ceiling main already had.
+    expect(Math.max(...all.map((text) => Buffer.byteLength(text))), `${bytes}: longest literal`).toBeLessThan(1024);
+  }
+});
+
+test.skipIf(!sandboxAvailable())("a linked worktree with a submodule under a ~480-byte path: the profile still parses and the protections hold (#518 review)", async () => {
+  let base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-longpath-")));
+  while (Buffer.byteLength(base) < 470) base = join(base, "d".repeat(Math.min(100, 470 - Buffer.byteLength(base))));
+  mkdirSync(base, { recursive: true });
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  const ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+  const init = (dir: string) => { expect(git(["init", "-q", dir]).exitCode).toBe(0); writeFileSync(join(dir, "f"), "x"); git(["-C", dir, "add", "f"]); expect(git(["-C", dir, ...ident, "commit", "-qm", "one"]).exitCode).toBe(0); };
+  const subSrc = join(base, "sub-src"), main = join(base, "main"), cwd = join(base, "wt");
+  init(subSrc); init(main);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subSrc, "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, ...ident, "commit", "-qm", "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, "worktree", "add", cwd]).exitCode).toBe(0);
+  expect(git(["-C", cwd, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]).exitCode).toBe(0);
+  expect(Buffer.byteLength(join(main, ".git"))).toBeGreaterThan(470);
+  const own = join(main, ".git", "worktrees", "wt");
+  const out = await sandboxedExec(["/bin/sh", "-c", [
+    "echo started",
+    `(echo x > '${own}/modules/s/config') 2>/dev/null && echo WROTE-SUB-CONFIG || echo blocked-sub-config`,
+    `(echo x > '${own}/config.worktree') 2>/dev/null && echo WROTE-CW || echo blocked-cw`,
+    `(mv '${own}/modules/s' '${own}/modules/away') 2>/dev/null && echo WROTE-RENAME || echo blocked-rename`,
+    "echo hi > ok.txt && echo wrote-file",
+    "git branch fix/config && echo branched",
+  ].join("; ")], { cwd, profile: profile(cwd, false) });
+  for (const expected of ["started", "blocked-sub-config", "blocked-cw", "blocked-rename", "wrote-file", "branched"]) expect(out.output).toContain(expected);
+  expect(out.output).not.toContain("Error reading string"); expect(out.output).not.toMatch(/WROTE-/);
 });
 
 test.skipIf(!sandboxAvailable())("a nested bare-layout repository is not covered by the rules: the exclusion, tested (#281)", async () => {
