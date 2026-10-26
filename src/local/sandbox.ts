@@ -59,7 +59,7 @@ function worktreesRoot(root: string): string | undefined {
  * that must not be renamed, replaced, symlinked or recreated (the root, each git dir and every component between them, #281). Everything else under the root is refused to
  * write (#520): a git dir that is not discovered here is a plant, whatever its name.
  */
-export interface ModuleGit { root: string; entries: string[]; dirs: string[] }
+export interface ModuleGit { root: string; entries: string[]; dirs?: string[] }
 
 /** The deepest submodule nesting the profile follows: a git dir below it is not exempt, so a write there fails closed instead of going unprotected. */
 const MODULE_DEPTH = 8;

@@ -77,7 +77,7 @@ const hooksUnder = (parent: string): string => {
   return depth > MAX_ANCHOR_DEPTH ? `^.*/${hfsFoldedName("hooks")}(/|$)` : `^${"/[^/]+".repeat(depth)}/${hfsFoldedName("hooks")}(/|$)`;
 };
 
-export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit: readonly { root: string; entries: string[]; dirs: string[] }[] = [], worktreesRoot?: string): string[] {
+export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit: readonly { root: string; entries: string[]; dirs?: string[] }[] = [], worktreesRoot?: string): string[] {
   const git = hfsFoldedName(".git");
   const re = (s: string) => `(regex ${sbplString(s)})`;
   const external = gitDirs.flatMap((d) => [
@@ -94,8 +94,9 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
   // Each literal holds either a path or a folded name, never both (the 1024-byte limit, #518 review); the folded names sit in `^.*/<name>$` filters beside a plain anchor.
   const modules = moduleGit.flatMap((tree) => {
     const root = sbplEscape(tree.root);
-    const inside = tree.dirs.map((d) => `(require-not ${re(`^${sbplEscape(d)}(/|$)`)})`).join(" ");
-    const anchored = tree.dirs.flatMap((d) => {
+    const found = tree.dirs ?? [];   // absent means nothing is exempt: everything under the root is refused, which fails closed
+    const inside = found.map((d) => `(require-not ${re(`^${sbplEscape(d)}(/|$)`)})`).join(" ");
+    const anchored = found.flatMap((d) => {
       const dir = sbplEscape(d);
       return [
         `(require-all ${re(`^${dir}/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config")}$`)})`,
@@ -103,6 +104,11 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
         `(require-all ${re(`^${dir}/`)} ${re(hooksUnder(d))})`,
         // A linked worktree of a submodule keeps its own config.worktree one level down.
         `(require-all ${re(`^${dir}/worktrees/[^/]+/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
+        // The directories on the way to those files are directory-entry targets, so none can be moved out of the protected path, edited and put back (#520 review): `worktrees`
+        // and each `worktrees/<name>` (no rename, replace, symlink or removal), and the `hooks` directory itself. The root and the folded name are separate filters.
+        `(require-all ${re(`^${dir}/[^/]+$`)} ${re(`^.*/${hfsFoldedName("worktrees")}$`)})`,
+        re(`^${dir}/worktrees/[^/]+$`),
+        `(require-all ${re(`^${dir}/[^/]+$`)} ${re(`^.*/${hfsFoldedName("hooks")}$`)})`,
       ];
     });
     return [
@@ -134,7 +140,7 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
           `(require-all ${re(`^${w}/[^/]+/`)} ${re(hooksUnder(`${worktreesRoot}/x`))})`,
           // Every write under any worktree's `modules/` that is not inside a DISCOVERED submodule git dir (#520): a plant, or a tree that does not exist yet. The discovered git dirs
           // (the sandboxed worktree's own, and any sibling's that exists) are exempt here and get their anchored rules from their own tree above. No name is exempt.
-          `(require-all ${re(`^${w}/[^/]+/modules/.`)} ${moduleGit.flatMap((tree) => tree.dirs).filter((d) => d.startsWith(`${worktreesRoot}/`)).map((d) => `(require-not ${re(`^${sbplEscape(d)}(/|$)`)})`).join(" ")})`,
+          `(require-all ${re(`^${w}/[^/]+/modules/.`)} ${moduleGit.flatMap((tree) => tree.dirs ?? []).filter((d) => d.startsWith(`${worktreesRoot}/`)).map((d) => `(require-not ${re(`^${sbplEscape(d)}(/|$)`)})`).join(" ")})`,
           `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("modules")}$`)})`,
         ];
       })()
