@@ -670,6 +670,54 @@ test.skipIf(!sandboxAvailable())("a submodule of a submodule: its git dir is pro
   expect(existsSync(join(common, "modules", "sub", "modules", "refs"))).toBe(false);
 });
 
+test.skipIf(!sandboxAvailable())("inside a discovered submodule git dir, every directory that holds a protected file is a directory-entry target too: worktrees, its linked worktrees and hooks cannot be moved out, edited and put back (#520 review)", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-subgit-")));
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  const ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+  const init = (dir: string) => { expect(git(["init", "-q", dir]).exitCode).toBe(0); writeFileSync(join(dir, "f"), "x"); git(["-C", dir, "add", "f"]); expect(git(["-C", dir, ...ident, "commit", "-qm", "one"]).exitCode).toBe(0); };
+  const subSrc = join(base, "sub-src"), main = join(base, "main"), linked = join(base, "sub-wt");
+  init(subSrc); init(main);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subSrc, "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, ...ident, "commit", "-qm", "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]).exitCode).toBe(0);
+  // The submodule is itself a repository: it can have its own linked worktrees, each with a config.worktree git reads.
+  expect(git(["-C", join(main, "s"), "worktree", "add", linked]).exitCode).toBe(0);
+  const dir = join(main, ".git", "modules", "s"), scratch = join(dir, "scratch-ops");
+  mkdirSync(scratch, { recursive: true });
+  const config = join(dir, "worktrees", "sub-wt", "config.worktree");
+  writeFileSync(config, "[core]\n");
+  const before = readFileSync(config, "utf8");
+  const attacks = [
+    `(mv '${dir}/worktrees' '${scratch}/w' && echo '[core]' >> '${scratch}/w/sub-wt/config.worktree'; mv '${scratch}/w' '${dir}/worktrees') 2>/dev/null; echo done`,
+    `(mv '${dir}/worktrees/sub-wt' '${scratch}/x' && echo '[core]' >> '${scratch}/x/config.worktree'; mv '${scratch}/x' '${dir}/worktrees/sub-wt') 2>/dev/null; echo done`,
+    `(mv '${dir}/worktrees' '${scratch}/w2' && mkdir -p '${scratch}/w2/planted' && echo '[core]' > '${scratch}/w2/planted/config.worktree'; mv '${scratch}/w2' '${dir}/worktrees') 2>/dev/null; echo done`,
+  ];
+  for (const attack of attacks) {
+    const out = await sandboxedExec(["/bin/sh", "-c", attack], { cwd: main, profile: profile(main, false) });
+    expect(out.output).toContain("done");
+    expect(readFileSync(config, "utf8"), attack).toBe(before);
+    expect(existsSync(join(dir, "worktrees", "planted")), attack).toBe(false);
+  }
+  // The same moves on every entry on the path, with every directory-entry operation, stopping at the first slip.
+  const entries = ["worktrees", "worktrees/sub-wt", "hooks"];
+  const operations: [string, (entry: string) => string][] = [
+    ["rename away", (entry) => `mv '${entry}' '${scratch}/gone'`],
+    ["rename a directory over it", (entry) => `mkdir -p '${scratch}/decoy' && mv -f '${scratch}/decoy' '${entry}'`],
+    ["replace by a symlink", (entry) => `mkdir -p '${scratch}/decoy2' && rm -rf '${entry}' && ln -s '${scratch}/decoy2' '${entry}'`],
+    ["remove", (entry) => `rm -rf '${entry}'`],
+  ];
+  for (const entry of entries) for (const [label, command] of operations) {
+    const target = join(dir, entry);
+    if (!existsSync(target)) mkdirSync(target, { recursive: true });
+    const inode = lstatSync(target).ino;
+    await sandboxedExec(["/bin/sh", "-c", `(${command(target)}) 2>/dev/null; echo done`], { cwd: main, profile: profile(main, false) });
+    if (!existsSync(target) || lstatSync(target).ino !== inode || lstatSync(target).isSymbolicLink()) return expect(`${entry}: ${label}`).toBe("nothing slipped");
+  }
+  // Ordinary work in the submodule and its linked worktree still runs.
+  const ok = await sandboxedExec(["/bin/sh", "-c", [`git -C s ${ident.join(" ")} commit -qm in-sub --allow-empty && echo committed-in-sub`, `git -C '${linked}' ${ident.join(" ")} commit -qm in-linked --allow-empty && echo committed-in-linked`, "git -C s branch fix/x && echo branched"].join("; ")], { cwd: main, profile: profile(main, false) });
+  for (const expected of ["committed-in-sub", "branched"]) expect(ok.output).toContain(expected);
+}, 60_000);
+
 test("no regex literal that folds a name carries the git path, so a long path cannot push one over SBPL's 1024-byte limit (#518 review)", () => {
   // A literal over 1024 BYTES (the HFS+ code points are 3 bytes each) makes sandbox-exec refuse the whole profile, so no sandboxed command starts. Bytes, not characters.
   const literal = /\(regex "((?:[^"\\]|\\.)*)"\)/g;
