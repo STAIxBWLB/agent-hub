@@ -34,8 +34,6 @@ class PiPromptNotStarted extends Error {
 }
 class PiPromptUncertain extends Error {}
 export interface PiOptions {
-  /** Fixed production factory port; transport-only fixtures do not launch a native CLI. */
-  preflight?: () => Promise<void>;
   /** stateDir owns this native instance; hubStateDir retains the canonical daemon binding. */
   hubStateDir?: string;
   cwd: string; stateDir: string; cmd?: string[]; mode: "headless" | "tui"; backend: "auto" | "dgx" | "mlx"; sessionFile?: string; sessionId?: string;
@@ -168,7 +166,8 @@ export class PiPeer extends BasePeer {
   private tuiQueue: Record<string, unknown>[] = [];
   private tuiWaiters: Array<{ resolve: (command: Record<string, unknown> | undefined) => void; timer: ReturnType<typeof setTimeout> }> = [];
 
-  constructor(id: PeerId, private readonly opts: PiOptions) { super(id, opts.watchdogMs); }
+  /** The fixed production factory supplies preflight separately, preserving transport option identity. */
+  constructor(id: PeerId, private readonly opts: PiOptions, private readonly preflight?: () => Promise<void>) { super(id, opts.watchdogMs); }
   get tuiLaunch(): PiTuiLaunch | undefined { return this._tuiLaunch; }
   get pendingResume(): { sessionId?: string; sessionFile?: string } {
     if (this.canReuseVerifiedEmptyResume()) return { sessionId: this.verifiedEmptyResume!.sessionId };
@@ -380,7 +379,7 @@ export class PiPeer extends BasePeer {
   }
 
   private async startImpl(): Promise<void> {
-    if (this.opts.preflight) await this.opts.preflight();
+    if (this.preflight) await this.preflight();
     this.terminalOwnerObservation = undefined;
     this.stopping = false;
     this.rosterDetached = false; this.rosterUnownedRun = false;

@@ -6368,6 +6368,7 @@ var init_pi = __esm(() => {
   };
   PiPeer = class PiPeer extends BasePeer {
     opts;
+    preflight;
     hubNative = true;
     proc;
     server;
@@ -6434,9 +6435,10 @@ var init_pi = __esm(() => {
     tuiCommands = new Map;
     tuiQueue = [];
     tuiWaiters = [];
-    constructor(id, opts) {
+    constructor(id, opts, preflight) {
       super(id, opts.watchdogMs);
       this.opts = opts;
+      this.preflight = preflight;
     }
     get tuiLaunch() {
       return this._tuiLaunch;
@@ -6682,8 +6684,8 @@ var init_pi = __esm(() => {
       return Response.json({ decisions, ...reservation ? { reservation } : {} });
     }
     async startImpl() {
-      if (this.opts.preflight)
-        await this.opts.preflight();
+      if (this.preflight)
+        await this.preflight();
       this.terminalOwnerObservation = undefined;
       this.stopping = false;
       this.rosterDetached = false;
@@ -11237,13 +11239,13 @@ function createPi(ctx) {
     throw new Error("Pi has no verified read-only permission mapping");
   init_pi();
   const options = ctx.daemon.pi;
-  return new PiPeer(ctx.instance, { ...options, preflight: async () => {
+  return new PiPeer(ctx.instance, options, async () => {
     const verdict = await piVersionAsync(options.cmd ?? ["pi"], options.cwd);
     if (!verdict.ok)
       throw new PiVersionRefusal(verdict);
     if (verdict.note)
       options.log?.(verdict.note);
-  } });
+  });
 }
 function createLocal(ctx) {
   if (!("local" in ctx.daemon))

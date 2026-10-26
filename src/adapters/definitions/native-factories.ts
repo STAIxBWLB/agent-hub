@@ -36,11 +36,11 @@ export function createPi(ctx: CreateContext): PeerAdapter {
   if (ctx.permission === "read-only") throw new Error("Pi has no verified read-only permission mapping");
   const { PiPeer, PiVersionRefusal, piVersionAsync } = require("../pi.ts") as typeof import("../pi.ts");
   const options = ctx.daemon.pi;
-  return new PiPeer(ctx.instance, { ...options, preflight: async () => {
+  return new PiPeer(ctx.instance, options, async () => {
     const verdict = await piVersionAsync(options.cmd ?? ["pi"], options.cwd);
     if (!verdict.ok) throw new PiVersionRefusal(verdict);
     if (verdict.note) options.log?.(verdict.note);
-  } });
+  });
 }
 
 export function createLocal(ctx: CreateContext): PeerAdapter {

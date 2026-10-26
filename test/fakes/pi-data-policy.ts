@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+if (process.argv.includes("--version")) { console.log("1.4.0"); process.exit(0); }
 const dir = process.argv[process.argv.indexOf("--session-dir") + 1]!;
 mkdirSync(dir, { recursive: true });
 const sessionFile = join(dir, "readonly-pi.jsonl");
