@@ -552,13 +552,223 @@ test.skipIf(!sandboxAvailable())("every directory entry on the path to a protect
   expect(slipped).toEqual([]);
 }, 60_000);
 
+test.skipIf(!sandboxAvailable())("sandboxed code cannot plant a fake submodule git dir under any modules root, whatever it is named: refs and logs are not exempt (#520)", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-plant-")));
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  const ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+  const init = (dir: string) => { expect(git(["init", "-q", dir]).exitCode).toBe(0); writeFileSync(join(dir, "f"), "x"); git(["-C", dir, "add", "f"]); expect(git(["-C", dir, ...ident, "commit", "-qm", "one"]).exitCode).toBe(0); };
+  const subSrc = join(base, "sub-src"), main = join(base, "main"), cwd = join(base, "wt");
+  init(subSrc); init(main);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subSrc, "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, ...ident, "commit", "-qm", "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, "worktree", "add", cwd]).exitCode).toBe(0);
+  expect(git(["-C", cwd, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]).exitCode).toBe(0);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]).exitCode).toBe(0);
+  const common = join(main, ".git"), own = join(common, "worktrees", "wt");
+  // A later unsandboxed `git submodule update --init` reuses a git dir found at <modules>/<name>, so any name under any modules root is a plant: `refs` and `logs` included.
+  const plants: [string, string][] = [
+    ["common modules/refs/config", `mkdir -p '${common}/modules/refs' && echo '[core]' > '${common}/modules/refs/config'`],
+    ["common modules/refs/hooks", `mkdir -p '${common}/modules/refs/hooks' && echo x > '${common}/modules/refs/hooks/post-checkout'`],
+    ["common modules/logs/hooks", `mkdir -p '${common}/modules/logs/hooks' && echo x > '${common}/modules/logs/hooks/pre-commit'`],
+    ["common modules/tools/logs/config", `mkdir -p '${common}/modules/tools/logs' && echo '[core]' > '${common}/modules/tools/logs/config'`],
+    ["common modules/x/refs/hooks", `mkdir -p '${common}/modules/x/refs/hooks' && echo x > '${common}/modules/x/refs/hooks/post-checkout'`],
+    ["worktree modules/refs/config", `mkdir -p '${own}/modules/refs' && echo '[core]' > '${own}/modules/refs/config'`],
+    ["worktree modules/refs/hooks", `mkdir -p '${own}/modules/refs/hooks' && echo x > '${own}/modules/refs/hooks/post-checkout'`],
+    ["worktree modules/x/logs/config", `mkdir -p '${own}/modules/x/logs' && echo '[core]' > '${own}/modules/x/logs/config'`],
+    ["nested modules/s/modules/refs/config", `mkdir -p '${common}/modules/s/modules/refs' && echo '[core]' > '${common}/modules/s/modules/refs/config'`],
+    ["a plain new git dir", `mkdir -p '${common}/modules/fresh/hooks' && echo x > '${common}/modules/fresh/hooks/pre-commit'`],
+  ];
+  const planted: string[] = [];
+  for (const [label, command] of plants) {
+    const out = await sandboxedExec(["/bin/sh", "-c", `(${command}) 2>/dev/null && echo WROTE || echo blocked`], { cwd, profile: profile(cwd, false) });
+    if (out.output.includes("WROTE")) planted.push(label);
+  }
+  expect(planted).toEqual([]);
+  for (const name of ["refs", "logs", "fresh"]) expect(existsSync(join(common, "modules", name))).toBe(false);
+  // The real submodules keep working: commit, branch, tag and a branch named like the protected files, in the main checkout's and the worktree's submodule.
+  const ok = await sandboxedExec(["/bin/sh", "-c", [
+    `git -C s ${ident.join(" ")} commit -qm in-sub --allow-empty && echo committed-in-sub`, "git -C s branch fix/config && echo branched-config-in-sub", "git -C s tag hooks && echo tagged-hooks-in-sub",
+    "git -C s checkout -qb feature/logs/x && echo checkout-logs-in-sub", "git branch fix/refs && echo branched-refs",
+  ].join("; ")], { cwd, profile: profile(cwd, false) });
+  for (const expected of ["committed-in-sub", "branched-config-in-sub", "tagged-hooks-in-sub", "checkout-logs-in-sub", "branched-refs"]) expect(ok.output).toContain(expected);
+});
+
+test.skipIf(!sandboxAvailable())("a submodule whose own name is refs or logs is a real git dir: it is protected and still works (#520)", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-named-")));
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  const ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+  const init = (dir: string) => { expect(git(["init", "-q", dir]).exitCode).toBe(0); writeFileSync(join(dir, "f"), "x"); git(["-C", dir, "add", "f"]); expect(git(["-C", dir, ...ident, "commit", "-qm", "one"]).exitCode).toBe(0); };
+  const main = join(base, "main"); init(main);
+  for (const name of ["refs", "logs"]) {
+    const src = join(base, `${name}-src`); init(src);
+    expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", src, name]).exitCode).toBe(0);
+  }
+  expect(git(["-C", main, ...ident, "commit", "-qm", "two subs"]).exitCode).toBe(0);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]).exitCode).toBe(0);
+  const common = join(main, ".git");
+  const out = await sandboxedExec(["/bin/sh", "-c", [
+    `(echo x >> '${common}/modules/refs/config') 2>/dev/null && echo WROTE-REFS-CONFIG || echo blocked-refs-config`,
+    `(mkdir -p '${common}/modules/logs/hooks' && echo x > '${common}/modules/logs/hooks/pre-commit') 2>/dev/null && echo WROTE-LOGS-HOOK || echo blocked-logs-hook`,
+    `git -C refs ${ident.join(" ")} commit -qm in-refs --allow-empty && echo committed-in-refs`, `git -C logs ${ident.join(" ")} commit -qm in-logs --allow-empty && echo committed-in-logs`,
+    "git -C refs branch fix/x && echo branched-in-refs",
+  ].join("; ")], { cwd: main, profile: profile(main, false) });
+  for (const expected of ["blocked-refs-config", "blocked-logs-hook", "committed-in-refs", "committed-in-logs", "branched-in-refs"]) expect(out.output).toContain(expected);
+  expect(out.output).not.toMatch(/WROTE-/);
+});
+
+test.skipIf(!sandboxAvailable())("a checkout under a directory named hooks keeps ordinary git work in its submodules, and its own hooks stay protected (#520)", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-hookpath-")));
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  const ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+  const init = (dir: string) => { expect(git(["init", "-q", dir]).exitCode).toBe(0); writeFileSync(join(dir, "f"), "x"); git(["-C", dir, "add", "f"]); expect(git(["-C", dir, ...ident, "commit", "-qm", "one"]).exitCode).toBe(0); };
+  const outer = join(base, "hooks", "work");
+  mkdirSync(outer, { recursive: true });
+  const subSrc = join(base, "sub-src"), main = join(outer, "main"), cwd = join(outer, "wt");
+  init(subSrc); init(main);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subSrc, "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, ...ident, "commit", "-qm", "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, "worktree", "add", cwd]).exitCode).toBe(0);
+  expect(git(["-C", cwd, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]).exitCode).toBe(0);
+  const own = join(main, ".git", "worktrees", "wt");
+  const out = await sandboxedExec(["/bin/sh", "-c", [
+    `git -C s ${ident.join(" ")} commit -qm in-sub --allow-empty && echo committed-in-sub`, "git -C s branch fix/x && echo branched-in-sub", `git ${ident.join(" ")} commit -qm in-wt --allow-empty && echo committed-in-wt`,
+    // Its own hooks and the submodule's config are still refused.
+    `(mkdir -p '${own}/hooks' && echo x > '${own}/hooks/pre-commit') 2>/dev/null && echo WROTE-WT-HOOK || echo blocked-wt-hook`,
+    `(echo x >> '${own}/modules/s/config') 2>/dev/null && echo WROTE-SUB-CONFIG || echo blocked-sub-config`,
+    `(mkdir -p '${own}/modules/s/hooks' && echo x > '${own}/modules/s/hooks/pre-commit') 2>/dev/null && echo WROTE-SUB-HOOK || echo blocked-sub-hook`,
+  ].join("; ")], { cwd, profile: profile(cwd, false) });
+  for (const expected of ["committed-in-sub", "branched-in-sub", "committed-in-wt", "blocked-wt-hook", "blocked-sub-config", "blocked-sub-hook"]) expect(out.output).toContain(expected);
+  expect(out.output).not.toMatch(/WROTE-/);
+});
+
+test.skipIf(!sandboxAvailable())("a submodule of a submodule: its git dir is protected, nothing can be planted under its modules root, and ordinary work in it runs (#520)", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-nested-")));
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  const ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+  const init = (dir: string) => { expect(git(["init", "-q", dir]).exitCode).toBe(0); writeFileSync(join(dir, "f"), "x"); git(["-C", dir, "add", "f"]); expect(git(["-C", dir, ...ident, "commit", "-qm", "one"]).exitCode).toBe(0); };
+  const deepSrc = join(base, "deep-src"), subSrc = join(base, "sub-src"), main = join(base, "main");
+  init(deepSrc); init(subSrc);
+  expect(git(["-C", subSrc, "-c", "protocol.file.allow=always", "submodule", "add", "-q", deepSrc, "deep"]).exitCode).toBe(0);
+  expect(git(["-C", subSrc, ...ident, "commit", "-qm", "with deep"]).exitCode).toBe(0);
+  init(main);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subSrc, "sub"]).exitCode).toBe(0);
+  expect(git(["-C", main, ...ident, "commit", "-qm", "sub"]).exitCode).toBe(0);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive", "-q"]).exitCode).toBe(0);
+  const common = join(main, ".git"), deepGit = join(common, "modules", "sub", "modules", "deep");
+  expect(existsSync(join(deepGit, "config"))).toBe(true);
+  const before = readFileSync(join(deepGit, "config"), "utf8");
+  const out = await sandboxedExec(["/bin/sh", "-c", [
+    `git -C sub/deep ${ident.join(" ")} commit -qm n --allow-empty && echo committed-nested`, "git -C sub/deep branch b && git -C sub/deep tag t && echo branched-nested", "git -C sub/deep gc -q && echo gc-nested",
+    "git submodule status --recursive >/dev/null && echo status-recursive",
+    `(mkdir -p '${common}/modules/sub/modules/refs' && echo x > '${common}/modules/sub/modules/refs/config') 2>/dev/null && echo WROTE-NESTED-PLANT || echo blocked-nested-plant`,
+    `(echo x >> '${deepGit}/config') 2>/dev/null && echo WROTE-NESTED-CONFIG || echo blocked-nested-config`,
+    `(mkdir -p '${deepGit}/hooks' && echo x > '${deepGit}/hooks/pre-commit') 2>/dev/null && echo WROTE-NESTED-HOOK || echo blocked-nested-hook`,
+  ].join("; ")], { cwd: main, profile: profile(main, false) });
+  for (const expected of ["committed-nested", "branched-nested", "gc-nested", "status-recursive", "blocked-nested-plant", "blocked-nested-config", "blocked-nested-hook"]) expect(out.output).toContain(expected);
+  expect(out.output).not.toMatch(/WROTE-/);
+  expect(readFileSync(join(deepGit, "config"), "utf8")).toBe(before);
+  expect(existsSync(join(common, "modules", "sub", "modules", "refs"))).toBe(false);
+});
+
+test.skipIf(!sandboxAvailable())("inside a discovered submodule git dir, every directory that holds a protected file is a directory-entry target too: worktrees, its linked worktrees and hooks cannot be moved out, edited and put back (#520 review)", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-subgit-")));
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  const ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+  const init = (dir: string) => { expect(git(["init", "-q", dir]).exitCode).toBe(0); writeFileSync(join(dir, "f"), "x"); git(["-C", dir, "add", "f"]); expect(git(["-C", dir, ...ident, "commit", "-qm", "one"]).exitCode).toBe(0); };
+  const subSrc = join(base, "sub-src"), main = join(base, "main"), linked = join(base, "sub-wt");
+  init(subSrc); init(main);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subSrc, "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, ...ident, "commit", "-qm", "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]).exitCode).toBe(0);
+  // The submodule is itself a repository: it can have its own linked worktrees, each with a config.worktree git reads.
+  expect(git(["-C", join(main, "s"), "worktree", "add", linked]).exitCode).toBe(0);
+  const dir = join(main, ".git", "modules", "s"), scratch = join(dir, "scratch-ops");
+  mkdirSync(scratch, { recursive: true });
+  const config = join(dir, "worktrees", "sub-wt", "config.worktree");
+  writeFileSync(config, "[core]\n");
+  const before = readFileSync(config, "utf8");
+  const attacks = [
+    `(mv '${dir}/worktrees' '${scratch}/w' && echo '[core]' >> '${scratch}/w/sub-wt/config.worktree'; mv '${scratch}/w' '${dir}/worktrees') 2>/dev/null; echo done`,
+    `(mv '${dir}/worktrees/sub-wt' '${scratch}/x' && echo '[core]' >> '${scratch}/x/config.worktree'; mv '${scratch}/x' '${dir}/worktrees/sub-wt') 2>/dev/null; echo done`,
+    `(mv '${dir}/worktrees' '${scratch}/w2' && mkdir -p '${scratch}/w2/planted' && echo '[core]' > '${scratch}/w2/planted/config.worktree'; mv '${scratch}/w2' '${dir}/worktrees') 2>/dev/null; echo done`,
+  ];
+  for (const attack of attacks) {
+    const out = await sandboxedExec(["/bin/sh", "-c", attack], { cwd: main, profile: profile(main, false) });
+    expect(out.output).toContain("done");
+    expect(readFileSync(config, "utf8"), attack).toBe(before);
+    expect(existsSync(join(dir, "worktrees", "planted")), attack).toBe(false);
+  }
+  // The same moves on every entry on the path, with every directory-entry operation, stopping at the first slip.
+  const entries = ["worktrees", "worktrees/sub-wt", "hooks"];
+  const operations: [string, (entry: string) => string][] = [
+    ["rename away", (entry) => `mv '${entry}' '${scratch}/gone'`],
+    ["rename a directory over it", (entry) => `mkdir -p '${scratch}/decoy' && mv -f '${scratch}/decoy' '${entry}'`],
+    ["replace by a symlink", (entry) => `mkdir -p '${scratch}/decoy2' && rm -rf '${entry}' && ln -s '${scratch}/decoy2' '${entry}'`],
+    ["remove", (entry) => `rm -rf '${entry}'`],
+  ];
+  for (const entry of entries) for (const [label, command] of operations) {
+    const target = join(dir, entry);
+    if (!existsSync(target)) mkdirSync(target, { recursive: true });
+    const inode = lstatSync(target).ino;
+    await sandboxedExec(["/bin/sh", "-c", `(${command(target)}) 2>/dev/null; echo done`], { cwd: main, profile: profile(main, false) });
+    if (!existsSync(target) || lstatSync(target).ino !== inode || lstatSync(target).isSymbolicLink()) return expect(`${entry}: ${label}`).toBe("nothing slipped");
+  }
+  // Ordinary work in the submodule and its linked worktree still runs.
+  const ok = await sandboxedExec(["/bin/sh", "-c", [`git -C s ${ident.join(" ")} commit -qm in-sub --allow-empty && echo committed-in-sub`, `git -C '${linked}' ${ident.join(" ")} commit -qm in-linked --allow-empty && echo committed-in-linked`, "git -C s branch fix/x && echo branched"].join("; ")], { cwd: main, profile: profile(main, false) });
+  for (const expected of ["committed-in-sub", "branched"]) expect(ok.output).toContain(expected);
+}, 60_000);
+
+test.skipIf(!sandboxAvailable())("a submodule's linked worktree has its own modules tree: it is protected like any other, present or not yet created, and ordinary work in it runs (#520 review)", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-subwt-modules-")));
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  const ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+  const init = (dir: string) => { expect(git(["init", "-q", dir]).exitCode).toBe(0); writeFileSync(join(dir, "f"), "x"); git(["-C", dir, "add", "f"]); expect(git(["-C", dir, ...ident, "commit", "-qm", "one"]).exitCode).toBe(0); };
+  const innerSrc = join(base, "inner-src"), subSrc = join(base, "sub-src"), main = join(base, "main"), linked = join(main, "sub-wt");   // inside the project root, where the sandbox can read and write
+  init(innerSrc); init(subSrc);
+  expect(git(["-C", subSrc, "-c", "protocol.file.allow=always", "submodule", "add", "-q", innerSrc, "in"]).exitCode).toBe(0);
+  expect(git(["-C", subSrc, ...ident, "commit", "-qm", "with inner"]).exitCode).toBe(0);
+  init(main);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subSrc, "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, ...ident, "commit", "-qm", "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive", "-q"]).exitCode).toBe(0);
+  // The submodule is a repository of its own: it can have a linked worktree, and that worktree can have its own submodule, whose git dir is D/worktrees/<wt>/modules/<name>.
+  expect(git(["-C", join(main, "s"), "worktree", "add", linked]).exitCode).toBe(0);
+  expect(git(["-C", linked, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]).exitCode).toBe(0);
+  const dir = join(main, ".git", "modules", "s"), wtGit = join(dir, "worktrees", "sub-wt"), innerGit = join(wtGit, "modules", "in");
+  expect(existsSync(join(innerGit, "config"))).toBe(true);
+  const before = readFileSync(join(innerGit, "config"), "utf8");
+  const attempts: [string, string][] = [
+    ["plant a fake git dir named refs", `mkdir -p '${wtGit}/modules/refs' && echo '[core]' > '${wtGit}/modules/refs/config'`],
+    ["plant a hook under a fake git dir", `mkdir -p '${wtGit}/modules/x/hooks' && echo x > '${wtGit}/modules/x/hooks/post-checkout'`],
+    ["edit the existing git dir's config", `echo '[core]' >> '${innerGit}/config'`],
+    ["add a hook to the existing git dir", `mkdir -p '${innerGit}/hooks' && echo x > '${innerGit}/hooks/pre-commit'`],
+    ["plant under a linked worktree that does not exist yet", `mkdir -p '${dir}/worktrees/later/modules/z' && echo x > '${dir}/worktrees/later/modules/z/config'`],
+    ["rename the modules tree away", `mv '${wtGit}/modules' '${wtGit}/m-away'`],
+    ["move the git dir away, edit, put back", `mv '${innerGit}' '${wtGit}/away' && echo '[core]' >> '${wtGit}/away/config'; mv '${wtGit}/away' '${innerGit}'`],
+  ];
+  const slipped: string[] = [];
+  for (const [label, command] of attempts) {
+    const out = await sandboxedExec(["/bin/sh", "-c", `(${command}) 2>/dev/null; echo done`], { cwd: main, profile: profile(main, false) });
+    expect(out.output).toContain("done");
+    if (readFileSync(join(innerGit, "config"), "utf8") !== before || existsSync(join(wtGit, "modules", "refs")) || existsSync(join(wtGit, "modules", "x")) || existsSync(join(innerGit, "hooks", "pre-commit"))
+      || existsSync(join(dir, "worktrees", "later", "modules")) || !existsSync(join(wtGit, "modules")) || existsSync(join(wtGit, "m-away")) || existsSync(join(wtGit, "away"))) { slipped.push(label); break; }
+  }
+  expect(slipped).toEqual([]);
+  // The real thing keeps working: commit, branch and tag in the linked worktree's own submodule, and in the linked worktree.
+  const ok = await sandboxedExec(["/bin/sh", "-c", [
+    `git -C '${linked}/in' ${ident.join(" ")} commit -qm in-inner --allow-empty && echo committed-in-inner`, `git -C '${linked}/in' branch fix/config && echo branched-in-inner`, `git -C '${linked}' ${ident.join(" ")} commit -qm in-wt --allow-empty && echo committed-in-wt`,
+    `git -C '${linked}' status --short >/dev/null && echo status-ok`,
+  ].join("; ")], { cwd: main, profile: profile(main, false) });
+  for (const expected of ["committed-in-inner", "branched-in-inner", "committed-in-wt", "status-ok"]) expect(ok.output).toContain(expected);
+}, 60_000);
+
 test("no regex literal that folds a name carries the git path, so a long path cannot push one over SBPL's 1024-byte limit (#518 review)", () => {
   // A literal over 1024 BYTES (the HFS+ code points are 3 bytes each) makes sandbox-exec refuse the whole profile, so no sandboxed command starts. Bytes, not characters.
   const literal = /\(regex "((?:[^"\\]|\\.)*)"\)/g;
   const literals = (rules: string[]) => rules.flatMap((rule) => [...rule.matchAll(literal)].map((m) => m[1]!));
   const build = (pathBytes: number) => {
     const common = `/p${"a".repeat(pathBytes - "/p/.git".length)}/.git`;
-    return hubWriteRegexes("/proj", [common], [{ root: `${common}/modules`, entries: [`${common}/modules`, `${common}/modules/sub`, `${common}/modules/sub/modules/deep`] }], `${common}/worktrees`);
+    return hubWriteRegexes("/proj", [common], [{ root: `${common}/modules`, entries: [`${common}/modules`, `${common}/modules/sub`, `${common}/modules/sub/modules/deep`], dirs: [`${common}/modules/sub`, `${common}/modules/sub/modules/deep`] }], `${common}/worktrees`);
   };
   for (const bytes of [40, 200, 450, 520, 700]) {
     const all = literals(build(bytes));
@@ -651,6 +861,8 @@ test.skipIf(!sandboxAvailable())("the modules rules ignore the project's own anc
     mkdirSync(cwd, { recursive: true });
     Bun.spawnSync(["git", "init", "-q"], { cwd });
     mkdirSync(join(cwd, ".git", "modules", "sub"), { recursive: true });
+    // A real submodule git dir has a HEAD and a config: that is what discovery looks for (#520), and a bare empty directory would be a plant and refused whole.
+    writeFileSync(join(cwd, ".git", "modules", "sub", "HEAD"), "ref: refs/heads/main\n"); writeFileSync(join(cwd, ".git", "modules", "sub", "config"), "[core]\n");
     const out = await sandboxedExec(["/bin/sh", "-c", [
       "(echo x > .git/modules/sub/config) 2>/dev/null && echo WROTE-CONFIG || echo blocked-config",
       "(echo x > .git/modules/sub/FETCH_HEAD) 2>/dev/null && echo wrote-unrelated || echo blocked-unrelated",

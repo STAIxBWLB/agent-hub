@@ -54,16 +54,21 @@ function worktreesRoot(root: string): string | undefined {
   return out.status === 0 && out.stdout.trim() ? join(resolve(root, out.stdout.trim()), "worktrees") : undefined;
 }
 
-/** One modules tree: its root and every directory entry under it that must not be renamed, replaced, symlinked or recreated. */
-export interface ModuleGit { root: string; entries: string[] }
+/**
+ * One modules tree: its root, the submodule git dirs found directly under it (`dirs`, each a directory holding HEAD and config, however it is named) and every directory entry
+ * that must not be renamed, replaced, symlinked or recreated (the root, each git dir and every component between them, #281). Everything else under the root is refused to
+ * write (#520): a git dir that is not discovered here is a plant, whatever its name.
+ */
+export interface ModuleGit { root: string; entries: string[]; dirs?: string[] }
+
+/** The deepest submodule nesting the profile follows: a git dir below it is not exempt, so a write there fails closed instead of going unprotected. */
+const MODULE_DEPTH = 8;
 
 /**
- * The submodule git directories the project can reach, as modules trees. A plain checkout keeps them under the common
- * dir's `modules/`; a LINKED worktree keeps its own under that worktree's git dir, `<common>/worktrees/<wt>/modules/`,
- * so the trees are the common dir's, this worktree's own git dir's (whether or not it exists yet, so it cannot be
- * pre-created) and every sibling worktree's that already has one: the common dir is writable from here (#518). Each tree
- * lists its modules root and every discovered git dir (a directory holding HEAD and config) with every component between
- * it and the root (#281). Discovered in the hub process, outside the sandbox.
+ * The submodule git directories the project can reach, as modules trees. A plain checkout keeps them under the common dir's `modules/`; a LINKED worktree keeps its own under that
+ * worktree's git dir, `<common>/worktrees/<wt>/modules/`, so the trees are the common dir's, this worktree's own git dir's (whether or not it exists yet, so it cannot be pre-created)
+ * and every sibling worktree's that already has one: the common dir is writable from here (#518). Every discovered git dir also gets a tree of its own for its `modules/`, existing
+ * or not, so a submodule of a submodule is covered the same way (#520). Discovered in the hub process, outside the sandbox.
  */
 function moduleGitDirs(root: string): ModuleGit[] {
   const out = hubGitSync(["-C", root, "rev-parse", "--git-common-dir", "--absolute-git-dir"], { encoding: "utf8" });
@@ -79,10 +84,11 @@ function moduleGitDirs(root: string): ModuleGit[] {
       if (existsSync(modules)) roots.add(modules);
     }
   } catch { /* no linked worktrees */ }
-  return [...roots].map((modulesRoot) => {
+  const trees: ModuleGit[] = [];
+  const tree = (modulesRoot: string, nesting: number): void => {
     const dirs: string[] = [];
     const walk = (dir: string, depth: number): void => {
-      if (depth > 8) return; // submodules do not nest deeper in practice; the regex rules still cover the names
+      if (depth > 8) return; // a path this deep is not a submodule layout git makes
       let entries: Dirent[];
       try {
         entries = readdirSync(dir, { withFileTypes: true });
@@ -90,19 +96,28 @@ function moduleGitDirs(root: string): ModuleGit[] {
         return; // no modules tree (no submodules): nothing to discover
       }
       const names = new Set(entries.map((e) => e.name));
-      if (names.has("HEAD") && names.has("config")) {
-        dirs.push(dir);
-        const nested = join(dir, "modules");
-        if (names.has("modules")) walk(nested, depth + 1); // a submodule of a submodule
-        return;
-      }
+      if (names.has("HEAD") && names.has("config")) { dirs.push(dir); return; }
       for (const e of entries) if (e.isDirectory()) walk(join(dir, e.name), depth + 1);
     };
     walk(modulesRoot, 0);
+    // Past the nesting limit nothing is exempt, so a write below it is refused rather than left unprotected.
+    const found = nesting >= MODULE_DEPTH ? [] : dirs;
     const entries = new Set<string>([modulesRoot]);
-    for (const d of dirs) for (let p = d; p.length > modulesRoot.length; p = dirname(p)) entries.add(p);
-    return { root: modulesRoot, entries: [...entries] };
-  });
+    for (const d of found) for (let p = d; p.length > modulesRoot.length; p = dirname(p)) entries.add(p);
+    trees.push({ root: modulesRoot, entries: [...entries], dirs: found });
+    for (const d of found) {
+      tree(join(d, "modules"), nesting + 1); // a submodule of a submodule, whether or not it exists yet
+      // A submodule is a repository: its linked worktrees keep their own modules trees at `<d>/worktrees/<wt>/modules`. Existing ones are discovered here; ones that do not exist yet
+      // are covered by pattern in hubWriteRegexes (#520 review).
+      try {
+        for (const e of readdirSync(join(d, "worktrees"), { withFileTypes: true })) {
+          if (e.isDirectory() && existsSync(join(d, "worktrees", e.name, "modules"))) tree(join(d, "worktrees", e.name, "modules"), nesting + 1);
+        }
+      } catch { /* no linked worktrees */ }
+    }
+  };
+  for (const modulesRoot of roots) tree(modulesRoot, 0);
+  return trees;
 }
 
 /** The system directories a deny-default profile lets commands read and run from: dyld, frameworks, toolchains. */
