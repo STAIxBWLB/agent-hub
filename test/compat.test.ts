@@ -234,3 +234,16 @@ test("Kimi 2.3.1 is receipt-verified without machine trust; its neighbours are n
   expect(assessVersion("kimi-review", "2.3.1", [])).toEqual({ ok: true, state: "verified", version: "2.3.1" });
   for (const near of ["2.3.2", "2.4.0", "2.3.1-rc.1"]) expect(assessVersion("kimi-review", near, []).ok).toBe(false);
 });
+
+test("Pi 1.4.0 has an exact receipt gate; other versions need the person's trust (#843 AC2)", () => {
+  expect(assessVersion("pi", "1.4.0", [])).toEqual({ ok: true, state: "verified", version: "1.4.0" });
+  expect(COMPAT.pi.gate).toBe("contract");
+  expect(COMPAT.pi).not.toHaveProperty("line");
+  expect(COMPAT.pi.parse("1.4.0\n")).toBe("1.4.0");
+  for (const version of ["1.4.1", "1.5.0", "1.4.0-rc.1"]) {
+    const verdict = assessVersion("pi", version, []);
+    expect(verdict).toMatchObject({ ok: false, state: "refused" });
+    if (!verdict.ok) expect(verdict.reason).toContain(`ahub agents trust pi ${version}`);
+    expect(assessVersion("pi", version, [{ id: "pi", version, at: 1 }])).toMatchObject({ ok: true, state: "trusted" });
+  }
+});

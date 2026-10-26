@@ -295,6 +295,15 @@ var plain = (text) => text.length <= 64 && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
 var init_compat = __esm(() => {
   init_project();
   COMPAT = {
+    pi: {
+      label: "Pi",
+      verified: ["1.4.0"],
+      gate: "contract",
+      probe: ["pi", "--version"],
+      config: "pi.cmd",
+      parse: (out) => plain(out.trim()),
+      trustNote: "The model-free extension load, RPC session identity and managed tool receipt path were checked on 1.4.0. Permissions remain host-owned; account-backed inference and another version's extension contract are unverified."
+    },
     "claude-implementer": {
       label: "Claude headless implementer",
       verified: ["2.1.309"],
@@ -6273,6 +6282,54 @@ import { randomUUID as randomUUID4 } from "crypto";
 import { existsSync as existsSync7, mkdirSync as mkdirSync9 } from "fs";
 import { join as join14, resolve as resolve11 } from "path";
 import { spawn as spawn9 } from "child_process";
+function piVersionAsync(command, cwd, timeoutMs = 1e4) {
+  const [bin, ...prefix] = command;
+  if (!bin)
+    return Promise.resolve(assessVersion("pi", undefined));
+  return new Promise((resolve) => {
+    let proc;
+    try {
+      proc = spawn9(bin, [...prefix, "--version"], { cwd, env: peerChildEnv("pi"), detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      resolve(assessVersion("pi", undefined));
+      return;
+    }
+    let output = "", bytes = 0, done = false;
+    const finish = async (code) => {
+      if (done)
+        return;
+      done = true;
+      clearTimeout(timer);
+      try {
+        await stopOwnedProcess(proc, { group: true });
+      } catch {
+        resolve(assessVersion("pi", undefined));
+        return;
+      }
+      resolve(assessVersion("pi", code === 0 && bytes <= 64 * 1024 ? COMPAT.pi.parse(output) : undefined));
+    };
+    const timer = setTimeout(() => {
+      finish(null);
+    }, timeoutMs);
+    proc.once("spawn", () => trackGroup(proc));
+    proc.stdout.on("data", (chunk) => {
+      if (done)
+        return;
+      bytes += chunk.length;
+      if (bytes > 64 * 1024) {
+        finish(null);
+        return;
+      }
+      output += chunk.toString("utf8");
+    });
+    proc.once("error", () => {
+      finish(null);
+    });
+    proc.once("close", (code) => {
+      finish(code);
+    });
+  });
+}
 function ownerStillAlive(pid, signature) {
   const current = processSignature(pid);
   if (current !== undefined)
@@ -6284,11 +6341,12 @@ function ownerStillAlive(pid, signature) {
     return false;
   }
 }
-var PiToolSettlementFailure, PiPromptNotStarted, PiPromptUncertain, TERMINAL_OWNER_MAX_AGE_MS = 1000, PiPeer;
+var PiToolSettlementFailure, PiPromptNotStarted, PiPromptUncertain, PiVersionRefusal, TERMINAL_OWNER_MAX_AGE_MS = 1000, PiPeer;
 var init_pi = __esm(() => {
   init_launch();
   init_envelope();
   init_child_process();
+  init_compat();
   init_process_signature();
   init_session();
   init_tools();
@@ -6303,8 +6361,14 @@ var init_pi = __esm(() => {
   };
   PiPromptUncertain = class PiPromptUncertain extends Error {
   };
+  PiVersionRefusal = class PiVersionRefusal extends Error {
+    constructor(verdict) {
+      super(verdict.reason);
+    }
+  };
   PiPeer = class PiPeer extends BasePeer {
     opts;
+    preflight;
     hubNative = true;
     proc;
     server;
@@ -6371,9 +6435,10 @@ var init_pi = __esm(() => {
     tuiCommands = new Map;
     tuiQueue = [];
     tuiWaiters = [];
-    constructor(id, opts) {
+    constructor(id, opts, preflight) {
       super(id, opts.watchdogMs);
       this.opts = opts;
+      this.preflight = preflight;
     }
     get tuiLaunch() {
       return this._tuiLaunch;
@@ -6619,6 +6684,8 @@ var init_pi = __esm(() => {
       return Response.json({ decisions, ...reservation ? { reservation } : {} });
     }
     async startImpl() {
+      if (this.preflight)
+        await this.preflight();
       this.terminalOwnerObservation = undefined;
       this.stopping = false;
       this.rosterDetached = false;
@@ -11171,7 +11238,14 @@ function createPi(ctx) {
   if (ctx.permission === "read-only")
     throw new Error("Pi has no verified read-only permission mapping");
   init_pi();
-  return new PiPeer(ctx.instance, ctx.daemon.pi);
+  const options = ctx.daemon.pi;
+  return new PiPeer(ctx.instance, options, async () => {
+    const verdict = await piVersionAsync(options.cmd ?? ["pi"], options.cwd);
+    if (!verdict.ok)
+      throw new PiVersionRefusal(verdict);
+    if (verdict.note)
+      options.log?.(verdict.note);
+  });
 }
 function createLocal(ctx) {
   if (!("local" in ctx.daemon))

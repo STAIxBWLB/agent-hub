@@ -82,7 +82,7 @@ import { claudeReportedTokens, readClaudeTranscriptCompletion, readClaudeTranscr
 import type { ServerWebSocket } from "bun";
 import { isAcpPeer, type AcpPeer, QwenIdentityError, ACTION_BUDGET_OPTION, type PermissionRequest, type ActionGateVerdict } from "../adapters/acp.ts";
 import { isCodexPeer, type CodexPeer } from "../adapters/codex-appserver.ts";
-import { isPiPeer, type PiPeer } from "../adapters/pi.ts";
+import { isPiPeer, PiVersionRefusal, type PiPeer } from "../adapters/pi.ts";
 import { isQwenDualPeer, qwenDualVersionAsync, type QwenDualPeer } from "../adapters/qwen-dual.ts";
 import { startModelRelay, type ModelRelay } from "../models/relay.ts";
 import { ensureMlx, type MlxOptions } from "../models/mlx.ts";
@@ -4647,7 +4647,11 @@ export async function startDaemon(opts: DaemonOptions) {
       executionOwners.set(peer, { owner: pi, cwd: executionCwd });
       bus.add(pi);
       // The start's own error is the one reported; a stop that fails too is logged beside it (#115).
-      try { await pi.start(); } catch (error) { await pi.stop().catch((stop: Error) => log(`pi stop after a failed start: ${stop.message}`)); throw error; }
+      try { await pi.start(); } catch (error) {
+        await pi.stop().catch((stop: Error) => log(`pi stop after a failed start: ${stop.message}`));
+        if (error instanceof PiVersionRefusal) return { ok: false, error: sanitize(error.message).slice(0, 1000) };
+        throw error;
+      }
       return { ok: true, ...(mode === "tui" ? { launch: pi.tuiLaunch } : {}) };
     }
     if (adapter?.start.daemonPort === "local-worker") {

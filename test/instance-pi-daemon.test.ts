@@ -29,7 +29,7 @@ async function fixture() {
   mkdirSync(join(root, ".agenthub"));
   writeFileSync(join(root, ".agenthub/config.local.json"), JSON.stringify({ instances }));
   // The existing fake deliberately uses one session id. Distinct native roots must still isolate its receipts.
-  writeFileSync(wrapper, `import { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(record)}, JSON.stringify({ peer: process.env.AGENTHUB_PEER_ID, nativeRoot: process.env.PI_CODING_AGENT_DIR, sessionDir: process.argv[process.argv.indexOf("--session-dir")+1] })+"\\n");\nawait import(${JSON.stringify(pathToFileURL(join(import.meta.dir, "fakes/pi-rpc.ts")).href)});\n`);
+  writeFileSync(wrapper, `import { appendFileSync } from "node:fs";\nif(process.argv.includes("--version")){console.log("1.4.0");process.exit(0);}\nappendFileSync(${JSON.stringify(record)}, JSON.stringify({ peer: process.env.AGENTHUB_PEER_ID, nativeRoot: process.env.PI_CODING_AGENT_DIR, sessionDir: process.argv[process.argv.indexOf("--session-dir")+1] })+"\\n");\nawait import(${JSON.stringify(pathToFileURL(join(import.meta.dir, "fakes/pi-rpc.ts")).href)});\n`);
   const model = startFakeModelServer({ key: "instance-pi-fixture", models: ["fixture-coding", "fixture-fast"], script: body => ({ content: `fixture response ${body.messages.at(-1)?.content}` }) });
   cleanup.push(model.stop);
   const oldUrl = process.env.AGENTHUB_OMNIROUTE_URL, oldKey = process.env.OMNIROUTE_API_KEY;

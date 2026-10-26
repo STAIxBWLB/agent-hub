@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+if (process.argv.includes("--version")) { console.log("1.4.0"); process.exit(0); }
 const option = (flag: string) => process.argv.includes(flag) ? process.argv[process.argv.indexOf(flag) + 1] : undefined;
 const empty = process.argv.includes("--empty-session");
 const dir = option("--session-dir")!;
