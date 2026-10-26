@@ -127,7 +127,7 @@ export function proveTaskShell(command: unknown, options: TaskShellProofOptions,
       const git = gitReader(root, env, current, project);
       {
         // No privileged Git/gh operation may turn model-written attributes or lazy object reads into helper execution.
-        if (git(["config", "--get-regexp", "^(filter\\..*\\.(clean|smudge|process)|diff\\..*\\.(command|textconv)|extensions\\.partialclone|remote\\..*\\.promisor)$"], true).trim()) return;
+        if (git(["config", "--get-regexp", "^(filter\\..*\\.(clean|smudge|process)|diff\\..*\\.(command|textconv)|include\\.path|includeif\\..*\\.path|extensions\\.partialclone|remote\\..*\\.promisor)$"], true).trim()) return;
       }
       if (form.kind === "add") {
         const selected = git(["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ...form.paths]).split("\0").filter(Boolean);

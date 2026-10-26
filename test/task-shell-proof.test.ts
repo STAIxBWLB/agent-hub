@@ -80,7 +80,7 @@ test("#845 mutable origin HEAD cannot replace the host-pinned non-main default b
 test("#845 privileged add/commit refuse configured filters, external drivers and partial clones", () => {
   const f = fixture();
   try {
-    for (const key of ["filter.fixture.clean", "filter.fixture.smudge", "filter.fixture.process", "diff.fixture.command", "diff.fixture.textconv", "extensions.partialClone", "remote.origin.promisor"]) {
+    for (const key of ["filter.fixture.clean", "filter.fixture.smudge", "filter.fixture.process", "diff.fixture.command", "diff.fixture.textconv", "include.path", "includeIf.onbranch:task/**.path", "extensions.partialClone", "remote.origin.promisor"]) {
       f.git("config", key, key === "remote.origin.promisor" ? "true" : key === "extensions.partialClone" ? "origin" : "fixture-helper");
       for (const command of ["git add test/example.test.ts", "git commit -m fixture"]) expect(proveTaskShell(command, f.options, () => true), key).toBeUndefined();
       f.git("config", "--unset", key);
