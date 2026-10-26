@@ -53,8 +53,10 @@ interface RunnerTransport {
   kind: "remote"; image: string; platform: string;
   probe(command: ContainerCommand, cleanup: ContainerCommand): Promise<RunnerState>;
   isolate(command: ContainerCommand): Promise<void>;
-  runArgs(receipt: RunReceipt, labels: string[]): string[];
+  runArgs(receipt: RunReceipt, labels: string[], volume?: string): string[];
   copy(command: ContainerCommand, source: string, container: string, signal: AbortSignal): Promise<void>;
+  /** Remote only: bring the lockfile-keyed dependency volume to a verified prepared state and return its name. */
+  prepareDeps?(command: ContainerCommand, receipt: RunReceipt, source: string, signal: AbortSignal, labels: string[]): Promise<string>;
   execArgs(container: string, words: readonly string[]): string[];
   cleanup(command: ContainerCommand, name: string): Promise<boolean>;
   listArgs: string[];
@@ -409,7 +411,10 @@ export class ContainerRunner {
       attemptedContainer = true;
       // Cold VM startup and a <=1.5 GiB source/dependency transfer need their own bounded allowances.
       const labels = ["--label", `agenthub.project=${this.options.projectKey}`, "--label", `agenthub.hub=${process.pid}:${this.signature}`, "--label", `agenthub.run=${r.run}`];
-      const run = await command(this.transport?.runArgs(r, labels) ?? ["run", "--detach", "--rm", "--name", r.container, ...labels, "--network", NETWORK, "--no-dns", "--cpus", "2", "--memory", "4g", "--workdir", "/work", CHECK_IMAGE, "sleep", "600"], 120_000);
+      // Preparation and verification containers reuse this run's name and labels, so cancel, timeout, shutdown, cleanup
+      // confirmation and the orphan sweep need no second ownership path. Each one is confirmed gone before the check starts.
+      const volume = await this.transport?.prepareDeps?.(transportCommand, r, src, entry.abort.signal, labels); this.ensureCurrent(entry);
+      const run = await command(this.transport?.runArgs(r, labels, volume) ?? ["run", "--detach", "--rm", "--name", r.container, ...labels, "--network", NETWORK, "--no-dns", "--cpus", "2", "--memory", "4g", "--workdir", "/work", CHECK_IMAGE, "sleep", "600"], 120_000);
       this.ensureCurrent(entry);
       if (run.code !== 0) { if (this.transport) throw new RemoteTransportError(); throw new Error("runner unavailable: container start failed"); }
       if (this.transport) await this.transport.copy(transportCommand, src, r.container, entry.abort.signal);
@@ -631,8 +636,50 @@ function runRemoteDocker(executable: string, remote: RemoteRunnerConfig, args: s
     });
   });
 }
+const DEPENDENCY_PREFIX = "agenthub-check-deps-";
+const DEPS_PROJECT = "agenthub.deps.project", DEPS_KEY = "agenthub.deps.key";
+/** Newest dependency volumes kept per project, the current one included; older ones are pruned. */
+export const KEEP_DEPENDENCY_VOLUMES = 3;
+/** Content key of a dependency volume: the commit's lockfile hash, Bun version, image architecture and image digest. */
+export function dependencyKey(parts: { lockfile: string; manifest: string; bun: string; arch: string; image: string }): string {
+  return createHash("sha256").update(["agenthub-deps-v2", parts.lockfile, parts.manifest, parts.bun, parts.arch, parts.image].join("\n")).digest("hex");
+}
+/** Files besides bun.lock that decide what `bun install --frozen-lockfile` produces: manifests, Bun and registry config, patches. */
+const INSTALL_INPUT = /(?:^|\/)(?:package\.json|bunfig\.toml|\.npmrc)$|^patches\//;
+/** Scripts bun runs during the root or a workspace install. They can read tracked source, so no manifest hash can bind their output. */
+const INSTALL_LIFECYCLE = ["preinstall", "install", "postinstall", "prepublish", "preprepare", "prepare", "postprepare"];
+/** Hash of every install-affecting file in the staged source, by path and content, so a changed manifest or config never reuses a volume. */
+export async function dependencyManifest(source: string): Promise<string> {
+  const files: string[] = [];
+  const walk = async (dir: string, prefix: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) { if (entry.name !== "node_modules" && entry.name !== ".git") await walk(join(dir, entry.name), path); }
+      else if (entry.isFile() && INSTALL_INPUT.test(path)) files.push(path);
+      if (files.length > 10_000) throw new Error("install inputs exceed file limit");
+    }
+  };
+  await walk(source, "");
+  const digest = createHash("sha256");
+  for (const path of files.sort()) {
+    const data = await readFile(join(source, path));
+    if (path.endsWith("package.json")) {
+      // A lifecycle script makes node_modules depend on source outside the key. Refuse it rather than reuse a stale volume or
+      // key on the whole tree; the install stays exactly `bun install --frozen-lockfile`, never `--ignore-scripts`.
+      let manifest: unknown;
+      try { manifest = JSON.parse(data.toString("utf8")); } catch { throw new RemoteDependencyError(); }
+      const scripts = manifest && typeof manifest === "object" ? (manifest as { scripts?: unknown }).scripts : undefined;
+      if (scripts !== undefined && (!scripts || typeof scripts !== "object" || Array.isArray(scripts) || INSTALL_LIFECYCLE.some(name => Object.hasOwn(scripts, name)))) throw new RemoteDependencyError();
+    }
+    digest.update(`${path}\0${hash(data)}\0`);
+  }
+  return digest.digest("hex");
+}
+export function dependencyVolume(projectKey: string, key: string): string { return `${DEPENDENCY_PREFIX}${projectKey}-${key.slice(0, 32)}`; }
 /** Distinguish transport failures from deterministic request/snapshot refusals without leaking remote stderr. */
 class RemoteTransportError extends Error { constructor() { super("remote runner unavailable"); } }
+/** The prepared dependency volume could not be proven; a fixed reason, never remote output. */
+class RemoteDependencyError extends Error { constructor() { super("remote dependencies unavailable"); } }
 
 /** Same production strategy for transport-only component/native checks; production uses RemoteRunner's dependency gate. */
 export function remoteRunnerTransport(options: RunnerOptions): RunnerTransport {
@@ -677,6 +724,12 @@ export function remoteRunnerTransport(options: RunnerOptions): RunnerTransport {
     } catch { return false; }
   };
   const hardening = ["--pull", "never", "--network", "none", "--user", "65532:65532", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,size=64m,mode=1777", "--tmpfs", "/home/check:rw,nosuid,nodev,size=16m,uid=65532,gid=65532", "--tmpfs", "/work:rw,nosuid,nodev,size=512m,mode=0755,uid=65532,gid=65532", "--env", "HOME=/home/check", "--env", "TMPDIR=/tmp", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--pids-limit", "64", "--cpus", "4", "--memory", "4g"];
+  // Network is "none" for every run except the single dependency-preparation container.
+  const hardenedFor = (network: "none" | "bridge") => { const args = [...hardening]; args[args.indexOf("--network") + 1] = network; return args; };
+  const mount = (volume: string, readonly: boolean) => ["--mount", `type=volume,src=${volume},dst=/work/node_modules${readonly ? ",readonly" : ""}`];
+  const readyFile = "/work/node_modules/.agenthub-deps-ready";
+  // Observed by the readiness probe: the Bun version and architecture the image actually runs.
+  let observed: { bun: string; arch: string } | undefined;
   const execArgs = (container: string, words: readonly string[]) => ["exec", "--user", "65532:65532", "--workdir", "/work", container, ...words];
   const copy = async (command: ContainerCommand, source: string, container: string, signal: AbortSignal) => {
     try {
@@ -714,10 +767,11 @@ export function remoteRunnerTransport(options: RunnerOptions): RunnerTransport {
           const launched = await command(["run", "--detach", "--rm", "--name", name, "--label", `agenthub.project=${options.projectKey}`, "--label", `agenthub.probe=${probeId}`, ...hardening, remote.image, "sleep", "600"]);
           if (launched.code !== 0) throw new RemoteTransportError();
           await copy(command, source, name, new AbortController().signal);
-          const result = await command(execArgs(name, ["bun", "-e", 'const {networkInterfaces}=await import("node:os"); if(process.getuid?.()!==65532||Object.keys(networkInterfaces()).some(name=>name!=="lo")||await Bun.file("/work/source-proof").text()!=="AHUB_REMOTE_SOURCE")process.exit(2); await Bun.write("/tmp/ready","ok"); try{await Bun.write("/root-write-proof","no");process.exit(3)}catch{} console.log(JSON.stringify({marker:"AHUB_REMOTE_READY",arch:process.arch,platform:process.platform}));']));
-          const observed = result.code === 0 ? JSON.parse(result.stdout) as { marker?: string; arch?: string; platform?: string } : undefined;
-          architecture = observed?.arch === "x64" ? "amd64" : observed?.arch;
-          if (observed?.marker !== "AHUB_REMOTE_READY" || observed.platform !== "linux" || architecture !== metadata.arch) throw new RemoteTransportError();
+          const result = await command(execArgs(name, ["bun", "-e", 'const {networkInterfaces}=await import("node:os"); if(process.getuid?.()!==65532||Object.keys(networkInterfaces()).some(name=>name!=="lo")||await Bun.file("/work/source-proof").text()!=="AHUB_REMOTE_SOURCE")process.exit(2); await Bun.write("/tmp/ready","ok"); try{await Bun.write("/root-write-proof","no");process.exit(3)}catch{} console.log(JSON.stringify({marker:"AHUB_REMOTE_READY",arch:process.arch,platform:process.platform,bun:Bun.version}));']));
+          const proof = result.code === 0 ? JSON.parse(result.stdout) as { marker?: string; arch?: string; platform?: string; bun?: string } : undefined;
+          architecture = proof?.arch === "x64" ? "amd64" : proof?.arch;
+          if (proof?.marker !== "AHUB_REMOTE_READY" || proof.platform !== "linux" || architecture !== metadata.arch || !/^\d+\.\d+\.\d+$/.test(proof.bun ?? "")) throw new RemoteTransportError();
+          observed = { bun: proof.bun!, arch: architecture! };
         } finally { clean = await cleanup(teardown, name); }
         if (!clean) throw new RemoteTransportError();
         return { available: true, platform: `linux/${architecture} (remote docker ${server.Version!.match(/^\d+\.\d+\.\d+/)![0]})` };
@@ -725,20 +779,81 @@ export function remoteRunnerTransport(options: RunnerOptions): RunnerTransport {
       finally { if (probeRoot) await rm(probeRoot, { recursive: true, force: true }).catch(() => {}); }
     },
     async isolate() { /* Fixed --network none needs no mutable host network. */ },
-    runArgs(receipt, labels) {
-      // ponytail: root and prepared dependency readiness remain reserved until 793b; no host path is used.
-      return ["run", "--detach", "--rm", "--name", receipt.container, ...labels, ...hardening,
-        "--mount", `type=volume,src=agenthub-check-deps-unprepared-${options.projectKey},dst=/work/node_modules,readonly`, "--workdir", "/work", remote.image, "sleep", "600"];
+    runArgs(receipt, labels, volume) {
+      // A check never runs without a verified prepared volume, and only ever mounts it read-only; no host path is used.
+      if (!volume) throw new RemoteDependencyError();
+      return ["run", "--detach", "--rm", "--name", receipt.container, ...labels, ...hardenedFor("none"), ...mount(volume, true), "--workdir", "/work", remote.image, "sleep", "600"];
+    },
+    async prepareDeps(command, receipt, source, signal, labels) {
+      if (!observed) throw new RemoteTransportError();
+      const key = dependencyKey({ lockfile: receipt.lockfile, manifest: await dependencyManifest(source), bun: observed.bun, arch: observed.arch, image: digest });
+      const volume = dependencyVolume(options.projectKey, key), name = receipt.container;
+      const ok = (result: CommandResult) => { if (result.code === 255 || result.code === 125) throw new RemoteTransportError(); if (result.code !== 0) throw new RemoteDependencyError(); return result; };
+      // Every step container carries this run's name and labels, so it is confirmed gone before the next one starts.
+      const gone = async () => { if (!await cleanup(command, name)) throw new RemoteTransportError(); };
+      const owner = async (): Promise<"missing" | "ours" | "foreign"> => {
+        const result = await command(["volume", "inspect", volume, "--format", `{"project":{{json (index .Labels "${DEPS_PROJECT}")}},"key":{{json (index .Labels "${DEPS_KEY}")}}}`]);
+        if (result.code === 255) throw new RemoteTransportError();
+        if (result.code !== 0) return "missing";
+        try { const labelled = JSON.parse(result.stdout) as { project?: unknown; key?: unknown }; return labelled.project === options.projectKey && labelled.key === key ? "ours" : "foreign"; } catch { return "foreign"; }
+      };
+      const marker = `await Bun.file(${JSON.stringify(readyFile)})`;
+      const verify = async (): Promise<boolean> => {
+        // Network none, volume read-only: proves the marker for this exact key and that the mount cannot be written.
+        const script = `const t=await ${marker}.text().catch(()=>"");if(t!==${JSON.stringify(key)})process.exit(2);try{await Bun.write(${JSON.stringify(readyFile)},"x");process.exit(3)}catch{}`;
+        const result = await command(["run", "--rm", "--name", name, ...labels, ...hardenedFor("none"), ...mount(volume, true), "--workdir", "/work", remote.image, "bun", "-e", script], { timeoutMs: 60_000 });
+        if (result.code === 255) throw new RemoteTransportError();
+        await gone();
+        return result.code === 0;
+      };
+      const prune = async () => {
+        // Bounded rule: keep the newest few of this project's own prepared volumes, always the current one; nothing else is touched.
+        const listed = await command(["volume", "ls", "--quiet", "--filter", `label=${DEPS_PROJECT}=${options.projectKey}`]);
+        if (listed.code !== 0) return;
+        const own = new RegExp(`^${DEPENDENCY_PREFIX}${options.projectKey}-[a-f0-9]{32}$`);
+        const names = listed.stdout.split("\n").map(line => line.trim()).filter(line => own.test(line));
+        if (names.length <= KEEP_DEPENDENCY_VOLUMES || names.length > 500) return;
+        const rows = await command(["volume", "inspect", ...names, "--format", `{"name":{{json .Name}},"created":{{json .CreatedAt}},"project":{{json (index .Labels "${DEPS_PROJECT}")}},"key":{{json (index .Labels "${DEPS_KEY}")}}}`]);
+        if (rows.code !== 0) return;
+        // Only a volume this runner demonstrably made is a candidate: exact name pattern, our project label and a key label that matches
+        // the name. A volume with an absent or inconsistent key label is someone else's or damaged: it is neither counted nor removed.
+        const volumes = rows.stdout.trim().split("\n").flatMap(line => { try { return [JSON.parse(line) as { name?: unknown; created?: unknown; project?: unknown; key?: unknown }]; } catch { return []; } })
+          .filter((row): row is { name: string; created: string; project: string; key: string } => typeof row.name === "string" && own.test(row.name) && row.project === options.projectKey && typeof row.created === "string"
+            && typeof row.key === "string" && /^[a-f0-9]{64}$/.test(row.key) && row.name === dependencyVolume(options.projectKey, row.key))
+          .sort((a, b) => Date.parse(b.created) - Date.parse(a.created) || a.name.localeCompare(b.name));
+        const keep = new Set([volume, ...volumes.filter(row => row.name !== volume).slice(0, KEEP_DEPENDENCY_VOLUMES - 1).map(row => row.name)]);
+        for (const row of volumes) if (!keep.has(row.name)) await command(["volume", "rm", row.name]).catch(() => {});
+      };
+      let state = await owner();
+      if (state === "ours" && await verify()) { await prune(); return volume; }
+      if (state === "ours") ok(await command(["volume", "rm", volume])); // Half-prepared or tampered: discard, never repair in place.
+      if (state === "foreign") throw new RemoteDependencyError();
+      try {
+        ok(await command(["volume", "create", "--label", `${DEPS_PROJECT}=${options.projectKey}`, "--label", `${DEPS_KEY}=${key}`, volume]));
+        if (await owner() !== "ours") throw new RemoteDependencyError();
+        // The one step with a network. Same hardening as a check apart from that, the volume writable and a cache inside the work tmpfs.
+        ok(await command(["run", "--rm", "--name", name, ...labels, "--pull", "never", "--network", "none", "--user", "0:0", "--read-only", "--cap-drop", "ALL", "--cap-add", "CHOWN", "--security-opt", "no-new-privileges", "--pids-limit", "16", "--memory", "256m", "--mount", `type=volume,src=${volume},dst=/deps`, remote.image, "chown", "65532:65532", "/deps"], { timeoutMs: 60_000 }));
+        await gone();
+        ok(await command(["run", "--detach", "--rm", "--name", name, ...labels, ...hardenedFor("bridge"), "--env", "BUN_INSTALL_CACHE_DIR=/work/.bun-cache", ...mount(volume, false), "--workdir", "/work", remote.image, "sleep", "600"], { timeoutMs: 120_000 }));
+        await copy(command, source, name, signal);
+        ok(await command(execArgs(name, ["bun", "install", "--frozen-lockfile"]), { timeoutMs: 300_000 }));
+        ok(await command(execArgs(name, ["bun", "-e", `await Bun.write(${JSON.stringify(readyFile)},${JSON.stringify(key)})`]), { timeoutMs: 60_000 }));
+        await gone();
+        if (!await verify()) throw new RemoteDependencyError();
+      } catch (error) {
+        // A failed preparation never leaves a candidate behind; the next run would discard it anyway, because only a verified marker admits a volume.
+        await cleanup(command, name).catch(() => false);
+        await command(["volume", "rm", volume]).catch(() => {});
+        throw error;
+      }
+      await prune();
+      return volume;
     },
   };
 }
-/** Same lifecycle, but no production checks capability until 793b proves prepared dependencies. */
+/** Same lifecycle; each run first proves or prepares its lockfile-keyed read-only dependency volume (#793b). */
 export class RemoteRunner extends ContainerRunner {
   constructor(options: RunnerOptions) {
     super(options, remoteRunnerTransport(options));
-  }
-  override async available(signal?: AbortSignal): Promise<RunnerState> {
-    const transport = await super.available(signal);
-    return transport.available ? { ...transport, available: false, reason: "remote dependencies unprepared" } : transport;
   }
 }

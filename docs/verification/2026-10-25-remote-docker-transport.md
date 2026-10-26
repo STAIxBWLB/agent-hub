@@ -44,3 +44,13 @@ The shared lifecycle persisted a finished remote-shaped receipt, exit zero and l
 ## Remaining work
 
 The production runner remains unavailable until the separate admitted, lockfile/Bun-keyed dependency preparation exists (AC3). A real remote SSH leg, the unchanged four-CPU launch there, person opt-in and pi's live hub_check_start receipt (AC6) remain separate work. The fake transport/config regressions and final packaging gate are recorded with the PR's exact head.
+
+## Dependency volume (793b)
+
+Date: 2026-10-26. Same local Docker daemon (29.5.2, Colima, two CPUs), same preinstalled pinned image, no pull, and the same disclosed change: the driver lowered only the CPU cap to two. The driver used the production `remoteRunnerTransport` and `ContainerRunner` lifecycle with a direct Docker command port, on a synthetic repository whose only dependency was `is-number@7.0.0` and whose test asserted both that the dependency imports and that a write into `/work/node_modules` fails.
+
+- First run: one `volume create`, one networked container, one `bun install --frozen-lockfile`, then the check exited zero with both tests passing.
+- Second run, same commit: no volume create, no install, no container with a network; the check exited zero against the same volume.
+- Afterwards no labelled container remained and exactly one labelled volume existed; the driver removed it.
+
+This does not verify the remote SSH leg, the four-CPU launch, a person opt-in or pi's live `hub_check_start` receipt (AC6).
