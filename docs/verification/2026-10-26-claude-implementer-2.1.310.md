@@ -58,12 +58,12 @@ The MCP wire still does not authenticate that a schema-valid permission call cam
 
 ## Evidence
 
-Kept outside the repository in `scratchpad/temp/agent-hub-507-run3` (the final full run), with the two earlier runs beside it as `agent-hub-507-run1` (the failed first producer) and `agent-hub-507-run2`:
+Kept outside the repository in `scratchpad/temp/agent-hub-507-run4` (the final full run of the committed producer), with the earlier runs beside it: `agent-hub-507-run1` (the failed first producer), `run2` and `run3` (identical results from the producer before a review fix gave each binary its own indexed output directory, so two binaries with the same file name no longer collide):
 
 | Item | SHA-256 |
 | --- | --- |
-| `claude-permission-transport-native.py` (the committed producer) | `d84864fc3417de874d611978b6d540ec50495d6e1d52fc26a5e4eb4373eb9310` |
-| `receipt.json` of the final run (18 cases, `certified: true`, `account: false`, `inference: false`) | `863e02004a450f0b5f3e62c0536d70eb32ce986b2851839c1b7e41907171d4c7` |
+| `claude-permission-transport-native.py` (the committed producer) | `b3f39acce1eb3713a5f01191702f1f217d704039d3a86452c6dfd311cb274efe` |
+| `receipt.json` of the final run (18 cases, `certified: true`, `account: false`, `inference: false`) | `edefd6d7e18dd28a22ad63489c51db0e9636586dadedc686738b0ff89b5113e9` |
 | Monitor one-off probe | `1ebd2ff6b4b8a587b212cde221d035d0a0d37e24d6acdef37dce55d7a71111d8` |
 
 The run retains each case's native stdout and stderr, the MCP permission records, and the request tool schemas. The host used Python 3 and the installed binaries; no Bun is involved in this producer.

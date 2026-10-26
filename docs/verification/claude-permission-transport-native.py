@@ -116,15 +116,16 @@ CASES = {
 }
 
 results = []
-for raw in args.claude:
+for index, raw in enumerate(args.claude):
     binary = pathlib.Path(raw).resolve()
     digest = sha(binary)
-    ident = ROOT / ('identity-' + binary.name); ident.mkdir()
+    # The index keeps two binaries with the same basename or the same version in separate directories.
+    ident = ROOT / ('identity-%d-%s' % (index, binary.name)); ident.mkdir()
     v = subprocess.run([str(binary), '--version'], env={'HOME': str(ident), 'CLAUDE_CONFIG_DIR': str(ident / 'config'), 'PATH': '/usr/bin:/bin'}, capture_output=True, text=True, timeout=10)
     assert v.returncode == 0, v
     version = v.stdout.strip().split()[0]
     for case, (settings, want_exit, want_calls, want_file, want_error, want_stop) in CASES.items():
-        d = ROOT / (version + '-' + case); d.mkdir()
+        d = ROOT / ('%d-%s-%s' % (index, version, case)); d.mkdir()
         home = d / 'home'; home.mkdir(); work = d / 'work'; work.mkdir(); work = work.resolve()
         target = work / 'probe.txt'
         out = {'version': version, 'binarySha256': digest, 'case': case}
