@@ -13,7 +13,7 @@ export interface InstanceConfig {
   review_mode?: "fresh";
   worktree?: string;
   readOnly?: boolean;
-  /** Jcode instances only (#685): their own native data home, and optional model selection. Machine-local, never editable from settings. */
+  /** Jcode instances (#685): their own native data home, and optional model selection. A headless Claude implementer also takes `model` (#844). Machine-local, never editable from settings. */
   jcode_home?: string;
   provider?: string;
   model?: string;
@@ -129,7 +129,9 @@ export function validateInstances(raw: unknown, catalog: ProjectAdapterCatalog):
     const path = `instances.${id}`, entry = fields(descriptor.value, path);
     const declaredKind: unknown = entry.kind?.value;
     const jcodeFields = typeof declaredKind === "string" && resolve(declaredKind)?.instances?.nativeHome === true;
-    if (Object.keys(entry).some(key => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly", ...(jcodeFields ? JCODE_FIELDS : [])].includes(key))) return fail(path, "unsupported field");
+    // #844: a headless Claude implementer may name its model; no other kind but Jcode has the field.
+    const claudeModel = declaredKind === "claude";
+    if (Object.keys(entry).some(key => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly", ...(jcodeFields ? JCODE_FIELDS : []), ...(claudeModel ? ["model"] : [])].includes(key))) return fail(path, "unsupported field");
     const kind: unknown = entry.kind?.value;
     if (typeof kind !== "string") return fail(`${path}.kind`, "must name a native kind");
     const definition = resolve(kind), prefix = `${kind}-`;
@@ -184,6 +186,12 @@ export function validateInstances(raw: unknown, catalog: ProjectAdapterCatalog):
     if (jcodeFields) {
       if (++jcodeCount > MAX_JCODE_INSTANCES) return fail("instances", `at most ${MAX_JCODE_INSTANCES} extra Jcode instances are supported per project`);
       Object.assign(value, jcodeInstanceFields(entry, path));
+    }
+    if (entry.model && claudeModel) {
+      if (!headlessWriter) return fail(`${path}.model`, "only a headless Claude implementer takes a model");
+      const word: unknown = entry.model.value;
+      if (typeof word !== "string" || !NATIVE_WORD.test(word)) return fail(`${path}.model`, "must be one bounded printable word without spaces");
+      value.model = word;
     }
     if (entry.readOnly) value.readOnly = entry.readOnly.value as boolean;
     if (entry.roles) { value.roles = roles(entry.roles.value, `${path}.roles`); Object.freeze(value.roles); }

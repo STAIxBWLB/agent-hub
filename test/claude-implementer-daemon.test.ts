@@ -11,7 +11,7 @@ import { realPath } from "../src/hub/project.ts";
 import { completeJsonLines } from "./fakes/jsonl.ts";
 
 async function until(condition: () => boolean, leg: string) { for (let n = 0; n < 300 && !condition(); n++) await Bun.sleep(5); expect(condition(), leg).toBe(true); }
-async function fixture(taskBound = false) {
+async function fixture(taskBound = false, model?: string) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-claude-impl-daemon-"))), peer = "claude-worker", tree = join(root, ".worktrees", peer), stateDir = join(root, ".agenthub", "state"), log = join(root, "calls.jsonl"), home = join(root, "home"), bin = join(root, "bin");
   const oldEnv = { HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, PATH: process.env.PATH, AMEM_HOME: process.env.AMEM_HOME, AGENTHUB_HOME: process.env.AGENTHUB_HOME };
   mkdirSync(stateDir, { recursive: true }); mkdirSync(home); mkdirSync(bin);
@@ -19,7 +19,7 @@ async function fixture(taskBound = false) {
   writeFileSync(join(tree, "source.ts"), "fixture source\n");
   writeFileSync(join(bin, "claude"), `#!${process.execPath}\nif(process.argv.includes("--version")){console.log("2.1.309 (Claude Code)");process.exit(0)}\nprocess.argv=[process.argv[0],${JSON.stringify(resolve(import.meta.dir, "fakes/fake-claude-implementer.ts"))},${JSON.stringify(log)},"hang",...process.argv.slice(2)];\nawait import(${JSON.stringify(resolve(import.meta.dir, "fakes/fake-claude-implementer.ts"))});\n`, { mode: 0o700 });
   process.env.HOME = home; process.env.AMEM_HOME = join(home, "memory"); process.env.AGENTHUB_HOME = join(home, "hub"); process.env.CLAUDE_CONFIG_DIR = join(home, ".claude"); process.env.PATH = `${bin}:${oldEnv.PATH}`;
-  writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify({ instances: { [peer]: { kind: "claude", roles: ["implementer"], start_mode: "headless", worktree: `.worktrees/${peer}`, permission_mode: "ask-when-needed" } }, roles: { [peer]: ["implementer"] }, roster: { [peer]: true }, memory: { enabled: false, native: false }, inference: { enabled: false }, snapshots: { enabled: false }, mlx: { enabled: false }, pi: { enabled: false, auto_start: false }, task_sweep: { enabled: false }, batch_ms: 0 }));
+  writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify({ instances: { [peer]: { kind: "claude", roles: ["implementer"], start_mode: "headless", worktree: `.worktrees/${peer}`, permission_mode: "ask-when-needed", ...(model ? { model } : {}) } }, roles: { [peer]: ["implementer"] }, roster: { [peer]: true }, memory: { enabled: false, native: false }, inference: { enabled: false }, snapshots: { enabled: false }, mlx: { enabled: false }, pi: { enabled: false, auto_start: false }, task_sweep: { enabled: false }, batch_ms: 0 }));
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined; const clients: ControlClient[] = [];
   try {
     daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, permissionTimeoutMs: 250, config: loadConfig(root) });
@@ -159,3 +159,16 @@ test("#525 an approval answer revalidates a worktree changed while its heartbeat
     expect(result.ok === false || result.behavior === "deny").toBe(true);
   } finally { await f.close(); }
 }, 20_000);
+
+test("#844 a declared model reaches the native argv and the status row; without one neither shows it", async () => {
+  const f = await fixture(false, "claude-sonnet-5-5");
+  try {
+    expect(f.call.args[f.call.args.indexOf("--model") + 1]).toBe("claude-sonnet-5-5");
+    expect((await f.console_.request({ t: "status" })).status.peers[f.peer].modelSource).toBe("claude-sonnet-5-5");
+  } finally { await f.close(); }
+  const plain = await fixture();
+  try {
+    expect(plain.call.args).not.toContain("--model");
+    expect((await plain.console_.request({ t: "status" })).status.peers[plain.peer].modelSource).toBeUndefined();
+  } finally { await plain.close(); }
+}, 30_000);
