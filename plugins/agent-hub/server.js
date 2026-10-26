@@ -21869,6 +21869,14 @@ var inFlight = new Set;
 
 // src/hub/review-scope.ts
 var isReviewScope = (value) => value === "full" || value === "code";
+var S = String.raw`(?:tests?|test suites?|bun test|scripts/check\.sh|checks?|ci|continuous integration|github checks?|gates?|check (?:output|results?)|typecheck|tsc|preload)`;
+var POSITIVE = [
+  new RegExp(String.raw`^(?:[\w ]{0,24}:\s*)?(?:please |still )?(?:provide|supply|paste|show|attach|confirm|rerun|re-run|run|execute)\b[^.;]{0,120}\b${S}\b`, "i"),
+  new RegExp(String.raw`\b${S}\b[^.;]{0,120}\b(?:(?:has|have|had|is|are|was|were|remains?|remained) (?:not|n't) (?:yet )?(?:been )?(?:run|ran|executed|verified|confirmed|green|passing|passed|available|provided|supplied|shown|readable|read)|(?:remains?|remained|is|are) (?:still )?(?:unverified|unavailable|unconfirmed|pending|unknown)|could not (?:be )?(?:run|read|executed|reproduced)|cannot (?:be )?(?:run|read|executed|reproduced)|(?:was|were|is|are) blocked)\b`, "i"),
+  new RegExp(String.raw`\b(?:no|without|missing|absent)\s+(?:\w+\s+){0,2}${S}\s+(?:results?|output|evidence|receipt|report)\b`, "i"),
+  new RegExp(String.raw`^(?:[\w ]{0,24}:\s*)?(?:the |a |any )?(?:\w+\s+){0,2}${S}\s+(?:results?|output|evidence|receipt|report)\s+(?:is|are|was|were|remains?)\s+(?:missing|absent|unavailable|not (?:provided|supplied|shown|available))(?:\s+(?:in|from) the (?:review )?(?:brief|task|request|public task view))?$`, "i"),
+  /\b(?:eperm|read-only sandbox)\b/i
+];
 
 // src/hub/tasks.ts
 init_review_findings();
