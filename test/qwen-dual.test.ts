@@ -374,13 +374,48 @@ test("Qwen folds several finished shells into one event: one or more whole envel
   expect(r.receipts.map(receipt => receipt.state)).toEqual(["accepted", "completed"]); expect(r.notices).toEqual([]);
 });
 
-test("a notification that arrives while Qwen is idle is Qwen working on its own: busy until it answers, nothing shared, nothing held (#517)", async () => {
+test("a notification that arrives while Qwen is idle changes nothing: the peer stays idle, and a notice with no follow-up never blocks the queue (#517)", async () => {
   const r = await attached();
   appendEvents(r, userEvent(NOTIFICATION()));
-  await until(() => r.peer.state === "busy");
-  appendEvents(r, ...finalAnswer("noted the shell finished"));
-  await until(() => r.peer.state === "idle");
+  await Bun.sleep(200);
+  expect(r.peer.state).toBe("idle");   // not busy: Qwen may never answer it
   expect(r.answers).toHaveLength(0); expect(r.receipts).toHaveLength(0); expect(r.notices).toEqual([]);
+  // No assistant message ever follows, and the next delivery still goes through.
+  await r.peer.deliver(env("after the lone notice"), "d1");
+  await until(() => r.receipts.at(-1)?.state === "completed", () => JSON.stringify(r.receipts));
+  expect(r.answers).toHaveLength(1); expect(r.notices).toEqual([]);
+  // And Qwen answering a notice on its own, when idle, shares nothing and leaves the peer idle.
+  appendEvents(r, userEvent(NOTIFICATION("bg_cccc3333")), ...finalAnswer("noted the shell finished"));
+  await Bun.sleep(200);
+  expect(r.peer.state).toBe("idle"); expect(r.answers).toHaveLength(1);
+});
+
+test("the exemption is judged on the raw event: a notice split across blocks, or beside any other block, is the person's prompt (#517)", async () => {
+  const mixed: [string, unknown[]][] = [
+    ["two text blocks that join into a valid envelope", [{ type: "text", text: "<task-notification>\n<task-id>bg_0a1b2c3d</task-id>\n<kind>shell</kind>\n" }, { type: "text", text: "<status>completed</status>\n</task-notification>" }]],
+    ["a valid envelope plus a second text block", [{ type: "text", text: NOTIFICATION() }, { type: "text", text: "and I also typed this" }]],
+    ["a valid envelope plus an image block", [{ type: "text", text: NOTIFICATION() }, { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } }]],
+    ["an image block before a valid envelope", [{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } }, { type: "text", text: NOTIFICATION() }]],
+    ["an empty text block beside a valid envelope", [{ type: "text", text: "" }, { type: "text", text: NOTIFICATION() }]],
+  ];
+  for (const [label, content] of mixed) {
+    const r = await attached();
+    await r.peer.deliver(env("STALL a turn"), "d1");
+    await until(() => r.receipts.some(receipt => receipt.state === "accepted"));
+    appendEvents(r, { type: "user", message: { role: "user", content } });
+    await until(() => r.receipts.at(-1)!.state === "needs_review", () => `not held for ${label}: ${JSON.stringify(r.receipts)}`);
+    // The personal answer that follows is never shared as the hub delivery's result.
+    appendEvents(r, ...finalAnswer("a private answer"));
+    await Bun.sleep(100);
+    expect(r.answers, label).toHaveLength(0);
+    await r.peer.stop();
+  }
+  // A single text block that is wholly the envelope is the one accepted shape, and a content string never is (Qwen writes lists).
+  const r = await attached();
+  await r.peer.deliver(env("STALL a turn"), "d1");
+  await until(() => r.receipts.some(receipt => receipt.state === "accepted"));
+  appendEvents(r, { type: "user", message: { role: "user", content: NOTIFICATION() } });
+  await until(() => r.receipts.at(-1)!.state === "needs_review");
 });
 
 test("only the exact notification shape is exempt: a person's prompt that looks like one still ends a hub turn as uncertain (#517)", async () => {

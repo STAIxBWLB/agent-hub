@@ -427,6 +427,17 @@ export class QwenDualPeer extends BasePeer {
     if (!this.stopping && !this.detached && this.state === "offline") this.setState("idle");
   }
 
+  /**
+   * Judged on the raw event, not on `promptText`, which joins every text block and drops the rest: an event is Qwen's own notice only when its content is exactly one text block
+   * and that block is wholly the strict envelope. A text split across blocks, or a block with anything else beside it (an image, a second text), is a person's prompt.
+   */
+  private isNotificationEvent(event: Json): boolean {
+    const content = event.message?.content;
+    if (!Array.isArray(content) || content.length !== 1) return false;
+    const block = content[0];
+    return !!block && typeof block === "object" && block.type === "text" && typeof block.text === "string" && isQwenTaskNotification(block.text);
+  }
+
   private promptText(event: Json): string | undefined {
     const content = event.message?.content;
     if (typeof content === "string") return content;
@@ -436,15 +447,11 @@ export class QwenDualPeer extends BasePeer {
   }
 
   private onUser(event: Json): void {
+    // Qwen's own background-shell notice (#517) is part of whatever turn is running and never the person typing, so it ends no hub turn and holds no queue. It changes nothing else:
+    // an idle peer stays idle (Qwen may answer it or not, and a peer that waited for an answer that never comes would block its queue), and a running turn keeps its owner.
+    if (this.isNotificationEvent(event)) return;
     const text = this.promptText(event);
     if (text === undefined) return; // a tool result echoed back, not a prompt
-    // Qwen's own background-shell notice: part of whatever turn is running (or Qwen's own work when none is), never the person typing, so it ends no hub turn and holds no queue (#517).
-    // Qwen then continues the turn by itself, and the turn's own assistant end settles it. With no turn open Qwen is working on its own (like the person's turn, nothing shared),
-    // so the peer is busy until that work ends: the owner must be set or its end would find nothing to settle and leave the peer busy for good.
-    if (isQwenTaskNotification(text)) {
-      if (!this.turn && this.owner === undefined) { this.owner = "personal"; this.lastAssistant = undefined; if (this.state === "idle") this.setState("busy"); }
-      return;
-    }
     const turn = this.turn;
     if (turn && !turn.started && (text.trim() === turn.text.trim() || text.trim().startsWith(turn.text.trim().slice(0, 200)))) {
       turn.started = true; this.owner = "hub"; this.lastAssistant = undefined;
