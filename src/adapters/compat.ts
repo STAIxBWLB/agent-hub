@@ -21,6 +21,8 @@ export interface CompatPolicy {
   parse: (stdout: string) => string | undefined;
   /** What runtime checks still decide after trust (isolation) or what stays unverified (contract). */
   trustNote: string;
+  /** The last receipt in docs/verification whose model-free procedure a new version repeats (#843). */
+  receipt: string;
   /** The config key that selects this kind's executable, when one exists. */
   config?: "codex_bin" | "jcode_cmd" | "qwen_cmd";
 }
@@ -30,29 +32,36 @@ export const COMPAT = {
   // Receipt: docs/verification/2026-10-23-headless-claude-permissions.md
   "claude-implementer": { label: "Claude headless implementer", verified: ["2.1.309"], gate: "contract", probe: ["claude", "--version"],
     parse: out => plain(out.trim().replace(/ \(Claude Code\)$/, "")),
-    trustNote: "The native prompt-tool allow, deny, MCP error/disconnect and hook-failure fallthrough have an isolated receipt. No dontAsk/bypass fallback exists; another version's permission behavior is unverified." },
+    trustNote: "The native prompt-tool allow, deny, MCP error/disconnect and hook-failure fallthrough have an isolated receipt. No dontAsk/bypass fallback exists; another version's permission behavior is unverified.",
+    receipt: "docs/verification/2026-10-23-headless-claude-permissions.md" },
   // 0.163.0 receipt: docs/verification/2026-10-22-codex-reviewer-isolation.md; 0.164.0 receipt: docs/verification/2026-10-24-codex-0164-reviewer-isolation.md
   "codex-review": { label: "Codex reviewer (codex-cli)", verified: ["0.146.0", "0.163.0", "0.164.0"], gate: "isolation", probe: ["codex", "--version"], config: "codex_bin",
     parse: out => plain(out.trim().replace(/^codex-cli /, "")),
-    trustNote: "Every launch still proves the MCP inventory, Apps/plugins/hooks disabled, sandbox read/write denial and the binary fence; a failed leg still refuses. Trust covers only the source-level claims those probes cannot see (docs/verification/2026-10-19-reviewer-isolation.md)." },
+    trustNote: "Every launch still proves the MCP inventory, Apps/plugins/hooks disabled, sandbox read/write denial and the binary fence; a failed leg still refuses. Trust covers only the source-level claims those probes cannot see (docs/verification/2026-10-19-reviewer-isolation.md).",
+    receipt: "docs/verification/2026-10-24-codex-0164-reviewer-isolation.md" },
   // Kimi 2.3.0 / Qwen 0.26.0 receipt: docs/verification/2026-10-22-kimi-qwen-compat.md; Kimi 2.3.1: docs/verification/2026-10-25-kimi-231-reviewer-compat.md
   "kimi-review": { label: "Kimi reviewer (kimi-code)", verified: ["2.2.0", "2.3.0", "2.3.1"], gate: "isolation", probe: ["kimi", "--version"],
     parse: out => plain(out.trim()),
-    trustNote: "Every launch still builds the private config, exact two-tool agent file and task-bound MCP; the native tool allowlist behaviour of an untested version is not re-proven." },
+    trustNote: "Every launch still builds the private config, exact two-tool agent file and task-bound MCP; the native tool allowlist behaviour of an untested version is not re-proven.",
+    receipt: "docs/verification/2026-10-25-kimi-231-reviewer-compat.md" },
   jcode: { label: "Jcode", verified: ["0.98.1", "0.99.0"], line: { min: "0.98.0", below: "1.0.0" }, gate: "contract", probe: ["jcode", "--quiet", "version", "--json"], config: "jcode_cmd",
     parse: out => { try { const v = JSON.parse(out).semver; return typeof v === "string" ? plain(v) : undefined; } catch { return undefined; } },
-    trustNote: "The ACP, serve and MCP contract was verified on 0.98.1 and steering on 0.99.0; an untested version may change them." },
+    trustNote: "The ACP, serve and MCP contract was verified on 0.98.1 and steering on 0.99.0; an untested version may change them.",
+    receipt: "docs/verification/2026-10-19-jcode-0.98.1.md" },
   agy: { label: "agy", verified: ["1.4.2"], line: { min: "1.4.0", below: "1.5.0" }, gate: "contract", probe: ["agy", "--version"],
     parse: out => plain(out.trim()),
-    trustNote: "Only 1.4.2 is T0-verified; the plugin MCP and hook contract of another version is unverified." },
+    trustNote: "Only 1.4.2 is T0-verified; the plugin MCP and hook contract of another version is unverified.",
+    receipt: "docs/verification/2026-10-19-agy-p1-t0.md" },
   qwen: { label: "Qwen Code", verified: ["0.25.0", "0.26.0"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
     parse: out => plain(out.trim()),
-    trustNote: "Native ACP identity and mode ids have dated receipts; 0.26.0 permission callbacks were checked without inference. Another version may change those contracts." },
+    trustNote: "Native ACP identity and mode ids have dated receipts; 0.26.0 permission callbacks were checked without inference. Another version may change those contracts.",
+    receipt: "docs/verification/2026-10-22-kimi-qwen-compat.md" },
   // Receipt: docs/verification/2026-10-25-qwen-dual-output-t0.md. The dual-output contract (input file, event file, can_use_tool control requests) is its own entry:
   // the ACP receipts of the headless `qwen` entry say nothing about it, so that entry is not widened and this one carries no `line`.
   "qwen-dual": { label: "Qwen Code dual-output TUI", verified: ["0.26.1"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
     parse: out => plain(out.trim()),
-    trustNote: "The dual-output file contract (submit and confirmation_response input, user/assistant/stream_event/control events, session_start identity) was verified on 0.26.1 only. A hub deny ends the turn without any Qwen event, and no external stop of a running turn exists; another version may change either." },
+    trustNote: "The dual-output file contract (submit and confirmation_response input, user/assistant/stream_event/control events, session_start identity) was verified on 0.26.1 only. A hub deny ends the turn without any Qwen event, and no external stop of a running turn exists; another version may change either.",
+    receipt: "docs/verification/2026-10-25-qwen-dual-output-t0.md" },
 } as const satisfies Record<string, CompatPolicy>;
 export type CompatId = keyof typeof COMPAT;
 type CommandConfig = { codex_bin: string; jcode_cmd: string[]; qwen_cmd: string[] };

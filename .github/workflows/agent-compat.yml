@@ -1,9 +1,9 @@
 name: agent-compat
 
-# #691: weekly, compare published agent CLI versions with the verified sets and keep one issue current.
+# #691: compare published agent CLI versions with the verified sets and keep one issue current. #843: daily.
 on:
   schedule:
-    - cron: "17 3 * * 1"
+    - cron: "17 3 * * *"
   workflow_dispatch:
 
 permissions:

@@ -234,3 +234,45 @@ test("Kimi 2.3.1 is receipt-verified without machine trust; its neighbours are n
   expect(assessVersion("kimi-review", "2.3.1", [])).toEqual({ ok: true, state: "verified", version: "2.3.1" });
   for (const near of ["2.3.2", "2.4.0", "2.3.1-rc.1"]) expect(assessVersion("kimi-review", near, []).ok).toBe(false);
 });
+
+test("the compat watch covers every COMPAT source and renders ahead, unknown and no-public-source rows from an injected fetch (#843)", async () => {
+  const { SOURCES, latestVersion, watch } = await import("../scripts/agent-compat-watch.ts");
+  // Every kind COMPAT gates has a declared public source (the pi hook in SOURCES covers a pi entry the moment #843 AC2 adds one);
+  // agy is the only one with none.
+  for (const id of Object.keys(COMPAT)) expect(id in SOURCES || id === "pi").toBe(true);
+  expect(SOURCES["claude-implementer"]).toEqual({ kind: "npm", pkg: "@anthropic-ai/claude-code" });
+  expect(SOURCES.jcode).toEqual({ kind: "github", repo: "1jehuang/jcode" });
+  expect(SOURCES.agy).toEqual({ kind: "none" });
+  expect(SOURCES["qwen-dual"]).toEqual({ kind: "npm", pkg: "@qwen-code/qwen-code" });
+  expect("pi" in SOURCES).toBe(!("pi" in COMPAT)); // the hook is watched only once a COMPAT pi entry exists
+  expect(await latestVersion({ kind: "github", repo: "x/y" }, async () => ({ json: async () => ({ tag_name: "v0.99.1" }) }))).toBe("0.99.1");
+  expect(await latestVersion({ kind: "npm", pkg: "x" }, async () => { throw new Error("offline"); })).toBeUndefined();
+
+  // The real published versions stand today, so the watcher's only row is agy's no-public-source notice: a row, never a failure.
+  const today = await watch(fetch, new Date("2026-10-26T00:00:00Z"));
+  expect(today.report).toContain("- **agy**: no public source; local drift only");
+  expect(today.report).not.toContain("- **codex-review**");
+
+  // The fake fetch keys on the full URL the watcher requests, and a second arg with the same url is the same body.
+  const stub = (bodies: Record<string, unknown>): typeof fetch =>
+    ((url: string) => Promise.resolve({ json: async () => bodies[url] })) as unknown as typeof fetch;
+  const ahead = await watch(stub({
+    "https://registry.npmjs.org/@anthropic-ai/claude-code/latest": { version: "9.9.9" },
+    "https://registry.npmjs.org/@openai/codex/latest": { version: "0.146.0" },
+    "https://registry.npmjs.org/@moonshot-ai/kimi-code/latest": { version: "2.3.1" },
+    "https://registry.npmjs.org/@qwen-code/qwen-code/latest": { version: "0.26.0" },
+    "https://api.github.com/repos/1jehuang/jcode/releases/latest": { tag_name: "v0.99.0" },
+  }), new Date("2026-10-26T00:00:00Z"));
+  expect(ahead.code).toBe(3);
+  expect(ahead.report.startsWith("Published agent CLI versions ahead of their verified set")).toBe(true);
+  const claudeRow = ahead.report.split("\n").find(l => l.includes("**claude-implementer**")) ?? "";
+  expect(claudeRow).toContain("npm @anthropic-ai/claude-code");
+  expect(claudeRow).toContain("latest 9.9.9");
+  expect(claudeRow).toContain("refused");
+  expect(claudeRow).toContain("docs/verification/2026-10-23-headless-claude-permissions.md");
+  expect(ahead.report).not.toContain("- **codex-review**"); // still verified at 0.146.0
+  // A source that cannot be read is unknown, not a crash.
+  const unknown = await watch(async () => { throw new Error("offline"); }, new Date("2026-10-26T00:00:00Z"));
+  expect(unknown.code).toBe(3);
+  expect(unknown.report).toContain("latest unknown, unknown");
+});
