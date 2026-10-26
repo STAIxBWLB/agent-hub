@@ -2304,7 +2304,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return () => c.toolsOwner === binding && !!launch && currentImplementerTools(c) === launch;
   }
   const shellProjectRepository = githubOriginRepository(opts.cwd);
-  const shellNeedsDefault = Object.values(declarations).some(instance => instance.kind === "claude" && instance.start_mode === "headless");
+  const shellNeedsDefault = Object.keys(declarations).some(peer => instanceDefinitionOf(peer, declarations, adapterCatalog)?.start.daemonPort === "claude-implementer");
   const shellDefaultBranch = shellNeedsDefault && shellProjectRepository
     ? await (opts.shellDefaultBranchProbe ?? readTaskShellDefaultBranch)(opts.cwd, hostShellEnvironment({ PATH: hostShellPath(opts.cwd, opts.cwd) ?? "" }), () => true, opts.cwd, shellProjectRepository)
     : undefined;
