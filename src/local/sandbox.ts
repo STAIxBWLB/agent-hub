@@ -48,6 +48,12 @@ function externalGitDirs(root: string): string[] {
   return [...new Set(dirs)].filter((d) => !d.startsWith(`${root}/`));
 }
 
+/** `<common>/worktrees`: where every linked worktree keeps its git dir. The rules for it are patterns, so they need no worktree to exist (#518). */
+function worktreesRoot(root: string): string | undefined {
+  const out = hubGitSync(["-C", root, "rev-parse", "--git-common-dir"], { encoding: "utf8" });
+  return out.status === 0 && out.stdout.trim() ? join(resolve(root, out.stdout.trim()), "worktrees") : undefined;
+}
+
 /** One modules tree: its root and every directory entry under it that must not be renamed, replaced, symlinked or recreated. */
 export interface ModuleGit { root: string; entries: string[] }
 
@@ -128,6 +134,7 @@ export function profile(cwd: string, network: SandboxNetwork, readAllow: string[
   const root = realPath(cwd);
   const gitDirs = externalGitDirs(root);
   const moduleGit = moduleGitDirs(root);
+  const worktrees = worktreesRoot(root);
   const creds = [".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube", ".docker", ".netrc", ".npmrc", ".omniroute", ".claude", ".codex", ".kimi-code", "Library/Keychains"];
   const dev = developerDir();
   const readable = [root, ...HOME_READABLE.map((p) => join(home, p)), ...readAllow.map(inHome), ...gitDirs, ...(dev ? [dev] : [])];
@@ -161,7 +168,7 @@ export function profile(cwd: string, network: SandboxNetwork, readAllow: string[
     // at any depth (creation, rename, symlink, gitfile), a submodule git dir's config and hooks under
     // .git/modules/ are refused at the depth submodules nest (#281), and the external git dirs get folded
     // hooks/config rules (#270). The cost: git init, clone and worktree add no longer run inside the sandbox.
-    `(deny file-write* ${hubWriteRegexes(root, gitDirs, moduleGit).join(" ")})`,
+    `(deny file-write* ${hubWriteRegexes(root, gitDirs, moduleGit, worktrees).join(" ")})`,
     `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join(home, c))})`).join(" ")})`,
     `(deny file-read* file-write* ${denyRegexes(root, deny).join(" ")})`,
     // Python's own CA bundle (certifi, which pip vendors too): pip, requests and httpx read it instead of the system's (#64).

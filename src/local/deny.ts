@@ -28,16 +28,17 @@ export const HFS_IGNORABLE_POINTS = ["\u200C", "\u200D", "\u200E", "\u200F", "\u
  */
 const HFS_IGNORABLE = `(${HFS_IGNORABLE_POINTS.join("|")})`;
 
-/**
- * `config.worktree` (the per-worktree config git reads beside `config`, #518) folded in two literals, because one SBPL regex literal dies at 1024 bytes and a folded name costs
- * about 65 bytes a character (the whole name is 1071). The first matches a folded `config` followed by the plain `.worktree`; the second a plain `config.` followed by a folded
- * `worktree`. A spelling that folds BOTH halves at once on HFS+ is a known residual of this rule (a case-insensitive APFS ignores none of those code points, and the same
- * folded-intermediate residual is already stated for `modules` below); `config` alone, the file git reads first, is folded in full everywhere.
- */
-const configWorktreeFolded = (): string[] => [`${hfsFoldedName("config")}\\.worktree`, `config\\.${hfsFoldedName("worktree")}`];
-
 /** A regex source matching `name` with any number of HFS+-ignorable code points interleaved, at the ends included. */
 const hfsFoldedName = (name: string) => `${HFS_IGNORABLE}*${[...name].map((c) => sbplEscape(c)).join(`${HFS_IGNORABLE}*`)}${HFS_IGNORABLE}*`;
+
+/**
+ * `config.worktree`, the per-worktree config git reads beside `config` (#518), folded in BOTH halves as two regex sources that a rule must both match. One SBPL regex literal dies
+ * at 1024 bytes in UTF-8 and every folded character costs about 65 bytes, so the whole name (1071) cannot be one literal, and a byte class cannot hold the multi-byte code
+ * points (the engine is byte-oriented, verified), so the fold stays an alternation. The first source pins the front: `prefix`, a folded `config`, a dot, then the rest of the
+ * name; the second pins the end: the name ends in a folded `worktree`. Together they match every spelling of `config.worktree` with ignorable code points anywhere in it, and
+ * also `config.<anything>worktree` in the same directory, which is over-refused on purpose and names no file git uses.
+ */
+const configWorktreeSources = (prefix: string): [string, string] => [`${prefix}${hfsFoldedName("config")}\\.[^/]*$`, `^.*/[^/]*${hfsFoldedName("worktree")}$`];
 
 /**
  * Seatbelt rules for the hub's and git's own names (#270). `.agenthub` is refused anywhere under the project root.
@@ -61,13 +62,12 @@ const hfsFoldedName = (name: string) => `${HFS_IGNORABLE}*${[...name].map((c) =>
  * long project path would trip. ponytail: the modules rules do contain the (plain) modules root; a project path
  * over roughly 600 bytes with submodules would exceed the limit — fold the root's segments if one ever shows up.
  */
-export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit: readonly { root: string; entries: string[] }[] = []): string[] {
+export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit: readonly { root: string; entries: string[] }[] = [], worktreesRoot?: string): string[] {
   const git = hfsFoldedName(".git");
   const re = (s: string) => `(regex ${sbplString(s)})`;
   const external = gitDirs.flatMap((d) => [
     `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${re(`^.*/(${hfsFoldedName("config")}|${hfsFoldedName("hooks")})$`)})`,
-    // The per-worktree config git reads beside `config`; its own rule because one regex literal dies at 1024 bytes and every folded name adds ~330.
-    ...configWorktreeFolded().map((name) => `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${re(`^.*/${name}$`)})`),
+    `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${configWorktreeSources("^.*/").map(re).join(" ")})`,
     `(subpath ${sbplString(`${d}/hooks`)})`,
     `(require-all (subpath ${sbplString(d)}) ${re(`^.*/${hfsFoldedName("commondir")}$`)})`,
   ]);
@@ -77,20 +77,39 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
     // or `prefs` keeps the refusal and one named `webhooks` keeps its ordinary writes (#281 round 2).
     // `config.worktree` is the per-worktree config git reads next to `config`, so it gets the same refusal.
     `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
-    ...configWorktreeFolded().map((name) => `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${name}$`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`),
+    `(require-all ${configWorktreeSources(`^${sbplEscape(tree.root)}/(.*/)?`).map(re).join(" ")} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
     `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
     // A submodule git dir as a directory entry: no rename, replace, symlink or recreate. The basename is
     // folded (HFS+ opens the folded spelling as the real entry); the plain prefix is the path as discovered.
     ...tree.entries.map((d) => re(`^${sbplEscape(dirname(d))}/${hfsFoldedName(basename(d))}$`)),
   ]);
+  // Every linked worktree's git dir under `<common>/worktrees/` by pattern, not by discovery (#518): a sibling's `modules/` tree that does not exist yet, or a sibling created
+  // after this profile was built, is as protected as one that does. The sandbox can write the common dir, so it could otherwise pre-create them. The worktree name is one
+  // plain component (a folded spelling of `worktrees` or of a sibling's name on HFS+ is the same residual as the folded `modules` component above).
+  const siblings = worktreesRoot
+    ? (() => {
+        const w = sbplEscape(worktreesRoot), notRefs = `(require-not ${re(`^${w}/[^/]+/modules/(.*/)?(refs|logs)/`)})`;
+        return [
+          // A worktree git dir's own `config` and `config.worktree`: direct children only.
+          `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config")}$`)})`,
+          `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${configWorktreeSources("^.*/").map(re).join(" ")})`,
+          // Its submodule git dirs: config, config.worktree and hooks at any depth, refs and logs excepted, and the `modules` entry itself (no create, rename or replace).
+          `(require-all ${re(`^${w}/[^/]+/modules/(.*/)?${hfsFoldedName("config")}$`)} ${notRefs})`,
+          `(require-all ${configWorktreeSources(`^${w}/[^/]+/modules/(.*/)?`).map(re).join(" ")} ${notRefs})`,
+          `(require-all ${re(`^${w}/[^/]+/modules/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} ${notRefs})`,
+          re(`^${w}/[^/]+/${hfsFoldedName("modules")}$`),
+        ];
+      })()
+    : [];
   return [
     `(require-all (subpath ${sbplString(root)}) ${re(`^.*/${hfsFoldedName(".agenthub")}(/|$)`)})`,
     re(`^.*/${git}$`),
     re(`^.*/${git}/${hfsFoldedName("config")}$`),
-    ...configWorktreeFolded().map((name) => re(`^.*/${git}/${name}$`)),
+    `(require-all ${configWorktreeSources(`^.*/${git}/`).map(re).join(" ")})`,
     re(`^.*/${git}/${hfsFoldedName("hooks")}(/|$)`),
     `(require-all ${re(`^.*/${git}/.*$`)} ${re(`^.*/${hfsFoldedName("commondir")}$`)})`,
     ...modules,
+    ...siblings,
     ...external,
   ];
 }
