@@ -9,6 +9,10 @@ test("#689 tier 2 covers instance fields that choose no executable or home", () 
     expect(tier("config.local.json", "instances", "codex-review", field), field).toEqual({ tier: 2 });
   }
   expect(tier("config.local.json", "instances", "codex-review")).toEqual({ tier: 2 });
+  // #844: a Claude implementer's model is the same tier 3 field, whole-object and single-field.
+  expect(tier("config.local.json", "instances", "claude-impl", "model")).toEqual({ tier: 3, key: "instances.claude-impl.model" });
+  expect(configTier("config.local.json", ["instances", "claude-impl"], { kind: "claude", roles: ["implementer"], model: "claude-sonnet-5-5" })).toEqual({ tier: 3, key: "instances.claude-impl" });
+  expect(configTier("config.local.json", ["instances", "claude-impl"], { kind: "claude", roles: ["implementer"] }, { kind: "claude", model: "x" })).toEqual({ tier: 3, key: "instances.claude-impl" });
   for (const path of [["review", "adaptive"], ["review", "min_reviews"], ["review", "pool"], ["review", "rerotate"], ["snapshots", "keep"], ["approvals", "timeout_s"], ["context", "gate"]]) {
     expect(tier("config.local.json", ...path), path.join(".")).toEqual({ tier: 2 });
   }

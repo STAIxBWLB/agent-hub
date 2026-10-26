@@ -89,3 +89,17 @@ test("#450 catalog and role projections preserve builtin order and isolate calle
   roles["local-reader"]!.push("conductor");
   expect(instanceDefaultRoles(declarations, true, builtinProjectCatalog())["local-reader"]).not.toContain("conductor");
 });
+
+test("#844 a headless Claude implementer accepts one bounded model word; no other Claude or non-Jcode instance does", () => {
+  const impl = { kind: "claude", roles: ["implementer"], start_mode: "headless", worktree: ".worktrees/claude-impl", permission_mode: "ask" };
+  const parsed = validateInstances({ "claude-impl": { ...impl, model: "claude-sonnet-5-5" } }, builtinProjectCatalog());
+  expect(parsed["claude-impl"]).toMatchObject({ kind: "claude", model: "claude-sonnet-5-5" });
+  expect(Object.isFrozen(parsed["claude-impl"])).toBe(true);
+  expect("model" in validateInstances({ "claude-impl": impl }, builtinProjectCatalog())["claude-impl"]!).toBe(false); // unset stays unset
+  for (const model of ["", " ", "a b", "-flag", "x\ny", "a".repeat(129), 3, null, ["m"], { m: 1 }]) {
+    expect(() => validateInstances({ "claude-impl": { ...impl, model } }, builtinProjectCatalog()), JSON.stringify(model)).toThrow(/claude-impl\.model/);
+  }
+  // A Claude instance that is not a headless implementer takes no model, and neither does a non-Jcode kind.
+  expect(() => validateInstances({ "claude-review": { kind: "claude", roles: ["reviewer"], start_mode: "headless", model: "claude-sonnet-5-5" } }, builtinProjectCatalog())).toThrow(/model/);
+  for (const kind of ["codex", "kimi", "qwen", "pi", "local"]) expect(() => validateInstances({ [`${kind}-worker`]: { kind, start_mode: "headless", model: "x" } }, builtinProjectCatalog()), kind).toThrow(/unsupported field/);
+});

@@ -210,7 +210,9 @@ export interface AdapterDefinition {
   /** Declaration admission only; execution-root and runtime owner proof remain host responsibilities. */
   instances?: { mode: "external" | "headless"; roles?: readonly string[];
     /** Each declared instance runs its own native data home (`jcode_home`) and may pass its own provider, model and profile names (#685). Fixed builtins only. */
-    nativeHome?: true };
+    nativeHome?: true;
+    /** A declared headless instance of this definition may pass one validated `model` word to its native child (#844). Fixed builtins only. */
+    modelSelect?: true };
   attach?: {
     /** The authenticated external hello may claim this id; independent of MCP configuration shape. */
     externalHello?: boolean;

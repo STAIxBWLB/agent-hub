@@ -23,6 +23,8 @@ export interface ClaudeImplementerOptions {
   factsHook: string;
   systemPrompt: string;
   watchdogMs: number;
+  /** Declared `model` of this instance (#844): one validated word passed as `--model`; unset leaves the native default and the argv unchanged. */
+  model?: string;
   mode?: "ask" | "ask-when-needed";
   /** Exact host-reported transcript evidence only; unknown/read errors retain the recorded UUID. */
   transcriptPersisted?(task: number, sessionId: string): boolean | "unknown";
@@ -38,10 +40,10 @@ export interface ClaudeImplementerOptions {
   prove?(): Promise<() => boolean>;
 }
 export interface ImplementerTurn { sessionId: string; resume: boolean; persistent: boolean }
-export function claudeImplementerArgs(turn: ImplementerTurn, mcp: string, settings: string, prompt: string): string[] {
+export function claudeImplementerArgs(turn: ImplementerTurn, mcp: string, settings: string, prompt: string, model?: string): string[] {
   return ["-p", "--output-format", "stream-json", "--verbose", turn.resume ? "--resume" : "--session-id", turn.sessionId,
     ...(!turn.persistent ? ["--no-session-persistence"] : []), "--strict-mcp-config", "--mcp-config", mcp, "--setting-sources", "", "--settings", settings,
-    "--permission-mode", "default", "--permission-prompts", "host", "--permission-prompt-tool", "mcp__agent-hub__hub_permission_request",
+    ...(model ? ["--model", model] : []), "--permission-mode", "default", "--permission-prompts", "host", "--permission-prompt-tool", "mcp__agent-hub__hub_permission_request",
     "--allowedTools", ...IMPLEMENTER_HUB_TOOL_NAMES.map(name => `mcp__agent-hub__${name}`), "--append-system-prompt", prompt];
 }
 
@@ -184,7 +186,7 @@ export class ClaudeImplementerPeer extends BasePeer {
           AGENTHUB_INSTANCE_ID: this.options.instanceId, AGENTHUB_LAUNCH_ID: launchId, AGENTHUB_HOOK_PURPOSE: "permission", AGENTHUB_PERMISSION_TOOL: "1" };
         const mcp = JSON.stringify({ mcpServers: { "agent-hub": { command: process.execPath, args: ["run", this.options.server], env } } });
         let result = false, failed = false;
-        const child = new OwnedPrintChild({ peer: this.id, command: this.command!, args: claudeImplementerArgs(turn, mcp, settings, this.options.systemPrompt), cwd: this.options.cwd,
+        const child = new OwnedPrintChild({ peer: this.id, command: this.command!, args: claudeImplementerArgs(turn, mcp, settings, this.options.systemPrompt, this.options.model), cwd: this.options.cwd,
           input: group.envs.map(frame).join("\n\n"), env, current, stop: this.options.stopChild,
           onSpawn: () => {
             try {

@@ -1027,7 +1027,9 @@ export async function startDaemon(opts: DaemonOptions) {
    */
   const jcodeModelSource = (id: string): { modelSource?: string } => {
     const instance = declarations[id];
-    if (!instance || definitionOf(id)?.instances?.nativeHome !== true) return {};
+    if (!instance) return {};
+    // #844: a model exists on an instance only where validation admitted it (a headless implementer whose definition declares modelSelect).
+    if (definitionOf(id)?.instances?.nativeHome !== true) return instance.model ? { modelSource: instance.model } : {};
     return { modelSource: [instance.provider, instance.model, instance.provider_profile && `profile ${instance.provider_profile}`].filter(Boolean).join(" ") || "native default" };
   };
   /**
@@ -4754,7 +4756,7 @@ export async function startDaemon(opts: DaemonOptions) {
       if (selected !== "ask" && selected !== "ask-when-needed") return { ok: false, error: "Claude implementer refuses never-ask" };
       const implementer = adapter.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: selected, mcpServers: [], daemon: DAEMON_PORTS["claude-implementer"]({
         cwd: executionCwd, stateDir: opts.stateDir, projectRoot: opts.cwd, instanceId, server: SERVER_JS,
-        factsHook: join(import.meta.dir, "..", "cli", "facts-hook.ts"), systemPrompt: sessionRoleContract(peer), mode: selected, watchdogMs: config.watchdog_ms,
+        factsHook: join(import.meta.dir, "..", "cli", "facts-hook.ts"), systemPrompt: sessionRoleContract(peer), mode: selected, watchdogMs: config.watchdog_ms, ...(declarations[peer]?.model ? { model: declarations[peer].model } : {}),
         admit: env => {
           try {
             if (env.private || !currentRoot() || bus.peers.get(peer) !== implementer) return false;
