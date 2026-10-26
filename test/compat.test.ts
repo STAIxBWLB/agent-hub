@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assessVersion, COMPAT, readTrust, trustFile, VERSION_REFUSAL, writeTrust } from "../src/adapters/compat.ts";
+import { assessVersion, COMPAT, readTrust, trustFile, VERSION_REFUSAL, writeTrust, type CompatId } from "../src/adapters/compat.ts";
 import { agyVersionGate } from "../src/adapters/agy/entry.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 
@@ -233,6 +233,87 @@ test("Kimi 2.3.0 and Qwen 0.26.0 are receipt-verified without machine trust (#37
 test("Kimi 2.3.1 is receipt-verified without machine trust; its neighbours are not (#792)", () => {
   expect(assessVersion("kimi-review", "2.3.1", [])).toEqual({ ok: true, state: "verified", version: "2.3.1" });
   for (const near of ["2.3.2", "2.4.0", "2.3.1-rc.1"]) expect(assessVersion("kimi-review", near, []).ok).toBe(false);
+});
+
+test("the compat watch covers every COMPAT source and renders ahead, unknown and no-public-source rows from an injected fetch (#843)", async () => {
+  const { SOURCES, latestVersion, watch } = await import("../scripts/agent-compat-watch.ts");
+  // Every key in SOURCES is a public source except agy, whose kind is "none". SOURCES is keyed by CompatId, so a pi
+  // entry #843 AC2 adds is watched through the same SOURCES.pi hook asserted below, without touching this test.
+  for (const id of Object.keys(SOURCES)) expect(id === "agy" || SOURCES[id]?.kind !== "none").toBe(true);
+  expect(SOURCES.agy).toEqual({ kind: "none" });
+  expect(SOURCES["claude-implementer"]).toEqual({ kind: "npm", pkg: "@anthropic-ai/claude-code" });
+  expect(SOURCES.jcode).toEqual({ kind: "github", repo: "1jehuang/jcode" });
+  expect(SOURCES["qwen-dual"]).toEqual({ kind: "npm", pkg: "@qwen-code/qwen-code" });
+  expect(SOURCES.pi).toEqual({ kind: "npm", pkg: "@earendil-works/pi-coding-agent" }); // the hook: watched the moment #843 AC2 adds a COMPAT pi entry
+  expect(await latestVersion({ kind: "github", repo: "x/y" }, async () => ({ json: async () => ({ tag_name: "v0.99.1" }) }))).toBe("0.99.1");
+  expect(await latestVersion({ kind: "npm", pkg: "x" }, async () => { throw new Error("offline"); })).toBeUndefined();
+
+  // The watched fixture is derived from COMPAT, not a fixed version list, so it survives a new COMPAT entry (pi, #843
+  // AC2) without editing this test. Each public id is served its first fetch in COMPAT's key order (agy, kind none,
+  // fetches nothing); qwen and qwen-dual read the same npm pkg but carry different verified sets, so serving each id
+  // its own value in that order is what keeps them all verified. Every id's verified[0] is a plain semver.
+  const publicOrder = Object.keys(COMPAT).filter(id => id !== "agy") as CompatId[];
+  const owned = (id: CompatId, url: string): boolean => {
+    const s = SOURCES[id];
+    return s ? (s.kind === "npm" ? url.includes(s.pkg) : s.kind === "github" ? url.includes(s.repo) : false) : false;
+  };
+  // Hand each public id its first matching fetch as a body of its SOURCES kind's shape, unless forced ahead.
+  const stub = (aheadOf?: Record<string, string>) => {
+    const served: Record<string, string> = {};
+    return ((url: string) => {
+      const id = publicOrder.find(k => served[k] === undefined && owned(k, url));
+      if (id) served[id] = url;
+      const version = id ? (aheadOf?.[id] ?? COMPAT[id].verified[0]) : undefined;
+      const source = id ? SOURCES[id] : undefined;
+      return Promise.resolve({ json: async () => (source?.kind === "github" ? { tag_name: `v${version}` } : { version }) });
+    }) as unknown as typeof fetch;
+  };
+
+  const allVerified = await watch(stub(), new Date("2026-10-26T00:00:00Z"));
+  expect(allVerified.code).toBe(0);
+  expect(allVerified.report).toContain("latest published version is verified");
+  expect(allVerified.report).toContain("- **agy**: no public source; local drift only");
+  expect(allVerified.report).not.toContain("Published agent CLI versions ahead");
+
+  // The same walk with only claude-implementer forced to an unverified version: exit 3 with the drift header and that
+  // id's drift row, while agy stays an informational notice (#843: a notice is never drift, so all-verified is exit 0).
+  const driftId = publicOrder[0]!;
+  const aheadVersion = "9.9.9";
+  const ahead = await watch(stub({ [driftId]: aheadVersion }), new Date("2026-10-26T00:00:00Z"));
+  expect(ahead.code).toBe(3);
+  expect(ahead.report.startsWith("Published agent CLI versions ahead of their verified set")).toBe(true);
+  const driftSource = SOURCES[driftId]!;
+  const driftLabel = driftSource.kind === "npm" ? `npm ${driftSource.pkg}` : driftSource.kind === "github" ? `GitHub releases ${driftSource.repo}` : "no public source";
+  const driftRow = ahead.report.split("\n").find(l => l.includes(`**${driftId}**`)) ?? "";
+  expect(driftRow).toContain(driftLabel);
+  expect(driftRow).toContain(`latest ${aheadVersion}`);
+  expect(driftRow).toContain("refused");
+  expect(driftRow).toContain(COMPAT[driftId].receipt);
+  const otherVerified = publicOrder.find(id => id !== driftId)!;
+  expect(ahead.report).not.toContain(`- **${otherVerified}**`); // still verified at its own verified[0]
+  expect(ahead.report).toContain("- **agy**: no public source; local drift only"); // agy is a notice, not drift
+  // A source that cannot be read is unknown, not a crash.
+  const unknown = await watch(async () => { throw new Error("offline"); }, new Date("2026-10-26T00:00:00Z"));
+  expect(unknown.code).toBe(3);
+  expect(unknown.report).toContain("latest unknown, unknown");
+});
+
+test("every COMPAT entry names a receipt that exists and has a watcher source, so a new entry cannot land without either (#843)", async () => {
+  const { SOURCES } = await import("../scripts/agent-compat-watch.ts");
+  const { existsSync } = await import("node:fs");
+  const ids = Object.keys(COMPAT) as CompatId[];
+  expect(ids).toContain("pi"); // #847 added it; the receipt pointers and the watcher must cover it like every other entry
+  for (const id of ids) {
+    expect(SOURCES[id], `${id} has no watcher source`).toBeDefined();
+    const receipt = COMPAT[id].receipt;
+    expect(typeof receipt, `${id} has no receipt`).toBe("string");
+    expect(receipt.startsWith("docs/verification/") && receipt.endsWith(".md"), `${id} receipt ${receipt}`).toBe(true);
+    expect(existsSync(join(import.meta.dir, "..", receipt)), `${id} receipt ${receipt} does not exist`).toBe(true);
+  }
+  // The receipt to repeat is the newest one for each of the three #843 AC5 CLIs.
+  expect(COMPAT.jcode.receipt).toBe("docs/verification/2026-10-26-jcode-0.99.1.md");
+  expect(COMPAT.agy.receipt).toBe("docs/verification/2026-10-26-agy-1.4.7.md");
+  expect(COMPAT.pi.receipt).toBe("docs/verification/2026-10-26-pi-140-compat.md");
 });
 
 test("Pi 1.4.0 has an exact receipt gate; other versions need the person's trust (#843 AC2)", () => {
