@@ -32,7 +32,7 @@ function root() {
 async function rig(snapshots = true, piiPaths:string[] = []) {
   const f=root();writeFileSync(join(f.dir,"paper.docx"),"original document\n");
   const config={...DEFAULT_CONFIG,batch_ms:0,roles:{...DEFAULT_CONFIG.roles,kimi:[...(DEFAULT_CONFIG.roles.kimi??[]),"reviewer"]},pii:{paths:piiPaths},snapshots:{...DEFAULT_CONFIG.snapshots,enabled:snapshots},memory:{...DEFAULT_CONFIG.memory,enabled:false},inference:{...DEFAULT_CONFIG.inference,enabled:false},mlx:{...DEFAULT_CONFIG.mlx,enabled:false},text_projection:{".docx":[f.converter,"{input}"]}};
-  const daemon=await startDaemon({cwd:f.dir,stateDir:f.state,controlPort:0,codexAppPort:0,codexProxyPort:0,config});cleanup.push(()=>daemon.stop());
+  const daemon=await startDaemon({cwd:f.dir,stateDir:f.state,controlPort:0,codexAppPort:0,codexProxyPort:0,snapshotClock:()=>0,config});cleanup.push(()=>daemon.stop());
   const client=await ControlClient.connect(f.state,{role:"console"});cleanup.push(()=>client.close());
   const owner=new Peer("codex"), reviewer=new Peer("claude");daemon.bus.add(owner);daemon.bus.add(reviewer);await owner.start();await reviewer.start();
   const op=async(name:string,args:Record<string,unknown>)=>{const reply=await client.request({t:"task",op:name,args},15000);expect(reply.ok).toBe(true);return reply;};
@@ -72,7 +72,7 @@ test.skipIf(process.platform!=="darwin")("reviewer replacement after daemon rest
   const f=await rig();await f.op("hub_task_propose",{title:"Review persisted paper",class:"implement",owner:"codex",refs:{paths:["paper.docx"]}});writeFileSync(join(f.dir,"paper.docx"),"first revision\n");await f.op("hub_task_done",{id:1,summary:"revision ready"});
   await f.wait(()=>f.reviewer.got.some(env=>env.kind==="review"));f.client.close();await f.daemon.stop();
   writeFileSync(join(f.dir,"paper.docx"),"second revision\n");
-  const daemon=await startDaemon({cwd:f.dir,stateDir:f.state,controlPort:0,codexAppPort:0,codexProxyPort:0,config:f.config});cleanup.push(()=>daemon.stop());
+  const daemon=await startDaemon({cwd:f.dir,stateDir:f.state,controlPort:0,codexAppPort:0,codexProxyPort:0,snapshotClock:()=>0,config:f.config});cleanup.push(()=>daemon.stop());
   const client=await ControlClient.connect(f.state,{role:"console"});cleanup.push(()=>client.close());const kimi=new Peer("kimi");daemon.bus.add(kimi);await kimi.start();
   const changed=await client.request({t:"task",op:"task_assign",args:{id:1,peer:"kimi",role:"reviewer"}},15000);expect(changed.ok).toBe(true);
   await f.wait(()=>kimi.got.some(env=>env.kind==="review"));const notice=kimi.got.find(env=>env.kind==="review")!;
