@@ -42,7 +42,9 @@ import { profileName, projectProfile, resolveProfile, mergeProfileOverrides, typ
 import { catalogAssignments, loadRoleCatalog, selectedRoles, roleIdentity } from "./roles.ts";
 import { ActivityRing } from "./activity.ts";
 import { JcodeOptionMismatch, isJcodePeer, jcodeVersionAsync, type JcodePeer } from "../adapters/jcode.ts";
-import { VERSION_REFUSAL, describe, isCompatId } from "../adapters/compat.ts";
+import { VERSION_REFUSAL, configuredCommands, describe, isCompatId } from "../adapters/compat.ts";
+import { agentVersionsAsync, type AgentVersionRow } from "../cli/agents.ts";
+import { driftedAgents, noticeDrift, type DriftedAgent } from "./agent-drift.ts";
 import { jcodeMcpReady } from "../cli/jcode-mcp.ts";
 import { loadSdlc, readSpecEdit, sdlcGh } from "./sdlc.ts";
 import { claudePeer as defaultChannelPeer, claudeStateFile, ownTerminalRow, pathEvidence, transcriptPersisted } from "./claude-state.ts";
@@ -558,6 +560,13 @@ export interface DaemonOptions {
   taskSweepNow?: () => number;
   /** Test seam: the period of the SDLC band evaluation, default five minutes. */
   bandsEveryMs?: number;
+  /**
+   * #843 AC3: read each gated agent CLI's installed version at start and daily, and tell the planner about drift.
+   * `true` uses the same probe as `ahub agents` (the product sets it); a function replaces the probe (tests). Off by default.
+   */
+  agentDrift?: boolean | (() => Promise<readonly AgentVersionRow[]>);
+  /** Test seam: the period of the agent drift sweep, default one day. */
+  agentDriftEveryMs?: number;
   /** Test seam: an extra hold on the SDLC band evaluation, like a storage error. */
   bandsHeld?: () => boolean;
   /** How long a research record waits after an approval for the task's open turns to end (#247). Tests shrink this. */
@@ -2378,10 +2387,36 @@ export async function startDaemon(opts: DaemonOptions) {
       } catch { /* The audit event is retained even if its advisory notice cannot be delivered. */ }
     }
   }
+  // #843 AC3: local agent CLI drift. One probe path (`agentVersionsAsync`, the one `ahub agents` shares), no network, no install.
+  let agentDrift: DriftedAgent[] = [];
+  let agentDriftRunning = false;
+  // The first probe is owed until one has run: a daemon that starts in recovery skips it, and the tick runs it once the hold releases.
+  let agentDriftOwed = true;
+  // A planner that is not attached yet gets it from the tick as soon as it is; a recorded marker is never sent twice.
+  const offerAgentDrift = () => noticeDrift(agentDrift, {
+    record: marker => board.recordAgentDriftNotice(marker), forget: marker => board.forgetAgentDriftNotice(marker),
+    planners: plannerPeers, isRostered: peer => bus.isRostered(peer), publish: env => bus.publish(env),
+  });
+  const sweepAgentDrift = async () => {
+    const probe = opts.agentDrift === true ? () => agentVersionsAsync(configuredCommands(config)) : opts.agentDrift || undefined;
+    if (!probe || agentDriftRunning || stopping || recoveryActive()) return;
+    agentDriftRunning = true;
+    agentDriftOwed = false;
+    try {
+      const drift = driftedAgents(await probe());
+      if (stopping) return;
+      agentDrift = drift;
+      offerAgentDrift();
+      writeStatus();
+    } catch { log("agent CLI drift sweep failed; run ahub agents"); } finally { agentDriftRunning = false; }
+  };
   const intervals = [
+    setInterval(() => { void sweepAgentDrift(); }, opts.agentDriftEveryMs ?? 86_400_000),
     setInterval(() => {
       void refreshRunner().catch(() => {});
       try { tasks.flushPlannerNotices(); } catch { /* the board remains authoritative if notice delivery fails */ }
+      if (agentDriftOwed && !stopping && !recoveryActive()) void sweepAgentDrift();
+      if (agentDrift.length && !stopping && !recoveryActive()) try { offerAgentDrift(); } catch { /* the next tick tries again */ }
       for (const pending of checkpointWaits.values()) if (!pending.valid()) pending.done(undefined);
       for (const [id, request] of permissions) if (request.expiresAt > Date.now()) supervision.approvalWaiting({ id, peer: request.peer, tool: request.tool ?? "unknown", createdAt: request.createdAt });
       for (const row of bus.queueList(undefined, true)) if (row.state === "needs_review") supervision.needsReview(row.peer, row.id);
@@ -3241,6 +3276,7 @@ export async function startDaemon(opts: DaemonOptions) {
     pluginBundle: SERVER_JS,
     pendingRestart: allPendingRestart(),
     retainedConfig,
+    ...(agentDrift.length ? { agentDrift } : {}),
     ...(() => { const warning = mainCheckoutWarning(opts.cwd, tasks.publicMetadataText, checkoutBranch); return warning ? { mainCheckout: warning } : {}; })(),
     startModes: Object.fromEntries([...START_MODE_PEERS, ...configuredIds].map(peer => [peer, startModeOf(config.peers, peer, declarations, adapterCatalog)])),
     memoryProfile: memoryProfileStatus(includeAttentionItems),
@@ -7314,6 +7350,8 @@ export async function startDaemon(opts: DaemonOptions) {
   // After a crash that recorded Pi, crash recovery starts it (#66): its recorded session first, a fresh one if that fails.
   const piRecovered = !archivedPiContinuity && !!crashed?.peers.some((p) => definitionOf(p.peer)?.session.restoreOnStart);
   if (piAutoStart() && !recoveryActive() && !piRecovered) autoStartPi();
+  // #843 AC3: at hub start, after the roster and the control socket exist; never awaited, so a slow probe delays no start.
+  void sweepAgentDrift();
   return { bus, token, port: server.port as number, bandEvaluations: () => bandEvaluations, sdlcFileReads: () => sdlcFileReads, stop, stopped: new Promise<void>((r) => (onStop = r)) };
   } finally {
     if (!ready) for (const cleanup of startupCleanup.reverse()) { try { await cleanup(); } catch { /* preserve startup error */ } }

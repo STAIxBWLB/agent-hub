@@ -85,6 +85,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Pi/local read-only shell class (#816 T1) | source/fixture coverage; person setting and live Pi receipt (AC4) remain unverified | automatic read-only class versus approval requests, parser/allowlist/proof revalidation tests, unchanged Seatbelt/path-guard byte checks |
 | Pi and the local worker on DGX | off: DGX unreachable recently; Pi is off the roster | turns served on-prem, relay errors |
 | Pi native version gate (#843 AC2) | source/fixture and isolated model-free 1.4.0 receipt; active after release and hub upgrade, Pi stays off this repository's roster | `ahub agents` pi verdict, one version probe on each real launch, rejected versions naming the exact trust command; account-backed inference remains unverified |
+| Local agent CLI drift notice (#843 AC3) | source/fixture and injected-probe daemon test; active on this repository after release and hub upgrade | one planner notice per (id, version), the `agent CLI drift` line in `ahub status`, no repeat after a hub restart |
 | PII routing | on | PII tasks and where they ran |
 | Multiple Jcode instances (#685) | pending | turns per instance |
 
