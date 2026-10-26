@@ -4840,7 +4840,10 @@ function qwenDualNamesStateDir(input, stateDir) {
   };
   return seen(input, 0);
 }
-var SUBMIT_CAP, READ_CAP, ANSWERED_CAP = 256, QWEN_STALLED_NOTE = "stalled: Qwen has said nothing for a while; the hub cannot stop a Qwen turn, press Esc in the Qwen terminal", QWEN_DETACHED_NOTE = "detached: the hub cannot read Qwen's event file; Qwen keeps working in its terminal and the hub reattaches when the file is readable again", DIR = "qwen-dual", QwenDualPeer;
+function isQwenTaskNotification(text) {
+  return text.length <= NOTIFICATION_CAP && QWEN_TASK_NOTIFICATIONS.test(text);
+}
+var SUBMIT_CAP, READ_CAP, ANSWERED_CAP = 256, QWEN_STALLED_NOTE = "stalled: Qwen has said nothing for a while; the hub cannot stop a Qwen turn, press Esc in the Qwen terminal", QWEN_DETACHED_NOTE = "detached: the hub cannot read Qwen's event file; Qwen keeps working in its terminal and the hub reattaches when the file is readable again", DIR = "qwen-dual", NOTIFICATION, QWEN_TASK_NOTIFICATIONS, NOTIFICATION_CAP, QwenDualPeer;
 var init_qwen_dual = __esm(() => {
   init_envelope();
   init_child_process();
@@ -4849,6 +4852,9 @@ var init_qwen_dual = __esm(() => {
   init_qwen_native();
   SUBMIT_CAP = 256 * 1024;
   READ_CAP = 1024 * 1024;
+  NOTIFICATION = String.raw`<task-notification>\n<task-id>bg_[0-9a-f]{4,32}<\/task-id>\n<kind>[a-z_-]{1,32}<\/kind>\n<status>[a-z_-]{1,32}<\/status>\n(?:(?!<task-notification>|<\/task-notification>)[\s\S])*<\/task-notification>`;
+  QWEN_TASK_NOTIFICATIONS = new RegExp(`^${NOTIFICATION}(?:\\n\\n${NOTIFICATION})*$`);
+  NOTIFICATION_CAP = 64 * 1024;
   QwenDualPeer = class QwenDualPeer extends BasePeer {
     opts;
     permissionModeState = "unmanaged";
@@ -5310,6 +5316,15 @@ ${text}`;
       const text = this.promptText(event);
       if (text === undefined)
         return;
+      if (isQwenTaskNotification(text)) {
+        if (!this.turn && this.owner === undefined) {
+          this.owner = "personal";
+          this.lastAssistant = undefined;
+          if (this.state === "idle")
+            this.setState("busy");
+        }
+        return;
+      }
       const turn = this.turn;
       if (turn && !turn.started && (text.trim() === turn.text.trim() || text.trim().startsWith(turn.text.trim().slice(0, 200)))) {
         turn.started = true;
