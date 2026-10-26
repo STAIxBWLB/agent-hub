@@ -7,7 +7,7 @@ import { processTable } from "../src/hub/child-process.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
 import { createHash } from "node:crypto";
-import { ContainerRunner, RemoteRunner, dependencyKey, dependencyVolume, KEEP_DEPENDENCY_VOLUMES, remoteRunnerTransport, remoteRunnerConfig, remoteDockerArgs, remoteArchiveArgs, type ContainerCommand, type RunnerOptions } from "../src/hub/check-runner.ts";
+import { ContainerRunner, RemoteRunner, dependencyKey, dependencyManifest, dependencyVolume, KEEP_DEPENDENCY_VOLUMES, remoteRunnerTransport, remoteRunnerConfig, remoteDockerArgs, remoteArchiveArgs, type ContainerCommand, type RunnerOptions } from "../src/hub/check-runner.ts";
 const remote = { host: "fixture@runner.reserved.invalid", image: "registry.reserved.invalid/check@sha256:" + "a".repeat(64), root: "/reserved/check-root" };
 const cleanup: (() => unknown | Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -44,7 +44,7 @@ async function fixture(options: Partial<RunnerOptions> = {}, failure?: string) {
       if (args[1] === "inspect") {
         const names = args.slice(2, args.indexOf("--format")), format = args[args.indexOf("--format") + 1]!;
         const rows = names.filter(name => volumes.has(name)); if (!rows.length) return { code: 1, stdout: "" };
-        return { code: 0, stdout: rows.map(name => { const v = volumes.get(name)!; return format.includes('"name"') ? JSON.stringify({ name, created: new Date(1_000_000 + v.created * 1000).toISOString(), project: v.labels["agenthub.deps.project"] }) : JSON.stringify({ project: v.labels["agenthub.deps.project"], key: v.labels["agenthub.deps.key"] }); }).join("\n") };
+        return { code: 0, stdout: rows.map(name => { const v = volumes.get(name)!; return format.includes('"name"') ? JSON.stringify({ name, created: new Date(1_000_000 + v.created * 1000).toISOString(), project: v.labels["agenthub.deps.project"], key: v.labels["agenthub.deps.key"] }) : JSON.stringify({ project: v.labels["agenthub.deps.project"], key: v.labels["agenthub.deps.key"] }); }).join("\n") };
       }
     }
     if (args[0] === "version") return { code: failure === "docker" ? 1 : 0, stdout: JSON.stringify({ Version: "27.4.1", Os: "linux", Arch: "arm64" }) };
@@ -119,7 +119,7 @@ test("remote check run is hardened, offline and mounts only the prepared lockfil
   expect(args).toContain("--read-only"); expect(args).toContain(remote.image);
   expect(args.filter((_, index) => args[index - 1] === "--tmpfs")).toEqual(expect.arrayContaining([expect.stringContaining("/work:"), expect.stringContaining("/home/check:"), expect.stringContaining("/tmp:")]));
   const lock = createHash("sha256").update("committed-lock\n").digest("hex");
-  const key = dependencyKey({ lockfile: lock, bun: "1.4.2", arch: "amd64", image: "sha256:" + "a".repeat(64) });
+  const key = dependencyKey({ lockfile: lock, manifest: createHash("sha256").digest("hex"), bun: "1.4.2", arch: "amd64", image: "sha256:" + "a".repeat(64) });
   expect(result.lockfile).toBe(lock);
   expect(mountOf(args)).toBe(`type=volume,src=${dependencyVolume("fixture", key)},dst=/work/node_modules,readonly`);
   expect(args.filter(value => value === "--mount")).toHaveLength(1);
@@ -129,15 +129,39 @@ test("remote check run is hardened, offline and mounts only the prepared lockfil
 });
 
 test("dependency volume names derive from lockfile, Bun version, architecture and image, per project", () => {
-  const base = { lockfile: "l".repeat(64), bun: "1.4.2", arch: "amd64", image: "sha256:" + "a".repeat(64) };
+  const base = { lockfile: "l".repeat(64), manifest: "p".repeat(64), bun: "1.4.2", arch: "amd64", image: "sha256:" + "a".repeat(64) };
   const name = (key: string, project = "fixture") => dependencyVolume(project, key);
   const same = name(dependencyKey(base));
   expect(name(dependencyKey({ ...base }))).toBe(same);
   expect(same).toMatch(/^agenthub-check-deps-fixture-[a-f0-9]{32}$/);
-  for (const change of [{ lockfile: "m".repeat(64) }, { bun: "1.4.3" }, { arch: "arm64" }, { image: "sha256:" + "b".repeat(64) }]) expect(name(dependencyKey({ ...base, ...change }))).not.toBe(same);
+  for (const change of [{ lockfile: "m".repeat(64) }, { manifest: "q".repeat(64) }, { bun: "1.4.3" }, { arch: "arm64" }, { image: "sha256:" + "b".repeat(64) }]) expect(name(dependencyKey({ ...base, ...change }))).not.toBe(same);
   expect(name(dependencyKey(base), "other")).not.toBe(same);
   // Fields cannot be shifted across a boundary to collide.
   expect(dependencyKey({ ...base, lockfile: "ab", bun: "c" })).not.toBe(dependencyKey({ ...base, lockfile: "a", bun: "bc" }));
+});
+
+async function commitFile(f: Awaited<ReturnType<typeof fixture>>, path: string, content: string) {
+  await mkdir(join(f.project, path, ".."), { recursive: true }); await writeFile(join(f.project, path), content); f.git("add", path); f.git("commit", "-qm", `test: ${path}`);
+}
+
+test("install inputs beyond bun.lock decide reuse: a changed manifest or config prepares a new volume, an identical one reuses", async () => {
+  const f = await fixture();
+  await commitFile(f, "package.json", '{"dependencies":{"a":"1.0.0"}}');
+  await f.runner.start(f.request).done; expect(f.volumes.size).toBe(1);
+  const installs = () => f.calls.filter(args => args.includes("install")).length;
+  const creates = () => f.calls.filter(args => args[0] === "volume" && args[1] === "create").length;
+  expect(installs()).toBe(1);
+  await f.runner.start(f.request).done; expect(f.volumes.size).toBe(1); expect(installs()).toBe(1); // same inputs: reused
+  await commitFile(f, "package.json", '{"dependencies":{"a":"1.0.1"}}'); // same bun.lock, different manifest
+  const result = await f.runner.start(f.request).done;
+  expect(result.exit).toBe(0); expect(f.volumes.size).toBe(2); expect(installs()).toBe(2);
+  for (const [path, content] of [["bunfig.toml", "[install]\n"], [".npmrc", "registry=x\n"], ["patches/a.patch", "p"], ["packages/w/package.json", "{}"]] as const) {
+    const before = creates(); await commitFile(f, path, content); await f.runner.start(f.request).done;
+    expect(creates()).toBe(before + 1);
+  }
+  // An unrelated source change does not.
+  const settled = creates(); await commitFile(f, "src/unrelated.ts", "export {};"); await f.runner.start(f.request).done;
+  expect(creates()).toBe(settled);
 });
 
 test("a prepared volume is reused: the next run installs nothing, creates nothing and never gets a network", async () => {
@@ -201,7 +225,7 @@ test("a prepared volume that fails read-only verification is discarded and prepa
 
 test("old dependency volumes are pruned to the newest few of this project; the current one and other projects stay", async () => {
   const f = await fixture();
-  for (let i = 1; i <= 5; i++) f.volumes.set(`agenthub-check-deps-fixture-${String(i).repeat(32)}`, { labels: { "agenthub.deps.project": "fixture", "agenthub.deps.key": "k" + i }, created: i, ready: true });
+  for (let i = 1; i <= 5; i++) f.volumes.set(`agenthub-check-deps-fixture-${String(i).repeat(32)}`, { labels: { "agenthub.deps.project": "fixture", "agenthub.deps.key": String(i).repeat(64) }, created: i, ready: true });
   f.volumes.set(`agenthub-check-deps-other-${"9".repeat(32)}`, { labels: { "agenthub.deps.project": "other", "agenthub.deps.key": "k" }, created: 0, ready: true });
   f.volumes.set("unrelated-volume", { labels: { "agenthub.deps.project": "fixture", "agenthub.deps.key": "k" }, created: 0, ready: true });
   await f.runner.start(f.request).done;
@@ -210,6 +234,25 @@ test("old dependency volumes are pruned to the newest few of this project; the c
   expect(mine).toContain(`agenthub-check-deps-fixture-${"5".repeat(32)}`); expect(mine).toContain(`agenthub-check-deps-fixture-${"4".repeat(32)}`);
   expect(mine).not.toContain(`agenthub-check-deps-fixture-${"1".repeat(32)}`);
   expect(f.volumes.has(`agenthub-check-deps-other-${"9".repeat(32)}`)).toBe(true); expect(f.volumes.has("unrelated-volume")).toBe(true);
+});
+
+test("prune never counts or removes a volume whose key label is absent, malformed or inconsistent with its name", async () => {
+  const f = await fixture();
+  const name = (n: string) => `agenthub-check-deps-fixture-${n.repeat(32)}`;
+  const seed = (n: string, labels: Record<string, string>, created: number) => f.volumes.set(name(n), { labels, created, ready: true });
+  const mine = (n: string) => ({ "agenthub.deps.project": "fixture", "agenthub.deps.key": n.repeat(64) });
+  seed("1", { "agenthub.deps.project": "fixture", "agenthub.deps.key": "" }, 1); // absent
+  seed("2", { "agenthub.deps.project": "fixture", "agenthub.deps.key": "not-a-key" }, 2); // malformed
+  seed("3", { "agenthub.deps.project": "fixture", "agenthub.deps.key": "a".repeat(64) }, 3); // well formed, but not this name's key
+  seed("4", { "agenthub.deps.project": "intruder", "agenthub.deps.key": "4".repeat(64) }, 4); // another project's label
+  for (const n of ["5", "6", "7", "8"]) seed(n, mine(n), 10 + Number(n));
+  await f.runner.start(f.request).done;
+  for (const n of ["1", "2", "3", "4"]) expect(f.volumes.has(name(n))).toBe(true);
+  expect(f.calls.some(args => args[0] === "volume" && args[1] === "rm" && ["1", "2", "3", "4"].some(n => args[2] === name(n)))).toBe(false);
+  // The valid ones still obey the bound: the current volume plus the newest others.
+  const valid = [...f.volumes.keys()].filter(volume => ["5", "6", "7", "8"].some(n => volume === name(n)));
+  expect(valid).toEqual([name("7"), name("8")].filter(volume => valid.includes(volume)));
+  expect(valid).toHaveLength(KEEP_DEPENDENCY_VOLUMES - 1);
 });
 
 test("preparation and verification containers carry the run's own name and labels, so cleanup and the orphan sweep own them", async () => {

@@ -641,8 +641,26 @@ const DEPS_PROJECT = "agenthub.deps.project", DEPS_KEY = "agenthub.deps.key";
 /** Newest dependency volumes kept per project, the current one included; older ones are pruned. */
 export const KEEP_DEPENDENCY_VOLUMES = 3;
 /** Content key of a dependency volume: the commit's lockfile hash, Bun version, image architecture and image digest. */
-export function dependencyKey(parts: { lockfile: string; bun: string; arch: string; image: string }): string {
-  return createHash("sha256").update(["agenthub-deps-v1", parts.lockfile, parts.bun, parts.arch, parts.image].join("\n")).digest("hex");
+export function dependencyKey(parts: { lockfile: string; manifest: string; bun: string; arch: string; image: string }): string {
+  return createHash("sha256").update(["agenthub-deps-v2", parts.lockfile, parts.manifest, parts.bun, parts.arch, parts.image].join("\n")).digest("hex");
+}
+/** Files besides bun.lock that decide what `bun install --frozen-lockfile` produces: manifests, Bun and registry config, patches. */
+const INSTALL_INPUT = /(?:^|\/)(?:package\.json|bunfig\.toml|\.npmrc)$|^patches\//;
+/** Hash of every install-affecting file in the staged source, by path and content, so a changed manifest or config never reuses a volume. */
+export async function dependencyManifest(source: string): Promise<string> {
+  const files: string[] = [];
+  const walk = async (dir: string, prefix: string): Promise<void> => {
+    for (const entry of await readdir(dir, { withFileTypes: true })) {
+      const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) { if (entry.name !== "node_modules" && entry.name !== ".git") await walk(join(dir, entry.name), path); }
+      else if (entry.isFile() && INSTALL_INPUT.test(path)) files.push(path);
+      if (files.length > 10_000) throw new Error("install inputs exceed file limit");
+    }
+  };
+  await walk(source, "");
+  const digest = createHash("sha256");
+  for (const path of files.sort()) digest.update(`${path}\0${hash(await readFile(join(source, path)))}\0`);
+  return digest.digest("hex");
 }
 export function dependencyVolume(projectKey: string, key: string): string { return `${DEPENDENCY_PREFIX}${projectKey}-${key.slice(0, 32)}`; }
 /** Distinguish transport failures from deterministic request/snapshot refusals without leaking remote stderr. */
@@ -755,7 +773,7 @@ export function remoteRunnerTransport(options: RunnerOptions): RunnerTransport {
     },
     async prepareDeps(command, receipt, source, signal, labels) {
       if (!observed) throw new RemoteTransportError();
-      const key = dependencyKey({ lockfile: receipt.lockfile, bun: observed.bun, arch: observed.arch, image: digest });
+      const key = dependencyKey({ lockfile: receipt.lockfile, manifest: await dependencyManifest(source), bun: observed.bun, arch: observed.arch, image: digest });
       const volume = dependencyVolume(options.projectKey, key), name = receipt.container;
       const ok = (result: CommandResult) => { if (result.code === 255 || result.code === 125) throw new RemoteTransportError(); if (result.code !== 0) throw new RemoteDependencyError(); return result; };
       // Every step container carries this run's name and labels, so it is confirmed gone before the next one starts.
@@ -782,10 +800,13 @@ export function remoteRunnerTransport(options: RunnerOptions): RunnerTransport {
         const own = new RegExp(`^${DEPENDENCY_PREFIX}${options.projectKey}-[a-f0-9]{32}$`);
         const names = listed.stdout.split("\n").map(line => line.trim()).filter(line => own.test(line));
         if (names.length <= KEEP_DEPENDENCY_VOLUMES || names.length > 500) return;
-        const rows = await command(["volume", "inspect", ...names, "--format", `{"name":{{json .Name}},"created":{{json .CreatedAt}},"project":{{json (index .Labels "${DEPS_PROJECT}")}}}`]);
+        const rows = await command(["volume", "inspect", ...names, "--format", `{"name":{{json .Name}},"created":{{json .CreatedAt}},"project":{{json (index .Labels "${DEPS_PROJECT}")}},"key":{{json (index .Labels "${DEPS_KEY}")}}}`]);
         if (rows.code !== 0) return;
-        const volumes = rows.stdout.trim().split("\n").flatMap(line => { try { return [JSON.parse(line) as { name?: unknown; created?: unknown; project?: unknown }]; } catch { return []; } })
-          .filter((row): row is { name: string; created: string; project: string } => typeof row.name === "string" && own.test(row.name) && row.project === options.projectKey && typeof row.created === "string")
+        // Only a volume this runner demonstrably made is a candidate: exact name pattern, our project label and a key label that matches
+        // the name. A volume with an absent or inconsistent key label is someone else's or damaged: it is neither counted nor removed.
+        const volumes = rows.stdout.trim().split("\n").flatMap(line => { try { return [JSON.parse(line) as { name?: unknown; created?: unknown; project?: unknown; key?: unknown }]; } catch { return []; } })
+          .filter((row): row is { name: string; created: string; project: string; key: string } => typeof row.name === "string" && own.test(row.name) && row.project === options.projectKey && typeof row.created === "string"
+            && typeof row.key === "string" && /^[a-f0-9]{64}$/.test(row.key) && row.name === dependencyVolume(options.projectKey, row.key))
           .sort((a, b) => Date.parse(b.created) - Date.parse(a.created) || a.name.localeCompare(b.name));
         const keep = new Set([volume, ...volumes.filter(row => row.name !== volume).slice(0, KEEP_DEPENDENCY_VOLUMES - 1).map(row => row.name)]);
         for (const row of volumes) if (!keep.has(row.name)) await command(["volume", "rm", row.name]).catch(() => {});
