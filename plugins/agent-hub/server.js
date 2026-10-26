@@ -322,7 +322,7 @@ var init_compat = __esm(() => {
     },
     jcode: {
       label: "Jcode",
-      verified: ["0.98.1", "0.99.0"],
+      verified: ["0.98.1", "0.99.0", "0.99.1"],
       line: { min: "0.98.0", below: "1.0.0" },
       gate: "contract",
       probe: ["jcode", "--quiet", "version", "--json"],
@@ -335,7 +335,7 @@ var init_compat = __esm(() => {
           return;
         }
       },
-      trustNote: "The ACP, serve and MCP contract was verified on 0.98.1 and steering on 0.99.0; an untested version may change them."
+      trustNote: "The ACP, serve and MCP contract was verified on 0.98.1 and 0.99.1 and steering on 0.99.0 and 0.99.1; an untested version may change them."
     },
     agy: {
       label: "agy",
