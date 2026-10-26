@@ -5853,6 +5853,7 @@ function hubWriteRegexes(root, gitDirs = [], moduleGit = [], worktreesRoot) {
     `(subpath ${sbplString(`${d}/hooks`)})`,
     `(require-all (subpath ${sbplString(d)}) ${re(`^.*/${hfsFoldedName("commondir")}$`)})`
   ]);
+  const allDirs = moduleGit.flatMap((tree) => tree.dirs ?? []);
   const modules = moduleGit.flatMap((tree) => {
     const root = sbplEscape(tree.root);
     const found = tree.dirs ?? [];
@@ -5866,7 +5867,9 @@ function hubWriteRegexes(root, gitDirs = [], moduleGit = [], worktreesRoot) {
         `(require-all ${re(`^${dir}/worktrees/[^/]+/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
         `(require-all ${re(`^${dir}/[^/]+$`)} ${re(`^.*/${hfsFoldedName("worktrees")}$`)})`,
         re(`^${dir}/worktrees/[^/]+$`),
-        `(require-all ${re(`^${dir}/[^/]+$`)} ${re(`^.*/${hfsFoldedName("hooks")}$`)})`
+        `(require-all ${re(`^${dir}/[^/]+$`)} ${re(`^.*/${hfsFoldedName("hooks")}$`)})`,
+        `(require-all ${re(`^${dir}/worktrees/[^/]+/modules/.`)} ${allDirs.filter((f) => f.startsWith(`${d}/worktrees/`)).map((f) => `(require-not ${re(`^${sbplEscape(f)}(/|$)`)})`).join(" ")})`,
+        `(require-all ${re(`^${dir}/worktrees/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("modules")}$`)})`
       ];
     });
     return [
@@ -5994,8 +5997,15 @@ function moduleGitDirs(root) {
       for (let p = d;p.length > modulesRoot.length; p = dirname9(p))
         entries.add(p);
     trees.push({ root: modulesRoot, entries: [...entries], dirs: found });
-    for (const d of found)
+    for (const d of found) {
       tree(join12(d, "modules"), nesting + 1);
+      try {
+        for (const e of readdirSync(join12(d, "worktrees"), { withFileTypes: true })) {
+          if (e.isDirectory() && existsSync6(join12(d, "worktrees", e.name, "modules")))
+            tree(join12(d, "worktrees", e.name, "modules"), nesting + 1);
+        }
+      } catch {}
+    }
   };
   for (const modulesRoot of roots)
     tree(modulesRoot, 0);

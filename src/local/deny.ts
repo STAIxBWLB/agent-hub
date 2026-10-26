@@ -92,6 +92,7 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
   // git dir `D` the protected files are anchored to `D` itself: `D/config`, `D/config.worktree`, `D/hooks` and what is below it, and `D/worktrees/*/config.worktree`.
   // Ordinary git work writes `D/refs`, `D/logs`, `D/objects`, `D/index`, `D/HEAD`, ... and none of those is refused, so no refs/logs exception is needed.
   // Each literal holds either a path or a folded name, never both (the 1024-byte limit, #518 review); the folded names sit in `^.*/<name>$` filters beside a plain anchor.
+  const allDirs = moduleGit.flatMap((tree) => tree.dirs ?? []);
   const modules = moduleGit.flatMap((tree) => {
     const root = sbplEscape(tree.root);
     const found = tree.dirs ?? [];   // absent means nothing is exempt: everything under the root is refused, which fails closed
@@ -109,6 +110,10 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
         `(require-all ${re(`^${dir}/[^/]+$`)} ${re(`^.*/${hfsFoldedName("worktrees")}$`)})`,
         re(`^${dir}/worktrees/[^/]+$`),
         `(require-all ${re(`^${dir}/[^/]+$`)} ${re(`^.*/${hfsFoldedName("hooks")}$`)})`,
+        // A submodule's own linked worktrees keep their `modules/` at `D/worktrees/<wt>/modules` (#520 review), inside the exemption above. Everything under one that is not inside a
+        // DISCOVERED git dir is refused, whether the worktree exists yet or not (the pattern needs no discovery), and the `modules` entry itself cannot be renamed or replaced.
+        `(require-all ${re(`^${dir}/worktrees/[^/]+/modules/.`)} ${allDirs.filter((f) => f.startsWith(`${d}/worktrees/`)).map((f) => `(require-not ${re(`^${sbplEscape(f)}(/|$)`)})`).join(" ")})`,
+        `(require-all ${re(`^${dir}/worktrees/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("modules")}$`)})`,
       ];
     });
     return [

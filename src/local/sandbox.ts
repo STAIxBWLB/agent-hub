@@ -105,7 +105,16 @@ function moduleGitDirs(root: string): ModuleGit[] {
     const entries = new Set<string>([modulesRoot]);
     for (const d of found) for (let p = d; p.length > modulesRoot.length; p = dirname(p)) entries.add(p);
     trees.push({ root: modulesRoot, entries: [...entries], dirs: found });
-    for (const d of found) tree(join(d, "modules"), nesting + 1); // a submodule of a submodule, whether or not it exists yet
+    for (const d of found) {
+      tree(join(d, "modules"), nesting + 1); // a submodule of a submodule, whether or not it exists yet
+      // A submodule is a repository: its linked worktrees keep their own modules trees at `<d>/worktrees/<wt>/modules`. Existing ones are discovered here; ones that do not exist yet
+      // are covered by pattern in hubWriteRegexes (#520 review).
+      try {
+        for (const e of readdirSync(join(d, "worktrees"), { withFileTypes: true })) {
+          if (e.isDirectory() && existsSync(join(d, "worktrees", e.name, "modules"))) tree(join(d, "worktrees", e.name, "modules"), nesting + 1);
+        }
+      } catch { /* no linked worktrees */ }
+    }
   };
   for (const modulesRoot of roots) tree(modulesRoot, 0);
   return trees;
