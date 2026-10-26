@@ -5847,6 +5847,8 @@ function hubWriteRegexes(root, gitDirs = [], moduleGit = [], worktreesRoot) {
   const siblings = worktreesRoot ? (() => {
     const w = sbplEscape(worktreesRoot), notRefs = `(require-not ${re(`^${w}/[^/]+/modules/(.*/)?(refs|logs)/`)})`;
     return [
+      `(require-all ${re(`^${sbplEscape(dirname8(worktreesRoot))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename4(worktreesRoot))}$`)})`,
+      re(`^${w}/[^/]+$`),
       `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config")}$`)})`,
       `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
       `(require-all ${re(`^${w}/[^/]+/`)} ${re(`^.*/${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${w}/[^/]+/(modules|refs|logs)/`)}))`,
