@@ -301,7 +301,8 @@ var init_compat = __esm(() => {
       gate: "contract",
       probe: ["claude", "--version"],
       parse: (out) => plain(out.trim().replace(/ \(Claude Code\)$/, "")),
-      trustNote: "The native prompt-tool allow, deny, MCP error/disconnect and hook-failure fallthrough have an isolated receipt. No dontAsk/bypass fallback exists; another version's permission behavior is unverified."
+      trustNote: "The native prompt-tool allow, deny, MCP error/disconnect and hook-failure fallthrough have an isolated receipt. No dontAsk/bypass fallback exists; another version's permission behavior is unverified.",
+      receipt: "docs/verification/2026-10-23-headless-claude-permissions.md"
     },
     "codex-review": {
       label: "Codex reviewer (codex-cli)",
@@ -310,7 +311,8 @@ var init_compat = __esm(() => {
       probe: ["codex", "--version"],
       config: "codex_bin",
       parse: (out) => plain(out.trim().replace(/^codex-cli /, "")),
-      trustNote: "Every launch still proves the MCP inventory, Apps/plugins/hooks disabled, sandbox read/write denial and the binary fence; a failed leg still refuses. Trust covers only the source-level claims those probes cannot see (docs/verification/2026-10-19-reviewer-isolation.md)."
+      trustNote: "Every launch still proves the MCP inventory, Apps/plugins/hooks disabled, sandbox read/write denial and the binary fence; a failed leg still refuses. Trust covers only the source-level claims those probes cannot see (docs/verification/2026-10-19-reviewer-isolation.md).",
+      receipt: "docs/verification/2026-10-24-codex-0164-reviewer-isolation.md"
     },
     "kimi-review": {
       label: "Kimi reviewer (kimi-code)",
@@ -318,7 +320,8 @@ var init_compat = __esm(() => {
       gate: "isolation",
       probe: ["kimi", "--version"],
       parse: (out) => plain(out.trim()),
-      trustNote: "Every launch still builds the private config, exact two-tool agent file and task-bound MCP; the native tool allowlist behaviour of an untested version is not re-proven."
+      trustNote: "Every launch still builds the private config, exact two-tool agent file and task-bound MCP; the native tool allowlist behaviour of an untested version is not re-proven.",
+      receipt: "docs/verification/2026-10-25-kimi-231-reviewer-compat.md"
     },
     jcode: {
       label: "Jcode",
@@ -335,7 +338,8 @@ var init_compat = __esm(() => {
           return;
         }
       },
-      trustNote: "The ACP, serve and MCP contract was verified on 0.98.1 and steering on 0.99.0; an untested version may change them."
+      trustNote: "The ACP, serve and MCP contract was verified on 0.98.1 and steering on 0.99.0; an untested version may change them.",
+      receipt: "docs/verification/2026-10-19-jcode-0.98.1.md"
     },
     agy: {
       label: "agy",
@@ -344,7 +348,8 @@ var init_compat = __esm(() => {
       gate: "contract",
       probe: ["agy", "--version"],
       parse: (out) => plain(out.trim()),
-      trustNote: "Only 1.4.2 is T0-verified; the plugin MCP and hook contract of another version is unverified."
+      trustNote: "Only 1.4.2 is T0-verified; the plugin MCP and hook contract of another version is unverified.",
+      receipt: "docs/verification/2026-10-19-agy-p1-t0.md"
     },
     qwen: {
       label: "Qwen Code",
@@ -353,7 +358,8 @@ var init_compat = __esm(() => {
       probe: ["qwen", "--version"],
       config: "qwen_cmd",
       parse: (out) => plain(out.trim()),
-      trustNote: "Native ACP identity and mode ids have dated receipts; 0.26.0 permission callbacks were checked without inference. Another version may change those contracts."
+      trustNote: "Native ACP identity and mode ids have dated receipts; 0.26.0 permission callbacks were checked without inference. Another version may change those contracts.",
+      receipt: "docs/verification/2026-10-22-kimi-qwen-compat.md"
     },
     "qwen-dual": {
       label: "Qwen Code dual-output TUI",
@@ -362,7 +368,8 @@ var init_compat = __esm(() => {
       probe: ["qwen", "--version"],
       config: "qwen_cmd",
       parse: (out) => plain(out.trim()),
-      trustNote: "The dual-output file contract (submit and confirmation_response input, user/assistant/stream_event/control events, session_start identity) was verified on 0.26.1 only. A hub deny ends the turn without any Qwen event, and no external stop of a running turn exists; another version may change either."
+      trustNote: "The dual-output file contract (submit and confirmation_response input, user/assistant/stream_event/control events, session_start identity) was verified on 0.26.1 only. A hub deny ends the turn without any Qwen event, and no external stop of a running turn exists; another version may change either.",
+      receipt: "docs/verification/2026-10-25-qwen-dual-output-t0.md"
     }
   };
   MAX_BYTES = 64 * 1024;

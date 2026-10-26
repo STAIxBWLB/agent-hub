@@ -38,30 +38,53 @@ export async function latestVersion(source: WatchSource, fetchImpl: FetchLike = 
   } catch { return undefined; }
 }
 
-/** One report row per kind that is not verified: ahead, unknown, or an agy-style no-public-source note. */
-export async function watchRows(fetchImpl: FetchLike = fetch): Promise<string[]> {
-  const rows: string[] = [];
+export type WatchVerdict = { code: 0 | 3; report: string };
+
+// One drift row and the id it belongs to, so a caller (the test) can name which id is ahead without depending on the
+// URL or the order of the fetches. `line` is the rendered report bullet.
+export type DriftRow = { id: string; line: string };
+
+/**
+ * The report rows, split into the two kinds the exit code turns on (#843). `drift` holds the public-source kinds that
+ * are ahead or unknown, and only those decide the exit code: every one verified means exit 0, so the workflow can close
+ * the drift issue. `notices` holds the informational rows (agy-style no-public-source kinds), which are printed but
+ * never make the watcher exit 3 — agy must never cause a failure.
+ */
+export async function watchRows(fetchImpl: FetchLike = fetch): Promise<{ drift: DriftRow[]; notices: string[] }> {
+  const drift: DriftRow[] = [];
+  const notices: string[] = [];
   for (const id of Object.keys(COMPAT) as CompatId[]) {
     const source = SOURCES[id] ?? { kind: "none" as const };
-    if (source.kind === "none") { rows.push(`- **${id}**: no public source; local drift only (${describe(id)}).`); continue; }
+    // A no-public-source kind is an informational note, not drift: it can be neither ahead nor behind a public version.
+    if (source.kind === "none") { notices.push(`- **${id}**: no public source; local drift only (${describe(id)}).`); continue; }
     const latest = await latestVersion(source, fetchImpl);
     const verdict = assessVersion(id, latest, []);
     if (verdict.ok && verdict.state === "verified") continue;
     // A source that cannot be read reads as unknown, never as a refusal or a crash.
     const state = latest === undefined ? "unknown" : verdict.state;
-    rows.push(`- **${id}** (${sourceLabel(source)}): latest ${latest ?? "unknown"}, ${state}; ${describe(id)}; repeat the receipt in ${COMPAT[id].receipt} before adding the version.`);
+    drift.push({ id, line: `- **${id}** (${sourceLabel(source)}): latest ${latest ?? "unknown"}, ${state}; ${describe(id)}; repeat the receipt in ${COMPAT[id].receipt} before adding the version.` });
   }
-  return rows;
+  return { drift, notices };
 }
 
-/** The watcher's verdict, importable so tests inject a fake fetch: exit code 0 all verified, 3 some ahead (or unknown). */
-export async function watch(fetchImpl: FetchLike = fetch, now = new Date()): Promise<{ code: 0 | 3; report: string }> {
-  const rows = await watchRows(fetchImpl);
-  if (!rows.length) return { code: 0, report: "Every watched agent CLI's latest published version is verified." };
+/**
+ * The watcher's verdict, importable so tests inject a fake fetch. Exit 0 when every public source is verified (only
+ * informational notices remain); exit 3 when any public source is ahead or unknown, with the drift header the step
+ * script keys on. Notices are always printed but never move the exit code on their own.
+ */
+export async function watch(fetchImpl: FetchLike = fetch, now = new Date()): Promise<WatchVerdict> {
+  const { drift, notices } = await watchRows(fetchImpl);
+  const footer = ["", `Checked ${now.toISOString().slice(0, 10)} by .github/workflows/agent-compat.yml.`];
+  if (!drift.length) {
+    // All public sources verified: exit 0 even when an informational notice (agy) remains, so the workflow closes the drift issue.
+    const report = ["Every watched agent CLI's latest published version is verified.", ...(notices.length ? ["", "Informational:", ...notices] : []), ...footer];
+    return { code: 0, report: report.join("\n") };
+  }
   const report = ["Published agent CLI versions ahead of their verified set (`src/adapters/compat.ts`).", "",
-    ...rows, "",
+    ...drift.map(row => row.line),
+    ...(notices.length ? ["", "Informational (no public source, not drift):", ...notices] : []), "",
     "Next step for each: a model-free receipt in `docs/verification/`, then add the version to `verified` in the same PR. Until then a person may run `ahub agents trust <id> <version>` on their machine.",
-    "", `Checked ${now.toISOString().slice(0, 10)} by .github/workflows/agent-compat.yml.`].join("\n");
+    ...footer].join("\n");
   return { code: 3, report };
 }
 

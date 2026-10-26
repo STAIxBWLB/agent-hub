@@ -244,25 +244,45 @@ test("the compat watch covers every COMPAT source and renders ahead, unknown and
   expect(SOURCES.jcode).toEqual({ kind: "github", repo: "1jehuang/jcode" });
   expect(SOURCES.agy).toEqual({ kind: "none" });
   expect(SOURCES["qwen-dual"]).toEqual({ kind: "npm", pkg: "@qwen-code/qwen-code" });
-  expect("pi" in SOURCES).toBe(!("pi" in COMPAT)); // the hook is watched only once a COMPAT pi entry exists
+  expect(SOURCES.pi).toEqual({ kind: "npm", pkg: "@earendil-works/pi-coding-agent" }); // the hook: watched the moment #843 AC2 adds a COMPAT pi entry
   expect(await latestVersion({ kind: "github", repo: "x/y" }, async () => ({ json: async () => ({ tag_name: "v0.99.1" }) }))).toBe("0.99.1");
   expect(await latestVersion({ kind: "npm", pkg: "x" }, async () => { throw new Error("offline"); })).toBeUndefined();
 
-  // The real published versions stand today, so the watcher's only row is agy's no-public-source notice: a row, never a failure.
-  const today = await watch(fetch, new Date("2026-10-26T00:00:00Z"));
-  expect(today.report).toContain("- **agy**: no public source; local drift only");
-  expect(today.report).not.toContain("- **codex-review**");
+  // qwen and qwen-dual read the same npm pkg but carry different verified sets, so no single URL maps to both. The
+  // watcher reads each id's source in COMPAT's key order and agy (kind none) fetches nothing, so each id's first fetch
+  // arrives in that same order. Hand each public id its first fetch as its verified value -> all verified, agy left as
+  // an informational notice -> exit 0, so the workflow can close the drift issue (#843: a notice is never drift).
+  const publicOrder = Object.keys(COMPAT).filter(id => id !== "agy");
+  const first: Record<string, string> = {};
+  const verifiedFor: Record<string, unknown> = {
+    "claude-implementer": { version: "2.1.309" }, "codex-review": { version: "0.146.0" }, "kimi-review": { version: "2.3.1" },
+    jcode: { tag_name: "v0.99.0" }, qwen: { version: "0.26.0" }, "qwen-dual": { version: "0.26.1" },
+  };
+  const ownsUrl = (id: string, url: string): boolean => {
+    const s = SOURCES[id];
+    if (!s) return false;
+    return s.kind === "npm" ? url.includes(s.pkg) : s.kind === "github" ? url.includes(s.repo) : false;
+  };
+  const verifiedStub = ((url: string) => {
+    const id = publicOrder.find(k => first[k] === undefined && ownsUrl(k, url));
+    if (id) first[id] = url;
+    return Promise.resolve({ json: async () => (id ? verifiedFor[id] : {}) });
+  }) as unknown as typeof fetch;
+  const allVerified = await watch(verifiedStub, new Date("2026-10-26T00:00:00Z"));
+  expect(allVerified.code).toBe(0);
+  expect(allVerified.report).toContain("latest published version is verified");
+  expect(allVerified.report).toContain("- **agy**: no public source; local drift only");
+  expect(allVerified.report).not.toContain("Published agent CLI versions ahead");
 
-  // The fake fetch keys on the full URL the watcher requests, and a second arg with the same url is the same body.
-  const stub = (bodies: Record<string, unknown>): typeof fetch =>
-    ((url: string) => Promise.resolve({ json: async () => bodies[url] })) as unknown as typeof fetch;
-  const ahead = await watch(stub({
-    "https://registry.npmjs.org/@anthropic-ai/claude-code/latest": { version: "9.9.9" },
-    "https://registry.npmjs.org/@openai/codex/latest": { version: "0.146.0" },
-    "https://registry.npmjs.org/@moonshot-ai/kimi-code/latest": { version: "2.3.1" },
-    "https://registry.npmjs.org/@qwen-code/qwen-code/latest": { version: "0.26.0" },
-    "https://api.github.com/repos/1jehuang/jcode/releases/latest": { tag_name: "v0.99.0" },
-  }), new Date("2026-10-26T00:00:00Z"));
+  // The same walk with only claude-implementer's first fetch forced ahead (9.9.9), the rest verified: exit 3 with the
+  // drift header, the claude drift row, and agy still an informational notice.
+  const aheadFirst: Record<string, string> = {};
+  const aheadStub = ((url: string) => {
+    const id = publicOrder.find(k => aheadFirst[k] === undefined && ownsUrl(k, url));
+    if (id) aheadFirst[id] = url;
+    return Promise.resolve({ json: async () => (id === "claude-implementer" ? { version: "9.9.9" } : id ? verifiedFor[id] : {}) });
+  }) as unknown as typeof fetch;
+  const ahead = await watch(aheadStub, new Date("2026-10-26T00:00:00Z"));
   expect(ahead.code).toBe(3);
   expect(ahead.report.startsWith("Published agent CLI versions ahead of their verified set")).toBe(true);
   const claudeRow = ahead.report.split("\n").find(l => l.includes("**claude-implementer**")) ?? "";
