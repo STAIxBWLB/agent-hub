@@ -93,6 +93,11 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
     ? (() => {
         const w = sbplEscape(worktreesRoot), notRefs = `(require-not ${re(`^${w}/[^/]+/modules/(.*/)?(refs|logs)/`)})`;
         return [
+          // The ancestors of every protected git dir, as directory entries: no rename, replace, symlink or recreate. Without them the container or a worktree git dir could be moved
+          // out of the protected path, its submodule config or hooks edited, and moved back (#518 review). Git itself never renames or removes these during ordinary work.
+          // The container's folded name and the directory it sits in are separate filters (one literal holding both grows with the path); a worktree git dir has any name.
+          `(require-all ${re(`^${sbplEscape(dirname(worktreesRoot))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename(worktreesRoot))}$`)})`,
+          re(`^${w}/[^/]+$`),
           // A worktree git dir's own `config` and `config.worktree`: direct children only.
           `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config")}$`)})`,
           `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
