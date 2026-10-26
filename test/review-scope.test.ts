@@ -107,6 +107,10 @@ test("the classifier refuses only clearly verification-only items, and keeps eve
     "AC5: Affected tests remain independently unverified: bun test test/jcode-peer.test.ts failed in preload with EPERM creating its isolated temporary home, before any test ran; rerun on the reviewed head in a writable authorized test environment.",
   ];
   for (const item of rejected) expect(verificationOnlyItem(item), item).toBe(true);
+  // A request such as "provide its successful receipt" is verification-only only as the continuation of a clause that stands on its own words.
+  expect(verificationOnlyItem("provide its successful receipt")).toBe(false);
+  expect(verificationOnlyItem("Required exact-head CI is not green; provide its successful receipt.")).toBe(true);
+  expect(verificationOnlyItem("The CI workflow is missing the trigger; provide its successful receipt.")).toBe(false);
   const kept = [
     "Install-input cache identity: unchanged package.json/bun.lock can reuse stale generated node_modules.",
     "Pruning does not preserve volumes whose key label is absent or inconsistent with its name.",
@@ -119,6 +123,20 @@ test("the classifier refuses only clearly verification-only items, and keeps eve
     "Document/reconcile the signature change in the design spec.",
     "A race between the check and the volume removal.",
     "",
+    // codex-review's own regressions on this classifier: real CI-configuration and test-code defects mention a runner word and a gap, and are code findings.
+    "The CI workflow is missing the required pull_request trigger.",
+    "The test fixture is missing cleanup after execution.",
+    "The tests are missing a case for the null model.",
+    "CI is configured to run on the wrong branch.",
+    "The check job does not call the lockfile step.",
+    "Tests assert the wrong head in the receipt.",
+    "The gate script skips the typecheck step when the bundle changes.",
+    "The test suite covers neither the empty list nor the open finding.",
+    "The required check name is missing from the workflow matrix.",
+    "The test is missing an assertion for the refusal text.",
+    "CI is missing a macOS job.",
+    "No tests cover the foreign-key prune path.",
+    "Check output is not redacted before it is stored.",
   ];
   for (const item of kept) expect(verificationOnlyItem(item), item).toBe(false);
   expect(classifyVerificationOnly([], [])).toBe(false);
@@ -126,4 +144,17 @@ test("the classifier refuses only clearly verification-only items, and keeps eve
   expect(classifyVerificationOnly([rejected[0]!, kept[0]!], [])).toBe(false);
   expect(classifyVerificationOnly(rejected, [{ id: "f1", pass: "bugs", severity: "important", disposition: "open" }])).toBe(false);
   expect(classifyVerificationOnly(rejected, [{ id: "f1", pass: "bugs", severity: "important", disposition: "fixed" }])).toBe(true);
+});
+
+test("no runner subject paired with a code defect is ever classified as verification-only (positive phrasings only)", () => {
+  const subjects = ["tests", "the test", "CI", "the CI job", "the check", "the gate", "the typecheck", "scripts/check.sh", "the test suite", "check output"];
+  const defects = ["is missing a guard for null input", "does not handle a withheld note", "is missing the required step", "is not run for the macOS leg in the workflow", "skips the lockfile step",
+    "is missing a case for the empty list", "asserts the wrong value", "is not redacted before storage", "is missing the pull_request trigger", "never runs the seeded guard",
+    "does not cover the refusal", "is missing cleanup", "reads the wrong head", "is configured with the wrong branch", "is not wired into the build matrix", "is missing coverage for tier 3",
+    "does not fail when the bundle is stale", "is not fenced against a stale generation", "uses a fixed port", "leaks the temp dir"];
+  const wrong = subjects.flatMap(subject => defects.map(defect => `${subject[0]!.toUpperCase()}${subject.slice(1)} ${defect}.`)).filter(verificationOnlyItem);
+  expect(wrong).toEqual([]);
+  // The evidence being absent is a verification claim only when it is the whole claim.
+  expect(verificationOnlyItem("Check output is missing.")).toBe(true);
+  expect(verificationOnlyItem("Check output is missing a guard for null input.")).toBe(false);
 });
