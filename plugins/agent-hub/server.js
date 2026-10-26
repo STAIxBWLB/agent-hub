@@ -11360,9 +11360,9 @@ var init_reviewer_variants = __esm(() => {
   init_kimi_review();
   init_native_factories();
   init_native_display();
-  codexVariant = reviewerVariant("codex", "Codex reviewer", { backend: codexReviewerBackend, defaultPool: true, declaration: "explicit" }, CODEX_DISPLAY);
+  codexVariant = reviewerVariant("codex", "Codex reviewer", { backend: codexReviewerBackend, defaultPool: true, declaration: "explicit", scope: "code" }, CODEX_DISPLAY);
   CODEX_REVIEWER_VARIANT = { ...codexVariant, start: { ...codexVariant.start, create: createCodexReviewer } };
-  KIMI_REVIEWER_VARIANT = reviewerVariant("kimi", "Kimi reviewer", { backend: kimiReviewerBackend, defaultPool: true, declaration: "explicit" }, KIMI_DISPLAY);
+  KIMI_REVIEWER_VARIANT = reviewerVariant("kimi", "Kimi reviewer", { backend: kimiReviewerBackend, defaultPool: true, declaration: "explicit", scope: "code" }, KIMI_DISPLAY);
   AGY_REVIEWER_VARIANT = {
     ...reviewerVariant("agy", "agy reviewer", { defaultPool: false, declaration: "automatic", unavailable: "agy is an implementer peer (#485)" }, { palette: { fg: "#6558a6", bg: "#f1effa" } }),
     optional: true
@@ -21867,6 +21867,9 @@ init_sdlc();
 init_envelope();
 var inFlight = new Set;
 
+// src/hub/review-scope.ts
+var isReviewScope = (value) => value === "full" || value === "code";
+
 // src/hub/tasks.ts
 init_review_findings();
 init_roles();
@@ -22009,7 +22012,7 @@ function validateInstances(raw, catalog) {
     const declaredKind = entry.kind?.value;
     const jcodeFields = typeof declaredKind === "string" && resolve(declaredKind)?.instances?.nativeHome === true;
     const modelSelect = typeof declaredKind === "string" && resolve(declaredKind)?.headlessVariant?.instances?.modelSelect === true;
-    if (Object.keys(entry).some((key) => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly", ...jcodeFields ? JCODE_FIELDS : [], ...modelSelect ? ["model"] : []].includes(key)))
+    if (Object.keys(entry).some((key) => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly", "review_scope", ...jcodeFields ? JCODE_FIELDS : [], ...modelSelect ? ["model"] : []].includes(key)))
       return fail4(path, "unsupported field");
     const kind = entry.kind?.value;
     if (typeof kind !== "string")
@@ -22091,6 +22094,13 @@ function validateInstances(raw, catalog) {
       if (typeof word !== "string" || !NATIVE_WORD.test(word))
         return fail4(`${path}.model`, "must be one bounded printable word without spaces");
       value.model = word;
+    }
+    if (entry.review_scope) {
+      if (!freshReviewer)
+        return fail4(`${path}.review_scope`, "only a fresh reviewer instance has a review scope");
+      if (!isReviewScope(entry.review_scope.value))
+        return fail4(`${path}.review_scope`, 'must be "code" or "full"');
+      value.review_scope = entry.review_scope.value;
     }
     if (entry.readOnly)
       value.readOnly = entry.readOnly.value;

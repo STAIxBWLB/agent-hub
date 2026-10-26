@@ -16,6 +16,7 @@ import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type P
 import { readMergeQueue, type DeliveryTask } from "./sdlc-queue.ts";
 import { guardedMerge, mergeModeFor, mergeView, type MergeView } from "./sdlc-merge.ts";
 import { mirrorVerdict as mirrorToGitHub, type MirrorVerdict } from "./sdlc-mirror.ts";
+import { CODE_SCOPE_LINE, CODE_SCOPE_REFUSAL, classifyVerificationOnly, type ReviewScope } from "./review-scope.ts";
 import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
 import { readReleaseReadiness } from "./sdlc-release.ts";
 import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
@@ -104,6 +105,8 @@ export interface TasksDeps {
   privateTurn?: (peer: PeerId) => boolean;
   /** #223 R4: the hub's reading of a verdict's context (`fresh` only for a reviewer session started for this review). */
   reviewContext?: (by: PeerId, task: number) => "fresh" | "continuing" | undefined;
+  /** #852: what a reviewer reads. `code` (the fixed sandboxed reviewers by default, or a local `review_scope`) reads the code only; unset or `full` also runs tests and reads CI. */
+  reviewScope?: (peer: PeerId) => ReviewScope;
   /** #223 R2: a reviewer-only instance gets review facts, not the builder's done summary. */
   reviewOnly?: (peer: PeerId) => boolean;
   /** #223: captured when a verdict call starts; a non-undefined result refuses the verdict at every later check. */
@@ -698,6 +701,7 @@ export class Tasks {
       ...(h.selfReview ? { selfReview: true } : {}),
       ...(h.reviewerFamily ? { reviewerFamily: screenHistoryText(h.reviewerFamily, "reviewer family") } : {}),
       ...(h.reviewerReason ? { reviewerReason: h.reviewerReason } : {}),
+      ...(h.reviewScope === "code" ? { reviewScope: "code" as const } : {}),
       ...(h.unmetCriteria?.length ? { unmetCriteria: h.unmetCriteria } : {}),
       ...(h.deliverables?.length ? { deliverables: publicDeliverables(h.deliverables, this.nameable) } : {}),
       ...(h.reviewBlocked ? { reviewBlocked: true } : {}),
@@ -4297,9 +4301,12 @@ export class Tasks {
         ? "No check ran for this class: verify the outcome yourself."
         : "No check ran for this class: run the affected tests yourself.";
     // #824: the hub's own exact-head CI evidence, from the admission this request already carries (no new gh call). Nothing here comes from the builder's summary or a recorded claim.
-    const verified = this.hubVerifiedBlock(task, admission);
+    const codeScoped = this.d.reviewScope?.(reviewer) === "code";
+    const verified = codeScoped ? "" : this.hubVerifiedBlock(task, admission);
     const ciPassed = admission?.ready === true && !this.isPii(task);
-    const checkResult = check ? `Check result: ${(check.note ?? "").split("\n")[0]}`
+    // #852 AC2: a code-scope reviewer's sandbox cannot run tests or read CI, so its Hub-verified and check lines are replaced by one fixed line.
+    const checkResult = codeScoped ? CODE_SCOPE_LINE
+      : check ? `Check result: ${(check.note ?? "").split("\n")[0]}`
       : ciPassed ? "CI passed at this exact head (see the Hub-verified line above); do not list test execution or CI evidence as unmet: name the specific missing test or behaviour instead."
       : noCheckWording;
     const checklistTemplates = profile.review_checklist ?? [
@@ -4493,6 +4500,10 @@ export class Tasks {
     let parsed: ReviewFinding[];
     try { parsed = parseReviewFindings(findings, { person: by === USER, maxNits: this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS }); }
     catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid structured findings"); }
+    // #852 AC3: a code-scope reviewer cannot run tests or read CI, so a rejection that cites only those is refused before any effect (a
+    // PreEffectToolRefusal writes nothing, so it never counts toward escalation). A narrow classifier; when unsure the verdict stands.
+    const codeScope = by !== USER && this.d.reviewScope?.(by) === "code";
+    if (codeScope && verdict === "changes_requested" && classifyVerificationOnly(items, parsed)) throw new PreEffectToolRefusal(CODE_SCOPE_REFUSAL);
     const resolvedHead = this.findingHead(initial);
     let findingHead = resolvedHead;
     if (head !== undefined) {
@@ -4593,7 +4604,7 @@ export class Tasks {
     // #507b: unmet items that start with a recorded criterion id name that criterion. The ids come from the checklist on the board as it is at this
     // write (the `task` just rechecked by valid()), never from the caller; a PII task carries none, its checklist being private.
     const unmetCriteria = pii ? [] : unmetCriteriaIds(items, checklistOf(task.sdlc));
-    const flag = { ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
+    const flag = { ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(codeScope ? { reviewScope: "code" as const } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
     if (verdict === "approved") {
       const capacity = this.capacityBefore(task);
       const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0, ...(reviewedHead && task.sdlc ? { sdlc: { ...task.sdlc, reviewedHead, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), "merge") } } : {}) }, note, flag);
