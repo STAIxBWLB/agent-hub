@@ -311,7 +311,9 @@ export interface AdapterDefinition {
   /** #525: fixed builtin variant for declared headless implementer instances. */
   headlessVariant?: AdapterDefinition;
   /** Fixed host backend; runtime isolation proof is required before bus admission. */
-  reviewer?: { backend?: ReviewerBackend; defaultPool: boolean; unavailable?: string; declaration: "automatic" | "explicit" };
+  reviewer?: { backend?: ReviewerBackend; defaultPool: boolean; unavailable?: string; declaration: "automatic" | "explicit";
+    /** #852: what a reviewer of this kind reads. `code`: the code only, its sandbox cannot run tests or read CI. Unset means `full`. Fixed builtins only. */
+    scope?: "full" | "code" };
 }
 
 /** Explicit project declarations, passed by the bound host. No process-global instance registration. */

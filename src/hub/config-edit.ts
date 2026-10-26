@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { configRepositoryPresent, configTracked } from "./config-trust.ts";
-import { configTier, CONFIG_EDIT_FILES, type ConfigEditFile } from "./config-tier.ts";
+import { configTier, CONFIG_EDIT_FILES, TIER3_INSTANCE_FIELDS, type ConfigEditFile } from "./config-tier.ts";
 import { sdlcConfig } from "./sdlc.ts";
 import { VERSION } from "../version.ts";
 
@@ -202,7 +202,7 @@ export function planConfigEdit(cwd: string, rawRequest: unknown, check: Candidat
         if (tier.tier === 3) tier3Keys.push(tier.key);
         // A whole instance replaced by a tier 2 object must not drop a tier 3 field it held: that would silently erase a home or account.
         if (path[0] === "instances" && path.length === 2 && isObject(held) && isObject(value)) {
-          const lost = Object.keys(held).find(field => !(field in value) && ["jcode_home", "provider", "model", "provider_profile"].includes(field));
+          const lost = Object.keys(held).find(field => !(field in value) && (TIER3_INSTANCE_FIELDS as readonly string[]).includes(field));
           if (lost) return { ok: false, error: `instances.${path[1]}.${lost}: this replacement would drop a native home or account setting; set only the fields you change (instances.${path[1]}.<field>); nothing was written`, field: `instances.${path[1]}.${lost}` };
         }
         putPath(doc, path, value);

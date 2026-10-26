@@ -4,6 +4,7 @@ import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { canonicalPath, realPath } from "./project.ts";
 import { defaultPeerRoles, definitionOf, type AdapterDefinition, type StartForm, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { isPermissionMode, type PermissionMode } from "./permission-mode.ts";
+import { isReviewScope } from "./review-scope.ts";
 
 export interface InstanceConfig {
   kind: string;
@@ -11,6 +12,8 @@ export interface InstanceConfig {
   start_mode?: StartForm;
   permission_mode?: PermissionMode;
   review_mode?: "fresh";
+  /** A fresh reviewer's review scope (#852): `code` reads the code only, `full` also runs tests and reads CI. Machine-local, tier 3. */
+  review_scope?: "full" | "code";
   worktree?: string;
   readOnly?: boolean;
   /** Jcode instances (#685): their own native data home, and optional model selection. A headless Claude implementer also takes `model` (#844). Machine-local, never editable from settings. */
@@ -131,7 +134,7 @@ export function validateInstances(raw: unknown, catalog: ProjectAdapterCatalog):
     const jcodeFields = typeof declaredKind === "string" && resolve(declaredKind)?.instances?.nativeHome === true;
     // #844: a kind whose headless variant declares `instances.modelSelect` may name its model; no other kind but Jcode has the field.
     const modelSelect = typeof declaredKind === "string" && resolve(declaredKind)?.headlessVariant?.instances?.modelSelect === true;
-    if (Object.keys(entry).some(key => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly", ...(jcodeFields ? JCODE_FIELDS : []), ...(modelSelect ? ["model"] : [])].includes(key))) return fail(path, "unsupported field");
+    if (Object.keys(entry).some(key => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly", "review_scope", ...(jcodeFields ? JCODE_FIELDS : []), ...(modelSelect ? ["model"] : [])].includes(key))) return fail(path, "unsupported field");
     const kind: unknown = entry.kind?.value;
     if (typeof kind !== "string") return fail(`${path}.kind`, "must name a native kind");
     const definition = resolve(kind), prefix = `${kind}-`;
@@ -192,6 +195,11 @@ export function validateInstances(raw: unknown, catalog: ProjectAdapterCatalog):
       const word: unknown = entry.model.value;
       if (typeof word !== "string" || !NATIVE_WORD.test(word)) return fail(`${path}.model`, "must be one bounded printable word without spaces");
       value.model = word;
+    }
+    if (entry.review_scope) {
+      if (!freshReviewer) return fail(`${path}.review_scope`, "only a fresh reviewer instance has a review scope");
+      if (!isReviewScope(entry.review_scope.value)) return fail(`${path}.review_scope`, 'must be "code" or "full"');
+      value.review_scope = entry.review_scope.value;
     }
     if (entry.readOnly) value.readOnly = entry.readOnly.value as boolean;
     if (entry.roles) { value.roles = roles(entry.roles.value, `${path}.roles`); Object.freeze(value.roles); }

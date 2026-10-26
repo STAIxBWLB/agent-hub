@@ -54,6 +54,7 @@ import { RecoveryDeferredHubError } from "./deferred-hub.ts";
 import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recovery-error.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS, QUOTA_HANDOFF_PLATFORMS, NATIVE_CONFIG_BLOCKS, nativeConfigurationDefaults, mergeNativeConfiguration, retainNativeRouting, DAEMON_PORTS, definitionOf, createProjectAdapterCatalog, isFixedBuiltinDefinition } from "../adapters/registry.ts";
 import { isSupportedPeer as registrySupportedPeer, definitionOf as builtinDefinitionOf, KNOWN_PEERS as BASE_KNOWN_PEERS, SUPPORTED_PEERS as BASE_SUPPORTED_PEERS, STARTABLE_PEERS as BASE_STARTABLE_PEERS } from "../adapters/registry.ts";
+import type { ReviewScope } from "./review-scope.ts";
 import { checkJcodeInstanceHomes, instanceDefinitionOf, effectiveInstanceRoles, instancePeerIds, validateInstances, type InstancesConfig } from "./instances.ts";
 import { INSTANCE_CONFIG_FILES, readInstanceConfig, readInstanceConfigLayers, readInstanceRoleConfig } from "./instance-config.ts";
 import { instanceBudgetHooks, projectBudgetHeadroom } from "./instance-budget.ts";
@@ -1031,6 +1032,15 @@ export async function startDaemon(opts: DaemonOptions) {
     return refused;
   };
   /**
+   * #852: what a reviewer reads. A fresh-reviewer instance's own `review_scope` (config.local.json only, tier 3) wins, else its definition's
+   * scope (the sandboxed codex and kimi reviewers are `code`), else `full`. Only a review-only instance has one; any other peer is `full`.
+   */
+  const reviewScopeOf = (peer: string): ReviewScope => {
+    const declared = Object.hasOwn(declarations, peer) ? declarations[peer]!.review_scope : undefined;
+    if (declared) return declared;
+    return reviewOnlyPeer(peer) && definitionOf(peer)?.reviewer?.scope === "code" ? "code" : "full";
+  };
+  /**
    * #685: the provider, model and profile names an extra Jcode instance was declared with, for status, doctor and the dashboard,
    * exactly as the person wrote them (they authenticate inside Jcode). Never a URL, a token or the native home path.
    */
@@ -1602,6 +1612,7 @@ export async function startDaemon(opts: DaemonOptions) {
     instances: () => declarations,
     adapterCatalog,
     reviewOnly: reviewOnlyPeer,
+    reviewScope: reviewScopeOf,
     // #223: a headless reviewer's verdict holds only while the same child it started with still runs for that task.
     reviewAuthority: runningReviewAuthority,
     requestAuthority: by => {
@@ -3304,7 +3315,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(isFixedBuiltinDefinition(definitionOf(id)) && (isCodexPeer(p) || isQwenDualPeer(p)) && p.statusNotice ? { statusNotice: p.statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: !!ownerWriteRoot(id) && ownerWriteRoot(id) !== opts.cwd, ...(!ownerWriteRoot(id) ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) && p.claiming ? { claiming: true } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
+      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(isFixedBuiltinDefinition(definitionOf(id)) && (isCodexPeer(p) || isQwenDualPeer(p)) && p.statusNotice ? { statusNotice: p.statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: !!ownerWriteRoot(id) && ownerWriteRoot(id) !== opts.cwd, ...(!ownerWriteRoot(id) ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) && p.claiming ? { claiming: true } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
     ),
     taskWip: tasks.wipBreakdown(peerIds),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },

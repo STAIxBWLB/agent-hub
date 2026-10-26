@@ -16,6 +16,7 @@ import { BACKLOG_SPLIT_SCREEN_TIMEOUT_MS, actualTaskDates, planningPatch, type P
 import { readMergeQueue, type DeliveryTask } from "./sdlc-queue.ts";
 import { guardedMerge, mergeModeFor, mergeView, type MergeView } from "./sdlc-merge.ts";
 import { mirrorVerdict as mirrorToGitHub, type MirrorVerdict } from "./sdlc-mirror.ts";
+import { CODE_SCOPE_LINE, evidenceOnlyNotice, type ReviewScope } from "./review-scope.ts";
 import { DEFAULT_MAX_NITS, parseReviewFindings, findingsForHead, findingHead as resolveFindingHead, findingTally, type ReviewFinding, type ReviewFindingSet } from "./review-findings.ts";
 import { readReleaseReadiness } from "./sdlc-release.ts";
 import { loadRoleCatalog, taskRole, taskRoleText, type RoleCatalog } from "./roles.ts";
@@ -104,6 +105,8 @@ export interface TasksDeps {
   privateTurn?: (peer: PeerId) => boolean;
   /** #223 R4: the hub's reading of a verdict's context (`fresh` only for a reviewer session started for this review). */
   reviewContext?: (by: PeerId, task: number) => "fresh" | "continuing" | undefined;
+  /** #852: what a reviewer reads. `code` (the fixed sandboxed reviewers by default, or a local `review_scope`) reads the code only; unset or `full` also runs tests and reads CI. */
+  reviewScope?: (peer: PeerId) => ReviewScope;
   /** #223 R2: a reviewer-only instance gets review facts, not the builder's done summary. */
   reviewOnly?: (peer: PeerId) => boolean;
   /** #223: captured when a verdict call starts; a non-undefined result refuses the verdict at every later check. */
@@ -698,6 +701,8 @@ export class Tasks {
       ...(h.selfReview ? { selfReview: true } : {}),
       ...(h.reviewerFamily ? { reviewerFamily: screenHistoryText(h.reviewerFamily, "reviewer family") } : {}),
       ...(h.reviewerReason ? { reviewerReason: h.reviewerReason } : {}),
+      ...(h.reviewScope === "code" ? { reviewScope: "code" as const } : {}),
+      ...(h.evidenceOnly ? { evidenceOnly: true as const } : {}),
       ...(h.unmetCriteria?.length ? { unmetCriteria: h.unmetCriteria } : {}),
       ...(h.deliverables?.length ? { deliverables: publicDeliverables(h.deliverables, this.nameable) } : {}),
       ...(h.reviewBlocked ? { reviewBlocked: true } : {}),
@@ -775,7 +780,7 @@ export class Tasks {
       if (h.owner === undefined || h.owner !== owner) since = i;
       owner = h.owner;
     });
-    return new Set(task.history.slice(since + 1).filter((h) => h.event === "changes_requested").map((h) => h.by));
+    return new Set(task.history.slice(since + 1).filter((h) => h.event === "changes_requested" && h.evidenceOnly !== true).map((h) => h.by));
   }
 
   /** Workload is board/queue data only: wip() never calls health() or weights(). */
@@ -872,7 +877,7 @@ export class Tasks {
         if (!OWNERSHIP_EVENTS.has(given.event) || given.event === "unassigned" || given.owner !== peer || given.profile !== profile || given.by === peer) return [];
         const next = t.history.findIndex((h, j) => j > i && OWNERSHIP_EVENTS.has(h.event));
         const span = t.history.slice(i + 1, next < 0 ? undefined : next + 1);
-        if (span.some((h) => failed.includes(h.event))) return [{ outcome: "failed" }];
+        if (span.some((h) => failed.includes(h.event) && h.evidenceOnly !== true)) return [{ outcome: "failed" }];
         if (next >= 0 || t.state !== "approved") return []; // handed on without a failure (a relay), or still open
         const accepted = span.find((h) => h.event === "accepted" && h.by === peer);
         // The work stage ends at its first done call: checks and an integration step are not the work itself.
@@ -2918,7 +2923,7 @@ export class Tasks {
     }
     const rows = this.d.board.list();
     const tasks: MetricTask[] = rows.map(task => ({ id: task.id, private: this.isPii(task), history: task.history.map(entry => ({ at: entry.at, event: entry.event,
-      ...(entry.reviewCost?.head ? { requestHead: entry.reviewCost.head } : {}), ...(entry.reviewFindings?.head ? { verdictHead: entry.reviewFindings.head } : {}) })) }));
+      ...(entry.reviewCost?.head ? { requestHead: entry.reviewCost.head } : {}), ...(entry.reviewFindings?.head ? { verdictHead: entry.reviewFindings.head } : {}), ...(entry.evidenceOnly ? { evidenceOnly: true as const } : {}) })) }));
     const visibleIds = new Set(rows.filter(task => !this.isPii(task)).map(task => task.id));
     const byKind: Record<string, number> = {};
     for (const stall of this.stalled()) if (visibleIds.has(stall.task)) byKind[stall.cause.kind] = (byKind[stall.cause.kind] ?? 0) + 1;
@@ -4297,9 +4302,12 @@ export class Tasks {
         ? "No check ran for this class: verify the outcome yourself."
         : "No check ran for this class: run the affected tests yourself.";
     // #824: the hub's own exact-head CI evidence, from the admission this request already carries (no new gh call). Nothing here comes from the builder's summary or a recorded claim.
-    const verified = this.hubVerifiedBlock(task, admission);
+    const codeScoped = this.d.reviewScope?.(reviewer) === "code";
+    const verified = codeScoped ? "" : this.hubVerifiedBlock(task, admission);
     const ciPassed = admission?.ready === true && !this.isPii(task);
-    const checkResult = check ? `Check result: ${(check.note ?? "").split("\n")[0]}`
+    // #852 AC2: a code-scope reviewer's sandbox cannot run tests or read CI, so its Hub-verified and check lines are replaced by one fixed line.
+    const checkResult = codeScoped ? CODE_SCOPE_LINE
+      : check ? `Check result: ${(check.note ?? "").split("\n")[0]}`
       : ciPassed ? "CI passed at this exact head (see the Hub-verified line above); do not list test execution or CI evidence as unmet: name the specific missing test or behaviour instead."
       : noCheckWording;
     const checklistTemplates = profile.review_checklist ?? [
@@ -4493,6 +4501,11 @@ export class Tasks {
     let parsed: ReviewFinding[];
     try { parsed = parseReviewFindings(findings, { person: by === USER, maxNits: this.d.sdlc?.config().maxNits ?? DEFAULT_MAX_NITS }); }
     catch (error) { throw new PreEffectToolRefusal(error instanceof Error ? error.message : "invalid structured findings"); }
+    // #852 AC3 (amended): a code-scope reviewer's changes_requested is always recorded, never refused. Without an open structured finding it is
+    // evidence-only: it does not count toward rejections or escalation, the task returns to its owner as usual, and the conductor gets one ids-only
+    // notice. The rule is structural (a finding with disposition open), never a reading of the unmet text.
+    const codeScope = by !== USER && this.d.reviewScope?.(by) === "code";
+    const evidenceOnly = codeScope && verdict === "changes_requested" && !parsed.some(finding => finding.disposition === "open");
     const resolvedHead = this.findingHead(initial);
     let findingHead = resolvedHead;
     if (head !== undefined) {
@@ -4574,7 +4587,7 @@ export class Tasks {
     }
     if (verdict === "approved" && this.d.sdlc && this.d.sdlc.config().mode !== "off") { await this.lifecycleGate(task, "approval", reviewedHead, proposedSets(task)); task = valid(); }
     let candidate: Extract<CandidateInput, { kind: "fail" }> | undefined;
-    if (verdict === "changes_requested" && items.length && this.d.candidates && !withheld && !this.isPii(task) && !this.d.privateTurn?.(by)) {
+    if (verdict === "changes_requested" && !evidenceOnly && items.length && this.d.candidates && !withheld && !this.isPii(task) && !this.d.privateTurn?.(by)) {
       const input: CandidateInput = { project: this.d.store?.project ?? this.d.project, kind: "fail", approach: this.publicTitle(task), symptom: items.join("\n"),
         cause: "unknown: review unmet items do not establish a cause", retryWhen: "unknown: a person must review the unmet items before accepting",
         evidenceRefs: [`task:${task.id}`, `reviewed-head:${reviewedHead ?? task.refs.commit ?? "unknown"}`] };
@@ -4593,7 +4606,7 @@ export class Tasks {
     // #507b: unmet items that start with a recorded criterion id name that criterion. The ids come from the checklist on the board as it is at this
     // write (the `task` just rechecked by valid()), never from the caller; a PII task carries none, its checklist being private.
     const unmetCriteria = pii ? [] : unmetCriteriaIds(items, checklistOf(task.sdlc));
-    const flag = { ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
+    const flag = { ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(codeScope ? { reviewScope: "code" as const } : {}), ...(evidenceOnly ? { evidenceOnly: true as const } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
     if (verdict === "approved") {
       const capacity = this.capacityBefore(task);
       const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0, ...(reviewedHead && task.sdlc ? { sdlc: { ...task.sdlc, reviewedHead, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), "merge") } } : {}) }, note, flag);
@@ -4616,17 +4629,19 @@ export class Tasks {
       this.releaseNotice(`task #${next.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(next, by, parsed, withheld));
       return next;
     }
-    const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: task.rejections + 1 }, note, flag);
+    const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: evidenceOnly ? task.rejections : task.rejections + 1 }, note, flag);
     void this.mirrorVerdict(rejected, by, "changes_requested", reviewedHead ?? rejected.sdlc?.reviewedHead, note, withheld);
-    this.releaseNotice(`task #${rejected.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(rejected, by, parsed, withheld));
+    if (!evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(rejected, by, parsed, withheld));
     if (candidate && !pii && !this.d.privateTurn?.(by) && this.candidateTextAllowed(JSON.stringify({ candidate, refs: rejected.refs, plan: rejected.plan }), rejected)) {
       try { this.d.memoryCheck?.(); this.d.candidates?.put({ ...candidate, evidenceRefs: [...candidate.evidenceRefs, `review:${rejected.id}:${rejected.history.length}`] }, "public"); } catch { /* a saved review remains authoritative if the optional sidecar fails */ }
     }
     this.cohorts.withdraw(rejected.id); // open again: its done intent no longer counts (issue #107)
-    if (rejected.owner) this.d.board.recordOutcome(rejected.owner, rejected.class, false);
-    this.contradict(rejected);
+    // Evidence-only is not a verdict on the owner's work: no failed outcome, no contradiction of an earlier approval, and no escalation count.
+    if (rejected.owner && !evidenceOnly) this.d.board.recordOutcome(rejected.owner, rejected.class, false);
+    if (!evidenceOnly) this.contradict(rejected);
     this.note(rejected, by, "decision", `Task #${rejected.id} changes requested by ${by}: ${rejected.title}\n${note ?? ""}`, withheld);
-    if (rejected.rejections >= (this.d.escalateAfter?.() ?? ESCALATE_AFTER)) {
+    if (evidenceOnly) this.tellConductorEvidenceOnly(rejected, by);
+    if (!evidenceOnly && rejected.rejections >= (this.d.escalateAfter?.() ?? ESCALATE_AFTER)) {
       let moved: Task;
       try {
         moved = await this.escalate(HUB, rejected.id, `${rejected.rejections} consecutive changes_requested`, "rejections");
@@ -4649,6 +4664,19 @@ export class Tasks {
     this.releaseNotice(`task ${this.publicTitle(reopened)}: could not tell ${reopened.owner ?? "its owner"} changes were requested`, () =>
       this.tell(reopened, `Task #${reopened.id}: ${by} requests changes.${note ? ` ${this.screen(reopened, note, "review note", reopened.owner, withheld)}` : ""} Fix it and call hub_task_done again.`, pii));
     return reopened;
+  }
+
+  /**
+   * #852 AC3: one task-weight notice to the configured conductor for a verdict recorded as evidence-only. Ids only (task and reviewer), so nothing of
+   * the review or the task reaches it; a PII task's notice is private. With no conductor the person sees one console notice instead.
+   */
+  private tellConductorEvidenceOnly(task: Task, reviewer: PeerId): void {
+    const conductors = Object.entries(this.d.roles ?? {}).filter(([, roles]) => Array.isArray(roles) && roles.includes("conductor")).map(([actor]) => actor).filter(actor => actor !== reviewer);
+    const text = evidenceOnlyNotice(task.id, reviewer);
+    if (!conductors.length) { this.releaseNotice(text); return; }
+    this.releaseNotice(`task #${task.id}: could not tell the conductor a code-scope review was evidence-only`, () => {
+      this.d.bus.publish(newEnvelope(HUB, sanitize(text), { to: conductors, kind: "task", refs: { task: String(task.id) }, ...(this.isPii(task) ? { private: true } : {}) }));
+    });
   }
 
   /** Task-level escalation: the next attached peer in the class's escalate_to takes over, with the history. */
