@@ -1038,6 +1038,53 @@ export class Tasks {
   wip(peer: PeerId, except?: number): number {
     return this.d.board.plannerWip(peer, except);
   }
+  private readonly plannerWriteNotices = new Map<PeerId, { envelope: string; capacity: Set<PeerId>; ready: Set<number> }>();
+  private capacityBefore(task: Task): Map<PeerId, number> {
+    return new Map([...new Set([task.owner, task.reserved])].filter((peer): peer is PeerId => !!peer).map(peer => [peer, this.wip(peer)]));
+  }
+
+  /** Write-driven wake-ups (#785): one unsettled ids-only task notice per planner, never a polling pull. */
+  private writePlannerNotices(task: Task, before: ReadonlyMap<PeerId, number>, approved = false): void {
+    this.releaseNotice(`task #${task.id}: could not notify planner about ready work`, () => {
+      const changes = new Map<PeerId, { capacity: Set<PeerId>; ready: Set<number> }>();
+      const add = (planner: PeerId, peer?: PeerId, id?: number) => {
+        if (!this.d.bus.isRostered(planner)) return;
+        const change = changes.get(planner) ?? { capacity: new Set<PeerId>(), ready: new Set<number>() };
+        if (peer) change.capacity.add(peer);
+        if (id !== undefined) change.ready.add(id);
+        changes.set(planner, change);
+      };
+      for (const [peer, used] of before) if (this.wip(peer) < used) for (const planner of this.taskPlanner(task)) add(planner, peer);
+      if (approved) for (const card of this.d.board.list("backlog")) {
+        if (card.deps?.includes(task.id) && !this.waitsFor(card).length) for (const planner of this.taskPlanner(card)) add(planner, undefined, card.id);
+      }
+      for (const [planner, change] of changes) this.releaseNotice(`could not notify planner ${planner} about ready work`, () => {
+        const old = this.plannerWriteNotices.get(planner);
+        const pending = this.d.bus.pendingEnvelopes(planner).filter(env => env.from === HUB && env.kind === "task" && env.body.startsWith("Planner work ready:"));
+        if (old && pending.some(env => env.id === old.envelope)) {
+          for (const peer of old.capacity) change.capacity.add(peer);
+          for (const id of old.ready) change.ready.add(id);
+        }
+        const lines: string[] = [];
+        for (const peer of change.capacity) {
+          const top = this.d.board.list().filter(card => ["backlog", "proposed"].includes(card.state) && !card.owner && card.reserved === peer
+            && this.taskPlanner(card).includes(planner) && !card.pinned && taskCanPlan(card) && !this.waitsFor(card).length && !this.excluded(card).includes(peer)
+            && (card.release == null || ["planning", "active"].includes(this.d.board.release(card.release)?.state ?? ""))).sort(this.readyOrder)[0];
+          lines.push(`capacity_released: ${peer} WIP ${this.wip(peer)}; reserved ready ${top ? `#${top.id}` : "none"}`);
+        }
+        for (const id of change.ready) {
+          const card = this.d.board.get(id);
+          if (card?.state === "backlog" && this.taskPlanner(card).includes(planner) && !this.waitsFor(card).length) lines.push(`backlog_ready: #${id}`);
+          else change.ready.delete(id);
+        }
+        for (const env of pending) this.d.bus.withdraw(env.id);
+        const env = newEnvelope(HUB, sanitize(`Planner work ready:\n${lines.join("\n")}\nRead the current board before planning or pulling work.`), { to: [planner], kind: "task" });
+        if (!this.d.bus.publish(env).includes(planner)) throw new Error("the notice was not queued");
+        this.plannerWriteNotices.set(planner, { envelope: env.id, ...change });
+      });
+    });
+  }
+
   /** #784 AC3: the read-only breakdown of `wip` for status, the console and the dashboard: one grouped query for every peer. Admission still reads `wip()`. */
   wipBreakdown(peers: readonly PeerId[]): Record<string, { wip: number; active: number; reviewWait: number; reserved: number; wipLimit: number }> {
     const grouped = this.d.board.plannerWipBreakdown();
@@ -1380,7 +1427,9 @@ export class Tasks {
     if (entry.planning.pull) {
       const release = task.release == null ? undefined : this.d.board.release(task.release);
       if (task.state !== "proposed" || task.owner || taskHasStarted(task) || by !== USER && (task.pinned || release && ["frozen", "shipped", "dropped"].includes(release.state))) throw new PreEffectToolRefusal("planner pull undo is no longer eligible");
+      const capacity = this.capacityBefore(task);
       const returned = this.d.board.undoPlannedPull(id, by, revision);
+      this.writePlannerNotices(returned, capacity);
       this.offered.delete(id); this.incomingBacklog.add(id);
       this.planningRecorded({ by, task: id, fields: ["pull", "reserved"], revision: returned.planningRevision! });
       return returned;
@@ -1760,7 +1809,9 @@ export class Tasks {
     this.plannerWriteAuthority(by);
     const confirmed = validate();
     if (confirmed.history.length !== flow) throw new PreEffectToolRefusal("task changed during untouched return");
+    const capacity = this.capacityBefore(confirmed);
     const returned = this.d.board.update(confirmed.id, by, "backlog returned untouched", { state: "backlog", owner: null, reviewer: null }, input.reason.trim(), { ...(withheld ? { withheld: true } : {}) }, flow);
+    this.writePlannerNotices(returned, capacity);
     this.offered.delete(confirmed.id);
     this.cohorts.leave(confirmed.id);
     this.withdrawRoleRequest(confirmed, returned, "owner");
@@ -1783,7 +1834,9 @@ export class Tasks {
     if (!pull && taskHasStarted(task)) throw new PreEffectToolRefusal(`task #${n}: started work cannot return to backlog`);
     const pulled = task.history.findLast(entry => entry.event === "backlog pulled" || entry.event === "backlog returned");
     const restoreReservation = !pull && pulled?.planning?.pull && !task.history.slice(task.history.lastIndexOf(pulled) + 1).some(entry => entry.event === "reserved" || entry.planning?.fields.includes("reserved"));
+    const capacity = this.capacityBefore(task);
     const next = this.d.board.update(n, by, pull ? "backlog pulled" : "backlog returned", { state: pull ? "proposed" : "backlog", owner: null, reviewer: null, ...(restoreReservation ? { reserved: pulled.planning!.previous.reserved ?? null } : {}) });
+    this.writePlannerNotices(next, capacity);
     this.offered.delete(n);
     if (!pull) { this.incomingBacklog.add(n); return next; }
     const waits = this.waitsFor(next);
@@ -2612,7 +2665,9 @@ export class Tasks {
     const task = validate();
     if (task.history.length !== revision) throw new PreEffectToolRefusal("task flow revision changed");
     const cancelled = { reason: input.reason.trim(), ...(input.supersededBy ? { supersededBy: input.supersededBy.trim() } : {}), flowRevision: revision + 1, ...(withheld ? { withheld: true as const } : {}) };
+    const capacity = this.capacityBefore(task);
     const next = this.d.board.update(task.id, by, "cancelled", { state: "cancelled", reserved: null, cancelled }, cancelled.reason, { ...(withheld ? { withheld: true as const } : {}) }, revision);
+    this.writePlannerNotices(next, capacity);
     this.releaseNotice(`task #${task.id}: cancellation cohort cleanup unavailable`, () => this.cohorts.leave(task.id));
     this.offered.delete(task.id);
     this.releaseNotice(`task #${task.id}: cancellation stall cleanup unavailable`, () => this.d.board.clearStall(task.id));
@@ -3688,12 +3743,17 @@ export class Tasks {
     const task = this.need(id, true, true);
     this.mine(task, by, "owner", true);
     // The owner it is declined for goes on the entry, also when the console declines for it: `excluded()` keeps it out (#207).
+    const capacityBefore = this.capacityBefore(task);
     const planned = this.plannerPullRecord(task)?.pull === true;
     const back = this.d.board.update(task.id, by, "declined", { ...(["in_progress", "changes_requested"].includes(task.state) ? { state: "proposed" as const } : {}), ...(planned ? { reserved: null } : {}) }, reason, task.owner ? { from: task.owner, ...(capacity === true ? { capacity: true as const } : {}) } : {});
     if (planned) this.offered.delete(task.id);
     this.d.notify(`task ${this.publicTitle(back)} declined${capacity === true ? " (capacity only)" : ""} by ${by}${reason && !this.isPii(back) ? `: ${reason}` : ""}`);
     // A capacity decline is not in excluded(), so this move's own reroute leaves the decliner out explicitly.
-    return this.assignOwner(back, HUB, { event: "reassigned", reason: "declined", clearOnFail: true, ...(capacity === true && task.owner ? { exclude: [task.owner] } : {}), ...(planned ? { planner: true } : {}) });
+    try {
+      return await this.assignOwner(back, HUB, { event: "reassigned", reason: "declined", clearOnFail: true, ...(capacity === true && task.owner ? { exclude: [task.owner] } : {}), ...(planned ? { planner: true } : {}) });
+    } finally {
+      this.writePlannerNotices(this.d.board.get(task.id) ?? back, capacityBefore);
+    }
   }
 
   /**
@@ -4037,7 +4097,9 @@ export class Tasks {
     const completedRefs = cleanRefs(refs);
     this.warmRepository({ ...task, refs: { ...task.refs, ...completedRefs } });
     const noWrites = this.noWritesRecorded({ ...task, refs: { ...task.refs, ...completedRefs } });
+    const capacity = this.capacityBefore(task);
     const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...completedRefs } }), state: reviewer ? "in_review" : "approved", ...(selection ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...this.planObservation(task), withheld: withheld || undefined, ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
+    this.writePlannerNotices(next, capacity, next.state === "approved");
     this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
     const memorySymbols = this.completionMemorySymbols(next);
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\nChanged-symbol memory anchors: ${memorySymbols.state === "known" ? memorySymbols.nodes.length : "unknown (no complete code facts)"}\n${summary ?? ""}`, withheld, memorySymbols);
@@ -4533,7 +4595,9 @@ export class Tasks {
     const unmetCriteria = pii ? [] : unmetCriteriaIds(items, checklistOf(task.sdlc));
     const flag = { ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
     if (verdict === "approved") {
+      const capacity = this.capacityBefore(task);
       const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0, ...(reviewedHead && task.sdlc ? { sdlc: { ...task.sdlc, reviewedHead, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), "merge") } } : {}) }, note, flag);
+      this.writePlannerNotices(next, capacity, next.state === "approved");
       if (next.owner) {
         this.d.board.recordOutcome(next.owner, next.class, true);
         this.d.board.recordReview({ implementer: next.owner, reviewer: by, class: next.class, kind: "approved", task: next.id });
