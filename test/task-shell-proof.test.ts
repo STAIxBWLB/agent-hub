@@ -12,8 +12,9 @@ function fixture() {
   const project = realPath(mkdtempSync(join(tmpdir(), "ahub-task-shell-proof-"))), root = join(project, ".worktrees", "worker");
   const hostBin = realPath(mkdtempSync(join(tmpdir(), "ahub-task-shell-host-")));
   for (const name of ["bun", "gh"]) writeFileSync(join(hostBin, name), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
+  const env = hostShellEnvironment({ HOME: hostBin, PATH: `${hostBin}:${process.env.PATH ?? "/usr/bin:/bin"}` });
   const git = (...args: string[]) => {
-    const out = hubGitSync(["-C", project, ...args], { encoding: "utf8", timeout: 1000 });
+    const out = hubGitSync(["-C", project, ...args], { env, encoding: "utf8", timeout: 1000 });
     expect(out.status, out.stderr).toBe(0); return out.stdout.trim();
   };
   git("init", "-q"); git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture");
@@ -22,7 +23,7 @@ function fixture() {
   mkdirSync(join(root, "scripts")); mkdirSync(join(root, "test"));
   writeFileSync(join(root, "scripts", "check.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   writeFileSync(join(root, "test", "example.test.ts"), "fixture\n");
-  const options: TaskShellProofOptions = { root, projectRoot: project, deny: [], protectInstructions: true, binding: { branch: "task/worker", defaultBranch: "main" }, env: hostShellEnvironment({ PATH: `${hostBin}:${process.env.PATH ?? "/usr/bin:/bin"}` }), repository: "fixture/repo" };
+  const options: TaskShellProofOptions = { root, projectRoot: project, deny: [], protectInstructions: true, binding: { branch: "task/worker", defaultBranch: "main" }, env, repository: "fixture/repo" };
   return { project, root, git, options, close: () => { rmSync(project, { recursive: true, force: true }); rmSync(hostBin, { recursive: true, force: true }); } };
 }
 
