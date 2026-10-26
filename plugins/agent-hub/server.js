@@ -5303,6 +5303,13 @@ ${text}`;
       if (!this.stopping && !this.detached && this.state === "offline")
         this.setState("idle");
     }
+    isNotificationEvent(event) {
+      const content = event.message?.content;
+      if (!Array.isArray(content) || content.length !== 1)
+        return false;
+      const block = content[0];
+      return !!block && typeof block === "object" && block.type === "text" && typeof block.text === "string" && isQwenTaskNotification(block.text);
+    }
     promptText(event) {
       const content = event.message?.content;
       if (typeof content === "string")
@@ -5313,18 +5320,11 @@ ${text}`;
       return blocks.length ? blocks.map((block) => block.text).join("") : undefined;
     }
     onUser(event) {
+      if (this.isNotificationEvent(event))
+        return;
       const text = this.promptText(event);
       if (text === undefined)
         return;
-      if (isQwenTaskNotification(text)) {
-        if (!this.turn && this.owner === undefined) {
-          this.owner = "personal";
-          this.lastAssistant = undefined;
-          if (this.state === "idle")
-            this.setState("busy");
-        }
-        return;
-      }
       const turn = this.turn;
       if (turn && !turn.started && (text.trim() === turn.text.trim() || text.trim().startsWith(turn.text.trim().slice(0, 200)))) {
         turn.started = true;
