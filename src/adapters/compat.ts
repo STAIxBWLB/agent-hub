@@ -34,8 +34,8 @@ export const COMPAT = {
     parse: out => plain(out.trim()),
     trustNote: "The model-free extension load, RPC session identity and managed tool receipt path were checked on 1.4.0. Permissions remain host-owned; account-backed inference and another version's extension contract are unverified.",
     receipt: "docs/verification/2026-10-26-pi-140-compat.md" },
-  // Receipt: docs/verification/2026-10-23-headless-claude-permissions.md
-  "claude-implementer": { label: "Claude headless implementer", verified: ["2.1.309"], gate: "contract", probe: ["claude", "--version"],
+  // Receipt: docs/verification/2026-10-23-headless-claude-permissions.md; 2.1.310 transport receipt: docs/verification/2026-10-26-claude-implementer-2.1.310.md
+  "claude-implementer": { label: "Claude headless implementer", verified: ["2.1.309", "2.1.310"], gate: "contract", probe: ["claude", "--version"],
     parse: out => plain(out.trim().replace(/ \(Claude Code\)$/, "")),
     trustNote: "The native prompt-tool allow, deny, MCP error/disconnect and hook-failure fallthrough have an isolated receipt. No dontAsk/bypass fallback exists; another version's permission behavior is unverified.",
     receipt: "docs/verification/2026-10-23-headless-claude-permissions.md" },
