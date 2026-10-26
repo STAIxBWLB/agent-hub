@@ -71,13 +71,13 @@ const gate = (runner: string, quiet: number, total: number) => {
 
 test("a run whose progress file keeps growing survives many quiet bounds and ends on its own; nothing is printed", async () => {
   const file = progressFile();
-  const growing = grower(file, 8);
+  const growing = grower(file, 6);
   try {
-    const watched = await run(growing.pid!, 120, file, 2);   // 8 s of progress against a 2 s quiet bound
+    const watched = await run(growing.pid!, 60, file, 3);   // 6 s of progress against a 3 s quiet bound: two bounds crossed in time, never in silence
     await exited(growing);
     expect([growing.exitCode, growing.signalCode, watched.status, watched.stderr]).toEqual([0, null, 0, ""]);
   } finally { cleanup(growing); }
-}, 60_000);
+}, 15_000);
 
 test("a run whose progress file stops growing is stopped on the quiet bound, with a process table, long before the total bound", async () => {
   const file = progressFile();
@@ -86,7 +86,7 @@ test("a run whose progress file stops growing is stopped on the quiet bound, wit
   const stalled = spawn("sh", ["-c", "sleep 120 & c=$!; trap 'kill $c' TERM; wait"], { stdio: "ignore" });
   try {
     const began = Date.now();
-    const watched = await run(stalled.pid!, 120, file, 3);
+    const watched = await run(stalled.pid!, 60, file, 2);
     const elapsed = Date.now() - began;
     await exited(stalled);
     expect(stalled.exitCode !== null || stalled.signalCode !== null).toBe(true);   // its trap handled the SIGTERM, so it exits instead of dying by the signal
@@ -94,33 +94,33 @@ test("a run whose progress file stops growing is stopped on the quiet bound, wit
     expect(watched.stderr).toContain("made no progress");
     expect(watched.stderr).toContain(`processes below pid ${stalled.pid}`);
     expect(watched.stderr).toMatch(/sleep 120/);
-    expect(elapsed).toBeLessThan(40_000);
+    expect(elapsed).toBeLessThan(12_000);   // nowhere near the 60 s total bound
   } finally { cleanup(stalled); }
-}, 30_000);
+}, 15_000);
 
 test("an empty progress file is stopped on the quiet bound too (a hang before the first result)", async () => {
   const file = progressFile();
   const stalled = spawn("sleep", ["120"], { stdio: "ignore" });
   try {
-    const watched = await run(stalled.pid!, 120, file, 2);
+    const watched = await run(stalled.pid!, 60, file, 2);
     await exited(stalled);
     expect(stalled.signalCode).toBe("SIGTERM");
     expect(watched.stderr).toContain("cause=quiet");
   } finally { cleanup(stalled); }
-}, 60_000);
+}, 15_000);
 
 test("the total bound is still the backstop: a run whose progress never stops is stopped there, not on the quiet bound", async () => {
   const file = progressFile();
-  const endless = grower(file, 60);
+  const endless = grower(file, 30);
   try {
-    const watched = await run(endless.pid!, 5, file, 2);
+    const watched = await run(endless.pid!, 4, file, 2);
     await exited(endless);
     expect(stopped(endless)).toBe(true);
-    expect(watched.stderr).toContain("still running after 5s");
+    expect(watched.stderr).toContain("still running after 4s");
     expect(watched.stderr).toContain("cause=total");
     expect(watched.stderr).not.toContain("cause=quiet");
   } finally { cleanup(endless); }
-}, 60_000);
+}, 15_000);
 
 test("progress-tee.sh passes every line through unchanged and counts one byte per result line or file header, the last line without a newline included", () => {
   const file = progressFile();
@@ -132,25 +132,29 @@ test("progress-tee.sh passes every line through unchanged and counts one byte pe
 });
 
 test("through the real fifo, filter and watchdog: a run that keeps passing tests is not stopped and its exit code is kept; the output reaches stderr unchanged", async () => {
-  const out = await gate('echo "test/a.test.ts:" >&2; for i in 1 2 3 4 5 6; do echo "(pass) t$i" >&2; sleep 1; done; echo "(fail) last" >&2; exit 3', 3, 60);
-  expect(out.stdout).toContain("GATE exit=3 progress=8");   // a header, six passes and a fail
-  expect(out.stderr).toContain("(pass) t6");
+  // 5 s of results against a 2 s quiet bound; the fake runner fails at the end, and that status must come out of the gate untouched.
+  const out = await gate('echo "test/a.test.ts:" >&2; for i in 1 2 3 4 5; do echo "(pass) t$i" >&2; sleep 1; done; echo "(fail) last" >&2; exit 3', 2, 60);
+  expect(out.stdout).toContain("GATE exit=3 progress=7");   // a header, five passes and a fail
+  expect(out.stderr).toContain("(pass) t5");
   expect(out.stderr).toContain("(fail) last");
   expect(out.stderr).not.toContain("cause=");
-}, 60_000);
+}, 15_000);
 
 test("through the real fifo, filter and watchdog: a run that goes silent after its results is stopped on the quiet bound", async () => {
-  const out = await gate('echo "(pass) a" >&2; echo "(pass) b" >&2; exec sleep 120', 3, 60);
+  const out = await gate('echo "(pass) a" >&2; echo "(pass) b" >&2; exec sleep 60', 2, 60);
   expect(out.stderr).toContain("cause=quiet");
   expect(out.stdout).toMatch(/GATE exit=143 progress=2/);
-}, 60_000);
+}, 15_000);
 
-test("through the real fifo, filter and watchdog: a file header alone is progress (a long test file whose results come at its end), but logging is not", async () => {
-  // Headers every second keep a 3 s quiet bound satisfied for 7 s without a single result line.
-  const headers = await gate('for i in 1 2 3 4 5 6 7; do echo "test/f$i.test.ts:" >&2; sleep 1; done; exit 0', 3, 60);
-  expect(headers.stdout).toContain("GATE exit=0 progress=7");
-  expect(headers.stderr).not.toContain("cause=");
-  // Plain log lines every second do not move it.
-  const logging = await gate('for i in $(seq 1 60); do echo "some log line $i" >&2; sleep 1; done', 3, 60);
-  expect(logging.stderr).toContain("cause=quiet");
-}, 90_000);
+test("through the real fifo, filter and watchdog: a test file header alone is progress (a long file whose results come at its end)", async () => {
+  // Headers every second keep a 2 s quiet bound satisfied for 5 s without a single result line.
+  const out = await gate('for i in 1 2 3 4 5; do echo "test/f$i.test.ts:" >&2; sleep 1; done; exit 0', 2, 60);
+  expect(out.stdout).toContain("GATE exit=0 progress=5");
+  expect(out.stderr).not.toContain("cause=");
+}, 15_000);
+
+test("through the real fifo, filter and watchdog: plain log lines are not progress", async () => {
+  const out = await gate('for i in $(seq 1 30); do echo "some log line $i" >&2; sleep 1; done', 2, 60);
+  expect(out.stderr).toContain("cause=quiet");
+  expect(out.stdout).toMatch(/GATE exit=143 progress=0/);
+}, 15_000);
