@@ -307,7 +307,7 @@ var init_compat = __esm(() => {
     },
     "claude-implementer": {
       label: "Claude headless implementer",
-      verified: ["2.1.309"],
+      verified: ["2.1.309", "2.1.310"],
       gate: "contract",
       probe: ["claude", "--version"],
       parse: (out) => plain(out.trim().replace(/ \(Claude Code\)$/, "")),
