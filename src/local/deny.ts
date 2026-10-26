@@ -93,6 +93,8 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
           // A worktree git dir's own `config` and `config.worktree`: direct children only.
           `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config")}$`)})`,
           `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${configWorktreeSources("^.*/").map(re).join(" ")})`,
+          // A worktree git dir's own `hooks` directory and everything in it, which git runs for that worktree.
+          re(`^${w}/[^/]+/${hfsFoldedName("hooks")}(/|$)`),
           // Its submodule git dirs: config, config.worktree and hooks at any depth, refs and logs excepted, and the `modules` entry itself (no create, rename or replace).
           `(require-all ${re(`^${w}/[^/]+/modules/(.*/)?${hfsFoldedName("config")}$`)} ${notRefs})`,
           `(require-all ${configWorktreeSources(`^${w}/[^/]+/modules/(.*/)?`).map(re).join(" ")} ${notRefs})`,

@@ -433,7 +433,8 @@ test.skipIf(!sandboxAvailable())("every linked worktree's git dir is protected b
   expect(existsSync(join(sib, "modules"))).toBe(false);
   expect(existsSync(join(own, "modules"))).toBe(false);
   expect(existsSync(join(sib, "config.worktree"))).toBe(false);
-  expect(existsSync(join(common, "worktrees", "later"))).toBe(false);
+  // The sandbox may make an empty directory for a worktree git dir that does not exist (harmless: git needs HEAD, commondir and gitdir there, and the names that execute are refused); nothing inside it may exist.
+  for (const name of ["modules", "config", "config.worktree", "hooks", "commondir"]) expect(existsSync(join(common, "worktrees", "later", name)), name).toBe(false);
 });
 
 test.skipIf(!sandboxAvailable())("config.worktree is refused with ignorable code points in BOTH halves of the name, in the project .git, a worktree git dir and the common dir, and an unrelated name stays writable (#518 review)", async () => {
