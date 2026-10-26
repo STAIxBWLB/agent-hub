@@ -5,6 +5,8 @@
 //   TOOL:<name>:<json>   asks for approval (control_request can_use_tool); on allow runs the tool and answers; on deny emits NOTHING (the receipt's gap) and goes idle
 //   STALL                emits the user event and then goes silent (a running turn that never settles); an `ESC` file next to the input ends it silently, as Esc does
 //   ESCAPED              emits the user event and ends the turn with no assistant and no message_stop
+//   NOTIFY               a background shell finished mid-turn: a tool_use message, then Qwen's own `<task-notification>` user event (the shape Qwen 0.26.1 wrote 48 times in the live
+//                        event files, #517), then the answer. NOTIFYAFTER answers first and emits the notice after the turn has ended, with nothing following it.
 //   anything else        answers "echo: <text>"
 // A `confirmation_response` for an id that was already answered gets control_response error, as the receipt shows. `--tui-answer <ms>` answers the first approval itself after that delay
 // (the person pressing Enter in the TUI): control_response success for that request_id.
@@ -34,6 +36,8 @@ const assistant = (text: string, stop: "end_turn" | "tool_use") => {
   out({ type: "stream_event", event: { type: "message_stop" } });
 };
 const userEvent = (text: string) => out({ type: "user", message: { role: "user", content: [{ type: "text", text }] } });
+// One text block, task id, kind and status, then the detail lines: the shape of the real one.
+const notification = () => userEvent(`<task-notification>\n<task-id>bg_${randomUUID().slice(0, 8)}</task-id>\n<kind>shell</kind>\n<status>completed</status>\n<summary>Shell command "sleep 1" completed.</summary>\n<command>sleep 1</command>\n<cwd>/tmp</cwd>\n<pid>1</pid>\n<exit-code>0</exit-code>\n<output-file>/tmp/out</output-file>\n</task-notification>`);
 
 async function runTurn(text: string): Promise<void> {
   busy = true;
@@ -50,6 +54,13 @@ async function runTurn(text: string): Promise<void> {
     if (!allowed) { busy = false; return; }   // a deny cancels the whole turn and emits nothing at all
     assistant("", "tool_use");
     assistant(`ran ${name}`, "end_turn");
+  } else if (body.includes("NOTIFYAFTER")) {
+    assistant(`echo: ${body.slice(0, 200)}`, "end_turn");
+    notification();            // after the turn ended, and nothing follows it
+  } else if (body.includes("NOTIFY")) {
+    assistant("", "tool_use");   // the model asked for a tool and Qwen runs it
+    notification();            // the background shell ends meanwhile: Qwen tells the model, inside the same turn
+    assistant(`echo: ${body.slice(0, 200)}`, "end_turn");
   } else if (body.includes("STALL")) {
     while (!existsSync(`${input}.esc`)) await Bun.sleep(25);
   } else if (body.includes("ESCAPED")) {

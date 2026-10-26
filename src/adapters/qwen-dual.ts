@@ -82,6 +82,17 @@ export function qwenDualNamesStateDir(input: unknown, stateDir: string): boolean
   return seen(input, 0);
 }
 
+/**
+ * #517: Qwen tells the model that one of its background shells finished with a `user` event of its own, which is neither the hub's submit nor the person typing. Qwen may fold
+ * several finished shells into one event, each its own envelope, separated by one blank line (8 of the 48 in the live event files do). The shape is exact: the text is wholly
+ * one or more complete envelopes and nothing else, so a person's text that merely contains or resembles one is still a person's prompt. Nothing inside an envelope is read
+ * beyond its header lines, so nothing in it can steer the adapter.
+ */
+const NOTIFICATION = String.raw`<task-notification>\n<task-id>bg_[0-9a-f]{4,32}<\/task-id>\n<kind>[a-z_-]{1,32}<\/kind>\n<status>[a-z_-]{1,32}<\/status>\n(?:(?!<task-notification>|<\/task-notification>)[\s\S])*<\/task-notification>`;
+const QWEN_TASK_NOTIFICATIONS = new RegExp(`^${NOTIFICATION}(?:\\n\\n${NOTIFICATION})*$`);
+const NOTIFICATION_CAP = 64 * 1024;
+export function isQwenTaskNotification(text: string): boolean { return text.length <= NOTIFICATION_CAP && QWEN_TASK_NOTIFICATIONS.test(text); }
+
 /** `qwen --version` against the dual-output compat entry. Never throws: a refusal is a reason. */
 export async function qwenDualVersionAsync(cmd: readonly string[], cwd: string): Promise<{ ok: true; version: string; note?: string } | { ok: false; reason: string }> {
   const [bin, ...prefix] = cmd.filter(word => word !== "--acp");
@@ -416,6 +427,17 @@ export class QwenDualPeer extends BasePeer {
     if (!this.stopping && !this.detached && this.state === "offline") this.setState("idle");
   }
 
+  /**
+   * Judged on the raw event, not on `promptText`, which joins every text block and drops the rest: an event is Qwen's own notice only when its content is exactly one text block
+   * and that block is wholly the strict envelope. A text split across blocks, or a block with anything else beside it (an image, a second text), is a person's prompt.
+   */
+  private isNotificationEvent(event: Json): boolean {
+    const content = event.message?.content;
+    if (!Array.isArray(content) || content.length !== 1) return false;
+    const block = content[0];
+    return !!block && typeof block === "object" && block.type === "text" && typeof block.text === "string" && isQwenTaskNotification(block.text);
+  }
+
   private promptText(event: Json): string | undefined {
     const content = event.message?.content;
     if (typeof content === "string") return content;
@@ -425,6 +447,9 @@ export class QwenDualPeer extends BasePeer {
   }
 
   private onUser(event: Json): void {
+    // Qwen's own background-shell notice (#517) is part of whatever turn is running and never the person typing, so it ends no hub turn and holds no queue. It changes nothing else:
+    // an idle peer stays idle (Qwen may answer it or not, and a peer that waited for an answer that never comes would block its queue), and a running turn keeps its owner.
+    if (this.isNotificationEvent(event)) return;
     const text = this.promptText(event);
     if (text === undefined) return; // a tool result echoed back, not a prompt
     const turn = this.turn;

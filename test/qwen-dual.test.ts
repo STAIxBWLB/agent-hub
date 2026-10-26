@@ -3,7 +3,7 @@ import { afterEach, expect, test } from "bun:test";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { QwenDualPeer, QWEN_STALLED_NOTE, qwenDualNamesStateDir, type QwenDualOptions } from "../src/adapters/qwen-dual.ts";
+import { QwenDualPeer, QWEN_STALLED_NOTE, isQwenTaskNotification, qwenDualNamesStateDir, type QwenDualOptions } from "../src/adapters/qwen-dual.ts";
 import { COMPAT, assessVersion } from "../src/adapters/compat.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import type { DeliveryReceipt } from "../src/hub/peers.ts";
@@ -322,6 +322,119 @@ test("a person's own prompt in the TUI is not the hub's: it keeps the peer busy 
   appendFileSync(join(r.dir, "events.jsonl"), `${JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "private answer" }], stop_reason: "end_turn" } })}\n${JSON.stringify({ type: "stream_event", event: { type: "message_stop" } })}\n`);
   await until(() => r.peer.state === "idle");
   expect(r.answers).toHaveLength(0);   // the person's conversation is never shared
+});
+
+// #517: Qwen tells the model that a background shell finished with a `user` event of its own. It is not the person typing, and it arrives in the middle of a running hub
+// turn (13 of the 25 in the live event files), so reading it as the person ended the turn as uncertain and held the peer's whole queue (7 of 7 recorded holds).
+const NOTIFICATION = (id = "bg_0a1b2c3d", status = "completed") => `<task-notification>\n<task-id>${id}</task-id>\n<kind>shell</kind>\n<status>${status}</status>\n<summary>Shell command "make" ${status}.</summary>\n<command>make</command>\n<cwd>/tmp</cwd>\n<pid>7</pid>\n<exit-code>0</exit-code>\n<output-file>/tmp/out</output-file>\n</task-notification>`;
+const userEvent = (text: string) => ({ type: "user", message: { role: "user", content: [{ type: "text", text }] } });
+const appendEvents = (r: Rig, ...lines: unknown[]) => appendFileSync(join(r.dir, "events.jsonl"), lines.map(line => `${JSON.stringify(line)}\n`).join(""));
+const finalAnswer = (text: string) => [{ type: "assistant", message: { content: [{ type: "text", text }], stop_reason: "end_turn" } }, { type: "stream_event", event: { type: "message_stop" } }];
+
+test("a background-task notification inside a running hub turn does not end it: the delivery completes and nothing is held (#517)", async () => {
+  const r = await attached();
+  await r.peer.deliver(env("NOTIFY please"), "d1");   // the fake: a tool_use message, then Qwen's own notice, then the answer, all in one turn
+  await until(() => r.answers.length === 1, () => `receipts ${JSON.stringify(r.receipts)} notices ${r.notices.join(" | ")}`);
+  await until(() => r.peer.state === "idle");
+  expect(events(r).filter(event => event.type === "user" && JSON.stringify(event).includes("<task-notification>"))).toHaveLength(1);   // the notice really was in the stream
+  expect(r.receipts.map(receipt => receipt.state)).toEqual(["accepted", "completed"]);   // never needs_review
+  expect(r.notices).toEqual([]);
+  expect(r.answers[0]!.body).toContain("echo:"); expect(r.answers[0]!.body).not.toContain("task-notification");
+  // And the next delivery goes through: the queue was never held.
+  await r.peer.deliver(env("after"), "d2");
+  await until(() => r.receipts.at(-1)?.id === "d2" && r.receipts.at(-1)!.state === "completed");
+});
+
+test("a notification after the turn has ended, with nothing following it, leaves the peer idle and the queue open (#517)", async () => {
+  const r = await attached();
+  await r.peer.deliver(env("NOTIFYAFTER please"), "d1");
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  await until(() => events(r).some(event => event.type === "user" && JSON.stringify(event).includes("<task-notification>")));
+  await Bun.sleep(150);
+  expect(r.peer.state).toBe("idle"); expect(r.notices).toEqual([]);
+  await r.peer.deliver(env("after the trailing notice"), "d2");
+  await until(() => r.receipts.at(-1)?.id === "d2" && r.receipts.at(-1)!.state === "completed", () => JSON.stringify(r.receipts));
+});
+
+test("several notifications in one hub turn leave it running until its own end, and the answer is the last assistant message (#517)", async () => {
+  const r = await attached({}, { watchdogMs: 60_000 });
+  await r.peer.deliver(env("STALL then answer"), "d1");
+  await until(() => r.receipts.some(receipt => receipt.state === "accepted"));
+  appendEvents(r, userEvent(NOTIFICATION("bg_aaaa1111")), userEvent(NOTIFICATION("bg_bbbb2222", "cancelled")));
+  await Bun.sleep(200);
+  expect(r.peer.state).toBe("busy");
+  expect(r.receipts.map(receipt => receipt.state)).toEqual(["accepted"]);   // still running, not held
+  appendEvents(r, ...finalAnswer("the real answer"));
+  await until(() => r.receipts.at(-1)!.state === "completed");
+  expect(r.answers.map(answer => answer.body)).toEqual(["the real answer"]);
+  expect(r.notices).toEqual([]);
+});
+
+test("Qwen folds several finished shells into one event: one or more whole envelopes separated by a blank line are still its own notice (#517)", async () => {
+  expect(isQwenTaskNotification(NOTIFICATION())).toBe(true);
+  expect(isQwenTaskNotification(`${NOTIFICATION("bg_aaaa1111")}\n\n${NOTIFICATION("bg_bbbb2222", "cancelled")}`)).toBe(true);
+  const r = await attached();
+  await r.peer.deliver(env("STALL then answer"), "d1");
+  await until(() => r.receipts.some(receipt => receipt.state === "accepted"));
+  appendEvents(r, userEvent(`${NOTIFICATION("bg_aaaa1111")}\n\n${NOTIFICATION("bg_bbbb2222")}`), ...finalAnswer("done"));
+  await until(() => r.receipts.at(-1)!.state === "completed");
+  expect(r.receipts.map(receipt => receipt.state)).toEqual(["accepted", "completed"]); expect(r.notices).toEqual([]);
+});
+
+test("a notification that arrives while Qwen is idle changes nothing: the peer stays idle, and a notice with no follow-up never blocks the queue (#517)", async () => {
+  const r = await attached();
+  appendEvents(r, userEvent(NOTIFICATION()));
+  await Bun.sleep(200);
+  expect(r.peer.state).toBe("idle");   // not busy: Qwen may never answer it
+  expect(r.answers).toHaveLength(0); expect(r.receipts).toHaveLength(0); expect(r.notices).toEqual([]);
+  // No assistant message ever follows, and the next delivery still goes through.
+  await r.peer.deliver(env("after the lone notice"), "d1");
+  await until(() => r.receipts.at(-1)?.state === "completed", () => JSON.stringify(r.receipts));
+  expect(r.answers).toHaveLength(1); expect(r.notices).toEqual([]);
+  // And Qwen answering a notice on its own, when idle, shares nothing and leaves the peer idle.
+  appendEvents(r, userEvent(NOTIFICATION("bg_cccc3333")), ...finalAnswer("noted the shell finished"));
+  await Bun.sleep(200);
+  expect(r.peer.state).toBe("idle"); expect(r.answers).toHaveLength(1);
+});
+
+test("the exemption is judged on the raw event: a notice split across blocks, or beside any other block, is the person's prompt (#517)", async () => {
+  const mixed: [string, unknown[]][] = [
+    ["two text blocks that join into a valid envelope", [{ type: "text", text: "<task-notification>\n<task-id>bg_0a1b2c3d</task-id>\n<kind>shell</kind>\n" }, { type: "text", text: "<status>completed</status>\n</task-notification>" }]],
+    ["a valid envelope plus a second text block", [{ type: "text", text: NOTIFICATION() }, { type: "text", text: "and I also typed this" }]],
+    ["a valid envelope plus an image block", [{ type: "text", text: NOTIFICATION() }, { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } }]],
+    ["an image block before a valid envelope", [{ type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } }, { type: "text", text: NOTIFICATION() }]],
+    ["an empty text block beside a valid envelope", [{ type: "text", text: "" }, { type: "text", text: NOTIFICATION() }]],
+  ];
+  for (const [label, content] of mixed) {
+    const r = await attached();
+    await r.peer.deliver(env("STALL a turn"), "d1");
+    await until(() => r.receipts.some(receipt => receipt.state === "accepted"));
+    appendEvents(r, { type: "user", message: { role: "user", content } });
+    await until(() => r.receipts.at(-1)!.state === "needs_review", () => `not held for ${label}: ${JSON.stringify(r.receipts)}`);
+    // The personal answer that follows is never shared as the hub delivery's result.
+    appendEvents(r, ...finalAnswer("a private answer"));
+    await Bun.sleep(100);
+    expect(r.answers, label).toHaveLength(0);
+    await r.peer.stop();
+  }
+  // A single text block that is wholly the envelope is the one accepted shape, and a content string never is (Qwen writes lists).
+  const r = await attached();
+  await r.peer.deliver(env("STALL a turn"), "d1");
+  await until(() => r.receipts.some(receipt => receipt.state === "accepted"));
+  appendEvents(r, { type: "user", message: { role: "user", content: NOTIFICATION() } });
+  await until(() => r.receipts.at(-1)!.state === "needs_review");
+});
+
+test("only the exact notification shape is exempt: a person's prompt that looks like one still ends a hub turn as uncertain (#517)", async () => {
+  for (const typed of ["<task-notification>just typed by the person</task-notification>", `${NOTIFICATION()}\nand more typed after it`, `${NOTIFICATION()}\n\ntyped between two`, `${NOTIFICATION()}\n\n${NOTIFICATION()}\n\nand then more`, `please read: ${NOTIFICATION()}`, ` ${NOTIFICATION()}`, NOTIFICATION("bg_not a valid id"), `<task-notification>\n<task-id>bg_0a1b2c3d</task-id>\n<kind>shell</kind>\n<status>completed</status>\n<task-notification>nested</task-notification></task-notification>`]) {
+    const r = await attached();
+    await r.peer.deliver(env("STALL a turn"), "d1");
+    await until(() => r.receipts.some(receipt => receipt.state === "accepted"));
+    appendEvents(r, userEvent(typed));
+    await until(() => r.receipts.at(-1)!.state === "needs_review", () => `not held for ${JSON.stringify(typed.slice(0, 40))}: ${JSON.stringify(r.receipts)}`);
+    expect(r.notices.join("\n")).toContain("without a result");
+    await r.peer.stop();
+  }
 });
 
 test("an approval request during the person's own turn is theirs: the console is not asked", async () => {
