@@ -24,11 +24,16 @@ export interface CompatPolicy {
   /** The last receipt in docs/verification whose model-free procedure a new version repeats (#843). */
   receipt: string;
   /** The config key that selects this kind's executable, when one exists. */
-  config?: "codex_bin" | "jcode_cmd" | "qwen_cmd";
+  config?: "codex_bin" | "jcode_cmd" | "qwen_cmd" | "pi.cmd";
 }
 
 const plain = (text: string) => text.length <= 64 && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(text) ? text : undefined;
 export const COMPAT = {
+  // Receipt: docs/verification/2026-10-26-pi-140-compat.md
+  pi: { label: "Pi", verified: ["1.4.0"], gate: "contract", probe: ["pi", "--version"], config: "pi.cmd",
+    parse: out => plain(out.trim()),
+    trustNote: "The model-free extension load, RPC session identity and managed tool receipt path were checked on 1.4.0. Permissions remain host-owned; account-backed inference and another version's extension contract are unverified.",
+    receipt: "docs/verification/2026-10-26-pi-140-compat.md" },
   // Receipt: docs/verification/2026-10-23-headless-claude-permissions.md
   "claude-implementer": { label: "Claude headless implementer", verified: ["2.1.309"], gate: "contract", probe: ["claude", "--version"],
     parse: out => plain(out.trim().replace(/ \(Claude Code\)$/, "")),
@@ -47,11 +52,11 @@ export const COMPAT = {
   jcode: { label: "Jcode", verified: ["0.98.1", "0.99.0", "0.99.1"], line: { min: "0.98.0", below: "1.0.0" }, gate: "contract", probe: ["jcode", "--quiet", "version", "--json"], config: "jcode_cmd",
     parse: out => { try { const v = JSON.parse(out).semver; return typeof v === "string" ? plain(v) : undefined; } catch { return undefined; } },
     trustNote: "The ACP, serve and MCP contract was verified on 0.98.1 and 0.99.1 and steering on 0.99.0 and 0.99.1; an untested version may change them.",
-    receipt: "docs/verification/2026-10-19-jcode-0.98.1.md" },
-  agy: { label: "agy", verified: ["1.4.2"], line: { min: "1.4.0", below: "1.5.0" }, gate: "contract", probe: ["agy", "--version"],
+    receipt: "docs/verification/2026-10-26-jcode-0.99.1.md" },
+  agy: { label: "agy", verified: ["1.4.2", "1.4.7"], line: { min: "1.4.0", below: "1.5.0" }, gate: "contract", probe: ["agy", "--version"],
     parse: out => plain(out.trim()),
-    trustNote: "Only 1.4.2 is T0-verified; the plugin MCP and hook contract of another version is unverified.",
-    receipt: "docs/verification/2026-10-19-agy-p1-t0.md" },
+    trustNote: "Only 1.4.2 and 1.4.7 are T0-verified; the plugin MCP and hook contract of another version is unverified.",
+    receipt: "docs/verification/2026-10-26-agy-1.4.7.md" },
   qwen: { label: "Qwen Code", verified: ["0.25.0", "0.26.0"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
     parse: out => plain(out.trim()),
     trustNote: "Native ACP identity and mode ids have dated receipts; 0.26.0 permission callbacks were checked without inference. Another version may change those contracts.",
@@ -64,14 +69,14 @@ export const COMPAT = {
     receipt: "docs/verification/2026-10-25-qwen-dual-output-t0.md" },
 } as const satisfies Record<string, CompatPolicy>;
 export type CompatId = keyof typeof COMPAT;
-type CommandConfig = { codex_bin: string; jcode_cmd: string[]; qwen_cmd: string[] };
+type CommandConfig = { codex_bin: string; jcode_cmd: string[]; qwen_cmd: string[]; pi?: { cmd: string[] } };
 /** The configured executables the native gates use; the rest probe their PATH default. */
 export function configuredCommands(config: CommandConfig): Partial<Record<CompatId, readonly string[]>> {
   const out: Partial<Record<CompatId, readonly string[]>> = {};
   for (const [id, policy] of Object.entries(COMPAT) as [CompatId, CompatPolicy][]) {
     if (!policy.config) continue;
-    const value = config[policy.config];
-    out[id] = typeof value === "string" ? [value] : value;
+    const value = policy.config === "pi.cmd" ? config.pi?.cmd : config[policy.config];
+    if (value !== undefined) out[id] = typeof value === "string" ? [value] : value;
   }
   return out;
 }

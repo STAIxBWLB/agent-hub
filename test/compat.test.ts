@@ -297,3 +297,34 @@ test("the compat watch covers every COMPAT source and renders ahead, unknown and
   expect(unknown.code).toBe(3);
   expect(unknown.report).toContain("latest unknown, unknown");
 });
+
+test("every COMPAT entry names a receipt that exists and has a watcher source, so a new entry cannot land without either (#843)", async () => {
+  const { SOURCES } = await import("../scripts/agent-compat-watch.ts");
+  const { existsSync } = await import("node:fs");
+  const ids = Object.keys(COMPAT) as CompatId[];
+  expect(ids).toContain("pi"); // #847 added it; the receipt pointers and the watcher must cover it like every other entry
+  for (const id of ids) {
+    expect(SOURCES[id], `${id} has no watcher source`).toBeDefined();
+    const receipt = COMPAT[id].receipt;
+    expect(typeof receipt, `${id} has no receipt`).toBe("string");
+    expect(receipt.startsWith("docs/verification/") && receipt.endsWith(".md"), `${id} receipt ${receipt}`).toBe(true);
+    expect(existsSync(join(import.meta.dir, "..", receipt)), `${id} receipt ${receipt} does not exist`).toBe(true);
+  }
+  // The receipt to repeat is the newest one for each of the three #843 AC5 CLIs.
+  expect(COMPAT.jcode.receipt).toBe("docs/verification/2026-10-26-jcode-0.99.1.md");
+  expect(COMPAT.agy.receipt).toBe("docs/verification/2026-10-26-agy-1.4.7.md");
+  expect(COMPAT.pi.receipt).toBe("docs/verification/2026-10-26-pi-140-compat.md");
+});
+
+test("Pi 1.4.0 has an exact receipt gate; other versions need the person's trust (#843 AC2)", () => {
+  expect(assessVersion("pi", "1.4.0", [])).toEqual({ ok: true, state: "verified", version: "1.4.0" });
+  expect(COMPAT.pi.gate).toBe("contract");
+  expect(COMPAT.pi).not.toHaveProperty("line");
+  expect(COMPAT.pi.parse("1.4.0\n")).toBe("1.4.0");
+  for (const version of ["1.4.1", "1.5.0", "1.4.0-rc.1"]) {
+    const verdict = assessVersion("pi", version, []);
+    expect(verdict).toMatchObject({ ok: false, state: "refused" });
+    if (!verdict.ok) expect(verdict.reason).toContain(`ahub agents trust pi ${version}`);
+    expect(assessVersion("pi", version, [{ id: "pi", version, at: 1 }])).toMatchObject({ ok: true, state: "trusted" });
+  }
+});

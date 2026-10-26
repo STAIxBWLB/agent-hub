@@ -28,6 +28,7 @@ function fakePi(dir: string): string {
   writeFileSync(file, `import { createInterface } from "node:readline";
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+if (process.argv.includes("--version")) { console.log("1.4.0"); process.exit(0); }
 const dir = process.argv[process.argv.indexOf("--session-dir") + 1];
 mkdirSync(dir, { recursive: true });
 writeFileSync(join(dir, "model-descriptors.json"), process.env.AGENTHUB_PI_MODELS ?? "[]");
@@ -41,7 +42,21 @@ createInterface({ input: process.stdin }).on("line", (line) => { const m = JSON.
   return file;
 }
 
+function startupExitPi(code = 0): string {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-pi-startup-exit-")), file = join(dir, "pi.ts");
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(file, `if (process.argv.includes("--version")) { console.log("1.4.0"); process.exit(0); }\nprocess.exit(${code});\n`);
+  return file;
+}
+
+function requireFakePiCommand(config: typeof DEFAULT_CONFIG): void {
+  if (config.pi.enabled && (config.pi.cmd[0] !== process.execPath || !config.pi.cmd[1] || config.pi.cmd[1].startsWith("-"))) {
+    throw new Error("enabled Pi daemon fixtures must use a versioned fake script command");
+  }
+}
+
 async function hub(config = DEFAULT_CONFIG, unattended = false, extra: { repo?: string; boundedTools?: DaemonOptions["boundedTools"] } = {}) {
+  requireFakePiCommand(config);
   const stateDir = mkdtempSync(join(tmpdir(), "agenthub-pi-daemon-"));
   if (extra.repo) {
     for (const args of [["init", "-q"], ["remote", "add", "origin", `https://github.com/${extra.repo}.git`]]) {
@@ -288,6 +303,7 @@ async function crashedHub(piConfig: Partial<typeof DEFAULT_CONFIG.pi>, session: 
   // What a run that died left behind: a session record of another instance, with Pi on that session file.
   writeFileSync(join(stateDir, "sessions.json"), JSON.stringify({ instanceId: "crashed", at: Date.now(), peers: [...extra, { peer: "pi", meta: { launch: { kind: "pi", ...launch }, ...(sessionFile ? { sessionFile } : {}) } }] }));
   const config = { ...DEFAULT_CONFIG, recovery, peers, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")], ...piConfig }, memory: { ...DEFAULT_CONFIG.memory, enabled: false } };
+  requireFakePiCommand(config);
   const daemon = await startDaemon({ boundedTools: fakeSpecTools(), cwd: stateDir, permissionTimeoutMs: 20, projectId: "pi-project", instanceId: `pi-instance-${Math.random()}`, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, config });
   cleanup.push(() => daemon.stop());
   const console_ = await ControlClient.connect(stateDir, { role: "console" });
@@ -360,7 +376,7 @@ test("after a crash with no Pi session recorded there is no way back to offer; a
   const none = await until((await crashedHub({ auto_start: true }, () => undefined)).crash);
   expect(none).toContain("pi: no session file was recorded; start it again with ahub pi");
   expect(none).toContain("pi.auto_start started a fresh session");
-  const broken = await until((await crashedHub({ auto_start: true, cmd: [process.execPath, "-e", "process.exit(1)"] }, () => undefined)).crash);
+  const broken = await until((await crashedHub({ auto_start: true, cmd: [process.execPath, startupExitPi(1)] }, () => undefined)).crash);
   expect(broken.some((l) => l.startsWith("pi.auto_start could not start Pi either ("))).toBe(true);
 });
 
@@ -596,7 +612,7 @@ test("pi.auto_start does not replace an idle-exit session whose persisted histor
 });
 
 test("pi.auto_start reports a startup exit once and does not retry it (#255)", async () => {
-  const config = { ...DEFAULT_CONFIG, peers: HEADLESS_PI, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true, cmd: [process.execPath, "-e", "process.exit(0)"] } };
+  const config = { ...DEFAULT_CONFIG, peers: HEADLESS_PI, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true, cmd: [process.execPath, startupExitPi()] } };
   const { stateDir, daemon } = await hub(config);
   for (let i = 0; i < 200 && !readFileSync(join(stateDir, "hub.log"), "utf8").includes("startup failed;"); i++) await Bun.sleep(5);
   const log = readFileSync(join(stateDir, "hub.log"), "utf8");
@@ -753,7 +769,7 @@ for (const phase of ["startup", "active"] as const) {
   test(`Pi ${phase} failure keeps inspection guidance with auto_start off (#255)`, async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-auto-off-order-")), trigger = join(dir, "exit-now");
     const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: false,
-      cmd: phase === "startup" ? [process.execPath, "-e", "process.exit(0)"] :
+      cmd: phase === "startup" ? [process.execPath, startupExitPi()] :
         [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), "--exit-trigger", trigger, "--exit-code", "0"] } };
     const { stateDir, daemon, console_ } = await hub(config);
     const result = await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } });
@@ -1092,7 +1108,7 @@ test("a claimed headless owner cannot obtain or consume a person's idle TUI shel
 }, 30_000);
 
 test.skipIf(process.platform !== "darwin")("hub stop cancels and settles a claimed TUI person's running sandbox command", async () => {
-  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true } };
+  const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")] } };
   const h = await hub(config);
   const launch = (await h.console_.request({ t: "start", peer: "pi", args: { mode: "tui" } })).launch;
   const owner = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdout: "ignore", stderr: "ignore" });
@@ -1273,7 +1289,7 @@ test("Pi replacement refuses missing owner, peer authorization and unsettled too
   try { db.query("INSERT INTO pi_tool_receipts(session,call_id,fingerprint,state) VALUES(?,?,?,'pending')").run("lost-session", "uncertain", "test"); } finally { db.close(); }
   expect((await h.replace()).error).toContain("receipts");
   expect(h.daemon.bus.peers.get("pi")).toBe(h.previous);
-  const empty = await hub({ ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true } });
+  const empty = await hub({ ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts")] } });
   expect((await empty.console_.request({ t: "start", peer: "pi", args: { replaceSession: true, sessionFile: h.selected } })).error).toContain("existing offline");
 });
 

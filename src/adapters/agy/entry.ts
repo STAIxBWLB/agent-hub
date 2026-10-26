@@ -37,7 +37,7 @@ function runAgyTui(argv: string[], cwd: string, env: NodeJS.ProcessEnv): Promise
 /** #607: agy 1.4.x attaches the plugin MCP server at the first prompt, so the hub tools are listed from the second turn. */
 export const AGY_LAUNCH_NOTICE = "Antigravity: pull-only TUI; native permissions unmanaged, no hub sandbox; hub tools appear from the second turn (send any first prompt, then ask for hub work)";
 
-/** agy auto-updates, so the 1.4.x line launches; only 1.4.2 has a T0 receipt and other patches warn (#589). */
+/** agy auto-updates, so the 1.4.x line launches; only 1.4.2 and 1.4.7 have a T0 receipt and other patches warn (#589). */
 export function agyVersionGate(stdout: string): { ok: true; message?: string } | { ok: false; message: string } {
   // #691: the verified versions, the compatible line and the person's trust live in compat.ts.
   const verdict = assessVersion("agy", COMPAT.agy.parse(stdout));
