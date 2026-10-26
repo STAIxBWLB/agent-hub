@@ -14,7 +14,8 @@ function fixture() {
   const project = realPath(mkdtempSync(join(tmpdir(), "ahub-task-shell-proof-"))), root = join(project, ".worktrees", "worker");
   const hostBin = realPath(mkdtempSync(join(tmpdir(), "ahub-task-shell-host-")));
   for (const name of ["bun", "gh"]) writeFileSync(join(hostBin, name), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
-  const env = hostShellEnvironment({ HOME: hostBin, PATH: `${hostBin}:${process.env.PATH ?? "/usr/bin:/bin"}` });
+  const globalConfig = join(hostBin, "gitconfig"); writeFileSync(globalConfig, "");
+  const env = hostShellEnvironment({ HOME: hostBin, PATH: `${hostBin}:${process.env.PATH ?? "/usr/bin:/bin"}`, GIT_CONFIG_SYSTEM: "/dev/null", GIT_CONFIG_GLOBAL: globalConfig });
   const git = (...args: string[]) => {
     const out = hubGitSync(["-C", project, ...args], { env, encoding: "utf8", timeout: 1000 });
     expect(out.status, out.stderr).toBe(0); return out.stdout.trim();
@@ -88,6 +89,16 @@ test("#845 privileged add/commit refuse configured filters, external drivers and
     const proof = proveTaskShell("git commit -m fixture", f.options, () => true)!;
     expect(proof.requiresSandbox).toBe(false);
     for (const setting of ["core.hooksPath=/dev/null", "core.fsmonitor=false", "commit.gpgSign=false", "push.gpgSign=false", "gc.auto=0", "maintenance.auto=false"]) expect(proof.argv).toContain(setting);
+  } finally { f.close(); }
+});
+
+test("#845 a global Git LFS filter keeps push, gh and code grants while add/commit ask", () => {
+  const f = fixture();
+  try {
+    for (const [key, value] of [["clean", "git-lfs clean -- %f"], ["smudge", "git-lfs smudge -- %f"], ["process", "git-lfs filter-process"]]) f.git("config", "--global", `filter.lfs.${key}`, value!);
+    expect(f.git("config", "--show-scope", "--get", "filter.lfs.clean")).toBe("global\tgit-lfs clean -- %f");
+    for (const command of ["git push origin task/worker", "git push -u origin task/worker", "gh pr view task/worker", "gh pr checks task/worker", "gh pr create --base main --head task/worker --title fixture --body fixture", "bun run build", "scripts/check.sh --changed"]) expect(proveTaskShell(command, f.options, () => true), command).toBeDefined();
+    for (const command of ["git add test/example.test.ts", "git commit -m fixture"]) expect(proveTaskShell(command, f.options, () => true), command).toBeUndefined();
   } finally { f.close(); }
 });
 

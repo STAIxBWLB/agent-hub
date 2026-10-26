@@ -6,25 +6,32 @@ import { join, resolve } from "node:path";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
-import { hubGitSync } from "../src/hub/git.ts";
+import { hubGitEnv, hubGitSync } from "../src/hub/git.ts";
+import { hostExecutable } from "../src/hub/host-executable.ts";
+import { shellQuote } from "../src/cli/shell-quote.ts";
 import { realPath } from "../src/hub/project.ts";
 import { sandboxAvailable } from "../src/local/sandbox.ts";
 import { completeJsonLines } from "./fakes/jsonl.ts";
 
 async function until(condition: () => boolean, leg: string) { for (let n = 0; n < 300 && !condition(); n++) await Bun.sleep(5); expect(condition(), leg).toBe(true); }
-async function fixture(taskBound = false, model?: string, shell?: { origin: true; actionEnabled: boolean; readCanonical?: boolean; defaultBranch?: string }) {
+async function fixture(taskBound = false, model?: string, shell?: { origin: true; actionEnabled: boolean; readCanonical?: boolean; defaultBranch?: string; globalLfs?: boolean }) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-claude-impl-daemon-"))), peer = "claude-worker", tree = join(root, ".worktrees", peer), stateDir = join(root, ".agenthub", "state"), log = join(root, "calls.jsonl"), home = join(root, "home"), bin = join(root, "bin");
+  const hostBin = realPath(mkdtempSync(join(tmpdir(), "ahub-claude-impl-git-")));
   const oldEnv = { HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, PATH: process.env.PATH, AMEM_HOME: process.env.AMEM_HOME, AGENTHUB_HOME: process.env.AGENTHUB_HOME };
-  mkdirSync(stateDir, { recursive: true }); mkdirSync(home); mkdirSync(bin);
-  for (const args of [["init", "-q"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], ["worktree", "add", "-qb", "worker", tree]]) expect(hubGitSync(["-C", root, ...args], { encoding: "utf8" }).status).toBe(0);
-  for (const args of [["update-ref", `refs/remotes/origin/${shell?.defaultBranch ?? "main"}`, "HEAD"], ["symbolic-ref", "refs/remotes/origin/HEAD", `refs/remotes/origin/${shell?.defaultBranch ?? "main"}`]]) expect(hubGitSync(["-C", root, ...args], { encoding: "utf8" }).status).toBe(0);
-  expect(hubGitSync(["-C", root, "remote", "add", "origin", "https://github.com/fixture/repo.git"], { encoding: "utf8" }).status).toBe(0);
-  writeFileSync(join(tree, "source.ts"), "fixture source\n");
-  writeFileSync(join(bin, "claude"), `#!${process.execPath}\nif(process.argv.includes("--version")){console.log("2.1.309 (Claude Code)");process.exit(0)}\nprocess.argv=[process.argv[0],${JSON.stringify(resolve(import.meta.dir, "fakes/fake-claude-implementer.ts"))},${JSON.stringify(log)},"hang",...process.argv.slice(2)];\nawait import(${JSON.stringify(resolve(import.meta.dir, "fakes/fake-claude-implementer.ts"))});\n`, { mode: 0o700 });
-  process.env.HOME = home; process.env.AMEM_HOME = join(home, "memory"); process.env.AGENTHUB_HOME = join(home, "hub"); process.env.CLAUDE_CONFIG_DIR = join(home, ".claude"); process.env.PATH = `${bin}:${oldEnv.PATH}`;
-  writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify({ instances: { [peer]: { kind: "claude", roles: ["implementer"], start_mode: "headless", worktree: `.worktrees/${peer}`, permission_mode: "ask-when-needed", ...(model ? { model } : {}) } }, roles: { [peer]: ["implementer"] }, roster: { [peer]: true }, memory: { enabled: false, native: false }, inference: { enabled: false }, snapshots: { enabled: false }, mlx: { enabled: false }, pi: { enabled: false, auto_start: false }, task_sweep: { enabled: false }, batch_ms: 0 }));
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined; const clients: ControlClient[] = [];
   try {
+    mkdirSync(stateDir, { recursive: true }); mkdirSync(home); mkdirSync(bin);
+    const actualGit = hostExecutable("git", root, oldEnv.PATH ?? "/usr/bin:/bin"), globalConfig = join(home, ".gitconfig");
+    writeFileSync(globalConfig, shell?.globalLfs ? '[filter "lfs"]\n clean = git-lfs clean -- %f\n smudge = git-lfs smudge -- %f\n process = git-lfs filter-process\n required = true\n' : "");
+    writeFileSync(join(hostBin, "git"), `#!/bin/sh\nexport GIT_CONFIG_SYSTEM=/dev/null\nexport GIT_CONFIG_GLOBAL=${shellQuote(globalConfig)}\nexec ${shellQuote(actualGit)} "$@"\n`, { mode: 0o700 });
+    const gitEnv = hubGitEnv({ ...process.env, HOME: home, PATH: `${hostBin}:${oldEnv.PATH ?? "/usr/bin:/bin"}` }, { repositoryIsolation: true });
+    for (const args of [["init", "-q"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], ["worktree", "add", "-qb", "worker", tree]]) expect(hubGitSync(["-C", root, ...args], { encoding: "utf8", env: gitEnv }).status).toBe(0);
+    for (const args of [["update-ref", `refs/remotes/origin/${shell?.defaultBranch ?? "main"}`, "HEAD"], ["symbolic-ref", "refs/remotes/origin/HEAD", `refs/remotes/origin/${shell?.defaultBranch ?? "main"}`]]) expect(hubGitSync(["-C", root, ...args], { encoding: "utf8", env: gitEnv }).status).toBe(0);
+    expect(hubGitSync(["-C", root, "remote", "add", "origin", "https://github.com/fixture/repo.git"], { encoding: "utf8", env: gitEnv }).status).toBe(0);
+    writeFileSync(join(tree, "source.ts"), "fixture source\n");
+    writeFileSync(join(bin, "claude"), `#!${process.execPath}\nif(process.argv.includes("--version")){console.log("2.1.309 (Claude Code)");process.exit(0)}\nprocess.argv=[process.argv[0],${JSON.stringify(resolve(import.meta.dir, "fakes/fake-claude-implementer.ts"))},${JSON.stringify(log)},"hang",...process.argv.slice(2)];\nawait import(${JSON.stringify(resolve(import.meta.dir, "fakes/fake-claude-implementer.ts"))});\n`, { mode: 0o700 });
+    process.env.HOME = home; process.env.AMEM_HOME = join(home, "memory"); process.env.AGENTHUB_HOME = join(home, "hub"); process.env.CLAUDE_CONFIG_DIR = join(home, ".claude"); process.env.PATH = `${bin}:${hostBin}:${oldEnv.PATH ?? "/usr/bin:/bin"}`;
+    writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify({ instances: { [peer]: { kind: "claude", roles: ["implementer"], start_mode: "headless", worktree: `.worktrees/${peer}`, permission_mode: "ask-when-needed", ...(model ? { model } : {}) } }, roles: { [peer]: ["implementer"] }, roster: { [peer]: true }, memory: { enabled: false, native: false }, inference: { enabled: false }, snapshots: { enabled: false }, mlx: { enabled: false }, pi: { enabled: false, auto_start: false }, task_sweep: { enabled: false }, batch_ms: 0 }));
     const config = loadConfig(root);
     if (shell) config.action_policy = { enabled: shell.actionEnabled, always_ask: ["publish", "destroy", "install", "external-write"], budgets: { publish: 1, destroy: 3, install: 2, "external-write": 5 } };
     if (shell?.readCanonical) config.local = { ...config.local, read_allow: [root] };
@@ -46,8 +53,8 @@ async function fixture(taskBound = false, model?: string, shell?: { origin: true
     const call = completeJsonLines(readFileSync(log, "utf8"))[0] as any, session = call.args[call.args.indexOf("--session-id") + 1];
     const tools = await ControlClient.connect(stateDir, { role: "tools", peer, launchId: call.launchId, projectRoot: root }); clients.push(tools);
     const connect = async (launchId: string) => { const client = await ControlClient.connect(stateDir, { role: "tools", peer, launchId, projectRoot: root }); clients.push(client); return client; };
-    return { taskId, root, peer, tree, stateDir, log, home, daemon, console_, tools, call, session, instanceId, connect, async close() { for (const client of clients) client.close(); await daemon!.stop(); for (const [key, value] of Object.entries(oldEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } rmSync(root, { recursive: true, force: true }); } };
-  } catch (error) { for (const client of clients) client.close(); await daemon?.stop(); for (const [key, value] of Object.entries(oldEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } rmSync(root, { recursive: true, force: true }); throw error; }
+    return { taskId, root, peer, tree, stateDir, log, home, daemon, console_, tools, call, session, instanceId, connect, async close() { for (const client of clients) client.close(); await daemon!.stop(); for (const [key, value] of Object.entries(oldEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } rmSync(root, { recursive: true, force: true }); rmSync(hostBin, { recursive: true, force: true }); } };
+  } catch (error) { for (const client of clients) client.close(); await daemon?.stop(); for (const [key, value] of Object.entries(oldEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } rmSync(root, { recursive: true, force: true }); rmSync(hostBin, { recursive: true, force: true }); throw error; }
 }
 
 async function shellTask(f: Awaited<ReturnType<typeof fixture>>, bind = false) {
@@ -87,7 +94,7 @@ test.skipIf(!sandboxAvailable())("#845 current task Bash grants use a single-use
 }, 20_000);
 
 test("#845 branch changes invalidate outstanding tickets and never rebind the task", async () => {
-  const f = await fixture(true, undefined, { origin: true, actionEnabled: false });
+  const f = await fixture(true, undefined, { origin: true, actionEnabled: false, globalLfs: true });
   try {
     await shellTask(f);
     const allowed = await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "git push origin worker" }, wrapperProtocol: 1 });

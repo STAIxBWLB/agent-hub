@@ -125,10 +125,10 @@ export function proveTaskShell(command: unknown, options: TaskShellProofOptions,
     }
     if (form.program === "git" || form.program === "gh") {
       const git = gitReader(root, env, current, project);
-      {
-        // No privileged Git/gh operation may turn model-written attributes or lazy object reads into helper execution.
-        if (git(["config", "--get-regexp", "^(filter\\..*\\.(clean|smudge|process)|diff\\..*\\.(command|textconv)|include\\.path|includeif\\..*\\.path|extensions\\.partialclone|remote\\..*\\.promisor)$"], true).trim()) return;
-      }
+      // Includes can change config between proof and execution; partial clones can trigger implicit helper/network activity.
+      if (git(["config", "--get-regexp", "^(include\\.path|includeif\\..*\\.path|extensions\\.partialclone|remote\\..*\\.promisor)$"], true).trim()) return;
+      // Only add/commit can run attribute-selected clean/smudge or content-diff drivers. Push/gh must keep working with a global LFS install.
+      if ((form.kind === "add" || form.kind === "commit") && git(["config", "--get-regexp", "^(filter\\..*\\.(clean|smudge|process)|diff\\..*\\.(command|textconv))$"], true).trim()) return;
       if (form.kind === "add") {
         const selected = git(["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ...form.paths]).split("\0").filter(Boolean);
         if (selected.length > 256) return;
