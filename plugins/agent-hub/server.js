@@ -5844,26 +5844,44 @@ var init_path_policy = __esm(() => {
 
 // src/local/deny.ts
 import { basename as basename4, dirname as dirname8 } from "path";
-function hubWriteRegexes(root, gitDirs = [], moduleGit) {
+function hubWriteRegexes(root, gitDirs = [], moduleGit = [], worktreesRoot) {
   const git = hfsFoldedName(".git");
   const re = (s) => `(regex ${sbplString(s)})`;
   const external = gitDirs.flatMap((d) => [
     `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${re(`^.*/(${hfsFoldedName("config")}|${hfsFoldedName("hooks")})$`)})`,
+    `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
     `(subpath ${sbplString(`${d}/hooks`)})`,
     `(require-all (subpath ${sbplString(d)}) ${re(`^.*/${hfsFoldedName("commondir")}$`)})`
   ]);
-  const modules = moduleGit ? [
-    `(require-all ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?(refs|logs)/`)}))`,
-    `(require-all ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?(refs|logs)/`)}))`,
-    ...moduleGit.entries.map((d) => re(`^${sbplEscape(dirname8(d))}/${hfsFoldedName(basename4(d))}$`))
-  ] : [];
+  const modules = moduleGit.flatMap((tree) => [
+    `(require-all ${re(`^${sbplEscape(tree.root)}/`)} ${re(`^.*/${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
+    `(require-all ${re(`^${sbplEscape(tree.root)}/`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
+    `(require-all ${re(`^${sbplEscape(tree.root)}/`)} ${re(`^.*/${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
+    ...tree.entries.map((d) => `(require-all ${re(`^${sbplEscape(dirname8(d))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename4(d))}$`)})`)
+  ]);
+  const siblings = worktreesRoot ? (() => {
+    const w = sbplEscape(worktreesRoot), notRefs = `(require-not ${re(`^${w}/[^/]+/modules/(.*/)?(refs|logs)/`)})`;
+    return [
+      `(require-all ${re(`^${sbplEscape(dirname8(worktreesRoot))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename4(worktreesRoot))}$`)})`,
+      re(`^${w}/[^/]+$`),
+      `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config")}$`)})`,
+      `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
+      `(require-all ${re(`^${w}/[^/]+/`)} ${re(`^.*/${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${w}/[^/]+/(modules|refs|logs)/`)}))`,
+      `(require-all ${re(`^${w}/[^/]+/modules/`)} ${re(`^.*/${hfsFoldedName("config")}$`)} ${notRefs})`,
+      `(require-all ${re(`^${w}/[^/]+/modules/`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")} ${notRefs})`,
+      `(require-all ${re(`^${w}/[^/]+/modules/`)} ${re(`^.*/${hfsFoldedName("hooks")}(/|$)`)} ${notRefs})`,
+      `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("modules")}$`)})`
+    ];
+  })() : [];
   return [
     `(require-all (subpath ${sbplString(root)}) ${re(`^.*/${hfsFoldedName(".agenthub")}(/|$)`)})`,
     re(`^.*/${git}$`),
     re(`^.*/${git}/${hfsFoldedName("config")}$`),
+    `(require-all ${re(`^.*/${git}/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
     re(`^.*/${git}/${hfsFoldedName("hooks")}(/|$)`),
     `(require-all ${re(`^.*/${git}/.*$`)} ${re(`^.*/${hfsFoldedName("commondir")}$`)})`,
     ...modules,
+    ...siblings,
     ...external
   ];
 }
@@ -5878,12 +5896,13 @@ function denyRegexes(root, extra = [], withNames = true) {
     ...extra.filter(Boolean).map((e) => `^${sbplEscape(root)}/.*${sbplEscape(e)}`)
   ].map((re) => `(regex ${sbplString(re)})`);
 }
-var sbplEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), sbplString = (s) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`, HFS_IGNORABLE_POINTS, HFS_IGNORABLE, hfsFoldedName = (name) => `${HFS_IGNORABLE}*${[...name].map((c) => sbplEscape(c)).join(`${HFS_IGNORABLE}*`)}${HFS_IGNORABLE}*`;
+var sbplEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), sbplString = (s) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`, HFS_IGNORABLE_POINTS, HFS_IGNORABLE, hfsFoldedName = (name) => `${HFS_IGNORABLE}*${[...name].map((c) => sbplEscape(c)).join(`${HFS_IGNORABLE}*`)}${HFS_IGNORABLE}*`, CONFIG_WORKTREE_NAME;
 var init_deny = __esm(() => {
   init_platform();
   init_platform();
   HFS_IGNORABLE_POINTS = ["\u200C", "\u200D", "\u200E", "\u200F", "\u202A", "\u202B", "\u202C", "\u202D", "\u202E", "\u206A", "\u206B", "\u206C", "\u206D", "\u206E", "\u206F", "\uFEFF"];
   HFS_IGNORABLE = `(${HFS_IGNORABLE_POINTS.join("|")})`;
+  CONFIG_WORKTREE_NAME = [`^.*/${hfsFoldedName("config")}\\.[^/]*$`, `^.*/[^/]*${hfsFoldedName("worktree")}$`];
 });
 
 // src/local/sandbox.ts
@@ -5907,39 +5926,59 @@ function externalGitDirs(root) {
 `).map((d) => resolve9(root, d));
   return [...new Set(dirs)].filter((d) => !d.startsWith(`${root}/`));
 }
-function moduleGitDirs(root) {
+function worktreesRoot(root) {
   const out = memoryGitSync(["-C", root, "rev-parse", "--git-common-dir"], { encoding: "utf8" });
+  return out.status === 0 && out.stdout.trim() ? join12(resolve9(root, out.stdout.trim()), "worktrees") : undefined;
+}
+function moduleGitDirs(root) {
+  const out = memoryGitSync(["-C", root, "rev-parse", "--git-common-dir", "--absolute-git-dir"], { encoding: "utf8" });
   if (out.status !== 0)
-    return;
-  const modulesRoot = join12(resolve9(root, out.stdout.trim()), "modules");
-  const dirs = [];
-  const walk = (dir, depth) => {
-    if (depth > 8)
-      return;
-    let entries;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
+    return [];
+  const [commonRaw, ownRaw] = out.stdout.trim().split(`
+`);
+  if (!commonRaw || !ownRaw)
+    return [];
+  const common = resolve9(root, commonRaw), own = resolve9(root, ownRaw);
+  const roots = new Set([join12(common, "modules"), join12(own, "modules")]);
+  try {
+    for (const e of readdirSync(join12(common, "worktrees"), { withFileTypes: true })) {
+      if (!e.isDirectory())
+        continue;
+      const modules = join12(common, "worktrees", e.name, "modules");
+      if (existsSync6(modules))
+        roots.add(modules);
     }
-    const names = new Set(entries.map((e) => e.name));
-    if (names.has("HEAD") && names.has("config")) {
-      dirs.push(dir);
-      const nested = join12(dir, "modules");
-      if (names.has("modules"))
-        walk(nested, depth + 1);
-      return;
-    }
-    for (const e of entries)
-      if (e.isDirectory())
-        walk(join12(dir, e.name), depth + 1);
-  };
-  walk(modulesRoot, 0);
-  const entries = new Set([modulesRoot]);
-  for (const d of dirs)
-    for (let p = d;p.length > modulesRoot.length; p = dirname9(p))
-      entries.add(p);
-  return { root: modulesRoot, entries: [...entries] };
+  } catch {}
+  return [...roots].map((modulesRoot) => {
+    const dirs = [];
+    const walk = (dir, depth) => {
+      if (depth > 8)
+        return;
+      let entries;
+      try {
+        entries = readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      const names = new Set(entries.map((e) => e.name));
+      if (names.has("HEAD") && names.has("config")) {
+        dirs.push(dir);
+        const nested = join12(dir, "modules");
+        if (names.has("modules"))
+          walk(nested, depth + 1);
+        return;
+      }
+      for (const e of entries)
+        if (e.isDirectory())
+          walk(join12(dir, e.name), depth + 1);
+    };
+    walk(modulesRoot, 0);
+    const entries = new Set([modulesRoot]);
+    for (const d of dirs)
+      for (let p = d;p.length > modulesRoot.length; p = dirname9(p))
+        entries.add(p);
+    return { root: modulesRoot, entries: [...entries] };
+  });
 }
 function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
   const home = homedir4();
@@ -5947,6 +5986,7 @@ function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
   const root = realPath(cwd);
   const gitDirs = externalGitDirs(root);
   const moduleGit = moduleGitDirs(root);
+  const worktrees = worktreesRoot(root);
   const creds = [".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube", ".docker", ".netrc", ".npmrc", ".omniroute", ".claude", ".codex", ".kimi-code", "Library/Keychains"];
   const dev = developerDir();
   const readable = [root, ...HOME_READABLE.map((p) => join12(home, p)), ...readAllow.map(inHome), ...gitDirs, ...dev ? [dev] : []];
@@ -5973,7 +6013,7 @@ function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
     ...start,
     "(deny file-write*)",
     ...readOnly.length ? ['(allow file-write* (literal "/dev/null"))'] : [`(allow file-write* (subpath ${q(root)}) (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`],
-    `(deny file-write* ${hubWriteRegexes(root, gitDirs, moduleGit).join(" ")})`,
+    `(deny file-write* ${hubWriteRegexes(root, gitDirs, moduleGit, worktrees).join(" ")})`,
     `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join12(home, c))})`).join(" ")})`,
     `(deny file-read* file-write* ${denyRegexes(root, deny).join(" ")})`,
     ...network ? [`(allow file-read* ${CA_BUNDLES.map((p) => `(literal ${q(p)})`).join(" ")} (regex ${q("/certifi/cacert\\.pem$")}))`, `(deny file-read* file-write* ${places})`] : []
