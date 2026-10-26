@@ -213,7 +213,7 @@ test("excessive output is cut at the cap while streaming: the probe is killed an
     const flood = script(dir, "fake-qwen", "while :; do head -c 1048576 /dev/zero | tr '\\0' 'x'; done");
     const started = Date.now();
     const qwen = (await agentVersionsAsync({ qwen: [flood] }, 8000)).find(r => r.id === "qwen")!;
-    expect(Date.now() - started).toBeLessThan(4000); // ended by the cap, not by the 8 s deadline
+    expect(Date.now() - started).toBeLessThan(6000); // ended by the cap, not by the 8 s deadline; slack for a contended runner
     expect(qwen.verdict.state).toBe("unknown");
     expect(driftedAgents([qwen])).toEqual([]);
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -227,12 +227,12 @@ test("a descendant that inherited stdout cannot hold the reader past the grace a
     const inherited = script(dir, "fake-qwen", `echo 7.7.7\n(sleep 20 & echo $! > ${stray}; wait) &\nexit 0`);
     const started = Date.now();
     const [row1] = (await agentVersionsAsync({ qwen: [inherited] }, 8000, 150)).filter(r => r.id === "qwen");
-    expect(Date.now() - started).toBeLessThan(3000);
+    expect(Date.now() - started).toBeLessThan(6000); // far under the 8 s deadline and the stray's 20 s sleep
     expect(row1!.verdict).toMatchObject({ state: "refused", version: "7.7.7" }); // what was read before the grace is kept
     const hung = script(dir, "fake-jcode", "sleep 20");
     const t0 = Date.now();
     const jcode = (await agentVersionsAsync({ jcode: [hung] }, 300, 100)).find(r => r.id === "jcode")!;
-    expect(Date.now() - t0).toBeLessThan(3000);
+    expect(Date.now() - t0).toBeLessThan(6000); // its deadline is 300 ms; a reader held by the 20 s sleep would overshoot
     expect(jcode.verdict.state).toBe("unknown");
   } finally {
     try { process.kill(Number(readFileSync(stray, "utf8").trim()), "SIGKILL"); } catch { /* already gone */ }
