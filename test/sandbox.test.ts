@@ -351,21 +351,32 @@ test.skipIf(!sandboxAvailable())("a linked worktree's submodule git dir (<common
     git(["-C", dir, "add", "f.txt"]);
     expect(git(["-C", dir, ...ident, "commit", "-qm", "one"]).exitCode).toBe(0);
   };
-  const subSrc = join(base, "sub-src"), main = join(base, "main"), cwd = join(base, "wt");
+  const subSrc = join(base, "sub-src"), main = join(base, "main"), cwd = join(base, "wt"), sibling = join(base, "wt-sibling");
   initRepo(subSrc); initRepo(main);
   expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subSrc, "sub"]).exitCode).toBe(0);
   expect(git(["-C", main, ...ident, "commit", "-qm", "with sub"]).exitCode).toBe(0);
   expect(git(["-C", main, "worktree", "add", cwd]).exitCode).toBe(0);   // outside the sandbox
+  expect(git(["-C", main, "worktree", "add", sibling]).exitCode).toBe(0);
   // The submodule of the LINKED worktree keeps its git dir under that worktree's own git dir, not under <common>/modules.
   expect(git(["-C", cwd, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]).exitCode).toBe(0);
+  // A SIBLING worktree's submodule git dir is in the common dir the sandbox can write too, so it is protected as well. Only the sibling updates its submodule.
+  expect(git(["-C", sibling, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]).exitCode).toBe(0);
   const common = join(main, ".git"), wtGit = join(common, "worktrees", "wt"), subGit = join(wtGit, "modules", "sub");
+  const sibGit = join(common, "worktrees", "wt-sibling", "modules", "sub");
   expect(existsSync(join(subGit, "config"))).toBe(true);
+  expect(existsSync(join(sibGit, "config"))).toBe(true);
+  const sibConfig = readFileSync(join(sibGit, "config"), "utf8");
   const subConfig = readFileSync(join(subGit, "config"), "utf8");
-  rmSync(join(subGit, "hooks"), { recursive: true, force: true });   // the create-when-absent leg
+  rmSync(join(subGit, "hooks"), { recursive: true, force: true });   // the create-when-absent leg, for this worktree's submodule and the sibling's
+  rmSync(join(sibGit, "hooks"), { recursive: true, force: true });
   const out = await sandboxedExec(["/bin/sh", "-c", [
     `(echo '[core]' >> '${subGit}/config') 2>/dev/null && echo WROTE-WTSUB-CONFIG || echo blocked-wtsub-config`,
     `(mkdir '${subGit}/hooks' && echo x > '${subGit}/hooks/pre-commit') 2>/dev/null && echo WROTE-WTSUB-HOOK || echo blocked-wtsub-hook`,
     `(echo x > '${wtGit}/config.worktree') 2>/dev/null && echo WROTE-CONFIG-WORKTREE || echo blocked-config-worktree`,
+    `(echo x > .git-config-probe && echo x > '${common}/config.worktree') 2>/dev/null && echo WROTE-COMMON-CONFIG-WORKTREE || echo blocked-common-config-worktree`,
+    `(echo '[core]' >> '${sibGit}/config') 2>/dev/null && echo WROTE-SIBLING-CONFIG || echo blocked-sibling-config`,
+    `(mkdir -p '${sibGit}/hooks' && echo x > '${sibGit}/hooks/pre-commit') 2>/dev/null && echo WROTE-SIBLING-HOOK || echo blocked-sibling-hook`,
+    `(mv '${sibGit}' '${sibGit}2') 2>/dev/null && echo WROTE-SIBLING-RENAME || echo blocked-sibling-rename`,
     // The directory entries above: the submodule git dir cannot be renamed away, replaced or recreated either.
     `(mv '${subGit}' '${wtGit}/modules/away') 2>/dev/null && echo WROTE-WTSUB-RENAME || echo blocked-wtsub-rename`,
     `(mv '${wtGit}/modules' '${wtGit}/m2') 2>/dev/null && echo WROTE-WTMODULES-RENAME || echo blocked-wtmodules-rename`,
@@ -376,11 +387,15 @@ test.skipIf(!sandboxAvailable())("a linked worktree's submodule git dir (<common
     "git -C sub tag config && echo tagged-config-in-sub",
     `git -C sub ${ident.join(" ")} commit -qm in-sub --allow-empty && echo committed-in-sub`,
   ].join("; ")], { cwd, profile: profile(cwd, false) });
-  for (const expected of ["blocked-wtsub-config", "blocked-wtsub-hook", "blocked-config-worktree", "blocked-wtsub-rename", "blocked-wtmodules-rename", "wrote-worktree-file", "branched-config", "branched-in-sub", "tagged-config-in-sub", "committed-in-sub"]) expect(out.output).toContain(expected);
-  for (const forbidden of ["WROTE-WTSUB-CONFIG", "WROTE-WTSUB-HOOK", "WROTE-CONFIG-WORKTREE", "WROTE-WTSUB-RENAME", "WROTE-WTMODULES-RENAME"]) expect(out.output).not.toContain(forbidden);
+  for (const expected of ["blocked-wtsub-config", "blocked-wtsub-hook", "blocked-config-worktree", "blocked-common-config-worktree", "blocked-sibling-config", "blocked-sibling-hook", "blocked-sibling-rename", "blocked-wtsub-rename", "blocked-wtmodules-rename", "wrote-worktree-file", "branched-config", "branched-in-sub", "tagged-config-in-sub", "committed-in-sub"]) expect(out.output).toContain(expected);
+  for (const forbidden of ["WROTE-WTSUB-CONFIG", "WROTE-WTSUB-HOOK", "WROTE-CONFIG-WORKTREE", "WROTE-COMMON-CONFIG-WORKTREE", "WROTE-SIBLING-CONFIG", "WROTE-SIBLING-HOOK", "WROTE-SIBLING-RENAME", "WROTE-WTSUB-RENAME", "WROTE-WTMODULES-RENAME"]) expect(out.output).not.toContain(forbidden);
   expect(readFileSync(join(subGit, "config"), "utf8")).toBe(subConfig);
   expect(existsSync(join(subGit, "hooks"))).toBe(false);
   expect(existsSync(join(wtGit, "config.worktree"))).toBe(false);
+  expect(existsSync(join(common, "config.worktree"))).toBe(false);
+  expect(readFileSync(join(sibGit, "config"), "utf8")).toBe(sibConfig);
+  expect(existsSync(join(sibGit, "hooks"))).toBe(false);
+  expect(existsSync(`${sibGit}2`)).toBe(false);
   expect(existsSync(join(wtGit, "modules", "away"))).toBe(false);
   expect(existsSync(join(wtGit, "m2"))).toBe(false);
 });
