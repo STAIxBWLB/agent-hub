@@ -100,3 +100,14 @@ test("a declared Jcode instance is a known roster peer, while an undeclared jcod
   expect(peerRosterConfig({ "jcode-local": true }, declared, catalog)).toEqual({ "jcode-local": true });
   expect(() => peerRosterConfig({ "jcode-local": true }, undefined, catalog)).toThrow("unsupported peer");
 });
+
+test("a Claude implementer's model in a tracked config file is ignored with a reason; only config.local.json grants it (#844)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-claude-model-")); cleanups.push(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(join(dir, ".agenthub"));
+  const declaration = { instances: { "claude-impl": { kind: "claude", roles: ["implementer"], start_mode: "headless", worktree: ".worktrees/claude-impl", permission_mode: "ask", model: "claude-sonnet-5-5" } } };
+  writeFileSync(join(dir, ".agenthub", "config.json"), JSON.stringify(declaration));
+  const tracked = readInstanceConfig(dir);
+  expect(tracked.instances).toBeUndefined();
+  expect(tracked.ignored.join("\n")).toContain("machine-local config.local.json");
+  // The positive leg, a trusted config.local.json granting the model, is covered end to end in test/claude-implementer-daemon.test.ts.
+});

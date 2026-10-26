@@ -259,6 +259,7 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
     ["cli.entry", declared(definition.cli, "entry")],
     ["cli.preview", declared(definition.cli, "preview")],
     ["cli.usage", declared(definition.cli, "usage")],
+    ["instances.modelSelect", declared(definition.instances, "modelSelect")], // #844: a fixed-builtin assumption, one validated model word per declared headless instance
   ];
   const field = restricted.find(([, present]) => present)?.[0];
   if (field) throw new Error(`${field} is restricted to fixed builtin adapter definitions`);

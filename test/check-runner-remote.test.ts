@@ -6,7 +6,8 @@ import { spawnSync } from "node:child_process";
 import { processTable } from "../src/hub/child-process.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
-import { ContainerRunner, RemoteRunner, remoteRunnerTransport, remoteRunnerConfig, remoteDockerArgs, remoteArchiveArgs, type ContainerCommand, type RunnerOptions } from "../src/hub/check-runner.ts";
+import { createHash } from "node:crypto";
+import { ContainerRunner, RemoteRunner, dependencyKey, dependencyManifest, dependencyVolume, KEEP_DEPENDENCY_VOLUMES, remoteRunnerTransport, remoteRunnerConfig, remoteDockerArgs, remoteArchiveArgs, type ContainerCommand, type RunnerOptions } from "../src/hub/check-runner.ts";
 const remote = { host: "fixture@runner.reserved.invalid", image: "registry.reserved.invalid/check@sha256:" + "a".repeat(64), root: "/reserved/check-root" };
 const cleanup: (() => unknown | Promise<unknown>)[] = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -23,20 +24,46 @@ async function fixture(options: Partial<RunnerOptions> = {}, failure?: string) {
   await mkdir(join(project, "node_modules")); await writeFile(join(project, "node_modules/mac-only.bin"), "DO_NOT_COPY_MAC_DEPS");
   const archives: { container: string; data: Buffer }[] = [];
   const active = new Map<string, Record<string, string>>();
+  // Fake Docker volumes: labels, a creation tick and whether the preparation marker was written into them.
+  const volumes = new Map<string, { labels: Record<string, string>; created: number; ready: boolean }>();
+  const mounts = new Map<string, string>();
+  let tick = 0;
+  const volumeOf = (args: string[]) => { const mount = args[args.indexOf("--mount") + 1]; return mount?.match(/src=([^,]+)/)?.[1]; };
   const command: ContainerCommand = async (args, opt) => {
     calls.push(args);
     if (failure === "ssh") throw Error(`${remote.host} ${remote.root} private SSH failure`);
+    if (args[0] === "volume") {
+      const labelValue = (name: string) => { const at = args.findIndex((value, i) => args[i - 1] === "--label" && value.startsWith(name + "=")); return at < 0 ? "" : args[at]!.slice(name.length + 1); };
+      if (args[1] === "create") {
+        if (failure === "volume-create") return { code: 1, stdout: "" };
+        const name = args.at(-1)!; if (!volumes.has(name)) volumes.set(name, { labels: { "agenthub.deps.project": labelValue("agenthub.deps.project"), "agenthub.deps.key": labelValue("agenthub.deps.key") }, created: ++tick, ready: false });
+        return { code: 0, stdout: name };
+      }
+      if (args[1] === "rm") { volumes.delete(args[2]!); return { code: 0, stdout: "" }; }
+      if (args[1] === "ls") return { code: 0, stdout: [...volumes.keys()].join("\n") };
+      if (args[1] === "inspect") {
+        const names = args.slice(2, args.indexOf("--format")), format = args[args.indexOf("--format") + 1]!;
+        const rows = names.filter(name => volumes.has(name)); if (!rows.length) return { code: 1, stdout: "" };
+        return { code: 0, stdout: rows.map(name => { const v = volumes.get(name)!; return format.includes('"name"') ? JSON.stringify({ name, created: new Date(1_000_000 + v.created * 1000).toISOString(), project: v.labels["agenthub.deps.project"], key: v.labels["agenthub.deps.key"] }) : JSON.stringify({ project: v.labels["agenthub.deps.project"], key: v.labels["agenthub.deps.key"] }); }).join("\n") };
+      }
+    }
     if (args[0] === "version") return { code: failure === "docker" ? 1 : 0, stdout: JSON.stringify({ Version: "27.4.1", Os: "linux", Arch: "arm64" }) };
     if (args[0] === "image") return { code: 0, stdout: JSON.stringify({ digests: failure === "image" ? [] : [remote.image], arch: "amd64", os: "linux" }) };
     if (args[0] === "run") {
       const name = args[args.indexOf("--name") + 1]!, labels: Record<string, string> = {};
       for (let i = 0; i < args.length; i++) if (args[i] === "--label") { const value = args[i + 1]!, at = value.indexOf("="); labels[value.slice(0, at)] = value.slice(at + 1); }
-      active.set(name, labels);
+      const volume = volumeOf(args); if (volume) mounts.set(name, volume);
+      if (args.includes("--detach")) active.set(name, labels);
+      else if (volume && args.includes("-e") && args.at(-1)?.includes("agenthub-deps-ready")) {
+        const state = volumes.get(volume); return { code: state?.ready ? 0 : 2, stdout: "" };
+      }
     }
     if (args[0] === "exec" && opt?.input) {
       const container = args[args.indexOf("65532:65532") + 1]!;
       archives.push({ container, data: Buffer.from(await new Response(opt.input).arrayBuffer()) });
-    } else if (args[0] === "exec" && args.at(-1)?.includes("AHUB_REMOTE_READY")) return { code: failure === "probe" ? 1 : 0, stdout: JSON.stringify({ marker: "AHUB_REMOTE_READY", arch: failure === "arch" ? "arm64" : "x64", platform: "linux" }) };
+    } else if (args[0] === "exec" && args.at(-1)?.includes("AHUB_REMOTE_READY")) return { code: failure === "probe" ? 1 : 0, stdout: JSON.stringify({ marker: "AHUB_REMOTE_READY", arch: failure === "arch" ? "arm64" : "x64", platform: "linux", bun: "1.4.2" }) };
+    else if (args[0] === "exec" && args.at(-1)?.includes("agenthub-deps-ready")) { const volume = mounts.get(args[args.indexOf("--workdir") + 2]!); if (volume && volumes.has(volume)) volumes.get(volume)!.ready = failure !== "install-marker"; return { code: 0, stdout: "" }; }
+    else if (args[0] === "exec" && args.includes("install")) return { code: failure === "install" ? 1 : 0, stdout: "" };
     else if (args[0] === "exec") { opt?.output?.(Buffer.from(`public output ${remote.host} ${remote.root} split ${remote.host.split("@").join(" ")}\n`)); return { code: 0, stdout: "" }; }
     if (args[0] === "rm" && (failure !== "cleanup" || args[1]!.startsWith("agenthub-check-probe-"))) active.delete(args[1]!);
     if (args[0] === "ps") {
@@ -50,7 +77,7 @@ async function fixture(options: Partial<RunnerOptions> = {}, failure?: string) {
   // Transport-only component: this intentionally does not grant production RemoteRunner dependency readiness.
   const runner = new ContainerRunner(settings, remoteRunnerTransport(settings));
   cleanup.push(() => runner.stopAll());
-  return { root, project, git, runner, calls, command, settings, archives, archive: () => archives.findLast(entry => !entry.container.startsWith("agenthub-check-probe-"))?.data ?? Buffer.alloc(0), request: { task: 1, owner: "pi", generation: 2, updated: 3, ref: "HEAD", check: "test" as const, files: ["test/nested/example.test.ts"] } };
+  return { root, project, git, runner, calls, command, settings, archives, volumes, archive: () => archives.findLast(entry => !entry.container.startsWith("agenthub-check-probe-"))?.data ?? Buffer.alloc(0), request: { task: 1, owner: "pi", generation: 2, updated: 3, ref: "HEAD", check: "test" as const, files: ["test/nested/example.test.ts"] } };
 }
 
 test("remote checks stream exact Git source with readable non-root modes and no Mac dependencies", async () => {
@@ -77,19 +104,185 @@ test("remote checks stream exact Git source with readable non-root modes and no 
     expect(f.calls.some(args => args[0] === "cp")).toBe(false);
     expect(JSON.stringify(result)).not.toContain(remote.host); expect(JSON.stringify(result)).not.toContain(remote.root); expect(result.tail).toContain("public output"); for (const part of remote.host.split("@")) expect(result.tail).not.toContain(part); expect(result.output_withheld).toBe(true);
     const output = await readFile(join(f.root, "storage/fixture", result.run, "output.log"), "utf8"); expect(output).not.toContain(remote.host); expect(output).not.toContain(remote.root);
-    expect(f.calls.some(args => args.includes("install"))).toBe(false);
+    // The preparation container is the only place that installs, on the committed lockfile, never the Mac's.
+    expect(f.calls.filter(args => args.includes("install"))).toEqual([["exec", "--user", "65532:65532", "--workdir", "/work", result.container, "bun", "install", "--frozen-lockfile"]]);
   } finally { process.umask(previous); }
 });
 
-test("remote run carries hardened fixed Docker arguments and only a read-only named dependency placeholder", async () => {
-  const f = await fixture(); await f.runner.start(f.request).done;
-  const args = f.calls.find(args => args[0] === "run" && !args.some(value => value.startsWith("agenthub-check-probe-")))!;
+const isCheckRun = (args: string[]) => args[0] === "run" && args.includes("--detach") && !args.some(value => value.startsWith("agenthub-check-probe-"));
+const mountOf = (args: string[]) => args[args.indexOf("--mount") + 1]!;
+
+test("remote check run is hardened, offline and mounts only the prepared lockfile-keyed volume read-only", async () => {
+  const f = await fixture(), result = await f.runner.start(f.request).done;
+  const args = f.calls.filter(isCheckRun).at(-1)!;
   for (const [flag, value] of [["--network", "none"], ["--user", "65532:65532"], ["--cap-drop", "ALL"], ["--security-opt", "no-new-privileges"], ["--cpus", "4"], ["--memory", "4g"], ["--pids-limit", "64"]]) expect(args[args.indexOf(flag!) + 1]).toBe(value!);
   expect(args).toContain("--read-only"); expect(args).toContain(remote.image);
   expect(args.filter((_, index) => args[index - 1] === "--tmpfs")).toEqual(expect.arrayContaining([expect.stringContaining("/work:"), expect.stringContaining("/home/check:"), expect.stringContaining("/tmp:")]));
-  expect(args[args.indexOf("--mount") + 1]).toBe("type=volume,src=agenthub-check-deps-unprepared-fixture,dst=/work/node_modules,readonly");
+  const lock = createHash("sha256").update("committed-lock\n").digest("hex");
+  const key = dependencyKey({ lockfile: lock, manifest: createHash("sha256").digest("hex"), bun: "1.4.2", arch: "amd64", image: "sha256:" + "a".repeat(64) });
+  expect(result.lockfile).toBe(lock);
+  expect(mountOf(args)).toBe(`type=volume,src=${dependencyVolume("fixture", key)},dst=/work/node_modules,readonly`);
+  expect(args.filter(value => value === "--mount")).toHaveLength(1);
   expect(args.some(arg => arg.startsWith("type=bind") || arg.includes(remote.root) || arg.includes(f.project))).toBe(false);
+  expect(args).not.toContain("--env=BUN_INSTALL_CACHE_DIR"); expect(args.join(" ")).not.toContain("BUN_INSTALL_CACHE_DIR");
   expect(f.calls.find(args => args[0] === "exec" && args.includes("test"))?.slice(-3)).toEqual(["bun", "test", "test/nested/example.test.ts"]);
+});
+
+test("dependency volume names derive from lockfile, Bun version, architecture and image, per project", () => {
+  const base = { lockfile: "l".repeat(64), manifest: "p".repeat(64), bun: "1.4.2", arch: "amd64", image: "sha256:" + "a".repeat(64) };
+  const name = (key: string, project = "fixture") => dependencyVolume(project, key);
+  const same = name(dependencyKey(base));
+  expect(name(dependencyKey({ ...base }))).toBe(same);
+  expect(same).toMatch(/^agenthub-check-deps-fixture-[a-f0-9]{32}$/);
+  for (const change of [{ lockfile: "m".repeat(64) }, { manifest: "q".repeat(64) }, { bun: "1.4.3" }, { arch: "arm64" }, { image: "sha256:" + "b".repeat(64) }]) expect(name(dependencyKey({ ...base, ...change }))).not.toBe(same);
+  expect(name(dependencyKey(base), "other")).not.toBe(same);
+  // Fields cannot be shifted across a boundary to collide.
+  expect(dependencyKey({ ...base, lockfile: "ab", bun: "c" })).not.toBe(dependencyKey({ ...base, lockfile: "a", bun: "bc" }));
+});
+
+async function commitFile(f: Awaited<ReturnType<typeof fixture>>, path: string, content: string) {
+  await mkdir(join(f.project, path, ".."), { recursive: true }); await writeFile(join(f.project, path), content); f.git("add", path); f.git("commit", "-qm", `test: ${path}`);
+}
+
+test("install inputs beyond bun.lock decide reuse: a changed manifest or config prepares a new volume, an identical one reuses", async () => {
+  const f = await fixture();
+  await commitFile(f, "package.json", '{"dependencies":{"a":"1.0.0"}}');
+  await f.runner.start(f.request).done; expect(f.volumes.size).toBe(1);
+  const installs = () => f.calls.filter(args => args.includes("install")).length;
+  const creates = () => f.calls.filter(args => args[0] === "volume" && args[1] === "create").length;
+  expect(installs()).toBe(1);
+  await f.runner.start(f.request).done; expect(f.volumes.size).toBe(1); expect(installs()).toBe(1); // same inputs: reused
+  await commitFile(f, "package.json", '{"dependencies":{"a":"1.0.1"}}'); // same bun.lock, different manifest
+  const result = await f.runner.start(f.request).done;
+  expect(result.exit).toBe(0); expect(f.volumes.size).toBe(2); expect(installs()).toBe(2);
+  for (const [path, content] of [["bunfig.toml", "[install]\n"], [".npmrc", "registry=x\n"], ["patches/a.patch", "p"], ["packages/w/package.json", "{}"]] as const) {
+    const before = creates(); await commitFile(f, path, content); await f.runner.start(f.request).done;
+    expect(creates()).toBe(before + 1);
+  }
+  // An unrelated source change does not.
+  const settled = creates(); await commitFile(f, "src/unrelated.ts", "export {};"); await f.runner.start(f.request).done;
+  expect(creates()).toBe(settled);
+});
+
+test("a root or workspace lifecycle script is refused before any volume, install or check, because its output depends on source outside the key", async () => {
+  for (const [path, scripts] of [["package.json", { postinstall: "node gen.js" }], ["package.json", { prepare: "x" }], ["packages/w/package.json", { preinstall: "x" }], ["package.json", "bad"]] as const) {
+    const f = await fixture(); await commitFile(f, path, JSON.stringify({ scripts }));
+    const result = await f.runner.start(f.request).done;
+    expect(result.error).toBe("remote dependencies unavailable"); expect(result.exit).toBeNull();
+    expect(f.volumes.size).toBe(0);
+    expect(f.calls.some(args => args.includes("install") || args[0] === "volume" && args[1] === "create" || args[0] === "exec" && args.includes("test"))).toBe(false);
+  }
+  // Ordinary scripts and a malformed manifest: ordinary scripts are fine, invalid JSON is refused.
+  const ok = await fixture(); await commitFile(ok, "package.json", JSON.stringify({ scripts: { test: "bun test", build: "x" } }));
+  expect((await ok.runner.start(ok.request).done).exit).toBe(0);
+  const bad = await fixture(); await commitFile(bad, "package.json", "{not json");
+  expect((await bad.runner.start(bad.request).done).error).toBe("remote dependencies unavailable");
+});
+
+test("a prepared volume is reused: the next run installs nothing, creates nothing and never gets a network", async () => {
+  const f = await fixture();
+  await f.runner.start(f.request).done;
+  const before = f.calls.length; const result = await f.runner.start(f.request).done;
+  expect(result.exit).toBe(0); expect(result.error).toBeUndefined();
+  const second = f.calls.slice(before);
+  expect(second.some(args => args.includes("install"))).toBe(false);
+  expect(second.some(args => args[0] === "volume" && args[1] === "create")).toBe(false);
+  for (const args of second.filter(args => args[0] === "run")) { expect(args[args.indexOf("--network") + 1]).toBe("none"); expect(mountOf(args)).toMatch(/,readonly$/); }
+  expect(f.volumes.size).toBe(1);
+});
+
+test("only the single preparation container gets a network, and only that one mounts the volume writable", async () => {
+  const f = await fixture(); await f.runner.start(f.request).done;
+  const runs = f.calls.filter(args => args[0] === "run" && !args.some(value => value.startsWith("agenthub-check-probe-")));
+  const networked = runs.filter(args => args[args.indexOf("--network") + 1] !== "none");
+  expect(networked).toHaveLength(1); expect(networked[0]).toContain("--detach");
+  expect(networked[0]![networked[0]!.indexOf("--network") + 1]).toBe("bridge");
+  const writable = runs.filter(args => args.includes("--mount") && !mountOf(args).endsWith(",readonly"));
+  expect(writable).toHaveLength(2); // ownership step and install step, same preparation
+  for (const args of runs) { expect(args).not.toContain("--privileged"); expect(args.some(value => value.startsWith("type=bind"))).toBe(false); }
+  // Install happens after the networked container exists and before any check exec.
+  const order = f.calls.map(args => args[0] === "run" && args[args.indexOf("--network") + 1] === "bridge" ? "net" : args.includes("install") ? "install" : args[0] === "exec" && args.includes("test") ? "check" : "").filter(Boolean);
+  expect(order).toEqual(["net", "install", "check"]);
+});
+
+test("a failed install leaves no volume behind and never runs the check", async () => {
+  const f = await fixture({}, "install"), result = await f.runner.start(f.request).done;
+  expect(result.error).toBe("remote dependencies unavailable"); expect(result.exit).toBeNull();
+  expect(f.volumes.size).toBe(0);
+  expect(f.calls.some(args => args[0] === "exec" && args.includes("test"))).toBe(false);
+});
+
+test("a volume whose marker was never written is discarded and reprepared, never repaired in place", async () => {
+  const f = await fixture({}, "install-marker"), first = await f.runner.start(f.request).done;
+  expect(first.error).toBe("remote dependencies unavailable"); expect(f.volumes.size).toBe(0);
+});
+
+test("a same-named volume owned by another project or key is refused, never mounted or removed", async () => {
+  const f = await fixture(); await f.runner.start(f.request).done;
+  const [name, volume] = [...f.volumes][0]!; volume.labels["agenthub.deps.project"] = "intruder";
+  const before = f.calls.length, result = await f.runner.start(f.request).done;
+  expect(result.error).toBe("remote dependencies unavailable");
+  const calls = f.calls.slice(before);
+  expect(calls.some(args => args[0] === "volume" && args[1] === "rm")).toBe(false);
+  expect(calls.some(args => args[0] === "run" && args.some(value => value.includes(name)))).toBe(false);
+  expect(f.volumes.has(name)).toBe(true);
+});
+
+test("a prepared volume that fails read-only verification is discarded and prepared again", async () => {
+  const f = await fixture(); await f.runner.start(f.request).done;
+  [...f.volumes.values()][0]!.ready = false;
+  const before = f.calls.length, result = await f.runner.start(f.request).done;
+  expect(result.exit).toBe(0);
+  const calls = f.calls.slice(before);
+  expect(calls.filter(args => args[0] === "volume" && args[1] === "rm").length).toBeGreaterThanOrEqual(1);
+  expect(calls.filter(args => args.includes("install"))).toHaveLength(1);
+});
+
+test("old dependency volumes are pruned to the newest few of this project; the current one and other projects stay", async () => {
+  const f = await fixture();
+  for (let i = 1; i <= 5; i++) f.volumes.set(`agenthub-check-deps-fixture-${String(i).repeat(32)}`, { labels: { "agenthub.deps.project": "fixture", "agenthub.deps.key": String(i).repeat(64) }, created: i, ready: true });
+  f.volumes.set(`agenthub-check-deps-other-${"9".repeat(32)}`, { labels: { "agenthub.deps.project": "other", "agenthub.deps.key": "k" }, created: 0, ready: true });
+  f.volumes.set("unrelated-volume", { labels: { "agenthub.deps.project": "fixture", "agenthub.deps.key": "k" }, created: 0, ready: true });
+  await f.runner.start(f.request).done;
+  const mine = [...f.volumes.keys()].filter(name => /^agenthub-check-deps-fixture-[a-f0-9]{32}$/.test(name));
+  expect(mine).toHaveLength(KEEP_DEPENDENCY_VOLUMES);
+  expect(mine).toContain(`agenthub-check-deps-fixture-${"5".repeat(32)}`); expect(mine).toContain(`agenthub-check-deps-fixture-${"4".repeat(32)}`);
+  expect(mine).not.toContain(`agenthub-check-deps-fixture-${"1".repeat(32)}`);
+  expect(f.volumes.has(`agenthub-check-deps-other-${"9".repeat(32)}`)).toBe(true); expect(f.volumes.has("unrelated-volume")).toBe(true);
+});
+
+test("prune never counts or removes a volume whose key label is absent, malformed or inconsistent with its name", async () => {
+  const f = await fixture();
+  const name = (n: string) => `agenthub-check-deps-fixture-${n.repeat(32)}`;
+  const seed = (n: string, labels: Record<string, string>, created: number) => f.volumes.set(name(n), { labels, created, ready: true });
+  const mine = (n: string) => ({ "agenthub.deps.project": "fixture", "agenthub.deps.key": n.repeat(64) });
+  seed("1", { "agenthub.deps.project": "fixture", "agenthub.deps.key": "" }, 1); // absent
+  seed("2", { "agenthub.deps.project": "fixture", "agenthub.deps.key": "not-a-key" }, 2); // malformed
+  seed("3", { "agenthub.deps.project": "fixture", "agenthub.deps.key": "a".repeat(64) }, 3); // well formed, but not this name's key
+  seed("4", { "agenthub.deps.project": "intruder", "agenthub.deps.key": "4".repeat(64) }, 4); // another project's label
+  for (const n of ["5", "6", "7", "8"]) seed(n, mine(n), 10 + Number(n));
+  await f.runner.start(f.request).done;
+  for (const n of ["1", "2", "3", "4"]) expect(f.volumes.has(name(n))).toBe(true);
+  expect(f.calls.some(args => args[0] === "volume" && args[1] === "rm" && ["1", "2", "3", "4"].some(n => args[2] === name(n)))).toBe(false);
+  // The valid ones still obey the bound: the current volume plus the newest others.
+  const valid = [...f.volumes.keys()].filter(volume => ["5", "6", "7", "8"].some(n => volume === name(n)));
+  expect(valid).toEqual([name("7"), name("8")].filter(volume => valid.includes(volume)));
+  expect(valid).toHaveLength(KEEP_DEPENDENCY_VOLUMES - 1);
+});
+
+test("preparation and verification containers carry the run's own name and labels, so cleanup and the orphan sweep own them", async () => {
+  const f = await fixture(), result = await f.runner.start(f.request).done;
+  const runs = f.calls.filter(args => args[0] === "run" && !args.some(value => value.startsWith("agenthub-check-probe-")));
+  expect(runs.length).toBeGreaterThanOrEqual(4);
+  for (const args of runs) { expect(args[args.indexOf("--name") + 1]).toBe(result.container); expect(args).toContain(`agenthub.run=${result.run}`); expect(args).toContain("agenthub.project=fixture"); }
+  expect(await Bun.file(join(f.project, ".git/ahub-heavy.lock")).exists()).toBe(false);
+});
+
+test("an unconfirmed cleanup between preparation steps stops the run before any install or check", async () => {
+  const f = await fixture({}, "cleanup"), result = await f.runner.start(f.request).done;
+  expect(result.exit).toBeNull();
+  expect(f.calls.some(args => args[0] === "exec" && args.includes("test"))).toBe(false);
+  expect(await Bun.file(join(f.project, ".git/ahub-heavy.lock/owner")).exists()).toBe(true);
 });
 
 for (const failure of ["ssh", "docker", "image", "probe", "arch"]) test(`remote readiness ${failure} failure is generic and never falls back`, async () => {
@@ -117,7 +310,7 @@ test("remote SSH arguments quote shell metacharacters and reject unsafe machine-
 async function fakeSshFixture(f: Awaited<ReturnType<typeof fixture>>, mode: "failure" | "stderr" = "failure") {
   const bin = join(f.root, "fake-bin"); await mkdir(bin);
   const agentSocket = join(f.root, "synthetic-agent.sock"), proof = join(f.root, "ssh-proof"), keys = join(f.root, "ssh-env-keys");
-  const active = join(f.root, "ssh-active");
+  const active = join(f.root, "ssh-active"), volumes = join(f.root, "ssh-volume"), ready = join(f.root, "ssh-ready");
   const script = `#!/bin/sh
 if [ "$1 $2 $3 $5 $7" = '-T -a -x ClearAllForwardings=yes PermitLocalCommand=no' ]; then printf '%s\\n' 'flags-protected' >> '${proof}'; else printf '%s\\n' 'flags-wrong' >> '${proof}'; fi
 if [ "$SSH_AUTH_SOCK" = '${agentSocket}' ]; then printf '%s\\n' 'auth-retained' >> '${proof}'; else printf '%s\\n' 'auth-missing' >> '${proof}'; fi
@@ -130,9 +323,11 @@ shift
 if [ 'AHUB_FAKE_MODE' = 'stderr' ] && [ "$1" = exec ]; then
   case "$last" in
     *"'tar' "*) ;;
+    *"'install'"*) exit 0 ;;
+    *agenthub-deps-ready*) : > '${ready}'; exit 0 ;;
     *AHUB_REMOTE_READY*)
       case "$last" in *" 2>&1") printf '%s\\n' 'BENIGN_PROBE_WARNING' ;; *) printf '%s\\n' 'BENIGN_PROBE_WARNING' >&2 ;; esac
-      printf '%s\\n' '{"marker":"AHUB_REMOTE_READY","arch":"x64","platform":"linux"}'; exit 0 ;;
+      printf '%s\\n' '{"marker":"AHUB_REMOTE_READY","arch":"x64","platform":"linux","bun":"1.4.2"}'; exit 0 ;;
     *)
       printf '%s\\n' 'PUBLIC_CHECK_OUTPUT'
       case "$last" in *" 2>&1") printf '%s\\n' 'CHECK_STDERR' ;; *) printf '%s\\n' 'CHECK_STDERR' >&2 ;; esac
@@ -142,11 +337,23 @@ fi
 case "$1" in
   version) printf '%s\\n' '{"Version":"27.4.1-private-host","Os":"linux","Arch":"arm64"}' ;;
   image) printf '%s\\n' '{"digests":["${remote.image}"],"arch":"amd64","os":"linux"}' ;;
-  run) while [ "$#" -gt 0 ]; do if [ "$1" = '--name' ]; then printf '%s' "$2" > '${active}'; fi; shift; done ;;
+  volume)
+    case "$2" in
+      create) key=''; for arg in "$@"; do case "$arg" in agenthub.deps.key=*) key="\${arg#agenthub.deps.key=}" ;; esac; done
+        printf '{"project":"fixture","key":"%s"}\\n' "$key" > '${volumes}' ;;
+      inspect) if [ -f '${volumes}' ]; then /bin/cat '${volumes}'; else exit 1; fi ;;
+      rm) rm -f '${volumes}' '${ready}' ;;
+      ls) : ;;
+    esac ;;
+  run)
+    case "$last" in *agenthub-deps-ready*) case "$last" in *"'--detach'"*) ;; *) if [ -f '${ready}' ]; then exit 0; else exit 2; fi ;; esac ;; esac
+    while [ "$#" -gt 0 ]; do if [ "$1" = '--name' ]; then printf '%s' "$2" > '${active}'; fi; shift; done ;;
   exec)
     case "$last" in
       *"'tar' "*) /bin/cat >/dev/null ;;
-      *AHUB_REMOTE_READY*) printf '%s\\n' '{"marker":"AHUB_REMOTE_READY","arch":"x64","platform":"linux"}' ;;
+      *"'install'"*) ;;
+      *agenthub-deps-ready*) : > '${ready}' ;;
+      *AHUB_REMOTE_READY*) printf '%s\\n' '{"marker":"AHUB_REMOTE_READY","arch":"x64","platform":"linux","bun":"1.4.2"}' ;;
       *) printf '%s\\n' '${remote.host} ${remote.root} transport stdout'; printf '%s\\n' 'SSH_PRIVATE_DIAGNOSTIC' >&2; exit 255 ;;
     esac ;;
   rm) : > '${active}' ;;
@@ -226,11 +433,21 @@ test("cancelled remote readiness still performs independent bounded probe cleanu
   for (const args of inventories) expect(args.some(value => value.startsWith("name=^/agenthub-check-probe-"))).toBe(true);
 });
 
-test("production RemoteRunner never grants tests while prepared dependencies remain unavailable", async () => {
+test("production RemoteRunner prepares its own dependencies, then runs the check against them", async () => {
   const f = await fixture(), runner = new RemoteRunner(f.settings); cleanup.push(() => runner.stopAll());
-  expect(await runner.available()).toMatchObject({ available: false, reason: "remote dependencies unprepared", platform: "linux/amd64 (remote docker 27.4.1)" });
-  expect((await runner.start(f.request).done).error).toContain("remote dependencies unprepared");
-  expect(f.calls.some(args => args[0] === "run" && !args.some(value => value.startsWith("agenthub-check-probe-")))).toBe(false);
+  expect(await runner.available()).toMatchObject({ available: true, platform: "linux/amd64 (remote docker 27.4.1)" });
+  const result = await runner.start(f.request).done;
+  expect(result).toMatchObject({ exit: 0, runner: "remote" });
+  expect(f.volumes.size).toBe(1);
+  expect(f.calls.filter(isCheckRun).some(args => mountOf(args).endsWith(",readonly"))).toBe(true);
+});
+
+test("production RemoteRunner refuses to run, not to guess, when the volume cannot be created", async () => {
+  const f = await fixture({}, "volume-create"), runner = new RemoteRunner(f.settings); cleanup.push(() => runner.stopAll());
+  const result = await runner.start(f.request).done;
+  expect(result.error).toBe("remote dependencies unavailable");
+  expect(f.calls.some(args => args[0] === "exec" && args.includes("test"))).toBe(false);
+  expect(f.calls.some(args => args.includes("install"))).toBe(false);
 });
 
 test("snapshot refusals retain their source reason instead of being rewritten as SSH failures", async () => {

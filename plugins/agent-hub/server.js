@@ -325,7 +325,7 @@ var init_compat = __esm(() => {
     },
     jcode: {
       label: "Jcode",
-      verified: ["0.98.1", "0.99.0"],
+      verified: ["0.98.1", "0.99.0", "0.99.1"],
       line: { min: "0.98.0", below: "1.0.0" },
       gate: "contract",
       probe: ["jcode", "--quiet", "version", "--json"],
@@ -338,7 +338,7 @@ var init_compat = __esm(() => {
           return;
         }
       },
-      trustNote: "The ACP, serve and MCP contract was verified on 0.98.1 and steering on 0.99.0; an untested version may change them.",
+      trustNote: "The ACP, serve and MCP contract was verified on 0.98.1 and 0.99.1 and steering on 0.99.0 and 0.99.1; an untested version may change them.",
       receipt: "docs/verification/2026-10-19-jcode-0.98.1.md"
     },
     agy: {
@@ -10767,7 +10767,7 @@ import { randomUUID as randomUUID8 } from "crypto";
 import { lstatSync as lstatSync11, mkdtempSync as mkdtempSync5, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
 import { join as join17 } from "path";
-function claudeImplementerArgs(turn, mcp, settings, prompt) {
+function claudeImplementerArgs(turn, mcp, settings, prompt, model) {
   return [
     "-p",
     "--output-format",
@@ -10783,6 +10783,7 @@ function claudeImplementerArgs(turn, mcp, settings, prompt) {
     "",
     "--settings",
     settings,
+    ...model ? ["--model", model] : [],
     "--permission-mode",
     "default",
     "--permission-prompts",
@@ -11045,7 +11046,7 @@ var init_claude_implementer = __esm(() => {
           const child = new OwnedPrintChild({
             peer: this.id,
             command: this.command,
-            args: claudeImplementerArgs(turn, mcp, settings, this.options.systemPrompt),
+            args: claudeImplementerArgs(turn, mcp, settings, this.options.systemPrompt, this.options.model),
             cwd: this.options.cwd,
             input: group.envs.map(frame).join(`
 
@@ -12771,7 +12772,7 @@ var init_builtin_metadata = __esm(() => {
     trust: { onPrem: false, hubSandboxed: false },
     start: { create: createClaudeImplementer, daemonPort: "claude-implementer", forms: headlessForms, defaultForm: "headless", conductorStartable: true, hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "env", currentChild: true },
-    instances: { mode: "headless", roles: ["implementer", "verifier"] },
+    instances: { mode: "headless", roles: ["implementer", "verifier"], modelSelect: true },
     permission: { grants: { ask: "every write, edit and shell command asks", "ask-when-needed": "file tools inside the owned worktree may run automatically; shell and protected paths ask" } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: false, launchKind: "claude-implementer", crashPlan: () => ({ resume: {}, how: "Claude implementer resumes its recorded per-task sessions" }) },
     turnEnd: "adapter",
@@ -13692,7 +13693,8 @@ function assertNativeCapabilityScope(definition) {
     ["hooks.factsHook", declared(definition.hooks, "factsHook")],
     ["cli.entry", declared(definition.cli, "entry")],
     ["cli.preview", declared(definition.cli, "preview")],
-    ["cli.usage", declared(definition.cli, "usage")]
+    ["cli.usage", declared(definition.cli, "usage")],
+    ["instances.modelSelect", declared(definition.instances, "modelSelect")]
   ];
   const field = restricted.find(([, present]) => present)?.[0];
   if (field)
@@ -21931,7 +21933,8 @@ function validateInstances(raw, catalog) {
     const path = `instances.${id}`, entry = fields2(descriptor.value, path);
     const declaredKind = entry.kind?.value;
     const jcodeFields = typeof declaredKind === "string" && resolve(declaredKind)?.instances?.nativeHome === true;
-    if (Object.keys(entry).some((key) => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly", ...jcodeFields ? JCODE_FIELDS : []].includes(key)))
+    const modelSelect = typeof declaredKind === "string" && resolve(declaredKind)?.headlessVariant?.instances?.modelSelect === true;
+    if (Object.keys(entry).some((key) => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly", ...jcodeFields ? JCODE_FIELDS : [], ...modelSelect ? ["model"] : []].includes(key)))
       return fail4(path, "unsupported field");
     const kind = entry.kind?.value;
     if (typeof kind !== "string")
@@ -22005,6 +22008,14 @@ function validateInstances(raw, catalog) {
       if (++jcodeCount > MAX_JCODE_INSTANCES)
         return fail4("instances", `at most ${MAX_JCODE_INSTANCES} extra Jcode instances are supported per project`);
       Object.assign(value, jcodeInstanceFields(entry, path));
+    }
+    if (entry.model && modelSelect) {
+      if (!headlessWriter)
+        return fail4(`${path}.model`, "only a headless implementer takes a model");
+      const word = entry.model.value;
+      if (typeof word !== "string" || !NATIVE_WORD.test(word))
+        return fail4(`${path}.model`, "must be one bounded printable word without spaces");
+      value.model = word;
     }
     if (entry.readOnly)
       value.readOnly = entry.readOnly.value;

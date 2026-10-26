@@ -9,7 +9,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JcodePeer, jcodeCommand, jcodeVersionSupported, verifiedJcodeCommand } from "../src/adapters/jcode.ts";
-import { COMPAT } from "../src/adapters/compat.ts";
+import { COMPAT, assessVersion } from "../src/adapters/compat.ts";
 import { configureJcodeMcp, jcodeMcpReady, JCODE_MCP_FILE, JCODE_MCP_NAME } from "../src/cli/jcode-mcp.ts";
 import { launcherPreview } from "../src/cli/preview.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
@@ -81,6 +81,14 @@ test("Jcode native identity outside the supported range refuses the peer and cle
     const peer = new JcodePeer({ command: [...fake, "--version-id", version], cwd: dir, home }); cleanups.push(() => peer.stop());
     await expect(peer.start()).rejects.toThrow("native ACP identity"); expect(peer.state).toBe("offline");
   }
+});
+
+test("Jcode 0.99.1 is a receipt-verified release, and its receipt names every leg (#843 AC5)", async () => {
+  expect(COMPAT.jcode.verified).toEqual(["0.98.1", "0.99.0", "0.99.1"]);
+  expect(assessVersion("jcode", "0.99.1", [])).toMatchObject({ ok: true, state: "verified", version: "0.99.1" });
+  expect(assessVersion("jcode", "0.99.2", [])).toMatchObject({ ok: true, state: "in-line" }); // inside the line, but not receipt-verified
+  const receipt = readFileSync(join(import.meta.dir, "../docs/verification/2026-10-26-jcode-0.99.1.md"), "utf8");
+  for (const leg of ["serve", "initialize", "session/new", "session/load", "MCP", "Steering leg", "soft_interrupt", "Not verified"]) expect(receipt, leg).toContain(leg);
 });
 
 test("Jcode accepts any native release from the verified minimum up to the breaking version, the minor unpinned (#529)", async () => {
