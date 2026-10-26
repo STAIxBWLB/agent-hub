@@ -58,6 +58,8 @@ check_tmp=$(cd "$check_tmp" && pwd -P)
 export TMPDIR="$check_tmp"
 ledger="$check_tmp/owned-processes.jsonl"
 : > "$ledger"
+progress="$check_tmp/test-progress.txt"
+: > "$progress"
 export AHUB_CHECK_RUN_ROOT="$check_tmp"
 export AHUB_CHECK_PROCESS_LEDGER="$ledger"
 export BUN_OPTIONS="${BUN_OPTIONS:+$BUN_OPTIONS }--preload=$PWD/scripts/record-test-process.mjs"
@@ -92,14 +94,20 @@ trap 'exit 143' TERM
 # TERM broke the ANSI goldens); tests that need either set it themselves.
 env -u AGENTHUB_PEER_ID -u AGENTHUB_DELIVERY_ONLY -u AGENTHUB_CHANNEL -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID \
   -u AGENTHUB_PROJECT_DIR -u AGENTHUB_STATE_DIR -u AGENTHUB_INSTANCE_ID -u AGENTHUB_LAUNCH_ID -u NO_COLOR \
-  GIT_CONFIG_GLOBAL=/dev/null TERM=xterm-256color bun test --timeout 20000 ${test_args[@]+"${test_args[@]}"} &
+  GIT_CONFIG_GLOBAL=/dev/null TERM=xterm-256color bun test --timeout 20000 ${test_args[@]+"${test_args[@]}"} \
+  > >(tee "$progress") 2>&1 &
 test_pid=$!
-scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-960}" &
+# The watchdog kills on the quiet bound first: a suite still printing test results is slow, not hung (#516: hosted
+# ubuntu runs of 14-17 minutes were cut at 1080 s while passing tests line by line). AHUB_CHECK_HANG_S stays the backstop.
+# The tee runs through process substitution, not a pipe: a pipeline would make $! the tee and `wait` its status, so
+# the watchdog would kill the tee and leave bun running, and a failing suite would read as passing.
+scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-960}" "$progress" &
 watch_pid=$!
 wait "$test_pid" || tests=$?
 test_pid=""
 kill "$watch_pid" 2>/dev/null || true # its work is done: never let it watch a pid that may be reused
 wait "$watch_pid" 2>/dev/null || true
+wait # the tee is a child too: let it flush the last lines before the leak scan and the temp-dir removal
 
 # The Bun preload records each current-run Bun process's PID, start time, and process
 # group at startup. The final scan uses those identities to include children that outlive

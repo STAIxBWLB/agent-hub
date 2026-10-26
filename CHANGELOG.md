@@ -4,6 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- The suite watchdog kills on lost progress, not elapsed time: `scripts/check.sh` pipes the test output through `scripts/hang-watch.sh` with a progress file, and the watchdog stops a run that has printed no new test result line for `AHUB_CHECK_QUIET_S` seconds (180 by default), keeping `AHUB_CHECK_HANG_S` as a generous total backstop. Two hosted ubuntu runs on 2026-10-26 that were still passing tests line by line were cut at the 1080 s total bound; they now run to completion, and a run that goes silent still fails fast with the same stack evidence. The macOS budget is unchanged, and callers without a progress file (`scripts/seeded-check.ts`, the macos-timing leg) keep the old total-time-only behavior (#516).
 - Pin @staix/agent-mem 0.9.1 (split-home sync holds a verified foreign-generation prune as "held, not applied" instead of refusing the sync, cached MCP policy screening, `--capture-days` claude-mem capture import; 0.9.0 was never published). Refs agent-mem#13.
 
 ## 0.18.0

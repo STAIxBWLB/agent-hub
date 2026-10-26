@@ -115,6 +115,10 @@ jobs:
           # Linux then hit 780 s one second after a passing test (run 39441258200): Linux gets 1080 s.
           # Run 40028391482 reached 1260 s on macOS while benchmark tests kept passing; allow 1440 s
           # and 30 minutes for that job, preserving Ubuntu's allowance and the per-test 20 s bound.
+          # #516: the watchdog now kills on progress first (AHUB_CHECK_QUIET_S, 180 s without a new test
+          # result line), so these values are the total backstop for a run that keeps printing while hung.
+          # The 2026-10-26 ubuntu cuts (runs 40264964185 and 40282389019, killed at 1080 s while tests were
+          # still passing line by line) read as quiet-hangs, not slow suites, and no longer need a raise.
           AHUB_CHECK_HANG_S: ${{ runner.os == 'macOS' && '1440' || '1080' }}
           AHUB_RESTART_DIAGNOSTICS_DIR: ${{ runner.temp }}/ahub-restart-diagnostics
         run: scripts/check.sh
