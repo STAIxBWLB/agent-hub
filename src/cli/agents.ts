@@ -4,7 +4,7 @@ import { assessVersion, COMPAT, describe, isCompatId, readTrust, trustFile, writ
 /** #691: what `ahub agents` and `ahub doctor` show for each gated native CLI. */
 export interface AgentVersionRow { id: CompatId; executable?: string; verdict: CompatVerdict; policy: string }
 
-/** `commands` carries the configured argv (codex_bin, jcode_cmd, qwen_cmd); the probe words follow it. */
+/** `commands` carries the configured argv (including pi.cmd); the probe words follow it. */
 export function agentVersions(commands: Partial<Record<CompatId, readonly string[]>> = {}): AgentVersionRow[] {
   const trusted = readTrust();
   return (Object.keys(COMPAT) as CompatId[]).map(id => {

@@ -34,8 +34,13 @@ export function createQwenDual(ctx: CreateContext): PeerAdapter {
 export function createPi(ctx: CreateContext): PeerAdapter {
   if (!("pi" in ctx.daemon)) throw new Error("Pi requires its Pi transport options");
   if (ctx.permission === "read-only") throw new Error("Pi has no verified read-only permission mapping");
-  const { PiPeer } = require("../pi.ts") as typeof import("../pi.ts");
-  return new PiPeer(ctx.instance, ctx.daemon.pi);
+  const { PiPeer, piVersionAsync } = require("../pi.ts") as typeof import("../pi.ts");
+  const options = ctx.daemon.pi;
+  return new PiPeer(ctx.instance, { ...options, preflight: async () => {
+    const verdict = await piVersionAsync(options.cmd ?? ["pi"], options.cwd);
+    if (!verdict.ok) throw new Error(verdict.reason);
+    if (verdict.note) options.log?.(verdict.note);
+  } });
 }
 
 export function createLocal(ctx: CreateContext): PeerAdapter {

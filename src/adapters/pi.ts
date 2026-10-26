@@ -2,10 +2,11 @@ import { buildPiLaunch } from "../pi/launch.ts";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import { BasePeer } from "../hub/peers.ts";
-import { stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
+import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
+import { assessVersion, COMPAT, type CompatVerdict } from "./compat.ts";
 import { processLiveness, processSignature } from "../pi/process-signature.ts";
 import { PiSessionBookmarkMismatch, validatePiSession } from "../pi/session.ts";
 import { ApprovalWaitStop, toolResultFailed, type ApprovalProvenance } from "../local/tools.ts";
@@ -33,6 +34,8 @@ class PiPromptNotStarted extends Error {
 }
 class PiPromptUncertain extends Error {}
 export interface PiOptions {
+  /** Fixed production factory port; transport-only fixtures do not launch a native CLI. */
+  preflight?: () => Promise<void>;
   /** stateDir owns this native instance; hubStateDir retains the canonical daemon binding. */
   hubStateDir?: string;
   cwd: string; stateDir: string; cmd?: string[]; mode: "headless" | "tui"; backend: "auto" | "dgx" | "mlx"; sessionFile?: string; sessionId?: string;
@@ -56,6 +59,34 @@ export interface PiOptions {
   signature?: typeof processSignature;
 }
 export interface PiTuiLaunch { cmd: string; args: string[]; env: NodeJS.ProcessEnv; }
+
+/** Bounded, non-blocking probe of the exact configured native command, including wrapper arguments. */
+export function piVersionAsync(command: readonly string[], cwd: string, timeoutMs = 10_000): Promise<CompatVerdict> {
+  const [bin, ...prefix] = command;
+  if (!bin) return Promise.resolve(assessVersion("pi", undefined));
+  return new Promise(resolve => {
+    let proc: ChildProcess;
+    try { proc = spawn(bin, [...prefix, "--version"], { cwd, env: peerChildEnv("pi"), detached: true, stdio: ["ignore", "pipe", "ignore"] }); }
+    catch { resolve(assessVersion("pi", undefined)); return; }
+    let output = "", bytes = 0, done = false;
+    const finish = async (code: number | null) => {
+      if (done) return; done = true; clearTimeout(timer);
+      try { await stopOwnedProcess(proc, { group: true }); }
+      catch { resolve(assessVersion("pi", undefined)); return; }
+      resolve(assessVersion("pi", code === 0 && bytes <= 64 * 1024 ? COMPAT.pi.parse(output) : undefined));
+    };
+    const timer = setTimeout(() => { void finish(null); }, timeoutMs);
+    proc.once("spawn", () => trackGroup(proc));
+    proc.stdout!.on("data", (chunk: Buffer) => {
+      if (done) return;
+      bytes += chunk.length;
+      if (bytes > 64 * 1024) { void finish(null); return; }
+      output += chunk.toString("utf8");
+    });
+    proc.once("error", () => { void finish(null); });
+    proc.once("close", code => { void finish(code); });
+  });
+}
 type RpcMessage = { type?: string; id?: string | number; command?: string; success?: boolean; data?: any; [key: string]: any };
 type VerifiedEmptyResume = { sessionId: string };
 type TerminalOwnerObservation = { pid: number; signature: string; sessionId: string; sessionFile: string; ownerToken: string; checkedAt: number };
@@ -344,6 +375,7 @@ export class PiPeer extends BasePeer {
   }
 
   private async startImpl(): Promise<void> {
+    if (this.opts.preflight) await this.opts.preflight();
     this.terminalOwnerObservation = undefined;
     this.stopping = false;
     this.rosterDetached = false; this.rosterUnownedRun = false;

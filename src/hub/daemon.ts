@@ -4647,7 +4647,11 @@ export async function startDaemon(opts: DaemonOptions) {
       executionOwners.set(peer, { owner: pi, cwd: executionCwd });
       bus.add(pi);
       // The start's own error is the one reported; a stop that fails too is logged beside it (#115).
-      try { await pi.start(); } catch (error) { await pi.stop().catch((stop: Error) => log(`pi stop after a failed start: ${stop.message}`)); throw error; }
+      try { await pi.start(); } catch (error) {
+        await pi.stop().catch((stop: Error) => log(`pi stop after a failed start: ${stop.message}`));
+        if (error instanceof Error && error.message.startsWith(VERSION_REFUSAL)) return { ok: false, error: sanitize(error.message).slice(0, 1000) };
+        throw error;
+      }
       return { ok: true, ...(mode === "tui" ? { launch: pi.tuiLaunch } : {}) };
     }
     if (adapter?.start.daemonPort === "local-worker") {

@@ -28,6 +28,7 @@ function fakePi(dir: string): string {
   writeFileSync(file, `import { createInterface } from "node:readline";
 import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+if (process.argv.includes("--version")) { console.log("1.4.0"); process.exit(0); }
 const dir = process.argv[process.argv.indexOf("--session-dir") + 1];
 mkdirSync(dir, { recursive: true });
 writeFileSync(join(dir, "model-descriptors.json"), process.env.AGENTHUB_PI_MODELS ?? "[]");
@@ -38,6 +39,13 @@ if (resumed < 0) writeFileSync(sessionFile, JSON.stringify({ type: "session", id
 const out = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\\n");
 createInterface({ input: process.stdin }).on("line", (line) => { const m = JSON.parse(line); if (m.type === "get_state") out({ id: m.id, success: true, data: { sessionId, sessionFile } }); else if (m.type === "prompt" || m.type === "set_model") out({ id: m.id, success: true }); });
 `);
+  return file;
+}
+
+function startupExitPi(code = 0): string {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-pi-startup-exit-")), file = join(dir, "pi.ts");
+  cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(file, `if (process.argv.includes("--version")) { console.log("1.4.0"); process.exit(0); }\nprocess.exit(${code});\n`);
   return file;
 }
 
@@ -360,7 +368,7 @@ test("after a crash with no Pi session recorded there is no way back to offer; a
   const none = await until((await crashedHub({ auto_start: true }, () => undefined)).crash);
   expect(none).toContain("pi: no session file was recorded; start it again with ahub pi");
   expect(none).toContain("pi.auto_start started a fresh session");
-  const broken = await until((await crashedHub({ auto_start: true, cmd: [process.execPath, "-e", "process.exit(1)"] }, () => undefined)).crash);
+  const broken = await until((await crashedHub({ auto_start: true, cmd: [process.execPath, startupExitPi(1)] }, () => undefined)).crash);
   expect(broken.some((l) => l.startsWith("pi.auto_start could not start Pi either ("))).toBe(true);
 });
 
@@ -596,7 +604,7 @@ test("pi.auto_start does not replace an idle-exit session whose persisted histor
 });
 
 test("pi.auto_start reports a startup exit once and does not retry it (#255)", async () => {
-  const config = { ...DEFAULT_CONFIG, peers: HEADLESS_PI, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true, cmd: [process.execPath, "-e", "process.exit(0)"] } };
+  const config = { ...DEFAULT_CONFIG, peers: HEADLESS_PI, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: true, cmd: [process.execPath, startupExitPi()] } };
   const { stateDir, daemon } = await hub(config);
   for (let i = 0; i < 200 && !readFileSync(join(stateDir, "hub.log"), "utf8").includes("startup failed;"); i++) await Bun.sleep(5);
   const log = readFileSync(join(stateDir, "hub.log"), "utf8");
@@ -753,7 +761,7 @@ for (const phase of ["startup", "active"] as const) {
   test(`Pi ${phase} failure keeps inspection guidance with auto_start off (#255)`, async () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-auto-off-order-")), trigger = join(dir, "exit-now");
     const config = { ...DEFAULT_CONFIG, pi: { ...DEFAULT_CONFIG.pi, enabled: true, auto_start: false,
-      cmd: phase === "startup" ? [process.execPath, "-e", "process.exit(0)"] :
+      cmd: phase === "startup" ? [process.execPath, startupExitPi()] :
         [process.execPath, join(import.meta.dir, "fakes/pi-rpc.ts"), "--exit-trigger", trigger, "--exit-code", "0"] } };
     const { stateDir, daemon, console_ } = await hub(config);
     const result = await console_.request({ t: "start", peer: "pi", args: { mode: "headless" } });
