@@ -2019,7 +2019,7 @@ Kimi usage ceiling: 2.2.0 print stream-json exposes no token counts. Keep unobse
 
 ## Antigravity P1 (#485)
 
-- Run agy on the 1.4.x line (1.4.2 verified; other patches warn, #589); verify its executable/version and keep the actual TUI/IDE leg separate from the account-free [T0 transport receipt](verification/2026-10-19-agy-p1-t0.md).
+- Run agy on the 1.4.x line (1.4.2 and 1.4.7 verified; other patches warn, #589); verify its executable/version and keep the actual TUI/IDE leg separate from the account-free T0 transport receipts ([1.4.2](verification/2026-10-19-agy-p1-t0.md), [1.4.7](verification/2026-10-26-agy-1.4.7.md)).
 - With a reviewed compatible daemon running and agy explicitly on roster, the person runs `ahub agy` in a terminal. Confirm peer `agy` is pull-only, native permissions unmanaged and no hub sandbox/budget source is claimed.
 - In the native TUI call `hub_inbox`, `hub_send`, and a permitted board read/proposal within a non-PII task. Confirm the tool audience and actor remain `agy`, the native model consumes the tool results, and no unsolicited push or PII task text reaches it.
 - End the TUI normally. Confirm its group/socket detaches and only its matching managed three-file plugin is cleaned up; unrelated project/global settings remain unchanged.
