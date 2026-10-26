@@ -5853,23 +5853,33 @@ function hubWriteRegexes(root, gitDirs = [], moduleGit = [], worktreesRoot) {
     `(subpath ${sbplString(`${d}/hooks`)})`,
     `(require-all (subpath ${sbplString(d)}) ${re(`^.*/${hfsFoldedName("commondir")}$`)})`
   ]);
-  const modules = moduleGit.flatMap((tree) => [
-    `(require-all ${re(`^${sbplEscape(tree.root)}/`)} ${re(`^.*/${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
-    `(require-all ${re(`^${sbplEscape(tree.root)}/`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
-    `(require-all ${re(`^${sbplEscape(tree.root)}/`)} ${re(`^.*/${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
-    ...tree.entries.map((d) => `(require-all ${re(`^${sbplEscape(dirname8(d))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename4(d))}$`)})`)
-  ]);
+  const modules = moduleGit.flatMap((tree) => {
+    const root = sbplEscape(tree.root);
+    const inside = tree.dirs.map((d) => `(require-not ${re(`^${sbplEscape(d)}(/|$)`)})`).join(" ");
+    const anchored = tree.dirs.flatMap((d) => {
+      const dir = sbplEscape(d);
+      return [
+        `(require-all ${re(`^${dir}/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config")}$`)})`,
+        `(require-all ${re(`^${dir}/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
+        `(require-all ${re(`^${dir}/`)} ${re(hooksUnder(d))})`,
+        `(require-all ${re(`^${dir}/worktrees/[^/]+/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`
+      ];
+    });
+    return [
+      `(require-all ${re(`^${root}/.`)} ${inside})`,
+      ...anchored,
+      ...tree.entries.map((d) => `(require-all ${re(`^${sbplEscape(dirname8(d))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename4(d))}$`)})`)
+    ];
+  });
   const siblings = worktreesRoot ? (() => {
-    const w = sbplEscape(worktreesRoot), notRefs = `(require-not ${re(`^${w}/[^/]+/modules/(.*/)?(refs|logs)/`)})`;
+    const w = sbplEscape(worktreesRoot);
     return [
       `(require-all ${re(`^${sbplEscape(dirname8(worktreesRoot))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename4(worktreesRoot))}$`)})`,
       re(`^${w}/[^/]+$`),
       `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config")}$`)})`,
       `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
-      `(require-all ${re(`^${w}/[^/]+/`)} ${re(`^.*/${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${w}/[^/]+/(modules|refs|logs)/`)}))`,
-      `(require-all ${re(`^${w}/[^/]+/modules/`)} ${re(`^.*/${hfsFoldedName("config")}$`)} ${notRefs})`,
-      `(require-all ${re(`^${w}/[^/]+/modules/`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")} ${notRefs})`,
-      `(require-all ${re(`^${w}/[^/]+/modules/`)} ${re(`^.*/${hfsFoldedName("hooks")}(/|$)`)} ${notRefs})`,
+      `(require-all ${re(`^${w}/[^/]+/`)} ${re(hooksUnder(`${worktreesRoot}/x`))})`,
+      `(require-all ${re(`^${w}/[^/]+/modules/.`)} ${moduleGit.flatMap((tree) => tree.dirs).filter((d) => d.startsWith(`${worktreesRoot}/`)).map((d) => `(require-not ${re(`^${sbplEscape(d)}(/|$)`)})`).join(" ")})`,
       `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("modules")}$`)})`
     ];
   })() : [];
@@ -5896,7 +5906,10 @@ function denyRegexes(root, extra = [], withNames = true) {
     ...extra.filter(Boolean).map((e) => `^${sbplEscape(root)}/.*${sbplEscape(e)}`)
   ].map((re) => `(regex ${sbplString(re)})`);
 }
-var sbplEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), sbplString = (s) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`, HFS_IGNORABLE_POINTS, HFS_IGNORABLE, hfsFoldedName = (name) => `${HFS_IGNORABLE}*${[...name].map((c) => sbplEscape(c)).join(`${HFS_IGNORABLE}*`)}${HFS_IGNORABLE}*`, CONFIG_WORKTREE_NAME;
+var sbplEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), sbplString = (s) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`, HFS_IGNORABLE_POINTS, HFS_IGNORABLE, hfsFoldedName = (name) => `${HFS_IGNORABLE}*${[...name].map((c) => sbplEscape(c)).join(`${HFS_IGNORABLE}*`)}${HFS_IGNORABLE}*`, CONFIG_WORKTREE_NAME, MAX_ANCHOR_DEPTH = 80, hooksUnder = (parent) => {
+  const depth = parent.split("/").filter(Boolean).length;
+  return depth > MAX_ANCHOR_DEPTH ? `^.*/${hfsFoldedName("hooks")}(/|$)` : `^${"/[^/]+".repeat(depth)}/${hfsFoldedName("hooks")}(/|$)`;
+};
 var init_deny = __esm(() => {
   init_platform();
   init_platform();
@@ -5949,7 +5962,8 @@ function moduleGitDirs(root) {
         roots.add(modules);
     }
   } catch {}
-  return [...roots].map((modulesRoot) => {
+  const trees = [];
+  const tree = (modulesRoot, nesting) => {
     const dirs = [];
     const walk = (dir, depth) => {
       if (depth > 8)
@@ -5963,9 +5977,6 @@ function moduleGitDirs(root) {
       const names = new Set(entries.map((e) => e.name));
       if (names.has("HEAD") && names.has("config")) {
         dirs.push(dir);
-        const nested = join12(dir, "modules");
-        if (names.has("modules"))
-          walk(nested, depth + 1);
         return;
       }
       for (const e of entries)
@@ -5973,12 +5984,18 @@ function moduleGitDirs(root) {
           walk(join12(dir, e.name), depth + 1);
     };
     walk(modulesRoot, 0);
+    const found = nesting >= MODULE_DEPTH ? [] : dirs;
     const entries = new Set([modulesRoot]);
-    for (const d of dirs)
+    for (const d of found)
       for (let p = d;p.length > modulesRoot.length; p = dirname9(p))
         entries.add(p);
-    return { root: modulesRoot, entries: [...entries] };
-  });
+    trees.push({ root: modulesRoot, entries: [...entries], dirs: found });
+    for (const d of found)
+      tree(join12(d, "modules"), nesting + 1);
+  };
+  for (const modulesRoot of roots)
+    tree(modulesRoot, 0);
+  return trees;
 }
 function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
   const home = homedir4();
@@ -6088,7 +6105,7 @@ function proxyEnv(network) {
   const url = `http://127.0.0.1:${network.proxyPort}`;
   return { HTTPS_PROXY: url, https_proxy: url, HTTP_PROXY: url, http_proxy: url, ALL_PROXY: url, all_proxy: url, NO_PROXY: "", no_proxy: "" };
 }
-var SANDBOX_EXEC = "/usr/bin/sandbox-exec", OUTPUT_CAP = 20000, sandboxAvailable = () => process.platform === "darwin" && existsSync6(SANDBOX_EXEC), q, HOME_READABLE, CA_BUNDLES, SYSTEM_READABLE, MACH_SERVICES, NETWORK_MACH_SERVICES, PROXY_MACH_SERVICES;
+var SANDBOX_EXEC = "/usr/bin/sandbox-exec", OUTPUT_CAP = 20000, sandboxAvailable = () => process.platform === "darwin" && existsSync6(SANDBOX_EXEC), q, HOME_READABLE, CA_BUNDLES, MODULE_DEPTH = 8, SYSTEM_READABLE, MACH_SERVICES, NETWORK_MACH_SERVICES, PROXY_MACH_SERVICES;
 var init_sandbox = __esm(() => {
   init_project();
   init_git();
