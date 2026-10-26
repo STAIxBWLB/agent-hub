@@ -62,6 +62,7 @@ test.skipIf(!sandboxAvailable())("Darwin task sandbox blocks other Git state and
   const sandbox = `${profile(f.root, false)}\n${restrictions}`;
   const exec = (argv: string[]) => sandboxedExec(argv, { cwd: f.root, profile: sandbox, env: f.env, timeoutMs: 2000 });
   const other = join(f.common, "worktrees/other"), mainHead = readFileSync(join(f.common, "HEAD"), "utf8");
+  const mainCommit = f.git("rev-parse", "refs/heads/main"), otherCommit = f.git("rev-parse", "refs/heads/task/other");
   for (const modules of [join(f.common, "modules"), join(f.own, "modules")]) {
     const target = join(modules, "precreate", "hooks"), result = await exec(["/bin/mkdir", "-p", target]);
     expect(result.code, target).not.toBe(0); expect(existsSync(target), target).toBe(false);
@@ -77,9 +78,11 @@ test.skipIf(!sandboxAvailable())("Darwin task sandbox blocks other Git state and
   for (const target of targets) {
     // Create fixture parents outside the sandbox; the deny-only scope must protect both existing and newly named metadata.
     mkdirSync(dirname(target), { recursive: true });
+    const before = existsSync(target) ? readFileSync(target) : undefined;
     const result = await exec(["/bin/sh", "-c", `printf unsafe > ${shellQuote(target)}`]);
     expect(result.code, target).not.toBe(0);
-    if (existsSync(target)) expect(readFileSync(target, "utf8"), target).not.toBe("unsafe");
+    if (before) expect(readFileSync(target), target).toEqual(before);
+    else expect(existsSync(target), target).toBe(false);
   }
   for (const directory of [join(f.common, "refs/heads/task"), join(f.common, "objects"), f.own, other, join(f.common, "modules"), join(f.own, "modules")]) {
     const result = await exec(["/bin/mv", directory, `${directory}-replaced`]);
@@ -93,6 +96,8 @@ test.skipIf(!sandboxAvailable())("Darwin task sandbox blocks other Git state and
   const commit = await exec([executable, ...hubGitArgv(["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "own branch commit"]).slice(1)]);
   expect(commit.code, commit.output).toBe(0);
   expect(f.git("-C", f.root, "log", "-1", "--format=%s")).toBe("own branch commit");
+  expect(f.git("rev-parse", "refs/heads/main")).toBe(mainCommit);
+  expect(f.git("rev-parse", "refs/heads/task/other")).toBe(otherCommit);
   expect(readFileSync(join(f.common, "HEAD"), "utf8")).toBe(mainHead);
 }, 20_000);
 
