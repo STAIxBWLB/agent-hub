@@ -5855,14 +5855,18 @@ function hubWriteRegexes(root, gitDirs = [], moduleGit = [], worktreesRoot) {
   ]);
   const modules = moduleGit.flatMap((tree) => {
     const root = sbplEscape(tree.root);
-    const inside = tree.dirs.map((d) => `(require-not ${re(`^${sbplEscape(d)}(/|$)`)})`).join(" ");
-    const anchored = tree.dirs.flatMap((d) => {
+    const found = tree.dirs ?? [];
+    const inside = found.map((d) => `(require-not ${re(`^${sbplEscape(d)}(/|$)`)})`).join(" ");
+    const anchored = found.flatMap((d) => {
       const dir = sbplEscape(d);
       return [
         `(require-all ${re(`^${dir}/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config")}$`)})`,
         `(require-all ${re(`^${dir}/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
         `(require-all ${re(`^${dir}/`)} ${re(hooksUnder(d))})`,
-        `(require-all ${re(`^${dir}/worktrees/[^/]+/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`
+        `(require-all ${re(`^${dir}/worktrees/[^/]+/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
+        `(require-all ${re(`^${dir}/[^/]+$`)} ${re(`^.*/${hfsFoldedName("worktrees")}$`)})`,
+        re(`^${dir}/worktrees/[^/]+$`),
+        `(require-all ${re(`^${dir}/[^/]+$`)} ${re(`^.*/${hfsFoldedName("hooks")}$`)})`
       ];
     });
     return [
@@ -5879,7 +5883,7 @@ function hubWriteRegexes(root, gitDirs = [], moduleGit = [], worktreesRoot) {
       `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config")}$`)})`,
       `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
       `(require-all ${re(`^${w}/[^/]+/`)} ${re(hooksUnder(`${worktreesRoot}/x`))})`,
-      `(require-all ${re(`^${w}/[^/]+/modules/.`)} ${moduleGit.flatMap((tree) => tree.dirs).filter((d) => d.startsWith(`${worktreesRoot}/`)).map((d) => `(require-not ${re(`^${sbplEscape(d)}(/|$)`)})`).join(" ")})`,
+      `(require-all ${re(`^${w}/[^/]+/modules/.`)} ${moduleGit.flatMap((tree) => tree.dirs ?? []).filter((d) => d.startsWith(`${worktreesRoot}/`)).map((d) => `(require-not ${re(`^${sbplEscape(d)}(/|$)`)})`).join(" ")})`,
       `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("modules")}$`)})`
     ];
   })() : [];

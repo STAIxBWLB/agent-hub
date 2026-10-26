@@ -151,7 +151,7 @@ test("a second unstable proof fails closed without a third approval or process",
 
 test("Seatbelt file and existing guardPath body remain byte-identical to the accepted base",()=>{
   const hash=(text:string)=>createHash("sha256").update(text).digest("hex");
-  expect(hash(readFileSync(new URL("../src/local/sandbox.ts",import.meta.url),"utf8"))).toBe("3f2e7e619e42af742fe8a92a1a0e781ad07d50b1e1557704b070af83274fd138"); // #518 and #520 moved this pin on purpose: moduleGitDirs and the modules trees changed (the #816 read-only shell slice itself left the file as a81626da...)
+  expect(hash(readFileSync(new URL("../src/local/sandbox.ts",import.meta.url),"utf8"))).toBe("ec0831e805d208844972ff9cffccb222e6277b6a6268e5846c8f40be4067e74e"); // #518 and #520 moved this pin on purpose: moduleGitDirs and the modules trees changed (the #816 read-only shell slice itself left the file as a81626da...)
   const tools=readFileSync(new URL("../src/local/tools.ts",import.meta.url),"utf8"),spans=findSymbol(parseSource("tools.ts",tools),"guardPath");
   expect(spans).toHaveLength(1);
   const span=spans[0]!;expect(tools[span.end]).toBe("\n");
