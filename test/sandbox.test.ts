@@ -718,6 +718,50 @@ test.skipIf(!sandboxAvailable())("inside a discovered submodule git dir, every d
   for (const expected of ["committed-in-sub", "branched"]) expect(ok.output).toContain(expected);
 }, 60_000);
 
+test.skipIf(!sandboxAvailable())("a submodule's linked worktree has its own modules tree: it is protected like any other, present or not yet created, and ordinary work in it runs (#520 review)", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-subwt-modules-")));
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  const ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+  const init = (dir: string) => { expect(git(["init", "-q", dir]).exitCode).toBe(0); writeFileSync(join(dir, "f"), "x"); git(["-C", dir, "add", "f"]); expect(git(["-C", dir, ...ident, "commit", "-qm", "one"]).exitCode).toBe(0); };
+  const innerSrc = join(base, "inner-src"), subSrc = join(base, "sub-src"), main = join(base, "main"), linked = join(base, "sub-wt");
+  init(innerSrc); init(subSrc);
+  expect(git(["-C", subSrc, "-c", "protocol.file.allow=always", "submodule", "add", "-q", innerSrc, "in"]).exitCode).toBe(0);
+  expect(git(["-C", subSrc, ...ident, "commit", "-qm", "with inner"]).exitCode).toBe(0);
+  init(main);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subSrc, "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, ...ident, "commit", "-qm", "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive", "-q"]).exitCode).toBe(0);
+  // The submodule is a repository of its own: it can have a linked worktree, and that worktree can have its own submodule, whose git dir is D/worktrees/<wt>/modules/<name>.
+  expect(git(["-C", join(main, "s"), "worktree", "add", linked]).exitCode).toBe(0);
+  expect(git(["-C", linked, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]).exitCode).toBe(0);
+  const dir = join(main, ".git", "modules", "s"), wtGit = join(dir, "worktrees", "sub-wt"), innerGit = join(wtGit, "modules", "in");
+  expect(existsSync(join(innerGit, "config"))).toBe(true);
+  const before = readFileSync(join(innerGit, "config"), "utf8");
+  const attempts: [string, string][] = [
+    ["plant a fake git dir named refs", `mkdir -p '${wtGit}/modules/refs' && echo '[core]' > '${wtGit}/modules/refs/config'`],
+    ["plant a hook under a fake git dir", `mkdir -p '${wtGit}/modules/x/hooks' && echo x > '${wtGit}/modules/x/hooks/post-checkout'`],
+    ["edit the existing git dir's config", `echo '[core]' >> '${innerGit}/config'`],
+    ["add a hook to the existing git dir", `mkdir -p '${innerGit}/hooks' && echo x > '${innerGit}/hooks/pre-commit'`],
+    ["plant under a linked worktree that does not exist yet", `mkdir -p '${dir}/worktrees/later/modules/z' && echo x > '${dir}/worktrees/later/modules/z/config'`],
+    ["rename the modules tree away", `mv '${wtGit}/modules' '${wtGit}/m-away'`],
+    ["move the git dir away, edit, put back", `mv '${innerGit}' '${wtGit}/away' && echo '[core]' >> '${wtGit}/away/config'; mv '${wtGit}/away' '${innerGit}'`],
+  ];
+  const slipped: string[] = [];
+  for (const [label, command] of attempts) {
+    const out = await sandboxedExec(["/bin/sh", "-c", `(${command}) 2>/dev/null; echo done`], { cwd: main, profile: profile(main, false) });
+    expect(out.output).toContain("done");
+    if (readFileSync(join(innerGit, "config"), "utf8") !== before || existsSync(join(wtGit, "modules", "refs")) || existsSync(join(wtGit, "modules", "x")) || existsSync(join(innerGit, "hooks"))
+      || existsSync(join(dir, "worktrees", "later", "modules")) || !existsSync(join(wtGit, "modules")) || existsSync(join(wtGit, "m-away")) || existsSync(join(wtGit, "away"))) { slipped.push(label); break; }
+  }
+  expect(slipped).toEqual([]);
+  // The real thing keeps working: commit, branch and tag in the linked worktree's own submodule, and in the linked worktree.
+  const ok = await sandboxedExec(["/bin/sh", "-c", [
+    `git -C '${linked}/in' ${ident.join(" ")} commit -qm in-inner --allow-empty && echo committed-in-inner`, `git -C '${linked}/in' branch fix/config && echo branched-in-inner`, `git -C '${linked}' ${ident.join(" ")} commit -qm in-wt --allow-empty && echo committed-in-wt`,
+    `git -C '${linked}' status --short >/dev/null && echo status-ok`,
+  ].join("; ")], { cwd: main, profile: profile(main, false) });
+  for (const expected of ["committed-in-inner", "branched-in-inner", "committed-in-wt", "status-ok"]) expect(ok.output).toContain(expected);
+}, 60_000);
+
 test("no regex literal that folds a name carries the git path, so a long path cannot push one over SBPL's 1024-byte limit (#518 review)", () => {
   // A literal over 1024 BYTES (the HFS+ code points are 3 bytes each) makes sandbox-exec refuse the whole profile, so no sandboxed command starts. Bytes, not characters.
   const literal = /\(regex "((?:[^"\\]|\\.)*)"\)/g;
