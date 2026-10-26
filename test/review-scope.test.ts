@@ -137,6 +137,16 @@ test("the classifier refuses only clearly verification-only items, and keeps eve
     "CI is missing a macOS job.",
     "No tests cover the foreign-key prune path.",
     "Check output is not redacted before it is stored.",
+    // codex-review round 2: an unknown suffix or a bare mention is a code finding, never a verification claim.
+    "The check is not run when inputs change.",
+    "EPERM is silently ignored.",
+    "EPERM is ignored.",
+    "EPERM is not handled.",
+    "The sandbox blocked the write.",
+    "The check is not run for the lockfile.",
+    "Tests are not run on the macOS leg.",
+    "The gate is not green when the bundle is stale.",
+    "CI is not green on main.",
   ];
   for (const item of kept) expect(verificationOnlyItem(item), item).toBe(false);
   expect(classifyVerificationOnly([], [])).toBe(false);
@@ -155,6 +165,20 @@ test("no runner subject paired with a code defect is ever classified as verifica
   const wrong = subjects.flatMap(subject => defects.map(defect => `${subject[0]!.toUpperCase()}${subject.slice(1)} ${defect}.`)).filter(verificationOnlyItem);
   expect(wrong).toEqual([]);
   // The evidence being absent is a verification claim only when it is the whole claim.
-  expect(verificationOnlyItem("Check output is missing.")).toBe(true);
+  expect(verificationOnlyItem("The check output is missing from the review brief.")).toBe(true);
   expect(verificationOnlyItem("Check output is missing a guard for null input.")).toBe(false);
+});
+
+test("a verification claim is a closed vocabulary: any unknown word, condition or suffix keeps the verdict", () => {
+  const suffixes = ["when inputs change", "on the macOS leg", "for null input", "after a restart", "silently", "twice", "in the workflow", "if the bundle is stale", "before the lockfile step", "without a guard", "while the daemon starts", "unless the flag is set"];
+  const subjects = ["The check", "The tests", "CI", "The gate", "The typecheck", "scripts/check.sh", "The test suite"];
+  const states = ["is not run", "is not green", "was not executed", "is not verified", "cannot run", "could not run", "is unavailable", "remains unverified"];
+  const wrong = subjects.flatMap(subject => states.flatMap(state => suffixes.map(suffix => `${subject} ${state} ${suffix}.`))).filter(verificationOnlyItem);
+  expect(wrong).toEqual([]);
+  const eperm = ["silently ignored", "swallowed", "not handled", "ignored", "logged twice", "retried forever", "treated as success", "mapped to a refusal"];
+  expect(eperm.map(word => `EPERM is ${word}.`).filter(verificationOnlyItem)).toEqual([]);
+  // With a verification context and nothing else, the claim is one a code reviewer cannot establish.
+  for (const claim of ["Required CI is not green.", "Exact-head CI is not green.", "The affected tests are not verified.", "Reviewer tests were blocked by the read-only sandbox EPERM.", "Required exact-head CI is not green per hub brief; provide green required checks before merge."]) expect(verificationOnlyItem(claim), claim).toBe(true);
+  // A bare claim with no verification context is ambiguous (a CI job that never triggers is a code defect too), so it is kept: when unsure, accept.
+  for (const bare of ["The check is not run.", "CI is not green.", "The tests were not executed.", "The gate remains unverified.", "Tests could not run.", "No check result.", "Check output is missing."]) expect(verificationOnlyItem(bare), bare).toBe(false);
 });

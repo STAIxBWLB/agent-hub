@@ -21869,14 +21869,15 @@ var inFlight = new Set;
 
 // src/hub/review-scope.ts
 var isReviewScope = (value) => value === "full" || value === "code";
-var S = String.raw`(?:tests?|test suites?|bun test|scripts/check\.sh|checks?|ci|continuous integration|github checks?|gates?|check (?:output|results?)|typecheck|tsc|preload)`;
-var POSITIVE = [
-  new RegExp(String.raw`^(?:[\w ]{0,24}:\s*)?(?:please |still )?(?:provide|supply|paste|show|attach|confirm|rerun|re-run|run|execute)\b[^.;]{0,120}\b${S}\b`, "i"),
-  new RegExp(String.raw`\b${S}\b[^.;]{0,120}\b(?:(?:has|have|had|is|are|was|were|remains?|remained) (?:not|n't) (?:yet )?(?:been )?(?:run|ran|executed|verified|confirmed|green|passing|passed|available|provided|supplied|shown|readable|read)|(?:remains?|remained|is|are) (?:still )?(?:unverified|unavailable|unconfirmed|pending|unknown)|could not (?:be )?(?:run|read|executed|reproduced)|cannot (?:be )?(?:run|read|executed|reproduced)|(?:was|were|is|are) blocked)\b`, "i"),
-  new RegExp(String.raw`\b(?:no|without|missing|absent)\s+(?:\w+\s+){0,2}${S}\s+(?:results?|output|evidence|receipt|report)\b`, "i"),
-  new RegExp(String.raw`^(?:[\w ]{0,24}:\s*)?(?:the |a |any )?(?:\w+\s+){0,2}${S}\s+(?:results?|output|evidence|receipt|report)\s+(?:is|are|was|were|remains?)\s+(?:missing|absent|unavailable|not (?:provided|supplied|shown|available))(?:\s+(?:in|from) the (?:review )?(?:brief|task|request|public task view))?$`, "i"),
-  /\b(?:eperm|read-only sandbox)\b/i
-];
+var words = (text) => new Set(text.split(/\s+/).filter(Boolean));
+var FUNCTION = words("a an the this that these those its it their there is are was were be been being has have had not no and or of at on in to for from by with before after per as because until yet still please only any all both each also which remain remains remained");
+var CLAIM = words("provide provided supply supplied paste show shown attach attached confirm confirmed confirmation rerun run ran running execute executed execution verify verified verification unverified read readable reproduce reproduced reproducible could cannot can green passing passed successful success available unavailable unconfirmed unknown pending missing absent blocked failed contains reports independently independent ok");
+var SUBJECT = words("test tests suite suites check checks gate gates ci typecheck tsc preload bun");
+var CONTEXT_NOUN = words("output result results evidence receipt report log logs head sha id file files body bodies brief hub task view public review reviewer reviewers sandbox environment temp temporary home directory creation creating writable authorized authorised isolated only exact affected required reviewed full new relevant targeted local five own unmet ac ref merge commit committed current eperm verification note");
+var VOCAB = new Set([...FUNCTION, ...CLAIM, ...SUBJECT, ...CONTEXT_NOUN]);
+var CONTEXT = words("reviewer reviewers sandbox eperm preload brief hub head evidence receipt affected required exact reviewed per merge");
+var LABELS = String.raw`(?:(?:verification|ac|required|unmet|evidence|note|exact|reviewer)\s+){0,3}`;
+var REQUEST = new RegExp(String.raw`^${LABELS}(?:please\s+|still\s+)?(?:provide|supply|paste|show|attach|confirm|rerun|run|execute)\b`);
 
 // src/hub/tasks.ts
 init_review_findings();
