@@ -112,11 +112,15 @@ export function proveTaskShell(command: unknown, options: TaskShellProofOptions,
     paths.add(executable);
     let argv = [...form.argv.slice(1)], repository: string | undefined;
     let effectiveEnv: Record<string, string> = { ...env };
-    if (form.kind === "pr-create" && argv.includes("--body-file")) {
+    let bodyFileIndex = -1;
+    if (form.kind === "pr-create") for (let index = 3; index < form.argv.length; index += 2) {
+      if (form.argv[index] === "--body-file") bodyFileIndex = index - 1; // Effective argv excludes the program.
+    }
+    if (bodyFileIndex >= 0) {
       if (!options.publicText) return;
-      const index = argv.indexOf("--body-file"), body = bodyFileText(path(argv[index + 1]!));
+      const body = bodyFileText(path(argv[bodyFileIndex + 1]!));
       if (options.publicText(body) !== true) return;
-      argv.splice(index, 2, "--body", body);
+      argv.splice(bodyFileIndex, 2, "--body", body);
     }
     if (form.program === "git" || form.program === "gh") {
       const git = gitReader(root, env, current, project);

@@ -155,6 +155,22 @@ test("#845 body-file grants require a screened bounded regular file and execute 
   } finally { f.close(); }
 });
 
+test("#845 a literal body-file flag in the title stays data while the actual body-file flag selects its path", () => {
+  const f = fixture();
+  try {
+    const prefix = "gh pr create --base main --head task/worker --title '--body-file'";
+    const literal = proveTaskShell(`${prefix} --body public`, { ...f.options, publicText: undefined }, () => true)!;
+    expect(literal).toBeDefined();
+    expect(literal.argv.slice(0, -2)).toEqual(["pr", "create", "--base", "main", "--head", "task/worker", "--title", "--body-file", "--body", "public"]);
+    writeFileSync(join(f.root, "body.md"), "Screened public snapshot.\n");
+    const screened: string[] = [];
+    const captured = proveTaskShell(`${prefix} --body-file body.md`, { ...f.options, publicText: text => { screened.push(text); return true; } }, () => true)!;
+    expect(captured).toBeDefined();
+    expect(screened).toEqual(["Screened public snapshot.\n"]);
+    expect(captured.argv.slice(0, -2)).toEqual(["pr", "create", "--base", "main", "--head", "task/worker", "--title", "--body-file", "--body", "Screened public snapshot.\n"]);
+  } finally { f.close(); }
+});
+
 test("#845 shared host environment ignores native-style ambient selector variables", () => {
   const keys = ["GIT_DIR", "RIPGREP_CONFIG_PATH", "GH_REPO"], before = keys.map(key => process.env[key]);
   try {

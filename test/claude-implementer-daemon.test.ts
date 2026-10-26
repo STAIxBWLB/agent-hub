@@ -146,6 +146,25 @@ test.skipIf(!sandboxAvailable())("#845 model-written gate test cannot read the h
   } finally { await f.close(); }
 }, 20_000);
 
+test.skipIf(!sandboxAvailable())("#845 a changed submodule inventory invalidates an outstanding gate ticket", async () => {
+  const f = await fixture(true);
+  try {
+    await shellTask(f);
+    const allowed = await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "scripts/check.sh --changed" }, wrapperProtocol: 1 });
+    expect(allowed).toMatchObject({ behavior: "allow", wrapperProtocol: 1 });
+    const module = join(f.root, ".git", "modules", "new-module");
+    mkdirSync(module, { recursive: true });
+    writeFileSync(join(module, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(module, "config"), "[core]\nrepositoryformatversion = 0\n");
+    const stale = await runGranted(allowed.updatedInput.command, f.root);
+    expect(stale.code).not.toBe(0); expect(stale.stdout).toBe("");
+    expect(stale.stderr).toContain("host shell execution refused");
+    const fresh = await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "scripts/check.sh --changed" }, wrapperProtocol: 1 });
+    expect(fresh).toMatchObject({ behavior: "allow", wrapperProtocol: 1 });
+    expect(await runGranted(fresh.updatedInput.command, f.root)).toEqual({ code: 0, stdout: `${f.tree}\n`, stderr: "" });
+  } finally { await f.close(); }
+}, 20_000);
+
 test.skipIf(sandboxAvailable())("#845 executable task gates ask when the local kernel sandbox is unavailable", async () => {
   const f = await fixture(true);
   try {

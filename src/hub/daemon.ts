@@ -2335,20 +2335,27 @@ export async function startDaemon(opts: DaemonOptions) {
     if (board.get(taskId)?.refs.branch === undefined && !taskProof) return;
     if (!readProof && !taskProof || !tasks.bindShellBranch(peer, taskId, { ...binding, worktree: root }, authority)) return;
     const fingerprint = (readProof ?? taskProof)!.fingerprint;
-    let sandbox: { profile: string; readOnlyData: boolean } | undefined;
-    if (confined) {
+    const currentSandbox = () => {
+      if (!confined) return undefined;
       const state = realPath(opts.stateDir);
       const owner = c.toolsOwner!.owner, key = JSON.stringify([root, state, policyFingerprint]), cached = implementerShellProfiles.get(owner);
+      if (cached?.key === key) return cached.sandbox;
+      // Cache only this synchronous proof burst: newly initialized submodules change concrete Git-directory protections.
       // read_allow may include the canonical checkout. Its live control credentials remain denied independently of the worktree root.
-      sandbox = cached?.key === key ? cached.sandbox : { profile: `${profile(root, sandboxNetwork, config.local.read_allow, config.local.deny, config.data?.readonly)}\n(deny file-read* file-write* (subpath ${sbplString(state)}))`, readOnlyData: !!config.data?.readonly?.length };
-      implementerShellProfiles.set(owner, { key, sandbox });
-    }
+      const sandbox = { profile: `${profile(root, sandboxNetwork, config.local.read_allow, config.local.deny, config.data?.readonly)}\n(deny file-read* file-write* (subpath ${sbplString(state)}))`, readOnlyData: !!config.data?.readonly?.length };
+      const entry = { key, sandbox };
+      implementerShellProfiles.set(owner, entry);
+      queueMicrotask(() => { if (implementerShellProfiles.get(owner) === entry) implementerShellProfiles.delete(owner); });
+      return sandbox;
+    };
+    const sandbox = currentSandbox();
     const recheck = () => {
       if (!authority() || !tasks.bindShellBranch(peer, taskId, { ...binding, worktree: root }, authority)) return false;
       const observed = readTaskShellBinding(root, env, authority, opts.cwd);
       if (!observed || observed.branch !== binding.branch || observed.defaultBranch !== binding.defaultBranch) return false;
       const proof = readProof ? proveReadOnlyShell(input, shellOptions, authority) : proveTaskShell(input.command, taskOptions, authority);
-      return proof?.fingerprint === fingerprint && authority();
+      const observedSandbox = currentSandbox();
+      return proof?.fingerprint === fingerprint && observedSandbox?.profile === sandbox?.profile && observedSandbox?.readOnlyData === sandbox?.readOnlyData && authority();
     };
     // A fixed capability on the channel request prevents an older plugin from ignoring updatedInput and running the original command.
     let wrapper: HostShellWrapper;
