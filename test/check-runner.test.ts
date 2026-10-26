@@ -193,6 +193,24 @@ test("explicit stale mark aborts active work, preserves person receipt and expos
   expect((await active.done).status).toBe("stale"); expect((await queued.done).status).toBe("stale"); expect(delivered).toBe(0);
   expect(await f.runner.result(active.run)).toMatchObject({ status: "stale", exit: null }); expect(f.runner.activeRun).toBeUndefined(); expect(f.runner.queuedRuns).toEqual([]);
 });
+test("a stale mark racing the run's own receipt save neither fails nor loses to the older snapshot (#867)", async () => {
+  // The aborted run's completion path and markStale save the same receipt at the same time. One temp name per process made the second rename find the file gone (ENOENT), and an
+  // older snapshot written last could undo the stale mark. Looped: the interleaving is a scheduling accident.
+  for (let i = 0; i < 50; i++) {
+    const f = await fixture();
+    const run = f.runner.start(f.request);
+    await run.done;
+    const internal = f.runner as unknown as { save: (receipt: unknown) => Promise<void> };
+    const receipt = { ...(await f.runner.result(run.run))! };
+    const ordinary = internal.save({ ...receipt, status: "finished" });   // the run's own save, in flight
+    receipt.status = "stale";
+    const marked = internal.save(receipt);                                // markStale's save, started while the other has not finished
+    await Promise.all([ordinary, marked]);
+    expect(await f.runner.result(run.run)).toMatchObject({ status: "stale" });
+    const left = (await readdir(join(f.root, "state/checks"))).filter(name => name.endsWith(".tmp"));
+    expect(left).toEqual([]);
+  }
+});
 test("availability cache reports original probe time and refreshes at its exact bound", async () => {
   let now = 1000;
   const f = await fixture({ now: () => now });
