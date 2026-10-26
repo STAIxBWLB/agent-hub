@@ -177,7 +177,7 @@ export class HostShellWrapper {
       this.tickets.set(token, ticket); grant.signal.addEventListener("abort", ticket.abort, { once: true });
       if (grant.signal.aborted) { this.forget(token, ticket); return; }
       // env -i alone does not prevent Bun from discovering config/preloads in a persisted native cwd.
-      return { command: [this.envProgram.path, "-i", `HOME=${this.directory.path}`, this.runtime.path, "--config", "/dev/null", "--no-env-file", "--cwd", this.directory.path, this.entry.path, this.socket, token].map(shellQuote).join(" ") };
+      return { command: [this.envProgram.path, "-i", `HOME=${this.directory.path}`, this.runtime.path, "--config=/dev/null", "--no-env-file", `--cwd=${this.directory.path}`, this.entry.path, this.socket, token].map(shellQuote).join(" ") };
     } catch { return; }
   }
 
@@ -239,7 +239,7 @@ export class HostShellWrapper {
       // Keep our original group leader alive through output drain. stopOwnedProcess refuses to signal a
       // reaped leader's surviving group. The fixed Bun supervisor reports target status on fd3,
       // closes its own output fds and stays alive on the host-owned stdin release pipe.
-      const proc = execution.proc = spawn(this.runtime.path, ["--config", "/dev/null", "--no-env-file", "--cwd", this.directory.path, "-e", SUPERVISOR_SOURCE], {
+      const proc = execution.proc = spawn(this.runtime.path, ["--config=/dev/null", "--no-env-file", `--cwd=${this.directory.path}`, "-e", SUPERVISOR_SOURCE], {
         cwd: this.directory.path, env: { HOME: this.directory.path }, detached: true, stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
       });
       proc.on("error", () => {}); proc.stdin!.on("error", () => {});
