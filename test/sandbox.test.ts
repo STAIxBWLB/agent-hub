@@ -478,6 +478,42 @@ test.skipIf(!sandboxAvailable())("config.worktree is refused with ignorable code
   expect(unrelated.output).toContain("wrote-orig-head"); expect(unrelated.output).toContain("branched-dotted-name"); expect(unrelated.output).toContain("tagged-dotted-name");
 });
 
+test.skipIf(!sandboxAvailable())("the ancestors of a protected git dir cannot be moved out and back: not the worktrees container, a worktree git dir, the common dir's modules tree or the .git directory (#518 review)", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-wt-ancestors-")));
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  const ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+  const init = (dir: string) => { expect(git(["init", "-q", dir]).exitCode).toBe(0); writeFileSync(join(dir, "f"), "x"); git(["-C", dir, "add", "f"]); expect(git(["-C", dir, ...ident, "commit", "-qm", "one"]).exitCode).toBe(0); };
+  const subSrc = join(base, "sub-src"), main = join(base, "main"), cwd = join(base, "wt"), sibling = join(base, "wt2");
+  init(subSrc); init(main);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subSrc, "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, ...ident, "commit", "-qm", "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, "worktree", "add", cwd]).exitCode).toBe(0);
+  expect(git(["-C", main, "worktree", "add", sibling]).exitCode).toBe(0);
+  expect(git(["-C", sibling, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]).exitCode).toBe(0);
+  // The main checkout's own submodule git dir sits in <common>/modules, the sibling's in <common>/worktrees/wt2/modules.
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]).exitCode).toBe(0);
+  const common = join(main, ".git"), sibGit = join(common, "worktrees", "wt2"), sibSub = join(sibGit, "modules", "s"), mainSub = join(common, "modules", "s");
+  const sibBefore = readFileSync(join(sibSub, "config"), "utf8"), mainBefore = readFileSync(join(mainSub, "config"), "utf8");
+  // Each attack moves an ancestor away, edits the config underneath, and moves it back: the profile must refuse the first move.
+  const attacks = [
+    `(mv '${common}/worktrees' '${common}/w-away' && echo '[core]' >> '${common}/w-away/wt2/modules/s/config'; mv '${common}/w-away' '${common}/worktrees') 2>/dev/null; echo done-worktrees`,
+    `(mv '${sibGit}' '${common}/away2' && echo '[core]' >> '${common}/away2/modules/s/config'; mv '${common}/away2' '${sibGit}') 2>/dev/null; echo done-sibling-gitdir`,
+    `(mv '${sibGit}/modules' '${sibGit}/m-away' && echo '[core]' >> '${sibGit}/m-away/s/config'; mv '${sibGit}/m-away' '${sibGit}/modules') 2>/dev/null; echo done-sibling-modules`,
+    `(mv '${common}/modules' '${common}/m-away' && echo '[core]' >> '${common}/m-away/s/config'; mv '${common}/m-away' '${common}/modules') 2>/dev/null; echo done-common-modules`,
+    `(mv '${common}' '${main}/.git-away' && echo '[core]' >> '${main}/.git-away/modules/s/config'; mv '${main}/.git-away' '${common}') 2>/dev/null; echo done-dot-git`,
+  ];
+  for (const attack of attacks) {
+    const out = await sandboxedExec(["/bin/sh", "-c", attack], { cwd, profile: profile(cwd, false) });
+    expect(out.output).toContain("done-");
+    expect(readFileSync(join(sibSub, "config"), "utf8"), attack).toBe(sibBefore);
+    expect(readFileSync(join(mainSub, "config"), "utf8"), attack).toBe(mainBefore);
+    expect(existsSync(join(common, "worktrees")) && existsSync(sibGit) && existsSync(join(common, "modules")), `the layout is intact after: ${attack}`).toBe(true);
+  }
+  // Ordinary work still runs after all of that: the worktree, a branch and a commit.
+  const ok = await sandboxedExec(["/bin/sh", "-c", ["echo hi > ok.txt && echo wrote-file", "git branch fix/config && echo branched", `git ${ident.join(" ")} commit -qm two --allow-empty && echo committed`].join("; ")], { cwd, profile: profile(cwd, false) });
+  for (const expected of ["wrote-file", "branched", "committed"]) expect(ok.output).toContain(expected);
+});
+
 test("no regex literal that folds a name carries the git path, so a long path cannot push one over SBPL's 1024-byte limit (#518 review)", () => {
   // A literal over 1024 BYTES (the HFS+ code points are 3 bytes each) makes sandbox-exec refuse the whole profile, so no sandboxed command starts. Bytes, not characters.
   const literal = /\(regex "((?:[^"\\]|\\.)*)"\)/g;
