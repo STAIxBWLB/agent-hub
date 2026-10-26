@@ -57,10 +57,10 @@ export const COMPAT = {
     parse: out => plain(out.trim()),
     trustNote: "Only 1.4.2 and 1.4.7 are T0-verified; the plugin MCP and hook contract of another version is unverified.",
     receipt: "docs/verification/2026-10-26-agy-1.4.7.md" },
-  qwen: { label: "Qwen Code", verified: ["0.25.0", "0.26.0"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
+  qwen: { label: "Qwen Code", verified: ["0.25.0", "0.26.0", "0.26.1"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",
     parse: out => plain(out.trim()),
-    trustNote: "Native ACP identity and mode ids have dated receipts; 0.26.0 permission callbacks were checked without inference. Another version may change those contracts.",
-    receipt: "docs/verification/2026-10-22-kimi-qwen-compat.md" },
+    trustNote: "Native ACP identity, mode ids and permission callbacks were re-checked without inference on 0.26.1; its two ACP fixes were judged not to change the hub contract. Another version may change those contracts.",
+    receipt: "docs/verification/2026-10-26-qwen-0261-acp.md" },
   // Receipt: docs/verification/2026-10-25-qwen-dual-output-t0.md. The dual-output contract (input file, event file, can_use_tool control requests) is its own entry:
   // the ACP receipts of the headless `qwen` entry say nothing about it, so that entry is not widened and this one carries no `line`.
   "qwen-dual": { label: "Qwen Code dual-output TUI", verified: ["0.26.1"], gate: "contract", probe: ["qwen", "--version"], config: "qwen_cmd",

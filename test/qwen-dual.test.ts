@@ -67,10 +67,12 @@ const answered = (r: Rig, n: number, id = "allow") => { r.settle.get(String(n))!
 test("the compat entry for the dual-output contract verifies 0.26.1 only, and does not widen the headless qwen entry", () => {
   expect(COMPAT["qwen-dual"].verified).toEqual(["0.26.1"]);
   expect("line" in COMPAT["qwen-dual"]).toBe(false);
-  expect(COMPAT.qwen.verified).toEqual(["0.25.0", "0.26.0"]);   // unchanged: the ACP receipts are separate
+  // The entries are separate contracts, so a widening of one never changes the other: #843 AC5 verified 0.26.1 for the
+  // ACP receipt on the headless qwen entry; this dual-output entry stays verified on 0.26.1 only, at its own gate.
   expect(assessVersion("qwen-dual", "0.26.1", []).ok).toBe(true);
-  expect(assessVersion("qwen-dual", "0.26.0", []).ok).toBe(false);
-  expect(assessVersion("qwen", "0.26.1", []).ok).toBe(false);
+  expect(assessVersion("qwen-dual", "0.25.0", []).ok).toBe(false);
+  expect(assessVersion("qwen", "0.26.0", []).ok).toBe(true);
+  expect(assessVersion("qwen", "0.27.0", []).ok).toBe(false);
 });
 
 test("start prepares private input and event files and the launch carries the dual-output flags", async () => {

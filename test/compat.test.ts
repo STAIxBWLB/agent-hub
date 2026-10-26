@@ -235,6 +235,11 @@ test("Kimi 2.3.1 and 2.3.2 are receipt-verified without machine trust; their nei
   for (const near of ["2.3.3", "2.4.0", "2.3.2-rc.1"]) expect(assessVersion("kimi-review", near, []).ok).toBe(false);
 });
 
+test("Qwen 0.26.1 is receipt-verified without machine trust; its neighbours are not (#843 AC5)", () => {
+  expect(assessVersion("qwen", "0.26.1", [])).toEqual({ ok: true, state: "verified", version: "0.26.1" });
+  for (const near of ["0.26.2", "0.27.0", "0.26.1-rc.1"]) expect(assessVersion("qwen", near, []).ok).toBe(false);
+});
+
 test("the compat watch covers every COMPAT source and renders ahead, unknown and no-public-source rows from an injected fetch (#843)", async () => {
   const { SOURCES, latestVersion, watch } = await import("../scripts/agent-compat-watch.ts");
   // Every key in SOURCES is a public source except agy, whose kind is "none". SOURCES is keyed by CompatId, so a pi
