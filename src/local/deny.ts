@@ -53,29 +53,33 @@ const hfsFoldedName = (name: string) => `${HFS_IGNORABLE}*${[...name].map((c) =>
  * long project path would trip. ponytail: the modules rules do contain the (plain) modules root; a project path
  * over roughly 600 bytes with submodules would exceed the limit — fold the root's segments if one ever shows up.
  */
-export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit?: { root: string; entries: string[] }): string[] {
+export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit: readonly { root: string; entries: string[] }[] = []): string[] {
   const git = hfsFoldedName(".git");
   const re = (s: string) => `(regex ${sbplString(s)})`;
   const external = gitDirs.flatMap((d) => [
     `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${re(`^.*/(${hfsFoldedName("config")}|${hfsFoldedName("hooks")})$`)})`,
+    // The per-worktree config git reads beside `config`; its own rule because one regex literal dies at 1024 bytes and every folded name adds ~330.
+    `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config.worktree")}$`)})`,
     `(subpath ${sbplString(`${d}/hooks`)})`,
     `(require-all (subpath ${sbplString(d)}) ${re(`^.*/${hfsFoldedName("commondir")}$`)})`,
   ]);
-  const modules = moduleGit
-    ? [
-        // Every name matches whole components only: `(.*/)?` forces a boundary, so a submodule named `catalogs`
-        // or `prefs` keeps the refusal and one named `webhooks` keeps its ordinary writes (#281 round 2).
-        `(require-all ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?(refs|logs)/`)}))`,
-        `(require-all ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(moduleGit.root)}/(.*/)?(refs|logs)/`)}))`,
-        // A submodule git dir as a directory entry: no rename, replace, symlink or recreate. The basename is
-        // folded (HFS+ opens the folded spelling as the real entry); the plain prefix is the path as discovered.
-        ...moduleGit.entries.map((d) => re(`^${sbplEscape(dirname(d))}/${hfsFoldedName(basename(d))}$`)),
-      ]
-    : [];
+  // One set of rules for every modules tree (#518): the common dir's, a linked worktree's own, and each sibling's that has one.
+  const modules = moduleGit.flatMap((tree) => [
+    // Every name matches whole components only: `(.*/)?` forces a boundary, so a submodule named `catalogs`
+    // or `prefs` keeps the refusal and one named `webhooks` keeps its ordinary writes (#281 round 2).
+    // `config.worktree` is the per-worktree config git reads next to `config`, so it gets the same refusal.
+    `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
+    `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${hfsFoldedName("config.worktree")}$`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
+    `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
+    // A submodule git dir as a directory entry: no rename, replace, symlink or recreate. The basename is
+    // folded (HFS+ opens the folded spelling as the real entry); the plain prefix is the path as discovered.
+    ...tree.entries.map((d) => re(`^${sbplEscape(dirname(d))}/${hfsFoldedName(basename(d))}$`)),
+  ]);
   return [
     `(require-all (subpath ${sbplString(root)}) ${re(`^.*/${hfsFoldedName(".agenthub")}(/|$)`)})`,
     re(`^.*/${git}$`),
     re(`^.*/${git}/${hfsFoldedName("config")}$`),
+    re(`^.*/${git}/${hfsFoldedName("config.worktree")}$`),
     re(`^.*/${git}/${hfsFoldedName("hooks")}(/|$)`),
     `(require-all ${re(`^.*/${git}/.*$`)} ${re(`^.*/${hfsFoldedName("commondir")}$`)})`,
     ...modules,
