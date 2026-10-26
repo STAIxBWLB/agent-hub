@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { HFS_IGNORABLE_POINTS } from "../src/local/deny.ts";
+import { HFS_IGNORABLE_POINTS, hubWriteRegexes } from "../src/local/deny.ts";
 import { profile, sandboxAvailable, sandboxedExec } from "../src/local/sandbox.ts";
 
 /**
@@ -398,6 +398,68 @@ test.skipIf(!sandboxAvailable())("a linked worktree's submodule git dir (<common
   expect(existsSync(`${sibGit}2`)).toBe(false);
   expect(existsSync(join(wtGit, "modules", "away"))).toBe(false);
   expect(existsSync(join(wtGit, "m2"))).toBe(false);
+});
+
+test.skipIf(!sandboxAvailable())("every linked worktree's git dir is protected by pattern: a modules tree that does not exist yet cannot be pre-created, and a sibling's own config.worktree is refused (#518 review)", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-wt-pattern-")));
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  const ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+  const main = join(base, "main"), cwd = join(base, "wt"), sibling = join(base, "wt-sibling");
+  expect(git(["init", "-q", main]).exitCode).toBe(0);
+  writeFileSync(join(main, "f.txt"), "x\n"); git(["-C", main, "add", "f.txt"]); expect(git(["-C", main, ...ident, "commit", "-qm", "one"]).exitCode).toBe(0);
+  expect(git(["-C", main, "worktree", "add", cwd]).exitCode).toBe(0);
+  expect(git(["-C", main, "worktree", "add", sibling]).exitCode).toBe(0);
+  // Neither worktree has a submodule, so neither git dir has a modules/ tree yet: nothing for discovery to find.
+  const common = join(main, ".git"), own = join(common, "worktrees", "wt"), sib = join(common, "worktrees", "wt-sibling");
+  expect(existsSync(join(own, "modules"))).toBe(false);
+  expect(existsSync(join(sib, "modules"))).toBe(false);
+  const out = await sandboxedExec(["/bin/sh", "-c", [
+    `(mkdir '${sib}/modules') 2>/dev/null && echo WROTE-SIB-MODULES || echo blocked-sib-modules`,
+    `(mkdir -p '${sib}/modules/x' && echo '[core]' > '${sib}/modules/x/config') 2>/dev/null && echo WROTE-SIB-PLANTED-CONFIG || echo blocked-sib-planted-config`,
+    `(mkdir -p '${own}/modules/y' && echo '[core]' > '${own}/modules/y/config') 2>/dev/null && echo WROTE-OWN-PLANTED-CONFIG || echo blocked-own-planted-config`,
+    `(echo x > '${sib}/config.worktree') 2>/dev/null && echo WROTE-SIB-CONFIG-WORKTREE || echo blocked-sib-config-worktree`,
+    `(echo x > '${sib}/config') 2>/dev/null && echo WROTE-SIB-CONFIG || echo blocked-sib-config`,
+    `(mkdir -p '${sib}/hooks' && echo x > '${sib}/hooks/pre-commit') 2>/dev/null && echo WROTE-SIB-HOOK || echo blocked-sib-hook`,
+    // A worktree created AFTER the profile was built is covered too: the rule is a pattern, not a list.
+    `(mkdir -p '${common}/worktrees/later/modules/z' && echo x > '${common}/worktrees/later/modules/z/config') 2>/dev/null && echo WROTE-LATER-WORKTREE || echo blocked-later-worktree`,
+    // Ordinary work: the worktree, branches and tags named like the protected files, a commit.
+    `(echo hi > new.txt) && echo wrote-worktree-file`,
+    "git branch fix/config && echo branched-config",
+    "git tag config && echo tagged-config",
+    `git ${ident.join(" ")} commit -qm two --allow-empty && echo committed`,
+  ].join("; ")], { cwd, profile: profile(cwd, false) });
+  for (const expected of ["blocked-sib-modules", "blocked-sib-planted-config", "blocked-own-planted-config", "blocked-sib-config-worktree", "blocked-sib-config", "blocked-sib-hook", "blocked-later-worktree", "wrote-worktree-file", "branched-config", "tagged-config", "committed"]) expect(out.output).toContain(expected);
+  for (const forbidden of ["WROTE-SIB-MODULES", "WROTE-SIB-PLANTED-CONFIG", "WROTE-OWN-PLANTED-CONFIG", "WROTE-SIB-CONFIG-WORKTREE", "WROTE-SIB-CONFIG", "WROTE-SIB-HOOK", "WROTE-LATER-WORKTREE"]) expect(out.output).not.toContain(forbidden);
+  expect(existsSync(join(sib, "modules"))).toBe(false);
+  expect(existsSync(join(own, "modules"))).toBe(false);
+  expect(existsSync(join(sib, "config.worktree"))).toBe(false);
+  expect(existsSync(join(common, "worktrees", "later"))).toBe(false);
+});
+
+test.skipIf(!sandboxAvailable())("config.worktree is refused in every spelling that folds ignorable code points into BOTH halves of the name, and a sibling that is only named like it is not over-matched (#518 review)", () => {
+  // A rule's regexes must all match: render them and check the spellings against the real patterns with the code points HFS+ ignores, which only an HFS+ volume would open as the real name.
+  const rules = hubWriteRegexes("/proj", ["/ext/.git"], [{ root: "/ext/.git/modules", entries: ["/ext/.git/modules"] }], "/ext/.git/worktrees");
+  const sources = (rule: string) => [...rule.matchAll(/\(regex "((?:[^"\\]|\\.)*)"\)/g)].map((m) => JSON.parse(`"${m[1]!.replace(/\\\\/g, "\\\\")}"`) as string);
+  const blocked = (path: string) => rules.some((rule) => {
+    const regexes = sources(rule);
+    return regexes.length > 0 && regexes.every((source) => new RegExp(source.replace(/\(\?\!/g, "(?!")).test(path)) && !/require-not/.test(rule.replace(/\(require-not [^]*$/, "")) ;
+  });
+  const fold = (name: string, at: number, ch: string) => name.slice(0, at) + ch + name.slice(at);
+  const spellings = [
+    "config.worktree",
+    fold("config.worktree", 3, ZWJ),
+    fold("config.worktree", 9, ZWJ),
+    fold(fold("config.worktree", 3, ZWJ), 11, HFS_IGNORABLE_POINTS[0]!),
+    `${ZWJ}config.${ZWJ}worktree${ZWJ}`,
+    fold(fold("config.worktree", 6, ZWJ), 7, HFS_IGNORABLE_POINTS[14]!),
+  ];
+  for (const name of spellings) {
+    expect(blocked(`/ext/.git/worktrees/wt/${name}`), `worktree git dir: ${JSON.stringify(name)}`).toBe(true);
+    expect(blocked(`/ext/.git/${name}`), `common dir: ${JSON.stringify(name)}`).toBe(true);
+    expect(blocked(`/proj/.git/${name}`), `project .git: ${JSON.stringify(name)}`).toBe(true);
+  }
+  // Not over-matched: an unrelated file in the same directories stays writable.
+  for (const name of ["index", "HEAD", "worktree", "config-worktree", "FETCH_HEAD"]) expect(blocked(`/ext/.git/worktrees/wt/${name}`), name).toBe(false);
 });
 
 test.skipIf(!sandboxAvailable())("a nested bare-layout repository is not covered by the rules: the exclusion, tested (#281)", async () => {
