@@ -4,8 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- The suite watchdog stops a run on lost progress, not elapsed time (#516): `scripts/hang-watch.sh` kills a suite that has printed no new test result line for `AHUB_CHECK_QUIET_S` seconds (180 by default) and prints the process table below it, while `AHUB_CHECK_HANG_S` stays as a backstop (1500 s on Linux and 1800 s on macOS in CI, with 35 and 40 minute job limits). A slow suite that keeps passing tests is no longer cut at the total bound.
 - Pin @staix/agent-mem 0.10.0 (standalone MCP screening/ranking and capture-worker prefetch improvements; unchanged hub policy and storage contracts). Refs agent-mem#13.
-
 - Pin @staix/agent-mem 0.9.1 (split-home sync holds a verified foreign-generation prune as "held, not applied" instead of refusing the sync, cached MCP policy screening, `--capture-days` claude-mem capture import; 0.9.0 was never published). Refs agent-mem#13.
 
 ## 0.18.0
