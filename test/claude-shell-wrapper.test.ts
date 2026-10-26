@@ -71,7 +71,8 @@ test("host supervisor neither injects nor filters PWD SHLVL or underscore from t
     const result = await collect(invoke(issued.command));
     expect(result.code).toBe(0); expect(result.stderr.length).toBe(0);
     const actual = Object.fromEntries(result.stdout.toString().trim().split("\n").map(line => { const equal = line.indexOf("="); return [line.slice(0, equal), line.slice(equal + 1)]; }));
-    expect(actual).toEqual({ ...env, TMPDIR: actual.TMPDIR });
+    expect(actual.TMPDIR).toBeDefined();
+    expect(actual).toEqual({ ...env, TMPDIR: actual.TMPDIR! });
     for (const key of ["PWD", "SHLVL", "_"]) expect(Object.hasOwn(actual, key)).toBe(Object.hasOwn(env, key));
   }
 }, 10_000);
