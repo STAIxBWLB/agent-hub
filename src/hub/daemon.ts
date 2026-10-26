@@ -2341,6 +2341,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const owner = c.toolsOwner!.owner, key = JSON.stringify([root, state, policyFingerprint]), cached = implementerShellProfiles.get(owner);
       if (cached?.key === key) return cached.sandbox;
       // Cache only this synchronous proof burst: newly initialized submodules change concrete Git-directory protections.
+      // ponytail: shared profile discovery is synchronous; move it to an asynchronous, deadline-bound inventory proof.
       // read_allow may include the canonical checkout. Its live control credentials remain denied independently of the worktree root.
       const sandbox = { profile: `${profile(root, sandboxNetwork, config.local.read_allow, config.local.deny, config.data?.readonly)}\n(deny file-read* file-write* (subpath ${sbplString(state)}))`, readOnlyData: !!config.data?.readonly?.length };
       const entry = { key, sandbox };
