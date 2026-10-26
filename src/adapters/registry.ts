@@ -250,7 +250,6 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
     ["routing", definition.routing !== undefined],
     ["projection", definition.projection !== undefined],
     ["instances.nativeHome", declared(definition.instances, "nativeHome")], // #685: a fixed-builtin assumption, one native data home per declared instance
-    ["instances.modelSelect", declared(definition.instances, "modelSelect")], // #844: a fixed-builtin assumption, one validated model word per declared headless instance
     ["identity.currentChild", declared(definition.identity, "currentChild")],
     ["reviewerVariant", definition.reviewerVariant !== undefined],
     ["headlessVariant", definition.headlessVariant !== undefined],
@@ -260,6 +259,7 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
     ["cli.entry", declared(definition.cli, "entry")],
     ["cli.preview", declared(definition.cli, "preview")],
     ["cli.usage", declared(definition.cli, "usage")],
+    ["instances.modelSelect", declared(definition.instances, "modelSelect")], // #844: a fixed-builtin assumption, one validated model word per declared headless instance
   ];
   const field = restricted.find(([, present]) => present)?.[0];
   if (field) throw new Error(`${field} is restricted to fixed builtin adapter definitions`);

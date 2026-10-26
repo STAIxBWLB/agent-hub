@@ -13678,7 +13678,6 @@ function assertNativeCapabilityScope(definition) {
     ["routing", definition.routing !== undefined],
     ["projection", definition.projection !== undefined],
     ["instances.nativeHome", declared(definition.instances, "nativeHome")],
-    ["instances.modelSelect", declared(definition.instances, "modelSelect")],
     ["identity.currentChild", declared(definition.identity, "currentChild")],
     ["reviewerVariant", definition.reviewerVariant !== undefined],
     ["headlessVariant", definition.headlessVariant !== undefined],
@@ -13687,7 +13686,8 @@ function assertNativeCapabilityScope(definition) {
     ["hooks.factsHook", declared(definition.hooks, "factsHook")],
     ["cli.entry", declared(definition.cli, "entry")],
     ["cli.preview", declared(definition.cli, "preview")],
-    ["cli.usage", declared(definition.cli, "usage")]
+    ["cli.usage", declared(definition.cli, "usage")],
+    ["instances.modelSelect", declared(definition.instances, "modelSelect")]
   ];
   const field = restricted.find(([, present]) => present)?.[0];
   if (field)
