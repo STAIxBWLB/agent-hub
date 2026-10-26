@@ -28,6 +28,14 @@ export const HFS_IGNORABLE_POINTS = ["\u200C", "\u200D", "\u200E", "\u200F", "\u
  */
 const HFS_IGNORABLE = `(${HFS_IGNORABLE_POINTS.join("|")})`;
 
+/**
+ * `config.worktree` (the per-worktree config git reads beside `config`, #518) folded in two literals, because one SBPL regex literal dies at 1024 bytes and a folded name costs
+ * about 65 bytes a character (the whole name is 1071). The first matches a folded `config` followed by the plain `.worktree`; the second a plain `config.` followed by a folded
+ * `worktree`. A spelling that folds BOTH halves at once on HFS+ is a known residual of this rule (a case-insensitive APFS ignores none of those code points, and the same
+ * folded-intermediate residual is already stated for `modules` below); `config` alone, the file git reads first, is folded in full everywhere.
+ */
+const configWorktreeFolded = (): string[] => [`${hfsFoldedName("config")}\\.worktree`, `config\\.${hfsFoldedName("worktree")}`];
+
 /** A regex source matching `name` with any number of HFS+-ignorable code points interleaved, at the ends included. */
 const hfsFoldedName = (name: string) => `${HFS_IGNORABLE}*${[...name].map((c) => sbplEscape(c)).join(`${HFS_IGNORABLE}*`)}${HFS_IGNORABLE}*`;
 
@@ -59,7 +67,7 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
   const external = gitDirs.flatMap((d) => [
     `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${re(`^.*/(${hfsFoldedName("config")}|${hfsFoldedName("hooks")})$`)})`,
     // The per-worktree config git reads beside `config`; its own rule because one regex literal dies at 1024 bytes and every folded name adds ~330.
-    `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config.worktree")}$`)})`,
+    ...configWorktreeFolded().map((name) => `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${re(`^.*/${name}$`)})`),
     `(subpath ${sbplString(`${d}/hooks`)})`,
     `(require-all (subpath ${sbplString(d)}) ${re(`^.*/${hfsFoldedName("commondir")}$`)})`,
   ]);
@@ -69,7 +77,7 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
     // or `prefs` keeps the refusal and one named `webhooks` keeps its ordinary writes (#281 round 2).
     // `config.worktree` is the per-worktree config git reads next to `config`, so it gets the same refusal.
     `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
-    `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${hfsFoldedName("config.worktree")}$`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
+    ...configWorktreeFolded().map((name) => `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${name}$`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`),
     `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
     // A submodule git dir as a directory entry: no rename, replace, symlink or recreate. The basename is
     // folded (HFS+ opens the folded spelling as the real entry); the plain prefix is the path as discovered.
@@ -79,7 +87,7 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
     `(require-all (subpath ${sbplString(root)}) ${re(`^.*/${hfsFoldedName(".agenthub")}(/|$)`)})`,
     re(`^.*/${git}$`),
     re(`^.*/${git}/${hfsFoldedName("config")}$`),
-    re(`^.*/${git}/${hfsFoldedName("config.worktree")}$`),
+    ...configWorktreeFolded().map((name) => re(`^.*/${git}/${name}$`)),
     re(`^.*/${git}/${hfsFoldedName("hooks")}(/|$)`),
     `(require-all ${re(`^.*/${git}/.*$`)} ${re(`^.*/${hfsFoldedName("commondir")}$`)})`,
     ...modules,
