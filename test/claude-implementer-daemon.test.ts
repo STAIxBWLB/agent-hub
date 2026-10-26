@@ -136,7 +136,7 @@ test.skipIf(!sandboxAvailable())("#845 model-written gate test cannot read the h
     expect(readFileSync(token, "utf8").trim().length).toBeGreaterThan(0);
     expect(readFileSync(ssh, "utf8")).toBe("fixture-ssh-private");
     mkdirSync(join(f.tree, "test"));
-    writeFileSync(join(f.tree, "test", "gate.test.ts"), `import {expect,test} from "bun:test";import {readFileSync,writeFileSync} from "node:fs";test("kernel gate boundary",()=>{for(const file of ${JSON.stringify([token, ssh])})expect(()=>readFileSync(file,"utf8")).toThrow();expect(()=>writeFileSync(${JSON.stringify(join(f.root, "escaped"))},"outside")).toThrow();writeFileSync(${JSON.stringify(output)},"worktree-write-ok");});`);
+    writeFileSync(join(f.tree, "test", "gate.test.ts"), `import {expect,test} from "bun:test";import {readFileSync,writeFileSync,linkSync} from "node:fs";test("kernel gate boundary",()=>{for(const [index,file] of ${JSON.stringify([token, ssh])}.entries()){expect(()=>readFileSync(file,"utf8")).toThrow();try{const alias="credential-alias-"+index;linkSync(file,alias);expect(()=>readFileSync(alias,"utf8")).toThrow();}catch(error){expect(["EPERM","EACCES"]).toContain(error.code);}}expect(()=>writeFileSync(${JSON.stringify(join(f.root, "escaped"))},"outside")).toThrow();writeFileSync(${JSON.stringify(output)},"worktree-write-ok");});`);
     const allowed = await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "bun test test/gate.test.ts" }, wrapperProtocol: 1 });
     expect(allowed).toMatchObject({ behavior: "allow", wrapperProtocol: 1 });
     const result = await runGranted(allowed.updatedInput.command, f.root);
