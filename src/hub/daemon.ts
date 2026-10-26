@@ -2390,6 +2390,8 @@ export async function startDaemon(opts: DaemonOptions) {
   // #843 AC3: local agent CLI drift. One probe path (`agentVersionsAsync`, the one `ahub agents` shares), no network, no install.
   let agentDrift: DriftedAgent[] = [];
   let agentDriftRunning = false;
+  // The first probe is owed until one has run: a daemon that starts in recovery skips it, and the tick runs it once the hold releases.
+  let agentDriftOwed = true;
   // A planner that is not attached yet gets it from the tick as soon as it is; a recorded marker is never sent twice.
   const offerAgentDrift = () => noticeDrift(agentDrift, {
     record: marker => board.recordAgentDriftNotice(marker), forget: marker => board.forgetAgentDriftNotice(marker),
@@ -2399,6 +2401,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const probe = opts.agentDrift === true ? () => agentVersionsAsync(configuredCommands(config)) : opts.agentDrift || undefined;
     if (!probe || agentDriftRunning || stopping || recoveryActive()) return;
     agentDriftRunning = true;
+    agentDriftOwed = false;
     try {
       const drift = driftedAgents(await probe());
       if (stopping) return;
@@ -2412,6 +2415,7 @@ export async function startDaemon(opts: DaemonOptions) {
     setInterval(() => {
       void refreshRunner().catch(() => {});
       try { tasks.flushPlannerNotices(); } catch { /* the board remains authoritative if notice delivery fails */ }
+      if (agentDriftOwed && !stopping && !recoveryActive()) void sweepAgentDrift();
       if (agentDrift.length && !stopping && !recoveryActive()) try { offerAgentDrift(); } catch { /* the next tick tries again */ }
       for (const pending of checkpointWaits.values()) if (!pending.valid()) pending.done(undefined);
       for (const [id, request] of permissions) if (request.expiresAt > Date.now()) supervision.approvalWaiting({ id, peer: request.peer, tool: request.tool ?? "unknown", createdAt: request.createdAt });

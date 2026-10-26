@@ -10,6 +10,7 @@ import { driftedAgents, noticeDrift, type DriftDeps } from "../src/hub/agent-dri
 import { Board } from "../src/hub/board.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { DEFAULT_CONFIG, startDaemon } from "../src/hub/daemon.ts";
+import { writeRestartSnapshot } from "../src/hub/restart.ts";
 
 const until = async (condition: () => boolean, label: string) => {
   for (let i = 0; i < 600 && !condition(); i++) await Bun.sleep(10);
@@ -237,4 +238,33 @@ test("a descendant that inherited stdout cannot hold the reader past the grace a
     try { process.kill(Number(readFileSync(stray, "utf8").trim()), "SIGKILL"); } catch { /* already gone */ }
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("a daemon that starts inside a controlled recovery owes the first probe and pays it when the hold ends, not a day later (#843 AC3)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-drift-recovery-"));
+  const stateDir = join(dir, ".agenthub/state");
+  mkdirSync(stateDir, { recursive: true });
+  writeRestartSnapshot(stateDir, { schemaVersion: 1, projectRoot: dir, projectId: "drift-recovery", sourceInstanceId: "source", operationId: "drift-op", committedAt: Date.now(),
+    bus: { schemaVersion: 1, queues: {}, prefaces: {}, seen: [], attempts: {}, withdrawn: [], manualPaused: [] }, manualPaused: [], peers: [] });
+  let probes = 0;
+  const previous = process.env.AGENTHUB_RECOVERY_OPERATION;
+  let daemon: Awaited<ReturnType<typeof startDaemon>>;
+  try {
+    process.env.AGENTHUB_RECOVERY_OPERATION = "drift-op";
+    daemon = await startDaemon({
+      cwd: dir, stateDir, projectId: "drift-recovery", instanceId: "target", controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+      config: { ...DEFAULT_CONFIG, roles: { claude: ["planner"] }, batch_ms: 0, memory: { ...DEFAULT_CONFIG.memory, enabled: false } },
+      agentDrift: async () => { probes++; return [row("jcode", "in-line", "9.9.9")]; }, agentDriftEveryMs: 86_400_000,
+    });
+  } finally { if (previous === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION; else process.env.AGENTHUB_RECOVERY_OPERATION = previous; }
+  const console_ = await ControlClient.connect(stateDir, { role: "console" });
+  try {
+    await Bun.sleep(1300); // a main tick (1 s) passes while the hold stands
+    expect(probes).toBe(0);
+    const aborted = await console_.request({ t: "recovery", op: "abort", expectedInstanceId: "target", operationId: "drift-op" }); expect(aborted).toMatchObject({ ok: true });
+    await until(() => probes === 1, "the owed probe runs once the hold has ended");
+    await Bun.sleep(1300);
+    expect(probes).toBe(1); // owed once, not every tick
+    expect(JSON.parse(readFileSync(join(stateDir, "status.json"), "utf8")).agentDrift).toHaveLength(1);
+  } finally { console_.close(); await daemon.stop(); rmSync(dir, { recursive: true, force: true }); }
 });
