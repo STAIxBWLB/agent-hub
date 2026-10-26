@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { accessSync, constants, lstatSync } from "node:fs";
+import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs";
 import { isAbsolute, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { guardPath } from "../local/tools.ts";
@@ -12,7 +12,8 @@ import { taskShellBindingValid, taskShellCommand, type TaskShellBinding, type Ta
 const within = (root: string, path: string) => { const rel = relative(root, path); return !rel || rel !== ".." && !rel.startsWith("../") && !isAbsolute(rel); };
 const stamp = (path: string) => { const s = lstatSync(path, { throwIfNoEntry: false }); return s ? [path, s.dev, s.ino, s.mode, s.size, s.mtimeMs, s.ctimeMs] : [path, "missing"]; };
 
-/** One bounded synchronous metadata read. No network, ambient repository selectors or repository helper execution. */
+/** One bounded synchronous metadata read. No network, ambient repository selectors or repository helper execution.
+ * ponytail: each reader's synchronous Git burst can block the hub for up to 1.5 seconds; move to asynchronous reads with one shared proof budget. */
 function gitReader(root: string, env: Record<string, string>, current: () => boolean, projectRoot = root) {
   if (!env.PATH || env.PATH.length > 16384 || env.PATH.split(":").some(dir => !isAbsolute(dir) || dir.split("/").includes(".."))) throw new Error("unavailable");
   const executable = hostExecutable("git", root, env.PATH), deadline = performance.now() + 1500;
@@ -44,8 +45,48 @@ export function readTaskShellBinding(root: string, env: Record<string, string>, 
 export interface TaskShellProofOptions {
   root: string; projectRoot: string; deny: string[]; readOnly?: string[]; protectInstructions: boolean;
   binding: TaskShellBinding; env: Record<string, string>; repository?: string;
+  /** Host privacy screen for the captured PR body. Missing or unknown screening never grants a body-file upload. */
+  publicText?: (text: string) => boolean;
 }
-export interface TaskShellProof { fingerprint: string; program: TaskShellCommand["program"]; executable: string; argv: readonly string[] }
+export interface TaskShellProof {
+  fingerprint: string; program: TaskShellCommand["program"]; executable: string; argv: readonly string[];
+  env: Readonly<Record<string, string>>; requiresSandbox: boolean;
+}
+
+/** Capture only a bounded regular file; the privileged CLI receives these screened bytes, never a path it can reopen later. */
+function bodyFileText(file: string): string {
+  const initial = lstatSync(file);
+  if (!initial.isFile() || initial.size > 12000) throw new Error("unavailable");
+  const before = stamp(file), fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = fstatSync(fd);
+    if (!stat.isFile() || stat.size > 12000 || JSON.stringify(before) !== JSON.stringify([file, stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeMs, stat.ctimeMs])) throw new Error("unavailable");
+    const bytes = Buffer.alloc(12001), count = readSync(fd, bytes, 0, bytes.length, 0), after = fstatSync(fd);
+    if (count !== stat.size || JSON.stringify(stamp(file)) !== JSON.stringify(before)
+      || [after.dev, after.ino, after.mode, after.size, after.mtimeMs, after.ctimeMs].some((value, index) => value !== [stat.dev, stat.ino, stat.mode, stat.size, stat.mtimeMs, stat.ctimeMs][index])) throw new Error("unavailable");
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, count));
+    if (!text.trim() || text.length > 3000 || text.includes("\0")) throw new Error("unavailable");
+    return text;
+  } finally { closeSync(fd); }
+}
+
+/** Reuse the core's command-line hardening as environment config for Git children spawned internally by gh. */
+function gitChildEnvironment(env: Record<string, string>): Record<string, string> {
+  const result = Object.fromEntries(Object.entries(hubGitEnv(env, { repositoryIsolation: true })).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+  const argv = hubGitArgv([]).slice(1), configs: string[] = [];
+  for (let index = 0; index < argv.length; index++) {
+    if (argv[index] === "--no-pager") continue;
+    if (argv[index] !== "-c" || !argv[index + 1]?.includes("=")) throw new Error("unavailable");
+    configs.push(argv[++index]!);
+  }
+  result.GIT_CONFIG_COUNT = String(configs.length);
+  configs.forEach((config, index) => {
+    const split = config.indexOf("=");
+    result[`GIT_CONFIG_KEY_${index}`] = config.slice(0, split);
+    result[`GIT_CONFIG_VALUE_${index}`] = config.slice(split + 1);
+  });
+  return result;
+}
 
 /** Host task-command proof only; read-only commands continue to use the existing #816 proof. */
 export function proveTaskShell(command: unknown, options: TaskShellProofOptions, current: () => boolean): TaskShellProof | undefined {
@@ -70,6 +111,13 @@ export function proveTaskShell(command: unknown, options: TaskShellProofOptions,
     if (!lstatSync(executable).isFile()) return;
     paths.add(executable);
     let argv = [...form.argv.slice(1)], repository: string | undefined;
+    let effectiveEnv: Record<string, string> = { ...env };
+    if (form.kind === "pr-create" && argv.includes("--body-file")) {
+      if (!options.publicText) return;
+      const index = argv.indexOf("--body-file"), body = bodyFileText(path(argv[index + 1]!));
+      if (options.publicText(body) !== true) return;
+      argv.splice(index, 2, "--body", body);
+    }
     if (form.program === "git" || form.program === "gh") {
       const git = gitReader(root, env, current, project);
       if (form.kind === "add") {
@@ -91,16 +139,23 @@ export function proveTaskShell(command: unknown, options: TaskShellProofOptions,
           return match?.[1]?.toLowerCase() !== expected;
         })) return;
         // No remote-selected helper or implicit extra push effect is part of the closed command shape.
-        if (git(["config", "--get-regexp", "^(core\\.(sshcommand|gitproxy)|remote\\.origin\\.(vcs|proxy|receivepack)|push\\.pushoption)$"], true).trim()) return;
+        if (git(["config", "--get-regexp", "^(core\\.(sshcommand|gitproxy)|remote\\.origin\\.(vcs|proxy|receivepack|push|mirror)|push\\.pushoption)$"], true).trim()) return;
         repository = expected;
       }
-      if (form.program === "git") argv = hubGitArgv([
-        ...(form.kind === "push" ? ["-c", "push.followTags=false", "-c", "remote.origin.mirror=false", "-c", "push.recurseSubmodules=no"] : []), ...argv,
-      ]).slice(1);
-      else argv.push("--repo", `https://github.com/${repository}`);
+      if (form.kind === "push") argv[argv.length - 1] = `refs/heads/${binding.branch}:refs/heads/${binding.branch}`;
+      if (form.program === "git") {
+        effectiveEnv = Object.fromEntries(Object.entries(hubGitEnv(env, { repositoryIsolation: true })).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+        argv = hubGitArgv([
+          ...(form.kind === "push" ? ["-c", "push.followTags=false", "-c", "remote.origin.mirror=false", "-c", "push.recurseSubmodules=no"] : []), ...argv,
+        ]).slice(1);
+      } else {
+        effectiveEnv = gitChildEnvironment(env);
+        argv.push("--repo", `https://github.com/${repository}`);
+      }
     }
+    const requiresSandbox = form.kind !== "push" && form.program !== "gh";
     const rootStat = lstatSync(root);
-    const fingerprint = createHash("sha256").update(JSON.stringify([root, rootStat.dev, rootStat.ino, binding, env, executable, argv, repository, [...paths].map(stamp)])).digest("hex");
-    return current() ? { fingerprint, program: form.program, executable, argv } : undefined;
+    const fingerprint = createHash("sha256").update(JSON.stringify([root, rootStat.dev, rootStat.ino, binding, effectiveEnv, executable, argv, repository, requiresSandbox, [...paths].map(stamp)])).digest("hex");
+    return current() ? { fingerprint, program: form.program, executable, argv: Object.freeze(argv), env: Object.freeze(effectiveEnv), requiresSandbox } : undefined;
   } catch { return undefined; }
 }

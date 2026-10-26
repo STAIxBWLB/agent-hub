@@ -2,11 +2,13 @@ import { expect, test } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hubGitSync } from "../src/hub/git.ts";
+import { spawnSync } from "node:child_process";
+import { hubGitArgv, hubGitEnv, hubGitSync } from "../src/hub/git.ts";
 import { readTaskShellBinding, proveTaskShell, type TaskShellProofOptions } from "../src/hub/task-shell-proof.ts";
 import { hostShellEnvironment } from "../src/local/shell-environment.ts";
 import { realPath } from "../src/hub/project.ts";
 import { shellQuote } from "../src/cli/shell-quote.ts";
+import { hostShellPath } from "../src/hub/host-executable.ts";
 
 function fixture() {
   const project = realPath(mkdtempSync(join(tmpdir(), "ahub-task-shell-proof-"))), root = join(project, ".worktrees", "worker");
@@ -23,7 +25,7 @@ function fixture() {
   mkdirSync(join(root, "scripts")); mkdirSync(join(root, "test"));
   writeFileSync(join(root, "scripts", "check.sh"), "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   writeFileSync(join(root, "test", "example.test.ts"), "fixture\n");
-  const options: TaskShellProofOptions = { root, projectRoot: project, deny: [], protectInstructions: true, binding: { branch: "task/worker", defaultBranch: "main" }, env, repository: "fixture/repo" };
+  const options: TaskShellProofOptions = { root, projectRoot: project, deny: [], protectInstructions: true, binding: { branch: "task/worker", defaultBranch: "main" }, env, repository: "fixture/repo", publicText: () => true };
   return { project, root, git, options, close: () => { rmSync(project, { recursive: true, force: true }); rmSync(hostBin, { recursive: true, force: true }); } };
 }
 
@@ -36,6 +38,7 @@ test("#845 task proof binds real branch/default, literal paths, host argv and ex
       expect(proof, command).toBeDefined(); expect(proof!.executable.startsWith("/")).toBe(true);
       if (proof!.program === "gh") expect(proof!.argv.slice(-2)).toEqual(["--repo", "https://github.com/fixture/repo"]);
       if (proof!.program === "git") expect(proof!.argv).toContain("core.hooksPath=/dev/null");
+      expect(proof!.requiresSandbox, command).toBe(!command.startsWith("git push ") && !command.startsWith("gh "));
     }
     const before = proveTaskShell("scripts/check.sh --changed", f.options, () => true)!;
     writeFileSync(join(f.root, "scripts", "check.sh"), "#!/bin/sh\nexit 7\n");
@@ -81,6 +84,77 @@ test("#845 every origin push target is pinned; helper and implicit push effects 
   } finally { f.close(); }
 });
 
+test("#845 push uses one explicit same-branch refspec, and refuses configured refspecs or mirror even when false", () => {
+  const f = fixture();
+  try {
+    const commands = ["git push origin task/worker", "git push -u origin task/worker"];
+    for (const command of commands) {
+      const proof = proveTaskShell(command, f.options, () => true)!;
+      expect(proof).toBeDefined();
+      expect(proof.argv.slice(proof.argv.indexOf("push"))).toEqual([
+        "push", ...(command.includes(" -u ") ? ["-u"] : []), "origin", "refs/heads/task/worker:refs/heads/task/worker",
+      ]);
+      const expectedEnv = Object.fromEntries(Object.entries(hubGitEnv(f.options.env, { repositoryIsolation: true })).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+      expect(proof.env).toEqual(expectedEnv);
+    }
+    for (const [key, value] of [["remote.origin.push", "+refs/heads/task/worker:refs/heads/main"], ["remote.origin.mirror", "true"], ["remote.origin.mirror", "false"]]) {
+      f.git("config", key!, value!);
+      for (const command of commands) expect(proveTaskShell(command, f.options, () => true), `${key}=${value}`).toBeUndefined();
+      f.git("config", "--unset-all", key!);
+    }
+  } finally { f.close(); }
+});
+
+test("#845 gh child Git inherits the core hardening through the exact fingerprinted effective environment", () => {
+  const f = fixture();
+  try {
+    const env = { ...f.options.env, GIT_DIR: "/fixture-poison", GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.hooksPath", GIT_CONFIG_VALUE_0: "/fixture-poison" };
+    const proof = proveTaskShell("gh pr view task/worker", { ...f.options, env }, () => true)!;
+    expect(proof).toBeDefined(); expect(proof.env.GIT_DIR).toBeUndefined();
+    const configs: string[] = [];
+    for (let index = 0; index < Number(proof.env.GIT_CONFIG_COUNT); index++) configs.push(`${proof.env[`GIT_CONFIG_KEY_${index}`]}=${proof.env[`GIT_CONFIG_VALUE_${index}`]}`);
+    const core = hubGitArgv([]);
+    expect(configs).toEqual(core.filter((_, index) => core[index - 1] === "-c"));
+    expect(proof.env.GIT_TERMINAL_PROMPT).toBe("0");
+    expect(proof.env.GIT_NO_REPLACE_OBJECTS).toBe("1");
+    f.git("config", "core.hooksPath", "/fixture-poison");
+    const executable = proveTaskShell("git add test/example.test.ts", f.options, () => true)!.executable;
+    const inherited = spawnSync(executable, ["-C", f.root, "config", "--get", "core.hooksPath"], { env: proof.env, encoding: "utf8", timeout: 1000 });
+    expect(inherited.status, inherited.stderr).toBe(0); expect(inherited.stdout.trim()).toBe("/dev/null");
+    const language = proof.env.LANG === "C" ? "en_US.UTF-8" : "C";
+    const changed = proveTaskShell("gh pr view task/worker", { ...f.options, env: { ...f.options.env, LANG: language } }, () => true)!;
+    expect(changed.env.LANG).toBe(language);
+    expect(changed.fingerprint).not.toBe(proof.fingerprint);
+    expect(Object.isFrozen(proof.env)).toBe(true);
+  } finally { f.close(); }
+});
+
+test("#845 body-file grants require a screened bounded regular file and execute its captured body bytes", () => {
+  const f = fixture();
+  try {
+    const command = "gh pr create --base main --head task/worker --title fixture --body-file body.md";
+    const publicBody = "Public review summary.\nRefs #845\n";
+    writeFileSync(join(f.root, "body.md"), publicBody);
+    expect(proveTaskShell(command, { ...f.options, publicText: undefined }, () => true)).toBeUndefined();
+    expect(proveTaskShell(command, { ...f.options, publicText: () => false }, () => true)).toBeUndefined();
+    const screened: string[] = [];
+    const options = { ...f.options, publicText: (text: string) => { screened.push(text); return !text.includes("fixture-private"); } };
+    const proof = proveTaskShell(command, options, () => true)!;
+    expect(proof).toBeDefined(); expect(screened).toEqual([publicBody]);
+    expect(proof.argv).not.toContain("--body-file"); expect(proof.argv).not.toContain("body.md");
+    expect(proof.argv[proof.argv.indexOf("--body") + 1]).toBe(publicBody);
+    writeFileSync(join(f.root, "body.md"), "fixture-private content changed after proof\n");
+    expect(proof.argv[proof.argv.indexOf("--body") + 1]).toBe(publicBody);
+    expect(proveTaskShell(command, options, () => true)).toBeUndefined();
+    writeFileSync(join(f.root, "body.md"), "A different public body.");
+    expect(proveTaskShell(command, options, () => true)!.fingerprint).not.toBe(proof.fingerprint);
+    writeFileSync(join(f.root, "body.md"), "x".repeat(3001));
+    expect(proveTaskShell(command, f.options, () => true)).toBeUndefined();
+    rmSync(join(f.root, "body.md")); mkdirSync(join(f.root, "body.md"));
+    expect(proveTaskShell(command, f.options, () => true)).toBeUndefined();
+  } finally { f.close(); }
+});
+
 test("#845 shared host environment ignores native-style ambient selector variables", () => {
   const keys = ["GIT_DIR", "RIPGREP_CONFIG_PATH", "GH_REPO"], before = keys.map(key => process.env[key]);
   try {
@@ -100,5 +174,19 @@ test("#845 metadata refuses a parent-project Git shadow before invoking it", () 
     expect(readTaskShellBinding(f.root, env, () => true, f.project)).toBeUndefined();
     expect(proveTaskShell("bun run build", { ...f.options, env }, () => true)).toBeUndefined();
     expect(existsSync(marker)).toBe(false);
+  } finally { f.close(); }
+});
+
+test("#845 target PATH removes project/worktree entries and directory symlink aliases", () => {
+  const f = fixture();
+  try {
+    const primary = join(f.project, "bin"), nested = join(f.root, "bin"), outside = f.options.env.HOME!;
+    mkdirSync(primary); mkdirSync(nested);
+    const alias = join(outside, "project-alias"), insideAlias = join(f.project, "outside-alias");
+    symlinkSync(primary, alias); symlinkSync(outside, insideAlias);
+    const filtered = hostShellPath(f.project, f.root, [primary, nested, alias, insideAlias, outside, "/usr/bin", "/bin"].join(":"));
+    expect(filtered?.split(":")).toEqual([...new Set([realPath(outside), realPath("/usr/bin"), realPath("/bin")])]);
+    expect(hostShellPath(f.project, f.root, `${primary}:${nested}:${alias}`)).toBeUndefined();
+    for (const value of ["", "relative:/usr/bin", "/usr/bin::/bin", "/usr/bin/../bin", "x".repeat(16385)]) expect(hostShellPath(f.project, f.root, value), value).toBeUndefined();
   } finally { f.close(); }
 });

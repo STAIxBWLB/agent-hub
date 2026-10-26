@@ -8,10 +8,11 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
+import { sandboxAvailable } from "../src/local/sandbox.ts";
 import { completeJsonLines } from "./fakes/jsonl.ts";
 
 async function until(condition: () => boolean, leg: string) { for (let n = 0; n < 300 && !condition(); n++) await Bun.sleep(5); expect(condition(), leg).toBe(true); }
-async function fixture(taskBound = false, model?: string, shell?: { origin: true; actionEnabled: boolean }) {
+async function fixture(taskBound = false, model?: string, shell?: { origin: true; actionEnabled: boolean; readCanonical?: boolean }) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-claude-impl-daemon-"))), peer = "claude-worker", tree = join(root, ".worktrees", peer), stateDir = join(root, ".agenthub", "state"), log = join(root, "calls.jsonl"), home = join(root, "home"), bin = join(root, "bin");
   const oldEnv = { HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, PATH: process.env.PATH, AMEM_HOME: process.env.AMEM_HOME, AGENTHUB_HOME: process.env.AGENTHUB_HOME };
   mkdirSync(stateDir, { recursive: true }); mkdirSync(home); mkdirSync(bin);
@@ -25,6 +26,7 @@ async function fixture(taskBound = false, model?: string, shell?: { origin: true
   try {
     const config = loadConfig(root);
     if (shell) config.action_policy = { enabled: shell.actionEnabled, always_ask: ["publish", "destroy", "install", "external-write"], budgets: { publish: 1, destroy: 3, install: 2, "external-write": 5 } };
+    if (shell?.readCanonical) config.local = { ...config.local, read_allow: [root] };
     daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, permissionTimeoutMs: 250, config });
     const console_ = await ControlClient.connect(stateDir, { role: "console", projectRoot: root }); clients.push(console_);
     const instanceId = (await console_.request({ t: "status" })).status.instanceId;
@@ -47,7 +49,7 @@ async function fixture(taskBound = false, model?: string, shell?: { origin: true
   } catch (error) { for (const client of clients) client.close(); await daemon?.stop(); for (const [key, value] of Object.entries(oldEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } rmSync(root, { recursive: true, force: true }); throw error; }
 }
 
-async function shellTask(f: Awaited<ReturnType<typeof fixture>>, bind = true) {
+async function shellTask(f: Awaited<ReturnType<typeof fixture>>, bind = false) {
   expect(await f.tools.request({ t: "task", op: "hub_task_accept", args: { id: f.taskId } })).toMatchObject({ ok: true });
   for (const args of [["update-ref", "refs/remotes/origin/main", "HEAD"], ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]]) expect(hubGitSync(["-C", f.root, ...args], { encoding: "utf8" }).status).toBe(0);
   mkdirSync(join(f.tree, "scripts"), { recursive: true }); writeFileSync(join(f.tree, "scripts", "check.sh"), "#!/bin/sh\n/bin/pwd\n", { mode: 0o700 });
@@ -62,7 +64,7 @@ async function runGranted(command: string, cwd: string) {
   } finally { clearTimeout(timer); }
 }
 
-test("#845 current task Bash grants use a single-use host wrapper and persist their branch binding", async () => {
+test.skipIf(!sandboxAvailable())("#845 current task Bash grants use a single-use host wrapper and persist their branch binding", async () => {
   const f = await fixture(true);
   try {
     await shellTask(f, false);
@@ -84,15 +86,15 @@ test("#845 current task Bash grants use a single-use host wrapper and persist th
 }, 20_000);
 
 test("#845 branch changes invalidate outstanding tickets and never rebind the task", async () => {
-  const f = await fixture(true);
+  const f = await fixture(true, undefined, { origin: true, actionEnabled: false });
   try {
     await shellTask(f);
-    const allowed = await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "scripts/check.sh --changed" }, wrapperProtocol: 1 });
+    const allowed = await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "git push origin worker" }, wrapperProtocol: 1 });
     expect(allowed.behavior).toBe("allow");
     expect(hubGitSync(["-C", f.tree, "checkout", "-qb", "other-task"], { encoding: "utf8" }).status).toBe(0);
     const stale = await runGranted(allowed.updatedInput.command, f.root);
     expect(stale.code).not.toBe(0); expect(stale.stdout).toBe("");
-    expect(await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "scripts/check.sh --changed" }, wrapperProtocol: 1 })).toMatchObject({ behavior: "deny", message: "no person answered" });
+    expect(await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "git push origin worker" }, wrapperProtocol: 1 })).toMatchObject({ behavior: "deny", message: "no person answered" });
   } finally { await f.close(); }
 }, 20_000);
 
@@ -123,6 +125,35 @@ test("#845 an enabled publish class asks even for an otherwise valid branch-boun
       // No push is redeemed; this fixture proves the policy boundary without network or publication.
     } finally { await f.close(); }
   }
+}, 20_000);
+
+test.skipIf(!sandboxAvailable())("#845 model-written gate test cannot read the hub control token or SSH key, even with canonical read allowance", async () => {
+  const f = await fixture(true, undefined, { origin: true, actionEnabled: false, readCanonical: true });
+  try {
+    await shellTask(f);
+    const token = join(f.stateDir, "control-token"), ssh = join(f.home, ".ssh", "id_ed25519"), output = join(f.tree, "gate-output");
+    mkdirSync(join(f.home, ".ssh")); writeFileSync(ssh, "fixture-ssh-private", { mode: 0o600 });
+    expect(readFileSync(token, "utf8").trim().length).toBeGreaterThan(0);
+    expect(readFileSync(ssh, "utf8")).toBe("fixture-ssh-private");
+    mkdirSync(join(f.tree, "test"));
+    writeFileSync(join(f.tree, "test", "gate.test.ts"), `import {expect,test} from "bun:test";import {readFileSync,writeFileSync} from "node:fs";test("kernel gate boundary",()=>{for(const file of ${JSON.stringify([token, ssh])})expect(()=>readFileSync(file,"utf8")).toThrow();expect(()=>writeFileSync(${JSON.stringify(join(f.root, "escaped"))},"outside")).toThrow();writeFileSync(${JSON.stringify(output)},"worktree-write-ok");});`);
+    const allowed = await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "bun test test/gate.test.ts" }, wrapperProtocol: 1 });
+    expect(allowed).toMatchObject({ behavior: "allow", wrapperProtocol: 1 });
+    const result = await runGranted(allowed.updatedInput.command, f.root);
+    expect(result.code, result.stderr).toBe(0);
+    expect(readFileSync(output, "utf8")).toBe("worktree-write-ok");
+    expect(existsSync(join(f.root, "escaped"))).toBe(false);
+  } finally { await f.close(); }
+}, 20_000);
+
+test.skipIf(sandboxAvailable())("#845 executable task gates ask when the local kernel sandbox is unavailable", async () => {
+  const f = await fixture(true);
+  try {
+    await shellTask(f);
+    for (const command of ["scripts/check.sh --changed", "bun run build", "bun test test/gate.test.ts", "git add source.ts", "git commit -m fixture"]) {
+      expect(await f.tools.request({ t: "permission_request", tool: "Bash", input: { command }, wrapperProtocol: 1 }), command).toMatchObject({ behavior: "deny", message: "no person answered" });
+    }
+  } finally { await f.close(); }
 }, 20_000);
 
 test("#525 headless current-child facts are isolated; missing or stale launch evidence cannot attach or grant", async () => {

@@ -22,7 +22,8 @@ import { NativeHookLaunches } from "./native-hook-launch.ts";
 import { readReleaseHostAdmission, type ReleaseHostAdmission } from "./release-admission.ts";
 import { ContainerRunner, RemoteRunner, remoteRunnerConfig, type RemoteRunnerConfig, type RunnerOptions, type RunReceipt } from "./check-runner.ts";
 import { fetchSpec, specAvailable, specRefs } from "./spec-read.ts";
-import { isDenied } from "../local/deny.ts";
+import { isDenied, sbplString } from "../local/deny.ts";
+import { hostShellPath } from "./host-executable.ts";
 import { supersededDeliveryReason, deliveryTaskContext } from "./delivery-superseded.ts";
 import { renderHeldHint } from "./delivery-hints.ts";
 import { correctionInput, MemoryTelemetry } from "./memory-candidates.ts";
@@ -2310,7 +2311,9 @@ export async function startDaemon(opts: DaemonOptions) {
       || original.timeout !== undefined && (!Number.isSafeInteger(original.timeout) || Number(original.timeout) < 1 || Number(original.timeout) > 600_000)) return;
     const input = Object.freeze({ ...original }), serialized = JSON.stringify(input);
     if (serialized.length > 8000 || !tasks.publicMetadataText(serialized)) return;
-    const taskId = launch.task, extra = Object.freeze({ ...proxyEnv(sandboxNetwork), AGENTHUB_PEER_ID: peer });
+    const path = hostShellPath(opts.cwd, root);
+    if (!path) return;
+    const taskId = launch.task, extra = Object.freeze({ ...proxyEnv(sandboxNetwork), AGENTHUB_PEER_ID: peer, PATH: path });
     const env = hostShellEnvironment(extra), environment = JSON.stringify(env);
     const policyState = () => JSON.stringify([config.local.deny, config.local.read_allow, config.data?.readonly, config.protect_instruction_files]);
     const policyFingerprint = policyState();
@@ -2318,23 +2321,26 @@ export async function startDaemon(opts: DaemonOptions) {
       const task = board.get(taskId);
       return current() && config === policy && policyState() === policyFingerprint && permissionMode(peer) === "ask-when-needed" && !contextPii(peer)
         && !!task && task.owner === peer && ["in_progress", "changes_requested"].includes(task.state) && !tasks.isPii(task)
-        && claudeActionClasses(actionBudgets, tool, input, root).length === 0 && JSON.stringify(hostShellEnvironment(extra)) === environment;
+        && claudeActionClasses(actionBudgets, tool, input, root).length === 0 && hostShellPath(opts.cwd, root) === path && JSON.stringify(hostShellEnvironment(extra)) === environment;
     };
     if (!authority()) return;
     const binding = readTaskShellBinding(root, env, authority, opts.cwd);
     if (!binding) return;
     const shellOptions = { root, projectRoot: opts.cwd, deny: config.local.deny, readOnly: config.data?.readonly, env: extra };
-    const taskOptions = { ...shellOptions, env, binding, protectInstructions: config.protect_instruction_files, repository: shellProjectRepository };
+    const taskOptions = { ...shellOptions, env, binding, protectInstructions: config.protect_instruction_files, repository: shellProjectRepository, publicText: (text: string) => tasks.publicMetadataText(text) };
     const readProof = proveReadOnlyShell(input, shellOptions, authority), taskProof = readProof ? undefined : proveTaskShell(input.command, taskOptions, authority);
-    if (readProof && !sandboxAvailable()) return;
+    const confined = !!readProof || taskProof?.requiresSandbox === true;
+    if (confined && !sandboxAvailable()) return;
     // The planner's fallback binds only on a task-gate request; read-only requests use an already recorded task branch.
     if (board.get(taskId)?.refs.branch === undefined && !taskProof) return;
     if (!readProof && !taskProof || !tasks.bindShellBranch(peer, taskId, { ...binding, worktree: root }, authority)) return;
     const fingerprint = (readProof ?? taskProof)!.fingerprint;
     let sandbox: { profile: string; readOnlyData: boolean } | undefined;
-    if (readProof) {
-      const owner = c.toolsOwner!.owner, key = JSON.stringify([root, policyFingerprint]), cached = implementerShellProfiles.get(owner);
-      sandbox = cached?.key === key ? cached.sandbox : { profile: profile(root, sandboxNetwork, config.local.read_allow, config.local.deny, config.data?.readonly), readOnlyData: !!config.data?.readonly?.length };
+    if (confined) {
+      const state = realPath(opts.stateDir);
+      const owner = c.toolsOwner!.owner, key = JSON.stringify([root, state, policyFingerprint]), cached = implementerShellProfiles.get(owner);
+      // read_allow may include the canonical checkout. Its live control credentials remain denied independently of the worktree root.
+      sandbox = cached?.key === key ? cached.sandbox : { profile: `${profile(root, sandboxNetwork, config.local.read_allow, config.local.deny, config.data?.readonly)}\n(deny file-read* file-write* (subpath ${sbplString(state)}))`, readOnlyData: !!config.data?.readonly?.length };
       implementerShellProfiles.set(owner, { key, sandbox });
     }
     const recheck = () => {
@@ -2345,12 +2351,14 @@ export async function startDaemon(opts: DaemonOptions) {
       return proof?.fingerprint === fingerprint && authority();
     };
     // A fixed capability on the channel request prevents an older plugin from ignoring updatedInput and running the original command.
-    const wrapper = await (implementerShellStart ??= createHostShellWrapper().catch(error => { implementerShellStart = undefined; throw error; }));
+    let wrapper: HostShellWrapper;
+    try { wrapper = await (implementerShellStart ??= createHostShellWrapper().catch(error => { implementerShellStart = undefined; throw error; })); }
+    catch { return; } // An unavailable host capability supplies no allow; the ordinary person path remains available.
     if (!recheck()) return;
     const proof = (readProof ?? taskProof)!, git = proof.program === "git";
     const argv = readProof?.program === "git" ? hubGitArgv([...proof.argv]).slice(1) : proof.argv;
     const command = wrapper.issue({ peer, task: taskId, generation: launch.generation, root, branch: binding.branch, executable: proof.executable, argv,
-      env: git ? Object.fromEntries(Object.entries(hubGitEnv(env, { repositoryIsolation: true })).filter((entry): entry is [string, string] => entry[1] !== undefined)) : env,
+      env: taskProof?.env ?? (git ? Object.fromEntries(Object.entries(hubGitEnv(env, { repositoryIsolation: true })).filter((entry): entry is [string, string] => entry[1] !== undefined)) : env),
       signal: launch.signal, timeoutMs: Number(input.timeout ?? 120_000), current: recheck, activity: () => c.toolsOwner?.owner.keepApprovalAlive?.(), ...(sandbox ? { sandbox } : {}) });
     if (command) log(`permission auto-allowed for ${peer}: bash (host wrapper ${readProof ? "read-only shell" : "task command"})`);
     return command && { command: command.command, timeout: Math.min(600_000, Number(input.timeout ?? 120_000) + 2000), description: "Hub-owned task command" };
