@@ -311,8 +311,8 @@ var init_compat = __esm(() => {
       gate: "contract",
       probe: ["claude", "--version"],
       parse: (out) => plain(out.trim().replace(/ \(Claude Code\)$/, "")),
-      trustNote: "The native prompt-tool allow, deny, MCP error/disconnect and hook-failure fallthrough have an isolated receipt. No dontAsk/bypass fallback exists; another version's permission behavior is unverified.",
-      receipt: "docs/verification/2026-10-23-headless-claude-permissions.md"
+      trustNote: "The native prompt-tool transport and host-wrapper rewrite, environment isolation and replay contract have isolated receipts. No dontAsk/bypass fallback exists; another version's permission or rewrite behavior is unverified.",
+      receipt: "docs/verification/2026-10-26-headless-claude-shell-context.md"
     },
     "codex-review": {
       label: "Codex reviewer (codex-cli)",
