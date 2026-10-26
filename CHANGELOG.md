@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Pin @staix/agent-mem 0.10.0 (standalone MCP screening/ranking and capture-worker prefetch improvements; unchanged hub policy and storage contracts). Refs agent-mem#13.
+
 - Pin @staix/agent-mem 0.9.1 (split-home sync holds a verified foreign-generation prune as "held, not applied" instead of refusing the sync, cached MCP policy screening, `--capture-days` claude-mem capture import; 0.9.0 was never published). Refs agent-mem#13.
 
 ## 0.18.0
