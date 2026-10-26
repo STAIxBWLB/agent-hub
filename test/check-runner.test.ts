@@ -193,6 +193,38 @@ test("explicit stale mark aborts active work, preserves person receipt and expos
   expect((await active.done).status).toBe("stale"); expect((await queued.done).status).toBe("stale"); expect(delivered).toBe(0);
   expect(await f.runner.result(active.run)).toMatchObject({ status: "stale", exit: null }); expect(f.runner.activeRun).toBeUndefined(); expect(f.runner.queuedRuns).toEqual([]);
 });
+test("markStale while the run's own receipt save is in flight ends stale on disk with no failed save, 50 times (#867)", async () => {
+  // start() runs the run's own first save synchronously up to its first await, so markStale called right after it saves the SAME receipt while that save is in flight. One temp
+  // name per process made the second rename find the file gone (ENOENT). Repeated: the interleaving is a scheduling accident.
+  const f = await fixture();
+  const records = join(f.root, "state/checks");
+  for (let i = 0; i < 50; i++) {
+    const active = f.runner.start(f.request);
+    const marked = f.runner.markStale(active.run);   // not awaited before the run settles: both save while the run's own save is in flight
+    const [, finished] = await Promise.all([marked, active.done]);
+    expect(finished.status).toBe("stale");
+    expect(finished.error).not.toBe("check receipt storage unavailable");   // a failed save would surface here
+    expect(await f.runner.result(active.run)).toMatchObject({ status: "stale" });
+    expect((await readdir(records)).filter(name => name.endsWith(".tmp"))).toEqual([]);
+  }
+}, 60_000);
+test("a stale save queued behind an older snapshot of the same run is the one left on disk (#867)", async () => {
+  // The aborted run's completion path and markStale save the same receipt at the same time. One temp name per process made the second rename find the file gone (ENOENT), and an
+  // older snapshot written last could undo the stale mark. Looped: the interleaving is a scheduling accident.
+  const f = await fixture();
+  const run = f.runner.start(f.request);
+  await run.done;
+  const internal = f.runner as unknown as { save: (receipt: unknown) => Promise<void> };
+  const base = { ...(await f.runner.result(run.run))! };
+  const records = join(f.root, "state/checks");
+  for (let i = 0; i < 50; i++) {
+    const ordinary = internal.save({ ...base, status: "finished", duration_ms: i });   // the run's own save, in flight
+    const marked = internal.save({ ...base, status: "stale", duration_ms: i });        // markStale's save, started while the other has not finished
+    await Promise.all([ordinary, marked]);
+    expect(await f.runner.result(run.run)).toMatchObject({ status: "stale", duration_ms: i });
+    expect((await readdir(records)).filter(name => name.endsWith(".tmp"))).toEqual([]);
+  }
+});
 test("availability cache reports original probe time and refreshes at its exact bound", async () => {
   let now = 1000;
   const f = await fixture({ now: () => now });

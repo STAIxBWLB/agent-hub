@@ -113,6 +113,7 @@ function runContainer(executable: string, args: string[], options: { signal?: Ab
 export class ContainerRunner {
   private readonly command: ContainerCommand;
   private readonly entries = new Map<string, Entry>();
+  private readonly saves = new Map<string, Promise<void>>();
   private readonly queue: Entry[] = [];
   private active?: Entry;
   private closing = false;
@@ -235,11 +236,25 @@ export class ContainerRunner {
     await this.save(receipt);
     if (entry === this.active && entry) await this.cleanup(receipt.container);
   }
-  private async save(receipt: RunReceipt): Promise<void> {
+  /**
+   * Saves of one run's receipt go one at a time, in the order they were asked for, and each turn serializes the receipt when it runs, not when it was asked (#867): the run's own
+   * completion path and `markStale` save the same receipt concurrently, and an earlier snapshot written last must not undo a stale mark. Each write has its own temp name, so two
+   * writers never share one, and a failed write or rename removes its temp. A failed save rejects only its own caller; the next turn still runs.
+   */
+  private save(receipt: RunReceipt): Promise<void> {
+    const run = receipt.run;
+    const turn = (this.saves.get(run) ?? Promise.resolve()).then(() => this.write(receipt));
+    const tail = turn.catch(() => {});
+    this.saves.set(run, tail);
+    void tail.then(() => { if (this.saves.get(run) === tail) this.saves.delete(run); });
+    return turn;
+  }
+  private async write(receipt: RunReceipt): Promise<void> {
     await mkdir(this.records, { recursive: true, mode: 0o700 });
     const path = join(this.records, `${receipt.run}.json`);
-    const temp = `${path}.${process.pid}.tmp`;
-    await writeFile(temp, JSON.stringify(receipt), { mode: 0o600 }); await rename(temp, path);
+    const temp = `${path}.${process.pid}.${randomUUID()}.tmp`;
+    try { await writeFile(temp, JSON.stringify(receipt), { mode: 0o600 }); await rename(temp, path); }
+    catch (error) { await rm(temp, { force: true }).catch(() => {}); throw error; }
   }
   private async drain(): Promise<void> {
     if (this.active) return;
