@@ -119,7 +119,7 @@ export async function runProjectDaemon(project: Project, unattended = false): Pr
         try {
           daemon = await startDaemon({ cwd: project.root, stateDir: project.stateDir, projectId: project.id, instanceId,
             controlPort: base + CONTROL, codexAppPort: base + CODEX_APP, codexProxyPort: base + CODEX_PROXY,
-            unattended, onShutdownStart,
+            unattended, onShutdownStart, agentDrift: true,
             // #269: the real terminal providers belong to the running product; a daemon built without them opens nothing.
             terminal: (template) => terminalOpener({ template, cwd: project.root, stateDir: project.stateDir }) });
           break;

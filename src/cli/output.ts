@@ -14,6 +14,8 @@ export interface StatusOutput {
   retainedConfig?: readonly { key: string; reason: string }[];
   /** #572 AC3: advisory, present while the project root checkout is on a branch other than the default. */
   mainCheckout?: string;
+  /** #843 AC3: installed agent CLIs not on a verified version; ids, version, state and a receipt path only. */
+  agentDrift?: readonly { id: string; version: string; state: string; receipt: string }[];
   taskStalls?: readonly { task: number; cause: { kind: string; peer?: string; dependency?: number; code: string } }[];
   pendingTaskOffers?: readonly { task: number; peer: string }[];
   isolatedChecks?: { pending?: number; orphans?: string[]; unknownReceipts?: readonly string[]; maintenanceUnavailable?: boolean };
@@ -204,6 +206,7 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   if (data.cwd) out.push(...lines(data.cwd, columns));
   for (const pending of data.pendingRestart ?? []) out.push(...detail("pending restart", `${pending.key}: ${pending.reason}`, columns, "attention"));
   if (data.mainCheckout) out.push(...detail("main checkout", data.mainCheckout, columns, "attention"));
+  for (const drift of data.agentDrift ?? []) out.push(...detail("agent CLI drift", `${drift.id} ${drift.version} ${drift.state}; last receipt ${drift.receipt}`, columns, "attention"));
   if (data.retainedConfig?.length) {
     out.push(...detail("config retained", `${data.retainedConfig.map(row => row.key).join(", ")}; run ahub settings reload`, columns, "attention"));
     for (const pending of data.retainedConfig) out.push(...detail("retained reason", `${pending.key}: ${pending.reason}`, columns, "attention"));

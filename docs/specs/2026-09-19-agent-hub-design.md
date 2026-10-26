@@ -4966,7 +4966,8 @@ Native CLIs update often: Codex 0.146.0 → 0.163.0, and Kimi 2.2.0 → 2.3.0 by
 - **Seeing drift.**
   - `ahub agents` (allowed for agents) and `ahub doctor` show each verdict.
   - A daily workflow compares the latest published version of every public-source kind with `verified` and keeps one `agent-compat` issue current (#843 widened it from weekly to daily and from npm-only to every public source).
-  - Sources: the npm-distributed kinds read npm `latest`; Jcode reads its GitHub releases' latest tag (leading `v` stripped, #843). agy has no public source and is reported as an informational note, never drift; pi is watched only once a COMPAT entry exists.
+  - Sources: the npm-distributed kinds read npm `latest`; Jcode reads its GitHub releases' latest tag (leading `v` stripped, #843). agy has no public source and is reported as an informational note, never drift; pi has an entry since #847 and is watched like the rest.
+  - Local drift (#843 AC3): at hub start and daily the daemon reads each installed CLI's version with the `ahub agents` probe and tells the effective planner once per (id, version) when it is not `verified`: id, version, state and the last receipt path only, deduplicated in `hub.db` across restarts. A missing executable or an unreadable version is silent. `ahub status` shows one attention line per drifted id.
 - **Moving a verified set.** A receipt in `docs/verification/` adds the version to `verified` in the same PR.
 
 ## Amendment: lifecycle identity linked by the hub (#694)
