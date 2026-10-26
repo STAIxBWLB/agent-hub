@@ -641,6 +641,35 @@ test.skipIf(!sandboxAvailable())("a checkout under a directory named hooks keeps
   expect(out.output).not.toMatch(/WROTE-/);
 });
 
+test.skipIf(!sandboxAvailable())("a submodule of a submodule: its git dir is protected, nothing can be planted under its modules root, and ordinary work in it runs (#520)", async () => {
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-nested-")));
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  const ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+  const init = (dir: string) => { expect(git(["init", "-q", dir]).exitCode).toBe(0); writeFileSync(join(dir, "f"), "x"); git(["-C", dir, "add", "f"]); expect(git(["-C", dir, ...ident, "commit", "-qm", "one"]).exitCode).toBe(0); };
+  const deepSrc = join(base, "deep-src"), subSrc = join(base, "sub-src"), main = join(base, "main");
+  init(deepSrc); init(subSrc);
+  expect(git(["-C", subSrc, "-c", "protocol.file.allow=always", "submodule", "add", "-q", deepSrc, "deep"]).exitCode).toBe(0);
+  expect(git(["-C", subSrc, ...ident, "commit", "-qm", "with deep"]).exitCode).toBe(0);
+  init(main);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subSrc, "sub"]).exitCode).toBe(0);
+  expect(git(["-C", main, ...ident, "commit", "-qm", "sub"]).exitCode).toBe(0);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "--recursive", "-q"]).exitCode).toBe(0);
+  const common = join(main, ".git"), deepGit = join(common, "modules", "sub", "modules", "deep");
+  expect(existsSync(join(deepGit, "config"))).toBe(true);
+  const before = readFileSync(join(deepGit, "config"), "utf8");
+  const out = await sandboxedExec(["/bin/sh", "-c", [
+    `git -C sub/deep ${ident.join(" ")} commit -qm n --allow-empty && echo committed-nested`, "git -C sub/deep branch b && git -C sub/deep tag t && echo branched-nested", "git -C sub/deep gc -q && echo gc-nested",
+    "git submodule status --recursive >/dev/null && echo status-recursive",
+    `(mkdir -p '${common}/modules/sub/modules/refs' && echo x > '${common}/modules/sub/modules/refs/config') 2>/dev/null && echo WROTE-NESTED-PLANT || echo blocked-nested-plant`,
+    `(echo x >> '${deepGit}/config') 2>/dev/null && echo WROTE-NESTED-CONFIG || echo blocked-nested-config`,
+    `(mkdir -p '${deepGit}/hooks' && echo x > '${deepGit}/hooks/pre-commit') 2>/dev/null && echo WROTE-NESTED-HOOK || echo blocked-nested-hook`,
+  ].join("; ")], { cwd: main, profile: profile(main, false) });
+  for (const expected of ["committed-nested", "branched-nested", "gc-nested", "status-recursive", "blocked-nested-plant", "blocked-nested-config", "blocked-nested-hook"]) expect(out.output).toContain(expected);
+  expect(out.output).not.toMatch(/WROTE-/);
+  expect(readFileSync(join(deepGit, "config"), "utf8")).toBe(before);
+  expect(existsSync(join(common, "modules", "sub", "modules", "refs"))).toBe(false);
+});
+
 test("no regex literal that folds a name carries the git path, so a long path cannot push one over SBPL's 1024-byte limit (#518 review)", () => {
   // A literal over 1024 BYTES (the HFS+ code points are 3 bytes each) makes sandbox-exec refuse the whole profile, so no sandboxed command starts. Bytes, not characters.
   const literal = /\(regex "((?:[^"\\]|\\.)*)"\)/g;
