@@ -5829,29 +5829,42 @@ var init_path_policy = __esm(() => {
 
 // src/local/deny.ts
 import { basename as basename4, dirname as dirname8 } from "path";
-function hubWriteRegexes(root, gitDirs = [], moduleGit = []) {
+function hubWriteRegexes(root, gitDirs = [], moduleGit = [], worktreesRoot) {
   const git = hfsFoldedName(".git");
   const re = (s) => `(regex ${sbplString(s)})`;
   const external = gitDirs.flatMap((d) => [
     `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${re(`^.*/(${hfsFoldedName("config")}|${hfsFoldedName("hooks")})$`)})`,
-    ...configWorktreeFolded().map((name) => `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${re(`^.*/${name}$`)})`),
+    `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${configWorktreeSources("^.*/").map(re).join(" ")})`,
     `(subpath ${sbplString(`${d}/hooks`)})`,
     `(require-all (subpath ${sbplString(d)}) ${re(`^.*/${hfsFoldedName("commondir")}$`)})`
   ]);
   const modules = moduleGit.flatMap((tree) => [
     `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
-    ...configWorktreeFolded().map((name) => `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${name}$`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`),
+    `(require-all ${configWorktreeSources(`^${sbplEscape(tree.root)}/(.*/)?`).map(re).join(" ")} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
     `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
     ...tree.entries.map((d) => re(`^${sbplEscape(dirname8(d))}/${hfsFoldedName(basename4(d))}$`))
   ]);
+  const siblings = worktreesRoot ? (() => {
+    const w = sbplEscape(worktreesRoot), notRefs = `(require-not ${re(`^${w}/[^/]+/modules/(.*/)?(refs|logs)/`)})`;
+    return [
+      `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config")}$`)})`,
+      `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${configWorktreeSources("^.*/").map(re).join(" ")})`,
+      re(`^${w}/[^/]+/${hfsFoldedName("hooks")}(/|$)`),
+      `(require-all ${re(`^${w}/[^/]+/modules/(.*/)?${hfsFoldedName("config")}$`)} ${notRefs})`,
+      `(require-all ${configWorktreeSources(`^${w}/[^/]+/modules/(.*/)?`).map(re).join(" ")} ${notRefs})`,
+      `(require-all ${re(`^${w}/[^/]+/modules/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} ${notRefs})`,
+      re(`^${w}/[^/]+/${hfsFoldedName("modules")}$`)
+    ];
+  })() : [];
   return [
     `(require-all (subpath ${sbplString(root)}) ${re(`^.*/${hfsFoldedName(".agenthub")}(/|$)`)})`,
     re(`^.*/${git}$`),
     re(`^.*/${git}/${hfsFoldedName("config")}$`),
-    ...configWorktreeFolded().map((name) => re(`^.*/${git}/${name}$`)),
+    `(require-all ${configWorktreeSources(`^.*/${git}/`).map(re).join(" ")})`,
     re(`^.*/${git}/${hfsFoldedName("hooks")}(/|$)`),
     `(require-all ${re(`^.*/${git}/.*$`)} ${re(`^.*/${hfsFoldedName("commondir")}$`)})`,
     ...modules,
+    ...siblings,
     ...external
   ];
 }
@@ -5866,7 +5879,7 @@ function denyRegexes(root, extra = [], withNames = true) {
     ...extra.filter(Boolean).map((e) => `^${sbplEscape(root)}/.*${sbplEscape(e)}`)
   ].map((re) => `(regex ${sbplString(re)})`);
 }
-var sbplEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), sbplString = (s) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`, HFS_IGNORABLE_POINTS, HFS_IGNORABLE, configWorktreeFolded = () => [`${hfsFoldedName("config")}\\.worktree`, `config\\.${hfsFoldedName("worktree")}`], hfsFoldedName = (name) => `${HFS_IGNORABLE}*${[...name].map((c) => sbplEscape(c)).join(`${HFS_IGNORABLE}*`)}${HFS_IGNORABLE}*`;
+var sbplEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), sbplString = (s) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`, HFS_IGNORABLE_POINTS, HFS_IGNORABLE, hfsFoldedName = (name) => `${HFS_IGNORABLE}*${[...name].map((c) => sbplEscape(c)).join(`${HFS_IGNORABLE}*`)}${HFS_IGNORABLE}*`, configWorktreeSources = (prefix) => [`${prefix}${hfsFoldedName("config")}\\.[^/]*$`, `^.*/[^/]*${hfsFoldedName("worktree")}$`];
 var init_deny = __esm(() => {
   init_platform();
   init_platform();
@@ -5894,6 +5907,10 @@ function externalGitDirs(root) {
   const dirs = out.stdout.trim().split(`
 `).map((d) => resolve9(root, d));
   return [...new Set(dirs)].filter((d) => !d.startsWith(`${root}/`));
+}
+function worktreesRoot(root) {
+  const out = memoryGitSync(["-C", root, "rev-parse", "--git-common-dir"], { encoding: "utf8" });
+  return out.status === 0 && out.stdout.trim() ? join12(resolve9(root, out.stdout.trim()), "worktrees") : undefined;
 }
 function moduleGitDirs(root) {
   const out = memoryGitSync(["-C", root, "rev-parse", "--git-common-dir", "--absolute-git-dir"], { encoding: "utf8" });
@@ -5951,6 +5968,7 @@ function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
   const root = realPath(cwd);
   const gitDirs = externalGitDirs(root);
   const moduleGit = moduleGitDirs(root);
+  const worktrees = worktreesRoot(root);
   const creds = [".ssh", ".aws", ".gnupg", ".config/gh", ".config/gcloud", ".kube", ".docker", ".netrc", ".npmrc", ".omniroute", ".claude", ".codex", ".kimi-code", "Library/Keychains"];
   const dev = developerDir();
   const readable = [root, ...HOME_READABLE.map((p) => join12(home, p)), ...readAllow.map(inHome), ...gitDirs, ...dev ? [dev] : []];
@@ -5977,7 +5995,7 @@ function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
     ...start,
     "(deny file-write*)",
     ...readOnly.length ? ['(allow file-write* (literal "/dev/null"))'] : [`(allow file-write* (subpath ${q(root)}) (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`],
-    `(deny file-write* ${hubWriteRegexes(root, gitDirs, moduleGit).join(" ")})`,
+    `(deny file-write* ${hubWriteRegexes(root, gitDirs, moduleGit, worktrees).join(" ")})`,
     `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join12(home, c))})`).join(" ")})`,
     `(deny file-read* file-write* ${denyRegexes(root, deny).join(" ")})`,
     ...network ? [`(allow file-read* ${CA_BUNDLES.map((p) => `(literal ${q(p)})`).join(" ")} (regex ${q("/certifi/cacert\\.pem$")}))`, `(deny file-read* file-write* ${places})`] : []
