@@ -1,21 +1,20 @@
 #!/usr/bin/env bash
-# Usage: scripts/hang-watch.sh PID SECONDS [PROGRESS_FILE]
+# Usage: scripts/hang-watch.sh PID SECONDS [PROGRESS_FILE QUIET_SECONDS]
 # Waits while PID runs and stops it, SIGTERM then SIGKILL, with evidence of where it is (a stack sample on macOS, the
 # thread states elsewhere, and the process table below it), so a test run whose event loop is blocked (which no test
 # timeout can end) fails fast instead of at the CI job limit (issue #115). Exits as soon as PID is gone; prints nothing then.
 #
-# Two bounds. With PROGRESS_FILE, the run is stopped once no new `bun test` result line ((pass), (fail), (skip) or (todo))
-# has appeared in it for AHUB_CHECK_QUIET_S seconds (default 180, above the longest per-test timeout in the suite, 120 s):
-# a suite that is slow but still passing tests is never cut (#516: hosted ubuntu runs of 14-17 minutes were killed at the
-# total bound while passing line by line). SECONDS is then only the overall backstop for a run that keeps printing results
-# while it is hung. Without PROGRESS_FILE there are no results to read, so SECONDS is the one bound, as before.
+# Two bounds. With PROGRESS_FILE and QUIET_SECONDS, the run is stopped once PROGRESS_FILE has not grown for QUIET_SECONDS: scripts/progress-tee.sh
+# appends one byte to it for every test result line and test file header the suite prints, so a suite that is slow but still passing tests is
+# never cut (#516: hosted ubuntu runs of 14-17 minutes were killed at the total bound while passing line by line). SECONDS is then only the overall
+# backstop for a run that keeps printing results while it is hung. Without them there is nothing to read, so SECONDS is the one bound, as before
+# (the CI timing job and scripts/seeded-check.ts call it that way).
 # The process is the one with PID and the start time it had when the watch began: a reused pid is never signalled.
 set -u
-pid=$1 limit=$2 progress=${3:-}
-quiet_limit=${AHUB_CHECK_QUIET_S:-180}
+pid=$1 limit=$2 progress=${3:-} quiet_limit=${4:-}
 started=$(LC_ALL=C TZ=UTC ps -o lstart= -p "$pid" 2>/dev/null)
 end=$((SECONDS + limit))
-last_results=0
+last_size=0
 last_move=$SECONDS
 # The same process, and not a zombie (a zombie has exited: only its parent's wait is missing).
 running() {
@@ -24,15 +23,12 @@ running() {
   now=$(LC_ALL=C TZ=UTC ps -o lstart= -p "$pid" 2>/dev/null) && [ "$now" = "$started" ] || return 1
   stat=$(ps -o stat= -p "$pid" 2>/dev/null) && [ "${stat#Z}" = "$stat" ]
 }
-# Test results so far. Only a result line is progress: a hung test that keeps logging is not. An unreadable file reads as
-# no new result, never as a burst of them. Bun prints no color into a file or a pipe.
-result_line='^\((pass|fail|skip|todo)\) '
-results() {
-  [ -f "$progress" ] || return 1
+# Bytes in the progress file. An unreadable file reads as no growth, never as a burst of progress.
+size() {
   local n
-  n=$(grep -cE "$result_line" "$progress" 2>/dev/null)
-  [ $? -le 1 ] || return 1 # grep exits 1 for no match (and prints 0), 2 for an error
-  echo "${n:-0}"
+  [ -f "$progress" ] || return 1
+  n=$(wc -c < "$progress" 2>/dev/null) || return 1
+  echo "${n//[![:digit:]]/}"
 }
 # What runs below PID, from one process table snapshot: the hung thing is often a fixture child, not the runner.
 process_table() {
@@ -45,7 +41,7 @@ process_table() {
 stop() {
   local why=$1 quiet=$((SECONDS - last_move))
   if [ "$why" = quiet ]; then
-    echo "check: pid $pid made no progress (no test result line) for ${quiet}s, bound ${quiet_limit}s; where it is:" >&2
+    echo "check: pid $pid made no progress (no test result line or file header) for ${quiet}s, bound ${quiet_limit}s; where it is:" >&2
   else
     echo "check: pid $pid still running after ${limit}s; where it is:" >&2
   fi
@@ -66,9 +62,9 @@ stop() {
 }
 while running; do
   if [ "$SECONDS" -ge "$end" ]; then stop total; fi
-  if [ -n "$progress" ]; then
-    now_results=$(results) || now_results=$last_results
-    if [ "$now_results" -gt "$last_results" ]; then last_results=$now_results; last_move=$SECONDS
+  if [ -n "$progress" ] && [ -n "$quiet_limit" ]; then
+    now_size=$(size) || now_size=$last_size
+    if [ "${now_size:-0}" -gt "$last_size" ]; then last_size=$now_size; last_move=$SECONDS
     elif [ $((SECONDS - last_move)) -ge "$quiet_limit" ]; then stop quiet; fi
   fi
   sleep 1

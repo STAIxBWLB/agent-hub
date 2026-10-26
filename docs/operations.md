@@ -3455,13 +3455,15 @@ unreadable result runs the main gate again and refuses release. A manual
 `prepare_bundle` dispatch builds reviewable plugin assets without publishing;
 it is never accepted as full-gate evidence. A `timing_runs=20` dispatch runs only the daemon, PII screen and ACP
 test files twenty times on macOS, in its own concurrency group; it does not replace the full gate. Each PR has its own CI concurrency group, so PRs run side by side; within a PR a newer pending run replaces the older pending one and an admitted run is never cancelled; main pushes and dispatches keep queueing every run. Two groups admitting the same tree at once may run it twice, never a false green (#609). `scripts/check.sh --changed [<base>]` runs every non-test step but only the affected test files, and the full suite when it cannot tell; the full gate stays CI's (#610).
-`scripts/check.sh` runs the suite under `scripts/hang-watch.sh`, which stops it when no
-new test result line (`(pass)`, `(fail)`, `(skip)` or `(todo)`) has appeared for
-`AHUB_CHECK_QUIET_S` seconds (180 by default), so a slow suite that is still passing
-tests is never cut. It prints where the run is and the process table below it first.
-`AHUB_CHECK_HANG_S` (960 by default) is only the backstop for a run that keeps printing
-results while hung; hosted CI sets 1500 on Linux inside a 35-minute job limit and 1800
-on macOS inside a 40-minute one (#378, #593, #752, #516).
+`scripts/check.sh` runs the suite under `scripts/hang-watch.sh`, which stops it when
+no test result line (`(pass)`, `(fail)`, `(skip)` or `(todo)`) and no test file header
+has appeared for `AHUB_CHECK_QUIET_S` seconds (300 by default, set to 300 in CI), so a
+slow suite that is still passing tests is never cut. `scripts/progress-tee.sh` passes bun's
+output through unchanged and appends one byte to a progress file for each of those lines;
+the watchdog polls that file's size. On a stop it prints where the run is and the process
+table below it first. `AHUB_CHECK_HANG_S` (960 by default) is only the backstop for a run
+that keeps printing results while hung; hosted CI sets 1500 on Linux inside a 35-minute
+job limit and 1800 on macOS inside a 40-minute one (#378, #593, #752, #516).
 The `closing-refs` workflow fails a PR whose title, body or commit messages would make
 GitHub close an issue the text only mentions (`Refs #N`, a negated or qualified keyword);
 an issue linked only in the sidebar passes (#760).

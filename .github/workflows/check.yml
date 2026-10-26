@@ -117,10 +117,11 @@ jobs:
           # and 30 minutes for that job, preserving Ubuntu's allowance and the per-test 20 s bound.
           # #516: a total-time kill cut suites that were still passing tests line by line (ubuntu runs 40264964185
           # and 40282389019 at 1080 s; PR #857's macOS leg at 1440 s). scripts/hang-watch.sh now stops the suite when
-          # no test result line has appeared for AHUB_CHECK_QUIET_S (180 s, the default), which is the hang detector;
+          # its progress file (one byte per test result line or file header) has not grown for AHUB_CHECK_QUIET_S (300 s), which is the hang detector;
           # AHUB_CHECK_HANG_S is only the backstop for a run that keeps printing results while hung, so it sits well above
           # a slow, healthy run: 1500 s on Linux and 1800 s on macOS, with the job limits raised to 35 and 40 minutes.
           AHUB_CHECK_HANG_S: ${{ runner.os == 'macOS' && '1800' || '1500' }}
+          AHUB_CHECK_QUIET_S: '300'
           AHUB_RESTART_DIAGNOSTICS_DIR: ${{ runner.temp }}/ahub-restart-diagnostics
         run: scripts/check.sh
       - name: Capture macOS fsmonitor readback diagnostics after a failed gate

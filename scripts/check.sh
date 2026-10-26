@@ -96,26 +96,27 @@ trap 'exit 143' TERM
 # a fixture's plugin would send that project at hello and be refused by the fixture hub.
 # #610: and not the person's git config (a global ignore hid fixture files) or color settings (NO_COLOR and a dumb
 # TERM broke the ANSI goldens); tests that need either set it themselves.
-# #516: the watchdog stops a run on lost progress, not on elapsed time, so it reads the test results as they are printed. Bun's output goes
-# through a fifo to a `tee` that keeps a copy in $progress and passes the rest on unchanged (stdout and stderr merged, as in a CI log).
-# A fifo and a tee of its own, not a pipe or a process substitution: with a pipe `$!` would be the tee and `wait` its status, so the
-# watchdog would stop the tee and leave bun running and a failing suite would read as passing; a process substitution cannot be waited
-# on with a bound, and a leaked fixture child that keeps the output open must not hold the gate before the leak scan names it.
-tee "$progress" < "$output_fifo" &
+# #516: the watchdog stops a run on lost progress, not on elapsed time. Bun prints its results on stderr: they go through a fifo to
+# scripts/progress-tee.sh, which passes every line on to this script's stderr unchanged and appends one byte to $progress for each result
+# line or file header, and hang-watch.sh polls that file's size. Stdout stays untouched. A fifo and a filter of its own, not a pipe or a
+# process substitution: with a pipe `$!` would be the filter and `wait` its status, so the watchdog would stop the filter and leave bun
+# running and a failing suite would read as passing; a process substitution cannot be waited on with a bound, and a leaked fixture child that
+# keeps the output open must not hold the gate before the leak scan names it.
+scripts/progress-tee.sh "$progress" < "$output_fifo" >&2 &
 tee_pid=$!
 env -u AGENTHUB_PEER_ID -u AGENTHUB_DELIVERY_ONLY -u AGENTHUB_CHANNEL -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID \
   -u AGENTHUB_PROJECT_DIR -u AGENTHUB_STATE_DIR -u AGENTHUB_INSTANCE_ID -u AGENTHUB_LAUNCH_ID -u NO_COLOR \
-  GIT_CONFIG_GLOBAL=/dev/null TERM=xterm-256color bun test --timeout 20000 ${test_args[@]+"${test_args[@]}"} > "$output_fifo" 2>&1 &
+  GIT_CONFIG_GLOBAL=/dev/null TERM=xterm-256color bun test --timeout 20000 ${test_args[@]+"${test_args[@]}"} 2> "$output_fifo" &
 test_pid=$!
 # A suite still printing test results is slow, not hung (hosted ubuntu runs of 14-17 minutes were cut at 1080 s while passing tests line
-# by line): the quiet bound (AHUB_CHECK_QUIET_S, 180 s without a result line) is the hang detector and AHUB_CHECK_HANG_S the backstop.
-scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-960}" "$progress" &
+# by line): the quiet bound (AHUB_CHECK_QUIET_S, 300 s without a result line or file header) is the hang detector and AHUB_CHECK_HANG_S the backstop.
+scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-960}" "$progress" "${AHUB_CHECK_QUIET_S:-300}" &
 watch_pid=$!
 wait "$test_pid" || tests=$?
 test_pid=""
 kill "$watch_pid" 2>/dev/null || true # its work is done: never let it watch a pid that may be reused
 wait "$watch_pid" 2>/dev/null || true
-# The tee ends when every writer has closed the fifo: wait a bounded time for the last lines, then let it go (a leaked child still holds it,
+# The filter ends when every writer has closed the fifo: wait a bounded time for the last lines, then let it go (a leaked child still holds it,
 # and the leak scan below reports that).
 for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$tee_pid" 2>/dev/null || break; sleep 0.5; done
 kill "$tee_pid" 2>/dev/null || true
