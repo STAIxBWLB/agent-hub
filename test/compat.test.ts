@@ -230,9 +230,9 @@ test("Kimi 2.3.0 and Qwen 0.26.0 are receipt-verified without machine trust (#37
   expect(assessVersion("qwen", "0.26.0", [])).toEqual({ ok: true, state: "verified", version: "0.26.0" });
 });
 
-test("Kimi 2.3.1 is receipt-verified without machine trust; its neighbours are not (#792)", () => {
-  expect(assessVersion("kimi-review", "2.3.1", [])).toEqual({ ok: true, state: "verified", version: "2.3.1" });
-  for (const near of ["2.3.2", "2.4.0", "2.3.1-rc.1"]) expect(assessVersion("kimi-review", near, []).ok).toBe(false);
+test("Kimi 2.3.1 and 2.3.2 are receipt-verified without machine trust; their neighbours are not (#792, #843)", () => {
+  for (const version of ["2.3.1", "2.3.2"]) expect(assessVersion("kimi-review", version, [])).toEqual({ ok: true, state: "verified", version });
+  for (const near of ["2.3.3", "2.4.0", "2.3.2-rc.1"]) expect(assessVersion("kimi-review", near, []).ok).toBe(false);
 });
 
 test("the compat watch covers every COMPAT source and renders ahead, unknown and no-public-source rows from an injected fetch (#843)", async () => {

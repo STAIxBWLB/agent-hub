@@ -326,12 +326,12 @@ var init_compat = __esm(() => {
     },
     "kimi-review": {
       label: "Kimi reviewer (kimi-code)",
-      verified: ["2.2.0", "2.3.0", "2.3.1"],
+      verified: ["2.2.0", "2.3.0", "2.3.1", "2.3.2"],
       gate: "isolation",
       probe: ["kimi", "--version"],
       parse: (out) => plain(out.trim()),
       trustNote: "Every launch still builds the private config, exact two-tool agent file and task-bound MCP; the native tool allowlist behaviour of an untested version is not re-proven.",
-      receipt: "docs/verification/2026-10-25-kimi-231-reviewer-compat.md"
+      receipt: "docs/verification/2026-10-26-kimi-232-reviewer-compat.md"
     },
     jcode: {
       label: "Jcode",
