@@ -193,24 +193,18 @@ test("explicit stale mark aborts active work, preserves person receipt and expos
   expect((await active.done).status).toBe("stale"); expect((await queued.done).status).toBe("stale"); expect(delivered).toBe(0);
   expect(await f.runner.result(active.run)).toMatchObject({ status: "stale", exit: null }); expect(f.runner.activeRun).toBeUndefined(); expect(f.runner.queuedRuns).toEqual([]);
 });
-test("markStale on an active run, while its own completion save is in flight, ends stale on disk with no failed save (#867)", async () => {
-  // The planned lifecycle: markStale aborts the active run, which makes its `exec` return, so the run's own completion path saves the SAME receipt object while markStale saves it.
-  // One temp name per process made the second rename find the file gone (ENOENT). Repeated: the interleaving is a scheduling accident.
-  let entered!: () => void; let running = new Promise<void>(r => { entered = r; });
-  const f = await fixture({ command: async (args, options) => {
-    if (args[0] === "network") return { code: 0, stdout: JSON.stringify([{ id: "agenthub-check", configuration: { name: "agenthub-check", mode: "hostOnly" } }]) };
-    if (args[0] === "exec") { entered(); return new Promise(r => options?.signal?.addEventListener("abort", () => r({ code: null, stdout: "" }), { once: true })); }
-    return { code: 0, stdout: args[0] === "list" ? "[]" : "1.5.0" };
-  } });
+test("markStale while the run's own receipt save is in flight ends stale on disk with no failed save, 50 times (#867)", async () => {
+  // start() runs the run's own first save synchronously up to its first await, so markStale called right after it saves the SAME receipt while that save is in flight. One temp
+  // name per process made the second rename find the file gone (ENOENT). Repeated: the interleaving is a scheduling accident.
+  const f = await fixture();
   const records = join(f.root, "state/checks");
   for (let i = 0; i < 50; i++) {
-    running = new Promise<void>(r => { entered = r; });
-    const active = f.runner.start(f.request); await running;
-    const marked = f.runner.markStale(active.run);   // not awaited: it saves while the aborted run's completion path saves too
+    const active = f.runner.start(f.request);
+    const marked = f.runner.markStale(active.run);   // not awaited before the run settles: both save while the run's own save is in flight
     const [, finished] = await Promise.all([marked, active.done]);
     expect(finished.status).toBe("stale");
+    expect(finished.error).not.toBe("check receipt storage unavailable");   // a failed save would surface here
     expect(await f.runner.result(active.run)).toMatchObject({ status: "stale" });
-    expect(finished.error).not.toBe("check receipt storage unavailable");   // a failed save would surface here (the aborted run reports "check stopped")
     expect((await readdir(records)).filter(name => name.endsWith(".tmp"))).toEqual([]);
   }
 }, 60_000);
