@@ -60,6 +60,11 @@ export interface PiOptions {
 }
 export interface PiTuiLaunch { cmd: string; args: string[]; env: NodeJS.ProcessEnv; }
 
+/** Only the host's parsed version verdict may cross the generic startup-error boundary. */
+export class PiVersionRefusal extends Error {
+  constructor(verdict: Extract<CompatVerdict, { ok: false }>) { super(verdict.reason); }
+}
+
 /** Bounded, non-blocking probe of the exact configured native command, including wrapper arguments. */
 export function piVersionAsync(command: readonly string[], cwd: string, timeoutMs = 10_000): Promise<CompatVerdict> {
   const [bin, ...prefix] = command;

@@ -101,6 +101,23 @@ test("Pi read-only mode still refuses before probing a native command", () => {
   expect(existsSync(f.trace)).toBe(false);
 });
 
+test("native RPC error text cannot impersonate a safe host version refusal", async () => {
+  const f = fixture("1.4.0"), stateDir = join(f.dir, "hub");
+  writeFileSync(join(f.dir, "pi.ts"), `import {createInterface} from "node:readline";
+if(process.argv.includes("--version")){console.log("1.4.0");process.exit(0);}
+createInterface({input:process.stdin}).on("line",line=>{const m=JSON.parse(line);console.log(JSON.stringify({id:m.id,success:false,error:"Version not verified: PRIVATE_NATIVE_ERROR"}));});`);
+  const daemon = await startDaemon({ cwd: f.dir, stateDir, projectId: "pi-error", instanceId: "pi-error",
+    controlPort: 0, codexAppPort: 0, codexProxyPort: 0, snapshotClock: () => 0,
+    config: { ...DEFAULT_CONFIG, memory: { ...DEFAULT_CONFIG.memory, enabled: false }, pi: { ...DEFAULT_CONFIG.pi, enabled: true, cmd: f.opts.cmd! },
+      peers: { ...DEFAULT_CONFIG.peers, pi: { ...DEFAULT_CONFIG.peers.pi, start_mode: "headless" } } } });
+  cleanup.push(() => daemon.stop());
+  const client = await ControlClient.connect(stateDir, { role: "console" }); cleanup.push(() => client.close());
+  const reply = await client.request({ t: "peer_start", peer: "pi" });
+  expect(reply.ok).toBe(false);
+  expect(reply.error).toBe("peer start failed; inspect ahub status and hub.log");
+  expect(JSON.stringify(reply)).not.toContain("PRIVATE_NATIVE_ERROR");
+});
+
 test("production Pi construction stays confined to its gated registry factory", () => {
   expect(definitionOf("pi")?.start.create).toBe(createPi);
   const root = join(import.meta.dir, ".."), sites: string[] = [];
