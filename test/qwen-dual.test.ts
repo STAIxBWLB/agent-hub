@@ -333,20 +333,27 @@ const finalAnswer = (text: string) => [{ type: "assistant", message: { content: 
 
 test("a background-task notification inside a running hub turn does not end it: the delivery completes and nothing is held (#517)", async () => {
   const r = await attached();
-  await r.peer.deliver(env("STALL then answer"), "d1");   // the fake accepts the submit and stays in the turn
-  await until(() => r.receipts.some(receipt => receipt.state === "accepted"));
-  // What the real Qwen wrote: the model asked for a tool, a background shell finished meanwhile and Qwen reported it as a user event, then the answer came.
-  appendEvents(r, { type: "assistant", message: { content: [{ type: "tool_use", id: "t1", name: "Bash" }], stop_reason: "tool_use" } }, { type: "stream_event", event: { type: "message_stop" } },
-    userEvent(NOTIFICATION()), ...finalAnswer("echo: STALL then answer"));
+  await r.peer.deliver(env("NOTIFY please"), "d1");   // the fake: a tool_use message, then Qwen's own notice, then the answer, all in one turn
   await until(() => r.answers.length === 1, () => `receipts ${JSON.stringify(r.receipts)} notices ${r.notices.join(" | ")}`);
   await until(() => r.peer.state === "idle");
+  expect(events(r).filter(event => event.type === "user" && JSON.stringify(event).includes("<task-notification>"))).toHaveLength(1);   // the notice really was in the stream
   expect(r.receipts.map(receipt => receipt.state)).toEqual(["accepted", "completed"]);   // never needs_review
   expect(r.notices).toEqual([]);
   expect(r.answers[0]!.body).toContain("echo:"); expect(r.answers[0]!.body).not.toContain("task-notification");
   // And the next delivery goes through: the queue was never held.
-  writeFileSync(join(r.dir, "input.jsonl.esc"), "");
   await r.peer.deliver(env("after"), "d2");
   await until(() => r.receipts.at(-1)?.id === "d2" && r.receipts.at(-1)!.state === "completed");
+});
+
+test("a notification after the turn has ended, with nothing following it, leaves the peer idle and the queue open (#517)", async () => {
+  const r = await attached();
+  await r.peer.deliver(env("NOTIFYAFTER please"), "d1");
+  await until(() => r.receipts.at(-1)?.state === "completed");
+  await until(() => events(r).some(event => event.type === "user" && JSON.stringify(event).includes("<task-notification>")));
+  await Bun.sleep(150);
+  expect(r.peer.state).toBe("idle"); expect(r.notices).toEqual([]);
+  await r.peer.deliver(env("after the trailing notice"), "d2");
+  await until(() => r.receipts.at(-1)?.id === "d2" && r.receipts.at(-1)!.state === "completed", () => JSON.stringify(r.receipts));
 });
 
 test("several notifications in one hub turn leave it running until its own end, and the answer is the last assistant message (#517)", async () => {
