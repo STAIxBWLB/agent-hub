@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { assessVersion, COMPAT, readTrust, trustFile, VERSION_REFUSAL, writeTrust } from "../src/adapters/compat.ts";
+import { assessVersion, COMPAT, readTrust, trustFile, VERSION_REFUSAL, writeTrust, type CompatId } from "../src/adapters/compat.ts";
 import { agyVersionGate } from "../src/adapters/agy/entry.ts";
 import { classifyPeerCommand } from "../src/cli/identity.ts";
 
@@ -237,60 +237,61 @@ test("Kimi 2.3.1 is receipt-verified without machine trust; its neighbours are n
 
 test("the compat watch covers every COMPAT source and renders ahead, unknown and no-public-source rows from an injected fetch (#843)", async () => {
   const { SOURCES, latestVersion, watch } = await import("../scripts/agent-compat-watch.ts");
-  // Every kind COMPAT gates has a declared public source (the pi hook in SOURCES covers a pi entry the moment #843 AC2 adds one);
-  // agy is the only one with none.
-  for (const id of Object.keys(COMPAT)) expect(id in SOURCES || id === "pi").toBe(true);
+  // Every key in SOURCES is a public source except agy, whose kind is "none". SOURCES is keyed by CompatId, so a pi
+  // entry #843 AC2 adds is watched through the same SOURCES.pi hook asserted below, without touching this test.
+  for (const id of Object.keys(SOURCES)) expect(id === "agy" || SOURCES[id]?.kind !== "none").toBe(true);
+  expect(SOURCES.agy).toEqual({ kind: "none" });
   expect(SOURCES["claude-implementer"]).toEqual({ kind: "npm", pkg: "@anthropic-ai/claude-code" });
   expect(SOURCES.jcode).toEqual({ kind: "github", repo: "1jehuang/jcode" });
-  expect(SOURCES.agy).toEqual({ kind: "none" });
   expect(SOURCES["qwen-dual"]).toEqual({ kind: "npm", pkg: "@qwen-code/qwen-code" });
   expect(SOURCES.pi).toEqual({ kind: "npm", pkg: "@earendil-works/pi-coding-agent" }); // the hook: watched the moment #843 AC2 adds a COMPAT pi entry
   expect(await latestVersion({ kind: "github", repo: "x/y" }, async () => ({ json: async () => ({ tag_name: "v0.99.1" }) }))).toBe("0.99.1");
   expect(await latestVersion({ kind: "npm", pkg: "x" }, async () => { throw new Error("offline"); })).toBeUndefined();
 
-  // qwen and qwen-dual read the same npm pkg but carry different verified sets, so no single URL maps to both. The
-  // watcher reads each id's source in COMPAT's key order and agy (kind none) fetches nothing, so each id's first fetch
-  // arrives in that same order. Hand each public id its first fetch as its verified value -> all verified, agy left as
-  // an informational notice -> exit 0, so the workflow can close the drift issue (#843: a notice is never drift).
-  const publicOrder = Object.keys(COMPAT).filter(id => id !== "agy");
-  const first: Record<string, string> = {};
-  const verifiedFor: Record<string, unknown> = {
-    "claude-implementer": { version: "2.1.309" }, "codex-review": { version: "0.146.0" }, "kimi-review": { version: "2.3.1" },
-    jcode: { tag_name: "v0.99.0" }, qwen: { version: "0.26.0" }, "qwen-dual": { version: "0.26.1" },
-  };
-  const ownsUrl = (id: string, url: string): boolean => {
+  // The watched fixture is derived from COMPAT, not a fixed version list, so it survives a new COMPAT entry (pi, #843
+  // AC2) without editing this test. Each public id is served its first fetch in COMPAT's key order (agy, kind none,
+  // fetches nothing); qwen and qwen-dual read the same npm pkg but carry different verified sets, so serving each id
+  // its own value in that order is what keeps them all verified. Every id's verified[0] is a plain semver.
+  const publicOrder = Object.keys(COMPAT).filter(id => id !== "agy") as CompatId[];
+  const owned = (id: CompatId, url: string): boolean => {
     const s = SOURCES[id];
-    if (!s) return false;
-    return s.kind === "npm" ? url.includes(s.pkg) : s.kind === "github" ? url.includes(s.repo) : false;
+    return s ? (s.kind === "npm" ? url.includes(s.pkg) : s.kind === "github" ? url.includes(s.repo) : false) : false;
   };
-  const verifiedStub = ((url: string) => {
-    const id = publicOrder.find(k => first[k] === undefined && ownsUrl(k, url));
-    if (id) first[id] = url;
-    return Promise.resolve({ json: async () => (id ? verifiedFor[id] : {}) });
-  }) as unknown as typeof fetch;
-  const allVerified = await watch(verifiedStub, new Date("2026-10-26T00:00:00Z"));
+  // Hand each public id its first matching fetch as a body of its SOURCES kind's shape, unless forced ahead.
+  const stub = (aheadOf?: Record<string, string>) => {
+    const served: Record<string, string> = {};
+    return ((url: string) => {
+      const id = publicOrder.find(k => served[k] === undefined && owned(k, url));
+      if (id) served[id] = url;
+      const version = id ? (aheadOf?.[id] ?? COMPAT[id].verified[0]) : undefined;
+      const source = id ? SOURCES[id] : undefined;
+      return Promise.resolve({ json: async () => (source?.kind === "github" ? { tag_name: `v${version}` } : { version }) });
+    }) as unknown as typeof fetch;
+  };
+
+  const allVerified = await watch(stub(), new Date("2026-10-26T00:00:00Z"));
   expect(allVerified.code).toBe(0);
   expect(allVerified.report).toContain("latest published version is verified");
   expect(allVerified.report).toContain("- **agy**: no public source; local drift only");
   expect(allVerified.report).not.toContain("Published agent CLI versions ahead");
 
-  // The same walk with only claude-implementer's first fetch forced ahead (9.9.9), the rest verified: exit 3 with the
-  // drift header, the claude drift row, and agy still an informational notice.
-  const aheadFirst: Record<string, string> = {};
-  const aheadStub = ((url: string) => {
-    const id = publicOrder.find(k => aheadFirst[k] === undefined && ownsUrl(k, url));
-    if (id) aheadFirst[id] = url;
-    return Promise.resolve({ json: async () => (id === "claude-implementer" ? { version: "9.9.9" } : id ? verifiedFor[id] : {}) });
-  }) as unknown as typeof fetch;
-  const ahead = await watch(aheadStub, new Date("2026-10-26T00:00:00Z"));
+  // The same walk with only claude-implementer forced to an unverified version: exit 3 with the drift header and that
+  // id's drift row, while agy stays an informational notice (#843: a notice is never drift, so all-verified is exit 0).
+  const driftId = publicOrder[0]!;
+  const aheadVersion = "9.9.9";
+  const ahead = await watch(stub({ [driftId]: aheadVersion }), new Date("2026-10-26T00:00:00Z"));
   expect(ahead.code).toBe(3);
   expect(ahead.report.startsWith("Published agent CLI versions ahead of their verified set")).toBe(true);
-  const claudeRow = ahead.report.split("\n").find(l => l.includes("**claude-implementer**")) ?? "";
-  expect(claudeRow).toContain("npm @anthropic-ai/claude-code");
-  expect(claudeRow).toContain("latest 9.9.9");
-  expect(claudeRow).toContain("refused");
-  expect(claudeRow).toContain("docs/verification/2026-10-23-headless-claude-permissions.md");
-  expect(ahead.report).not.toContain("- **codex-review**"); // still verified at 0.146.0
+  const driftSource = SOURCES[driftId]!;
+  const driftLabel = driftSource.kind === "npm" ? `npm ${driftSource.pkg}` : driftSource.kind === "github" ? `GitHub releases ${driftSource.repo}` : "no public source";
+  const driftRow = ahead.report.split("\n").find(l => l.includes(`**${driftId}**`)) ?? "";
+  expect(driftRow).toContain(driftLabel);
+  expect(driftRow).toContain(`latest ${aheadVersion}`);
+  expect(driftRow).toContain("refused");
+  expect(driftRow).toContain(COMPAT[driftId].receipt);
+  const otherVerified = publicOrder.find(id => id !== driftId)!;
+  expect(ahead.report).not.toContain(`- **${otherVerified}**`); // still verified at its own verified[0]
+  expect(ahead.report).toContain("- **agy**: no public source; local drift only"); // agy is a notice, not drift
   // A source that cannot be read is unknown, not a crash.
   const unknown = await watch(async () => { throw new Error("offline"); }, new Date("2026-10-26T00:00:00Z"));
   expect(unknown.code).toBe(3);
