@@ -12,11 +12,12 @@ import { sandboxAvailable } from "../src/local/sandbox.ts";
 import { completeJsonLines } from "./fakes/jsonl.ts";
 
 async function until(condition: () => boolean, leg: string) { for (let n = 0; n < 300 && !condition(); n++) await Bun.sleep(5); expect(condition(), leg).toBe(true); }
-async function fixture(taskBound = false, model?: string, shell?: { origin: true; actionEnabled: boolean; readCanonical?: boolean }) {
+async function fixture(taskBound = false, model?: string, shell?: { origin: true; actionEnabled: boolean; readCanonical?: boolean; defaultBranch?: string }) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-claude-impl-daemon-"))), peer = "claude-worker", tree = join(root, ".worktrees", peer), stateDir = join(root, ".agenthub", "state"), log = join(root, "calls.jsonl"), home = join(root, "home"), bin = join(root, "bin");
   const oldEnv = { HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, PATH: process.env.PATH, AMEM_HOME: process.env.AMEM_HOME, AGENTHUB_HOME: process.env.AGENTHUB_HOME };
   mkdirSync(stateDir, { recursive: true }); mkdirSync(home); mkdirSync(bin);
   for (const args of [["init", "-q"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], ["worktree", "add", "-qb", "worker", tree]]) expect(hubGitSync(["-C", root, ...args], { encoding: "utf8" }).status).toBe(0);
+  for (const args of [["update-ref", `refs/remotes/origin/${shell?.defaultBranch ?? "main"}`, "HEAD"], ["symbolic-ref", "refs/remotes/origin/HEAD", `refs/remotes/origin/${shell?.defaultBranch ?? "main"}`]]) expect(hubGitSync(["-C", root, ...args], { encoding: "utf8" }).status).toBe(0);
   if (shell?.origin) expect(hubGitSync(["-C", root, "remote", "add", "origin", "https://github.com/fixture/repo.git"], { encoding: "utf8" }).status).toBe(0);
   writeFileSync(join(tree, "source.ts"), "fixture source\n");
   writeFileSync(join(bin, "claude"), `#!${process.execPath}\nif(process.argv.includes("--version")){console.log("2.1.309 (Claude Code)");process.exit(0)}\nprocess.argv=[process.argv[0],${JSON.stringify(resolve(import.meta.dir, "fakes/fake-claude-implementer.ts"))},${JSON.stringify(log)},"hang",...process.argv.slice(2)];\nawait import(${JSON.stringify(resolve(import.meta.dir, "fakes/fake-claude-implementer.ts"))});\n`, { mode: 0o700 });
@@ -95,6 +96,17 @@ test("#845 branch changes invalidate outstanding tickets and never rebind the ta
     const stale = await runGranted(allowed.updatedInput.command, f.root);
     expect(stale.code).not.toBe(0); expect(stale.stdout).toBe("");
     expect(await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "git push origin worker" }, wrapperProtocol: 1 })).toMatchObject({ behavior: "deny", message: "no person answered" });
+  } finally { await f.close(); }
+}, 20_000);
+
+test("#845 startup default branch stays excluded after local origin HEAD is rewritten", async () => {
+  const f = await fixture(true, undefined, { origin: true, actionEnabled: false, defaultBranch: "release" });
+  try {
+    await shellTask(f); // This changes origin/HEAD to main after the daemon captured release.
+    expect(hubGitSync(["-C", f.tree, "checkout", "-qb", "release"], { encoding: "utf8" }).status).toBe(0);
+    expect(await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "git push origin release" }, wrapperProtocol: 1 })).toMatchObject({ behavior: "deny", message: "no person answered" });
+    const shown = await f.tools.request({ t: "task", op: "hub_task_show", args: { id: f.taskId } });
+    expect(JSON.parse(shown.text).refs.branch).toBeUndefined();
   } finally { await f.close(); }
 }, 20_000);
 

@@ -99,7 +99,8 @@ import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../lo
 import { runTool, toolResultFailed, TOOL_SCHEMAS, type ToolApproval, type ApprovalObserver, type ToolContext, type ShellPermitPolicy } from "../local/tools.ts";
 import { proveReadOnlyShell, ShellExecutionProofs } from "./read-only-shell-proof.ts";
 import { createHostShellWrapper, type HostShellWrapper } from "./claude-shell-wrapper.ts";
-import { readTaskShellBinding, proveTaskShell } from "./task-shell-proof.ts";
+import { readTaskShellDefaultBranch, readTaskShellBinding, proveTaskShell } from "./task-shell-proof.ts";
+import { taskShellSandboxRestrictions } from "./task-shell-sandbox.ts";
 import { hostShellEnvironment } from "../local/shell-environment.ts";
 import { hubGitArgv, hubGitEnv } from "./git.ts";
 import { isLocalPeer, type LocalPeer } from "../adapters/local-worker.ts";
@@ -2301,6 +2302,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return () => c.toolsOwner === binding && !!launch && currentImplementerTools(c) === launch;
   }
   const shellProjectRepository = githubOriginRepository(opts.cwd);
+  const shellDefaultBranch = readTaskShellDefaultBranch(opts.cwd, hostShellEnvironment({ PATH: hostShellPath(opts.cwd, opts.cwd) ?? "" }), () => true, opts.cwd);
   let implementerShellStart: Promise<HostShellWrapper> | undefined;
   const implementerShellProfiles = new WeakMap<object, { key: string; sandbox: { profile: string; readOnlyData: boolean } }>();
   async function automaticImplementerShell(c: Client, tool: string, original: Record<string, unknown>, current: () => boolean): Promise<{ command: string; timeout: number; description: string } | undefined> {
@@ -2324,7 +2326,7 @@ export async function startDaemon(opts: DaemonOptions) {
         && claudeActionClasses(actionBudgets, tool, input, root).length === 0 && hostShellPath(opts.cwd, root) === path && JSON.stringify(hostShellEnvironment(extra)) === environment;
     };
     if (!authority()) return;
-    const binding = readTaskShellBinding(root, env, authority, opts.cwd);
+    const binding = readTaskShellBinding(root, env, authority, opts.cwd, shellDefaultBranch);
     if (!binding) return;
     const shellOptions = { root, projectRoot: opts.cwd, deny: config.local.deny, readOnly: config.data?.readonly, env: extra };
     const taskOptions = { ...shellOptions, env, binding, protectInstructions: config.protect_instruction_files, repository: shellProjectRepository, publicText: (text: string) => tasks.publicMetadataText(text) };
@@ -2343,19 +2345,24 @@ export async function startDaemon(opts: DaemonOptions) {
       // Cache only this synchronous proof burst: newly initialized submodules change concrete Git-directory protections.
       // ponytail: shared profile discovery is synchronous; move it to an asynchronous, deadline-bound inventory proof.
       // read_allow may include the canonical checkout. Its live control credentials remain denied independently of the worktree root.
-      const sandbox = { profile: `${profile(root, sandboxNetwork, config.local.read_allow, config.local.deny, config.data?.readonly)}\n(deny file-read* file-write* (subpath ${sbplString(state)}))`, readOnlyData: !!config.data?.readonly?.length };
+      const restrictions = taskShellSandboxRestrictions(root, binding.branch, { projectRoot: opts.cwd, env });
+      if (!restrictions) return undefined;
+      const sandbox = { profile: `${profile(root, sandboxNetwork, config.local.read_allow, config.local.deny, config.data?.readonly)}\n${restrictions}\n(deny file-read* file-write* (subpath ${sbplString(state)}))`, readOnlyData: !!config.data?.readonly?.length };
       const entry = { key, sandbox };
       implementerShellProfiles.set(owner, entry);
       queueMicrotask(() => { if (implementerShellProfiles.get(owner) === entry) implementerShellProfiles.delete(owner); });
       return sandbox;
     };
-    const sandbox = currentSandbox();
+    let sandbox: { profile: string; readOnlyData: boolean } | undefined;
+    try { sandbox = currentSandbox(); } catch { return; }
+    if (confined && !sandbox) return;
     const recheck = () => {
       if (!authority() || !tasks.bindShellBranch(peer, taskId, { ...binding, worktree: root }, authority)) return false;
-      const observed = readTaskShellBinding(root, env, authority, opts.cwd);
+      const observed = readTaskShellBinding(root, env, authority, opts.cwd, shellDefaultBranch);
       if (!observed || observed.branch !== binding.branch || observed.defaultBranch !== binding.defaultBranch) return false;
       const proof = readProof ? proveReadOnlyShell(input, shellOptions, authority) : proveTaskShell(input.command, taskOptions, authority);
-      const observedSandbox = currentSandbox();
+      let observedSandbox: typeof sandbox;
+      try { observedSandbox = currentSandbox(); } catch { return false; }
       return proof?.fingerprint === fingerprint && observedSandbox?.profile === sandbox?.profile && observedSandbox?.readOnlyData === sandbox?.readOnlyData && authority();
     };
     // A fixed capability on the channel request prevents an older plugin from ignoring updatedInput and running the original command.

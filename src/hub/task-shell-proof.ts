@@ -29,15 +29,25 @@ function gitReader(root: string, env: Record<string, string>, current: () => boo
   };
 }
 
-/** Unknown default refs and detached HEAD never become a guessed task binding. */
-export function readTaskShellBinding(root: string, env: Record<string, string>, current: () => boolean, projectRoot = root): TaskShellBinding | undefined {
+/** Startup-only host evidence. Never refresh this authority from origin/HEAD after task code has run. */
+export function readTaskShellDefaultBranch(root: string, env: Record<string, string>, current: () => boolean, projectRoot = root): string | undefined {
   try {
     const git = gitReader(realPath(root), env, current, projectRoot);
+    const ref = git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]).replace(/\n$/, "");
+    if (!ref.startsWith("refs/remotes/origin/")) return;
+    if (!/^[0-9a-f]{40}\n$/.test(git(["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]))) return;
+    const branch = ref.slice("refs/remotes/origin/".length);
+    return current() ? branch : undefined;
+  } catch { return undefined; }
+}
+
+/** Attached HEAD is live evidence; the default branch must be pinned by the host before task execution. */
+export function readTaskShellBinding(root: string, env: Record<string, string>, current: () => boolean, projectRoot = root, defaultBranch?: string): TaskShellBinding | undefined {
+  try {
+    if (!defaultBranch) return;
+    const git = gitReader(realPath(root), env, current, projectRoot);
     const branch = git(["symbolic-ref", "--quiet", "--short", "HEAD"]).replace(/\n$/, "");
-    const defaultRef = git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]).replace(/\n$/, "");
-    if (!defaultRef.startsWith("refs/remotes/origin/")) return;
-    if (!/^[0-9a-f]{40}\n$/.test(git(["rev-parse", "--verify", "--end-of-options", `${defaultRef}^{commit}`]))) return;
-    const binding = { branch, defaultBranch: defaultRef.slice("refs/remotes/origin/".length) };
+    const binding = { branch, defaultBranch };
     return taskShellBindingValid(binding) && current() ? binding : undefined;
   } catch { return undefined; }
 }
@@ -96,7 +106,7 @@ export function proveTaskShell(command: unknown, options: TaskShellProofOptions,
     if (!form) return;
     const root = realPath(options.root), project = realPath(options.projectRoot), env = options.env;
     if (!env.PATH || env.PATH.length > 16384 || env.PATH.split(":").some(dir => !isAbsolute(dir) || dir.split("/").includes(".."))) return;
-    const binding = readTaskShellBinding(root, env, current, project);
+    const binding = readTaskShellBinding(root, env, current, project, options.binding.defaultBranch);
     if (!binding || binding.branch !== options.binding.branch || binding.defaultBranch !== options.binding.defaultBranch) return;
     const paths = new Set<string>();
     const path = (value: string, writing = false) => {

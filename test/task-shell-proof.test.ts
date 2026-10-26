@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { hubGitArgv, hubGitEnv, hubGitSync } from "../src/hub/git.ts";
-import { readTaskShellBinding, proveTaskShell, type TaskShellProofOptions } from "../src/hub/task-shell-proof.ts";
+import { readTaskShellDefaultBranch, readTaskShellBinding, proveTaskShell, type TaskShellProofOptions } from "../src/hub/task-shell-proof.ts";
 import { hostShellEnvironment } from "../src/local/shell-environment.ts";
 import { realPath } from "../src/hub/project.ts";
 import { shellQuote } from "../src/cli/shell-quote.ts";
@@ -32,7 +32,7 @@ function fixture() {
 test("#845 task proof binds real branch/default, literal paths, host argv and executable", () => {
   const f = fixture();
   try {
-    expect(readTaskShellBinding(f.root, f.options.env, () => true)).toEqual(f.options.binding);
+    expect(readTaskShellBinding(f.root, f.options.env, () => true, f.project, f.options.binding.defaultBranch)).toEqual(f.options.binding);
     for (const command of ["scripts/check.sh --changed", "bun run build", "bun test test/example.test.ts", "git add test/example.test.ts", "git commit -m 'fixture (Refs #845)'", "git push origin task/worker", "git push -u origin task/worker", "gh pr view task/worker", "gh pr checks task/worker", "gh pr create --base main --head task/worker --title fixture --body fixture"]) {
       const proof = proveTaskShell(command, f.options, () => true);
       expect(proof, command).toBeDefined(); expect(proof!.executable.startsWith("/")).toBe(true);
@@ -57,13 +57,28 @@ test("#845 unknown/default/detached branches, protected paths, readonly policy a
     expect(proveTaskShell("git add test", f.options, () => true)).toBeUndefined();
     writeFileSync(join(f.root, "scripts", ".env"), "fixture-private\n");
     expect(proveTaskShell("git add scripts", f.options, () => true)).toBeUndefined();
+    expect(readTaskShellBinding(f.root, f.options.env, () => true, f.project)).toBeUndefined();
     f.git("symbolic-ref", "--delete", "refs/remotes/origin/HEAD");
-    expect(readTaskShellBinding(f.root, f.options.env, () => true)).toBeUndefined();
+    expect(readTaskShellDefaultBranch(f.root, f.options.env, () => true, f.project)).toBeUndefined();
     f.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/missing");
-    expect(readTaskShellBinding(f.root, f.options.env, () => true)).toBeUndefined();
+    expect(readTaskShellDefaultBranch(f.root, f.options.env, () => true, f.project)).toBeUndefined();
     f.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
     expect(hubGitSync(["-C", f.root, "checkout", "--detach", "HEAD"], { encoding: "utf8" }).status).toBe(0);
-    expect(readTaskShellBinding(f.root, f.options.env, () => true)).toBeUndefined();
+    expect(readTaskShellBinding(f.root, f.options.env, () => true, f.project, f.options.binding.defaultBranch)).toBeUndefined();
+  } finally { f.close(); }
+});
+
+test("#845 mutable origin HEAD cannot replace the host-pinned non-main default branch", () => {
+  const f = fixture();
+  try {
+    f.git("update-ref", "refs/remotes/origin/release", "HEAD");
+    f.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/release");
+    const pinned = readTaskShellDefaultBranch(f.root, f.options.env, () => true, f.project);
+    expect(pinned).toBe("release");
+    f.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
+    expect(readTaskShellBinding(f.root, f.options.env, () => true, f.project, pinned)).toEqual({ branch: "task/worker", defaultBranch: "release" });
+    expect(hubGitSync(["-C", f.root, "checkout", "-qb", "release"], { encoding: "utf8" }).status).toBe(0);
+    expect(readTaskShellBinding(f.root, f.options.env, () => true, f.project, pinned)).toBeUndefined();
   } finally { f.close(); }
 });
 
@@ -187,7 +202,7 @@ test("#845 metadata refuses a parent-project Git shadow before invoking it", () 
     const bin = join(f.project, "bin"), marker = join(f.project, "invoked"); mkdirSync(bin);
     writeFileSync(join(bin, "git"), `#!/bin/sh\nprintf unsafe > ${shellQuote(marker)}\nexit 1\n`, { mode: 0o700 });
     const env = { ...f.options.env, PATH: `${bin}:/usr/bin:/bin` };
-    expect(readTaskShellBinding(f.root, env, () => true, f.project)).toBeUndefined();
+    expect(readTaskShellBinding(f.root, env, () => true, f.project, f.options.binding.defaultBranch)).toBeUndefined();
     expect(proveTaskShell("bun run build", { ...f.options, env }, () => true)).toBeUndefined();
     expect(existsSync(marker)).toBe(false);
   } finally { f.close(); }
