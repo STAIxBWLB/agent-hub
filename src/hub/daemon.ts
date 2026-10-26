@@ -532,6 +532,8 @@ function mlxPinProblem(routing: Routing, project: boolean): string | undefined {
 export interface DaemonOptions {
   /** Host-only test/embedding port; never read from project configuration or a tool. */
   memoryClient?: MemoryClient;
+  /** Host-only remote-default evidence seam; never read from config or control messages. */
+  shellDefaultBranchProbe?: typeof readTaskShellDefaultBranch;
   /** Host-only snapshot/probe seams; never read from project config or tool arguments. */
   snapshot?: typeof snapshot;
   snapshotBurstMs?: number;
@@ -2302,7 +2304,10 @@ export async function startDaemon(opts: DaemonOptions) {
     return () => c.toolsOwner === binding && !!launch && currentImplementerTools(c) === launch;
   }
   const shellProjectRepository = githubOriginRepository(opts.cwd);
-  const shellDefaultBranch = readTaskShellDefaultBranch(opts.cwd, hostShellEnvironment({ PATH: hostShellPath(opts.cwd, opts.cwd) ?? "" }), () => true, opts.cwd);
+  const shellNeedsDefault = Object.values(declarations).some(instance => instance.kind === "claude" && instance.start_mode === "headless");
+  const shellDefaultBranch = shellNeedsDefault && shellProjectRepository
+    ? await (opts.shellDefaultBranchProbe ?? readTaskShellDefaultBranch)(opts.cwd, hostShellEnvironment({ PATH: hostShellPath(opts.cwd, opts.cwd) ?? "" }), () => true, opts.cwd, shellProjectRepository)
+    : undefined;
   let implementerShellStart: Promise<HostShellWrapper> | undefined;
   const implementerShellProfiles = new WeakMap<object, { key: string; sandbox: { profile: string; readOnlyData: boolean } }>();
   async function automaticImplementerShell(c: Client, tool: string, original: Record<string, unknown>, current: () => boolean): Promise<{ command: string; timeout: number; description: string } | undefined> {

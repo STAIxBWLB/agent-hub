@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { hubGitArgv, hubGitEnv, hubGitSync } from "../src/hub/git.ts";
-import { readTaskShellDefaultBranch, readTaskShellBinding, proveTaskShell, type TaskShellProofOptions } from "../src/hub/task-shell-proof.ts";
+import { readTaskShellBinding, proveTaskShell, type TaskShellProofOptions } from "../src/hub/task-shell-proof.ts";
 import { hostShellEnvironment } from "../src/local/shell-environment.ts";
 import { realPath } from "../src/hub/project.ts";
 import { shellQuote } from "../src/cli/shell-quote.ts";
@@ -38,7 +38,7 @@ test("#845 task proof binds real branch/default, literal paths, host argv and ex
       expect(proof, command).toBeDefined(); expect(proof!.executable.startsWith("/")).toBe(true);
       if (proof!.program === "gh") expect(proof!.argv.slice(-2)).toEqual(["--repo", "https://github.com/fixture/repo"]);
       if (proof!.program === "git") expect(proof!.argv).toContain("core.hooksPath=/dev/null");
-      expect(proof!.requiresSandbox, command).toBe(!command.startsWith("git push ") && !command.startsWith("gh "));
+      expect(proof!.requiresSandbox, command).toBe(command.startsWith("scripts/check.sh") || command.startsWith("bun "));
     }
     const before = proveTaskShell("scripts/check.sh --changed", f.options, () => true)!;
     writeFileSync(join(f.root, "scripts", "check.sh"), "#!/bin/sh\nexit 7\n");
@@ -58,11 +58,6 @@ test("#845 unknown/default/detached branches, protected paths, readonly policy a
     writeFileSync(join(f.root, "scripts", ".env"), "fixture-private\n");
     expect(proveTaskShell("git add scripts", f.options, () => true)).toBeUndefined();
     expect(readTaskShellBinding(f.root, f.options.env, () => true, f.project)).toBeUndefined();
-    f.git("symbolic-ref", "--delete", "refs/remotes/origin/HEAD");
-    expect(readTaskShellDefaultBranch(f.root, f.options.env, () => true, f.project)).toBeUndefined();
-    f.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/missing");
-    expect(readTaskShellDefaultBranch(f.root, f.options.env, () => true, f.project)).toBeUndefined();
-    f.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
     expect(hubGitSync(["-C", f.root, "checkout", "--detach", "HEAD"], { encoding: "utf8" }).status).toBe(0);
     expect(readTaskShellBinding(f.root, f.options.env, () => true, f.project, f.options.binding.defaultBranch)).toBeUndefined();
   } finally { f.close(); }
@@ -73,12 +68,26 @@ test("#845 mutable origin HEAD cannot replace the host-pinned non-main default b
   try {
     f.git("update-ref", "refs/remotes/origin/release", "HEAD");
     f.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/release");
-    const pinned = readTaskShellDefaultBranch(f.root, f.options.env, () => true, f.project);
+    const pinned = "release"; // Supplied by the separately tested remote host probe, never by local origin/HEAD.
     expect(pinned).toBe("release");
     f.git("symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main");
     expect(readTaskShellBinding(f.root, f.options.env, () => true, f.project, pinned)).toEqual({ branch: "task/worker", defaultBranch: "release" });
     expect(hubGitSync(["-C", f.root, "checkout", "-qb", "release"], { encoding: "utf8" }).status).toBe(0);
     expect(readTaskShellBinding(f.root, f.options.env, () => true, f.project, pinned)).toBeUndefined();
+  } finally { f.close(); }
+});
+
+test("#845 privileged add/commit refuse configured filters, external drivers and partial clones", () => {
+  const f = fixture();
+  try {
+    for (const key of ["filter.fixture.clean", "filter.fixture.smudge", "filter.fixture.process", "diff.fixture.command", "diff.fixture.textconv", "extensions.partialClone", "remote.origin.promisor"]) {
+      f.git("config", key, key === "remote.origin.promisor" ? "true" : key === "extensions.partialClone" ? "origin" : "fixture-helper");
+      for (const command of ["git add test/example.test.ts", "git commit -m fixture"]) expect(proveTaskShell(command, f.options, () => true), key).toBeUndefined();
+      f.git("config", "--unset", key);
+    }
+    const proof = proveTaskShell("git commit -m fixture", f.options, () => true)!;
+    expect(proof.requiresSandbox).toBe(false);
+    for (const setting of ["core.hooksPath=/dev/null", "core.fsmonitor=false", "commit.gpgSign=false", "push.gpgSign=false", "gc.auto=0", "maintenance.auto=false"]) expect(proof.argv).toContain(setting);
   } finally { f.close(); }
 });
 

@@ -10,7 +10,7 @@ export interface TaskShellCommand {
   paths: readonly string[];
 }
 
-function shortBranch(value: unknown): value is string {
+export function shortBranch(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$/.test(value)
     && value !== "HEAD" && !value.startsWith("refs/") && !value.includes("..") && !value.includes("//")
     && !value.endsWith("/") && !value.endsWith(".")

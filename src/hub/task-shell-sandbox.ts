@@ -1,6 +1,6 @@
 import { accessSync, constants, lstatSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { sbplString } from "../local/deny.ts";
 import { hostExecutable } from "./host-executable.ts";
 import { hubGitArgv, hubGitEnv } from "./git.ts";
@@ -13,7 +13,8 @@ const literal = (file: string) => `(literal ${sbplString(file)})`;
 const subpath = (file: string) => `(subpath ${sbplString(file)})`;
 
 /** Deny-only refinement of the worker profile, never an execution grant or a replacement sandbox.
- * Unknown layouts (including a non-linked checkout or missing ref/reflog parents) ask instead of creating metadata directories.
+ * All Git metadata is immutable here, including objects: object content is later trusted by privileged Git operations.
+ * Unknown layouts (including a non-linked checkout) ask instead of guessing metadata boundaries.
  * ponytail: synchronous Git evidence shares a 1.5 second burst; an async host proof is the upgrade path. */
 export function taskShellSandboxRestrictions(root: string, branch: string, options: TaskShellSandboxOptions): string | undefined {
   try {
@@ -35,7 +36,7 @@ export function taskShellSandboxRestrictions(root: string, branch: string, optio
     if (git("symbolic-ref", "--quiet", "--short", "HEAD") !== branch || realPath(git("rev-parse", "--show-toplevel")) !== root) return;
     const gitDir = realPath(git("rev-parse", "--absolute-git-dir"));
     const commonDir = realPath(resolve(root, git("rev-parse", "--git-common-dir")));
-    // Only the current registered linked-worktree directory is writable. A canonical checkout would overlap the denied common HEAD/index.
+    // Only a proven linked-worktree layout is supported; this refinement grants no metadata writes, even to the current worktree.
     const worktreePart = relative(commonDir, gitDir).split("/");
     if (worktreePart.length !== 2 || worktreePart[0] !== "worktrees" || !worktreePart[1] || gitDir === commonDir) return;
     const entries = new Set<string>();
@@ -44,32 +45,17 @@ export function taskShellSandboxRestrictions(root: string, branch: string, optio
       entries.add(file);
     };
     for (const metadata of [commonDir, gitDir]) directory(metadata);
-    const objects = join(commonDir, "objects"); directory(objects);
-    const files = [
-      join(commonDir, "refs", "heads", branch), join(commonDir, "logs", "refs", "heads", branch),
-      ...["HEAD", "index", "COMMIT_EDITMSG", "logs/HEAD"].map(name => join(gitDir, name)),
-    ];
-    for (const file of files) {
-      if (Buffer.byteLength(`${file}.lock`) > 900) return;
-      for (let parent = dirname(file); inside(commonDir, parent); parent = dirname(parent)) {
-        directory(parent); if (parent === commonDir) break;
-      }
-      for (const candidate of [file, `${file}.lock`]) {
-        const stat = lstatSync(candidate, { throwIfNoEntry: false });
-        if (stat && (!stat.isFile() || stat.nlink !== 1 || realPath(candidate) !== candidate)) return;
-      }
+    for (let parent = dirname(gitDir); inside(commonDir, parent); parent = dirname(parent)) {
+      directory(parent); if (parent === commonDir) break;
     }
     // Protect metadata ancestors too when the metadata sits beneath the writable execution root.
     for (const metadata of [commonDir, gitDir]) for (let parent = dirname(metadata); inside(root, parent); parent = dirname(parent)) {
       directory(parent); if (parent === root) break;
     }
-    const allowed = [subpath(objects), ...files.flatMap(file => [literal(file), literal(`${file}.lock`)])];
     return [
-      `(deny file-write* (require-all ${subpath(commonDir)} (require-not (require-any ${allowed.join(" ")}))))`,
-      // Exact directory entries cannot be renamed or replaced; permitting a file never permits its parent directory as general data.
+      `(deny file-write* ${subpath(commonDir)} ${subpath(gitDir)})`,
+      // Exact metadata ancestor entries cannot be renamed or replaced either.
       `(deny file-write* ${[...entries].sort().map(literal).join(" ")})`,
-      // Normal add/commit write hashed objects, never info selectors such as alternates that redirect privileged Git reads.
-      `(deny file-write* ${subpath(join(objects, "info"))})`,
     ].join("\n");
   } catch { return undefined; }
 }

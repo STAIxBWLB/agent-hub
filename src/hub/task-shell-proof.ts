@@ -29,23 +29,14 @@ function gitReader(root: string, env: Record<string, string>, current: () => boo
   };
 }
 
-/** Startup-only host evidence. Never refresh this authority from origin/HEAD after task code has run. */
-export function readTaskShellDefaultBranch(root: string, env: Record<string, string>, current: () => boolean, projectRoot = root): string | undefined {
-  try {
-    const git = gitReader(realPath(root), env, current, projectRoot);
-    const ref = git(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"]).replace(/\n$/, "");
-    if (!ref.startsWith("refs/remotes/origin/")) return;
-    if (!/^[0-9a-f]{40}\n$/.test(git(["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`]))) return;
-    const branch = ref.slice("refs/remotes/origin/".length);
-    return current() ? branch : undefined;
-  } catch { return undefined; }
-}
+export { readTaskShellDefaultBranch } from "./task-shell-default.ts";
 
 /** Attached HEAD is live evidence; the default branch must be pinned by the host before task execution. */
 export function readTaskShellBinding(root: string, env: Record<string, string>, current: () => boolean, projectRoot = root, defaultBranch?: string): TaskShellBinding | undefined {
   try {
     if (!defaultBranch) return;
     const git = gitReader(realPath(root), env, current, projectRoot);
+    if (realPath(git(["rev-parse", "--show-toplevel"]).replace(/\n$/, "")) !== realPath(root)) return;
     const branch = git(["symbolic-ref", "--quiet", "--short", "HEAD"]).replace(/\n$/, "");
     const binding = { branch, defaultBranch };
     return taskShellBindingValid(binding) && current() ? binding : undefined;
@@ -134,13 +125,17 @@ export function proveTaskShell(command: unknown, options: TaskShellProofOptions,
     }
     if (form.program === "git" || form.program === "gh") {
       const git = gitReader(root, env, current, project);
+      {
+        // No privileged Git/gh operation may turn model-written attributes or lazy object reads into helper execution.
+        if (git(["config", "--get-regexp", "^(filter\\..*\\.(clean|smudge|process)|diff\\..*\\.(command|textconv)|extensions\\.partialclone|remote\\..*\\.promisor)$"], true).trim()) return;
+      }
       if (form.kind === "add") {
         const selected = git(["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", ...form.paths]).split("\0").filter(Boolean);
         if (selected.length > 256) return;
         for (const value of selected) path(value, true);
       }
       if (form.kind === "commit") {
-        const staged = git(["diff", "--cached", "--name-only", "-z"]).split("\0").filter(Boolean);
+        const staged = git(["diff", "--no-ext-diff", "--no-textconv", "--cached", "--name-only", "-z"]).split("\0").filter(Boolean);
         if (staged.length > 256) return;
         for (const value of staged) path(value, true);
       }
@@ -160,6 +155,7 @@ export function proveTaskShell(command: unknown, options: TaskShellProofOptions,
       if (form.program === "git") {
         effectiveEnv = Object.fromEntries(Object.entries(hubGitEnv(env, { repositoryIsolation: true })).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
         argv = hubGitArgv([
+          "-c", "commit.gpgSign=false", "-c", "push.gpgSign=false", "-c", "gc.auto=0", "-c", "maintenance.auto=false",
           ...(form.kind === "push" ? ["-c", "push.followTags=false", "-c", "remote.origin.mirror=false", "-c", "push.recurseSubmodules=no"] : []), ...argv,
         ]).slice(1);
       } else {
@@ -167,7 +163,7 @@ export function proveTaskShell(command: unknown, options: TaskShellProofOptions,
         argv.push("--repo", `https://github.com/${repository}`);
       }
     }
-    const requiresSandbox = form.kind !== "push" && form.program !== "gh";
+    const requiresSandbox = form.kind === "check" || form.program === "bun";
     const rootStat = lstatSync(root);
     const fingerprint = createHash("sha256").update(JSON.stringify([root, rootStat.dev, rootStat.ino, binding, effectiveEnv, executable, argv, repository, requiresSandbox, [...paths].map(stamp)])).digest("hex");
     return current() ? { fingerprint, program: form.program, executable, argv: Object.freeze(argv), env: Object.freeze(effectiveEnv), requiresSandbox } : undefined;

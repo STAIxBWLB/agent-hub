@@ -18,7 +18,7 @@ async function fixture(taskBound = false, model?: string, shell?: { origin: true
   mkdirSync(stateDir, { recursive: true }); mkdirSync(home); mkdirSync(bin);
   for (const args of [["init", "-q"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], ["worktree", "add", "-qb", "worker", tree]]) expect(hubGitSync(["-C", root, ...args], { encoding: "utf8" }).status).toBe(0);
   for (const args of [["update-ref", `refs/remotes/origin/${shell?.defaultBranch ?? "main"}`, "HEAD"], ["symbolic-ref", "refs/remotes/origin/HEAD", `refs/remotes/origin/${shell?.defaultBranch ?? "main"}`]]) expect(hubGitSync(["-C", root, ...args], { encoding: "utf8" }).status).toBe(0);
-  if (shell?.origin) expect(hubGitSync(["-C", root, "remote", "add", "origin", "https://github.com/fixture/repo.git"], { encoding: "utf8" }).status).toBe(0);
+  expect(hubGitSync(["-C", root, "remote", "add", "origin", "https://github.com/fixture/repo.git"], { encoding: "utf8" }).status).toBe(0);
   writeFileSync(join(tree, "source.ts"), "fixture source\n");
   writeFileSync(join(bin, "claude"), `#!${process.execPath}\nif(process.argv.includes("--version")){console.log("2.1.309 (Claude Code)");process.exit(0)}\nprocess.argv=[process.argv[0],${JSON.stringify(resolve(import.meta.dir, "fakes/fake-claude-implementer.ts"))},${JSON.stringify(log)},"hang",...process.argv.slice(2)];\nawait import(${JSON.stringify(resolve(import.meta.dir, "fakes/fake-claude-implementer.ts"))});\n`, { mode: 0o700 });
   process.env.HOME = home; process.env.AMEM_HOME = join(home, "memory"); process.env.AGENTHUB_HOME = join(home, "hub"); process.env.CLAUDE_CONFIG_DIR = join(home, ".claude"); process.env.PATH = `${bin}:${oldEnv.PATH}`;
@@ -28,7 +28,7 @@ async function fixture(taskBound = false, model?: string, shell?: { origin: true
     const config = loadConfig(root);
     if (shell) config.action_policy = { enabled: shell.actionEnabled, always_ask: ["publish", "destroy", "install", "external-write"], budgets: { publish: 1, destroy: 3, install: 2, "external-write": 5 } };
     if (shell?.readCanonical) config.local = { ...config.local, read_allow: [root] };
-    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, permissionTimeoutMs: 250, config });
+    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, permissionTimeoutMs: 250, config, shellDefaultBranchProbe: async () => shell?.defaultBranch ?? "main" });
     const console_ = await ControlClient.connect(stateDir, { role: "console", projectRoot: root }); clients.push(console_);
     const instanceId = (await console_.request({ t: "status" })).status.instanceId;
     const started = await console_.request({ t: "start", peer }); expect(started).toMatchObject({ ok: true, executionCwd: tree });
@@ -181,9 +181,32 @@ test.skipIf(sandboxAvailable())("#845 executable task gates ask when the local k
   const f = await fixture(true);
   try {
     await shellTask(f);
-    for (const command of ["scripts/check.sh --changed", "bun run build", "bun test test/gate.test.ts", "git add source.ts", "git commit -m fixture"]) {
+    for (const command of ["scripts/check.sh --changed", "bun run build", "bun test test/gate.test.ts"]) {
       expect(await f.tools.request({ t: "permission_request", tool: "Bash", input: { command }, wrapperProtocol: 1 }), command).toMatchObject({ behavior: "deny", message: "no person answered" });
     }
+  } finally { await f.close(); }
+}, 20_000);
+
+test("#845 closed host add/commit work without a gate sandbox and cannot execute hooks, fsmonitor or signing", async () => {
+  const f = await fixture(true);
+  try {
+    await shellTask(f);
+    const marker = join(f.tree, "unexpected-helper"), helper = join(f.tree, "helper.sh"), hooks = join(f.tree, "hooks");
+    mkdirSync(hooks);
+    const script = `#!/bin/sh\nprintf unsafe > '${marker}'\nexit 1\n`;
+    writeFileSync(helper, script, { mode: 0o700 }); writeFileSync(join(hooks, "pre-commit"), script, { mode: 0o700 });
+    for (const [key, value] of [["user.name", "Fixture"], ["user.email", "fixture@example.invalid"], ["core.hooksPath", hooks], ["core.fsmonitor", helper], ["gpg.program", helper], ["commit.gpgSign", "true"]]) expect(hubGitSync(["-C", f.root, "config", key!, value!], { encoding: "utf8" }).status).toBe(0);
+    for (const command of ["git add source.ts", "git commit -m fixture-host-commit"]) {
+      const allowed = await f.tools.request({ t: "permission_request", tool: "Bash", input: { command }, wrapperProtocol: 1 });
+      expect(allowed).toMatchObject({ behavior: "allow", wrapperProtocol: 1 });
+      const result = await runGranted(allowed.updatedInput.command, f.root);
+      expect(result.code, result.stderr).toBe(0);
+    }
+    expect(existsSync(marker)).toBe(false);
+    expect(hubGitSync(["-C", f.tree, "log", "-1", "--format=%s"], { encoding: "utf8" }).stdout.trim()).toBe("fixture-host-commit");
+    expect(hubGitSync(["-C", f.root, "config", "filter.fixture.clean", helper], { encoding: "utf8" }).status).toBe(0);
+    expect(await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "git add source.ts" }, wrapperProtocol: 1 })).toMatchObject({ behavior: "deny", message: "no person answered" });
+    expect(existsSync(marker)).toBe(false);
   } finally { await f.close(); }
 }, 20_000);
 
