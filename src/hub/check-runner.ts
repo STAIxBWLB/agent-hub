@@ -646,6 +646,8 @@ export function dependencyKey(parts: { lockfile: string; manifest: string; bun: 
 }
 /** Files besides bun.lock that decide what `bun install --frozen-lockfile` produces: manifests, Bun and registry config, patches. */
 const INSTALL_INPUT = /(?:^|\/)(?:package\.json|bunfig\.toml|\.npmrc)$|^patches\//;
+/** Scripts bun runs during the root or a workspace install. They can read tracked source, so no manifest hash can bind their output. */
+const INSTALL_LIFECYCLE = ["preinstall", "install", "postinstall", "prepublish", "preprepare", "prepare", "postprepare"];
 /** Hash of every install-affecting file in the staged source, by path and content, so a changed manifest or config never reuses a volume. */
 export async function dependencyManifest(source: string): Promise<string> {
   const files: string[] = [];
@@ -659,7 +661,18 @@ export async function dependencyManifest(source: string): Promise<string> {
   };
   await walk(source, "");
   const digest = createHash("sha256");
-  for (const path of files.sort()) digest.update(`${path}\0${hash(await readFile(join(source, path)))}\0`);
+  for (const path of files.sort()) {
+    const data = await readFile(join(source, path));
+    if (path.endsWith("package.json")) {
+      // A lifecycle script makes node_modules depend on source outside the key. Refuse it rather than reuse a stale volume or
+      // key on the whole tree; the install stays exactly `bun install --frozen-lockfile`, never `--ignore-scripts`.
+      let manifest: unknown;
+      try { manifest = JSON.parse(data.toString("utf8")); } catch { throw new RemoteDependencyError(); }
+      const scripts = manifest && typeof manifest === "object" ? (manifest as { scripts?: unknown }).scripts : undefined;
+      if (scripts !== undefined && (!scripts || typeof scripts !== "object" || Array.isArray(scripts) || INSTALL_LIFECYCLE.some(name => Object.hasOwn(scripts, name)))) throw new RemoteDependencyError();
+    }
+    digest.update(`${path}\0${hash(data)}\0`);
+  }
   return digest.digest("hex");
 }
 export function dependencyVolume(projectKey: string, key: string): string { return `${DEPENDENCY_PREFIX}${projectKey}-${key.slice(0, 32)}`; }

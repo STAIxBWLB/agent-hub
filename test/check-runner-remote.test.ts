@@ -164,6 +164,21 @@ test("install inputs beyond bun.lock decide reuse: a changed manifest or config 
   expect(creates()).toBe(settled);
 });
 
+test("a root or workspace lifecycle script is refused before any volume, install or check, because its output depends on source outside the key", async () => {
+  for (const [path, scripts] of [["package.json", { postinstall: "node gen.js" }], ["package.json", { prepare: "x" }], ["packages/w/package.json", { preinstall: "x" }], ["package.json", "bad"]] as const) {
+    const f = await fixture(); await commitFile(f, path, JSON.stringify({ scripts }));
+    const result = await f.runner.start(f.request).done;
+    expect(result.error).toBe("remote dependencies unavailable"); expect(result.exit).toBeNull();
+    expect(f.volumes.size).toBe(0);
+    expect(f.calls.some(args => args.includes("install") || args[0] === "volume" && args[1] === "create" || args[0] === "exec" && args.includes("test"))).toBe(false);
+  }
+  // Ordinary scripts and a malformed manifest: ordinary scripts are fine, invalid JSON is refused.
+  const ok = await fixture(); await commitFile(ok, "package.json", JSON.stringify({ scripts: { test: "bun test", build: "x" } }));
+  expect((await ok.runner.start(ok.request).done).exit).toBe(0);
+  const bad = await fixture(); await commitFile(bad, "package.json", "{not json");
+  expect((await bad.runner.start(bad.request).done).error).toBe("remote dependencies unavailable");
+});
+
 test("a prepared volume is reused: the next run installs nothing, creates nothing and never gets a network", async () => {
   const f = await fixture();
   await f.runner.start(f.request).done;
