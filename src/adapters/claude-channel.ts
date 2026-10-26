@@ -400,9 +400,13 @@ async function callTool(req: { params: { name: string; arguments?: Record<string
       || !args.input || typeof args.input !== "object" || Array.isArray(args.input)
       || typeof args.tool_use_id !== "string" || !args.tool_use_id.length || args.tool_use_id.length > 256) return deny("invalid native permission request");
     try {
-      // Keep original arguments only in this native request closure; the host returns a decision, not replacements.
-      const res = await hub.request({ t: "permission_request", tool: args?.tool_name, input: args?.input }, 3_605_000);
-      return res.ok === true && res.behavior === "allow" ? text(JSON.stringify({ behavior: "allow", updatedInput: args?.input })) : deny(typeof res.message === "string" ? res.message : "permission denied");
+      // Only this fixed client capability permits host wrapper grants; older clients keep person approval.
+      const res = await hub.request({ t: "permission_request", tool: args?.tool_name, input: args?.input, wrapperProtocol: 1 }, 3_605_000);
+      if (res.ok !== true || res.behavior !== "allow") return deny(typeof res.message === "string" ? res.message : "permission denied");
+      if (res.wrapperProtocol !== undefined && res.wrapperProtocol !== 1) return deny("unsupported host execution response");
+      const updated = res.wrapperProtocol === 1 ? res.updatedInput : undefined;
+      if (res.wrapperProtocol === 1 && (args.tool_name !== "Bash" || !updated || typeof updated !== "object" || Array.isArray(updated) || typeof updated.command !== "string")) return deny("invalid host execution response");
+      return text(JSON.stringify({ behavior: "allow", updatedInput: updated ?? args?.input }));
     } catch { return deny("hub permission unavailable"); }
   }
   if (name === "hub_delivery_done" && channel) {

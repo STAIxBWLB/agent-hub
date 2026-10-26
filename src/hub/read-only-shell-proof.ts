@@ -1,5 +1,4 @@
 import { accessSync, constants, lstatSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -7,10 +6,11 @@ import { guardPath, type ShellExecutionCheck } from "../local/tools.ts";
 import { hostExecutable } from "./host-executable.ts";
 import { hubGitArgv, hubGitEnv } from "./git.ts";
 import { realPath } from "./project.ts";
-import { readOnlyShellForm, type ReadOnlyProgram } from "./read-only-shell.ts";
+import { parseSimpleShell, readOnlyShellForm, type ReadOnlyProgram } from "./read-only-shell.ts";
+import { hostShellEnvironment } from "../local/shell-environment.ts";
 
 export interface ShellProofOptions { root:string; projectRoot?:string; deny:string[]; readOnly?:string[]; env?:Record<string,string> }
-export interface ReadOnlyShellProof { fingerprint:string; program:ReadOnlyProgram }
+export interface ReadOnlyShellProof { fingerprint:string; program:ReadOnlyProgram; executable:string; argv:readonly string[] }
 const within=(root:string,path:string)=>{const p=relative(root,path);return p==="" || p!==".."&&!p.startsWith("../")&&!isAbsolute(p);};
 function firstProgram(name:string,root:string,path:string):string|undefined {
   if(path.length>16384)return undefined;
@@ -49,14 +49,15 @@ export function proveReadOnlyShell(input:unknown,options:ShellProofOptions,curre
     const root=realPath(options.root),projectRoot=realPath(options.projectRoot??options.root),names:string[]=[root,projectRoot];
     const form=readOnlyShellForm(args.command,root,(path,base=root)=>{if(path.split("/").includes(".."))throw new Error("ambiguous parent traversal");const lexical=resolve(base,path),canonical=guardPath({cwd:root,deny:options.deny,readOnly:options.readOnly},lexical,"read");names.push(lexical,canonical);return canonical;});
     if(!form || !current())return undefined;
-    const env={PATH:process.env.PATH??"/usr/bin:/bin",HOME:homedir(),LANG:process.env.LANG??"en_US.UTF-8",TERM:"dumb",...options.env};
+    const env=hostShellEnvironment(options.env);
     const lexical=firstProgram(form.program,root,env.PATH);if(!lexical || within(root,lexical) || within(projectRoot,lexical))return undefined;
     const executable=hostExecutable(form.program,root,env.PATH);if(realPath(lexical)!==executable || within(projectRoot,executable) || !current())return undefined;
     if(form.gitCwd && !gitHelpersUnconfigured(executable,form.gitCwd,env,current))return undefined;
     // ponytail: this screens the declared helper-bearing config keys and explicit diff/textconv flags; other config-mediated helpers need dedicated audited forms before extending the allowlist.
     const paths=new Set([...names.flatMap(name=>ancestors(name,root)),...ancestors(lexical,"/"),...ancestors(executable,"/")]);
-    const fingerprint=createHash("sha256").update(JSON.stringify([root,projectRoot,args.command,env.PATH,lexical,executable,[...paths].map(path=>stamp(path,path===lexical||path===executable))])).digest("hex");
-    return current()?{fingerprint,program:form.program}:undefined;
+    const fingerprint=createHash("sha256").update(JSON.stringify([root,projectRoot,args.command,env,lexical,executable,[...paths].map(path=>stamp(path,path===lexical||path===executable))])).digest("hex");
+    const argv=parseSimpleShell(args.command)!.words.slice(1);
+    return current()?{fingerprint,program:form.program,executable,argv}:undefined;
   } catch {return undefined;}
 }
 interface Decision { command:string; current:()=>boolean; proof?:ReadOnlyShellProof }

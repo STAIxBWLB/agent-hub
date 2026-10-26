@@ -93,10 +93,14 @@ import { PiToolReceipts, packPiShellResult } from "../pi/tool-receipts.ts";
 import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import { processSignature } from "../pi/process-signature.ts";
 import { PiSessionBookmarkMismatch, PiSessionUnresumable, recordPiReplacement, validatePiSession } from "../pi/session.ts";
-import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
+import { profile, proxyEnv, sandboxAvailable, type SandboxNetwork } from "../local/sandbox.ts";
 import { DEFAULT_NETWORK_ALLOW, startEgressProxy, type EgressProxy } from "../local/proxy.ts";
 import { runTool, toolResultFailed, TOOL_SCHEMAS, type ToolApproval, type ApprovalObserver, type ToolContext, type ShellPermitPolicy } from "../local/tools.ts";
 import { proveReadOnlyShell, ShellExecutionProofs } from "./read-only-shell-proof.ts";
+import { createHostShellWrapper, type HostShellWrapper } from "./claude-shell-wrapper.ts";
+import { readTaskShellBinding, proveTaskShell } from "./task-shell-proof.ts";
+import { hostShellEnvironment } from "../local/shell-environment.ts";
+import { hubGitArgv, hubGitEnv } from "./git.ts";
 import { isLocalPeer, type LocalPeer } from "../adapters/local-worker.ts";
 import { isReviewerPrintPeer, reviewerNoVerdictLine, reviewerUnavailableReason, ReviewerUnavailableError, REVIEWER_FALLBACK_UNCONFIRMED, type ReviewerPrintPeer } from "../adapters/reviewer-print.ts";
 import { createReviewerMcpSession, type ReviewerToolName } from "../adapters/reviewer-mcp.ts";
@@ -2294,6 +2298,62 @@ export async function startDaemon(opts: DaemonOptions) {
   function captureImplementerTools(c: Client): () => boolean {
     const binding = c.toolsOwner, launch = currentImplementerTools(c);
     return () => c.toolsOwner === binding && !!launch && currentImplementerTools(c) === launch;
+  }
+  const shellProjectRepository = githubOriginRepository(opts.cwd);
+  let implementerShellStart: Promise<HostShellWrapper> | undefined;
+  const implementerShellProfiles = new WeakMap<object, { key: string; sandbox: { profile: string; readOnlyData: boolean } }>();
+  async function automaticImplementerShell(c: Client, tool: string, original: Record<string, unknown>, current: () => boolean): Promise<{ command: string; timeout: number; description: string } | undefined> {
+    const peer = c.peer, launch = currentImplementerTools(c), root = peer && ownerWriteRoot(peer), policy = config;
+    if (!peer || !launch || !root || launch.task === undefined || tool !== "Bash" || permissionMode(peer) !== "ask-when-needed") return;
+    if (Object.keys(original).some(key => !["command", "description", "timeout"].includes(key)) || typeof original.command !== "string"
+      || original.description !== undefined && (typeof original.description !== "string" || original.description.length > 2000)
+      || original.timeout !== undefined && (!Number.isSafeInteger(original.timeout) || Number(original.timeout) < 1 || Number(original.timeout) > 600_000)) return;
+    const input = Object.freeze({ ...original }), serialized = JSON.stringify(input);
+    if (serialized.length > 8000 || !tasks.publicMetadataText(serialized)) return;
+    const taskId = launch.task, extra = Object.freeze({ ...proxyEnv(sandboxNetwork), AGENTHUB_PEER_ID: peer });
+    const env = hostShellEnvironment(extra), environment = JSON.stringify(env);
+    const policyState = () => JSON.stringify([config.local.deny, config.local.read_allow, config.data?.readonly, config.protect_instruction_files]);
+    const policyFingerprint = policyState();
+    const authority = () => {
+      const task = board.get(taskId);
+      return current() && config === policy && policyState() === policyFingerprint && permissionMode(peer) === "ask-when-needed" && !contextPii(peer)
+        && !!task && task.owner === peer && ["in_progress", "changes_requested"].includes(task.state) && !tasks.isPii(task)
+        && claudeActionClasses(actionBudgets, tool, input, root).length === 0 && JSON.stringify(hostShellEnvironment(extra)) === environment;
+    };
+    if (!authority()) return;
+    const binding = readTaskShellBinding(root, env, authority, opts.cwd);
+    if (!binding) return;
+    const shellOptions = { root, projectRoot: opts.cwd, deny: config.local.deny, readOnly: config.data?.readonly, env: extra };
+    const taskOptions = { ...shellOptions, env, binding, protectInstructions: config.protect_instruction_files, repository: shellProjectRepository };
+    const readProof = proveReadOnlyShell(input, shellOptions, authority), taskProof = readProof ? undefined : proveTaskShell(input.command, taskOptions, authority);
+    if (readProof && !sandboxAvailable()) return;
+    // The planner's fallback binds only on a task-gate request; read-only requests use an already recorded task branch.
+    if (board.get(taskId)?.refs.branch === undefined && !taskProof) return;
+    if (!readProof && !taskProof || !tasks.bindShellBranch(peer, taskId, { ...binding, worktree: root }, authority)) return;
+    const fingerprint = (readProof ?? taskProof)!.fingerprint;
+    let sandbox: { profile: string; readOnlyData: boolean } | undefined;
+    if (readProof) {
+      const owner = c.toolsOwner!.owner, key = JSON.stringify([root, policyFingerprint]), cached = implementerShellProfiles.get(owner);
+      sandbox = cached?.key === key ? cached.sandbox : { profile: profile(root, sandboxNetwork, config.local.read_allow, config.local.deny, config.data?.readonly), readOnlyData: !!config.data?.readonly?.length };
+      implementerShellProfiles.set(owner, { key, sandbox });
+    }
+    const recheck = () => {
+      if (!authority() || !tasks.bindShellBranch(peer, taskId, { ...binding, worktree: root }, authority)) return false;
+      const observed = readTaskShellBinding(root, env, authority, opts.cwd);
+      if (!observed || observed.branch !== binding.branch || observed.defaultBranch !== binding.defaultBranch) return false;
+      const proof = readProof ? proveReadOnlyShell(input, shellOptions, authority) : proveTaskShell(input.command, taskOptions, authority);
+      return proof?.fingerprint === fingerprint && authority();
+    };
+    // A fixed capability on the channel request prevents an older plugin from ignoring updatedInput and running the original command.
+    const wrapper = await (implementerShellStart ??= createHostShellWrapper().catch(error => { implementerShellStart = undefined; throw error; }));
+    if (!recheck()) return;
+    const proof = (readProof ?? taskProof)!, git = proof.program === "git";
+    const argv = readProof?.program === "git" ? hubGitArgv([...proof.argv]).slice(1) : proof.argv;
+    const command = wrapper.issue({ peer, task: taskId, generation: launch.generation, root, branch: binding.branch, executable: proof.executable, argv,
+      env: git ? Object.fromEntries(Object.entries(hubGitEnv(env, { repositoryIsolation: true })).filter((entry): entry is [string, string] => entry[1] !== undefined)) : env,
+      signal: launch.signal, timeoutMs: Number(input.timeout ?? 120_000), current: recheck, activity: () => c.toolsOwner?.owner.keepApprovalAlive?.(), ...(sandbox ? { sandbox } : {}) });
+    if (command) log(`permission auto-allowed for ${peer}: bash (host wrapper ${readProof ? "read-only shell" : "task command"})`);
+    return command && { command: command.command, timeout: Math.min(600_000, Number(input.timeout ?? 120_000) + 2000), description: "Hub-owned task command" };
   }
   function canonicalWriteScope(repo: Repo, budget?: SnapshotBudget): boolean | undefined {
     // ponytail: D1 is inert for builtin owners while .worktrees exists (a deliberate false negative).
@@ -6365,10 +6425,14 @@ export async function startDaemon(opts: DaemonOptions) {
         // answer still revalidate native root evidence, without synchronous Git on every tick.
         const heartbeat = setInterval(() => { if (currentImplementerTools(c, false) === launch) c.toolsOwner?.owner.keepApprovalAlive?.(); else pending.abort(); }, Math.max(10, Math.min(1000, Math.floor(config.watchdog_ms / 3)))); heartbeat.unref();
         c.toolsOwner?.owner.keepApprovalAlive?.();
-        void requestPermission({ peer, title: shown.title, tool: shown.tool, classed: true, options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] }, pending.signal).then(result => {
+        void (async () => {
+          const updatedInput = msg.wrapperProtocol === 1 ? await automaticImplementerShell(c, msg.tool, msg.input, () => sock.readyState === WebSocket.OPEN && current()) : undefined;
+          if (updatedInput && current()) return void reply({ ok: true, behavior: "allow", wrapperProtocol: 1, updatedInput });
+          if (!current()) return void reply({ ok: true, behavior: "deny", message: "permission denied" });
+          const result = await requestPermission({ peer, title: shown.title, tool: shown.tool, classed: true, options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] }, pending.signal);
           const allowed = current() && result.outcome === "answered" && result.optionId === "allow";
           reply({ ok: true, behavior: allowed ? "allow" : "deny", ...(allowed ? {} : { message: result.outcome === "expired" ? "no person answered" : "permission denied" }) });
-        }, () => reply({ ok: true, behavior: "deny", message: "hub permission unavailable" })).finally(() => { clearInterval(heartbeat); launch.signal.removeEventListener("abort", abortPending); }).catch(() => {});
+        })().catch(() => reply({ ok: true, behavior: "deny", message: "hub permission unavailable" })).finally(() => { clearInterval(heartbeat); launch.signal.removeEventListener("abort", abortPending); }).catch(() => {});
         return;
       }
       case "conductor_operational": {
@@ -7241,6 +7305,8 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function stopOnce(): Promise<void> {
     stopping = true;
+    let implementerShellCleanupFailed = false;
+    const implementerShellStopped = implementerShellStart?.then(wrapper => wrapper.close()).catch(() => { implementerShellCleanupFailed = true; log("host shell cleanup failed during shutdown"); });
     terminalLaunches.clear();
     // Start cancellation immediately; a failed read cleanup must not strand the other owned peers or finalization.
     const codeFactsStopped = codeFacts.close().catch(() => { log("code facts cleanup failed during shutdown"); });
@@ -7259,7 +7325,7 @@ export async function startDaemon(opts: DaemonOptions) {
     for (const pending of checkpointWaits.values()) pending.done(undefined);
     for (const p of permissions.values()) p.done(undefined);
     try {
-      await Promise.all([terminalReadsStopped, codeFactsStopped]);
+      await Promise.all([terminalReadsStopped, codeFactsStopped, implementerShellStopped]);
       await terminalLaunches.settled();
       // A peer can still be inside memory recall or its native handshake when kill arrives.
       // Drain those starts before taking the final owned-process snapshot.
@@ -7300,6 +7366,7 @@ export async function startDaemon(opts: DaemonOptions) {
       } catch { /* another owner or no published state: never remove it */ }
       onStop?.();
     }
+    if (implementerShellCleanupFailed) throw new Error("host shell cleanup unconfirmed");
   }
   let onStop: (() => void) | undefined;
 
