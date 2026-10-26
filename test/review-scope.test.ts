@@ -44,6 +44,9 @@ test("AC2: a code reviewer's request replaces every check and CI line with one f
   expect((code.match(/Your sandbox cannot run tests or read CI/g) ?? []).length).toBe(1);
   expect(code).toContain("structured finding with an id"); // the amendment: report every code defect as a finding
   expect(code).toContain("recorded as evidence-only");
+  expect(code).toContain("Findings are only for defects in the reviewed code, docs or tests.");
+  expect(code).toContain("A missing check result, CI result, test run or PR/branch identity is an evidence request: put it in unmet, never in findings.");
+  expect(code).not.toContain("do not list tests, check output or CI as unmet");
   // Everything else about the checklist is as before.
   expect(code).toContain("Map the changed signatures and call sites to");
   expect(code).toContain("List what is unmet in hub_review's unmet, one item each.");
