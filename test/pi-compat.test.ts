@@ -137,3 +137,18 @@ test("production Pi construction stays confined to its gated registry factory", 
   }
   expect(sites).toEqual(["src/adapters/definitions/native-factories.ts"]);
 });
+
+test("enabled Pi daemon fixtures always supply a fake command, including Darwin-only tests", () => {
+  const file = join(import.meta.dir, "pi-daemon.test.ts"), source = parseSource(file, readFileSync(file, "utf8")), missing: number[] = [];
+  const key = (property: ts.PropertyAssignment) => ts.isIdentifier(property.name) || ts.isStringLiteral(property.name) ? property.name.text : undefined;
+  const visit = (node: ts.Node): void => {
+    if (ts.isObjectLiteralExpression(node) && node.properties.some(property => ts.isSpreadAssignment(property) && property.expression.getText(source) === "DEFAULT_CONFIG.pi")) {
+      const fields = node.properties.filter(ts.isPropertyAssignment);
+      if (fields.some(property => key(property) === "enabled" && property.initializer.kind === ts.SyntaxKind.TrueKeyword)
+        && !fields.some(property => key(property) === "cmd")) missing.push(source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  expect(missing).toEqual([]);
+});
