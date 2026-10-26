@@ -82,6 +82,17 @@ export function qwenDualNamesStateDir(input: unknown, stateDir: string): boolean
   return seen(input, 0);
 }
 
+/**
+ * #517: Qwen tells the model that one of its background shells finished with a `user` event of its own, which is neither the hub's submit nor the person typing. Qwen may fold
+ * several finished shells into one event, each its own envelope, separated by one blank line (8 of the 48 in the live event files do). The shape is exact: the text is wholly
+ * one or more complete envelopes and nothing else, so a person's text that merely contains or resembles one is still a person's prompt. Nothing inside an envelope is read
+ * beyond its header lines, so nothing in it can steer the adapter.
+ */
+const NOTIFICATION = String.raw`<task-notification>\n<task-id>bg_[0-9a-f]{4,32}<\/task-id>\n<kind>[a-z_-]{1,32}<\/kind>\n<status>[a-z_-]{1,32}<\/status>\n(?:(?!<task-notification>|<\/task-notification>)[\s\S])*<\/task-notification>`;
+const QWEN_TASK_NOTIFICATIONS = new RegExp(`^${NOTIFICATION}(?:\\n\\n${NOTIFICATION})*$`);
+const NOTIFICATION_CAP = 64 * 1024;
+export function isQwenTaskNotification(text: string): boolean { return text.length <= NOTIFICATION_CAP && QWEN_TASK_NOTIFICATIONS.test(text); }
+
 /** `qwen --version` against the dual-output compat entry. Never throws: a refusal is a reason. */
 export async function qwenDualVersionAsync(cmd: readonly string[], cwd: string): Promise<{ ok: true; version: string; note?: string } | { ok: false; reason: string }> {
   const [bin, ...prefix] = cmd.filter(word => word !== "--acp");
@@ -427,6 +438,13 @@ export class QwenDualPeer extends BasePeer {
   private onUser(event: Json): void {
     const text = this.promptText(event);
     if (text === undefined) return; // a tool result echoed back, not a prompt
+    // Qwen's own background-shell notice: part of whatever turn is running (or Qwen's own work when none is), never the person typing, so it ends no hub turn and holds no queue (#517).
+    // Qwen then continues the turn by itself, and the turn's own assistant end settles it. With no turn open Qwen is working on its own (like the person's turn, nothing shared),
+    // so the peer is busy until that work ends: the owner must be set or its end would find nothing to settle and leave the peer busy for good.
+    if (isQwenTaskNotification(text)) {
+      if (!this.turn && this.owner === undefined) { this.owner = "personal"; this.lastAssistant = undefined; if (this.state === "idle") this.setState("busy"); }
+      return;
+    }
     const turn = this.turn;
     if (turn && !turn.started && (text.trim() === turn.text.trim() || text.trim().startsWith(turn.text.trim().slice(0, 200)))) {
       turn.started = true; this.owner = "hub"; this.lastAssistant = undefined;
