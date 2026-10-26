@@ -780,7 +780,7 @@ export class Tasks {
       if (h.owner === undefined || h.owner !== owner) since = i;
       owner = h.owner;
     });
-    return new Set(task.history.slice(since + 1).filter((h) => h.event === "changes_requested").map((h) => h.by));
+    return new Set(task.history.slice(since + 1).filter((h) => h.event === "changes_requested" && h.evidenceOnly !== true).map((h) => h.by));
   }
 
   /** Workload is board/queue data only: wip() never calls health() or weights(). */
@@ -877,7 +877,7 @@ export class Tasks {
         if (!OWNERSHIP_EVENTS.has(given.event) || given.event === "unassigned" || given.owner !== peer || given.profile !== profile || given.by === peer) return [];
         const next = t.history.findIndex((h, j) => j > i && OWNERSHIP_EVENTS.has(h.event));
         const span = t.history.slice(i + 1, next < 0 ? undefined : next + 1);
-        if (span.some((h) => failed.includes(h.event))) return [{ outcome: "failed" }];
+        if (span.some((h) => failed.includes(h.event) && h.evidenceOnly !== true)) return [{ outcome: "failed" }];
         if (next >= 0 || t.state !== "approved") return []; // handed on without a failure (a relay), or still open
         const accepted = span.find((h) => h.event === "accepted" && h.by === peer);
         // The work stage ends at its first done call: checks and an integration step are not the work itself.
@@ -4631,7 +4631,7 @@ export class Tasks {
     }
     const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: evidenceOnly ? task.rejections : task.rejections + 1 }, note, flag);
     void this.mirrorVerdict(rejected, by, "changes_requested", reviewedHead ?? rejected.sdlc?.reviewedHead, note, withheld);
-    this.releaseNotice(`task #${rejected.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(rejected, by, parsed, withheld));
+    if (!evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(rejected, by, parsed, withheld));
     if (candidate && !pii && !this.d.privateTurn?.(by) && this.candidateTextAllowed(JSON.stringify({ candidate, refs: rejected.refs, plan: rejected.plan }), rejected)) {
       try { this.d.memoryCheck?.(); this.d.candidates?.put({ ...candidate, evidenceRefs: [...candidate.evidenceRefs, `review:${rejected.id}:${rejected.history.length}`] }, "public"); } catch { /* a saved review remains authoritative if the optional sidecar fails */ }
     }

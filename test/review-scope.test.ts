@@ -22,9 +22,10 @@ function rig(scope: ReviewScope | undefined, opts: { checkPassed?: boolean; cond
   const dir = mkdtempSync(join(tmpdir(), "ahub-review-scope-")), board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 }), notices: string[] = [];
   const roles: Record<string, string[]> = { codex: ["implementer"], "codex-review": ["reviewer"], ...(opts.conductor === false ? {} : { director: ["conductor"] }) };
   const tasks = new Tasks({ cwd: dir, board, bus, roles, project: "review-scope", routing: () => loadRouting(dir), reviewOnly: peer => peer === "codex-review", ...(scope ? { reviewScope: () => scope } : {}),
-    ...(opts.escalateAfter ? { escalateAfter: () => opts.escalateAfter! } : {}), notify: text => notices.push(text) });
+    ...(opts.escalateAfter ? { escalateAfter: () => opts.escalateAfter! } : {}), splitProfile: () => "review-scope-fixture", notify: text => notices.push(text) });
   const task = board.propose("user", { title: "finished implementation", class: "implement" });
-  board.update(task.id, "user", "accepted", { owner: "codex", reviewer: "codex-review", state: "in_progress", refs: { commit: head } });
+  board.update(task.id, "user", "assigned", { owner: "codex", reviewer: "codex-review", refs: { commit: head } }, undefined, { profile: "review-scope-fixture" });
+  board.update(task.id, "codex", "accepted", { state: "in_progress" });
   if (opts.checkPassed) board.update(task.id, "hub", "check passed", {}, "scripts/check.sh -> exit 0\ncheck: OK");
   const reviewer = new Peer("codex-review"), owner = new Peer("codex"), director = new Peer("director"); bus.add(reviewer); bus.add(owner); bus.add(director);
   cleanups.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
@@ -149,4 +150,68 @@ test("an evidence-only verdict is not a rework round in the SDLC metrics, and an
   const approved = { event: "approved" };
   expect(taskSample({ id: 1, history: history([...base, { event: "changes_requested", evidenceOnly: true }, { event: "done" }, approved]) }).rework_rounds).toBe(0);
   expect(taskSample({ id: 2, history: history([...base, { event: "changes_requested" }, { event: "done" }, approved]) }).rework_rounds).toBe(1);
+});
+
+const outcomeCases = [
+  { name: "code evidence-only", scope: "code", by: "codex-review", findings: undefined, counted: false },
+  { name: "code open finding", scope: "code", by: "codex-review", findings: OPEN, counted: true },
+  { name: "full reviewer", scope: "full", by: "codex-review", findings: undefined, counted: true },
+  { name: "person", scope: "code", by: "user", findings: undefined, counted: true },
+] as const;
+
+for (const scenario of outcomeCases) test(`AC3: ${scenario.name} has the correct later caught-review and split outcome`, async () => {
+  const f = rig(scenario.scope); await f.body();
+  await f.tasks.review(scenario.by, f.task.id, "changes_requested", "review complete", [], undefined, undefined, scenario.findings);
+  expect(f.tasks.splitObservations("implement", "codex").map(row => row.outcome)).toEqual(scenario.counted ? ["failed"] : []);
+  expect(f.board.outcomes("implement", 0).filter(row => !row.ok)).toHaveLength(scenario.counted ? 1 : 0);
+  await f.again();
+  await f.tasks.review("codex-review", f.task.id, "approved", "review complete");
+  expect(f.board.reviews({ class: "implement" }).filter(row => row.kind === "caught").map(row => row.reviewer)).toEqual(scenario.counted ? [scenario.by] : []);
+  expect(f.tasks.splitObservations("implement", "codex").map(row => row.outcome)).toEqual([scenario.counted ? "failed" : "approved"]);
+});
+
+for (const scenario of outcomeCases) test(`AC3: ${scenario.name} has the correct reviewer outcome on a later manual escalation`, async () => {
+  const f = rig(scenario.scope); await f.body();
+  await f.tasks.review(scenario.by, f.task.id, "changes_requested", "review complete", [], undefined, undefined, scenario.findings);
+  await f.tasks.escalate("user", f.task.id, "move the work");
+  // Only the bound reviewer gets an escalation outcome; a person's verdict does not credit that reviewer.
+  const expected = scenario.counted && scenario.by === "codex-review" ? ["codex-review"] : [];
+  expect(f.board.reviews({ class: "implement" }).filter(row => row.kind === "escalated").map(row => row.reviewer)).toEqual(expected);
+});
+
+test("AC3: an evidence-only fixed report cannot propose a recurring finding from historical open reports; a later open report still can", async () => {
+  const f = rig("code"); await f.body();
+  // Retained historical reports may predate recurring proposals or an earlier optional proposal failure. They are separate work with no durable marker.
+  for (let index = 0; index < 2; index++) {
+    const previous = f.board.propose("user", { title: `historical report ${index}`, class: "implement" });
+    f.board.update(previous.id, "user", "accepted", { state: "in_progress", owner: "codex", reviewer: "codex-review", refs: { commit: head } });
+    f.board.update(previous.id, "codex", "done", { state: "in_review" });
+    f.board.update(previous.id, "codex-review", "changes_requested", { state: "changes_requested" }, "historical finding", {
+      reviewFindings: { head, items: [{ id: "retained", pass: "bugs", severity: "important", disposition: "open" }] },
+    });
+  }
+  const fixed = [{ id: "retained", pass: "bugs", severity: "important", disposition: "fixed" }];
+  const result = await f.tasks.review("codex-review", f.task.id, "changes_requested", "settled earlier finding", [], undefined, undefined, fixed);
+  expect(result.history.findLast(row => row.event === "changes_requested")?.evidenceOnly).toBe(true);
+  expect(f.board.list("backlog")).toHaveLength(0);
+  await f.again();
+  await f.tasks.review("codex-review", f.task.id, "changes_requested", "finding is open", [], undefined, undefined, [{ ...fixed[0]!, disposition: "open" }]);
+  expect(f.board.list("backlog").map(row => row.detail)).toEqual([expect.stringContaining("Review finding key: bugs:retained")]);
+});
+
+test("first-pass approval ignores evidence-only verdicts without changing the actual first-review wait", () => {
+  const accepted = { at: 1000, event: "accepted" }, done = { at: 1100, event: "done" };
+  const evidence = { at: 1200, event: "changes_requested", evidenceOnly: true as const };
+  const sample = (tail: { at: number; event: string; evidenceOnly?: true }[]) => taskSample({ id: 1, history: [accepted, done, evidence, ...tail] });
+  const waiting = sample([]);
+  expect(waiting.first_pass_approval).toBeNull();
+  expect(waiting.acceptance_to_first_review_ms).toBe(200);
+  expect(waiting.at).toBe(1200);
+  const passed = sample([{ at: 1300, event: "done" }, { at: 1400, event: "approved" }]);
+  expect(passed.first_pass_approval).toBe(1);
+  expect(passed.acceptance_to_first_review_ms).toBe(200);
+  expect(passed.rework_rounds).toBe(0);
+  const rejected = sample([{ at: 1300, event: "done" }, { at: 1400, event: "changes_requested" }, { at: 1500, event: "done" }, { at: 1600, event: "approved" }]);
+  expect(rejected.first_pass_approval).toBe(0);
+  expect(rejected.rework_rounds).toBe(1);
 });
