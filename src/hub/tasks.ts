@@ -1038,7 +1038,6 @@ export class Tasks {
   wip(peer: PeerId, except?: number): number {
     return this.d.board.plannerWip(peer, except);
   }
-  private readonly plannerWriteNotices = new Map<PeerId, { envelope: string; capacity: Set<PeerId>; ready: Set<number> }>();
   private capacityBefore(task: Task): Map<PeerId, number> {
     return new Map([...new Set([task.owner, task.reserved])].filter((peer): peer is PeerId => !!peer).map(peer => [peer, this.wip(peer)]));
   }
@@ -1059,11 +1058,13 @@ export class Tasks {
         if (card.deps?.includes(task.id) && !this.waitsFor(card).length) for (const planner of this.taskPlanner(card)) add(planner, undefined, card.id);
       }
       for (const [planner, change] of changes) this.releaseNotice(`could not notify planner ${planner} about ready work`, () => {
-        const old = this.plannerWriteNotices.get(planner);
         const pending = this.d.bus.pendingEnvelopes(planner).filter(env => env.from === HUB && env.kind === "task" && env.body.startsWith("Planner work ready:"));
-        if (old && pending.some(env => env.id === old.envelope)) {
-          for (const peer of old.capacity) change.capacity.add(peer);
-          for (const id of old.ready) change.ready.add(id);
+        // The bus retains these hub-written lines across restart; an in-memory cache would lose unsettled events.
+        for (const env of pending) for (const line of env.body.split("\n")) {
+          const capacity = /^capacity_released: (\S+) WIP \d+; reserved ready (?:#\d+|none)$/.exec(line);
+          if (capacity) change.capacity.add(capacity[1]!);
+          const ready = /^backlog_ready: #(\d+)$/.exec(line);
+          if (ready && Number.isSafeInteger(Number(ready[1]))) change.ready.add(Number(ready[1]));
         }
         const lines: string[] = [];
         for (const peer of change.capacity) {
@@ -1080,7 +1081,6 @@ export class Tasks {
         for (const env of pending) this.d.bus.withdraw(env.id);
         const env = newEnvelope(HUB, sanitize(`Planner work ready:\n${lines.join("\n")}\nRead the current board before planning or pulling work.`), { to: [planner], kind: "task" });
         if (!this.d.bus.publish(env).includes(planner)) throw new Error("the notice was not queued");
-        this.plannerWriteNotices.set(planner, { envelope: env.id, ...change });
       });
     });
   }

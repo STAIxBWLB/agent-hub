@@ -153,3 +153,20 @@ test("post-write publication failure preserves approval and reports lost notice"
   expect((await r.tasks.review(USER, task.id, "approved")).state).toBe("approved");
   expect(r.notices.some(line => line.includes("planner") && line.includes("fixture unavailable"))).toBe(true);
 });
+
+test("a fresh Tasks preserves every unsettled capacity and backlog event across restart", async () => {
+  const r = await rig(), first = r.owned(), second = r.owned();
+  r.board.update(second.id, USER, "fixture second owner", { owner: "pi" });
+  const a = r.card({ deps: [first.id] }), b = r.card({ deps: [second.id] });
+  await r.tasks.review(USER, first.id, "approved");
+  expect(r.pending()[0]!.body).toContain(`backlog_ready: #${a.id}`);
+  const restarted = new Tasks({ cwd: r.cwd, board: r.board, bus: r.bus, roles: r.roles, project: "fixture",
+    routing: () => loadRouting(r.cwd), notify: line => r.notices.push(line) });
+  await restarted.review(USER, second.id, "approved");
+  expect(r.pending()).toHaveLength(1);
+  const body = r.pending()[0]!.body;
+  expect(body).toContain("capacity_released: codex WIP 0");
+  expect(body).toContain("capacity_released: pi WIP 0");
+  expect(body).toContain(`backlog_ready: #${a.id}`);
+  expect(body).toContain(`backlog_ready: #${b.id}`);
+});
