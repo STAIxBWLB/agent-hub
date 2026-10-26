@@ -68,7 +68,10 @@ function realPath(path) {
 }
 function isDenied(path, extra = []) {
   const norm = path.split(sep).join("/");
-  return DENY_SEGMENTS.some((s) => hasSegment(norm, s)) || DENY_NAMES.some((re) => new RegExp(re).test(basename(norm))) || extra.some((e) => e && norm.includes(e));
+  if (DENY_SEGMENTS.some((s) => hasSegment(norm, s)))
+    return true;
+  const name = basename(norm);
+  return DENY_NAMES.some((re) => (denyNamePatterns.get(re) ?? new RegExp(re)).test(name)) || extra.some((e) => e && norm.includes(e));
 }
 function memoryGitEnv(env = process.env, options = {}) {
   const result = { ...env, GIT_TERMINAL_PROMPT: "0" };
@@ -118,11 +121,12 @@ var require2, processes, childProcess = () => processes ??= require2("node:child
     const parent = dirname(absolute);
     return parent === absolute ? absolute : join(canonical(parent), basename(absolute));
   }
-}, DENY_SEGMENTS, DENY_NAMES, hasSegment = (rel, seg) => `/${rel}/`.includes(`/${seg}/`), SAFE_CONFIG, CREDENTIAL_KEYS, memoryGitArgv = (args, opts = {}) => ["git", "--no-pager", ...SAFE_CONFIG.filter((c) => !opts.credentials || !CREDENTIAL_KEYS.has(c)).flatMap((c) => ["-c", c]), ...args], ambientGitTimeout;
+}, DENY_SEGMENTS, DENY_NAMES, denyNamePatterns, hasSegment = (rel, seg) => `/${rel}/`.includes(`/${seg}/`), SAFE_CONFIG, CREDENTIAL_KEYS, memoryGitArgv = (args, opts = {}) => ["git", "--no-pager", ...SAFE_CONFIG.filter((c) => !opts.credentials || !CREDENTIAL_KEYS.has(c)).flatMap((c) => ["-c", c]), ...args], ambientGitTimeout;
 var init_platform = __esm(() => {
   require2 = createRequire(import.meta.url);
   DENY_SEGMENTS = [".maru/secrets", ".agenthub/state", ".agenthub/archive"];
   DENY_NAMES = ["^\\.env", "\\.pem$", "\\.key$", "^id_rsa", "^id_ed25519", "^credentials(\\.|$)", "^auth\\.json$", "^\\.netrc$", "^\\.npmrc$", "^\\.pypirc$"];
+  denyNamePatterns = new Map(DENY_NAMES.map((source) => [source, new RegExp(source)]));
   SAFE_CONFIG = ["core.fsmonitor=false", "core.hooksPath=/dev/null", "diff.external=", "core.pager=cat", "credential.helper=", "core.askpass="];
   CREDENTIAL_KEYS = new Set(["credential.helper=", "core.askpass="]);
 });
@@ -21491,6 +21495,11 @@ init_platform();
 init_store();
 init_shard();
 init_work_lists();
+init_capture();
+init_capture_input();
+init_config2();
+init_policy();
+init_private_spans();
 
 // node_modules/@staix/agent-mem/src/index.ts
 init_project2();
@@ -21502,7 +21511,7 @@ init_store();
 init_sync();
 init_project2();
 var AMEM_NAMES = { memory: "amem", goal: "amem goal" };
-var memoryUsage = (name = AMEM_NAMES.memory) => `usage: ${name} [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> [--history] [--as-of <UTC>] | show <id> [--history] [--as-of <UTC>] | graph <id|node> [--hops 1|2] [--history] [--as-of <UTC>] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] [--restart] | dedupe [--apply] | suggestions | confirm|reject <suggestion id>  [--json]`;
+var memoryUsage = (name = AMEM_NAMES.memory) => `usage: ${name} [list] [--tier short|long] [--kind <kind>] [--peer <p>] [--machine <id>] [--since <iso>] [--limit N] | search <words> [--history] [--as-of <UTC>] | show <id> [--history] [--as-of <UTC>] | graph <id|node> [--hops 1|2] [--history] [--as-of <UTC>] | promote|demote|forget <id> | supersede <old> <new> | rebuild | sync [--remote <url>] | machine [--label <name>] | import claude-mem [--db <path>] [--limit N] [--restart] [--capture-days N] | dedupe [--apply] | suggestions | confirm|reject <suggestion id>  [--json]`;
 var MEMORY_USAGE = memoryUsage();
 var goalUsage = (name = AMEM_NAMES.goal) => `usage: ${name} [list] [--all] | show <id> | new <title> [--milestone <text>]... [--depends <id>]... [--shared] | link <id> <task id> | state <id> open|active|blocked|done|dropped | done <id> | take <id> [--force]  [--json]`;
 var GOAL_USAGE = goalUsage();
@@ -21712,7 +21721,7 @@ var package_default = {
     bun: ">=1.4.2"
   },
   dependencies: {
-    "@staix/agent-mem": "0.8.0"
+    "@staix/agent-mem": "0.9.1"
   },
   devDependencies: {
     "@modelcontextprotocol/sdk": "^1.27.1",

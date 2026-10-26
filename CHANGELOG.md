@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- Pin @staix/agent-mem 0.9.1 (split-home sync holds a verified foreign-generation prune as "held, not applied" instead of refusing the sync, cached MCP policy screening, `--capture-days` claude-mem capture import; 0.9.0 was never published). Refs agent-mem#13.
+
 ## 0.18.0
 
 - Readable output by default (#814): `ahub sdlc status|explain|queue|release|metrics|costs|authorize-release` (#831), `task show|cancel`, `backlog groom|return|plan|pin|split|undo|pull-ready` and `release list|show|new|plan|activate|freeze|ship|drop` (#834), and `restart` and `upgrade` off a terminal (a pipe or `--dry-run`), `recovery status` and the results of `recovery reattach|resume|abort|dispose`, `models setup|start`, `queue resolve` and `budget execution configure|disable` (#833) print for a person. Scripts must pass `--json`, which prints exactly the previous document (the hub tool's text for the task, backlog and release commands). `--json` and `--color=` are flags only at the start or end of a command that takes free text, and an invalid or repeated `--color` is refused before any request is sent. Guard tests fail when a CLI path prints JSON outside `--json` or a named data format, or prints a hub tool's text that is not behind `--json` or a named exception (#837).
