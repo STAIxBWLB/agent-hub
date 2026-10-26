@@ -21869,15 +21869,6 @@ var inFlight = new Set;
 
 // src/hub/review-scope.ts
 var isReviewScope = (value) => value === "full" || value === "code";
-var words = (text) => new Set(text.split(/\s+/).filter(Boolean));
-var FUNCTION = words("a an the this that these those its it their there is are was were be been being has have had not no and or of at on in to for from by with before after per as because until yet still please only any all both each also which remain remains remained");
-var CLAIM = words("provide provided supply supplied paste show shown attach attached confirm confirmed confirmation rerun run ran running execute executed execution verify verified verification unverified read readable reproduce reproduced reproducible could cannot can green passing passed successful success available unavailable unconfirmed unknown pending missing absent blocked failed contains reports independently independent ok");
-var SUBJECT = words("test tests suite suites check checks gate gates ci typecheck tsc preload bun");
-var CONTEXT_NOUN = words("output result results evidence receipt report log logs head sha id file files body bodies brief hub task view public review reviewer reviewers sandbox environment temp temporary home directory creation creating writable authorized authorised isolated only exact affected required reviewed full new relevant targeted local five own unmet ac ref merge commit committed current eperm verification note");
-var VOCAB = new Set([...FUNCTION, ...CLAIM, ...SUBJECT, ...CONTEXT_NOUN]);
-var CONTEXT = words("reviewer reviewers sandbox eperm preload brief hub head evidence receipt affected required exact reviewed per merge");
-var LABELS = String.raw`(?:(?:verification|ac|required|unmet|evidence|note|exact|reviewer)\s+){0,3}`;
-var REQUEST = new RegExp(String.raw`^${LABELS}(?:please\s+|still\s+)?(?:provide|supply|paste|show|attach|confirm|rerun|run|execute)\b`);
 
 // src/hub/tasks.ts
 init_review_findings();

@@ -11,8 +11,8 @@ export type BandTier = typeof BAND_TIERS[number];
 export interface MetricTask {
   id: number;
   private?: boolean;
-  /** `requestHead` is the head a `done` asked review for (reviewCost.head); `verdictHead` the head a verdict was bound to (reviewFindings.head). Compared for equality only, never printed. */
-  history: { at: number; event: string; requestHead?: string; verdictHead?: string }[];
+  /** `evidenceOnly` marks a code-scope verdict with no open finding (#852): it is not a rework round. `requestHead` is the head a `done` asked review for (reviewCost.head); `verdictHead` the head a verdict was bound to (reviewFindings.head). Compared for equality only, never printed. */
+  history: { at: number; event: string; requestHead?: string; verdictHead?: string; evidenceOnly?: true }[];
 }
 
 /** Per-task values; `null` is unknown. */
@@ -111,7 +111,7 @@ export function taskSample(task: MetricTask, extra: { mergedAt?: number; ciRerun
     first_pass_approval: verdict ? (verdict.event === "approved" ? 1 : 0) : null,
     // Rework grows with every round, so it is a value only once the task is approved: a task still in flight has no final one, and a
     // provisional point would move at each verdict and could start a second breach episode inside one shift.
-    rework_rounds: dones.length && approvedAt !== null ? history.filter(entry => entry.event === "changes_requested").length : null,
+    rework_rounds: dones.length && approvedAt !== null ? history.filter(entry => entry.event === "changes_requested" && entry.evidenceOnly !== true).length : null,
     first_pass_check: ci ? (ci.event === "check passed" ? 1 : 0) : null,
     same_head_ci_reruns: extra.ciReruns === undefined ? null : extra.ciReruns,
     stale_head_re_reviews: approvedAt !== null ? staleHeadRounds(history) : null,

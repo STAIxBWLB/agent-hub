@@ -7,45 +7,50 @@ import { Bus } from "../src/hub/bus.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { loadRouting } from "../src/hub/routing.ts";
-import { classifyVerificationOnly, CODE_SCOPE_LINE, CODE_SCOPE_REFUSAL, verificationOnlyItem, type ReviewScope } from "../src/hub/review-scope.ts";
+import { CODE_SCOPE_LINE, evidenceOnlyNotice, type ReviewScope } from "../src/hub/review-scope.ts";
+import { taskSample } from "../src/hub/sdlc-metrics.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 
-// agent-hub#852 (task #514): a review scope. A `code` reviewer's sandbox cannot run tests or read CI, so its request says so and its
-// verification-only rejection is refused; a `full` reviewer keeps today's text and every verdict.
+// agent-hub#852 (task #514), AC2 and the amended AC3: a code-scope reviewer's request says what it cannot do, its approval records the scope, and its
+// changes_requested is always recorded. Without an open structured finding it is evidence-only: no rejection, no escalation, one conductor notice.
 const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
 const head = "a".repeat(40);
-class Reviewer extends BasePeer { received: Envelope[] = []; async start() { this.setState("idle"); } async stop() { this.setState("offline"); } async deliver(envs: Envelope[]) { this.received.push(...envs); } }
+class Peer extends BasePeer { received: Envelope[] = []; async start() { this.setState("idle"); } async stop() { this.setState("offline"); } async deliver(envs: Envelope[]) { this.received.push(...envs); } }
 
-function rig(scope: ReviewScope | undefined, opts: { checkPassed?: boolean } = {}) {
+function rig(scope: ReviewScope | undefined, opts: { checkPassed?: boolean; conductor?: boolean; escalateAfter?: number } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "ahub-review-scope-")), board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 }), notices: string[] = [];
-  const roles: Record<string, string[]> = { codex: ["implementer"], "codex-review": ["reviewer"], director: ["conductor"] };
-  const tasks = new Tasks({ cwd: dir, board, bus, roles, project: "review-scope", routing: () => loadRouting(dir), reviewOnly: peer => peer === "codex-review", ...(scope ? { reviewScope: () => scope } : {}), notify: text => notices.push(text) });
+  const roles: Record<string, string[]> = { codex: ["implementer"], "codex-review": ["reviewer"], ...(opts.conductor === false ? {} : { director: ["conductor"] }) };
+  const tasks = new Tasks({ cwd: dir, board, bus, roles, project: "review-scope", routing: () => loadRouting(dir), reviewOnly: peer => peer === "codex-review", ...(scope ? { reviewScope: () => scope } : {}),
+    ...(opts.escalateAfter ? { escalateAfter: () => opts.escalateAfter! } : {}), notify: text => notices.push(text) });
   const task = board.propose("user", { title: "finished implementation", class: "implement" });
   board.update(task.id, "user", "accepted", { owner: "codex", reviewer: "codex-review", state: "in_progress", refs: { commit: head } });
   if (opts.checkPassed) board.update(task.id, "hub", "check passed", {}, "scripts/check.sh -> exit 0\ncheck: OK");
-  const peer = new Reviewer("codex-review"); bus.add(peer);
+  const reviewer = new Peer("codex-review"), owner = new Peer("codex"), director = new Peer("director"); bus.add(reviewer); bus.add(owner); bus.add(director);
   cleanups.push(() => { bus.closeJournal(); board.close(); rmSync(dir, { recursive: true, force: true }); });
-  const body = async () => { await peer.start(); await tasks.done("codex", task.id, "done"); return peer.received.filter(env => env.kind === "review").at(-1)?.body ?? ""; };
-  return { tasks, board, task, notices, body };
+  const body = async () => { await reviewer.start(); await owner.start(); await director.start(); await tasks.done("codex", task.id, "done"); return reviewer.received.filter(env => env.kind === "review").at(-1)?.body ?? ""; };
+  const again = async () => { await tasks.done("codex", task.id, "fixed"); };
+  const conductorNotices = () => director.received.filter(env => env.from === "hub" && env.kind === "task" && env.body.includes("evidence-only"));
+  return { tasks, board, task, notices, body, again, conductorNotices, owner };
 }
-
-const VERIFICATION_ONLY = ["Required scripts/check.sh --changed success at 34dbc3b0413a26bec589175f5ed60d44ed06374f has not been verified; provide its successful receipt.", "Required exact-head CI is not green per hub brief; provide green required checks before merge."];
+const OPEN = [{ id: "bug-1", pass: "bugs", severity: "important", disposition: "open" }];
+const VERIFICATION = ["Required exact-head CI is not green per hub brief; provide green required checks before merge."];
 
 test("AC2: a code reviewer's request replaces every check and CI line with one fixed line; a full reviewer keeps today's text", async () => {
   const code = await rig("code").body();
   expect(code).toContain(CODE_SCOPE_LINE);
   for (const gone of ["No check ran for this class", "run the affected tests yourself", "Hub-verified", "CI passed at this exact head", "exact-head full CI is not green"]) expect(code, gone).not.toContain(gone);
   expect((code.match(/Your sandbox cannot run tests or read CI/g) ?? []).length).toBe(1);
+  expect(code).toContain("structured finding with an id"); // the amendment: report every code defect as a finding
+  expect(code).toContain("recorded as evidence-only");
   // Everything else about the checklist is as before.
   expect(code).toContain("Map the changed signatures and call sites to");
   expect(code).toContain("List what is unmet in hub_review's unmet, one item each.");
   for (const scope of ["full", undefined] as const) {
     const full = await rig(scope).body();
     expect(full, String(scope)).toContain("No check ran for this class: run the affected tests yourself.");
-    expect(full, String(scope)).not.toContain("Your sandbox cannot run tests or read CI");
+    expect(full, String(scope)).not.toContain("Your sandbox cannot run tests or read CI"); expect(full, String(scope)).not.toContain("evidence-only");
   }
-  // A check the hub itself ran still shows for a full reviewer, and is not shown to a code reviewer who could not read it.
   expect(await rig("full", { checkPassed: true }).body()).toContain("Check result: scripts/check.sh -> exit 0");
   const codeWithCheck = await rig("code", { checkPassed: true }).body();
   expect(codeWithCheck).toContain(CODE_SCOPE_LINE); expect(codeWithCheck).not.toContain("Check result:");
@@ -57,128 +62,91 @@ test("AC3: a code reviewer's approval records scope code in the history, and a f
   expect(approved.state).toBe("approved");
   expect(approved.history.findLast(entry => entry.event === "approved")).toMatchObject({ by: "codex-review", reviewScope: "code" });
   const full = rig("full"); await full.body();
-  const done = await full.tasks.review("codex-review", full.task.id, "approved", "ok");
-  expect(done.history.findLast(entry => entry.event === "approved")?.reviewScope).toBeUndefined();
+  expect((await full.tasks.review("codex-review", full.task.id, "approved", "ok")).history.findLast(entry => entry.event === "approved")?.reviewScope).toBeUndefined();
   const none = rig(undefined); await none.body();
   expect((await none.tasks.review("codex-review", none.task.id, "approved", "ok")).history.findLast(entry => entry.event === "approved")?.reviewScope).toBeUndefined();
 });
 
-test("AC3: a code reviewer's verification-only changes_requested is refused before any effect, naming AC2, and never counts toward escalation", async () => {
+test("AC3: a code reviewer's changes_requested with no open finding is recorded as evidence-only: not counted, the task returns to the owner, the conductor is told once", async () => {
   const f = rig("code"); await f.body();
-  const before = f.board.get(f.task.id)!, rejectionsBefore = before.rejections, historyBefore = before.history.length;
-  for (const unmet of [VERIFICATION_ONLY, [VERIFICATION_ONLY[1]!], ["Affected tests remain unverified: bun test failed in preload with EPERM before any test ran."]]) {
-    await expect(f.tasks.review("codex-review", f.task.id, "changes_requested", "cannot verify", unmet)).rejects.toThrow("#852 AC2");
+  const result = await f.tasks.review("codex-review", f.task.id, "changes_requested", "cannot verify", VERIFICATION);
+  expect(result.rejections).toBe(0);                                   // not counted
+  expect(result.state).toBe("in_progress");                            // returned to the owner as usual
+  const entry = result.history.findLast(item => item.event === "changes_requested")!;
+  expect(entry).toMatchObject({ by: "codex-review", reviewScope: "code", evidenceOnly: true });  // recorded, never refused
+  expect(entry.note).toContain("Unmet:");
+  expect(f.conductorNotices()).toHaveLength(1);                        // one task-weight notice to the conductor
+  expect(f.conductorNotices()[0]!.body).toBe(evidenceOnlyNotice(f.task.id, "codex-review"));
+  expect(f.conductorNotices()[0]!.body).not.toContain("CI is not green");   // ids only: nothing of the review text
+  // The owner is still told, as today.
+  expect(f.owner.received.some(env => env.body.includes("requests changes"))).toBe(true);
+});
+
+test("AC3: an open finding still counts as today: two counted rejections reach an escalate_after of 2, and an evidence-only round in between does not move the count", async () => {
+  const f = rig("code", { escalateAfter: 2 }); await f.body();
+  const first = await f.tasks.review("codex-review", f.task.id, "changes_requested", "defect one", ["validateInstances does not refuse a non-string model."], undefined, undefined, OPEN);
+  expect(first.rejections).toBe(1);
+  await f.again();
+  const between = await f.tasks.review("codex-review", f.task.id, "changes_requested", "cannot verify", VERIFICATION);
+  expect(between.rejections).toBe(1);                                       // evidence-only: neither raised nor reset
+  expect(between.history.filter(entry => entry.event === "escalated")).toHaveLength(0);
+  await f.again();
+  const second = await f.tasks.review("codex-review", f.task.id, "changes_requested", "defect two", ["another real defect"], undefined, undefined, OPEN);
+  expect(second.rejections).toBe(2);                                        // the second counted rejection reaches the threshold
+  const closing = second.history.filter(entry => entry.event === "changes_requested");
+  expect(closing.map(entry => entry.evidenceOnly === true)).toEqual([false, true, false]);
+});
+
+test("AC3: three evidence-only verdicts never escalate or count; an open finding then counts as today", async () => {
+  const f = rig("code", { escalateAfter: 3 }); await f.body();
+  for (let round = 1; round <= 3; round++) {
+    const result = await f.tasks.review("codex-review", f.task.id, "changes_requested", `round ${round}`, VERIFICATION);
+    expect(result.rejections, `round ${round}`).toBe(0); expect(result.owner).toBe("codex");
+    await f.again();
   }
-  await expect(f.tasks.review("codex-review", f.task.id, "changes_requested", CODE_SCOPE_REFUSAL.slice(0, 20), VERIFICATION_ONLY)).rejects.toThrow(/code-scope reviewer cannot establish|review scope is code/);
-  const after = f.board.get(f.task.id)!;
-  expect(after.state).toBe("in_review"); expect(after.rejections).toBe(rejectionsBefore); expect(after.history.length).toBe(historyBefore);
-  expect(after.history.some(entry => entry.event === "changes_requested")).toBe(false);
+  expect(f.board.get(f.task.id)!.history.filter(entry => entry.event === "escalated")).toHaveLength(0);
+  expect(f.board.get(f.task.id)!.history.filter(entry => entry.event === "changes_requested" && entry.evidenceOnly)).toHaveLength(3);
+  // An open finding counts as today.
+  const counted = await f.tasks.review("codex-review", f.task.id, "changes_requested", "a real defect", ["validateInstances does not refuse a non-string model."], undefined, undefined, OPEN);
+  expect(counted.rejections).toBe(1);
+  const entry = counted.history.findLast(item => item.event === "changes_requested")!;
+  expect(entry.evidenceOnly).toBeUndefined(); expect(entry).toMatchObject({ reviewScope: "code" });
+  expect(f.conductorNotices()).toHaveLength(3);                        // one per evidence-only verdict, none for the counted one
 });
 
-test("AC3: a code reviewer's real code finding, or a mixed verdict, is accepted and counts; a full reviewer may cite verification", async () => {
-  const f = rig("code"); await f.body();
-  const mixed = await f.tasks.review("codex-review", f.task.id, "changes_requested", "two points", [...VERIFICATION_ONLY, "validateInstances does not refuse a non-string model."]);
-  expect(mixed.rejections).toBe(1);
-  expect(mixed.history.findLast(entry => entry.event === "changes_requested")).toMatchObject({ reviewScope: "code" });
-  const code = rig("code"); await code.body();
-  expect((await code.tasks.review("codex-review", code.task.id, "changes_requested", "bug", ["src/hub/tasks.ts review() does not handle a withheld note."])).rejections).toBe(1);
-  // A verdict with no unmet items at all is not a verification-only rejection: when unsure, the verdict stands.
-  const bare = rig("code"); await bare.body();
-  const bareResult = await bare.tasks.review("codex-review", bare.task.id, "changes_requested", "needs a closer look");
-  expect(bareResult.rejections).toBe(1); expect(bareResult.history.some(entry => entry.event === "changes_requested")).toBe(true);
-  const full = rig("full"); await full.body();
-  expect((await full.tasks.review("codex-review", full.task.id, "changes_requested", "no tests", VERIFICATION_ONLY)).rejections).toBe(1);
-  const unset = rig(undefined); await unset.body();
-  expect((await unset.tasks.review("codex-review", unset.task.id, "changes_requested", "no tests", VERIFICATION_ONLY)).rejections).toBe(1);
+test("AC3: a code reviewer's fixed or false-positive findings are not open, so that verdict is evidence-only; an open nit still counts", async () => {
+  const closed = rig("code"); await closed.body();
+  const fixed = await closed.tasks.review("codex-review", closed.task.id, "changes_requested", "ok", [], undefined, undefined, [{ id: "x", pass: "bugs", severity: "important", disposition: "fixed" }]);
+  expect(fixed.rejections).toBe(0); expect(fixed.history.findLast(item => item.event === "changes_requested")?.evidenceOnly).toBe(true);
+  const nit = rig("code"); await nit.body();
+  const counted = await nit.tasks.review("codex-review", nit.task.id, "changes_requested", "a nit", ["a naming nit"], undefined, undefined, [{ id: "n", pass: "compliance", severity: "nit", disposition: "open" }]);
+  expect(counted.rejections).toBe(1); expect(counted.history.findLast(item => item.event === "changes_requested")?.evidenceOnly).toBeUndefined();
 });
 
-test("AC3: a person's verdict is never classified, whatever the reviewer scope", async () => {
-  const f = rig("code"); await f.body();
-  expect((await f.tasks.review("user", f.task.id, "changes_requested", "cannot see CI", VERIFICATION_ONLY)).rejections).toBe(1);
+test("AC3: a full reviewer's and a person's changes_requested are never evidence-only, whatever they say", async () => {
+  for (const scope of ["full", undefined] as const) {
+    const f = rig(scope); await f.body();
+    const result = await f.tasks.review("codex-review", f.task.id, "changes_requested", "no tests", VERIFICATION);
+    expect(result.rejections, String(scope)).toBe(1); expect(result.history.findLast(item => item.event === "changes_requested")?.evidenceOnly).toBeUndefined();
+    expect(f.conductorNotices()).toHaveLength(0);
+  }
+  const person = rig("code"); await person.body();
+  const result = await person.tasks.review("user", person.task.id, "changes_requested", "cannot see CI", VERIFICATION);
+  expect(result.rejections).toBe(1); expect(result.history.findLast(item => item.event === "changes_requested")?.evidenceOnly).toBeUndefined();
+  expect(person.conductorNotices()).toHaveLength(0);
 });
 
-test("the classifier refuses only clearly verification-only items, and keeps every real code finding seen on #467, #510 and #512", () => {
-  const rejected = [
-    ...VERIFICATION_ONLY,
-    "Reviewer affected tests remain unverified: all five files were blocked before test bodies by read-only sandbox EPERM in test/hub-home.ts.",
-    "AC5: Supply successful scripts/check.sh --changed output for committed head c08e9a3837320199fdeb465b588a461ed658d311 (check: OK); the public task view contains no check result and the review brief reports exact-head full CI not green.",
-    "Verification: provide successful affected-test execution at this exact head; reviewer test bodies could not run because read-only sandbox blocked preload temp creation.",
-    "Verification: exact-head green gate evidence remains unavailable in the review brief; the required scripts/check.sh --changed success is unverified.",
-    "AC5: Affected tests remain independently unverified: bun test test/jcode-peer.test.ts failed in preload with EPERM creating its isolated temporary home, before any test ran; rerun on the reviewed head in a writable authorized test environment.",
-  ];
-  for (const item of rejected) expect(verificationOnlyItem(item), item).toBe(true);
-  // A request such as "provide its successful receipt" is verification-only only as the continuation of a clause that stands on its own words.
-  expect(verificationOnlyItem("provide its successful receipt")).toBe(false);
-  expect(verificationOnlyItem("Required exact-head CI is not green; provide its successful receipt.")).toBe(true);
-  expect(verificationOnlyItem("The CI workflow is missing the trigger; provide its successful receipt.")).toBe(false);
-  const kept = [
-    "Install-input cache identity: unchanged package.json/bun.lock can reuse stale generated node_modules.",
-    "Pruning does not preserve volumes whose key label is absent or inconsistent with its name.",
-    "Update docs/dogfood.md as required by AGENTS.md for a user-facing feature.",
-    "Correct docs/operations.md restart guidance: declarations are captured once at daemon startup.",
-    "The tests do not cover the lifecycle script refusal.",
-    "Plan conformance: dependencyManifest(packageJson) became async dependencyManifest(source).",
-    "src/hub/tasks.ts review() does not handle a withheld note.",
-    "Foreign-key pruning protection is missing.",
-    "Document/reconcile the signature change in the design spec.",
-    "A race between the check and the volume removal.",
-    "",
-    // codex-review's own regressions on this classifier: real CI-configuration and test-code defects mention a runner word and a gap, and are code findings.
-    "The CI workflow is missing the required pull_request trigger.",
-    "The test fixture is missing cleanup after execution.",
-    "The tests are missing a case for the null model.",
-    "CI is configured to run on the wrong branch.",
-    "The check job does not call the lockfile step.",
-    "Tests assert the wrong head in the receipt.",
-    "The gate script skips the typecheck step when the bundle changes.",
-    "The test suite covers neither the empty list nor the open finding.",
-    "The required check name is missing from the workflow matrix.",
-    "The test is missing an assertion for the refusal text.",
-    "CI is missing a macOS job.",
-    "No tests cover the foreign-key prune path.",
-    "Check output is not redacted before it is stored.",
-    // codex-review round 2: an unknown suffix or a bare mention is a code finding, never a verification claim.
-    "The check is not run when inputs change.",
-    "EPERM is silently ignored.",
-    "EPERM is ignored.",
-    "EPERM is not handled.",
-    "The sandbox blocked the write.",
-    "The check is not run for the lockfile.",
-    "Tests are not run on the macOS leg.",
-    "The gate is not green when the bundle is stale.",
-    "CI is not green on main.",
-  ];
-  for (const item of kept) expect(verificationOnlyItem(item), item).toBe(false);
-  expect(classifyVerificationOnly([], [])).toBe(false);
-  expect(classifyVerificationOnly(rejected, [])).toBe(true);
-  expect(classifyVerificationOnly([rejected[0]!, kept[0]!], [])).toBe(false);
-  expect(classifyVerificationOnly(rejected, [{ id: "f1", pass: "bugs", severity: "important", disposition: "open" }])).toBe(false);
-  expect(classifyVerificationOnly(rejected, [{ id: "f1", pass: "bugs", severity: "important", disposition: "fixed" }])).toBe(true);
+test("AC3: with no conductor the person gets one console notice instead, and the verdict is still recorded", async () => {
+  const f = rig("code", { conductor: false }); await f.body();
+  const result = await f.tasks.review("codex-review", f.task.id, "changes_requested", "cannot verify", VERIFICATION);
+  expect(result.rejections).toBe(0); expect(result.history.findLast(item => item.event === "changes_requested")?.evidenceOnly).toBe(true);
+  expect(f.notices.filter(text => text.includes("evidence-only"))).toEqual([evidenceOnlyNotice(f.task.id, "codex-review")]);
 });
 
-test("no runner subject paired with a code defect is ever classified as verification-only (positive phrasings only)", () => {
-  const subjects = ["tests", "the test", "CI", "the CI job", "the check", "the gate", "the typecheck", "scripts/check.sh", "the test suite", "check output"];
-  const defects = ["is missing a guard for null input", "does not handle a withheld note", "is missing the required step", "is not run for the macOS leg in the workflow", "skips the lockfile step",
-    "is missing a case for the empty list", "asserts the wrong value", "is not redacted before storage", "is missing the pull_request trigger", "never runs the seeded guard",
-    "does not cover the refusal", "is missing cleanup", "reads the wrong head", "is configured with the wrong branch", "is not wired into the build matrix", "is missing coverage for tier 3",
-    "does not fail when the bundle is stale", "is not fenced against a stale generation", "uses a fixed port", "leaks the temp dir"];
-  const wrong = subjects.flatMap(subject => defects.map(defect => `${subject[0]!.toUpperCase()}${subject.slice(1)} ${defect}.`)).filter(verificationOnlyItem);
-  expect(wrong).toEqual([]);
-  // The evidence being absent is a verification claim only when it is the whole claim.
-  expect(verificationOnlyItem("The check output is missing from the review brief.")).toBe(true);
-  expect(verificationOnlyItem("Check output is missing a guard for null input.")).toBe(false);
-});
-
-test("a verification claim is a closed vocabulary: any unknown word, condition or suffix keeps the verdict", () => {
-  const suffixes = ["when inputs change", "on the macOS leg", "for null input", "after a restart", "silently", "twice", "in the workflow", "if the bundle is stale", "before the lockfile step", "without a guard", "while the daemon starts", "unless the flag is set"];
-  const subjects = ["The check", "The tests", "CI", "The gate", "The typecheck", "scripts/check.sh", "The test suite"];
-  const states = ["is not run", "is not green", "was not executed", "is not verified", "cannot run", "could not run", "is unavailable", "remains unverified"];
-  const wrong = subjects.flatMap(subject => states.flatMap(state => suffixes.map(suffix => `${subject} ${state} ${suffix}.`))).filter(verificationOnlyItem);
-  expect(wrong).toEqual([]);
-  const eperm = ["silently ignored", "swallowed", "not handled", "ignored", "logged twice", "retried forever", "treated as success", "mapped to a refusal"];
-  expect(eperm.map(word => `EPERM is ${word}.`).filter(verificationOnlyItem)).toEqual([]);
-  // With a verification context and nothing else, the claim is one a code reviewer cannot establish.
-  for (const claim of ["Required CI is not green.", "Exact-head CI is not green.", "The affected tests are not verified.", "Reviewer tests were blocked by the read-only sandbox EPERM.", "Required exact-head CI is not green per hub brief; provide green required checks before merge."]) expect(verificationOnlyItem(claim), claim).toBe(true);
-  // A bare claim with no verification context is ambiguous (a CI job that never triggers is a code defect too), so it is kept: when unsure, accept.
-  for (const bare of ["The check is not run.", "CI is not green.", "The tests were not executed.", "The gate remains unverified.", "Tests could not run.", "No check result.", "Check output is missing."]) expect(verificationOnlyItem(bare), bare).toBe(false);
+test("an evidence-only verdict is not a rework round in the SDLC metrics, and an ordinary one still is", () => {
+  const history = (rows: { event: string; evidenceOnly?: true }[]) => rows.map((row, index) => ({ at: 1000 + index, ...row }));
+  const base = [{ event: "accepted" }, { event: "done" }];
+  const approved = { event: "approved" };
+  expect(taskSample({ id: 1, history: history([...base, { event: "changes_requested", evidenceOnly: true }, { event: "done" }, approved]) }).rework_rounds).toBe(0);
+  expect(taskSample({ id: 2, history: history([...base, { event: "changes_requested" }, { event: "done" }, approved]) }).rework_rounds).toBe(1);
 });
