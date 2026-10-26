@@ -38,28 +38,52 @@ test("only an installed CLI on a version that is not verified is drift; missing,
   for (const d of drift) expect(d.receipt).toBe(COMPAT[d.id].receipt);
 });
 
-function fakeDeps(options: { planners?: string[]; fail?: boolean } = {}) {
+const script = (dir: string, name: string, body: string) => { const file = join(dir, name); writeFileSync(file, `#!/bin/sh\n${body}\n`); chmodSync(file, 0o755); return file; };
+
+function fakeDeps(options: { planners?: string[]; fail?: boolean; unqueued?: string[] } = {}) {
   const recorded = new Set<string>(), sent: { to: string[]; body: string }[] = [];
   const deps: DriftDeps = {
     record: marker => !recorded.has(marker) && !!recorded.add(marker),
     forget: marker => { recorded.delete(marker); },
     planners: () => options.planners ?? ["claude"],
     isRostered: () => true,
-    publish: env => { if (options.fail) return []; sent.push({ to: env.to ?? [], body: env.body }); return env.to ?? []; },
+    publish: env => { if (options.fail) return []; const to = (env.to ?? []).filter(peer => !options.unqueued?.includes(peer)); sent.push({ to, body: env.body }); return to; },
   };
   return { deps, recorded, sent };
 }
 
-test("one notice per (id, version): repeated sweeps are silent and a new version renotifies (#843 AC3)", () => {
+test("one notice per (id, version) and planner: repeated sweeps are silent and a new version renotifies (#843 AC3)", () => {
   const { deps, sent } = fakeDeps({ planners: ["claude", "pi"] });
   const first = driftedAgents([row("jcode", "in-line", "9.9.9")]);
-  expect(noticeDrift(first, deps)).toBe(1);
+  expect(noticeDrift(first, deps)).toBe(2);
   expect(noticeDrift(first, deps)).toBe(0);
-  expect(sent).toHaveLength(1);
-  expect(sent[0]).toEqual({ to: ["claude", "pi"], body: `Agent CLI drift: jcode 9.9.9 in-line; last receipt ${COMPAT.jcode.receipt}` });
-  expect(noticeDrift(driftedAgents([row("jcode", "in-line", "9.9.10")]), deps)).toBe(1);
-  expect(sent).toHaveLength(2);
-  expect(sent[1]!.body).toContain("jcode 9.9.10");
+  expect(sent).toEqual([
+    { to: ["claude"], body: `Agent CLI drift: jcode 9.9.9 in-line; last receipt ${COMPAT.jcode.receipt}` },
+    { to: ["pi"], body: `Agent CLI drift: jcode 9.9.9 in-line; last receipt ${COMPAT.jcode.receipt}` },
+  ]);
+  expect(noticeDrift(driftedAgents([row("jcode", "in-line", "9.9.10")]), deps)).toBe(2);
+  expect(sent).toHaveLength(4);
+  expect(sent[2]!.body).toContain("jcode 9.9.10");
+});
+
+test("a planner that was not queued is retried alone: the queued one is never told twice (#843 AC3)", () => {
+  const unqueued = ["pi"];
+  const rig = fakeDeps({ planners: ["claude", "pi"], unqueued });
+  const drift = driftedAgents([row("jcode", "in-line", "9.9.9")]);
+  expect(noticeDrift(drift, rig.deps)).toBe(1);
+  expect([...rig.recorded]).toEqual(["jcode:9.9.9@claude"]); // pi's marker was forgotten, so the next sweep tries it
+  unqueued.length = 0;
+  expect(noticeDrift(drift, rig.deps)).toBe(1);
+  expect(rig.sent.map(entry => entry.to).filter(to => to.length)).toEqual([["claude"], ["pi"]]); // claude once, pi once, on its retry
+  expect(noticeDrift(drift, rig.deps)).toBe(0);
+  // A planner that joins the roster later is told once, without repeating the others.
+  const late = fakeDeps({ planners: ["claude", "pi"] });
+  const roster = new Set(["claude"]);
+  late.deps.isRostered = peer => roster.has(peer);
+  expect(noticeDrift(drift, late.deps)).toBe(1);
+  roster.add("pi");
+  expect(noticeDrift(drift, late.deps)).toBe(1);
+  expect(late.sent.map(entry => entry.to)).toEqual([["claude"], ["pi"]]);
 });
 
 test("no planner records nothing, and a notice that could not be queued is retried by the next sweep (#843 AC3)", () => {
@@ -88,14 +112,14 @@ test("the board remembers an announced (id, version) across a reopen and refuses
   const dir = mkdtempSync(join(tmpdir(), "ahub-drift-board-"));
   try {
     const first = new Board(join(dir, "hub.db"));
-    expect(first.recordAgentDriftNotice("jcode:9.9.9")).toBe(true);
-    expect(first.recordAgentDriftNotice("jcode:9.9.9")).toBe(false);
-    expect(() => first.recordAgentDriftNotice("jcode:9 9\n")).toThrow();
+    expect(first.recordAgentDriftNotice("jcode:9.9.9@claude")).toBe(true);
+    expect(first.recordAgentDriftNotice("jcode:9.9.9@claude")).toBe(false);
+    expect(() => first.recordAgentDriftNotice("jcode:9 9@claude\n")).toThrow();
     first.close();
     const second = new Board(join(dir, "hub.db"));
-    expect(second.recordAgentDriftNotice("jcode:9.9.9")).toBe(false);
-    second.forgetAgentDriftNotice("jcode:9.9.9");
-    expect(second.recordAgentDriftNotice("jcode:9.9.9")).toBe(true);
+    expect(second.recordAgentDriftNotice("jcode:9.9.9@claude")).toBe(false);
+    second.forgetAgentDriftNotice("jcode:9.9.9@claude");
+    expect(second.recordAgentDriftNotice("jcode:9.9.9@claude")).toBe(true);
     second.close();
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
@@ -165,23 +189,52 @@ test("a daemon without the product switch never probes (#843 AC3)", async () => 
   } finally { await daemon.stop(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("the daemon's async probe and `ahub agents` share one probe target: same rows, a missing executable is not drift, a hung one is bounded (#843 AC3)", async () => {
+test("the daemon's async probe and `ahub agents` share one probe target: same rows, a missing executable is not drift (#843 AC3)", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-drift-probe-"));
   try {
-    const script = (name: string, body: string) => { const file = join(dir, name); writeFileSync(file, `#!/bin/sh\n${body}\n`); chmodSync(file, 0o755); return file; };
-    const qwen = script("fake-qwen", "echo 7.7.7");
-    const hung = script("fake-jcode", "sleep 5");
-    const commands = { qwen: [qwen], jcode: [hung], agy: [join(dir, "no-such-agy")] };
-    const asyncRows = await agentVersionsAsync(commands, 300);
+    const qwen = script(dir, "fake-qwen", "echo 7.7.7");
+    const asyncRows = await agentVersionsAsync({ qwen: [qwen], agy: [join(dir, "no-such-agy")] }, 2000);
     const syncRow = agentVersions({ qwen: [qwen] }).find(r => r.id === "qwen")!;
     const asyncQwen = asyncRows.find(r => r.id === "qwen")!;
     expect(asyncQwen.executable).toBe(syncRow.executable);
     expect(asyncQwen.verdict).toEqual(syncRow.verdict);
     expect(asyncQwen.verdict).toMatchObject({ ok: false, state: "refused", version: "7.7.7" });
-    expect(asyncRows.find(r => r.id === "jcode")!.verdict.state).toBe("unknown"); // timed out: unreadable, not drift
     expect(asyncRows.find(r => r.id === "agy")!.executable).toBeUndefined();
     expect(driftedAgents(asyncRows).map(d => d.id)).toContain("qwen");
-    expect(driftedAgents(asyncRows).map(d => d.id)).not.toContain("jcode");
     expect(driftedAgents(asyncRows).map(d => d.id)).not.toContain("agy");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("excessive output is cut at the cap while streaming: the probe is killed and reads unknown, never buffered whole (#843 AC3)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-drift-flood-"));
+  try {
+    // 4 MiB per second, forever: only a reader that counts as it streams and then kills the probe can finish.
+    const flood = script(dir, "fake-qwen", "while :; do head -c 1048576 /dev/zero | tr '\\0' 'x'; done");
+    const started = Date.now();
+    const qwen = (await agentVersionsAsync({ qwen: [flood] }, 8000)).find(r => r.id === "qwen")!;
+    expect(Date.now() - started).toBeLessThan(4000); // ended by the cap, not by the 8 s deadline
+    expect(qwen.verdict.state).toBe("unknown");
+    expect(driftedAgents([qwen])).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a descendant that inherited stdout cannot hold the reader past the grace after the probe exits, and a hung probe ends at its deadline (#843 AC3)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-drift-pipe-"));
+  const stray = join(dir, "stray.pid");
+  try {
+    // The probe prints a version and exits 0 while a background child keeps the inherited pipe open.
+    const inherited = script(dir, "fake-qwen", `echo 7.7.7\n(sleep 20 & echo $! > ${stray}; wait) &\nexit 0`);
+    const started = Date.now();
+    const [row1] = (await agentVersionsAsync({ qwen: [inherited] }, 8000, 150)).filter(r => r.id === "qwen");
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(row1!.verdict).toMatchObject({ state: "refused", version: "7.7.7" }); // what was read before the grace is kept
+    const hung = script(dir, "fake-jcode", "sleep 20");
+    const t0 = Date.now();
+    const jcode = (await agentVersionsAsync({ jcode: [hung] }, 300, 100)).find(r => r.id === "jcode")!;
+    expect(Date.now() - t0).toBeLessThan(3000);
+    expect(jcode.verdict.state).toBe("unknown");
+  } finally {
+    try { process.kill(Number(readFileSync(stray, "utf8").trim()), "SIGKILL"); } catch { /* already gone */ }
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

@@ -24,13 +24,14 @@ export function driftedAgents(rows: readonly AgentVersionRow[]): DriftedAgent[] 
   return out;
 }
 
-export const driftMarker = (agent: Pick<DriftedAgent, "id" | "version">): string => `${agent.id}:${agent.version}`;
+/** Durable key of one notice: the (id, version) and the planner it was queued for. */
+export const driftMarker = (agent: Pick<DriftedAgent, "id" | "version">, planner: PeerId): string => `${agent.id}:${agent.version}@${planner}`;
 
 export const driftNoticeBody = (agent: DriftedAgent): string =>
   sanitize(`Agent CLI drift: ${agent.id} ${agent.version} ${agent.state}; last receipt ${agent.receipt}`);
 
 export interface DriftDeps {
-  /** True when the marker is new and now recorded (durable: `Board.recordAgentDriftNotice`). */
+  /** True when the (id, version, planner) marker is new and now recorded (durable: `Board.recordAgentDriftNotice`). */
   record(marker: string): boolean;
   /** Undo a record whose notice could not be queued, so the next sweep tries again. */
   forget(marker: string): void;
@@ -41,20 +42,18 @@ export interface DriftDeps {
 }
 
 /**
- * One notice per (id, version) to every effective planner, deduplicated through the durable marker so a restart
- * or a later sweep never repeats it and a new version is a new notice. With no rostered planner nothing is recorded:
- * the next sweep tries again. Returns the notices queued.
+ * One notice per (id, version) to each effective planner, kept durably per recipient: a planner that was queued is
+ * never told again, and one that could not be queued (or was not rostered yet) is retried alone by the next sweep.
+ * With no rostered planner nothing is recorded. Returns the notices queued.
  */
 export function noticeDrift(drift: readonly DriftedAgent[], deps: DriftDeps): number {
   const planners = deps.planners().filter(peer => deps.isRostered(peer));
-  if (!planners.length) return 0;
   let sent = 0;
-  for (const agent of drift) {
-    const marker = driftMarker(agent);
+  for (const agent of drift) for (const planner of planners) {
+    const marker = driftMarker(agent, planner);
     if (!deps.record(marker)) continue;
     try {
-      const queued = deps.publish(newEnvelope(HUB, driftNoticeBody(agent), { to: [...planners], kind: "task" }));
-      if (!planners.some(peer => queued.includes(peer))) throw new Error("the notice was not queued");
+      if (!deps.publish(newEnvelope(HUB, driftNoticeBody(agent), { to: [planner], kind: "task" })).includes(planner)) throw new Error("the notice was not queued");
       sent++;
     } catch { deps.forget(marker); }
   }

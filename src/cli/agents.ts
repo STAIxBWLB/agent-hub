@@ -30,20 +30,52 @@ export function agentVersions(commands: Partial<Record<CompatId, readonly string
   });
 }
 
+const PROBE_OUTPUT_CAP = 64 * 1024;
+/** After the probe process ends, how long a descendant that kept the pipe open may still be read before the reader is cancelled. */
+const PROBE_EXIT_GRACE_MS = 250;
+
+/**
+ * One bounded probe run. Output is read as a stream and counted as it arrives: past the cap the probe is killed and the
+ * reader cancelled, so a chatty or endless CLI never accumulates in memory. A deadline kills the probe and cancels the
+ * reader, and a descendant that inherited stdout cannot hold the reader past the grace after the probe's own exit.
+ * ponytail: only the probe process is killed, not its descendants; a stray one ends on its own or when its pipe closes.
+ * The upgrade is a process group via child_process (as `jcodeVersionAsync` does).
+ */
+async function runProbe(executable: string, args: readonly string[], timeoutMs: number, graceMs = PROBE_EXIT_GRACE_MS): Promise<string | undefined> {
+  const child = Bun.spawn([executable, ...args], { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: { ...process.env, ...PROBE_ENV }, timeout: timeoutMs, killSignal: "SIGKILL" });
+  const reader = child.stdout.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0, overflow = false, cancelled = false;
+  const release = () => { if (cancelled) return; cancelled = true; void reader.cancel().catch(() => undefined); };
+  const pump = (async () => {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        total += value.byteLength;
+        if (total > PROBE_OUTPUT_CAP) { overflow = true; child.kill("SIGKILL"); release(); return; }
+        chunks.push(value);
+      }
+    } catch { /* a cancelled or failed read ends the probe with what was counted */ }
+  })();
+  const deadline = setTimeout(() => { child.kill("SIGKILL"); release(); }, timeoutMs + graceMs);
+  let grace: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const code = await child.exited;
+    grace = setTimeout(release, graceMs);
+    await pump;
+    return code === 0 && !overflow ? Buffer.concat(chunks).toString("utf8") : undefined;
+  } finally { clearTimeout(deadline); clearTimeout(grace); release(); }
+}
+
 /** #843 AC3: the same probe for the daemon, which must not block its event loop for up to ten seconds an id. */
-export async function agentVersionsAsync(commands: Partial<Record<CompatId, readonly string[]>> = {}, timeoutMs = 10_000): Promise<AgentVersionRow[]> {
+export async function agentVersionsAsync(commands: Partial<Record<CompatId, readonly string[]>> = {}, timeoutMs = 10_000, graceMs = PROBE_EXIT_GRACE_MS): Promise<AgentVersionRow[]> {
   const trusted = readTrust();
   return Promise.all((Object.keys(COMPAT) as CompatId[]).map(async id => {
     const target = probeTarget(id, commands);
     if (!target) return probeRow(id, undefined, undefined, trusted);
-    try {
-      const child = Bun.spawn([target.executable, ...target.args], { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: { ...process.env, ...PROBE_ENV }, timeout: timeoutMs, killSignal: "SIGKILL" });
-      const reading = new Response(child.stdout).text();
-      const code = await child.exited;
-      // A grandchild can keep the pipe open after the probe itself ended or was killed; never wait on it past the exit.
-      const text = await Promise.race([reading, Bun.sleep(250).then(() => undefined)]);
-      return probeRow(id, target.executable, code === 0 && text !== undefined && text.length <= 64 * 1024 ? text : undefined, trusted);
-    } catch { return probeRow(id, target.executable, undefined, trusted); }
+    try { return probeRow(id, target.executable, await runProbe(target.executable, target.args, timeoutMs, graceMs), trusted); }
+    catch { return probeRow(id, target.executable, undefined, trusted); }
   }));
 }
 

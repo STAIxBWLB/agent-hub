@@ -259,7 +259,7 @@ export class Board {
     this.db.run("CREATE TABLE IF NOT EXISTS task_stalls (task INTEGER PRIMARY KEY, payload TEXT NOT NULL)");
     // #481 S7: one row per log-tier band breach episode already announced, so a restart never repeats the notice.
     this.db.run("CREATE TABLE IF NOT EXISTS band_notices (marker TEXT PRIMARY KEY, at INTEGER NOT NULL)");
-    // #843 AC3: one row per (agent id, installed version) already announced to the planner, so a restart never repeats it.
+    // #843 AC3: one row per (agent id, installed version, planner) already queued, so a restart never repeats it.
     this.db.run("CREATE TABLE IF NOT EXISTS agent_drift_notices (marker TEXT PRIMARY KEY, at INTEGER NOT NULL)");
     // Derived status-cache generation: only Board task/stall writes advance it, never journal writes.
     this.db.run("CREATE TABLE IF NOT EXISTS board_status_revision (id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL)");
@@ -375,9 +375,9 @@ export class Board {
     if (!/^[a-z_]{1,64}:#[1-9][0-9]{0,9}:log$/.test(marker)) throw new Error("invalid band notice marker");
     return this.db.query("INSERT OR IGNORE INTO band_notices(marker, at) VALUES(?, ?)").run(marker, Date.now()).changes > 0;
   }
-  /** True when the (id, version) marker was new and is now recorded; false when it was announced before. */
+  /** True when the (id, version, planner) marker was new and is now recorded; false when it was announced before. */
   recordAgentDriftNotice(marker: string): boolean {
-    if (!/^[a-z][a-z0-9-]{0,31}:[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/.test(marker)) throw new Error("invalid agent drift marker");
+    if (!/^[a-z][a-z0-9-]{0,31}:[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}@[0-9A-Za-z][0-9A-Za-z._-]{0,63}$/.test(marker)) throw new Error("invalid agent drift marker");
     return this.db.query("INSERT OR IGNORE INTO agent_drift_notices(marker, at) VALUES(?, ?)").run(marker, Date.now()).changes > 0;
   }
   forgetAgentDriftNotice(marker: string): void { this.db.query("DELETE FROM agent_drift_notices WHERE marker=?").run(marker); }
