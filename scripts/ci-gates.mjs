@@ -8,6 +8,11 @@ const lostProofError = error => !(error instanceof GateReadLimitError) && (
   error instanceof MalformedGateProofError || error instanceof SyntaxError
   || error?.status === 404 || error?.status === undefined && error?.name === "TimeoutError"
 );
+// A transient GitHub 5xx or a 429 is not lost proof and not an answer: the runs API returned 502 on about half of all calls for stretches of 2026-10-26 (#872), and failing closed on the
+// first one refused every PR before any gate job ran. It is retried, twice at most, with a short backoff, and only while the shared deadline leaves room. Everything else (any other status, a
+// timeout, malformed data) is untouched, and a read that stays failed still ends as unknown, which is never permission to run or reuse.
+const RETRY_BACKOFF_MS = [500, 1000];
+const retryableStatus = error => Number.isInteger(error?.status) && (error.status === 429 || error.status >= 500 && error.status <= 599);
 const ACTIVE_RUN = new Set(["in_progress", "queued", "waiting", "pending", "requested"]);
 const sameRun = (left, right) => right !== undefined && String(left) === String(right);
 const successfulFullGate = run => run.status === "completed" && run.conclusion === "success"
@@ -36,7 +41,7 @@ export function fullGateAdmission(tree, runs, { currentRunId, complete = false }
  * Different groups may observe the same empty snapshot and run a tree twice (#609: redundant work, never false green).
  * Lost successful proof can require a fresh gate; incomplete active coverage and global read ceilings stay unknown.
  */
-export async function readFullGateAdmission(api, tree, { currentRunId, deadline = Date.now() + 60_000, now = Date.now } = {}) {
+export async function readFullGateAdmission(api, tree, { currentRunId, deadline = Date.now() + 60_000, now = Date.now, sleep = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
   const evidence = [], commits = new Map();
   let requests = 0;
   const checkDeadline = () => {
@@ -44,11 +49,18 @@ export async function readFullGateAdmission(api, tree, { currentRunId, deadline 
     if (!Number.isFinite(deadline) || !Number.isFinite(at) || at >= deadline) throw new GateReadLimitError("gate read deadline exhausted");
   };
   const read = async path => {
-    checkDeadline();
-    if (requests >= 240) throw new GateReadLimitError("gate read budget exhausted");
-    requests++;
-    try { return await api(path); }
-    finally { checkDeadline(); } // A failed or late successful request cannot turn global exhaustion into lost proof.
+    for (let attempt = 0; ; attempt++) {
+      checkDeadline();
+      if (requests >= 240) throw new GateReadLimitError("gate read budget exhausted"); // a retry is a request: it counts against the same budget
+      requests++;
+      try { return await api(path); }
+      catch (error) {
+        const backoff = RETRY_BACKOFF_MS[attempt];
+        // The backoff must fit before the deadline, with room left for the retry itself; otherwise the original error stands and the read fails closed as before.
+        if (!retryableStatus(error) || backoff === undefined || !(now() + backoff < deadline)) throw error;
+        await sleep(backoff);
+      } finally { checkDeadline(); } // A failed or late successful request cannot turn global exhaustion into lost proof.
+    }
   };
   const page = (value, key) => {
     if (!value || !Array.isArray(value[key]) || value[key].length > 100 || !Number.isSafeInteger(value.total_count) || value.total_count < value[key].length) throw new MalformedGateProofError("gate page unavailable");

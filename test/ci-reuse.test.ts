@@ -406,8 +406,10 @@ for (const phase of ["success-list", "commit", "jobs"] as const) for (const [fai
     if (phase === "commit" && path === "git/commits/success-1" || phase === "jobs" && path.includes("actions/runs/1/")) return fail();
     return path.startsWith("git/") ? { tree: { sha: "expected" } } : verifiedJobs();
   };
-  expect(await gates.readFullGateAdmission(api, "expected")).toMatchObject({ kind: "unknown" });
-  expect(calls).toHaveLength(phase === "success-list" ? 1 : phase === "commit" ? 2 : 3);
+  // A 429 or 5xx is retried twice (#872) before it is given up, so the failing read is attempted three times; every other failure is attempted once. Either way the answer is unknown.
+  const attempts = ["429", "500", "503"].includes(failure) ? 3 : 1;
+  expect(await gates.readFullGateAdmission(api, "expected", { sleep: async () => {} })).toMatchObject({ kind: "unknown" });
+  expect(calls).toHaveLength(phase === "success-list" ? attempts : phase === "commit" ? 1 + attempts : 2 + attempts);
 });
 
 test("CLI HTTP failures retain their status: 503 proof failure refuses fresh admission", () => {
