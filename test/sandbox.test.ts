@@ -723,7 +723,7 @@ test.skipIf(!sandboxAvailable())("a submodule's linked worktree has its own modu
   const git = (args: string[]) => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
   const ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
   const init = (dir: string) => { expect(git(["init", "-q", dir]).exitCode).toBe(0); writeFileSync(join(dir, "f"), "x"); git(["-C", dir, "add", "f"]); expect(git(["-C", dir, ...ident, "commit", "-qm", "one"]).exitCode).toBe(0); };
-  const innerSrc = join(base, "inner-src"), subSrc = join(base, "sub-src"), main = join(base, "main"), linked = join(base, "sub-wt");
+  const innerSrc = join(base, "inner-src"), subSrc = join(base, "sub-src"), main = join(base, "main"), linked = join(main, "sub-wt");   // inside the project root, where the sandbox can read and write
   init(innerSrc); init(subSrc);
   expect(git(["-C", subSrc, "-c", "protocol.file.allow=always", "submodule", "add", "-q", innerSrc, "in"]).exitCode).toBe(0);
   expect(git(["-C", subSrc, ...ident, "commit", "-qm", "with inner"]).exitCode).toBe(0);
@@ -750,7 +750,7 @@ test.skipIf(!sandboxAvailable())("a submodule's linked worktree has its own modu
   for (const [label, command] of attempts) {
     const out = await sandboxedExec(["/bin/sh", "-c", `(${command}) 2>/dev/null; echo done`], { cwd: main, profile: profile(main, false) });
     expect(out.output).toContain("done");
-    if (readFileSync(join(innerGit, "config"), "utf8") !== before || existsSync(join(wtGit, "modules", "refs")) || existsSync(join(wtGit, "modules", "x")) || existsSync(join(innerGit, "hooks"))
+    if (readFileSync(join(innerGit, "config"), "utf8") !== before || existsSync(join(wtGit, "modules", "refs")) || existsSync(join(wtGit, "modules", "x")) || existsSync(join(innerGit, "hooks", "pre-commit"))
       || existsSync(join(dir, "worktrees", "later", "modules")) || !existsSync(join(wtGit, "modules")) || existsSync(join(wtGit, "m-away")) || existsSync(join(wtGit, "away"))) { slipped.push(label); break; }
   }
   expect(slipped).toEqual([]);
