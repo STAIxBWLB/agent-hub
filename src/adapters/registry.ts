@@ -250,6 +250,7 @@ export function assertNativeCapabilityScope(definition: AdapterDefinition): void
     ["routing", definition.routing !== undefined],
     ["projection", definition.projection !== undefined],
     ["instances.nativeHome", declared(definition.instances, "nativeHome")], // #685: a fixed-builtin assumption, one native data home per declared instance
+    ["instances.modelSelect", declared(definition.instances, "modelSelect")], // #844: a fixed-builtin assumption, one validated model word per declared headless instance
     ["identity.currentChild", declared(definition.identity, "currentChild")],
     ["reviewerVariant", definition.reviewerVariant !== undefined],
     ["headlessVariant", definition.headlessVariant !== undefined],

@@ -12765,7 +12765,7 @@ var init_builtin_metadata = __esm(() => {
     trust: { onPrem: false, hubSandboxed: false },
     start: { create: createClaudeImplementer, daemonPort: "claude-implementer", forms: headlessForms, defaultForm: "headless", conductorStartable: true, hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "env", currentChild: true },
-    instances: { mode: "headless", roles: ["implementer", "verifier"] },
+    instances: { mode: "headless", roles: ["implementer", "verifier"], modelSelect: true },
     permission: { grants: { ask: "every write, edit and shell command asks", "ask-when-needed": "file tools inside the owned worktree may run automatically; shell and protected paths ask" } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: false, launchKind: "claude-implementer", crashPlan: () => ({ resume: {}, how: "Claude implementer resumes its recorded per-task sessions" }) },
     turnEnd: "adapter",
@@ -13678,6 +13678,7 @@ function assertNativeCapabilityScope(definition) {
     ["routing", definition.routing !== undefined],
     ["projection", definition.projection !== undefined],
     ["instances.nativeHome", declared(definition.instances, "nativeHome")],
+    ["instances.modelSelect", declared(definition.instances, "modelSelect")],
     ["identity.currentChild", declared(definition.identity, "currentChild")],
     ["reviewerVariant", definition.reviewerVariant !== undefined],
     ["headlessVariant", definition.headlessVariant !== undefined],
@@ -21925,8 +21926,8 @@ function validateInstances(raw, catalog) {
     const path = `instances.${id}`, entry = fields2(descriptor.value, path);
     const declaredKind = entry.kind?.value;
     const jcodeFields = typeof declaredKind === "string" && resolve(declaredKind)?.instances?.nativeHome === true;
-    const claudeModel = declaredKind === "claude";
-    if (Object.keys(entry).some((key) => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly", ...jcodeFields ? JCODE_FIELDS : [], ...claudeModel ? ["model"] : []].includes(key)))
+    const modelSelect = typeof declaredKind === "string" && resolve(declaredKind)?.headlessVariant?.instances?.modelSelect === true;
+    if (Object.keys(entry).some((key) => !["kind", "roles", "start_mode", "permission_mode", "worktree", "review_mode", "readOnly", ...jcodeFields ? JCODE_FIELDS : [], ...modelSelect ? ["model"] : []].includes(key)))
       return fail4(path, "unsupported field");
     const kind = entry.kind?.value;
     if (typeof kind !== "string")
@@ -22001,9 +22002,9 @@ function validateInstances(raw, catalog) {
         return fail4("instances", `at most ${MAX_JCODE_INSTANCES} extra Jcode instances are supported per project`);
       Object.assign(value, jcodeInstanceFields(entry, path));
     }
-    if (entry.model && claudeModel) {
+    if (entry.model && modelSelect) {
       if (!headlessWriter)
-        return fail4(`${path}.model`, "only a headless Claude implementer takes a model");
+        return fail4(`${path}.model`, "only a headless implementer takes a model");
       const word = entry.model.value;
       if (typeof word !== "string" || !NATIVE_WORD.test(word))
         return fail4(`${path}.model`, "must be one bounded printable word without spaces");

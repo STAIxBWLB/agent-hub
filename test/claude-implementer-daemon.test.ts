@@ -160,15 +160,18 @@ test("#525 an approval answer revalidates a worktree changed while its heartbeat
   } finally { await f.close(); }
 }, 20_000);
 
-test("#844 a declared model reaches the native argv and the status row; without one neither shows it", async () => {
+test("#844 a declared model reaches the native argv and the status row", async () => {
   const f = await fixture(false, "claude-sonnet-5-5");
   try {
     expect(f.call.args[f.call.args.indexOf("--model") + 1]).toBe("claude-sonnet-5-5");
     expect((await f.console_.request({ t: "status" })).status.peers[f.peer].modelSource).toBe("claude-sonnet-5-5");
   } finally { await f.close(); }
-  const plain = await fixture();
+}, 20_000);
+
+test("#844 without a declared model the native argv and the status row carry none", async () => {
+  const f = await fixture();
   try {
-    expect(plain.call.args).not.toContain("--model");
-    expect((await plain.console_.request({ t: "status" })).status.peers[plain.peer].modelSource).toBeUndefined();
-  } finally { await plain.close(); }
-}, 30_000);
+    expect(f.call.args).not.toContain("--model");
+    expect((await f.console_.request({ t: "status" })).status.peers[f.peer].modelSource).toBeUndefined();
+  } finally { await f.close(); }
+}, 20_000);

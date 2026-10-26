@@ -1027,8 +1027,9 @@ export async function startDaemon(opts: DaemonOptions) {
    */
   const jcodeModelSource = (id: string): { modelSource?: string } => {
     const instance = declarations[id];
-    if (instance?.model && instance.kind === "claude") return { modelSource: instance.model }; // #844: a headless Claude implementer's declared model
-    if (!instance || definitionOf(id)?.instances?.nativeHome !== true) return {};
+    if (!instance) return {};
+    // #844: a model exists on an instance only where validation admitted it (a headless implementer whose definition declares modelSelect).
+    if (definitionOf(id)?.instances?.nativeHome !== true) return instance.model ? { modelSource: instance.model } : {};
     return { modelSource: [instance.provider, instance.model, instance.provider_profile && `profile ${instance.provider_profile}`].filter(Boolean).join(" ") || "native default" };
   };
   /**
