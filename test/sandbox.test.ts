@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HFS_IGNORABLE_POINTS, hubWriteRegexes } from "../src/local/deny.ts";
@@ -513,6 +513,44 @@ test.skipIf(!sandboxAvailable())("the ancestors of a protected git dir cannot be
   const ok = await sandboxedExec(["/bin/sh", "-c", ["echo hi > ok.txt && echo wrote-file", "git branch fix/config && echo branched", `git ${ident.join(" ")} commit -qm two --allow-empty && echo committed`].join("; ")], { cwd, profile: profile(cwd, false) });
   for (const expected of ["wrote-file", "branched", "committed"]) expect(ok.output).toContain(expected);
 });
+
+test.skipIf(!sandboxAvailable())("every directory entry on the path to a protected git file refuses rename, replace, symlink, removal and being renamed over, in the main checkout and a sibling worktree (#518 review round 3)", async () => {
+  const git = (args: string[]) => Bun.spawnSync(["git", ...args], { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } });
+  const ident = ["-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false"];
+  const init = (dir: string) => { expect(git(["init", "-q", dir]).exitCode).toBe(0); writeFileSync(join(dir, "f"), "x"); git(["-C", dir, "add", "f"]); expect(git(["-C", dir, ...ident, "commit", "-qm", "one"]).exitCode).toBe(0); };
+  const entries = ["worktrees", "worktrees/wt2", "worktrees/wt2/modules", "worktrees/wt2/modules/s", "worktrees/wt", "modules", "modules/s"];
+  const operations: [string, (entry: string, scratch: string) => string][] = [
+    ["rename away", (entry, scratch) => `mv '${entry}' '${scratch}/gone'`],
+    ["rename another directory over it", (entry, scratch) => `mkdir '${scratch}/decoy' && mv -f '${scratch}/decoy' '${entry}'`],
+    ["replace by a symlink", (entry, scratch) => `mkdir '${scratch}/decoy' && rm -rf '${entry}' && ln -s '${scratch}/decoy' '${entry}'`],
+    ["remove", (entry) => `rm -rf '${entry}'`],
+    ["rename an empty directory over it", (entry, scratch) => `mkdir -p '${scratch}/other' && mv -f '${scratch}/other' '${entry}'`],
+  ];
+  // One repository for all entries, built once: a refused operation changes nothing, so each is tried in turn and a failure names exactly the entry and the operation that got through.
+  // An operation that does get through is undone with a restore from a copy before the next, so one slip cannot hide the following ones.
+  const base = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-wt-entries-")));
+  const subSrc = join(base, "sub-src"), main = join(base, "main"), cwd = join(base, "wt"), sibling = join(base, "wt2");
+  init(subSrc); init(main);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "add", "-q", subSrc, "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, ...ident, "commit", "-qm", "s"]).exitCode).toBe(0);
+  expect(git(["-C", main, "worktree", "add", cwd]).exitCode).toBe(0);
+  expect(git(["-C", main, "worktree", "add", sibling]).exitCode).toBe(0);
+  expect(git(["-C", sibling, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]).exitCode).toBe(0);
+  expect(git(["-C", main, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "-q"]).exitCode).toBe(0);
+  const common = join(main, ".git"), scratch = join(common, "scratch-ops");
+  mkdirSync(scratch, { recursive: true });
+  const slipped: string[] = [];
+  for (const entry of entries) for (const [label, command] of operations) {
+    const target = join(common, entry);
+    const before = lstatSync(target).ino;
+    await sandboxedExec(["/bin/sh", "-c", `(${command(target, scratch)}) 2>/dev/null; echo done`], { cwd, profile: profile(cwd, false) });
+    if (!existsSync(target) || lstatSync(target).ino !== before || lstatSync(target).isSymbolicLink()) {
+      slipped.push(`${entry}: ${label}`);
+      return expect(slipped).toEqual([]);   // the layout may be damaged now, so later results would mean nothing
+    }
+  }
+  expect(slipped).toEqual([]);
+}, 60_000);
 
 test("no regex literal that folds a name carries the git path, so a long path cannot push one over SBPL's 1024-byte limit (#518 review)", () => {
   // A literal over 1024 BYTES (the HFS+ code points are 3 bytes each) makes sandbox-exec refuse the whole profile, so no sandboxed command starts. Bytes, not characters.
