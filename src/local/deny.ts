@@ -32,13 +32,15 @@ const HFS_IGNORABLE = `(${HFS_IGNORABLE_POINTS.join("|")})`;
 const hfsFoldedName = (name: string) => `${HFS_IGNORABLE}*${[...name].map((c) => sbplEscape(c)).join(`${HFS_IGNORABLE}*`)}${HFS_IGNORABLE}*`;
 
 /**
- * `config.worktree`, the per-worktree config git reads beside `config` (#518), folded in BOTH halves as two regex sources that a rule must both match. One SBPL regex literal dies
- * at 1024 bytes in UTF-8 and every folded character costs about 65 bytes, so the whole name (1071) cannot be one literal, and a byte class cannot hold the multi-byte code
- * points (the engine is byte-oriented, verified), so the fold stays an alternation. The first source pins the front: `prefix`, a folded `config`, a dot, then the rest of the
- * name; the second pins the end: the name ends in a folded `worktree`. Together they match every spelling of `config.worktree` with ignorable code points anywhere in it, and
- * also `config.<anything>worktree` in the same directory, which is over-refused on purpose and names no file git uses.
+ * `config.worktree`, the per-worktree config git reads beside `config` (#518), folded in BOTH halves as two NAME-only regex sources that a rule must both match. One SBPL regex
+ * literal dies at 1024 bytes in UTF-8 and every folded character costs about 65 bytes, so the whole name (1071) cannot be one literal, and a byte class cannot hold the
+ * multi-byte code points (the engine is byte-oriented, verified), so the fold stays an alternation. The first source pins the front (a folded `config`, a dot, then the rest of
+ * the name), the second the end (a folded `worktree`). Together they match every spelling of `config.worktree` with ignorable code points anywhere in it, and also
+ * `config.<anything>worktree` in the same directory, which is over-refused on purpose and names no file git uses.
+ * The root a rule is scoped to is NEVER part of these literals: it goes in its own `require-all` filter, so a long project or git path cannot push a folded name over the limit
+ * (#518 review: a 450-byte path made a 1083-byte literal when the root and the name shared one).
  */
-const configWorktreeSources = (prefix: string): [string, string] => [`${prefix}${hfsFoldedName("config")}\\.[^/]*$`, `^.*/[^/]*${hfsFoldedName("worktree")}$`];
+const CONFIG_WORKTREE_NAME: readonly [string, string] = [`^.*/${hfsFoldedName("config")}\\.[^/]*$`, `^.*/[^/]*${hfsFoldedName("worktree")}$`];
 
 /**
  * Seatbelt rules for the hub's and git's own names (#270). `.agenthub` is refused anywhere under the project root.
@@ -67,7 +69,7 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
   const re = (s: string) => `(regex ${sbplString(s)})`;
   const external = gitDirs.flatMap((d) => [
     `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${re(`^.*/(${hfsFoldedName("config")}|${hfsFoldedName("hooks")})$`)})`,
-    `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${configWorktreeSources("^.*/").map(re).join(" ")})`,
+    `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
     `(subpath ${sbplString(`${d}/hooks`)})`,
     `(require-all (subpath ${sbplString(d)}) ${re(`^.*/${hfsFoldedName("commondir")}$`)})`,
   ]);
@@ -77,11 +79,12 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
     // or `prefs` keeps the refusal and one named `webhooks` keeps its ordinary writes (#281 round 2).
     // `config.worktree` is the per-worktree config git reads next to `config`, so it gets the same refusal.
     `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
-    `(require-all ${configWorktreeSources(`^${sbplEscape(tree.root)}/(.*/)?`).map(re).join(" ")} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
+    `(require-all ${re(`^${sbplEscape(tree.root)}/`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
     `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
     // A submodule git dir as a directory entry: no rename, replace, symlink or recreate. The basename is
     // folded (HFS+ opens the folded spelling as the real entry); the plain prefix is the path as discovered.
-    ...tree.entries.map((d) => re(`^${sbplEscape(dirname(d))}/${hfsFoldedName(basename(d))}$`)),
+    // The directory and the folded name are separate filters: one literal holding both grows with the path and dies at 1024 bytes (a ~520-byte git path did on main, #518 review).
+    ...tree.entries.map((d) => `(require-all ${re(`^${sbplEscape(dirname(d))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename(d))}$`)})`),
   ]);
   // Every linked worktree's git dir under `<common>/worktrees/` by pattern, not by discovery (#518): a sibling's `modules/` tree that does not exist yet, or a sibling created
   // after this profile was built, is as protected as one that does. The sandbox can write the common dir, so it could otherwise pre-create them. The worktree name is one
@@ -92,14 +95,14 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
         return [
           // A worktree git dir's own `config` and `config.worktree`: direct children only.
           `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config")}$`)})`,
-          `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${configWorktreeSources("^.*/").map(re).join(" ")})`,
+          `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
           // A worktree git dir's own `hooks` directory and everything in it, which git runs for that worktree.
           re(`^${w}/[^/]+/${hfsFoldedName("hooks")}(/|$)`),
           // Its submodule git dirs: config, config.worktree and hooks at any depth, refs and logs excepted, and the `modules` entry itself (no create, rename or replace).
           `(require-all ${re(`^${w}/[^/]+/modules/(.*/)?${hfsFoldedName("config")}$`)} ${notRefs})`,
-          `(require-all ${configWorktreeSources(`^${w}/[^/]+/modules/(.*/)?`).map(re).join(" ")} ${notRefs})`,
+          `(require-all ${re(`^${w}/[^/]+/modules/`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")} ${notRefs})`,
           `(require-all ${re(`^${w}/[^/]+/modules/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} ${notRefs})`,
-          re(`^${w}/[^/]+/${hfsFoldedName("modules")}$`),
+          `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("modules")}$`)})`,
         ];
       })()
     : [];
@@ -107,7 +110,7 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
     `(require-all (subpath ${sbplString(root)}) ${re(`^.*/${hfsFoldedName(".agenthub")}(/|$)`)})`,
     re(`^.*/${git}$`),
     re(`^.*/${git}/${hfsFoldedName("config")}$`),
-    `(require-all ${configWorktreeSources(`^.*/${git}/`).map(re).join(" ")})`,
+    `(require-all ${re(`^.*/${git}/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
     re(`^.*/${git}/${hfsFoldedName("hooks")}(/|$)`),
     `(require-all ${re(`^.*/${git}/.*$`)} ${re(`^.*/${hfsFoldedName("commondir")}$`)})`,
     ...modules,
