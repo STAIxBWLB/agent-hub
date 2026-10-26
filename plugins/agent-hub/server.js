@@ -339,12 +339,12 @@ var init_compat = __esm(() => {
     },
     agy: {
       label: "agy",
-      verified: ["1.4.2"],
+      verified: ["1.4.2", "1.4.7"],
       line: { min: "1.4.0", below: "1.5.0" },
       gate: "contract",
       probe: ["agy", "--version"],
       parse: (out) => plain(out.trim()),
-      trustNote: "Only 1.4.2 is T0-verified; the plugin MCP and hook contract of another version is unverified."
+      trustNote: "Only 1.4.2 and 1.4.7 are T0-verified; the plugin MCP and hook contract of another version is unverified."
     },
     qwen: {
       label: "Qwen Code",
