@@ -85,7 +85,7 @@ const CLAUDE_IMPLEMENTER_VARIANT: AdapterDefinition = {
   api: 1, kind: "claude", displayName: "Claude Code implementer", family: "claude", transport: "hub-native",
   roles: Object.freeze(["implementer"]), defaultOnRoster: true, trust: { onPrem: false, hubSandboxed: false },
   start: { create: createClaudeImplementer, daemonPort: "claude-implementer", forms: headlessForms, defaultForm: "headless", conductorStartable: true, hubSwitches: [], ownedFlags: [] },
-  identity: { mcp: "env", currentChild: true }, instances: { mode: "headless", roles: ["implementer", "verifier"] },
+  identity: { mcp: "env", currentChild: true }, instances: { mode: "headless", roles: ["implementer", "verifier"], modelSelect: true },
   permission: { grants: { ask: "every write, edit and shell command asks", "ask-when-needed": "file tools inside the owned worktree may run automatically; shell and protected paths ask" } },
   session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: false, launchKind: "claude-implementer", crashPlan: () => ({ resume: {}, how: "Claude implementer resumes its recorded per-task sessions" }) },
   turnEnd: "adapter", budget: { account: "claude" },

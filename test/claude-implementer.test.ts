@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { ClaudeImplementerPeer, type ClaudeImplementerOptions } from "../src/adapters/claude-implementer.ts";
+import { ClaudeImplementerPeer, claudeImplementerArgs, type ClaudeImplementerOptions } from "../src/adapters/claude-implementer.ts";
 import { Bus } from "../src/hub/bus.ts";
 import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
 import { newEnvelope } from "../src/hub/envelope.ts";
@@ -244,4 +244,25 @@ test("completeJsonLines reads only whole lines: an empty file and a half-written
   expect(completeJsonLines("")).toEqual([]);
   expect(completeJsonLines('{"a":1}\n{"b"')).toEqual([{ a: 1 }]);
   expect(completeJsonLines('{"a":1}\n')).toEqual([{ a: 1 }]);
+});
+
+test("#844 claudeImplementerArgs adds --model only when set and leaves the rest of the argv unchanged", () => {
+  const turn = { sessionId: "11111111-1111-4111-8111-111111111111", resume: false, persistent: true };
+  const without = claudeImplementerArgs(turn, "mcp.json", "settings.json", "prompt");
+  expect(without).not.toContain("--model");
+  expect(claudeImplementerArgs(turn, "mcp.json", "settings.json", "prompt", undefined)).toEqual(without);
+  expect(claudeImplementerArgs(turn, "mcp.json", "settings.json", "prompt", "")).toEqual(without);
+  const withModel = claudeImplementerArgs(turn, "mcp.json", "settings.json", "prompt", "claude-sonnet-5-5");
+  expect(withModel.slice(withModel.indexOf("--model"), withModel.indexOf("--model") + 2)).toEqual(["--model", "claude-sonnet-5-5"]);
+  expect(withModel.filter(word => word !== "--model" && word !== "claude-sonnet-5-5")).toEqual(without);
+  expect(withModel.at(-1)).toBe("prompt"); // the system prompt stays the last word, after every host-owned flag
+});
+
+test("#844 a configured model reaches every native turn, resumed turns included", async () => {
+  const r = rig("success", { model: "claude-sonnet-5-5" }); await r.peer.start();
+  for (const task of [1, 1]) { await r.peer.deliver([message(task)], String(task)); await until(() => r.peer.state === "idle"); }
+  const calls = r.calls(); expect(calls).toHaveLength(2);
+  for (const call of calls) expect(arg(call.args, "--model")).toBe("claude-sonnet-5-5");
+  const none = rig(); await none.peer.start(); await none.peer.deliver([message(1)], "1"); await until(() => none.peer.state === "idle");
+  expect(none.calls()[0].args).not.toContain("--model");
 });
