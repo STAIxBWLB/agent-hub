@@ -647,7 +647,7 @@ test("no regex literal that folds a name carries the git path, so a long path ca
   const literals = (rules: string[]) => rules.flatMap((rule) => [...rule.matchAll(literal)].map((m) => m[1]!));
   const build = (pathBytes: number) => {
     const common = `/p${"a".repeat(pathBytes - "/p/.git".length)}/.git`;
-    return hubWriteRegexes("/proj", [common], [{ root: `${common}/modules`, entries: [`${common}/modules`, `${common}/modules/sub`, `${common}/modules/sub/modules/deep`] }], `${common}/worktrees`);
+    return hubWriteRegexes("/proj", [common], [{ root: `${common}/modules`, entries: [`${common}/modules`, `${common}/modules/sub`, `${common}/modules/sub/modules/deep`], dirs: [`${common}/modules/sub`, `${common}/modules/sub/modules/deep`] }], `${common}/worktrees`);
   };
   for (const bytes of [40, 200, 450, 520, 700]) {
     const all = literals(build(bytes));
@@ -740,6 +740,8 @@ test.skipIf(!sandboxAvailable())("the modules rules ignore the project's own anc
     mkdirSync(cwd, { recursive: true });
     Bun.spawnSync(["git", "init", "-q"], { cwd });
     mkdirSync(join(cwd, ".git", "modules", "sub"), { recursive: true });
+    // A real submodule git dir has a HEAD and a config: that is what discovery looks for (#520), and a bare empty directory would be a plant and refused whole.
+    writeFileSync(join(cwd, ".git", "modules", "sub", "HEAD"), "ref: refs/heads/main\n"); writeFileSync(join(cwd, ".git", "modules", "sub", "config"), "[core]\n");
     const out = await sandboxedExec(["/bin/sh", "-c", [
       "(echo x > .git/modules/sub/config) 2>/dev/null && echo WROTE-CONFIG || echo blocked-config",
       "(echo x > .git/modules/sub/FETCH_HEAD) 2>/dev/null && echo wrote-unrelated || echo blocked-unrelated",
