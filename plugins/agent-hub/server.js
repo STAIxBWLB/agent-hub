@@ -5834,33 +5834,33 @@ function hubWriteRegexes(root, gitDirs = [], moduleGit = [], worktreesRoot) {
   const re = (s) => `(regex ${sbplString(s)})`;
   const external = gitDirs.flatMap((d) => [
     `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${re(`^.*/(${hfsFoldedName("config")}|${hfsFoldedName("hooks")})$`)})`,
-    `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${configWorktreeSources("^.*/").map(re).join(" ")})`,
+    `(require-all ${re(`^${sbplEscape(d)}/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
     `(subpath ${sbplString(`${d}/hooks`)})`,
     `(require-all (subpath ${sbplString(d)}) ${re(`^.*/${hfsFoldedName("commondir")}$`)})`
   ]);
   const modules = moduleGit.flatMap((tree) => [
-    `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
-    `(require-all ${configWorktreeSources(`^${sbplEscape(tree.root)}/(.*/)?`).map(re).join(" ")} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
-    `(require-all ${re(`^${sbplEscape(tree.root)}/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
-    ...tree.entries.map((d) => re(`^${sbplEscape(dirname8(d))}/${hfsFoldedName(basename4(d))}$`))
+    `(require-all ${re(`^${sbplEscape(tree.root)}/`)} ${re(`^.*/${hfsFoldedName("config")}$`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
+    `(require-all ${re(`^${sbplEscape(tree.root)}/`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
+    `(require-all ${re(`^${sbplEscape(tree.root)}/`)} ${re(`^.*/${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${sbplEscape(tree.root)}/(.*/)?(refs|logs)/`)}))`,
+    ...tree.entries.map((d) => `(require-all ${re(`^${sbplEscape(dirname8(d))}/[^/]+$`)} ${re(`^.*/${hfsFoldedName(basename4(d))}$`)})`)
   ]);
   const siblings = worktreesRoot ? (() => {
     const w = sbplEscape(worktreesRoot), notRefs = `(require-not ${re(`^${w}/[^/]+/modules/(.*/)?(refs|logs)/`)})`;
     return [
       `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("config")}$`)})`,
-      `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${configWorktreeSources("^.*/").map(re).join(" ")})`,
-      re(`^${w}/[^/]+/${hfsFoldedName("hooks")}(/|$)`),
-      `(require-all ${re(`^${w}/[^/]+/modules/(.*/)?${hfsFoldedName("config")}$`)} ${notRefs})`,
-      `(require-all ${configWorktreeSources(`^${w}/[^/]+/modules/(.*/)?`).map(re).join(" ")} ${notRefs})`,
-      `(require-all ${re(`^${w}/[^/]+/modules/(.*/)?${hfsFoldedName("hooks")}(/|$)`)} ${notRefs})`,
-      re(`^${w}/[^/]+/${hfsFoldedName("modules")}$`)
+      `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
+      `(require-all ${re(`^${w}/[^/]+/`)} ${re(`^.*/${hfsFoldedName("hooks")}(/|$)`)} (require-not ${re(`^${w}/[^/]+/(modules|refs|logs)/`)}))`,
+      `(require-all ${re(`^${w}/[^/]+/modules/`)} ${re(`^.*/${hfsFoldedName("config")}$`)} ${notRefs})`,
+      `(require-all ${re(`^${w}/[^/]+/modules/`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")} ${notRefs})`,
+      `(require-all ${re(`^${w}/[^/]+/modules/`)} ${re(`^.*/${hfsFoldedName("hooks")}(/|$)`)} ${notRefs})`,
+      `(require-all ${re(`^${w}/[^/]+/[^/]+$`)} ${re(`^.*/${hfsFoldedName("modules")}$`)})`
     ];
   })() : [];
   return [
     `(require-all (subpath ${sbplString(root)}) ${re(`^.*/${hfsFoldedName(".agenthub")}(/|$)`)})`,
     re(`^.*/${git}$`),
     re(`^.*/${git}/${hfsFoldedName("config")}$`),
-    `(require-all ${configWorktreeSources(`^.*/${git}/`).map(re).join(" ")})`,
+    `(require-all ${re(`^.*/${git}/[^/]+$`)} ${CONFIG_WORKTREE_NAME.map(re).join(" ")})`,
     re(`^.*/${git}/${hfsFoldedName("hooks")}(/|$)`),
     `(require-all ${re(`^.*/${git}/.*$`)} ${re(`^.*/${hfsFoldedName("commondir")}$`)})`,
     ...modules,
@@ -5879,12 +5879,13 @@ function denyRegexes(root, extra = [], withNames = true) {
     ...extra.filter(Boolean).map((e) => `^${sbplEscape(root)}/.*${sbplEscape(e)}`)
   ].map((re) => `(regex ${sbplString(re)})`);
 }
-var sbplEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), sbplString = (s) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`, HFS_IGNORABLE_POINTS, HFS_IGNORABLE, hfsFoldedName = (name) => `${HFS_IGNORABLE}*${[...name].map((c) => sbplEscape(c)).join(`${HFS_IGNORABLE}*`)}${HFS_IGNORABLE}*`, configWorktreeSources = (prefix) => [`${prefix}${hfsFoldedName("config")}\\.[^/]*$`, `^.*/[^/]*${hfsFoldedName("worktree")}$`];
+var sbplEscape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), sbplString = (s) => `"${s.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"`, HFS_IGNORABLE_POINTS, HFS_IGNORABLE, hfsFoldedName = (name) => `${HFS_IGNORABLE}*${[...name].map((c) => sbplEscape(c)).join(`${HFS_IGNORABLE}*`)}${HFS_IGNORABLE}*`, CONFIG_WORKTREE_NAME;
 var init_deny = __esm(() => {
   init_platform();
   init_platform();
   HFS_IGNORABLE_POINTS = ["\u200C", "\u200D", "\u200E", "\u200F", "\u202A", "\u202B", "\u202C", "\u202D", "\u202E", "\u206A", "\u206B", "\u206C", "\u206D", "\u206E", "\u206F", "\uFEFF"];
   HFS_IGNORABLE = `(${HFS_IGNORABLE_POINTS.join("|")})`;
+  CONFIG_WORKTREE_NAME = [`^.*/${hfsFoldedName("config")}\\.[^/]*$`, `^.*/[^/]*${hfsFoldedName("worktree")}$`];
 });
 
 // src/local/sandbox.ts
