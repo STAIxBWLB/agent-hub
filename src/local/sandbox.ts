@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { realPath } from "../hub/project.ts";
 import { hubGitSync } from "../hub/git.ts";
-import { denyRegexes, hubWriteRegexes, sbplString } from "./deny.ts";
+import { denyRegexes, hubWriteRegexes, objectStoreRules, sbplString } from "./deny.ts";
 
 const SANDBOX_EXEC = "/usr/bin/sandbox-exec";
 export const OUTPUT_CAP = 20_000;
@@ -184,6 +184,8 @@ export function profile(cwd: string, network: SandboxNetwork, readAllow: string[
     // .git/modules/ are refused at the depth submodules nest (#281), and the external git dirs get folded
     // hooks/config rules (#270). The cost: git init, clone and worktree add no longer run inside the sandbox.
     `(deny file-write* ${hubWriteRegexes(root, gitDirs, moduleGit, worktrees).join(" ")})`,
+    // The shared object store: only new loose objects may be added (#864).
+    ...(worktrees ? objectStoreRules(dirname(worktrees)) : []),
     `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join(home, c))})`).join(" ")})`,
     `(deny file-read* file-write* ${denyRegexes(root, deny).join(" ")})`,
     // Python's own CA bundle (certifi, which pip vendors too): pip, requests and httpx read it instead of the system's (#64).

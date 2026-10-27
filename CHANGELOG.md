@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+- The local-worker and Pi sandbox lets a command add only new loose objects to the shared git object store (#864): `objects/info` (alternates, commit-graph) and `objects/pack` are refused, and an existing object cannot be changed, removed or replaced, so a sandboxed peer cannot poison what every checkout and the Claude implementer's host add, commit and push trust. `git gc`, `repack`, `fetch` and `maintenance` now run outside the sandbox.
+
 ## 0.19.0
 
 - The headless Claude implementer runs proven commands without asking in `ask-when-needed` (#845, #857): read-only commands and closed task-gate commands (check, test and build; `git add` and `git commit`; `git push` of the bound task branch; `gh pr` reads and create) go through a fixed host wrapper with a single-use ticket bound to task, child, root, branch, argv and environment, rechecked before spawn. Check, test and build code runs under the local-worker sandbox and cannot write project Git metadata (objects included); host add and commit run outside it with hooks, fsmonitor, signing and maintenance off. The default branch comes from the remote once at startup. `git add` and `git commit` still ask when Git filters or textconv drivers are configured; push and `gh` grants are kept with a global Git LFS install.
