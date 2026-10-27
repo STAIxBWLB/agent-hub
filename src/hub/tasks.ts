@@ -49,6 +49,7 @@ import { coverageGap, renderReviewBrief, type ReviewBrief } from "./review-brief
 import { definitionOf as builtinDefinitionOf } from "../adapters/registry.ts";
 import { ADAPTERS, DEFAULT_REVIEW_POOL, definitionOf, familyOf, type ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { plannerGrooming, nextSweep, taskSweepConfig, type TaskSweepConfig, type SweepRecord } from "./task-sweep.ts";
+import { CiWatchers, pollCi, type CiOutcome, type CiWatch } from "./ci-watch.ts";
 import { planningIssueReceipt, linkedReceipt, openPrFor, readPrCostHistory, readReviewReadiness, reviewReadinessFromEvidence, type PrEvidence, type ReviewReadiness, readPlanIssueMetadata, canonicalStage, checklistOf, readSdlcPr, readSpecEdit, sdlcConfig, sdlcReceipt, sdlcStatus, specState, SPEC_STATE_TEXT, stageDefinition, lifecycleStage, type SdlcConfig, type MergeRecord, type PlanIssueMetadata, sdlcGh, type SdlcGh, type SdlcStatus, type SpecEdit, type SpecState } from "./sdlc.ts";
 
 export type TaskAssignmentRole = "owner" | "reviewer" | "planner";
@@ -98,6 +99,8 @@ export interface TasksDeps {
   /** Host-verified existing symbols at this task's admitted completion head; never plan guesses. */
   memorySymbolNodes?: (task: Task) => MemorySymbolNodes | undefined;
   sdlc?: { config: () => SdlcConfig; gh?: SdlcGh };
+  /** #785 P1b: the per-head CI watcher's bounds; tests shorten them, the defaults are `CI_WATCH_*` in `ci-watch.ts`. */
+  ciWatch?: { deadlineMs?: number; pollMs?: number };
   briefs?: Briefs;
   /** Screened live fail notes directly intersecting the task plan or refs; read-only advice. */
   planFails?: (task: Task) => NativeItem[];
@@ -355,8 +358,17 @@ export class Tasks {
   private sweepConfig: TaskSweepConfig;
   private readonly noWriteTurns = new NoWriteTurns();
   private sweeping = false;
+  /** #785 P1b: one bounded CI watcher per exact PR head, and the reviews the hub held as premature, by task id. */
+  private readonly ciWatchers: CiWatchers;
+  private readonly heldReviews = new Map<number, { head: string; reviewer: PeerId; revision: number }>();
 
   constructor(private readonly d: TasksDeps) {
+    this.ciWatchers = new CiWatchers({
+      ...d.ciWatch,
+      poll: watch => pollCi(watch, watch.head, d.sdlc?.config().requiredChecks ?? [], d.sdlc?.gh ?? sdlcGh),
+      current: watch => this.ciWatchCurrent(watch),
+      finish: (watch, outcome) => this.ciCompleted(watch, outcome),
+    });
     d.board.trackPlanRevisions = () => (d.sdlc?.config().mode ?? "off") !== "off";
     this.repositories = new TaskRepositories(d.cwd, d.repository);
     d.board.proposalPlanner = task => this.proposalPlanner(task);
@@ -2706,6 +2718,7 @@ export class Tasks {
     if (task.history.length !== revision) throw new PreEffectToolRefusal("task flow revision changed");
     const cancelled = { reason: input.reason.trim(), ...(input.supersededBy ? { supersededBy: input.supersededBy.trim() } : {}), flowRevision: revision + 1, ...(withheld ? { withheld: true as const } : {}) };
     const capacity = this.capacityBefore(task);
+    this.ciWatchers.cancel(task.id); this.heldReviews.delete(task.id);
     const next = this.d.board.update(task.id, by, "cancelled", { state: "cancelled", reserved: null, cancelled }, cancelled.reason, { ...(withheld ? { withheld: true as const } : {}) }, revision);
     this.writePlannerNotices(next, capacity);
     this.releaseNotice(`task #${task.id}: cancellation cohort cleanup unavailable`, () => this.cohorts.leave(task.id));
@@ -4140,6 +4153,7 @@ export class Tasks {
     const capacity = this.capacityBefore(task);
     const next = this.d.board.update(task.id, by, "done", { codeSymbols: this.observedCodeSymbols({ ...task, refs: { ...task.refs, ...completedRefs } }), state: reviewer ? "in_review" : "approved", ...(selection ? { reviewer: reviewer ?? USER } : {}), ...(task.sdlc ? { sdlc: { ...task.sdlc, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), reviewer ? "review" : "merge") } } : {}), refs: completedRefs }, checkOutput ? `${routedSummary ?? ""}\n${checkOutput}`.trim() : routedSummary, { ...this.planObservation(task), withheld: withheld || undefined, ...(noWrites ? { noWrites: true as const } : {}), ...this.reviewMetadata(selection), ...(reviewCost ? { reviewCost } : {}), ...(records ? { deliverables: records } : {}) }, task.history.length, HOST_CODE_SYMBOLS);
     this.writePlannerNotices(next, capacity, next.state === "approved");
+    this.ciWatchers.cancel(next.id); this.heldReviews.delete(next.id); // a newer head or a move ends the old head's watcher (#785 P1b)
     this.cohorts.closed(next.id); // its owner's next native turn end settles it in its cohort (issue #107)
     const memorySymbols = this.completionMemorySymbols(next);
     this.note(next, by, "finding", `Task #${next.id} done by ${by}: ${next.title}\nChanged-symbol memory anchors: ${memorySymbols.state === "known" ? memorySymbols.nodes.length : "unknown (no complete code facts)"}\n${summary ?? ""}`, withheld, memorySymbols);
@@ -4152,6 +4166,7 @@ export class Tasks {
     }
     else if (reviewer === USER) this.releaseNotice(`task ${this.publicTitle(next)} done by ${by}: review it in the ahub console (Tasks, select #${next.id}, press r) or with ahub review ${next.id} approved|changes_requested [note]`);
     else this.releaseNotice(`task ${this.publicTitle(next)}: could not send the review request to ${reviewer}`, () => this.sendReview(next, reviewer, "", admission));
+    if (reviewer && !(admission?.ready && admission.head === this.reviewHead(next))) this.watchCi(next);
     return next;
   }
 
@@ -4317,6 +4332,7 @@ export class Tasks {
     if (mode === "enforce" && !admission?.ready) {
       // Background roster/quota role changes are retained, but never invent a remotely admitted review request.
       this.releaseNotice(`task ${this.publicTitle(task)}: premature review held; retry the reviewer assignment after current CI and bot replies are verified`);
+      this.holdReview(task, reviewer);
       return false;
     }
 
@@ -4395,6 +4411,67 @@ export class Tasks {
     const body = `Review task #${task.id} [${profileTaskLabel(task)}] ${task.title}\nDone by ${last?.by ?? task.owner}: ${summary}\n${where ? `Where: ${where}\n` : ""}${last?.noWrites ? "no writes recorded since acceptance\n" : ""}${spec}${why ? `${why}\n` : ""}${!plan && task.detail ? `Task detail:\n${task.detail}\n` : ""}${guidance ? guidance + "\n" : ""}${projection ? projection + "\n" : ""}${brief ? brief + "\n" : ""}${checkout ? `Note: ${checkout}.\n` : ""}${findings.length ? `Earlier findings (set a disposition for each):\n${findings.join("\n")}\n` : ""}${carriedText}${conformanceText}${rulingsBlock}${verified}${checklist}\nGive your verdict with hub_review {id: ${task.id}, verdict: "approved" | "changes_requested", note, unmet, findings: [{id, pass: "bugs" | "security" | "compliance", severity: "important" | "nit", path?, disposition: "open" | "fixed" | "false_positive"}]}. Reuse finding ids when updating their disposition; only the person may accept a finding with a rationale.`;
     return this.d.bus.publish(newEnvelope(HUB, body, { to: [reviewer], kind: "review", priority: "important", refs: { ...r, ...(this.reviewHead(task) ? { commit: this.reviewHead(task)! } : {}), task: String(task.id), reviewRevision: String(this.reviewRequestRevision(task)) }, ...(this.isPii(task) ? { private: true } : {}) })).includes(reviewer);
   }
+
+  /** #785 P1b: remember a review the hub held as premature, so a green CI at this exact head can re-offer it once. Also watches that head. */
+  private holdReview(task: Task, reviewer: PeerId): void {
+    try {
+      const head = this.reviewHead(task);
+      if (this.isPii(task) || !head || reviewer === USER) return;
+      this.heldReviews.set(task.id, { head, reviewer, revision: this.reviewRequestRevision(task) });
+      this.watchCi(task);
+    } catch { /* optional bookkeeping never fails a review path */ }
+  }
+
+  /** #785 P1b AC3: start the one watcher for this task's exact head. Not for private work, an unlinked PR or a lifecycle that is off; never throws. */
+  private watchCi(task: Task): void {
+    try {
+      const head = this.reviewHead(task), repo = task.sdlc?.repo, pr = task.sdlc?.pr;
+      if (!this.d.sdlc || this.d.sdlc.config().mode === "off" || this.isPii(task) || task.state !== "in_review" || !head || !/^[0-9a-f]{40}$/.test(head) || !repo || !pr) return;
+      this.ciWatchers.start({ id: task.id, head, repo, pr });
+    } catch { /* a watcher that cannot start leaves the review path as it was */ }
+  }
+
+  /** The watcher's own check before every read and every notice: the task must still be in review at this exact head and PR. */
+  private ciWatchCurrent(watch: CiWatch): boolean {
+    const task = this.d.board.get(watch.id);
+    return !!task && task.state === "in_review" && !this.isPii(task) && this.reviewHead(task) === watch.head && task.sdlc?.repo === watch.repo && task.sdlc?.pr === watch.pr
+      && (this.d.sdlc?.config().mode ?? "off") !== "off";
+  }
+
+  /**
+   * #785 P1b: the result of the exact head's CI, told once to the owner and the reviewer (one ids-only task envelope each, `status` weight: `fyi` is recorded but never delivered to the peer),
+   * then a review held as premature is offered once more after a fresh readiness read. A deadline tells the console only.
+   */
+  private async ciCompleted(watch: CiWatch, outcome: CiOutcome): Promise<void> {
+    const task = this.d.board.get(watch.id);
+    if (!task || !this.ciWatchCurrent(watch)) return;
+    const label = `#${task.id} head ${watch.head.slice(0, 12)}`;
+    if (outcome === "deadline") { this.releaseNotice(`task ${label}: CI did not finish within the watch deadline; no further reads`); return; }
+    const line = `ci_completed: ${label} ${outcome}`;
+    for (const peer of new Set([task.owner, task.reviewer])) {
+      if (!peer || peer === HUB) continue;
+      if (peer === USER) { this.releaseNotice(`task ${label}: CI ${outcome} at its exact head`); continue; }
+      this.releaseNotice(`task ${label}: could not tell ${peer} the CI result`, () => this.d.bus.publish(newEnvelope(HUB, `${line}\nRead hub_task_show for the task before acting.`, { to: [peer], kind: "task", priority: "status", refs: { task: String(task.id), commit: watch.head } })));
+    }
+    if (outcome === "failed") return;
+    await this.reofferHeldReview(task, watch);
+  }
+
+  /** The held review of this exact head and request, once: only while it is still the same reviewer, head and revision, and a fresh admission says it is ready. */
+  private async reofferHeldReview(task: Task, watch: CiWatch): Promise<void> {
+    const held = this.heldReviews.get(task.id);
+    if (!held || held.head !== watch.head || task.reviewer !== held.reviewer || this.reviewRequestRevision(task) !== held.revision) return;
+    this.heldReviews.delete(task.id); // once: a later hold needs a new head or a new request
+    try {
+      const admission = await this.reviewRequestAdmission(task, undefined, false, task.owner ?? USER);
+      const current = this.d.board.get(task.id);
+      if (!admission?.ready || !current || !this.ciWatchCurrent(watch) || current.reviewer !== held.reviewer || this.reviewRequestRevision(current) !== held.revision) return;
+      this.releaseNotice(`task ${this.publicTitle(current)}: could not re-offer the held review to ${held.reviewer}`, () => this.sendReview(current, held.reviewer, "(Held earlier because exact-head CI was not green; it is green now.)", admission));
+    } catch { /* still not ready: the hold notice already named why; a reviewer reassignment retries it */ }
+  }
+
+  /** Daemon shutdown: no watcher outlives the hub. */
+  stopCiWatchers(): void { this.ciWatchers.stopAll(); this.heldReviews.clear(); }
 
   private reviewRequestRevision(task: Task): number {
     // Role changes fence older requests; bookkeeping appended after the request does not.
@@ -4644,6 +4721,7 @@ export class Tasks {
     const flag = { ...this.planObservation(task), withheld: withheld || undefined, ...(report ? { reviewFindings: report } : {}), ...(unmetCriteria.length ? { unmetCriteria } : {}), ...(boundDeliverables ? { deliverables: boundDeliverables } : {}), ...(reviewContext ? { reviewContext } : {}), ...(codeScope ? { reviewScope: "code" as const } : {}), ...(evidenceOnly ? { evidenceOnly: true as const } : {}), ...(reviewerFamily ? { reviewerFamily } : {}), ...(reviewerReason ? { reviewerReason } : {}) };
     if (verdict === "approved") {
       const capacity = this.capacityBefore(task);
+      this.ciWatchers.cancel(task.id); this.heldReviews.delete(task.id);
       const next = this.d.board.update(task.id, by, "approved", { state: "approved", rejections: 0, ...(reviewedHead && task.sdlc ? { sdlc: { ...task.sdlc, reviewedHead, stage: lifecycleStage(this.d.sdlc?.config() ?? sdlcConfig(undefined), "merge") } } : {}) }, note, flag);
       this.writePlannerNotices(next, capacity, next.state === "approved");
       if (next.owner) {
@@ -4664,6 +4742,7 @@ export class Tasks {
       this.releaseNotice(`task #${next.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(next, by, parsed, withheld));
       return next;
     }
+    this.ciWatchers.cancel(task.id); this.heldReviews.delete(task.id);
     const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: evidenceOnly ? task.rejections : task.rejections + 1 }, note, flag);
     void this.mirrorVerdict(rejected, by, "changes_requested", reviewedHead ?? rejected.sdlc?.reviewedHead, note, withheld);
     if (!evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(rejected, by, parsed, withheld));

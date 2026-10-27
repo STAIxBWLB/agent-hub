@@ -22028,6 +22028,10 @@ init_registry();
 // src/hub/task-sweep.ts
 var GROOMING_CODES = new Set(["tests", "spec", "roster", "pull-only", "not-attached", "excluded", "owner-admission", "offline", "paused", "failing", "pii", "policy", "cancelled", "unavailable", "runner", "approvals", "quota", "dependency", "no-writes"]);
 
+// src/hub/ci-watch.ts
+init_sdlc();
+var CI_WATCH_DEADLINE_MS = 45 * 60000;
+
 // src/hub/tasks.ts
 init_sdlc();
 init_routing();

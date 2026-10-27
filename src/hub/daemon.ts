@@ -539,6 +539,8 @@ export interface DaemonOptions {
   snapshotBurstMs?: number;
   /** Host-only (#661): the clock the shared snapshot Git budget reads (default performance.now). A test holds it fixed so a slow runner cannot spend the 250 ms; production never sets it and no config key or tool reaches it. */
   snapshotClock?: () => number;
+  /** Host-only bounds of the per-head CI watcher (#785 P1b); tests shorten them, never read from config or a tool. */
+  ciWatch?: { deadlineMs?: number; pollMs?: number };
   checkoutBranch?: typeof mainCheckoutBranch;
   /** Host-only admission transport; never selected by project config or tools. */
   releaseHostAdmission?: (cwd: string) => Promise<ReleaseHostAdmission>;
@@ -1730,6 +1732,7 @@ export async function startDaemon(opts: DaemonOptions) {
     review: config.review,
     sweep: taskSweepConfig(config.task_sweep),
     sweepHeld: () => stopping || recoveryActive(),
+    ciWatch: opts.ciWatch,
     cancellationHeld: () => stopping || recoveryActive(),
     offerRead: (peer, envelopeId) => journal.offerRead(peer, envelopeId),
     offerPullOnly: (id) => { const peer = bus.peers.get(id); return peer?.pullOnly === true; },
@@ -7353,6 +7356,7 @@ export async function startDaemon(opts: DaemonOptions) {
     dashboard?.stop();
     stopConfigWatch();
     clearInterval(sweepTimer);
+    tasks.stopCiWatchers(); // #785 P1b: no per-head CI watcher outlives the hub
     for (const i of intervals) clearInterval(i);
     for (const pending of checkpointWaits.values()) pending.done(undefined);
     for (const p of permissions.values()) p.done(undefined);
