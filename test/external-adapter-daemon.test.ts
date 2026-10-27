@@ -152,8 +152,8 @@ test("A4 module edits remain restart-bound and reload never evaluates changed co
   } finally { await f.close(); }
 }, 20_000);
 
-test("A4 external-kind instance declarations are refused explicitly", async () => {
-  await expect(fixture(false, true)).rejects.toThrow("external adapter instances are unsupported in A4");
+test("external-kind instance declarations without module opt-in are refused explicitly", async () => {
+  await expect(fixture(false, true)).rejects.toThrow("external module has not opted into headless instances");
 }, 20_000);
 
 

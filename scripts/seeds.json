@@ -132,8 +132,8 @@
     {
       "id": "roster-d-peer-hello",
       "file": "src/hub/daemon.ts",
-      "search": "        c.peer = String(msg.peer ?? \"\");\n        if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === \"hub\") return sock.close(4403, \"peer id is reserved or malformed\");\n        if (!membershipAllowed(c.peer)) return sock.close(4000, \"peer is off roster; retry when a person adds it\");",
-      "replacement": "        c.peer = String(msg.peer ?? \"\");\n        if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === \"hub\") return sock.close(4403, \"peer id is reserved or malformed\");",
+      "search": "        c.peer = String(msg.peer ?? \"\");\n        if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === \"hub\") return sock.close(4403, \"peer id is reserved or malformed\");\n        if (externalRefusedRows.has(c.peer)) return sock.close(4403, \"instance kind is unavailable in the startup catalog\");\n        if (!membershipAllowed(c.peer)) return sock.close(4000, \"peer is off roster; retry when a person adds it\");",
+      "replacement": "        c.peer = String(msg.peer ?? \"\");\n        if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === \"hub\") return sock.close(4403, \"peer id is reserved or malformed\");\n        if (externalRefusedRows.has(c.peer)) return sock.close(4403, \"instance kind is unavailable in the startup catalog\");",
       "testFile": "test/roster.test.ts",
       "testName": "a confirmed live removal fences Claude admission and retains its queue until return without applying file edits (#315)"
     },
@@ -252,7 +252,7 @@
     {
       "id": "roster-empty-status",
       "file": "src/hub/daemon.ts",
-      "search": "    return [...ids].filter(peer => membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));",
+      "search": "    return [...ids].filter(peer => isExternalInstance(peer) || externalRefusedRows.has(peer) || membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));",
       "replacement": "    return [...ids];",
       "testFile": "test/roster.test.ts",
       "testName": "existing tools socket, conductor start, dashboard send and empty status all obey removal (#315)"
@@ -2668,8 +2668,8 @@
     {
       "id": "planner-reserved-status-row",
       "file": "src/hub/daemon.ts",
-      "search": "new Set([...bus.knownPeers(), ...extraIds, ...reservations])",
-      "replacement": "new Set([...bus.knownPeers(), ...extraIds])",
+      "search": "new Set([...bus.knownPeers(), ...extraIds, ...allExternalInstanceIds(), ...reservations])",
+      "replacement": "new Set([...bus.knownPeers(), ...extraIds, ...allExternalInstanceIds()])",
       "testFile": "test/planner-pull-surfaces.test.ts",
       "testName": "restarted ownerless pull reservations retain an unattached peer WIP status row"
     },
@@ -3440,6 +3440,22 @@
       "replacement": "START_MODE_PEERS: ordered(\"startRank\", definition => definition.start.forms.includes(\"tui\") && definition.start.forms.includes(\"headless\") && definition.kind !== \"jcode\"),",
       "testFile": "test/adapter-catalog-a2.test.ts",
       "testName": "A2 catalog projections retain exact legacy orders and source-probe compatibility"
+    },
+    {
+      "id": "external-review-request-fence",
+      "file": "src/hub/tasks.ts",
+      "search": "    const valid = (): Task => {\n      requestCheck();\n      const refused = authority?.();",
+      "replacement": "    const valid = (): Task => {\n      const refused = authority?.();",
+      "testFile": "test/external-instance-review.test.ts",
+      "testName": "#754 a revoked continuing review cannot save approved after privacy screening"
+    },
+    {
+      "id": "external-lifecycle-request-fence",
+      "file": "src/hub/tasks.ts",
+      "search": "    const records = await this.hashClaims(claims, task, true);\n    requestCheck();\n    const current = this.need(id, false, true);",
+      "replacement": "    const records = await this.hashClaims(claims, task, true);\n    const current = this.need(id, false, true);",
+      "testFile": "test/external-instance-review.test.ts",
+      "testName": "#754 fixture-reviewer cannot record lifecycle deliverables after authority loss during the real hash"
     }
   ]
 }

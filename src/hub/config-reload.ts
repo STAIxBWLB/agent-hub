@@ -1,4 +1,4 @@
-import { ADAPTERS, createProjectAdapterCatalog } from "../adapters/registry.ts";
+import { ADAPTERS, createProjectAdapterCatalog, type AdapterDefinition } from "../adapters/registry.ts";
 import { externalMetadataDefinitions, type ExternalAdapterMetadata } from "../adapters/external-metadata.ts";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { validateRawConfig, type ConfigLayer, type ConfigIdentitySnapshot } from "./config-apply.ts";
 import { parseOverlay, parseRouting, type Routing } from "./routing.ts";
 import { CLASSES } from "./board.ts";
-import { readInstanceConfig } from "./instance-config.ts";
+import { readInstanceConfig, withoutInertInstancePolicy, type DeclaredExternalInstance } from "./instance-config.ts";
 import { validateInstances } from "./instances.ts";
 
 export const CONFIG_SOURCE_FILES = ["config.json", "config.local.json", "routing.toml", "routing.local.toml"] as const;
@@ -87,7 +87,7 @@ function validateRoutingRaw(value: unknown): void {
 }
 
 /** Strict reloads never use routing's last-good fallback. Startup can retain its existing fallback explicitly. */
-export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: Routing, cwd?: string, externalAdapters?: readonly ExternalAdapterMetadata[]): ConfigSources {
+export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: Routing, cwd?: string, externalAdapters?: readonly ExternalAdapterMetadata[], externalDefinitions?: readonly AdapterDefinition[]): ConfigSources {
   const layers: ConfigLayer[] = [], trustLayers: ConfigSources["trustLayers"] = [];
   const jsonLayers: ConfigLayer[] = [];
   for (const name of ["config.json", "config.local.json"] as const) {
@@ -103,13 +103,14 @@ export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: R
   }
   const localRaw = jsonLayers.find(layer => layer.name === "config.local.json")?.raw ?? {};
   let declared;
+  let inertInstances: readonly DeclaredExternalInstance[] | undefined;
   let identityAdapters: ConfigIdentitySnapshot["adapters"];
   let inertModuleRoster = false;
   let catalog = createProjectAdapterCatalog();
   try {
     if (cwd) {
-      const accepted = readInstanceConfig(cwd, jsonLayers, externalAdapters === undefined ? undefined : externalMetadataDefinitions(externalAdapters));
-      catalog = accepted.catalog; declared = accepted.instances; identityAdapters = accepted.adapters;
+      const accepted = readInstanceConfig(cwd, jsonLayers, externalDefinitions);
+      catalog = accepted.catalog; declared = accepted.instances; inertInstances = accepted.declaredExternalInstances; identityAdapters = accepted.adapters;
       inertModuleRoster = !!accepted.adapter_modules?.length;
     } else {
       catalog = createProjectAdapterCatalog(localRaw?.adapters, externalMetadataDefinitions(externalAdapters));
@@ -133,6 +134,7 @@ export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: R
       continue;
     }
     if (name === "config.json" || name === "config.local.json") {
+      raw = withoutInertInstancePolicy(raw, inertInstances);
       if (!fallbackRouting) {
         try {
           const structural = { ...raw };

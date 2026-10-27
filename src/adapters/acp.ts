@@ -1,6 +1,7 @@
 import { activityText, updateActivity, type Activity, type ActivityKind } from "../hub/activity.ts";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
+import { randomUUID } from "node:crypto";
 import { renderDigest, replyAudience, replyParent, sanitize, type Envelope, type PeerId, type PeerState } from "../hub/envelope.ts";
 import { acpQuotaRefusal, type ACPQuotaRefusal } from "./acp-quota.ts";
 import type { PermissionMode } from "../hub/permission-mode.ts";
@@ -138,6 +139,45 @@ const HANDSHAKE_MS = 30_000;
 const TOOL_INPUT_CAP = 64;
 const TOOL_CEILING_MS = 30 * 60_000;
 
+export interface ManagedAcpLaunch {
+  readonly generation: string;
+  readonly cwd: string;
+  readonly sessionId: string;
+}
+interface ManagedAcpLaunchRecord {
+  readonly id: PeerId;
+  readonly options: AcpOptions;
+  readonly proc: ChildProcessWithoutNullStreams;
+  readonly proof: AcpOwnedGroup;
+  readonly receipt: Readonly<ManagedAcpLaunch>;
+}
+// Host evidence is deliberately outside runtime properties: copied metadata, private-field names
+// and an overridden start/recovery getter cannot manufacture a verified managed spawn.
+const managedLaunches = new WeakMap<object, ManagedAcpLaunchRecord>();
+function currentManagedLaunch(peer: unknown, expectedOptions: AcpOptions): ManagedAcpLaunchRecord | undefined {
+  if (!peer || (typeof peer !== "object" && typeof peer !== "function")) return undefined;
+  const record = managedLaunches.get(peer);
+  if (!record) return undefined;
+  const id = Object.getOwnPropertyDescriptor(peer, "id");
+  if (id?.value !== record.id || record.options !== expectedOptions || record.proc.exitCode !== null || record.proc.signalCode !== null) return undefined;
+  return record;
+}
+/** Exact host options identity is required; a factory that copies/replaces those options has no host binding. */
+export function managedAcpLaunch(peer: unknown, expectedOptions: AcpOptions): Readonly<ManagedAcpLaunch> | undefined {
+  return currentManagedLaunch(peer, expectedOptions)?.receipt;
+}
+/** Recheck the actual captured owned group after an await, then require the same current launch. */
+export async function verifyManagedAcpLaunch(peer: unknown, expectedOptions: AcpOptions): Promise<boolean> {
+  const record = currentManagedLaunch(peer, expectedOptions);
+  if (!record) return false;
+  try { await record.proof.verify(); }
+  catch {
+    if (peer && typeof peer === "object" && managedLaunches.get(peer) === record) managedLaunches.delete(peer);
+    return false;
+  }
+  return currentManagedLaunch(peer, expectedOptions) === record;
+}
+
 /**
  * The canonical tool binding (#138): an announced `<tool> (<server> MCP Server)` title resolves to
  * `mcp__<server>__<tool>` only when <server> is one this session was configured with. A title that
@@ -239,7 +279,7 @@ export class AcpPeer extends BasePeer {
   private readonly permissionWaits = new Set<AbortController>();
 
   protected override setState(next: PeerState): void {
-    if (next === "offline") { this.clearActivity(); this.cancelPermissions(); }
+    if (next === "offline") { managedLaunches.delete(this); this.clearActivity(); this.cancelPermissions(); }
     super.setState(next);
   }
 
@@ -266,11 +306,14 @@ export class AcpPeer extends BasePeer {
   }
 
   async start(): Promise<void> {
+    managedLaunches.delete(this);
     if (this.opts.requireOwnedGroup && this.proc) throw new Error("Configured ACP still has a process; stop it before starting another");
     this.stopping = false;
+    const launchedId = this.id;
+    const launchedCwd = this.opts.cwd;
     const [bin, ...args] = this.opts.cmd;
     // Its own process group, stopped as a whole (#115, as Codex's in #113): an agent CLI may be a launcher with a native child.
-    const proc = spawn(bin!, args, { cwd: this.opts.cwd, env: peerChildEnv(this.id, { ...process.env, ...(this.opts.env ?? {}) }), stdio: ["pipe", "pipe", "pipe"], detached: true });
+    const proc = spawn(bin!, args, { cwd: launchedCwd, env: peerChildEnv(this.id, { ...process.env, ...(this.opts.env ?? {}) }), stdio: ["pipe", "pipe", "pipe"], detached: true });
     this.proc = proc;
     trackGroup(proc);
     proc.on("error", (e) => { if (!this.opts.requireOwnedGroup || this.proc === proc) this.down(`spawn failed: ${e.message}`); });
@@ -310,6 +353,7 @@ export class AcpPeer extends BasePeer {
         setTimeout(() => reject(new Error(`${this.id} did not complete the ACP handshake within ${HANDSHAKE_MS / 1000} s`)), HANDSHAKE_MS).unref();
       });
       const session = await Promise.race([handshake(), timeout]);
+      const nativeSession = session?.sessionId;
       if (this.nativePolicy !== undefined && (typeof session?.sessionId !== "string" || !session.sessionId.trim()
         || Buffer.byteLength(session.sessionId) > 4096 || /[\p{Cc}\p{Cf}]/u.test(session.sessionId))) {
         throw new Error("Configured ACP did not provide a valid native session identity");
@@ -328,8 +372,13 @@ export class AcpPeer extends BasePeer {
         if (!owned || owned.proc !== proc || this.proc !== proc || this.stopping) throw new Error("Configured ACP process ownership could not be verified");
         await owned.proof.verify();
         if (this.proc !== proc || this.stopping) throw new Error("Configured ACP process ownership could not be verified");
+        if (typeof nativeSession !== "string" || !nativeSession.trim() || Buffer.byteLength(nativeSession) > 4096 || /[\p{Cc}\p{Cf}]/u.test(nativeSession)) throw new Error("Configured ACP did not provide a valid native session identity");
+        if (this.id !== launchedId || this.opts.cwd !== launchedCwd || this.sessionId !== nativeSession) throw new Error("Configured ACP peer identity changed during startup");
+        managedLaunches.set(this, { id: launchedId, options: this.opts, proc, proof: owned.proof,
+          receipt: Object.freeze({ generation: randomUUID(), cwd: launchedCwd, sessionId: nativeSession }) });
       }
     } catch (e) {
+      managedLaunches.delete(this);
       this.setState("offline");
       if (this.proc === proc) {
         if (this.opts.requireOwnedGroup) {
@@ -390,6 +439,7 @@ export class AcpPeer extends BasePeer {
   }
 
   async stop(reason?: string): Promise<void> {
+    managedLaunches.delete(this);
     if (this.activityOpen) this.endActivity("stopped", true);
     this.stopping = true;
     this.cancelPermissions();
@@ -597,6 +647,7 @@ export class AcpPeer extends BasePeer {
   }
 
   private down(reason: string): void {
+    managedLaunches.delete(this);
     this.clearCancelWait();
     if (this.nativePolicy !== undefined || this.opts.requireOwnedGroup) reason = "Configured ACP transport stopped";
     this.opts.log?.(`[${this.id}] ${reason}`);

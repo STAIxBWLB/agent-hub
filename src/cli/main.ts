@@ -160,7 +160,7 @@ function localDeclarations(): { scope: Pick<InstanceRoleConfig, "instances" | "c
   catch (error) { return { scope: { catalog: createProjectAdapterCatalog() }, error: startupDiagnostic(error) }; }
 }
 const projectCatalog = peerConfig.catalog;
-const configuredCommand = !definitionOf(given) && projectCatalog.definitionOf(given)?.permission.genericAcp !== undefined;
+const configuredCommand = !definitionOf(given) && (projectCatalog.definitionOf(given)?.permission.genericAcp !== undefined || peerConfig.declaredExternalInstances?.some(row => row.kind === given) === true);
 const unboundCaller = detectCliIdentity(process.env);
 const markerNeedsDeclaration = unboundCaller.role === "invalid" && unboundCaller.reason === "AGENTHUB_PEER_ID conflicts with native agent marker"
   && process.env.AGENTHUB_PEER_ID !== undefined && !definitionOf(process.env.AGENTHUB_PEER_ID);
@@ -170,7 +170,7 @@ let nativeSelection: ReturnType<typeof instanceLaunchArguments>;
 try {
   declaredInstances = needsInstances || configuredCommand ? peerConfig.instances : undefined;
   if (configuredCommand && !(rest.length === 1 && ["--help", "-h"].includes(rest[0]!))) {
-    const selection = parseConfiguredAcpArguments(given, rest, projectCatalog, declaredInstances);
+    const selection = parseConfiguredAcpArguments(given, rest, projectCatalog, declaredInstances, peerConfig.declaredExternalInstances);
     nativeSelection = { ...(selection.peer !== given ? { instance: selection.peer } : {}), args: [...rest] };
   } else nativeSelection = instanceLaunchArguments(given, rest, declaredInstances);
 } catch (error) { fail(startupDiagnostic(error)); }
@@ -2430,11 +2430,14 @@ async function runConductorCommand(): Promise<void> {
   } else {
     // Native TUIs return a human launch command through the daemon; an agent shell never executes it.
     if (configuredCommand) {
-      const selection = parseConfiguredAcpArguments(cmd, args, projectCatalog, declaredInstances);
-      if (selection.preview) return runConfiguredAcpEntry({ kind: cmd, raw: args, catalog: projectCatalog, instances: declaredInstances, connect, print: text => console.log(text) });
+      const selection = parseConfiguredAcpArguments(cmd, args, projectCatalog, declaredInstances, peerConfig.declaredExternalInstances);
+      if (selection.preview) return runConfiguredAcpEntry({ kind: cmd, raw: args, catalog: projectCatalog, instances: declaredInstances, declaredExternalInstances: peerConfig.declaredExternalInstances, projectRoot: cwd, connect, print: text => console.log(text) });
       if (selection.sessionId) fail("conductor starts accept no session override; a person starts a configured ACP session");
       const hub = await connect();
       try {
+        const external = selection.peer !== cmd && (peerConfig.declaredExternalInstances?.some(row => row.id === selection.peer && row.kind === cmd)
+          || projectCatalog.externalDefinitions.some(definition => definition.kind === cmd));
+        if (external) fail("external module instances require an explicit person start");
         await requireActiveConfiguredAcp(hub, cmd, selection.peer, text => console.error(text));
         console.log(await taskOp("hub_peer_start", { peer: selection.peer, mode: "headless" }, false, hub, 70_000));
       } finally { hub.close(); }
@@ -2451,9 +2454,9 @@ async function runConductorCommand(): Promise<void> {
   console.log(await taskOp(op, input));
 }
 const runConfigured = configuredCommand ? async () => {
-  const selection = parseConfiguredAcpArguments(cmd, args, projectCatalog, declaredInstances);
+  const selection = parseConfiguredAcpArguments(cmd, args, projectCatalog, declaredInstances, peerConfig.declaredExternalInstances);
   if (!selection.preview) assertLifecycleAvailable();
-  await runConfiguredAcpEntry({ kind: cmd, raw: args, catalog: projectCatalog, instances: declaredInstances, connect: connectLaunch, print: text => console.log(text), operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
+  await runConfiguredAcpEntry({ kind: cmd, raw: args, catalog: projectCatalog, instances: declaredInstances, declaredExternalInstances: peerConfig.declaredExternalInstances, projectRoot: cwd, connect: connectLaunch, print: text => console.log(text), operationId: process.env.AGENTHUB_RECOVERY_OPERATION });
 } : undefined;
 const run = identity.role === "tools" && commandAccess === "conductor" ? runConductorCommand : (Object.hasOwn(commands, cmd) ? commands[cmd] : undefined) ?? runConfigured ?? (() => fail(`unknown command "${cmd}"; run ahub help`));
 try {

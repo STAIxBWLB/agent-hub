@@ -138,10 +138,26 @@ export function validateInstances(raw: unknown, catalog: ProjectAdapterCatalog):
     const kind: unknown = entry.kind?.value;
     if (typeof kind !== "string") return fail(`${path}.kind`, "must name a native kind");
     const definition = resolve(kind), prefix = `${kind}-`;
-    if (!definition) return fail(`${path}.kind`, "unknown native kind (external adapter instances are unsupported in A4)");
-    if (catalog.externalDefinitions.some(item => item.kind === kind)) return fail(`${path}.kind`, "external adapter instances are unsupported in A4");
+    if (!definition) return fail(`${path}.kind`, "unknown native kind (a live startup catalog is required for external instances)");
+    const moduleInstance = catalog.externalDefinitions.some(item => item.kind === kind);
+    let moduleRoles: string[] | undefined;
+    if (moduleInstance) {
+      const optIn = definition.headlessInstances;
+      if (!optIn || optIn.form !== "headless" || !supportsHeadlessInstances(definition)) return fail(`${path}.kind`, "external module has not opted into headless instances");
+      if (entry.review_mode || entry.review_scope) return fail(path, "external instances do not have fresh or isolated reviewer capabilities");
+      if (entry.start_mode && entry.start_mode.value !== "headless") return fail(`${path}.start_mode`, "external instances start headless only");
+      if (!entry.worktree) return fail(`${path}.worktree`, "every external instance requires its own managed worktree");
+      const allowedRoles: readonly string[] = optIn.roles;
+      const requestedRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : definition.roles.filter(role => allowedRoles.includes(role));
+      if (!requestedRoles.length || requestedRoles.some(role => !allowedRoles.includes(role) || !definition.roles.includes(role))) return fail(`${path}.roles`, "roles must fit the external module's explicit instance subset and kind ceiling");
+      moduleRoles = requestedRoles;
+      if (entry.permission_mode) {
+        const mode = entry.permission_mode.value;
+        if (!isPermissionMode(mode) || !definition.permission.genericAcp?.modes?.[mode]) return fail(`${path}.permission_mode`, "external native adapter has no mapping for this permission mode");
+      }
+    }
     if (!id.startsWith(prefix) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length))) return fail(path, "id must be <kind>-<name>");
-    const declaredRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
+    const declaredRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : moduleRoles ?? [];
     const reviewer = (definition.reviewerVariant ?? definition).reviewer;
     const reviewerOnly = entry.start_mode?.value === "headless" && declaredRoles.length === 1 && declaredRoles[0] === "reviewer";
     if (entry.review_mode && (entry.review_mode.value !== "fresh" || !reviewerOnly || !reviewer)) return fail(`${path}.review_mode`, "fresh requires reviewer-only roles, headless mode and a declared fresh-review capability");
@@ -202,7 +218,7 @@ export function validateInstances(raw: unknown, catalog: ProjectAdapterCatalog):
       value.review_scope = entry.review_scope.value;
     }
     if (entry.readOnly) value.readOnly = entry.readOnly.value as boolean;
-    if (entry.roles) { value.roles = roles(entry.roles.value, `${path}.roles`); Object.freeze(value.roles); }
+    if (entry.roles || moduleRoles) { value.roles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [...moduleRoles!]; Object.freeze(value.roles); }
     if (entry.start_mode) {
       if (entry.start_mode.value !== "headless") return fail(`${path}.start_mode`, "I2 extra instances require headless mode");
       value.start_mode = "headless";
@@ -245,6 +261,12 @@ export function effectiveInstanceRoles(id: string, declarations: InstancesConfig
   const declaration = declarations && Object.hasOwn(declarations, id) ? declarations[id] : undefined;
   const ownRoles = (key: string): readonly string[] | undefined => Object.hasOwn(policyRoles, key) ? policyRoles[key] : undefined;
   const roles = declaration?.roles ?? ownRoles(id) ?? ownRoles(definition.kind) ?? definition.roles;
+  // A module's current runtime policy cannot widen its captured opt-in, including id-keyed role overrides.
+  if (declaration && catalog.externalDefinitions.some(item => item.kind === definition.kind)) {
+    const allowed: readonly string[] = definition.headlessInstances?.roles ?? [];
+    return roles.filter(role => allowed.includes(role) && definition.roles.includes(role)
+      && role !== "planner" && role !== "conductor");
+  }
   // #525 R1: a roles entry keyed by an instance id skips loadConductorPolicy's kind check, so planner is gated here too.
   return roles.filter(role => role !== "planner" || definition.projection?.plannerEligible === true);
 }

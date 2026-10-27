@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { projectContext } from "./project.ts";
-import { externalAdapterMetadata, type ExternalAdapterMetadata } from "../adapters/external-metadata.ts";
+import { externalAdapterMetadata, externalInstanceCatalog, type ExternalInstanceCatalog, type ExternalAdapterMetadata } from "../adapters/external-metadata.ts";
 
 export function stateDirFor(cwd: string): string {
   return projectContext(cwd).stateDir;
@@ -9,7 +9,7 @@ export function stateDirFor(cwd: string): string {
 
 /** Control WS wire version. 2 = `deliver` carries `envs` (digests); 3 = `tools` role and task messages; 4 = budget messages and `hub_checkpoint`; 5 = `ask`; 6 = console-only `ui` session bootstrap; 8 = controlled recovery; 9 = Pi bridge metadata; 10 = durable delivery receipts; 11 = queue hold diagnostics; 12 = generation-bound channel settlement and execution budgets; 13 = turn-free facts (`facts` with tool, session and transcript binding, `silenced`) and per-recipient send results (issue #108). 14 = native context-window status and session-bound context checkpoint request ids (issue #185). 15 = conductor tools and permission deadlines/closed events (issues #190, #194). 16 = a Claude session without channel evidence: hello `channel: false` and `inbox` (issue #205). The plugin is installed apart from the daemon, so they can drift. */
 export const PROTOCOL = 16;
-export const DAEMON_FEATURES = ["external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated"] as const;
+export const DAEMON_FEATURES = ["external_adapter_instances", "external_adapter_modules", "configured_acp", "native_hook_launch", "task_cancel", "recovery_deferred_hub", "peer_instances", "role_stages", "task_planners", "release_trains", "reviewer_pool", "native_tui_launch", "terminal_owner", "cli_audit_delegated"] as const;
 /** Protocols a current coordinator may authenticate while upgrading a running source. */
 export const RECOVERY_SOURCE_PROTOCOLS = [9, 10, 11, 12, 13, 14, 15, PROTOCOL] as const;
 
@@ -164,6 +164,18 @@ export class ControlClient {
         resolve(client);
       });
     });
+  }
+
+  /** Read inert instance policy only from this authenticated, still-current daemon connection. */
+  async readExternalInstanceCatalog(projectRoot: string, timeoutMs = 3000): Promise<ExternalInstanceCatalog> {
+    const epoch = this.instanceId;
+    if (!epoch || !this.isOpen || !["external_adapter_instances", "external_adapter_modules", "peer_instances"].every(feature => this.features.includes(feature))) throw new Error("running hub lacks a live external instance catalog");
+    const reply = await this.request({ t: "status" }, timeoutMs);
+    const status = reply.status;
+    if (!this.isOpen || this.instanceId !== epoch || reply.ok === false || !status || status.instanceId !== epoch || status.cwd !== projectRoot) throw new Error("external instance catalog observation changed");
+    const catalog = externalInstanceCatalog(status.externalInstanceCatalog);
+    if (catalog.epoch !== epoch || catalog.projectRoot !== projectRoot) throw new Error("external instance catalog binding changed");
+    return catalog;
   }
 
   /** `timeoutMs`: for calls a person waits on. The hub has its own budget; this one only makes sure the CLI never hangs. */

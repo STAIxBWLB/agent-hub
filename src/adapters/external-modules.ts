@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants, closeSync, fstatSync, lstatSync, openSync, readSync } from "node:fs";
+import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { isBuiltin } from "node:module";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { moduleDataObject as dataObject, moduleText as text, moduleArray as array } from "./external-metadata.ts";
@@ -18,6 +18,38 @@ const ADAPTER_IMPORT = "@staix/agent-hub/adapter";
 class ExternalAdapterRefusal extends Error {}
 const fail = (reason: string): never => { throw new ExternalAdapterRefusal(`external adapter: ${reason}`); };
 const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
+export interface ExternalModuleIdentity {
+  readonly projectRoot: string;
+  readonly modulePath: string;
+  readonly sha256: string;
+  readonly api: 1;
+  readonly capabilityDigest: string;
+}
+const capturedIdentities = new WeakMap<AdapterDefinition, ExternalModuleIdentity>();
+/** Only the verified startup loader can establish this provenance; display metadata and caller copies cannot. */
+export function externalModuleIdentity(definition: AdapterDefinition): ExternalModuleIdentity | undefined {
+  return capturedIdentities.get(definition);
+}
+/** Revalidate captured provenance synchronously without evaluating module code or trusting definition getters. */
+export function externalModuleIdentityCurrent(definition: AdapterDefinition): boolean {
+  const identity = capturedIdentities.get(definition);
+  if (!identity) return false;
+  try {
+    const root = identity.projectRoot, file = join(root, ".agenthub", "config.local.json");
+    if (realPath(root) !== root || configRefusal(root, "config.local.json")) return false;
+    const local = regularPath(root, file);
+    if ((local.mode & 0o002) !== 0) return false;
+    const source = readFileSync(file, "utf8");
+    const raw = dataObject(JSON.parse(source));
+    const { modules } = readAdapterModuleDeclarations(root, [{ name: "config.local.json", raw }]);
+    const matching = modules.filter(module => relative(root, resolve(root, module.path)).split(sep).join("/") === identity.modulePath);
+    if (matching.length !== 1 || matching[0]!.sha256 !== identity.sha256) return false;
+    captureBundle(root, matching[0]!);
+    const current = regularPath(root, file);
+    return current.dev === local.dev && current.ino === local.ino && current.mtimeMs === local.mtimeMs && current.ctimeMs === local.ctimeMs
+      && (current.mode & 0o002) === 0 && readFileSync(file, "utf8") === source && !configRefusal(root, "config.local.json");
+  } catch { return false; }
+}
 export function adapterModuleDeclarations(raw: unknown): readonly AdapterModuleDeclaration[] {
   if (raw === undefined) return Object.freeze([]);
   return Object.freeze(array(raw, MAX_MODULES).map(value => {
@@ -113,6 +145,29 @@ function only(value: unknown, keys: readonly string[]): Record<string, unknown> 
   if (Object.keys(fields).some(key => !keys.includes(key))) return fail("field is outside the supported external definition subset");
   return fields;
 }
+function headlessInstancePolicy(definition: AdapterDefinition): AdapterDefinition["headlessInstances"] {
+  if (!Object.hasOwn(definition, "headlessInstances")) return undefined;
+  const policy = only(definition.headlessInstances, ["form", "roles"]);
+  const roles = array(policy.roles, 3);
+  if (policy.form !== "headless" || !roles.length || new Set(roles).size !== roles.length
+    || roles.some(role => typeof role !== "string" || !["implementer", "verifier", "reviewer"].includes(role) || !definition.roles.includes(role))) return fail("headless instance roles must fit the module role ceiling");
+  return Object.freeze({ form: "headless", roles: Object.freeze(roles as ("implementer" | "verifier" | "reviewer")[]) });
+}
+
+/** Canonical own-data serialization: never stringify callbacks or module-controlled toJSON methods. */
+function capabilityDigest(definition: AdapterDefinition): string {
+  const canonical = (value: unknown): unknown => Array.isArray(value) ? value.map(canonical)
+    : value && typeof value === "object" ? Object.fromEntries(Object.entries(dataObject(value)).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([key, member]) => [key, canonical(member)])) : value;
+  const ceiling = {
+    api: definition.api, kind: definition.kind, family: definition.family, transport: definition.transport,
+    roles: [...definition.roles].sort(), trust: definition.trust,
+    headlessInstances: definition.headlessInstances ? { form: "headless", roles: [...definition.headlessInstances.roles].sort() } : null,
+    start: { forms: definition.start.forms, defaultForm: definition.start.defaultForm, daemonPort: definition.start.daemonPort, conductorStartable: definition.start.conductorStartable },
+    permission: definition.permission, identity: definition.identity, turnEnd: definition.turnEnd,
+    session: { idField: definition.session.idField, resumeById: definition.session.resumeById, launchKind: definition.session.launchKind },
+  };
+  return digest(new TextEncoder().encode(JSON.stringify(canonical(ceiling))));
+}
 export function validateExternalDefinition(raw: unknown): AdapterDefinition {
   const definition = snapshot(raw) as AdapterDefinition;
   if (definition.api !== ADAPTER_API) return fail("adapter API mismatch");
@@ -123,9 +178,10 @@ export function validateExternalDefinition(raw: unknown): AdapterDefinition {
   if (definition.family !== definition.kind || definition.trust?.onPrem !== false || definition.trust.hubSandboxed !== false
     || definition.defaultOnRoster !== false || definition.optional !== true) return fail("external kinds must retain their own family and optional off-roster cloud trust");
   if (!Array.isArray(definition.roles) || !definition.roles.length || definition.roles.some(role => !["planner", "implementer", "verifier", "reviewer"].includes(role)) || new Set(definition.roles).size !== definition.roles.length) return fail("unsupported default roles");
-  if (definition.instances !== undefined) return fail("external adapter instances are unsupported in A4");
+  if (Object.hasOwn(definition, "instances")) return fail("external builtin instance policy is unsupported; use headlessInstances");
+  const instancePolicy = headlessInstancePolicy(definition);
   try { assertNativeCapabilityScope(definition); } catch { return fail("fixed-builtin capability refused"); }
-  only(definition, ["api", "kind", "family", "displayName", "transport", "roles", "optional", "defaultOnRoster", "trust", "start", "identity", "permission", "session", "turnEnd", "cli", "display"]);
+  only(definition, ["api", "kind", "family", "displayName", "transport", "roles", "optional", "defaultOnRoster", "trust", "start", "identity", "permission", "session", "turnEnd", "cli", "display", "headlessInstances"]);
   only(definition.trust, ["onPrem", "hubSandboxed"]);
   const start = only(definition.start, ["forms", "defaultForm", "daemonPort", "launch", "create", "preflight", "version", "conductorStartable", "hubSwitches", "ownedFlags", "exclusiveStartRefusal"]);
   if (definition.transport !== "acp" || definition.turnEnd !== "adapter" || definition.start.daemonPort !== "acp"
@@ -159,6 +215,7 @@ export function validateExternalDefinition(raw: unknown): AdapterDefinition {
     try { return callback(); } catch { return fail(`${name} refused (details withheld)`); }
   };
   return snapshot({ ...definition,
+    ...(instancePolicy ? { headlessInstances: instancePolicy, instances: { mode: "headless", roles: instancePolicy.roles } } : {}),
     start: { ...definition.start,
       create: (context: Parameters<NonNullable<AdapterDefinition["start"]["create"]>>[0]) => invoke("factory", () => definition.start.create!(context)),
       launch: (context: Parameters<NonNullable<AdapterDefinition["start"]["launch"]>>[0]): LaunchPlan => invoke("launch", () => {
@@ -216,6 +273,7 @@ export async function loadExternalAdapterDefinitions(cwd: string, layers: readon
   const definitions: AdapterDefinition[] = [];
   for (const [index, declaration] of modules.entries()) {
     try {
+      const projectRoot = realPath(cwd);
       if (configRefusal(cwd, "config.local.json")) return fail("module configuration provenance changed");
       const local = regularPath(realPath(cwd), join(realPath(cwd), ".agenthub", "config.local.json"));
       if ((local.mode & 0o002) !== 0) return fail("world-writable module configuration refused");
@@ -228,6 +286,8 @@ export async function loadExternalAdapterDefinitions(cwd: string, layers: readon
       const definition = validateExternalDefinition((imported as { definition?: unknown }).definition);
       if ([...existingKinds].some(kind => definition.kind === kind || definition.kind.startsWith(`${kind}-`))) return fail("kind collides with a configured adapter namespace");
       if (definitions.some(item => item.kind === definition.kind)) return fail("duplicate external kind");
+      capturedIdentities.set(definition, Object.freeze({ projectRoot, modulePath: relative(projectRoot, resolve(projectRoot, declaration.path)).split(sep).join("/"),
+        sha256: declaration.sha256, api: ADAPTER_API, capabilityDigest: capabilityDigest(definition) }));
       definitions.push(definition);
     } catch (error) {
       const refusal = error instanceof ExternalAdapterRefusal ? error : new ExternalAdapterRefusal("external adapter: module could not be verified or loaded (details withheld)");

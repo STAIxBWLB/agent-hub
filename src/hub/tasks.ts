@@ -3205,12 +3205,14 @@ export class Tasks {
    * and only then is the rest recorded as before. A receipt with deliverables and nothing else records just the deliverables.
    */
   async recordSdlc(by: PeerId, id: unknown, input: unknown): Promise<Task> {
+    const requestCheck = this.requestCheck(by);
     if (!input || typeof input !== "object" || Array.isArray(input) || !("deliverables" in input)) return this.recordLifecycle(by, id, input);
     const { deliverables, ...receipt } = input as Record<string, unknown>;
     const task = this.need(id, false, true);
     if (by !== USER && by !== task.owner && by !== task.reviewer) throw new PreEffectToolRefusal("only the task owner, reviewer or console user may record lifecycle evidence");
     const claims = this.deliverableClaims(deliverables, task);
     const records = await this.hashClaims(claims, task, true);
+    requestCheck();
     const current = this.need(id, false, true);
     if (current.history.length !== task.history.length) throw new PreEffectToolRefusal("task changed while its deliverables were hashed; record them again");
     return this.recordLifecycle(by, id, receipt, records);
@@ -4637,6 +4639,7 @@ export class Tasks {
   }
 
   async review(by: PeerId, id: unknown, verdict: unknown, note?: string, unmet?: unknown, head?: unknown, coverage?: unknown, findings?: unknown): Promise<Task> {
+    const requestCheck = this.requestCheck(by);
     const authority = by === USER ? undefined : this.d.reviewAuthority?.(by, Number(id));
     let findingGuard: ((task: Task) => void) | undefined;
     // #520: what the coverage was checked against, pinned through every await: the commit and the lifecycle receipt (the
@@ -4644,6 +4647,7 @@ export class Tasks {
     let covered: { commit: string | undefined; receipt: string } | undefined;
     let conformanceIdentity: string | undefined;
     const valid = (): Task => {
+      requestCheck();
       const refused = authority?.();
       if (refused) throw new PreEffectToolRefusal(refused); // rechecked after every await, right before each write
       const t = this.need(id, false, true);
@@ -5090,11 +5094,13 @@ export class Tasks {
 
   /** Candidate only: the person remains the sole acceptance authority. */
   async correct(by: PeerId, input: unknown): Promise<string> {
+    const requestCheck = this.requestCheck(by);
     const args = correctionInput(input);
     const st = this.d.store;
     if (!st || !this.d.candidates) throw new PreEffectToolRefusal("memory correction unavailable");
     const screen: MemoryScreen = rows => this.d.candidateScreen?.(rows) ?? withoutPii(rows, this.d.routing(), this.d.cwd, this.d.piiPaths ?? []);
     const valid = () => {
+      requestCheck();
       this.d.memoryCheck?.();
       if (this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("memory correction unavailable during a private turn");
       if (!this.candidateTextAllowed(JSON.stringify(args))) throw new PreEffectToolRefusal("memory correction withheld by privacy policy");

@@ -110,13 +110,14 @@ function closure(name: string): string {
 function generationRig(peer: PlainPeer) {
   const bus = new Bus({ batchMs: 0 }); bus.add(peer);
   const waits = new Map<string, { valid(): boolean; done(summary: string | undefined): void }>();
-  const context = { ...peerContracts, bus, checkConnections: new WeakMap(), instanceId: "fixture-instance", randomUUID: () => crypto.randomUUID(),
+  const externalIds = new Set<string>(), executionOwners = new Map<string, { owner: PlainPeer }>();
+  const context = { ...peerContracts, isExternalInstance: (id: string) => externalIds.has(id), currentExecutionOwner: (id: string) => executionOwners.get(id), bus, checkConnections: new WeakMap(), instanceId: "fixture-instance", randomUUID: () => crypto.randomUUID(),
     isWsPeer, isCodexPeer, isPiPeer, stopping: false, recoveryActive: () => false, checkpointWaits: waits,
     contextSession: () => peer.session, contextPii: () => false, turns: new Map(), board: { list: () => [{ state: "in_progress", owner: peer.id }] },
     config: { budget: { checkpoint_timeout_s: 1 } }, HUB, newEnvelope, log: () => {}, setTimeout, clearTimeout,
   };
   cleanup.push(() => { for (const wait of waits.values()) wait.done(undefined); bus.closeJournal(); });
-  return { bus, waits, connection: runInNewContext(closure("connectionGeneration"), context) as (id: string) => string | undefined,
+  return { bus, waits, externalIds, executionOwners, connection: runInNewContext(closure("connectionGeneration"), context) as (id: string) => string | undefined,
     checkpoint: runInNewContext(closure("requestCheckpoint"), context) as (id: string, reason: "quota" | "context") => Promise<string | undefined> };
 }
 test("#625 checks bind optional generation and retain generationless recovery fallback", async () => {
@@ -128,6 +129,15 @@ test("#625 checks bind optional generation and retain generationless recovery fa
   const plain = new PlainPeer("plain"); f.bus.add(plain); await plain.start();
   const fallback = f.connection(plain.id); expect(fallback).toBeDefined();
   plain.session = "session-B"; expect(f.connection(plain.id)).not.toBe(fallback);
+});
+test("#754 check generations require a current external execution owner", async () => {
+  const peer = new GenerationPeer("fixture-writer"), f = generationRig(peer); await peer.start();
+  f.externalIds.add(peer.id);
+  expect(f.connection(peer.id)).toBeUndefined();
+  f.executionOwners.set(peer.id, { owner: peer });
+  expect(f.connection(peer.id)).toBeDefined();
+  f.executionOwners.delete(peer.id);
+  expect(f.connection(peer.id)).toBeUndefined();
 });
 test("#625 checkpoint refuses stale generation while preserving explicit opt-out", async () => {
   const peer = new GenerationPeer("fixture"), f = generationRig(peer); await peer.start();

@@ -1,10 +1,13 @@
 import { resolveAcceptedBinding } from "./recovery-guidance.ts";
 import { claudeStateFile } from "../hub/claude-state.ts";
 import { ADAPTERS, definitionOf } from "../adapters/registry.ts";
-import { readInstanceConfig } from "../hub/instance-config.ts";
+import { readInstanceConfig, readInstanceConfigLayers } from "../hub/instance-config.ts";
+import { readAdapterModuleDeclarations } from "../adapters/external-modules.ts";
+import { configRefusal } from "../hub/config-trust.ts";
+import { validExternalInstanceBinding } from "../hub/external-instance.ts";
 import { isDatabaseBusy, isDatabaseBusyReply, RecoveryDatabaseBusy } from "../hub/recovery-error.ts";
 import { cpSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { ControlClient, PROTOCOL, RECOVERY_SOURCE_PROTOCOLS, readControl } from "../hub/control-client.ts";
 import { awaitStopped, inspectProject } from "../hub/lifecycle.ts";
@@ -142,10 +145,53 @@ export async function endPlannedPeer(planned: PlannedProject, peer: RecoveryPeer
   }
 }
 
+/** No imports or executable catalog reconstruction: unknown kinds are only possible module instances. */
+function recoveryDeclarations(projectRoot: string) {
+  const layers = readInstanceConfigLayers(projectRoot);
+  const modules = readAdapterModuleDeclarations(projectRoot, layers).modules;
+  const local = layers.find(layer => layer.name === "config.local.json");
+  const raw = local && !configRefusal(projectRoot, local.name) ? local.raw : {};
+  const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+  const instances = raw.instances === undefined ? {} : raw.instances;
+  if (!object(instances) || Object.keys(instances).length > 64) throw new Error("recovery instance declaration inventory unavailable");
+  const configured = object(raw.adapters) ? Object.keys(raw.adapters) : [];
+  const moduleInstances = Object.entries(instances).filter(([, entry]) => !object(entry) || typeof entry.kind !== "string" || !definitionOf(entry.kind) && !configured.includes(entry.kind));
+  return { modules, instances, configured, moduleInstances };
+}
+const hasRecoveryFeatures = (features: unknown, required: readonly string[]): features is string[] => Array.isArray(features) && features.every(feature => typeof feature === "string") && required.every(feature => features.includes(feature));
+const EXTERNAL_INSTANCE_FEATURES = ["external_adapter_modules", "peer_instances", "external_adapter_instances"] as const;
+
+/** Includes offline declarations and retained identities, so a reused target cannot downgrade their meaning. */
+export function instanceRecoveryTargetRefusal(projectRoot: string, features: unknown, retainedPeers: readonly RecoveryPeer[] = []): string | undefined {
+  const declarations = recoveryDeclarations(projectRoot);
+  if ((declarations.moduleInstances.length || retainedPeers.some(peer => Object.hasOwn(peer, "externalInstance"))) && !hasRecoveryFeatures(features, EXTERNAL_INSTANCE_FEATURES)) {
+    return "target lacks external_adapter_instances or its external_adapter_modules/peer_instances prerequisites; module instances require a supporting target before recovery effects";
+  }
+}
+
 /** Declared identities cannot be reinterpreted against an older running source's unbound peer rows. */
 export function instanceRecoverySourceRefusal(projectRoot: string, features: unknown, observedPeers?: unknown): string | undefined {
+  const inventory = recoveryDeclarations(projectRoot);
+  if (inventory.moduleInstances.length) {
+    if (!hasRecoveryFeatures(features, EXTERNAL_INSTANCE_FEATURES)) return "source lacks external_adapter_instances or its external_adapter_modules/peer_instances prerequisites; restart with a supporting source before recovering module instances, including offline declarations";
+    const rows = observedPeers && typeof observedPeers === "object" && !Array.isArray(observedPeers) ? observedPeers as Record<string, unknown> : undefined;
+    for (const [id, declaration] of inventory.moduleInstances) {
+      const peer = rows?.[id] as RecoveryPeer | undefined;
+      const binding = peer?.externalInstance;
+      if (!declaration || typeof declaration !== "object" || !peer || !["idle", "busy", "paused", "offline"].includes(peer.state) || !validExternalInstanceBinding(binding, projectRoot, id) || binding.kind !== (declaration as { kind?: unknown }).kind ||
+          !inventory.modules.some(module => module.sha256 === binding.sha256 && relative(projectRoot, resolve(projectRoot, module.path)).split(sep).join("/") === binding.modulePath)) {
+        return "source external module instance binding unavailable or changed; a matching authenticated live startup catalog is required before recovery";
+      }
+    }
+    const configuredIds = [...inventory.configured, ...Object.entries(inventory.instances).filter(([, entry]) => entry && typeof entry === "object" && inventory.configured.includes((entry as { kind: string }).kind)).map(([id]) => id)];
+    if (configuredIds.length && !hasRecoveryFeatures(features, ["configured_acp"])) {
+      if (!rows || !Object.values(rows).every(peer => peer && typeof peer === "object" && typeof (peer as { state?: unknown }).state === "string") || Object.entries(rows).some(([id, peer]) => configuredIds.includes(id) && (peer as { state: string }).state !== "offline")) return "source lacks configured_acp; configured native identities require a supporting source before recovery";
+    }
+    // The authenticated source owns semantic admission; raw config and cached display metadata cannot reconstruct it.
+    return undefined;
+  }
   const bound = readInstanceConfig(projectRoot);
-  if (bound.adapter_modules?.length && !(Array.isArray(features) && features.includes("external_adapter_modules"))) return "source lacks external_adapter_modules; restart with a supporting source before recovering module peers";
+  if (bound.adapter_modules?.length && !hasRecoveryFeatures(features, ["external_adapter_modules"])) return "source lacks external_adapter_modules; restart with a supporting source before recovering module peers";
   const configured = Object.keys(bound.adapters ?? {});
   const configuredIds = [...configured, ...Object.entries(bound.instances ?? {}).filter(([, entry]) => configured.includes(entry.kind)).map(([id]) => id)];
   if (configuredIds.length && !(Array.isArray(features) && features.every(feature => typeof feature === "string") && features.includes("configured_acp"))) {
@@ -227,10 +273,14 @@ export async function inspectRecovery(project: Project, targetFeatures?: readonl
       peers: [], blockers: ["runtime changed during recovery inspection"] };
   }
   const peers = Object.values(response.recovery?.peers ?? {}) as any[];
+  if (peers.some(peer => peer && Object.hasOwn(peer, "externalInstance") && !validExternalInstanceBinding(peer.externalInstance, project.root, peer.id))) {
+    return { state: "incompatible", instanceId: status.instanceId, version: status.version, protocol: status.protocol, peers: [], blockers: ["source external module instance binding is invalid"] };
+  }
   // #272: the hub's own words for what it waits on; shown to the person, never decided on.
   const waiting = (Array.isArray(response.recovery?.blockers) ? response.recovery.blockers : []).filter((b: unknown): b is string => typeof b === "string").slice(0, 20).map((b: string) => b.slice(0, 200));
   return { state: "running", instanceId: status.instanceId, version: status.version, protocol: status.protocol,
     recovery: { operationId: response.recovery?.operationId, phase: response.recovery?.phase, ready: response.recovery?.ready, ...(waiting.length ? { waiting } : {}) }, peers: peers.map((peer) => ({ id: peer.id, state: peer.state,
+      ...(peer.externalInstance === undefined ? {} : { externalInstance: peer.externalInstance }),
       ...(peer.threadId ? { threadId: peer.threadId } : {}), ...(peer.sessionId ? { sessionId: peer.sessionId } : {}),
       ...(typeof (peer.sessionFile ?? peer.launch?.sessionFile) === "string" ? { sessionFile: peer.sessionFile ?? peer.launch.sessionFile } : {}),
       ...(peer.launch ? { args: Object.fromEntries(Object.entries(peer.launch).filter(([k, v]) => ["model", "route", "sessionFile", "mode", "backend"].includes(k) && typeof v === "string")) as Record<string, string> } : {}) })), blockers: [] };
@@ -627,6 +677,10 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
         return { ...target, ...(op.targetFeatures === undefined ? {} : { targetFeatures: [...op.targetFeatures] }) };
       }
       if (cached && op.targetFeatures !== undefined) {
+        for (const planned of op.plan.projects) {
+          const refusal = typeof planned.project?.root === "string" ? instanceRecoveryTargetRefusal(planned.project.root, op.targetFeatures, planned.source.peers) : undefined;
+          if (refusal) throw new FinalRefusal(refusal);
+        }
         if (!op.targetFeatures.includes("external_adapter_modules") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && (readInstanceConfig(planned.project.root).adapter_modules?.length ?? 0) > 0)) throw new FinalRefusal("target lacks external_adapter_modules; module peers require a supporting target before recovery effects");
         if (!op.targetFeatures.includes("configured_acp") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).adapters ?? {}).length > 0)) throw new FinalRefusal("target lacks configured_acp; configured adapters require a supporting target before recovery effects");
         if (!op.targetFeatures.includes("peer_instances") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).instances ?? {}).length > 0)) throw new FinalRefusal("target lacks peer_instances; declared project instances require a supporting target before recovery effects");
@@ -640,6 +694,10 @@ export function makeRecoveryDriver(run: RunCommand = runCommand, liveTestPeer?: 
       if (!metadata || typeof metadata !== "object" || !Number.isInteger(metadata.protocol)) throw new Error(`the staged target's control protocol could not be read (probe exit ${probe.code}); staged package retained, runtimes unchanged; resume again once it can run`);
       if (!Array.isArray(metadata.features) || !metadata.features.every((feature: unknown) => typeof feature === "string" && feature.length > 0)) throw new Error("the staged target features could not be read; staged package retained, runtimes unchanged");
       const targetFeatures: readonly string[] = [...metadata.features];
+      for (const planned of op.plan.projects) {
+        const refusal = typeof planned.project?.root === "string" ? instanceRecoveryTargetRefusal(planned.project.root, targetFeatures, planned.source.peers) : undefined;
+        if (refusal) throw new FinalRefusal(refusal);
+      }
       if (!targetFeatures.includes("external_adapter_modules") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && (readInstanceConfig(planned.project.root).adapter_modules?.length ?? 0) > 0)) throw new FinalRefusal("target lacks external_adapter_modules; module peers require a supporting target before recovery effects");
       if (!targetFeatures.includes("configured_acp") && op.plan.projects.some(planned => typeof planned.project?.root === "string" && Object.keys(readInstanceConfig(planned.project.root).adapters ?? {}).length > 0)) throw new FinalRefusal("target lacks configured_acp; configured adapters require a supporting target before recovery effects");
       if (metadata.protocol !== PROTOCOL) throw new FinalRefusal("target protocol requires a newer coordinator; staged package retained, runtimes unchanged");

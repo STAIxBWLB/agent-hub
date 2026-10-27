@@ -136,8 +136,9 @@ function lifecycleRig(peer: PlainPeer, foreign = false) {
   const bus = new Bus({ batchMs: 0 }); cleanup.push(() => bus.closeJournal());
   const permissionModes = new Map<string, PermissionMode>([[peer.id, "ask-when-needed"]]), pendingPermissionDefaults = new Map([[peer.id, "fixture default"]]);
   const executionOwners = new Map(), executionRoots = new Map();
-  const functions = hostFunctions(["isSupportedPeer", "readOnlyPeer", "nativeUnattended", "frontendProxyState", "permissionChange", "reconcileNativeStart", "confirmPermissionDefault"], {
-    adapterCatalog, declarations, definitionOf, isFixedBuiltinDefinition, bus, permissionModes, pendingPermissionDefaults,
+  const externalInstanceIds = Object.keys(declarations).filter(id => adapterCatalog.externalDefinitions.includes(adapterCatalog.definitionOf(id, declarations)!));
+  const functions = hostFunctions(["isExternalInstance", "isSupportedPeer", "readOnlyPeer", "nativeUnattended", "frontendProxyState", "permissionChange", "reconcileNativeStart", "confirmPermissionDefault"], {
+    adapterCatalog, declarations, externalInstanceIds, definitionOf, isFixedBuiltinDefinition, bus, permissionModes, pendingPermissionDefaults,
     permissionChanges: new Map(), starting: new Set(), startingUnattended: new Map(), unattendedPeers: new Set(),
     stopping: false, permissionMode: (id: string) => permissionModes.get(id) ?? "ask", executionOwners, executionRoots, opts: { cwd: "/fixture" },
     permissionModeSources: new Map(), event: () => {}, log: () => {}, writeStatus: () => {},
