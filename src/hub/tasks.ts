@@ -101,6 +101,8 @@ export interface TasksDeps {
   sdlc?: { config: () => SdlcConfig; gh?: SdlcGh };
   /** #785 P1b: the per-head CI watcher's bounds; tests shorten them, the defaults are `CI_WATCH_*` in `ci-watch.ts`. */
   ciWatch?: { deadlineMs?: number; pollMs?: number };
+  /** #785 P1c: `tasks.auto_pull`, read at each capacity release so a reload applies to the next one; absent or false pulls nothing. */
+  autoPull?: () => boolean;
   briefs?: Briefs;
   /** Screened live fail notes directly intersecting the task plan or refs; read-only advice. */
   planFails?: (task: Task) => NativeItem[];
@@ -1105,7 +1107,8 @@ export class Tasks {
         if (id !== undefined) change.ready.add(id);
         changes.set(planner, change);
       };
-      for (const [peer, used] of before) if (this.wip(peer) < used) for (const planner of this.taskPlanner(task)) add(planner, peer);
+      const released = new Set<PeerId>();
+      for (const [peer, used] of before) if (this.wip(peer) < used) { released.add(peer); for (const planner of this.taskPlanner(task)) add(planner, peer); }
       if (approved) for (const card of this.d.board.list("backlog")) {
         if (card.deps?.includes(task.id) && !this.waitsFor(card).length) for (const planner of this.taskPlanner(card)) add(planner, undefined, card.id);
       }
@@ -1120,9 +1123,7 @@ export class Tasks {
         }
         const lines: string[] = [];
         for (const peer of change.capacity) {
-          const top = this.d.board.list().filter(card => ["backlog", "proposed"].includes(card.state) && !card.owner && card.reserved === peer
-            && this.taskPlanner(card).includes(planner) && !card.pinned && taskCanPlan(card) && !this.waitsFor(card).length && !this.excluded(card).includes(peer)
-            && (card.release == null || ["planning", "active"].includes(this.d.board.release(card.release)?.state ?? ""))).sort(this.readyOrder)[0];
+          const top = this.topReservedReady(peer, planner);
           lines.push(`capacity_released: ${peer} WIP ${this.wip(peer)}; reserved ready ${top ? `#${top.id}` : "none"}`);
         }
         for (const id of change.ready) {
@@ -1134,7 +1135,40 @@ export class Tasks {
         const env = newEnvelope(HUB, sanitize(`Planner work ready:\n${lines.join("\n")}\nRead the current board before planning or pulling work.`), { to: [planner], kind: "task" });
         if (!this.d.bus.publish(env).includes(planner)) throw new Error("the notice was not queued");
       });
+      // #785 P1c: only this write's own release, never a merged earlier one, and only when the person turned it on.
+      if (this.d.autoPull?.() === true) this.queueAutoPulls(released);
     });
+  }
+
+  /** The top card explicitly reserved for `peer` that this planner may pull now; the notice and the opt-in pull read the same rule. `pullable` keeps the staged backlog cards only. */
+  private topReservedReady(peer: PeerId, planner?: PeerId, pullable = false): Task | undefined {
+    return this.d.board.list().filter(card => (pullable ? card.state === "backlog" : ["backlog", "proposed"].includes(card.state)) && !card.owner && card.reserved === peer
+      && (planner === undefined || this.taskPlanner(card).includes(planner)) && !(pullable && this.isPii(card)) && !card.pinned && taskCanPlan(card) && !this.waitsFor(card).length && !this.excluded(card).includes(peer)
+      && (card.release == null || ["planning", "active"].includes(this.d.board.release(card.release)?.state ?? ""))).sort(this.readyOrder)[0];
+  }
+
+  /**
+   * #785 P1c: `tasks.auto_pull`. A slot freed for a peer pulls the one top backlog card explicitly reserved for it, through `pullPlanned` as the hub acting for that card's planner of
+   * record: revision, dependency, reservation, pinned, frozen-release, P0 order and WIP checks all run there unchanged. One card per release. Never an unreserved card, never PII.
+   * Serialized on one chain, so two releases cannot pick the same card; each job re-reads the board, so a card that moved meanwhile is skipped.
+   */
+  private autoPulls: Promise<void> = Promise.resolve();
+  private queueAutoPulls(released: ReadonlySet<PeerId>): void {
+    for (const peer of released) this.autoPulls = this.autoPulls.then(() => this.autoPull(peer)).catch(() => { /* autoPull reports its own refusals */ });
+  }
+  private async autoPull(peer: PeerId): Promise<void> {
+    if (this.d.autoPull?.() !== true || this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) return;
+    const card = this.topReservedReady(peer, undefined, true);
+    if (!card) return;
+    // The planner of record is the card's own: its bound planner, else the first current holder, and it must be rostered. A private card never gets here (topReservedReady skips it).
+    const planner = this.taskPlanner(card)[0];
+    if (!planner || !this.d.bus.isRostered(planner)) return;
+    const reason = `auto_pull: capacity released for ${peer}; hub acted for planner ${planner}`;
+    try {
+      await this.pullPlanned(HUB, { id: card.id, revision: card.planningRevision ?? 0, reason }, { onBehalfOf: planner });
+    } catch (e) {
+      this.releaseNotice(`task ${this.publicTitle(card)}: auto_pull for ${peer} refused: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   /** #784 AC3: the read-only breakdown of `wip` for status, the console and the dashboard: one grouped query for every peer. Admission still reads `wip()`. */
@@ -1178,15 +1212,18 @@ export class Tasks {
     return assign({ ...task, state: "proposed" }, states, routing, { exclude: this.excluded(task), excludeOwners: full, ...(reservedOnly && task.reserved ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class, task) });
   }
 
-  async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }): Promise<Task> {
+  async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }, opts: { onBehalfOf?: PeerId } = {}): Promise<Task> {
     // #455: one authority check, made before the screen and again after it (a person may move the planner meanwhile).
-    const authorized = () => this.planningAuthority(by);
+    // #785 P1c: `by` is the actor the history records; the hub's opt-in auto pull names the planner it acts for, and that planner's authority is what is checked.
+    if (opts.onBehalfOf !== undefined && by !== HUB) throw new PreEffectToolRefusal("only the hub pulls on a planner's behalf");
+    const planner = opts.onBehalfOf ?? by;
+    const authorized = () => this.planningAuthority(planner);
     authorized();
     if (!Number.isSafeInteger(input.id) || input.id <= 0 || !Number.isSafeInteger(input.revision) || input.revision < 0 || typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("planner pull needs an id, revision and bounded reason");
     const validate = () => {
       const task = this.d.board.get(input.id);
       if (!task || (task.planningRevision ?? 0) !== input.revision || task.state !== "backlog" || task.owner || !taskCanPlan(task) || task.pinned) throw new PreEffectToolRefusal("planner pull changed, pinned or already started");
-      this.planningAuthority(by, task);
+      this.planningAuthority(planner, task);
       const release = task.release == null ? undefined : this.d.board.release(task.release);
       if (task.release != null && (!release || ["frozen", "shipped", "dropped"].includes(release.state))) throw new PreEffectToolRefusal("planner pull requires unfrozen release scope");
       if (this.waitsFor(task).length) throw new PreEffectToolRefusal("planner pull waits for dependency approval");

@@ -217,7 +217,7 @@ export interface HubConfig {
   /** Pending permission requests: how long they wait, and whether the desktop is told (issue #5). */
   approvals: { timeout_s: number; notify: boolean };
   /** An owner offline this long loses its open tasks back to routing; 0 turns it off (issue #6). */
-  tasks: { release_after_min: number; wip_limits?: Record<string, number>; escalate_after: number };
+  tasks: { release_after_min: number; wip_limits?: Record<string, number>; escalate_after: number; /** #785 P1c: pull the top explicitly reserved ready card when a slot frees; machine-local, default off. */ auto_pull?: boolean };
   /** Between-turn task escalation, disabled unless explicitly enabled (#186). */
   task_sweep: TaskSweepConfig;
   /** A command per task class run when the owner marks the task done, and its timeout (issue #7). */
@@ -278,7 +278,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   ...nativeDefaults.sandbox,
   // Off here, so tests and a hub without a config file stay silent; a project's config defaults it on for macOS.
   approvals: { timeout_s: 120, notify: false },
-  tasks: { release_after_min: 30, escalate_after: ESCALATE_AFTER },
+  tasks: { release_after_min: 30, escalate_after: ESCALATE_AFTER, auto_pull: false },
   task_sweep: DEFAULT_TASK_SWEEP,
   checks: { timeout_s: 600 },
   // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
@@ -1734,6 +1734,7 @@ export async function startDaemon(opts: DaemonOptions) {
     sweep: taskSweepConfig(config.task_sweep),
     sweepHeld: () => stopping || recoveryActive(),
     ciWatch: opts.ciWatch,
+    autoPull: () => config.tasks.auto_pull === true,
     cancellationHeld: () => stopping || recoveryActive(),
     offerRead: (peer, envelopeId) => journal.offerRead(peer, envelopeId),
     offerPullOnly: (id) => { const peer = bus.peers.get(id); return peer?.pullOnly === true; },
