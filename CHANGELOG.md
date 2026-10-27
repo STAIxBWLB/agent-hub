@@ -5,6 +5,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 ## Unreleased
 
 - Eval gate for agent-configuration PRs (#481 S5, mechanism only): `eval_check` and `config_paths` in `.agenthub/sdlc.toml`. A PR touching a configured path (default AGENTS.md, `docs/agent-notes/**`, `templates/**`, role texts, routing.toml, hub tool definitions) requires the named check on every sdlc readback and the guarded merge, and the approval note records its pass rate and suite version. No suite is chosen or defaulted (suite choice pending the person); with no `eval_check` the gate only reports it (a note, never a blocker); code-only PRs and off mode are unchanged.
+- SDLC metrics remainder (#442, #481 S7 and AC12): the guarded merge records the merged PR's review and CI figures once (`cost` on the merge record: CI runs, same-head reruns, GitHub reviews, merge time), `ahub sdlc metrics` shows them with an honest unknown for anything not read, `ahub sdlc release` shows release interval, approval-to-release lead time and hotfix rate, and two new bands, `hotfix_rate` and `security_open_alerts`, use the existing one-card-per-episode path. An opt-in `[security_scan]` table records GitHub's open-alert counts on a schedule (counts only, a source it cannot read is unknown, never zero). The per-release gates-run record stays unbuilt.
 - Hub board task ids in the 0.19.0 entries, the 0.19.0 verification report and the user documents are written `task N` instead of `#N`, so GitHub no longer links them to unrelated issues (#879).
 ## 0.20.0
 
