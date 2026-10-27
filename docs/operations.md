@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.19.0 and control protocol 16. Live verification
+This guide describes ahub 0.20.0 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -1914,7 +1914,7 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | Switches | `task_sweep.enabled`, `.auto_reassign`, `.interval_s`, `.unaccepted_min`, `.idle_min`, `.review_min`, `.ready_min`, `.ladder_min`, `.no_writes_turns` | `config.local.json` | live; `.no_writes_turns` sets the turn threshold independently; other keys reschedule the sweep timer |
 | Routing | `tasks.wip_limits.<peer>` | `config.local.json` | live |
 | Routing | `tasks.escalate_after` (1-10, default 3: consecutive `changes_requested` before a task moves to the next `escalate_to` peer) | `config.local.json` | live; the next verdict uses it |
-| Switches | `tasks.auto_pull` (default off: pull the top explicitly reserved ready card when a planner slot frees) | `config.local.json` | live; the next release uses it |
+| Switches | `tasks.auto_pull` (default off: pull the top explicitly reserved ready card when a planner slot frees) | `config.local.json` | live; the next freed planner slot uses it |
 | Roles | `planner` (one or up to eight planner holders) | `config.local.json` | at once |
 
 - Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,
@@ -2416,16 +2416,18 @@ board and decides. With `tasks.auto_pull` on (opt-in, see below) the hub itself 
 the top card explicitly reserved for the peer whose slot just freed.
 
 When `hub_task_done` leaves a review whose exact-head CI is not yet green (the
-lifecycle must be on and the task linked to a PR), the hub starts one watcher
+lifecycle must be on, the task linked to a PR and not private), the hub starts one watcher
 for that head (#785): one `gh pr view` a minute, ended by the CI result, by a
 45 minute deadline, by a newer head, a verdict or a cancellation, or by hub
-shutdown. On the result the owner and the reviewer each get one
-`ci_completed: #<id> head <sha> passed|failed|incomplete` task notice (ids only), and a
-review the hub held as premature for that head is offered once more after a
-fresh readiness read. A deadline tells the console only. No peer turn waits for
+shutdown; a restart does not restore it, and the next `hub_task_done` starts a new
+one. On the result the owner and the reviewer each get one
+`ci_completed: #<id> head <sha12> passed|failed|incomplete` task notice (ids only, the
+head cut to 12 characters; a person reviewer gets a console line instead), and
+unless CI failed, a review the hub held as premature for that head is offered
+once more after a fresh readiness read. A deadline tells the console only. No peer turn waits for
 CI, and nothing is polled outside a watcher.
 
-`tasks.auto_pull` (default off, `config.local.json` only, live) lets the hub act on that
+`tasks.auto_pull` (default off, machine-local, live) lets the hub act on that
 wake-up (#785). When a write frees a peer's planner slot, the hub pulls the one top
 backlog card explicitly reserved for that peer, through the same planner pull a
 planner makes: revision, dependency, reservation, pinned, frozen-release, P0 order
@@ -2590,7 +2592,7 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.19.0), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.20.0), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
@@ -2604,7 +2606,7 @@ bunx --package @staix/agent-hub@0.12.43 ahub upgrade --to 0.12.43 --yes
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.19.0 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.20.0 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 

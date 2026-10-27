@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.19.0
+bun add -g github:STAIxBWLB/agent-hub#v0.20.0
 ahub setup
 ```
 
@@ -29,6 +29,10 @@ For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
+
+## Upgrading to 0.20.0
+
+The hub now exact-pins `@staix/agent-mem` 0.11.0. Every `amem` that shares a memory home must run 0.11.0 or later to keep consolidation review receipts, so upgrade a global `amem` CLI too. When `hub_task_done` leaves a review whose exact-head CI is not yet green, the hub watches that PR head once a minute for up to 45 minutes and tells the owner and the reviewer once with a `ci_completed:` task notice; no peer turn waits for CI (#785). The new `tasks.auto_pull` setting is opt-in and off by default, and a committed config cannot turn it on: set it in `.agenthub/config.local.json` or a settings session, and when a peer's planner slot frees the hub pulls the top backlog card explicitly reserved for that peer (#785; see [the planner](operations.md#the-planner-455)). The local worker and Pi sandbox now lets a command add only new loose objects to the shared git object store (#864): `git gc`, `repack`, `fetch` and `maintenance` no longer run inside it, so run them yourself in a terminal. A task's host-observed branch binding no longer turns a running check result into "check finished late" (#880). Upgrade running hubs with `ahub upgrade` and restart Claude sessions so they load the 0.20.0 plugin. Coming from 0.18.0 or older, the notes below apply too.
 
 ## Upgrading to 0.19.0
 
