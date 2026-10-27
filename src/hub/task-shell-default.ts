@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, lstatSync, mkdtempSync, rmSync } from "node:fs";
-import { isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import { stopOwnedProcess, trackGroup } from "./child-process.ts";
 import { hostExecutable } from "./host-executable.ts";
 import { hubGitArgv, hubGitEnv } from "./git.ts";
@@ -38,7 +38,8 @@ export async function readTaskShellDefaultBranch(root: string, env: Record<strin
       if (!held.isDirectory() || realPath(own) !== own || JSON.stringify([held.dev, held.ino, held.mode]) !== identity) throw new Error("unavailable");
       rmSync(own, { recursive: true, force: true }); temporary = undefined;
     };
-    const environment = hubGitEnv({ PATH: env.PATH, HOME: own, XDG_CONFIG_HOME: own, LANG: env.LANG ?? "C", TERM: "dumb", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CEILING_DIRECTORIES: own }, { repositoryIsolation: true });
+    // Git stops before inspecting a ceiling ancestor; naming cwd itself still permits discovery in its parent.
+    const environment = hubGitEnv({ PATH: env.PATH, HOME: own, XDG_CONFIG_HOME: own, LANG: env.LANG ?? "C", TERM: "dumb", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null", GIT_CEILING_DIRECTORIES: dirname(own) }, { repositoryIsolation: true });
     const argv = hubGitArgv(["-c", "protocol.allow=never", "-c", "protocol.https.allow=always", "ls-remote", "--symref", "--exit-code", `https://github.com/${repository}.git`, "HEAD"]);
     if (!current()) { remove(); return; }
     return await new Promise<string | undefined>(resolve => {
