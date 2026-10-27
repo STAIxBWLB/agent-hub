@@ -9322,7 +9322,9 @@ var init_sdlc_metrics = __esm(() => {
     first_pass_approval: 0.5,
     rework_rounds: 0.5,
     first_pass_check: 0.5,
-    stale_head_re_reviews: 0.5
+    stale_head_re_reviews: 0.5,
+    hotfix_rate: 0.5,
+    security_open_alerts: 0.5
   };
 });
 
@@ -9330,6 +9332,9 @@ var init_sdlc_metrics = __esm(() => {
 var init_eval_gate = __esm(() => {
   init_plan_conformance();
 });
+
+// src/hub/security-baseline.ts
+var init_security_baseline = () => {};
 
 // src/hub/workflow.ts
 var init_workflow = __esm(() => {
@@ -9349,6 +9354,7 @@ var init_sdlc = __esm(() => {
   init_review_findings();
   init_sdlc_metrics();
   init_eval_gate();
+  init_security_baseline();
   init_workflow();
   init_child_process();
   init_host_executable();
@@ -21934,6 +21940,7 @@ init_git();
 // src/hub/tasks.ts
 init_spec_read();
 init_sdlc_metrics();
+init_security_baseline();
 // package.json
 var package_default = {
   name: "@staix/agent-hub",

@@ -21,7 +21,7 @@ const sdlcGh: SdlcGh = async (...args) => {
   catch { return { code: 1, stdout: "" }; }
 };
 export interface DocEvidence { schemaVersion: 1; head?: string; version?: string; documents: { path?: string; state: "fresh" | "stale" | "nonancestor" | "unknown"; verifiedAgainst?: string; commits?: number; dirty?: boolean }[]; errors: number; fresh: boolean; }
-export interface ReleaseReadiness { repo: string; head?: string; version?: string; tag?: string; tagCommit?: string; commits: string[]; mergedPrs: { pr: number; commit: string }[]; documents?: DocEvidence; liveIssues: { id: number; state: "open" | "closed" | "unknown" }[]; blockers: string[]; sourceReady: boolean; native: "unverified"; ready: false; }
+export interface ReleaseReadiness { /** #481 AC12: interval, approval-to-release lead time and hotfix rate over shipped releases, filled by Tasks.releaseReadiness. */ releaseMetrics?: ReturnType<typeof releaseMetrics>; repo: string; head?: string; version?: string; tag?: string; tagCommit?: string; commits: string[]; mergedPrs: { pr: number; commit: string }[]; documents?: DocEvidence; liveIssues: { id: number; state: "open" | "closed" | "unknown" }[]; blockers: string[]; sourceReady: boolean; native: "unverified"; ready: false; }
 export type ReleaseGit = (args: string[]) => { code: number; stdout: string };
 export interface ReleaseReaders { gh?: SdlcGh; git?: ReleaseGit; docs?: (root: string, timeoutMs: number) => Promise<DocEvidence | undefined>; }
 const SHA = /^[0-9a-f]{40}$/;

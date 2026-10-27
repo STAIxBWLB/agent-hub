@@ -4,6 +4,7 @@ import { DEFAULT_MAX_NITS, findingsForHead, findingHead, findingTally, type Revi
 import type { CostPlan } from "./cost-governance.ts";
 import { bandsConfig, type BandsConfig } from "./sdlc-metrics.ts";
 import { configPathList, evalGapBlockers, evalGateView, evalRequiredChecks, type EvalGate, type EvalResult } from "./eval-gate.ts";
+import { SECURITY_SOURCES, type SecuritySource } from "./security-baseline.ts";
 import { criteriaReceipt, type CriteriaReceipt, type CriteriaView, type LegacyPhaseReceipt } from "./workflow.ts";
 import { constants, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
@@ -37,9 +38,11 @@ export type SdlcMode = "off" | "advise" | "enforce";
 /** #786: `off` never merges, `dry-run` reports the decision and runs nothing, `on` runs the guarded `gh pr merge`. */
 export type AutoMergeMode = "off" | "dry-run" | "on";
 export const AUTO_MERGE_MODES: readonly AutoMergeMode[] = ["off", "dry-run", "on"];
+/** #481 S7: which GitHub alert sources the scan reads, how often, and for which repository (absent: the project repository). */
+export interface SecurityScanConfig { everyH: number; sources: SecuritySource[]; repo?: string }
 /** #786: one repository's own gate: its required checks (before the top-level list) and its own merge mode. */
 export interface RepoMergePolicy { requiredChecks?: string[]; autoMerge?: AutoMergeMode }
-export interface SdlcConfig { workflow?: "gsd-lite"; maxNits?: number; /** #481 S7: optional control bands per metric; absent means none. */ bands?: BandsConfig; /** #481 S5: the one check a configuration PR needs; no default, the person names it. */ evalCheck?: string; /** #481 S5: patterns that mark a PR as a configuration change; absent reads as the defaults in eval-gate.ts, an empty list turns the gate off. */ configPaths?: string[]; mode: SdlcMode; requiredChecks: string[]; /** #786: absent reads as "off"; written only when the file names it. */ autoMerge?: AutoMergeMode; /** #786: per-repository tables, keyed by lowercase owner/name. */ repos?: Record<string, RepoMergePolicy>; stages: SdlcStage[]; definitions?: Record<string, StageDefinition>; deprecations?: string[]; }
+export interface SdlcConfig { workflow?: "gsd-lite"; maxNits?: number; /** #481 S7: optional control bands per metric; absent means none. */ bands?: BandsConfig; /** #481 S7: the scheduled security-scan baseline; absent means none is scheduled. */ securityScan?: SecurityScanConfig; /** #481 S5: the one check a configuration PR needs; no default, the person names it. */ evalCheck?: string; /** #481 S5: patterns that mark a PR as a configuration change; absent reads as the defaults in eval-gate.ts, an empty list turns the gate off. */ configPaths?: string[]; mode: SdlcMode; requiredChecks: string[]; /** #786: absent reads as "off"; written only when the file names it. */ autoMerge?: AutoMergeMode; /** #786: per-repository tables, keyed by lowercase owner/name. */ repos?: Record<string, RepoMergePolicy>; stages: SdlcStage[]; definitions?: Record<string, StageDefinition>; deprecations?: string[]; }
 export interface PlanReviewReceipt {
   planner: string;
   planAuthor?: string | null;
@@ -57,6 +60,8 @@ export interface MergeRecord {
   cleanup: "not_started" | "claimed" | "deleted" | "already_gone" | "skipped" | "unknown";
   reason?: "not_merged" | "missing_commit" | "metadata_unknown" | "identity_changed" | "protected_branch" | "default_branch" | "head_changed" | "authority_changed" | "delete_unconfirmed";
   ownerNotice: "not_started" | "claimed" | "sent" | "unknown";
+  /** #481 S7: the merged PR's review and CI figures, read once at merge by the host. Absent when the PR could not be read; fields inside are null when unknown. */
+  cost?: import("./cost-governance.ts").MergeCost;
 }
 export interface SdlcReceipt {
   merge?: MergeRecord;
@@ -157,6 +162,18 @@ const evalCheckName = (value: unknown): string => {
   if (typeof value !== "string" || !value.trim() || value.length > 120 || /[\r\n\x00-\x1f]/.test(value)) throw new Error("sdlc.eval_check: expected one nonempty check name");
   return value;
 };
+const securityScanConfig = (value: unknown): SecurityScanConfig => {
+  const fail = (path: string, why: string): never => { throw new Error(`sdlc.security_scan${path}: ${why}`); };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return fail("", "expected a table");
+  const raw = value as Record<string, unknown>;
+  for (const key of Object.keys(raw)) if (!["every_h", "sources", "repo"].includes(key)) fail(`.${key}`, "unknown field");
+  const everyH = raw.every_h === undefined ? 24 : raw.every_h;
+  if (typeof everyH !== "number" || !Number.isSafeInteger(everyH) || everyH < 1 || everyH > 720) fail(".every_h", "expected an integer number of hours from 1 to 720");
+  const sources = raw.sources;
+  if (!Array.isArray(sources) || !sources.length || sources.length > SECURITY_SOURCES.length || new Set(sources).size !== sources.length || sources.some(s => !SECURITY_SOURCES.includes(s as SecuritySource))) fail(".sources", `expected a nonempty list of unique names from ${SECURITY_SOURCES.join(", ")}; the scan has no default source`);
+  if (raw.repo !== undefined && !repo(raw.repo)) fail(".repo", "expected owner/repository");
+  return { everyH: everyH as number, sources: [...sources as SecuritySource[]], ...(raw.repo === undefined ? {} : { repo: raw.repo as string }) };
+};
 const autoMergeMode = (value: unknown, what: string): AutoMergeMode => {
   if (!AUTO_MERGE_MODES.includes(value as AutoMergeMode)) throw new Error(`${what}: expected off, dry-run or on`);
   return value as AutoMergeMode;
@@ -183,7 +200,7 @@ export function sdlcConfig(value: unknown, version?: string): SdlcConfig {
   if (value === undefined) return { mode: "off", requiredChecks: [], stages: [...SDLC_STAGES] };
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("sdlc: expected a table");
   const raw = value as Record<string, unknown>;
-  for (const key of Object.keys(raw)) if (!["mode", "required_checks", "stages", "workflow", "definitions", "max_nits", "bands", "auto_merge", "repos", "eval_check", "config_paths"].includes(key)) throw new Error(`sdlc.${key}: unknown field`);
+  for (const key of Object.keys(raw)) if (!["mode", "required_checks", "stages", "workflow", "definitions", "max_nits", "bands", "auto_merge", "repos", "eval_check", "config_paths", "security_scan"].includes(key)) throw new Error(`sdlc.${key}: unknown field`);
   const maxNits = raw.max_nits === undefined ? DEFAULT_MAX_NITS : raw.max_nits;
   if (typeof maxNits !== "number" || !Number.isSafeInteger(maxNits) || maxNits < 0 || maxNits > 64) throw new Error("sdlc.max_nits: expected an integer from 0 to 64");
   const bands = bandsConfig(raw.bands), bandConfig = Object.keys(bands).length ? { bands } : {};
@@ -191,7 +208,7 @@ export function sdlcConfig(value: unknown, version?: string): SdlcConfig {
     ...(raw.eval_check === undefined ? {} : { evalCheck: evalCheckName(raw.eval_check) }),
     ...(raw.config_paths === undefined ? {} : { configPaths: configPathList(raw.config_paths, "sdlc.config_paths") }),
   };
-  const findingConfig = { ...(raw.max_nits === undefined ? {} : { maxNits }), ...bandConfig, ...evalConfig };
+  const findingConfig = { ...(raw.max_nits === undefined ? {} : { maxNits }), ...bandConfig, ...evalConfig, ...(raw.security_scan === undefined ? {} : { securityScan: securityScanConfig(raw.security_scan) }) };
   const mode = raw.mode ?? "off";
   if (mode !== "off" && mode !== "advise" && mode !== "enforce") throw new Error("sdlc.mode: expected off, advise or enforce");
   // ponytail: the #481 S8 window is a fixed version; delete `workflow`, the phase aliases and their tests once it passes.
