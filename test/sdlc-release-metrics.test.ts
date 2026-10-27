@@ -71,7 +71,8 @@ test("a legacy shipped release with no recorded train is skipped by the hotfix s
   for (const order of [1, 2, 3]) {
     const release = await r.tasks.newRelease(USER, { name: `legacy-${order}`, goal: "Train", order });
     const active = r.board.updateRelease(release.id, { state: "active" }, 0);
-    r.board.updateRelease(release.id, { state: "shipped" }, active.revision);
+    const frozen = r.board.updateRelease(release.id, { state: "frozen" }, active.revision);
+    r.board.updateRelease(release.id, { state: "shipped" }, frozen.revision);
   }
   expect(r.board.releases().filter(release => release.state === "shipped" && !release.train)).toHaveLength(3);
   const report = r.tasks.sdlcMetrics("claude");
