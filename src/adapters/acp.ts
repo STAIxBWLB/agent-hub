@@ -260,6 +260,10 @@ export class AcpPeer extends BasePeer {
   recoveryMetadata(): Record<string, unknown> {
     return { launch: { kind: "acp", ...(this.opts.launchModel ? { model: this.opts.launchModel } : {}) }, ...(this.sessionId ? { sessionId: this.sessionId } : {}) };
   }
+  get nativeSession(): string | undefined {
+    const session = this.recoveryMetadata().sessionId;
+    return typeof session === "string" ? session : undefined;
+  }
 
   async start(): Promise<void> {
     if (this.opts.requireOwnedGroup && this.proc) throw new Error("Configured ACP still has a process; stop it before starting another");

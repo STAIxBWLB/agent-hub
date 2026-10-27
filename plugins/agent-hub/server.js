@@ -3062,6 +3062,10 @@ var init_acp = __esm(() => {
     recoveryMetadata() {
       return { launch: { kind: "acp", ...this.opts.launchModel ? { model: this.opts.launchModel } : {} }, ...this.sessionId ? { sessionId: this.sessionId } : {} };
     }
+    get nativeSession() {
+      const session = this.recoveryMetadata().sessionId;
+      return typeof session === "string" ? session : undefined;
+    }
     async start() {
       if (this.opts.requireOwnedGroup && this.proc)
         throw new Error("Configured ACP still has a process; stop it before starting another");
@@ -3721,6 +3725,9 @@ var init_codex_appserver = __esm(() => {
     }
     get thread() {
       return this.threadId;
+    }
+    get nativeSession() {
+      return this.threadId || undefined;
     }
     get proxyUrl() {
       return `ws://127.0.0.1:${this.server?.port ?? this.opts.proxyPort}`;
@@ -6591,6 +6598,10 @@ var init_pi = __esm(() => {
       const empty = this.emptyResumeVerified && !this.activityObserved && !this.persistedOnce;
       const file = this.sessionFile && (exists || !empty) ? this.sessionFile : undefined;
       return { launch: { kind: "pi", cwd: this.opts.cwd, mode: this.opts.mode, backend: this.opts.backend, ...this.opts.model ? { model: this.opts.model } : {}, ...file ? { sessionFile: file } : {} }, ...this.sessionId ? { sessionId: this.sessionId } : {}, ...file ? { sessionFile: file } : {} };
+    }
+    get nativeSession() {
+      const session = this.recoveryMetadata().sessionId;
+      return typeof session === "string" ? session : undefined;
     }
     async captureResume() {
       if (this.state === "offline") {

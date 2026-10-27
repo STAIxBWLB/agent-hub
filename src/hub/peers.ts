@@ -36,8 +36,12 @@ export interface PeerAdapter {
   readonly pendingOwnedProcess?: boolean;
   /** Native running form; absent keeps the site's default, present undefined is unknown. */
   readonly form?: StartForm;
+  /** Absent is settled; false or a present undefined value refuses recovery readiness. */
+  readonly recoveryReady?: boolean;
   /** Capture live resume evidence before a requested stop; throws when unavailable. */
   captureResume?(): Promise<Record<string, unknown>>;
+  /** Native session binding; absence or undefined is unbound, never inferred from a different reader. */
+  readonly nativeSession?: string;
   /** Leave the roster without stopping a person's terminal. */
   detachForRoster?(resetMode: PermissionMode): void | Promise<void>;
   /** Return to the roster after detachForRoster. */

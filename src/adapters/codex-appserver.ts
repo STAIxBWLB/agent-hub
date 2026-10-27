@@ -149,6 +149,7 @@ export class CodexPeer extends BasePeer {
   get thread(): string {
     return this.threadId;
   }
+  get nativeSession(): string | undefined { return this.threadId || undefined; }
 
   get proxyUrl(): string {
     return `ws://127.0.0.1:${this.server?.port ?? this.opts.proxyPort}`;

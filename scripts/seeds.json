@@ -324,7 +324,7 @@
     {
       "id": "roster-detached-pi-recovery",
       "file": "src/hub/daemon.ts",
-      "search": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\" || (isPiPeer(peer) && !peer.recoveryReady))) return false;",
+      "search": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\" || (\"recoveryReady\" in peer && peer.recoveryReady !== true))) return false;",
       "replacement": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\")) return false;",
       "testFile": "test/roster-pi.test.ts",
       "testName": "controlled recovery refuses a removed personal Pi owner until the person ends it (#315)"
