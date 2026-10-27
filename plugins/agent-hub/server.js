@@ -9253,6 +9253,11 @@ var init_sdlc_metrics = __esm(() => {
   };
 });
 
+// src/hub/eval-gate.ts
+var init_eval_gate = __esm(() => {
+  init_plan_conformance();
+});
+
 // src/hub/workflow.ts
 var init_workflow = __esm(() => {
   init_sdlc();
@@ -9270,6 +9275,7 @@ var init_sdlc = __esm(() => {
   init_plan_conformance();
   init_review_findings();
   init_sdlc_metrics();
+  init_eval_gate();
   init_workflow();
   init_child_process();
   init_host_executable();
@@ -22024,6 +22030,7 @@ init_platform();
 // src/hub/tasks.ts
 init_task_code_symbols();
 init_test_integrity();
+init_eval_gate();
 init_plan_conformance();
 
 // src/hub/sdlc-release.ts
@@ -22104,11 +22111,13 @@ init_planning();
 // src/hub/sdlc-queue.ts
 init_test_integrity();
 init_plan_conformance();
+init_eval_gate();
 init_review_findings();
 init_sdlc();
 
 // src/hub/sdlc-merge.ts
 init_review_findings();
+init_eval_gate();
 init_sdlc();
 
 // src/hub/sdlc-mirror.ts
