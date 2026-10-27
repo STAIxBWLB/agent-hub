@@ -62,6 +62,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Per-head CI watcher and `ci_completed` (#785 P1b) | source/fixture coverage with a fake gh; active after release and hub upgrade | one `ci_completed:` task notice per head to owner and reviewer, a premature review re-offered once green; watchers started per `hub_task_done` head and gone at the result, deadline, newer head, verdict or shutdown; no gh read outside a watcher |
 | Plan conformance (#481 S2) | advise | PRs with files outside the plan |
 | Test integrity for bug fixes (#481 S4) | advise | bug PRs without a red-first receipt, modified pre-existing tests |
+| Eval gate for agent configuration (#481 S5) | advise; mechanism only, `eval_check` is not set here until the person chooses a suite (#251, #266), so configuration PRs show `eval check not configured` | configuration PRs with a missing, failing or unreported eval check; recorded pass rate and suite on the approval note |
 | Required checks | advise (`check (ubuntu-latest)`, `check (macos-latest)`, `seeded guards`) | first-pass CI rate, same-head reruns (`hub_sdlc_costs`) |
 | Seed anchor diagnostics (#684) | on in the seeded checker; exact-match failure remains mandatory | missing anchors report the base commit, enclosing symbol and current file/line or explicit unknown; `test/seeded-check.test.ts` |
 | Release authorization (#481 S6) | pending (#199) | releases with a receipt |

@@ -1,5 +1,6 @@
 import { findingsForHead, findingHead, findingTally } from "./review-findings.ts";
 import { readMergeQueue, type DeliveryTask, type MergeQueue } from "./sdlc-queue.ts";
+import { evalGapBlockers, evalGateView, evalRequiredChecks, readEvalFor } from "./eval-gate.ts";
 import { readSdlcPr, stageDefinition, type AutoMergeMode, type PrEvidence, type SdlcConfig, type SdlcGh, type MergeRecord } from "./sdlc.ts";
 
 /**
@@ -78,10 +79,10 @@ export function assertMergeArgv(argv: readonly string[], head: string): void {
   if (!shape) throw new Error("refusing a merge argv outside the guarded shape");
 }
 
-function checkGates(evidence: PrEvidence, required: readonly string[]): string[] {
+function checkGates(evidence: PrEvidence, required: readonly string[], extra: readonly string[] = []): string[] {
   if (!required.length) return ["required checks unknown: name them in sdlc.toml"];
   const gates: string[] = [];
-  for (const name of required) {
+  for (const name of [...new Set([...required, ...extra])]) {
     const matches = evidence.checks.filter(check => check.name === name);
     const state = !matches.length ? "missing" : matches.some(c => c.state === "failed") ? "failing" : matches.some(c => c.state === "pending") ? "pending" : matches.some(c => c.state !== "passed") ? "unknown" : undefined;
     if (state) gates.push(`required check ${name}: ${state}`);
@@ -118,12 +119,12 @@ function dropEchoes(gates: string[]): string[] {
 }
 
 /** The gates one reading of the PR can fail. Run on every reading this decision takes, so a gate that changes between reads is never judged on the older one. */
-function evidenceGates(evidence: PrEvidence, approved: string | undefined, required: readonly string[]): string[] {
+function evidenceGates(evidence: PrEvidence, approved: string | undefined, required: readonly string[], extra: readonly string[] = []): string[] {
   const gates: string[] = [];
   if (approved && evidence.head !== approved) gates.push(`head changed: reviewed ${approved.slice(0, 8)}, PR is at ${evidence.head.slice(0, 8)}`);
   if (evidence.state !== "OPEN") gates.push(`PR is ${evidence.state.toLowerCase()}`);
   if (evidence.draft !== false) gates.push("draft (or draft status unknown)");
-  gates.push(...checkGates(evidence, required));
+  gates.push(...checkGates(evidence, required, extra));
   if (evidence.review === "changes_requested") gates.push("change request pending");
   if (evidence.pendingReviews === null) gates.push("review requests unknown");
   else if (evidence.pendingReviews > 0) gates.push(`${evidence.pendingReviews} review request${evidence.pendingReviews === 1 ? "" : "s"} pending`);
@@ -151,6 +152,12 @@ export function localGates(input: { subject: DeliveryTask; state: string; taskSt
   return gates;
 }
 
+/** #481 S5: in enforce, a configuration PR whose eval check passed but reported no pass rate or suite version, or whose file coverage is unknown, does not merge. Advise and off add nothing here. */
+async function evalGaps(config: SdlcConfig, repo: string, evidence: PrEvidence, run: SdlcGh): Promise<string[]> {
+  if (config.mode !== "enforce") return [];
+  return evalGapBlockers(evalGateView(config, evidence, await readEvalFor(config, evidence, repo, run)));
+}
+
 /**
  * Every failing gate, never the first only: a person reading a refusal fixes them in one pass. Unknown evidence is a failing gate, never a pass.
  * `approvedHead` is the head the reviewer's verdict recorded (`receipt.reviewedHead`); a head that moved since is `head changed`.
@@ -164,7 +171,7 @@ export async function decideMerge(input: MergeInput): Promise<MergeDecision> {
   const evidence = await readSdlcPr(receipt, run);
   if (!evidence) return { refused: [...gates, "PR evidence unavailable"] };
   const required = requiredChecksFor(config, repo);
-  gates.push(...evidenceGates(evidence, approved, required));
+  gates.push(...evidenceGates(evidence, approved, required, evalRequiredChecks(config, evidence)), ...await evalGaps(config, repo, evidence, run));
   gates.push(...localGates({ subject, state: input.state, taskState: input.taskState, config, head: evidence.head }));
   let queue: MergeQueue | undefined;
   try { queue = await readMergeQueue(repo, config, input.tasks, run, input.readableMetadata); } catch { queue = undefined; }
@@ -173,7 +180,7 @@ export async function decideMerge(input: MergeInput): Promise<MergeDecision> {
   // head that moved between the reads refuses here. `--match-head-commit` pins the head only, never these gates.
   const last = await readSdlcPr(receipt, run);
   if (!last) gates.push("PR evidence unavailable on the final read");
-  else { gates.push(...evidenceGates(last, approved, required)); gates.push(...localGates({ subject, state: input.state, taskState: input.taskState, config, head: last.head })); }
+  else { gates.push(...evidenceGates(last, approved, required, evalRequiredChecks(config, last)), ...await evalGaps(config, repo, last, run)); gates.push(...localGates({ subject, state: input.state, taskState: input.taskState, config, head: last.head })); }
   const row = queue?.rows.find(r => r.pr === pr);
   if (row?.head !== undefined && approved && row.head !== approved && !gates.some(g => g.startsWith("head changed"))) gates.push(`head changed: the queue read ${row.head.slice(0, 8)}`);
   if (gates.length) return { refused: dropEchoes([...new Set(gates)]) };

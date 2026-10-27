@@ -115,6 +115,12 @@ function taskBlock(row: any, columns: number | undefined, detail: boolean): Line
     out.push(...pair("tests", `${t.applicability === "bug" ? "bug fix" : t.applicability === "not_bug" ? "not a bug fix" : "bug status unknown"}, red-first ${String(t.redFirst).replace("_", " ")}, files ${t.fileState}`, columns, 11, undefined, "  "));
     out.push(...bullets("modified tests", list(t.modifiedTests), columns, undefined, "    "), ...bullets("test blockers", list(t.blockers), columns, "attention", "    "));
   }
+  const e = row.evalGate;
+  if (e) {
+    const shown = e.state === "not_configured" ? "eval check not configured (suite choice pending the person)" : e.state === "coverage_unknown" ? "PR file coverage unknown" : `${e.check} ${String(e.state)}${e.passRate !== undefined ? `, pass rate ${e.passRate}` : ""}${e.suite !== undefined ? `, suite ${e.suite}` : ""}`;
+    out.push(...pair("eval gate", `configuration PR, ${shown}`, columns, 11, e.state === "passed" && !list(e.gaps).length ? undefined : "attention", "  "));
+    out.push(...bullets("eval gaps", list(e.gaps), columns, "attention", "    "));
+  }
   const c = row.criteria;
   if (c) {
     out.push(...pair("criteria", `${c.ready ? "all met" : "not all met"}${c.id ? `, checklist ${c.id}` : ""}${c.note ? `, ${c.note}` : ""}`, columns, 11, readyTone(c.ready), "  "));

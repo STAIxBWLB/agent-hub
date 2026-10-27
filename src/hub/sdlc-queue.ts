@@ -1,10 +1,11 @@
 import { publicTestIntegrity, parseIssueLabels, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
 import { planConformance, planConformanceBlockers } from "./plan-conformance.ts";
+import { evalGapBlockers, evalGateView, readEvalFor, type EvalGate } from "./eval-gate.ts";
 import { findingsForHead, findingHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
 import type { CriteriaView } from "./workflow.ts";
 import { parsePrEvidence, readSdlcPr, sdlcGh, sdlcStatus, type PrEvidence, type SdlcConfig, type SdlcGh, type SdlcReceipt } from "./sdlc.ts";
 export interface DeliveryTask { plan?: { paths?: string[]; revision: number; fingerprint: string; accepted: { repo: string; pr: number; head: string; revision: number; fingerprint: string; paths: string[] }[] }; findings?: readonly ReviewFindingSet[]; id: number; after: number[]; private: boolean; receipt?: SdlcReceipt; phase?: CriteriaView; }
-export interface MergeQueueRow { testIntegrity?: (TestIntegrity & { task?: number })[]; planConformance?: { task?: number; state: string; outside: number; untouched: number; accepted: boolean }[]; findings?: ReviewFindingTally; pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
+export interface MergeQueueRow { evalGate?: EvalGate; testIntegrity?: (TestIntegrity & { task?: number })[]; planConformance?: { task?: number; state: string; outside: number; untouched: number; accepted: boolean }[]; findings?: ReviewFindingTally; pr: number; tasks: number[]; head?: string; private?: true; ready: boolean; blockers: string[]; after: number[]; }
 export interface MergeConflict { left: number; right: number; files: number; order: "dependency" | "person_required"; }
 export interface MergeQueue { repo: string; rows: MergeQueueRow[]; order: number[]; unordered?: number[]; conflicts: MergeConflict[]; complete: boolean; truncated: boolean; }
 const validRepo = (value: string) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(value) && !value.startsWith("-");
@@ -93,6 +94,11 @@ export async function readMergeQueue(repo: string, config: SdlcConfig, tasks: De
       const integrity = rawIntegrity ? publicTestIntegrity(rawIntegrity, readableMetadata) : undefined;
       if (integrity) (row.testIntegrity ??= []).push({ task: holder!.id, ...integrity });
       row.blockers.push(...sdlcStatus(config, holder?.receipt, read, holder?.phase).blockers);
+      // #481 S5: the eval check itself is a required check inside sdlcStatus; its recorded pass rate and suite are read once per PR here.
+      if (!row.evalGate) {
+        const gate = evalGateView(config, read, await readEvalFor(config, read, repo, bounded));
+        if (gate) { row.evalGate = gate; if (config.mode === "enforce") row.blockers.push(...evalGapBlockers(gate)); }
+      }
       if (config.mode === "enforce") row.blockers.push(...planConformanceBlockers(conformance), ...testIntegrityBlockers(integrity));
     }
   }
