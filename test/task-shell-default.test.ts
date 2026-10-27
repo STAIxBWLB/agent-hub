@@ -1,11 +1,18 @@
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import * as fs from "node:fs";
+import * as paths from "node:path";
+import { dirname, join } from "node:path";
+import { runInNewContext } from "node:vm";
+import { spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { readTaskShellDefaultBranch } from "../src/hub/task-shell-default.ts";
 import { realPath } from "../src/hub/project.ts";
-import { hubGitSync } from "../src/hub/git.ts";
-import { readProcessTable } from "../src/hub/child-process.ts";
+import { hubGitArgv, hubGitEnv, hubGitSync } from "../src/hub/git.ts";
+import { readProcessTable, stopOwnedProcess, trackGroup } from "../src/hub/child-process.ts";
+import { hostExecutable } from "../src/hub/host-executable.ts";
+import { isGitHubRepository } from "../src/hub/spec-read.ts";
+import { shortBranch } from "../src/hub/task-shell-command.ts";
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
@@ -42,11 +49,43 @@ test("remote default probe uses the fixed remote release rather than a local ori
   expect(call.cwd).not.toBe(f.project); expect(call.git).toBe(false);
   expect(call.env.HOME).toBe(call.cwd); expect(call.env.XDG_CONFIG_HOME).toBe(call.cwd);
   expect(call.env.GIT_CONFIG_NOSYSTEM).toBe("1"); expect(call.env.GIT_CONFIG_GLOBAL).toBe("/dev/null");
-  expect(call.env.GIT_CEILING_DIRECTORIES).toBe(call.cwd);
+  expect(call.env.GIT_CEILING_DIRECTORIES).toBe(dirname(call.cwd));
   expect(call.env.GIT_TERMINAL_PROMPT).toBe("0"); expect(call.env.GIT_NO_REPLACE_OBJECTS).toBe("1");
   for (const key of ["FIXTURE_SECRET", "GIT_DIR", "GIT_EXEC_PATH", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "HTTPS_PROXY", "GH_TOKEN", "BUN_OPTIONS"]) expect(call.env[key], key).toBeUndefined();
   expect(existsSync(call.cwd)).toBe(false);
   const rows = await readProcessTable(); expect(rows).toBeDefined(); expect(rows!.some(row => row.pgid === call.pid)).toBe(false);
+}, 10_000);
+
+test("#863 remote default probe ignores a parent repository's insteadOf config", async () => {
+  const f = fixture(), parent = join(f.project, "parent"); mkdirSync(parent);
+  for (const args of [["init", "-q", parent], ["-C", parent, "config", "url.file:///parent-poison/.insteadOf", "https://github.com/"]]) {
+    const result = hubGitSync(args, { encoding: "utf8", timeout: 1000 });
+    expect(result.status, result.stderr).toBe(0);
+  }
+  const child = join(parent, "control"); mkdirSync(child);
+  const git = hostExecutable("git", f.project, "/usr/bin:/bin");
+  const control = spawnSync(git, ["config", "--get", "url.file:///parent-poison/.insteadOf"], {
+    cwd: child, env: { PATH: "/usr/bin:/bin", GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: "/dev/null" }, encoding: "utf8", timeout: 1000,
+  });
+  expect(control.status, control.stderr).toBe(0); expect(control.stdout.trim()).toBe("https://github.com/");
+  writeFileSync(join(f.bin, "git"), `#!${process.execPath}
+import { spawnSync } from "node:child_process";
+import { writeFileSync } from "node:fs";
+const result = spawnSync(${JSON.stringify(git)}, ["config", "--get", "url.file:///parent-poison/.insteadOf"], { env: process.env, encoding: "utf8" });
+writeFileSync(${JSON.stringify(f.trace)}, JSON.stringify({ status: result.status, stdout: result.stdout }));
+if (result.status === 1) process.stdout.write(${JSON.stringify(receipt)}); else process.exitCode = 1;
+`, { mode: 0o700 });
+  // Run the actual probe with only its temporary-directory allocator relocated under a private parent repo.
+  // Never plant .git in the shared OS temp directory; every other host/policy port stays real.
+  const source = readFileSync(new URL("../src/hub/task-shell-default.ts", import.meta.url), "utf8")
+    .replace(/^import .*;\n/gm, "").replace("export async function", "async function");
+  const probe: typeof readTaskShellDefaultBranch = runInNewContext(new Bun.Transpiler({ loader: "ts" }).transformSync(source) + "\nreadTaskShellDefaultBranch", {
+    ...fs, ...paths, spawn, stopOwnedProcess, trackGroup, hostExecutable, hubGitArgv, hubGitEnv, realPath, isGitHubRepository, shortBranch,
+    Buffer, TextDecoder, setTimeout, clearTimeout, setInterval, clearInterval,
+    mkdtempSync: () => fs.mkdtempSync(join(parent, "probe-")),
+  });
+  expect(await probe(f.project, f.env, () => true, f.project, "fixture/repo", 1000)).toBe("release");
+  expect(JSON.parse(readFileSync(f.trace, "utf8"))).toEqual({ status: 1, stdout: "" });
 }, 10_000);
 
 test("remote default probe refuses missing authority or invalid repository before any spawn", async () => {
