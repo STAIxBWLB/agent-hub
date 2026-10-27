@@ -1,5 +1,11 @@
 [
   {
+    "predicate": "isWsPeer",
+    "function": "src/hub/claude-launch-proof.ts:createClaudeLaunchProof.owner",
+    "count": 1,
+    "reason": "Intentional host Claude launch proof: only a fixed-builtin Claude channel actual WsPeer can supply socket generation and native-turn ownership; generic adapter generations cannot prove it."
+  },
+  {
     "predicate": "isAcpPeer",
     "function": "src/hub/daemon.ts:startDaemon.actionEnforcement",
     "count": 1,
@@ -19,12 +25,6 @@
   },
   {
     "predicate": "isPiPeer",
-    "function": "src/hub/daemon.ts:startDaemon.actionEnforcement",
-    "count": 1,
-    "reason": "Always-ask enforceability depends on native approval RPC and live hook/bridge evidence; retain host proof dispatch until a separately specified policy port exists."
-  },
-  {
-    "predicate": "isWsPeer",
     "function": "src/hub/daemon.ts:startDaemon.actionEnforcement",
     "count": 1,
     "reason": "Always-ask enforceability depends on native approval RPC and live hook/bridge evidence; retain host proof dispatch until a separately specified policy port exists."
@@ -52,12 +52,6 @@
     "function": "src/hub/daemon.ts:startDaemon.changePermission",
     "count": 3,
     "reason": "Codex proxy restoration/attachment moves to fixed-builtin-gated frontendProxy in 2d; Claude launch generation proof moves in 2e and TUI form in 2b."
-  },
-  {
-    "predicate": "isWsPeer",
-    "function": "src/hub/daemon.ts:startDaemon.changePermission",
-    "count": 1,
-    "reason": "Claude launch-generation proof remains native until 2e; generic unmanaged TUI form moved to form in 2b."
   },
   {
     "predicate": "isLocalPeer",
@@ -110,20 +104,8 @@
   {
     "predicate": "isWsPeer",
     "function": "src/hub/daemon.ts:startDaemon.onMessage",
-    "count": 10,
-    "reason": "Authenticated channel hello/receipts/inbox and native facts/Stop bind to the host socket generation; Jcode TUI tuple and Kimi admission remain fixed native proofs, with Claude hook extraction in 2e."
-  },
-  {
-    "predicate": "isWsPeer",
-    "function": "src/hub/daemon.ts:startDaemon.onMessage.finishStop",
-    "count": 1,
-    "reason": "Claude Stop completion must match the current channel generation before changing occupancy; launch proof extraction belongs to 2e."
-  },
-  {
-    "predicate": "isWsPeer",
-    "function": "src/hub/daemon.ts:startDaemon.permissionDisplay",
-    "count": 1,
-    "reason": "Claude permission display reads the current authenticated channel and hook generation; host launch proof extraction belongs to 2e."
+    "count": 6,
+    "reason": "Intentional authenticated channel hello/receipts/inbox, native-facts socket ownership and Kimi admission. Channel permission/native-turn proof now uses host ClaudeLaunchProof.owner."
   },
   {
     "predicate": "isAcpPeer",

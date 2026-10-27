@@ -8,7 +8,7 @@ import { canonicalMemorySymbolNode, resolveMemorySymbolNodes, type MemorySymbolN
 import { AsyncLocalStorage } from "node:async_hooks";
 import { normalizeUsage } from "../omniroute/usage.ts";
 import { permissionPayload } from "./permission-payload.ts";
-import { readClaudeLaunchProof } from "./claude-launch-proof.ts";
+import { createClaudeLaunchProof, readClaudeLaunchProof } from "./claude-launch-proof.ts";
 import { InboxPolling } from "./inbox-polling.ts";
 import { ActionBudgets, actionPolicyConfig, type ActionPolicyConfig } from "./action-policy.ts";
 import { actionGate, claudeActionClasses } from "./action-enforce.ts";
@@ -1082,6 +1082,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const bus = new Bus({ rostered: membershipAllowed, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => reviewOnlyPeer(peer) && !reviewOnlyItem(peer, env) ? `not for ${peer}: a review-only instance receives review requests only` : env.refs?.boundedCheck || env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff() || relevantNotice(peer, env), silence,
     onImportantQueued: (peer, counts) => { const p = bus.peers.get(peer); if (isWsPeer(p)) p.notifyQueued(counts); } });
   startupCleanup.push(() => bus.closeJournal());
+  const claudeLaunchProof = createClaudeLaunchProof({ stateDir: opts.stateDir, cwd: opts.cwd, instanceId, definitionOf, peer: peer => bus.peers.get(peer) });
   const manualPaused = new Set<PeerId>(bus.manualPausedPeers()); // recovery never lifts an operator's pause
   const conductorHolds = new ConductorHolds(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => conductorHolds.close());
@@ -3080,11 +3081,11 @@ export async function startDaemon(opts: DaemonOptions) {
   // adapter with the gate, and only while its native mode is `ask`: Kimi's `yolo` and `auto` modes send no request for a call they allow.
   const actionEnforcement = (peer: PeerId): { enforced: boolean; reason?: string } => {
     if (definitionOf(peer)?.transport === "claude-channel") {
-      const launch = claudePermissionLaunch(peer), attached = bus.peers.get(peer);
+      const launch = claudeLaunchProof.permissionLaunch(peer), attached = claudeLaunchProof.owner(peer);
       // The launch record outlives the process, so it proves nothing alone: the attached session must be the generation whose hook last spoke to the hub.
       if (!launch) return { enforced: false, reason: "no hub permission hook in this Claude session (start it with ahub claude)" };
       if (launch.unattended) return { enforced: false, reason: "this Claude launch is --unattended: its permission checks, hooks included, are off" };
-      if (!isWsPeer(attached) || attached.state === "offline" || claudePermissionGenerations.get(peer) !== attached.sessionGeneration)
+      if (!attached || attached.state === "offline" || !claudeLaunchProof.verified(peer))
         return { enforced: false, reason: "no live Claude session has run the hub permission hook yet" };
       return { enforced: true };
     }
@@ -3107,7 +3108,6 @@ export async function startDaemon(opts: DaemonOptions) {
   const unattendedPeers = new Set<string>();
   const startingUnattended = new Map<string, boolean>();
   const nativeUnattended = (peer: string): boolean => startingUnattended.get(peer) ?? unattendedPeers.has(peer);
-  const claudePermissionGenerations = new Map<string, string>();
   const permissions = new Map<string, { push: string; peer: string; tool?: string; createdAt: number; expiresAt: number; done: (optionId: string | undefined, surface?: "console" | "dashboard" | "terminal", reason?: "expired" | "cancelled") => boolean }>();
   let stopping = false;
   const releaseAuthorizations = new ReleaseAuthorizations(opts.cwd, {
@@ -3327,9 +3327,10 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const permissionDisplay = (id: string, peer: PeerAdapter | undefined): string => {
     if (readOnlyPeer(id)) return "read-only";
-    if (definitionOf(id)?.transport === "claude-channel" && isWsPeer(peer) && peer.state !== "offline") {
-      const launch = claudePermissionLaunch(id);
-      if (!launch || claudePermissionGenerations.get(id) !== peer.sessionGeneration) return "unverified";
+    const channelOwner = claudeLaunchProof.owner(id);
+    if (channelOwner && channelOwner === peer && channelOwner.state !== "offline") {
+      const launch = claudeLaunchProof.permissionLaunch(id);
+      if (!launch || !claudeLaunchProof.verified(id)) return "unverified";
     }
     const native = peer?.permissionModeState;
     // An offline ask clears the hub choice, not a stopped ACP runtime's retained native field.
@@ -6235,11 +6236,6 @@ export async function startDaemon(opts: DaemonOptions) {
     return recoveryError("unknown recovery operation");
   }
 
-  function claudePermissionLaunch(peer: string): { launchId: string; unattended: boolean; hookPurpose?: string } | undefined {
-    if (!isFixedBuiltinDefinition(definitionOf(peer))) return undefined;
-    const row = readClaudeLaunchProof(opts.stateDir, peer, instanceId);
-    return row?.permissionHook ? row : undefined;
-  }
   async function changePermission(peer: unknown, mode: unknown, confirmed: unknown): Promise<Record<string, unknown>> {
     if (!isSupportedPeer(peer)) return { ok: false, error: "unknown permission peer" };
     if (readOnlyPeer(peer)) return { ok: false, error: "read-only ceiling is locked for this instance" };
@@ -6266,8 +6262,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!isPermissionMode(mode)) return { ok: false, error: "mode must be ask, ask-when-needed or never-ask" };
     if (mode === "never-ask" && confirmed !== true) return { ok: false, error: "never-ask needs --yes or console confirmation" };
     if (definitionOf(peer)?.transport === "claude-channel") {
-      const launch = claudePermissionLaunch(peer);
-      if (!launch || !isWsPeer(owner) || claudePermissionGenerations.get(peer) !== owner.sessionGeneration) return { ok: false, error: "Claude has no verified ahub claude permission hook; restart with ahub claude and run a tool first" };
+      const launch = claudeLaunchProof.permissionLaunch(peer);
+      if (!launch || claudeLaunchProof.owner(peer) !== owner || !claudeLaunchProof.verified(peer)) return { ok: false, error: "Claude has no verified ahub claude permission hook; restart with ahub claude and run a tool first" };
       if (launch.unattended) return { ok: false, error: "Claude started --unattended already skips prompts; run ahub permission claude ask after it stops to clear the hub choice, then restart without --unattended" };
     } else if (isFixedBuiltinDefinition(definitionOf(peer)) && isCodexPeer(owner)) {
       if (!owner.proxyAttached) return { ok: false, error: "Codex TUI is not behind the hub proxy; reconnect with ahub codex" };
@@ -6403,12 +6399,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
         if (!recoveryPeerAllowed(c.peer)) return sock.close(4403, "peer id is not part of the recovery roster");
         if (definitionOf(c.peer)?.transport === "claude-channel" && msg.launchId !== undefined) {
-          let currentLaunch: unknown;
-          try {
-            const launch = readClaudeLaunchProof(opts.stateDir, c.peer, instanceId);
-            if (launch) currentLaunch = launch.launchId;
-          } catch { /* No current launch evidence: retain plain/pre-daemon attachment compatibility. */ }
-          if (currentLaunch !== undefined && msg.launchId !== currentLaunch) return sock.close(4430, "Claude launch ended; start a new session with ahub claude");
+          if (claudeLaunchProof.helloLaunch(c.peer, msg.launchId) === "refuse") return sock.close(4430, "Claude launch ended; start a new session with ahub claude");
           if (typeof msg.launchId === "string" && msg.launchId.length <= 128) c.launchId = msg.launchId;
         }
         let peer = bus.peers.get(c.peer);
@@ -6783,15 +6774,7 @@ export async function startDaemon(opts: DaemonOptions) {
           }
           let nativeClaude = false;
           if (definitionOf(peer)?.transport === "claude-channel" && sessionId && msg.nativeInstanceId === instanceId) {
-            let expectedLaunch: string | undefined;
-            try {
-              const rows = JSON.parse(readFileSync(join(opts.stateDir, "terminal-recovery.json"), "utf8"));
-              expectedLaunch = Array.isArray(rows) ? rows.find(row => row?.peer === peer && definitionOf(row.peer)?.transport === "claude-channel" && row?.projectRoot === opts.cwd && row?.instanceId === instanceId)?.launchId : undefined;
-            } catch { /* an ordinary terminal has no Orca recovery identity */ }
-            try {
-              const launch = readClaudeLaunchProof(opts.stateDir, peer, instanceId);
-              if (launch) expectedLaunch = launch.launchId;
-            } catch { /* older/manual launches do not have a launcher marker */ }
+            const expectedLaunch = claudeLaunchProof.expectedLaunch(peer);
             const current = claudeSession(peer);
             if ((phase === "stop" || phase === "post") && current.sessionId && current.sessionId !== sessionId) return void reply({ t: "facts", ok: false });
             if (!expectedLaunch || msg.nativeLaunchId === expectedLaunch) {
@@ -6805,12 +6788,12 @@ export async function startDaemon(opts: DaemonOptions) {
             if (!nativeClaude) return void reply({ t: "facts", ok: false });
           }
           if (definitionOf(peer)?.transport === "claude-channel" && msg.nativeInstanceId !== undefined && msg.nativeInstanceId !== instanceId) return void reply({ t: "facts", ok: false });
-          const nativePeer = nativeClaude ? bus.peers.get(peer) : undefined;
-          const permissionLaunch = definitionOf(peer)?.transport === "claude-channel" ? claudePermissionLaunch(peer) : undefined;
+          const nativePeer = nativeClaude ? claudeLaunchProof.owner(peer) : undefined;
+          const permissionLaunch = definitionOf(peer)?.transport === "claude-channel" ? claudeLaunchProof.permissionLaunch(peer) : undefined;
           const writeRoot = declarations[peer]?.worktree ? ownerWriteRoot(peer) : executionRoot(peer);
           if (declarations[peer]?.worktree && writeRoot === undefined) return void reply({ t: "facts", ok: false });
           const permission = nativeClaude && permissionLaunch && !permissionLaunch.unattended && msg.nativeLaunchId === permissionLaunch.launchId && writeRoot !== undefined ? permissionMode(peer) : undefined;
-          if (permission !== undefined && isWsPeer(nativePeer)) claudePermissionGenerations.set(peer, nativePeer.sessionGeneration);
+          if (permission !== undefined && nativePeer) claudeLaunchProof.bindGeneration(peer, nativePeer.sessionGeneration);
           const protectedWrite = scopedWriteBlocked(phase, permission, msg.tool, () => projectFileTool(msg.tool, msg.input, writeRoot ?? opts.cwd, config.protect_instruction_files, config.data?.readonly));
           // Always-ask (#636): a classed call is asked about in every permission mode. The hub names only the classes, under the same verified root as the file policy above; the hook turns them into `ask`.
           const actionClasses = phase === "pre" && permission !== undefined && typeof msg.tool === "string" ? claudeActionClasses(actionBudgets, msg.tool, msg.input, writeRoot ?? opts.cwd) : [];
@@ -6820,7 +6803,7 @@ export async function startDaemon(opts: DaemonOptions) {
           const observesNative = purpose === "facts" || purpose === "idle" || purpose === "facts-and-idle" || (purpose === undefined && (config.coordination === "turn-free" || config.task_sweep.enabled || config.roles[peer]?.includes("conductor")));
           if (nativeClaude && !observesNative) return void reply({ t: "facts", ok: true, ...permissionReply });
           if (phase === "session") { recordSessions(); return void reply({ t: "facts", ok: true }); }
-          if ((phase === "start" || phase === "pre") && isWsPeer(nativePeer)) {
+          if ((phase === "start" || phase === "pre") && nativePeer) {
             const previous = nativeTurnStart.get(peer);
             const current = claudeSession(peer);
             if (phase === "start" || nativePeer.state !== "busy" || previous?.generation !== nativePeer.sessionGeneration || previous?.session !== sessionId || previous?.launch !== (current.launchId ?? "")) {
@@ -6843,7 +6826,7 @@ export async function startDaemon(opts: DaemonOptions) {
               const st = hookStats.get(peer)!;
               event({ type: "hook_stats", peer, n: st.n, startupMs: Math.round(st.startupMs), hubMs: Math.round(st.hubMs), maxStartupMs: Math.round(st.maxStartupMs) });
               hookStats.delete(peer);
-              if (id && isWsPeer(nativePeer)) nativePeer.nativeStopped(sessionId!);
+              if (id && nativePeer) nativePeer.nativeStopped(sessionId!);
               if (factsOn()) { factSession(peer, sessionId); readbacks(peer, claudeTranscript(sessionId, msg.transcriptPath, peer)); }
             };
             if (!nativeClaude) { finishStop(); reply({ t: "facts", ok: true }); return; } // legacy bookkeeping cannot certify native completion
@@ -6852,13 +6835,13 @@ export async function startDaemon(opts: DaemonOptions) {
             const readCompletion = () => { transcript ??= claudeTranscript(sessionId, msg.transcriptPath, peer); return session.sessionId && transcript ? readClaudeTranscriptCompletion(session.sessionId, transcript) : undefined; };
             const completionId = (id: string) => createHash("sha256").update(`${sessionId}:${session.launchId ?? "legacy"}:${id}`).digest("hex");
             const started = nativeTurnStart.get(peer);
-            const activeStart = !!started && started.session === sessionId && started.launch === (session.launchId ?? "") && isWsPeer(nativePeer) && started.generation === nativePeer.sessionGeneration;
+            const activeStart = !!started && started.session === sessionId && started.launch === (session.launchId ?? "") && !!nativePeer && started.generation === nativePeer.sessionGeneration;
             // A seen previous completion is a duplicate only outside an active start. During B it is B's baseline.
             if (!activeStart) {
               const latest = readCompletion();
               if (latest?.at && nativeStopsSeen.has(completionId(latest.id))) return void reply({ t: "facts", ok: true });
             }
-            if (!started || !activeStart || !isWsPeer(nativePeer)) { log("native Stop refused for claude: current native turn start unavailable"); return void reply({ t: "facts", ok: false }); }
+            if (!started || !activeStart || !nativePeer) { log("native Stop refused for claude: current native turn start unavailable"); return void reply({ t: "facts", ok: false }); }
             const scopeCurrent = () => {
               const now = claudeSession(peer);
               return !stopping && bus.peers.get(peer) === nativePeer && nativePeer.sessionGeneration === started.generation && now.sessionId === started.session && (now.launchId ?? "") === started.launch;

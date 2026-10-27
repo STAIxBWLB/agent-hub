@@ -2,6 +2,8 @@
 
 - Keep external-channel behavior in `src/adapters/channel-peer.ts`; the daemon owns socket authentication, admission and generation binding. Use adapter-owned native type predicates in core. Preserve the Codex `unidentified-cancellation` status notice while its attached session is latched; clear it on verified reattachment or TUI detachment.
 
+- Claude channel launch and permission-generation proof (#625 slice 2e) goes through the daemon-bound `createClaudeLaunchProof` in `src/hub/claude-launch-proof.ts`. Keep `owner` gated by fixed-builtin definition identity and actual `WsPeer`; a generic adapter generation never proves it. Keep the explicit headless child `currentImplementerTools` path and terminal execution-root record checks separate. Preserve legacy hello/facts admission and managed-record precedence over the matching terminal row.
+
 - Session/recovery dispatch (#625 slice 2c) reads `PeerAdapter.nativeSession`, never `definition.session.currentId`: local and reviewer context/memory provenance stays unbound. Keep Claude's session/claim proof in the daemon and `lastCodexThreads` as the resume-command fallback. An absent `recoveryReady` is settled; a present false or undefined value refuses. Call an idle owner's `captureResume` before recovery inspect/prepare/commit; preserve snapshot and protocol shapes.
 
 - For explicitly user-authorized live verification, use the per-invocation CLI delegation in `docs/security.md` §Agent CLI identity and conductor authority; keep caller markers and record native evidence separately from fixtures.
