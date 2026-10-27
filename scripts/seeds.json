@@ -3608,6 +3608,14 @@
       "replacement": "export async function verifyPublicFrame(input: { wire: Uint8Array; roster: VerifiedPublicRoster }): Promise<VerifiedPublicFrame> {\n  if (!(input.wire instanceof Uint8Array)) fail();\n  const wire = input.wire.slice();\n",
       "testFile": "test/broker-protocol.test.ts",
       "testName": "Buffer-backed public proofs retain verified bytes across input and output mutation"
+    },
+    {
+      "id": "broker-retained-duplicate",
+      "file": "src/broker/store.ts",
+      "search": "if (retained) {",
+      "replacement": "if (false) {",
+      "testFile": "test/broker-store.test.ts",
+      "testName": "retained lower-sequence packets deduplicate after a newer floor without inventing removed history"
     }
   ]
 }

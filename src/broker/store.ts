@@ -341,6 +341,14 @@ export class BrokerStore {
         expiredPrevious = true;
       }
       this.db.query("DELETE FROM queued_frames WHERE expires_at<=?").run(writeNow);
+      // A retained older packet is a known accepted outcome even after a newer
+      // sequence advanced the compact sender floor. Never recreate or rewrite it.
+      const retained = this.db.query<{ digest: string }, [string, string, string]>("SELECT digest FROM queued_frames WHERE room=? AND sender=? AND seq=?").get(proof.room, proof.sender, proof.seq);
+      if (retained) {
+        if (retained.digest !== proof.digest) fail("conflict");
+        result = { digest: proof.digest, duplicate: true };
+        return;
+      }
       const floor = this.db.query<{ seq: string; digest: string }, [string, string]>("SELECT seq,digest FROM sender_floors WHERE room=? AND sender=?").get(proof.room, proof.sender);
       if (floor) {
         const order = BigInt(proof.seq) - BigInt(floor.seq);

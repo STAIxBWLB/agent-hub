@@ -235,3 +235,21 @@ test("global packet and aggregate byte caps operate independently of the per-roo
     } finally { f.store.close(); f.cleanup(); }
   }
 });
+
+
+test("retained lower-sequence packets deduplicate after a newer floor without inventing removed history", async () => {
+  const f = await fixture();
+  try {
+    f.store.install(f.roster, f.owner.public.fingerprint);
+    const first = await f.frame("1"), second = await f.frame("2");
+    f.store.enqueue(first.proof, f.owner.public.fingerprint);
+    f.store.enqueue(second.proof, f.owner.public.fingerprint);
+    let duplicate: { digest: string; duplicate: boolean } | undefined;
+    expect(() => { duplicate = f.store.enqueue(first.proof, f.owner.public.fingerprint); }).not.toThrow();
+    expect(duplicate).toMatchObject({ duplicate: true });
+    expect(f.store.stats().queuedFrames).toBe(2);
+    f.store.ack(f.roster.room, f.guest.public.fingerprint, first.proof.digest);
+    expect(() => f.store.enqueue(first.proof, f.owner.public.fingerprint)).toThrow(BrokerStoreError);
+    expect(f.store.stats().queuedFrames).toBe(1);
+  } finally { f.store.close(); f.cleanup(); }
+});

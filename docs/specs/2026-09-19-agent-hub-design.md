@@ -960,7 +960,8 @@ wait behind an outgoing signature check without racing authentication state.
 
 Storage holds original sealed wire bytes plus public recipient fingerprints. It
 commits before `{type:"stored",digest,seq,duplicate}`. Sender sequence/digest floors
-survive queue ACKs/restart: known exact duplicates are idempotent; conflicting or
+survive queue ACKs/restart: the last accepted digest or an identical retained older
+packet is idempotent without requeueing; conflicting or
 unknown lower sequences refuse. FIFO uses SQLite admission row order, never lexical
 sequence strings or clock ties. Full queues refuse new packets without evicting
 accepted ones. Prior-epoch grace may expire a packet before its ordinary TTL.
