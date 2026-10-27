@@ -71,7 +71,7 @@ async function packageCli(argv: string[], cwd: string): Promise<string> {
 
 test("daemon default binding is shared v1 at AMEM_HOME independently of project state", async () => {
   const f = fixture(), h = await hub(f);
-  expect(await h.status()).toMatchObject({ home: f.memoryDir, profile: "shared-v1", state: "ready", agentMemVersion: "0.10.0" });
+  expect(await h.status()).toMatchObject({ home: f.memoryDir, profile: "shared-v1", state: "ready", agentMemVersion: "0.11.0" });
   expect((await h.task("hub_remember", { text: "shared default synthetic note", kind: "finding" })).ok).toBe(true);
   const store = new MemoryStore(); cleanup.push(() => store.close());
   expect(store.list({ project: f.project }).some(note => note.text === "shared default synthetic note")).toBe(true);
@@ -88,7 +88,7 @@ test("migrated daemon bridges legacy and package CLI and tools cross-read and cr
   await migrate({ memoryDir: f.memoryDir, mode: "apply", generation: G, authorizedPerson: true, tty: true });
   const h = await hub(f);
   const receipt = await h.status();
-  expect(receipt).toMatchObject({ home: f.memoryDir, profile: "generation", generation: G, state: "ready", agentMemVersion: "0.10.0" });
+  expect(receipt).toMatchObject({ home: f.memoryDir, profile: "generation", generation: G, state: "ready", agentMemVersion: "0.11.0" });
   expect(receipt.selectorRevision).toMatch(/^[a-f0-9]{64}$/);
   const old = await h.task("hub_memory_show", { ids: [oldId] });
   expect(old.ok).toBe(true); expect(old.text).toContain("legacy synthetic contract");
@@ -121,7 +121,7 @@ for (const invalid of ["invalid selector", "missing generation"] as const) {
     const original = legacyRows(f.memoryDir);
     writeFileSync(join(f.memoryDir, "profile.json"), invalid === "invalid selector" ? "not JSON\n" : JSON.stringify({ schema: "agent-mem.profile/v1", kind: "generation", generation: G }));
     const h = await hub(f);
-    expect(await h.status()).toMatchObject({ state: "unavailable", agentMemVersion: "0.10.0" });
+    expect(await h.status()).toMatchObject({ state: "unavailable", agentMemVersion: "0.11.0" });
     const result = await h.task("hub_remember", { text: "must never fall back to legacy", kind: "finding" });
     expect(`${result.text ?? ""} ${result.error ?? ""}`).not.toContain("saved to shared memory");
     const board = await h.task("hub_task_list", {}); expect(board.ok).toBe(true);
@@ -192,11 +192,11 @@ test("disk status keeps the reduced memory receipt while authenticated console r
   const f = fixture(), legacy = new MemoryStore({ profile: "shared-v1" }); legacy.close();
   await migrate({ memoryDir: f.memoryDir, mode: "apply", generation: G, authorizedPerson: true, tty: true });
   const h = await hub(f), full = await h.status();
-  expect(full).toMatchObject({ home: f.memoryDir, generation: G, profile: "generation", state: "ready", agentMemVersion: "0.10.0" });
+  expect(full).toMatchObject({ home: f.memoryDir, generation: G, profile: "generation", state: "ready", agentMemVersion: "0.11.0" });
   expect(full.selectorRevision).toMatch(/^[a-f0-9]{64}$/);
   expect(typeof full.skippedRows).toBe("number");
   const disk = JSON.parse(readFileSync(join(f.stateDir, "status.json"), "utf8")) as { memoryProfile: Record<string, unknown> };
-  expect(disk.memoryProfile).toMatchObject({ profile: "generation", generation: G.slice(0, 8), state: "ready", agentMemVersion: "0.10.0" });
+  expect(disk.memoryProfile).toMatchObject({ profile: "generation", generation: G.slice(0, 8), state: "ready", agentMemVersion: "0.11.0" });
   for (const field of ["home", "selectorRevision", "skippedRows"]) expect(disk.memoryProfile).not.toHaveProperty(field);
   const rendered = JSON.stringify(disk.memoryProfile);
   expect(rendered).not.toContain(f.memoryDir);
@@ -213,7 +213,7 @@ for (const mode of ["disabled", "unavailable"] as const) {
     }
     const h = await hub(f, { native: mode !== "disabled" });
     const unbound = await h.status();
-    expect(unbound).toMatchObject({ state: mode, home: f.memoryDir, agentMemVersion: "0.10.0" });
+    expect(unbound).toMatchObject({ state: mode, home: f.memoryDir, agentMemVersion: "0.11.0" });
     expect(unbound).not.toHaveProperty("profile");
     expect(unbound).not.toHaveProperty("generation");
     expect(unbound).not.toHaveProperty("selectorRevision");
