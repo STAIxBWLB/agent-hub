@@ -73,6 +73,10 @@ test("the merge records the merged PR's review and CI figures once, from the PR 
   expect(merge.cost).toEqual({ mergedAt: Date.parse(MERGED_AT), ciRuns: 2, ciReruns: 2, reviews: 2 });
   expect(f.calls.filter(args => args.join(" ").includes("mergedAt"))).toHaveLength(1);
   expect(f.calls.filter(args => args[1]?.includes("/actions/workflows/check.yml/runs"))).toHaveLength(1);
+  // The cost is read after the merge is observed, never before it: the PR is merged by the time the cost query is answered.
+  const mergeAt = f.calls.findIndex(args => args[0] === "pr" && args[1] === "merge"), costAt = f.calls.findIndex(args => args.join(" ").includes("mergedAt"));
+  expect(mergeAt).toBeGreaterThan(-1);
+  expect(costAt).toBeGreaterThan(mergeAt);
   // A repeat invocation reads and writes nothing more.
   const reads = f.calls.length;
   await f.tasks.guardedMerge(USER, f.id);

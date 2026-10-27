@@ -67,10 +67,18 @@ test("the release readiness report carries the release metrics and the CLI shows
 
 test("a legacy shipped release with no recorded train is skipped by the hotfix series, never counted as a zero", async () => {
   const r = rig({ hotfix_rate: { window: 10, min_samples: 3, min_delta: 0.5 } });
-  const release = await r.tasks.newRelease(USER, { name: "legacy", goal: "Train", order: 1 });
-  r.board.updateRelease(release.id, { state: "active" }, 0);
+  // Three legacy releases shipped with no train history at all, then nothing else: they say nothing about the hotfix rate.
+  for (const order of [1, 2, 3]) {
+    const release = await r.tasks.newRelease(USER, { name: `legacy-${order}`, goal: "Train", order });
+    const active = r.board.updateRelease(release.id, { state: "active" }, 0);
+    r.board.updateRelease(release.id, { state: "shipped" }, active.revision);
+  }
+  expect(r.board.releases().filter(release => release.state === "shipped" && !release.train)).toHaveLength(3);
   const report = r.tasks.sdlcMetrics("claude");
   expect(report.bands).toEqual([expect.objectContaining({ metric: "hotfix_rate", tier: "ok", baseline: 0, last: null, subject: "release" })]);
+  // A real shipped release after them is the first and only point.
+  await ship(r, 4);
+  expect(r.tasks.sdlcMetrics("claude").bands).toEqual([expect.objectContaining({ metric: "hotfix_rate", last: 0, baseline: 0 })]);
 });
 
 test("hotfix_rate band: a run of ordinary releases then a hotfix is one deduplicated card naming the release, not a task", async () => {
