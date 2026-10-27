@@ -23,6 +23,32 @@ export function cleanCostPlan(input: unknown): CostPlan {
   }
   return result;
 }
+/**
+ * #481 S7: what the guarded merge records about a merged PR, from the PR read once at merge. Every field is `null` when the read could not establish it, never 0.
+ * CI figures need the complete read (runs linked by every head of the PR); a rerun is an attempt after the first of one run id, i.e. the same head run again.
+ */
+export interface MergeCost { mergedAt: number | null; ciRuns: number | null; ciReruns: number | null; reviews: number | null }
+export function ciRunCounts(runs: readonly { id: number; attempt: number }[] | undefined): { runs: number; reruns: number } | null {
+  if (!runs || runs.length > 100) return null;
+  const attempts = new Map<number, number>();
+  for (const run of runs) {
+    if (!Number.isSafeInteger(run?.id) || run.id < 1 || !Number.isSafeInteger(run.attempt) || run.attempt < 1 || run.attempt > 10_000) return null;
+    attempts.set(run.id, Math.max(attempts.get(run.id) ?? 0, run.attempt));
+  }
+  return { runs: attempts.size, reruns: [...attempts.values()].reduce((sum, n) => sum + n - 1, 0) };
+}
+export function mergeCostFrom(pr: CostPr | undefined): MergeCost | undefined {
+  if (!pr || pr.state !== "MERGED") return undefined;
+  const counts = pr.complete ? ciRunCounts(pr.ciRuns) : null;
+  return { mergedAt: Number.isSafeInteger(pr.mergedAt) && pr.mergedAt! >= 0 ? pr.mergedAt! : null, ciRuns: counts?.runs ?? null, ciReruns: counts?.reruns ?? null,
+    reviews: Number.isSafeInteger(pr.reviews) && pr.reviews! >= 0 ? pr.reviews! : null };
+}
+/** Bounded, finite or absent: a stored record is data, never trusted shape. */
+export function cleanMergeCost(value: unknown): MergeCost | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>, field = (key: string) => Number.isSafeInteger(raw[key]) && (raw[key] as number) >= 0 ? raw[key] as number : null;
+  return { mergedAt: field("mergedAt"), ciRuns: field("ciRuns"), ciReruns: field("ciReruns"), reviews: field("reviews") };
+}
 const validRepo = (repo: string) => /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repo) && !repo.startsWith("-");
 const key = (repo: string, pr: number) => `${repo.toLowerCase()}#${pr}`;
 /** One round is a board review handoff, not one reviewer in a multi-reviewer round. CI attempts share a run id. */

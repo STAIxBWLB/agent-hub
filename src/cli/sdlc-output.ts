@@ -181,6 +181,12 @@ export function renderSdlcRelease(reply: unknown, columns?: number, now = Date.n
   if (a) out.push(blank, ...pair("authorization", `${a.state}: version ${a.receipt?.version ?? "unknown"} at ${short(a.receipt?.commit)}, approved ${moment(a.receipt?.at, now)}`, columns, w, a.state === "matched" ? "success" : "attention"));
   else out.push(blank, ...pair("authorization", "none recorded: run ahub sdlc authorize-release <version>", columns, w, "muted"));
   for (const t of list(r.trains)) out.push(...pair(`train #${t.release?.id ?? "?"}`, `${t.readiness?.trigger ?? "unknown"}${list(t.readiness?.blockers).length ? `, ${list(t.readiness.blockers).join("; ")}` : ""}`, columns, w, list(t.readiness?.blockers).length ? "attention" : undefined));
+  const rm = r.releaseMetrics;
+  if (rm) {
+    const mean = (values: unknown[]) => { const known = values.filter((v): v is number => typeof v === "number" && Number.isFinite(v)); return known.length ? span(known.reduce((a, b) => a + b, 0) / known.length) : "unknown"; };
+    out.push(blank, ...pair("releases", `${list(rm.intervals).length ? `interval ${mean(list(rm.intervals).map((i: any) => i.ms))} mean over ${plural(list(rm.intervals).length, "gap")}` : "interval unknown (needs two shipped releases with history)"}; lead time ${mean(list(rm.approvalToReleaseMs).map((x: any) => x.ms))} mean approval to release; hotfix rate ${percent(rm.hotfixRate)}${rm.hotfixCount === null || rm.hotfixCount === undefined ? "" : ` (${rm.hotfixCount})`}`, columns, w));
+    if (list(rm.unknown).length) out.push(...pair("unknown", `${plural(list(rm.unknown).length, "release")} without complete history: ${list(rm.unknown).map((id: number) => `#${id}`).join(", ")}`, columns, w, "attention", "  "));
+  }
   out.push(...bullets("blockers", list(r.blockers), columns, "attention"));
   return out;
 }
@@ -190,6 +196,7 @@ export function renderSdlcRelease(reply: unknown, columns?: number, now = Date.n
 const SUMMARY_ROWS: [string, string, boolean][] = [
   ["acceptance_to_plan_ms", "acceptance to plan", true], ["acceptance_to_first_review_ms", "acceptance to first review", true], ["acceptance_to_merge_ms", "acceptance to merge", true],
   ["rework_rounds", "rework rounds", false], ["same_head_ci_reruns", "same-head CI reruns", false], ["stale_head_re_reviews", "stale-head re-reviews", false],
+  ["review_rounds_at_merge", "review rounds at merge", false], ["ci_runs_at_merge", "CI runs at merge", false], ["github_reviews_at_merge", "GitHub reviews at merge", false],
 ];
 const BAND_TONE: Record<string, Tone> = { ok: "success", log: "muted", diagnose: "attention", propose: "failure" };
 /** `ahub sdlc metrics [--since ...]`: times and counts from board history, the two approval rates, stalls and band tiers. */

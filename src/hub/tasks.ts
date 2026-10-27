@@ -9,7 +9,9 @@ import { completePlanInventory, planConformance, planConformanceBlockers, planFi
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, type CostPlan, type ReviewCost } from "./cost-governance.ts";
 import { qualifiedTitleRepos, siblingTitleRefs, specRefs } from "./spec-read.ts";
-import { sdlcMetrics, type BandResult, type MetricTask, type MetricsReport } from "./sdlc-metrics.ts";
+import { sdlcMetrics, type BandMetric, type BandResult, type MetricTask, type MetricsReport, type SeriesPoint } from "./sdlc-metrics.ts";
+import { readSecurityScan } from "./security-baseline.ts";
+import { cleanMergeCost } from "./cost-governance.ts";
 import type { InstancesConfig } from "./instances.ts";
 import { composeRememberText } from "./memory-fail.ts";
 import { VERSION } from "../version.ts";
@@ -3036,7 +3038,50 @@ export class Tasks {
     const byKind: Record<string, number> = {};
     for (const stall of this.stalled()) if (visibleIds.has(stall.task)) byKind[stall.cause.kind] = (byKind[stall.cause.kind] ?? 0) + 1;
     const stalls = { open: Object.values(byKind).reduce((sum, n) => sum + n, 0), byKind, doneWithoutWrites: rows.filter(task => visibleIds.has(task.id) && task.history.findLast(entry => entry.event === "done")?.noWrites).length };
-    return sdlcMetrics(tasks, { ...(cutoff !== undefined ? { since: cutoff } : {}), ...(this.d.sdlc?.config().bands ? { bands: this.d.sdlc.config().bands } : {}), stalls, ...(merged ?? {}) });
+    // #481 S7: the merge-time readback the guarded merge recorded on each merged task's receipt (host-written, never a tool input), and the two series that are not made of tasks.
+    const mergedAt: Record<number, number> = {}, ciReruns: Record<number, number | null> = {}, ciRuns: Record<number, number | null> = {}, reviews: Record<number, number | null> = {};
+    for (const task of rows) {
+      const merge = task.sdlc?.merge;
+      if (!visibleIds.has(task.id) || merge?.state !== "merged") continue;
+      const cost = cleanMergeCost(merge.cost);
+      const at = cost?.mergedAt ?? (Number.isSafeInteger(merge.at) ? merge.at : null);
+      if (at !== null) mergedAt[task.id] = at;
+      if (cost) { ciReruns[task.id] = cost.ciReruns; ciRuns[task.id] = cost.ciRuns; reviews[task.id] = cost.reviews; }
+    }
+    return sdlcMetrics(tasks, { ...(cutoff !== undefined ? { since: cutoff } : {}), ...(this.d.sdlc?.config().bands ? { bands: this.d.sdlc.config().bands } : {}), stalls, mergedAt, ciReruns, ciRuns, reviews, external: this.externalSeries(), ...(merged ?? {}) });
+  }
+
+  /** #481 S7: one point per shipped release (1 for a hotfix, 0 otherwise; a release with no recorded train is skipped, never a 0) and one per recorded security scan whose total is known. */
+  private externalSeries(): Partial<Record<BandMetric, SeriesPoint[]>> {
+    const rows = this.d.board.list(), privateRelease = (id: number) => rows.some(task => task.release === id && this.isPii(task));
+    const hotfix = this.d.board.releases().filter(release => release.state === "shipped" && release.shippedAt !== null && release.train?.history.length && !privateRelease(release.id))
+      .sort((a, b) => a.shippedAt! - b.shippedAt! || a.id - b.id).map(release => ({ value: release.train!.hotfix ? 1 : 0, task: release.id }));
+    const config = this.d.sdlc?.config().securityScan, repo = config?.repo ?? this.d.repository;
+    const scans = config && typeof repo === "string" ? this.d.board.securityScans(repo, config.sources.join(",")).flatMap(scan => scan.total === null ? [] : [{ value: scan.total, task: scan.id }]) : [];
+    return { hotfix_rate: hotfix, security_open_alerts: scans };
+  }
+
+  /**
+   * #481 S7: the scheduled security-scan baseline. Reads the open-alert counts GitHub already holds (`security-baseline.ts`), records one row per interval and then runs the
+   * same band path as every other metric, so a breach is one deduplicated card. Held like every host writer; a private repository identity, a mode off, no `[security_scan]`
+   * table and a scan that is not yet due all do nothing. A source GitHub will not read (not enabled, not permitted) records an unknown total, never zero. Returns the scan id.
+   */
+  async runSecurityScan(now = Date.now()): Promise<number | undefined> {
+    const config = this.d.sdlc?.config(), scan = config?.securityScan;
+    if (!config || config.mode === "off" || !scan) return undefined;
+    const repo = scan.repo ?? this.d.repository;
+    if (typeof repo !== "string" || !this.nameable(repo)) return undefined;
+    const held = () => !!this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || !!this.d.bus.storageError;
+    if (held()) return undefined;
+    const sources = scan.sources.join(","), last = this.d.board.securityScans(repo, sources, 1).at(-1);
+    if (last && now - last.at < scan.everyH * 3_600_000) return undefined;
+    const read = await readSecurityScan(repo, scan.sources, this.d.sdlc?.gh ?? sdlcGh);
+    const after = this.d.sdlc?.config();
+    // The read awaited: the lifecycle, the schedule or a hold may have changed meanwhile, so nothing is written from a stale decision.
+    if (!read || held() || !after || after.mode === "off" || JSON.stringify(after.securityScan) !== JSON.stringify(scan)) return undefined;
+    const id = this.d.board.recordSecurityScan({ repo, sources, counts: read.counts as Record<string, number | null>, total: read.total });
+    this.proposeFromBands();
+    return id;
   }
 
   /**
@@ -3055,7 +3100,10 @@ export class Tasks {
   bandsState(): { ready: boolean; signature: string } {
     const config = this.d.sdlc?.config();
     const configured = !!config && config.mode !== "off" && !!config.bands && Object.keys(config.bands).length > 0;
-    return { ready: configured && !this.d.sweepHeld?.() && !this.d.bus.isRecoveryHeld && !this.d.bus.storageError, signature: configured ? JSON.stringify([config!.mode, config!.bands]) : "" };
+    // The release and scan series do not move the task board's revision, so what they last held is part of the signature: a shipped release or a new scan row is a reason to run again.
+    const external = configured ? this.externalSeries() : {};
+    return { ready: configured && !this.d.sweepHeld?.() && !this.d.bus.isRecoveryHeld && !this.d.bus.storageError,
+      signature: configured ? JSON.stringify([config!.mode, config!.bands, config!.securityScan ?? null, external.hotfix_rate?.length ?? 0, external.security_open_alerts?.at(-1)?.task ?? 0]) : "" };
   }
 
   proposeFromBands(by: PeerId = HUB): number[] {
@@ -3072,22 +3120,24 @@ export class Tasks {
     // A card counts as open while its task is not closed: the planner has not yet decided on it.
     const open = new Set(bandRows.filter(row => !isClosedTaskState(row.state)).map(row => keyOf(row).split(":")[0]!));
     const created: number[] = [];
+    // Fixed words and a number: a release or a security scan is named by its id, a task by `task #id`.
+    const subjectText = (band: BandResult, id: number) => band.subject === "release" ? `release #${id}` : band.subject === "scan" ? `security scan #${id}` : `task #${id}`;
     for (const band of report.bands as BandResult[]) {
       if (band.tier === "ok" || band.lastTask === null || band.episode === null) continue;
       const key = `${band.metric}:#${band.episode}`;
       if (band.tier === "log") {
         const marker = `${key}:log`;
-        if (!open.has(band.metric) && this.d.board.recordBandNotice(marker)) this.releaseNotice(`sdlc band: ${band.metric} is ${band.reason}; last value ${band.last} on task #${band.lastTask}`);
+        if (!open.has(band.metric) && this.d.board.recordBandNotice(marker)) this.releaseNotice(`sdlc band: ${band.metric} is ${band.reason}; last value ${band.last} on ${subjectText(band, band.lastTask)}`);
         continue;
       }
       if (seen.has(`${key}:propose`) || seen.has(`${key}:diagnose`) || open.has(band.metric)) continue;
       const tier = band.tier === "propose" ? "propose" : "diagnose";
       const full = `${key}:${tier}`;
-      const evidence = `metric ${band.metric}; newest value ${band.last} on task #${band.lastTask}; episode began at task #${band.episode}; baseline mean ${band.mean}, deviation ${band.sd} over ${band.baseline} tasks; ${band.reason}`;
+      const evidence = `metric ${band.metric}; newest value ${band.last} on ${subjectText(band, band.lastTask)}; episode began at ${subjectText(band, band.episode)}; baseline mean ${band.mean}, deviation ${band.sd} over ${band.baseline} ${band.subject === "release" ? "releases" : band.subject === "scan" ? "scans" : "tasks"}; ${band.reason}`;
       const diagnose = tier === "diagnose";
       const title = diagnose ? `Diagnose SDLC metric ${band.metric}: read-only triage` : `Review SDLC metric ${band.metric}: control band breach`;
       const detail = `Band breach key: ${full}\n${evidence}\n${diagnose
-        ? "Read-only triage for the planner: inspect the recent task histories behind this metric and report what changed. Do not edit files, branches or the board."
+        ? `Read-only triage for the planner: inspect the recent ${band.subject === "release" ? "releases" : band.subject === "scan" ? "security scans" : "task histories"} behind this metric and report what changed. Do not edit files, branches or the board.`
         : "Backlog card for the planner: decide whether this breach needs a process change. It names the metric and its evidence; it opens no GitHub issue."}`;
       const draft = { title, detail, refs: {} };
       const signals = this.signalsFor(draft);
@@ -3446,6 +3496,12 @@ export class Tasks {
       if (d.path && (!this.nameable(d.path) || matchesPolicy(this.d.cwd, d.path, this.d.piiPaths ?? [], true))) { const { path: _privatePath, ...metadata } = d; return metadata; }
       return d;
     });
+    // #481 AC12: release interval, lead time from approval to release and hotfix rate, from the shipped releases' recorded history; unknown stays null (never 0).
+    // Releases whose scope holds private work are left out, like the per-release report does.
+    const rowsNow = this.d.board.list();
+    const publicShipped = this.d.board.releases().filter(release => !rowsNow.some(task => task.release === release.id && this.isPii(task)));
+    const metrics = publicShipped.some(release => release.state === "shipped") ? releaseMetrics(publicShipped, rowsNow.filter(task => !this.isPii(task))) : undefined;
+    if (metrics) report.releaseMetrics = metrics;
     const trains = this.d.board.releases().filter(release => release.train && ["active", "frozen"].includes(release.state));
     if (trains.length) {
       const planned = trains.map(release => {

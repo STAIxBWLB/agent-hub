@@ -263,6 +263,8 @@ export class Board {
     this.db.run("CREATE TABLE IF NOT EXISTS task_stalls (task INTEGER PRIMARY KEY, payload TEXT NOT NULL)");
     // #481 S7: one row per log-tier band breach episode already announced, so a restart never repeats the notice.
     this.db.run("CREATE TABLE IF NOT EXISTS band_notices (marker TEXT PRIMARY KEY, at INTEGER NOT NULL)");
+    // #481 S7: one row per scheduled security scan. Counts only (no alert text); `total` is null when a named source could not be read completely.
+    this.db.run("CREATE TABLE IF NOT EXISTS security_scans (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, repo TEXT NOT NULL, sources TEXT NOT NULL, counts TEXT NOT NULL, total INTEGER)");
     // #843 AC3: one row per (agent id, installed version, planner) already queued, so a restart never repeats it.
     this.db.run("CREATE TABLE IF NOT EXISTS agent_drift_notices (marker TEXT PRIMARY KEY, at INTEGER NOT NULL)");
     // Derived status-cache generation: only Board task/stall writes advance it, never journal writes.
@@ -373,6 +375,15 @@ export class Board {
     if (old?.signature === stall.signature && old.replanRevision === stall.replanRevision) return false;
     this.taskWrite(() => this.db.query("INSERT INTO task_stalls(task,payload) VALUES(?,?) ON CONFLICT(task) DO UPDATE SET payload=excluded.payload").run(stall.task, JSON.stringify(stall)));
     return true;
+  }
+  /** #481 S7: the scan history of one repository and source set, oldest first. Counts and times only. */
+  securityScans(repo: string, sources: string, limit = 200): { id: number; at: number; total: number | null }[] {
+    const rows = this.db.query("SELECT id, at, total FROM security_scans WHERE repo=? AND sources=? ORDER BY id DESC LIMIT ?").all(repo.toLowerCase(), sources, Math.max(1, Math.min(1000, limit))) as { id: number; at: number; total: number | null }[];
+    return rows.reverse();
+  }
+  recordSecurityScan(row: { repo: string; sources: string; counts: Record<string, number | null>; total: number | null }): number {
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(row.repo) || !/^[a-z_,]{1,80}$/.test(row.sources) || (row.total !== null && (!Number.isSafeInteger(row.total) || row.total < 0))) throw new Error("invalid security scan row");
+    return Number(this.db.query("INSERT INTO security_scans(at, repo, sources, counts, total) VALUES(?,?,?,?,?)").run(Date.now(), row.repo.toLowerCase(), row.sources, JSON.stringify(row.counts), row.total).lastInsertRowid);
   }
   /** True when the marker was new (and is now recorded), false when it was announced before. Ids, metric names and task numbers only. */
   recordBandNotice(marker: string): boolean {

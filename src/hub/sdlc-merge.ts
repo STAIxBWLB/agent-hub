@@ -1,7 +1,8 @@
 import { findingsForHead, findingHead, findingTally } from "./review-findings.ts";
 import { readMergeQueue, type DeliveryTask, type MergeQueue } from "./sdlc-queue.ts";
 import { evalGapBlockers, evalGateView, evalReportedGap, evalRequiredChecks, readEvalFor, type EvalResult } from "./eval-gate.ts";
-import { readSdlcPr, stageDefinition, type AutoMergeMode, type PrEvidence, type SdlcConfig, type SdlcGh, type MergeRecord } from "./sdlc.ts";
+import { mergeCostFrom } from "./cost-governance.ts";
+import { readPrCostHistory, readSdlcPr, stageDefinition, type AutoMergeMode, type PrEvidence, type SdlcConfig, type SdlcGh, type MergeRecord } from "./sdlc.ts";
 
 /**
  * #786 T1/T2: the one guarded merge. Given a task and the head its reviewer approved, it re-reads the PR (`readSdlcPr`) and the merge queue
@@ -250,7 +251,14 @@ export async function guardedMerge(input: MergeInput & { mode: AutoMergeMode }):
   }
   const result: NonNullable<MergeOutcome["result"]> = after?.state === "MERGED" ? {exit,state:"merged",...(after.mergeCommit?{mergeCommit:after.mergeCommit}:{})} : after ? {exit,state:"not_merged"} : {exit,state:"unknown"};
   if (input.recordMerge) {
-    let record: MergeRecord={repo:decision.repo,pr:decision.pr,head:decision.head,at:Date.now(),...result,cleanup:"not_started",ownerNotice:"not_started"};
+    // #481 S7: the merged PR's review and CI figures, read once now that the merge is observed. After the merge there is nothing left to race, so this await is fine;
+    // its own bound keeps a slow GitHub from holding the record, and a failed read records no cost (unknown), never a zero.
+    const costDeadline = performance.now() + 8000;
+    const cost = result.state === "merged" ? await readPrCostHistory(decision.repo, decision.pr, (args, timeout, cwd, cap) => {
+      const left = costDeadline - performance.now();
+      return left > 0 ? input.run(args, Math.min(timeout ?? 10_000, left), cwd, cap) : Promise.resolve({ code: 1, stdout: "" });
+    }).then(mergeCostFrom, () => undefined) : undefined;
+    let record: MergeRecord={repo:decision.repo,pr:decision.pr,head:decision.head,at:Date.now(),...result,...(cost?{cost}:{}),cleanup:"not_started",ownerNotice:"not_started"};
     const save = () => {try {return input.recordMerge!({...record});}catch{return false;}};
     if (!save()) {record={...record,cleanup:"skipped",reason:"authority_changed"};save();}
     else if (result.state!=="merged" || !result.mergeCommit) {record={...record,cleanup:"skipped",reason:result.state==="merged"?"missing_commit":"not_merged"};save();}

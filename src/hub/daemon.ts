@@ -584,6 +584,8 @@ export interface DaemonOptions {
   agentDriftEveryMs?: number;
   /** Test seam: an extra hold on the SDLC band evaluation, like a storage error. */
   bandsHeld?: () => boolean;
+  /** Test seam: how often the scheduled security-scan baseline checks whether a scan is due, default one hour (the configured `every_h` still decides). */
+  securityScanEveryMs?: number;
   /** How long a research record waits after an approval for the task's open turns to end (#247). Tests shrink this. */
   researchGraceMs?: number;
   /** Tests observe timer-driven sync without opening a remote; production uses the package sync. */
@@ -2686,6 +2688,11 @@ export async function startDaemon(opts: DaemonOptions) {
         bandsRevision = `${board.statusRevision()}:${state.signature}`; // after the write: the cards this pass made are not a reason to run again
       } catch (error) { log(`sdlc band evaluation failed: ${sanitize((error as Error).message).slice(0, 160)}`); }
     }, opts.bandsEveryMs ?? 300_000),
+    // #481 S7: the scheduled security-scan baseline. The tick only asks whether a scan is due; the configured interval, the holds and the lifecycle mode decide inside.
+    setInterval(() => {
+      if (stopping || recoveryActive() || opts.bandsHeld?.()) return;
+      void tasks.runSecurityScan().catch(error => log(`sdlc security scan failed: ${sanitize((error as Error).message).slice(0, 160)}`));
+    }, opts.securityScanEveryMs ?? 3_600_000),
     setInterval(() => {
       if (!ready || !memoryBinding) return;
       const before = memoryProblem;
