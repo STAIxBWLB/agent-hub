@@ -15,7 +15,7 @@
     "predicate": "isCodexPeer",
     "function": "src/hub/daemon.ts:startDaemon.actionEnforcement",
     "count": 1,
-    "reason": "Always-ask enforceability depends on native approval RPC and live hook/bridge evidence; retain host proof dispatch until a separately specified policy port exists."
+    "reason": "Intentional Codex action-policy enforceability read of actionGated, outside 2d frontend proxy/startup/revert scope. Replace only after a separately specified action-policy port; native policy may execute without sending approval RPCs."
   },
   {
     "predicate": "isLocalPeer",
@@ -48,22 +48,10 @@
     "reason": "Intentional host-channel pull-only nudge; only the daemon-owned authenticated WsPeer socket can receive this advisory."
   },
   {
-    "predicate": "isCodexPeer",
-    "function": "src/hub/daemon.ts:startDaemon.changePermission",
-    "count": 3,
-    "reason": "Codex proxy restoration/attachment moves to fixed-builtin-gated frontendProxy in 2d; Claude launch generation proof moves in 2e and TUI form in 2b."
-  },
-  {
     "predicate": "isLocalPeer",
     "function": "src/hub/daemon.ts:startDaemon.conductor.validateRelease",
     "count": 1,
     "reason": "Intentional local route/model release validation belongs to the hub-native worker and its measured backend choice."
-  },
-  {
-    "predicate": "isCodexPeer",
-    "function": "src/hub/daemon.ts:startDaemon.confirmPermissionDefault",
-    "count": 1,
-    "reason": "Offline Codex frontend admission moves to fixed-builtin-gated frontendProxy in 2d; keep the existing refusal until then."
   },
   {
     "predicate": "isWsPeer",
@@ -108,18 +96,6 @@
     "reason": "Intentional authenticated channel hello/receipts/inbox, native-facts socket ownership and Kimi admission. Channel permission/native-turn proof now uses host ClaudeLaunchProof.owner."
   },
   {
-    "predicate": "isAcpPeer",
-    "function": "src/hub/daemon.ts:startDaemon.reconcileNativeStart",
-    "count": 1,
-    "reason": "Codex proxy startup/restoration and unattended refusals move to fixed-builtin-gated frontendProxy in 2d; unmanaged ACP preserves its slice-1 mode semantics."
-  },
-  {
-    "predicate": "isCodexPeer",
-    "function": "src/hub/daemon.ts:startDaemon.reconcileNativeStart",
-    "count": 2,
-    "reason": "Codex proxy startup/restoration and unattended refusals move to fixed-builtin-gated frontendProxy in 2d; unmanaged ACP preserves its slice-1 mode semantics."
-  },
-  {
     "predicate": "isPiPeer",
     "function": "src/hub/daemon.ts:startDaemon.recordSessions",
     "count": 1,
@@ -156,12 +132,6 @@
     "reason": "Kimi TUI admission remains native; A4 still requires AcpPeer identity and now restrictive deliveryOnly/hubOwned/headless ports. Pending owned-process state moved to its generic port in 2b."
   },
   {
-    "predicate": "isCodexPeer",
-    "function": "src/hub/daemon.ts:startDaemon.startPeerBody",
-    "count": 1,
-    "reason": "Pi replacement/handover and Kimi TUI admission remain native proofs; pending ACP process state moves in 2b, Codex proxy URL in 2d, and A4 keeps AcpPeer factory identity."
-  },
-  {
     "predicate": "isPiPeer",
     "function": "src/hub/daemon.ts:startDaemon.startPeerBody",
     "count": 3,
@@ -186,45 +156,27 @@
     "reason": "Intentional pi-rpc model-relay budget binds the active bridge owner and its current delivery envelopes."
   },
   {
-    "predicate": "isCodexPeer",
-    "function": "src/hub/daemon.ts:startDaemon.status",
-    "count": 1,
-    "reason": "Codex native status notice moves to gated statusNotice in 2d; local served-model and Pi relay telemetry and channel claiming/inbox timestamps remain native host evidence."
-  },
-  {
     "predicate": "isLocalPeer",
     "function": "src/hub/daemon.ts:startDaemon.status",
     "count": 1,
-    "reason": "Codex native status notice moves to gated statusNotice in 2d; local served-model and Pi relay telemetry and channel claiming/inbox timestamps remain native host evidence."
+    "reason": "Intentional local served-model and Pi relay telemetry and channel claiming/inbox timestamps remain native host evidence; builtin operator notices moved to the gated statusNotice port in 2d."
   },
   {
     "predicate": "isPiPeer",
     "function": "src/hub/daemon.ts:startDaemon.status",
     "count": 1,
-    "reason": "Codex native status notice moves to gated statusNotice in 2d; local served-model and Pi relay telemetry and channel claiming/inbox timestamps remain native host evidence."
-  },
-  {
-    "predicate": "isQwenDualPeer",
-    "function": "src/hub/daemon.ts:startDaemon.status",
-    "count": 1,
-    "reason": "The stalled and detached notices come from the dual-output adapter's own event-file state (statusNotice), shown beside Codex's; no generic status-notice port exists yet (#286 Part 3)."
+    "reason": "Intentional local served-model and Pi relay telemetry and channel claiming/inbox timestamps remain native host evidence; builtin operator notices moved to the gated statusNotice port in 2d."
   },
   {
     "predicate": "isWsPeer",
     "function": "src/hub/daemon.ts:startDaemon.status",
     "count": 2,
-    "reason": "Codex native status notice moves to gated statusNotice in 2d; local served-model and Pi relay telemetry and channel claiming/inbox timestamps remain native host evidence."
+    "reason": "Intentional local served-model and Pi relay telemetry and channel claiming/inbox timestamps remain native host evidence; builtin operator notices moved to the gated statusNotice port in 2d."
   },
   {
     "predicate": "isQwenDualPeer",
     "function": "src/hub/daemon.ts:startDaemon.stopPeer",
     "count": 1,
     "reason": "The hub never signals a person's Qwen TUI: a stop of that owner is refused with the instruction to end it in its own terminal, before the generic owned-process stop would run. No generic port marks an owner as person-held (#286 Part 3)."
-  },
-  {
-    "predicate": "isCodexPeer",
-    "function": "src/hub/daemon.ts:startDaemon.taskOpBody",
-    "count": 1,
-    "reason": "Delivery-only retry refusal moves to deliveryOnly in 2b; native Codex undo moves to fixed-builtin-gated revertTurn in 2d without weakening latest-turn/workspace proof."
   }
 ]

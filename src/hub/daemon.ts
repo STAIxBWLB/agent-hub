@@ -140,7 +140,7 @@ import { startDashboard, dashboardView, type DashboardSession } from "./ui.ts";
 import { codeGroup } from "./task-code-group.ts";
 import { DAEMON_FEATURES, PROTOCOL, readControl, stateDirFor } from "./control-client.ts";
 import { MAX_HOP, newEnvelope, parseMarker, replyParent, sanitize, USER, type Envelope, type PeerId, type Priority } from "./envelope.ts";
-import { BasePeer, DEFAULT_WATCHDOG_MS, type PeerAdapter } from "./peers.ts";
+import { BasePeer, DEFAULT_WATCHDOG_MS, type FrontendProxyPort, type PeerAdapter } from "./peers.ts";
 import { MemoryClient } from "../memory/client.ts";
 import { VERSION } from "../version.ts";
 import { appendRecords, taskRecords } from "./research.ts";
@@ -1083,6 +1083,10 @@ export async function startDaemon(opts: DaemonOptions) {
     onImportantQueued: (peer, counts) => { const p = bus.peers.get(peer); if (isWsPeer(p)) p.notifyQueued(counts); } });
   startupCleanup.push(() => bus.closeJournal());
   const claudeLaunchProof = createClaudeLaunchProof({ stateDir: opts.stateDir, cwd: opts.cwd, instanceId, definitionOf, peer: peer => bus.peers.get(peer) });
+  function frontendProxyState(peer: string, owner: PeerAdapter | undefined): { present: boolean; port: FrontendProxyPort | undefined } {
+    if (!owner || !isFixedBuiltinDefinition(definitionOf(peer)) || !("frontendProxy" in owner)) return { present: false, port: undefined };
+    return { present: true, port: owner.frontendProxy };
+  }
   const manualPaused = new Set<PeerId>(bus.manualPausedPeers()); // recovery never lifts an operator's pause
   const conductorHolds = new ConductorHolds(join(opts.stateDir, "hub.db"));
   startupCleanup.push(() => conductorHolds.close());
@@ -3013,7 +3017,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!isFixedBuiltinDefinition(definitionOf(turn.peer)) || !definitionOf(turn.peer)?.session.nativeRevert || !turn.native) throw new Error(`turn ${turn.id} has no Codex conversation turn to revert`);
         if (turnLog!.latest(turn.peer)?.id !== turn.id) throw new Error(`turn ${turn.id} is not Codex's latest turn; reverting it would drop the later ones too`);
         const codex = bus.peers.get(turn.peer);
-        if (!isCodexPeer(codex)) throw new Error("codex is not attached");
+        if (!codex?.revertTurn) throw new Error("codex is not attached");
         const workspace = turnLog!.workspace(turn.id);
         if (workspace !== undefined) {
           const current = readInstanceRoleConfig(opts.cwd), adapter = instanceDefinitionOf(turn.peer, current.instances, current.catalog);
@@ -3026,7 +3030,7 @@ export async function startDaemon(opts: DaemonOptions) {
         const held = bus.stateOf(turn.peer) !== "paused";
         if (held) bus.pause(turn.peer);
         try {
-          await codex.revert(turn.native);
+          await codex.revertTurn(turn.native);
         } finally {
           if (held && !manualPaused.has(turn.peer) && !budget.record(turn.peer) && !conductorHolds.has(turn.peer)) bus.resume(turn.peer);
         }
@@ -3409,7 +3413,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(isFixedBuiltinDefinition(definitionOf(id)) && (isCodexPeer(p) || isQwenDualPeer(p)) && p.statusNotice ? { statusNotice: p.statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: !!ownerWriteRoot(id) && ownerWriteRoot(id) !== opts.cwd, ...(!ownerWriteRoot(id) ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) && p.claiming ? { claiming: true } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
+      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); const statusNotice = isFixedBuiltinDefinition(definitionOf(id)) ? p?.statusNotice : undefined; return [id, { state: bus.stateOf(id), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(statusNotice ? { statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: !!ownerWriteRoot(id) && ownerWriteRoot(id) !== opts.cwd, ...(!ownerWriteRoot(id) ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) && p.claiming ? { claiming: true } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
     ),
     taskWip: tasks.wipBreakdown(peerIds),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
@@ -4360,7 +4364,9 @@ export async function startDaemon(opts: DaemonOptions) {
       if (adapter && configuredIds.includes(adapter.kind) && args.sessionId !== undefined && args.sessionId !== adapter.session.currentId(existing)) {
         return { ok: false, error: "configured ACP is already running a different native session; stop it before selecting another" };
       }
-      return { ok: true, already: true, ...(isFixedBuiltinDefinition(definitionOf(peer)) && isCodexPeer(existing) ? { proxyUrl: existing.proxyUrl } : {}) };
+      const proxy = frontendProxyState(peer, existing);
+      if (proxy.present && proxy.port === undefined) return { ok: false, error: "frontend proxy state unknown" };
+      return { ok: true, already: true, ...(proxy.port ? { proxyUrl: proxy.port.url } : {}) };
     }
     if (!adapter?.start.reconfigureWhileAttached) {
       if (isPiPeer(existing)) await stopPiForReplacement(existing);
@@ -4592,7 +4598,9 @@ export async function startDaemon(opts: DaemonOptions) {
         await codex.start();
         await reconcileNativeStart(peer, codex);
       } catch (error) { await codex.stop().catch(stop => log(`codex stop after a failed start: ${(stop as Error).message}`)); throw error; }
-      return { ok: true, proxyUrl: codex.proxyUrl };
+      const proxy = frontendProxyState(peer, codex);
+      if (proxy.present && proxy.port === undefined) return { ok: false, error: "frontend proxy state unknown" };
+      return { ok: true, ...(proxy.port ? { proxyUrl: proxy.port.url } : {}) };
     }
     if (adapter?.start.daemonPort === "pi-rpc") {
       if (!onRoster(peer)) return { ok: false, error: config.roster.pi === undefined ? "Pi is disabled; set pi.enabled in .agenthub/config.json" : "pi is off roster" };
@@ -6247,11 +6255,13 @@ export async function startDaemon(opts: DaemonOptions) {
     const unmanagedForm = owner ? owner.form === "tui" || "form" in owner && owner.form === undefined : startMode(peer) === "tui";
     if (definitionOf(peer)?.permission.unmanagedForms?.includes("tui") && unmanagedForm) return { ok: false, error: definitionOf(peer)!.permission.unmanagedNote };
     if (requestedPeerStops.has(peer)) return { ok: false, error: "peer stop is in progress; wait for ahub status before changing its mode" };
+    const proxy = frontendProxyState(peer, owner);
+    if (proxy.present && proxy.port === undefined) return { ok: false, error: "frontend proxy state unknown" };
     if (mode === "ask" && (!owner || owner.state === "offline")) {
       // A Codex proxy outlives its TUI and keeps its own copy of the mode: clear that too, or the next TUI that attaches
       // to it would run a mode the status no longer shows.
       // It is never refused here: a leftover non-ask mode must always be undoable while the peer is away.
-      const note = isFixedBuiltinDefinition(definitionOf(peer)) && isCodexPeer(owner) && !owner.clearPermissionMode() ? "The detached session's own approval policy was never reported, so its thread keeps what it last got; a new ahub codex session starts in ask" : undefined;
+      const note = proxy.port && !proxy.port.clearPermissionMode() ? "The detached session's own approval policy was never reported, so its thread keeps what it last got; a new ahub codex session starts in ask" : undefined;
       if (note) log(`permission mode codex: ${note}`);
       const from = permissionMode(peer);
       permissionModes.set(peer, "ask"); permissionModeSources.set(peer, "human runtime command"); pendingPermissionDefaults.delete(peer);
@@ -6259,7 +6269,7 @@ export async function startDaemon(opts: DaemonOptions) {
       log(`permission mode ${peer}: ${from} -> ask (offline hub choice cleared)`); writeStatus();
       return { ok: true, peer, permissionMode: "ask", ...(note ? { note } : {}) };
     }
-    if (isFixedBuiltinDefinition(definitionOf(peer)) && isCodexPeer(owner) && !owner.proxyAttached) return { ok: false, error: "Codex TUI is not behind the hub proxy; reconnect with ahub codex" };
+    if (proxy.port && !proxy.port.attached) return { ok: false, error: "Codex TUI is not behind the hub proxy; reconnect with ahub codex" };
     if (!owner || owner.state === "offline") return { ok: false, error: `${peer} is not attached; start it through ahub first` };
     if (mode === undefined) return { ok: true, peer, permissionMode: permissionDisplay(peer, owner) };
     if (!isPermissionMode(mode)) return { ok: false, error: "mode must be ask, ask-when-needed or never-ask" };
@@ -6268,8 +6278,8 @@ export async function startDaemon(opts: DaemonOptions) {
       const launch = claudeLaunchProof.permissionLaunch(peer);
       if (!launch || claudeLaunchProof.owner(peer) !== owner || !claudeLaunchProof.verified(peer)) return { ok: false, error: "Claude has no verified ahub claude permission hook; restart with ahub claude and run a tool first" };
       if (launch.unattended) return { ok: false, error: "Claude started --unattended already skips prompts; run ahub permission claude ask after it stops to clear the hub choice, then restart without --unattended" };
-    } else if (isFixedBuiltinDefinition(definitionOf(peer)) && isCodexPeer(owner)) {
-      if (!owner.proxyAttached) return { ok: false, error: "Codex TUI is not behind the hub proxy; reconnect with ahub codex" };
+    } else if (proxy.port) {
+      if (!proxy.port.attached) return { ok: false, error: "Codex TUI is not behind the hub proxy; reconnect with ahub codex" };
       if (nativeUnattended(peer)) return { ok: false, error: "Codex started --unattended already skips prompts; run ahub permission codex ask after it stops to clear the hub choice, then restart without --unattended" };
     }
     const from = permissionMode(peer);
@@ -6299,8 +6309,10 @@ export async function startDaemon(opts: DaemonOptions) {
       writeStatus(); return { ok: true, peer, permissionMode: permissionMode(peer) };
     }
     const owner = bus.peers.get(peer);
+    const proxy = frontendProxyState(peer, owner);
+    if (proxy.present && proxy.port === undefined) return { ok: false, error: "frontend proxy state unknown" };
     if (definitionOf(peer)?.permission.trackUnattended && nativeUnattended(peer)) return { ok: false, error: "Codex started --unattended cannot confirm a permission default; run ahub permission codex ask after it stops, or restart without --unattended" };
-    if (!starting.has(peer) && isFixedBuiltinDefinition(definitionOf(peer)) && isCodexPeer(owner) && owner.state === "offline") return { ok: false, error: "connect the Codex TUI through the hub proxy before confirming its default" };
+    if (!starting.has(peer) && proxy.port && owner?.state === "offline") return { ok: false, error: "connect the Codex TUI through the hub proxy before confirming its default" };
     if (!starting.has(peer) && owner && owner.state !== "offline") {
       const result = await changePermission(peer, "never-ask", true);
       if (!result.ok) return result;
@@ -6331,9 +6343,11 @@ export async function startDaemon(opts: DaemonOptions) {
     const result = await permissionChange(peer, async () => {
       if (stopping) return { ok: false, error: "hub is stopping" };
       const selected = permissionMode(peer);
-      if (isFixedBuiltinDefinition(definitionOf(peer)) && isCodexPeer(owner) && nativeUnattended(peer) && selected !== "ask") return { ok: false, error: "Codex --unattended cannot take a non-ask mode; run ahub permission codex ask, or restart without --unattended" };
-      if (!readOnlyPeer(peer) && !(isAcpPeer(owner) && owner.permissionModeState === "unmanaged") && owner.getPermissionMode() !== selected) {
-        if (isFixedBuiltinDefinition(definitionOf(peer)) && isCodexPeer(owner) && !owner.proxyAttached) owner.setStartupPermissionMode(selected);
+      const proxy = frontendProxyState(peer, owner);
+      if (proxy.present && proxy.port === undefined) return { ok: false, error: "frontend proxy state unknown" };
+      if (isFixedBuiltinDefinition(definitionOf(peer)) && definitionOf(peer)?.permission.trackUnattended && nativeUnattended(peer) && selected !== "ask") return { ok: false, error: "Codex --unattended cannot take a non-ask mode; run ahub permission codex ask, or restart without --unattended" };
+      if (!readOnlyPeer(peer) && owner.permissionModeState !== "unmanaged" && owner.getPermissionMode() !== selected) {
+        if (proxy.port && !proxy.port.attached) proxy.port.setStartupPermissionMode(selected);
         else await owner.setPermissionMode(selected);
       }
       // The bus may immediately drain at add(): do not expose an idle adapter until its current choice is applied.

@@ -15,6 +15,15 @@ export interface OwnedToolsLaunch {
   launchId: string; generation: string; sessionId: string; signal: AbortSignal; task?: number; permissionHook: true;
 }
 
+export interface FrontendProxyPort {
+  readonly url: string;
+  readonly attached: boolean;
+  /** Only before a frontend attaches, while offline and with no native restoration debt. */
+  setStartupPermissionMode(mode: PermissionMode): void;
+  /** Clear to ask while retaining any native restoration debt; false means its baseline is unknown. */
+  clearPermissionMode(): boolean;
+}
+
 export interface PeerAdapter {
   readonly id: PeerId;
   ownedTools?(launchId: unknown): OwnedToolsLaunch | undefined;
@@ -42,6 +51,12 @@ export interface PeerAdapter {
   captureResume?(): Promise<Record<string, unknown>>;
   /** Native session binding; absence or undefined is unbound, never inferred from a different reader. */
   readonly nativeSession?: string;
+  /** Fixed-builtin native proof only; present undefined is unknown, not an absent proxy. */
+  readonly frontendProxy?: FrontendProxyPort;
+  /** Fixed operator notices from builtin native adapters, never provider text or native ids. */
+  readonly statusNotice?: { code: "unidentified-cancellation" | "qwen-detached" | "qwen-stalled"; message: string };
+  /** Fixed builtins with session.nativeRevert only. Native conversation effects remain in the adapter. */
+  revertTurn?(nativeTurn: string): Promise<void>;
   /** Leave the roster without stopping a person's terminal. */
   detachForRoster?(resetMode: PermissionMode): void | Promise<void>;
   /** Return to the roster after detachForRoster. */

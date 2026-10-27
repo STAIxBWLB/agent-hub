@@ -43,13 +43,15 @@ test("#625 offline Codex clear reads native proof state only under the fixed res
       daemon: { codex: { cwd: "/unopened/fixture", appPort: 0, proxyPort: 0 } } });
     expect(isCodexPeer(owner)).toBe(true);
     let clears = 0;
-    Object.defineProperty(owner, "clearPermissionMode", { value: () => { clears++; return false; } });
+    Object.defineProperty(owner.frontendProxy!, "clearPermissionMode", { value: () => { clears++; return false; } });
     const policyPorts = { declarations: { locked: { readOnly: true } }, adapterCatalog: createProjectAdapterCatalog() };
     const isSupportedPeer = hostBinding("isSupportedPeer", policyPorts), readOnlyPeer = hostBinding("readOnlyPeer", policyPorts);
     expect(isSupportedPeer("codex")).toBe(true); expect(isSupportedPeer("foreign-unregistered")).toBe(false);
     expect(readOnlyPeer("locked")).toBe(true); expect(readOnlyPeer("codex")).toBe(false);
+    const frontendProxyState = hostFunction("function frontendProxyState(", "const manualPaused =", { isFixedBuiltinDefinition, definitionOf: () => definition });
     const run = hostFunction("async function changePermission(", "async function confirmPermissionDefault(", {
       isFixedBuiltinDefinition, isCodexPeer, definitionOf: () => definition, isSupportedPeer, readOnlyPeer,
+      frontendProxyState,
       requestedPeerStops: new Set(), bus: { peers: new Map([["codex", owner]]) },
       claudeLaunchProof: createClaudeLaunchProof({ stateDir: "/unopened/state", cwd: "/unopened/fixture", instanceId: "fixture", definitionOf: () => definition, peer: () => owner }),
       permissionMode: () => "ask", permissionModes: new Map(), permissionModeSources: new Map(), pendingPermissionDefaults: new Map(),
