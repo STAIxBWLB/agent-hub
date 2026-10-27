@@ -77,8 +77,9 @@ const refused: readonly [string, NativeReply][] = [
 for (const method of ["thread/start", "thread/resume"] as const) for (const [reason, response] of refused) test(`#525 planner ${method} refuses ${reason} without adoption or host delivery`, async () => {
   const f = await fixture(() => response);
   f.tui.send(JSON.stringify({ id: 2, method, params: method === "thread/resume" ? { threadId: "planner-thread" } : {} }));
-  await until(() => f.closed(), "unconfirmed planner link closed");
+  await until(() => f.seen.some(message => message.id === 2), "planner thread reply received");
   expect(f.seen.find(message => message.id === 2)).toEqual({ id: 2, error: { code: -32000, message: "Codex planner thread requires a confirmed read-only sandbox" } });
+  await until(() => f.closed(), "unconfirmed planner link closed");
   expect(f.peer.state).toBe("offline"); expect(f.peer.thread).toBe(""); expect(f.adopted).toEqual([]);
   await expect(f.peer.deliver([envelope()])).rejects.toThrow("not injectable");
   expect(f.requests.filter(message => message.method === "turn/start")).toEqual([]);
