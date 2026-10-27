@@ -85,7 +85,8 @@ function memoryGitEnv(env = process.env, options = {}) {
 }
 function memoryGitSync(args, options) {
   const argv = memoryGitArgv(args);
-  return childProcess().spawnSync(argv[0], argv.slice(1), { ...ambientGitTimeout !== undefined ? { timeout: ambientGitTimeout, killSignal: "SIGKILL" } : {}, ...options, env: memoryGitEnv(options.env ?? process.env) });
+  const timeout = gitTimeoutContext?.getStore();
+  return childProcess().spawnSync(argv[0], argv.slice(1), { ...timeout !== undefined ? { timeout, killSignal: "SIGKILL" } : {}, ...options, env: memoryGitEnv(options.env ?? process.env) });
 }
 function processSignature(pid) {
   try {
@@ -121,7 +122,7 @@ var require2, processes, childProcess = () => processes ??= require2("node:child
     const parent = dirname(absolute);
     return parent === absolute ? absolute : join(canonical(parent), basename(absolute));
   }
-}, DENY_SEGMENTS, DENY_NAMES, denyNamePatterns, hasSegment = (rel, seg) => `/${rel}/`.includes(`/${seg}/`), SAFE_CONFIG, CREDENTIAL_KEYS, memoryGitArgv = (args, opts = {}) => ["git", "--no-pager", ...SAFE_CONFIG.filter((c) => !opts.credentials || !CREDENTIAL_KEYS.has(c)).flatMap((c) => ["-c", c]), ...args], ambientGitTimeout;
+}, DENY_SEGMENTS, DENY_NAMES, denyNamePatterns, hasSegment = (rel, seg) => `/${rel}/`.includes(`/${seg}/`), SAFE_CONFIG, CREDENTIAL_KEYS, memoryGitArgv = (args, opts = {}) => ["git", "--no-pager", ...SAFE_CONFIG.filter((c) => !opts.credentials || !CREDENTIAL_KEYS.has(c)).flatMap((c) => ["-c", c]), ...args], gitTimeoutContext;
 var init_platform = __esm(() => {
   require2 = createRequire(import.meta.url);
   DENY_SEGMENTS = [".maru/secrets", ".agenthub/state", ".agenthub/archive"];
@@ -14042,8 +14043,49 @@ var init_lifecycle = __esm(() => {
   init_shard();
 });
 
+// node_modules/@staix/agent-mem/src/memory/search-score.ts
+function sql(expr, rank) {
+  const get = (part) => sql(part, rank);
+  switch (expr.op) {
+    case "rank":
+      return rank;
+    case "tier":
+      return `CASE tier ${Object.entries(TIER_WEIGHTS).map(([name, value]) => `WHEN '${name}' THEN ${real(value)}`).join(" ")} ELSE ${real(DEFAULT_TIER_WEIGHT)} END`;
+    case "age":
+      return `((julianday(?) - julianday(at)) / ${real(MONTH_DAYS)})`;
+    case "constant":
+      return real(expr.value);
+    case "negative":
+      return `(-(${get(expr.value)}))`;
+    case "reciprocal":
+      return `(1.0 / ${get(expr.value)})`;
+    case "add":
+      return `(${get(expr.left)} + ${get(expr.right)})`;
+    case "multiply":
+      return expr.right.op === "reciprocal" ? `(${get(expr.left)} / ${get(expr.right.value)})` : `(${get(expr.left)} * ${get(expr.right)})`;
+    case "max":
+      return `max(${get(expr.left)}, ${get(expr.right)})`;
+  }
+}
+function rankedScoreSql(rank = "bm25(docs)") {
+  return sql(SCORE, rank);
+}
+var MONTH_DAYS = 30, TIER_WEIGHTS, DEFAULT_TIER_WEIGHT = 0.9, TIER_FACTOR, DENOMINATOR, RECENCY_FACTOR, SCORE, real = (value) => Number.isInteger(value) ? `${value}.0` : String(value);
+var init_search_score = __esm(() => {
+  TIER_WEIGHTS = { long: 1, capture: 0.5 };
+  TIER_FACTOR = { op: "tier" };
+  DENOMINATOR = { op: "add", left: { op: "constant", value: 1 }, right: { op: "max", left: { op: "constant", value: 0 }, right: { op: "age" } } };
+  RECENCY_FACTOR = { op: "reciprocal", value: DENOMINATOR };
+  SCORE = { op: "multiply", left: { op: "multiply", left: { op: "negative", value: { op: "rank" } }, right: TIER_FACTOR }, right: RECENCY_FACTOR };
+});
+
 // node_modules/@staix/agent-mem/src/memory/search-fts.ts
-var init_search_fts = () => {};
+var SCREENED_SCORE, SCREENED_SUBSTRING_SCORE;
+var init_search_fts = __esm(() => {
+  init_search_score();
+  SCREENED_SCORE = rankedScoreSql();
+  SCREENED_SUBSTRING_SCORE = rankedScoreSql("-1.0");
+});
 
 // node_modules/@staix/agent-mem/src/memory/capture-input.ts
 var init_capture_input = __esm(() => {
@@ -14299,6 +14341,7 @@ var init_store = __esm(() => {
   init_machine();
   init_lifecycle();
   init_machine();
+  init_search_score();
   init_search_fts();
   init_shard();
   init_capture();
@@ -21763,7 +21806,7 @@ var tool2 = (name, description, inputSchema, readOnlyHint = true) => ({
   annotations: { readOnlyHint, destructiveHint: false, openWorldHint: false }
 });
 var MCP_TOOLS = [
-  tool2("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object6({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" } }, ["query"])),
+  tool2("amem_search", "Search screened memory in this project. Capture results are recall, not curated evidence.", object6({ query: string(1000), limit, since: string(40), includeCapture: { type: "boolean" }, explain: { type: "boolean" } }, ["query"])),
   tool2("amem_evidence", "Return a bounded bundle of cited, live curated entries for a question. Untrusted memory data only: no answer or model call. Capture, repo-only notes, pending candidates and model answers are not evidence.", object6({ question: string(1000), limit: { type: "integer", minimum: 1, maximum: 20 }, maxBytes: { type: "integer", minimum: 256, maximum: 8192 } }, ["question"])),
   tool2("amem_show", "Show a screened memory entry in this project by its exact id or unique prefix.", object6({ id: string(80) }, ["id"])),
   tool2("amem_timeline", "Read screened memory near an entry or time in this project.", object6({ id: string(80), since: string(40), limit })),
@@ -21922,7 +21965,7 @@ init_sdlc_metrics();
 // package.json
 var package_default = {
   name: "@staix/agent-hub",
-  version: "0.19.0",
+  version: "0.20.0",
   description: "Native multi-agent hub: Claude Code, Codex, Kimi Code, Pi and local inference as peers in one project",
   license: "MIT",
   type: "module",
@@ -21939,7 +21982,7 @@ var package_default = {
     bun: ">=1.4.2"
   },
   dependencies: {
-    "@staix/agent-mem": "0.10.0"
+    "@staix/agent-mem": "0.11.0"
   },
   devDependencies: {
     "@modelcontextprotocol/sdk": "^1.27.1",

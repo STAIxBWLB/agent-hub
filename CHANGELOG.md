@@ -4,6 +4,8 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.20.0
+
 - Pin @staix/agent-mem 0.11.0 (ranked search explanations, dated eval sets, and import and consolidation boundaries: Claude Code project-directory encoding, accepted-only relation targets, consolidation review receipts that survive pruning). Every amem that shares a memory home must run 0.11.0 or later to keep those receipts, so upgrade a global `amem` CLI too. Refs agent-mem#13.
 - The daemon dispatches delivery, lifecycle, session, recovery, the Claude launch proof and the Codex proxy and revert through generic peer ports instead of native type checks (#625 slices 2b to 2e: #882, #887, #890, #891). Behavior is unchanged; the native-branch ratchet shrank from 64 to 30 rows, and one Codex `actionEnforcement` branch stays on purpose for a later action-policy port.
 - Release preparation as an agent task and a guarded one-shot tag (#787 P3b): `scripts/release-prepare.ts` applies the version rule (any `feat` bumps the minor), README Status, CHANGELOG, bundle and a verification report skeleton on a `release/<version>` branch, lists native acceptance receipts from the repository and restamps only the documents an agent names with `--reviewed`; `scripts/release-tag.ts <version>` repeats the whole preflight, reads the person's consent through `ahub sdlc release-guard` and, only with `--execute`, makes the single push of the preflighted commit. Consent stays person-only and nothing here grants it. Refs #787.
