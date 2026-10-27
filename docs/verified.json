@@ -74,7 +74,10 @@
         "src/hub/permission-payload.ts",
         "src/hub/read-only-shell.ts",
         "src/hub/read-only-shell-proof.ts",
-        "src/hub/operational-authority.ts"
+        "src/hub/operational-authority.ts",
+        "test/daemon-native-branches.json",
+        "test/daemon-native-branches.test.ts",
+        "src/hub/claude-launch-proof.ts"
       ]
     },
     "docs/agent-notes/benchmarks.md": {
@@ -256,7 +259,8 @@
         "src/hub/deliverables.ts",
         "src/hub/deliverable-files.ts",
         "src/hub/sdlc-merge.ts",
-        "src/hub/sdlc-mirror.ts"
+        "src/hub/sdlc-mirror.ts",
+        "src/hub/ci-watch.ts"
       ]
     },
     "docs/agent-notes/tests.md": {
@@ -280,7 +284,11 @@
         "scripts/check-closing-refs.mjs",
         ".github/workflows/closing-refs.yml",
         "scripts/lib/ts-ast.ts",
-        "test/cli-json-guard.test.ts"
+        "test/cli-json-guard.test.ts",
+        "scripts/progress-tee.sh",
+        "scripts/release-prepare.ts",
+        "scripts/release-tag.ts",
+        "scripts/lib/release-plan.ts"
       ]
     },
     "docs/agent-notes/README.md": {
