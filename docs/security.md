@@ -62,9 +62,12 @@ within the previous epoch's 60-second grace.
 Private key export is explicit machine-local storage, not a transport format.
 X3 must enforce 0700 directories/0600 files, durable room/sender counters, atomic
 replay/inbox acceptance, one-time invite enrollment, persisted owner/epoch pins,
-and non-extending grace deadlines. Losing or rolling back that state requires a
-fresh identity/room enrollment, never silently resetting a nonce counter under
-the same key. The X1 tests use memory state ports; they do not prove crash safety,
+and non-extending grace deadlines derived from local rotation installation time
+plus 60,000 ms. Frame nonces are random 96-bit values, independent of sequence;
+counter rollback therefore does not deterministically reuse an encryption nonce.
+Lost or rolled-back state still compromises replay freshness and ordering. X3
+must reconcile that state before delivery; fresh enrollment is a defence-in-depth
+recovery option, not a confidentiality prerequisite for nonce uniqueness. The X1 tests use memory state ports; they do not prove crash safety,
 filesystem permissions or publication races. A same-user malicious process and
 member key theft are outside this protection. Later X4 framing/PII/role boundaries
 must hold before decrypted bytes reach the local bus; crypto alone grants no tool,

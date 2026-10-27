@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { generateHubIdentity, encodeBase64url, type HubIdentity } from "../src/rooms/crypto.ts";
+import { generateHubIdentity, encodeBase64url, decodeBase64url, encryptEpoch, importEpochKey, signBytes, hmac, type HubIdentity } from "../src/rooms/crypto.ts";
 import {
   ROOM_WIRE_LIMITS, RoomWireError, canonicalBytes, positiveU64,
   decodeFrame, decodeRoster, decodeInvite, decodeJoin, createRoomEpoch, acceptRoomEpoch,
@@ -15,7 +15,7 @@ const member = (identity: HubIdentity, label: string): RoomMember => ({ ...ident
 async function fixture() {
   const owner = await generateHubIdentity(), guest = await generateHubIdentity();
   const created = await createRoomEpoch({ owner, members: [member(owner, "owner"), member(guest, "guest")] });
-  const guestEpoch = await acceptRoomEpoch({ wire: created.wire, identity: guest, pin: { room: created.epoch.room, owner: owner.public.fingerprint, minEpoch: "1" } });
+  const guestEpoch = await acceptRoomEpoch({ wire: created.wire, identity: guest, pin: { room: created.epoch.room, owner: owner.public.fingerprint, minEpoch: "0" } });
   return { owner, guest, ...created, guestEpoch };
 }
 function sequence(): SequencePort {
@@ -78,7 +78,7 @@ test("owner-signed roster hides labels and exposures and pins owner/room/epoch/d
   await expect(acceptRoomEpoch({ wire: f.wire, identity: f.guest, pin: { ...pin, room: raw(32) } })).rejects.toThrow();
   await expect(acceptRoomEpoch({ wire: f.wire, identity: f.guest, pin: { ...pin, minEpoch: "2" } })).rejects.toMatchObject({ code: "wrong_epoch" });
   await expect(acceptRoomEpoch({ wire: f.wire, identity: f.guest, pin: { ...pin, digest: raw(32) } })).rejects.toThrow();
-  await expect(acceptRoomEpoch({ wire: canonicalBytes({ ...roster, signature: raw(64) }), identity: f.guest, pin: { room: pin.room, owner: pin.owner, minEpoch: "1" } })).rejects.toMatchObject({ code: "authentication_failed" });
+  await expect(acceptRoomEpoch({ wire: canonicalBytes({ ...roster, signature: raw(64) }), identity: f.guest, pin: { room: pin.room, owner: pin.owner, minEpoch: "0" } })).rejects.toMatchObject({ code: "authentication_failed" });
   const changed = canonicalBytes({ ...roster, privateNonce: raw(12) });
   await expect(acceptRoomEpoch({ wire: changed, identity: f.guest, pin })).rejects.toThrow();
   const outsider = await generateHubIdentity();
@@ -146,8 +146,8 @@ test("epoch rotation keeps sender sequence scope, permits grace only for current
   expect(result.status).toBe("accepted");
   await expect(openFrame({ wire: first, identity: f.guest, current: guestNext, previous, replay: inbox(guestNext).port, nowMs: 60000 })).rejects.toMatchObject({ code: "wrong_epoch" });
   const revoked = await createRoomEpoch({ owner: f.owner, members: [member(f.owner, "owner")], previous: next.epoch });
-  await expect(acceptRoomEpoch({ wire: revoked.wire, identity: f.guest, pin: { room: f.epoch.room, owner: f.owner.public.fingerprint, minEpoch: "2", digest: next.epoch.digest } })).rejects.toThrow();
-  const oldGuest = await sealFrame({ epoch: f.guestEpoch, identity: f.guest, recipients: [f.owner.public.fingerprint], plaintext: text.encode("revoked sender"), sequence: sequence() });
+  await expect(acceptRoomEpoch({ wire: revoked.wire, identity: f.guest, pin: { room: f.epoch.room, owner: f.owner.public.fingerprint, minEpoch: "2", digest: next.epoch.digest } })).rejects.toMatchObject({ code: "untrusted" });
+  const oldGuest = await sealFrame({ epoch: guestNext, identity: f.guest, recipients: [f.owner.public.fingerprint], plaintext: text.encode("revoked sender"), sequence: sequence() });
   await expect(openFrame({ wire: oldGuest, identity: f.owner, current: revoked.epoch, previous: { epoch: next.epoch, expiresAt: 60000 }, replay: inbox(revoked.epoch).port, nowMs: 1 })).rejects.toMatchObject({ code: "untrusted" });
 });
 
@@ -236,4 +236,54 @@ test("replay storage errors and malformed outcomes are fixed refusals", async ()
     { accept: async () => ({ status: "accepted", gap: -1 }) } as unknown as ReplayPort,
   ];
   for (const replay of ports) await expect(openFrame({ wire, identity: f.guest, current: f.guestEpoch, replay })).rejects.toMatchObject({ code: "state_unavailable", message: "Room wire: state_unavailable" });
+});
+
+
+test("a rolled-back sender sequence still uses fresh random frame nonces", async () => {
+  const f = await fixture();
+  const rolledBack: SequencePort = { reserve: async () => "1", isCurrent: () => true };
+  const args = { epoch: f.epoch, identity: f.owner, recipients: [f.guest.public.fingerprint], sequence: rolledBack };
+  const first = await sealFrame({ ...args, plaintext: text.encode("first plaintext") });
+  const second = await sealFrame({ ...args, plaintext: text.encode("other plaintext") });
+  expect(decodeFrame(first).seq).toBe(decodeFrame(second).seq);
+  expect(decodeFrame(first).nonce).not.toBe(decodeFrame(second).nonce);
+  for (const wire of [first, second]) {
+    const result = await openFrame({ wire, identity: f.guest, current: f.guestEpoch, replay: inbox(f.guestEpoch).port });
+    expect(result.status).toBe("accepted");
+  }
+  const replay = inbox(f.guestEpoch).port;
+  await openFrame({ wire: first, identity: f.guest, current: f.guestEpoch, replay });
+  await expect(openFrame({ wire: second, identity: f.guest, current: f.guestEpoch, replay })).rejects.toMatchObject({ code: "state_changed" });
+});
+
+test("an installed epoch requires its exact digest even for owner-signed retries", async () => {
+  const f = await fixture();
+  const pin = { room: f.epoch.room, owner: f.owner.public.fingerprint, minEpoch: "1" };
+  await expect(acceptRoomEpoch({ wire: f.wire, identity: f.guest, pin })).rejects.toMatchObject({ code: "untrusted" });
+  await expect(acceptRoomEpoch({ wire: f.wire, identity: f.guest, pin: { ...pin, digest: f.epoch.digest } })).resolves.toEqual(f.guestEpoch);
+  const next = await createRoomEpoch({ owner: f.owner, members: roomMembers(f.epoch), previous: f.epoch });
+  const retry = await createRoomEpoch({ owner: f.owner, members: roomMembers(f.epoch), previous: f.epoch });
+  expect(next.epoch.epoch).toBe(retry.epoch.epoch);
+  const installed = { ...pin, minEpoch: next.epoch.epoch, digest: next.epoch.digest };
+  await expect(acceptRoomEpoch({ wire: retry.wire, identity: f.guest, pin: installed })).rejects.toMatchObject({ code: "untrusted" });
+  await expect(acceptRoomEpoch({ wire: retry.wire, identity: f.guest, pin: { ...installed, digest: undefined } })).rejects.toMatchObject({ code: "untrusted" });
+});
+
+test("enrollment refuses a correctly authenticated low-order agreement key before consuming the invite", async () => {
+  const f = await fixture(), newcomer = await generateHubIdentity();
+  const inviteBytes = await createInvite({ epoch: f.epoch, owner: f.owner, broker: "wss://broker.example/", expiresAt: 1000, nowMs: 1 });
+  const invite = decodeInvite(inviteBytes);
+  const { secret: _, ...claims } = invite;
+  const secret = decodeBase64url(invite.secret, 32);
+  const member = { ...newcomer.public, agreementKey: raw(32) };
+  const nonce = raw(32), privateNonce = new Uint8Array(12);
+  const domain = (purpose: string, value: unknown) => canonicalBytes(["agent-hub.rooms.v1", purpose, value]);
+  const privateCiphertext = await encryptEpoch({ key: await importEpochKey(secret), purpose: "invite", context: domain("join-private", { invite: claims, member, nonce }), nonce: privateNonce, plaintext: canonicalBytes({ label: "new", exposedPeers: [] }) });
+  const core = { v: 1, type: "join", room: invite.room, owner: invite.owner, inviteId: invite.inviteId, member, nonce, privateNonce: encodeBase64url(privateNonce), privateCiphertext: encodeBase64url(privateCiphertext) };
+  const signature = encodeBase64url(await signBytes(newcomer, domain("join-signature", { invite: claims, request: core })));
+  const body = { ...core, signature };
+  const wire = canonicalBytes({ ...body, mac: encodeBase64url(await hmac(secret, domain("join-mac", { invite: claims, request: body }))) });
+  let consumed = false;
+  await expect(acceptJoin({ issuedInvite: inviteBytes, wire, owner: f.owner, nowMs: 2, enrollment: { consume: async () => { consumed = true; return "accepted"; } } })).rejects.toMatchObject({ code: "invalid_key" });
+  expect(consumed).toBe(false);
 });

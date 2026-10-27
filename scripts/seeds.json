@@ -3520,6 +3520,30 @@
       "replacement": "if (false) fail(\"state_changed\");",
       "testFile": "test/rooms-wire.test.ts",
       "testName": "outgoing reservation is consumed before crypto and a changed publication fence refuses"
+    },
+    {
+      "id": "rooms-random-nonce",
+      "file": "src/rooms/wire.ts",
+      "search": "const nonce = randomBytes(12);\n  const encrypted = await encryptEpoch({ key: current.key,",
+      "replacement": "const nonce = new Uint8Array(12);\n  const encrypted = await encryptEpoch({ key: current.key,",
+      "testFile": "test/rooms-wire.test.ts",
+      "testName": "a rolled-back sender sequence still uses fresh random frame nonces"
+    },
+    {
+      "id": "rooms-installed-digest",
+      "file": "src/rooms/wire.ts",
+      "search": "if (roster.epoch === min && (pin.digest === undefined || rosterDigest !== pin.digest)) fail(\"untrusted\");",
+      "replacement": "if (roster.epoch === min && pin.digest !== undefined && rosterDigest !== pin.digest) fail(\"untrusted\");",
+      "testFile": "test/rooms-wire.test.ts",
+      "testName": "an installed epoch requires its exact digest even for owner-signed retries"
+    },
+    {
+      "id": "rooms-join-agreement",
+      "file": "src/rooms/wire.ts",
+      "search": "await assertAgreementKeyUsable(join.member);",
+      "replacement": "void join.member;",
+      "testFile": "test/rooms-wire.test.ts",
+      "testName": "enrollment refuses a correctly authenticated low-order agreement key before consuming the invite"
     }
   ]
 }

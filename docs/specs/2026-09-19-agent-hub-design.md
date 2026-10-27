@@ -709,6 +709,7 @@ M6 internal inference, packaging
 ## Out of scope
 
 - Windows. Cross-machine rooms are an opt-in extension under #446, described below. The web UI was outside the original six milestones; issue #6 adds the local dashboard described below.
+- Room v1 excludes hosted multi-tenant service, multi-owner rooms, forward secrecy, traffic-metadata hiding, approval or permission-request relay, and cross-machine instances. Shared boards, remote roles and remote task ownership remain excluded; memory crosses only through the separate agent-mem git sync. No hub server is exposed.
 - OmniRoute daemon on the Mac; pooling subscription OAuth through any gateway.
 - Gemini CLI and OpenCode adapters beyond the ACP fallback note.
 - Switchyard `auto` route until v0.3.0 ships.
@@ -791,8 +792,10 @@ wraps, and an encrypted private roster. The encrypted portion contains the match
 member tuples, unique local labels and exposed peer ids. This resolves the freeze's
 signed-roster requirement without exposing labels or peer ids to the broker. All
 public and encrypted components are covered by the owner signature. A receiver
-pins room, owner fingerprint and its persisted minimum epoch (and digest at an
-already installed epoch); it verifies the signature, its exact key tuple, wrap,
+pins room, owner fingerprint and its persisted minimum epoch. Initial enrollment
+uses `minEpoch="0"`; positive values name an installed epoch, whose exact digest
+is mandatory when accepting that same epoch again. Missing or mismatched digests
+refuse even an otherwise valid owner-signed retry. It verifies the signature, its exact key tuple, wrap,
 private roster and identical membership before accepting a candidate. X3 must
 atomically install that candidate against its persisted pin. Replaying an old
 candidate must never reset the minimum epoch or a grace deadline.
@@ -802,8 +805,11 @@ ciphertext and signature. Recipients are hub fingerprints, not local peer ids.
 The body is opaque encrypted bytes, including any eventual local addressing,
 kind, trace and text. Frame AAD is exactly UTF-8 `room|epoch|sender|seq`. A
 sender-specific AES key is HKDF-derived from the epoch root and room/epoch/sender/
-roster digest context. The nonce is four zero bytes followed by big-endian uint64
-sequence. Thus different senders do not share a nonce/key pair. The sender's
+roster digest context. Every encryption attempt draws a fresh random 96-bit nonce
+from WebCrypto, independent of the sequence counter. A counter rollback therefore
+does not deterministically reuse a GCM nonce; per-sender subkeys also separate
+senders. Random-nonce collision bounds and a functioning runtime RNG remain
+cryptographic assumptions. The sender's
 signature additionally binds recipients, nonce, ciphertext and all header fields.
 X1 encryption authenticates bytes; X4 must still screen what those bytes may mean
 before any local bus delivery, including untrusted framing and the `status` ceiling.
@@ -814,10 +820,10 @@ There is no production in-memory fallback. `sealFrame` requires `SequencePort`:
 `reserve` durably consumes a strictly increasing room/sender counter that survives
 restart and epoch rotation, checking the installed roster digest. `isCurrent` is
 a final synchronous fence after crypto; X3 must additionally fence durable outbox
-publication. Failed attempts consume sequence numbers; they never reuse a nonce.
+publication. Failed attempts consume sequence numbers; each encryption attempt draws a fresh random nonce. Counter durability still protects replay/order state, rather than determining encryption nonces.
 
 `openFrame` verifies current sender/recipient membership, signature, epoch, nonce
-and GCM authentication before invoking `ReplayPort.accept`. In one transaction that
+length and GCM authentication before invoking `ReplayPort.accept`. In one transaction that
 port must recheck current and selected roster digests, current membership and its
 own local clock/grace deadline, compare the room/sender high-water mark, and commit
 accepted digest plus inbox delivery before release. Only `accepted` returns
@@ -827,7 +833,8 @@ D5 receipts may be resent only for that stored identical digest. Gaps are record
 not treated as proof that missing messages arrived. Callback failure refuses.
 
 Only the immediately preceding epoch may have a persisted 60-second local grace
-deadline. Both sender and receiver must still be current members with unchanged
+deadline. X3 must derive and persist that deadline as the local successful rotation
+installation time plus exactly 60,000 ms, never from caller or remote expiry input. Both sender and receiver must still be current members with unchanged
 keys; revocation therefore refuses immediately, including during grace. The port
 must refuse after expiry even if crypto crossed the deadline, and restarts or
 replayed rosters must not extend it. X1's optional `previous` and `nowMs` parameters
@@ -838,8 +845,10 @@ An out-of-band invite carries room, broker, pinned owner fingerprint, expiry,
 random invite id and random 256-bit one-time secret. Never send it to the broker or
 log it. A join exposes only its member public-key tuple and encrypted private
 label/exposure data. HMAC binds the full invitation claims and signed request;
-the member signature binds the same claims and request. A broker cannot replace
-keys or repurpose a request under a changed invitation. Owner expiry is exact;
+the member signature binds the same claims and request. Before consuming the
+invite, a trial X25519 agreement rejects unusable/low-order member public keys.
+This checks key usability, without claiming a separate private-key possession
+proof. A broker cannot replace keys or repurpose a request under a changed invitation. Owner expiry is exact;
 a joiner's preflight allows at most 10 minutes of clock skew, which grants no
 owner-side extension. `EnrollmentPort.consume` must compare the original stored
 invite digest and expiry, consume once, and persist identity/request outcome with

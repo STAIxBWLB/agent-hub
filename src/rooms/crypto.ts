@@ -197,6 +197,15 @@ async function checkedPublic(value: PublicHubIdentity): Promise<PublicHubIdentit
   if (toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", buf(decodeBase64url(copy.signingKey, 32))))) !== copy.fingerprint) fail("invalid_identity");
   return copy;
 }
+/** Reject unusable/low-order X25519 public keys before admitting a member. */
+export async function assertAgreementKeyUsable(identity: PublicHubIdentity): Promise<void> {
+  const pub = publicCopy(identity);
+  return operation(async () => {
+    await checkedPublic(pub);
+    const probe = await generatePair("X25519", false);
+    await agreement(probe.privateKey, await importPublic("X25519", decodeBase64url(pub.agreementKey, 32)));
+  }, "invalid_key");
+}
 function identityState(identity: HubIdentity): PrivateIdentity {
   return identities.get(identity) ?? fail("invalid_identity");
 }

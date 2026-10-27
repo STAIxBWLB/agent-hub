@@ -2,7 +2,7 @@
 import {
   assertRoomCryptoReady, decodeBase64url, encodeBase64url, randomBytes,
   encryptEpoch, decryptEpoch, importEpochKey, generateEpochKey, sha256,
-  signBytes, verifyBytes, hmac, verifyHmac, wrapEpochKey, unwrapEpochKey,
+  signBytes, verifyBytes, hmac, verifyHmac, wrapEpochKey, unwrapEpochKey, assertAgreementKeyUsable,
   type HubIdentity, type PublicHubIdentity, type EpochKey, type WrappedEpochKey,
 } from "./crypto.ts";
 
@@ -166,15 +166,16 @@ export function roomMembers(epoch: VerifiedEpoch): RoomMember[] { return structu
 function rosterContext(roster: Pick<RosterWire, "room" | "epoch" | "owner" | "members">): Uint8Array {
   return domain("epoch", { room: roster.room, epoch: roster.epoch, owner: roster.owner, members: roster.members });
 }
+/** minEpoch="0" is initial enrollment only; an installed epoch requires its digest. */
 export interface OwnerPin { room: string; owner: string; minEpoch: string; digest?: string }
 export async function acceptRoomEpoch(input: { wire: Uint8Array; identity: HubIdentity; pin: OwnerPin }): Promise<VerifiedEpoch> {
   await assertRoomCryptoReady();
   const roster = decodeRoster(input.wire), pin = input.pin;
   if (roster.room !== pin.room || roster.owner !== pin.owner) fail("untrusted");
-  const min = positiveU64(pin.minEpoch);
+  const min = pin.minEpoch === "0" ? "0" : positiveU64(pin.minEpoch);
   const rosterDigest = await digest(canonicalBytes(roster));
   if (BigInt(roster.epoch) < BigInt(min)) fail("wrong_epoch");
-  if (roster.epoch === min && pin.digest !== undefined && rosterDigest !== pin.digest) fail("untrusted");
+  if (roster.epoch === min && (pin.digest === undefined || rosterDigest !== pin.digest)) fail("untrusted");
   for (const member of roster.members) await authenticateIdentity(member);
   const owner = roster.members.find(m => m.fingerprint === roster.owner)!;
   if (!await verifyBytes(owner, domain("roster-signature", unsigned(roster)), decodeBase64url(roster.signature, 64))) fail("authentication_failed");
@@ -241,11 +242,6 @@ export interface ReplayPort {
 async function portCall<T>(call: () => Promise<T>): Promise<T> {
   try { return await call(); } catch { fail("state_unavailable"); }
 }
-function sequenceNonce(seq: string): Uint8Array {
-  const result = new Uint8Array(12);
-  new DataView(result.buffer).setBigUint64(4, BigInt(positiveU64(seq)), false);
-  return result;
-}
 function frameContext(epoch: VerifiedEpoch, sender: string): Uint8Array {
   return domain("sender-key", { room: epoch.room, epoch: epoch.epoch, sender, rosterDigest: epoch.digest });
 }
@@ -268,7 +264,7 @@ export async function sealFrame(input: {
   const binding = { room: epoch.room, sender, epoch: epoch.epoch, rosterDigest: epoch.digest };
   const seq = positiveU64(await portCall(() => sequence.reserve({ ...binding })));
   const header = { v: 1 as const, type: "frame" as const, room: epoch.room, epoch: epoch.epoch, sender, recipients, seq };
-  const nonce = sequenceNonce(seq);
+  const nonce = randomBytes(12);
   const encrypted = await encryptEpoch({ key: current.key, purpose: "frame", context: frameContext(epoch, sender), aad: frameAad(header), nonce, plaintext });
   const body = { ...header, nonce: encodeBase64url(nonce), ciphertext: encodeBase64url(encrypted) };
   const wire = canonicalBytes({ ...body, signature: encodeBase64url(await signBytes(identity, domain("frame-signature", body))) });
@@ -303,8 +299,7 @@ export async function openFrame(input: {
   const selectedState = state(selected);
   if (frame.recipients.some(fp => !selectedState.roster.members.some(m => m.fingerprint === fp))) fail("untrusted");
   if (!await verifyBytes(sender, domain("frame-signature", unsigned(frame)), decodeBase64url(frame.signature, 64))) fail("authentication_failed");
-  const nonce = sequenceNonce(frame.seq);
-  if (encodeBase64url(nonce) !== frame.nonce) fail("authentication_failed");
+  const nonce = decodeBase64url(frame.nonce, 12);
   const plaintext = await decryptEpoch({ key: selectedState.key, purpose: "frame", context: frameContext(selected, frame.sender), aad: frameAad(frame), nonce, ciphertext: decodeBase64url(frame.ciphertext) });
   if (plaintext.length > ROOM_WIRE_LIMITS.plaintext) fail("limit");
   if (!replay || typeof replay.accept !== "function") fail("state_unavailable");
@@ -375,6 +370,7 @@ export async function acceptJoin(input: {
   if (!await verifyHmac(secret, domain("join-mac", { invite: inviteClaims(invite), request: { ...core, signature: join.signature } }), decodeBase64url(join.mac, 32))) fail("authentication_failed");
   await authenticateIdentity(join.member);
   if (!await verifyBytes(join.member, domain("join-signature", { invite: inviteClaims(invite), request: core }), decodeBase64url(join.signature, 64))) fail("authentication_failed");
+  await assertAgreementKeyUsable(join.member);
   const key = await importEpochKey(secret);
   const plain = await decryptEpoch({ key, purpose: "invite", context: joinContext(invite, join.member, join.nonce), nonce: decodeBase64url(join.privateNonce, 12), ciphertext: decodeBase64url(join.privateCiphertext) });
   const privateData = decode(plain, 4096, x => { const o = object(x, ["label", "exposedPeers"]); return { label: id(o.label), exposedPeers: exposed(o.exposedPeers) }; });
