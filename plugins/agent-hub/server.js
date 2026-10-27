@@ -21429,7 +21429,7 @@ function externalMetadataDefinitions(raw) {
 }
 var INSTANCE_ID = /^[a-z][a-z0-9-]{0,31}$/;
 var INSTANCE_ROLES = ["implementer", "verifier", "reviewer"];
-var INSTANCE_REFUSALS = ["catalog-unavailable", "binding-changed", "ownership-unverified", "off-roster", "not-started"];
+var INSTANCE_REFUSALS = ["catalog-unavailable", "module-refused", "binding-changed", "ownership-unverified", "off-roster", "not-started"];
 function externalInstanceCatalog(raw) {
   const catalog = moduleDataObject(raw);
   if (Object.keys(catalog).some((key) => !["schema", "projectRoot", "epoch", "fingerprint", "instances"].includes(key)) || catalog.schema !== 1 || typeof catalog.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(catalog.fingerprint))
@@ -22274,6 +22274,7 @@ function validateInstances(raw, catalog) {
     if (!definition)
       return fail4(`${path}.kind`, "unknown native kind (a live startup catalog is required for external instances)");
     const moduleInstance = catalog.externalDefinitions.some((item) => item.kind === kind);
+    let moduleRoles;
     if (moduleInstance) {
       const optIn = definition.headlessInstances;
       if (!optIn || optIn.form !== "headless" || !supportsHeadlessInstances(definition))
@@ -22284,10 +22285,11 @@ function validateInstances(raw, catalog) {
         return fail4(`${path}.start_mode`, "external instances start headless only");
       if (!entry.worktree)
         return fail4(`${path}.worktree`, "every external instance requires its own managed worktree");
-      const requestedRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : definition.roles;
       const allowedRoles = optIn.roles;
+      const requestedRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : definition.roles.filter((role) => allowedRoles.includes(role));
       if (!requestedRoles.length || requestedRoles.some((role) => !allowedRoles.includes(role) || !definition.roles.includes(role)))
         return fail4(`${path}.roles`, "roles must fit the external module's explicit instance subset and kind ceiling");
+      moduleRoles = requestedRoles;
       if (entry.permission_mode) {
         const mode = entry.permission_mode.value;
         if (!isPermissionMode(mode) || !definition.permission.genericAcp?.modes?.[mode])
@@ -22296,7 +22298,7 @@ function validateInstances(raw, catalog) {
     }
     if (!id.startsWith(prefix) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length)))
       return fail4(path, "id must be <kind>-<name>");
-    const declaredRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
+    const declaredRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : moduleRoles ?? [];
     const reviewer = (definition.reviewerVariant ?? definition).reviewer;
     const reviewerOnly = entry.start_mode?.value === "headless" && declaredRoles.length === 1 && declaredRoles[0] === "reviewer";
     if (entry.review_mode && (entry.review_mode.value !== "fresh" || !reviewerOnly || !reviewer))
@@ -22376,8 +22378,8 @@ function validateInstances(raw, catalog) {
     }
     if (entry.readOnly)
       value.readOnly = entry.readOnly.value;
-    if (entry.roles) {
-      value.roles = roles(entry.roles.value, `${path}.roles`);
+    if (entry.roles || moduleRoles) {
+      value.roles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [...moduleRoles];
       Object.freeze(value.roles);
     }
     if (entry.start_mode) {
@@ -22415,6 +22417,7 @@ function effectiveInstanceRoles(id, declarations, policyRoles, catalog) {
 }
 
 // src/hub/instance-config.ts
+init_permission_mode();
 var INSTANCE_CONFIG_FILES = ["config.json", "config.local.json"];
 function readInstanceConfigLayers(cwd) {
   return INSTANCE_CONFIG_FILES.flatMap((name) => {
@@ -22454,10 +22457,10 @@ function readInstanceConfig(cwd, layers = readInstanceConfigLayers(cwd), externa
     external = externalMetadataDefinitions(metadata);
   }
   const catalog = createProjectAdapterCatalog(adapters, external);
-  const runtimeCatalog = externalDefinitions !== undefined && externalDefinitions.every((definition) => typeof definition.start.create === "function");
+  const runtimeDefinitions = new Set(externalDefinitions?.filter((definition) => typeof definition.start.create === "function"));
   const declaredExternalInstances = [];
   let executableInstances = rawInstances;
-  if (!runtimeCatalog && moduleConfig.modules.length && rawInstances !== undefined) {
+  if (moduleConfig.modules.length && rawInstances !== undefined) {
     const entries = moduleDataObject(rawInstances);
     if (Object.keys(entries).length > 64)
       throw new Error("instances: at most 64 extra instances are supported");
@@ -22465,7 +22468,7 @@ function readInstanceConfig(cwd, layers = readInstanceConfigLayers(cwd), externa
     for (const [id, value] of Object.entries(entries)) {
       const row = moduleDataObject(value), kind = row.kind;
       const definition = typeof kind === "string" ? catalog.definitionOf(kind) : undefined;
-      const inert = !definition || catalog.externalDefinitions.includes(definition);
+      const inert = !definition || catalog.externalDefinitions.includes(definition) && !runtimeDefinitions.has(definition);
       if (!inert) {
         executable[id] = value;
         continue;
@@ -22489,7 +22492,7 @@ function readInstanceConfig(cwd, layers = readInstanceConfigLayers(cwd), externa
         throw new Error("instances: read-only instances cannot select a permission mode");
       if (Object.hasOwn(row, "worktree"))
         moduleText(row.worktree, 4096);
-      declaredExternalInstances.push(Object.freeze({ id, kind, availability: "declared-unknown", refusalCode: "catalog-unavailable" }));
+      declaredExternalInstances.push(Object.freeze(externalDefinitions === undefined ? { id, kind, availability: "declared-unknown", refusalCode: "catalog-unavailable" } : { id, kind, availability: "refused", refusalCode: "module-refused" }));
     }
     executableInstances = executable;
   }

@@ -11,10 +11,10 @@ import { realPath } from "../src/hub/project.ts";
 
 const cleanup: string[] = [];
 afterEach(() => { for (const root of cleanup.splice(0)) rmSync(root, { recursive: true, force: true }); });
-function moduleCatalog(optIn = true, allowed: ("implementer" | "verifier" | "reviewer")[] = ["implementer", "verifier", "reviewer"]) {
+function moduleCatalog(optIn = true, allowed: ("implementer" | "verifier" | "reviewer")[] = ["implementer", "verifier", "reviewer"], kindRoles = ["implementer", "verifier", "reviewer"]) {
   const definition: AdapterDefinition = {
     api: 1, kind: "fixture", family: "fixture", displayName: "Fixture", transport: "acp",
-    roles: ["implementer", "verifier", "reviewer"], optional: true, defaultOnRoster: false,
+    roles: kindRoles, optional: true, defaultOnRoster: false,
     trust: { onPrem: false, hubSandboxed: false }, identity: { mcp: "acp-session" },
     ...(optIn ? { headlessInstances: { form: "headless" as const, roles: allowed } } : {}),
     permission: { genericAcp: { modes: { ask: "ask", "ask-when-needed": "default" }, readOnly: "read-only" } },
@@ -75,6 +75,18 @@ test("#754 module role ceilings also constrain id-keyed effective role overrides
   expect(effectiveInstanceRoles("fixture-reviewer", implicit, { "fixture-reviewer": ["planner", "conductor", "implementer", "reviewer"] }, catalog)).toEqual(["reviewer"]);
   expect(effectiveInstanceRoles("fixture-reviewer", declarations, { "fixture-reviewer": ["planner", "conductor"] }, catalog)).toEqual(["reviewer"]);
   for (const role of ["planner", "conductor", "implementer"]) expect(() => validateInstances({ "fixture-reviewer": declaration("fixture-reviewer", role) }, catalog)).toThrow(/subset/);
+});
+
+test("#754 omitted module roles use only the intersection with the explicit instance opt-in", () => {
+  const catalog = moduleCatalog(true, ["implementer"], ["planner", "implementer"]);
+  const raw = { "fixture-worker": { kind: "fixture", start_mode: "headless", worktree: ".worktrees/fixture-worker" } };
+  const declarations = validateInstances(raw, catalog);
+  expect(declarations["fixture-worker"]?.roles).toEqual(["implementer"]);
+  expect(Object.isFrozen(declarations["fixture-worker"]?.roles)).toBe(true);
+  expect(validateInstances(declarations, catalog)["fixture-worker"]?.roles).toEqual(["implementer"]);
+  expect(effectiveInstanceRoles("fixture-worker", declarations, { "fixture-worker": ["planner", "conductor"] }, catalog)).toEqual(["implementer"]);
+  expect(instanceCatalog(declarations, catalog).find(row => row.id === "fixture-worker")?.config?.roles).toEqual(["implementer"]);
+  expect(() => validateInstances({ "fixture-worker": { ...raw["fixture-worker"], roles: ["planner"] } }, catalog)).toThrow(/subset/);
 });
 
 test("#754 builtin-only fields and fresh reviewer mode refuse by presence", () => {

@@ -6,6 +6,7 @@ import { externalMetadataDefinitions, moduleArray, moduleDataObject, moduleText 
 import { readControl, stateDirFor } from "./control-client.ts";
 import { conductorPeer } from "./conductor.ts";
 import { configRefusal } from "./config-trust.ts";
+import { isPermissionMode } from "./permission-mode.ts";
 import { validateInstances, type InstancesConfig } from "./instances.ts";
 
 export const INSTANCE_CONFIG_FILES = ["config.json", "config.local.json"] as const;
@@ -23,18 +24,40 @@ export function readInstanceConfigLayers(cwd: string): InstanceConfigLayer[] {
 export interface DeclaredExternalInstance {
   readonly id: string;
   readonly kind: string;
-  readonly availability: "declared-unknown";
-  readonly refusalCode: "catalog-unavailable";
+  readonly availability: "declared-unknown" | "refused";
+  readonly refusalCode: "catalog-unavailable" | "module-refused";
 }
 export interface InstanceRoleConfig {
   adapter_modules?: readonly AdapterModuleDeclaration[];
   adapters?: Readonly<Record<string, import("../adapters/configured-acp.ts").ConfiguredAcpAdapterConfig>>;
   instances?: InstancesConfig;
-  /** Read-only declarations with no authenticated catalog; excluded from executable policy. */
+  /** Unresolved or refused module declarations, excluded from executable policy. */
   declaredExternalInstances?: readonly DeclaredExternalInstance[];
   catalog: ProjectAdapterCatalog;
   ignored: string[];
 }
+/** Keep valid dormant policy on disk, but never admit it through an unavailable module's identity. */
+export function withoutInertInstancePolicy(raw: Record<string, unknown>, rows: readonly DeclaredExternalInstance[] = []): Record<string, unknown> {
+  if (!rows.length) return raw;
+  const ids = new Set(rows.flatMap(row => [row.id, row.kind]));
+  const result = { ...raw };
+  for (const key of ["permission_modes", "peers"] as const) {
+    if (raw[key] === undefined) continue;
+    const block = moduleDataObject(raw[key]);
+    result[key] = Object.fromEntries(Object.entries(block).filter(([id, value]) => {
+      if (!ids.has(id)) return true;
+      if (key === "permission_modes") {
+        if (!isPermissionMode(value)) throw new Error(`permission_modes.${id}: invalid dormant mode`);
+      } else {
+        const settings = moduleDataObject(value);
+        if (Object.keys(settings).some(field => field !== "start_mode") || settings.start_mode !== undefined && settings.start_mode !== "headless") throw new Error(`peers.${id}: invalid dormant headless setting`);
+      }
+      return false;
+    }));
+  }
+  return result;
+}
+
 export function readInstanceConfig(cwd: string, layers: readonly InstanceConfigLayer[] = readInstanceConfigLayers(cwd), externalDefinitions?: readonly AdapterDefinition[]): InstanceRoleConfig {
   const moduleConfig = readAdapterModuleDeclarations(cwd, layers);
   const ignored: string[] = [...moduleConfig.ignored];
@@ -57,17 +80,17 @@ export function readInstanceConfig(cwd: string, layers: readonly InstanceConfigL
   const catalog = createProjectAdapterCatalog(adapters, external);
   // A descriptor on disk is display evidence only. It cannot turn module kinds into executable
   // definitions or establish live policy. Only the daemon's explicit captured definitions can.
-  const runtimeCatalog = externalDefinitions !== undefined && externalDefinitions.every(definition => typeof definition.start.create === "function");
+  const runtimeDefinitions = new Set(externalDefinitions?.filter(definition => typeof definition.start.create === "function"));
   const declaredExternalInstances: DeclaredExternalInstance[] = [];
   let executableInstances = rawInstances;
-  if (!runtimeCatalog && moduleConfig.modules.length && rawInstances !== undefined) {
+  if (moduleConfig.modules.length && rawInstances !== undefined) {
     const entries = moduleDataObject(rawInstances);
     if (Object.keys(entries).length > 64) throw new Error("instances: at most 64 extra instances are supported");
     const executable: Record<string, unknown> = Object.create(null);
     for (const [id, value] of Object.entries(entries)) {
       const row = moduleDataObject(value), kind = row.kind;
       const definition = typeof kind === "string" ? catalog.definitionOf(kind) : undefined;
-      const inert = !definition || catalog.externalDefinitions.includes(definition);
+      const inert = !definition || catalog.externalDefinitions.includes(definition) && !runtimeDefinitions.has(definition);
       if (!inert) { executable[id] = value; continue; }
       if (!/^[a-z][a-z0-9-]{0,31}$/.test(id) || typeof kind !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(kind)
         || !id.startsWith(`${kind}-`) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(kind.length + 1))) throw new Error("instances: invalid unresolved module instance declaration");
@@ -81,7 +104,9 @@ export function readInstanceConfig(cwd: string, layers: readonly InstanceConfigL
       if (Object.hasOwn(row, "permission_mode") && (typeof row.permission_mode !== "string" || !["ask", "ask-when-needed", "never-ask"].includes(row.permission_mode))) throw new Error("instances: unknown permission mode");
       if (row.readOnly === true && Object.hasOwn(row, "permission_mode")) throw new Error("instances: read-only instances cannot select a permission mode");
       if (Object.hasOwn(row, "worktree")) moduleText(row.worktree, 4096);
-      declaredExternalInstances.push(Object.freeze({ id, kind, availability: "declared-unknown", refusalCode: "catalog-unavailable" }));
+      declaredExternalInstances.push(Object.freeze(externalDefinitions === undefined
+        ? { id, kind, availability: "declared-unknown", refusalCode: "catalog-unavailable" }
+        : { id, kind, availability: "refused", refusalCode: "module-refused" }));
     }
     executableInstances = executable;
   }

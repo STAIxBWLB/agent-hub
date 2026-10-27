@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { validateRawConfig, type ConfigLayer, type ConfigIdentitySnapshot } from "./config-apply.ts";
 import { parseOverlay, parseRouting, type Routing } from "./routing.ts";
 import { CLASSES } from "./board.ts";
-import { readInstanceConfig } from "./instance-config.ts";
+import { readInstanceConfig, withoutInertInstancePolicy, type DeclaredExternalInstance } from "./instance-config.ts";
 import { validateInstances } from "./instances.ts";
 
 export const CONFIG_SOURCE_FILES = ["config.json", "config.local.json", "routing.toml", "routing.local.toml"] as const;
@@ -103,13 +103,14 @@ export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: R
   }
   const localRaw = jsonLayers.find(layer => layer.name === "config.local.json")?.raw ?? {};
   let declared;
+  let inertInstances: readonly DeclaredExternalInstance[] | undefined;
   let identityAdapters: ConfigIdentitySnapshot["adapters"];
   let inertModuleRoster = false;
   let catalog = createProjectAdapterCatalog();
   try {
     if (cwd) {
       const accepted = readInstanceConfig(cwd, jsonLayers, externalDefinitions);
-      catalog = accepted.catalog; declared = accepted.instances; identityAdapters = accepted.adapters;
+      catalog = accepted.catalog; declared = accepted.instances; inertInstances = accepted.declaredExternalInstances; identityAdapters = accepted.adapters;
       inertModuleRoster = !!accepted.adapter_modules?.length;
     } else {
       catalog = createProjectAdapterCatalog(localRaw?.adapters, externalMetadataDefinitions(externalAdapters));
@@ -133,6 +134,7 @@ export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: R
       continue;
     }
     if (name === "config.json" || name === "config.local.json") {
+      raw = withoutInertInstancePolicy(raw, inertInstances);
       if (!fallbackRouting) {
         try {
           const structural = { ...raw };

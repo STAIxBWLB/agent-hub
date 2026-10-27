@@ -60,7 +60,7 @@ import { ADAPTERS, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS, QUOTA_HANDOFF_PLATFOR
 import { isSupportedPeer as registrySupportedPeer, definitionOf as builtinDefinitionOf, KNOWN_PEERS as BASE_KNOWN_PEERS, SUPPORTED_PEERS as BASE_SUPPORTED_PEERS, STARTABLE_PEERS as BASE_STARTABLE_PEERS } from "../adapters/registry.ts";
 import type { ReviewScope } from "./review-scope.ts";
 import { checkJcodeInstanceHomes, instanceDefinitionOf, effectiveInstanceRoles, instancePeerIds, validateInstances, type InstancesConfig } from "./instances.ts";
-import { INSTANCE_CONFIG_FILES, readInstanceConfig, readInstanceConfigLayers, readInstanceRoleConfig } from "./instance-config.ts";
+import { INSTANCE_CONFIG_FILES, readInstanceConfig, withoutInertInstancePolicy, readInstanceConfigLayers, readInstanceRoleConfig } from "./instance-config.ts";
 import { instanceBudgetHooks, projectBudgetHeadroom } from "./instance-budget.ts";
 import { resolveInstanceExecutionCwd } from "./instance-execution.ts";
 import { ProgressObserver, normalizeCodexObservation, normalizeClaudeObservation } from "./progress.ts";
@@ -384,7 +384,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     let file: Record<string, any>; // parsed JSON, checked field by field below
     if (!captured.some(layer => layer.name === name)) return [];
     try {
-      file = structuredClone(captured.find(layer => layer.name === name)!.raw);
+      file = withoutInertInstancePolicy(structuredClone(captured.find(layer => layer.name === name)!.raw), instanceConfig.declaredExternalInstances);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
       throw error;
@@ -414,6 +414,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     terminalTemplate(file.terminal?.open);
     if (file.pet !== undefined) validatePetConfig(file.pet, "config.pet");
     if (file.pet && typeof file.pet === "object" && !Object.keys(file.pet).length) delete file.pet;
+    delete file.declaredExternalInstances; // host-derived refusal rows, never a file claim
     delete file.permission_default_sources; // provenance is loader-owned, never a file claim
     if (file.checks?.runner === "remote" || file.checks?.remote !== undefined) {
       if (name !== "config.local.json" || configTracked(cwd, name) !== false) throw new Error("remote checks require untracked config.local.json");
@@ -481,7 +482,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     memory: { ...DEFAULT_CONFIG.memory, native: true, ...file.memory, ...(file.memory?.short_ttl_days !== undefined ? { short_ttl_days: ttlDays(file.memory.short_ttl_days) } : {}),
       ...(file.memory?.sync_interval_min !== undefined ? { sync_interval_min: syncMinutes(file.memory.sync_interval_min) } : {}) }, // the native store is on with any project config (#258)
     roster: peerRosterConfig(file.roster, instances, adapterCatalog, inertModuleRoster),
-    roles: { ...configuredRoles, ...conductorPolicy.roles, ...extraRoles },
+    roles: Object.fromEntries(Object.entries({ ...configuredRoles, ...conductorPolicy.roles, ...extraRoles }).filter(([id]) => !instanceConfig.declaredExternalInstances?.some(row => row.id === id || row.kind === id))),
     planner: conductorPolicy.planner,
     conductor: conductorPolicy.conductor,
     budget: { ...DEFAULT_CONFIG.budget, wait_max_min: 30, ...file.budget }, // on with any project config (issue #36)
@@ -646,6 +647,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const externalAdapters = externalDefinitions.map(({ kind, displayName }) => ({ kind, displayName }));
   const externalIds = new Set(externalAdapters.map(item => item.kind));
   const moduleDeclarations = readAdapterModuleDeclarations(opts.cwd, startupLayers).modules;
+  const startupDeclarationRows = readInstanceConfig(opts.cwd, startupLayers, externalDefinitions).declaredExternalInstances ?? [];
   const loadedConfig = opts.config ? { ...opts.config, adapter_modules: moduleDeclarations.length ? moduleDeclarations : undefined }
     : loadConfig(opts.cwd, startupLayers, undefined, externalDefinitions);
   reviewerPoolConfig(loadedConfig.review, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS);
@@ -694,7 +696,29 @@ export async function startDaemon(opts: DaemonOptions) {
   // The resolver and catalogs are bound to this daemon, never published into the process-global builtin registry.
   const definitionOf = (peer: string) => adapterCatalog.definitionOf(peer, declarations);
   const externalInstanceIds = extraIds.filter(id => externalIds.has(declarations[id]!.kind));
+  const externalRefusedRows = new Map(startupDeclarationRows.map(row => [row.id, row]));
+  const allExternalInstanceIds = () => [...new Set([...(restored?.peers ?? []).filter(row => row.externalInstance).map(row => row.id), ...externalInstanceIds, ...externalRefusedRows.keys()])];
   const isExternalInstance = (peer: string) => externalInstanceIds.includes(peer);
+  const externalEvidenceThisTurn = new Map<string, { binding: ExternalInstanceBinding; workspace: string } | undefined>();
+  let externalEvidenceExpiryQueued = false;
+  function externalEvidence(peer: string, fresh = false): { binding: ExternalInstanceBinding; workspace: string } | undefined {
+    if (!fresh && externalEvidenceThisTurn.has(peer)) return externalEvidenceThisTurn.get(peer);
+    let evidence: { binding: ExternalInstanceBinding; workspace: string } | undefined;
+    try {
+      if (externalRefusedRows.has(peer)) throw new Error("external instance module refused");
+      const binding = captureExternalBinding(peer);
+      const retained = externalBindings.get(peer);
+      if (retained && !sameExternalInstanceBinding(retained, binding)) throw new Error("external instance binding changed");
+      evidence = { binding, workspace: externalWorkspaceIdentity(binding.executionCwd) };
+      externalBindings.set(peer, binding);
+    } catch { /* Unavailable evidence is cached only for this synchronous turn, never authority. */ }
+    externalEvidenceThisTurn.set(peer, evidence);
+    if (!externalEvidenceExpiryQueued) {
+      externalEvidenceExpiryQueued = true;
+      queueMicrotask(() => { externalEvidenceThisTurn.clear(); externalEvidenceExpiryQueued = false; });
+    }
+    return evidence;
+  }
   function externalWorkspaceIdentity(cwd: string): string {
     const info = lstatSync(cwd);
     if (!info.isDirectory() || info.isSymbolicLink()) throw new Error("external workspace directory changed");
@@ -717,12 +741,8 @@ export async function startDaemon(opts: DaemonOptions) {
     if (record) externalSessions.set(peer, record.sessionId);
     return binding;
   }
-  function retainedExternalBinding(peer: string): ExternalInstanceBinding | undefined {
-    try {
-      const current = captureExternalBinding(peer), retained = externalBindings.get(peer);
-      if (retained && !sameExternalInstanceBinding(retained, current)) return undefined;
-      externalBindings.set(peer, current); return current;
-    } catch { return undefined; }
+  function retainedExternalBinding(peer: string, fresh = false): ExternalInstanceBinding | undefined {
+    return externalEvidence(peer, fresh)?.binding;
   }
   const KNOWN_PEERS: readonly string[] = [...BASE_KNOWN_PEERS, ...configuredIds, ...extraIds];
   const SUPPORTED_PEERS: readonly string[] = [...BASE_SUPPORTED_PEERS, ...configuredIds, ...extraIds];
@@ -984,8 +1004,14 @@ export async function startDaemon(opts: DaemonOptions) {
     : undefined;
   if ((restartFilePresent && !restored) || (recoveryOperation && !restored)) throw new Error("restart state is unreadable, missing, or does not match this project and recovery operation");
   for (const peer of restored?.peers ?? []) if (peer.externalInstance) {
-    if (!isExternalInstance(peer.id) || !sameExternalInstanceBinding(peer.externalInstance, captureExternalBinding(peer.id))) throw new Error("external instance retained binding does not match the startup catalog");
+    try {
+      if (!isExternalInstance(peer.id) || !sameExternalInstanceBinding(peer.externalInstance, captureExternalBinding(peer.id))) throw new Error("external instance retained binding is unavailable");
+    } catch {
+      // Preserve historical correlation/integrity while refusing this instance alone. Builtins still restore.
+      externalRefusedRows.set(peer.id, { id: peer.id, kind: peer.externalInstance.kind, availability: "refused", refusalCode: "module-refused" });
+    }
     externalBindings.set(peer.id, peer.externalInstance);
+    if (peer.sessionId) externalSessions.set(peer.id, peer.sessionId);
   }
 
   // A session record left by a run that never shut down means it crashed (issue #37). A controlled restart has its own.
@@ -2295,12 +2321,11 @@ export async function startDaemon(opts: DaemonOptions) {
     executionOwners.delete(peer); executionRoots.delete(peer);
     worktreeFacts.delete(peer); worktreeProjections.delete(peer);
   }
-  function currentExecutionOwner(peer: string) {
+  function currentExecutionOwner(peer: string, fresh = false) {
     const bound = executionOwners.get(peer);
     if (bound && isExternalInstance(peer)) {
       const launch = externalLaunches.get(peer), receipt = launch && managedAcpLaunch(bound.owner, launch.options);
-      const current = retainedExternalBinding(peer);
-      let workspace: string | undefined; try { workspace = externalWorkspaceIdentity(bound.cwd); } catch { return undefined; }
+      const evidence = externalEvidence(peer, fresh), current = evidence?.binding, workspace = evidence?.workspace;
       if (!launch || workspace !== launch.workspace || launch.owner !== bound.owner || bus.peers.get(peer) !== bound.owner || !receipt || receipt.generation !== launch.generation || receipt.cwd !== bound.cwd || !current || !sameExternalInstanceBinding(launch.binding, current)) return undefined;
     } else if (bound?.socket) {
       const launch = readClaudeLaunchProof(opts.stateDir, peer, instanceId);
@@ -2337,10 +2362,10 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     return executionRoot(peer);
   }
-  function currentExternalTools(client: Client): boolean {
+  function currentExternalTools(client: Client, fresh = false): boolean {
     const peer = client.peer, bound = client.externalOwner;
     if (!peer || !bound || stopping || recoveryActive() || !membershipAllowed(peer)) return false;
-    const launch = externalLaunches.get(peer), current = currentExecutionOwner(peer);
+    const launch = externalLaunches.get(peer), current = currentExecutionOwner(peer, fresh);
     if (launch && current && launch.owner === bound.owner && current.owner === bound.owner && launch.launchId === bound.launchId && launch.generation && bound.generation === undefined) bound.generation = launch.generation;
     return !!launch && !!current && launch.owner === bound.owner && current.owner === bound.owner && launch.launchId === bound.launchId && launch.generation === bound.generation;
   }
@@ -3342,10 +3367,10 @@ export async function startDaemon(opts: DaemonOptions) {
   } };
   const claudeUsageTimer = setInterval(collectClaudeUsage, 2000);
   claudeUsageTimer.unref(); intervals.push(claudeUsageTimer);
-  const recoveryPeers = (): Record<string, RestartPeerSnapshot> => Object.fromEntries([...new Set([...bus.peers.keys(), ...externalInstanceIds])].map(id => {
+  const recoveryPeers = (): Record<string, RestartPeerSnapshot> => Object.fromEntries([...new Set([...bus.peers.keys(), ...allExternalInstanceIds()])].map(id => {
     const peer = bus.peers.get(id);
-    if (isExternalInstance(id)) {
-      const binding = retainedExternalBinding(id), receipt = peer && externalLaunches.get(id) ? managedAcpLaunch(peer, externalLaunches.get(id)!.options) : undefined;
+    if (isExternalInstance(id) || externalRefusedRows.has(id)) {
+      const binding = externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id), receipt = peer && externalLaunches.get(id) ? managedAcpLaunch(peer, externalLaunches.get(id)!.options) : undefined;
       const saved = restored?.peers.find(row => row.id === id);
       return [id, { id, state: peer?.state ?? "offline", queueIds: bus.queueIds(id), ...(binding ? { externalInstance: binding } : {}), ...(receipt?.sessionId ? { sessionId: receipt.sessionId } : externalSessions.has(id) ? { sessionId: externalSessions.get(id) } : saved?.sessionId ? { sessionId: saved.sessionId } : {}) }];
     }
@@ -3371,7 +3396,7 @@ export async function startDaemon(opts: DaemonOptions) {
       return row;
     });
     const budgetState = budget.persistedPauseDigestRows().sort((a, b) => a.peer.localeCompare(b.peer));
-    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(externalInstanceIds.length ? { externalBindingsDigest: digest(externalInstanceIds.map(id => [id, retainedExternalBinding(id) ?? null])) } : {}) };
+    return { queues, manualPaused: [...manualPaused].sort(), boardDigest: digest(boardState), budgetDigest: digest(budgetState), ...(allExternalInstanceIds().length ? { externalBindingsDigest: digest(allExternalInstanceIds().sort().map(id => [id, (externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id)) ?? null])) } : {}) };
   };
   /** The integrity in the shape `expected` was recorded in: the current one unless only an older shape matches. */
   const integrityAs = (expected: unknown) => {
@@ -3419,11 +3444,11 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const statusPeerIds = (open: ReturnType<Board["statusTasks"]>) => {
     const reservations = board.statusReservations();
-    const ids = new Set([...bus.knownPeers(), ...extraIds, ...reservations]);
+    const ids = new Set([...bus.knownPeers(), ...extraIds, ...allExternalInstanceIds(), ...reservations]);
     for (const peer of configuredIds) if (onRoster(peer)) ids.add(peer);
     if (!Object.keys(config.roster).some(peer => !membershipAllowed(peer))) return [...ids];
     for (const task of open) for (const peer of [task.owner, task.reviewer]) if (peer && !membershipAllowed(peer)) ids.add(peer);
-    return [...ids].filter(peer => membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));
+    return [...ids].filter(peer => isExternalInstance(peer) || externalRefusedRows.has(peer) || membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));
   };
   let checkoutInTick: { branch: ReturnType<typeof mainCheckoutBranch> } | undefined;
   const checkoutBranch = () => {
@@ -3460,8 +3485,10 @@ export async function startDaemon(opts: DaemonOptions) {
     features: DAEMON_FEATURES,
     configuredAdapters: configuredIds,
     ...(externalAdapters.length ? { externalAdapters } : {}),
-    ...(externalInstanceIds.length ? { externalInstanceCatalog: externalInstanceCatalog({ schema: 1, projectRoot: opts.cwd, epoch: instanceId,
-      fingerprint: digest(externalInstanceIds.map(id => [id, externalBindings.get(id) ?? null])), instances: externalInstanceIds.map(id => {
+    ...(allExternalInstanceIds().length ? { externalInstanceCatalog: externalInstanceCatalog({ schema: 1, projectRoot: opts.cwd, epoch: instanceId,
+      fingerprint: digest(allExternalInstanceIds().map(id => [id, externalBindings.get(id) ?? null])), instances: allExternalInstanceIds().map(id => {
+        const refused = externalRefusedRows.get(id);
+        if (refused) return { id, kind: refused.kind, displayName: refused.kind, roles: [], form: "headless", readOnly: false, permissionState: "unknown", availability: "refused", refusalCode: "module-refused" };
         const bound = retainedExternalBinding(id), current = currentExecutionOwner(id), owner = bus.peers.get(id);
         return { id, kind: declarations[id]!.kind, displayName: definitionOf(id)!.displayName, roles: config.roles[id] ?? [], form: "headless", readOnly: readOnlyPeer(id), permissionState: owner?.permissionModeState ?? "unknown",
           availability: !bound ? "refused" : current ? "ready" : "offline", ...(!bound ? { refusalCode: "binding-changed" } : !owner ? { refusalCode: "not-started" } : !current ? { refusalCode: "ownership-unverified" } : {}) };
@@ -3480,7 +3507,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(dashboard ? { uiOrigin: dashboard.origin } : {}),
     codexProxyPort: opts.codexProxyPort,
     peers: Object.fromEntries(
-      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); const statusNotice = isFixedBuiltinDefinition(definitionOf(id)) ? p?.statusNotice : undefined; return [id, { state: bus.stateOf(id), ...(includeAttentionItems && isExternalInstance(id) && retainedExternalBinding(id) ? { externalInstance: retainedExternalBinding(id) } : {}), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(statusNotice ? { statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: !!ownerWriteRoot(id) && ownerWriteRoot(id) !== opts.cwd, ...(!ownerWriteRoot(id) ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) && p.claiming ? { claiming: true } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
+      peerIds.map((id) => { const p = bus.peers.get(id); const summary = bus.queueSummary(id); const context = contexts.view(id, contextSession(id), !!p && ["idle", "busy", "paused"].includes(bus.stateOf(id))); const statusNotice = isFixedBuiltinDefinition(definitionOf(id)) ? p?.statusNotice : undefined; return [id, { state: bus.stateOf(id), ...(includeAttentionItems && isExternalInstance(id) && !externalRefusedRows.has(id) && retainedExternalBinding(id) ? { externalInstance: retainedExternalBinding(id) } : {}), ...(!membershipAllowed(id) ? { rostered: false, rosterNote: "off roster" } : {}), ...permissionStatus(id, p), ...(statusNotice ? { statusNotice } : {}), ...(context.source !== null || context.measuredAt !== null ? { context } : {}), queued: bus.queued(id), ...(p ? {} : { attached: false }), ...(declarations[id] && config.roles[id]?.includes("implementer") && definitionOf(id)?.transport === "claude-channel" ? { ownerIsolation: !!ownerWriteRoot(id) && ownerWriteRoot(id) !== opts.cwd, ...(!ownerWriteRoot(id) ? { ownerIsolationNote: "terminal execution root not verified; owner admission refused" } : {}) } : {}), ...(summary.needsReview ? { needsReview: summary.needsReview } : {}), ...(summary.liveAccepted ? { liveAccepted: summary.liveAccepted, settlementNote: "awaiting adapter completion (Claude: correlated reply or hub_delivery_done); task state is independent" } : {}), ...queueHoldStatus(id, summary.heldBy), ...(summary.oldestQueuedAt !== undefined ? { oldestQueuedAt: summary.oldestQueuedAt } : {}), ...(bus.queuedImportant(id) ? { queuedImportant: bus.queuedImportant(id) } : {}), ...importantWaitingStatus(id, p), ...pausedNote(id), ...(reviewerUnavailable.has(id) ? { reviewerUnavailable: reviewerUnavailable.get(id) } : {}), ...jcodeModelSource(id), ...(reviewOnlyPeer(id) ? { reviewScope: reviewScopeOf(id) } : {}), ...(isLocalPeer(p) && p.lastServedBy ? { servedBy: p.lastServedBy } : {}), ...(isWsPeer(p) && p.claiming ? { claiming: true } : {}), ...(isWsPeer(p) && p.pullOnly ? { pullOnly: true, toolsOnly: definitionOf(id)?.attach?.pullOnlyNotice ?? "tools-only: messages wait for hub_inbox; for pushes restart Claude with ahub claude", lastInboxAt: p.lastInboxAt ?? null } : {}), ...(isPiPeer(p) ? { requestedModel: p.getRequestedModel(), backends: modelRelays.get(id)?.status().backends ?? [] } : {}) }]; }),
     ),
     taskWip: tasks.wipBreakdown(peerIds),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
@@ -4026,10 +4053,10 @@ export async function startDaemon(opts: DaemonOptions) {
   const permissionAnswerEpoch = (peer: string) => permissionAnswerEpochs.get(peer) ?? 0;
   type PermissionResult = { outcome: "answered" | "expired" | "cancelled"; optionId?: string };
   async function onPermission(req: PermissionRequest, signal?: AbortSignal): Promise<string | undefined> {
-    const external = isExternalInstance(req.peer) ? currentExecutionOwner(req.peer) : undefined;
+    const external = isExternalInstance(req.peer) ? currentExecutionOwner(req.peer, true) : undefined;
     if (isExternalInstance(req.peer) && !external) return undefined;
     const result = await requestPermission(req, signal);
-    if (external && (currentExecutionOwner(req.peer) !== external || !membershipAllowed(req.peer))) return undefined;
+    if (external && (currentExecutionOwner(req.peer, true) !== external || !membershipAllowed(req.peer))) return undefined;
     return result.outcome === "answered" ? result.optionId : undefined;
   }
   /** The managed local/Pi execution boundary: a classed call asks before any native mode or tool-wide grant. */
@@ -4132,6 +4159,7 @@ export async function startDaemon(opts: DaemonOptions) {
   function startPeer(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }, replacementAuthority?: symbol): Promise<Record<string, unknown>> {
     if (isExternalInstance(peer) && (Object.keys(args).some(key => !["mode", "sessionId"].includes(key)) || args.mode !== undefined && args.mode !== "headless")) return Promise.resolve({ ok: false, error: "external module instances permit only a headless start and recorded session id" });
     if (args.replaceSession !== undefined && (args.replaceSession !== true || replacementAuthority !== piReplacementAuthority || definitionOf(peer)?.start.daemonPort !== "pi-rpc")) return Promise.resolve({ ok: false, error: "Pi session replacement requires explicit person authorization" });
+    if (externalRefusedRows.has(peer)) return Promise.resolve({ ok: false, error: "external instance module was refused; repair its person-owned declaration and restart the hub" });
     if (stopping) return Promise.resolve({ ok: false, error: "hub is stopping" });
     if (!membershipAllowed(peer)) return Promise.resolve({ ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` });
     if (rosterChanging === peer) return Promise.resolve({ ok: false, error: `${peer} roster change is in progress` });
@@ -4204,7 +4232,8 @@ export async function startDaemon(opts: DaemonOptions) {
   });
   // Printed for a person's explicit reconciliation only; never executed by auto-start.
   const continuityCleanup = () => `After inspection, archive the active bookmark with ${["mv", "-n", "--", join(opts.stateDir, "recovery-continuity.json"), join(opts.stateDir, `recovery-continuity.retired.manual.${randomUUID()}.json`)].map(shellQuote).join(" ")} before choosing another session`;
-  async function hubStart(peer: unknown, by: string): Promise<Record<string, unknown>> {
+  async function hubStart(peer: unknown, by: string, person = false): Promise<Record<string, unknown>> {
+    if (typeof peer === "string" && isExternalInstance(peer) && !person) return { ok: false, error: "external module instances require an explicit person start" };
     if (stopping) return { ok: false, error: "hub is stopping" };
     if (rosterChanging !== undefined && rosterChanging === peer) return { ok: false, error: `${String(peer)} roster change is in progress` };
     if (!isStartablePeer(peer)) return { ok: false, error: "unknown peer; the hub starts claude, codex, kimi, qwen (when on roster), pi (when enabled) and local" };
@@ -6158,7 +6187,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "start_peer": {
         // #269: the hub's own start of a peer from the closed list, in the mode a person set. No argument reaches a command.
         if (!peer()) return bad;
-        const result = await hubStart(a.peer, "the dashboard");
+        const result = await hubStart(a.peer, "the dashboard", session?.liveTest !== true);
         if (result.ok === true) return { ok: true, text: result.already ? `${a.peer} is already attached.` : result.opened ? `Opened a terminal running ${result.command}; ${a.peer} attaches when its TUI is ready.` : `${a.peer} started (headless).${watchSentence(result.watch)}` };
         // A refusal the hub worded itself carries the command to run by hand; an adapter's own failure text stays in the log.
         if (typeof result.command === "string" || typeof a.peer === "string" && !membershipAllowed(a.peer)) return { ok: false, error: sanitize(String(result.error)) };
@@ -6220,8 +6249,8 @@ export async function startDaemon(opts: DaemonOptions) {
         ? `target lacks task_cancel; cancelled tasks: ${ids.map(id => `#${id}`).join(", ")}` : undefined;
     };
     const incompatibleRecoveryTarget = () => {
-      if (externalInstanceIds.length && (!Array.isArray(msg.targetFeatures) || !["external_adapter_instances", "external_adapter_modules", "peer_instances"].every(feature => msg.targetFeatures.includes(feature)))) return "target lacks external_adapter_instances or its module/instance prerequisites";
-      for (const id of externalInstanceIds) if (!retainedExternalBinding(id)) return "external instance retained binding changed or unavailable";
+      if (allExternalInstanceIds().length && (!Array.isArray(msg.targetFeatures) || !["external_adapter_instances", "external_adapter_modules", "peer_instances"].every(feature => msg.targetFeatures.includes(feature)))) return "target lacks external_adapter_instances or its module/instance prerequisites";
+      if (!(msg.op === "inspect" && recoveryPhase === "restored")) for (const id of allExternalInstanceIds()) if (!retainedExternalBinding(id, true)) return "external instance retained binding changed or unavailable";
       const cancelled = incompatibleCancellationTarget();
       if (cancelled) return cancelled;
       if (externalIds.size && (!Array.isArray(msg.targetFeatures) || !msg.targetFeatures.includes("external_adapter_modules"))) return "target lacks external_adapter_modules; verified external definitions cannot be preserved by that daemon";
@@ -6504,6 +6533,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // Acts for a peer the hub manages itself (kimi, codex): may send and use the board as that peer, is never a delivery target.
         c.peer = String(msg.peer ?? "");
         if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === "hub") return sock.close(4403, "peer id is reserved or malformed");
+        if (externalRefusedRows.has(c.peer)) return sock.close(4403, "external instance module was refused");
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
         if (definitionOf(c.peer)?.start.daemonPort === "claude-implementer") {
           const owner = bus.peers.get(c.peer), launch = owner?.ownedTools?.(msg.launchId), root = ownerWriteRoot(c.peer);
@@ -6532,6 +6562,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (definitionOf(c.peer)?.transport === "ws-pull" && msg.channel !== false) return sock.close(4403, "this native peer supports pull-only attachment; use hub_inbox");
         const kimiPull = !!definitionOf(c.peer)?.attach?.admission && (kimiSessionMode ?? startMode(c.peer)) === "tui" && msg.channel === false;
         if (!PEER_ID.test(c.peer) || (RESERVED_IDS.has(c.peer) && !kimiPull)) return sock.close(4403, definitionOf(c.peer)?.attach?.admission?.reservedRefusal ?? "peer id is reserved or malformed");
+        if (externalRefusedRows.has(c.peer)) return sock.close(4403, "external instance module was refused");
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
         if (!recoveryPeerAllowed(c.peer)) return sock.close(4403, "peer id is not part of the recovery roster");
         if (definitionOf(c.peer)?.transport === "claude-channel" && msg.launchId !== undefined) {
@@ -7293,7 +7324,7 @@ export async function startDaemon(opts: DaemonOptions) {
       case "peer_start":
         // #269: a start the hub makes in the peer's start mode, for a console child with no terminal of its own.
         if (c.role !== "console") return void reply({ ok: false, error: "peer_start is a console command; use hub_peer_start with the conductor role" });
-        void hubStart(msg.peer, "the console").then(result => reply(includeRetainedLaunchConfig(String(msg.peer), result)), (error) => { log(`peer_start ${String(msg.peer)} failed: ${(error as Error).message}`); reply({ ok: false, error: "peer start failed; inspect ahub status and hub.log" }); });
+        void hubStart(msg.peer, "the console", true).then(result => reply(includeRetainedLaunchConfig(String(msg.peer), result)), (error) => { log(`peer_start ${String(msg.peer)} failed: ${(error as Error).message}`); reply({ ok: false, error: "peer start failed; inspect ahub status and hub.log" }); });
         return;
       case "peer_stop":
         let stopCurrent:(()=>void)|undefined;
@@ -7318,7 +7349,7 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         if (c.toolsOwner && !IMPLEMENTER_HUB_TOOL_NAMES.includes(String(msg.op))) return void reply({ t: "task", ok: false, error: "tool is not available to this Claude implementer child" });
         if (recoveryActive() && recoveryPhase !== "preparing" && String(msg.op) !== "hub_checkpoint") return void reply({ t: "task", ok: false, error: "recovery is holding mutations" });
-        (c.externalOwner ? childToolAuthority.run({ by: c.peer!, current: () => currentExternalTools(c) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : c.toolsOwner ? childToolAuthority.run({ by: c.peer!, current: captureImplementerTools(c) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : taskOp(c.peer ?? USER, String(msg.op), msg.args ?? {})).then(
+        (c.externalOwner ? childToolAuthority.run({ by: c.peer!, current: () => currentExternalTools(c, true) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : c.toolsOwner ? childToolAuthority.run({ by: c.peer!, current: captureImplementerTools(c) }, () => taskOp(c.peer!, String(msg.op), msg.args ?? {})) : taskOp(c.peer ?? USER, String(msg.op), msg.args ?? {})).then(
           (text) => reply({ t: "task", ok: true, text }),
           (e: Error) => reply({ t: "task", ok: false, error: e.message }),
         );

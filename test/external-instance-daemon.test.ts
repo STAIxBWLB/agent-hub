@@ -4,13 +4,14 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { startDaemon } from "../src/hub/daemon.ts";
+import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient, DAEMON_FEATURES } from "../src/hub/control-client.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
 import { AcpPeer, isAcpPeer } from "../src/adapters/acp.ts";
 import { AcpOwnedGroup } from "../src/adapters/acp-owned-group.ts";
 import { fakePaths } from "../src/adapters/conformance/fake-paths.ts";
+import { instanceRecoverySourceRefusal } from "../src/cli/upgrade-runtime.ts";
 
 const MODULE_IDS = ["fixture-writer", "fixture-verifier", "fixture-reviewer"] as const;
 const roles = ["implementer", "verifier", "reviewer"] as const;
@@ -20,7 +21,7 @@ async function until(condition: () => boolean, label: string) {
   for (let attempt = 0; attempt < 500 && !condition(); attempt++) await Bun.sleep(10);
   expect(condition(), label).toBe(true);
 }
-async function fixture(factoryMutation = "") {
+async function fixture(factoryMutation = "", options: { refuseModule?: "pin" | "syntax"; conductor?: boolean; dormantPolicy?: { permission_modes?: unknown; peers?: unknown } } = {}) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-external-instances-"))), stateDir = join(root, ".agenthub", "state");
   const previousHome = process.env.HOME, clients: ControlClient[] = [];
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined, client: ControlClient | undefined;
@@ -61,7 +62,16 @@ session:{idField:"sessionId",currentId:peer=>peer.sessionId},turnEnd:"adapter",c
     writeFileSync(bin, `#!${process.execPath}\nawait import(${JSON.stringify(pathToFileURL(join(import.meta.dir, "fakes/codex-bin.ts")).href)});\n`, { mode: 0o700 });
     const instances = Object.fromEntries(MODULE_IDS.map((id, index) => [id, { kind: "fixture", roles: [roles[index]!], start_mode: "headless", worktree: `.worktrees/${id}`, ...(id === "fixture-reviewer" ? { readOnly: true } : {}) }]));
     const declarations: Record<string, Record<string, unknown>> = { ...instances, "codex-builtin": { kind: "codex", roles: ["implementer"], worktree: ".worktrees/codex-builtin" } };
-    const local = { adapter_modules: [{ path: ".agenthub/adapters/fixture.mjs", sha256: createHash("sha256").update(source).digest("hex") }], instances: declarations, roster: Object.fromEntries([...MODULE_IDS, "codex-builtin"].map(id => [id, true])), codex_bin: bin };
+    const local = { adapter_modules: [{ path: ".agenthub/adapters/fixture.mjs", sha256: createHash("sha256").update(source).digest("hex") }], instances: declarations, roster: Object.fromEntries([...MODULE_IDS, "codex-builtin"].map(id => [id, true])), codex_bin: bin,
+      ...(options.refuseModule ? { permission_modes: { "fixture-writer": "ask" }, peers: { "fixture-writer": { start_mode: "headless" } } } : {}),
+      ...(options.conductor ? { roles: { claude: ["conductor"] } } : {}) };
+    Object.assign(local, options.dormantPolicy);
+    if (options.refuseModule === "pin") local.adapter_modules[0]!.sha256 = "0".repeat(64);
+    if (options.refuseModule === "syntax") {
+      const invalid = `syntax error before any native factory;\n${source}`;
+      writeFileSync(moduleFile, invalid, { mode: 0o600 });
+      local.adapter_modules[0]!.sha256 = createHash("sha256").update(invalid).digest("hex");
+    }
     const localFile = join(root, ".agenthub", "config.local.json");
     writeFileSync(localFile, JSON.stringify(local), { mode: 0o600 });
     writeFileSync(join(root, ".agenthub", "config.json"), JSON.stringify({ batch_ms: 0, memory: { enabled: false, native: false }, inference: { enabled: false }, snapshots: { enabled: false }, approvals: { notify: false }, mlx: { enabled: false }, pi: { enabled: false, auto_start: false } }));
@@ -76,6 +86,20 @@ session:{idField:"sessionId",currentId:peer=>peer.sessionId},turnEnd:"adapter",c
     const protocol = (id: string) => rows<{ method: string; params?: any }>(join(root, `${id}.protocol`));
     return { root, stateDir, daemon, client, local, localFile, moduleFile, imports, records, protocol, tools, git, close };
   } catch (error) { await close(); throw error; }
+}
+
+async function conductorCli(root: string, stateDir: string, args: string[]) {
+  const entry = join(import.meta.dir, "../src/cli/main.ts"), wrapper = join(root, `conductor-${crypto.randomUUID()}.ts`);
+  writeFileSync(wrapper, `for (const name of Object.keys(process.env)) if (name.startsWith("AGENTHUB_") || ["CLAUDECODE","CLAUDE_CODE_SESSION_ID","CODEX_THREAD_ID"].includes(name)) delete process.env[name];
+Object.assign(process.env, { HOME: ${JSON.stringify(join(root, "home"))}, AGENTHUB_HOME: ${JSON.stringify(join(root, "cli-home"))}, AGENTHUB_PEER_ID: "claude", AGENTHUB_PROJECT_DIR: ${JSON.stringify(root)}, AGENTHUB_STATE_DIR: ${JSON.stringify(stateDir)} });
+process.argv = [process.execPath, ${JSON.stringify(entry)}, ...${JSON.stringify(args)}];
+await import(${JSON.stringify(entry)});\n`);
+  const child = Bun.spawn([process.execPath, wrapper], { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
+  try {
+    const [code, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    return { code, stdout, stderr };
+  } finally { clearTimeout(timer); }
 }
 
 async function refusedTask(tools: ControlClient) {
@@ -269,6 +293,9 @@ test("#754 supported restart preserves stopped module bindings while a builtin c
   const previousOperation = process.env.AGENTHUB_RECOVERY_OPERATION;
   try {
     const id = "fixture-writer";
+    // Native start order differs from declaration order; portable integrity must use canonical ids.
+    expect((await f.client.request({ t: "start", peer: "fixture-reviewer" })).ok).toBe(true);
+    expect((await f.client.request({ t: "peer_stop", peer: "fixture-reviewer" })).ok).toBe(true);
     expect(await f.client.request({ t: "start", peer: id })).toMatchObject({ ok: true });
     expect((await f.client.request({ t: "peer_stop", peer: id })).ok).toBe(true);
     // A fake authenticated builtin channel exercises the normal reattachment/release fence,
@@ -321,4 +348,159 @@ test("#754 external products cannot declare builtin native proof ports even with
     expect(f.protocol("fixture-writer")).toEqual([]);
     expect(f.daemon.bus.peers.has("fixture-writer")).toBe(false);
   } finally { await f.close(); }
+}, 20_000);
+
+for (const refusal of ["pin", "syntax"] as const) test(`#754 a ${refusal}-refused module keeps its declared instances inert while builtins remain usable`, async () => {
+  const f = await fixture("", { refuseModule: refusal });
+  let builtin: ControlClient | undefined;
+  try {
+    const status = (await f.client.request({ t: "status" })).status;
+    expect(status.externalAdapterRefusals).toHaveLength(1);
+    const effective = loadConfig(f.root, undefined, undefined, []);
+    expect(effective.permission_modes).not.toHaveProperty("fixture-writer");
+    expect(effective.peers).not.toHaveProperty("fixture-writer");
+    expect(JSON.parse(readFileSync(f.localFile, "utf8"))).toMatchObject({ permission_modes: { "fixture-writer": "ask" }, peers: { "fixture-writer": { start_mode: "headless" } } });
+    for (const id of MODULE_IDS) {
+      expect(status.externalInstanceCatalog.instances.find((row: any) => row.id === id)).toMatchObject({ id, kind: "fixture", availability: "refused", refusalCode: "module-refused", roles: [] });
+      expect(status.activeInstances).not.toContain(id);
+      expect(status.peers[id]?.externalInstance).toBeUndefined();
+      expect(status.ownerIsolation[id] ?? false).toBe(false);
+      expect(f.daemon.bus.peers.has(id)).toBe(false);
+      expect((await f.client.request({ t: "start", peer: id })).ok).toBe(false);
+      expect(f.protocol(id)).toEqual([]);
+    }
+    expect(f.records()).toEqual([]);
+    builtin = await ControlClient.connect(f.stateDir, { role: "peer", peer: "claude", channel: false, projectRoot: f.root });
+    await until(() => f.daemon.bus.stateOf("claude") === "idle", "builtin channel survives refused module declarations");
+    expect((await f.client.request({ t: "start", peer: "codex-builtin" })).ok).toBe(true);
+    expect(existsSync(f.imports)).toBe(false);
+  } finally { builtin?.close(); await f.close(); }
+}, 20_000);
+
+for (const [field, dormantPolicy] of [
+  ["permission_modes", { permission_modes: { "fixture-writer": "unknown-native-mode" } }],
+  ["peers", { peers: { "fixture-writer": { start_mode: "tui" } } }],
+] as const) test(`#754 refused module rows do not hide malformed dormant ${field}`, async () => {
+  await expect(fixture("", { refuseModule: "pin", dormantPolicy })).rejects.toThrow(/permission_modes|peers/);
+}, 20_000);
+
+test("#754 off-roster stopped module instances keep current bindings in source recovery inventory", async () => {
+  const f = await fixture();
+  try {
+    const id = "fixture-writer";
+    expect((await f.client.request({ t: "start", peer: id })).ok).toBe(true);
+    expect((await f.client.request({ t: "peer_stop", peer: id })).ok).toBe(true);
+    expect(f.daemon.bus.queueIds(id)).toEqual([]);
+    expect((await f.client.request({ t: "settings_set", key: `roster.${id}`, value: false, confirm: id })).ok).toBe(true);
+    expect(f.daemon.bus.queueIds(id)).toEqual([]);
+    const status = (await f.client.request({ t: "status" })).status;
+    expect(Object.values(status.tasks).every(count => count === 0)).toBe(true);
+    expect(status.peers[id]).toMatchObject({ state: "offline", rostered: false, externalInstance: { schema: 1, instance: id, kind: "fixture", projectRoot: f.root } });
+    expect(instanceRecoverySourceRefusal(f.root, DAEMON_FEATURES, status.peers)).toBeUndefined();
+    expect(f.records()).toHaveLength(1); expect(readFileSync(f.imports, "utf8")).toBe("imported\n");
+  } finally { await f.close(); }
+}, 20_000);
+
+test("#754 conductor tools and the actual CLI cannot start a person-owned module instance", async () => {
+  const f = await fixture("", { conductor: true });
+  let conductor: ControlClient | undefined;
+  try {
+    conductor = await ControlClient.connect(f.stateDir, { role: "tools", peer: "claude", projectRoot: f.root });
+    const tool = await conductor.request({ t: "task", op: "hub_peer_start", args: { peer: "fixture-writer", mode: "headless" } });
+    expect(tool.ok).toBe(false); expect(tool.error).toMatch(/person/);
+    const cli = await conductorCli(f.root, f.stateDir, ["fixture", "--as", "fixture-writer"]);
+    expect(cli.code).toBe(1); expect(cli.stderr).toMatch(/person/);
+    expect(f.records()).toEqual([]); expect(f.protocol("fixture-writer")).toEqual([]);
+    expect(f.daemon.bus.peers.has("fixture-writer")).toBe(false);
+    expect((await f.client.request({ t: "start", peer: "fixture-writer" })).ok).toBe(true); // the person's control surface still works
+  } finally { conductor?.close(); await f.close(); }
+}, 20_000);
+
+test("#754 delegated dashboard tickets cannot turn an external instance start into a person's action", async () => {
+  const f = await fixture();
+  try {
+    const bootstrap = new URL((await f.client.request({ t: "ui", liveTest: true })).url);
+    const post = (path: string, body: unknown, cookie?: string) => fetch(`${bootstrap.origin}${path}`, { method: "POST", headers: { origin: bootstrap.origin, "content-type": "application/json", ...(cookie ? { cookie } : {}) }, body: JSON.stringify(body) });
+    const delegated = await post("/session", { ticket: bootstrap.hash.slice(1), liveTest: false });
+    expect(delegated.status).toBe(200);
+    const cookie = delegated.headers.get("set-cookie")!.split(";")[0]!;
+    const refused = await (await post("/action", { action: "start_peer", peer: "fixture-writer", liveTest: false }, cookie)).json() as { ok?: boolean };
+    expect(refused.ok).toBe(false);
+    expect(f.records()).toEqual([]); expect(f.protocol("fixture-writer")).toEqual([]);
+    expect(f.daemon.bus.peers.has("fixture-writer")).toBe(false);
+    const person = new URL((await f.client.request({ t: "ui" })).url);
+    const ordinary = await post("/session", { ticket: person.hash.slice(1) });
+    expect(ordinary.status).toBe(200);
+    const personCookie = ordinary.headers.get("set-cookie")!.split(";")[0]!;
+    expect(await (await post("/action", { action: "start_peer", peer: "fixture-writer" }, personCookie)).json()).toMatchObject({ ok: true });
+    expect(f.records()).toHaveLength(1);
+  } finally { await f.close(); }
+}, 20_000);
+
+test("#754 switching the attached branch revokes a live instance until a new explicit start", async () => {
+  const f = await fixture();
+  try {
+    const id = "fixture-writer";
+    expect((await f.client.request({ t: "start", peer: id })).ok).toBe(true);
+    const tools = await f.tools(id), owner = f.daemon.bus.peers.get(id), count = f.records().length;
+    const before = await f.client.request({ t: "task", op: "hub_task_list", args: {} });
+    f.git("-C", join(f.root, ".worktrees", id), "switch", "-c", "writer-new-branch");
+    expect((await refusedTask(tools)).ok).toBe(false);
+    expect((await f.client.request({ t: "status" })).status.ownerIsolation[id]).toBe(false);
+    expect(f.daemon.bus.peers.get(id)).toBe(owner); expect(f.records()).toHaveLength(count);
+    expect(JSON.parse((await f.client.request({ t: "task", op: "hub_task_list", args: {} })).text)).toEqual(JSON.parse(before.text));
+    expect((await f.client.request({ t: "peer_stop", peer: id })).ok).toBe(true);
+    expect((await f.client.request({ t: "start", peer: id })).ok).toBe(true);
+    expect((await f.client.request({ t: "status" })).status.ownerIsolation[id]).toBe(true);
+    expect(f.records()).toHaveLength(count + 1);
+  } finally { await f.close(); }
+}, 20_000);
+
+test("#754 a target with a refused module starts and restores builtins without reviving its stopped instances", async () => {
+  const f = await fixture(), operationId = "external-refused-target";
+  let target: Awaited<ReturnType<typeof startDaemon>> | undefined, consoleTwo: ControlClient | undefined, builtinOne: ControlClient | undefined, builtinTwo: ControlClient | undefined;
+  const previousOperation = process.env.AGENTHUB_RECOVERY_OPERATION;
+  try {
+    const id = "fixture-writer";
+    expect((await f.client.request({ t: "start", peer: id })).ok).toBe(true);
+    expect((await f.client.request({ t: "peer_stop", peer: id })).ok).toBe(true);
+    builtinOne = await ControlClient.connect(f.stateDir, { role: "peer", peer: "claude", channel: false, projectRoot: f.root });
+    await until(() => f.daemon.bus.stateOf("claude") === "idle", "source builtin channel attached before refused target");
+    const projectId = (await f.client.request({ t: "status" })).status.projectId;
+    const request = { t: "recovery", operationId, expectedInstanceId: f.client.instanceId, targetFeatures: DAEMON_FEATURES };
+    const prepared = await f.client.request({ ...request, op: "prepare" });
+    expect(prepared).toMatchObject({ ok: true, recovery: { phase: "prepared", ready: true } });
+    const binding = prepared.recovery.peers[id].externalInstance, factories = f.records().length, protocol = f.protocol(id);
+    expect((await f.client.request({ ...request, op: "commit" })).committed).toBe(true);
+    await f.daemon.stopped; f.client.close(); builtinOne.close();
+    writeFileSync(f.moduleFile, 'throw new Error("REFUSED_TARGET_MODULE_MUST_NOT_RUN");'); // old pin now refuses before import
+    try {
+      process.env.AGENTHUB_RECOVERY_OPERATION = operationId;
+      target = await startDaemon({ cwd: f.root, stateDir: f.stateDir, projectId, controlPort: 0, codexAppPort: 0, codexProxyPort: 0 });
+    } finally {
+      if (previousOperation === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION; else process.env.AGENTHUB_RECOVERY_OPERATION = previousOperation;
+    }
+    consoleTwo = await ControlClient.connect(f.stateDir, { role: "console", projectRoot: f.root });
+    const status = (await consoleTwo.request({ t: "status" })).status;
+    expect(status.externalAdapterRefusals).toHaveLength(1);
+    for (const moduleId of MODULE_IDS) {
+      expect(status.externalInstanceCatalog.instances.find((row: any) => row.id === moduleId)).toMatchObject({ availability: "refused", refusalCode: "module-refused", roles: [] });
+      expect(status.peers[moduleId]?.externalInstance).toBeUndefined();
+      expect(status.ownerIsolation[moduleId] ?? false).toBe(false);
+      expect(target.bus.stateOf(moduleId)).toBe("offline");
+    }
+    expect(instanceRecoverySourceRefusal(f.root, DAEMON_FEATURES, status.peers)).toBeDefined(); // no current module proof for another upgrade
+    const targetRequest = { t: "recovery", operationId, expectedInstanceId: consoleTwo.instanceId, targetFeatures: DAEMON_FEATURES };
+    const inspected = await consoleTwo.request({ ...targetRequest, op: "inspect" });
+    expect(inspected.recovery.peers[id]).toMatchObject({ state: "offline", externalInstance: binding }); // historical identity only
+    builtinTwo = await ControlClient.connect(f.stateDir, { role: "peer", peer: "claude", channel: false, projectRoot: f.root });
+    await until(() => target!.bus.stateOf("claude") === "idle", "builtin channel survives refused target module");
+    expect((await consoleTwo.request({ ...targetRequest, op: "release" })).released).toBe(true);
+    expect(target.bus.isRecoveryHeld).toBe(false);
+    expect(f.records()).toHaveLength(factories); expect(f.protocol(id)).toEqual(protocol);
+    expect(readFileSync(f.imports, "utf8")).toBe("imported\n");
+  } finally {
+    if (previousOperation === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION; else process.env.AGENTHUB_RECOVERY_OPERATION = previousOperation;
+    builtinOne?.close(); builtinTwo?.close(); consoleTwo?.close(); await target?.stop(); await f.close();
+  }
 }, 20_000);

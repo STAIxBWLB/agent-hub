@@ -2437,7 +2437,8 @@ async function runConductorCommand(): Promise<void> {
       try {
         const external = selection.peer !== cmd && (peerConfig.declaredExternalInstances?.some(row => row.id === selection.peer && row.kind === cmd)
           || projectCatalog.externalDefinitions.some(definition => definition.kind === cmd));
-        await requireActiveConfiguredAcp(hub, cmd, selection.peer, text => console.error(text), external ? { projectRoot: cwd } : undefined);
+        if (external) fail("external module instances require an explicit person start");
+        await requireActiveConfiguredAcp(hub, cmd, selection.peer, text => console.error(text));
         console.log(await taskOp("hub_peer_start", { peer: selection.peer, mode: "headless" }, false, hub, 70_000));
       } finally { hub.close(); }
       return;
