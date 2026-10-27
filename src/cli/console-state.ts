@@ -11,6 +11,7 @@ import { symbolFields, overlapFields } from "./console-symbols.ts";
 import { choicePrompt, reviewChoiceFor, reviewHint, reviewRefusal, verdictGuide, verdictInput, type ReviewChoice, type Verdict } from "./console-review.ts";
 import { configFormPrompt, reduceConfigForm, type ConfigEditBody, type ConfigForm } from "./console-config.ts";
 import { windowKind } from "../hub/window-kind.ts";
+import { ownerIsolationText, taskHolderText } from "./role-holders.ts";
 import { USAGE_DROP, USAGE_HEAD, usageCells, usageDetail, usagePeers, usageTaskLines, type UsageState } from "./console-usage.ts";
 
 export interface Approval {
@@ -330,7 +331,8 @@ function fieldLines(fields: [string, unknown][], columns: number, now: number): 
  * raw observation and `symbolOverlaps` is the hub pair projection; formatted blocks replace both raw fields.
  */
 function taskFields(detail: Record<string, unknown>): [string, unknown][] {
-  const fields = Object.entries(detail).filter(([key]) => key !== "codeSymbols" && key !== "symbolOverlaps");
+  const fields = Object.entries(detail).filter(([key]) => !["codeSymbols", "symbolOverlaps", "plannerReason", "reviewerReason", "ownerReason", "sameFamilyFallback"].includes(key))
+    .map(([key, value]): [string, unknown] => [key, key === "planner" || key === "owner" || key === "reviewer" ? taskHolderText(detail, key) : value]);
   const block = [...symbolFields(detail), ...overlapFields(detail)];
   if (!block.length) return fields;
   const at = fields.findIndex(([key]) => key === "plan");
@@ -353,7 +355,8 @@ export function budgetFields(budget: any, now: number): [string, unknown][] {
 function peerDetailRow(s: ConsoleState, row: any): Record<string, unknown> {
   const wip = s.taskWip?.[row.id];
   const split = wip && [wip.active, wip.reviewWait, wip.reserved].every(n => Number.isSafeInteger(n)) ? `${wip.wip} of ${wip.wipLimit}: active ${wip.active}, review-wait ${wip.reviewWait}, reserved ${wip.reserved}` : undefined;
-  return { ...row, ...(split ? { "planner WIP": split } : {}) };
+  const isolation = ownerIsolationText(row.ownerIsolation, row.ownerIsolationNote);
+  return { ...row, ...(isolation ? { ownerIsolation: isolation } : {}), ...(split ? { "planner WIP": split } : {}) };
 }
 const detailLines = (detail: Detail, columns: number, now: number, task = false): Span[][] => {
   if (typeof detail === "string") return wrap(detail, columns).map(text => [span(text)]);
@@ -1172,7 +1175,10 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
     let taskLines = s.panel === 7 ? usageTaskLines(s.usage, s.usageTask) : [];
     const taskRoom = Math.max(1, Math.floor(height / 2));
     if (taskLines.length > taskRoom) taskLines = [...taskLines.slice(0, taskRoom - 1), { text: `  ... ${taskLines.length - taskRoom + 1} more`, tone: "muted" as const }];
-    const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : s.panel === 7 ? height - 2 - taskLines.length : height - (s.panel === 3 ? 2 : 1)); const start = Math.max(0, at - capacity + 1);
+    const selectedTask = s.panel === 3 ? data[at] : undefined;
+    const holders = selectedTask && (selectedTask.planner !== undefined || selectedTask.plannerReason !== undefined)
+      ? fieldLines((["planner", "owner", "reviewer"] as const).map((role): [string, unknown] => [role, taskHolderText(selectedTask, role)]), columns, now).flat() : [];
+    const capacity = Math.max(1, s.panel === 2 ? Math.min(Math.floor(height / 2) - 1, height - 3 - tail.length) : s.panel === 7 ? height - 2 - taskLines.length : height - (s.panel === 3 ? 2 + holders.length : 1)); const start = Math.max(0, at - capacity + 1);
     const stages = new Map(progress.stages.map(stage => [stage.id, stage]));
     const cellRows = head ? data.map((row, i) => cells(s, row, i === at, now, stages)) : [];
     const rowsOf = head ? s.panel === 7 ? optionalTable(head, cellRows, columns, USAGE_DROP) : s.panel === 1 ? optionalTable(head, cellRows, columns) : s.panel === 3 && s.backlogView ? optionalTable(head, cellRows, columns, ["AGE", "CLASS", "DEPS", "PRI"]) : table(head, cellRows, columns) : undefined;
@@ -1211,6 +1217,7 @@ export function renderConsoleLines(s: ConsoleState, columns: number, rows = 24, 
       lines.push(fitLine([span(selected ? "> " : "  ", selected ? "strong" : undefined), ...(rowsOf?.[i + 1] ?? cells(s, data[i], selected, now))], columns));
     }
     if (!data.length) lines.push([span("  (empty)")]);
+    if (holders.length) lines.push(...holders);
     if (s.panel === 7) for (const line of taskLines) lines.push(fitLine([span("  " + line.text, line.tone)], columns));
     if (title.length) {
       const room = Math.max(1, height - lines.length - 1 - tail.length);

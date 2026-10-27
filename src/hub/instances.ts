@@ -109,6 +109,11 @@ export function checkJcodeInstanceHomes(declarations: InstancesConfig | undefine
   }
 }
 
+/** Planner/reviewer combinations plan without a writing role; mixed implementer/verifier holders keep their native behavior. */
+export function isPlannerOnly(roles: readonly string[]): boolean {
+  return roles.includes("planner") && !roles.includes("implementer") && !roles.includes("verifier");
+}
+
 /** Declaration support is explicit policy, independent of the native MCP binding mechanism. */
 export function supportsHeadlessInstances(definition: AdapterDefinition): boolean {
   return definition.instances?.mode === "headless" && !!definition.start.create && definition.start.forms.includes("headless");
@@ -196,6 +201,7 @@ export function validateInstances(raw: unknown, catalog: ProjectAdapterCatalog):
       const allowed = runtime.instances?.roles;
       if (allowed && (declaredRoles.length ? declaredRoles : runtime.roles).some(role => !allowed.includes(role))) return fail(`${path}.roles`, "roles must fit the definition's instance policy");
     }
+    if (runtime.start.daemonPort === "codex-appserver" && isPlannerOnly(declaredRoles) && entry.worktree) return fail(`${path}.worktree`, "a planner-only app-server instance plans on the project checkout; worktree is not supported");
     if (entry.readOnly) {
       if (typeof entry.readOnly.value !== "boolean") return fail(`${path}.readOnly`, "must be a boolean");
       if (!runtime.permission.genericAcp?.readOnly) return fail(`${path}.readOnly`, "native adapter has no verified read-only mode");

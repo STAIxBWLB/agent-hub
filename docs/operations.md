@@ -1156,7 +1156,7 @@ approved; caught (changes were requested and the owner's redo was approved);
 contradicted (within a week, work on the same file or symbol failed its check
 or review); escalated (after the reviewer asked for changes). A record counts
 tasks, not verdicts. `ahub task show <id>` lists a task's outcomes and `ahub
-route explain` shows each reviewer's record with the implementer. `ahub route explain <id>` also prints the planner walk (`planner candidate X: ...` lines, then `planner: X (rotation | named | kept)`): the rotation among the rostered planner holders by task id (#525-3), shown for information, since nothing records or enforces a per-task planner yet. A peer that accepted or finished a task never reviews it; when every eligible reviewer did, the person reviews and the trace says so. With
+route explain` shows each reviewer's record with the implementer. `ahub route explain <id>` also prints the planner walk (`planner candidate X: ...` lines, then `planner: X (rotation | named | kept)`): the same planner walk used when a new or pulled task records its planner (#525-2, #525-3). The task detail, dashboard and console show the recorded planner and selection reason; only that effective planner or the person may change its planning. A peer that accepted or finished a task never reviews it; when every eligible reviewer did, the person reviews and the trace says so. With
 `"review": { "adaptive": true }` in `.agenthub/config.json`, reviewers with at
 least `min_reviews` (5) reviews of that implementer in the class are ordered by
 how their reviews held up, ahead of quota but after idle before busy; off by
@@ -4522,7 +4522,24 @@ The design for planner, implementer and reviewer instances per stage is in the s
 - 525-4: a headless Claude implementer runs one owned child per turn in its declared worktree, with a separate persisted session per task (`start_mode: "headless"`, permission `ask` or `ask-when-needed`; `never-ask` refused).
 - 525-5: terminal Claude implementer instances own write-class tasks once the daemon has verified their execution root.
 
-The operator steps for 525-1, 525-4 and 525-5 are in "Additional headless peer instances" above. Slice 525-2 adds the planner settings, task/release bindings, independent plan review and recovery floor described in "The planner" above. Slice 525-6 (Codex planner-only visibility) remains separate.
+For a Codex planner, put a declaration such as the following in the untracked `.agenthub/config.local.json`, then restart the daemon. A planner instance holds `planner` and neither `implementer` nor `verifier`; adding `reviewer` does not grant code-write ownership. It uses the project checkout, so `worktree` is refused.
+
+```json
+{
+  "instances": {
+    "codex-plan": { "kind": "codex", "roles": ["planner"], "start_mode": "headless" }
+  },
+  "planner": ["claude", "codex-plan"]
+}
+```
+
+Run `ahub codex --as codex-plan` from the person's terminal. The hub opens the app-server proxy without creating a synthetic host thread. Each native `thread/start` or `thread/resume` is requested read-only. The host rechecks the current settled roles when each thread is admitted and before hub injection, so changing a running instance from a continuing reviewer to a planner cannot reuse an unconfirmed writable thread. A live planner transition with a declared writing worktree is refused until the declaration is corrected and the daemon restarted. A reply that does not positively confirm read-only refuses that RPC and closes the unconfirmed link before the hub adopts the thread or delivers work; missing or malformed evidence is not read-only. The attached TUI belongs to the person and can change its native sandbox later: this is an initial thread ceiling, not a claim that the hub confines the person's TUI. A planner can own `plan` work but cannot become the code owner without the implementer role.
+
+A planner-only Claude instance stays a channel instance on the project checkout, with no `worktree` or headless form. Its facts hook gives no automatic grant for mutating file tools or shell, whatever the hub permission mode. A native choice in that person's terminal remains the person's; the builtin `claude` keeps its existing behavior.
+
+Inspect the running holders with `ahub status` and the dashboard's Agents view. Each peer's `roleInfo` includes its running `form`, `capableRoles` and effective `flowRoles`; a planner holder also names its planner source. `form` distinguishes a channel, headless variant, terminal implementer or builtin form. Capability describes the allowed ceiling, not an extra assigned role. Each declared extra shows owner isolation as `isolated` or `not isolated: <reason>`; a planner using the canonical checkout is not an isolated write owner by design. Missing proof never counts as isolation.
+
+Use `ahub task show <id>`, the console Tasks panel and the dashboard task detail to inspect planner, owner and reviewer with their recorded reasons. `ahub task show <id> --json` and `ui_snapshot` carry `planner` and `plannerReason` as additive fields; a legacy null planner stays unbound. Compare the holder walk with `ahub route explain <id>`. Use `ahub task assign <id> <peer> --role planner` from the person's terminal to name another eligible holder without moving owner or reviewer. Planner settings, bindings, independent plan review and the recovery floor are described in "The planner" above; implementer/reviewer setup is in "Additional headless peer instances". The [six-instance person smoke leg](smoke.md#six-role-instances-525-6) remains unverified until it is actually run.
 
 ## Daemon responsiveness and launch connects (#719)
 

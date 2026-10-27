@@ -59,7 +59,7 @@ import { databaseBusySite, isDatabaseBusy, RecoveryDatabaseBusy } from "./recove
 import { ADAPTERS, DEFAULT_REVIEW_POOL, REVIEW_POOL_KINDS, QUOTA_HANDOFF_PLATFORMS, NATIVE_CONFIG_BLOCKS, nativeConfigurationDefaults, mergeNativeConfiguration, retainNativeRouting, DAEMON_PORTS, definitionOf, createProjectAdapterCatalog, isFixedBuiltinDefinition } from "../adapters/registry.ts";
 import { isSupportedPeer as registrySupportedPeer, definitionOf as builtinDefinitionOf, KNOWN_PEERS as BASE_KNOWN_PEERS, SUPPORTED_PEERS as BASE_SUPPORTED_PEERS, STARTABLE_PEERS as BASE_STARTABLE_PEERS } from "../adapters/registry.ts";
 import type { ReviewScope } from "./review-scope.ts";
-import { checkJcodeInstanceHomes, instanceDefinitionOf, effectiveInstanceRoles, instancePeerIds, validateInstances, type InstancesConfig } from "./instances.ts";
+import { checkJcodeInstanceHomes, instanceDefinitionOf, effectiveInstanceRoles, isPlannerOnly, instancePeerIds, validateInstances, type InstancesConfig } from "./instances.ts";
 import { INSTANCE_CONFIG_FILES, readInstanceConfig, withoutInertInstancePolicy, readInstanceConfigLayers, readInstanceRoleConfig } from "./instance-config.ts";
 import { instanceBudgetHooks, projectBudgetHeadroom } from "./instance-budget.ts";
 import { resolveInstanceExecutionCwd } from "./instance-execution.ts";
@@ -763,8 +763,28 @@ export async function startDaemon(opts: DaemonOptions) {
   const RESERVED_IDS = new Set([...BASE_RESERVED_IDS, ...configuredIds, ...extraIds.filter(id => !channelExtras.includes(id))]);
   // #223 R2: a declared instance whose effective roles are exactly reviewer gets review requests and its own task notices only.
   const reviewOnlyPeer = (peer: string): boolean => Object.hasOwn(declarations, peer) && config.roles[peer]?.length === 1 && config.roles[peer]![0] === "reviewer";
+  /** Display the same runtime form/role ceilings used by declarations; these fields grant no authority. */
+  function roleVisibility(peer: string): { form?: string; capableRoles: string[] } {
+    const definition = definitionOf(peer), declaration = declarations[peer];
+    if (!definition) return { capableRoles: [] };
+    const fixed = isFixedBuiltinDefinition(definition);
+    const candidates: readonly string[] = fixed ? definition.routing?.reviewOnly ? definition.roles : definition.instances?.roles ?? ["planner", "implementer", "verifier", "reviewer", "conductor"]
+      : declaration ? definition.headlessInstances?.roles ?? definition.roles : definition.roles;
+    const capableRoles = candidates.filter(role => (!definition.routing?.allowedRoles || definition.routing.allowedRoles.includes(role))
+      && (role !== "planner" || (fixed ? definition.projection?.plannerEligible === true : !declaration && definition.roles.includes(role)))
+      && (fixed || role !== "conductor"));
+    const form = !declaration ? startMode(peer) : definition.instances?.mode === "external"
+      ? (config.roles[peer] ?? []).some(role => role === "implementer" || role === "verifier") ? "terminal-implementer" : "channel" : "headless";
+    return { form, capableRoles: [...capableRoles] };
+  }
+
   /** #520: a task under review shows its review brief to whoever may read it (owner, reviewer, conductor). */
   const briefField = (task: Task): { brief?: string } => { if (task.state !== "in_review") return {}; const text = tasks.briefText(task); return text ? { brief: text } : {}; };
+  const holderReasons = (view: Record<string, unknown>) => ({
+    ...(typeof view.plannerReason === "string" ? { plannerReason: view.plannerReason } : {}),
+    ...(typeof view.ownerReason === "string" ? { ownerReason: view.ownerReason } : {}),
+    ...(typeof view.reviewerReason === "string" ? { reviewerReason: view.reviewerReason } : {}),
+  });
   /** #223 R2: a review-only instance reads the spec, refs and earlier verdicts of a task, never the builder's narrative. */
   const reviewerView = (peer: string, view: Record<string, unknown>): Record<string, unknown> => {
     if (!reviewOnlyPeer(peer) || !Array.isArray(view.history)) return view;
@@ -3025,7 +3045,7 @@ export async function startDaemon(opts: DaemonOptions) {
           if (!release) throw new PreEffectToolRefusal("no such release");
           releaseId = release.id;
         }
-        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => (by === USER || t.state !== "backlog") && (releaseId === undefined || t.release === releaseId) && (a.ready !== true || !tasks.waitsFor(t).length)).map((t) => { const view: Record<string, unknown> = onPrem ? { ...t } : tasks.publicView(t); const { history: _h, ...rest } = view; return { ...rest, flowRevision: t.history.length, ...(a.columnMetadata === true ? { started: taskHasStarted(t) } : {}) }; }));
+        return JSON.stringify(board.list(a.ready === true ? "proposed" : a.state).filter((t) => (by === USER || t.state !== "backlog") && (releaseId === undefined || t.release === releaseId) && (a.ready !== true || !tasks.waitsFor(t).length)).map((t) => { const publicTask = tasks.publicView(t); const view: Record<string, unknown> = onPrem ? { ...t, ...holderReasons(publicTask) } : publicTask; const { history: _h, ...rest } = view; return { ...rest, flowRevision: t.history.length, ...(a.columnMetadata === true ? { started: taskHasStarted(t) } : {}) }; }));
       }
     }
     if (op === "task_show" && by !== USER) {
@@ -3068,12 +3088,12 @@ export async function startDaemon(opts: DaemonOptions) {
         const task = board.get(Number(a.id));
         if (!task) return JSON.stringify(`no task #${a.id}`);
         const { codeSymbols: _storedCodeSymbols, ...detail } = task;
-        const codeSymbols = tasks.publicView(task).codeSymbols;
+        const publicTask = tasks.publicView(task), codeSymbols = publicTask.codeSymbols;
         const consoleDeliverables = await tasks.deliverableStatus(task);
         const related = tasks.isPii(task) ? undefined : await taskMemoryResult(task, true).catch(() => ({ items: [], state: "unknown" as const }));
         const fresh = board.get(task.id);
         const relatedMemory = related && fresh?.updated === task.updated && !tasks.isPii(fresh) ? { state: related.state, count: related.items.length, ...("head" in related ? { head: related.head } : {}) } : { state: "unknown" };
-        return JSON.stringify({ ...detail, relatedMemory, ...(codeSymbols ? { codeSymbols } : {}), ...(consoleDeliverables ? { deliverables: consoleDeliverables } : {}), symbolOverlaps: tasks.symbolOverlaps(task), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
+        return JSON.stringify({ ...detail, ...holderReasons(publicTask), relatedMemory, ...(codeSymbols ? { codeSymbols } : {}), ...(consoleDeliverables ? { deliverables: consoleDeliverables } : {}), symbolOverlaps: tasks.symbolOverlaps(task), flowRevision: task.history.length, reviews: board.reviews({ task: task.id }) }, null, 2);
       }
       case "deliverables": {
         // #317 (`ahub deliverables`): the board's deliverable records, person only. `check` measures the files now; without it nothing is opened.
@@ -3512,7 +3532,7 @@ export async function startDaemon(opts: DaemonOptions) {
     // #450 I3: the instance ids this daemon bound at startup; a launcher selects only one of these.
     activeInstances: extraIds,
     ownerIsolation: Object.fromEntries(extraIds.map(id => [id, !!ownerWriteRoot(id) && ownerWriteRoot(id) !== opts.cwd])),
-    ownerIsolationNotes: Object.fromEntries(extraIds.filter(id => definitionOf(id)?.transport === "claude-channel" && !ownerWriteRoot(id)).map(id => [id, "terminal execution root not verified; owner admission refused"])),
+    ownerIsolationNotes: Object.fromEntries(extraIds.filter(id => !ownerWriteRoot(id) || ownerWriteRoot(id) === opts.cwd).map(id => [id, declarations[id]?.worktree ? definitionOf(id)?.transport === "claude-channel" ? "terminal execution root not verified; owner admission refused" : "execution root not verified" : "no declared write worktree"])),
     stopping,
     pid: process.pid,
     cwd: opts.cwd,
@@ -3525,7 +3545,7 @@ export async function startDaemon(opts: DaemonOptions) {
     taskWip: tasks.wipBreakdown(peerIds),
     boardReadCapabilities: { releaseFilter: true, columnMetadata: true },
     actionPolicyInfo: Object.fromEntries(peerIds.map(id => { const e = actionEnforcement(id); return [id, actionBudgets.status(id, e.enforced, e.reason)]; })),
-    roleInfo: Object.fromEntries(peerIds.map(id => [id, { flowRoles: config.roles[id] ?? [], catalogRoles: roleState(id), ...(config.roles[id]?.includes("planner") ? { planner: plannerSource } : {}) }])),
+    roleInfo: Object.fromEntries(peerIds.map(id => [id, { flowRoles: config.roles[id] ?? [], catalogRoles: roleState(id), ...roleVisibility(id), ...(config.roles[id]?.includes("planner") ? { planner: plannerSource } : {}) }])),
     planner: { peers: plannerPeers(), source: plannerSource },
     ...(pendingPermissionDefaults.size ? { permissionDefaults: [...pendingPermissionDefaults].map(([peer, source]) => ({ peer, mode: "never-ask", source })) } : {}),
     ...(modelRelay ? { models: modelRelay.status() } : {}),
@@ -4670,6 +4690,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const codex: CodexPeer = adapter!.start.create!({ instance: peer, projectRoot: opts.cwd, stateDir: opts.stateDir, kindConfig: config, permission: permissionMode(peer), mcpServers: [], daemon: DAEMON_PORTS["codex-appserver"]({
         admitAttach: () => membershipAllowed(peer),
         permissionMode: permissionMode(peer),
+        ...(declarations[peer] ? { threadSandbox: () => isPlannerOnly(config.roles[peer] ?? []) ? declarations[peer]?.worktree ? "unavailable" as const : "read-only" as const : undefined } : {}),
         actionGate: acpActionGate(peer), onPermission,
         onTokens: (added) => void addTokens(peer, added),
         // #683 U1: the same update split into Codex's own kinds, next to the unchanged `tokens` event. One record per update:
@@ -5504,7 +5525,7 @@ export async function startDaemon(opts: DaemonOptions) {
       instanceId,
       attention: attentionStatus.attentionInput,
       pet,
-      status: { peers: peerView, pendingRestart: allPendingRestart(), retainedConfig, taskWip: attentionStatus.taskWip, roleInfo: attentionStatus.roleInfo },
+      status: { peers: peerView, pendingRestart: allPendingRestart(), retainedConfig, taskWip: attentionStatus.taskWip, roleInfo: attentionStatus.roleInfo, ownerIsolation: attentionStatus.ownerIsolation, ownerIsolationNotes: attentionStatus.ownerIsolationNotes },
       boardCapabilities: { backlog: true },
       planningCapabilities: { enabled: true, wipPull: true, split: true },
       releases: tasks.releaseList(USER),
@@ -5518,7 +5539,7 @@ export async function startDaemon(opts: DaemonOptions) {
       tasks: boardTasks.map((task) => {
         const view = tasks.publicView(task);
         // Refs and history can themselves quote private text. The dashboard needs neither.
-        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, reviewer: task.reviewer, deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, ...(view.codeSymbols ? { codeSymbols: view.codeSymbols } : {}), ...(() => { const group = codeGroup(task, view.codeSymbols, task.plan?.symbols, tasks.publicMetadataText, tasks.isPii(task)); return group ? { codeGroup: group } : {}; })(), ...(view.cancelled ? { cancelled: view.cancelled } : {}), ...(view.external ? { external: view.external } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}), ...(() => { const deliverables = tasks.deliverableBadge(task); return deliverables ? { deliverables } : {}; })() };
+        return { id: task.id, title: view.title, detail: view.detail, class: task.class, ...(task.profile ? { profile: task.profile, profileClass: task.profileClass } : {}), ...(task.role ? { role: task.role } : {}), state: task.state, owner: task.owner, planner: view.planner ?? null, reviewer: task.reviewer, ...holderReasons(view), deps: view.deps ?? [], ...(task.reserved ? { reserved: task.reserved } : {}), planningRevision: task.planningRevision ?? 0, rank: task.rank ?? null, priority: task.priority ?? null, release: task.release ?? null, plannedStart: task.plannedStart ?? null, due: task.due ?? null, pinned: task.pinned === true, actualDates: view.actualDates, ...(view.codeSymbols ? { codeSymbols: view.codeSymbols } : {}), ...(() => { const group = codeGroup(task, view.codeSymbols, task.plan?.symbols, tasks.publicMetadataText, tasks.isPii(task)); return group ? { codeGroup: group } : {}; })(), ...(view.cancelled ? { cancelled: view.cancelled } : {}), ...(view.external ? { external: view.external } : {}), started: taskHasStarted(task), urgent: task.signals.includes("urgent"), updated: task.updated, reworkRound: task.history.filter(entry => entry.event === "changes_requested").length, checking: tasks.isChecking(task.id), ...(view.lifecycle ? { lifecycle: view.lifecycle } : {}), ...(() => { const deliverables = tasks.deliverableBadge(task); return deliverables ? { deliverables } : {}; })() };
       }),
       links: links.filter(link => link.tasks.every(id => { const task = board.get(id); return task && !tasks.isPii(task); })),
       budget: Object.fromEntries(peers.map((id) => [id, { ...(quota[accountOf(id)] ?? { windows: [] }), ...(budgetNoteOf.get(id) ? { note: budgetNoteOf.get(id)!.note, noteKind: budgetNoteOf.get(id)!.kind } : {}), context: contexts.view(id, contextSession(id), bus.peers.has(id) && ["idle", "busy", "paused"].includes(bus.stateOf(id))) }])),
@@ -6500,6 +6521,12 @@ export async function startDaemon(opts: DaemonOptions) {
         if (!membershipAllowed(peer) || !launch || launch.owner !== owner || !await verifyManagedAcpLaunch(owner, launch.options) || !sameExternalInstanceBinding(launch.binding, current)) return { ok: false, error: "external instance admission changed" };
         if (stopping || recoveryActive() || !membershipAllowed(peer) || externalWorkspaceIdentity(current.executionCwd) !== launch.workspace || !sameExternalInstanceBinding(launch.binding, captureExternalBinding(peer))) return { ok: false, error: "external instance admission changed" };
       }
+      // Roles may change while native startup/mode acknowledgement is awaited; the current workspace policy still owns admission.
+      if (declarations[peer]) {
+        try {
+          if (resolveInstanceExecutionCwd(opts.cwd, peer, declarations, config.roles[peer] ?? [], adapterCatalog) !== executionRoots.get(peer)) return { ok: false, error: "instance execution policy changed during startup" };
+        } catch { return { ok: false, error: "instance execution policy changed during startup" }; }
+      }
       // The bus may immediately drain at add(): do not expose an idle adapter until its current choice is applied.
       executionOwners.set(peer, { owner, cwd: executionRoots.get(peer) ?? opts.cwd });
       bus.add(owner);
@@ -6977,7 +7004,8 @@ export async function startDaemon(opts: DaemonOptions) {
           const protectedWrite = scopedWriteBlocked(phase, permission, msg.tool, () => projectFileTool(msg.tool, msg.input, writeRoot ?? opts.cwd, config.protect_instruction_files, config.data?.readonly));
           // Always-ask (#636): a classed call is asked about in every permission mode. The hub names only the classes, under the same verified root as the file policy above; the hook turns them into `ask`.
           const actionClasses = phase === "pre" && permission !== undefined && typeof msg.tool === "string" ? claudeActionClasses(actionBudgets, msg.tool, msg.input, writeRoot ?? opts.cwd) : [];
-          const permissionReply = phase === "pre" && permission !== undefined ? { permission: permission === "ask-when-needed" && protectedWrite ? "ask" : permission, projectRoot: writeRoot ?? opts.cwd, protectInstructionFiles: config.protect_instruction_files, ...(actionClasses.length ? { actionClasses } : {}) } : {};
+          const plannerOnly = !!declarations[peer] && definitionOf(peer)?.transport === "claude-channel" && isPlannerOnly(config.roles[peer] ?? []);
+          const permissionReply = phase === "pre" && permission !== undefined ? { permission: permission === "ask-when-needed" && protectedWrite ? "ask" : permission, projectRoot: writeRoot ?? opts.cwd, protectInstructionFiles: config.protect_instruction_files, ...(plannerOnly ? { mutationGrants: false } : {}), ...(actionClasses.length ? { actionClasses } : {}) } : {};
           // Permission-only hooks carry no native-turn evidence and must never drive busy state.
           const purpose = permissionLaunch?.hookPurpose ?? msg.hookPurpose;
           const observesNative = purpose === "facts" || purpose === "idle" || purpose === "facts-and-idle" || (purpose === undefined && (config.coordination === "turn-free" || config.task_sweep.enabled || config.roles[peer]?.includes("conductor")));

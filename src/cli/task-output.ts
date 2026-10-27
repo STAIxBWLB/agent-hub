@@ -5,6 +5,7 @@
 // and detail, empty refs and plan): this module shows that stub and never asks for more.
 import { type Span, type Tone, plural, table, terminalText, wrap } from "./console-state.ts";
 import { moment } from "./sdlc-output.ts";
+import { taskHolderText } from "./role-holders.ts";
 
 type Line = Span[];
 // Local copies of the layout primitives of sdlc-output.ts (#814 T1), the source of these helpers: that file stays untouched by this task
@@ -100,8 +101,8 @@ function taskBlock(task: any, columns: number | undefined, now: number, detail: 
   const out: Line[] = [...para(`${id}  ${dash(task?.title)}`, columns, undefined, "", 6).map((line, i): Line => i === 0 ? [s(id, "taskRef"), s(line[0]!.text.slice(id.length), "strong")] : line)];
   const w = 10;
   out.push(...pair("state", `${dash(task?.state)}${task?.cancelled ? " (cancelled)" : ""}`, columns, w, stateTone(task?.state), "  "),
-    ...pair("class", dash(task?.class), columns, w, undefined, "  "), ...pair("owner", dash(task?.owner), columns, w, undefined, "  "), ...pair("reviewer", dash(task?.reviewer), columns, w, undefined, "  "));
-  if (task?.planner) out.push(...pair("planner", task.planner, columns, w, undefined, "  "));
+    ...pair("class", dash(task?.class), columns, w, undefined, "  "), ...pair("owner", taskHolderText(task, "owner"), columns, w, undefined, "  "), ...pair("reviewer", taskHolderText(task, "reviewer"), columns, w, undefined, "  "));
+  if (task?.planner !== undefined) out.push(...pair("planner", taskHolderText(task, "planner"), columns, w, undefined, "  "));
   if (task?.reserved) out.push(...pair("reserved", task.reserved, columns, w, undefined, "  "));
   out.push(...pair("after", ids(task?.deps), columns, w, undefined, "  "));
   if (typeof task?.release === "number") out.push(...pair("release", `#${task.release}`, columns, w, undefined, "  "));

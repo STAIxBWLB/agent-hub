@@ -39,6 +39,7 @@
 | Antigravity TUI close (#485) | Antigravity P1 | agent-executable | |
 | Managed Pi live receipts (#418 AC8) | none yet (issue #418) | person-only, then agent-executable | the person opts in to a check runner and answers the approvals |
 | Kimi credential probe (#285 AC9) | Kimi usage counting | person-only | the owner's approval of the probe |
+| Six role instances (#525-6, hub card #138 I4) | Six role instances (#525-6) | person-only | native terminal/account starts, the person's sandbox and approval choices, and the live six-instance verdict |
 
 ## Issue #273 operator execution plan (2026-10-16)
 
@@ -2028,3 +2029,42 @@ Kimi usage ceiling: 2.2.0 print stream-json exposes no token counts. Keep unobse
 ## Held deliveries and peer retries (#434 AC8, 2026-10-24)
 
 See [delivery holds and peer retry verification](verification/2026-10-24-delivery-holds-ac8.md) for live evidence of hub-settled held deliveries (39 superseded notices in `resolution_history`) and peer retries (2 peer retry rows in `resolution_history`, 27 rows across Claude, Jcode, and Kimi in `delivery_retry_evidence`), alongside daemon status and queue readbacks.
+
+
+## Six role instances (#525-6)
+
+**Status: unverified. Class: person-only.** This is the I4 live leg retained by hub card #138 and [the accepted #525 role-stage contract](specs/2026-09-19-agent-hub-design.md#amendment-roles-per-sdlc-stage-525). No native/account result is recorded by adding this procedure. Fake protocol and daemon acceptance tests do not satisfy this live leg. The six instances below are declared role instances; the person's builtin coordinating session is not a seventh test instance.
+
+- Use a disposable committed Git repository and a candidate daemon, CLI and Claude plugin built from the same recorded head. Record native versions, account/model identities without credentials, OS, candidate head and project id. Follow the normal setup/authentication steps first; the hub never signs in for the person.
+- Create registered attached-branch worktrees for the two writing instances before declaring them:
+
+```sh
+git worktree add -b smoke-claude-impl .worktrees/claude-impl
+git worktree add -b smoke-codex-impl .worktrees/codex-impl
+```
+
+- Add the following to that disposable project's untracked `.agenthub/config.local.json`, preserving unrelated required setup values, and restart the hub. Restrict this trial's owner routing and reviewer pool to the listed role instances so an unrelated builtin does not satisfy a step.
+
+```json
+{
+  "instances": {
+    "claude-plan": { "kind": "claude", "roles": ["planner"] },
+    "claude-impl": { "kind": "claude", "roles": ["implementer"], "start_mode": "headless", "worktree": ".worktrees/claude-impl", "permission_mode": "ask" },
+    "claude-review": { "kind": "claude", "roles": ["reviewer"], "start_mode": "headless" },
+    "codex-plan": { "kind": "codex", "roles": ["planner"], "start_mode": "headless" },
+    "codex-impl": { "kind": "codex", "roles": ["implementer"], "start_mode": "headless", "worktree": ".worktrees/codex-impl" },
+    "codex-review": { "kind": "codex", "roles": ["reviewer"], "start_mode": "headless", "review_mode": "fresh" }
+  },
+  "planner": ["claude-plan", "codex-plan"],
+  "review": { "pool": ["claude", "codex"], "same_family": "never" },
+  "roster": { "claude-plan": true, "claude-impl": true, "claude-review": true, "codex-plan": true, "codex-impl": true, "codex-review": true }
+}
+```
+
+- The person starts each instance with its native command and `--as <id>`: `ahub claude --as claude-plan`, `ahub claude --as claude-impl`, `ahub claude --as claude-review`, `ahub codex --as codex-plan`, `ahub codex --as codex-impl`, and `ahub codex --as codex-review`. Use separate native terminals for the channel/TUI sessions. Headless Claude implementer and fresh reviewer starts may be idle without a child until their task or review arrives; that is not a failed start. Do not reuse a builtin's launch id, peer id, transcript or recorded native session as proof for an extra.
+- On `codex-plan`, start and resume a native thread through its proxy. Record the read-only request and positive confirmation from the native response, with session/launch identifiers screened. If confirmation is missing, malformed or writable, record the refusal and stop. No adoption or hub delivery may follow that refusal; the positive native start/resume check remains failed or unverified. Do not relabel unknown as read-only. The person's attached TUI can later choose a different native sandbox; record such a choice separately and do not claim an unchangeable hub sandbox.
+- On `claude-plan`, request a bounded scratch-file mutation and shell operation from its native session, inspect that the facts hook emitted no automatic grant, and let the person choose the native outcome. A native permission setting or explicit native allow is not a hub grant. Confirm neither planner can be assigned a code-write owner role merely because it is a planner. A normal planning write through `Tasks` should still work for the task's effective planner.
+- Run two non-PII throwaway tasks through real native holders. For task A use `codex-plan` to plan, `claude-impl` to build in its own worktree, and fresh `codex-review` to review. For task B use `claude-plan`, `codex-impl` and `claude-review`. Use the person's documented `ahub task assign <id> <peer> --role planner|owner|reviewer` controls when naming holders; never alter the board directly. Keep each implementer out of its own review, apply the existing family rule, and have the other eligible planner review an authored plan rather than treating a planner's own verdict as independent. Capture the actual assignment/acceptance/done/verdict history and reasons, not just the intended roster.
+- Compare `ahub status`, `ahub task show <id>` (and `--json`), `ahub route explain <id>`, console Tasks/peer detail and dashboard task detail. Check distinct six ids, the correct form and capable/effective roles, planner/owner/reviewer plus their recorded reasons, and `ownerIsolation` for each writing extra. The planner-only canonical-checkout instances should report not isolated with a fixed reason, rather than be mistaken for isolated code writers. Missing evidence is unknown or not isolated, never success.
+- Exercise a second turn of a Claude implementer's task and a separate new task, recording that the former resumes its own per-task session and the latter does not inherit it. Keep queues, MCP actors and native sessions distinct while the other role instances remain attached. Stop the disposable trial's runtimes and verify owned-group cleanup without stopping unrelated project peers.
+- Record a dated receipt here or in `docs/verification/` with the candidate/native versions, six actual instance ids and forms, task ids/holder histories, isolation evidence, read-only confirmations/refusals, planner hook evidence, session/queue separation, cleanup result and any failures or unknowns. Do not copy credentials or private task bodies. Until that receipt exists, this leg remains **unverified** and supplies no native-account or sandbox attestation.

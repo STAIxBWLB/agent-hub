@@ -94,7 +94,9 @@ export async function factsHook(stdin: string, stateDir: string, peer: string, t
     // A present value that is not an empty list asks, even when malformed: the hook never turns an unreadable classification into an allow.
     const classed = res.actionClasses !== undefined && !(Array.isArray(res.actionClasses) && res.actionClasses.length === 0);
     const classNames = Array.isArray(res.actionClasses) ? res.actionClasses.filter((key: unknown): key is string => typeof key === "string" && /^[a-z-]{1,32}$/.test(key)) : [];
-    const allow = !classed && input.hook_event_name === "PreToolUse" && (permission === "never-ask" || permission === "ask-when-needed" && fileTool);
+    // The daemon supplies this ceiling from the authenticated instance's flow roles, never a peer-id spelling.
+    const mayGrant = !Object.hasOwn(res, "mutationGrants") || res.mutationGrants === true || ["Read", "LS", "Glob", "Grep"].includes(String(input.tool_name));
+    const allow = mayGrant && !classed && input.hook_event_name === "PreToolUse" && (permission === "never-ask" || permission === "ask-when-needed" && fileTool);
     const text = typeof res.text === "string" && res.text ? res.text : undefined;
     if (!allow && !classed && !text) return undefined;
     return JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", ...(text ? { additionalContext: text } : {}), ...(classed ? { permissionDecision: "ask", permissionDecisionReason: `agent-hub always-ask${classNames.length ? `: ${classNames.join(", ")}` : ""}` } : allow ? { permissionDecision: "allow" } : {}) } });
