@@ -1914,6 +1914,7 @@ A guarded file edit that the daemon keeps at its accepted value remains visible 
 | Switches | `task_sweep.enabled`, `.auto_reassign`, `.interval_s`, `.unaccepted_min`, `.idle_min`, `.review_min`, `.ready_min`, `.ladder_min`, `.no_writes_turns` | `config.local.json` | live; `.no_writes_turns` sets the turn threshold independently; other keys reschedule the sweep timer |
 | Routing | `tasks.wip_limits.<peer>` | `config.local.json` | live |
 | Routing | `tasks.escalate_after` (1-10, default 3: consecutive `changes_requested` before a task moves to the next `escalate_to` peer) | `config.local.json` | live; the next verdict uses it |
+| Switches | `tasks.auto_pull` (default off: pull the top explicitly reserved ready card when a planner slot frees) | `config.local.json` | live; the next release uses it |
 | Roles | `planner` (one or up to eight planner holders) | `config.local.json` | at once |
 
 - Writes go only to `.agenthub/config.local.json` and `.agenthub/routing.local.toml`,
@@ -2410,8 +2411,9 @@ releases backlog work (#785): a lower WIP for the owner or reserved peer adds a
 approval that leaves a backlog card with no unresolved dependency adds
 `backlog_ready: #<id>`. The lines go in one `Planner work ready:` task notice
 per planner, ids only; a newer one merges and replaces the unsettled copy, which
-survives a restart. Nothing is pulled automatically: the planner reads the
-board and decides.
+survives a restart. By default nothing is pulled automatically: the planner reads the
+board and decides. With `tasks.auto_pull` on (opt-in, see below) the hub itself pulls
+the top card explicitly reserved for the peer whose slot just freed.
 
 When `hub_task_done` leaves a review whose exact-head CI is not yet green (the
 lifecycle must be on and the task linked to a PR), the hub starts one watcher
@@ -2422,6 +2424,18 @@ shutdown. On the result the owner and the reviewer each get one
 review the hub held as premature for that head is offered once more after a
 fresh readiness read. A deadline tells the console only. No peer turn waits for
 CI, and nothing is polled outside a watcher.
+
+`tasks.auto_pull` (default off, `config.local.json` only, live) lets the hub act on that
+wake-up (#785). When a write frees a peer's planner slot, the hub pulls the one top
+backlog card explicitly reserved for that peer, through the same planner pull a
+planner makes: revision, dependency, reservation, pinned, frozen-release, P0 order
+and WIP checks all apply unchanged, and a refusal becomes a console notice naming
+why. Unreserved cards, cards reserved for another peer and private (PII) cards are
+never pulled. One card per release, as the hub for the card's own planner of record:
+the history entry reads `by: hub` with that planner and the reason
+`auto_pull: capacity released for <peer>; hub acted for planner <planner>`. A hub that
+is paused for recovery pulls nothing, also when the setting is turned off or recovery begins while a pull is already waiting on its screening: that pull writes nothing, and a recovery waits for pulls in flight. A committed `config.json` cannot turn it on: like
+the other machine-local policies it is ignored there with a log line.
 
 ## Resetting a project's hub
 

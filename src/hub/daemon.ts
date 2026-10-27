@@ -217,7 +217,7 @@ export interface HubConfig {
   /** Pending permission requests: how long they wait, and whether the desktop is told (issue #5). */
   approvals: { timeout_s: number; notify: boolean };
   /** An owner offline this long loses its open tasks back to routing; 0 turns it off (issue #6). */
-  tasks: { release_after_min: number; wip_limits?: Record<string, number>; escalate_after: number };
+  tasks: { release_after_min: number; wip_limits?: Record<string, number>; escalate_after: number; /** #785 P1c: pull the top explicitly reserved ready card when a slot frees; machine-local, default off. */ auto_pull?: boolean };
   /** Between-turn task escalation, disabled unless explicitly enabled (#186). */
   task_sweep: TaskSweepConfig;
   /** A command per task class run when the owner marks the task done, and its timeout (issue #7). */
@@ -278,7 +278,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   ...nativeDefaults.sandbox,
   // Off here, so tests and a hub without a config file stay silent; a project's config defaults it on for macOS.
   approvals: { timeout_s: 120, notify: false },
-  tasks: { release_after_min: 30, escalate_after: ESCALATE_AFTER },
+  tasks: { release_after_min: 30, escalate_after: ESCALATE_AFTER, auto_pull: false },
   task_sweep: DEFAULT_TASK_SWEEP,
   checks: { timeout_s: 600 },
   // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
@@ -1734,6 +1734,7 @@ export async function startDaemon(opts: DaemonOptions) {
     sweep: taskSweepConfig(config.task_sweep),
     sweepHeld: () => stopping || recoveryActive(),
     ciWatch: opts.ciWatch,
+    autoPull: () => config.tasks.auto_pull === true,
     cancellationHeld: () => stopping || recoveryActive(),
     offerRead: (peer, envelopeId) => journal.offerRead(peer, envelopeId),
     offerPullOnly: (id) => { const peer = bus.peers.get(id); return peer?.pullOnly === true; },
@@ -3162,6 +3163,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const recoveryReady = () => {
     if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || ("recoveryReady" in peer && peer.recoveryReady !== true))) return false;
     if (checkPending.size !== 0) return false;
+    if (tasks.autoPullsPending() !== 0) return false; // #785 P1c: an automatic backlog pull mid-admission would write after the commit's digest; its own line keeps the line above exact for scripts/seeds.json
     if (!recoveryPeerSnapshot) return true;
     const current = recoveryPeers();
     return recoveryPeerSnapshot.every((saved) => {
@@ -6086,6 +6088,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // #272: the rest of what recoveryReady() waits for, so the upgrade screen can name the wait. Display only.
       ...(taskOpsInFlight !== 0 ? ["a task command in flight"] : []),
       ...(tasks.checksPending() !== 0 ? ["completion checks queued or running"] : []),
+      ...(tasks.autoPullsPending() !== 0 ? ["an automatic backlog pull in flight"] : []),
       ...(checkPending.size !== 0 ? ["isolated checks queued or running"] : []),
       ...(piCallsInFlight() !== 0 ? ["Pi tool calls in flight"] : []),
       ...(releasing ? ["ready tasks being released"] : []),

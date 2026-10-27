@@ -21376,7 +21376,8 @@ var MACHINE_LOCAL = [
   "local.read_allow",
   "local.bash_network",
   "local.network_allow",
-  "terminal.open"
+  "terminal.open",
+  "tasks.auto_pull"
 ];
 var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"];
 function configRefusal(cwd, name) {
