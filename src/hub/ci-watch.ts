@@ -120,7 +120,12 @@ export class CiWatchers {
     void Promise.resolve().then(() => this.o.finish(entry.watch, outcome)).catch(() => { /* the finisher guards its own notices */ });
   }
 
+  /** A watcher never throws out of its timer: a `current` or `finish` that fails (a closed board at shutdown) ends it. */
   private async tick(entry: { watch: CiWatch; timer?: ReturnType<typeof setTimeout> }): Promise<void> {
+    try { await this.step(entry); } catch { this.end(entry); }
+  }
+
+  private async step(entry: { watch: CiWatch; timer?: ReturnType<typeof setTimeout> }): Promise<void> {
     entry.timer = undefined;
     if (this.active.get(entry.watch.id) !== entry) return;
     if (!this.o.current(entry.watch)) { this.end(entry); return; }
