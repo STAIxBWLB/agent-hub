@@ -3331,6 +3331,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || ("recoveryReady" in peer && peer.recoveryReady !== true))) return false;
     if (checkPending.size !== 0) return false;
     if (tasks.autoPullsPending() !== 0) return false; // #785 P1c: an automatic backlog pull mid-admission would write after the commit's digest; its own line keeps the line above exact for scripts/seeds.json
+    if (tasks.schedulesPending() !== 0) return false; // #512a: a scheduled run mid-admission (its PII screen is awaited) would write after the commit's digest; the hold fence refuses its write, and this waits for it to end
     if (!recoveryPeerSnapshot) return true;
     const current = recoveryPeers();
     return recoveryPeerSnapshot.every((saved) => {
@@ -6313,6 +6314,7 @@ export async function startDaemon(opts: DaemonOptions) {
       ...(taskOpsInFlight !== 0 ? ["a task command in flight"] : []),
       ...(tasks.checksPending() !== 0 ? ["completion checks queued or running"] : []),
       ...(tasks.autoPullsPending() !== 0 ? ["an automatic backlog pull in flight"] : []),
+      ...(tasks.schedulesPending() !== 0 ? ["a scheduled task proposal in flight"] : []),
       ...(checkPending.size !== 0 ? ["isolated checks queued or running"] : []),
       ...(piCallsInFlight() !== 0 ? ["Pi tool calls in flight"] : []),
       ...(releasing ? ["ready tasks being released"] : []),

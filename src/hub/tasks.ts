@@ -3167,6 +3167,8 @@ export class Tasks {
   schedulesHeld(): boolean { return !!this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || !!this.d.bus.storageError; }
 
   private schedulesRunning = false;
+  /** 1 while a schedules pass is running (its PII screen and triage are awaited), so a recovery commit waits for it like it waits for `checksPending` and `autoPullsPending`: a run mid-admission would write after the commit's digest. */
+  schedulesPending = (): number => (this.schedulesRunning ? 1 : 0);
   /**
    * #512a: one pass over the machine-local schedules. A schedule is due once `every` has passed since its period began (first sight, then its last run).
    * A due schedule proposes at most one task per pass, through `propose` like any proposal (the PII screen, triage, routing and notices all apply), and none

@@ -194,3 +194,30 @@ test("a stop clears the schedules timer: no pass starts after it (the pass reads
   expect(reads, "no pass starts once the hub has stopped").toBe(after);
   expect(h.scheduled()).toHaveLength(0);
 });
+
+test("recovery waits for a scheduled proposal that is inside its PII screen, and the hold refuses its write", async () => {
+  const p = project({ local: { schedules: SCHEDULES }, screen: true }), clock = { now: T0 };
+  let entered = 0, release: (() => void) | undefined;
+  const h = await start(p, clock, { piiScreen: () => new Promise(resolve => { entered++; release = () => resolve({ label: "clear", ms: 0 }); }) });
+  await until(async () => (await h.status()).schedules?.length === 1, "listed");
+  await until(() => h.anchored(), "anchored");
+  clock.now = T0 + HOUR;
+  await until(() => entered === 1, "the pass is inside the screen");
+  const operationId = "schedules-recovery", expectedInstanceId = (await h.status()).instanceId;
+  const inspect = async () => (await h.client.request({ t: "recovery", op: "inspect", expectedInstanceId })).recovery;
+  expect((await h.client.request({ t: "recovery", op: "prepare", operationId, expectedInstanceId, targetFeatures: (await h.status()).features })).ok).toBe(true);
+  // the hold has begun, and the proposal that was admitted before it is still in flight
+  const during = await inspect();
+  expect(during.ready, "a commit must not run while a scheduled proposal can still write").toBe(false);
+  expect(during.blockers).toContain("a scheduled task proposal in flight");
+  release!();
+  await until(async () => (await inspect()).ready === true, "ready once the pass has ended");
+  expect(h.scheduled(), "the hold refused the write").toHaveLength(0);
+  expect((await h.client.request({ t: "recovery", op: "abort", operationId, expectedInstanceId })).ok).toBe(true);
+  expect((await h.status()).schedules[0].coalesced, "the overtaken tick and the ticks held after it are counted, never replayed").toBeGreaterThanOrEqual(1);
+  expect((await h.status()).schedules[0].error).toBeUndefined();
+  clock.now = T0 + 2 * HOUR; // after the abort the next tick runs it
+  await until(() => entered === 2, "the next tick proposes again");
+  release!();
+  await until(() => h.scheduled().length === 1, "one run after the hold ended");
+});
