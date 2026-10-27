@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, linkSync, statSync, utimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { matchesPolicy } from "../src/hub/path-policy.ts";
-import { checkSourceUrl, fetchSourceUrl, MAX_REDIRECTS, MAX_SOURCE_BYTES, publicSourceView, screenRegistration, sha256Of, SourceRegistry, sourceId, validSourceId } from "../src/hub/sources.ts";
+import { processSignature } from "@staix/agent-mem/platform";
+import { checkSourceUrl, MAX_META_BYTES, MAX_ORIGINS, MAX_ORIGIN_CHARS, MAX_SOURCE_TEXT, fetchSourceUrl, MAX_REDIRECTS, MAX_SOURCE_BYTES, publicSourceView, screenRegistration, sha256Of, SourceRegistry, sourceId, validSourceId } from "../src/hub/sources.ts";
 import { MAX_PROJECTION_INPUT } from "../src/hub/text-projection.ts";
 
 // agent-hub #508 (hub task #329): the source registry core. Spec: "Sources (#508)".
@@ -260,4 +261,91 @@ test("the fetch sends no credentials and never follows redirects itself", async 
   await fetchSourceUrl("https://example.com/a", { fetch: async (_url, i) => { init = i; return response("x"); } });
   expect(init.redirect).toBe("manual");
   expect(Object.keys(init.headers ?? {}).map(key => key.toLowerCase()).sort()).toEqual(["accept", "user-agent"]);
+});
+
+// Review of PR #907 (codex-review): three defects, one test each.
+
+test("a record with the most origins the writer accepts is read back, and a later add never replaces it", () => {
+  const dir = state(), registry = new SourceRegistry(dir), data = bytes("many origins");
+  const id = registry.add({ bytes: data, kind: "file", origin: "/first", private: true, now: 1 }).id;
+  // every origin as long as the cap, and 3-byte characters: the largest meta the writer can make
+  for (let i = 0; i < MAX_ORIGINS + 5; i++) registry.add({ bytes: data, kind: "file", origin: `/o${i}/` + "\u20ac".repeat(MAX_ORIGIN_CHARS - 10), private: true, now: 2 + i });
+  const file = join(dir, "sources", `src-${id.slice(4)}`, "meta.json");
+  expect(statSync(file).size).toBeGreaterThan(64 * 1024); // the old reader cap
+  expect(statSync(file).size).toBeLessThan(MAX_META_BYTES);
+  const meta = registry.get(id)!;
+  expect(meta.private).toBe(true);
+  expect(meta.origins).toHaveLength(MAX_ORIGINS);
+  expect(registry.add({ bytes: data, kind: "file", origin: "/public", private: false })).toMatchObject({ id, created: false, private: true });
+  expect(registry.readRaw(id)).toEqual(data);
+});
+
+test("a directory whose meta.json exists but cannot be read is refused and left untouched, never replaced as public", () => {
+  const dir = state(), registry = new SourceRegistry(dir), data = bytes("keep me");
+  const id = registry.add({ bytes: data, kind: "file", origin: "/secret", private: true }).id;
+  const folder = join(dir, "sources", `src-${id.slice(4)}`);
+  writeFileSync(join(folder, "meta.json"), "{ not json");
+  expect(() => registry.add({ bytes: data, kind: "file", origin: "/again", private: false })).toThrow("cannot be read");
+  expect(readFileSync(join(folder, "meta.json"), "utf8")).toBe("{ not json");
+  expect(readFileSync(join(folder, "raw"))).toEqual(data);
+});
+
+test("plain text up to the raw cap is stored and read back whole, and text over the cap is refused before anything is written", () => {
+  const dir = state(), registry = new SourceRegistry(dir);
+  expect(MAX_SOURCE_TEXT).toBe(MAX_SOURCE_BYTES);
+  const big = "a".repeat(600 * 1024); // over the old 512 KiB read cap
+  const added = registry.add({ bytes: bytes(big), kind: "file", origin: "/big.txt", private: false, text: big });
+  expect(added.text).toBe(true);
+  expect(registry.readText(added.id)).toBe(big);
+  expect(() => registry.add({ bytes: bytes("small"), kind: "file", origin: "/s", private: false, text: "a".repeat(MAX_SOURCE_TEXT + 1) })).toThrow("text is over");
+  expect(registry.list()).toHaveLength(1);
+});
+
+const lockFile = (dir: string) => join(dir, "sources", ".lock");
+const hold = (dir: string, owner: unknown) => { mkdirSync(join(dir, "sources"), { recursive: true }); writeFileSync(lockFile(dir), JSON.stringify(owner)); };
+
+test("a registration waits for a live holder and gives up with the lock named, never taking it", () => {
+  const dir = state(), registry = new SourceRegistry(dir, { lockWaitMs: 150 });
+  hold(dir, { pid: process.pid, signature: processSignature(process.pid) });
+  const started = Date.now();
+  expect(() => registry.add({ bytes: bytes("x"), kind: "file", origin: "/x", private: false })).toThrow("holds");
+  expect(Date.now() - started).toBeGreaterThanOrEqual(140);
+  expect(existsSync(lockFile(dir))).toBe(true);
+  expect(registry.list()).toEqual([]);
+});
+
+test("a lock whose holder is gone is taken over, and the lock is released after the add, also when it fails", () => {
+  const dir = state(), registry = new SourceRegistry(dir, { lockWaitMs: 2000 });
+  hold(dir, { pid: process.pid, signature: "0".repeat(64) }); // this pid, another process identity: a reused pid
+  expect(registry.add({ bytes: bytes("x"), kind: "file", origin: "/x", private: false }).created).toBe(true);
+  expect(existsSync(lockFile(dir))).toBe(false);
+  expect(() => registry.add({ bytes: bytes("x"), kind: "file", origin: "bad\norigin", private: false })).toThrow();
+  const original = SourceRegistry.prototype.get;
+  SourceRegistry.prototype.get = () => { throw new Error("boom"); };
+  try { expect(() => registry.add({ bytes: bytes("y"), kind: "file", origin: "/y", private: false })).toThrow("boom"); } finally { SourceRegistry.prototype.get = original; }
+  expect(existsSync(lockFile(dir))).toBe(false);
+});
+
+test("a lock file nobody finished writing is stale after a grace period, and a fresh one is waited for", () => {
+  const dir = state(), registry = new SourceRegistry(dir, { lockWaitMs: 100 });
+  mkdirSync(join(dir, "sources"), { recursive: true }); writeFileSync(lockFile(dir), "");
+  expect(() => registry.add({ bytes: bytes("x"), kind: "file", origin: "/x", private: false })).toThrow("holds");
+  const old = new Date(Date.now() - 60_000);
+  utimesSync(lockFile(dir), old, old);
+  expect(registry.add({ bytes: bytes("x"), kind: "file", origin: "/x", private: false }).created).toBe(true);
+});
+
+test("separate processes adding the same bytes, some private and some public, always leave the record private", async () => {
+  const dir = state(), data = "shared bytes for a race";
+  const script = join(dir, "add.ts"), module = join(import.meta.dir, "..", "src", "hub", "sources.ts");
+  writeFileSync(script, `import { SourceRegistry } from ${JSON.stringify(module)};
+const [dir, flag, origin] = process.argv.slice(2);
+for (let i = 0; i < 15; i++) new SourceRegistry(dir).add({ bytes: Buffer.from(${JSON.stringify(data)}), kind: "file", origin: origin + i, private: flag === "private" });`);
+  const procs = Array.from({ length: 6 }, (_, i) => Bun.spawn([process.execPath, script, dir, i === 3 ? "private" : "public", `/p${i}/`], { stdout: "pipe", stderr: "pipe" }));
+  const codes = await Promise.all(procs.map(proc => proc.exited));
+  expect(codes).toEqual([0, 0, 0, 0, 0, 0]);
+  const registry = new SourceRegistry(dir), id = sourceId(sha256Of(bytes(data)));
+  expect(registry.get(id)!.private).toBe(true);
+  expect(registry.get(id)!.origins.length).toBe(6 * 15);
+  expect(existsSync(lockFile(dir))).toBe(false);
 });

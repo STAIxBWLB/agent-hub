@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { chmodSync, closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { processLiveness, processSignature } from "@staix/agent-mem/platform";
 import { MAX_PROJECTION_INPUT } from "./text-projection.ts";
 
 /**
@@ -10,6 +11,19 @@ import { MAX_PROJECTION_INPUT } from "./text-projection.ts";
 export const MAX_SOURCE_BYTES = MAX_PROJECTION_INPUT;
 export const MAX_REDIRECTS = 5;
 export const MAX_SOURCES = 10_000;
+export const MAX_ORIGINS = 256;
+export const MAX_ORIGIN_CHARS = 2000;
+/**
+ * One cap per file, used by the writer AND the reader, so what `add` accepts can always be read back (a record the reader cannot read is treated as damaged,
+ * and damage must never be mistaken for absence). `meta.json` holds at most MAX_ORIGINS origins of MAX_ORIGIN_CHARS characters, each up to 3 UTF-8 bytes
+ * per UTF-16 unit, twice over (the first origin is also the record's own), plus indentation: under 1.7 MiB, so 2 MiB. Text is the projection of the bytes:
+ * a converter's is at most 256 KiB, a plain file's is its own decoded bytes, at most the raw cap.
+ */
+export const MAX_META_BYTES = 2 * 1024 * 1024;
+export const MAX_SOURCE_TEXT = MAX_SOURCE_BYTES;
+/** How long a registration waits for another process's registration before it gives up (never steals a live holder's lock). */
+export const LOCK_WAIT_MS = 10_000;
+const LOCK_UNNAMED_MS = 2_000;
 const ID = /^src:[0-9a-f]{16}$/;
 export type SourceKind = "file" | "url";
 export interface SourceOrigin { kind: SourceKind; origin: string; added_at: number; private: boolean }
@@ -43,14 +57,14 @@ function boundedRead(path: string, cap: number): Buffer {
     return bytes;
   } finally { closeSync(fd); }
 }
-const cleanOrigin = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= 2000 && !/[\x00-\x1f\x7f]/.test(value);
+const cleanOrigin = (value: unknown): value is string => typeof value === "string" && value.length > 0 && value.length <= MAX_ORIGIN_CHARS && !/[\x00-\x1f\x7f]/.test(value);
 function parseMeta(text: string, id: string): SourceMeta | undefined {
   try {
     const raw = JSON.parse(text) as Record<string, unknown>;
     const origins = raw.origins;
     if (raw.id !== id || !["file", "url"].includes(raw.kind as string) || !cleanOrigin(raw.origin) || typeof raw.sha256 !== "string" || sourceId(raw.sha256) !== id
       || !Number.isSafeInteger(raw.bytes) || (raw.bytes as number) < 0 || (raw.bytes as number) > MAX_SOURCE_BYTES || !Number.isSafeInteger(raw.added_at) || typeof raw.private !== "boolean"
-      || !Array.isArray(origins) || !origins.length || origins.length > 256) return undefined;
+      || !Array.isArray(origins) || !origins.length || origins.length > MAX_ORIGINS) return undefined;
     const kept: SourceOrigin[] = [];
     for (const item of origins as Record<string, unknown>[]) {
       if (!item || !["file", "url"].includes(item.kind as string) || !cleanOrigin(item.origin) || !Number.isSafeInteger(item.added_at) || typeof item.private !== "boolean") return undefined;
@@ -68,13 +82,14 @@ function parseMeta(text: string, id: string): SourceMeta | undefined {
  */
 export class SourceRegistry {
   readonly root: string;
-  constructor(stateDir: string) { this.root = join(stateDir, "sources"); }
+  private readonly lockWaitMs: number;
+  constructor(stateDir: string, options: { lockWaitMs?: number } = {}) { this.root = join(stateDir, "sources"); this.lockWaitMs = options.lockWaitMs ?? LOCK_WAIT_MS; }
 
   private dir(id: string): string { return join(this.root, dirName(id)); }
 
   get(id: string): SourceMeta | undefined {
     if (!validSourceId(id)) return undefined;
-    try { return parseMeta(boundedRead(join(this.dir(id), "meta.json"), 64 * 1024).toString("utf8"), id); } catch { return undefined; }
+    try { return parseMeta(boundedRead(join(this.dir(id), "meta.json"), MAX_META_BYTES).toString("utf8"), id); } catch { return undefined; }
   }
 
   list(): SourceMeta[] {
@@ -97,7 +112,33 @@ export class SourceRegistry {
   }
   readText(id: string): string | undefined {
     if (!this.get(id)) return undefined;
-    try { return boundedRead(join(this.dir(id), "text"), 512 * 1024).toString("utf8"); } catch { return undefined; }
+    try { return boundedRead(join(this.dir(id), "text"), MAX_SOURCE_TEXT).toString("utf8"); } catch { return undefined; }
+  }
+
+  /** The registry-wide lock: a file created exclusively (`wx`), holding the owner's pid and process signature. Never stolen from a live or unknown holder. */
+  private locked<T>(action: () => T): T {
+    const lock = join(this.root, ".lock"), mine = JSON.stringify({ pid: process.pid, signature: processSignature(process.pid) ?? null });
+    const deadline = Date.now() + this.lockWaitMs;
+    let held = false;
+    for (;;) {
+      try { writeFileSync(lock, mine, { mode: 0o600, flag: "wx" }); held = true; break; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        let owner: { pid?: unknown; signature?: unknown } | undefined, seen: { dev: number; ino: number; age: number } | undefined;
+        try { const stat = lstatSync(lock); seen = { dev: stat.dev, ino: stat.ino, age: Date.now() - stat.mtimeMs }; owner = JSON.parse(readFileSync(lock, "utf8")); } catch { owner = undefined; }
+        // A lock file nobody finished writing (a crash between create and write) names no owner: after a grace period it is stale too.
+        const state = owner ? processLiveness(owner.pid, typeof owner.signature === "string" ? owner.signature : null) : seen && seen.age > LOCK_UNNAMED_MS ? "gone" : "unknown";
+        // Only a holder proven gone loses its lock, and only the file that was inspected is removed (an inode check, so a newer holder's lock survives).
+        if (state === "gone") {
+          try { const now = lstatSync(lock); if (seen && now.ino === seen.ino && now.dev === seen.dev) unlinkSync(lock); } catch { /* another process took it over first */ }
+          continue;
+        }
+        if (Date.now() >= deadline) throw new Error(`another ahub source registration holds ${lock}; try again in a moment (a stale lock is only removed once its process is gone)`);
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+      }
+    }
+    try { return action(); }
+    finally { if (held) { try { unlinkSync(lock); } catch { /* already gone */ } } }
   }
 
   /**
@@ -107,22 +148,32 @@ export class SourceRegistry {
    */
   add(input: { bytes: Buffer; kind: SourceKind; origin: string; private: boolean; text?: string; now?: number }): SourceAdd {
     if (!Buffer.isBuffer(input.bytes)) throw new Error("a source is bytes");
+    if (input.text !== undefined && Buffer.byteLength(input.text) > MAX_SOURCE_TEXT) throw new Error(`the text is over the ${MAX_SOURCE_TEXT} byte cap; nothing was stored`);
     if (input.bytes.length > MAX_SOURCE_BYTES) throw new Error(`source is ${input.bytes.length} bytes, over the ${MAX_SOURCE_BYTES} byte cap (MAX_PROJECTION_INPUT); nothing was stored`);
-    if (!cleanOrigin(input.origin)) throw new Error("source origin must be 1 to 2000 printable characters");
+    if (!cleanOrigin(input.origin)) throw new Error(`source origin must be 1 to ${MAX_ORIGIN_CHARS} printable characters`);
     const sha256 = sha256Of(input.bytes), id = sourceId(sha256), now = input.now ?? Date.now(), directory = this.dir(id);
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
+    // One registration at a time per registry, across processes: the read of the record, the decision and the write are one step, so two CLIs adding the
+    // same bytes (one private, one public) can never each read the old flag and the later write lose the other's upgrade.
+    return this.locked(() => this.addLocked(input, sha256, id, now, directory));
+  }
+
+  private addLocked(input: { bytes: Buffer; kind: SourceKind; origin: string; private: boolean; text?: string }, sha256: string, id: string, now: number, directory: string): SourceAdd {
     if (!existsSync(directory) && this.list().length >= MAX_SOURCES) throw new Error(`the registry holds ${MAX_SOURCES} sources already; nothing was stored`);
     const existing = this.get(id);
+    // A directory that exists but whose record cannot be read is DAMAGED, not absent: replacing it could erase a private record and the bytes with it,
+    // so a damaged record is refused and left for the person, never silently rebuilt as public.
+    if (!existing && existsSync(join(directory, "meta.json"))) throw new Error(`the record for ${id} exists but cannot be read; it was left as it is (inspect ${directory})`);
     if (existing) {
       const origin: SourceOrigin = { kind: input.kind, origin: input.origin, added_at: now, private: input.private };
       const known = existing.origins.some(item => item.kind === origin.kind && item.origin === origin.origin && item.private === origin.private);
       const privateNow = existing.private || input.private;
-      const origins = known || existing.origins.length >= 256 ? existing.origins : [...existing.origins, origin];
+      const origins = known || existing.origins.length >= MAX_ORIGINS ? existing.origins : [...existing.origins, origin];
       if (privateNow === existing.private && origins === existing.origins) return { id, created: false, private: existing.private, upgraded: false, text: this.readText(id) !== undefined };
       atomic(join(directory, "meta.json"), JSON.stringify({ ...existing, private: privateNow, origins }, null, 2) + "\n");
       return { id, created: false, private: privateNow, upgraded: privateNow && !existing.private, text: this.readText(id) !== undefined };
     }
-    if (existsSync(directory)) rmSync(directory, { recursive: true, force: true }); // a half-written directory of an earlier crash is not a source
+    if (existsSync(directory)) rmSync(directory, { recursive: true, force: true }); // no meta.json (checked above): a half-written directory of an earlier crash, never a record
     const staging = `${directory}.${crypto.randomUUID()}.partial`;
     try {
       mkdirSync(staging, { recursive: true, mode: 0o700 });
