@@ -4602,3 +4602,32 @@ Log history is limited to the last 100 retained lines and export to the last 100
 Orphan cleanup requires a missing selected root, signed process identity and the host-known hub executable/entrypoint and argv. An inaccessible root or unavailable proof remains unknown; there is no offline config-based role grant. The daemon rechecks authority and process ownership before signals. A confirmed self candidate uses the existing lifecycle stop after its reply. A roster write already committed before authority ends is acknowledged as saved, without authorizing further lifecycle work or commands.
 
 `restart --yes` and `recovery resume/abort` await a project-scoped continuation proof. `task unassign` follows #481, and legacy models start/stop awaits a project that needs it. This slice adds no task eligibility rule and no MLX/recovery-driver changes. Person authority and the separately authorized `--live-test` path retain their existing behavior.
+
+## Standalone ciphertext broker (#446 X2)
+
+From the operator's terminal, run `ahub broker serve --port 8788 --state-dir <private-directory>`.
+Default bind is 127.0.0.1; default storage is `broker/` under the selected hub state
+directory. Ctrl+C or SIGTERM closes the listener and SQLite handle together.
+Accepted ciphertext remains across restart. `GET http://127.0.0.1:8788/health`
+returns fixed version/status data.
+
+For another machine, configure TLS termination and use `--public-url wss://relay.example/`.
+The audience must be a canonical root URL without credentials, query or fragment.
+Proxy `/v1/rooms/<room>` as binary WebSocket, preserve Origin and expose WSS only.
+A non-loopback bind also needs `--hostname <address>` and an explicit WSS URL.
+The command configures no proxy, certificate, firewall or hosting account; live
+TLS and two-machine operation need their own operator receipts.
+
+Keep `broker.db` and its directory outside version control. There is one process
+per database, enforced by SQLite's kernel lock; a second instance reports busy.
+A crash releases that lock. Do not delete the database as lock recovery: owner/
+epoch pins protect membership. Empty/corrupt/unsupported state refuses rather than
+forgetting pins. Restore a known valid backup or arrange a fresh room lifecycle
+explicitly; X3 clients must retain their own owner/epoch/replay state.
+
+The first room connection proves its signed roster's owner identity; later ones
+prove current membership. Room create/invite/join/expose and the hub link are X3;
+ordinary chat forwarding and local policy are X4. A stored or queue_ack packet is
+transport/storage only; application delivery needs the recipient's separate signed
+receipt. Queue-full/backpressure refuses new work without evicting accepted data.
+See the [protocol and caps](specs/2026-09-19-agent-hub-design.md#encrypted-rooms-x2-blind-broker-446).

@@ -1251,6 +1251,12 @@ const commands: Record<string, () => Promise<void> | void> = {
     return shown(renderReleaseChange)(taskOp("release_change", { name, revision: Number(revision), fields }));
   },
 
+  broker: async () => {
+    const { runBrokerCommand, brokerCommandError } = await import("./broker.ts");
+    try { await runBrokerCommand(args, stateDir); }
+    catch (error) { fail(brokerCommandError(error)); }
+  },
+
   source: async () => {
     // #508: the source registry. Person only (classifyPeerCommand sends an unlisted command to console, so an agent shell is refused before this runs) and local:
     // it reads and writes the hub state dir directly and needs no daemon. A URL is fetched here, once, by this process; no hub tool or agent ever fetches one.

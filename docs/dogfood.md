@@ -11,6 +11,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Feature | State here | Measured by |
 | --- | --- | --- |
 | Encrypted rooms (#446 X1) | off; source-only crypto/wire, with no broker, room link, invitation CLI or delivery enabled | real WebCrypto vectors and negative wire fixtures; atomic memory fake ports establish ordering only; durable X3 state and the X7 two-machine person receipt remain unverified |
+| Blind room broker (#446 X2) | off; standalone source/fixture work, no public TLS service or hub room link configured here | fake-client auth/fan-out/revocation/restart, ciphertext-only child-process canary, queue caps/TTL/FIFO, and person-only CLI tests; live proxy/account/X7 receipts remain unverified |
 | Message bus, digests, priorities | on | `ahub report`: messages, digests, overflow, undeliverable; delivery latency from events |
 | Compact board (#724) | on | `ahub board` at 80, 120 and 200 columns: one line per task (test/board-compact.test.ts) |
 | Backlog list table (#399) | on | `ahub backlog list` at a terminal width: one line per card by rank with the reserved owner and dependencies, and the count by owner (test/backlog-list-output.test.ts); `--json` for scripts |
