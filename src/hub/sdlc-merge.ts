@@ -1,6 +1,6 @@
 import { findingsForHead, findingHead, findingTally } from "./review-findings.ts";
 import { readMergeQueue, type DeliveryTask, type MergeQueue } from "./sdlc-queue.ts";
-import { evalGapBlockers, evalGateView, evalRequiredChecks, readEvalFor } from "./eval-gate.ts";
+import { evalGapBlockers, evalGateView, evalReportedGap, evalRequiredChecks, readEvalFor, type EvalResult } from "./eval-gate.ts";
 import { readSdlcPr, stageDefinition, type AutoMergeMode, type PrEvidence, type SdlcConfig, type SdlcGh, type MergeRecord } from "./sdlc.ts";
 
 /**
@@ -152,10 +152,15 @@ export function localGates(input: { subject: DeliveryTask; state: string; taskSt
   return gates;
 }
 
-/** #481 S5: in enforce, a configuration PR whose eval check passed but reported no pass rate or suite version, or whose file coverage is unknown, does not merge. Advise and off add nothing here. */
-async function evalGaps(config: SdlcConfig, repo: string, evidence: PrEvidence, run: SdlcGh): Promise<string[]> {
+/**
+ * #481 S5: in enforce, a configuration PR whose eval check passed but reported no pass rate or suite version, or whose file coverage is unknown, does not merge.
+ * Advise and off add nothing here. Synchronous on purpose: the result is read before the final PR read, so judging the last reading awaits nothing remote.
+ * A result read for another head is ignored by the view, and a passed check with no result read at all counts as unreported (the PR moved into scope after the read).
+ */
+function evalGaps(config: SdlcConfig, evidence: PrEvidence, result: EvalResult | undefined): string[] {
   if (config.mode !== "enforce") return [];
-  return evalGapBlockers(evalGateView(config, evidence, await readEvalFor(config, evidence, repo, run)));
+  const view = evalGateView(config, evidence, result);
+  return [...new Set([...evalGapBlockers(view), ...(view?.state === "passed" && !result && view.check ? [evalReportedGap(view.check)] : [])])];
 }
 
 /**
@@ -171,7 +176,9 @@ export async function decideMerge(input: MergeInput): Promise<MergeDecision> {
   const evidence = await readSdlcPr(receipt, run);
   if (!evidence) return { refused: [...gates, "PR evidence unavailable"] };
   const required = requiredChecksFor(config, repo);
-  gates.push(...evidenceGates(evidence, approved, required, evalRequiredChecks(config, evidence)), ...await evalGaps(config, repo, evidence, run));
+  // The eval metadata is read before the final PR read, never after it: nothing remote is awaited between the last reading and its judgment.
+  const evalResult = config.mode === "enforce" ? await readEvalFor(config, evidence, repo, run) : undefined;
+  gates.push(...evidenceGates(evidence, approved, required, evalRequiredChecks(config, evidence)), ...evalGaps(config, evidence, evalResult));
   gates.push(...localGates({ subject, state: input.state, taskState: input.taskState, config, head: evidence.head }));
   let queue: MergeQueue | undefined;
   try { queue = await readMergeQueue(repo, config, input.tasks, run, input.readableMetadata); } catch { queue = undefined; }
@@ -180,7 +187,7 @@ export async function decideMerge(input: MergeInput): Promise<MergeDecision> {
   // head that moved between the reads refuses here. `--match-head-commit` pins the head only, never these gates.
   const last = await readSdlcPr(receipt, run);
   if (!last) gates.push("PR evidence unavailable on the final read");
-  else { gates.push(...evidenceGates(last, approved, required, evalRequiredChecks(config, last)), ...await evalGaps(config, repo, last, run)); gates.push(...localGates({ subject, state: input.state, taskState: input.taskState, config, head: last.head })); }
+  else { gates.push(...evidenceGates(last, approved, required, evalRequiredChecks(config, last)), ...evalGaps(config, last, evalResult)); gates.push(...localGates({ subject, state: input.state, taskState: input.taskState, config, head: last.head })); }
   const row = queue?.rows.find(r => r.pr === pr);
   if (row?.head !== undefined && approved && row.head !== approved && !gates.some(g => g.startsWith("head changed"))) gates.push(`head changed: the queue read ${row.head.slice(0, 8)}`);
   if (gates.length) return { refused: dropEchoes([...new Set(gates)]) };

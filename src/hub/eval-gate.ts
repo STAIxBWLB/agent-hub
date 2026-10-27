@@ -70,7 +70,8 @@ export interface EvalGate {
 }
 export const EVAL_NOT_CONFIGURED = "eval check not configured: the person names one with eval_check in sdlc.toml (suite choice pending the person)";
 export const EVAL_COVERAGE_UNKNOWN = "eval gate: PR file coverage incomplete or unknown";
-const reported = (check: string) => `eval gate: pass rate or suite version not reported by ${check}`;
+export const evalReportedGap = (check: string) => `eval gate: pass rate or suite version not reported by ${check}`;
+const reported = evalReportedGap;
 
 /** Undefined for off mode and for a code-only PR: those outputs stay byte-identical. */
 export function evalGateView(config: Pick<SdlcConfig, "configPaths" | "evalCheck" | "mode">, evidence: PrEvidence | undefined, result?: EvalResult): EvalGate | undefined {
