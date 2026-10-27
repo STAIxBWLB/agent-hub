@@ -20,6 +20,8 @@ import { supportsBoardReleaseFilter, supportsBoardColumnMetadata } from "./board
 import { matchesPolicy } from "../hub/path-policy.ts";
 import { projectedDiff } from "../hub/projected-diff.ts";
 import { TextProjections } from "../hub/text-projection.ts";
+import { fetchSourceUrl, MAX_SOURCE_BYTES, publicSourceView, screenRegistration, SourceRegistry, validSourceId, type SourceMeta } from "../hub/sources.ts";
+import { renderSourceAdd, renderSourceList } from "./source-output.ts";
 import { terminalText } from "./console-state.ts";
 import { parseSettingsEditArgs, runSettingsEdit, SETTINGS_EDIT_USAGE } from "./settings-edit.ts";
 import { petView, readPet, renderPet } from "./pet.ts";
@@ -34,9 +36,9 @@ import { qwenSessionId } from "../hub/crash.ts";
 import { isPermissionMode } from "../hub/permission-mode.ts";
 import { parseSettingText, settingDef, settingText, type SettingRow } from "../hub/settings.ts";
 import { startModeOf } from "../hub/start-mode.ts";
-import { OVERLAY_FILE, parseOverlay, parseRouting, routingText, type Routing, type RoutingOverlay } from "../hub/routing.ts";
+import { currentRouting, OVERLAY_FILE, parseOverlay, parseRouting, routingText, type Routing, type RoutingOverlay } from "../hub/routing.ts";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, constants, existsSync, fstatSync, openSync, readFileSync, readSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
@@ -1247,6 +1249,57 @@ const commands: Record<string, () => Promise<void> | void> = {
     } else if (sub && Object.hasOwn(states, sub) && operands.length === 3) fields = { state: states[sub] };
     else return fail("invalid release command");
     return shown(renderReleaseChange)(taskOp("release_change", { name, revision: Number(revision), fields }));
+  },
+
+  source: async () => {
+    // #508: the source registry. Person only (classifyPeerCommand sends an unlisted command to console, so an agent shell is refused before this runs) and local:
+    // it reads and writes the hub state dir directly and needs no daemon. A URL is fetched here, once, by this process; no hub tool or agent ever fetches one.
+    const options = outputOptions();
+    const operands = args.filter(arg => arg !== "--json" && arg !== "--full" && !arg.startsWith("--color="));
+    const usage = "usage: ahub source add <path|url> [--json] [--color=auto|always|never] | list [--json] [--color=auto|always|never]";
+    const [sub, ...rest] = operands;
+    const registry = new SourceRegistry(stateDir);
+    if (sub === "list" && rest.length === 0) {
+      const rows = registry.list();
+      if (options.json) return console.log(JSON.stringify(rows, null, 2));
+      return printOutput(renderSourceList(rows, options.columns, Date.now()), options.color);
+    }
+    if (sub !== "add" || rest.length !== 1 || !rest[0]) return fail(usage);
+    const target = rest[0], config = projectConfig();
+    const isUrl = /^[a-z][a-z0-9+.-]*:\/\//i.test(target);
+    let bytes: Buffer, origin: string, kind: "file" | "url", absolute: string | undefined;
+    try {
+      if (isUrl) {
+        const fetched = await fetchSourceUrl(target);
+        bytes = fetched.bytes; origin = fetched.finalUrl; kind = "url";
+      } else {
+        absolute = realPath(resolve(cwd, target));
+        const fd = openSync(absolute, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        try {
+          const st = fstatSync(fd);
+          if (!st.isFile()) throw new Error("not a regular file");
+          if (st.size > MAX_SOURCE_BYTES) throw new Error(`file is ${st.size} bytes, over the ${MAX_SOURCE_BYTES} byte cap (MAX_PROJECTION_INPUT); nothing was stored`);
+          bytes = Buffer.alloc(st.size); let got = 0;
+          while (got < bytes.length) { const n = readSync(fd, bytes, got, bytes.length - got, got); if (!n) break; got += n; }
+          if (got !== st.size) throw new Error("the file changed while it was read");
+        } finally { closeSync(fd); }
+        origin = absolute; kind = "file";
+      }
+    } catch (error) { return fail(`cannot register ${isUrl ? "that URL" : target}: ${(error as Error).message}`); }
+    const projections = new TextProjections({ cwd, stateDir, config: config.text_projection ?? {}, deny: config.local.deny, readAllow: config.local.read_allow, log: line => console.error(line) });
+    const extension = /\.[A-Za-z0-9]{1,16}$/.exec(isUrl ? new URL(origin).pathname : origin)?.[0] ?? "";
+    const verdict = screenRegistration({ bytes, kind, ...(absolute ? { path: absolute } : {}) }, {
+      piiPaths: config.pii?.paths ?? [], piiPatterns: currentRouting(cwd).signals.pii_patterns, cwd, matchesPolicy,
+      project: data => extension ? projections.projectBytes(join(cwd, `source${extension.toLowerCase()}`), data)?.text : undefined,
+    });
+    let added;
+    try { added = registry.add({ bytes, kind, origin, private: verdict.private, ...(verdict.text !== undefined ? { text: verdict.text } : {}) }); }
+    catch (error) { return fail(`cannot register ${isUrl ? "that URL" : target}: ${(error as Error).message}`); }
+    const meta = registry.get(added.id);
+    if (!meta) return fail(`the record for ${added.id} cannot be read after it was registered; inspect ${join(stateDir, "sources")}`);
+    const result = { id: added.id, created: added.created, upgraded: added.upgraded, kind: meta.kind, origin: meta.origin, sha256: meta.sha256, bytes: meta.bytes, private: meta.private, text: added.text, reasons: verdict.reasons };
+    if (options.json) return console.log(JSON.stringify(result, null, 2));
+    printOutput(renderSourceAdd(result, options.columns), options.color);
   },
 
   deliverables: async () => {

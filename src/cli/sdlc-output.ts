@@ -5,7 +5,7 @@
 import { duration, plural, relative, table, terminalText, wrap, type Span, type Tone } from "./console-state.ts";
 
 type Line = Span[];
-const s = (value: unknown, tone?: Tone): Span => ({ text: terminalText(value).replace(/[\n\t]/g, " "), ...(tone ? { tone } : {}) });
+export const s = (value: unknown, tone?: Tone): Span => ({ text: terminalText(value).replace(/[\n\t]/g, " "), ...(tone ? { tone } : {}) });
 const room = (columns?: number) => columns ?? Infinity;
 const list = (value: unknown): any[] => Array.isArray(value) ? value : [];
 const yes = (value: unknown) => value === true ? "yes" : value === false ? "no" : "unknown";
@@ -29,7 +29,7 @@ function para(text: string, columns: number | undefined, tone?: Tone, indent = "
  * the value does not fit in the room left of the label column, the value moves under the label instead, so a path or id
  * is broken only when it is wider than the whole terminal.
  */
-function pair(label: string, value: unknown, columns: number | undefined, labelWidth: number, tone?: Tone, indent = ""): Line[] {
+export function pair(label: string, value: unknown, columns: number | undefined, labelWidth: number, tone?: Tone, indent = ""): Line[] {
   const text = terminalText(value).replace(/[\n\t]/g, " ");
   const head = indent + label.padEnd(labelWidth) + "  ";
   const longest = Math.max(0, ...text.split(/\s+/).map(textWidth));
@@ -52,7 +52,7 @@ const textWidth = (text: string) => Bun.stringWidth(text);
  * widest cells wrap inside their column (a PR linked to thirty tasks wraps its TASKS cell, it does not push the
  * table to 134 columns); and when even each column's longest unbreakable word cannot fit, one labelled block per row.
  */
-function grid(head: string[], data: Span[][], columns: number | undefined): Line[] {
+export function grid(head: string[], data: Span[][], columns: number | undefined): Line[] {
   const natural = head.map((name, i) => Math.max(textWidth(name), ...data.map(row => textWidth(row[i]?.text ?? ""))));
   const gaps = GAP * (head.length - 1);
   if (columns === undefined || natural.reduce((sum, n) => sum + n, 0) + gaps <= columns) return table(head, data, room(columns), natural);
@@ -79,8 +79,8 @@ function blocks(head: string[], data: Span[][], columns: number): Line[] {
     ...head.slice(1).flatMap((name, i) => pair(name.toLowerCase(), row[i + 1]?.text ?? "", columns, label, row[i + 1]?.tone, "  "))]);
 }
 /** A heading wraps to the width like any paragraph; a long repository name never pushes it past the terminal. */
-const heading = (text: string, columns?: number): Line[] => wrap(text, room(columns), 2).map(line => [s(line, "strong")]);
-const blank: Line = [s("")];
+export const heading = (text: string, columns?: number): Line[] => wrap(text, room(columns), 2).map(line => [s(line, "strong")]);
+export const blank: Line = [s("")];
 const readyTone = (ready: unknown): Tone => ready === true ? "success" : "attention";
 
 // ---- sdlc status / explain ----------------------------------------------------------------------------------------
