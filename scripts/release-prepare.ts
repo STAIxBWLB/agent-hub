@@ -9,7 +9,8 @@ import { writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileReader, prepareRelease, realRun, restampDocuments } from "./lib/release-plan.ts";
 
-const root = resolve(import.meta.dir, "..");
+// The checkout to release. Defaults to the repository these scripts live in; tests (and anyone releasing a sibling checkout) point it elsewhere.
+const root = resolve(process.env.AHUB_RELEASE_ROOT ?? resolve(import.meta.dir, ".."));
 const args = process.argv.slice(2);
 const read = fileReader(root), write = (path: string, data: string) => writeFileSync(join(root, path), data);
 const die = (lines: string[]): never => { for (const line of lines) console.error(`release-prepare: ${line}`); process.exit(1); };

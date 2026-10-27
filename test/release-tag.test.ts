@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -179,15 +179,31 @@ test("a rejected push is reported and leaves no tag; the script never passes --n
   expect(pushes[0]).toEqual(tagPushArgv("origin", r.head(), VERSION));
 });
 
-test("the CLI: usage errors exit 1 and a repository that is not a prepared release is refused without pushing", () => {
+test("the CLI runs entirely against the checkout it is pointed at: usage errors exit 1, a repository that is not a prepared release is refused, and nothing outside the scratch repo is touched", () => {
   const r = released();
-  const cli = (...args: string[]) => spawnSync(process.execPath, [join(ROOT, "scripts/release-tag.ts"), ...args], { cwd: r.work, encoding: "utf8", env: { ...process.env, AHUB_CLI: "/nonexistent/ahub" } });
+  // AHUB_RELEASE_ROOT points the script at the scratch repository, so its fetch and ls-remote reach only that repository's local bare remote
+  // (never this checkout's real origin), and its guard is a path that cannot exist, so the consent read fails closed.
+  const cli = (...args: string[]) => spawnSync(process.execPath, [join(ROOT, "scripts/release-tag.ts"), ...args], { cwd: r.work, encoding: "utf8", timeout: 15_000, env: { ...process.env, AHUB_RELEASE_ROOT: r.work, AHUB_CLI: "/nonexistent/ahub" } });
+  const sourceFetchHead = join(ROOT, ".git", "FETCH_HEAD");
+  const before = spawnSync("git", ["-C", ROOT, "rev-parse", "--git-path", "FETCH_HEAD"], { encoding: "utf8" }).stdout.trim();
+  const stamp = (path: string) => { try { return String(statSync(path).mtimeMs); } catch { return "absent"; } };
+  const source = before ? (before.startsWith("/") ? before : join(ROOT, before)) : sourceFetchHead;
+  const fetchedBefore = stamp(source);
   expect(cli().status).toBe(1);
   expect(cli("0.2.0", "--force").status).toBe(1);
   expect(cli("0.2.0", "0.3.0").status).toBe(1);
-  // The script under test is this repository's, which is not a prepared release: the preflight refuses (main is not a release merge here).
+  // A version this scratch repository is not prepared for: refused, naming the scratch repo's own facts.
   const refused = cli("9.9.9");
   expect(refused.status).toBe(1);
   expect(refused.stderr).toContain("release-tag: refused:");
+  expect(refused.stderr).toContain("package.json at HEAD is 0.2.0, not 9.9.9");
   expect(refused.stdout).not.toContain("pushed");
+  expect(remoteTags(r)).toBe("v0.1.0");
+  // The prepared version, with no reachable consent: the preflight passes on the scratch repo's local remote and the dry run says no consent (exit 2).
+  const dry = cli(VERSION);
+  expect(dry.status).toBe(2);
+  expect(dry.stdout).toContain(`preflight passed for v${VERSION} at ${r.head()}`);
+  expect(remoteTags(r)).toBe("v0.1.0");
+  // This checkout's own FETCH_HEAD was never touched: the test never contacted its origin.
+  expect(stamp(source)).toBe(fetchedBefore);
 }, 20_000);

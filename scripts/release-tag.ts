@@ -10,7 +10,8 @@
 import { resolve } from "node:path";
 import { realRun, releaseTag } from "./lib/release-plan.ts";
 
-const root = resolve(import.meta.dir, "..");
+// The checkout to release. Defaults to the repository these scripts live in; tests (and anyone releasing a sibling checkout) point it elsewhere.
+const root = resolve(process.env.AHUB_RELEASE_ROOT ?? resolve(import.meta.dir, ".."));
 const args = process.argv.slice(2), version = args.find(arg => !arg.startsWith("--"));
 const unknown = args.filter(arg => arg.startsWith("--") && arg !== "--execute");
 if (!version || unknown.length || args.filter(arg => !arg.startsWith("--")).length !== 1) { console.error("usage: bun scripts/release-tag.ts <version> [--execute]"); process.exit(1); }
