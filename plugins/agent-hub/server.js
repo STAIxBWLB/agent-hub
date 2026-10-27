@@ -311,8 +311,8 @@ var init_compat = __esm(() => {
       gate: "contract",
       probe: ["claude", "--version"],
       parse: (out) => plain(out.trim().replace(/ \(Claude Code\)$/, "")),
-      trustNote: "The native prompt-tool allow, deny, MCP error/disconnect and hook-failure fallthrough have an isolated receipt. No dontAsk/bypass fallback exists; another version's permission behavior is unverified.",
-      receipt: "docs/verification/2026-10-23-headless-claude-permissions.md"
+      trustNote: "The native prompt-tool transport and host-wrapper rewrite, environment isolation and replay contract have isolated receipts. No dontAsk/bypass fallback exists; another version's permission or rewrite behavior is unverified.",
+      receipt: "docs/verification/2026-10-26-headless-claude-shell-context.md"
     },
     "codex-review": {
       label: "Codex reviewer (codex-cli)",
@@ -12934,7 +12934,7 @@ var init_builtin_metadata = __esm(() => {
     start: { create: createClaudeImplementer, daemonPort: "claude-implementer", forms: headlessForms, defaultForm: "headless", conductorStartable: true, hubSwitches: [], ownedFlags: [] },
     identity: { mcp: "env", currentChild: true },
     instances: { mode: "headless", roles: ["implementer", "verifier"], modelSelect: true },
-    permission: { grants: { ask: "every write, edit and shell command asks", "ask-when-needed": "file tools inside the owned worktree may run automatically; shell and protected paths ask" } },
+    permission: { grants: { ask: "every write, edit and shell command asks", "ask-when-needed": "file tools, proven read-only shell commands and bound task commands inside the owned worktree may run automatically; protected paths and other commands ask" } },
     session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: false, launchKind: "claude-implementer", crashPlan: () => ({ resume: {}, how: "Claude implementer resumes its recorded per-task sessions" }) },
     turnEnd: "adapter",
     budget: { account: "claude" },
@@ -30982,8 +30982,15 @@ async function callTool(req) {
     if (typeof args?.tool_name !== "string" || !/^[A-Za-z][A-Za-z0-9_.:/-]{0,127}$/.test(args.tool_name) || !args.input || typeof args.input !== "object" || Array.isArray(args.input) || typeof args.tool_use_id !== "string" || !args.tool_use_id.length || args.tool_use_id.length > 256)
       return deny("invalid native permission request");
     try {
-      const res = await hub.request({ t: "permission_request", tool: args?.tool_name, input: args?.input }, 3605000);
-      return res.ok === true && res.behavior === "allow" ? text5(JSON.stringify({ behavior: "allow", updatedInput: args?.input })) : deny(typeof res.message === "string" ? res.message : "permission denied");
+      const res = await hub.request({ t: "permission_request", tool: args?.tool_name, input: args?.input, wrapperProtocol: 1 }, 3605000);
+      if (res.ok !== true || res.behavior !== "allow")
+        return deny(typeof res.message === "string" ? res.message : "permission denied");
+      if (res.wrapperProtocol !== undefined && res.wrapperProtocol !== 1)
+        return deny("unsupported host execution response");
+      const updated = res.wrapperProtocol === 1 ? res.updatedInput : undefined;
+      if (res.wrapperProtocol === 1 && (args.tool_name !== "Bash" || !updated || typeof updated !== "object" || Array.isArray(updated) || typeof updated.command !== "string"))
+        return deny("invalid host execution response");
+      return text5(JSON.stringify({ behavior: "allow", updatedInput: updated ?? args?.input }));
     } catch {
       return deny("hub permission unavailable");
     }
