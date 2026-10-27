@@ -113,7 +113,7 @@ test("the total bound is still the backstop: a run whose progress never stops is
   const file = progressFile();
   const endless = grower(file, 30);
   try {
-    const watched = await run(endless.pid!, 4, file, 2);
+    const watched = await run(endless.pid!, 4, file, 3);   // 1 s gaps against a 3 s quiet bound (#526): only the total bound may fire
     await exited(endless);
     expect(stopped(endless)).toBe(true);
     expect(watched.stderr).toContain("still running after 4s");
@@ -132,10 +132,10 @@ test("progress-tee.sh passes every line through unchanged and counts one byte pe
 });
 
 test("through the real fifo, filter and watchdog: a run that keeps passing tests is not stopped and its exit code is kept; the output reaches stderr unchanged", async () => {
-  // 5 s of results against a 2 s quiet bound; the fake runner fails at the end, and that status must come out of the gate untouched.
-  const out = await gate('echo "test/a.test.ts:" >&2; for i in 1 2 3 4 5; do echo "(pass) t$i" >&2; sleep 1; done; echo "(fail) last" >&2; exit 3', 2, 60);
-  expect(out.stdout).toContain("GATE exit=3 progress=7");   // a header, five passes and a fail
-  expect(out.stderr).toContain("(pass) t5");
+  // 5 s of results (a line every 0.5 s) against a 3 s quiet bound: the longest gap is a sixth of the bound, so a loaded runner has 2.5 s of slack (#526). The fake runner fails at the end, and that status must come out of the gate untouched.
+  const out = await gate('echo "test/a.test.ts:" >&2; for i in 1 2 3 4 5 6 7 8 9 10; do echo "(pass) t$i" >&2; sleep 0.5; done; echo "(fail) last" >&2; exit 3', 3, 60);
+  expect(out.stdout).toContain("GATE exit=3 progress=12");   // a header, ten passes and a fail
+  expect(out.stderr).toContain("(pass) t10");
   expect(out.stderr).toContain("(fail) last");
   expect(out.stderr).not.toContain("cause=");
 }, 15_000);
@@ -147,9 +147,9 @@ test("through the real fifo, filter and watchdog: a run that goes silent after i
 }, 15_000);
 
 test("through the real fifo, filter and watchdog: a test file header alone is progress (a long file whose results come at its end)", async () => {
-  // Headers every second keep a 2 s quiet bound satisfied for 5 s without a single result line.
-  const out = await gate('for i in 1 2 3 4 5; do echo "test/f$i.test.ts:" >&2; sleep 1; done; exit 0', 2, 60);
-  expect(out.stdout).toContain("GATE exit=0 progress=5");
+  // Headers every 0.5 s keep a 3 s quiet bound satisfied for 5 s without a single result line (gap a sixth of the bound, #526).
+  const out = await gate('for i in 1 2 3 4 5 6 7 8 9 10; do echo "test/f$i.test.ts:" >&2; sleep 0.5; done; exit 0', 3, 60);
+  expect(out.stdout).toContain("GATE exit=0 progress=10");
   expect(out.stderr).not.toContain("cause=");
 }, 15_000);
 
