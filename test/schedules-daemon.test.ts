@@ -49,13 +49,16 @@ async function start(p: { dir: string; state: string }, clock: { now: number }, 
   const status = async () => (await client.request({ t: "status" })).status;
   const db = new Database(join(p.state, "hub.db"), { readonly: true }); cleanup.push(() => db.close());
   const scheduled = () => (db.query("SELECT id, title, detail, class, state FROM tasks ORDER BY id").all() as { id: number; title: string; detail: string; class: string; state: string }[]).filter(task => scheduleKeyOf(task.detail) === "nightly");
-  return { daemon, client, status, scheduled };
+  /** The timer has seen the schedule and recorded its anchor: only then does moving the clock mean "a period passed". */
+  const anchored = () => (db.query("SELECT id FROM schedule_runs").all() as { id: string }[]).some(row => row.id === "nightly");
+  return { daemon, client, status, scheduled, anchored };
 }
 
 test("the timer runs with task_sweep off: nothing at first sight, one backlog card when due, and status shows the next run", async () => {
   const p = project({ local: { schedules: SCHEDULES } }), clock = { now: T0 };
   const h = await start(p, clock);
   await until(async () => (await h.status()).schedules?.length === 1, "status lists the schedule");
+  await until(() => h.anchored(), "the timer recorded the anchor");
   const first = (await h.status()).schedules[0];
   expect(first).toMatchObject({ id: "nightly", every: "1h", class: "plan", queue: "backlog", state: "scheduled", next: T0 + HOUR });
   expect(JSON.stringify(first)).not.toContain("Review the nightly board"); // task text is never in status
@@ -85,6 +88,7 @@ test("a hub held by the test seam skips due ticks and coalesces them, then runs 
   let held = true;
   const h = await start(p, clock, { schedulesHeld: () => held });
   await until(async () => (await h.status()).schedules?.length === 1, "listed");
+  await until(() => h.anchored(), "anchored");
   clock.now = T0 + 3 * HOUR;
   await until(async () => (await h.status()).schedules[0].coalesced >= 2, "ticks coalesced while held");
   expect((await h.status()).schedules[0].state).toBe("held");
@@ -122,6 +126,7 @@ test("a restart keeps the period in hub.db: the run before the stop is not repea
   const p = project({ local: { schedules: SCHEDULES } }), clock = { now: T0 };
   let h = await start(p, clock);
   await until(async () => (await h.status()).schedules?.length === 1, "listed");
+  await until(() => h.anchored(), "anchored");
   clock.now = T0 + HOUR;
   await until(() => h.scheduled().length === 1, "first run");
   const id = h.scheduled()[0]!.id;
@@ -143,6 +148,7 @@ test("a reload that adds schedules arms the timer, and removing them stops it an
   expect(preview.ok, String(preview.error)).toBe(true);
   if (preview.confirmation) expect((await h.client.request({ t: "settings_reload", confirm: preview.confirmation.token })).ok).toBe(true);
   await until(async () => (await h.status()).schedules?.length === 1, "the reload armed the schedule");
+  await until(() => h.anchored(), "the new timer recorded the anchor");
   clock.now = T0 + HOUR;
   await until(() => h.scheduled().length === 1, "the new timer ran it");
   writeFileSync(join(p.dir, ".agenthub/config.local.json"), JSON.stringify({}));

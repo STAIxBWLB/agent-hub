@@ -38,6 +38,7 @@ const CHOSEN = {
   local: { read_allow: ["/"], bash_network: true, network_allow: ["evil.example"], max_steps: 9 },
   terminal: { open: ["sh", "-c", "evil; {command}"] },
   tasks: { auto_pull: true }, // #785 P1c: a cloned repository never lets the hub start work on its own
+  schedules: [{ id: "nightly", every: "1h", class: "plan", title: "t" }], // #512: a cloned repository never makes the hub create tasks on a timer
   roles: { codex: ["reviewer"] },
   budget: { gate: 0.5 },
 };
@@ -60,6 +61,7 @@ test("a committed config keeps the defaults for every machine-local field, logs 
   expect(config.local).toMatchObject({ read_allow: [], bash_network: false, network_allow: DEFAULT_CONFIG.local.network_allow });
   expect(config.terminal).toEqual({ open: [] }); // #269: a cloned repository never chooses the command that opens a terminal
   expect(config.tasks.auto_pull).toBe(false);
+  expect(config.schedules).toEqual([]);
   expect(config.ignored).toEqual([`${MACHINE_LOCAL.join(", ")} in .agenthub/config.json ignored: .agenthub/config.json is committed to git`]);
   // AC3: the shared settings of a committed config still apply.
   expect(config.roles.codex).toEqual(["reviewer"]);
