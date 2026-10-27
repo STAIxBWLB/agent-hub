@@ -245,6 +245,11 @@ test("the body is capped while it streams: a declared size over the cap, an endl
   const endless = new ReadableStream<Uint8Array>({ pull(controller) { pulled += 4; controller.enqueue(new Uint8Array(4)); } });
   await expect(fetchSourceUrl("https://example.com/endless", { maxBytes: 16, fetch: async () => new Response(endless) })).rejects.toThrow("over the 16 byte cap");
   expect(pulled).toBeLessThan(64);
+  // A declared size over the cap is refused before the body is read at all: the stream is never pulled.
+  let read = 0;
+  const declared = new ReadableStream<Uint8Array>({ pull(controller) { read++; controller.enqueue(new Uint8Array(4)); } });
+  await expect(fetchSourceUrl("https://example.com/declared", { maxBytes: 10, fetch: async () => new Response(declared, { headers: { "content-length": "9999" } }) })).rejects.toThrow("9999 bytes, over the 10 byte cap");
+  expect(read).toBeLessThanOrEqual(1);
   const exact = await fetchSourceUrl("https://example.com/exact", { maxBytes: 10, fetch: async () => response("x".repeat(10)) });
   expect(exact.bytes.length).toBe(10);
   await expect(fetchSourceUrl("https://example.com/missing", { fetch: async () => response("gone", { status: 404 }) })).rejects.toThrow("HTTP 404");
