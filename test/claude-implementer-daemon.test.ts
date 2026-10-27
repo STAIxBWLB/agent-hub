@@ -6,23 +6,36 @@ import { join, resolve } from "node:path";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { ControlClient } from "../src/hub/control-client.ts";
 import { newEnvelope, type Envelope } from "../src/hub/envelope.ts";
-import { hubGitSync } from "../src/hub/git.ts";
+import { hubGitEnv, hubGitSync } from "../src/hub/git.ts";
+import { hostExecutable } from "../src/hub/host-executable.ts";
+import { shellQuote } from "../src/cli/shell-quote.ts";
 import { realPath } from "../src/hub/project.ts";
+import { sandboxAvailable } from "../src/local/sandbox.ts";
 import { completeJsonLines } from "./fakes/jsonl.ts";
 
 async function until(condition: () => boolean, leg: string) { for (let n = 0; n < 300 && !condition(); n++) await Bun.sleep(5); expect(condition(), leg).toBe(true); }
-async function fixture(taskBound = false, model?: string) {
+async function fixture(taskBound = false, model?: string, shell?: { origin: true; actionEnabled: boolean; readCanonical?: boolean; defaultBranch?: string; globalLfs?: boolean }) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-claude-impl-daemon-"))), peer = "claude-worker", tree = join(root, ".worktrees", peer), stateDir = join(root, ".agenthub", "state"), log = join(root, "calls.jsonl"), home = join(root, "home"), bin = join(root, "bin");
+  const hostBin = realPath(mkdtempSync(join(tmpdir(), "ahub-claude-impl-git-")));
   const oldEnv = { HOME: process.env.HOME, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR, PATH: process.env.PATH, AMEM_HOME: process.env.AMEM_HOME, AGENTHUB_HOME: process.env.AGENTHUB_HOME };
-  mkdirSync(stateDir, { recursive: true }); mkdirSync(home); mkdirSync(bin);
-  for (const args of [["init", "-q"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], ["worktree", "add", "-qb", "worker", tree]]) expect(hubGitSync(["-C", root, ...args], { encoding: "utf8" }).status).toBe(0);
-  writeFileSync(join(tree, "source.ts"), "fixture source\n");
-  writeFileSync(join(bin, "claude"), `#!${process.execPath}\nif(process.argv.includes("--version")){console.log("2.1.309 (Claude Code)");process.exit(0)}\nprocess.argv=[process.argv[0],${JSON.stringify(resolve(import.meta.dir, "fakes/fake-claude-implementer.ts"))},${JSON.stringify(log)},"hang",...process.argv.slice(2)];\nawait import(${JSON.stringify(resolve(import.meta.dir, "fakes/fake-claude-implementer.ts"))});\n`, { mode: 0o700 });
-  process.env.HOME = home; process.env.AMEM_HOME = join(home, "memory"); process.env.AGENTHUB_HOME = join(home, "hub"); process.env.CLAUDE_CONFIG_DIR = join(home, ".claude"); process.env.PATH = `${bin}:${oldEnv.PATH}`;
-  writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify({ instances: { [peer]: { kind: "claude", roles: ["implementer"], start_mode: "headless", worktree: `.worktrees/${peer}`, permission_mode: "ask-when-needed", ...(model ? { model } : {}) } }, roles: { [peer]: ["implementer"] }, roster: { [peer]: true }, memory: { enabled: false, native: false }, inference: { enabled: false }, snapshots: { enabled: false }, mlx: { enabled: false }, pi: { enabled: false, auto_start: false }, task_sweep: { enabled: false }, batch_ms: 0 }));
   let daemon: Awaited<ReturnType<typeof startDaemon>> | undefined; const clients: ControlClient[] = [];
   try {
-    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, permissionTimeoutMs: 250, config: loadConfig(root) });
+    mkdirSync(stateDir, { recursive: true }); mkdirSync(home); mkdirSync(bin);
+    const actualGit = hostExecutable("git", root, oldEnv.PATH ?? "/usr/bin:/bin"), globalConfig = join(home, ".gitconfig");
+    writeFileSync(globalConfig, shell?.globalLfs ? '[filter "lfs"]\n clean = git-lfs clean -- %f\n smudge = git-lfs smudge -- %f\n process = git-lfs filter-process\n required = true\n' : "");
+    writeFileSync(join(hostBin, "git"), `#!/bin/sh\nexport GIT_CONFIG_SYSTEM=/dev/null\nexport GIT_CONFIG_GLOBAL=${shellQuote(globalConfig)}\nexec ${shellQuote(actualGit)} "$@"\n`, { mode: 0o700 });
+    const gitEnv = hubGitEnv({ ...process.env, HOME: home, PATH: `${hostBin}:${oldEnv.PATH ?? "/usr/bin:/bin"}` }, { repositoryIsolation: true });
+    for (const args of [["init", "-q"], ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], ["worktree", "add", "-qb", "worker", tree]]) expect(hubGitSync(["-C", root, ...args], { encoding: "utf8", env: gitEnv }).status).toBe(0);
+    for (const args of [["update-ref", `refs/remotes/origin/${shell?.defaultBranch ?? "main"}`, "HEAD"], ["symbolic-ref", "refs/remotes/origin/HEAD", `refs/remotes/origin/${shell?.defaultBranch ?? "main"}`]]) expect(hubGitSync(["-C", root, ...args], { encoding: "utf8", env: gitEnv }).status).toBe(0);
+    expect(hubGitSync(["-C", root, "remote", "add", "origin", "https://github.com/fixture/repo.git"], { encoding: "utf8", env: gitEnv }).status).toBe(0);
+    writeFileSync(join(tree, "source.ts"), "fixture source\n");
+    writeFileSync(join(bin, "claude"), `#!${process.execPath}\nif(process.argv.includes("--version")){console.log("2.1.309 (Claude Code)");process.exit(0)}\nprocess.argv=[process.argv[0],${JSON.stringify(resolve(import.meta.dir, "fakes/fake-claude-implementer.ts"))},${JSON.stringify(log)},"hang",...process.argv.slice(2)];\nawait import(${JSON.stringify(resolve(import.meta.dir, "fakes/fake-claude-implementer.ts"))});\n`, { mode: 0o700 });
+    process.env.HOME = home; process.env.AMEM_HOME = join(home, "memory"); process.env.AGENTHUB_HOME = join(home, "hub"); process.env.CLAUDE_CONFIG_DIR = join(home, ".claude"); process.env.PATH = `${bin}:${hostBin}:${oldEnv.PATH ?? "/usr/bin:/bin"}`;
+    writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify({ instances: { [peer]: { kind: "claude", roles: ["implementer"], start_mode: "headless", worktree: `.worktrees/${peer}`, permission_mode: "ask-when-needed", ...(model ? { model } : {}) } }, roles: { [peer]: ["implementer"] }, roster: { [peer]: true }, memory: { enabled: false, native: false }, inference: { enabled: false }, snapshots: { enabled: false }, mlx: { enabled: false }, pi: { enabled: false, auto_start: false }, task_sweep: { enabled: false }, batch_ms: 0 }));
+    const config = loadConfig(root);
+    if (shell) config.action_policy = { enabled: shell.actionEnabled, always_ask: ["publish", "destroy", "install", "external-write"], budgets: { publish: 1, destroy: 3, install: 2, "external-write": 5 } };
+    if (shell?.readCanonical) config.local = { ...config.local, read_allow: [root] };
+    daemon = await startDaemon({ cwd: root, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0, permissionTimeoutMs: 250, config, shellDefaultBranchProbe: async () => shell?.defaultBranch ?? "main" });
     const console_ = await ControlClient.connect(stateDir, { role: "console", projectRoot: root }); clients.push(console_);
     const instanceId = (await console_.request({ t: "status" })).status.instanceId;
     const started = await console_.request({ t: "start", peer }); expect(started).toMatchObject({ ok: true, executionCwd: tree });
@@ -40,9 +53,169 @@ async function fixture(taskBound = false, model?: string) {
     const call = completeJsonLines(readFileSync(log, "utf8"))[0] as any, session = call.args[call.args.indexOf("--session-id") + 1];
     const tools = await ControlClient.connect(stateDir, { role: "tools", peer, launchId: call.launchId, projectRoot: root }); clients.push(tools);
     const connect = async (launchId: string) => { const client = await ControlClient.connect(stateDir, { role: "tools", peer, launchId, projectRoot: root }); clients.push(client); return client; };
-    return { taskId, root, peer, tree, stateDir, log, home, daemon, console_, tools, call, session, instanceId, connect, async close() { for (const client of clients) client.close(); await daemon!.stop(); for (const [key, value] of Object.entries(oldEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } rmSync(root, { recursive: true, force: true }); } };
-  } catch (error) { for (const client of clients) client.close(); await daemon?.stop(); for (const [key, value] of Object.entries(oldEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } rmSync(root, { recursive: true, force: true }); throw error; }
+    return { taskId, root, peer, tree, stateDir, log, home, daemon, console_, tools, call, session, instanceId, connect, async close() { for (const client of clients) client.close(); await daemon!.stop(); for (const [key, value] of Object.entries(oldEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } rmSync(root, { recursive: true, force: true }); rmSync(hostBin, { recursive: true, force: true }); } };
+  } catch (error) { for (const client of clients) client.close(); await daemon?.stop(); for (const [key, value] of Object.entries(oldEnv)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } rmSync(root, { recursive: true, force: true }); rmSync(hostBin, { recursive: true, force: true }); throw error; }
 }
+
+async function shellTask(f: Awaited<ReturnType<typeof fixture>>, bind = false) {
+  expect(await f.tools.request({ t: "task", op: "hub_task_accept", args: { id: f.taskId } })).toMatchObject({ ok: true });
+  for (const args of [["update-ref", "refs/remotes/origin/main", "HEAD"], ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]]) expect(hubGitSync(["-C", f.root, ...args], { encoding: "utf8" }).status).toBe(0);
+  mkdirSync(join(f.tree, "scripts"), { recursive: true }); writeFileSync(join(f.tree, "scripts", "check.sh"), "#!/bin/sh\n/bin/pwd\n", { mode: 0o700 });
+  if (bind) expect(await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "bun run build" }, wrapperProtocol: 1 })).toMatchObject({ behavior: "allow", wrapperProtocol: 1 });
+}
+async function runGranted(command: string, cwd: string) {
+  const child = Bun.spawn(["/bin/sh", "-c", command], { cwd, env: { ...process.env, GIT_DIR: "/fixture-poison", RIPGREP_CONFIG_PATH: "/fixture-poison" }, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const timer = setTimeout(() => child.kill("SIGKILL"), 5000);
+  try {
+    const [stdout, stderr, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
+    return { stdout, stderr, code };
+  } finally { clearTimeout(timer); }
+}
+
+test.skipIf(!sandboxAvailable())("#845 current task Bash grants use a single-use host wrapper and persist their branch binding", async () => {
+  const f = await fixture(true);
+  try {
+    await shellTask(f, false);
+    const input = { command: "scripts/check.sh --changed" };
+    expect(await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "pwd" }, wrapperProtocol: 1 })).toMatchObject({ behavior: "deny", message: "no person answered" });
+    expect(await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "bun run build" }, wrapperProtocol: 1 })).toMatchObject({ behavior: "allow", wrapperProtocol: 1 });
+    const allowed = await f.tools.request({ t: "permission_request", tool: "Bash", input, wrapperProtocol: 1 });
+    expect(allowed).toMatchObject({ ok: true, behavior: "allow", wrapperProtocol: 1 });
+    expect(allowed.updatedInput.command).not.toBe(input.command);
+    expect(await runGranted(allowed.updatedInput.command, f.root)).toEqual({ code: 0, stdout: `${f.tree}\n`, stderr: "" });
+    const replay = await runGranted(allowed.updatedInput.command, f.root);
+    expect(replay.code).not.toBe(0); expect(replay.stdout).toBe(""); expect(replay.stderr).toContain("host shell execution refused");
+    const shown = await f.tools.request({ t: "task", op: "hub_task_show", args: { id: f.taskId } });
+    const task = JSON.parse(shown.text); expect(task.refs.branch).toBe("worker");
+    expect(task.history.filter((entry: any) => entry.event === "shell branch bound")).toHaveLength(1);
+    const build = await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "bun run build" }, wrapperProtocol: 1 });
+    expect(build).toMatchObject({ ok: true, behavior: "allow", wrapperProtocol: 1 });
+  } finally { await f.close(); }
+}, 20_000);
+
+test("#845 branch changes invalidate outstanding tickets and never rebind the task", async () => {
+  const f = await fixture(true, undefined, { origin: true, actionEnabled: false, globalLfs: true });
+  try {
+    await shellTask(f);
+    const allowed = await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "git push origin worker" }, wrapperProtocol: 1 });
+    expect(allowed.behavior).toBe("allow");
+    expect(hubGitSync(["-C", f.tree, "checkout", "-qb", "other-task"], { encoding: "utf8" }).status).toBe(0);
+    const stale = await runGranted(allowed.updatedInput.command, f.root);
+    expect(stale.code).not.toBe(0); expect(stale.stdout).toBe("");
+    expect(await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "git push origin worker" }, wrapperProtocol: 1 })).toMatchObject({ behavior: "deny", message: "no person answered" });
+  } finally { await f.close(); }
+}, 20_000);
+
+test("#845 startup default branch stays excluded after local origin HEAD is rewritten", async () => {
+  const f = await fixture(true, undefined, { origin: true, actionEnabled: false, defaultBranch: "release" });
+  try {
+    await shellTask(f); // This changes origin/HEAD to main after the daemon captured release.
+    expect(hubGitSync(["-C", f.tree, "checkout", "-qb", "release"], { encoding: "utf8" }).status).toBe(0);
+    expect(await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "git push origin release" }, wrapperProtocol: 1 })).toMatchObject({ behavior: "deny", message: "no person answered" });
+    const shown = await f.tools.request({ t: "task", op: "hub_task_show", args: { id: f.taskId } });
+    expect(JSON.parse(shown.text).refs.branch).toBeUndefined();
+  } finally { await f.close(); }
+}, 20_000);
+
+test("#845 ask, old clients, extra native fields, operators and force push retain person approval", async () => {
+  const f = await fixture(true);
+  try {
+    await shellTask(f);
+    for (const request of [
+      { tool: "Bash", input: { command: "pwd" } },
+      { tool: "Bash", input: { command: "pwd && pwd" }, wrapperProtocol: 1 },
+      { tool: "Bash", input: { command: "pwd", cwd: f.root }, wrapperProtocol: 1 },
+      { tool: "Bash", input: { command: "pwd", run_in_background: true }, wrapperProtocol: 1 },
+      { tool: "Bash", input: { command: "git push --force origin worker" }, wrapperProtocol: 1 },
+    ]) expect(await f.tools.request({ t: "permission_request", ...request })).toMatchObject({ behavior: "deny", message: "no person answered" });
+    expect(await f.console_.request({ t: "permission", peer: f.peer, mode: "ask" })).toMatchObject({ ok: true });
+    expect(await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "pwd" }, wrapperProtocol: 1 })).toMatchObject({ behavior: "deny", message: "no person answered" });
+  } finally { await f.close(); }
+}, 20_000);
+
+test("#845 an enabled publish class asks even for an otherwise valid branch-bound push", async () => {
+  for (const actionEnabled of [true, false]) {
+    const f = await fixture(true, undefined, { origin: true, actionEnabled });
+    try {
+      await shellTask(f);
+      const answer = await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "git push origin worker" }, wrapperProtocol: 1 });
+      if (actionEnabled) expect(answer).toMatchObject({ behavior: "deny", message: "no person answered" });
+      else expect(answer).toMatchObject({ behavior: "allow", wrapperProtocol: 1 });
+      // No push is redeemed; this fixture proves the policy boundary without network or publication.
+    } finally { await f.close(); }
+  }
+}, 20_000);
+
+test.skipIf(!sandboxAvailable())("#845 model-written gate test cannot read the hub control token or SSH key, even with canonical read allowance", async () => {
+  const f = await fixture(true, undefined, { origin: true, actionEnabled: false, readCanonical: true });
+  try {
+    await shellTask(f);
+    const token = join(f.stateDir, "control-token"), ssh = join(f.home, ".ssh", "id_ed25519"), output = join(f.tree, "gate-output");
+    mkdirSync(join(f.home, ".ssh")); writeFileSync(ssh, "fixture-ssh-private", { mode: 0o600 });
+    expect(readFileSync(token, "utf8").trim().length).toBeGreaterThan(0);
+    expect(readFileSync(ssh, "utf8")).toBe("fixture-ssh-private");
+    mkdirSync(join(f.tree, "test"));
+    writeFileSync(join(f.tree, "test", "gate.test.ts"), `import {expect,test} from "bun:test";import {readFileSync,writeFileSync,linkSync} from "node:fs";test("kernel gate boundary",()=>{for(const [index,file] of ${JSON.stringify([token, ssh])}.entries()){expect(()=>readFileSync(file,"utf8")).toThrow();try{const alias="credential-alias-"+index;linkSync(file,alias);expect(()=>readFileSync(alias,"utf8")).toThrow();}catch(error){expect(["EPERM","EACCES"]).toContain(error.code);}}expect(()=>writeFileSync(${JSON.stringify(join(f.root, "escaped"))},"outside")).toThrow();writeFileSync(${JSON.stringify(output)},"worktree-write-ok");});`);
+    const allowed = await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "bun test test/gate.test.ts" }, wrapperProtocol: 1 });
+    expect(allowed).toMatchObject({ behavior: "allow", wrapperProtocol: 1 });
+    const result = await runGranted(allowed.updatedInput.command, f.root);
+    expect(result.code, result.stderr).toBe(0);
+    expect(readFileSync(output, "utf8")).toBe("worktree-write-ok");
+    expect(existsSync(join(f.root, "escaped"))).toBe(false);
+  } finally { await f.close(); }
+}, 20_000);
+
+test.skipIf(!sandboxAvailable())("#845 a changed submodule inventory invalidates an outstanding gate ticket", async () => {
+  const f = await fixture(true);
+  try {
+    await shellTask(f);
+    const allowed = await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "scripts/check.sh --changed" }, wrapperProtocol: 1 });
+    expect(allowed).toMatchObject({ behavior: "allow", wrapperProtocol: 1 });
+    const module = join(f.root, ".git", "modules", "new-module");
+    mkdirSync(module, { recursive: true });
+    writeFileSync(join(module, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(module, "config"), "[core]\nrepositoryformatversion = 0\n");
+    const stale = await runGranted(allowed.updatedInput.command, f.root);
+    expect(stale.code).not.toBe(0); expect(stale.stdout).toBe("");
+    expect(stale.stderr).toContain("host shell execution refused");
+    const fresh = await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "scripts/check.sh --changed" }, wrapperProtocol: 1 });
+    expect(fresh).toMatchObject({ behavior: "allow", wrapperProtocol: 1 });
+    expect(await runGranted(fresh.updatedInput.command, f.root)).toEqual({ code: 0, stdout: `${f.tree}\n`, stderr: "" });
+  } finally { await f.close(); }
+}, 20_000);
+
+test.skipIf(sandboxAvailable())("#845 executable task gates ask when the local kernel sandbox is unavailable", async () => {
+  const f = await fixture(true);
+  try {
+    await shellTask(f);
+    for (const command of ["scripts/check.sh --changed", "bun run build", "bun test test/gate.test.ts"]) {
+      expect(await f.tools.request({ t: "permission_request", tool: "Bash", input: { command }, wrapperProtocol: 1 }), command).toMatchObject({ behavior: "deny", message: "no person answered" });
+    }
+  } finally { await f.close(); }
+}, 20_000);
+
+test("#845 closed host add/commit work without a gate sandbox and cannot execute hooks, fsmonitor or signing", async () => {
+  const f = await fixture(true);
+  try {
+    await shellTask(f);
+    const marker = join(f.tree, "unexpected-helper"), helper = join(f.tree, "helper.sh"), hooks = join(f.tree, "hooks");
+    mkdirSync(hooks);
+    const script = `#!/bin/sh\nprintf unsafe > '${marker}'\nexit 1\n`;
+    writeFileSync(helper, script, { mode: 0o700 }); writeFileSync(join(hooks, "pre-commit"), script, { mode: 0o700 });
+    for (const [key, value] of [["user.name", "Fixture"], ["user.email", "fixture@example.invalid"], ["core.hooksPath", hooks], ["core.fsmonitor", helper], ["gpg.program", helper], ["commit.gpgSign", "true"]]) expect(hubGitSync(["-C", f.root, "config", key!, value!], { encoding: "utf8" }).status).toBe(0);
+    for (const command of ["git add source.ts", "git commit -m fixture-host-commit"]) {
+      const allowed = await f.tools.request({ t: "permission_request", tool: "Bash", input: { command }, wrapperProtocol: 1 });
+      expect(allowed).toMatchObject({ behavior: "allow", wrapperProtocol: 1 });
+      const result = await runGranted(allowed.updatedInput.command, f.root);
+      expect(result.code, result.stderr).toBe(0);
+    }
+    expect(existsSync(marker)).toBe(false);
+    expect(hubGitSync(["-C", f.tree, "log", "-1", "--format=%s"], { encoding: "utf8" }).stdout.trim()).toBe("fixture-host-commit");
+    expect(hubGitSync(["-C", f.root, "config", "filter.fixture.clean", helper], { encoding: "utf8" }).status).toBe(0);
+    expect(await f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "git add source.ts" }, wrapperProtocol: 1 })).toMatchObject({ behavior: "deny", message: "no person answered" });
+    expect(existsSync(marker)).toBe(false);
+  } finally { await f.close(); }
+}, 20_000);
 
 test("#525 headless current-child facts are isolated; missing or stale launch evidence cannot attach or grant", async () => {
   const f = await fixture();

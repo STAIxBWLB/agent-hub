@@ -15,7 +15,7 @@ export function changedFiles(base, root = ".") {
 }
 
 // The gate itself, the runtime and shared fixtures: anything here can change any test's outcome.
-const FULL = [/^scripts\/(check\.sh|changed-tests\.mjs|record-test-process\.mjs|hang-watch\.sh|check-owned-processes\.mjs)$/,
+const FULL = [/^scripts\/(check\.sh|changed-tests\.mjs|record-test-process\.mjs|hang-watch\.sh|progress-tee\.sh|check-owned-processes\.mjs)$/,
   /^(package\.json|bun\.lock|bunfig\.toml|tsconfig\.json|\.bun-version)$/, /^test\/(?!.*\.test\.ts$)/, /^src\/adapters\/conformance\//];
 
 const DOCS = /(^docs\/|\.md$|^LICENSE)/;

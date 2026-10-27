@@ -1,4 +1,6 @@
 import { canonicalMemorySymbolNode, normalizeMemorySymbolInput, MEMORY_SYMBOL_LIMIT, type MemorySymbolNodes } from "./memory-symbols.ts";
+import { createHash } from "node:crypto";
+import { taskShellBindingValid, type TaskShellBinding } from "./task-shell-command.ts";
 import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, HOST_CODE_SYMBOLS } from "./task-code-symbols.ts";
 import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
 import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
@@ -1042,6 +1044,38 @@ export class Tasks {
   }
   wip(peer: PeerId, except?: number): number {
     return this.d.board.plannerWip(peer, except);
+  }
+
+  /** Host-observed task branch/root binding (#845), never a tool-call branch claim or an execution grant. */
+  bindShellBranch(peer: PeerId, id: number, binding: TaskShellBinding & { worktree: string }, current: () => boolean): boolean {
+    try {
+      if (!Number.isSafeInteger(id) || id < 1 || !taskShellBindingValid(binding) || !this.publicMetadataText(binding.branch)
+        || !current() || this.d.privateTurn?.(peer)) return false;
+      const task = this.d.board.get(id), root = this.d.executionRoot?.(peer);
+      if (!task || task.owner !== peer || !["in_progress", "changes_requested"].includes(task.state) || this.isPii(task)
+        || !root || realPath(root) === realPath(this.d.cwd) || realPath(root) !== realPath(binding.worktree)) return false;
+      const worktree = createHash("sha256").update(realPath(root)).digest("hex");
+      const previous = task.history.findLast(entry => entry.by === HUB && entry.event === "shell branch bound");
+      if (previous) {
+        const saved: unknown = JSON.parse(previous.note ?? "");
+        if (!saved || typeof saved !== "object" || Array.isArray(saved)) return false;
+        const record = saved as Record<string, unknown>;
+        if (record.branch !== binding.branch || record.worktree !== worktree) return false;
+      }
+      if (task.refs.branch !== undefined && task.refs.branch !== binding.branch) return false;
+      const scope = this.repositories.scope(task.refs);
+      const others = this.d.board.list().filter(row => row.id !== id && !isClosedTaskState(row.state))
+        .map(row => ({ row, scope: this.repositories.scope(row.refs) }));
+      if (scope.key !== this.repositories.project.key || others.some(other => other.scope.key === scope.key && other.row.refs.branch === binding.branch)) return false;
+      if (!current() || this.d.privateTurn?.(peer) || this.d.board.get(id)?.history.length !== task.history.length) return false;
+      if (previous) return true;
+      let recorded = false;
+      this.releaseNotice(`task #${id}: execution branch binding unavailable`, () => {
+        this.d.board.update(id, HUB, "shell branch bound", { refs: { branch: binding.branch } }, JSON.stringify({ branch: binding.branch, worktree }), {}, task.history.length);
+        recorded = true;
+      });
+      return recorded;
+    } catch { return false; }
   }
   private capacityBefore(task: Task): Map<PeerId, number> {
     return new Map([...new Set([task.owner, task.reserved])].filter((peer): peer is PeerId => !!peer).map(peer => [peer, this.wip(peer)]));

@@ -7,7 +7,7 @@ import { PROTOCOL } from "../src/hub/control-client.ts";
 async function client(permission: boolean) {
   const root = mkdtempSync(join(tmpdir(), "ahub-print-permission-client-"));
   const requests: Record<string, any>[] = [], replies = new Map<number, (value: any) => void>();
-  let sequence = 0, diagnostics = "", mode: "allow" | "deny" | "error" | "disconnect" = "allow";
+  let sequence = 0, diagnostics = "", mode: "allow" | "wrapper" | "bad-wrapper" | "future-wrapper" | "deny" | "error" | "disconnect" = "allow";
   const daemon = Bun.serve({ hostname: "127.0.0.1", port: 0,
     fetch(request, server) { return server.upgrade(request) ? undefined : new Response("websocket only", { status: 400 }); },
     websocket: { message(ws, data) {
@@ -16,7 +16,8 @@ async function client(permission: boolean) {
       if (message.t === "permission_request") {
         if (mode === "disconnect") return void ws.close(4401, "fixture disconnected");
         return void ws.send(JSON.stringify({ t: message.t, rid: message.rid,
-          ...(mode === "allow" ? { ok: true, behavior: "allow", updatedInput: { command: "daemon must not replace native input" } } : mode === "deny" ? { ok: true, behavior: "deny", message: "person denied" } : { ok: false, behavior: "allow", message: "approval unavailable" }) }));
+          ...(mode === "wrapper" || mode === "bad-wrapper" || mode === "future-wrapper" ? { ok: true, behavior: "allow", wrapperProtocol: mode === "future-wrapper" ? 2 : 1, updatedInput: mode !== "bad-wrapper" ? { command: "fixed-wrapper single-use-ticket", description: "Hub-owned task command", timeout: 1000 } : null }
+            : mode === "allow" ? { ok: true, behavior: "allow", updatedInput: { command: "daemon must not replace native input" } } : mode === "deny" ? { ok: true, behavior: "deny", message: "person denied" } : { ok: false, behavior: "allow", message: "approval unavailable" }) }));
       }
       ws.send(JSON.stringify({ t: message.t, rid: message.rid, ok: true,
         ...(message.t === "inbox" ? { envs: [], waiting: 0, waitingImportant: 0 } : message.t === "status" ? { status: {} } : {}) }));
@@ -97,6 +98,20 @@ test("#525 ordinary tools mode cannot expose or call the native permission promp
     const list = await f.rpc("tools/list"); expect(list.tools.some((tool: any) => tool.name === "hub_permission_request")).toBe(false);
     expect(decision(await f.call("hub_permission_request", request)).behavior).toBe("deny");
     expect(f.requests.filter(row => row.t === "permission_request")).toHaveLength(0);
+  } finally { await f.close(); }
+});
+
+test("#845 the fixed wrapper protocol passes only host replacement input; malformed or non-Bash replacements deny", async () => {
+  const f = await client(true);
+  try {
+    f.mode("wrapper");
+    expect(decision(await f.call("hub_permission_request", request))).toEqual({ behavior: "allow", updatedInput: { command: "fixed-wrapper single-use-ticket", description: "Hub-owned task command", timeout: 1000 } });
+    expect(f.requests.find(row => row.t === "permission_request")?.wrapperProtocol).toBe(1);
+    expect(decision(await f.call("hub_permission_request", { ...request, tool_name: "Write" })).behavior).toBe("deny");
+    f.mode("bad-wrapper");
+    expect(decision(await f.call("hub_permission_request", request)).behavior).toBe("deny");
+    f.mode("future-wrapper");
+    expect(decision(await f.call("hub_permission_request", request)).behavior).toBe("deny");
   } finally { await f.close(); }
 });
 

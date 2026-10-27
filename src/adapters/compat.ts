@@ -34,11 +34,11 @@ export const COMPAT = {
     parse: out => plain(out.trim()),
     trustNote: "The model-free extension load, RPC session identity and managed tool receipt path were checked on 1.4.0. Permissions remain host-owned; account-backed inference and another version's extension contract are unverified.",
     receipt: "docs/verification/2026-10-26-pi-140-compat.md" },
-  // Receipt: docs/verification/2026-10-23-headless-claude-permissions.md; 2.1.310 transport receipt: docs/verification/2026-10-26-claude-implementer-2.1.310.md
+  // Transport receipts: docs/verification/2026-10-23-headless-claude-permissions.md; 2.1.310: docs/verification/2026-10-26-claude-implementer-2.1.310.md; host-wrapper receipt below repeats with them.
   "claude-implementer": { label: "Claude headless implementer", verified: ["2.1.309", "2.1.310"], gate: "contract", probe: ["claude", "--version"],
     parse: out => plain(out.trim().replace(/ \(Claude Code\)$/, "")),
-    trustNote: "The native prompt-tool allow, deny, MCP error/disconnect and hook-failure fallthrough have an isolated receipt. No dontAsk/bypass fallback exists; another version's permission behavior is unverified.",
-    receipt: "docs/verification/2026-10-23-headless-claude-permissions.md" },
+    trustNote: "The native prompt-tool transport and host-wrapper rewrite, environment isolation and replay contract have isolated receipts. No dontAsk/bypass fallback exists; another version's permission or rewrite behavior is unverified.",
+    receipt: "docs/verification/2026-10-26-headless-claude-shell-context.md" },
   // 0.163.0 receipt: docs/verification/2026-10-22-codex-reviewer-isolation.md; 0.164.0 receipt: docs/verification/2026-10-24-codex-0164-reviewer-isolation.md
   "codex-review": { label: "Codex reviewer (codex-cli)", verified: ["0.146.0", "0.163.0", "0.164.0"], gate: "isolation", probe: ["codex", "--version"], config: "codex_bin",
     parse: out => plain(out.trim().replace(/^codex-cli /, "")),
