@@ -72,6 +72,7 @@ export async function proveClaudeImplementer(peer: string, command: readonly str
 /** One owned print child at a time. Idle holds no native process; task continuity is ids-only on disk. */
 export class ClaudeImplementerPeer extends BasePeer {
   readonly hubNative = true;
+  readonly hubOwned: boolean = true;
   private generation = 0;
   private owned: OwnedPrintChild | undefined;
   private running: Promise<void> | undefined;

@@ -10,6 +10,7 @@ export { QwenIdentityError } from "./definitions/qwen-native.ts";
 import { BasePeer } from "../hub/peers.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import { AcpOwnedGroup } from "./acp-owned-group.ts";
+import type { StartForm } from "./registry-types.ts";
 
 export interface PermissionOption {
   optionId: string;
@@ -163,6 +164,9 @@ function jsonObject(text: string | undefined): object | undefined {
 
 /** ACP client (JSON-RPC 2.0, newline-delimited, over the child's stdio). One session, one prompt in flight. */
 export class AcpPeer extends BasePeer {
+  readonly deliveryOnly: boolean = true;
+  readonly hubOwned: boolean = true;
+  readonly form: StartForm = "headless";
   private permissionMode: PermissionMode;
   private readonly nativePolicy: AcpOptions["nativePolicy"];
   private modeUnknown = false;

@@ -1,6 +1,7 @@
 import { BasePeer, type PeerAdapter } from "../hub/peers.ts";
 import type { Envelope } from "../hub/envelope.ts";
 import { definitionOf } from "./registry.ts";
+import type { StartForm } from "./registry-types.ts";
 
 /** Only the control socket operations the peer owns; authentication remains in the daemon. */
 export interface ChannelSocket {
@@ -12,6 +13,7 @@ export interface ChannelSocket {
 
 /** A peer that lives in another process and attaches over the control WS (the Claude channel plugin). */
 export class WsPeer extends BasePeer {
+  readonly form: StartForm = "tui";
   private generation = crypto.randomUUID();
   // Checkpoints become stale at hello/claim, before asynchronous recall finishes and attach changes delivery generation.
   private claimGeneration = crypto.randomUUID();

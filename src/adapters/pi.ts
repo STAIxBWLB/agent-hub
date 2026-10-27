@@ -12,6 +12,7 @@ import { PiSessionBookmarkMismatch, validatePiSession } from "../pi/session.ts";
 import { ApprovalWaitStop, toolResultFailed, type ApprovalProvenance } from "../local/tools.ts";
 import { piToolStepCeiling, type PiToolStepCeiling } from "../pi/ceiling.ts";
 import type { ExecutionBudgetDecision, ExecutionUnit } from "../hub/execution-budget.ts";
+import type { StartForm } from "./registry-types.ts";
 
 export interface PiModelDescriptor { id: string; name?: string; contextWindow?: number; maxTokens?: number; reasoning?: boolean; }
 export interface PiToolSchema { name: string; description?: string; parameters: Record<string, unknown>; }
@@ -99,6 +100,7 @@ function ownerStillAlive(pid: number, signature: string | undefined): boolean { 
 
 export class PiPeer extends BasePeer {
   readonly hubNative = true;
+  readonly hubOwned: boolean = true;
   private proc?: ChildProcessWithoutNullStreams;
   private server?: ReturnType<typeof Bun.serve>;
   private buffer = "";
@@ -502,6 +504,7 @@ export class PiPeer extends BasePeer {
     return pending.map((call) => call.settled);
   }
   get mode(): "headless" | "tui" { return this.opts.mode; }
+  get form(): StartForm { return this.opts.mode; }
 
   /** Withdraw hub admission without shutting down a person's Pi TUI or its bridge. */
   async detachForRoster(): Promise<void> {

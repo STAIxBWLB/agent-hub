@@ -1732,7 +1732,7 @@ export async function startDaemon(opts: DaemonOptions) {
     sweepHeld: () => stopping || recoveryActive(),
     cancellationHeld: () => stopping || recoveryActive(),
     offerRead: (peer, envelopeId) => journal.offerRead(peer, envelopeId),
-    offerPullOnly: (id) => { const peer = bus.peers.get(id); return isWsPeer(peer) && peer.pullOnly; },
+    offerPullOnly: (id) => { const peer = bus.peers.get(id); return peer?.pullOnly === true; },
     stallNotice: stall => { supervision.taskStalled(stall); },
     roles: config.roles,
     turnFree,
@@ -2660,8 +2660,9 @@ export async function startDaemon(opts: DaemonOptions) {
       taskOpsInFlight--;
     }
   };
+  const deliveryRetryAllowed = (owner: PeerAdapter | undefined): boolean => !owner || !("deliveryOnly" in owner) || owner.deliveryOnly === false;
   function ownHeldHint(peer: PeerId): string {
-    try { return renderHeldHint(bus.heldDeliveryHints(peer), Date.now(), !(isLocalPeer(bus.peers.get(peer)) || isAcpPeer(bus.peers.get(peer)))); }
+    try { return renderHeldHint(bus.heldDeliveryHints(peer), Date.now(), deliveryRetryAllowed(bus.peers.get(peer))); }
     catch { return ""; } // unavailable telemetry is not a zero count or a reason to fail the tool itself
   }
   /** A model-written peer argument: a peer id, or nothing for absent, null or "". Anything else is refused. */
@@ -2803,7 +2804,7 @@ export async function startDaemon(opts: DaemonOptions) {
     switch (op) {
       case "hub_delivery_retry": {
         if (by === USER || by === HUB || !a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some(key => key !== "delivery_id") || typeof a.delivery_id !== "string" || a.delivery_id.length < 1 || a.delivery_id.length > 256) throw new PreEffectToolRefusal("hub_delivery_retry accepts only your delivery_id; completed and discard require the person");
-        if (isLocalPeer(bus.peers.get(by)) || isAcpPeer(bus.peers.get(by))) throw new PreEffectToolRefusal("delivery-only peers require the person to resolve held deliveries");
+        if (!deliveryRetryAllowed(bus.peers.get(by))) throw new PreEffectToolRefusal("delivery-only peers require the person to resolve held deliveries");
         if (stopping || recoveryActive()) throw new PreEffectToolRefusal("recovery or shutdown is holding delivery mutations");
         bus.retryDelivery(by, a.delivery_id);
         return `retry queued for delivery ${a.delivery_id}; check for earlier effects before acting`;
@@ -3144,7 +3145,7 @@ export async function startDaemon(opts: DaemonOptions) {
    * waited past `budget.stale_min` the status says so, and the person decides. Read-only.
    */
   const importantWaitingStatus = (id: PeerId, peer: PeerAdapter | undefined): Record<string, unknown> => {
-    if (!isAcpPeer(peer) || (peer as PeerAdapter).steer || bus.stateOf(id) !== "busy") return {};
+    if (definitionOf(id)?.transport !== "acp" || peer?.steer || bus.stateOf(id) !== "busy") return {};
     const since = bus.oldestQueuedImportantAt(id);
     if (since === undefined || Date.now() - since < config.budget.stale_min * 60_000) return {};
     const count = bus.queuedImportant(id), minutes = Math.floor((Date.now() - since) / 60_000);
@@ -3335,7 +3336,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const permissionStatus = (id: string, peer: PeerAdapter | undefined): Record<string, unknown> => {
     const note = definitionOf(id)?.permission.unmanagedStatusNote;
-    if (note && isWsPeer(peer) && peer.pullOnly) return { permissionNote: note };
+    if (note && peer?.pullOnly === true) return { permissionNote: note };
     const mode = permissionDisplay(id, peer);
     return mode === "ask" ? {} : { permissionMode: mode };
   };
@@ -4196,12 +4197,13 @@ export async function startDaemon(opts: DaemonOptions) {
     if (stopping || recoveryActive()) return { ok: false, error: "recovery or shutdown is holding peer stops; finish the operation before retrying" };
     if (typeof peer !== "string" || !PEER_ID.test(peer)) return { ok: false, error: "unknown peer; run ahub status and choose a hub-owned headless peer" };
     const owner = bus.peers.get(peer);
-    const stopNotice = definitionOf(peer)?.cli.stopNotice?.(isWsPeer(owner) ? "tui" : !owner ? startMode(peer) : "headless", owner);
+    if (owner && "form" in owner && owner.form === undefined) return { ok: false, error: "peer form is unknown; refresh ahub status before stopping it" };
+    const stopNotice = definitionOf(peer)?.cli.stopNotice?.(owner?.form ?? (owner ? "headless" : startMode(peer)), owner);
     if (stopNotice) return { ok: false, error: stopNotice };
     if (isQwenDualPeer(owner)) return { ok: false, error: "Qwen belongs to its own terminal; end it there (the hub never signals a person's Qwen)" };
-    if (!(isAcpPeer(owner) || isPiPeer(owner) || isLocalPeer(owner) || isReviewerPrintPeer(owner) || definitionOf(peer)?.start.daemonPort === "claude-implementer" && !!owner?.ownedTools)) return { ok: false, error: "unknown or non-owned peer; run ahub status and choose a hub-owned headless peer" };
-    if (isPiPeer(owner) && owner.mode !== "headless") return { ok: false, error: "Pi belongs to a native TUI terminal; end it in its terminal" };
-    if (owner.state === "offline" && !(isAcpPeer(owner) && owner.pendingOwnedProcess)) return { ok: false, error: `peer is already offline; start it with ${startCommand(peer)} before stopping it` };
+    if (!owner || owner.hubOwned !== true) return { ok: false, error: "unknown or non-owned peer; run ahub status and choose a hub-owned headless peer" };
+    if (owner.form === "tui") return { ok: false, error: `${definitionOf(peer)?.displayName ?? peer} belongs to a native TUI terminal; end it in its terminal` };
+    if (owner.state === "offline" && owner.pendingOwnedProcess !== true) return { ok: false, error: `peer is already offline; start it with ${startCommand(peer)} before stopping it` };
     if (starting.has(peer) || requestedPeerStops.has(peer) || permissionChanges.has(peer)) return { ok: false, error: "peer lifecycle or permission change is in progress; wait for ahub status before retrying" };
     requestedPeerStops.add(peer); // fence delivery, starts and recovery before the first asynchronous stop step
     try {
@@ -4210,7 +4212,7 @@ export async function startDaemon(opts: DaemonOptions) {
         operational?.current();
         const reason = `requested stop: ahub stop ${peer}`; // ids only, never task or message text
         // Pi persists a session only after its first message: take live empty-session proof before stopping.
-        if (isPiPeer(owner) && owner.state === "idle") {
+        if (owner.captureResume && owner.state === "idle") {
           try { await owner.captureResume(); }
           catch { log(`requested stop ${peer}: resume evidence unavailable; later start requires verified persisted history`); }
         }
@@ -4270,7 +4272,7 @@ export async function startDaemon(opts: DaemonOptions) {
       return { ok: false, error: "configured ACP session selector is invalid" };
     }
     const retainedOwner = bus.peers.get(peer);
-    if (adapter?.permission.genericAcp && isAcpPeer(retainedOwner) && retainedOwner.pendingOwnedProcess && retainedOwner.state === "offline") return { ok: false, error: "configured ACP previous process teardown is unconfirmed; retry ahub stop before starting again" };
+    if (adapter?.permission.genericAcp && retainedOwner?.state === "offline" && "pendingOwnedProcess" in retainedOwner && retainedOwner.pendingOwnedProcess !== false) return { ok: false, error: "configured ACP previous process teardown is unconfirmed; retry ahub stop before starting again" };
     if (adapter?.permission.genericAcp && (args.model || args.route || args.backend || args.unattended || args.providerProfile || args.sessionFile || args.fresh)) return { ok: false, error: "configured ACP accepts no native launch overrides" };
     if (adapter?.reviewer?.unavailable) return { ok: false, error: adapter.reviewer.unavailable };
     const preflight = adapter?.start.preflight?.({ instance: peer, form: args.mode });
@@ -4496,7 +4498,7 @@ export async function startDaemon(opts: DaemonOptions) {
         mcpServers,
         preamble: sessionRoleContract(peer),
       } } });
-      if (!isAcpPeer(owner) || owner.id !== peer) throw new Error("ACP factory did not return its bound native transport");
+      if (!isAcpPeer(owner) || owner.id !== peer || owner.deliveryOnly !== true || owner.hubOwned !== true || owner.form !== "headless") throw new Error("ACP factory did not return its bound native transport");
       recoveryTaskPreface(peer); await ensurePreface(peer);
       try { await owner.start(); await reconcileNativeStart(peer, owner); }
       catch (error) {
@@ -5717,7 +5719,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   function retainedTerminalNotice(peer: string): string | undefined {
     const owner = bus.peers.get(peer);
-    return definitionOf(peer)?.cli.retainedTerminalNotice?.(peer, isPiPeer(owner) ? owner.mode : undefined, codexResumeCommand(peer));
+    return definitionOf(peer)?.cli.retainedTerminalNotice?.(peer, owner?.form, codexResumeCommand(peer));
   }
 
   async function changeRosterSetting(def: SettingDef, value: SettingValue, source: SettingSource, confirm: unknown, now: boolean, undo = false, authority: SettingAuthority = "ordinary", reason?: string, undoIdentity?: UndoIdentity): Promise<Record<string, unknown>> {
@@ -5749,9 +5751,10 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!after) {
         for (const pending of permissions.values()) if (pending.peer === peer) pending.done(undefined);
         const owner = bus.peers.get(peer);
-        if (isWsPeer(owner)) { owner.detachForRoster(); if (definitionOf(peer)?.attach?.admission) clearKimiAdmission(); }
-        else if (isCodexPeer(owner)) owner.detachForRoster(config.permission_modes[peer] === "never-ask" ? "ask" : config.permission_modes[peer] ?? "ask");
-        else if (isPiPeer(owner) && owner.mode === "tui") await owner.detachForRoster();
+        if (owner?.detachForRoster && owner.form !== "headless") {
+          await owner.detachForRoster(config.permission_modes[peer] === "never-ask" ? "ask" : config.permission_modes[peer] ?? "ask");
+          if (definitionOf(peer)?.attach?.admission) clearKimiAdmission();
+        }
         else if (owner && owner.state !== "offline") {
           const result = await stopPeer(peer, true, authority==="conductor"?operationalContext.getStore():undefined);
           if (result.ok !== true) throw new Error(`roster saved; ${peer} stop is unconfirmed; permission reset and task handoff were not attempted; inspect ahub status and reapply ${def.key} false to retry`);
@@ -5766,7 +5769,7 @@ export async function startDaemon(opts: DaemonOptions) {
         handoff = await tasks.reassignForRoster(peer, handoffCurrent);
       } else {
         const owner = bus.peers.get(peer);
-        if (isPiPeer(owner) && owner.mode === "tui") await owner.resumeFromRoster();
+        if (owner?.form !== "headless") await owner?.resumeFromRoster?.();
       }
       checkOperational(authority);
       const reloaded = await reloadConfig(authority, `roster.${peer}`);
@@ -6239,9 +6242,10 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!isSupportedPeer(peer)) return { ok: false, error: "unknown permission peer" };
     if (readOnlyPeer(peer)) return { ok: false, error: "read-only ceiling is locked for this instance" };
     if (definitionOf(peer)?.permission.unmanaged) return { ok: false, error: definitionOf(peer)!.permission.unmanaged };
-    if (definitionOf(peer)?.permission.unmanagedForms?.includes("tui") && (isWsPeer(bus.peers.get(peer)) || (!bus.peers.has(peer) && startMode(peer) === "tui"))) return { ok: false, error: definitionOf(peer)!.permission.unmanagedNote };
-    if (requestedPeerStops.has(peer)) return { ok: false, error: "peer stop is in progress; wait for ahub status before changing its mode" };
     const owner = bus.peers.get(peer);
+    const unmanagedForm = owner ? owner.form === "tui" || "form" in owner && owner.form === undefined : startMode(peer) === "tui";
+    if (definitionOf(peer)?.permission.unmanagedForms?.includes("tui") && unmanagedForm) return { ok: false, error: definitionOf(peer)!.permission.unmanagedNote };
+    if (requestedPeerStops.has(peer)) return { ok: false, error: "peer stop is in progress; wait for ahub status before changing its mode" };
     if (mode === "ask" && (!owner || owner.state === "offline")) {
       // A Codex proxy outlives its TUI and keeps its own copy of the mode: clear that too, or the next TUI that attaches
       // to it would run a mode the status no longer shows.

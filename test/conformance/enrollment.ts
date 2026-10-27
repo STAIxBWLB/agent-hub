@@ -11,9 +11,6 @@ export const UNSUPPORTED: Record<string, string> = {
   "agy:reviewer": "agy is an implementer peer (#485); metadata-only reviewer remains unavailable, with no factory or backend; dedicated coverage: test/agy-peer.test.ts",
 };
 export const UNSUPPORTED_LEGS: Readonly<Record<string, string>> = {
-  "kimi:restrictive-ports": "ports added in 2b",
-  "qwen:restrictive-ports": "ports added in 2b",
-  "jcode:restrictive-ports": "ports added in 2b",
   "claude:native-proof-ports": "Fixed builtin channel; Claude launch and generation proof is owned by the daemon, covered in test/permission-modes.test.ts.",
   "codex:native-proof-ports": "Fixed builtin proxy; native approval and revert proof is covered by test/permission-modes.test.ts and test/instance-turn-revert.test.ts.",
   "kimi:native-proof-ports": "Fixed builtin ACP; no frontend proxy, native status notice or native turn revert; generic protocol legs run in test/conformance/acp.test.ts.",

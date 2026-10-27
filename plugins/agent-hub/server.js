@@ -1415,6 +1415,7 @@ var init_reviewer_print = __esm(() => {
   ReviewerPrintPeer = class ReviewerPrintPeer extends BasePeer {
     opts;
     hubNative = true;
+    hubOwned = true;
     generation = 0;
     child;
     childCleanup;
@@ -2943,6 +2944,9 @@ var init_acp = __esm(() => {
   };
   AcpPeer = class AcpPeer extends BasePeer {
     opts;
+    deliveryOnly = true;
+    hubOwned = true;
+    form = "headless";
     permissionMode;
     nativePolicy;
     modeUnknown = false;
@@ -6474,6 +6478,7 @@ var init_pi = __esm(() => {
     opts;
     preflight;
     hubNative = true;
+    hubOwned = true;
     proc;
     server;
     buffer = "";
@@ -6949,6 +6954,9 @@ var init_pi = __esm(() => {
       return pending.map((call) => call.settled);
     }
     get mode() {
+      return this.opts.mode;
+    }
+    get form() {
       return this.opts.mode;
     }
     async detachForRoster() {
@@ -10329,6 +10337,8 @@ var init_local_worker = __esm(() => {
   LocalPeer = class LocalPeer extends BasePeer {
     opts;
     hubNative = true;
+    deliveryOnly = true;
+    hubOwned = true;
     history = [];
     sessionId = `agent-hub-local-${randomUUID6()}`;
     routes;
@@ -11025,6 +11035,7 @@ var init_claude_implementer = __esm(() => {
   ClaudeImplementerPeer = class ClaudeImplementerPeer extends BasePeer {
     options;
     hubNative = true;
+    hubOwned = true;
     generation = 0;
     owned;
     running;

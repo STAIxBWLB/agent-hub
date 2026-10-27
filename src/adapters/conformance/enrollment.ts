@@ -4,7 +4,7 @@ import { isFixedBuiltinDefinition } from "../registry.ts";
 /** Stable generic ACP legs; both actual test registration and enrollment validation consume this catalog. */
 export const ACP_LEGS = Object.freeze(["native-approval-rpc", "native-mode-ack", "native-quota", "watchdog-generation"] as const);
 export type AcpLeg = typeof ACP_LEGS[number];
-/** Reserved until 2b supplies the restrictive ACP product members; not an executable ACP leg yet. */
+/** Mandatory product invariant, asserted for generic and owned ACP factories rather than skipped protocol legs. */
 export const ACP_PORTS_LEG = "restrictive-ports";
 export const NATIVE_PROOF_PORTS_LEG = "native-proof-ports";
 /** No unsupported key or non-generic ACP engine can silently escape an executable catalog leg. */
@@ -18,8 +18,9 @@ export function assertAcpLegEnrollment(definitions: readonly AdapterDefinition[]
       if (!row || !isFixedBuiltinDefinition(row.definition)) throw new Error(`${key}: only fixed builtin proof legs may be nonapplicable`);
       continue;
     }
-    if (separator < 1 || !acp.has(kind) || !(ACP_LEGS as readonly string[]).includes(leg) && leg !== ACP_PORTS_LEG) throw new Error(`${key}: stale or unknown unsupported ACP leg`);
-    if (leg === ACP_PORTS_LEG && reason !== "ports added in 2b") throw new Error(`${key}: reserved ACP ports leg requires reason ports added in 2b`);
+    if (separator < 1 || !acp.has(kind)) throw new Error(`${key}: stale or unknown unsupported ACP leg`);
+    if (leg === ACP_PORTS_LEG) throw new Error(`${key}: mandatory ACP restrictive ports leg cannot be unsupported`);
+    if (!(ACP_LEGS as readonly string[]).includes(leg)) throw new Error(`${key}: stale or unknown unsupported ACP leg`);
   }
   for (const definition of acp.values()) if (definition.start.daemonPort !== "acp") {
     for (const leg of ACP_LEGS) {
@@ -50,7 +51,6 @@ export function assertEnrollment(definitions: readonly AdapterDefinition[], enro
   }
   for (const { id, definition } of rows) {
     if (isFixedBuiltinDefinition(definition) && !Object.hasOwn(unsupportedLegs, `${id}:${NATIVE_PROOF_PORTS_LEG}`)) throw new Error(`${id}: native proof ports need an explicit nonapplicable reason`);
-    if (definition.transport === "acp" && !Object.hasOwn(unsupportedLegs, `${id}:${ACP_PORTS_LEG}`)) throw new Error(`${id}: ACP restrictive ports require the reserved 2b reason`);
     if (!enrolled.includes(id) && !Object.hasOwn(unsupported, id)) throw new Error(`${id}: no conformance fixture or unsupported reason`);
     if (definition.transport === "acp" && !enrolled.includes(id)) throw new Error(`${id}: every ACP definition must run the ACP legs`);
     if (id.endsWith(":reviewer") && !definition.reviewer) throw new Error(`${id}: reviewer variant lacks reviewer policy`);

@@ -56,26 +56,8 @@
   {
     "predicate": "isWsPeer",
     "function": "src/hub/daemon.ts:startDaemon.changePermission",
-    "count": 2,
-    "reason": "Codex proxy restoration/attachment moves to fixed-builtin-gated frontendProxy in 2d; Claude launch generation proof moves in 2e and TUI form in 2b."
-  },
-  {
-    "predicate": "isCodexPeer",
-    "function": "src/hub/daemon.ts:startDaemon.changeRosterSetting",
     "count": 1,
-    "reason": "Roster detach/resume and Pi TUI form move to generic lifecycle ports in 2b; preserve today's exact owned-runtime teardown until then."
-  },
-  {
-    "predicate": "isPiPeer",
-    "function": "src/hub/daemon.ts:startDaemon.changeRosterSetting",
-    "count": 2,
-    "reason": "Roster detach/resume and Pi TUI form move to generic lifecycle ports in 2b; preserve today's exact owned-runtime teardown until then."
-  },
-  {
-    "predicate": "isWsPeer",
-    "function": "src/hub/daemon.ts:startDaemon.changeRosterSetting",
-    "count": 1,
-    "reason": "Roster detach/resume and Pi TUI form move to generic lifecycle ports in 2b; preserve today's exact owned-runtime teardown until then."
+    "reason": "Claude launch-generation proof remains native until 2e; generic unmanaged TUI form moved to form in 2b."
   },
   {
     "predicate": "isCodexPeer",
@@ -139,12 +121,6 @@
   },
   {
     "predicate": "isAcpPeer",
-    "function": "src/hub/daemon.ts:startDaemon.importantWaitingStatus",
-    "count": 1,
-    "reason": "Busy ACP important-wait presentation moves to transport metadata in 2b; a Kimi pull-only channel is never busy."
-  },
-  {
-    "predicate": "isAcpPeer",
     "function": "src/hub/daemon.ts:startDaemon.onMessage",
     "count": 2,
     "reason": "Authenticated channel hello/receipts/inbox and native facts/Stop bind to the host socket generation; Jcode TUI tuple and Kimi admission remain fixed native proofs, with Claude hook extraction in 2e."
@@ -168,28 +144,10 @@
     "reason": "Claude Stop completion must match the current channel generation before changing occupancy; launch proof extraction belongs to 2e."
   },
   {
-    "predicate": "isAcpPeer",
-    "function": "src/hub/daemon.ts:startDaemon.ownHeldHint",
-    "count": 1,
-    "reason": "Delivery-only retry hints move to deliveryOnly in 2b; never offer retry while the native adapter cannot acknowledge safe replay."
-  },
-  {
-    "predicate": "isLocalPeer",
-    "function": "src/hub/daemon.ts:startDaemon.ownHeldHint",
-    "count": 1,
-    "reason": "Delivery-only retry hints move to deliveryOnly in 2b; never offer retry while the native adapter cannot acknowledge safe replay."
-  },
-  {
     "predicate": "isWsPeer",
     "function": "src/hub/daemon.ts:startDaemon.permissionDisplay",
     "count": 1,
     "reason": "Claude permission display reads the current authenticated channel and hook generation; host launch proof extraction belongs to 2e."
-  },
-  {
-    "predicate": "isWsPeer",
-    "function": "src/hub/daemon.ts:startDaemon.permissionStatus",
-    "count": 1,
-    "reason": "Pull-only permission presentation moves to the existing generic pullOnly port in 2b."
   },
   {
     "predicate": "isAcpPeer",
@@ -234,12 +192,6 @@
     "reason": "Intentional channel claiming refusal: no checkpoint binds before authenticated session ownership settles."
   },
   {
-    "predicate": "isPiPeer",
-    "function": "src/hub/daemon.ts:startDaemon.retainedTerminalNotice",
-    "count": 1,
-    "reason": "Pi terminal form moves to the generic form port in 2b; other native retained-terminal notices ignore this argument."
-  },
-  {
     "predicate": "isReviewerPrintPeer",
     "function": "src/hub/daemon.ts:startDaemon.runningReviewAuthority",
     "count": 1,
@@ -260,8 +212,8 @@
   {
     "predicate": "isAcpPeer",
     "function": "src/hub/daemon.ts:startDaemon.startPeerBody",
-    "count": 3,
-    "reason": "Pi replacement/handover and Kimi TUI admission remain native proofs; pending ACP process state moves in 2b, Codex proxy URL in 2d, and A4 keeps AcpPeer factory identity."
+    "count": 2,
+    "reason": "Kimi TUI admission remains native; A4 still requires AcpPeer identity and now restrictive deliveryOnly/hubOwned/headless ports. Pending owned-process state moved to its generic port in 2b."
   },
   {
     "predicate": "isCodexPeer",
@@ -324,63 +276,15 @@
     "reason": "Codex native status notice moves to gated statusNotice in 2d; local served-model and Pi relay telemetry and channel claiming/inbox timestamps remain native host evidence."
   },
   {
-    "predicate": "isAcpPeer",
-    "function": "src/hub/daemon.ts:startDaemon.stopPeer",
-    "count": 2,
-    "reason": "Owned-runtime, native form and idle resume capture move to hubOwned/form/captureResume in 2b; pending ACP process uncertainty must continue to refuse a fresh start."
-  },
-  {
-    "predicate": "isLocalPeer",
-    "function": "src/hub/daemon.ts:startDaemon.stopPeer",
-    "count": 1,
-    "reason": "Owned-runtime, native form and idle resume capture move to hubOwned/form/captureResume in 2b; pending ACP process uncertainty must continue to refuse a fresh start."
-  },
-  {
-    "predicate": "isPiPeer",
-    "function": "src/hub/daemon.ts:startDaemon.stopPeer",
-    "count": 3,
-    "reason": "Owned-runtime, native form and idle resume capture move to hubOwned/form/captureResume in 2b; pending ACP process uncertainty must continue to refuse a fresh start."
-  },
-  {
     "predicate": "isQwenDualPeer",
     "function": "src/hub/daemon.ts:startDaemon.stopPeer",
     "count": 1,
     "reason": "The hub never signals a person's Qwen TUI: a stop of that owner is refused with the instruction to end it in its own terminal, before the generic owned-process stop would run. No generic port marks an owner as person-held (#286 Part 3)."
   },
   {
-    "predicate": "isReviewerPrintPeer",
-    "function": "src/hub/daemon.ts:startDaemon.stopPeer",
-    "count": 1,
-    "reason": "Owned-runtime, native form and idle resume capture move to hubOwned/form/captureResume in 2b; pending ACP process uncertainty must continue to refuse a fresh start."
-  },
-  {
-    "predicate": "isWsPeer",
-    "function": "src/hub/daemon.ts:startDaemon.stopPeer",
-    "count": 1,
-    "reason": "Owned-runtime, native form and idle resume capture move to hubOwned/form/captureResume in 2b; pending ACP process uncertainty must continue to refuse a fresh start."
-  },
-  {
-    "predicate": "isAcpPeer",
-    "function": "src/hub/daemon.ts:startDaemon.taskOpBody",
-    "count": 1,
-    "reason": "Delivery-only retry refusal moves to deliveryOnly in 2b; native Codex undo moves to fixed-builtin-gated revertTurn in 2d without weakening latest-turn/workspace proof."
-  },
-  {
     "predicate": "isCodexPeer",
     "function": "src/hub/daemon.ts:startDaemon.taskOpBody",
     "count": 1,
     "reason": "Delivery-only retry refusal moves to deliveryOnly in 2b; native Codex undo moves to fixed-builtin-gated revertTurn in 2d without weakening latest-turn/workspace proof."
-  },
-  {
-    "predicate": "isLocalPeer",
-    "function": "src/hub/daemon.ts:startDaemon.taskOpBody",
-    "count": 1,
-    "reason": "Delivery-only retry refusal moves to deliveryOnly in 2b; native Codex undo moves to fixed-builtin-gated revertTurn in 2d without weakening latest-turn/workspace proof."
-  },
-  {
-    "predicate": "isWsPeer",
-    "function": "src/hub/daemon.ts:startDaemon.tasks.offerPullOnly",
-    "count": 1,
-    "reason": "Pull-only owner admission moves to the existing generic pullOnly port in 2b; this slice changes no routing eligibility."
   }
 ]
