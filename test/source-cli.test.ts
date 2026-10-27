@@ -15,13 +15,12 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m/g, "");
 const flat = (text: string) => plain(text).replace(/\s+/g, " ").trim();
 
-/** One project directory: a git repo with a pii.paths entry and one PII pattern, and a hub home of its own. */
+/** One project directory: a git repo with a pii.paths entry and a hub home of its own. The PII pattern is the shipped routing.toml default (resident registration numbers). */
 function project() {
   const dir = realpathSync(mkdtempSync(join(root, "p-")));
   Bun.spawnSync(["git", "init", "-q", dir]);
   mkdirSync(join(dir, ".agenthub")); mkdirSync(join(dir, "secret")); mkdirSync(join(dir, "open"));
   writeFileSync(join(dir, ".agenthub", "config.json"), JSON.stringify({ pii: { paths: ["secret"] } }));
-  writeFileSync(join(dir, ".agenthub", "routing.toml"), '[signals]\npii_patterns = ["\\\\d{6}-\\\\d{7}"]\n');
   return { dir, home: join(dir, "home"), state: () => join(dir, "home") };
 }
 type Project = ReturnType<typeof project>;
@@ -148,7 +147,7 @@ test("bad input is refused with the usage or the reason: no operand, an unknown 
 });
 
 test("an agent shell is refused before anything runs, under every marker, and no registry is created", async () => {
-  for (const env of [{ CODEX_THREAD_ID: "t" }, { CLAUDECODE: "1" }, { AGENTHUB_PEER_ID: "codex" }]) {
+  for (const env of [{ CODEX_THREAD_ID: "t" }, { CLAUDECODE: "1" }, { AGENTHUB_PEER_ID: "codex" }] as Record<string, string>[]) {
     const p = project(), file = write(p, "open/n.txt", "agent text");
     for (const args of [["source", "add", file], ["source", "list"], ["source", "list", "--json"]]) {
       const r = await cli(p, args, env);
