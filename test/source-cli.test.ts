@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HELP, helpCommands, renderHelp } from "../src/cli/help.ts";
-import { classifyPeerCommand, cliCommandLabel } from "../src/cli/identity.ts";
+import { classifyPeerCommand, cliCommandLabel, liveTestRefusal } from "../src/cli/identity.ts";
 import { renderSourceAdd, renderSourceList } from "../src/cli/source-output.ts";
 import { SourceRegistry } from "../src/hub/sources.ts";
 
@@ -237,4 +237,19 @@ test("every origin up to the cap registers through the CLI and the record stays 
   expect(rows[0].origins.length).toBe(41);
   const after = JSON.parse((await cli(p, ["source", "add", write(p, "open/o2.txt", bytes), "--json"])).stdout);
   expect(after).toMatchObject({ id: first.id, created: false, private: true });
+});
+
+test("live-test never delegates person-only source registration or listing to an agent", async () => {
+  const p = project(), target = write(p, "open/live.txt", "source privacy canary");
+  const markers: Record<string, string>[] = [{ CODEX_THREAD_ID: "test-thread" }, { CLAUDECODE: "1" }, { AGENTHUB_PEER_ID: "codex" }];
+  for (const env of markers) {
+    for (const args of [["source", "add", target], ["source", "list"], ["source", "list", "--json"]]) {
+      const result = await cli(p, ["--live-test", ...args], env);
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toContain("live-test cannot write person-attributed content");
+      expect(liveTestRefusal("source", args.slice(1))).toBe(true);
+      expect(result.stdout).not.toContain("source privacy canary");
+      expect(sourcesDir(p)).toBeUndefined();
+    }
+  }
 });
