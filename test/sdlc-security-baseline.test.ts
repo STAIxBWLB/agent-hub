@@ -147,3 +147,19 @@ test("a private or unnameable repository identity is never scanned, and the scan
   expect(Object.keys(row).sort()).toEqual(["at", "counts", "id", "repo", "sources", "total"]);
   expect(JSON.parse(row.counts as string)).toEqual({ dependabot: 1 });
 });
+
+test("a configured window of 200 loads enough scans for the baseline and the newest point, and unknown totals do not use up the rows (agent-hub#906 P2)", async () => {
+  const w = world({ dependabot: 2, secret_scanning: 0, code_scanning: 0 });
+  const r = rig({ sources: ["dependabot"], every_h: 1 }, w, { bands: { security_open_alerts: { window: 200, min_samples: 200, min_delta: 1, log_sigma: 1, diagnose_sigma: 2, propose_sigma: 3 } } });
+  // 260 recorded scans: 250 flat at 2 alerts, with 10 unreadable ones (unknown totals) spread through them, then a jump to 40.
+  for (let n = 0; n < 250; n++) r.board.recordSecurityScan({ repo: "o/r", sources: "dependabot", counts: { dependabot: 2 }, total: 2 });
+  for (let n = 0; n < 10; n++) r.board.recordSecurityScan({ repo: "o/r", sources: "dependabot", counts: { dependabot: null }, total: null });
+  const jump = r.board.recordSecurityScan({ repo: "o/r", sources: "dependabot", counts: { dependabot: 40 }, total: 40 });
+  const band = (r.tasks.sdlcMetrics("claude").bands as { metric: string; tier: string; baseline: number; last: number; lastTask: number }[])[0]!;
+  expect(band).toMatchObject({ metric: "security_open_alerts", baseline: 200, last: 40, lastTask: jump });
+  expect(band.tier).not.toBe("ok"); // a baseline of 199 would have read ok however large the jump
+  // The limit applies after the unknown totals are filtered: only the 10 unknown rows nearest the jump would otherwise have cost baseline points.
+  expect(r.board.securityScans("o/r", "dependabot", 5, true).every(scan => scan.total !== null)).toBe(true);
+  expect(r.board.securityScans("o/r", "dependabot", 5, true)).toHaveLength(5);
+  expect(r.board.securityScans("o/r", "dependabot", 5).filter(scan => scan.total === null).length).toBeGreaterThan(0);
+});

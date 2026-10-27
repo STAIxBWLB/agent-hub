@@ -9,7 +9,7 @@ import { completePlanInventory, planConformance, planConformanceBlockers, planFi
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, type CostPlan, type ReviewCost } from "./cost-governance.ts";
 import { qualifiedTitleRepos, siblingTitleRefs, specRefs } from "./spec-read.ts";
-import { sdlcMetrics, type BandMetric, type BandResult, type MetricTask, type MetricsReport, type SeriesPoint } from "./sdlc-metrics.ts";
+import { DEFAULT_BAND, EPISODE_LOOKBACK, sdlcMetrics, type BandMetric, type BandResult, type MetricTask, type MetricsReport, type SeriesPoint } from "./sdlc-metrics.ts";
 import { readSecurityScan } from "./security-baseline.ts";
 import { cleanMergeCost } from "./cost-governance.ts";
 import type { InstancesConfig } from "./instances.ts";
@@ -3057,7 +3057,10 @@ export class Tasks {
     const hotfix = this.d.board.releases().filter(release => release.state === "shipped" && release.shippedAt !== null && release.train?.history.length && !privateRelease(release.id))
       .sort((a, b) => a.shippedAt! - b.shippedAt! || a.id - b.id).map(release => ({ value: release.train!.hotfix ? 1 : 0, task: release.id }));
     const config = this.d.sdlc?.config().securityScan, repo = config?.repo ?? this.d.repository;
-    const scans = config && typeof repo === "string" ? this.d.board.securityScans(repo, config.sources.join(",")).flatMap(scan => scan.total === null ? [] : [{ value: scan.total, task: scan.id }]) : [];
+    // A band needs `window` baseline points plus the newest one, and the episode walk looks back up to EPISODE_LOOKBACK more, so the series loads that many known
+    // totals (unknown ones are filtered in SQL, never counted against the limit). The board caps one read at 1000 rows.
+    const need = (this.d.sdlc?.config().bands?.security_open_alerts?.window ?? DEFAULT_BAND.window) + EPISODE_LOOKBACK + 2;
+    const scans = config && typeof repo === "string" ? this.d.board.securityScans(repo, config.sources.join(","), need, true).map(scan => ({ value: scan.total!, task: scan.id })) : [];
     return { hotfix_rate: hotfix, security_open_alerts: scans };
   }
 

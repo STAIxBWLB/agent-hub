@@ -377,8 +377,9 @@ export class Board {
     return true;
   }
   /** #481 S7: the scan history of one repository and source set, oldest first. Counts and times only. */
-  securityScans(repo: string, sources: string, limit = 200): { id: number; at: number; total: number | null }[] {
-    const rows = this.db.query("SELECT id, at, total FROM security_scans WHERE repo=? AND sources=? ORDER BY id DESC LIMIT ?").all(repo.toLowerCase(), sources, Math.max(1, Math.min(1000, limit))) as { id: number; at: number; total: number | null }[];
+  /** `knownOnly` filters unknown totals in SQL, before the limit, so rows with no total never use up the rows a series needs. */
+  securityScans(repo: string, sources: string, limit = 200, knownOnly = false): { id: number; at: number; total: number | null }[] {
+    const rows = this.db.query(`SELECT id, at, total FROM security_scans WHERE repo=? AND sources=?${knownOnly ? " AND total IS NOT NULL" : ""} ORDER BY id DESC LIMIT ?`).all(repo.toLowerCase(), sources, Math.max(1, Math.min(1000, limit))) as { id: number; at: number; total: number | null }[];
     return rows.reverse();
   }
   recordSecurityScan(row: { repo: string; sources: string; counts: Record<string, number | null>; total: number | null }): number {
