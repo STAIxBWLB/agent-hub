@@ -362,6 +362,8 @@ For a configuration PR with an `eval_check`:
 - With an `eval_check`, a passing check that reports no pass rate or suite version and unknown file coverage are gaps. Advise shows each in `evalGate.gaps` and in the review advice notice and never blocks on it. Enforce adds each to the blockers, so the review, approval and merge gates refuse.
 - Without an `eval_check`, the gate is a note (`evalGate.notes`, `state: not_configured`) in every mode and never a blocker: an existing enforce setup gains no refusal until the person names a suite. File coverage is not judged then.
 
+The guarded merge reads the eval check run before its final PR read and judges that last reading with no remote await in between, so a change request, thread, draft or check that moves during the eval read refuses. A passed eval check on the last reading with no result read (the PR entered configuration scope after the read) counts as unreported.
+
 A private (PII) task reads no eval metadata and records none.
 
 ## Person release authorization (#481 S6)
