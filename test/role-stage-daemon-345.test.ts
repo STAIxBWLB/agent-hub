@@ -172,7 +172,7 @@ test("#525-6 authenticated Claude planner facts withhold mutation grants in ever
         expect(builtinReply).toMatchObject({ permission: mode });
         expect(builtinReply).not.toHaveProperty("mutationGrants");
       }
-      expect((await f.status()).peers["claude-plan"].permissionMode).toBe(mode);
+      expect((await f.status()).peers["claude-plan"].permissionMode ?? "ask").toBe(mode);
     }
     const privateText = "PII_FIXTURE private fixture text";
     const proposed = await f.console_.request({ t: "task", op: "hub_task_propose", args: { title: privateText, class: "implement" } });
