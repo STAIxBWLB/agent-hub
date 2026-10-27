@@ -169,7 +169,9 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
  * every write under `objects/info` (alternates, http-alternates, commit-graph) and `objects/pack` (a new pack wins over a loose copy of the same id, since git reads packs
  * first); the `objects`, `objects/info` and `objects/pack` entries themselves (no rename, replace or removal); removing or renaming a fan-out directory; and changing,
  * removing, chmod-ing or renaming over an existing loose object. The cost: `git gc`, `git repack`, `git fetch`, `git maintenance` and `git commit-graph write` do not run in
- * the sandbox. Residual: an object id that does not exist yet can be planted before git writes it (the attacker must predict its exact content). Seatbelt ignores `{n}`
+ * the sandbox. A hardlink to an existing loose object is refused under these rules (verified, into the project and into the command's own temp dir). Residual: an object id
+ * that does not exist yet can be planted before git writes it (the attacker must predict its exact content); a local checkout shows it, a push of it is rejected by the
+ * receiving side's rehash. Seatbelt ignores `{n}`
  * repeats, so the two fan-out hex digits are written out (verified with the real sandbox-exec).
  */
 export function objectStoreRules(common: string): string[] {

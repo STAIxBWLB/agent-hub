@@ -462,12 +462,15 @@ test.skipIf(!sandboxAvailable())("the shared object store only takes new loose o
     `chmod u+w '${loose}' 2>/dev/null && echo CHMOD-LOOSE || echo blocked-chmod`,
     `rm -f '${loose}' 2>/dev/null && echo REMOVED-LOOSE || echo blocked-remove`,
     `(printf evil > '${dirname(loose)}/tmp_planted' && mv -f '${dirname(loose)}/tmp_planted' '${loose}') 2>/dev/null && echo REPLACED-LOOSE || echo blocked-replace`,
+    // A hardlink alias would let chmod and a write reach the object's inode through a path the rules do not name; the current profile allowed it.
+    `ln '${loose}' alias 2>/dev/null && echo LINKED-INTO-PROJECT || echo blocked-link-project`,
+    `ln '${loose}' "$TMPDIR/alias" 2>/dev/null && echo LINKED-INTO-TMP || echo blocked-link-tmp`,
     `mv '${dirname(loose)}' '${objects}/zz' 2>/dev/null && echo MOVED-FANOUT || echo blocked-fanout`,
     `mv '${objects}/pack' '${objects}/pack-moved' 2>/dev/null && echo MOVED-PACK-DIR || echo blocked-pack-dir`,
     `mv '${objects}/info' '${objects}/info-moved' 2>/dev/null && echo MOVED-INFO-DIR || echo blocked-info-dir`,
     `mv '${objects}' '${objects}-moved' 2>/dev/null && echo MOVED-OBJECTS || echo blocked-objects`,
   ].join("; ")], { cwd, profile: profile(cwd, false) });
-  for (const expected of ["committed-new", "committed-existing-blob", "blocked-alternates", "blocked-alternates-case", "blocked-http-alternates", "blocked-commit-graph", "blocked-pack", "blocked-chmod", "blocked-remove", "blocked-replace", "blocked-fanout", "blocked-pack-dir", "blocked-info-dir", "blocked-objects"]) expect(out.output, out.output).toContain(expected);
+  for (const expected of ["committed-new", "committed-existing-blob", "blocked-alternates", "blocked-alternates-case", "blocked-http-alternates", "blocked-commit-graph", "blocked-pack", "blocked-chmod", "blocked-remove", "blocked-replace", "blocked-link-project", "blocked-link-tmp", "blocked-fanout", "blocked-pack-dir", "blocked-info-dir", "blocked-objects"]) expect(out.output, out.output).toContain(expected);
   for (const name of ["alternates", "ALTERNATES", "http-alternates"]) expect(existsSync(join(objects, "info", name)), name).toBe(false);
   expect(readFileSync(loose)).toEqual(before);
   expect(git(main, "fsck", "--connectivity-only").exitCode).toBe(0);
