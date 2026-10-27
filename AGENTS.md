@@ -67,6 +67,7 @@ Run this before pushing a PR or reporting a task complete, and paste the output.
   2. Run `node scripts/check-docs.mjs --require-fresh`. Recheck and restamp every stale document in `docs/verified.json`, or record why it is deferred in the release verification report. That includes `src/cli/help.ts`: every command, subcommand and flag in `ahub help` must match `src/cli/main.ts`, `src/cli/launch.ts` and the native entries.
   3. Merge the release PR with a merge commit, never squash or rebase: the stamps in `docs/verified.json` name a commit of the release branch.
   4. Tag `v<version>`. The release workflow refuses a tag that does not match, stale stamps, and stamps that are not ancestors of the tagged commit.
+  Tooling (#787): `bun scripts/release-prepare.ts --dry-run` on a `release/<version>` branch applies steps 1 and 2 mechanically (version rule, README, CHANGELOG, bundle, report skeleton; docs/sdlc.md "Release preparation and the guarded tag"), and `restamp <document>... --reviewed` stamps only the documents you read. Step 4 is `bun scripts/release-tag.ts <version> --execute`, which repeats the preflight and refuses without the person's consent (`ahub sdlc authorize-release`, theirs alone).
 
 ## Area notes
 
