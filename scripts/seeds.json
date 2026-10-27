@@ -3480,6 +3480,14 @@
       "replacement": "...{}",
       "testFile": "test/role-stage-daemon-345.test.ts",
       "testName": "#525-6 authenticated Claude planner facts withhold mutation grants in every mode while builtin behavior remains unchanged"
+    },
+    {
+      "id": "claude-planner-hook-grants",
+      "file": "src/cli/facts-hook.ts",
+      "search": "const allow = mayGrant && !classed && input.hook_event_name === \"PreToolUse\" && (permission === \"never-ask\" || permission === \"ask-when-needed\" && fileTool);",
+      "replacement": "const allow = !classed && input.hook_event_name === \"PreToolUse\" && (permission === \"never-ask\" || permission === \"ask-when-needed\" && fileTool);",
+      "testFile": "test/facts-hook-planner-345.test.ts",
+      "testName": "#345 a planner mutation ceiling keeps facts/read grants but never auto-allows a mutation in any permission mode"
     }
   ]
 }
