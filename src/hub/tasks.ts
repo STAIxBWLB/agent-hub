@@ -5090,11 +5090,13 @@ export class Tasks {
 
   /** Candidate only: the person remains the sole acceptance authority. */
   async correct(by: PeerId, input: unknown): Promise<string> {
+    const requestCheck = this.requestCheck(by);
     const args = correctionInput(input);
     const st = this.d.store;
     if (!st || !this.d.candidates) throw new PreEffectToolRefusal("memory correction unavailable");
     const screen: MemoryScreen = rows => this.d.candidateScreen?.(rows) ?? withoutPii(rows, this.d.routing(), this.d.cwd, this.d.piiPaths ?? []);
     const valid = () => {
+      requestCheck();
       this.d.memoryCheck?.();
       if (this.d.privateTurn?.(by)) throw new PreEffectToolRefusal("memory correction unavailable during a private turn");
       if (!this.candidateTextAllowed(JSON.stringify(args))) throw new PreEffectToolRefusal("memory correction withheld by privacy policy");

@@ -1,8 +1,10 @@
+import { assertNativeProofPorts } from "../native-proof-ports.ts";
+export { assertNativeProofPorts } from "../native-proof-ports.ts";
 import { expect, test } from "bun:test";
 import type { Envelope } from "../../hub/envelope.ts";
 import { newEnvelope } from "../../hub/envelope.ts";
 import type { PeerAdapter } from "../../hub/peers.ts";
-import { isFixedBuiltinDefinition, type AdapterDefinition } from "../registry.ts";
+import { type AdapterDefinition } from "../registry.ts";
 
 export async function until(condition: () => boolean, label: string): Promise<void> {
   const deadline = Date.now() + 5000;
@@ -31,14 +33,6 @@ export function assertAcpProductPorts(definition: AdapterDefinition | undefined,
     if (product[port] !== true) throw new Error(`${definition.kind}: ACP restrictive port ${port} must be true`);
   }
   if (product.form !== "headless") throw new Error(`${definition.kind}: ACP restrictive port form must be headless`);
-}
-
-/** Presence itself is forbidden on a foreign product: even an undefined native proof port must fail the kit. */
-export function assertNativeProofPorts(definition: AdapterDefinition | undefined, product: PeerAdapter): void {
-  if (isFixedBuiltinDefinition(definition)) return;
-  for (const port of ["frontendProxy", "statusNotice", "revertTurn"] as const) {
-    if (port in product) throw new Error(`${definition?.kind ?? product.id}: ${port} is restricted to fixed builtin adapter products`);
-  }
 }
 
 /** Shared observable contract; every invocation uses the real adapter and its fake native transport. */

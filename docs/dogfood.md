@@ -92,6 +92,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Pi native version gate (#843 AC2) | source/fixture and isolated model-free 1.4.0 receipt; active after release and hub upgrade, Pi stays off this repository's roster | `ahub agents` pi verdict, one version probe on each real launch, rejected versions naming the exact trust command; account-backed inference remains unverified |
 | Local agent CLI drift notice (#843 AC3) | source/fixture and injected-probe daemon test; active on this repository after release and hub upgrade | one planner notice per (id, version), the `agent CLI drift` line in `ahub status`, no repeat after a hub restart |
 | PII routing | on | PII tasks and where they ran |
+| External module-kind instances (#754) | off here: no person-pinned module with an explicit headless-instance opt-in is configured | fake mixed builtin/module starts, current-owner and MCP refusal counters, retained stopped bindings and no-import source/target fences (`test/external-instance-*.test.ts`); native/account receipts remain unmeasured |
 | Multiple Jcode instances (#685) | pending | turns per instance |
 
 ## Operations

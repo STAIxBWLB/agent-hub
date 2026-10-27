@@ -1,6 +1,7 @@
 import { nativeRestoreGroup } from "../adapters/definitions/native-identity-defaults.ts";
 import { definitionOf } from "../adapters/registry.ts";
 import { readInstanceConfig } from "../hub/instance-config.ts";
+import { validExternalInstanceBinding, type ExternalInstanceBinding } from "../hub/external-instance.ts";
 import { LIVE_TEST_PERSON_REFUSAL } from "./identity.ts";
 import { checkedSessionPath } from "./recovery-session-file.ts";
 import { canChooseFresh, decodeRestoreReceipt, restoreReceiptStatus } from "./upgrade-restore-state.ts";
@@ -25,6 +26,8 @@ const projectDefinition = (peer: string, root?: string) => {
 
 export interface RecoveryPeer {
   id: string;
+  /** Captured stable module/instance identity; never a portable current-owner proof. */
+  externalInstance?: ExternalInstanceBinding;
   state: string;
   threadId?: string;
   sessionId?: string;
@@ -487,6 +490,10 @@ function validateReceipt(id: string, op: RecoveryOperation, historical = false):
       op.projects.some((p, i) => p.id !== op.plan.projects[i]?.project.id)) throw new Error("reviewed operation plan or project scope changed");
   const object = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
   for (const [index, progress] of op.projects.entries()) {
+    const planned = op.plan.projects[index]!;
+    for (const peer of planned.source.peers) {
+      if (Object.hasOwn(peer, "externalInstance") && !validExternalInstanceBinding(peer.externalInstance, planned.project.root, peer.id)) throw new Error("invalid retained external module instance binding");
+    }
     if (progress.repairedSessions !== undefined) {
       if (!object(progress.repairedSessions)) throw new Error("invalid repaired session provenance");
       for (const [peer, protectedSession] of Object.entries(progress.repairedSessions)) {

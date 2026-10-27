@@ -2894,6 +2894,7 @@ var init_acp_owned_group = __esm(() => {
 // src/adapters/acp.ts
 import { spawn as spawn5 } from "child_process";
 import { createInterface } from "readline";
+import { randomUUID as randomUUID3 } from "crypto";
 function normalizeACPUsage(value, source = "usage_update") {
   const unknown = { source, availability: "unsupported", shape: "none" };
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -2932,7 +2933,7 @@ function jsonObject(text) {
     return;
   }
 }
-var ACTION_BUDGET_OPTION = "agent-hub:action-budget", HANDSHAKE_MS = 30000, TOOL_INPUT_CAP = 64, TOOL_CEILING_MS, RpcTimeoutError, AcpPeer;
+var ACTION_BUDGET_OPTION = "agent-hub:action-budget", HANDSHAKE_MS = 30000, TOOL_INPUT_CAP = 64, TOOL_CEILING_MS, managedLaunches, RpcTimeoutError, AcpPeer;
 var init_acp = __esm(() => {
   init_envelope();
   init_kimi_native();
@@ -2941,6 +2942,7 @@ var init_acp = __esm(() => {
   init_child_process();
   init_acp_owned_group();
   TOOL_CEILING_MS = 30 * 60000;
+  managedLaunches = new WeakMap;
   RpcTimeoutError = class RpcTimeoutError extends Error {
   };
   AcpPeer = class AcpPeer extends BasePeer {
@@ -3044,6 +3046,7 @@ var init_acp = __esm(() => {
     permissionWaits = new Set;
     setState(next) {
       if (next === "offline") {
+        managedLaunches.delete(this);
         this.clearActivity();
         this.cancelPermissions();
       }
@@ -3068,11 +3071,14 @@ var init_acp = __esm(() => {
       return typeof session === "string" ? session : undefined;
     }
     async start() {
+      managedLaunches.delete(this);
       if (this.opts.requireOwnedGroup && this.proc)
         throw new Error("Configured ACP still has a process; stop it before starting another");
       this.stopping = false;
+      const launchedId = this.id;
+      const launchedCwd = this.opts.cwd;
       const [bin, ...args] = this.opts.cmd;
-      const proc = spawn5(bin, args, { cwd: this.opts.cwd, env: peerChildEnv(this.id, { ...process.env, ...this.opts.env ?? {} }), stdio: ["pipe", "pipe", "pipe"], detached: true });
+      const proc = spawn5(bin, args, { cwd: launchedCwd, env: peerChildEnv(this.id, { ...process.env, ...this.opts.env ?? {} }), stdio: ["pipe", "pipe", "pipe"], detached: true });
       this.proc = proc;
       trackGroup(proc);
       proc.on("error", (e) => {
@@ -3118,6 +3124,7 @@ var init_acp = __esm(() => {
           setTimeout(() => reject(new Error(`${this.id} did not complete the ACP handshake within ${HANDSHAKE_MS / 1000} s`)), HANDSHAKE_MS).unref();
         });
         const session = await Promise.race([handshake(), timeout]);
+        const nativeSession = session?.sessionId;
         if (this.nativePolicy !== undefined && (typeof session?.sessionId !== "string" || !session.sessionId.trim() || Buffer.byteLength(session.sessionId) > 4096 || /[\p{Cc}\p{Cf}]/u.test(session.sessionId))) {
           throw new Error("Configured ACP did not provide a valid native session identity");
         }
@@ -3136,8 +3143,20 @@ var init_acp = __esm(() => {
           await owned.proof.verify();
           if (this.proc !== proc || this.stopping)
             throw new Error("Configured ACP process ownership could not be verified");
+          if (typeof nativeSession !== "string" || !nativeSession.trim() || Buffer.byteLength(nativeSession) > 4096 || /[\p{Cc}\p{Cf}]/u.test(nativeSession))
+            throw new Error("Configured ACP did not provide a valid native session identity");
+          if (this.id !== launchedId || this.opts.cwd !== launchedCwd || this.sessionId !== nativeSession)
+            throw new Error("Configured ACP peer identity changed during startup");
+          managedLaunches.set(this, {
+            id: launchedId,
+            options: this.opts,
+            proc,
+            proof: owned.proof,
+            receipt: Object.freeze({ generation: randomUUID3(), cwd: launchedCwd, sessionId: nativeSession })
+          });
         }
       } catch (e) {
+        managedLaunches.delete(this);
         this.setState("offline");
         if (this.proc === proc) {
           if (this.opts.requireOwnedGroup) {
@@ -3211,6 +3230,7 @@ var init_acp = __esm(() => {
       this.permissionMode = mode;
     }
     async stop(reason) {
+      managedLaunches.delete(this);
       if (this.activityOpen)
         this.endActivity("stopped", true);
       this.stopping = true;
@@ -3461,6 +3481,7 @@ ${renderDigest(envs, false)}` }] });
       this.delivery({ id: this.activeDeliveryId, state: "accepted" });
     }
     down(reason) {
+      managedLaunches.delete(this);
       this.clearCancelWait();
       if (this.nativePolicy !== undefined || this.opts.requireOwnedGroup)
         reason = "Configured ACP transport stopped";
@@ -5569,9 +5590,9 @@ var init_launch = __esm(() => {
 
 // src/hub/recovery-store.ts
 import { chmodSync, existsSync as existsSync5, mkdirSync as mkdirSync6, readFileSync as readFileSync5, renameSync as renameSync4, rmSync as rmSync4, writeFileSync as writeFileSync6 } from "fs";
-import { randomUUID as randomUUID3 } from "crypto";
+import { randomUUID as randomUUID4 } from "crypto";
 function atomicPrivateJSON(file, value) {
-  const temporary = `${file}.${randomUUID3()}.tmp`;
+  const temporary = `${file}.${randomUUID4()}.tmp`;
   try {
     writeFileSync6(temporary, `${JSON.stringify(value, null, 2)}
 `, { mode: 384, flag: "wx" });
@@ -6409,7 +6430,7 @@ function piToolStepCeiling(value) {
 var PI_CEILING_KIND = "tool-step-ceiling", PI_CEILING_UNIT = "tool-step";
 
 // src/adapters/pi.ts
-import { randomUUID as randomUUID4 } from "crypto";
+import { randomUUID as randomUUID5 } from "crypto";
 import { existsSync as existsSync7, mkdirSync as mkdirSync9 } from "fs";
 import { join as join14, resolve as resolve11 } from "path";
 import { spawn as spawn9 } from "child_process";
@@ -6521,7 +6542,7 @@ var init_pi = __esm(() => {
     idleBashReservations = new Map;
     budgetGeneration = 0;
     modelStep = 0;
-    observationScope = randomUUID4();
+    observationScope = randomUUID5();
     emptyResumeVerified = false;
     verifiedEmptyResume;
     activityObserved = false;
@@ -6539,7 +6560,7 @@ var init_pi = __esm(() => {
     approvalAbortSent = false;
     approvalStopReason = "";
     requestedStopReason;
-    owner = randomUUID4();
+    owner = randomUUID5();
     _tuiLaunch;
     requestedModel = "";
     starting;
@@ -6801,7 +6822,7 @@ var init_pi = __esm(() => {
         for (const [key, value] of this.idleBashReservations)
           if (value.expiresAt < Date.now())
             this.idleBashReservations.delete(key);
-        reservation = randomUUID4();
+        reservation = randomUUID5();
         this.idleBashReservations.set(reservation, { generation: body.generation, expiresAt: Date.now() + 30000, ...remaining === undefined ? {} : { deadlineAt: Date.now() + remaining } });
       }
       clearTimeout(this.executionBudgetTimer);
@@ -6852,7 +6873,7 @@ var init_pi = __esm(() => {
           throw error;
         }
       }
-      const token = randomUUID4();
+      const token = randomUUID5();
       this.tuiExit = new Promise((resolvePromise) => {
         this.resolveTuiExit = resolvePromise;
       });
@@ -8724,7 +8745,7 @@ var init_signals = __esm(() => {
 });
 
 // src/models/route/labels.ts
-import { createHash as createHash4, randomUUID as randomUUID5 } from "crypto";
+import { createHash as createHash4, randomUUID as randomUUID6 } from "crypto";
 
 class RouteLabelTracker {
   sink;
@@ -8748,7 +8769,7 @@ class RouteLabelTracker {
   addDecision(turn, dimensions, priorMessages = []) {
     if (!turn || turn.closed || this.turns.get(turn.context.turn) !== turn)
       return;
-    const id = randomUUID5();
+    const id = randomUUID6();
     turn.decisions.set(id, { id, dimensions: { ...dimensions }, baselineFingerprints: batchFingerprints(priorMessages) });
     this.decisionOwners.set(id, turn);
     return id;
@@ -10332,7 +10353,7 @@ var init_routing = __esm(() => {
 });
 
 // src/adapters/local-worker.ts
-import { randomUUID as randomUUID6 } from "crypto";
+import { randomUUID as randomUUID7 } from "crypto";
 function safeParse(json) {
   try {
     return JSON.parse(json) ?? {};
@@ -10367,7 +10388,7 @@ var init_local_worker = __esm(() => {
     deliveryOnly = true;
     hubOwned = true;
     history = [];
-    sessionId = `agent-hub-local-${randomUUID6()}`;
+    sessionId = `agent-hub-local-${randomUUID7()}`;
     routes;
     warnedLegacyRoutes = new Set;
     routeEnvs = [];
@@ -10785,7 +10806,7 @@ var init_local_worker = __esm(() => {
     recordUsage(res, requestedModel, task) {
       try {
         this.opts.onUsage?.({
-          id: randomUUID6(),
+          id: randomUUID7(),
           at: new Date().toISOString(),
           ...res.usage ? { usage: res.usage } : {},
           requestedModel: safeModelLabel(requestedModel) ?? "unknown",
@@ -10881,7 +10902,7 @@ var init_launch2 = __esm(() => {
 });
 
 // src/adapters/claude-task-sessions.ts
-import { randomUUID as randomUUID7 } from "crypto";
+import { randomUUID as randomUUID8 } from "crypto";
 import { mkdirSync as mkdirSync10, readFileSync as readFileSync8 } from "fs";
 import { dirname as dirname11 } from "path";
 function readState(file) {
@@ -10926,11 +10947,11 @@ class ClaudeTaskSessions {
   }
   session(task) {
     if (task === undefined)
-      return { sessionId: randomUUID7(), resume: false, persistent: false };
+      return { sessionId: randomUUID8(), resume: false, persistent: false };
     const key = taskKey(task);
     let entry = this.state.sessions[key];
     if (!entry) {
-      entry = { sessionId: randomUUID7(), started: false };
+      entry = { sessionId: randomUUID8(), started: false };
       this.write({ ...this.state.sessions, [key]: entry });
     }
     return { sessionId: entry.sessionId, resume: entry.started, persistent: true };
@@ -10964,7 +10985,7 @@ var init_claude_task_sessions = __esm(() => {
 });
 
 // src/adapters/claude-implementer.ts
-import { randomUUID as randomUUID8 } from "crypto";
+import { randomUUID as randomUUID9 } from "crypto";
 import { lstatSync as lstatSync11, mkdtempSync as mkdtempSync5, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
 import { join as join17 } from "path";
@@ -11230,7 +11251,7 @@ var init_claude_implementer = __esm(() => {
               this.options.notify?.(`${this.id}: task #${group.task} session fresh; recorded transcript is missing`);
             }
           }
-          const launchId = randomUUID8(), directory = mkdtempSync5(join17(this.options.stateDir, "claude-child-")), settings = join17(directory, "settings.json");
+          const launchId = randomUUID9(), directory = mkdtempSync5(join17(this.options.stateDir, "claude-child-")), settings = join17(directory, "settings.json");
           this.cleanup = () => rmSync6(directory, { recursive: true, force: true });
           writeFileSync8(settings, sessionSettings(undefined, { script: this.options.factsHook, stateDir: this.options.stateDir, purpose: "permission" }), { mode: 384, flag: "wx" });
           const env = {
@@ -11678,7 +11699,7 @@ function builtinCliEntries(definitions) {
 // src/adapters/definitions/native-cli-entry-claude.ts
 import { readFileSync as readFileSync9 } from "fs";
 import { join as join19 } from "path";
-import { randomUUID as randomUUID9 } from "crypto";
+import { randomUUID as randomUUID10 } from "crypto";
 async function runClaudeEntry(ctx) {
   const { args, cwd, stateDir, cliDir, unattendedEnv, projectConfig, fail } = ctx;
   const peer = ctx.instance ?? "claude";
@@ -11717,7 +11738,7 @@ async function runClaudeEntry(ctx) {
     process.env.AGENTHUB_INSTANCE_ID = control.instanceId;
     const terminal = await prepareTerminalLaunch(peer, cwd, stateDir, control.instanceId, ctx.instance ? { executionCwd } : undefined);
     if (!terminal)
-      process.env.AGENTHUB_LAUNCH_ID = randomUUID9();
+      process.env.AGENTHUB_LAUNCH_ID = randomUUID10();
     else {
       const hub = await ctx.connect();
       try {
@@ -12598,7 +12619,7 @@ var init_native_cli_launch_common = __esm(() => {
 
 // src/adapters/definitions/native-cli-claude-launch.ts
 import { mkdirSync as mkdirSync11, writeFileSync as writeFileSync9, renameSync as renameSync5, unlinkSync as unlinkSync3, readFileSync as readFileSync12 } from "fs";
-import { randomUUID as randomUUID10 } from "crypto";
+import { randomUUID as randomUUID11 } from "crypto";
 import { resolve as resolve16, join as join24 } from "path";
 function claudeChannel(userArgs) {
   const bundle = resolve16(import.meta.dir, "../../../plugins/agent-hub/server.js");
@@ -12661,7 +12682,7 @@ function claudeNativeLaunch(ctx) {
       const stateDir = ctx.facts?.stateDir ?? ctx.statusLine?.stateDir;
       if (!stateDir)
         throw new Error("Claude session settings require the hub state directory");
-      const file = join24(stateDir, `claude-settings-${randomUUID10()}.json`);
+      const file = join24(stateDir, `claude-settings-${randomUUID11()}.json`);
       try {
         mkdirSync11(stateDir, { recursive: true, mode: 448 });
         writeFileSync9(`${file}.tmp`, settingsArgs[1], { mode: 384, flag: "wx" });
@@ -21406,6 +21427,42 @@ function externalMetadataDefinitions(raw) {
     display: { palette: { fg: "white", bg: "black" } }
   })));
 }
+var INSTANCE_ID = /^[a-z][a-z0-9-]{0,31}$/;
+var INSTANCE_ROLES = ["implementer", "verifier", "reviewer"];
+var INSTANCE_REFUSALS = ["catalog-unavailable", "binding-changed", "ownership-unverified", "off-roster", "not-started"];
+function externalInstanceCatalog(raw) {
+  const catalog = moduleDataObject(raw);
+  if (Object.keys(catalog).some((key) => !["schema", "projectRoot", "epoch", "fingerprint", "instances"].includes(key)) || catalog.schema !== 1 || typeof catalog.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(catalog.fingerprint))
+    return fail2("invalid instance catalog metadata");
+  const instances = moduleArray(catalog.instances, 64).map((value) => {
+    const row = moduleDataObject(value);
+    if (Object.keys(row).some((key) => !["id", "kind", "displayName", "roles", "form", "readOnly", "permissionState", "availability", "refusalCode"].includes(key)) || typeof row.id !== "string" || !INSTANCE_ID.test(row.id) || typeof row.kind !== "string" || !INSTANCE_ID.test(row.kind) || row.form !== "headless" || typeof row.readOnly !== "boolean" || typeof row.permissionState !== "string" || !["ask", "ask-when-needed", "never-ask", "unmanaged", "unknown"].includes(row.permissionState) || typeof row.availability !== "string" || !["ready", "offline", "declared-unknown", "refused"].includes(row.availability) || Object.hasOwn(row, "refusalCode") && (typeof row.refusalCode !== "string" || !INSTANCE_REFUSALS.includes(row.refusalCode)))
+      return fail2("invalid instance display metadata");
+    const roles = moduleArray(row.roles, 3);
+    if (roles.some((role) => typeof role !== "string" || !INSTANCE_ROLES.includes(role)) || new Set(roles).size !== roles.length)
+      return fail2("invalid instance role metadata");
+    return Object.freeze({
+      id: row.id,
+      kind: row.kind,
+      displayName: moduleText(row.displayName, 256),
+      roles: Object.freeze(roles),
+      form: "headless",
+      readOnly: row.readOnly,
+      permissionState: row.permissionState,
+      availability: row.availability,
+      ...row.refusalCode !== undefined ? { refusalCode: row.refusalCode } : {}
+    });
+  });
+  if (new Set(instances.map((row) => row.id)).size !== instances.length)
+    return fail2("duplicate external instance metadata");
+  return Object.freeze({
+    schema: 1,
+    projectRoot: moduleText(catalog.projectRoot, 4096),
+    epoch: moduleText(catalog.epoch, 128),
+    fingerprint: catalog.fingerprint,
+    instances: Object.freeze(instances)
+  });
+}
 
 // src/adapters/external-modules.ts
 init_configured_acp();
@@ -21482,6 +21539,7 @@ class ExternalAdapterRefusal extends Error {
 var fail3 = (reason) => {
   throw new ExternalAdapterRefusal(`external adapter: ${reason}`);
 };
+var capturedIdentities = new WeakMap;
 function adapterModuleDeclarations(raw) {
   if (raw === undefined)
     return Object.freeze([]);
@@ -21639,6 +21697,19 @@ class ControlClient {
         resolve(client);
       });
     });
+  }
+  async readExternalInstanceCatalog(projectRoot, timeoutMs = 3000) {
+    const epoch = this.instanceId;
+    if (!epoch || !this.isOpen || !["external_adapter_instances", "external_adapter_modules", "peer_instances"].every((feature) => this.features.includes(feature)))
+      throw new Error("running hub lacks a live external instance catalog");
+    const reply = await this.request({ t: "status" }, timeoutMs);
+    const status = reply.status;
+    if (!this.isOpen || this.instanceId !== epoch || reply.ok === false || !status || status.instanceId !== epoch || status.cwd !== projectRoot)
+      throw new Error("external instance catalog observation changed");
+    const catalog = externalInstanceCatalog(status.externalInstanceCatalog);
+    if (catalog.epoch !== epoch || catalog.projectRoot !== projectRoot)
+      throw new Error("external instance catalog binding changed");
+    return catalog;
   }
   request(msg, timeoutMs = 30000) {
     if (this.ws.readyState !== WebSocket.OPEN)
@@ -22201,9 +22272,28 @@ function validateInstances(raw, catalog) {
       return fail4(`${path}.kind`, "must name a native kind");
     const definition = resolve(kind), prefix = `${kind}-`;
     if (!definition)
-      return fail4(`${path}.kind`, "unknown native kind (external adapter instances are unsupported in A4)");
-    if (catalog.externalDefinitions.some((item) => item.kind === kind))
-      return fail4(`${path}.kind`, "external adapter instances are unsupported in A4");
+      return fail4(`${path}.kind`, "unknown native kind (a live startup catalog is required for external instances)");
+    const moduleInstance = catalog.externalDefinitions.some((item) => item.kind === kind);
+    if (moduleInstance) {
+      const optIn = definition.headlessInstances;
+      if (!optIn || optIn.form !== "headless" || !supportsHeadlessInstances(definition))
+        return fail4(`${path}.kind`, "external module has not opted into headless instances");
+      if (entry.review_mode || entry.review_scope)
+        return fail4(path, "external instances do not have fresh or isolated reviewer capabilities");
+      if (entry.start_mode && entry.start_mode.value !== "headless")
+        return fail4(`${path}.start_mode`, "external instances start headless only");
+      if (!entry.worktree)
+        return fail4(`${path}.worktree`, "every external instance requires its own managed worktree");
+      const requestedRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : definition.roles;
+      const allowedRoles = optIn.roles;
+      if (!requestedRoles.length || requestedRoles.some((role) => !allowedRoles.includes(role) || !definition.roles.includes(role)))
+        return fail4(`${path}.roles`, "roles must fit the external module's explicit instance subset and kind ceiling");
+      if (entry.permission_mode) {
+        const mode = entry.permission_mode.value;
+        if (!isPermissionMode(mode) || !definition.permission.genericAcp?.modes?.[mode])
+          return fail4(`${path}.permission_mode`, "external native adapter has no mapping for this permission mode");
+      }
+    }
     if (!id.startsWith(prefix) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(prefix.length)))
       return fail4(path, "id must be <kind>-<name>");
     const declaredRoles = entry.roles ? roles(entry.roles.value, `${path}.roles`) : [];
@@ -22317,6 +22407,10 @@ function effectiveInstanceRoles(id, declarations, policyRoles, catalog) {
   const declaration = declarations && Object.hasOwn(declarations, id) ? declarations[id] : undefined;
   const ownRoles = (key) => Object.hasOwn(policyRoles, key) ? policyRoles[key] : undefined;
   const roles = declaration?.roles ?? ownRoles(id) ?? ownRoles(definition.kind) ?? definition.roles;
+  if (declaration && catalog.externalDefinitions.some((item) => item.kind === definition.kind)) {
+    const allowed = definition.headlessInstances?.roles ?? [];
+    return roles.filter((role) => allowed.includes(role) && definition.roles.includes(role) && role !== "planner" && role !== "conductor");
+  }
   return roles.filter((role) => role !== "planner" || definition.projection?.plannerEligible === true);
 }
 
@@ -22360,8 +22454,47 @@ function readInstanceConfig(cwd, layers = readInstanceConfigLayers(cwd), externa
     external = externalMetadataDefinitions(metadata);
   }
   const catalog = createProjectAdapterCatalog(adapters, external);
-  const instances = validateInstances(rawInstances, catalog);
-  return { ...moduleConfig.modules.length ? { adapter_modules: moduleConfig.modules } : {}, ...adapters !== undefined ? { adapters } : {}, ...Object.keys(instances).length ? { instances } : {}, catalog, ignored };
+  const runtimeCatalog = externalDefinitions !== undefined && externalDefinitions.every((definition) => typeof definition.start.create === "function");
+  const declaredExternalInstances = [];
+  let executableInstances = rawInstances;
+  if (!runtimeCatalog && moduleConfig.modules.length && rawInstances !== undefined) {
+    const entries = moduleDataObject(rawInstances);
+    if (Object.keys(entries).length > 64)
+      throw new Error("instances: at most 64 extra instances are supported");
+    const executable = Object.create(null);
+    for (const [id, value] of Object.entries(entries)) {
+      const row = moduleDataObject(value), kind = row.kind;
+      const definition = typeof kind === "string" ? catalog.definitionOf(kind) : undefined;
+      const inert = !definition || catalog.externalDefinitions.includes(definition);
+      if (!inert) {
+        executable[id] = value;
+        continue;
+      }
+      if (!/^[a-z][a-z0-9-]{0,31}$/.test(id) || typeof kind !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(kind) || !id.startsWith(`${kind}-`) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(kind.length + 1)))
+        throw new Error("instances: invalid unresolved module instance declaration");
+      if (Object.keys(row).some((key) => !["kind", "roles", "start_mode", "permission_mode", "worktree", "readOnly"].includes(key)))
+        throw new Error("instances: unsupported external instance field");
+      if (Object.hasOwn(row, "roles")) {
+        const roles = moduleArray(row.roles, 3);
+        if (roles.some((role) => typeof role !== "string" || !["implementer", "verifier", "reviewer"].includes(role)) || new Set(roles).size !== roles.length)
+          throw new Error("instances: unsupported external instance role");
+      }
+      if (Object.hasOwn(row, "start_mode") && row.start_mode !== "headless")
+        throw new Error("instances: external instances require headless mode");
+      if (Object.hasOwn(row, "readOnly") && typeof row.readOnly !== "boolean")
+        throw new Error("instances: readOnly must be a boolean");
+      if (Object.hasOwn(row, "permission_mode") && (typeof row.permission_mode !== "string" || !["ask", "ask-when-needed", "never-ask"].includes(row.permission_mode)))
+        throw new Error("instances: unknown permission mode");
+      if (row.readOnly === true && Object.hasOwn(row, "permission_mode"))
+        throw new Error("instances: read-only instances cannot select a permission mode");
+      if (Object.hasOwn(row, "worktree"))
+        moduleText(row.worktree, 4096);
+      declaredExternalInstances.push(Object.freeze({ id, kind, availability: "declared-unknown", refusalCode: "catalog-unavailable" }));
+    }
+    executableInstances = executable;
+  }
+  const instances = validateInstances(executableInstances, catalog);
+  return { ...moduleConfig.modules.length ? { adapter_modules: moduleConfig.modules } : {}, ...adapters !== undefined ? { adapters } : {}, ...Object.keys(instances).length ? { instances } : {}, ...declaredExternalInstances.length ? { declaredExternalInstances: Object.freeze(declaredExternalInstances) } : {}, catalog, ignored };
 }
 
 // src/hub/lifecycle-schema.ts

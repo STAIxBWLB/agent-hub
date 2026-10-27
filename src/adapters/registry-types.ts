@@ -72,6 +72,8 @@ export interface CreateContext<Ports extends DaemonPorts = DaemonPorts> {
   instance: string;
   projectRoot: string;
   stateDir: string;
+  /** Host-derived private external-instance state namespace; stateDir remains the canonical daemon control directory. */
+  instanceStateDir?: string;
   kindConfig: unknown;
   permission: PermissionMode | "read-only";
   mcpServers: NonNullable<AcpOptions["mcpServers"]>;
@@ -207,6 +209,8 @@ export interface AdapterDefinition {
     conductorStartArgs?(args: string[]): { mode?: StartForm } | Error;
   };
   identity: { mcp: "acp-session" | "project-file" | "env" | "channel-plugin"; currentChild?: true };
+  /** External module data-only opt-in. The verified loader derives the internal instances policy from it (#754). */
+  headlessInstances?: { form: "headless"; roles: readonly ("implementer" | "verifier" | "reviewer")[] };
   /** Declaration admission only; execution-root and runtime owner proof remain host responsibilities. */
   instances?: { mode: "external" | "headless"; roles?: readonly string[];
     /** Each declared instance runs its own native data home (`jcode_home`) and may pass its own provider, model and profile names (#685). Fixed builtins only. */

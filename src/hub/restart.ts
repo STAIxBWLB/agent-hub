@@ -7,6 +7,7 @@ import { MAX_HOP } from "./envelope.ts";
 import { validateJournalSnapshot } from "./delivery-journal.ts";
 import { atomicPrivateJSON } from "./recovery-store.ts";
 import { RecoveryDeferredHubError, validateDeferredHub } from "./deferred-hub.ts";
+import { validExternalInstanceBinding, type ExternalInstanceBinding } from "./external-instance.ts";
 
 export const RESTART_SCHEMA_VERSION = 1;
 
@@ -24,6 +25,8 @@ export interface RestartPeerSnapshot {
    * cannot be resumed and a fresh session is accepted instead. Absent in snapshots written
    * before this flag; those are re-derived from disk (#64). */
   sessionPersisted?: boolean;
+  /** Retained stable identity for an explicitly stopped module instance; never authorizes automatic resume. */
+  externalInstance?: ExternalInstanceBinding;
 }
 
 export interface RestartSnapshot {
@@ -41,6 +44,8 @@ export interface RestartSnapshot {
     manualPaused: PeerId[];
     boardDigest: string;
     budgetDigest: string;
+    /** Whole captured binding set; portable identities are covered alongside queue/board integrity. */
+    externalBindingsDigest?: string;
   };
 }
 
@@ -87,7 +92,9 @@ export function readRestartSnapshot(stateDir: string, expected: RestartReadExpec
     }, occupied);
   } catch (error) { if (error instanceof RecoveryDeferredHubError) throw error; return undefined; }
   if (!Array.isArray(s.manualPaused) || !s.manualPaused.every((id) => typeof id === "string") || !Array.isArray(s.peers) || !s.peers.every((peer) => peer && typeof peer === "object" && typeof peer.id === "string" && ["idle", "busy", "paused", "offline"].includes(peer.state as string) && Array.isArray(peer.queueIds) && peer.queueIds.every((id) => typeof id === "string"))) return undefined;
+  if (s.peers.some(peer => Object.hasOwn(peer, "externalInstance") && (peer.state !== "offline" || !validExternalInstanceBinding(peer.externalInstance, expected.projectRoot, peer.id)))) return undefined;
   if (s.integrity !== undefined && (!s.integrity || typeof s.integrity !== "object" || typeof s.integrity.boardDigest !== "string" || typeof s.integrity.budgetDigest !== "string" || !Array.isArray(s.integrity.manualPaused) || !s.integrity.manualPaused.every((id) => typeof id === "string") || !s.integrity.queues || typeof s.integrity.queues !== "object" || !Object.values(s.integrity.queues).every((ids) => Array.isArray(ids) && ids.every((id) => typeof id === "string")))) return undefined;
+  if (s.integrity && Object.hasOwn(s.integrity, "externalBindingsDigest") && (typeof s.integrity.externalBindingsDigest !== "string" || !/^[a-f0-9]{64}$/.test(s.integrity.externalBindingsDigest))) return undefined;
   if (bus.journal !== undefined) { try { validateJournalSnapshot(bus.journal); } catch { return undefined; } }
   return s as RestartSnapshot;
 }

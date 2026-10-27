@@ -1,4 +1,4 @@
-import { ADAPTERS, createProjectAdapterCatalog } from "../adapters/registry.ts";
+import { ADAPTERS, createProjectAdapterCatalog, type AdapterDefinition } from "../adapters/registry.ts";
 import { externalMetadataDefinitions, type ExternalAdapterMetadata } from "../adapters/external-metadata.ts";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -87,7 +87,7 @@ function validateRoutingRaw(value: unknown): void {
 }
 
 /** Strict reloads never use routing's last-good fallback. Startup can retain its existing fallback explicitly. */
-export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: Routing, cwd?: string, externalAdapters?: readonly ExternalAdapterMetadata[]): ConfigSources {
+export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: Routing, cwd?: string, externalAdapters?: readonly ExternalAdapterMetadata[], externalDefinitions?: readonly AdapterDefinition[]): ConfigSources {
   const layers: ConfigLayer[] = [], trustLayers: ConfigSources["trustLayers"] = [];
   const jsonLayers: ConfigLayer[] = [];
   for (const name of ["config.json", "config.local.json"] as const) {
@@ -108,7 +108,7 @@ export function parseConfigSources(texts: ConfigSourceTexts, fallbackRouting?: R
   let catalog = createProjectAdapterCatalog();
   try {
     if (cwd) {
-      const accepted = readInstanceConfig(cwd, jsonLayers, externalAdapters === undefined ? undefined : externalMetadataDefinitions(externalAdapters));
+      const accepted = readInstanceConfig(cwd, jsonLayers, externalDefinitions);
       catalog = accepted.catalog; declared = accepted.instances; identityAdapters = accepted.adapters;
       inertModuleRoster = !!accepted.adapter_modules?.length;
     } else {

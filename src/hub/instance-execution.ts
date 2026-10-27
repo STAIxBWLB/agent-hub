@@ -31,8 +31,11 @@ export function resolveInstanceExecutionCwd(projectRoot: string, id: string, dec
   const git = gitWithin(budgetMs, clock, run);
   const declaration = validateInstances(declarations, adapterCatalog)[id];
   if (!declaration) return refuse("extra instance is not declared");
+  const moduleInstance = adapterCatalog.externalDefinitions.some(definition => definition.kind === declaration.kind);
   const implementer = roles.includes("implementer");
+  const writing = moduleInstance ? declaration.readOnly !== true : implementer;
   if (!declaration.worktree) {
+    if (moduleInstance) return refuse("every external instance requires its own managed worktree");
     if (implementer) return refuse("an extra implementer requires an explicit managed worktree");
     return projectRoot;
   }
@@ -56,7 +59,7 @@ export function resolveInstanceExecutionCwd(projectRoot: string, id: string, dec
   if (commonDirectory(git, root) !== commonDirectory(git, cwd)) return refuse("worktree belongs to a different Git repository");
   const top = git(cwd, ["rev-parse", "--show-toplevel"]).replace(/\n$/, "");
   if (realPath(top) !== cwd) return refuse("directory is not the registered worktree root");
-  if (implementer && !matches[0]!.some(field => field.startsWith("branch refs/heads/") && field.length > "branch refs/heads/".length)) return refuse("an implementer worktree requires an attached branch");
+  if (writing && !matches[0]!.some(field => field.startsWith("branch refs/heads/") && field.length > "branch refs/heads/".length)) return refuse(moduleInstance ? "a potentially writing external instance requires an attached branch" : "an implementer worktree requires an attached branch");
   // ponytail: this read cannot bind the branch to a task or make path swaps atomic; task/start authority must recheck before effects.
   return cwd;
 }

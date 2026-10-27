@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createProjectAdapterCatalog, defaultPeerRoles, definitionOf, type ProjectAdapterCatalog, type AdapterDefinition } from "../adapters/registry.ts";
 import { readAdapterModuleDeclarations, type AdapterModuleDeclaration } from "../adapters/external-modules.ts";
-import { externalMetadataDefinitions } from "../adapters/external-metadata.ts";
+import { externalMetadataDefinitions, moduleArray, moduleDataObject, moduleText } from "../adapters/external-metadata.ts";
 import { readControl, stateDirFor } from "./control-client.ts";
 import { conductorPeer } from "./conductor.ts";
 import { configRefusal } from "./config-trust.ts";
@@ -20,10 +20,18 @@ export function readInstanceConfigLayers(cwd: string): InstanceConfigLayer[] {
 }
 
 /** Declaration authority is file provenance, never a suffix or a claim made by a native child. */
+export interface DeclaredExternalInstance {
+  readonly id: string;
+  readonly kind: string;
+  readonly availability: "declared-unknown";
+  readonly refusalCode: "catalog-unavailable";
+}
 export interface InstanceRoleConfig {
   adapter_modules?: readonly AdapterModuleDeclaration[];
   adapters?: Readonly<Record<string, import("../adapters/configured-acp.ts").ConfiguredAcpAdapterConfig>>;
   instances?: InstancesConfig;
+  /** Read-only declarations with no authenticated catalog; excluded from executable policy. */
+  declaredExternalInstances?: readonly DeclaredExternalInstance[];
   catalog: ProjectAdapterCatalog;
   ignored: string[];
 }
@@ -47,8 +55,38 @@ export function readInstanceConfig(cwd: string, layers: readonly InstanceConfigL
     external = externalMetadataDefinitions(metadata);
   }
   const catalog = createProjectAdapterCatalog(adapters, external);
-  const instances = validateInstances(rawInstances, catalog);
-  return { ...(moduleConfig.modules.length ? { adapter_modules: moduleConfig.modules } : {}), ...(adapters !== undefined ? { adapters } : {}), ...(Object.keys(instances).length ? { instances } : {}), catalog, ignored };
+  // A descriptor on disk is display evidence only. It cannot turn module kinds into executable
+  // definitions or establish live policy. Only the daemon's explicit captured definitions can.
+  const runtimeCatalog = externalDefinitions !== undefined && externalDefinitions.every(definition => typeof definition.start.create === "function");
+  const declaredExternalInstances: DeclaredExternalInstance[] = [];
+  let executableInstances = rawInstances;
+  if (!runtimeCatalog && moduleConfig.modules.length && rawInstances !== undefined) {
+    const entries = moduleDataObject(rawInstances);
+    if (Object.keys(entries).length > 64) throw new Error("instances: at most 64 extra instances are supported");
+    const executable: Record<string, unknown> = Object.create(null);
+    for (const [id, value] of Object.entries(entries)) {
+      const row = moduleDataObject(value), kind = row.kind;
+      const definition = typeof kind === "string" ? catalog.definitionOf(kind) : undefined;
+      const inert = !definition || catalog.externalDefinitions.includes(definition);
+      if (!inert) { executable[id] = value; continue; }
+      if (!/^[a-z][a-z0-9-]{0,31}$/.test(id) || typeof kind !== "string" || !/^[a-z][a-z0-9-]{0,31}$/.test(kind)
+        || !id.startsWith(`${kind}-`) || !/^[a-z0-9][a-z0-9-]*$/.test(id.slice(kind.length + 1))) throw new Error("instances: invalid unresolved module instance declaration");
+      if (Object.keys(row).some(key => !["kind", "roles", "start_mode", "permission_mode", "worktree", "readOnly"].includes(key))) throw new Error("instances: unsupported external instance field");
+      if (Object.hasOwn(row, "roles")) {
+        const roles = moduleArray(row.roles, 3);
+        if (roles.some(role => typeof role !== "string" || !["implementer", "verifier", "reviewer"].includes(role)) || new Set(roles).size !== roles.length) throw new Error("instances: unsupported external instance role");
+      }
+      if (Object.hasOwn(row, "start_mode") && row.start_mode !== "headless") throw new Error("instances: external instances require headless mode");
+      if (Object.hasOwn(row, "readOnly") && typeof row.readOnly !== "boolean") throw new Error("instances: readOnly must be a boolean");
+      if (Object.hasOwn(row, "permission_mode") && (typeof row.permission_mode !== "string" || !["ask", "ask-when-needed", "never-ask"].includes(row.permission_mode))) throw new Error("instances: unknown permission mode");
+      if (row.readOnly === true && Object.hasOwn(row, "permission_mode")) throw new Error("instances: read-only instances cannot select a permission mode");
+      if (Object.hasOwn(row, "worktree")) moduleText(row.worktree, 4096);
+      declaredExternalInstances.push(Object.freeze({ id, kind, availability: "declared-unknown", refusalCode: "catalog-unavailable" }));
+    }
+    executableInstances = executable;
+  }
+  const instances = validateInstances(executableInstances, catalog);
+  return { ...(moduleConfig.modules.length ? { adapter_modules: moduleConfig.modules } : {}), ...(adapters !== undefined ? { adapters } : {}), ...(Object.keys(instances).length ? { instances } : {}), ...(declaredExternalInstances.length ? { declaredExternalInstances: Object.freeze(declaredExternalInstances) } : {}), catalog, ignored };
 }
 
 /** Capture ordinary role policy and trusted instance declarations together, without loading daemon configuration. */
@@ -63,6 +101,9 @@ export function readInstanceRoleConfig(cwd: string, layers: readonly InstanceCon
       for (const [id, list] of Object.entries(raw.roles as Record<string, string[]>)) roles[id] = [...list];
     }
   }
+  // Unresolved rows and display-only module definitions grant no roles through id or kind aliases.
+  for (const row of declarationConfig.declaredExternalInstances ?? []) { delete roles[row.id]; delete roles[row.kind]; }
+  for (const definition of declarationConfig.catalog.externalDefinitions) delete roles[definition.kind];
   conductorPeer(roles);
   return { ...declarationConfig, roles };
 }
