@@ -58,15 +58,21 @@ check_tmp=$(cd "$check_tmp" && pwd -P)
 export TMPDIR="$check_tmp"
 ledger="$check_tmp/owned-processes.jsonl"
 : > "$ledger"
+progress="$check_tmp/test-progress.txt"
+: > "$progress"
+output_fifo="$check_tmp/test-output.fifo"
+mkfifo "$output_fifo"
 export AHUB_CHECK_RUN_ROOT="$check_tmp"
 export AHUB_CHECK_PROCESS_LEDGER="$ledger"
 export BUN_OPTIONS="${BUN_OPTIONS:+$BUN_OPTIONS }--preload=$PWD/scripts/record-test-process.mjs"
 
 preserve_tmp=1
 test_pid=""
+tee_pid=""
 cleanup_check() {
   status=$?
   trap - EXIT INT TERM
+  if [ -n "$tee_pid" ]; then kill "$tee_pid" 2>/dev/null || true; fi
   if [ -n "$test_pid" ]; then
     kill -TERM "$test_pid" 2>/dev/null || true
     wait "$test_pid" 2>/dev/null || true
@@ -90,16 +96,32 @@ trap 'exit 143' TERM
 # a fixture's plugin would send that project at hello and be refused by the fixture hub.
 # #610: and not the person's git config (a global ignore hid fixture files) or color settings (NO_COLOR and a dumb
 # TERM broke the ANSI goldens); tests that need either set it themselves.
+# #516: the watchdog stops a run on lost progress, not on elapsed time. Bun prints its results on stderr: they go through a fifo to
+# scripts/progress-tee.sh, which passes every line on to this script's stderr unchanged and appends one byte to $progress for each result
+# line or file header, and hang-watch.sh polls that file's size. Stdout stays untouched. A fifo and a filter of its own, not a pipe or a
+# process substitution: with a pipe `$!` would be the filter and `wait` its status, so the watchdog would stop the filter and leave bun
+# running and a failing suite would read as passing; a process substitution cannot be waited on with a bound, and a leaked fixture child that
+# keeps the output open must not hold the gate before the leak scan names it.
+scripts/progress-tee.sh "$progress" < "$output_fifo" >&2 &
+tee_pid=$!
 env -u AGENTHUB_PEER_ID -u AGENTHUB_DELIVERY_ONLY -u AGENTHUB_CHANNEL -u CLAUDECODE -u CLAUDE_CODE_SESSION_ID -u CODEX_THREAD_ID \
   -u AGENTHUB_PROJECT_DIR -u AGENTHUB_STATE_DIR -u AGENTHUB_INSTANCE_ID -u AGENTHUB_LAUNCH_ID -u NO_COLOR \
-  GIT_CONFIG_GLOBAL=/dev/null TERM=xterm-256color bun test --timeout 20000 ${test_args[@]+"${test_args[@]}"} &
+  GIT_CONFIG_GLOBAL=/dev/null TERM=xterm-256color bun test --timeout 20000 ${test_args[@]+"${test_args[@]}"} 2> "$output_fifo" &
 test_pid=$!
-scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-960}" &
+# A suite still printing test results is slow, not hung (hosted ubuntu runs of 14-17 minutes were cut at 1080 s while passing tests line
+# by line): the quiet bound (AHUB_CHECK_QUIET_S, 300 s without a result line or file header) is the hang detector and AHUB_CHECK_HANG_S the backstop.
+scripts/hang-watch.sh "$test_pid" "${AHUB_CHECK_HANG_S:-960}" "$progress" "${AHUB_CHECK_QUIET_S:-300}" &
 watch_pid=$!
 wait "$test_pid" || tests=$?
 test_pid=""
 kill "$watch_pid" 2>/dev/null || true # its work is done: never let it watch a pid that may be reused
 wait "$watch_pid" 2>/dev/null || true
+# The filter ends when every writer has closed the fifo: wait a bounded time for the last lines, then let it go (a leaked child still holds it,
+# and the leak scan below reports that).
+for _ in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$tee_pid" 2>/dev/null || break; sleep 0.5; done
+kill "$tee_pid" 2>/dev/null || true
+wait "$tee_pid" 2>/dev/null || true
+tee_pid=""
 
 # The Bun preload records each current-run Bun process's PID, start time, and process
 # group at startup. The final scan uses those identities to include children that outlive
