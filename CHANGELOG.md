@@ -6,6 +6,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 - The local-worker and Pi sandbox lets a command add only new loose objects to the shared git object store (#864): `objects/info` (alternates, commit-graph) and `objects/pack` are refused, and an existing object cannot be changed, removed or replaced, so a sandboxed peer cannot poison what every checkout and the Claude implementer's host add, commit and push trust. `git gc`, `repack`, `fetch` and `maintenance` now run outside the sandbox.
 - `scripts/check.sh` counts test progress under mawk too (#883): the output filter reads line by line there, so the quiet watchdog no longer stops a healthy run on Debian or Ubuntu hosts without gawk
+- A task's host-observed branch binding (#845) no longer counts as a move (#880): a binding that lands while the class check runs no longer turns the check result into "check finished late"
 
 ## 0.19.0
 
