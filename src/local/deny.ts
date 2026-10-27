@@ -164,6 +164,27 @@ export function hubWriteRegexes(root: string, gitDirs: string[] = [], moduleGit:
 }
 
 /**
+ * Full SBPL rule lines for the shared object store `<common>/objects` (#864). Every checkout of the repository, and the hub's own host add/commit/push (#845), trusts what is
+ * there without rehashing it, so a sandboxed command may only ADD loose objects: `git add` and `git commit` keep working, and git skips writing an object that exists. Refused:
+ * every write under `objects/info` (alternates, http-alternates, commit-graph) and `objects/pack` (a new pack wins over a loose copy of the same id, since git reads packs
+ * first); the `objects`, `objects/info` and `objects/pack` entries themselves (no rename, replace or removal); removing or renaming a fan-out directory; and changing,
+ * removing, chmod-ing or renaming over an existing loose object. The cost: `git gc`, `git repack`, `git fetch`, `git maintenance` and `git commit-graph write` do not run in
+ * the sandbox. A hardlink to an existing loose object is refused under these rules (verified, into the project and into the command's own temp dir). Residual: an object id
+ * that does not exist yet can be planted before git writes it (the attacker must predict its exact content); a local checkout shows it, a push of it is rejected by the
+ * receiving side's rehash. Seatbelt ignores `{n}`
+ * repeats, so the two fan-out hex digits are written out (verified with the real sandbox-exec).
+ */
+export function objectStoreRules(common: string): string[] {
+  const objects = `${common}/objects`, o = sbplEscape(objects);
+  const re = (s: string) => `(regex ${sbplString(s)})`;
+  return [
+    `(deny file-write* (subpath ${sbplString(`${objects}/info`)}) (subpath ${sbplString(`${objects}/pack`)}) ${[objects, `${objects}/info`, `${objects}/pack`].map((p) => `(literal ${sbplString(p)})`).join(" ")})`,
+    `(deny file-write-unlink ${re(`^${o}/[0-9a-f][0-9a-f]$`)})`,
+    `(deny file-write-data file-write-unlink file-write-mode file-write-flags ${re(`^${o}/[0-9a-f][0-9a-f]/[0-9a-f]+$`)})`,
+  ];
+}
+
+/**
  * Seatbelt regex filters equivalent to isDenied. Seatbelt sees absolute paths, so the `local.deny` substrings are
  * anchored under the project root: a bare "private/" would otherwise match /private/var/... and deny the whole temp tree.
  */

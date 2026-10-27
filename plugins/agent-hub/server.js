@@ -5902,6 +5902,15 @@ function hubWriteRegexes(root, gitDirs = [], moduleGit = [], worktreesRoot) {
     ...external
   ];
 }
+function objectStoreRules(common) {
+  const objects = `${common}/objects`, o = sbplEscape(objects);
+  const re = (s) => `(regex ${sbplString(s)})`;
+  return [
+    `(deny file-write* (subpath ${sbplString(`${objects}/info`)}) (subpath ${sbplString(`${objects}/pack`)}) ${[objects, `${objects}/info`, `${objects}/pack`].map((p) => `(literal ${sbplString(p)})`).join(" ")})`,
+    `(deny file-write-unlink ${re(`^${o}/[0-9a-f][0-9a-f]$`)})`,
+    `(deny file-write-data file-write-unlink file-write-mode file-write-flags ${re(`^${o}/[0-9a-f][0-9a-f]/[0-9a-f]+$`)})`
+  ];
+}
 function denyRegexes(root, extra = [], withNames = true) {
   const names = DENY_NAMES.map((re) => {
     const body = re.startsWith("^") ? re.slice(1) : `[^/]*${re}`;
@@ -6045,6 +6054,7 @@ function profile(cwd, network, readAllow = [], deny = [], readOnly = []) {
     "(deny file-write*)",
     ...readOnly.length ? ['(allow file-write* (literal "/dev/null"))'] : [`(allow file-write* (subpath ${q(root)}) (regex #"^/dev/") ${gitDirs.map((d) => `(subpath ${q(d)})`).join(" ")})`],
     `(deny file-write* ${hubWriteRegexes(root, gitDirs, moduleGit, worktrees).join(" ")})`,
+    ...worktrees ? objectStoreRules(dirname9(worktrees)) : [],
     `(deny file-read* file-write* ${creds.map((c) => `(subpath ${q(join12(home, c))})`).join(" ")})`,
     `(deny file-read* file-write* ${denyRegexes(root, deny).join(" ")})`,
     ...network ? [`(allow file-read* ${CA_BUNDLES.map((p) => `(literal ${q(p)})`).join(" ")} (regex ${q("/certifi/cacert\\.pem$")}))`, `(deny file-read* file-write* ${places})`] : []

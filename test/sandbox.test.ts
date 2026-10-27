@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, realpathSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { HFS_IGNORABLE_POINTS, hubWriteRegexes } from "../src/local/deny.ts";
 import { profile, sandboxAvailable, sandboxedExec } from "../src/local/sandbox.ts";
 
@@ -143,7 +143,7 @@ test.skipIf(!sandboxAvailable())("a worktree project: the common dir's config, h
   expect(existsSync(join(gitDir, "config"))).toBe(false);
 });
 
-test.skipIf(!sandboxAvailable())("git add, commit, stash, checkout and gc still work inside the sandbox (#270)", async () => {
+test.skipIf(!sandboxAvailable())("git add, commit, stash and checkout still work inside the sandbox; gc runs outside it (#270, #864)", async () => {
   const cwd = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-gitops-")));
   Bun.spawnSync(["git", "init", "-q"], { cwd });
   writeFileSync(join(cwd, "a.txt"), "one\n");
@@ -153,12 +153,14 @@ test.skipIf(!sandboxAvailable())("git add, commit, stash, checkout and gc still 
     "echo two >> a.txt",
     "git -c user.email=t@t -c user.name=t -c commit.gpgsign=false stash -q",
     "git checkout -q -- a.txt",
-    "git gc -q",
     "echo git-ops-ok",
   ].join(" && ")], { cwd, profile: profile(cwd, false) });
   expect(out.output).toContain("git-ops-ok");
   expect(Bun.spawnSync(["git", "-C", cwd, "log", "--oneline"]).stdout.toString()).toContain("one");
   expect(readFileSync(join(cwd, "a.txt"), "utf8")).toBe("one\n"); // stash and checkout really ran
+  // gc writes packs, which the shared object store refuses inside the sandbox (#864); it runs outside, where the hub and the person run git.
+  expect((await sandboxedExec(["/bin/sh", "-c", "git gc -q"], { cwd, profile: profile(cwd, false) })).code).not.toBe(0);
+  expect(Bun.spawnSync(["git", "-C", cwd, "gc", "-q"]).exitCode).toBe(0);
 });
 
 test.skipIf(!sandboxAvailable())(".gitignore and .github stay writable through the profile: the folded patterns are equality, not prefix (#270)", async () => {
@@ -436,6 +438,47 @@ test.skipIf(!sandboxAvailable())("every linked worktree's git dir is protected b
   // The sandbox may make an empty directory for a worktree git dir that does not exist (harmless: git needs HEAD, commondir and gitdir there, and the names that execute are refused); nothing inside it may exist.
   for (const name of ["modules", "config", "config.worktree", "hooks", "commondir"]) expect(existsSync(join(common, "worktrees", "later", name)), name).toBe(false);
 });
+
+test.skipIf(!sandboxAvailable())("the shared object store only takes new loose objects: alternates, packs and existing objects are refused, add and commit still work (#864)", async () => {
+  const main = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-objects-repo-")));
+  const git = (cwd: string, ...args: string[]) => Bun.spawnSync(["git", "-C", cwd, "-c", "user.email=t@t", "-c", "user.name=t", "-c", "commit.gpgsign=false", ...args]);
+  git(main, "init", "-q");
+  writeFileSync(join(main, "a.txt"), "packed\n"); git(main, "add", "a.txt"); git(main, "commit", "-qm", "a"); git(main, "gc", "-q");
+  writeFileSync(join(main, "b.txt"), "loose\n"); git(main, "add", "b.txt"); git(main, "commit", "-qm", "b");
+  const cwd = join(realpathSync(mkdtempSync(join(tmpdir(), "agenthub-objects-wt-"))), "wt");
+  expect(git(main, "worktree", "add", "-q", cwd).exitCode).toBe(0); // outside the sandbox
+  const objects = join(main, ".git", "objects");
+  const blob = git(main, "rev-parse", "HEAD:b.txt").stdout.toString().trim(), loose = join(objects, blob.slice(0, 2), blob.slice(2));
+  const before = readFileSync(loose);
+  const commit = "git -c user.email=t@t -c user.name=t -c commit.gpgsign=false commit -qm";
+  const out = await sandboxedExec(["/bin/sh", "-c", [
+    `printf new > c.txt && git add c.txt && ${commit} c && echo committed-new`,
+    `printf 'loose\\n' > d.txt && git add d.txt && ${commit} d && echo committed-existing-blob`,   // git only freshens an object that exists
+    `(printf /tmp > '${objects}/info/alternates') 2>/dev/null && echo WROTE-ALTERNATES || echo blocked-alternates`,
+    `(printf /tmp > '${objects}/info/ALTERNATES') 2>/dev/null && echo WROTE-ALTERNATES-CASE || echo blocked-alternates-case`,
+    `(printf x > '${objects}/info/http-alternates') 2>/dev/null && echo WROTE-HTTP-ALTERNATES || echo blocked-http-alternates`,
+    `(printf x > '${objects}/info/commit-graph') 2>/dev/null && echo WROTE-COMMIT-GRAPH || echo blocked-commit-graph`,
+    `(printf x > '${objects}/pack/pack-planted.pack') 2>/dev/null && echo WROTE-PACK || echo blocked-pack`,
+    `chmod u+w '${loose}' 2>/dev/null && echo CHMOD-LOOSE || echo blocked-chmod`,
+    `rm -f '${loose}' 2>/dev/null && echo REMOVED-LOOSE || echo blocked-remove`,
+    `(printf evil > '${dirname(loose)}/tmp_planted' && mv -f '${dirname(loose)}/tmp_planted' '${loose}') 2>/dev/null && echo REPLACED-LOOSE || echo blocked-replace`,
+    // A hardlink alias would let chmod and a write reach the object's inode through a path the rules do not name; the current profile allowed it.
+    `ln '${loose}' alias 2>/dev/null && echo LINKED-INTO-PROJECT || echo blocked-link-project`,
+    `ln '${loose}' "$TMPDIR/alias" 2>/dev/null && echo LINKED-INTO-TMP || echo blocked-link-tmp`,
+    `mv '${dirname(loose)}' '${objects}/zz' 2>/dev/null && echo MOVED-FANOUT || echo blocked-fanout`,
+    `mv '${objects}/pack' '${objects}/pack-moved' 2>/dev/null && echo MOVED-PACK-DIR || echo blocked-pack-dir`,
+    `mv '${objects}/info' '${objects}/info-moved' 2>/dev/null && echo MOVED-INFO-DIR || echo blocked-info-dir`,
+    `mv '${objects}' '${objects}-moved' 2>/dev/null && echo MOVED-OBJECTS || echo blocked-objects`,
+  ].join("; ")], { cwd, profile: profile(cwd, false) });
+  for (const expected of ["committed-new", "committed-existing-blob", "blocked-alternates", "blocked-alternates-case", "blocked-http-alternates", "blocked-commit-graph", "blocked-pack", "blocked-chmod", "blocked-remove", "blocked-replace", "blocked-link-project", "blocked-link-tmp", "blocked-fanout", "blocked-pack-dir", "blocked-info-dir", "blocked-objects"]) expect(out.output, out.output).toContain(expected);
+  for (const name of ["alternates", "ALTERNATES", "http-alternates"]) expect(existsSync(join(objects, "info", name)), name).toBe(false);
+  expect(readFileSync(loose)).toEqual(before);
+  expect(git(main, "fsck", "--connectivity-only").exitCode).toBe(0);
+  expect(git(cwd, "log", "--format=%s", "-2").stdout.toString().trim().split("\n")).toEqual(["d", "c"]);
+  const gc = await sandboxedExec(["/bin/sh", "-c", "git gc -q"], { cwd, profile: profile(cwd, false) });
+  expect(gc.code).not.toBe(0);   // the documented cost: gc, repack, fetch and maintenance run outside the sandbox
+  rmSync(main, { recursive: true, force: true }); rmSync(dirname(cwd), { recursive: true, force: true });
+}, 20_000);
 
 test.skipIf(!sandboxAvailable())("config.worktree is refused with ignorable code points in BOTH halves of the name, in the project .git, a worktree git dir and the common dir, and an unrelated name stays writable (#518 review)", async () => {
   // The rule matches the path string, so a file named with the code points HFS+ ignores is refused wherever the volume is: on HFS+ it opens as the real name, on APFS it is another name the rule still covers.

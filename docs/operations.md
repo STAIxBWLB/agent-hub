@@ -914,7 +914,11 @@ create, rename or remove a `.git`: `git init`, `git clone` and
 `git worktree add` do not run inside the sandbox, and neither do
 `git worktree remove`, `git worktree prune` of a stale record,
 `git submodule update --init`, `git clean -ffd` over a nested repository or
-`rm -rf` of a directory that holds a `.git`. `git add`, `commit`, `stash`, `checkout` and `gc` work, and
+`rm -rf` of a directory that holds a `.git`. The shared object store takes
+only new loose objects (#864): `objects/info` (alternates, commit-graph) and
+`objects/pack` are closed and an existing object cannot be changed, removed or
+replaced, so `git gc`, `repack`, `fetch` and `maintenance` do not run inside
+the sandbox either. `git add`, `commit`, `stash` and `checkout` work, and
 `.gitignore` and `.github/` stay writable; a commit that your git configuration
 signs with a key under `~/.ssh` or `~/.gnupg` fails, because the sandbox cannot
 read those directories. Run a refused command yourself, in a terminal.
