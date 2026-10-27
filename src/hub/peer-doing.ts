@@ -94,15 +94,15 @@ const SUBJECT_CAP = 256;
 /**
  * One Claude session's current item, from the tool input its PreToolUse hook already sends: TodoWrite's in-progress
  * todo, or the task TaskUpdate puts in progress. Answers undefined for no change, null for no current item. A cached
- * subject keeps the privacy of the context it was learned in (`isPrivate`, asked when it is cached; a throw is private),
- * so one learned during PII work is still private when a later public TaskUpdate selects it.
+ * subject keeps the privacy verdict it was learned with (`isPrivate(subject)`, asked for every cached subject; a throw is
+ * private), so one learned during PII work, or refused by the screen then, stays private when a later TaskUpdate selects it.
  */
 export type ClaudeTodoItem = { text: string; private: boolean };
 export class ClaudeTodoSource {
   private readonly subjects = new Map<string, ClaudeTodoItem>();
   private task: string | undefined;
 
-  item(tool: string, input: Record<string, unknown>, isPrivate: () => boolean): ClaudeTodoItem | null | undefined {
+  item(tool: string, input: Record<string, unknown>, isPrivate: (subject: string) => boolean): ClaudeTodoItem | null | undefined {
     if (tool === "TodoWrite") {
       if (!Array.isArray(input.todos)) return undefined;
       this.task = undefined;
@@ -114,7 +114,7 @@ export class ClaudeTodoSource {
     const id = String(input.taskId), subject = doingText(input.subject);
     if (subject) {
       let hidden = true;
-      try { hidden = isPrivate(); } catch { /* unknown context: private */ }
+      try { hidden = isPrivate(subject); } catch { /* unknown verdict: private */ }
       this.subjects.delete(id); this.subjects.set(id, { text: subject, private: hidden });
       if (this.subjects.size > SUBJECT_CAP) this.subjects.delete(this.subjects.keys().next().value as string);
     }

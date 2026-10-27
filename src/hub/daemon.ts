@@ -2174,7 +2174,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const title = readAiTitle(source.cursor);
       if (title !== undefined) observeDoing(peer, "title", title);
     }
-    const item = tool ? source.todos.item(tool, input, () => contextPii(peer)) : undefined;
+    const item = tool ? source.todos.item(tool, input, subject => contextPii(peer) || !tasks.publicMetadataText(subject)) : undefined;
     if (item !== undefined) observeDoing(peer, "todo", item?.text, item?.private === true);
   };
   const requestCheckpoint = (peer: PeerId, reason: "quota" | "context"): Promise<string | undefined> => {

@@ -89,6 +89,18 @@ test("a TaskUpdate subject cached while private stays a stub when a public TaskU
   expect(todos.item("TaskUpdate", { taskId: "5", status: "in_progress" }, () => false)).toEqual({ text: "Unknown context", private: true });
 });
 
+test("a non-current TaskUpdate subject the metadata screen refuses when it is learned stays a stub after the screen turns permissive", () => {
+  const todos = new ClaudeTodoSource(), tracker = new DoingTracker();
+  let patterns = [/PRIVATE-MARKER/];
+  const screen = (text: string) => patterns.some(pattern => pattern.test(text)); // contextPii is false throughout
+  expect(todos.item("TaskUpdate", { taskId: "3", subject: "PRIVATE-MARKER project" }, screen)).toBeUndefined(); // not the current task
+  patterns = []; // routing reloaded without the pattern
+  const selected = todos.item("TaskUpdate", { taskId: "3", status: "in_progress" }, screen);
+  expect(selected).toEqual({ text: "PRIVATE-MARKER project", private: true });
+  tracker.observe("todo", selected!.text, text => selected!.private || screen(text));
+  expect(tracker.view(false)?.text).toBe(DOING_STUB);
+});
+
 test("transcript titles are read incrementally, at most 1 MiB per read, skipping oversized lines (AC4)", () => {
   const dir = tempDir("ahub-doing-title-"), path = join(dir, "s1.jsonl");
   const filler = JSON.stringify({ type: "assistant", message: { content: "y".repeat(1000) } }) + "\n";
