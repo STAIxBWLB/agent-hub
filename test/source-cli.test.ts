@@ -211,3 +211,30 @@ test("what the CLI wrote is what the registry reads back", async () => {
   expect(registry.readRaw(added.id)!.toString()).toBe("roundtrip");
   expect(registry.readText(added.id)).toBe("roundtrip");
 });
+
+// Review of PR #907 (codex-review), through the CLI.
+test("a plain file over 512 KiB registers with its text readable, and a damaged record is refused with the registry left as it was", async () => {
+  const p = project(), big = "b".repeat(600 * 1024);
+  const added = JSON.parse((await cli(p, ["source", "add", write(p, "open/big.txt", big), "--json"])).stdout);
+  expect(added).toMatchObject({ created: true, text: true });
+  expect(new SourceRegistry(join(sourcesDir(p)!, "..")).readText(added.id)).toBe(big);
+  const folder = join(sourcesDir(p)!, `src-${added.id.slice(4)}`);
+  writeFileSync(join(folder, "meta.json"), "{ damaged");
+  const again = await cli(p, ["source", "add", write(p, "open/big2.txt", big)]);
+  expect(again.code).not.toBe(0);
+  expect(flat(again.stderr)).toContain("cannot be read");
+  expect(readFileSync(join(folder, "meta.json"), "utf8")).toBe("{ damaged");
+});
+
+test("every origin up to the cap registers through the CLI and the record stays listed as private", async () => {
+  const p = project(), bytes = "one source, thirty-six places";
+  const first = JSON.parse((await cli(p, ["source", "add", write(p, "secret/o.txt", bytes), "--json"])).stdout);
+  const registry = new SourceRegistry(join(sourcesDir(p)!, ".."));
+  for (let i = 0; i < 40; i++) registry.add({ bytes: Buffer.from(bytes), kind: "url", origin: `https://example.org/${i}/` + "p".repeat(1900), private: false });
+  const rows = JSON.parse((await cli(p, ["source", "list", "--json"])).stdout);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]).toMatchObject({ id: first.id, private: true });
+  expect(rows[0].origins.length).toBe(41);
+  const after = JSON.parse((await cli(p, ["source", "add", write(p, "open/o2.txt", bytes), "--json"])).stdout);
+  expect(after).toMatchObject({ id: first.id, created: false, private: true });
+});

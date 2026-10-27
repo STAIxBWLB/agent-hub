@@ -1295,7 +1295,8 @@ const commands: Record<string, () => Promise<void> | void> = {
     let added;
     try { added = registry.add({ bytes, kind, origin, private: verdict.private, ...(verdict.text !== undefined ? { text: verdict.text } : {}) }); }
     catch (error) { return fail(`cannot register ${isUrl ? "that URL" : target}: ${(error as Error).message}`); }
-    const meta = registry.get(added.id) as SourceMeta;
+    const meta = registry.get(added.id);
+    if (!meta) return fail(`the record for ${added.id} cannot be read after it was registered; inspect ${join(stateDir, "sources")}`);
     const result = { id: added.id, created: added.created, upgraded: added.upgraded, kind: meta.kind, origin: meta.origin, sha256: meta.sha256, bytes: meta.bytes, private: meta.private, text: added.text, reasons: verdict.reasons };
     if (options.json) return console.log(JSON.stringify(result, null, 2));
     printOutput(renderSourceAdd(result, options.columns), options.color);
