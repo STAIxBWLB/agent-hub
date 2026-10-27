@@ -22116,6 +22116,10 @@ var GROOM_FYI_WINDOW_MS = 10 * 60000;
 
 // src/hub/conductor.ts
 init_tool_refusal();
+
+// src/hub/peer-doing.ts
+var TITLE_READ_MAX = 1024 * 1024;
+var TITLE_LINE_MAX = 64 * 1024;
 // src/hub/instances.ts
 import { types as types4 } from "util";
 init_project();

@@ -93,28 +93,34 @@ const SUBJECT_CAP = 256;
 
 /**
  * One Claude session's current item, from the tool input its PreToolUse hook already sends: TodoWrite's in-progress
- * todo, or the task TaskUpdate puts in progress. Answers undefined for no change, null for no current item.
+ * todo, or the task TaskUpdate puts in progress. Answers undefined for no change, null for no current item. A cached
+ * subject keeps the privacy of the context it was learned in (`isPrivate`, asked when it is cached; a throw is private),
+ * so one learned during PII work is still private when a later public TaskUpdate selects it.
  */
+export type ClaudeTodoItem = { text: string; private: boolean };
 export class ClaudeTodoSource {
-  private readonly subjects = new Map<string, string>();
+  private readonly subjects = new Map<string, ClaudeTodoItem>();
   private task: string | undefined;
 
-  item(tool: string, input: Record<string, unknown>): string | null | undefined {
+  item(tool: string, input: Record<string, unknown>, isPrivate: () => boolean): ClaudeTodoItem | null | undefined {
     if (tool === "TodoWrite") {
       if (!Array.isArray(input.todos)) return undefined;
       this.task = undefined;
       const todo = input.todos.find((t: unknown) => (t as { status?: unknown } | null)?.status === "in_progress") as { activeForm?: unknown; content?: unknown } | undefined;
-      return doingText(todo?.activeForm) ?? doingText(todo?.content) ?? null;
+      const text = doingText(todo?.activeForm) ?? doingText(todo?.content);
+      return text ? { text, private: false } : null;
     }
     if (tool !== "TaskUpdate" || (typeof input.taskId !== "string" && typeof input.taskId !== "number")) return undefined;
     const id = String(input.taskId), subject = doingText(input.subject);
     if (subject) {
-      this.subjects.delete(id); this.subjects.set(id, subject);
+      let hidden = true;
+      try { hidden = isPrivate(); } catch { /* unknown context: private */ }
+      this.subjects.delete(id); this.subjects.set(id, { text: subject, private: hidden });
       if (this.subjects.size > SUBJECT_CAP) this.subjects.delete(this.subjects.keys().next().value as string);
     }
     // ponytail: a task's subject is known only from a TaskUpdate that names it (TaskCreate's id is in its result, which
     // the hook does not send); an unknown one shows no current item. Forward the PostToolUse result if that matters.
-    const text = () => doingText(input.activeForm) ?? this.subjects.get(id) ?? null;
+    const text = (): ClaudeTodoItem | null => { const form = doingText(input.activeForm); return form ? { text: form, private: false } : this.subjects.get(id) ?? null; };
     if (input.status === "in_progress") { this.task = id; return text(); }
     if (id !== this.task) return undefined;
     if (input.status === undefined) return text();

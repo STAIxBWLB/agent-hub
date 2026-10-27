@@ -2143,12 +2143,12 @@ export async function startDaemon(opts: DaemonOptions) {
   const contextPii = (peer: PeerId) => !!turns.get(peer)?.private || board.list().some(t => !isClosedTaskState(t.state) && (t.owner === peer || t.reviewer === peer) && tasks.isPii(t));
   // #878: what each peer is doing. Daemon memory only: never persisted (status.json leaves it out), logged, captured or relayed.
   const doings = new Map<PeerId, DoingTracker>();
-  const observeDoing = (peer: PeerId, kind: DoingKind, text?: unknown) => {
+  const observeDoing = (peer: PeerId, kind: DoingKind, text?: unknown, learnedPrivate = false) => {
     if (kind === "reset") { doings.delete(peer); claudeDoing.delete(peer); return; }
     let tracker = doings.get(peer);
     if (!tracker) doings.set(peer, tracker = new DoingTracker());
-    // Private when observed in a PII context or refused by the public metadata screen; a throw is private too.
-    tracker.observe(kind, text, value => contextPii(peer) || !tasks.publicMetadataText(value));
+    // Private when learned or observed in a PII context or refused by the public metadata screen; a throw is private too.
+    tracker.observe(kind, text, value => learnedPrivate || contextPii(peer) || !tasks.publicMetadataText(value));
   };
   /** Shown only for an attached peer; a stub while it owns or reviews a PII task or is in a private turn. */
   const doingRows = (ids: string[]): Record<string, PeerDoing> => {
@@ -2174,8 +2174,8 @@ export async function startDaemon(opts: DaemonOptions) {
       const title = readAiTitle(source.cursor);
       if (title !== undefined) observeDoing(peer, "title", title);
     }
-    const item = tool ? source.todos.item(tool, input) : undefined;
-    if (item !== undefined) observeDoing(peer, "todo", item ?? undefined);
+    const item = tool ? source.todos.item(tool, input, () => contextPii(peer)) : undefined;
+    if (item !== undefined) observeDoing(peer, "todo", item?.text, item?.private === true);
   };
   const requestCheckpoint = (peer: PeerId, reason: "quota" | "context"): Promise<string | undefined> => {
     // One outstanding request per peer. A quota transition may proceed without a summary rather than steal a context waiter.
