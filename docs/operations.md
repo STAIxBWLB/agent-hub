@@ -2434,7 +2434,7 @@ why. Unreserved cards, cards reserved for another peer and private (PII) cards a
 never pulled. One card per release, as the hub for the card's own planner of record:
 the history entry reads `by: hub` with that planner and the reason
 `auto_pull: capacity released for <peer>; hub acted for planner <planner>`. A hub that
-is paused for recovery pulls nothing. A committed `config.json` cannot turn it on: like
+is paused for recovery pulls nothing, also when the setting is turned off or recovery begins while a pull is already waiting on its screening: that pull writes nothing, and a recovery waits for pulls in flight. A committed `config.json` cannot turn it on: like
 the other machine-local policies it is ignored there with a log line.
 
 ## Resetting a project's hub

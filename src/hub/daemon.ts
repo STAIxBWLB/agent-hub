@@ -3161,7 +3161,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   let releasing = false; // gone-owner release (#6) and the ready sweep (#34): one run at a time, and a recovery commit waits for it
   const recoveryReady = () => {
-    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || ("recoveryReady" in peer && peer.recoveryReady !== true))) return false;
+    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || tasks.autoPullsPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || ("recoveryReady" in peer && peer.recoveryReady !== true))) return false;
     if (checkPending.size !== 0) return false;
     if (!recoveryPeerSnapshot) return true;
     const current = recoveryPeers();
@@ -6087,6 +6087,7 @@ export async function startDaemon(opts: DaemonOptions) {
       // #272: the rest of what recoveryReady() waits for, so the upgrade screen can name the wait. Display only.
       ...(taskOpsInFlight !== 0 ? ["a task command in flight"] : []),
       ...(tasks.checksPending() !== 0 ? ["completion checks queued or running"] : []),
+      ...(tasks.autoPullsPending() !== 0 ? ["an automatic backlog pull in flight"] : []),
       ...(checkPending.size !== 0 ? ["isolated checks queued or running"] : []),
       ...(piCallsInFlight() !== 0 ? ["Pi tool calls in flight"] : []),
       ...(releasing ? ["ready tasks being released"] : []),

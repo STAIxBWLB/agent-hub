@@ -1153,11 +1153,21 @@ export class Tasks {
    * Serialized on one chain, so two releases cannot pick the same card; each job re-reads the board, so a card that moved meanwhile is skipped.
    */
   private autoPulls: Promise<void> = Promise.resolve();
+  private autoPullsOpen = 0;
+  /** Queued or running auto pulls, so a recovery commit waits for them the way it waits for `checksPending` (#785 P1c): one that is mid-admission would otherwise write after the commit's digest. */
+  autoPullsPending = (): number => this.autoPullsOpen;
   private queueAutoPulls(released: ReadonlySet<PeerId>): void {
-    for (const peer of released) this.autoPulls = this.autoPulls.then(() => this.autoPull(peer)).catch(() => { /* autoPull reports its own refusals */ });
+    for (const peer of released) {
+      this.autoPullsOpen++;
+      this.autoPulls = this.autoPulls.then(() => this.autoPull(peer)).catch(() => { /* autoPull reports its own refusals */ }).finally(() => { this.autoPullsOpen--; });
+    }
+  }
+  /** Whether the hub may still start work on its own: the setting is on, and no recovery, shutdown or storage hold is active. Read at entry and again right before the assignment write. */
+  private autoPullAdmitted(): boolean {
+    return this.d.autoPull?.() === true && !this.d.sweepHeld?.() && !this.d.bus.isRecoveryHeld && !this.d.bus.storageError;
   }
   private async autoPull(peer: PeerId): Promise<void> {
-    if (this.d.autoPull?.() !== true || this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) return;
+    if (!this.autoPullAdmitted()) return;
     const card = this.topReservedReady(peer, undefined, true);
     if (!card) return;
     // The planner of record is the card's own: its bound planner, else the first current holder, and it must be rostered. A private card never gets here (topReservedReady skips it).
@@ -1165,8 +1175,10 @@ export class Tasks {
     if (!planner || !this.d.bus.isRostered(planner)) return;
     const reason = `auto_pull: capacity released for ${peer}; hub acted for planner ${planner}`;
     try {
-      await this.pullPlanned(HUB, { id: card.id, revision: card.planningRevision ?? 0, reason }, { onBehalfOf: planner });
+      await this.pullPlanned(HUB, { id: card.id, revision: card.planningRevision ?? 0, reason }, { onBehalfOf: planner, guard: () => { if (!this.autoPullAdmitted()) throw new PreEffectToolRefusal("auto pull is no longer admitted: tasks.auto_pull was turned off or a recovery, shutdown or storage hold began"); } });
     } catch (e) {
+      // A guard refusal is the setting or a hold doing its job, not a failure to report.
+      if (!this.autoPullAdmitted()) return;
       this.releaseNotice(`task ${this.publicTitle(card)}: auto_pull for ${peer} refused: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
@@ -1212,12 +1224,14 @@ export class Tasks {
     return assign({ ...task, state: "proposed" }, states, routing, { exclude: this.excluded(task), excludeOwners: full, ...(reservedOnly && task.reserved ? { candidates: [task.reserved], namedOwner: task.reserved } : {}), waitsFor: this.waitsFor(task), ...this.weights(task.class, task) });
   }
 
-  async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }, opts: { onBehalfOf?: PeerId } = {}): Promise<Task> {
+  async pullPlanned(by: PeerId, input: { id: number; revision: number; reason: string }, opts: { onBehalfOf?: PeerId; guard?: () => void } = {}): Promise<Task> {
     // #455: one authority check, made before the screen and again after it (a person may move the planner meanwhile).
     // #785 P1c: `by` is the actor the history records; the hub's opt-in auto pull names the planner it acts for, and that planner's authority is what is checked.
     if (opts.onBehalfOf !== undefined && by !== HUB) throw new PreEffectToolRefusal("only the hub pulls on a planner's behalf");
     const planner = opts.onBehalfOf ?? by;
-    const authorized = () => this.planningAuthority(planner);
+    // `opts.guard` (the auto pull's own admission, #785 P1c) throws a PreEffectToolRefusal once the pull is no longer wanted; it runs wherever authority is rechecked, so it
+    // also runs after the awaited PII screen and right before the assignment write, where a setting turned off or a recovery that began meanwhile must still stop it.
+    const authorized = () => { this.planningAuthority(planner); opts.guard?.(); };
     authorized();
     if (!Number.isSafeInteger(input.id) || input.id <= 0 || !Number.isSafeInteger(input.revision) || input.revision < 0 || typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("planner pull needs an id, revision and bounded reason");
     const validate = () => {
@@ -1257,6 +1271,7 @@ export class Tasks {
           if (checked.task.history.length !== current.task.history.length || checked.owner !== current.owner) throw new PreEffectToolRefusal("planner pull changed during admission");
         } } });
     }
+    opts.guard?.();
     const pulled = this.d.board.pullPlanned(current.task.id, by, current.owner, input.revision, input.reason.trim(), withheld, this.plannerBinding(current.task, current.assignment, true));
     this.planningRecorded({ by, task: pulled.id, fields: ["pull", "reserved"], revision: pulled.planningRevision! });
     return pulled;

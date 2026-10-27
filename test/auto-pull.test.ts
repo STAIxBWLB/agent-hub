@@ -25,7 +25,12 @@ async function rig(autoPull: boolean | (() => boolean) = true) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-auto-pull-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 }), notices: string[] = [];
   const roles: Record<string, string[]> = { claude: ["planner"], pi: ["planner"], codex: ["implementer"], kimi: ["implementer"] };
   const flag = { on: typeof autoPull === "function" ? autoPull : () => autoPull };
-  const tasks = new Tasks({ cwd, board, bus, roles, project: "fixture", routing: () => loadRouting(cwd), notify: line => notices.push(line), autoPull: () => flag.on() });
+  // A PII screen the test can hold open: the pull's reason text is screened (a model call in production), and that await is where the setting or a hold can change.
+  const screen: { hold?: Promise<void>; entered: number; held: boolean } = { entered: 0, held: false };
+  const hold = { sweepHeld: false };
+  const tasks = new Tasks({ cwd, board, bus, roles, project: "fixture", notify: line => notices.push(line), autoPull: () => flag.on(), sweepHeld: () => hold.sweepHeld,
+    routing: () => { const routing = loadRouting(cwd); return screen.held ? { ...routing, signals: { ...routing.signals, pii_screen: "local" as const } } : routing; },
+    piiScreen: async () => { screen.entered++; await screen.hold; return { label: "clear" as const, ms: 0 }; } });
   const peers = new Map<string, Quiet>();
   for (const id of Object.keys(roles)) { const peer = new Quiet(id); peers.set(id, peer); bus.add(peer); await peer.start(); }
   cleanup.push(() => { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
@@ -44,7 +49,9 @@ async function rig(autoPull: boolean | (() => boolean) = true) {
     return board.update(task.id, "codex", "done", { state: "in_review" });
   };
   const release = async () => { const task = inReview(); await tasks.review(USER, task.id, "approved"); return task; };
-  return { cwd, board, bus, tasks, flag, peers, notices, card, inReview, release };
+  /** Hold the PII screen open until `open()` is called; it holds only while `screen.held`. */
+  const holdScreen = () => { let open!: () => void; screen.hold = new Promise<void>(resolve => { open = resolve; }); screen.held = true; return open; };
+  return { cwd, board, bus, tasks, flag, hold, screen, holdScreen, peers, notices, card, inReview, release };
 }
 const pulled = (task: Task | undefined) => !!task && task.state !== "backlog";
 const pullEntry = (task: Task) => task.history.find(entry => entry.event === "backlog pulled");
@@ -166,4 +173,59 @@ test("hub-only: a peer cannot ask pullPlanned to act on a planner's behalf, and 
   await expect(r.tasks.pullPlanned("kimi", { id: reserved.id, revision, reason: "x" })).rejects.toThrow("planning requires");
   const own = await r.tasks.pullPlanned("claude", { id: reserved.id, revision, reason: "planner pull" });
   expect(pullEntry(own)?.by).toBe("claude");
+});
+
+test("turning auto_pull off while the pull is mid-admission (its PII screen is pending) writes no assignment, and says nothing about it", async () => {
+  let on = true;
+  const r = await rig(() => on);
+  const reserved = r.card({ reserved: "codex", priority: 1 });
+  const open = r.holdScreen();
+  await r.release();
+  expect(await until(() => r.screen.entered > 0)).toBe(true); // the pull is past its entry check and waiting on the screen
+  expect(r.tasks.autoPullsPending()).toBe(1);
+  on = false; open();
+  expect(await until(() => r.tasks.autoPullsPending() === 0)).toBe(true);
+  const after = r.board.get(reserved.id)!;
+  expect([after.state, after.owner ?? null, after.history.some(entry => entry.event === "backlog pulled" || entry.event === "assigned")]).toEqual(["backlog", null, false]);
+  expect(r.notices.join("\n")).not.toContain("auto_pull for codex refused"); // the setting doing its job is not a failure to report
+});
+
+test("a recovery, shutdown or storage hold that begins while the pull is mid-admission writes no assignment", async () => {
+  for (const kind of ["sweepHeld", "recovery"] as const) {
+    const r = await rig(true);
+    const reserved = r.card({ reserved: "codex", priority: 1 });
+    const open = r.holdScreen();
+    await r.release();
+    expect(await until(() => r.screen.entered > 0)).toBe(true);
+    if (kind === "sweepHeld") r.hold.sweepHeld = true;
+    else Object.defineProperty(r.bus, "isRecoveryHeld", { get: () => true, configurable: true });
+    open();
+    expect(await until(() => r.tasks.autoPullsPending() === 0)).toBe(true);
+    const after = r.board.get(reserved.id)!;
+    expect([kind, after.state, after.owner ?? null]).toEqual([kind, "backlog", null]);
+  }
+});
+
+test("autoPullsPending counts a queued or running pull until it settles, so recovery can wait for it", async () => {
+  const r = await rig(true);
+  r.card({ reserved: "codex", priority: 1 });
+  expect(r.tasks.autoPullsPending()).toBe(0);
+  const open = r.holdScreen();
+  await r.release();
+  expect(await until(() => r.screen.entered > 0)).toBe(true);
+  expect(r.tasks.autoPullsPending()).toBe(1);
+  open();
+  expect(await until(() => r.tasks.autoPullsPending() === 0)).toBe(true);
+  expect(r.tasks.autoPullsPending()).toBe(0);
+});
+
+test("with the guard unchanged the same held screen still lets an admitted pull through (the guard stops only what is no longer wanted)", async () => {
+  const r = await rig(true);
+  const reserved = r.card({ reserved: "codex", priority: 1 });
+  const open = r.holdScreen();
+  await r.release();
+  expect(await until(() => r.screen.entered > 0)).toBe(true);
+  open();
+  expect(await until(() => pulled(r.board.get(reserved.id)))).toBe(true);
+  expect(pullEntry(r.board.get(reserved.id)!)).toMatchObject({ by: "hub" });
 });
