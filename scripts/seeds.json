@@ -3488,6 +3488,62 @@
       "replacement": "const allow = !classed && input.hook_event_name === \"PreToolUse\" && (permission === \"never-ask\" || permission === \"ask-when-needed\" && fileTool);",
       "testFile": "test/facts-hook-planner-345.test.ts",
       "testName": "#345 a planner mutation ceiling keeps facts/read grants but never auto-allows a mutation in any permission mode"
+    },
+    {
+      "id": "rooms-frame-signature",
+      "file": "src/rooms/wire.ts",
+      "search": "if (!await verifyBytes(sender, domain(\"frame-signature\", unsigned(frame)), decodeBase64url(frame.signature, 64))) fail(\"authentication_failed\");",
+      "replacement": "if (false) fail(\"authentication_failed\");",
+      "testFile": "test/rooms-wire.test.ts",
+      "testName": "frame open authenticates all header/ciphertext fields before durable acceptance"
+    },
+    {
+      "id": "rooms-roster-signature",
+      "file": "src/rooms/wire.ts",
+      "search": "if (!await verifyBytes(owner, domain(\"roster-signature\", unsigned(roster)), decodeBase64url(roster.signature, 64))) fail(\"authentication_failed\");",
+      "replacement": "if (false) fail(\"authentication_failed\");",
+      "testFile": "test/rooms-wire.test.ts",
+      "testName": "owner-signed roster hides labels and exposures and pins owner/room/epoch/digest"
+    },
+    {
+      "id": "rooms-invite-hmac",
+      "file": "src/rooms/wire.ts",
+      "search": "if (!await verifyHmac(secret, domain(\"join-mac\", { invite: inviteClaims(invite), request: { ...core, signature: join.signature } }), decodeBase64url(join.mac, 32))) fail(\"authentication_failed\");",
+      "replacement": "if (false) fail(\"authentication_failed\");",
+      "testFile": "test/rooms-wire.test.ts",
+      "testName": "invite and join authenticate original context, hide private metadata and consume once atomically"
+    },
+    {
+      "id": "rooms-publication-fence",
+      "file": "src/rooms/wire.ts",
+      "search": "if (fresh !== true) fail(\"state_changed\");",
+      "replacement": "if (false) fail(\"state_changed\");",
+      "testFile": "test/rooms-wire.test.ts",
+      "testName": "outgoing reservation is consumed before crypto and a changed publication fence refuses"
+    },
+    {
+      "id": "rooms-random-nonce",
+      "file": "src/rooms/wire.ts",
+      "search": "const nonce = randomBytes(12);\n  const encrypted = await encryptEpoch({ key: current.key,",
+      "replacement": "const nonce = new Uint8Array(12);\n  const encrypted = await encryptEpoch({ key: current.key,",
+      "testFile": "test/rooms-wire.test.ts",
+      "testName": "a rolled-back sender sequence still uses fresh random frame nonces"
+    },
+    {
+      "id": "rooms-installed-digest",
+      "file": "src/rooms/wire.ts",
+      "search": "if (roster.epoch === min && (pin.digest === undefined || rosterDigest !== pin.digest)) fail(\"untrusted\");",
+      "replacement": "if (roster.epoch === min && pin.digest !== undefined && rosterDigest !== pin.digest) fail(\"untrusted\");",
+      "testFile": "test/rooms-wire.test.ts",
+      "testName": "an installed epoch requires its exact digest even for owner-signed retries"
+    },
+    {
+      "id": "rooms-join-agreement",
+      "file": "src/rooms/wire.ts",
+      "search": "await assertAgreementKeyUsable(join.member);",
+      "replacement": "void join.member;",
+      "testFile": "test/rooms-wire.test.ts",
+      "testName": "enrollment refuses a correctly authenticated low-order agreement key before consuming the invite"
     }
   ]
 }

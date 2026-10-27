@@ -125,9 +125,11 @@ the same retirement decision.
    relayed to the hub console. Loopback is not enough on its own (any web page can open a
    WebSocket to 127.0.0.1), so the control WS requires a per-run token and both hub
    servers refuse requests that carry an `Origin` header (amended in M1).
-9. Single machine, one hub daemon per project directory. Cross-machine broker is out.
-    (Amended in #258: hub memory is replicated between a person's machines through a git
-    remote; that is memory replication, not a broker, and the bus stays single-machine.)
+9. One hub daemon per project directory, with a local bus. Amended by #446:
+    opt-in encrypted rooms may connect hubs through an untrusted broker; the room
+    boundary does not federate their boards, roles, approvals or memory. X1 defines
+    crypto and wire primitives only; transport and delivery integration remain later
+    phases. Memory replication through git (#258) remains a separate mechanism.
 10. Shared memory reuses claude-mem as the single store; the hub never runs its own
     memory database. (Amended in #258: the hub owns a long-term store and its graph,
     `docs/memory.md`; claude-mem stays the optional capture and session-recall source.) Native capture stays where it exists (Claude hooks, Codex plugin,
@@ -706,7 +708,8 @@ M6 internal inference, packaging
 
 ## Out of scope
 
-- Cross-machine broker or rooms, Windows. The web UI was outside the original six milestones; issue #6 adds the local dashboard described below.
+- Windows. Cross-machine rooms are an opt-in extension under #446, described below. The web UI was outside the original six milestones; issue #6 adds the local dashboard described below.
+- Room v1 excludes hosted multi-tenant service, multi-owner rooms, forward secrecy, traffic-metadata hiding, approval or permission-request relay, and cross-machine instances. Shared boards, remote roles and remote task ownership remain excluded; memory crosses only through the separate agent-mem git sync. No hub server is exposed.
 - OmniRoute daemon on the Mac; pooling subscription OAuth through any gateway.
 - Gemini CLI and OpenCode adapters beyond the ACP fallback note.
 - Switchyard `auto` route until v0.3.0 ships.
@@ -714,6 +717,155 @@ M6 internal inference, packaging
   translation check in the OmniRoute plan v1, Phase 0).
 - A hub-owned memory store, cmem.ai cloud sync, automatic corpus building (a project
   corpus for `ahub ask` is an optional M6 item), and any change to the vault LEARN loop.
+
+## Encrypted rooms: X1 crypto and wire contract (#446)
+
+This amends decision 9 and the original cross-machine exclusion. The [frozen
+D1-D5 design](https://github.com/STAIxBWLB/agent-hub/issues/446#issuecomment-6242775004),
+[person's O1-O4 answers](https://github.com/STAIxBWLB/agent-hub/issues/446#issuecomment-6242885199)
+and [implementation go-ahead](https://github.com/STAIxBWLB/agent-hub/issues/446#issuecomment-6391889660)
+are binding: a self-hosted zero-dependency broker, person-only owner-hub invitations
+and revocations, no task notices in v1, and remote priority capped at `status`.
+X1 adds source modules, with no listeners, CLI, daemon startup imports or room delivery.
+X2 supplies the broker; X3 supplies durable state/link/enrollment integration; X4
+supplies message boundary enforcement; X5-X7 supply status, invocation and the
+person's two-machine live receipt. None of those later proofs follows from X1 tests.
+
+### Algorithms and local identity
+
+`src/rooms/crypto.ts` uses built-in WebCrypto only: Ed25519 signatures, X25519 key
+agreement, HKDF-SHA-256, AES-256-GCM with a 128-bit tag, and HMAC-SHA-256. Definitions
+follow [WebCrypto](https://www.w3.org/TR/webcrypto-2/), [RFC 7748](https://www.rfc-editor.org/rfc/rfc7748)
+and [RFC 5869](https://www.rfc-editor.org/rfc/rfc5869). `ROOM_MIN_BUN_VERSION` is
+`1.4.2`, also the repository's Bun floor. `assertRoomCryptoReady()` caches a
+fail-closed version/capability self-test, including known-answer and negative
+checks for every primitive. Every asynchronous crypto/wire operation awaits it;
+X3 must also await it before opening any room link. A failure disables rooms,
+without changing local hub operation. Supporting a version requires both the
+version floor and the actual self-test, not a version-string assertion alone.
+
+A hub has separate signing and agreement key pairs. Its fingerprint is lowercase
+SHA-256 hex of its raw Ed25519 public key. Both public keys and the fingerprint
+are authenticated together by joins, wraps and rosters. Private runtime handles
+are opaque WeakMap-backed identities; explicit `exportHubIdentityForStorage` and
+`exportEpochKeyForStorage` are machine-local persistence boundaries, never wire
+fields or diagnostics. X3 must store them in a private 0700 directory and 0600
+files. A same-user process can steal those files; pinning is not a sandbox.
+
+A random 256-bit epoch root is wrapped separately for each member using a fresh
+X25519 ephemeral pair, 32-byte HKDF salt and 12-byte GCM nonce. HKDF info is SHA-256 of the full
+versioned, domain-separated derivation transcript, keeping provider input bounded
+without dropping context; GCM AAD and signatures still bind the full transcript. The owner's
+signature binds the full owner/recipient public-key tuples, room/epoch/membership
+context, ephemeral key, salt, nonce and ciphertext. Zero shared secrets refuse.
+Every roster change, including label or exposure changes, advances the epoch and
+creates a fresh root. A removed member receives no new wrap. This has no forward
+secrecy against later theft of a member's long-term agreement key and recorded wraps.
+
+### Wire v1 and privacy
+
+`src/rooms/wire.ts` defines strict canonical UTF-8 JSON: recursively sorted ASCII
+object keys, exact known fields, safe integer timestamps, positive canonical
+uint64 decimal strings for epochs/sequences, and unpadded canonical base64url.
+Decoders reject unknown/duplicate fields, whitespace or alternative encodings,
+invalid UTF-8, unsorted/duplicate collections and exceeded ceilings. Canonical
+bytes are the signed/hashed transcript; signatures use separate versioned domains
+for frames, rosters, wraps and joins. IDs/labels are bounded ASCII identifiers,
+never arbitrary display text. Errors contain fixed codes, no input or key material.
+
+| Record or collection | v1 ceiling |
+| --- | --- |
+| Plain frame payload | 65,536 bytes |
+| Encoded frame | 131,072 bytes |
+| Encoded roster | 524,288 bytes |
+| Invite or join | 16,384 bytes |
+| Members, frame recipients, exposed local peer ids per member | 64 each |
+| Local label or exposed peer id | 32 characters |
+| Broker URL | 2,048 characters |
+
+These are protocol ceilings, not measured capacity claims. Raising one requires a
+versioned contract review. Broker URLs are canonical `wss:` without credentials or
+fragments; `ws:` is permitted only for literal `127.0.0.1` or `[::1]` testing.
+
+The signed roster has public room/epoch/owner, member fingerprints and public keys,
+wraps, and an encrypted private roster. The encrypted portion contains the matching
+member tuples, unique local labels and exposed peer ids. This resolves the freeze's
+signed-roster requirement without exposing labels or peer ids to the broker. All
+public and encrypted components are covered by the owner signature. A receiver
+pins room, owner fingerprint and its persisted minimum epoch. Initial enrollment
+uses `minEpoch="0"`; positive values name an installed epoch, whose exact digest
+is mandatory when accepting that same epoch again. Missing or mismatched digests
+refuse even an otherwise valid owner-signed retry. It verifies the signature, its exact key tuple, wrap,
+private roster and identical membership before accepting a candidate. X3 must
+atomically install that candidate against its persisted pin. Replaying an old
+candidate must never reset the minimum epoch or a grace deadline.
+
+A frame's public header is `{v,type,room,epoch,sender,recipients,seq}` plus nonce,
+ciphertext and signature. Recipients are hub fingerprints, not local peer ids.
+The body is opaque encrypted bytes, including any eventual local addressing,
+kind, trace and text. Frame AAD is exactly UTF-8 `room|epoch|sender|seq`. A
+sender-specific AES key is HKDF-derived from the epoch root and room/epoch/sender/
+roster digest context. Every encryption attempt draws a fresh random 96-bit nonce
+from WebCrypto, independent of the sequence counter. A counter rollback therefore
+does not deterministically reuse a GCM nonce; per-sender subkeys also separate
+senders. Random-nonce collision bounds and a functioning runtime RNG remain
+cryptographic assumptions. The sender's
+signature additionally binds recipients, nonce, ciphertext and all header fields.
+X1 encryption authenticates bytes; X4 must still screen what those bytes may mean
+before any local bus delivery, including untrusted framing and the `status` ceiling.
+
+### Required durable host ports and epoch settlement
+
+There is no production in-memory fallback. `sealFrame` requires `SequencePort`:
+`reserve` durably consumes a strictly increasing room/sender counter that survives
+restart and epoch rotation, checking the installed roster digest. `isCurrent` is
+a final synchronous fence after crypto; X3 must additionally fence durable outbox
+publication. Failed attempts consume sequence numbers; each encryption attempt draws a fresh random nonce. Counter durability still protects replay/order state, rather than determining encryption nonces.
+
+`openFrame` verifies current sender/recipient membership, signature, epoch, nonce
+length and GCM authentication before invoking `ReplayPort.accept`. In one transaction that
+port must recheck current and selected roster digests, current membership and its
+own local clock/grace deadline, compare the room/sender high-water mark, and commit
+accepted digest plus inbox delivery before release. Only `accepted` returns
+plaintext. `duplicate` means an identical previously accepted frame digest and
+returns no plaintext; an unknown lower sequence is `stale`, never a completed ACK.
+D5 receipts may be resent only for that stored identical digest. Gaps are recorded,
+not treated as proof that missing messages arrived. Callback failure refuses.
+
+Only the immediately preceding epoch may have a persisted 60-second local grace
+deadline. X3 must derive and persist that deadline as the local successful rotation
+installation time plus exactly 60,000 ms, never from caller or remote expiry input. Both sender and receiver must still be current members with unchanged
+keys; revocation therefore refuses immediately, including during grace. The port
+must refuse after expiry even if crypto crossed the deadline, and restarts or
+replayed rosters must not extend it. X1's optional `previous` and `nowMs` parameters
+are trusted-host inputs/test clocks, not remote authority. No caller can substitute
+for X3's durable atomic installation, clock and publication fences.
+
+An out-of-band invite carries room, broker, pinned owner fingerprint, expiry,
+random invite id and random 256-bit one-time secret. Never send it to the broker or
+log it. A join exposes only its member public-key tuple and encrypted private
+label/exposure data. HMAC binds the full invitation claims and signed request;
+the member signature binds the same claims and request. Before consuming the
+invite, a trial X25519 agreement rejects unusable/low-order member public keys.
+This checks key usability, without claiming a separate private-key possession
+proof. A broker cannot replace keys or repurpose a request under a changed invitation. Owner expiry is exact;
+a joiner's preflight allows at most 10 minutes of clock skew, which grants no
+owner-side extension. `EnrollmentPort.consume` must compare the original stored
+invite digest and expiry, consume once, and persist identity/request outcome with
+membership publication. Only the exact same request may be a duplicate. Owner-hub
+person authorization and OOB secret handling remain X3 integration obligations.
+
+### Acceptance and limits
+
+Real built-in crypto tests cover vectors, private/public binding, wrap tampering,
+wrong recipient/context, revoked old-key failure, domain separation and sanitized
+errors. Wire fixtures cover canonical bounds, owner pins, metadata hiding,
+unsigned/tampered frames, replay/concurrent duplicates, stale sequences, epoch
+rotation, current-member grace, invite substitution/expiry/one-time consumption
+and refused state ports. Memory fake ports prove API ordering only, not durability
+or restart safety. Full gate and exact-head CI are separate from native/account or
+two-machine receipts. No room transport, real invite, remote delivery, production
+storage permission, crash-restart replay or X7 receipt is verified by this slice.
 
 ## Risks
 

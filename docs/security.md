@@ -37,6 +37,43 @@ Before migrating any real home, every hub sharing it must first be on 0.12.30 or
 
 On a home split by `amem migrate --shards`, the hub opens only its own project's shard, with the user shard as overlay, under the alias-resolved project key (#534, #537); other projects' private notes are not in that store. Each memory entry rechecks the shard identity, and an alias that later remaps the key latches the binding unavailable. A split that is not active refuses and is never read as an empty or legacy store. A hub on 0.12.36 or earlier does not detect a split and keeps writing the old layout, so every hub on the home must run 0.12.37 or later, or be stopped, before splitting. `ahub memory profile-check` is split-aware (#536): it compares each running hub with its own project's shard and reports an inactive split with the resume remedy.
 
+## Encrypted rooms (#446 X1)
+
+Rooms currently have crypto/wire source modules and fixture tests only. No broker,
+link, listener, CLI invitation or local delivery is enabled. The [X1 protocol
+contract](specs/2026-09-19-agent-hub-design.md#encrypted-rooms-x1-crypto-and-wire-contract-446)
+fixes algorithms, canonical transcripts, limits and the required durable host ports.
+Bun 1.4.2 is the minimum; room operations await a cached built-in WebCrypto
+known-answer/negative self-test. Future room startup must await it before effects.
+
+The intended broker is untrusted: it may drop, reorder, replay or replace packets.
+Owner-signed membership and key wraps, member signatures, authenticated encryption
+and invitation HMAC protect the accepted content/key bindings. Labels, exposed
+local peer ids and body/addressing metadata are encrypted. Room ids, hub public
+keys/fingerprints, epochs, recipient hub sets, packet sizes, timing and network
+endpoints remain visible. Encryption cannot ensure availability or hide traffic
+analysis. Members holding an epoch root can read that epoch's recorded traffic;
+recipient lists enforce delivery policy, not secrecy from other room members.
+Long-term key theft plus recorded wraps defeats past confidentiality; this is not
+a forward-secret group protocol. A revoked member retains old plaintext and keys
+but receives no new epoch wrap. Current membership must refuse its traffic even
+within the previous epoch's 60-second grace.
+
+Private key export is explicit machine-local storage, not a transport format.
+X3 must enforce 0700 directories/0600 files, durable room/sender counters, atomic
+replay/inbox acceptance, one-time invite enrollment, persisted owner/epoch pins,
+and non-extending grace deadlines derived from local rotation installation time
+plus 60,000 ms. Frame nonces are random 96-bit values, independent of sequence;
+counter rollback therefore does not deterministically reuse an encryption nonce.
+Lost or rolled-back state still compromises replay freshness and ordering. X3
+must reconcile that state before delivery; fresh enrollment is a defence-in-depth
+recovery option, not a confidentiality prerequisite for nonce uniqueness. The X1 tests use memory state ports; they do not prove crash safety,
+filesystem permissions or publication races. A same-user malicious process and
+member key theft are outside this protection. Later X4 framing/PII/role boundaries
+must hold before decrypted bytes reach the local bus; crypto alone grants no tool,
+board, task, approval or memory authority. Native and two-machine use remain
+unverified until their named person legs are run.
+
 ## What is not defended
 
 - **A malicious local process running as you.** It can read the control token, `hub.db`, the project and your home directory without the hub's help. The token keeps web pages and other users out, not your own processes.
