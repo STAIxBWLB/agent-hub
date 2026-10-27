@@ -112,13 +112,15 @@ test("#576 real concurrent edits publish linearly in tasks, not one notice per t
   expect(f.notices.join("\n")).toContain("shared.txt");
 }, 20_000);
 
+// #531: the daemon makes no wall-clock promise for status; it is answered on the next event-loop turns while the burst keeps working.
+// The proof is ordering (answered before the producer finished its waves), which a starved runner cannot change. The old 1 s elapsed bound
+// measured the runner (idle 0.52 s, 17 of 20 failures with 64 CPU spinners on 4 cores), so the request timeout is only a hang guard.
 test("#576 status answers within its timeout while a longer slow-snapshot burst is still running", async () => {
   const f = await fixture(8, true);
-  let requestedAt = 0, reply: ReturnType<ControlClient["request"]> | undefined;
+  let reply: ReturnType<ControlClient["request"]> | undefined;
   f.onSnapshot(() => {
     if (reply) return;
-    requestedAt = performance.now();
-    reply = f.client.request({ t: "status" }, 1_000);
+    reply = f.client.request({ t: "status" }, 10_000);
     void reply.catch(() => {}); // Attach immediately: the producer deliberately keeps working until we can await it.
   });
   let completed = false, completedWaves = 0;
@@ -137,7 +139,6 @@ test("#576 status answers within its timeout while a longer slow-snapshot burst 
   try {
     expect(reply).toBeDefined(); // The request was issued inside the first in-flight slow snapshot.
     expect((await reply!).status).toBeDefined();
-    expect(performance.now() - requestedAt).toBeLessThan(1_000);
     expect(completed).toBe(false);
     expect(completedWaves).toBeLessThan(5);
   } finally { await producer; }
