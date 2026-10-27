@@ -7353,6 +7353,7 @@ export async function startDaemon(opts: DaemonOptions) {
     dashboard?.stop();
     stopConfigWatch();
     clearInterval(sweepTimer);
+    tasks.stopCiWatchers(); // #785 P1b: no per-head CI watcher outlives the hub
     for (const i of intervals) clearInterval(i);
     for (const pending of checkpointWaits.values()) pending.done(undefined);
     for (const p of permissions.values()) p.done(undefined);

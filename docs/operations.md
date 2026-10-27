@@ -2413,6 +2413,16 @@ per planner, ids only; a newer one merges and replaces the unsettled copy, which
 survives a restart. Nothing is pulled automatically: the planner reads the
 board and decides.
 
+When `hub_task_done` leaves a review whose exact-head CI is not yet green (the
+lifecycle must be on and the task linked to a PR), the hub starts one watcher
+for that head (#785): one `gh pr view` a minute, ended by the CI result, by a
+45 minute deadline, by a newer head, a verdict or a cancellation, or by hub
+shutdown. On the result the owner and the reviewer each get one
+`ci_completed: #<id> head <sha> passed|failed|incomplete` task notice (ids only), and a
+review the hub held as premature for that head is offered once more after a
+fresh readiness read. A deadline tells the console only. No peer turn waits for
+CI, and nothing is polled outside a watcher.
+
 ## Resetting a project's hub
 
 `ahub reset` returns a project's hub to a clean state. Without `--yes` it is a
