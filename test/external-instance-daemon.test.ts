@@ -276,6 +276,7 @@ test("#754 supported restart preserves stopped module bindings while a builtin c
     builtinOne = await ControlClient.connect(f.stateDir, { role: "peer", peer: "claude", channel: false, projectRoot: f.root });
     await until(() => f.daemon.bus.stateOf("claude") === "idle", "source builtin channel attached");
     const count = f.records().length, protocol = f.protocol(id);
+    const projectId = (await f.client.request({ t: "status" })).status.projectId;
     const request = { t: "recovery", operationId, expectedInstanceId: f.client.instanceId, targetFeatures: DAEMON_FEATURES };
     const prepared = await f.client.request({ ...request, op: "prepare" });
     expect(prepared).toMatchObject({ ok: true, recovery: { phase: "prepared", ready: true } });
@@ -286,7 +287,7 @@ test("#754 supported restart preserves stopped module bindings while a builtin c
     f.client.close(); builtinOne.close();
     try {
       process.env.AGENTHUB_RECOVERY_OPERATION = operationId;
-      target = await startDaemon({ cwd: f.root, stateDir: f.stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0 });
+      target = await startDaemon({ cwd: f.root, stateDir: f.stateDir, projectId, controlPort: 0, codexAppPort: 0, codexProxyPort: 0 });
     } finally {
       if (previousOperation === undefined) delete process.env.AGENTHUB_RECOVERY_OPERATION; else process.env.AGENTHUB_RECOVERY_OPERATION = previousOperation;
     }
