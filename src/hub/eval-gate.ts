@@ -63,8 +63,10 @@ export interface EvalGate {
   state: "not_configured" | "coverage_unknown" | "passed" | "failed" | "pending" | "missing" | "unknown";
   passRate?: number;
   suite?: string;
-  /** Gaps in the evidence, each shown in every enabled mode; only enforce counts them as blockers. */
+  /** Evidence gaps that were required of a configured gate: shown in every enabled mode, blockers only in enforce. */
   gaps: string[];
+  /** Shown, never a blocker in any mode: the gate has no suite behind it yet (suite choice pending the person). */
+  notes?: string[];
 }
 export const EVAL_NOT_CONFIGURED = "eval check not configured: the person names one with eval_check in sdlc.toml (suite choice pending the person)";
 export const EVAL_COVERAGE_UNKNOWN = "eval gate: PR file coverage incomplete or unknown";
@@ -75,9 +77,10 @@ export function evalGateView(config: Pick<SdlcConfig, "configPaths" | "evalCheck
   if (config.mode === "off") return undefined;
   const { applies, matched } = evalApplies(config, evidence);
   if (applies === "code") return undefined;
-  if (applies === "unknown") return { applies, files: 0, state: "coverage_unknown", gaps: [EVAL_COVERAGE_UNKNOWN] };
   const check = config.evalCheck;
-  if (!check) return { applies, files: matched.length, state: "not_configured", gaps: [EVAL_NOT_CONFIGURED] };
+  // With no eval check named there is nothing to require: say so, and never block. Enforce users gain no new refusal until the person names a suite.
+  if (!check) return applies === "unknown" ? undefined : { applies, files: matched.length, state: "not_configured", gaps: [], notes: [EVAL_NOT_CONFIGURED] };
+  if (applies === "unknown") return { applies, files: 0, state: "coverage_unknown", check, gaps: [EVAL_COVERAGE_UNKNOWN] };
   const found = evidence!.checks.filter(c => c.name === check);
   const state = !found.length ? "missing" : found.some(c => c.state === "failed") ? "failed" : found.some(c => c.state === "pending") ? "pending" : found.every(c => c.state === "passed") ? "passed" : "unknown";
   const view: EvalGate = { applies, files: matched.length, check, state, gaps: [] };
@@ -91,6 +94,8 @@ export function evalGateView(config: Pick<SdlcConfig, "configPaths" | "evalCheck
 }
 /** Evidence gaps that block in enforce. The state of the check itself is an ordinary required-check blocker. */
 export const evalGapBlockers = (view: EvalGate | undefined): string[] => view?.gaps ?? [];
+/** What advise shows beside the gaps: gaps and notes, each once. */
+export const evalAdvice = (view: EvalGate | undefined): string[] => [...(view?.gaps ?? []), ...(view?.notes ?? [])];
 
 const MARK_RATE = /(?:^|\s)eval_pass_rate=(0(?:\.[0-9]{1,6})?|1(?:\.0{1,6})?)(?=\s|$)/;
 const MARK_SUITE = /(?:^|\s)eval_suite=([A-Za-z0-9][A-Za-z0-9._-]{0,39})(?=\s|$)/;

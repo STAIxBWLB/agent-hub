@@ -119,7 +119,7 @@ function taskBlock(row: any, columns: number | undefined, detail: boolean): Line
   if (e) {
     const shown = e.state === "not_configured" ? "eval check not configured (suite choice pending the person)" : e.state === "coverage_unknown" ? "PR file coverage unknown" : `${e.check} ${String(e.state)}${e.passRate !== undefined ? `, pass rate ${e.passRate}` : ""}${e.suite !== undefined ? `, suite ${e.suite}` : ""}`;
     out.push(...pair("eval gate", `configuration PR, ${shown}`, columns, 11, e.state === "passed" && !list(e.gaps).length ? undefined : "attention", "  "));
-    out.push(...bullets("eval gaps", list(e.gaps), columns, "attention", "    "));
+    out.push(...bullets("eval gaps", [...list(e.gaps), ...list(e.notes)], columns, "attention", "    "));
   }
   const c = row.criteria;
   if (c) {

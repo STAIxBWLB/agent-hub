@@ -345,7 +345,7 @@ Reads share the existing 20 s lifecycle/queue allowance and fixed argument/outpu
 
 ## Eval gate for agent configuration (#481 S5)
 
-Suite choice pending the person. This slice wires the gate only. It chooses, creates and defaults to no eval suite: `eval_check` has no default, and until the person names one a configuration PR shows `eval check not configured` instead of passing (#251 and #266 own the suite and its smoke subset).
+Suite choice pending the person. This slice wires the gate only. It chooses, creates and defaults to no eval suite: `eval_check` has no default, and until the person names one a configuration PR shows `eval check not configured` in its status and advice (never a silent pass) and nothing is required of it, in any mode (#251 and #266 own the suite and its smoke subset).
 
 `.agenthub/sdlc.toml` takes two optional keys, read at hub start:
 
@@ -359,7 +359,8 @@ For a configuration PR with an `eval_check`:
 - The check joins the required checks on every reading: `ahub sdlc status`, the review and approval gates, the merge queue and the guarded merge decision (`required check evals: ...`).
 - The hub reads that check run once at the exact head (fixed argv, at most 32 KiB of output and 10 s, one completed run of that exact name at that head, else unknown) and keeps only two values from its title and summary, `eval_pass_rate=<0 to 1>` and `eval_suite=<version>`. No other text is stored or shown.
 - `evalGate` in status and queue rows shows the check, its state, how many changed files matched, the pass rate and the suite version. A verdict that approves a passing check appends `Eval gate: <check> passed at <head>, pass rate <rate>, suite <version>` to the approval note, which is the recorded pass rate and suite version.
-- A passing check that reports no pass rate or suite version, an unconfigured `eval_check` and unknown file coverage are gaps. Advise shows each in `evalGate.gaps` and in the review advice notice and never blocks on it. Enforce adds each to the blockers, so the review, approval and merge gates refuse.
+- With an `eval_check`, a passing check that reports no pass rate or suite version and unknown file coverage are gaps. Advise shows each in `evalGate.gaps` and in the review advice notice and never blocks on it. Enforce adds each to the blockers, so the review, approval and merge gates refuse.
+- Without an `eval_check`, the gate is a note (`evalGate.notes`, `state: not_configured`) in every mode and never a blocker: an existing enforce setup gains no refusal until the person names a suite. File coverage is not judged then.
 
 A private (PII) task reads no eval metadata and records none.
 

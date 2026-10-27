@@ -64,15 +64,15 @@ test("AC6: a configuration PR requires the configured eval check; a code-only PR
   expect(evalApplies(conf("enforce", { eval_check: "evals", config_paths: [] }), parsePrEvidence(raw(["AGENTS.md"]))).applies).toBe("code");
 });
 
-test("no eval_check configured: the gate says so in advise and enforce, never a silent pass, and advise never blocks", () => {
+test("no eval_check configured: the gate says so in advise and enforce, never a silent pass, and never blocks in any mode", () => {
   const evidence = parsePrEvidence(raw(["AGENTS.md"]));
   for (const mode of ["advise", "enforce"] as const) {
     const status = sdlcStatus(conf(mode), receipt, evidence);
-    expect(status.evalGate).toMatchObject({ state: "not_configured", gaps: [EVAL_NOT_CONFIGURED] });
+    expect(status.evalGate).toMatchObject({ state: "not_configured", gaps: [], notes: [EVAL_NOT_CONFIGURED] });
     expect(EVAL_NOT_CONFIGURED).toContain("suite choice pending the person");
-    // The ordinary checks are green, so advise is ready; enforce refuses a configuration PR with no eval check named.
-    expect(status.blockers.includes(EVAL_NOT_CONFIGURED)).toBe(mode === "enforce");
-    expect(status.ready).toBe(mode === "advise");
+    // No suite is chosen, so nothing is required yet: an existing enforce setup gains no new refusal from this slice.
+    expect(status.blockers.includes(EVAL_NOT_CONFIGURED)).toBe(false);
+    expect(status.ready).toBe(true);
   }
   // Off keeps its output byte for byte: no eval view, no blocker, whatever the paths.
   const off = sdlcStatus(conf("off"), receipt, evidence);
@@ -86,7 +86,9 @@ test("incomplete file coverage is unknown, never a clean code-only PR", () => {
   const evidence = parsePrEvidence(raw(["src/a.ts"], undefined, { changedFiles: 5 }));
   expect(evalApplies(conf("enforce", { eval_check: "evals" }), evidence).applies).toBe("unknown");
   const status = sdlcStatus(conf("enforce", { eval_check: "evals" }), receipt, evidence);
-  expect(status.evalGate).toMatchObject({ state: "coverage_unknown", gaps: [EVAL_COVERAGE_UNKNOWN] });
+  expect(status.evalGate).toMatchObject({ state: "coverage_unknown", check: "evals", gaps: [EVAL_COVERAGE_UNKNOWN] });
+  // With no eval check named there is nothing to require, so unknown coverage is silent and never blocks.
+  expect(sdlcStatus(conf("enforce"), receipt, evidence)).not.toHaveProperty("evalGate");
   expect(status.blockers).toContain(EVAL_COVERAGE_UNKNOWN);
   expect(sdlcStatus(conf("advise", { eval_check: "evals" }), receipt, evidence).blockers).not.toContain(EVAL_COVERAGE_UNKNOWN);
 });

@@ -4,7 +4,7 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
-- Eval gate for agent-configuration PRs (#481 S5, mechanism only): `eval_check` and `config_paths` in `.agenthub/sdlc.toml`. A PR touching a configured path (default AGENTS.md, `docs/agent-notes/**`, `templates/**`, role texts, routing.toml, hub tool definitions) requires the named check on every sdlc readback and the guarded merge, and the approval note records its pass rate and suite version. No suite is chosen or defaulted (suite choice pending the person); with no `eval_check` the gate reports it in advise and refuses in enforce; code-only PRs and off mode are unchanged.
+- Eval gate for agent-configuration PRs (#481 S5, mechanism only): `eval_check` and `config_paths` in `.agenthub/sdlc.toml`. A PR touching a configured path (default AGENTS.md, `docs/agent-notes/**`, `templates/**`, role texts, routing.toml, hub tool definitions) requires the named check on every sdlc readback and the guarded merge, and the approval note records its pass rate and suite version. No suite is chosen or defaulted (suite choice pending the person); with no `eval_check` the gate only reports it (a note, never a blocker); code-only PRs and off mode are unchanged.
 - Hub board task ids in the 0.19.0 entries, the 0.19.0 verification report and the user documents are written `task N` instead of `#N`, so GitHub no longer links them to unrelated issues (#879).
 ## 0.20.0
 

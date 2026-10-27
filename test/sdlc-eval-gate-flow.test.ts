@@ -95,11 +95,13 @@ test("enforce: a pass that reports no pass rate or suite version is refused; adv
   expect(advise.board.get(advise.id)!.history.findLast(h => h.event === "approved")!.note ?? "").not.toContain("Eval gate:");
 });
 
-test("no eval_check configured: enforce refuses a configuration PR naming the pending suite choice, advise approves and says so, off reads nothing", async () => {
+test("no eval_check configured: a configuration PR is approved in every mode and the notice names the pending suite choice, off reads nothing", async () => {
   const world: World = { paths: ["templates/roles/dev/code-reviewer.md"], evalCheck: "absent", text: "" };
   const enforce = rig(world, "enforce", {});
   await enforce.tasks.done("codex", enforce.id, "role text");
-  await expect(enforce.tasks.review(USER, enforce.id, "approved", undefined, undefined, HEAD)).rejects.toThrow("eval check not configured");
+  expect((await enforce.tasks.review(USER, enforce.id, "approved", undefined, undefined, HEAD)).state).toBe("approved");
+  expect((await enforce.tasks.lifecycleStatus(enforce.id)).evalGate).toMatchObject({ state: "not_configured", notes: [expect.stringContaining("suite choice pending the person")] });
+  expect(enforce.calls.some(args => args[1]?.includes("/check-runs"))).toBe(false); // nothing to read with no check named
   const advise = rig(world, "advise", {});
   await advise.tasks.done("codex", advise.id, "role text");
   expect((await advise.tasks.review(USER, advise.id, "approved", undefined, undefined, HEAD)).state).toBe("approved");
@@ -126,8 +128,8 @@ test("the guarded merge decision names the eval gate on every reading, and a cod
   expect(refused(await decide({ paths: ["src/hub/bus.ts"], evalCheck: "absent", text: "" }))).toEqual(["MERGE"]);
   // Advise and off add no eval gate to the merge decision's evidence gates beyond the check itself.
   expect(refused(await decide({ paths: ["AGENTS.md"], evalCheck: "passed", text: "no markers" }, "advise"))).toEqual(["MERGE"]);
-  // No eval_check named: the merge cannot treat a configuration PR as clean in enforce.
-  expect(refused(await decide({ paths: ["AGENTS.md"], evalCheck: "absent", text: "" }, "enforce", {}))).toEqual(["eval check not configured: the person names one with eval_check in sdlc.toml (suite choice pending the person)"]);
+  // No eval_check named: nothing is required, so the decision is the one it was before this slice.
+  expect(refused(await decide({ paths: ["AGENTS.md"], evalCheck: "absent", text: "" }, "enforce", {}))).toEqual(["MERGE"]);
   // Unknown file coverage is never read as a code-only PR in enforce.
   expect(refused(await decide({ paths: ["src/a.ts"], evalCheck: "absent", text: "", coverage: "incomplete" }))).toEqual(expect.arrayContaining(["eval gate: PR file coverage incomplete or unknown"]));
 });

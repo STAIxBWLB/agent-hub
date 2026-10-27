@@ -4,7 +4,7 @@ import { taskShellBindingValid, type TaskShellBinding } from "./task-shell-comma
 import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, HOST_CODE_SYMBOLS } from "./task-code-symbols.ts";
 import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
 import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
-import { evalGapBlockers, readEvalFor } from "./eval-gate.ts";
+import { evalAdvice, readEvalFor } from "./eval-gate.ts";
 import { completePlanInventory, planConformance, planConformanceBlockers, planFingerprint, type PlanConformance } from "./plan-conformance.ts";
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, type CostPlan, type ReviewCost } from "./cost-governance.ts";
@@ -3673,7 +3673,7 @@ export class Tasks {
     const gate = status.evalGate;
     if (transition === "approval" && gate?.state === "passed" && gate.passRate !== undefined && gate.suite !== undefined && !this.isPii(task)) this.evalRecords.set(task.id, `Eval gate: ${gate.check} passed at ${evidence!.head.slice(0, 12)}, pass rate ${gate.passRate}, suite ${gate.suite}`);
     else this.evalRecords.delete(task.id);
-    const advice = [...new Set([...blockers, ...planConformanceBlockers(planReport), ...testIntegrityBlockers(integrity), ...evalGapBlockers(status.evalGate)])];
+    const advice = [...new Set([...blockers, ...planConformanceBlockers(planReport), ...testIntegrityBlockers(integrity), ...evalAdvice(status.evalGate)])];
     if (config.mode === "advise" && advice.length) this.d.notify(`task ${this.publicTitle(task)}: SDLC ${transition} advice: ${this.isPii(task) ? "private lifecycle evidence unknown" : advice.join("; ")}`);
     return evidence;
   }
