@@ -9,6 +9,15 @@ import type { ContextReader } from "./registry-types.ts";
 import { ACTION_BUDGET_OPTION, type ActionGateVerdict, type PermissionRequest } from "./acp.ts";
 
 const UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery";
+const PLANNER_SANDBOX_REFUSAL = "Codex planner thread requires a confirmed read-only sandbox";
+
+/** Codex 0.164.0 SandboxPolicy readOnly variant; an unreadable or widened policy is not proof. */
+function confirmsReadOnlySandbox(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const policy = value as Record<string, unknown>;
+  return policy.type === "readOnly" && Object.keys(policy).every(key => key === "type" || key === "networkAccess")
+    && (!Object.hasOwn(policy, "networkAccess") || typeof policy.networkAccess === "boolean");
+}
 
 /** A counter Codex reported: a finite non-negative number, otherwise 0 (an absent kind is not a negative delta). */
 const counter = (value: unknown): number => { const n = Number(value); return Number.isFinite(n) && n >= 0 ? n : 0; };
@@ -16,6 +25,8 @@ export interface CodexOptions {
   /** Port the TUI attaches to: `codex --enable tui_app_server --remote ws://127.0.0.1:<proxyPort>`. */
   proxyPort: number;
   permissionMode?: PermissionMode;
+  /** Live host planner ceiling on initial thread start/resume; the attached person may change later turn policy. */
+  threadSandbox?: "read-only" | (() => "read-only" | "unavailable" | undefined);
   /** Host-only always-ask gate, shared with ACP; an absent verdict preserves native handling. */
   actionGate?: (call: { names: readonly string[]; kind?: string; input: unknown }, session: string) => ActionGateVerdict | undefined;
   onPermission?: (request: PermissionRequest, signal?: AbortSignal) => Promise<string | undefined>;
@@ -71,6 +82,10 @@ interface Link {
   backlog: string[]; // TUI frames that arrived before the upstream socket opened
   approvalIds: Set<string | number>; // intercepted native ids stay tombstoned for this socket lifetime
   tracked: Map<string | number, string>; // request id -> method, for thread/start and thread/resume
+  /** Correlated native initial policy, retained even before this instance gains the planner role. */
+  readOnlyThread?: string;
+  /** An ordinary client reused an outstanding id; this link cannot attest a planner thread until reattach. */
+  ambiguousThreadRpc?: true;
 }
 
 const TRACKED = new Set(["thread/start", "thread/resume"]);
@@ -233,7 +248,7 @@ export class CodexPeer extends BasePeer {
   /** Resolves when app-server accepts the turn. Only called while idle, i.e. a thread exists and no turn runs. */
   deliver(envs: Envelope[], deliveryId?: string): Promise<void> {
     const link = this.link;
-    if (this.state !== "idle" || !link || link.up.readyState !== WebSocket.OPEN) {
+    if (this.state !== "idle" || !link || link.up.readyState !== WebSocket.OPEN || !this.threadSandboxReady(link)) {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is not injectable` });
       return Promise.reject(new Error(`${this.id} is not injectable`));
     }
@@ -285,6 +300,10 @@ export class CodexPeer extends BasePeer {
           reject(e);
         },
       });
+      if (!this.threadSandboxReady(link)) {
+        const pending = this.pending.get(id); this.pending.delete(id);
+        pending?.reject(new Error(`${this.id} is not injectable`)); return;
+      }
       link.up.send(
         JSON.stringify({ method: "turn/start", id, params: this.applyPermissionPolicy({ threadId: this.threadId, input: [{ type: "text", text }] }, id) }),
       );
@@ -299,7 +318,7 @@ export class CodexPeer extends BasePeer {
   steer(envs: Envelope[], deliveryId?: string): Promise<void> {
     const link = this.link;
     const expectedTurnId = [...this.activeTurns].reverse().find((t) => !t.startsWith("unknown:"));
-    if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId) {
+    if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId || !this.threadSandboxReady(link)) {
       if (deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} has no steerable turn` });
       return Promise.reject(new Error(`${this.id} has no steerable turn`));
     }
@@ -346,6 +365,10 @@ export class CodexPeer extends BasePeer {
         reject: fail,
       });
       const input = [{ type: "text", text: this.render(envs) }];
+      if (!this.threadSandboxReady(link)) {
+        const pending = this.pending.get(id); this.pending.delete(id);
+        pending?.reject(new Error(`${this.id} is not injectable`)); return;
+      }
       link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input } }));
     });
   }
@@ -358,12 +381,16 @@ export class CodexPeer extends BasePeer {
   steerText(text: string): Promise<"accepted" | "refused" | "unanswered"> {
     const link = this.link;
     const expectedTurnId = [...this.activeTurns].reverse().find((t) => !t.startsWith("unknown:"));
-    if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId) return Promise.resolve("refused");
+    if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId || !this.threadSandboxReady(link)) return Promise.resolve("refused");
     const id = this.nextId--;
     return new Promise((resolve) => {
       const timer = setTimeout(() => this.pending.delete(id) && resolve("unanswered"), this.opts.steerTimeoutMs ?? 10_000);
       timer.unref?.();
       this.pending.set(id, { resolve: () => (clearTimeout(timer), resolve("accepted")), reject: () => (clearTimeout(timer), resolve("refused")) });
+      if (!this.threadSandboxReady(link)) {
+        const pending = this.pending.get(id); this.pending.delete(id);
+        pending?.reject(new Error(`${this.id} is not injectable`)); return;
+      }
       link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input: [{ type: "text", text }] } }));
     });
   }
@@ -560,6 +587,9 @@ export class CodexPeer extends BasePeer {
   private fromTui(link: Link, raw: string): void {
     const msg = parse(raw);
     if (msg?.id !== undefined && !msg.method && link.approvalIds.has(msg.id)) return;
+    const sandbox = this.threadSandboxPolicy();
+    const threadRequest = TRACKED.has(msg?.method), turnRequest = msg?.method === "turn/start" || msg?.method === "turn/steer";
+    if (sandbox === "unavailable" && (threadRequest || turnRequest) || sandbox === "read-only" && turnRequest && (link !== this.link || link.tracked.size > 0 || link.readOnlyThread !== this.threadId)) return this.refusePlannerThread(link, msg.id);
     if (msg?.method === "turn/interrupt" && link === this.link) this.abortActionWaits(link, typeof msg.params?.turnId === "string" ? msg.params.turnId : undefined);
     if (msg?.method === "turn/start" && msg.params && link === this.link) {
       const thread = typeof msg.params.threadId === "string" ? msg.params.threadId : this.threadId;
@@ -572,7 +602,15 @@ export class CodexPeer extends BasePeer {
         raw = JSON.stringify(msg);
       }
     }
-    if (msg?.id !== undefined && TRACKED.has(msg.method)) link.tracked.set(msg.id, msg.method);
+    if (msg?.id !== undefined && TRACKED.has(msg.method)) {
+      if (link.tracked.has(msg.id)) link.ambiguousThreadRpc = true;
+      if (sandbox === "read-only") {
+        if (link.ambiguousThreadRpc || msg.params !== undefined && (!msg.params || typeof msg.params !== "object" || Array.isArray(msg.params))) return this.refusePlannerThread(link, msg.id);
+        msg.params = { ...msg.params, sandbox: "read-only" };
+        raw = JSON.stringify(msg);
+      }
+      link.tracked.set(msg.id, msg.method);
+    }
     if (link.up.readyState === WebSocket.OPEN) link.up.send(raw);
     else link.backlog.push(raw);
   }
@@ -595,7 +633,11 @@ export class CodexPeer extends BasePeer {
     if (typeof msg.result?.userAgent === "string") this.version = /^[^/\s]+\/(\d+\.\d+\.\d+(?:-[\w.]+)?)/.exec(msg.result.userAgent)?.[1] ?? this.version;
     const tracked = msg.id !== undefined && !msg.method ? link.tracked.get(msg.id) : undefined;
     if (tracked && link.tracked.delete(msg.id)) {
+      const sandbox = this.threadSandboxPolicy();
+      const readOnly = !link.ambiguousThreadRpc && msg.error === undefined && typeof msg.result?.thread?.id === "string" && !!msg.result.thread.id && confirmsReadOnlySandbox(msg.result?.sandbox);
+      if (sandbox === "unavailable" || sandbox === "read-only" && !readOnly) return this.refusePlannerThread(link, msg.id);
       if (typeof msg.result?.thread?.id === "string") {
+        link.readOnlyThread = readOnly ? msg.result.thread.id : undefined;
         // A resumed response may report the sticky hub override, not the original native choice.
         const thread = msg.result.thread.id;
         if (!this.overriddenApprovals.has(thread) && msg.result.approvalPolicy != null) this.nativeApprovalPolicies.set(thread, msg.result.approvalPolicy);
@@ -604,6 +646,32 @@ export class CodexPeer extends BasePeer {
     }
     else if (msg.method) this.onNotification(link, msg.method, msg.params ?? {});
     link.tui.send(raw);
+  }
+
+  private threadSandboxPolicy(): "read-only" | "unavailable" | undefined {
+    try {
+      const value = typeof this.opts.threadSandbox === "function" ? this.opts.threadSandbox() : this.opts.threadSandbox;
+      return value === undefined || value === "read-only" ? value : "unavailable";
+    } catch { return "unavailable"; }
+  }
+
+  /** Role changes never turn an ordinary writable/unknown thread into a proved planner thread. */
+  private threadSandboxReady(link: Link): boolean {
+    const sandbox = this.threadSandboxPolicy();
+    if (sandbox === "unavailable") { this.refusePlannerThread(link, undefined); return false; }
+    if (sandbox === "read-only") {
+      if (link.tracked.size > 0) return false;
+      if (link !== this.link || link.readOnlyThread !== this.threadId) { this.refusePlannerThread(link, undefined); return false; }
+    }
+    return true;
+  }
+
+  /** Refuse before adoption or another host delivery, including while a previous thread was idle. */
+  private refusePlannerThread(link: Link, id: unknown): void {
+    if (link.tui.readyState === WebSocket.OPEN && (typeof id === "string" || typeof id === "number")) link.tui.send(JSON.stringify({ id, error: { code: -32000, message: PLANNER_SANDBOX_REFUSAL } }));
+    link.tracked.clear();
+    this.detach(link);
+    link.tui.close(1008, PLANNER_SANDBOX_REFUSAL);
   }
 
   private abortActionWaits(link?: Link, turn?: string): void {

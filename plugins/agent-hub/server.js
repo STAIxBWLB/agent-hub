@@ -3675,6 +3675,12 @@ ${renderDigest(envs, false)}` }] });
 
 // src/adapters/codex-appserver.ts
 import { spawn as spawn6 } from "child_process";
+function confirmsReadOnlySandbox(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return false;
+  const policy = value;
+  return policy.type === "readOnly" && Object.keys(policy).every((key) => key === "type" || key === "networkAccess") && (!Object.hasOwn(policy, "networkAccess") || typeof policy.networkAccess === "boolean");
+}
 function parse(raw) {
   try {
     return JSON.parse(raw);
@@ -3682,7 +3688,7 @@ function parse(raw) {
     return;
   }
 }
-var UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery", counter = (value) => {
+var UNIDENTIFIED_CANCELLATION_NOTICE = "Codex cancelled turn has no verified native id; reattach the native session before further hub delivery", PLANNER_SANDBOX_REFUSAL = "Codex planner thread requires a confirmed read-only sandbox", counter = (value) => {
   const n = Number(value);
   return Number.isFinite(n) && n >= 0 ? n : 0;
 }, TRACKED, CodexPeer;
@@ -3837,7 +3843,7 @@ var init_codex_appserver = __esm(() => {
     }
     deliver(envs, deliveryId) {
       const link = this.link;
-      if (this.state !== "idle" || !link || link.up.readyState !== WebSocket.OPEN) {
+      if (this.state !== "idle" || !link || link.up.readyState !== WebSocket.OPEN || !this.threadSandboxReady(link)) {
         if (deliveryId)
           this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} is not injectable` });
         return Promise.reject(new Error(`${this.id} is not injectable`));
@@ -3903,6 +3909,12 @@ var init_codex_appserver = __esm(() => {
             reject(e);
           }
         });
+        if (!this.threadSandboxReady(link)) {
+          const pending = this.pending.get(id);
+          this.pending.delete(id);
+          pending?.reject(new Error(`${this.id} is not injectable`));
+          return;
+        }
         link.up.send(JSON.stringify({ method: "turn/start", id, params: this.applyPermissionPolicy({ threadId: this.threadId, input: [{ type: "text", text }] }, id) }));
       });
     }
@@ -3914,7 +3926,7 @@ ${renderDigest(envs, false)}`;
     steer(envs, deliveryId) {
       const link = this.link;
       const expectedTurnId = [...this.activeTurns].reverse().find((t) => !t.startsWith("unknown:"));
-      if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId) {
+      if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId || !this.threadSandboxReady(link)) {
         if (deliveryId)
           this.delivery({ id: deliveryId, state: "failed_safe", reason: `${this.id} has no steerable turn` });
         return Promise.reject(new Error(`${this.id} has no steerable turn`));
@@ -3966,19 +3978,31 @@ ${renderDigest(envs, false)}`;
           reject: fail
         });
         const input = [{ type: "text", text: this.render(envs) }];
+        if (!this.threadSandboxReady(link)) {
+          const pending = this.pending.get(id);
+          this.pending.delete(id);
+          pending?.reject(new Error(`${this.id} is not injectable`));
+          return;
+        }
         link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input } }));
       });
     }
     steerText(text) {
       const link = this.link;
       const expectedTurnId = [...this.activeTurns].reverse().find((t) => !t.startsWith("unknown:"));
-      if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId)
+      if (!link || link.up.readyState !== WebSocket.OPEN || !expectedTurnId || !this.threadSandboxReady(link))
         return Promise.resolve("refused");
       const id = this.nextId--;
       return new Promise((resolve) => {
         const timer = setTimeout(() => this.pending.delete(id) && resolve("unanswered"), this.opts.steerTimeoutMs ?? 1e4);
         timer.unref?.();
         this.pending.set(id, { resolve: () => (clearTimeout(timer), resolve("accepted")), reject: () => (clearTimeout(timer), resolve("refused")) });
+        if (!this.threadSandboxReady(link)) {
+          const pending = this.pending.get(id);
+          this.pending.delete(id);
+          pending?.reject(new Error(`${this.id} is not injectable`));
+          return;
+        }
         link.up.send(JSON.stringify({ method: "turn/steer", id, params: { threadId: this.threadId, expectedTurnId, input: [{ type: "text", text }] } }));
       });
     }
@@ -4190,6 +4214,10 @@ ${renderDigest(envs, false)}`;
       const msg = parse(raw);
       if (msg?.id !== undefined && !msg.method && link.approvalIds.has(msg.id))
         return;
+      const sandbox = this.threadSandboxPolicy();
+      const threadRequest = TRACKED.has(msg?.method), turnRequest = msg?.method === "turn/start" || msg?.method === "turn/steer";
+      if (sandbox === "unavailable" && (threadRequest || turnRequest) || sandbox === "read-only" && turnRequest && (link !== this.link || link.tracked.size > 0 || link.readOnlyThread !== this.threadId))
+        return this.refusePlannerThread(link, msg.id);
       if (msg?.method === "turn/interrupt" && link === this.link)
         this.abortActionWaits(link, typeof msg.params?.turnId === "string" ? msg.params.turnId : undefined);
       if (msg?.method === "turn/start" && msg.params && link === this.link) {
@@ -4202,8 +4230,17 @@ ${renderDigest(envs, false)}`;
           raw = JSON.stringify(msg);
         }
       }
-      if (msg?.id !== undefined && TRACKED.has(msg.method))
+      if (msg?.id !== undefined && TRACKED.has(msg.method)) {
+        if (link.tracked.has(msg.id))
+          link.ambiguousThreadRpc = true;
+        if (sandbox === "read-only") {
+          if (link.ambiguousThreadRpc || msg.params !== undefined && (!msg.params || typeof msg.params !== "object" || Array.isArray(msg.params)))
+            return this.refusePlannerThread(link, msg.id);
+          msg.params = { ...msg.params, sandbox: "read-only" };
+          raw = JSON.stringify(msg);
+        }
         link.tracked.set(msg.id, msg.method);
+      }
       if (link.up.readyState === WebSocket.OPEN)
         link.up.send(raw);
       else
@@ -4233,7 +4270,12 @@ ${renderDigest(envs, false)}`;
         this.version = /^[^/\s]+\/(\d+\.\d+\.\d+(?:-[\w.]+)?)/.exec(msg.result.userAgent)?.[1] ?? this.version;
       const tracked = msg.id !== undefined && !msg.method ? link.tracked.get(msg.id) : undefined;
       if (tracked && link.tracked.delete(msg.id)) {
+        const sandbox = this.threadSandboxPolicy();
+        const readOnly = !link.ambiguousThreadRpc && msg.error === undefined && typeof msg.result?.thread?.id === "string" && !!msg.result.thread.id && confirmsReadOnlySandbox(msg.result?.sandbox);
+        if (sandbox === "unavailable" || sandbox === "read-only" && !readOnly)
+          return this.refusePlannerThread(link, msg.id);
         if (typeof msg.result?.thread?.id === "string") {
+          link.readOnlyThread = readOnly ? msg.result.thread.id : undefined;
           const thread = msg.result.thread.id;
           if (!this.overriddenApprovals.has(thread) && msg.result.approvalPolicy != null)
             this.nativeApprovalPolicies.set(thread, msg.result.approvalPolicy);
@@ -4242,6 +4284,37 @@ ${renderDigest(envs, false)}`;
       } else if (msg.method)
         this.onNotification(link, msg.method, msg.params ?? {});
       link.tui.send(raw);
+    }
+    threadSandboxPolicy() {
+      try {
+        const value = typeof this.opts.threadSandbox === "function" ? this.opts.threadSandbox() : this.opts.threadSandbox;
+        return value === undefined || value === "read-only" ? value : "unavailable";
+      } catch {
+        return "unavailable";
+      }
+    }
+    threadSandboxReady(link) {
+      const sandbox = this.threadSandboxPolicy();
+      if (sandbox === "unavailable") {
+        this.refusePlannerThread(link, undefined);
+        return false;
+      }
+      if (sandbox === "read-only") {
+        if (link.tracked.size > 0)
+          return false;
+        if (link !== this.link || link.readOnlyThread !== this.threadId) {
+          this.refusePlannerThread(link, undefined);
+          return false;
+        }
+      }
+      return true;
+    }
+    refusePlannerThread(link, id) {
+      if (link.tui.readyState === WebSocket.OPEN && (typeof id === "string" || typeof id === "number"))
+        link.tui.send(JSON.stringify({ id, error: { code: -32000, message: PLANNER_SANDBOX_REFUSAL } }));
+      link.tracked.clear();
+      this.detach(link);
+      link.tui.close(1008, PLANNER_SANDBOX_REFUSAL);
     }
     abortActionWaits(link, turn) {
       for (const [controller, wait] of this.actionWaits)
@@ -22067,6 +22140,9 @@ function jcodeInstanceFields(entry, path) {
     return fail4(`${path}.start_mode`, "a Jcode instance starts headless");
   return out;
 }
+function isPlannerOnly(roles) {
+  return roles.includes("planner") && !roles.includes("implementer") && !roles.includes("verifier");
+}
 function supportsHeadlessInstances(definition) {
   return definition.instances?.mode === "headless" && !!definition.start.create && definition.start.forms.includes("headless");
 }
@@ -22168,6 +22244,8 @@ function validateInstances(raw, catalog) {
       if (allowed && (declaredRoles.length ? declaredRoles : runtime.roles).some((role) => !allowed.includes(role)))
         return fail4(`${path}.roles`, "roles must fit the definition's instance policy");
     }
+    if (runtime.start.daemonPort === "codex-appserver" && isPlannerOnly(declaredRoles) && entry.worktree)
+      return fail4(`${path}.worktree`, "a planner-only app-server instance plans on the project checkout; worktree is not supported");
     if (entry.readOnly) {
       if (typeof entry.readOnly.value !== "boolean")
         return fail4(`${path}.readOnly`, "must be a boolean");

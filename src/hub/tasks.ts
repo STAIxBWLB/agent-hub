@@ -698,7 +698,14 @@ export class Tasks {
 
   publicView(task: Task, fullHistory = false): Record<string, unknown> {
     const { title, detail, history, external, cancelled, codeSymbols, ...taskRest } = task;
-    const rest = { ...taskRest, ...(history.some(h => h.by === USER && h.planDeparture) ? { planDepartureAccepted: true } : {}) };
+    const plannerBinding = history.findLast(h => h.planner === task.planner && h.plannerReason !== undefined);
+    const ownerBinding = history.findLast(h => h.owner === task.owner && ["assigned", "reassigned", "escalated", "backlog pulled"].includes(h.event));
+    const reviewerBinding = history.findLast(h => ["assigned", "reassigned", "escalated", "done", "reviewer changed", "reviewer unavailable"].includes(h.event));
+    const rest = { ...taskRest,
+      ...(plannerBinding?.plannerReason && ["rotation", "named", "kept", "none"].includes(plannerBinding.plannerReason) ? { plannerReason: plannerBinding.plannerReason } : {}),
+      ...(ownerBinding?.reason && TASK_MOVE_REASONS.includes(ownerBinding.reason) ? { ownerReason: ownerBinding.reason === "manual" && ownerBinding.event === "reassigned" && ownerBinding.by !== HUB ? "named" : ownerBinding.reason } : {}),
+      ...(reviewerBinding?.reviewerReason && ["rotation", "implementer skip", "unavailable skip", "same-family fallback"].includes(reviewerBinding.reviewerReason) ? { reviewerReason: reviewerBinding.reviewerReason } : reviewerBinding?.event === "reviewer changed" && reviewerBinding.reason === "manual" ? { reviewerReason: "named" } : {}),
+      ...(history.some(h => h.by === USER && h.planDeparture) ? { planDepartureAccepted: true } : {}) };
     if (this.isPii(task)) return { ...rest, actualDates: actualTaskDates(task), refs: {}, plan: {}, ...(task.sdlc ? { sdlc: { stage: stageDefinition(this.d.sdlc?.config() ?? sdlcConfig(undefined), task.sdlc.stage)?.base ?? "unknown" } } : {}), title: "[pii]", detail: "[pii]" };
     if (rest.sdlc?.redFirst && !this.publicMetadataText(JSON.stringify(rest.sdlc.redFirst))) {
       const { redFirst: _withheld, ...receipt } = rest.sdlc; rest.sdlc = receipt;

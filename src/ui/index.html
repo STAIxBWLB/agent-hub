@@ -1160,10 +1160,10 @@ function renderPlanning(snapshot) {
   });
 }
 
-function peerMark(peer, reviewer = false) {
+function peerMark(peer, reviewer = false, role) {
   const key = Object.hasOwn(peerPalette, peer || '') ? peer : 'other';
   const mark = el('span', undefined, 'peer-mark peer-' + key), color = el('span', undefined, 'peer-color-dot' + (reviewer ? ' reviewer' : ''));
-  color.setAttribute('aria-hidden', 'true'); mark.append(color, el('span', (reviewer ? 'reviewer: ' : 'owner: ') + (peer || 'unassigned'))); return mark;
+  color.setAttribute('aria-hidden', 'true'); mark.append(color, el('span', (role || (reviewer ? 'reviewer' : 'owner')) + ': ' + (peer || 'unassigned'))); return mark;
 }
 // A sprite icon in the page (#469 R4). Decorative unless a label is given; the text beside it carries the meaning otherwise.
 const icon = (id, label) => {
@@ -1288,7 +1288,11 @@ function taskDetail(task, card, stage, ids, overdue) {
   if(overdue)status.append(badge('Overdue','warn'));
   row.append(status);
   const people = el('section', undefined, 'detail-group'); people.append(el('h4', 'People', 'detail-heading'));
-  people.append(peerMark(task.owner)); if (task.reviewer) people.append(peerMark(task.reviewer, true));
+  const holder = (role, peer, reason) => { const mark = peerMark(peer, role === 'reviewer', role); if (reason) mark.append(el('span', ' (' + reason + ')', 'meta')); people.append(mark); };
+  if (Object.prototype.hasOwnProperty.call(task, 'planner')) holder('planner', task.planner, task.plannerReason);
+  const ownerReason = [task.ownerReason, task.reserved && (!task.owner || task.reserved === task.owner) ? 'reserved' : undefined].filter(Boolean).join('; ');
+  holder('owner', task.owner || task.reserved, ownerReason);
+  if (task.reviewer) holder('reviewer', task.reviewer, task.reviewerReason || (task.sameFamilyFallback === true ? 'same-family fallback' : undefined));
   if(task.role){const guidance='Task guidance: '+task.role+' (grants no authority)';people.append(el('p',guidance,'meta'));row.setAttribute('aria-label',row.getAttribute('aria-label')+', '+guidance);}
   row.append(people);
   if (task.detail) row.append(el('p', task.detail, 'body'));
@@ -1642,9 +1646,14 @@ function renderUsage(usage, tasks, budget) {
 }
 // Mirrors windowKind in src/hub/window-kind.ts (the page imports nothing): a window from an older hub has no kind. test/ui.test.ts keeps the two equal.
 function windowKindOf(w) { return w.kind || (w.id === 'tokens' ? 'count' : w.source === 'ahub budget set' ? 'manual' : 'native'); }
+function appendRoleDetails(target, peer) {
+  if (typeof peer.form === 'string') target.append(el('p', 'Form: ' + peer.form, 'meta'));
+  if (Array.isArray(peer.capableRoles)) target.append(el('p', 'Capable roles: ' + (peer.capableRoles.join(', ') || 'none'), 'meta'));
+  if (typeof peer.ownerIsolation === 'boolean') target.append(el('p', 'Owner isolation: ' + (peer.ownerIsolation ? 'isolated' : 'not isolated: ' + (peer.ownerIsolationNote || 'execution root not verified')), 'meta'));
+}
 function render(snapshot) {
   renderNeedsAttention(snapshot);
-  const peers = Object.fromEntries(Object.entries(snapshot.status.peers || {}).map(([id, peer]) => [id, {...peer, ...(snapshot.status.roleInfo || {})[id]}])), ids = Object.keys(peers), starts = Array.isArray(snapshot.starts) ? snapshot.starts : [];
+  const peers = Object.fromEntries(Object.entries(snapshot.status.peers || {}).map(([id, peer]) => [id, {...peer, ...(snapshot.status.roleInfo || {})[id], ...(typeof snapshot.status.ownerIsolation?.[id] === 'boolean' ? {ownerIsolation:snapshot.status.ownerIsolation[id],ownerIsolationNote:snapshot.status.ownerIsolationNotes?.[id]} : {})}])), ids = Object.keys(peers), starts = Array.isArray(snapshot.starts) ? snapshot.starts : [];
   $('peer-count').textContent = ids.length + ' peers';
   syncStarts(snapshot);
   update('peers', [peers, starts, starts.map(start => { const pending = pendingStarts.get(startKey(start.peer)); return pending ? [pending.phase, pending.retryAt || null] : null; })], (target) => {
@@ -1665,6 +1674,7 @@ function render(snapshot) {
       if (typeof peer.statusNotice?.message === 'string' && peer.statusNotice.message) row.append(el('p', peer.statusNotice.message, 'meta notice-warn'));
       const more = el('div', undefined, 'peer-more');
       if (peer.flowRoles) more.append(el('p', 'Flow roles: ' + (peer.flowRoles.join(', ') || 'none'), 'meta'));
+      appendRoleDetails(more, peer);
       if (peer.catalogRoles) { more.append(el('p', 'Catalog guidance: ' + (Array.isArray(peer.catalogRoles.value) ? peer.catalogRoles.value.join(', ') || 'none' : 'unconfirmed'), 'meta')); if (peer.catalogRoles.pending !== undefined) more.append(el('p', 'Pending at next start: ' + (peer.catalogRoles.pending.join(', ') || 'none'), 'meta')); }
       if (peer.needsReview) more.append(el('p', peer.needsReview + ' need review: use ahub queue list', 'meta'));
       if (peer.oldestQueuedAt !== undefined) more.append(el('p', 'Oldest pending: ' + Math.max(0, Math.floor((Date.now() - peer.oldestQueuedAt) / 1000)) + 's', 'meta'));

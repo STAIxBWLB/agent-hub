@@ -5,6 +5,7 @@ import { peerStyle } from "../ui/peer-palette.ts";
 import { cells, TABLES, table, fitLine, wrap, duration, relative, plural, terminalText, initialConsoleState, stateTone, type Span, type Tone } from "./console-state.ts";
 import { taskProgress } from "../ui/task-progress.ts";
 import { backendLabel } from "./status-lines.ts";
+import { ownerIsolationText } from "./role-holders.ts";
 import { formatReport, formatTaskReport, type Report, type TaskReport } from "../hub/report.ts";
 import type { Counter, LimitsResult, TotalResult, UsageResult } from "../hub/usage-rollup.ts";
 
@@ -24,6 +25,7 @@ export interface StatusOutput {
   /** #784 AC3: `active`, `reviewWait` and `reserved` add up to `wip`; absent from an older hub. */
   taskWip?: Record<string, { wip: number; wipLimit: number; active?: number; reviewWait?: number; reserved?: number }>;
   pid?: number; controlPort?: number; cwd?: string; version?: string; peers: Record<string, any>; roleInfo?: Record<string, any>; actionPolicyInfo?: Record<string, { note: string; enforceable: boolean }>; budget?: Record<string, any>; planner?: { peers?: string[]; source?: string };
+  ownerIsolation?: Record<string, boolean>; ownerIsolationNotes?: Record<string, string>;
   tasks?: Record<string, number>; models?: { backends?: any[] }; permissionDefaults?: any[]; deliveryError?: string; crash?: string[];
 }
 /** `peers`: one note per peer that shows no number, and why (no quota, nothing read yet); absent from an older hub. */
@@ -220,6 +222,10 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   }
   if (data.memoryRead?.truncated) out.push(...detail("memory view", `truncated: newest ${data.memoryRead.limit} project candidates considered`, columns, "attention"));
   if (data.planner) out.push(...detail("planner", `${data.planner.peers?.join(", ") || "nobody"} (${data.planner.source ?? "unknown"})${data.planner.source === "automatic" || data.planner.source === "none" ? "; pin it with ahub settings set planner <peer>" : ""}`, columns, data.planner.source === "none" ? "attention" : undefined));
+  for (const [id, isolated] of Object.entries(data.ownerIsolation ?? {})) {
+    const text = ownerIsolationText(isolated, data.ownerIsolationNotes?.[id]);
+    if (text) out.push(...detail(`${id} owner isolation`, text, columns, isolated ? undefined : "attention"));
+  }
   if (data.deliveryError) out.push(...detail("delivery storage", `${data.deliveryError}; dispatch is stopped`, columns, "failure"));
   for (const pending of data.permissionDefaults ?? []) out.push(...detail("permission default", `${pending.peer}: never-ask from ${pending.source}, stays ask until a person confirms in ahub console`, columns, "attention"));
   for (const crash of data.crash ?? []) out.push(...detail("crash recovery", crash, columns, "attention"));
@@ -236,6 +242,8 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   let settling = false;
   const peerDetails = Object.entries(data.peers).map(([id, p]) => {
     const out: Span[][] = [];
+    if (typeof p.form === "string") out.push(...detail(`${id} form`, p.form, columns));
+    if (Array.isArray(p.capableRoles)) out.push(...detail(`${id} capable roles`, p.capableRoles.join(", ") || "none", columns));
     if (p.flowRoles) out.push(...detail(`${id} flow roles`, p.flowRoles.join(", ") || "none", columns));
     if (p.catalogRoles) { out.push(...detail(`${id} catalog roles`, Array.isArray(p.catalogRoles.value) ? p.catalogRoles.value.join(", ") || "none" : "unconfirmed", columns)); if (p.catalogRoles.pending !== undefined) out.push(...detail(`${id} pending roles`, p.catalogRoles.pending.join(", ") || "none", columns, "attention")); }
     if (p.liveAccepted?.length) { settling = true; out.push(...detail("settling", p.liveAccepted.map((v: string) => shortId(v, columns, full)).join(", "), columns, "attention")); }

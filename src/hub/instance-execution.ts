@@ -3,7 +3,7 @@ import { join, resolve } from "node:path";
 import type { ProjectAdapterCatalog } from "../adapters/registry.ts";
 import { hubGitSync } from "./git.ts";
 import { realPath } from "./project.ts";
-import { validateInstances, type InstancesConfig } from "./instances.ts";
+import { isPlannerOnly, validateInstances, type InstancesConfig } from "./instances.ts";
 
 const refuse = (reason: string): never => { throw new Error(`instance execution workspace refused: ${reason}`); };
 // #225: this runs synchronously on the daemon's event loop (an extra-instance start, turn_revert), and a resolution makes up to four git
@@ -31,6 +31,7 @@ export function resolveInstanceExecutionCwd(projectRoot: string, id: string, dec
   const git = gitWithin(budgetMs, clock, run);
   const declaration = validateInstances(declarations, adapterCatalog)[id];
   if (!declaration) return refuse("extra instance is not declared");
+  if (declaration.worktree && adapterCatalog.definitionOf(id, declarations)?.start.daemonPort === "codex-appserver" && isPlannerOnly(roles)) return refuse("a planner-only app-server instance plans on the project checkout; worktree is not supported");
   const moduleInstance = adapterCatalog.externalDefinitions.some(definition => definition.kind === declaration.kind);
   const implementer = roles.includes("implementer");
   const writing = moduleInstance ? declaration.readOnly !== true : implementer;

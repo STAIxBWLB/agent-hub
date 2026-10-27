@@ -3456,6 +3456,38 @@
       "replacement": "    const records = await this.hashClaims(claims, task, true);\n    const current = this.need(id, false, true);",
       "testFile": "test/external-instance-review.test.ts",
       "testName": "#754 fixture-reviewer cannot record lifecycle deliverables after authority loss during the real hash"
+    },
+    {
+      "id": "codex-planner-sandbox-confirmation",
+      "file": "src/adapters/codex-appserver.ts",
+      "search": "if (sandbox === \"unavailable\" || sandbox === \"read-only\" && !readOnly) return this.refusePlannerThread(link, msg.id);",
+      "replacement": "if (sandbox === \"unavailable\") return this.refusePlannerThread(link, msg.id);",
+      "testFile": "test/codex-planner-sandbox.test.ts",
+      "testName": "#525 planner thread/start refuses missing policy without adoption or host delivery"
+    },
+    {
+      "id": "codex-planner-live-role",
+      "file": "src/hub/daemon.ts",
+      "search": "...(declarations[peer] ? { threadSandbox: () => isPlannerOnly(config.roles[peer] ?? []) ? declarations[peer]?.worktree ? \"unavailable\" as const : \"read-only\" as const : undefined } : {}),",
+      "replacement": "...(declarations[peer] && isPlannerOnly(config.roles[peer] ?? []) ? { threadSandbox: \"read-only\" as const } : {}),",
+      "testFile": "test/role-stage-daemon-345.test.ts",
+      "testName": "#525-6 a live role transition rechecks the planner thread ceiling for codex-flex"
+    },
+    {
+      "id": "claude-planner-mutation-ceiling",
+      "file": "src/hub/daemon.ts",
+      "search": "const plannerOnly = !!declarations[peer] && definitionOf(peer)?.transport === \"claude-channel\" && isPlannerOnly(config.roles[peer] ?? []);",
+      "replacement": "const plannerOnly = false;",
+      "testFile": "test/role-stage-daemon-345.test.ts",
+      "testName": "#525-6 authenticated Claude planner facts withhold mutation grants in every mode while builtin behavior remains unchanged"
+    },
+    {
+      "id": "claude-planner-hook-grants",
+      "file": "src/cli/facts-hook.ts",
+      "search": "const allow = mayGrant && !classed && input.hook_event_name === \"PreToolUse\" && (permission === \"never-ask\" || permission === \"ask-when-needed\" && fileTool);",
+      "replacement": "const allow = !classed && input.hook_event_name === \"PreToolUse\" && (permission === \"never-ask\" || permission === \"ask-when-needed\" && fileTool);",
+      "testFile": "test/facts-hook-planner-345.test.ts",
+      "testName": "#345 a planner mutation ceiling keeps facts/read grants but never auto-allows a mutation in any permission mode"
     }
   ]
 }
