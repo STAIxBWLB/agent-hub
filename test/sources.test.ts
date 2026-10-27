@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { matchesPolicy } from "../src/hub/path-policy.ts";
 import { processSignature } from "@staix/agent-mem/platform";
-import { checkSourceUrl, MAX_META_BYTES, MAX_ORIGINS, MAX_ORIGIN_CHARS, MAX_SOURCE_TEXT, fetchSourceUrl, MAX_REDIRECTS, MAX_SOURCE_BYTES, publicSourceView, screenRegistration, sha256Of, SourceRegistry, sourceId, validSourceId } from "../src/hub/sources.ts";
+import { checkSourceUrl, MAX_META_BYTES, MAX_ORIGINS, MAX_ORIGIN_CHARS, MAX_SOURCE_TEXT, fetchSourceUrl, MAX_REDIRECTS, MAX_SOURCE_BYTES, MAX_SOURCES, publicSourceView, screenRegistration, sha256Of, SourceRegistry, sourceId, validSourceId } from "../src/hub/sources.ts";
 import { MAX_PROJECTION_INPUT } from "../src/hub/text-projection.ts";
 
 // agent-hub #508 (hub task #329): the source registry core. Spec: "Sources (#508)".
@@ -269,14 +269,17 @@ test("a record with the most origins the writer accepts is read back, and a late
   const dir = state(), registry = new SourceRegistry(dir), data = bytes("many origins");
   const id = registry.add({ bytes: data, kind: "file", origin: "/first", private: true, now: 1 }).id;
   // every origin as long as the cap, and 3-byte characters: the largest meta the writer can make
-  for (let i = 0; i < MAX_ORIGINS + 5; i++) registry.add({ bytes: data, kind: "file", origin: `/o${i}/` + "\u20ac".repeat(MAX_ORIGIN_CHARS - 10), private: true, now: 2 + i });
+  for (let i = 0; i < MAX_ORIGINS - 1; i++) registry.add({ bytes: data, kind: "file", origin: `/o${i}/` + "€".repeat(MAX_ORIGIN_CHARS - 10), private: true, now: 2 + i });
   const file = join(dir, "sources", `src-${id.slice(4)}`, "meta.json");
   expect(statSync(file).size).toBeGreaterThan(64 * 1024); // the old reader cap
   expect(statSync(file).size).toBeLessThan(MAX_META_BYTES);
   const meta = registry.get(id)!;
   expect(meta.private).toBe(true);
   expect(meta.origins).toHaveLength(MAX_ORIGINS);
-  expect(registry.add({ bytes: data, kind: "file", origin: "/public", private: false })).toMatchObject({ id, created: false, private: true });
+  const before = readFileSync(file);
+  expect(() => registry.add({ bytes: data, kind: "file", origin: "/public", private: false })).toThrow(`${MAX_ORIGINS} origins`);
+  expect(readFileSync(file)).toEqual(before);
+  expect(registry.add({ bytes: data, kind: "file", origin: "/first", private: true })).toMatchObject({ id, created: false, private: true });
   expect(registry.readRaw(id)).toEqual(data);
 });
 
@@ -377,4 +380,56 @@ for (let i = 0; i < 15; i++) new SourceRegistry(dir).add({ bytes: Buffer.from(${
   expect(registry.get(id)!.private).toBe(true);
   expect(registry.get(id)!.origins.length).toBe(6 * 15);
   expect(existsSync(lockFile(dir))).toBe(false);
+});
+
+
+test("source record capacity ignores lock, temporary, partial and damaged directory entries", () => {
+  const dir = state(), registry = new SourceRegistry(dir);
+  mkdirSync(registry.root, { recursive: true });
+  // Build metadata directly to avoid O(cap squared) registration scans. Every
+  // row is validated by the real get/list parser; this case does not read raw.
+  const firstSha = "0".repeat(64);
+  for (let i = 0; i < MAX_SOURCES - 1; i++) {
+    const prefix = i.toString(16).padStart(16, "0"), sha256 = prefix + "0".repeat(48);
+    const folder = join(registry.root, `src-${prefix}`);
+    mkdirSync(folder);
+    writeFileSync(join(folder, "meta.json"), JSON.stringify({ id: sourceId(sha256), sha256, kind: "file", origin: "/fixture", bytes: 0, added_at: i, private: false, origins: [{ kind: "file", origin: "/fixture", added_at: i, private: false }] }));
+  }
+  for (const name of [".lock.contender.tmp", ".abandoned.partial", "src-0000000000000000.abandoned.partial", "src-ffffffffffffffff"]) mkdirSync(join(registry.root, name));
+  hold(dir, { pid: process.pid, signature: processSignature(process.pid) });
+  expect(registry.list()).toHaveLength(MAX_SOURCES - 1);
+  rmSync(lockFile(dir));
+  const last = registry.add({ bytes: bytes("last allowed source"), kind: "file", origin: "/last", private: false });
+  expect(last.created).toBe(true);
+  expect(registry.list()).toHaveLength(MAX_SOURCES);
+  const overflow = bytes("not allowed source"), overflowId = sourceId(sha256Of(overflow));
+  expect(() => registry.add({ bytes: overflow, kind: "file", origin: "/overflow", private: false })).toThrow(`${MAX_SOURCES} sources`);
+  // An empty crash directory must not bypass the new-record admission check.
+  const partial = join(registry.root, `src-${overflowId.slice(4)}`);
+  mkdirSync(partial);
+  expect(() => registry.add({ bytes: overflow, kind: "file", origin: "/overflow", private: false })).toThrow(`${MAX_SOURCES} sources`);
+  expect(readdirSync(partial)).toEqual([]);
+  // At source capacity, an existing record can still upgrade privacy/provenance.
+  expect(registry.add({ bytes: bytes("last allowed source"), kind: "file", origin: "/private/last", private: true })).toMatchObject({ created: false, upgraded: true, private: true });
+  expect(registry.get(last.id)!.origins).toHaveLength(2);
+  expect(registry.get(sourceId(firstSha))).toBeDefined();
+  expect(registry.list()).toHaveLength(MAX_SOURCES);
+  // Legacy/out-of-band over-cap state is reported, never a silently cut list.
+  const extraSha = "e".repeat(64), extra = join(registry.root, `src-${extraSha.slice(0, 16)}`);
+  mkdirSync(extra);
+  writeFileSync(join(extra, "meta.json"), JSON.stringify({ id: sourceId(extraSha), sha256: extraSha, kind: "file", origin: "/extra", bytes: 0, added_at: 1, private: false, origins: [{ kind: "file", origin: "/extra", added_at: 1, private: false }] }));
+  expect(() => registry.list()).toThrow(`${MAX_SOURCES} sources`);
+});
+
+
+test("an unseen origin at capacity is refused without claiming a registration or changing privacy", () => {
+  const dir = state(), registry = new SourceRegistry(dir), data = bytes("full public provenance");
+  const id = registry.add({ bytes: data, kind: "file", origin: "/public/0", private: false }).id;
+  for (let i = 1; i < MAX_ORIGINS; i++) registry.add({ bytes: data, kind: "file", origin: `/public/${i}`, private: false });
+  const file = join(registry.root, `src-${id.slice(4)}`, "meta.json"), before = readFileSync(file);
+  expect(() => registry.add({ bytes: data, kind: "file", origin: "/new/private", private: true })).toThrow(`${MAX_ORIGINS} origins`);
+  expect(readFileSync(file)).toEqual(before);
+  expect(registry.get(id)!.private).toBe(false); // refused attempts are not registrations
+  expect(registry.get(id)!.origins).toHaveLength(MAX_ORIGINS);
+  expect(registry.add({ bytes: data, kind: "file", origin: "/public/0", private: false })).toMatchObject({ created: false, private: false });
 });

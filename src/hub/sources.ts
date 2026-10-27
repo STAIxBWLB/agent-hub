@@ -95,10 +95,13 @@ export class SourceRegistry {
     let names: string[];
     try { names = readdirSync(this.root); } catch { return []; }
     const rows: SourceMeta[] = [];
-    for (const name of names.slice(0, MAX_SOURCES)) {
+    for (const name of names) {
       const match = /^src-([0-9a-f]{16})$/.exec(name);
       const meta = match ? this.get(`src:${match[1]}`) : undefined;
-      if (meta) rows.push(meta);
+      if (meta) {
+        if (rows.length === MAX_SOURCES) throw new Error(`the registry exceeds ${MAX_SOURCES} sources; nothing was omitted silently (inspect ${this.root})`);
+        rows.push(meta);
+      }
     }
     return rows.sort((a, b) => a.added_at - b.added_at || a.id.localeCompare(b.id));
   }
@@ -162,7 +165,6 @@ export class SourceRegistry {
   }
 
   private addLocked(input: { bytes: Buffer; kind: SourceKind; origin: string; private: boolean; text?: string }, sha256: string, id: string, now: number, directory: string): SourceAdd {
-    if (!existsSync(directory) && this.list().length >= MAX_SOURCES) throw new Error(`the registry holds ${MAX_SOURCES} sources already; nothing was stored`);
     const existing = this.get(id);
     // A directory that exists but whose record cannot be read is DAMAGED, not absent: replacing it could erase a private record and the bytes with it,
     // so a damaged record is refused and left for the person, never silently rebuilt as public.
@@ -170,12 +172,16 @@ export class SourceRegistry {
     if (existing) {
       const origin: SourceOrigin = { kind: input.kind, origin: input.origin, added_at: now, private: input.private };
       const known = existing.origins.some(item => item.kind === origin.kind && item.origin === origin.origin && item.private === origin.private);
+      if (!known && existing.origins.length >= MAX_ORIGINS) throw new Error(`the source holds ${MAX_ORIGINS} origins already; this registration was refused and the record was left unchanged`);
       const privateNow = existing.private || input.private;
-      const origins = known || existing.origins.length >= MAX_ORIGINS ? existing.origins : [...existing.origins, origin];
+      const origins = known ? existing.origins : [...existing.origins, origin];
       if (privateNow === existing.private && origins === existing.origins) return { id, created: false, private: existing.private, upgraded: false, text: this.readText(id) !== undefined };
       atomic(join(directory, "meta.json"), JSON.stringify({ ...existing, private: privateNow, origins }, null, 2) + "\n");
       return { id, created: false, private: privateNow, upgraded: privateNow && !existing.private, text: this.readText(id) !== undefined };
     }
+    // Count validated records, not directory entries or a target's mere existence.
+    // A crash partial at this id is still a NEW source and cannot bypass capacity.
+    if (this.list().length >= MAX_SOURCES) throw new Error(`the registry holds ${MAX_SOURCES} sources already; nothing was stored`);
     if (existsSync(directory)) rmSync(directory, { recursive: true, force: true }); // no meta.json (checked above): a half-written directory of an earlier crash, never a record
     const staging = `${directory}.${crypto.randomUUID()}.partial`;
     try {
