@@ -132,8 +132,8 @@
     {
       "id": "roster-d-peer-hello",
       "file": "src/hub/daemon.ts",
-      "search": "        c.peer = String(msg.peer ?? \"\");\n        if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === \"hub\") return sock.close(4403, \"peer id is reserved or malformed\");\n        if (externalRefusedRows.has(c.peer)) return sock.close(4403, \"external instance module was refused\");\n        if (!membershipAllowed(c.peer)) return sock.close(4000, \"peer is off roster; retry when a person adds it\");",
-      "replacement": "        c.peer = String(msg.peer ?? \"\");\n        if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === \"hub\") return sock.close(4403, \"peer id is reserved or malformed\");\n        if (externalRefusedRows.has(c.peer)) return sock.close(4403, \"external instance module was refused\");",
+      "search": "        c.peer = String(msg.peer ?? \"\");\n        if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === \"hub\") return sock.close(4403, \"peer id is reserved or malformed\");\n        if (externalRefusedRows.has(c.peer)) return sock.close(4403, \"instance kind is unavailable in the startup catalog\");\n        if (!membershipAllowed(c.peer)) return sock.close(4000, \"peer is off roster; retry when a person adds it\");",
+      "replacement": "        c.peer = String(msg.peer ?? \"\");\n        if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === \"hub\") return sock.close(4403, \"peer id is reserved or malformed\");\n        if (externalRefusedRows.has(c.peer)) return sock.close(4403, \"instance kind is unavailable in the startup catalog\");",
       "testFile": "test/roster.test.ts",
       "testName": "a confirmed live removal fences Claude admission and retains its queue until return without applying file edits (#315)"
     },

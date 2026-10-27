@@ -68,7 +68,7 @@ test("offline module instances stay declared/unknown and cannot gain id-keyed ro
   expect(existsSync(marker)).toBe(false);
   // A startup refusal is scoped to the missing module's rows, not to the builtin catalog.
   const refused = readInstanceConfig(root, undefined, []);
-  expect(refused.declaredExternalInstances).toEqual([{ id: "fixture-review", kind: "fixture", availability: "refused", refusalCode: "module-refused" }]);
+  expect(refused.declaredExternalInstances).toEqual([{ id: "fixture-review", kind: "fixture", availability: "refused", refusalCode: "kind-unavailable" }]);
   expect(refused.instances?.["fixture-review"]).toBeUndefined();
   expect(refused.instances?.["codex-extra"]?.roles).toEqual(["verifier"]);
   expect(refused.catalog.definitionOf("fixture-review", refused.instances)).toBeUndefined();
@@ -97,9 +97,16 @@ test("a partial startup catalog keeps good module and builtin instances executab
   expect(view.instances?.["good-worker"]?.roles).toEqual(["implementer"]);
   expect(view.instances?.["codex-extra"]?.roles).toEqual(["verifier"]);
   expect(view.instances?.["missing-worker"]).toBeUndefined();
-  expect(view.declaredExternalInstances).toEqual([{ id: "missing-worker", kind: "missing", availability: "refused", refusalCode: "module-refused" }]);
+  expect(view.declaredExternalInstances).toEqual([{ id: "missing-worker", kind: "missing", availability: "refused", refusalCode: "kind-unavailable" }]);
   expect(view.catalog.definitionOf("good-worker", view.instances)?.kind).toBe("good");
   expect(view.catalog.definitionOf("missing-worker", view.instances)).toBeUndefined();
+  expect(calls).toBe(0);
+  // A misspelled builtin is indistinguishable from a missing module kind without evaluating it.
+  (local.instances as Record<string, unknown>)["codxe-worker"] = { kind: "codxe", roles: ["implementer"], start_mode: "headless", worktree: ".worktrees/codxe-worker" };
+  writeFileSync(join(root, ".agenthub", "config.local.json"), JSON.stringify(local));
+  const typo = readInstanceConfig(root, undefined, [definition(true)]);
+  expect(typo.declaredExternalInstances?.find(row => row.id === "codxe-worker")).toMatchObject({ kind: "codxe", refusalCode: "kind-unavailable" });
+  expect(typo.instances?.["codxe-worker"]).toBeUndefined();
   expect(calls).toBe(0);
   expect(() => readInstanceConfig(root, undefined, [definition(false)])).toThrow(/opted/);
   expect(calls).toBe(0);

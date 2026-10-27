@@ -21429,7 +21429,7 @@ function externalMetadataDefinitions(raw) {
 }
 var INSTANCE_ID = /^[a-z][a-z0-9-]{0,31}$/;
 var INSTANCE_ROLES = ["implementer", "verifier", "reviewer"];
-var INSTANCE_REFUSALS = ["catalog-unavailable", "module-refused", "binding-changed", "ownership-unverified", "off-roster", "not-started"];
+var INSTANCE_REFUSALS = ["catalog-unavailable", "module-refused", "kind-unavailable", "binding-changed", "ownership-unverified", "off-roster", "not-started"];
 function externalInstanceCatalog(raw) {
   const catalog = moduleDataObject(raw);
   if (Object.keys(catalog).some((key) => !["schema", "projectRoot", "epoch", "fingerprint", "instances"].includes(key)) || catalog.schema !== 1 || typeof catalog.fingerprint !== "string" || !/^[a-f0-9]{64}$/.test(catalog.fingerprint))
@@ -22492,7 +22492,7 @@ function readInstanceConfig(cwd, layers = readInstanceConfigLayers(cwd), externa
         throw new Error("instances: read-only instances cannot select a permission mode");
       if (Object.hasOwn(row, "worktree"))
         moduleText(row.worktree, 4096);
-      declaredExternalInstances.push(Object.freeze(externalDefinitions === undefined ? { id, kind, availability: "declared-unknown", refusalCode: "catalog-unavailable" } : { id, kind, availability: "refused", refusalCode: "module-refused" }));
+      declaredExternalInstances.push(Object.freeze(externalDefinitions === undefined ? { id, kind, availability: "declared-unknown", refusalCode: "catalog-unavailable" } : { id, kind, availability: "refused", refusalCode: "kind-unavailable" }));
     }
     executableInstances = executable;
   }

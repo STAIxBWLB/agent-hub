@@ -25,7 +25,7 @@ export interface DeclaredExternalInstance {
   readonly id: string;
   readonly kind: string;
   readonly availability: "declared-unknown" | "refused";
-  readonly refusalCode: "catalog-unavailable" | "module-refused";
+  readonly refusalCode: "catalog-unavailable" | "module-refused" | "kind-unavailable";
 }
 export interface InstanceRoleConfig {
   adapter_modules?: readonly AdapterModuleDeclaration[];
@@ -106,7 +106,7 @@ export function readInstanceConfig(cwd: string, layers: readonly InstanceConfigL
       if (Object.hasOwn(row, "worktree")) moduleText(row.worktree, 4096);
       declaredExternalInstances.push(Object.freeze(externalDefinitions === undefined
         ? { id, kind, availability: "declared-unknown", refusalCode: "catalog-unavailable" }
-        : { id, kind, availability: "refused", refusalCode: "module-refused" }));
+        : { id, kind, availability: "refused", refusalCode: "kind-unavailable" }));
     }
     executableInstances = executable;
   }

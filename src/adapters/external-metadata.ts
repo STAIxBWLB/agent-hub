@@ -48,7 +48,7 @@ export function externalMetadataDefinitions(raw: unknown): readonly AdapterDefin
 }
 
 export type ExternalInstanceRole = "implementer" | "verifier" | "reviewer";
-export type ExternalInstanceRefusal = "catalog-unavailable" | "module-refused" | "binding-changed" | "ownership-unverified" | "off-roster" | "not-started";
+export type ExternalInstanceRefusal = "catalog-unavailable" | "module-refused" | "kind-unavailable" | "binding-changed" | "ownership-unverified" | "off-roster" | "not-started";
 export interface ExternalInstanceMetadata {
   readonly id: string;
   readonly kind: string;
@@ -70,7 +70,7 @@ export interface ExternalInstanceCatalog {
 }
 const INSTANCE_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const INSTANCE_ROLES: readonly string[] = ["implementer", "verifier", "reviewer"];
-const INSTANCE_REFUSALS: readonly string[] = ["catalog-unavailable", "module-refused", "binding-changed", "ownership-unverified", "off-roster", "not-started"];
+const INSTANCE_REFUSALS: readonly string[] = ["catalog-unavailable", "module-refused", "kind-unavailable", "binding-changed", "ownership-unverified", "off-roster", "not-started"];
 /** Validate the whole bounded projection; an incomplete or widened row is never silently accepted. */
 export function externalInstanceCatalog(raw: unknown): ExternalInstanceCatalog {
   const catalog = moduleDataObject(raw);

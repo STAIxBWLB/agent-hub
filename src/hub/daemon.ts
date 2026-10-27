@@ -699,6 +699,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const externalRefusedRows = new Map(startupDeclarationRows.map(row => [row.id, row]));
   const allExternalInstanceIds = () => [...new Set([...(restored?.peers ?? []).filter(row => row.externalInstance).map(row => row.id), ...externalInstanceIds, ...externalRefusedRows.keys()])];
   const isExternalInstance = (peer: string) => externalInstanceIds.includes(peer);
+  // ponytail: each instance costs about 10 synchronous Git calls per fresh turn (64 instances maximum);
+  // a stat-keyed evidence cache is the upgrade path, preserving fresh effect-boundary rechecks.
   const externalEvidenceThisTurn = new Map<string, { binding: ExternalInstanceBinding; workspace: string } | undefined>();
   let externalEvidenceExpiryQueued = false;
   function externalEvidence(peer: string, fresh = false): { binding: ExternalInstanceBinding; workspace: string } | undefined {
@@ -726,7 +728,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (branch.error || branch.status !== 0 && branch.status !== 1) throw new Error("external workspace branch evidence unavailable");
     return `${info.dev}:${info.ino}:${branch.status === 0 ? branch.stdout.trim() : "detached"}`;
   }
-  function captureExternalBinding(peer: string): ExternalInstanceBinding {
+  function captureExternalBinding(peer: string, resumeSessionId?: string): ExternalInstanceBinding {
     const definition = definitionOf(peer), identity = definition && externalModuleIdentity(definition);
     if (!identity || !externalModuleIdentityCurrent(definition!)) throw new Error("external instance module binding changed");
     const current = readInstanceConfig(opts.cwd, undefined, externalDefinitions);
@@ -737,8 +739,13 @@ export async function startDaemon(opts: DaemonOptions) {
     const cwd = resolveInstanceExecutionCwd(opts.cwd, peer, current.instances, currentRoles, current.catalog);
     const binding = externalInstanceBinding(identity, peer, declaration, currentRoles, cwd);
     const record = readExternalInstanceRecord(opts.stateDir, peer);
-    if (record && !sameExternalInstanceBinding(record.externalInstance, binding)) throw new Error("external instance retained record binding changed");
-    if (record) externalSessions.set(peer, record.sessionId);
+    const sameBinding = record && sameExternalInstanceBinding(record.externalInstance, binding);
+    if (resumeSessionId !== undefined) {
+      if (record && !sameBinding) throw new Error("external instance retained record binding changed");
+      if (!record || record.sessionId !== resumeSessionId) throw new Error("external instance resume requires its recorded native session id");
+    }
+    if (sameBinding) externalSessions.set(peer, record.sessionId);
+    else externalSessions.delete(peer); // Changed continuity does not prevent a person's fresh session. Successful start replaces the record.
     return binding;
   }
   function retainedExternalBinding(peer: string, fresh = false): ExternalInstanceBinding | undefined {
@@ -2326,7 +2333,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (bound && isExternalInstance(peer)) {
       const launch = externalLaunches.get(peer), receipt = launch && managedAcpLaunch(bound.owner, launch.options);
       const evidence = externalEvidence(peer, fresh), current = evidence?.binding, workspace = evidence?.workspace;
-      if (!launch || workspace !== launch.workspace || launch.owner !== bound.owner || bus.peers.get(peer) !== bound.owner || !receipt || receipt.generation !== launch.generation || receipt.cwd !== bound.cwd || !current || !sameExternalInstanceBinding(launch.binding, current)) return undefined;
+      if (!launch || workspace !== launch.workspace || launch.owner !== bound.owner || bus.peers.get(peer) !== bound.owner || !receipt || receipt.generation !== launch.generation || receipt.cwd !== bound.cwd || !current || !sameExternalInstanceBinding(launch.binding, current)) {
+        revokeTerminalExecution(peer); return undefined;
+      }
     } else if (bound?.socket) {
       const launch = readClaudeLaunchProof(opts.stateDir, peer, instanceId);
       if (!isFixedBuiltinDefinition(definitionOf(peer)) || !isWsPeer(bound.owner) || bound.owner.sessionGeneration !== bound.generation || !launch?.privateRecord || launch.launchId !== bound.launchId || launch.executionCwd !== bound.cwd) {
@@ -3488,7 +3497,7 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(allExternalInstanceIds().length ? { externalInstanceCatalog: externalInstanceCatalog({ schema: 1, projectRoot: opts.cwd, epoch: instanceId,
       fingerprint: digest(allExternalInstanceIds().map(id => [id, externalBindings.get(id) ?? null])), instances: allExternalInstanceIds().map(id => {
         const refused = externalRefusedRows.get(id);
-        if (refused) return { id, kind: refused.kind, displayName: refused.kind, roles: [], form: "headless", readOnly: false, permissionState: "unknown", availability: "refused", refusalCode: "module-refused" };
+        if (refused) return { id, kind: refused.kind, displayName: refused.kind, roles: [], form: "headless", readOnly: false, permissionState: "unknown", availability: "refused", refusalCode: refused.refusalCode };
         const bound = retainedExternalBinding(id), current = currentExecutionOwner(id), owner = bus.peers.get(id);
         return { id, kind: declarations[id]!.kind, displayName: definitionOf(id)!.displayName, roles: config.roles[id] ?? [], form: "headless", readOnly: readOnlyPeer(id), permissionState: owner?.permissionModeState ?? "unknown",
           availability: !bound ? "refused" : current ? "ready" : "offline", ...(!bound ? { refusalCode: "binding-changed" } : !owner ? { refusalCode: "not-started" } : !current ? { refusalCode: "ownership-unverified" } : {}) };
@@ -4159,7 +4168,7 @@ export async function startDaemon(opts: DaemonOptions) {
   function startPeer(peer: string, args: { model?: string; route?: string; mode?: "headless" | "tui"; backend?: "auto" | "dgx" | "mlx"; sessionId?: string; sessionFile?: string; replaceSession?: boolean; fresh?: boolean; unattended?: boolean; providerProfile?: string }, replacementAuthority?: symbol): Promise<Record<string, unknown>> {
     if (isExternalInstance(peer) && (Object.keys(args).some(key => !["mode", "sessionId"].includes(key)) || args.mode !== undefined && args.mode !== "headless")) return Promise.resolve({ ok: false, error: "external module instances permit only a headless start and recorded session id" });
     if (args.replaceSession !== undefined && (args.replaceSession !== true || replacementAuthority !== piReplacementAuthority || definitionOf(peer)?.start.daemonPort !== "pi-rpc")) return Promise.resolve({ ok: false, error: "Pi session replacement requires explicit person authorization" });
-    if (externalRefusedRows.has(peer)) return Promise.resolve({ ok: false, error: "external instance module was refused; repair its person-owned declaration and restart the hub" });
+    if (externalRefusedRows.has(peer)) return Promise.resolve({ ok: false, error: "instance kind is unavailable in the startup catalog; check its kind spelling and person-owned module declarations, then restart the hub" });
     if (stopping) return Promise.resolve({ ok: false, error: "hub is stopping" });
     if (!membershipAllowed(peer)) return Promise.resolve({ ok: false, error: `${peer} is off roster; a person can add it with ahub roster add ${peer}` });
     if (rosterChanging === peer) return Promise.resolve({ ok: false, error: `${peer} roster change is in progress` });
@@ -4590,8 +4599,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const mcpServers = [{ name: "agent-hub", command: "bun", args: ["run", SERVER_JS], env: Object.entries(toolEnv(peer, true)).map(([name, value]) => ({ name, value })) }];
       const permission = readOnlyPeer(peer) ? "read-only" as const : permissionMode(peer);
       actionBudgets.revoke(peer); // a new owner never inherits the allowance of the one it replaces, even for the same session id
-      const externalBinding = isExternalInstance(peer) ? captureExternalBinding(peer) : undefined;
-      if (externalBinding && args.sessionId !== undefined && args.sessionId !== externalSessions.get(peer)) throw new Error("external instance resume requires its recorded native session id");
+      const externalBinding = isExternalInstance(peer) ? captureExternalBinding(peer, args.sessionId) : undefined;
       const externalWorkspace = externalBinding ? externalWorkspaceIdentity(executionCwd) : undefined;
       if (externalBinding && permission !== "read-only" && defaultSources[peer] && !adapter.permission.genericAcp?.modes?.[permission]) throw new Error("external instance configured permission mode has no native mapping");
       const externalLaunchId = externalBinding ? randomUUID() : undefined;
@@ -4629,11 +4637,11 @@ export async function startDaemon(opts: DaemonOptions) {
       if (!isAcpPeer(owner) || owner.id !== peer || owner.deliveryOnly !== true || owner.hubOwned !== true || owner.form !== "headless") throw new Error("ACP factory did not return its bound native transport");
       recoveryTaskPreface(peer); await ensurePreface(peer);
       try {
-        if (externalBinding && (!membershipAllowed(peer) || externalWorkspaceIdentity(executionCwd) !== externalWorkspace || !sameExternalInstanceBinding(externalBinding, captureExternalBinding(peer)))) throw new Error("external instance binding changed before native spawn");
+        if (externalBinding && (!membershipAllowed(peer) || externalWorkspaceIdentity(executionCwd) !== externalWorkspace || !sameExternalInstanceBinding(externalBinding, captureExternalBinding(peer, args.sessionId)))) throw new Error("external instance binding changed before native spawn");
         await owner.start();
         if (externalBinding) {
           if (!await verifyManagedAcpLaunch(owner, acpOptions)) throw new Error("external ACP managed launch is unverified");
-          const receipt = managedAcpLaunch(owner, acpOptions), current = captureExternalBinding(peer);
+          const receipt = managedAcpLaunch(owner, acpOptions), current = captureExternalBinding(peer, args.sessionId);
           if (!receipt || externalWorkspaceIdentity(executionCwd) !== externalWorkspace || receipt.cwd !== executionCwd || !sameExternalInstanceBinding(externalBinding, current)) throw new Error("external instance startup binding changed");
           externalLaunches.get(peer)!.generation = receipt.generation;
           externalBindings.set(peer, externalBinding);
@@ -6533,7 +6541,7 @@ export async function startDaemon(opts: DaemonOptions) {
         // Acts for a peer the hub manages itself (kimi, codex): may send and use the board as that peer, is never a delivery target.
         c.peer = String(msg.peer ?? "");
         if (!PEER_ID.test(c.peer) || c.peer === USER || c.peer === "hub") return sock.close(4403, "peer id is reserved or malformed");
-        if (externalRefusedRows.has(c.peer)) return sock.close(4403, "external instance module was refused");
+        if (externalRefusedRows.has(c.peer)) return sock.close(4403, "instance kind is unavailable in the startup catalog");
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
         if (definitionOf(c.peer)?.start.daemonPort === "claude-implementer") {
           const owner = bus.peers.get(c.peer), launch = owner?.ownedTools?.(msg.launchId), root = ownerWriteRoot(c.peer);
@@ -6562,7 +6570,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (definitionOf(c.peer)?.transport === "ws-pull" && msg.channel !== false) return sock.close(4403, "this native peer supports pull-only attachment; use hub_inbox");
         const kimiPull = !!definitionOf(c.peer)?.attach?.admission && (kimiSessionMode ?? startMode(c.peer)) === "tui" && msg.channel === false;
         if (!PEER_ID.test(c.peer) || (RESERVED_IDS.has(c.peer) && !kimiPull)) return sock.close(4403, definitionOf(c.peer)?.attach?.admission?.reservedRefusal ?? "peer id is reserved or malformed");
-        if (externalRefusedRows.has(c.peer)) return sock.close(4403, "external instance module was refused");
+        if (externalRefusedRows.has(c.peer)) return sock.close(4403, "instance kind is unavailable in the startup catalog");
         if (!membershipAllowed(c.peer)) return sock.close(4000, "peer is off roster; retry when a person adds it");
         if (!recoveryPeerAllowed(c.peer)) return sock.close(4403, "peer id is not part of the recovery roster");
         if (definitionOf(c.peer)?.transport === "claude-channel" && msg.launchId !== undefined) {

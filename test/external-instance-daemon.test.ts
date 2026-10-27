@@ -229,6 +229,40 @@ test("#754 A7 live recovery and incompatible targets refuse before holds, stoppe
 }, 20_000);
 
 
+for (const change of ["pin", "permission_mode", "readOnly"] as const) test(`#754 ${change} change after restart refuses stale resume but permits a fresh person start`, async () => {
+  const f = await fixture();
+  let target: Awaited<ReturnType<typeof startDaemon>> | undefined, client: ControlClient | undefined;
+  try {
+    const id = "fixture-writer", recordFile = join(f.stateDir, "instances", id, "external-instance.json");
+    expect((await f.client.request({ t: "start", peer: id })).ok).toBe(true);
+    expect((await f.client.request({ t: "peer_stop", peer: id })).ok).toBe(true);
+    const oldRecord = JSON.parse(readFileSync(recordFile, "utf8"));
+    f.client.close(); await f.daemon.stop();
+    if (change === "pin") {
+      const updated = readFileSync(f.moduleFile, "utf8") + "\n// person-authorized module update\n";
+      writeFileSync(f.moduleFile, updated);
+      f.local.adapter_modules[0]!.sha256 = createHash("sha256").update(updated).digest("hex");
+    } else f.local.instances[id]![change] = change === "readOnly" ? true : "ask";
+    writeFileSync(f.localFile, JSON.stringify(f.local));
+    target = await startDaemon({ cwd: f.root, stateDir: f.stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0 });
+    client = await ControlClient.connect(f.stateDir, { role: "console", projectRoot: f.root });
+    const count = f.records().length, protocol = f.protocol(id);
+    const refused = await client.request({ t: "start", peer: id, args: { sessionId: oldRecord.sessionId } });
+    expect(refused.ok).toBe(false);
+    expect(refused.error).toContain("retained record binding changed");
+    expect(f.records()).toHaveLength(count); expect(f.protocol(id)).toEqual(protocol);
+    expect(JSON.parse(readFileSync(recordFile, "utf8"))).toEqual(oldRecord);
+    expect((await client.request({ t: "start", peer: id })).ok).toBe(true);
+    const currentRecord = JSON.parse(readFileSync(recordFile, "utf8"));
+    expect(currentRecord.externalInstance).not.toEqual(oldRecord.externalInstance);
+    expect(currentRecord.externalInstance.sha256).toBe(f.local.adapter_modules[0]!.sha256);
+    expect((await client.request({ t: "status" })).status.ownerIsolation[id]).toBe(true);
+    expect(f.records()).toHaveLength(count + 1);
+    expect(f.protocol(id).filter(row => row.method === "session/new")).toHaveLength(2);
+    expect(f.protocol(id).filter(row => row.method === "session/load")).toHaveLength(0);
+  } finally { client?.close(); await target?.stop(); await f.close(); }
+}, 20_000);
+
 test("#754 ACP startup may authenticate its pending MCP socket without granting tools before bus admission", async () => {
   const f = await fixture(), original = AcpPeer.prototype.start;
   let nativeStarted = false, release!: () => void;
@@ -361,7 +395,7 @@ for (const refusal of ["pin", "syntax"] as const) test(`#754 a ${refusal}-refuse
     expect(effective.peers).not.toHaveProperty("fixture-writer");
     expect(JSON.parse(readFileSync(f.localFile, "utf8"))).toMatchObject({ permission_modes: { "fixture-writer": "ask" }, peers: { "fixture-writer": { start_mode: "headless" } } });
     for (const id of MODULE_IDS) {
-      expect(status.externalInstanceCatalog.instances.find((row: any) => row.id === id)).toMatchObject({ id, kind: "fixture", availability: "refused", refusalCode: "module-refused", roles: [] });
+      expect(status.externalInstanceCatalog.instances.find((row: any) => row.id === id)).toMatchObject({ id, kind: "fixture", availability: "refused", refusalCode: "kind-unavailable", roles: [] });
       expect(status.activeInstances).not.toContain(id);
       expect(status.peers[id]?.externalInstance).toBeUndefined();
       expect(status.ownerIsolation[id] ?? false).toBe(false);
@@ -449,6 +483,9 @@ test("#754 switching the attached branch revokes a live instance until a new exp
     expect((await f.client.request({ t: "status" })).status.ownerIsolation[id]).toBe(false);
     expect(f.daemon.bus.peers.get(id)).toBe(owner); expect(f.records()).toHaveLength(count);
     expect(JSON.parse((await f.client.request({ t: "task", op: "hub_task_list", args: {} })).text)).toEqual(JSON.parse(before.text));
+    f.git("-C", join(f.root, ".worktrees", id), "switch", id);
+    expect((await refusedTask(tools)).ok).toBe(false); // returning to the old branch cannot restore a revoked receipt
+    expect((await f.client.request({ t: "status" })).status.ownerIsolation[id]).toBe(false);
     expect((await f.client.request({ t: "peer_stop", peer: id })).ok).toBe(true);
     expect((await f.client.request({ t: "start", peer: id })).ok).toBe(true);
     expect((await f.client.request({ t: "status" })).status.ownerIsolation[id]).toBe(true);
