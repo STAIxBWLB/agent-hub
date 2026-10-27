@@ -1,9 +1,10 @@
 # Changelog
 
-Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository.
+Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the previous repository, archived on 2026-09-30 when this repository's history was rewritten; the one exception is the open smoke-check issue, formerly #12, which moved here as #1. Numbers in newer entries refer to this repository. In newer entries and the docs, `#N` is only an issue or pull request of this repository; a hub board task is written `task N`, without `#` (#879).
 
 ## Unreleased
 
+- Hub board task ids in the 0.19.0 entries, the 0.19.0 verification report and the user documents are written `task N` instead of `#N`, so GitHub no longer links them to unrelated issues (#879).
 ## 0.20.0
 
 - Pin @staix/agent-mem 0.11.0 (ranked search explanations, dated eval sets, and import and consolidation boundaries: Claude Code project-directory encoding, accepted-only relation targets, consolidation review receipts that survive pruning). Every amem that shares a memory home must run 0.11.0 or later to keep those receipts, so upgrade a global `amem` CLI too. Refs agent-mem#13.
@@ -29,10 +30,10 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 - Qwen dual output: Qwen's own background-task notice is not the person's prompt and ends no hub turn (#861).
 - Conductor operations keep their own error and are audited as refused only on an authority refusal; safe history is cached (#812, #839).
 - CI admission retries a transient GitHub 5xx or 429 twice inside its deadline and stays fail-closed otherwise (#872, #873); check-runner receipt saves are serialized per run (#867, #868).
-- The suite watchdog stops a run on lost progress, not elapsed time (#516): `scripts/progress-tee.sh` forwards bun's output and appends one byte per test result line or file header to a progress file, and `scripts/hang-watch.sh` kills a suite whose progress file has not grown for `AHUB_CHECK_QUIET_S` seconds (300 by default), printing the process table below it first. `AHUB_CHECK_HANG_S` stays as a backstop (1500 s on Linux and 1800 s on macOS in CI, with 35 and 40 minute job limits). A slow suite that keeps passing tests is no longer cut at the total bound.
+- The suite watchdog stops a run on lost progress, not elapsed time (task 516): `scripts/progress-tee.sh` forwards bun's output and appends one byte per test result line or file header to a progress file, and `scripts/hang-watch.sh` kills a suite whose progress file has not grown for `AHUB_CHECK_QUIET_S` seconds (300 by default), printing the process table below it first. `AHUB_CHECK_HANG_S` stays as a backstop (1500 s on Linux and 1800 s on macOS in CI, with 35 and 40 minute job limits). A slow suite that keeps passing tests is no longer cut at the total bound.
 - Pin @staix/agent-mem 0.10.0 (standalone MCP screening/ranking and capture-worker prefetch improvements; unchanged hub policy and storage contracts). Refs agent-mem#13.
 - Pin @staix/agent-mem 0.9.1 (split-home sync holds a verified foreign-generation prune as "held, not applied" instead of refusing the sync, cached MCP policy screening, `--capture-days` claude-mem capture import; 0.9.0 was never published). Refs agent-mem#13.
-- Tests and docs: the snapshot clock is held in the projection-surface daemons (#515, #854), benchmark Python bytecode is ignored (#840), and the cut-payload guard is stated as refusing session-wide grants (#843, #860).
+- Tests and docs: the snapshot clock is held in the projection-surface daemons (task 515, #854), benchmark Python bytecode is ignored (#840), and the cut-payload guard is stated as refusing session-wide grants (#843, #860).
 
 ## 0.18.0
 
