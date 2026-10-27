@@ -165,9 +165,14 @@ test("#525-6 authenticated Claude planner facts withhold mutation grants in ever
     for (const mode of ["ask", "ask-when-needed", "never-ask"]) {
       for (const peer of ["claude-plan", "claude"]) expect(await f.console_.request({ t: "permission", peer, mode, confirmed: true })).toMatchObject({ ok: true });
       for (const tool of ["Write", "Edit", "MultiEdit", "NotebookEdit", "Bash"]) {
-        expect(await planner.facts(tool)).toMatchObject({ ok: true, permission: mode, mutationGrants: false });
-        expect(await builtin.facts(tool)).not.toHaveProperty("mutationGrants");
+        const planReply = await planner.facts(tool), builtinReply = await builtin.facts(tool);
+        expect(planReply).toMatchObject({ ok: true, permission: "ask", mutationGrants: false });
+        // Older hooks only know permission: the daemon must withhold their automatic mutation grant too.
+        expect(planReply.permission).not.toBe("never-ask");
+        expect(builtinReply).toMatchObject({ permission: mode });
+        expect(builtinReply).not.toHaveProperty("mutationGrants");
       }
+      expect((await f.status()).peers["claude-plan"].permissionMode).toBe(mode);
     }
     const privateText = "PII_FIXTURE private fixture text";
     const proposed = await f.console_.request({ t: "task", op: "hub_task_propose", args: { title: privateText, class: "implement" } });

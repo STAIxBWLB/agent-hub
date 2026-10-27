@@ -7006,7 +7006,9 @@ export async function startDaemon(opts: DaemonOptions) {
           // Always-ask (#636): a classed call is asked about in every permission mode. The hub names only the classes, under the same verified root as the file policy above; the hook turns them into `ask`.
           const actionClasses = phase === "pre" && permission !== undefined && typeof msg.tool === "string" ? claudeActionClasses(actionBudgets, msg.tool, msg.input, writeRoot ?? opts.cwd) : [];
           const plannerOnly = !!declarations[peer] && definitionOf(peer)?.transport === "claude-channel" && isPlannerOnly(config.roles[peer] ?? []);
-          const permissionReply = phase === "pre" && permission !== undefined ? { permission: permission === "ask-when-needed" && protectedWrite ? "ask" : permission, projectRoot: writeRoot ?? opts.cwd, protectInstructionFiles: config.protect_instruction_files, ...(plannerOnly ? { mutationGrants: false } : {}), ...(actionClasses.length ? { actionClasses } : {}) } : {};
+          // Older hooks do not know mutationGrants; the existing permission field must also withhold their mutation grant.
+          const plannerMutation = plannerOnly && !["Read", "LS", "Glob", "Grep"].includes(tool);
+          const permissionReply = phase === "pre" && permission !== undefined ? { permission: plannerMutation || permission === "ask-when-needed" && protectedWrite ? "ask" : permission, projectRoot: writeRoot ?? opts.cwd, protectInstructionFiles: config.protect_instruction_files, ...(plannerOnly ? { mutationGrants: false } : {}), ...(actionClasses.length ? { actionClasses } : {}) } : {};
           // Permission-only hooks carry no native-turn evidence and must never drive busy state.
           const purpose = permissionLaunch?.hookPurpose ?? msg.hookPurpose;
           const observesNative = purpose === "facts" || purpose === "idle" || purpose === "facts-and-idle" || (purpose === undefined && (config.coordination === "turn-free" || config.task_sweep.enabled || config.roles[peer]?.includes("conductor")));

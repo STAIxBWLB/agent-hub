@@ -3476,8 +3476,8 @@
     {
       "id": "claude-planner-mutation-ceiling",
       "file": "src/hub/daemon.ts",
-      "search": "...(plannerOnly ? { mutationGrants: false } : {})",
-      "replacement": "...{}",
+      "search": "const plannerOnly = !!declarations[peer] && definitionOf(peer)?.transport === \"claude-channel\" && isPlannerOnly(config.roles[peer] ?? []);",
+      "replacement": "const plannerOnly = false;",
       "testFile": "test/role-stage-daemon-345.test.ts",
       "testName": "#525-6 authenticated Claude planner facts withhold mutation grants in every mode while builtin behavior remains unchanged"
     },
