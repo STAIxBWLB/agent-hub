@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { hubGitSync } from "../src/hub/git.ts";
 import { readMemoryCodeHead } from "../src/hub/memory-code-head.ts";
@@ -16,6 +17,10 @@ test("#367 cached HEAD proof notices branch movement and packed refs without lau
   const f = fixture(), bin = join(f.root, "bin"), calls = join(f.root, "git-calls"), original = process.env.PATH, actual = Bun.which("git")!;
   mkdirSync(bin); const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
   writeFileSync(join(bin, "git"), ["#!/bin/sh", `printf git >> ${quote(calls)}`, `exec ${quote(actual)} "$@"`, ""].join("\n")); chmodSync(join(bin, "git"), 0o755);
+  // #519: the first run of a newly written executable costs about 250 ms on macOS (measured 250, 269 and 369 ms against 6 to 8 ms for every later run), which is the whole
+  // 250 ms bound of the product's one Git probe: cold, this test failed 24 of 30 isolated runs with `proof` undefined (the probe failing closed). The shim is run once here, outside
+  // the measured region, and its call log cleared, so the probe below is exercised under the real bound and must still launch exactly one Git and none per read.
+  spawnSync(join(bin, "git"), ["--version"], { stdio: "ignore" }); rmSync(calls, { force: true });
   process.env.PATH = `${bin}:${original}`;
   let proof: ReturnType<typeof readMemoryCodeHead>;
   try { proof = readMemoryCodeHead(f.repo); expect(proof?.head).toBe(f.head);
