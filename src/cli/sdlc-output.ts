@@ -219,7 +219,7 @@ export function renderSdlcMetrics(result: unknown, columns?: number, now = Date.
   if (st) out.push(blank, ...pair("stalls", `${st.open ?? 0} open${Object.keys(st.byKind ?? {}).length ? ` (${Object.entries(st.byKind).map(([k, n]) => `${k} ${n}`).join(", ")})` : ""}, ${st.doneWithoutWrites ?? 0} done without writes`, columns, 10, st.open ? "attention" : undefined));
   if (m?.bands === "off" || m?.bands === undefined) out.push(...pair("bands", "off", columns, 10, "muted"));
   else {
-    out.push(blank, ...grid(["BAND", "TIER", "BASELINE", "LAST", "Z", "TASK"], list(m.bands).map((b: any) => [s(String(b.metric).replaceAll("_", " ")), s(b.tier, BAND_TONE[b.tier] ?? undefined), s(count(b.baseline)), s(count(b.last)), s(count(b.z)), s(b.lastTask ? `#${b.lastTask}` : "-", "taskRef")]), columns));
+    out.push(blank, ...grid(["BAND", "TIER", "BASELINE", "LAST", "Z", "SUBJECT"], list(m.bands).map((b: any) => [s(String(b.metric).replaceAll("_", " ")), s(b.tier, BAND_TONE[b.tier] ?? undefined), s(count(b.baseline)), s(count(b.last)), s(count(b.z)), s(b.lastTask ? `${b.subject === "release" ? "release " : b.subject === "scan" ? "scan " : ""}#${b.lastTask}` : "-", "taskRef")]), columns));
     for (const b of list(m.bands)) if (b.reason && b.tier !== "ok") out.push(...para(`${String(b.metric).replaceAll("_", " ")}: ${b.reason}`, columns, "muted", "  ", 2));
   }
   return out;

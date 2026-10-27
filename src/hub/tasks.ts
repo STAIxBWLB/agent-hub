@@ -3188,7 +3188,7 @@ export class Tasks {
     const scoped = current.filter(task => visiblePrs.has(task.sdlc!.pr!) && !this.isPii(task));
     const scopedIds = new Set(scoped.map(task => task.id));
     const stalls = { noWrites: this.stalled().filter(stall => stall.cause.kind === "no-writes" && scopedIds.has(stall.task)).length, doneWithoutWrites: scoped.filter(task => task.history.findLast(entry => entry.event === "done")?.noWrites).length };
-    return { ...report, stalls, truncated: report.truncated || incomplete, ...(current.some(task => this.isPii(task)) ? { privateTasks: "withheld" } : {}), bands: "S7 pending" };
+    return { ...report, stalls, truncated: report.truncated || incomplete, ...(current.some(task => this.isPii(task)) ? { privateTasks: "withheld" } : {}), bands: "see ahub sdlc metrics" };
   }
 
   async planReviewGap(task: Task): Promise<string | undefined> {
