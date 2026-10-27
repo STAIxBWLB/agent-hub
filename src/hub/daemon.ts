@@ -773,7 +773,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const capableRoles = candidates.filter(role => (!definition.routing?.allowedRoles || definition.routing.allowedRoles.includes(role))
       && (role !== "planner" || (fixed ? definition.projection?.plannerEligible === true : !declaration && definition.roles.includes(role)))
       && (fixed || role !== "conductor"));
-    const form = !declaration ? startMode(peer) : definition.instances?.mode === "external"
+    const owner = bus.peers.get(peer);
+    const form = !declaration ? owner && "form" in owner ? owner.form : startMode(peer) : definition.instances?.mode === "external"
       ? (config.roles[peer] ?? []).some(role => role === "implementer" || role === "verifier") ? "terminal-implementer" : "channel" : "headless";
     return { form, capableRoles: [...capableRoles] };
   }

@@ -9,6 +9,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
 import { claudeStateFile } from "../src/hub/claude-state.ts";
+import type { PeerAdapter } from "../src/hub/peers.ts";
 import type { InstanceConfig } from "../src/hub/instances.ts";
 
 const until = async (condition: () => boolean, label: string) => {
@@ -237,4 +238,15 @@ test("#525-6 a role change while startup awaits cannot admit a planner in an old
     expect(f.daemon.bus.stateOf("codex-moving")).toBe("offline");
     expect(rows(f.appRequests).filter(row => row.method === "thread/start" || row.method === "turn/start")).toHaveLength(0);
   } finally { release(); await starting; CodexPeer.prototype.start = original; await f.close(); }
+}, 20_000);
+
+test("#525-6 builtin form reports the active adapter port and keeps an explicit unknown form unknown", async () => {
+  const f = await fixture();
+  const peer: PeerAdapter = { id: "kimi", state: "idle", form: "headless", start: async () => {}, stop: async () => {}, deliver: async () => {} };
+  try {
+    f.daemon.bus.add(peer);
+    expect((await f.status()).roleInfo.kimi.form).toBe("headless");
+    Object.defineProperty(peer, "form", { value: undefined });
+    expect((await f.status()).roleInfo.kimi).not.toHaveProperty("form");
+  } finally { await f.close(); }
 }, 20_000);
