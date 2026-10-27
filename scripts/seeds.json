@@ -3440,6 +3440,22 @@
       "replacement": "START_MODE_PEERS: ordered(\"startRank\", definition => definition.start.forms.includes(\"tui\") && definition.start.forms.includes(\"headless\") && definition.kind !== \"jcode\"),",
       "testFile": "test/adapter-catalog-a2.test.ts",
       "testName": "A2 catalog projections retain exact legacy orders and source-probe compatibility"
+    },
+    {
+      "id": "external-review-request-fence",
+      "file": "src/hub/tasks.ts",
+      "search": "    const valid = (): Task => {\n      requestCheck();\n      const refused = authority?.();",
+      "replacement": "    const valid = (): Task => {\n      const refused = authority?.();",
+      "testFile": "test/external-instance-review.test.ts",
+      "testName": "#754 a revoked continuing review cannot save approved after privacy screening"
+    },
+    {
+      "id": "external-lifecycle-request-fence",
+      "file": "src/hub/tasks.ts",
+      "search": "    const records = await this.hashClaims(claims, task, true);\n    requestCheck();\n    const current = this.need(id, false, true);",
+      "replacement": "    const records = await this.hashClaims(claims, task, true);\n    const current = this.need(id, false, true);",
+      "testFile": "test/external-instance-review.test.ts",
+      "testName": "#754 fixture-reviewer cannot record lifecycle deliverables after authority loss during the real hash"
     }
   ]
 }
