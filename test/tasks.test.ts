@@ -601,6 +601,18 @@ test("a class without a check completes at once; a task that moved on during its
   expect(board.get(t.id)!.history.find((h) => h.event === "check finished late")!.note).toBe("make test -> timed out");
 });
 
+test("a shell branch binding written while the class check runs is bookkeeping: the check result still completes the task (#880)", async () => {
+  const { tasks, board, peers, release } = await checked({ code: 0, timedOut: false, tail: "" });
+  const t = await tasks.propose("codex", { title: "fix", class: "implement", owner: "codex" });
+  await tasks.done("codex", t.id, "fixed");
+  // What Tasks.bindShellBranch writes (#845): one hub entry that only sets refs.branch.
+  board.update(t.id, HUB, "shell branch bound", { refs: { branch: "feature/fix" } }, JSON.stringify({ branch: "feature/fix", worktree: "0".repeat(64) }));
+  release();
+  await until(() => board.get(t.id)!.state === "in_review");
+  expect(board.get(t.id)!.history.some((h) => h.event === "check finished late")).toBe(false);
+  expect(peers.claude!.got.some((e) => e.kind === "review")).toBe(true);
+});
+
 test("a task that left and came back does not take its old check's result; its owner is asked to mark it done again", async () => {
   const { tasks, board, peers, release } = await checked({ code: 0, timedOut: false, tail: "" });
   const t = await tasks.propose("codex", { title: "fix", class: "implement", owner: "codex" });
