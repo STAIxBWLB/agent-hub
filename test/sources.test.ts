@@ -314,25 +314,54 @@ test("a registration waits for a live holder and gives up with the lock named, n
   expect(registry.list()).toEqual([]);
 });
 
-test("a lock whose holder is gone is taken over, and the lock is released after the add, also when it fails", () => {
+test("a lock whose holder is gone is never removed on anyone's behalf: the add fails closed naming the file, and the lock file is untouched", () => {
   const dir = state(), registry = new SourceRegistry(dir, { lockWaitMs: 2000 });
-  hold(dir, { pid: process.pid, signature: "0".repeat(64) }); // this pid, another process identity: a reused pid
+  hold(dir, { pid: process.pid, signature: "0".repeat(64) }); // this pid, another process identity: a reused pid, so the holder is gone
+  const before = statSync(lockFile(dir));
+  expect(() => registry.add({ bytes: bytes("x"), kind: "file", origin: "/x", private: false })).toThrow("never removed automatically");
+  const after = statSync(lockFile(dir));
+  expect([after.ino, after.dev]).toEqual([before.ino, before.dev]);
+  expect(readFileSync(lockFile(dir), "utf8")).toContain("0".repeat(64));
+  expect(registry.list()).toEqual([]);
+  rmSync(lockFile(dir)); // the person's repair
   expect(registry.add({ bytes: bytes("x"), kind: "file", origin: "/x", private: false }).created).toBe(true);
   expect(existsSync(lockFile(dir))).toBe(false);
+});
+
+test("the lock is released after the add, also when it fails, and no temp file is left behind", () => {
+  const dir = state(), registry = new SourceRegistry(dir, { lockWaitMs: 2000 });
   expect(() => registry.add({ bytes: bytes("x"), kind: "file", origin: "bad\norigin", private: false })).toThrow();
   const original = SourceRegistry.prototype.get;
   SourceRegistry.prototype.get = () => { throw new Error("boom"); };
   try { expect(() => registry.add({ bytes: bytes("y"), kind: "file", origin: "/y", private: false })).toThrow("boom"); } finally { SourceRegistry.prototype.get = original; }
   expect(existsSync(lockFile(dir))).toBe(false);
+  expect(readdirSync(join(dir, "sources")).filter(name => name.startsWith(".lock"))).toEqual([]);
 });
 
-test("a lock file nobody finished writing is stale after a grace period, and a fresh one is waited for", () => {
+test("a lock file is never seen half written: it is linked in whole, so a contender always reads an owner", () => {
   const dir = state(), registry = new SourceRegistry(dir, { lockWaitMs: 100 });
-  mkdirSync(join(dir, "sources"), { recursive: true }); writeFileSync(lockFile(dir), "");
-  expect(() => registry.add({ bytes: bytes("x"), kind: "file", origin: "/x", private: false })).toThrow("holds");
-  const old = new Date(Date.now() - 60_000);
-  utimesSync(lockFile(dir), old, old);
-  expect(registry.add({ bytes: bytes("x"), kind: "file", origin: "/x", private: false }).created).toBe(true);
+  let seen: string | undefined;
+  const original = SourceRegistry.prototype.get;
+  SourceRegistry.prototype.get = function (this: SourceRegistry, id: string) { seen = readFileSync(lockFile(dir), "utf8"); return original.call(this, id); };
+  try { registry.add({ bytes: bytes("z"), kind: "file", origin: "/z", private: false }); } finally { SourceRegistry.prototype.get = original; }
+  expect(JSON.parse(seen!)).toEqual({ pid: process.pid, signature: processSignature(process.pid) ?? null });
+});
+
+test("several processes finding a dead holder's lock at once all fail and none removes it, so none runs beside another", async () => {
+  // The reviewed interleaving: two recoverers inspect the same stale lock, one removes it and takes a new one, the other's removal then deletes the new lock.
+  // With no removal at all, that cannot happen: every contender fails, the lock file is the same one, and nothing was registered.
+  const dir = state(), module = join(import.meta.dir, "..", "src", "hub", "sources.ts"), script = join(dir, "recover.ts");
+  hold(dir, { pid: process.pid, signature: "0".repeat(64) });
+  const before = statSync(lockFile(dir));
+  writeFileSync(script, `import { SourceRegistry } from ${JSON.stringify(module)};
+try { new SourceRegistry(process.argv[2]!, { lockWaitMs: 3000 }).add({ bytes: Buffer.from("race " + process.argv[3]), kind: "file", origin: "/r", private: process.argv[3] === "1" }); console.log("ADDED"); }
+catch (error) { console.log("REFUSED " + (error as Error).message.includes("never removed automatically")); }`);
+  const procs = Array.from({ length: 8 }, (_, i) => Bun.spawn([process.execPath, script, dir, String(i)], { stdout: "pipe", stderr: "pipe" }));
+  const outputs = await Promise.all(procs.map(async proc => { const text = await new Response(proc.stdout).text(); await proc.exited; return text.trim(); }));
+  expect(outputs).toEqual(Array(8).fill("REFUSED true"));
+  const after = statSync(lockFile(dir));
+  expect([after.ino, after.dev]).toEqual([before.ino, before.dev]);
+  expect(new SourceRegistry(dir).list()).toEqual([]);
 });
 
 test("separate processes adding the same bytes, some private and some public, always leave the record private", async () => {

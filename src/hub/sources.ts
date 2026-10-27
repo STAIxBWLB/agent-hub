@@ -21,9 +21,8 @@ export const MAX_ORIGIN_CHARS = 2000;
  */
 export const MAX_META_BYTES = 2 * 1024 * 1024;
 export const MAX_SOURCE_TEXT = MAX_SOURCE_BYTES;
-/** How long a registration waits for another process's registration before it gives up (never steals a live holder's lock). */
+/** How long a registration waits for another process's registration before it gives up. A lock is never taken from its holder. */
 export const LOCK_WAIT_MS = 10_000;
-const LOCK_UNNAMED_MS = 2_000;
 const ID = /^src:[0-9a-f]{16}$/;
 export type SourceKind = "file" | "url";
 export interface SourceOrigin { kind: SourceKind; origin: string; added_at: number; private: boolean }
@@ -115,28 +114,32 @@ export class SourceRegistry {
     try { return boundedRead(join(this.dir(id), "text"), MAX_SOURCE_TEXT).toString("utf8"); } catch { return undefined; }
   }
 
-  /** The registry-wide lock: a file created exclusively (`wx`), holding the owner's pid and process signature. Never stolen from a live or unknown holder. */
+  /**
+   * The registry-wide lock, and the only way a registration is serialized. It is published whole by `link(2)` of a fully written temp file (atomic, fails with
+   * EEXIST when held), so a lock file never exists without its owner's pid and process signature. It is removed only by its own holder, when the registration ends.
+   * It is NEVER removed on someone else's behalf: "check that the holder is gone, then unlink" is two steps, and a second recoverer that already passed the check
+   * would delete the first recoverer's fresh lock and run beside it, so a stale public write could overwrite a private upgrade. No filesystem call removes a file only
+   * if it is still the one that was inspected, so a lock whose holder is gone fails closed and the person repairs it (the error says how).
+   */
   private locked<T>(action: () => T): T {
-    const lock = join(this.root, ".lock"), mine = JSON.stringify({ pid: process.pid, signature: processSignature(process.pid) ?? null });
+    const lock = join(this.root, ".lock"), temp = `${lock}.${crypto.randomUUID()}.tmp`;
     const deadline = Date.now() + this.lockWaitMs;
+    writeFileSync(temp, JSON.stringify({ pid: process.pid, signature: processSignature(process.pid) ?? null }), { mode: 0o600, flag: "wx" });
     let held = false;
-    for (;;) {
-      try { writeFileSync(lock, mine, { mode: 0o600, flag: "wx" }); held = true; break; }
-      catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        let owner: { pid?: unknown; signature?: unknown } | undefined, seen: { dev: number; ino: number; age: number } | undefined;
-        try { const stat = lstatSync(lock); seen = { dev: stat.dev, ino: stat.ino, age: Date.now() - stat.mtimeMs }; owner = JSON.parse(readFileSync(lock, "utf8")); } catch { owner = undefined; }
-        // A lock file nobody finished writing (a crash between create and write) names no owner: after a grace period it is stale too.
-        const state = owner ? processLiveness(owner.pid, typeof owner.signature === "string" ? owner.signature : null) : seen && seen.age > LOCK_UNNAMED_MS ? "gone" : "unknown";
-        // Only a holder proven gone loses its lock, and only the file that was inspected is removed (an inode check, so a newer holder's lock survives).
-        if (state === "gone") {
-          try { const now = lstatSync(lock); if (seen && now.ino === seen.ino && now.dev === seen.dev) unlinkSync(lock); } catch { /* another process took it over first */ }
-          continue;
+    try {
+      for (;;) {
+        try { linkSync(temp, lock); held = true; break; }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+          let owner: { pid?: unknown; signature?: unknown } | undefined;
+          try { owner = JSON.parse(readFileSync(lock, "utf8")); } catch { owner = undefined; }
+          const state = owner ? processLiveness(owner.pid, typeof owner.signature === "string" ? owner.signature : null) : "unknown";
+          if (state === "gone") throw new Error(`${lock} was left by a registration that is gone (pid ${String(owner?.pid)}); it is never removed automatically. Once no \`ahub source\` runs, delete that file and try again`);
+          if (Date.now() >= deadline) throw new Error(`another ahub source registration holds ${lock}${owner ? ` (pid ${String(owner.pid)})` : ""}; try again in a moment`);
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
         }
-        if (Date.now() >= deadline) throw new Error(`another ahub source registration holds ${lock}; try again in a moment (a stale lock is only removed once its process is gone)`);
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
       }
-    }
+    } finally { try { unlinkSync(temp); } catch { /* the temp name is ours alone */ } }
     try { return action(); }
     finally { if (held) { try { unlinkSync(lock); } catch { /* already gone */ } } }
   }
