@@ -249,3 +249,67 @@ test("the schedule source id form is the registry's: both accept and refuse the 
     expect(SOURCE_ID.test(id), id).toBe(validSourceId(id));
   }
 });
+
+/** A fixture whose PII screen the test holds open: the screen is a model call in production, and that await is where a hold can begin. */
+async function screened() {
+  const screen: { entered: number; release?: () => void } = { entered: 0 };
+  const hold = { on: false };
+  const f = await fixture({
+    sweepHeld: () => hold.on,
+    routing: () => { const routing = loadRouting(join(tmpdir(), "no-such-routing-dir")); return { ...routing, signals: { ...routing.signals, pii_screen: "local" as const }, constraints: { ...routing.constraints, pii: "local_only" as const } }; },
+    piiScreen: () => new Promise(resolve => { screen.entered++; screen.release = () => resolve({ label: "clear", ms: 0 }); }),
+  });
+  return { ...f, screen, hold };
+}
+const until = async (condition: () => boolean) => { for (let i = 0; i < 400 && !condition(); i++) await new Promise(resolve => setTimeout(resolve, 5)); expect(condition()).toBe(true); };
+
+test("a hold that begins while the PII screen is awaited stops the write: nothing is proposed, the tick counts as a skip, and the next one runs", async () => {
+  const f = await screened(), e = entry({ id: "late" });
+  await f.tasks.proposeFromSchedules(f.store, [e], T0);
+  const pass = f.tasks.proposeFromSchedules(f.store, [e], T0 + HOUR);
+  await until(() => f.screen.entered === 1); // admitted: not held, the screen is now pending
+  f.hold.on = true; // recovery, shutdown or a storage error begins during the screen
+  f.screen.release!();
+  expect(await pass).toEqual([{ id: "late", outcome: "held" }]);
+  expect(f.board.list()).toHaveLength(0);
+  expect(f.store.get("late")).toMatchObject({ coalesced: 1, last_run: null, last_error: null });
+  f.hold.on = false;
+  const next = f.tasks.proposeFromSchedules(f.store, [e], T0 + 2 * HOUR);
+  await until(() => f.screen.entered === 2);
+  f.screen.release!();
+  expect(await next).toMatchObject([{ id: "late", outcome: "ran" }]);
+  expect(f.board.list()).toHaveLength(1);
+  expect(f.store.get("late")!.coalesced).toBe(0);
+});
+
+test("the extra hold (the daemon's test seam) is fenced at the write too", async () => {
+  const f = await screened(), e = entry({ id: "late" });
+  let extra = false;
+  await f.tasks.proposeFromSchedules(f.store, [e], T0, () => extra);
+  const pass = f.tasks.proposeFromSchedules(f.store, [e], T0 + HOUR, () => extra);
+  await until(() => f.screen.entered === 1);
+  extra = true;
+  f.screen.release!();
+  expect(await pass).toEqual([{ id: "late", outcome: "held" }]);
+  expect(f.board.list()).toHaveLength(0);
+});
+
+test("a hold that begins during the screen is not recorded as the schedule's error", async () => {
+  const f = await screened(), e = entry({ id: "late" });
+  await f.tasks.proposeFromSchedules(f.store, [e], T0);
+  const pass = f.tasks.proposeFromSchedules(f.store, [e], T0 + HOUR);
+  await until(() => f.screen.entered === 1);
+  f.hold.on = true;
+  f.screen.release!();
+  await pass;
+  expect(f.store.get("late")!.last_error).toBeNull();
+});
+
+test("an ordinary propose is not fenced by the schedules hold: only a scheduled run asks it", async () => {
+  const f = await screened();
+  f.hold.on = true;
+  const made = f.tasks.propose("user", { title: "by a person", class: "plan", backlog: true });
+  await until(() => f.screen.entered === 1);
+  f.screen.release!();
+  expect((await made).title).toBe("by a person");
+});

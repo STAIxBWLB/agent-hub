@@ -434,9 +434,9 @@ export class Tasks {
   };
 
   /** One bounded screen call. A screener that fails is no verdict, handled as PII (fail closed). */
-  private requestCheck(by: PeerId): () => void {
+  private requestCheck(by: PeerId, fence?: () => string | undefined): () => void {
     const authority = this.d.requestAuthority?.(by);
-    const check = () => { const reason = authority?.(); if (reason) throw new PreEffectToolRefusal(reason); };
+    const check = () => { const reason = authority?.() ?? fence?.(); if (reason) throw new PreEffectToolRefusal(reason); };
     check(); return check;
   }
 
@@ -1800,8 +1800,8 @@ export class Tasks {
     return updated; // a failed readback may follow a durable release write
   }
 
-  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; backlog?: unknown; goal?: unknown }, external?: GitHubSource, created?: () => void): Promise<Task> {
-    const requestCheck = this.requestCheck(by);
+  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; backlog?: unknown; goal?: unknown }, external?: GitHubSource, created?: () => void, fence?: () => string | undefined): Promise<Task> {
+    const requestCheck = this.requestCheck(by, fence);
     external = external ? { ...external } : undefined;
     if (external && (by !== USER || input.backlog !== true)) throw new PreEffectToolRefusal("external intake requires person-owned backlog staging");
     if (input.backlog !== undefined && typeof input.backlog !== "boolean") throw new PreEffectToolRefusal("backlog must be a boolean");
@@ -3182,15 +3182,21 @@ export class Tasks {
       for (const entry of entries) {
         const row = store.ensure(entry.id, now);
         if (now < row.anchor + parseEvery(entry.every)) continue;
-        if (this.schedulesHeld() || extraHold()) { store.skipped(entry.id); out.push({ id: entry.id, outcome: "held" }); continue; }
+        const hold = () => this.schedulesHeld() || extraHold() ? "the hub is held" : undefined;
+        if (hold()) { store.skipped(entry.id); out.push({ id: entry.id, outcome: "held" }); continue; }
         const open = this.openScheduled().get(entry.id);
         if (open !== undefined) { store.skipped(entry.id); out.push({ id: entry.id, outcome: "waiting", task: open }); continue; }
+        // The PII screen and triage are awaited inside `propose`, and a hold can begin during them (shutdown, recovery, a storage error). `propose` asks this fence
+        // again right before its board write, so a run that was admitted and then overtaken by a hold writes nothing and counts as a skip, like one held at the start.
+        let overtaken = false;
+        const fence = () => { const reason = hold(); if (reason) overtaken = true; return reason; };
         try {
           const task = await this.propose(HUB, { title: entry.title, detail: scheduledDetail(entry), class: entry.class, backlog: entry.queue === "backlog",
-            ...(entry.owner ? { owner: entry.owner } : {}) });
+            ...(entry.owner ? { owner: entry.owner } : {}) }, undefined, undefined, fence);
           store.ran(entry.id, now, task.id);
           out.push({ id: entry.id, outcome: "ran", task: task.id });
         } catch (error) {
+          if (overtaken) { try { store.skipped(entry.id); } catch { /* the store closed with the hub */ } out.push({ id: entry.id, outcome: "held" }); continue; }
           store.failed(entry.id, sanitize((error as Error).message));
           out.push({ id: entry.id, outcome: "failed" });
         }

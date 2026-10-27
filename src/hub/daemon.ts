@@ -132,7 +132,7 @@ import { SupervisionFeed } from "./supervision.ts";
 import { drainCliAudits } from "../cli/identity-audit.ts";
 import { launcherPreview } from "../cli/preview.ts";
 import { AssignmentUndeliveredError, ESCALATE_AFTER, Tasks } from "./tasks.ts";
-import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig } from "./inference.ts";
+import { DEFAULT_INFERENCE, DIGEST, Inference, screenPii, type InferenceConfig, type PiiVerdict } from "./inference.ts";
 import { ask, ASK_NOTE_TITLE, RUN_START } from "./ask.ts";
 import { currentRouting, loadRouting, detectSignals, OVERLAY_FILE, overlayToml, parseRouting, routingText, type Routing } from "./routing.ts";
 import { NEVER_EDITABLE, projectSettings, checkSettingValue, ignoredLine, pendingUndo, pendingUndoIdentity, readOverlay, restoredValue, routingCandidate, storedLocally, sharedValue, settingDef as instanceSettingDef, settingRefusal, settingRows, settingText, undoSetting, valueAt, writeConfigSetting, writeRoutingSetting, type SettingAuthority, type SettingSource, type SettingDef, type SettingRow, type SettingValue, type UndoIdentity } from "./settings.ts";
@@ -594,6 +594,8 @@ export interface DaemonOptions {
   schedulesEveryMs?: number;
   /** Test seam: an extra hold on the schedules timer, like a storage error. */
   schedulesHeld?: () => boolean;
+  /** Test seam: replaces the PII screen's model call, so a test can hold a screen open. */
+  piiScreen?: (text: string) => Promise<PiiVerdict>;
   /** Test seam: how often the scheduled security-scan baseline checks whether a scan is due, default one hour (the configured `every_h` still decides). */
   securityScanEveryMs?: number;
   /** How long a research record waits after an approval for the task's open turns to end (#247). Tests shrink this. */
@@ -1843,7 +1845,7 @@ export async function startDaemon(opts: DaemonOptions) {
     },
     triage: { classify: (title, detail) => inference?.triage(title, detail) ?? Promise.resolve(undefined), onCampus: () => onCampus() },
     // The PII screen (issue #198): the model on this machine when MLX/Ollama is enabled, else the gateway on campus only.
-    piiScreen: (text) => screenPii(text, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model }),
+    piiScreen: opts.piiScreen ?? ((text) => screenPii(text, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })),
     recordScreen: (record) => event({ type: "pii_screen", ...record }),
     quota: (): ReturnType<Budget["headroom"]> => projectBudgetHeadroom(budget.headroom(), accountMembers), // budget is built below; this runs at assignment time
     review: config.review,
@@ -2749,14 +2751,20 @@ export async function startDaemon(opts: DaemonOptions) {
   startupCleanup.push(() => schedulesStore.close());
   let schedulesTimer: ReturnType<typeof setInterval> | undefined;
   const scheduleNow = () => opts.schedulesNow?.() ?? Date.now();
-  const runSchedules = async () => {
-    if (stopping) return;
+  /** The pass in flight, so a stop can wait for it before the board and the store close. */
+  let schedulesPass: Promise<void> | undefined;
+  const runSchedules = (): Promise<void> => {
+    if (stopping || schedulesPass) return Promise.resolve();
+    schedulesPass = runSchedulesOnce().finally(() => { schedulesPass = undefined; });
+    return schedulesPass;
+  };
+  const runSchedulesOnce = async () => {
     try {
       for (const run of await tasks.proposeFromSchedules(schedulesStore, config.schedules, scheduleNow(), () => opts.schedulesHeld?.() === true)) {
         if (run.outcome === "ran") log(`schedule ${run.id}: proposed task #${run.task}`);
         else if (run.outcome === "failed") log(`schedule ${run.id}: could not propose; see ahub status`);
       }
-      writeStatus();
+      if (!stopping) writeStatus(); // a pass that ends during shutdown must not republish the status file shutdown is about to remove
     } catch (error) { log(`schedules pass failed: ${sanitize((error as Error).message).slice(0, 160)}`); }
   };
   const rescheduleSchedules = () => {
@@ -7593,11 +7601,19 @@ export async function startDaemon(opts: DaemonOptions) {
     dashboard?.stop();
     stopConfigWatch();
     clearInterval(sweepTimer);
+    clearInterval(schedulesTimer);
     tasks.stopCiWatchers(); // #785 P1b: no per-head CI watcher outlives the hub
     for (const i of intervals) clearInterval(i);
     for (const pending of checkpointWaits.values()) pending.done(undefined);
     for (const p of permissions.values()) p.done(undefined);
     try {
+      // A schedules pass may be inside its PII screen: `stopping` is set, so its fence refuses the write when the screen returns. Wait for it (bounded, the screen has
+      // its own timeout) before the peers stop, the board closes and the store closes, so no pass runs against a closed database.
+      if (schedulesPass) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([schedulesPass.catch(() => undefined), new Promise<void>(resolve => { timer = setTimeout(resolve, 5_000); timer.unref?.(); })]);
+        clearTimeout(timer);
+      }
       await Promise.all([terminalReadsStopped, codeFactsStopped, implementerShellStopped]);
       await terminalLaunches.settled();
       // A peer can still be inside memory recall or its native handshake when kill arrives.
@@ -7619,6 +7635,7 @@ export async function startDaemon(opts: DaemonOptions) {
       collectClaudeUsage();
       for (const id of [...researchPending.keys()]) writeResearch(id); // the peers have stopped, so their turns have ended
       budget.close();
+      schedulesStore.close();
       conductorHolds.close();
       executionBudget.close();
       syncStop.abort(); // a sync in flight kills its git step and ends before the store closes

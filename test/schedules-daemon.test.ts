@@ -29,13 +29,14 @@ const SHARED = {
 const SCHEDULES = [{ id: "nightly", every: "1h", class: "plan", title: "Review the nightly board" }];
 
 /** A git project whose config.json is committed (trusted for nothing machine-local) and whose config.local.json is not tracked. */
-function project(config: { shared?: Record<string, unknown>; local?: Record<string, unknown>; commitLocal?: boolean }) {
+function project(config: { shared?: Record<string, unknown>; local?: Record<string, unknown>; commitLocal?: boolean; screen?: boolean }) {
   const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-schedules-daemon-"))), state = join(dir, ".agenthub/state");
   cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   mkdirSync(join(dir, ".agenthub"));
   const git = (...args: string[]) => { const r = hubGitSync(["-C", dir, "-c", "user.name=Fixture", "-c", "user.email=fixture@localhost", ...args], { encoding: "utf8" }); expect(r.status, r.stderr).toBe(0); };
   writeFileSync(join(dir, ".agenthub/config.json"), JSON.stringify({ ...SHARED, ...config.shared }));
-  writeFileSync(join(dir, ".agenthub/routing.toml"), readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8").replace(/^pi_backend = "mlx"$/gm, 'pi_backend = "dgx"'));
+  const routing = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8").replace(/^pi_backend = "mlx"$/gm, 'pi_backend = "dgx"');
+  writeFileSync(join(dir, ".agenthub/routing.toml"), config.screen ? routing.replace(/^pii_screen = "off"/m, 'pii_screen = "local"') : routing);
   if (config.local) writeFileSync(join(dir, ".agenthub/config.local.json"), JSON.stringify(config.local));
   git("init", "-q"); git("add", "-f", ".agenthub/config.json", ".agenthub/routing.toml");
   if (config.commitLocal) git("add", "-f", ".agenthub/config.local.json");
@@ -156,4 +157,40 @@ test("a reload that adds schedules arms the timer, and removing them stops it an
   expect(preview2.ok, String(preview2.error)).toBe(true);
   if (preview2.confirmation) expect((await h.client.request({ t: "settings_reload", confirm: preview2.confirmation.token })).ok).toBe(true);
   await until(async () => (await h.status()).schedules === undefined, "removed schedules leave status");
+});
+
+test("a stop during a pending PII screen waits for the pass, writes no task, and closes the store before the board", async () => {
+  const p = project({ local: { schedules: SCHEDULES }, screen: true }), clock = { now: T0 };
+  let entered = 0, release: (() => void) | undefined;
+  const h = await start(p, clock, { piiScreen: () => new Promise(resolve => { entered++; release = () => resolve({ label: "clear", ms: 0 }); }) });
+  await until(async () => (await h.status()).schedules?.length === 1, "listed");
+  await until(() => h.anchored(), "anchored");
+  clock.now = T0 + HOUR;
+  await until(() => entered === 1, "the pass is inside the screen");
+  let stopped = false;
+  const stopping = h.daemon.stop().then(() => { stopped = true; });
+  await Bun.sleep(100);
+  expect(stopped, "stop waits for the pass in flight").toBe(false);
+  release!();
+  await stopping;
+  expect(stopped).toBe(true);
+  expect(h.scheduled()).toHaveLength(0); // the hold began during the screen, so nothing was written
+  expect(entered).toBe(1);
+});
+
+test("a stop clears the schedules timer: no pass starts after it (the pass reads the clock first, so reads are counted)", async () => {
+  const p = project({ local: { schedules: SCHEDULES } }), clock = { now: T0 };
+  let reads = 0;
+  const h = await start(p, clock, { schedulesNow: () => { reads++; return clock.now; } });
+  await until(async () => (await h.status()).schedules?.length === 1, "listed");
+  await until(() => h.anchored(), "anchored");
+  const running = reads;
+  await until(() => reads > running, "the timer is ticking before the stop");
+  await h.daemon.stop();
+  await Bun.sleep(40); // a tick already past its guard settles
+  const after = reads;
+  clock.now = T0 + 5 * HOUR;
+  await Bun.sleep(150); // ten periods of the 15 ms timer
+  expect(reads, "no pass starts once the hub has stopped").toBe(after);
+  expect(h.scheduled()).toHaveLength(0);
 });
