@@ -3,6 +3,7 @@ import { planConformanceBlockers, type PlanConformance } from "./plan-conformanc
 import { DEFAULT_MAX_NITS, findingsForHead, findingHead, findingTally, type ReviewFindingSet, type ReviewFindingTally } from "./review-findings.ts";
 import type { CostPlan } from "./cost-governance.ts";
 import { bandsConfig, type BandsConfig } from "./sdlc-metrics.ts";
+import { configPathList, evalGapBlockers, evalGateView, evalRequiredChecks, type EvalGate, type EvalResult } from "./eval-gate.ts";
 import { criteriaReceipt, type CriteriaReceipt, type CriteriaView, type LegacyPhaseReceipt } from "./workflow.ts";
 import { constants, openSync, fstatSync, readSync, closeSync } from "node:fs";
 import { join } from "node:path";
@@ -38,7 +39,7 @@ export type AutoMergeMode = "off" | "dry-run" | "on";
 export const AUTO_MERGE_MODES: readonly AutoMergeMode[] = ["off", "dry-run", "on"];
 /** #786: one repository's own gate: its required checks (before the top-level list) and its own merge mode. */
 export interface RepoMergePolicy { requiredChecks?: string[]; autoMerge?: AutoMergeMode }
-export interface SdlcConfig { workflow?: "gsd-lite"; maxNits?: number; /** #481 S7: optional control bands per metric; absent means none. */ bands?: BandsConfig; mode: SdlcMode; requiredChecks: string[]; /** #786: absent reads as "off"; written only when the file names it. */ autoMerge?: AutoMergeMode; /** #786: per-repository tables, keyed by lowercase owner/name. */ repos?: Record<string, RepoMergePolicy>; stages: SdlcStage[]; definitions?: Record<string, StageDefinition>; deprecations?: string[]; }
+export interface SdlcConfig { workflow?: "gsd-lite"; maxNits?: number; /** #481 S7: optional control bands per metric; absent means none. */ bands?: BandsConfig; /** #481 S5: the one check a configuration PR needs; no default, the person names it. */ evalCheck?: string; /** #481 S5: patterns that mark a PR as a configuration change; absent reads as the defaults in eval-gate.ts, an empty list turns the gate off. */ configPaths?: string[]; mode: SdlcMode; requiredChecks: string[]; /** #786: absent reads as "off"; written only when the file names it. */ autoMerge?: AutoMergeMode; /** #786: per-repository tables, keyed by lowercase owner/name. */ repos?: Record<string, RepoMergePolicy>; stages: SdlcStage[]; definitions?: Record<string, StageDefinition>; deprecations?: string[]; }
 export interface PlanReviewReceipt {
   planner: string;
   planAuthor?: string | null;
@@ -152,6 +153,10 @@ const checkList = (value: unknown, what: string): string[] => {
   if (!Array.isArray(value) || value.length > 32 || value.some(c => typeof c !== "string" || !c.trim() || c.length > 120 || /[\r\n\x00-\x1f]/.test(c)) || new Set(value).size !== value.length) throw new Error(`${what}: expected at most 32 unique nonempty names`);
   return [...value] as string[];
 };
+const evalCheckName = (value: unknown): string => {
+  if (typeof value !== "string" || !value.trim() || value.length > 120 || /[\r\n\x00-\x1f]/.test(value)) throw new Error("sdlc.eval_check: expected one nonempty check name");
+  return value;
+};
 const autoMergeMode = (value: unknown, what: string): AutoMergeMode => {
   if (!AUTO_MERGE_MODES.includes(value as AutoMergeMode)) throw new Error(`${what}: expected off, dry-run or on`);
   return value as AutoMergeMode;
@@ -178,11 +183,15 @@ export function sdlcConfig(value: unknown, version?: string): SdlcConfig {
   if (value === undefined) return { mode: "off", requiredChecks: [], stages: [...SDLC_STAGES] };
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("sdlc: expected a table");
   const raw = value as Record<string, unknown>;
-  for (const key of Object.keys(raw)) if (!["mode", "required_checks", "stages", "workflow", "definitions", "max_nits", "bands", "auto_merge", "repos"].includes(key)) throw new Error(`sdlc.${key}: unknown field`);
+  for (const key of Object.keys(raw)) if (!["mode", "required_checks", "stages", "workflow", "definitions", "max_nits", "bands", "auto_merge", "repos", "eval_check", "config_paths"].includes(key)) throw new Error(`sdlc.${key}: unknown field`);
   const maxNits = raw.max_nits === undefined ? DEFAULT_MAX_NITS : raw.max_nits;
   if (typeof maxNits !== "number" || !Number.isSafeInteger(maxNits) || maxNits < 0 || maxNits > 64) throw new Error("sdlc.max_nits: expected an integer from 0 to 64");
   const bands = bandsConfig(raw.bands), bandConfig = Object.keys(bands).length ? { bands } : {};
-  const findingConfig = { ...(raw.max_nits === undefined ? {} : { maxNits }), ...bandConfig };
+  const evalConfig = {
+    ...(raw.eval_check === undefined ? {} : { evalCheck: evalCheckName(raw.eval_check) }),
+    ...(raw.config_paths === undefined ? {} : { configPaths: configPathList(raw.config_paths, "sdlc.config_paths") }),
+  };
+  const findingConfig = { ...(raw.max_nits === undefined ? {} : { maxNits }), ...bandConfig, ...evalConfig };
   const mode = raw.mode ?? "off";
   if (mode !== "off" && mode !== "advise" && mode !== "enforce") throw new Error("sdlc.mode: expected off, advise or enforce");
   // ponytail: the #481 S8 window is a fixed version; delete `workflow`, the phase aliases and their tests once it passes.
@@ -336,12 +345,13 @@ export const SPEC_STATE_TEXT: Record<Exclude<SpecState, "current">, string> = {
   changed: "spec changed after acceptance: the person re-accepts with ahub sdlc accept <task> --issue <n>",
   unknown: "spec edit time unknown: the issue could not be read",
 };
-export interface SdlcStatus { testIntegrity?: TestIntegrity; planConformance?: PlanConformance & { accepted?: boolean; earlierPushes?: "unknown"; revisionsAfterFirstObservedPush?: number }; findings?: ReviewFindingTally; spec?: { issue: number; state: SpecState }; playbook?: string; criteria?: CriteriaView; mode: SdlcMode; stage: SdlcStage; definition?: StageDefinition; entry?: string[]; exit?: string[]; blockers: string[]; ready: boolean; actor: string; next: string; }
+export interface SdlcStatus { evalGate?: EvalGate; testIntegrity?: TestIntegrity; planConformance?: PlanConformance & { accepted?: boolean; earlierPushes?: "unknown"; revisionsAfterFirstObservedPush?: number }; findings?: ReviewFindingTally; spec?: { issue: number; state: SpecState }; playbook?: string; criteria?: CriteriaView; mode: SdlcMode; stage: SdlcStage; definition?: StageDefinition; entry?: string[]; exit?: string[]; blockers: string[]; ready: boolean; actor: string; next: string; }
 /** The acceptance-criteria checklist (#481 S8, Compliance pass) counts once recorded, and on every task under the retired gsd-lite setting. Off keeps #257's output. */
 export const criteriaRequired = (config: SdlcConfig, receipt: SdlcReceipt | undefined): boolean => config.workflow === "gsd-lite" || (config.mode !== "off" && !!checklistOf(receipt));
-export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined, evidence?: PrEvidence, criteria?: CriteriaView, specEdit?: SpecEdit, sets: readonly ReviewFindingSet[] = [], commit?: string, plan?: SdlcStatus["planConformance"], integrity?: TestIntegrity): SdlcStatus {
+export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined, evidence?: PrEvidence, criteria?: CriteriaView, specEdit?: SpecEdit, sets: readonly ReviewFindingSet[] = [], commit?: string, plan?: SdlcStatus["planConformance"], integrity?: TestIntegrity, evalResult?: EvalResult): SdlcStatus {
   const stage = receipt?.stage ?? config.stages[0] ?? "spec", blockers: string[] = [];
   const definition = stageDefinition(config, stage);
+  const evalGate = evidence ? evalGateView(config, evidence, evalResult) : undefined;
   const items = findingsForHead(sets, findingHead(receipt, evidence, commit));
   const findings = items.length ? findingTally(items) : undefined;
   if (config.mode === "enforce" && findings?.openImportant) blockers.push("open important review findings: " + findings.openImportant);
@@ -355,10 +365,13 @@ export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined,
     if (receipt?.reviewedHead !== evidence.head) blockers.push("current head has not been reviewed");
     if (receipt?.localHead !== evidence.head || receipt.localResult !== "passed") blockers.push("local gate on current head missing or failed");
     if (!config.requiredChecks.length) blockers.push("required check set unknown");
-    for (const name of config.requiredChecks) {
+    // #481 S5: a configuration PR also needs the configured eval check; a code-only PR is unaffected.
+    for (const name of [...new Set([...config.requiredChecks, ...evalRequiredChecks(config, evidence)])]) {
       const matches = evidence.checks.filter(c => c.name === name);
       if (!matches.length || matches.some(c => c.state !== "passed")) blockers.push(`required check ${name}: not successful on current head`);
     }
+    // Gaps in the eval evidence block only in enforce; advise shows them in `evalGate` and the advice notice (never a silent pass, never an advise block).
+    if (config.mode === "enforce") blockers.push(...evalGapBlockers(evalGate));
     if (evidence.review !== "approved") blockers.push("GitHub review approval missing or changes requested");
     if (evidence.pendingReviews !== 0) blockers.push("review requests pending or unknown");
     if (evidence.unresolved !== 0) blockers.push("review threads unresolved or unknown");
@@ -371,7 +384,7 @@ export function sdlcStatus(config: SdlcConfig, receipt: SdlcReceipt | undefined,
   const shown = criteria && (criteriaRequired(config, receipt) || definition && [...definition.entry_gates, ...definition.exit_gates].includes("criteria"));
   // Shown, not counted as a readiness blocker: the spec gate is build entry (#481 S1).
   const spec = config.mode !== "off" && receipt?.issue ? { spec: { issue: receipt.issue, state: specState(receipt, specEdit) } } : {};
-  return { ...spec, ...(config.mode !== "off" && integrity ? { testIntegrity: integrity } : {}), ...(config.mode !== "off" && plan ? { planConformance: plan } : {}), ...(findings ? { findings } : {}), ...(config.mode !== "off" && definition && playbookStage(definition.base) ? { playbook: playbookStage(definition.base) } : {}), ...(shown ? { criteria } : {}), ...(custom ? { definition, ...custom } : {}), mode: config.mode, stage, blockers, ready: blockers.length === 0,
+  return { ...spec, ...(evalGate ? { evalGate } : {}), ...(config.mode !== "off" && integrity ? { testIntegrity: integrity } : {}), ...(config.mode !== "off" && plan ? { planConformance: plan } : {}), ...(findings ? { findings } : {}), ...(config.mode !== "off" && definition && playbookStage(definition.base) ? { playbook: playbookStage(definition.base) } : {}), ...(shown ? { criteria } : {}), ...(custom ? { definition, ...custom } : {}), mode: config.mode, stage, blockers, ready: blockers.length === 0,
     actor: !definition ? "person" : shown && criteria.blockers.length ? "reviewer/person" : config.definitions ? definition.actor : baseActor(definition.base),
     // #694: the identity blocker keeps its exact text for gate matching; the next step says how to supply it.
     next: blockers[0] === "issue identity missing" ? "issue identity missing: name one issue (title #N, refs or hub_sdlc_record)" : blockers[0] ?? "person may inspect merge readiness; no automatic merge" };

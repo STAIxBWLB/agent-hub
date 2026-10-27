@@ -16,7 +16,7 @@ The built-in lifecycle follows the [AI-Native SDLC Playbook](https://claude.com/
 | spec | Design | person/planner | issue identity and scope | spec acceptance/body drift checked at build entry | person-only (acceptance) |
 | plan | Build | planner/owner | plan, branch, existing predecessor gates | current planner review required at build admission; literal-path conformance gates approval in enforce | agent-executable |
 | build | Build | owner | PR identity/current head and local check on that head | entering review, when enabled | agent-executable |
-| test | Test | verifier/reviewer | required checks and local gate on the reviewed head | approval, when enabled; bug test integrity below, evals pending S5 | agent-executable |
+| test | Test | verifier/reviewer | required checks and local gate on the reviewed head | approval, when enabled; bug test integrity and the configuration-PR eval gate below | agent-executable |
 | review | Deploy | assigned reviewer | current head-bound verdict, no pending change request/open thread; AC checklist under Compliance | approval, when enabled; open Important findings block in enforce | agent-executable |
 | merge | Deploy | person | current-head readiness, ordered touching PRs | shown; the guarded merge below runs only when `auto_merge` is `on` (default off) | agent-executable where the project's AGENTS.md delegates it to the approving reviewer (this repository does, #784); the hub still shows the person as actor |
 | release | Deploy | person | merged commit, version/tag, docs freshness/live receipt checklist | person authorization and optional tag hook below | agent-evidence / person-verdict (consent) |
@@ -33,7 +33,7 @@ Stored `implement` and `verify` stage ids read as `build` and `test`. A write th
 | S2 | Accepted plan and diff conformance | Bounded proof/risks, metadata-only plan conformance and person-bound departure acceptance |
 | S3 | Bugs, Security and Compliance review passes | Head-bound findings, configured nit cap, Important approval gate and recurring-finding amendment proposals |
 | S4 | Red-first tests and test integrity | Bug-label metadata, source-labelled red-first proof and changed pre-existing test blockers |
-| S5 | Continuous evals for agent configuration | Pending gate, dependent on #251/#266; no eval pass claimed |
+| S5 | Continuous evals for agent configuration | Gate mechanism only: `config_paths` mark a configuration PR and the configured `eval_check` is then required, with its pass rate and suite version recorded. No suite is chosen, created or defaulted: suite choice pending the person (#251/#266) |
 | S6 | Production approval gate | Person-only commit/version/docs receipt and opt-in Git tag pre-push guard; report stays read-only |
 | S7 | Metrics, deterministic control bands and follow-up intent | `ahub sdlc metrics`, optional `[bands]` with log, diagnose and propose tiers, one card per breach episode; no PR readback and no security baseline (design spec amendment) |
 | S8 | Compliance acceptance-criteria checklist | Head-bound checklist retained; legacy workflow and phase compatibility deprecated; task import removed |
@@ -64,11 +64,11 @@ The acceptance-criteria checklist belongs to the Compliance pass over the same b
 
 ## Delivery and verification state
 
-Head-bound review/approval gates, bounded custom definitions, read-only merge/release reports, S0/S8 vocabulary/checklist migration, S1 spec acceptance and S9 planner admission and S10 cost governance are implemented in source. S11 release-train governance ships in 0.12.37. S5, S7 and the native advise-through-merge/release cycle remain pending. S6 authorization and its optional tag hook are implemented in source. S4 test integrity is implemented in source. S2 plan conformance and S3 findings are implemented in source. Installation and native acceptance require separate receipts; a person authorization is consent, not native verification.
+Head-bound review/approval gates, bounded custom definitions, read-only merge/release reports, S0/S8 vocabulary/checklist migration, S1 spec acceptance and S9 planner admission and S10 cost governance are implemented in source. S11 release-train governance ships in 0.12.37. S5 is implemented as a gate mechanism with no suite behind it (suite choice pending the person), S7 is implemented, and the native advise-through-merge/release cycle remains pending. S6 authorization and its optional tag hook are implemented in source. S4 test integrity is implemented in source. S2 plan conformance and S3 findings are implemented in source. Installation and native acceptance require separate receipts; a person authorization is consent, not native verification.
 
 ## Initial commands
 
-A per-project `.agenthub/sdlc.toml` may set `mode = "advise"` and `required_checks = ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"]`. Omit the file for off. A missing/empty check set is unknown, never a green approval gate. The built-in stage order follows the table above; changing the file applies at the next hub start.
+A per-project `.agenthub/sdlc.toml` may set `mode = "advise"` and `required_checks = ["check (ubuntu-latest)", "check (macos-latest)", "seeded guards"]`; the optional `eval_check` and `config_paths` are described under the eval gate below. Omit the file for off. A missing/empty check set is unknown, never a green approval gate. The built-in stage order follows the table above; changing the file applies at the next hub start.
 
 A person records ids and a claimed local receipt with `ahub sdlc record 12 '{"repo":"owner/repo","issue":109,"pr":325,"localHead":"<full SHA>","localResult":"passed","stage":"build"}'`. Owners/reviewers have the bounded `hub_sdlc_record` tool; it accepts no remote bodies or external-check results. Only the assigned reviewer or person records a reviewed head. `ahub review 12 approved --head <full SHA>` rechecks current evidence before approval. Changes requested does not require green CI.
 
@@ -342,6 +342,29 @@ Example receipt (replace both SHAs):
 Status/explain and merge-queue rows expose `testIntegrity` with applicability, red-first state, file-inventory state, source labels and modified/deleted test paths. Added tests are allowed. Test paths are under `test/`, `tests/` or `__tests__/`, or have a supported `.test`/`.spec` suffix; conventional `*_test.go`, `test_*.py`, `*_test.py`, `*_spec.rb` and `*Test.java` names also count. Renames/copies, unsafe paths, missing change types and truncated inventories stay unknown. Private tasks and metadata rejected by the current host privacy policy expose a neutral unknown report; receipt metadata is screened again on public output.
 
 Reads share the existing 20 s lifecycle/queue allowance and fixed argument/output caps. Labels and check contexts are bounded to 100 each, PR commits to 100, and the red commit to fewer than 100 changed files; larger proof is unknown rather than silently accepted. The queue revalidates every linked issue's applicability with its final PR snapshot (up to 32 distinct issues). Metadata cannot detect a later commit gutting assertions in a test added by the PR; content-aware review remains required. These metadata/claim receipts do not prove a native/container run by themselves; no live advise-through-release receipt is claimed.
+
+## Eval gate for agent configuration (#481 S5)
+
+Suite choice pending the person. This slice wires the gate only. It chooses, creates and defaults to no eval suite: `eval_check` has no default, and until the person names one a configuration PR shows `eval check not configured` in its status and advice (never a silent pass) and nothing is required of it, in any mode (#251 and #266 own the suite and its smoke subset).
+
+`.agenthub/sdlc.toml` takes two optional keys, read at hub start:
+
+- `eval_check = "<check name>"`: the one check a configuration PR must have passed on its current head. One nonempty name of at most 120 characters.
+- `config_paths = ["AGENTS.md", "docs/agent-notes/**", ...]`: the patterns that mark a PR as a configuration change. At most 32 unique repository-relative patterns of literal names, `*` and `?` inside one segment, and a whole-segment `**` (`dir/**` matches everything under `dir`, never `dir` itself). Absent means the defaults: `AGENTS.md`, `docs/agent-notes/**`, `templates/**` (role texts and profiles), `.agenthub/roles/**`, `.agenthub/routing.toml`, `routing.toml` and `src/hub/hub-tools.ts` (the hub tool definitions). A list replaces the defaults, and an empty list turns the gate off. Bad values refuse at load with a field path.
+
+A PR is a configuration change when any of its changed files matches. The decision uses the PR's complete file inventory (metadata, never patches): an incomplete or truncated inventory is `eval gate: PR file coverage incomplete or unknown`, never a clean code-only PR. A code-only PR is unaffected: no extra required check, no eval read, no `evalGate` in its status or queue row, and off output stays byte for byte.
+
+For a configuration PR with an `eval_check`:
+
+- The check joins the required checks on every reading: `ahub sdlc status`, the review and approval gates, the merge queue and the guarded merge decision (`required check evals: ...`).
+- The hub reads that check run once at the exact head (fixed argv, at most 32 KiB of output and 10 s, one completed run of that exact name at that head, else unknown) and keeps only two values from its title and summary, `eval_pass_rate=<0 to 1>` and `eval_suite=<version>`. No other text is stored or shown.
+- `evalGate` in status and queue rows shows the check, its state, how many changed files matched, the pass rate and the suite version. A verdict that approves a passing check appends `Eval gate: <check> passed at <head>, pass rate <rate>, suite <version>` to the approval note, which is the recorded pass rate and suite version.
+- With an `eval_check`, a passing check that reports no pass rate or suite version and unknown file coverage are gaps. Advise shows each in `evalGate.gaps` and in the review advice notice and never blocks on it. Enforce adds each to the blockers, so the review, approval and merge gates refuse.
+- Without an `eval_check`, the gate is a note (`evalGate.notes`, `state: not_configured`) in every mode and never a blocker: an existing enforce setup gains no refusal until the person names a suite. File coverage is not judged then.
+
+The guarded merge reads the eval check run before its final PR read and judges that last reading with no remote await in between, so a change request, thread, draft or check that moves during the eval read refuses. A passed eval check on the last reading with no result read (the PR entered configuration scope after the read) counts as unreported.
+
+A private (PII) task reads no eval metadata and records none.
 
 ## Person release authorization (#481 S6)
 

@@ -4,6 +4,7 @@ import { taskShellBindingValid, type TaskShellBinding } from "./task-shell-comma
 import { buildTaskCodeSymbols, publicTaskCodeSymbols, taskCodeSymbolsDisjoint, HOST_CODE_SYMBOLS } from "./task-code-symbols.ts";
 import { normalizePlanSymbol, symbolsOverlap } from "./symbol-normalizer.ts";
 import { publicTestIntegrity, readTestIntegrity, testIntegrityBlockers, type TestIntegrity } from "./test-integrity.ts";
+import { evalAdvice, evalGapBlockers, evalRequiredChecks, readEvalFor } from "./eval-gate.ts";
 import { completePlanInventory, planConformance, planConformanceBlockers, planFingerprint, type PlanConformance } from "./plan-conformance.ts";
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, type CostPlan, type ReviewCost } from "./cost-governance.ts";
@@ -3573,11 +3574,12 @@ export class Tasks {
     const accepted = task.sdlc?.acceptance;
     const edit = accepted && !this.isPii(task) && refresh && config.mode !== "off" ? await readSpecEdit(accepted.repo, accepted.issue, read) : undefined;
     const integrity = config.mode !== "off" ? publicTestIntegrity(task.sdlc && evidence && !this.isPii(task) ? await readTestIntegrity(task.sdlc, evidence, read) : this.unknownTestIntegrity(this.isPii(task)), this.publicMetadataText) : undefined;
+    const evalResult = task.sdlc && !this.isPii(task) ? await readEvalFor(config, evidence, task.sdlc.repo, read) : undefined;
     const current = valid();
     if (this.planIdentity(current) !== this.planIdentity(task) || current.history.length !== task.history.length) throw new PreEffectToolRefusal("task changed during lifecycle readback");
     this.capturePlanRead(current, evidence);
     return sdlcStatus(config, current.sdlc, evidence, this.workflowView(current), edit, this.isPii(current) ? [] : this.reviewFindingSets(current), current.refs.commit,
-      config.mode !== "off" ? this.planReport(this.d.board.get(current.id)!, evidence) : undefined, integrity);
+      config.mode !== "off" ? this.planReport(this.d.board.get(current.id)!, evidence) : undefined, integrity, evalResult);
   }
 
   /** #481 S1: only build work starts from an accepted spec. */
@@ -3649,6 +3651,8 @@ export class Tasks {
     return { applicability: "unknown", redFirst: "unknown", fileState: "unknown", modifiedTests: [], blockers: [privateTask ? "test integrity: private evidence unavailable" : "test integrity: current evidence unknown"] };
   }
 
+  /** The eval record the last approval-time lifecycle read produced for a task; consumed by the verdict that follows it. */
+  private readonly evalRecords = new Map<number, string>();
   private async lifecycleGate(task: Task, transition: "review" | "approval", reviewedHead?: string, findings?: readonly ReviewFindingSet[]): Promise<PrEvidence | undefined> {
     const config = this.d.sdlc?.config() ?? sdlcConfig(undefined);
     if (config.mode === "off") return;
@@ -3662,16 +3666,24 @@ export class Tasks {
     };
     const evidence = receipt && !this.isPii(task) ? await readSdlcPr(receipt, read, true) : undefined;
     const integrity = publicTestIntegrity(receipt && evidence && !this.isPii(task) ? await readTestIntegrity(receipt, evidence, read) : this.unknownTestIntegrity(this.isPii(task)), this.publicMetadataText);
+    const evalResult = receipt && !this.isPii(task) ? await readEvalFor(config, evidence, receipt.repo, read) : undefined;
     const current = this.need(task.id, false, true);
     if (config.mode === "enforce" && (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state)) throw new PreEffectToolRefusal(`task #${task.id}: changed during lifecycle readback; retry on current work`);
     // Advise may continue on the current task, but evidence from its previous link cannot admit that task's review.
     if (current.history.length !== task.history.length || current.owner !== task.owner || current.reviewer !== task.reviewer || current.state !== task.state || this.isPii(current) !== this.isPii(task)) return;
     this.capturePlanRead(current, evidence);
     const planReport = this.planReport(current, evidence);
-    const status = sdlcStatus(config, receipt, evidence, this.workflowView(current), undefined, this.isPii(current) ? [] : findings ?? this.reviewFindingSets(current), current.refs.commit, planReport, integrity);
-    const blockers = transition === "review" ? [...new Set([...status.blockers.filter(blocker => ["lifecycle stage definition unknown", "issue identity missing", "PR identity missing", "current PR evidence unknown", "PR is not open", "local gate on current head missing or failed"].includes(blocker) || blocker.startsWith("test integrity:")), ...(status.entry ?? []), ...(status.exit ?? [])])] : status.blockers;
+    const status = sdlcStatus(config, receipt, evidence, this.workflowView(current), undefined, this.isPii(current) ? [] : findings ?? this.reviewFindingSets(current), current.refs.commit, planReport, integrity, evalResult);
+    // #481 S5: review entry keeps the eval gate's own blockers (its check, and in enforce its evidence gaps), like the premature-review rule does for the ordinary required checks.
+    const evalNames = evalRequiredChecks(config, evidence).filter(name => !config.requiredChecks.includes(name));
+    const evalBlocker = (blocker: string) => evalNames.some(name => blocker.startsWith(`required check ${name}:`)) || evalGapBlockers(status.evalGate).includes(blocker);
+    const blockers = transition === "review" ? [...new Set([...status.blockers.filter(blocker => ["lifecycle stage definition unknown", "issue identity missing", "PR identity missing", "current PR evidence unknown", "PR is not open", "local gate on current head missing or failed"].includes(blocker) || blocker.startsWith("test integrity:") || evalBlocker(blocker)), ...(status.entry ?? []), ...(status.exit ?? [])])] : status.blockers;
     if (config.mode === "enforce" && blockers.length) throw new PreEffectToolRefusal(`task #${task.id}: SDLC ${transition} blocked: ${blockers.join("; ")}`);
-    const advice = [...new Set([...blockers, ...planConformanceBlockers(planReport), ...testIntegrityBlockers(integrity)])];
+    // #481 S5: the recorded pass rate and suite version ride the approval note; a code-only PR, an unconfigured gate or an unreported value records nothing.
+    const gate = status.evalGate;
+    if (transition === "approval" && gate?.state === "passed" && gate.passRate !== undefined && gate.suite !== undefined && !this.isPii(task)) this.evalRecords.set(task.id, `Eval gate: ${gate.check} passed at ${evidence!.head.slice(0, 12)}, pass rate ${gate.passRate}, suite ${gate.suite}`);
+    else this.evalRecords.delete(task.id);
+    const advice = [...new Set([...blockers, ...planConformanceBlockers(planReport), ...testIntegrityBlockers(integrity), ...evalAdvice(status.evalGate)])];
     if (config.mode === "advise" && advice.length) this.d.notify(`task ${this.publicTitle(task)}: SDLC ${transition} advice: ${this.isPii(task) ? "private lifecycle evidence unknown" : advice.join("; ")}`);
     return evidence;
   }
@@ -4760,7 +4772,12 @@ export class Tasks {
         }
       }
     }
-    if (verdict === "approved" && this.d.sdlc && this.d.sdlc.config().mode !== "off") { await this.lifecycleGate(task, "approval", reviewedHead, proposedSets(task)); task = valid(); }
+    if (verdict === "approved" && this.d.sdlc && this.d.sdlc.config().mode !== "off") {
+      this.evalRecords.delete(task.id);
+      await this.lifecycleGate(task, "approval", reviewedHead, proposedSets(task)); task = valid();
+      const record = this.evalRecords.get(task.id); this.evalRecords.delete(task.id);
+      if (record) note = `${note ?? ""}\n${record}`.trim();
+    }
     let candidate: Extract<CandidateInput, { kind: "fail" }> | undefined;
     if (verdict === "changes_requested" && !evidenceOnly && items.length && this.d.candidates && !withheld && !this.isPii(task) && !this.d.privateTurn?.(by)) {
       const input: CandidateInput = { project: this.d.store?.project ?? this.d.project, kind: "fail", approach: this.publicTitle(task), symptom: items.join("\n"),

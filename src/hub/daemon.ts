@@ -5370,7 +5370,7 @@ export async function startDaemon(opts: DaemonOptions) {
       rows: report.rows.map(row => row.private || privatePrs.has(row.pr) ? { private: true, ready: false, tasks: [], after: [], blockers: ["private lifecycle evidence unavailable"] }
         : mixed ? { pr: row.pr, tasks: row.tasks.filter(id => !privateIds.has(id)), ready: false, after: [], blockers: ["private dependency evidence unavailable"] }
         : { pr: row.pr, tasks: row.tasks, head: row.head, ready: row.ready, blockers: row.blockers, after: row.after,
-          ...(row.findings ? { findings: row.findings } : {}), ...(row.planConformance ? { planConformance: row.planConformance } : {}), ...(row.testIntegrity ? { testIntegrity: row.testIntegrity } : {}) }),
+          ...(row.findings ? { findings: row.findings } : {}), ...(row.planConformance ? { planConformance: row.planConformance } : {}), ...(row.testIntegrity ? { testIntegrity: row.testIntegrity } : {}), ...(row.evalGate ? { evalGate: row.evalGate } : {}) }),
       order: mixed ? [] : report.order, ...(report.unordered ? { unordered: mixed ? [] : report.unordered } : {}), conflicts: mixed ? [] : report.conflicts });
   }
   /** A public read may use host GitHub authentication only for this project's current public scope. */
@@ -7218,7 +7218,7 @@ export async function startDaemon(opts: DaemonOptions) {
               if (tasks.isPii(now)) return { id: now.id, title: tasks.publicTitle(now), private: true };
               if (task.history.length !== now.history.length || !statuses.has(task.id)) throw new Error("task changed");
               const status = statuses.get(task.id)!;
-              const safeStatus = Object.fromEntries(["mode", "stage", "blockers", "ready", "actor", "next", "spec", "playbook", "criteria", "definition", "entry", "exit", "planConformance", "testIntegrity", "findings"].filter(key => key in status).map(key => [key, publicReadValue(status[key as keyof typeof status])]));
+              const safeStatus = Object.fromEntries(["mode", "stage", "blockers", "ready", "actor", "next", "spec", "playbook", "criteria", "definition", "entry", "exit", "planConformance", "testIntegrity", "evalGate", "findings"].filter(key => key in status).map(key => [key, publicReadValue(status[key as keyof typeof status])]));
               return { id: now.id, title: tasks.publicTitle(now), receipt: publicReadValue(tasks.publicView(now).sdlc), ...safeStatus };
             });
             current(); reply({ ok: true, public: true, mode: lifecycleConfig.mode, rows, truncated: selected.length > 100 });

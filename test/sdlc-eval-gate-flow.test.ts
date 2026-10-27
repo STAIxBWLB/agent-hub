@@ -1,0 +1,175 @@
+import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Board } from "../src/hub/board.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { USER } from "../src/hub/envelope.ts";
+import { loadRouting } from "../src/hub/routing.ts";
+import { decideMerge, type MergeInput } from "../src/hub/sdlc-merge.ts";
+import type { DeliveryTask } from "../src/hub/sdlc-queue.ts";
+import { sdlcConfig, type SdlcGh, type SdlcMode } from "../src/hub/sdlc.ts";
+import { Tasks } from "../src/hub/tasks.ts";
+
+// agent-hub #481 S5 (hub task #201): the eval gate through the real Tasks flow and the guarded merge decision, with a fake gh.
+const HEAD = "a".repeat(40), BASE = "c".repeat(40);
+const cleanups: (() => void)[] = [];
+afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
+const pageInfo = { hasNextPage: false };
+
+interface World { paths: string[]; evalCheck: "passed" | "failed" | "absent"; text: string; coverage?: "complete" | "incomplete"; review?: "APPROVED" | "CHANGES_REQUESTED"; /** Runs when the eval check run is read: how a test moves GitHub during that request. */ onEvalRead?: () => void }
+function fakeGh(world: World) {
+  const calls: string[][] = [];
+  const checks = () => [{ name: "gate", status: "COMPLETED", conclusion: "SUCCESS" }, ...(world.evalCheck === "absent" ? [] : [{ name: "evals", status: "COMPLETED", conclusion: world.evalCheck === "passed" ? "SUCCESS" : "FAILURE" }])];
+  const files = () => world.paths.map(path => ({ path, changeType: "MODIFIED" }));
+  const changed = () => world.coverage === "incomplete" ? world.paths.length + 3 : world.paths.length;
+  const gh: SdlcGh = async args => {
+    calls.push(args);
+    const query = args.find(arg => arg.startsWith("query=")) ?? "";
+    const issue = Number(args.find(arg => arg.startsWith("issue="))?.slice(6) ?? 2);
+    const view = { headRefOid: HEAD, state: "OPEN", isDraft: false, baseRefName: "main", baseRefOid: BASE, reviewDecision: world.review ?? "APPROVED", reviewRequests: [], statusCheckRollup: checks(), files: files(), changedFiles: changed(), headRefName: "feat/x" };
+    let result: unknown;
+    if (args[0] === "pr" && args[1] === "list") result = [{ number: 1, headRefOid: HEAD, baseRefName: "main", baseRefOid: BASE }];
+    else if (args[0] === "pr" && args[1] === "view") result = view;
+    else if (args[0] === "api" && args[1]?.includes("/check-runs")) { world.onEvalRead?.(); result = { total_count: world.evalCheck === "absent" ? 0 : 1, check_runs: world.evalCheck === "absent" ? [] : [{ name: "evals", status: "completed", conclusion: "success", head_sha: HEAD, text: world.text }] }; }
+    else if (query.includes("queue_p")) {
+      const repository: Record<string, unknown> = { pullRequests: { nodes: [{ number: 1, headRefOid: HEAD, baseRefName: "main", baseRefOid: BASE }], pageInfo },
+        queue_p1: { ...view, reviewRequests: { nodes: [], pageInfo }, reviewThreads: { nodes: [], pageInfo }, statusCheckRollup: { contexts: { nodes: checks(), pageInfo } } } };
+      for (const match of query.matchAll(/(queue_i\d+|queue_issue\d+):issue\(number:(\d+)\)/g)) repository[match[1]!] = { number: Number(match[2]), labels: { nodes: [], pageInfo } };
+      result = { data: { repository } };
+    } else if (query.includes("reviewThreads") || query.includes("issue(number:")) result = { data: { repository: { pullRequest: { headRefOid: HEAD, reviewThreads: { nodes: [], pageInfo } }, issue: { number: issue, labels: { nodes: [], pageInfo } } } } };
+    else throw new Error(`Unexpected metadata read: ${args.join(" ")}`);
+    return { code: 0, stdout: JSON.stringify(result) };
+  };
+  return { gh, calls };
+}
+
+function rig(world: World, mode: SdlcMode = "enforce", extra: Record<string, unknown> = { eval_check: "evals" }) {
+  const dir = mkdtempSync(join(tmpdir(), "ahub-eval-gate-"));
+  const board = new Board(join(dir, "hub.db")), bus = new Bus({ batchMs: 0 });
+  cleanups.push(() => { board.close(); rmSync(dir, { recursive: true, force: true }); });
+  const notices: string[] = [], remote = fakeGh(world);
+  const config = () => sdlcConfig({ mode, required_checks: ["gate"], ...extra });
+  const tasks = new Tasks({ board, bus, cwd: dir, project: "eval-gate", repository: "owner/repo", routing: () => loadRouting(dir), notify: message => notices.push(message), sdlc: { config, gh: remote.gh } });
+  const task = board.propose(USER, { title: "tune the role text", class: "implement", plan: { paths: world.paths } });
+  board.update(task.id, USER, "accepted", { owner: "codex", reviewer: USER, state: "in_progress" });
+  tasks.recordLifecycle(USER, task.id, { repo: "owner/repo", issue: 2, pr: 1, localHead: HEAD, localResult: "passed", stage: "implement" });
+  return { board, tasks, id: task.id, notices, calls: remote.calls, config };
+}
+const reported = "eval_pass_rate=0.92 eval_suite=smoke-1";
+
+test("enforce: a configuration PR cannot be approved without the passing eval check, and a code-only PR is unaffected", async () => {
+  // Review entry (hub_task_done) refuses a missing or failing eval check before any write, like every other required check.
+  const missing = rig({ paths: ["AGENTS.md"], evalCheck: "absent", text: "" }), before = missing.board.get(missing.id)!;
+  await expect(missing.tasks.done("codex", missing.id, "updated the notes")).rejects.toThrow("required check evals: not successful on current head");
+  expect(missing.board.get(missing.id)?.state).toBe("in_progress");
+  expect(missing.board.get(missing.id)?.history).toEqual(before.history);
+  const failed = rig({ paths: ["docs/agent-notes/tests.md"], evalCheck: "failed", text: reported });
+  await expect(failed.tasks.done("codex", failed.id, "updated the notes")).rejects.toThrow("required check evals");
+  expect(failed.board.get(failed.id)?.state).toBe("in_progress");
+  // The approval gate refuses it too for a task already in review.
+  const late = rig({ paths: ["AGENTS.md"], evalCheck: "failed", text: reported }); late.board.update(late.id, USER, "done", { state: "in_review" });
+  await expect(late.tasks.review(USER, late.id, "approved", undefined, undefined, HEAD)).rejects.toThrow("required check evals");
+  expect(late.board.get(late.id)?.state).toBe("in_review");
+  const code = rig({ paths: ["src/hub/bus.ts"], evalCheck: "absent", text: "" });
+  await code.tasks.done("codex", code.id, "code only");
+  expect((await code.tasks.review(USER, code.id, "approved", undefined, undefined, HEAD)).state).toBe("approved");
+  expect(code.calls.some(args => args[1]?.includes("/check-runs"))).toBe(false); // no eval read for a code-only PR
+  expect(await code.tasks.lifecycleStatus(code.id)).not.toHaveProperty("evalGate");
+});
+
+test("enforce: a passing eval check with its pass rate and suite is approved, and the approval note records both", async () => {
+  const r = rig({ paths: ["AGENTS.md", "src/hub/bus.ts"], evalCheck: "passed", text: reported });
+  await r.tasks.done("codex", r.id, "updated AGENTS.md");
+  expect((await r.tasks.review(USER, r.id, "approved", undefined, undefined, HEAD)).state).toBe("approved");
+  const approved = r.board.get(r.id)!.history.findLast(h => h.event === "approved")!;
+  expect(approved.note).toContain("Eval gate: evals passed at aaaaaaaaaaaa, pass rate 0.92, suite smoke-1");
+  const status = await r.tasks.lifecycleStatus(r.id);
+  expect(status.evalGate).toEqual({ applies: "config", files: 1, check: "evals", state: "passed", passRate: 0.92, suite: "smoke-1", gaps: [] });
+});
+
+test("enforce: a pass that reports no pass rate or suite version is refused; advise names the gap and approves", async () => {
+  const strict = rig({ paths: ["AGENTS.md"], evalCheck: "passed", text: "all good" });
+  await expect(strict.tasks.done("codex", strict.id, "updated AGENTS.md")).rejects.toThrow("pass rate or suite version not reported by evals");
+  expect(strict.board.get(strict.id)?.state).toBe("in_progress");
+  const strictLate = rig({ paths: ["AGENTS.md"], evalCheck: "passed", text: "all good" }); strictLate.board.update(strictLate.id, USER, "done", { state: "in_review" });
+  await expect(strictLate.tasks.review(USER, strictLate.id, "approved", undefined, undefined, HEAD)).rejects.toThrow("pass rate or suite version not reported by evals");
+  expect(strictLate.board.get(strictLate.id)?.state).toBe("in_review");
+  const unknownCoverage = rig({ paths: ["src/a.ts"], evalCheck: "passed", text: reported, coverage: "incomplete" });
+  await expect(unknownCoverage.tasks.done("codex", unknownCoverage.id, "code")).rejects.toThrow("PR file coverage incomplete or unknown");
+  expect(unknownCoverage.board.get(unknownCoverage.id)?.state).toBe("in_progress");
+  const advise = rig({ paths: ["AGENTS.md"], evalCheck: "passed", text: "all good" }, "advise");
+  await advise.tasks.done("codex", advise.id, "updated AGENTS.md");
+  expect((await advise.tasks.review(USER, advise.id, "approved", undefined, undefined, HEAD)).state).toBe("approved");
+  expect(advise.notices.join(" ")).toContain("pass rate or suite version not reported by evals");
+  expect(advise.board.get(advise.id)!.history.findLast(h => h.event === "approved")!.note ?? "").not.toContain("Eval gate:");
+});
+
+test("no eval_check configured: a configuration PR is approved in every mode and the notice names the pending suite choice, off reads nothing", async () => {
+  const world: World = { paths: ["templates/roles/dev/code-reviewer.md"], evalCheck: "absent", text: "" };
+  const enforce = rig(world, "enforce", {});
+  await enforce.tasks.done("codex", enforce.id, "role text");
+  expect((await enforce.tasks.review(USER, enforce.id, "approved", undefined, undefined, HEAD)).state).toBe("approved");
+  expect((await enforce.tasks.lifecycleStatus(enforce.id)).evalGate).toMatchObject({ state: "not_configured", notes: [expect.stringContaining("suite choice pending the person")] });
+  expect(enforce.calls.some(args => args[1]?.includes("/check-runs"))).toBe(false); // nothing to read with no check named
+  const advise = rig(world, "advise", {});
+  await advise.tasks.done("codex", advise.id, "role text");
+  expect((await advise.tasks.review(USER, advise.id, "approved", undefined, undefined, HEAD)).state).toBe("approved");
+  expect(advise.notices.join(" ")).toContain("eval check not configured");
+  expect(advise.notices.join(" ")).toContain("suite choice pending the person");
+  const off = rig(world, "off", {});
+  await off.tasks.done("codex", off.id, "role text");
+  expect((await off.tasks.review(USER, off.id, "approved")).state).toBe("approved");
+  expect(off.calls).toEqual([]);
+});
+
+test("the guarded merge decision names the eval gate on every reading, and a code-only PR merges as before", async () => {
+  const decide = async (world: World, mode: SdlcMode = "enforce", extra: Record<string, unknown> = { eval_check: "evals" }) => {
+    const r = rig(world, mode, extra);
+    const subject: DeliveryTask = { id: r.id, after: [], private: false, receipt: { repo: "owner/repo", issue: 2, pr: 1, stage: "merge", reviewedHead: HEAD, localHead: HEAD, localResult: "passed" } };
+    const input: MergeInput = { subject, state: "approved", taskState: () => "approved", config: r.config(), tasks: [subject], run: fakeGh(world).gh };
+    return decideMerge(input);
+  };
+  const refused = (d: Awaited<ReturnType<typeof decide>>) => "refused" in d ? d.refused : ["MERGE"];
+  expect(refused(await decide({ paths: ["AGENTS.md"], evalCheck: "absent", text: "" }))).toEqual(expect.arrayContaining(["required check evals: missing"]));
+  expect(refused(await decide({ paths: ["AGENTS.md"], evalCheck: "failed", text: reported }))).toEqual(expect.arrayContaining(["required check evals: failing"]));
+  expect(refused(await decide({ paths: ["AGENTS.md"], evalCheck: "passed", text: "no markers" }))).toEqual(["eval gate: pass rate or suite version not reported by evals"]);
+  expect(refused(await decide({ paths: ["AGENTS.md"], evalCheck: "passed", text: reported }))).toEqual(["MERGE"]);
+  expect(refused(await decide({ paths: ["src/hub/bus.ts"], evalCheck: "absent", text: "" }))).toEqual(["MERGE"]);
+  // Advise and off add no eval gate to the merge decision's evidence gates beyond the check itself.
+  expect(refused(await decide({ paths: ["AGENTS.md"], evalCheck: "passed", text: "no markers" }, "advise"))).toEqual(["MERGE"]);
+  // No eval_check named: nothing is required, so the decision is the one it was before this slice.
+  expect(refused(await decide({ paths: ["AGENTS.md"], evalCheck: "absent", text: "" }, "enforce", {}))).toEqual(["MERGE"]);
+  // Unknown file coverage is never read as a code-only PR in enforce.
+  expect(refused(await decide({ paths: ["src/a.ts"], evalCheck: "absent", text: "", coverage: "incomplete" }))).toEqual(expect.arrayContaining(["eval gate: PR file coverage incomplete or unknown"]));
+});
+
+test("the guarded merge awaits nothing remote between its last PR read and its judgment: a gate that moves during the eval read is refused (agent-hub#904 P1)", async () => {
+  const decide = async (world: World) => {
+    const r = rig(world);
+    const gh = fakeGh(world);
+    const subject: DeliveryTask = { id: r.id, after: [], private: false, receipt: { repo: "owner/repo", issue: 2, pr: 1, stage: "merge", reviewedHead: HEAD, localHead: HEAD, localResult: "passed" } };
+    const decision = await decideMerge({ subject, state: "approved", taskState: () => "approved", config: r.config(), tasks: [subject], run: gh.gh });
+    return { decision, calls: gh.calls };
+  };
+  // A change request lands while the eval check run is being read.
+  const world: World = { paths: ["AGENTS.md"], evalCheck: "passed", text: reported };
+  world.onEvalRead = () => { world.review = "CHANGES_REQUESTED"; };
+  const moved = await decide(world);
+  expect("refused" in moved.decision && moved.decision.refused).toEqual(expect.arrayContaining(["change request pending"]));
+  // Ordering invariant: once the final `pr view` has been issued, no eval (or other) metadata request follows it.
+  const quiet = await decide({ paths: ["AGENTS.md"], evalCheck: "passed", text: reported });
+  expect("action" in quiet.decision).toBe(true);
+  const lastView = quiet.calls.map(args => args[0] === "pr" && args[1] === "view").lastIndexOf(true);
+  expect(lastView).toBeGreaterThan(0);
+  expect(quiet.calls.slice(lastView).filter(args => args[1]?.includes("/check-runs"))).toEqual([]);
+  expect(quiet.calls.some(args => args[1]?.includes("/check-runs"))).toBe(true); // the eval metadata is read, and only before the final PR read
+  // A PR that enters configuration scope only on the final read is refused as unreported, never judged on a result that was not read.
+  const scope: World = { paths: ["src/hub/bus.ts"], evalCheck: "passed", text: reported };
+  let views = 0;
+  const rigScope = rig(scope); const gh = fakeGh(scope);
+  const wrapped: SdlcGh = async args => { if (args[0] === "pr" && args[1] === "view" && ++views >= 2) scope.paths = ["AGENTS.md"]; return gh.gh(args); };
+  const subject: DeliveryTask = { id: rigScope.id, after: [], private: false, receipt: { repo: "owner/repo", issue: 2, pr: 1, stage: "merge", reviewedHead: HEAD, localHead: HEAD, localResult: "passed" } };
+  const late = await decideMerge({ subject, state: "approved", taskState: () => "approved", config: rigScope.config(), tasks: [subject], run: wrapped });
+  expect("refused" in late && late.refused).toEqual(expect.arrayContaining(["eval gate: pass rate or suite version not reported by evals"]));
+});
