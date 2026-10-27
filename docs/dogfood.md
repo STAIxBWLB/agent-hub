@@ -79,6 +79,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | amem runtime integration (agent-mem#13 P4) | on after release; no claude-mem worker dependency | no-worker tripwire requests (must be 0), screened capture rows, profile refusals, all-author short-term recall, bounded-view truncation notices and curated-only ask citations |
 | Shared memory through amem, briefs, recall preface | on; library intent briefs and plan guard (#436) take effect after release and hub upgrade; legacy index/timeline reads and worker notices retire in intent mode | notes saved per week, brief hits, fails that prevented a retry; same-input hub/library brief equality, host privacy refusals and front-of-brief plan fails despite the library byte cap or standalone screen |
 | `ahub ask` | on | answers with cited ids |
+| Source registry, `ahub source add\|list` (#508 AC1, AC2, AC5 CLI) | on after release; person-only and local (no daemon needed); the model PII screen, `hub_source_read`, plan validation and the dashboard list are later slices | `ahub source list` rows (id, size, private, origins); `sources/` under the hub state dir; a refusal in the CLI audit for an agent shell |
 | Code structure in the memory graph (#684) | pending | stale anchors, briefs with related notes |
 
 ## Models, budget and safety
