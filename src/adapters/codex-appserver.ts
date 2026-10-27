@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import type { Server, ServerWebSocket } from "bun";
 import { renderDigest, replyAudience, replyParent, type Envelope, type PeerId } from "../hub/envelope.ts";
 import type { PermissionMode } from "../hub/permission-mode.ts";
-import { BasePeer } from "../hub/peers.ts";
+import { BasePeer, type FrontendProxyPort } from "../hub/peers.ts";
 import { codexContext, type ContextReading } from "../hub/context-window.ts";
 import { peerChildEnv, stopOwnedProcess, trackGroup } from "../hub/child-process.ts";
 import type { ContextReader } from "./registry-types.ts";
@@ -82,6 +82,7 @@ const TRACKED = new Set(["thread/start", "thread/resume"]);
  * TUI's, and their responses are swallowed.
  */
 export class CodexPeer extends BasePeer {
+  readonly frontendProxy: FrontendProxyPort;
   private permissionMode: PermissionMode;
   private readonly actionWaits = new Map<AbortController, { link: Link; turn: string | undefined }>();
   get actionGated(): boolean { return this.opts.actionGate !== undefined; }
@@ -136,6 +137,13 @@ export class CodexPeer extends BasePeer {
   ) {
     super(id, opts.watchdogMs);
     this.permissionMode = opts.permissionMode ?? "ask";
+    const owner = this;
+    this.frontendProxy = {
+      get url() { return owner.proxyUrl; },
+      get attached() { return owner.proxyAttached; },
+      setStartupPermissionMode: this.setStartupPermissionMode.bind(this),
+      clearPermissionMode: this.clearPermissionMode.bind(this),
+    };
   }
 
   recoveryMetadata(): Record<string, unknown> {
@@ -695,6 +703,7 @@ export class CodexPeer extends BasePeer {
       link.up.send(JSON.stringify({ method: "thread/revert", id, params: { threadId: this.threadId, beforeTurnId: turnId } }));
     });
   }
+  revertTurn(nativeTurn: string): Promise<void> { return this.revert(nativeTurn); }
 
   /** account/rateLimits/read through the TUI's connection, with a hub id so the answer never reaches the TUI. */
   private readUsage(): void {

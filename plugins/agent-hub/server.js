@@ -3672,6 +3672,7 @@ var init_codex_appserver = __esm(() => {
   TRACKED = new Set(["thread/start", "thread/resume"]);
   CodexPeer = class CodexPeer extends BasePeer {
     opts;
+    frontendProxy;
     permissionMode;
     actionWaits = new Map;
     get actionGated() {
@@ -3716,6 +3717,17 @@ var init_codex_appserver = __esm(() => {
       super(id, opts.watchdogMs);
       this.opts = opts;
       this.permissionMode = opts.permissionMode ?? "ask";
+      const owner = this;
+      this.frontendProxy = {
+        get url() {
+          return owner.proxyUrl;
+        },
+        get attached() {
+          return owner.proxyAttached;
+        },
+        setStartupPermissionMode: this.setStartupPermissionMode.bind(this),
+        clearPermissionMode: this.clearPermissionMode.bind(this)
+      };
     }
     recoveryMetadata() {
       return {
@@ -4334,6 +4346,9 @@ ${renderDigest(envs, false)}`;
         this.pending.set(id, { resolve: () => (clearTimeout(timer), resolve()), reject: (e) => (clearTimeout(timer), reject(e)) });
         link.up.send(JSON.stringify({ method: "thread/revert", id, params: { threadId: this.threadId, beforeTurnId: turnId } }));
       });
+    }
+    revertTurn(nativeTurn) {
+      return this.revert(nativeTurn);
     }
     readUsage() {
       const link = this.link;

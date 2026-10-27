@@ -4639,7 +4639,7 @@ resumeFromRoster?(): Promise<void>;
 /** Fixed builtins only: a person's frontend attaches to the native session through this hub proxy. */
 readonly frontendProxy?: FrontendProxyPort;
 /** Fixed builtins only: a fixed operator notice; never native ids or provider text. */
-readonly statusNotice?: { code: "unidentified-cancellation"; message: string };
+readonly statusNotice?: { code: "unidentified-cancellation" | "qwen-detached" | "qwen-stalled"; message: string };
 /** Fixed builtins only, and only with session.nativeRevert: roll the native conversation back to before this native turn. */
 revertTurn?(nativeTurn: string): Promise<void>;
 ```
@@ -4671,7 +4671,7 @@ Who sets what (parity by construction; each value is today's member, renamed at 
 | `detachForRoster` | `WsPeer` (ignores the mode, `channel-peer.ts:91`), `CodexPeer` (`codex-appserver.ts:473`), `PiPeer` (`pi.ts:471`) | `daemon.ts:4758-4760` |
 | `resumeFromRoster` | `PiPeer` (`pi.ts:496`) | `daemon.ts:4773` |
 | `frontendProxy` | `CodexPeer`: `url` = `proxyUrl` (`:137`), `attached` = `proxyAttached` (`:488`), the two methods as at `:494`, `:500` | `daemon.ts:3701`, `:5198-5280` |
-| `statusNotice` | `CodexPeer` (`codex-appserver.ts:99`), unchanged | `daemon.ts:2791` |
+| `statusNotice` | `CodexPeer` (`unidentified-cancellation`) and the existing `QwenDualPeer` (`qwen-detached`, `qwen-stalled`), unchanged | fixed-builtin-gated status projection |
 | `revertTurn` | `CodexPeer.revert` (`codex-appserver.ts:610`) | `daemon.ts:2446`, `:2459` |
 
 Per-port absent and undefined semantics:
@@ -4924,7 +4924,7 @@ Common acceptance criteria:
      - `frontendProxy` undefined refuses permission changes and `already`.
      - The `unidentified-cancellation` notice shows only from a fixed builtin.
      - The Codex sticky-override, restoring-turn, detached-clear and attached-refusal tests stay unchanged.
-     - `isCodexPeer` rows leave the table.
+     - The proxy/startup/revert `isCodexPeer` rows leave the table. The later `actionEnforcement` branch remains intentional: it reads Codex `actionGated` to choose the existing enforceability refusal. It is outside 2d and waits for a separately specified action-policy port; no `actionGated` member is added to `FrontendProxyPort`.
 5. **2e: Claude launch proof extraction.** Area note: `daemon.md` (Claude launch and hook rules). Size M.
    - Paths: new `src/hub/claude-launch-proof.ts`, `src/hub/daemon.ts` (hello, `permissionDisplay`, `changePermission`, facts), tests.
    - No change to `src/cli/launch.ts`, `src/cli/facts-hook.ts`, `src/adapters/claude-channel.ts` or the plugin bundle.
