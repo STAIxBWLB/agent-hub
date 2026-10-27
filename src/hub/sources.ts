@@ -135,9 +135,22 @@ export class SourceRegistry {
         catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
           let owner: { pid?: unknown; signature?: unknown } | undefined;
-          try { owner = JSON.parse(readFileSync(lock, "utf8")); } catch { owner = undefined; }
+          let observed: { dev: number; ino: number } | undefined, ownerText: string | undefined;
+          try {
+            const st = lstatSync(lock); observed = { dev: st.dev, ino: st.ino };
+            ownerText = readFileSync(lock, "utf8"); owner = JSON.parse(ownerText);
+          } catch { owner = undefined; }
           const state = owner ? processLiveness(owner.pid, typeof owner.signature === "string" ? owner.signature : null) : "unknown";
-          if (state === "gone") throw new Error(`${lock} was left by a registration that is gone (pid ${String(owner?.pid)}); it is never removed automatically. Once no \`ahub source\` runs, delete that file and try again`);
+          if (state === "gone") {
+            // The normal holder may have released/replaced this lock while its
+            // process was inspected. Refuse only the same still-present record.
+            let unchanged = false;
+            try {
+              const current = lstatSync(lock);
+              unchanged = current.dev === observed?.dev && current.ino === observed?.ino && readFileSync(lock, "utf8") === ownerText;
+            } catch { /* released: retry acquisition without removing anything */ }
+            if (unchanged) throw new Error(`${lock} was left by a registration that is gone (pid ${String(owner?.pid)}); it is never removed automatically. Once no \`ahub source\` runs, delete that file and try again`);
+          }
           if (Date.now() >= deadline) throw new Error(`another ahub source registration holds ${lock}${owner ? ` (pid ${String(owner.pid)})` : ""}; try again in a moment`);
           Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
         }

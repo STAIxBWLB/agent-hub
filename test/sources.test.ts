@@ -1,9 +1,10 @@
-import { afterEach, expect, test } from "bun:test";
-import { existsSync, linkSync, statSync, utimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterEach, expect, spyOn, test } from "bun:test";
+import { existsSync, linkSync, statSync, utimesSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { matchesPolicy } from "../src/hub/path-policy.ts";
 import { processSignature } from "@staix/agent-mem/platform";
+import * as platform from "@staix/agent-mem/platform";
 import { checkSourceUrl, MAX_META_BYTES, MAX_ORIGINS, MAX_ORIGIN_CHARS, MAX_SOURCE_TEXT, fetchSourceUrl, MAX_REDIRECTS, MAX_SOURCE_BYTES, MAX_SOURCES, publicSourceView, screenRegistration, sha256Of, SourceRegistry, sourceId, validSourceId } from "../src/hub/sources.ts";
 import { MAX_PROJECTION_INPUT } from "../src/hub/text-projection.ts";
 
@@ -374,8 +375,8 @@ test("separate processes adding the same bytes, some private and some public, al
 const [dir, flag, origin] = process.argv.slice(2);
 for (let i = 0; i < 15; i++) new SourceRegistry(dir).add({ bytes: Buffer.from(${JSON.stringify(data)}), kind: "file", origin: origin + i, private: flag === "private" });`);
   const procs = Array.from({ length: 6 }, (_, i) => Bun.spawn([process.execPath, script, dir, i === 3 ? "private" : "public", `/p${i}/`], { stdout: "pipe", stderr: "pipe" }));
-  const codes = await Promise.all(procs.map(proc => proc.exited));
-  expect(codes).toEqual([0, 0, 0, 0, 0, 0]);
+  const results = await Promise.all(procs.map(async proc => ({ code: await proc.exited, stderr: await new Response(proc.stderr).text() })));
+  expect(results).toEqual(Array.from({ length: 6 }, () => ({ code: 0, stderr: "" })));
   const registry = new SourceRegistry(dir), id = sourceId(sha256Of(bytes(data)));
   expect(registry.get(id)!.private).toBe(true);
   expect(registry.get(id)!.origins.length).toBe(6 * 15);
@@ -432,4 +433,34 @@ test("an unseen origin at capacity is refused without claiming a registration or
   expect(registry.get(id)!.private).toBe(false); // refused attempts are not registrations
   expect(registry.get(id)!.origins).toHaveLength(MAX_ORIGINS);
   expect(registry.add({ bytes: data, kind: "file", origin: "/public/0", private: false })).toMatchObject({ created: false, private: false });
+});
+
+
+test("a lock released or replaced during its owner's liveness probe is retried, never called stale", () => {
+  for (const mode of ["released", "replaced"] as const) {
+    const dir = state(), registry = new SourceRegistry(dir, { lockWaitMs: 1000 });
+    hold(dir, { pid: process.pid, signature: "0".repeat(64) });
+    const live = { pid: process.pid, signature: processSignature(process.pid) ?? null };
+    const probe = spyOn(platform, "processLiveness").mockImplementationOnce(() => {
+      // Simulate the old holder's normal release while its liveness was checked.
+      rmSync(lockFile(dir));
+      if (mode === "replaced") {
+        const next = join(dir, "sources", ".next-owner");
+        writeFileSync(next, JSON.stringify(live));
+        renameSync(next, lockFile(dir));
+      }
+      return "gone";
+    }).mockImplementationOnce((pid, signature) => {
+      expect({ pid, signature }).toEqual(live);
+      // The replacement holder now releases its own fixture lock normally.
+      rmSync(lockFile(dir));
+      return "live";
+    });
+    try {
+      expect(() => registry.add({ bytes: bytes(mode), kind: "file", origin: "/race", private: true })).not.toThrow();
+      expect(probe).toHaveBeenCalledTimes(mode === "released" ? 1 : 2);
+      expect(registry.list()).toHaveLength(1);
+      expect(existsSync(lockFile(dir))).toBe(false);
+    } finally { probe.mockRestore(); }
+  }
 });
