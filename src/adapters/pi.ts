@@ -204,6 +204,10 @@ export class PiPeer extends BasePeer {
     const file = this.sessionFile && (exists || !empty) ? this.sessionFile : undefined;
     return { launch: { kind: "pi", cwd: this.opts.cwd, mode: this.opts.mode, backend: this.opts.backend, ...(this.opts.model ? { model: this.opts.model } : {}), ...(file ? { sessionFile: file } : {}) }, ...(this.sessionId ? { sessionId: this.sessionId } : {}), ...(file ? { sessionFile: file } : {}) };
   }
+  get nativeSession(): string | undefined {
+    const session = this.recoveryMetadata().sessionId;
+    return typeof session === "string" ? session : undefined;
+  }
 
   /** Verify the live source before choosing ID-only restoration. Never infer emptiness from a missing file. */
   async captureResume(): Promise<Record<string, unknown>> {

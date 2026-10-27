@@ -60,12 +60,6 @@
     "reason": "Claude launch-generation proof remains native until 2e; generic unmanaged TUI form moved to form in 2b."
   },
   {
-    "predicate": "isCodexPeer",
-    "function": "src/hub/daemon.ts:startDaemon.codexResumeCommand",
-    "count": 1,
-    "reason": "Codex thread provenance moves to nativeSession in 2c; no other definition uses this native resume command."
-  },
-  {
     "predicate": "isLocalPeer",
     "function": "src/hub/daemon.ts:startDaemon.conductor.validateRelease",
     "count": 1,
@@ -78,28 +72,10 @@
     "reason": "Offline Codex frontend admission moves to fixed-builtin-gated frontendProxy in 2d; keep the existing refusal until then."
   },
   {
-    "predicate": "isAcpPeer",
-    "function": "src/hub/daemon.ts:startDaemon.contextSession",
-    "count": 1,
-    "reason": "Native session readings move to nativeSession in 2c; channel claiming remains an intentional daemon-owned authentication window."
-  },
-  {
-    "predicate": "isCodexPeer",
-    "function": "src/hub/daemon.ts:startDaemon.contextSession",
-    "count": 1,
-    "reason": "Native session readings move to nativeSession in 2c; channel claiming remains an intentional daemon-owned authentication window."
-  },
-  {
-    "predicate": "isPiPeer",
-    "function": "src/hub/daemon.ts:startDaemon.contextSession",
-    "count": 1,
-    "reason": "Native session readings move to nativeSession in 2c; channel claiming remains an intentional daemon-owned authentication window."
-  },
-  {
     "predicate": "isWsPeer",
     "function": "src/hub/daemon.ts:startDaemon.contextSession",
     "count": 1,
-    "reason": "Native session readings move to nativeSession in 2c; channel claiming remains an intentional daemon-owned authentication window."
+    "reason": "Intentional daemon-owned channel claim window: nativeSession cannot replace authenticated Claude launch/session evidence."
   },
   {
     "predicate": "isWsPeer",
@@ -166,24 +142,6 @@
     "function": "src/hub/daemon.ts:startDaemon.recordSessions",
     "count": 1,
     "reason": "Intentional persisted Pi-shaped continuity bookmark; generalizing it changes recovery shape and requires a compatibility floor."
-  },
-  {
-    "predicate": "isPiPeer",
-    "function": "src/hub/daemon.ts:startDaemon.recoveryOp",
-    "count": 1,
-    "reason": "Idle Pi resume capture moves to captureResume in 2c; preserve capture-before-snapshot ordering."
-  },
-  {
-    "predicate": "isPiPeer",
-    "function": "src/hub/daemon.ts:startDaemon.recoveryReady",
-    "count": 1,
-    "reason": "Pi recovery settlement moves to recoveryReady in 2c, with the roster-detached-pi-recovery seed updated in that same slice."
-  },
-  {
-    "predicate": "isPiPeer",
-    "function": "src/hub/daemon.ts:startDaemon.recoveryView",
-    "count": 2,
-    "reason": "Pi settlement and retained-terminal guidance move to recoveryReady/form in 2c; unknown ownership never becomes settled."
   },
   {
     "predicate": "isWsPeer",

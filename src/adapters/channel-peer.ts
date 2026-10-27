@@ -25,7 +25,7 @@ export class WsPeer extends BasePeer {
   private delivered = new Set<string>();
   private sock: ChannelSocket | undefined;
   private claimed: ChannelSocket | undefined;
-  private nativeSession: string | undefined;
+  private nativeTurnSession: string | undefined;
   private nativeActive = false;
   /** The attached session said it cannot show channel pushes (issue #205): the bus keeps its queue for `inbox`. */
   pullOnly = false;
@@ -68,7 +68,7 @@ export class WsPeer extends BasePeer {
     this.sock = sock;
     this.generation = crypto.randomUUID();
     this.delivered.clear();
-    this.nativeSession = undefined;
+    this.nativeTurnSession = undefined;
     this.nativeActive = false;
     this.pullOnly = this.claimedPullOnly; // before idle: the idle transition drains
     // Native TUI readback in #493 proves important channel input can be consumed before the turn ends.
@@ -114,13 +114,13 @@ export class WsPeer extends BasePeer {
   owns(sock: ChannelSocket): boolean { return this.sock === sock; }
   nativeStarted(session: string): void {
     if (!this.sock) return;
-    this.nativeSession = session;
+    this.nativeTurnSession = session;
     this.nativeActive = true;
     this.setState("busy");
   }
   nativeStopped(session: string): boolean {
-    if (!this.sock || (this.nativeSession !== undefined && this.nativeSession !== session)) return false;
-    this.nativeSession = session;
+    if (!this.sock || (this.nativeTurnSession !== undefined && this.nativeTurnSession !== session)) return false;
+    this.nativeTurnSession = session;
     this.nativeActive = false;
     this.setState("idle");
     return true;

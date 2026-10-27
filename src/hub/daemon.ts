@@ -2011,9 +2011,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const p = bus.peers.get(peer);
     if (isWsPeer(p) && p.claiming) return undefined;
     if (definitionOf(peer)?.transport === "claude-channel") { const c = claudeSession(peer); return c.sessionId ? `${c.sessionId}:${c.launchId ?? ""}` : undefined; }
-    if (isCodexPeer(p)) return p.thread || undefined;
-    if (isAcpPeer(p) || isPiPeer(p)) { const id = p.recoveryMetadata().sessionId; return typeof id === "string" ? id : undefined; }
-    return undefined;
+    const session = p?.nativeSession;
+    return typeof session === "string" ? session : undefined;
   };
   const activityRings: Record<string, ActivityRing> = Object.fromEntries(SUPPORTED_PEERS.filter(peer => definitionOf(peer)?.capabilities?.watch).map(peer => [peer, new ActivityRing()]));
   const contextPii = (peer: PeerId) => !!turns.get(peer)?.private || board.list().some(t => !isClosedTaskState(t.state) && (t.owner === peer || t.reviewer === peer) && tasks.isPii(t));
@@ -3158,7 +3157,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   let releasing = false; // gone-owner release (#6) and the ready sweep (#34): one run at a time, and a recovery commit waits for it
   const recoveryReady = () => {
-    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || (isPiPeer(peer) && !peer.recoveryReady))) return false;
+    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || ("recoveryReady" in peer && peer.recoveryReady !== true))) return false;
     if (checkPending.size !== 0) return false;
     if (!recoveryPeerSnapshot) return true;
     const current = recoveryPeers();
@@ -5713,7 +5712,7 @@ export async function startDaemon(opts: DaemonOptions) {
     return undefined;
   }
   function codexResumeCommand(peer: string): string {
-    const owner = bus.peers.get(peer), thread = isCodexPeer(owner) ? owner.thread || lastCodexThreads.get(peer) : lastCodexThreads.get(peer);
+    const owner = bus.peers.get(peer), thread = owner?.nativeSession ?? lastCodexThreads.get(peer);
     const command = declarations[peer] ? `ahub codex --as ${peer} resume` : "ahub codex resume";
     return thread && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(thread) ? `${command} ${thread}` : command;
   }
@@ -6086,7 +6085,7 @@ export async function startDaemon(opts: DaemonOptions) {
       ...(checkPending.size !== 0 ? ["isolated checks queued or running"] : []),
       ...(piCallsInFlight() !== 0 ? ["Pi tool calls in flight"] : []),
       ...(releasing ? ["ready tasks being released"] : []),
-      ...([...bus.peers].filter(([, peer]) => isPiPeer(peer) && peer.state !== "busy" && !peer.recoveryReady).map(([id, peer]) => !membershipAllowed(id) && isPiPeer(peer) && peer.mode === "tui" ? `${id} is not settled; end the retained Pi TUI, then prepare again` : `${id} is not settled`)),
+      ...([...bus.peers].filter(([, peer]) => peer.state !== "busy" && "recoveryReady" in peer && peer.recoveryReady !== true).map(([id, peer]) => !membershipAllowed(id) && peer.form === "tui" ? `${id} is not settled; end the retained ${definitionOf(id)?.displayName ?? id} TUI, then prepare again` : `${id} is not settled`)),
     ],
     integrity: { current: integrityAs(restored?.integrity), ...(restored?.integrity ? { expected: restored.integrity } : {}) },
     peers: Object.fromEntries([...(recoveryPeerSnapshot ?? []), ...Object.values(recoveryPeers()).filter((peer) => !(recoveryPeerSnapshot ?? []).some((saved) => saved.id === peer.id))].map((peer) => {
@@ -6123,8 +6122,8 @@ export async function startDaemon(opts: DaemonOptions) {
     }
 
     if (msg.op === "inspect" || msg.op === "prepare" || msg.op === "commit") {
-      for (const pi of bus.peers.values()) if (isPiPeer(pi) && pi.state === "idle") {
-        try { await pi.captureResume(); } catch (error) { return recoveryError((error as Error).message); }
+      for (const peer of bus.peers.values()) if (peer.captureResume && peer.state === "idle") {
+        try { await peer.captureResume(); } catch (error) { return recoveryError((error as Error).message); }
         if (checkTarget) { const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error); }
       }
     }
