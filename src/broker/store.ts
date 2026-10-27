@@ -28,6 +28,8 @@ function fail(code: BrokerStoreCode): never { throw new BrokerStoreError(code); 
 const SCHEMA_VERSION = 1;
 const GRACE_MS = 60_000;
 const DB_NAME = "broker.db";
+// Exclusive ownership cannot be shared; keep accidental second starts fail-fast.
+const BROKER_DB_BUSY_TIMEOUT_MS = 1;
 
 interface StoredRoom {
   room: string; owner: string; currentEpoch: string; currentDigest: string; currentWire: Uint8Array;
@@ -137,7 +139,8 @@ export class BrokerStore {
     let db: Database | undefined;
     try {
       db = new Database(file, { create: true, strict: true });
-      db.exec("PRAGMA busy_timeout=0; PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA; PRAGMA locking_mode=EXCLUSIVE;");
+      db.run(`PRAGMA busy_timeout = ${BROKER_DB_BUSY_TIMEOUT_MS}`);
+      db.exec("PRAGMA journal_mode=DELETE; PRAGMA synchronous=EXTRA; PRAGMA locking_mode=EXCLUSIVE;");
       db.exec("BEGIN EXCLUSIVE;");
       const existing = db.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version ?? 0;
       if (existing !== 0 && existing !== SCHEMA_VERSION) fail("unsupported");
