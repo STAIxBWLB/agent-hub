@@ -21398,7 +21398,8 @@ var MACHINE_LOCAL = [
   "local.bash_network",
   "local.network_allow",
   "terminal.open",
-  "tasks.auto_pull"
+  "tasks.auto_pull",
+  "schedules"
 ];
 var ALL_MACHINE_LOCAL = [...MACHINE_LOCAL, "action_policy", "protect_instruction_files", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "adapters", "adapter_modules", "text_projection", "instances"];
 function configRefusal(cwd, name) {
@@ -21939,6 +21940,13 @@ init_git();
 
 // src/hub/tasks.ts
 init_spec_read();
+
+// src/hub/schedules.ts
+var MIN_EVERY_MS = 15 * 60000;
+var MAX_EVERY_MS = 365 * 86400000;
+var KEYS = new Set(["id", "every", "cron", "class", "title", "detail", "sources", "owner", "queue"]);
+
+// src/hub/tasks.ts
 init_sdlc_metrics();
 init_security_baseline();
 // package.json
