@@ -8,6 +8,7 @@ import { PreEffectToolRefusal } from "./tool-refusal.ts";
 import type { StartMode } from "./start-mode.ts";
 import type { HubEvent } from "./events.ts";
 import type { SupervisionFeed } from "./supervision.ts";
+import type { PeerDoing } from "./peer-doing.ts";
 import type { Budget } from "./budget.ts";
 import { windowKind, type WindowKind } from "./window-kind.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
@@ -129,7 +130,7 @@ export function conductorStart(peer: unknown, mode: unknown, preview: (peer: "cl
 
 const numberOrNull = (v: unknown): number | null => typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
 export interface ConductorStatusInput {
-  peers: Array<{ peer: string; state?: string; attached?: boolean; queued?: number; needsReview?: number; manualHeld?: boolean; hold?: ConductorHold | null; budgetPause?: { since?: number; resetsAt?: number } | null; windows?: Array<{ id: string; used?: number; resetsAt?: number; at?: number; source?: string }> }>;
+  peers: Array<{ peer: string; state?: string; attached?: boolean; queued?: number; needsReview?: number; manualHeld?: boolean; hold?: ConductorHold | null; budgetPause?: { since?: number; resetsAt?: number } | null; windows?: Array<{ id: string; used?: number; resetsAt?: number; at?: number; source?: string }>; doing?: PeerDoing | null }>;
   taskCounts: Record<string, number>;
   approvals: Array<{ peer: string; tool?: string; at?: number }>;
 }
@@ -143,6 +144,7 @@ export function publicConductorStatus(input: ConductorStatusInput, now = Date.no
       conductorHold: p.hold ? { actor: p.hold.actor, since: numberOrNull(p.hold.since) } : null,
       budgetPause: p.budgetPause ? { since: numberOrNull(p.budgetPause.since), resetsAt: numberOrNull(p.budgetPause.resetsAt) } : null,
       windows: p.windows === undefined ? null : p.windows.map((w) => ({ id: w.id, used: numberOrNull(w.used), resetsAt: numberOrNull(w.resetsAt), at: numberOrNull(w.at), source: w.source ?? null })),
+      doing: p.doing ? { text: p.doing.text, source: p.doing.source, at: numberOrNull(p.doing.at) } : null, // #878: already screened by the daemon
     })),
     taskCounts: Object.fromEntries(Object.entries(input.taskCounts).map(([state, count]) => [state, numberOrNull(count)])),
     approvals: input.approvals.map((a) => ({ peer: a.peer, tool: a.tool ?? null, ageMs: a.at === undefined || !Number.isFinite(a.at) ? null : Math.max(0, now - a.at) })),

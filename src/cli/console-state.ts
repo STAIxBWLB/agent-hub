@@ -6,6 +6,7 @@ import { PLANNER_PEERS, definitionOf, nativeStreamTone, createProjectAdapterCata
 import { taskProgress } from "../ui/task-progress.ts";
 import type { ProgressStage } from "../ui/task-progress.ts";
 import { sanitize } from "../hub/envelope.ts";
+import { DOING_STUB } from "../hub/peer-doing.ts";
 import type { SettingRow, SettingValue } from "../hub/settings.ts";
 import { symbolFields, overlapFields } from "./console-symbols.ts";
 import { choicePrompt, reviewChoiceFor, reviewHint, reviewRefusal, verdictGuide, verdictInput, type ReviewChoice, type Verdict } from "./console-review.ts";
@@ -895,7 +896,7 @@ export function activeNotice(s: Pick<ConsoleState, "notice" | "noticeAt">, now =
   return !!s.notice && now - (s.noticeAt ?? now) < NOTICE_MS;
 }
 export const TABLES: Record<number, string[]> = {
-  1: ["PEER", "STATE", "LINK", "Q", "!", "WIP", "REVIEW", "PAUSE", "QUOTA", "MODEL"],
+  1: ["PEER", "STATE", "LINK", "Q", "!", "WIP", "REVIEW", "PAUSE", "QUOTA", "MODEL", "DOING"],
   2: ["ID", "PEER", "LEFT", "TITLE"],
   3: ["ID", "STATE", "OWNER", "REVIEWER", "CLASS", "AGE", "TITLE", "STAGE"],
   4: ["ID", "PEER", "STATE", "REV", "AGE"],
@@ -922,7 +923,8 @@ export function cells(s: ConsoleState, row: any, selected: boolean, now: number,
       span(wip ? `${wip.wip}/${wip.wipLimit}` : "-", wip && wip.wip >= wip.wipLimit ? "attention" : undefined),
       span(count(row.needsReview), row.needsReview ? "failure" : undefined), span(paused, paused === "-" ? undefined : "attention"),
       span(b?.windows?.length ? b.windows.map((w: any) => `${w.id} ${Math.round(w.used * 100)}%${typeof w.resetsAt === "number" ? ` ${relative(w.resetsAt, now)}` : ""}`).join(", ") : "-"),
-      span(row.servedBy ?? row.requestedModel ?? "-")];
+      span(row.servedBy ?? row.requestedModel ?? "-"),
+      span(typeof row.doing?.text === "string" && row.doing.text ? row.doing.text : "-", row.doing?.text === DOING_STUB ? "muted" : undefined)]; // #878: screened by the hub
   }
   if (s.panel === 7) {
     const text = usageCells(s.usage, row.id, s.budget[row.id], at => relative(at, now));
@@ -978,10 +980,10 @@ export function table(head: string[], rows: Span[][], columns: number, explicitW
   }));
 }
 /** Keep the status/quota columns visible instead of clipping them behind optional peer metadata. */
-function optionalTable(head: string[], rows: Span[][], columns: number, drop = ["MODEL", "WIP", "PAUSE", "REVIEW", "LINK", "Q", "!", "MODE"]): Span[][] {
+function optionalTable(head: string[], rows: Span[][], columns: number, drop = ["DOING", "MODEL", "WIP", "PAUSE", "REVIEW", "LINK", "Q", "!", "MODE"]): Span[][] {
   const cap = Math.max(24, Math.floor(columns / 3));
   const widths = head.map((name, i) => Math.min(cap, rows.reduce((max, row) => Math.max(max, Bun.stringWidth(flat(row[i]?.text ?? ""))), name.length)));
-  const keep = head.map((_, i) => i);
+  const keep = head.map((_, i) => i).filter(i => head[i] !== "DOING" || rows.some(row => row[i]?.text !== "-")); // #878: shown once a peer has one
   const total = () => keep.reduce((sum, i) => sum + widths[i]!, 0) + 2 * (keep.length - 1);
   for (const name of drop) {
     if (total() <= columns - 2) break;

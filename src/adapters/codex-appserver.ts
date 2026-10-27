@@ -510,6 +510,7 @@ export class CodexPeer extends BasePeer {
     this.link = undefined;
     this.restoringApprovals.clear();
     this.threadId = "";
+    this.onDoing?.("reset");
     this.contextEpoch++;
     this.deliveryEpoch++;
     this.retiredTurns.clear(); this.unidentifiedCancellation = false;
@@ -741,6 +742,7 @@ export class CodexPeer extends BasePeer {
     this.freshThread = fresh;
     this.link = link;
     this.threadId = threadId;
+    this.onDoing?.("reset");
     this.contextEpoch++;
     this.deliveryEpoch++;
     this.retiredTurns.clear(); this.unidentifiedCancellation = false;
@@ -790,6 +792,9 @@ export class CodexPeer extends BasePeer {
       this.opts.onUsage?.({ rateLimitReachedType: "usageLimitExceeded" }, true);
     }
     if (link !== this.link || params.threadId !== this.threadId) return;
+    // #878: the bound thread's name and its plan's in-progress step, for the hub's DOING column only.
+    if (method === "thread/name/updated") return void this.onDoing?.("title", params.threadName);
+    if (method === "turn/plan/updated") return void this.onDoing?.("todo", Array.isArray(params.plan) ? params.plan.find((s: any) => s?.status === "inProgress")?.step : undefined);
     const nativeId = method === "turn/started" || method === "turn/completed" ? params.turn?.id : params.turnId;
     if (typeof nativeId === "string" && this.retiredTurns.has(nativeId)) {
       if (method === "turn/completed") this.retiredTurns.delete(nativeId);
