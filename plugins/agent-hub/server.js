@@ -12906,39 +12906,13 @@ function claudeWindows(rateLimits) {
 }
 
 // src/adapters/definitions/builtin-metadata.ts
-function compatibilityLaunch(kind, ctx, explicitMode = false) {
-  const mode = explicitMode || kind === "kimi" || kind === "pi" ? ["--mode", ctx.form] : [];
-  const unattended = ctx.unattended && (kind === "claude" || kind === "codex") ? ["--unattended"] : [];
-  const args = [
-    ctx.entrypoint,
-    "--project",
-    ctx.projectRoot,
-    kind,
-    ...mode,
-    ...unattended,
-    ...ctx.model && !ctx.userArgs.includes("--model") ? ["--model", ctx.model] : [],
-    ...ctx.userArgs
-  ];
-  const argv = [process.execPath, ...args];
-  const env = {
-    ...ctx.env.CODEX_HOME !== undefined ? { CODEX_HOME: ctx.env.CODEX_HOME } : {},
-    ...ctx.env.CLAUDE_CONFIG_DIR !== undefined ? { CLAUDE_CONFIG_DIR: ctx.env.CLAUDE_CONFIG_DIR } : {}
-  };
-  const prefix = Object.entries(env).map(([name, value]) => `${name}=${shellQuote3(value)}`);
-  return {
-    cmd: process.execPath,
-    args,
-    ...unattended.length ? { unattended: true } : {},
-    metadata: { packageEntrypoint: ctx.entrypoint, argv, env, command: [...prefix, ...argv.map(shellQuote3)].join(" ") }
-  };
-}
 function sessionId(field) {
   return (peer) => {
     const value = peer.recoveryMetadata?.()[field];
     return typeof value === "string" && value ? value : undefined;
   };
 }
-var switches, implementerRoles, dualForms, headlessForms, hubGrants, CLAUDE_REVIEWER_VARIANT, CLAUDE_IMPLEMENTER_VARIANT, NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN, terminal = (form) => form === "tui", headless = () => false, palette = (fg) => ({ palette: { fg, bg: "transparent" } }), BUILTIN_DEFINITIONS_WITHOUT_QWEN;
+var switches, implementerRoles, dualForms, headlessForms, hubGrants, CLAUDE_REVIEWER_VARIANT, CLAUDE_IMPLEMENTER_VARIANT, NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN;
 var init_builtin_metadata = __esm(() => {
   init_native_cli_entry_claude();
   init_native_cli_entry_codex();
@@ -13188,159 +13162,6 @@ var init_builtin_metadata = __esm(() => {
       cli: { command: "jcode", entry: { lifecycleAdmission: true, execute: runJcodeEntry }, preview: previewJcode, usage: [["ahub jcode [--mode tui|headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>] [--print-command]", "optional Jcode (roster.jcode, default off): its TUI on the hub-owned ACP session, opened once that session is saved; --mode headless for ACP only; native policy unmanaged, no hub sandbox"]], authority: "person", launchConfigKeys: ["jcode_cmd", "jcode_home", "jcode_provider_profile"], startWords: (mode) => ["jcode", "--mode", mode] },
       display: JCODE_DISPLAY,
       hooks: { recallPlatform: "jcode" }
-    }
-  ]);
-  BUILTIN_DEFINITIONS_WITHOUT_QWEN = Object.freeze([
-    {
-      api: 1,
-      kind: "claude",
-      displayName: "Claude Code",
-      family: "claude",
-      transport: "claude-channel",
-      roles: Object.freeze(["planner", "reviewer"]),
-      defaultOnRoster: true,
-      trust: { onPrem: false, hubSandboxed: false },
-      start: {
-        forms: Object.freeze(["tui"]),
-        defaultForm: "tui",
-        ownsTerminal: terminal,
-        launch: (ctx) => compatibilityLaunch("claude", ctx),
-        conductorStartable: true,
-        unattended: true,
-        hubSwitches: switches,
-        ownedFlags: Object.freeze(["--dangerously-load-development-channels", "--dangerously-skip-permissions"])
-      },
-      identity: { mcp: "channel-plugin" },
-      permission: { modes: {}, grants: {
-        ask: "Claude's own permission rules decide",
-        "ask-when-needed": "file tools on project files run without asking, outside .agenthub, .git and agent configuration; other tools keep Claude's own rules",
-        "never-ask": "every tool runs without asking"
-      } },
-      session: { idField: "sessionId", currentId: sessionId("sessionId"), configDirEnv: "CLAUDE_CONFIG_DIR", zeroTurnFresh: true, launchKind: "claude-channel", launchRecord: true },
-      turnEnd: "native-hook",
-      budget: { account: "claude", checkpoint: true },
-      cli: { command: "claude", startWords: () => ["claude"] },
-      display: palette("#6495ed"),
-      hooks: { recallPlatform: "claude" }
-    },
-    {
-      api: 1,
-      kind: "codex",
-      displayName: "Codex",
-      family: "codex",
-      transport: "codex-appserver",
-      roles: Object.freeze(["implementer"]),
-      defaultOnRoster: true,
-      trust: { onPrem: false, hubSandboxed: false },
-      start: {
-        forms: dualForms,
-        defaultForm: "tui",
-        ownsTerminal: terminal,
-        launch: (ctx) => compatibilityLaunch("codex", ctx),
-        conductorStartable: true,
-        unattended: true,
-        hubSwitches: switches,
-        ownedFlags: Object.freeze(["--remote", "--remote-auth-token-env", "--yolo", "--dangerously-bypass-approvals-and-sandbox"])
-      },
-      identity: { mcp: "env" },
-      permission: {
-        modes: {
-          ask: { kind: "native-only", note: "restore the session's captured native approval policy" },
-          "ask-when-needed": { kind: "codex-approval", policy: "on-request" },
-          "never-ask": { kind: "codex-approval", policy: "never" }
-        },
-        grants: { ask: "the session's own approval policy applies again", "ask-when-needed": "approval policy on-request on every turn", "never-ask": "approval policy never on every turn: nothing asks" }
-      },
-      session: { idField: "threadId", currentId: sessionId("threadId"), configDirEnv: "CODEX_HOME", zeroTurnFresh: true, launchKind: "codex", launchRecord: true },
-      turnEnd: "adapter",
-      budget: { account: "codex", checkpoint: true },
-      cli: { command: "codex", startWords: () => ["codex"] },
-      display: palette("#22b8cf"),
-      hooks: { recallPlatform: "codex" }
-    },
-    {
-      api: 1,
-      kind: "kimi",
-      displayName: "Kimi Code",
-      family: "kimi",
-      transport: "acp",
-      roles: implementerRoles,
-      defaultOnRoster: true,
-      trust: { onPrem: false, hubSandboxed: false },
-      start: { forms: dualForms, defaultForm: "tui", ownsTerminal: terminal, launch: (ctx) => compatibilityLaunch("kimi", ctx), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
-      identity: { mcp: "acp-session" },
-      attach: { pullOnlyForms: Object.freeze(["tui"]) },
-      permission: {
-        modes: { ask: { kind: "acp-mode", modeId: "default" }, "ask-when-needed": { kind: "acp-mode", modeId: "yolo" }, "never-ask": { kind: "acp-mode", modeId: "auto" } },
-        grants: { ask: "Kimi asks as it does on its own", "ask-when-needed": "Kimi's yolo mode: it asks only where it judges it must", "never-ask": "Kimi's auto mode: nothing asks" },
-        unmanagedForms: Object.freeze(["tui"]),
-        unmanagedNote: "Kimi approves tools and selects its permission mode in its own TUI; no hub permission mode"
-      },
-      session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: true, launchKind: "acp" },
-      turnEnd: "adapter",
-      budget: { account: "kimi" },
-      capabilities: { watch: true },
-      init: { mcpFile: ".kimi-code/mcp.json" },
-      cli: { command: "kimi", startWords: (form) => ["kimi", "--mode", form] },
-      display: palette("#bc73ca")
-    },
-    {
-      api: 1,
-      kind: "pi",
-      displayName: "Pi",
-      family: "pi",
-      transport: "hub-native",
-      roles: implementerRoles,
-      defaultOnRoster: false,
-      trust: { onPrem: false, hubSandboxed: true },
-      start: { forms: dualForms, defaultForm: "tui", ownsTerminal: terminal, launch: (ctx) => compatibilityLaunch("pi", ctx), conductorStartable: true, autoStart: "pi.auto_start", hubSwitches: [], ownedFlags: [] },
-      identity: { mcp: "env" },
-      permission: { modes: {}, grants: { ...hubGrants } },
-      session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "pi", launchRecord: true },
-      turnEnd: "adapter",
-      budget: { account: "pi", noQuotaReason: "on-prem backends have no provider quota" },
-      cli: { command: "pi", startWords: (form) => ["pi", "--mode", form] },
-      display: palette("#c79936")
-    },
-    {
-      api: 1,
-      kind: "local",
-      displayName: "Local worker",
-      family: "local",
-      transport: "hub-native",
-      roles: implementerRoles,
-      defaultOnRoster: true,
-      trust: { onPrem: true, hubSandboxed: true },
-      start: { forms: headlessForms, defaultForm: "headless", ownsTerminal: headless, launch: (ctx) => compatibilityLaunch("local", ctx), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
-      identity: { mcp: "env" },
-      permission: { modes: {}, grants: { ...hubGrants } },
-      session: { idField: "sessionId", currentId: sessionId("sessionId"), freshOnRestore: true, launchKind: "local" },
-      turnEnd: "adapter",
-      cli: { command: "local", startWords: () => ["local"] },
-      display: palette("#4caa77")
-    },
-    {
-      api: 1,
-      kind: "jcode",
-      displayName: "Jcode",
-      family: "jcode",
-      transport: "acp",
-      roles: implementerRoles,
-      optional: true,
-      defaultOnRoster: false,
-      trust: { onPrem: false, hubSandboxed: false },
-      start: { forms: headlessForms, defaultForm: "headless", ownsTerminal: headless, launch: (ctx) => compatibilityLaunch("jcode", ctx), conductorStartable: true, hubSwitches: [], ownedFlags: [] },
-      identity: { mcp: "project-file" },
-      permission: { modes: {}, unmanaged: "Jcode native policy is unmanaged; no hub mode mapping", grants: {
-        ask: "no verified hub mode mapping; native policy only",
-        "ask-when-needed": "no verified hub mode mapping; native policy only",
-        "never-ask": "no verified hub mode mapping; native policy only"
-      } },
-      session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "jcode" },
-      turnEnd: "adapter",
-      budget: { account: "jcode" },
-      cli: { command: "jcode", startWords: () => ["jcode"] },
-      display: palette("#8a8f99")
     }
   ]);
 });
