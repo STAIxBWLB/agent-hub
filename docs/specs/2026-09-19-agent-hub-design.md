@@ -4538,6 +4538,19 @@ Where the code differs from or fixes a detail the section above leaves open:
 - Folder trigger: `{id, folder, glob?, class, title, ...}`. `folder` is resolved with `realPath`, must lie inside the project or a declared data path, and is polled on the schedules timer, not watched. Symlinks that leave the folder are skipped. A new file (by `realPath`, size, mtime and SHA-256 recorded in `hub.db`) is registered as a source (#508) and proposes one task that names it. The trigger therefore lands after the source registry.
 - `ahub schedule list|run <id>|pause <id>|resume <id>` is person-only.
 
+#### Schedules (#512a) implementation notes (hub task #330: `schedules`, `src/hub/schedules.ts`)
+
+Where the code states or fixes a detail the section above leaves open:
+
+- **Where the timer runs.** `schedulesTimer` in `startDaemon` is its own interval (default one minute, `schedulesEveryMs` in tests), armed at startup and re-armed by `reloadConfig` when a `schedules` leaf changes. It exists only while `schedules` is non-empty, and it never reads `task_sweep.enabled`. The pass is `Tasks.proposeFromSchedules`; the daemon only calls it and writes `status.json` afterwards.
+- **Period.** A schedule's period starts at its anchor in `schedule_runs` (`hub.db`): the first time the hub saw it, then each run. A schedule never runs at first sight, and a restart or a hold never replays what it missed: a run restarts the period at `now`. Changing `every` takes effect from the same anchor. A schedule removed from the config loses its row.
+- **Coalescing.** A due schedule proposes at most one task per pass. While the task its previous run made is open, or while the hub is held (stopping, recovering, a storage error), a due pass proposes nothing and counts a skip (`coalesced`); the next run after the cause ends is the one task they fold into.
+- **Which task is "its previous task".** The open card whose first history entry is by the hub and whose detail starts with `Schedule key: <id>`, read from the board, never from `hub.db`. So a task closed by anyone, or a `hub.db` row that was lost, cannot make the answer wrong, and a task a person or peer wrote to quote the marker does not count.
+- **How the task is made.** Through `Tasks.propose` as the hub (backlog for `queue: "backlog"`, a routed proposal for `"ready"`), so the PII screen, triage, class validation, routing and notices all apply. A proposal `Tasks` refuses is recorded as the schedule's `last_error`, shown in status, and retried at the next tick (the period is not restarted by a failure).
+- **Status.** `schedules` in the daemon status holds, per schedule: id, every, class, queue, next run, last run, the task, a state (`scheduled`, `due`, `waiting`, `held`), skipped runs and the last error. It never holds a title or detail, because those are task text. `ahub status` prints one `schedule <id>` line each.
+- **Config.** `schedules` is in `MACHINE_LOCAL` and `NEVER_EDITABLE` (a settings write cannot create work), is validated by `schedulesConfig` in the loader and in `config-apply`, and applies live. At most 64 entries, ids of lower-case letters, digits, `-` and `_`, details of at most 7000 characters (so the marker line is never cut off), at most 16 `sources` ids of the `src:<16 hex>` form.
+- **Not in this slice.** `sources` is carried into the task's detail as `Source: <id>` lines; it is not yet validated against the registry or attached as `plan.sources` (that is the plan-validation slice of #508). Folder triggers and `ahub schedule list|run|pause|resume` stay with their own tasks.
+
 ### Deliverables (#509)
 
 - In a PII task, or for a deliverable under `pii.paths`, the record keeps the id, format, version and SHA-256 only, never a path or an excerpt, in every view, log and memory call. Hashing still runs on the real path under the existing path guard.

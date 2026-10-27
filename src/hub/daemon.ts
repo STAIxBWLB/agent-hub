@@ -73,6 +73,7 @@ import { spawn } from "node:child_process";
 import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
+import { scheduleViews, schedulesConfig, ScheduleStore, type ScheduleEntry } from "./schedules.ts";
 import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
 import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateEffectiveConfig, validatePetConfig } from "./config-apply.ts";
 import { resolveSettledRoles } from "./settled-roles.ts";
@@ -223,6 +224,8 @@ export interface HubConfig {
   tasks: { release_after_min: number; wip_limits?: Record<string, number>; escalate_after: number; /** #785 P1c: pull the top explicitly reserved ready card when a slot frees; machine-local, default off. */ auto_pull?: boolean };
   /** Between-turn task escalation, disabled unless explicitly enabled (#186). */
   task_sweep: TaskSweepConfig;
+  /** #512a: machine-local schedules; checked by `schedulesConfig`, never set from a committed file. */
+  schedules: ScheduleEntry[];
   /** A command per task class run when the owner marks the task done, and its timeout (issue #7). */
   checks: { timeout_s: number; runner?: "container" | "remote"; remote?: RemoteRunnerConfig; [cls: string]: string | number | RemoteRunnerConfig | undefined };
   /** A git tree at each turn boundary for `ahub turns` and `ahub undo`, the last `keep` per peer (issue #33). */
@@ -283,6 +286,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   approvals: { timeout_s: 120, notify: false },
   tasks: { release_after_min: 30, escalate_after: ESCALATE_AFTER, auto_pull: false },
   task_sweep: DEFAULT_TASK_SWEEP,
+  schedules: [],
   checks: { timeout_s: 600 },
   // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
   snapshots: { enabled: false, keep: 20 },
@@ -496,6 +500,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     },
     tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks, ...(file.tasks?.wip_limits !== undefined ? { wip_limits: planningWipLimits(file.tasks.wip_limits) } : {}) },
     task_sweep: taskSweepConfig(file.task_sweep),
+    schedules: schedulesConfig(file.schedules),
     checks: { ...DEFAULT_CONFIG.checks, ...file.checks, runner: file.checks?.runner === "remote" ? "remote" : file.checks?.runner === "container" ? "container" : undefined,
       ...(file.checks?.remote !== undefined || file.checks?.runner === "remote" ? { remote: remoteRunnerConfig(file.checks?.remote) } : {}) },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },
@@ -584,6 +589,11 @@ export interface DaemonOptions {
   agentDriftEveryMs?: number;
   /** Test seam: an extra hold on the SDLC band evaluation, like a storage error. */
   bandsHeld?: () => boolean;
+  /** Test seam: the schedules clock and the period of the due check (default Date.now and one minute). */
+  schedulesNow?: () => number;
+  schedulesEveryMs?: number;
+  /** Test seam: an extra hold on the schedules timer, like a storage error. */
+  schedulesHeld?: () => boolean;
   /** Test seam: how often the scheduled security-scan baseline checks whether a scan is due, default one hour (the configured `every_h` still decides). */
   securityScanEveryMs?: number;
   /** How long a research record waits after an approval for the task's open turns to end (#247). Tests shrink this. */
@@ -2733,6 +2743,31 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   rescheduleSweep();
   startupCleanup.push(() => clearInterval(sweepTimer));
+  // #512a: the schedules timer is its own interval, started whenever `schedules` is configured, whatever `task_sweep.enabled` says, and re-armed on reload.
+  // It runs no task sweep. Held while stopping or recovering (inside `proposeFromSchedules`), where a due schedule counts the skip and coalesces.
+  const schedulesStore = new ScheduleStore(join(opts.stateDir, "hub.db"));
+  startupCleanup.push(() => schedulesStore.close());
+  let schedulesTimer: ReturnType<typeof setInterval> | undefined;
+  const scheduleNow = () => opts.schedulesNow?.() ?? Date.now();
+  const runSchedules = async () => {
+    if (stopping) return;
+    try {
+      for (const run of await tasks.proposeFromSchedules(schedulesStore, config.schedules, scheduleNow(), () => opts.schedulesHeld?.() === true)) {
+        if (run.outcome === "ran") log(`schedule ${run.id}: proposed task #${run.task}`);
+        else if (run.outcome === "failed") log(`schedule ${run.id}: could not propose; see ahub status`);
+      }
+      writeStatus();
+    } catch (error) { log(`schedules pass failed: ${sanitize((error as Error).message).slice(0, 160)}`); }
+  };
+  const rescheduleSchedules = () => {
+    if (schedulesTimer) clearInterval(schedulesTimer);
+    schedulesTimer = undefined;
+    if (!config.schedules.length) { try { schedulesStore.prune([]); } catch { /* the store is closed while stopping */ } return; }
+    schedulesTimer = setInterval(() => { void runSchedules(); }, opts.schedulesEveryMs ?? 60_000);
+    schedulesTimer.unref?.();
+  };
+  rescheduleSchedules();
+  startupCleanup.push(() => clearInterval(schedulesTimer));
   for (const i of intervals) i.unref?.();
   startupCleanup.push(() => { for (const i of intervals) clearInterval(i); });
 
@@ -3513,6 +3548,7 @@ export async function startDaemon(opts: DaemonOptions) {
     pendingRestart: allPendingRestart(),
     retainedConfig,
     ...(agentDrift.length ? { agentDrift } : {}),
+    ...(config.schedules.length ? { schedules: scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true) } : {}),
     ...(() => { const warning = mainCheckoutWarning(opts.cwd, tasks.publicMetadataText, checkoutBranch); return warning ? { mainCheckout: warning } : {}; })(),
     startModes: Object.fromEntries([...START_MODE_PEERS, ...configuredIds].map(peer => [peer, startModeOf(config.peers, peer, declarations, adapterCatalog)])),
     memoryProfile: memoryProfileStatus(includeAttentionItems),
@@ -5791,6 +5827,7 @@ export async function startDaemon(opts: DaemonOptions) {
       config.permission_default_sources = candidate.permission_default_sources;
       for (const peer of changedPermissionDefaults) applyPendingPermissionDefault(peer);
       if (changes.some(change => change.key === "task_sweep" || change.key.startsWith("task_sweep."))) rescheduleSweep();
+      if (changes.some(change => change.key === "schedules" || change.key.startsWith("schedules."))) rescheduleSchedules();
       if (changes.some(change => ["batch_max", "batch_ms", "queue_cap"].includes(change.key))) bus.configureScheduling({ batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap });
       if (changes.some(change => change.key === "watchdog_ms")) for (const peer of bus.peers.values()) if (peer instanceof BasePeer) peer.configureWatchdog(config.watchdog_ms);
       Object.assign(limits, config.limits);

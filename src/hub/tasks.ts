@@ -9,6 +9,7 @@ import { completePlanInventory, planConformance, planConformanceBlockers, planFi
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, type CostPlan, type ReviewCost } from "./cost-governance.ts";
 import { qualifiedTitleRepos, siblingTitleRefs, specRefs } from "./spec-read.ts";
+import { parseEvery, scheduledDetail, scheduleKeyOf, type ScheduleEntry, type ScheduleStore } from "./schedules.ts";
 import { DEFAULT_BAND, EPISODE_LOOKBACK, sdlcMetrics, type BandMetric, type BandResult, type MetricTask, type MetricsReport, type SeriesPoint } from "./sdlc-metrics.ts";
 import { readSecurityScan } from "./security-baseline.ts";
 import { cleanMergeCost } from "./cost-governance.ts";
@@ -3150,6 +3151,52 @@ export class Tasks {
     }
     for (const id of created) this.releaseNotice(`task #${id}: SDLC control band breach proposed in the backlog`);
     return created;
+  }
+
+  /** The open task each schedule made: a hub-written card (first history entry by the hub) whose detail starts with the schedule marker and that is not closed. */
+  openScheduled(): Map<string, number> {
+    const open = new Map<string, number>();
+    for (const row of this.d.board.list()) {
+      const key = row.history[0]?.by === HUB && !isClosedTaskState(row.state) ? scheduleKeyOf(row.detail) : undefined;
+      if (key !== undefined && !open.has(key)) open.set(key, row.id);
+    }
+    return open;
+  }
+
+  /** Whether a scheduled run may write now: the same holds as every host writer (stopping or recovering, held by the daemon, a storage error). */
+  schedulesHeld(): boolean { return !!this.d.sweepHeld?.() || this.d.bus.isRecoveryHeld || !!this.d.bus.storageError; }
+
+  private schedulesRunning = false;
+  /**
+   * #512a: one pass over the machine-local schedules. A schedule is due once `every` has passed since its period began (first sight, then its last run).
+   * A due schedule proposes at most one task per pass, through `propose` like any proposal (the PII screen, triage, routing and notices all apply), and none
+   * while the task its previous run made is still open. While the hub is held the whole pass skips and every due schedule counts the skip, so a long hold
+   * ends in one run per schedule, never a burst. A run restarts the period at `now`: nothing a restart or a hold missed is replayed. Returns what each due schedule did.
+   */
+  async proposeFromSchedules(store: ScheduleStore, entries: readonly ScheduleEntry[], now: number, extraHold: () => boolean = () => false): Promise<{ id: string; outcome: "ran" | "held" | "waiting" | "failed"; task?: number }[]> {
+    if (this.schedulesRunning) return [];
+    this.schedulesRunning = true;
+    const out: { id: string; outcome: "ran" | "held" | "waiting" | "failed"; task?: number }[] = [];
+    try {
+      store.prune(entries.map(entry => entry.id));
+      for (const entry of entries) {
+        const row = store.ensure(entry.id, now);
+        if (now < row.anchor + parseEvery(entry.every)) continue;
+        if (this.schedulesHeld() || extraHold()) { store.skipped(entry.id); out.push({ id: entry.id, outcome: "held" }); continue; }
+        const open = this.openScheduled().get(entry.id);
+        if (open !== undefined) { store.skipped(entry.id); out.push({ id: entry.id, outcome: "waiting", task: open }); continue; }
+        try {
+          const task = await this.propose(HUB, { title: entry.title, detail: scheduledDetail(entry), class: entry.class, backlog: entry.queue === "backlog",
+            ...(entry.owner ? { owner: entry.owner } : {}) });
+          store.ran(entry.id, now, task.id);
+          out.push({ id: entry.id, outcome: "ran", task: task.id });
+        } catch (error) {
+          store.failed(entry.id, sanitize((error as Error).message));
+          out.push({ id: entry.id, outcome: "failed" });
+        }
+      }
+    } finally { this.schedulesRunning = false; }
+    return out;
   }
 
   /** S10 read-only planner report; S7 owns rolling bands and automatic board proposals. */

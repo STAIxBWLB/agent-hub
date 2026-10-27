@@ -17,6 +17,8 @@ export interface StatusOutput {
   mainCheckout?: string;
   /** #843 AC3: installed agent CLIs not on a verified version; ids, version, state and a receipt path only. */
   agentDrift?: readonly { id: string; version: string; state: string; receipt: string }[];
+  /** #512a: one row per machine-local schedule; ids, times and a state only, never task text. */
+  schedules?: readonly { id: string; every: string; class: string; queue: string; next: number; last?: number; task?: number; state: string; coalesced?: number; error?: string }[];
   taskStalls?: readonly { task: number; cause: { kind: string; peer?: string; dependency?: number; code: string } }[];
   pendingTaskOffers?: readonly { task: number; peer: string }[];
   isolatedChecks?: { pending?: number; orphans?: string[]; unknownReceipts?: readonly string[]; maintenanceUnavailable?: boolean };
@@ -212,6 +214,11 @@ export function renderStatus(data: StatusOutput, columns?: number, now = Date.no
   if (data.retainedConfig?.length) {
     out.push(...detail("config retained", `${data.retainedConfig.map(row => row.key).join(", ")}; run ahub settings reload`, columns, "attention"));
     for (const pending of data.retainedConfig) out.push(...detail("retained reason", `${pending.key}: ${pending.reason}`, columns, "attention"));
+  }
+  for (const row of data.schedules ?? []) {
+    const when = (at: number) => new Date(at).toISOString().replace("T", " ").slice(0, 16) + "Z";
+    const text = `${row.state === "scheduled" ? `next ${when(row.next)}` : row.state === "due" ? "due now" : row.state === "waiting" ? `due, waiting for task #${row.task} to close` : "due, held (the hub is stopping or recovering)"}; every ${row.every}; ${row.class} to ${row.queue}${row.last ? `; last ${when(row.last)}${row.task ? ` as task #${row.task}` : ""}` : "; never run"}${row.coalesced ? `; ${row.coalesced} skipped run${row.coalesced === 1 ? "" : "s"} coalesced` : ""}${row.error ? `; last error: ${row.error}` : ""}`;
+    out.push(...detail(`schedule ${row.id}`, text, columns, row.error ? "attention" : undefined));
   }
   for (const stall of data.taskStalls ?? []) out.push(...detail(`task #${stall.task} stalled`, `${stall.cause.kind}${stall.cause.peer ? ` ${stall.cause.peer}` : ""}${stall.cause.dependency ? ` #${stall.cause.dependency}` : ""}: ${stall.cause.code}; configure the peer, ahub task assign ${stall.task} <peer>, or ahub task cancel ${stall.task} --reason <text>`, columns, "attention"));
   for (const offer of data.pendingTaskOffers ?? []) out.push(...detail("task offer", `open ${offer.peer}: task #${offer.task} is waiting for it`, columns, "attention"));
