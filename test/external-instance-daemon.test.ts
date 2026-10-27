@@ -229,6 +229,23 @@ test("#754 A7 live recovery and incompatible targets refuse before holds, stoppe
 }, 20_000);
 
 
+test("#754 a fresh start cannot apply changed instance policy before a daemon restart", async () => {
+  for (const change of ["permission_mode", "readOnly", "roles"] as const) {
+    const f = await fixture();
+    try {
+      const id = "fixture-writer";
+      expect((await f.client.request({ t: "start", peer: id })).ok).toBe(true);
+      expect((await f.client.request({ t: "peer_stop", peer: id })).ok).toBe(true);
+      const count = f.records().length, protocol = f.protocol(id);
+      f.local.instances[id]![change] = change === "readOnly" ? true : change === "roles" ? ["verifier"] : "ask";
+      writeFileSync(f.localFile, JSON.stringify(f.local));
+      const refused = await f.client.request({ t: "start", peer: id });
+      expect(refused.ok).toBe(false);
+      expect(f.records()).toHaveLength(count); expect(f.protocol(id)).toEqual(protocol);
+    } finally { await f.close(); }
+  }
+}, 20_000);
+
 for (const change of ["pin", "permission_mode", "readOnly"] as const) test(`#754 ${change} change after restart refuses stale resume but permits a fresh person start`, async () => {
   const f = await fixture();
   let target: Awaited<ReturnType<typeof startDaemon>> | undefined, client: ControlClient | undefined;

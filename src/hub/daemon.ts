@@ -696,6 +696,8 @@ export async function startDaemon(opts: DaemonOptions) {
   // The resolver and catalogs are bound to this daemon, never published into the process-global builtin registry.
   const definitionOf = (peer: string) => adapterCatalog.definitionOf(peer, declarations);
   const externalInstanceIds = extraIds.filter(id => externalIds.has(declarations[id]!.kind));
+  // Instance declarations and their effective role ceiling are restart-bound, even for a fresh native session.
+  const externalStartupPolicies = new Map(externalInstanceIds.map(id => [id, { declaration: structuredClone(declarations[id]!), roles: [...(config.roles[id] ?? [])] }]));
   const externalRefusedRows = new Map(startupDeclarationRows.map(row => [row.id, row]));
   const allExternalInstanceIds = () => [...new Set([...(restored?.peers ?? []).filter(row => row.externalInstance).map(row => row.id), ...externalInstanceIds, ...externalRefusedRows.keys()])];
   const isExternalInstance = (peer: string) => externalInstanceIds.includes(peer);
@@ -738,6 +740,8 @@ export async function startDaemon(opts: DaemonOptions) {
     const currentRoles = effectiveInstanceRoles(peer, current.instances, policy.roles, current.catalog);
     const cwd = resolveInstanceExecutionCwd(opts.cwd, peer, current.instances, currentRoles, current.catalog);
     const binding = externalInstanceBinding(identity, peer, declaration, currentRoles, cwd);
+    const startup = externalStartupPolicies.get(peer);
+    if (!startup || binding.policyDigest !== externalInstanceBinding(identity, peer, startup.declaration, startup.roles, cwd).policyDigest) throw new Error("external instance policy changed; restart the hub before starting under its new policy");
     const record = readExternalInstanceRecord(opts.stateDir, peer);
     const sameBinding = record && sameExternalInstanceBinding(record.externalInstance, binding);
     if (resumeSessionId !== undefined) {
