@@ -59,13 +59,18 @@ function rig(world: World, mode: SdlcMode = "enforce", extra: Record<string, unk
 const reported = "eval_pass_rate=0.92 eval_suite=smoke-1";
 
 test("enforce: a configuration PR cannot be approved without the passing eval check, and a code-only PR is unaffected", async () => {
-  const missing = rig({ paths: ["AGENTS.md"], evalCheck: "absent", text: "" });
-  await missing.tasks.done("codex", missing.id, "updated the notes");
-  await expect(missing.tasks.review(USER, missing.id, "approved", undefined, undefined, HEAD)).rejects.toThrow("required check evals: not successful on current head");
-  expect(missing.board.get(missing.id)?.state).toBe("in_review");
+  // Review entry (hub_task_done) refuses a missing or failing eval check before any write, like every other required check.
+  const missing = rig({ paths: ["AGENTS.md"], evalCheck: "absent", text: "" }), before = missing.board.get(missing.id)!;
+  await expect(missing.tasks.done("codex", missing.id, "updated the notes")).rejects.toThrow("required check evals: not successful on current head");
+  expect(missing.board.get(missing.id)?.state).toBe("in_progress");
+  expect(missing.board.get(missing.id)?.history).toEqual(before.history);
   const failed = rig({ paths: ["docs/agent-notes/tests.md"], evalCheck: "failed", text: reported });
-  await failed.tasks.done("codex", failed.id, "updated the notes");
-  await expect(failed.tasks.review(USER, failed.id, "approved", undefined, undefined, HEAD)).rejects.toThrow("required check evals");
+  await expect(failed.tasks.done("codex", failed.id, "updated the notes")).rejects.toThrow("required check evals");
+  expect(failed.board.get(failed.id)?.state).toBe("in_progress");
+  // The approval gate refuses it too for a task already in review.
+  const late = rig({ paths: ["AGENTS.md"], evalCheck: "failed", text: reported }); late.board.update(late.id, USER, "done", { state: "in_review" });
+  await expect(late.tasks.review(USER, late.id, "approved", undefined, undefined, HEAD)).rejects.toThrow("required check evals");
+  expect(late.board.get(late.id)?.state).toBe("in_review");
   const code = rig({ paths: ["src/hub/bus.ts"], evalCheck: "absent", text: "" });
   await code.tasks.done("codex", code.id, "code only");
   expect((await code.tasks.review(USER, code.id, "approved", undefined, undefined, HEAD)).state).toBe("approved");
@@ -85,9 +90,14 @@ test("enforce: a passing eval check with its pass rate and suite is approved, an
 
 test("enforce: a pass that reports no pass rate or suite version is refused; advise names the gap and approves", async () => {
   const strict = rig({ paths: ["AGENTS.md"], evalCheck: "passed", text: "all good" });
-  await strict.tasks.done("codex", strict.id, "updated AGENTS.md");
-  await expect(strict.tasks.review(USER, strict.id, "approved", undefined, undefined, HEAD)).rejects.toThrow("pass rate or suite version not reported by evals");
-  expect(strict.board.get(strict.id)?.state).toBe("in_review");
+  await expect(strict.tasks.done("codex", strict.id, "updated AGENTS.md")).rejects.toThrow("pass rate or suite version not reported by evals");
+  expect(strict.board.get(strict.id)?.state).toBe("in_progress");
+  const strictLate = rig({ paths: ["AGENTS.md"], evalCheck: "passed", text: "all good" }); strictLate.board.update(strictLate.id, USER, "done", { state: "in_review" });
+  await expect(strictLate.tasks.review(USER, strictLate.id, "approved", undefined, undefined, HEAD)).rejects.toThrow("pass rate or suite version not reported by evals");
+  expect(strictLate.board.get(strictLate.id)?.state).toBe("in_review");
+  const unknownCoverage = rig({ paths: ["src/a.ts"], evalCheck: "passed", text: reported, coverage: "incomplete" });
+  await expect(unknownCoverage.tasks.done("codex", unknownCoverage.id, "code")).rejects.toThrow("PR file coverage incomplete or unknown");
+  expect(unknownCoverage.board.get(unknownCoverage.id)?.state).toBe("in_progress");
   const advise = rig({ paths: ["AGENTS.md"], evalCheck: "passed", text: "all good" }, "advise");
   await advise.tasks.done("codex", advise.id, "updated AGENTS.md");
   expect((await advise.tasks.review(USER, advise.id, "approved", undefined, undefined, HEAD)).state).toBe("approved");
