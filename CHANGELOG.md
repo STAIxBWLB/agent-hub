@@ -4,9 +4,24 @@ Issue and pull request numbers in the entries for 0.7.7 and earlier refer to the
 
 ## Unreleased
 
+## 0.19.0
+
+- The headless Claude implementer runs proven commands without asking in `ask-when-needed` (#845, #857): read-only commands and closed task-gate commands (check, test and build; `git add` and `git commit`; `git push` of the bound task branch; `gh pr` reads and create) go through a fixed host wrapper with a single-use ticket bound to task, child, root, branch, argv and environment, rechecked before spawn. Check, test and build code runs under the local-worker sandbox and cannot write project Git metadata (objects included); host add and commit run outside it with hooks, fsmonitor, signing and maintenance off. The default branch comes from the remote once at startup. `git add` and `git commit` still ask when Git filters or textconv drivers are configured; push and `gh` grants are kept with a global Git LFS install.
+- Optional `model` for the headless Claude implementer instance (#844, #848).
+- Code-only review scope (#852, #853): the sandboxed codex and kimi fresh reviewers declare `review scope: code`, `review_scope` overrides it per instance, and a code-scope `changes_requested` with no open structured finding is evidence-only (recorded, never escalated, one ids-only notice to the conductor).
+- Agent CLI drift (#849, #855): a daily watch of every public CLI source records the receipt a new version should repeat, and the planner is told when an installed agent CLI is not a verified version; `ahub status` shows an `agent CLI drift` line.
+- Pi has a native version gate (#843, #847): 1.4.0 is verified, any other version is refused at every launch path unless the person runs `ahub agents trust pi <version>`.
+- Planners get one merged `Planner work ready:` notice when a write frees an owner's capacity or releases backlog (#785, #842).
+- The remote check runner mounts a lockfile-keyed, read-only dependency volume; a manifest with an install lifecycle script is refused (#793, #846).
+- Verified CLI versions: agy 1.4.7 (#851), Jcode 0.99.1 (#850), kimi-review 2.3.2 (#856), headless Qwen ACP 0.26.1 (#859), claude-implementer 2.1.310 (#858).
+- Sandbox: a linked worktree's submodule git dirs and `config.worktree` are protected (#862), and every write under a modules root outside a discovered submodule git dir is refused (#865, #866).
+- Qwen dual output: Qwen's own background-task notice is not the person's prompt and ends no hub turn (#861).
+- Conductor operations keep their own error and are audited as refused only on an authority refusal; safe history is cached (#812, #839).
+- CI admission retries a transient GitHub 5xx or 429 twice inside its deadline and stays fail-closed otherwise (#872, #873); check-runner receipt saves are serialized per run (#867, #868).
 - The suite watchdog stops a run on lost progress, not elapsed time (#516): `scripts/progress-tee.sh` forwards bun's output and appends one byte per test result line or file header to a progress file, and `scripts/hang-watch.sh` kills a suite whose progress file has not grown for `AHUB_CHECK_QUIET_S` seconds (300 by default), printing the process table below it first. `AHUB_CHECK_HANG_S` stays as a backstop (1500 s on Linux and 1800 s on macOS in CI, with 35 and 40 minute job limits). A slow suite that keeps passing tests is no longer cut at the total bound.
 - Pin @staix/agent-mem 0.10.0 (standalone MCP screening/ranking and capture-worker prefetch improvements; unchanged hub policy and storage contracts). Refs agent-mem#13.
 - Pin @staix/agent-mem 0.9.1 (split-home sync holds a verified foreign-generation prune as "held, not applied" instead of refusing the sync, cached MCP policy screening, `--capture-days` claude-mem capture import; 0.9.0 was never published). Refs agent-mem#13.
+- Tests and docs: the snapshot clock is held in the projection-surface daemons (#515, #854), benchmark Python bytecode is ignored (#840), and the cut-payload guard is stated as refusing session-wide grants (#843, #860).
 
 ## 0.18.0
 

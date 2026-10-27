@@ -1,6 +1,6 @@
 # Operations guide
 
-This guide describes ahub 0.18.0 and control protocol 16. Live verification
+This guide describes ahub 0.19.0 and control protocol 16. Live verification
 results and remaining prerequisites are recorded separately in [the smoke ledger](smoke.md).
 
 ## Agent-operated live verification
@@ -638,6 +638,11 @@ Pi starts in its TUI by default; `ahub pi --headless`, or the start mode
 setting (`ahub settings set peers.pi.start_mode headless`), asks for the
 background peer instead. The project uses its existing OmniRoute connection for DGX;
 `pi.dgx_coding` and `pi.dgx_fast` select the gateway's configured model IDs.
+Every Pi start (headless, TUI, console or auto start) first runs the configured
+`pi.cmd` with `--version` (#847). Pi 1.4.0 is verified
+([model-free receipt](verification/2026-10-26-pi-140-compat.md)); another
+version, or one that cannot be read, is refused before Pi starts, unless the
+person trusts that exact version with `ahub agents trust pi <version>`.
 
 ```bash
 ahub models setup       # prepare bounded Qwen3.5 4B MLX in an existing Ollama service
@@ -900,12 +905,16 @@ the OS temp cleanup), and nothing else; the shared temp dirs are closed.
 Some names stay closed to those commands, and to Pi's, wherever they may
 otherwise write: anything named `.git` at any depth, the `config` and `hooks`
 directly under a `.git`, `commondir` below it, and `.agenthub` anywhere in the
-project. A submodule's git directory under `.git/modules/` is not covered yet
-(#281). A command can therefore not create, rename or remove a `.git`:
-`git init`, `git clone` and `git worktree add` do not run inside the sandbox,
-and neither do `git worktree remove`, `git worktree prune` of a stale record,
-`git clean -ffd` over a nested repository or `rm -rf` of a directory that
-holds a `.git`. `git add`, `commit`, `stash`, `checkout` and `gc` work, and
+project, plus `config.worktree` beside each such `config`. A submodule's git
+directory gets the same `config` and `hooks` refusal under every `modules/`
+tree the project can reach: the common dir's, the worktree's own and every
+linked worktree's (#281, #518). Nothing else may be written under such a tree
+outside a discovered submodule git dir (#865). A command can therefore not
+create, rename or remove a `.git`: `git init`, `git clone` and
+`git worktree add` do not run inside the sandbox, and neither do
+`git worktree remove`, `git worktree prune` of a stale record,
+`git submodule update --init`, `git clean -ffd` over a nested repository or
+`rm -rf` of a directory that holds a `.git`. `git add`, `commit`, `stash`, `checkout` and `gc` work, and
 `.gitignore` and `.github/` stay writable; a commit that your git configuration
 signs with a key under `~/.ssh` or `~/.gnupg` fails, because the sandbox cannot
 read those directories. Run a refused command yourself, in a terminal.
@@ -2391,6 +2400,15 @@ moves, reviews and assignments are recorded at `fyi` weight (no turn), at most
 once per planner per ten minutes. A newer notice replaces an unsettled copy, and
 the hub's own bookkeeping tells nobody.
 
+A task write also wakes the task's rostered planners when it frees capacity or
+releases backlog work (#785): a lower WIP for the owner or reserved peer adds a
+`capacity_released: <peer> WIP <n>; reserved ready #<id>|none` line, and an
+approval that leaves a backlog card with no unresolved dependency adds
+`backlog_ready: #<id>`. The lines go in one `Planner work ready:` task notice
+per planner, ids only; a newer one merges and replaces the unsettled copy, which
+survives a restart. Nothing is pulled automatically: the planner reads the
+board and decides.
+
 ## Resetting a project's hub
 
 `ahub reset` returns a project's hub to a clean state. Without `--yes` it is a
@@ -2509,7 +2527,7 @@ Rows without a live process are stale registrations; forget them with
 
 ## Agent CLI versions
 
-Agent CLIs update themselves often, and a hub release cannot follow every one. One policy decides each gated CLI: the Codex and Kimi fresh reviewers, Jcode, agy and Qwen (#691). Qwen has two entries: `qwen` for headless ACP and `qwen-dual` for the dual-output TUI (#286).
+Agent CLIs update themselves often, and a hub release cannot follow every one. One policy decides each gated CLI: the Codex and Kimi fresh reviewers, the headless Claude implementer, Jcode, agy, Qwen and Pi (#691, #847). Qwen has two entries: `qwen` for headless ACP and `qwen-dual` for the dual-output TUI (#286).
 
 - `ahub agents [--json]` lists each gated CLI with its version, verdict and verified versions.
   - **verified:** a receipt exists.
@@ -2544,7 +2562,7 @@ section is what they run.
 
 Upgrade running projects with the target release's own coordinator. It accepts
 a running source on control protocol 9 (0.6.x), 10 (0.7.0 through 0.12.0),
-11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.18.0), and only
+11 (0.12.1 and 0.12.2), 12 (0.12.3), 13 (0.12.4 through 0.12.15), 14 (0.12.16), 15 (0.12.17 through 0.12.19) or 16 (0.12.20 through 0.19.0), and only
 a target on its own protocol, so the target's coordinator fits every supported
 source and carries every recovery fix released up to it. Protocol 8 and older
 (0.5.x and earlier) are refused as `manual-bootstrap-required`. Run from the
@@ -2558,7 +2576,7 @@ bunx --package @staix/agent-hub@0.12.43 ahub upgrade --to 0.12.43 --yes
 | Running now | Coordinator to use |
 | --- | --- |
 | 0.6.x (protocol 9) | the target's, through `bunx` as above |
-| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.18.0 (protocol 16) | the target's, through `bunx` as above |
+| 0.7.0 through 0.12.0 (protocol 10), 0.12.1 and 0.12.2 (protocol 11), 0.12.3 (protocol 12), 0.12.4 through 0.12.15 (protocol 13), 0.12.16 (protocol 14), 0.12.17 through 0.12.19 (protocol 15), 0.12.20 through 0.19.0 (protocol 16) | the target's, through `bunx` as above |
 | any supported source, with the installed CLI already at the target | `ahub upgrade` below, which is the same coordinator |
 | 0.5.x or earlier (protocol 8 and older) | not supported: bootstrap by hand with the matching CLI |
 
@@ -3723,13 +3741,13 @@ selected roster and existing capabilities; the TUI is always a person's start.
 `ahub qwen --mode tui` runs `qwen --input-file <in> --json-file <out> --mcp-config <hub server> --approval-mode default` in the terminal you ran it from. The daemon prepares the two files (mode 0600, under `<state dir>/qwen/qwen-dual/`) and returns the launch; the hub then appends one `submit` line per delivery and tails the event file from a saved offset. It needs a Qwen the dual-output compat entry verifies (`ahub agents` shows `qwen-dual`, verified 0.26.1 only; the headless `qwen` entry is separate and unchanged) and refuses another version before it creates a file. The TUI is explicit only: `ahub qwen` without `--mode` is still headless, Qwen is not a start-mode peer, and the hub never opens this terminal by itself. The TUI start is refused for an extra Qwen instance, off roster, outside a terminal, and while a headless Qwen runs (`ahub stop qwen` first); a headless start is refused while the TUI holds its terminal.
 
 - What the hub does: a delivery becomes a `submit`; the last assistant message of the turn (an `assistant` event whose `stop_reason` is not `tool_use`, then `message_stop`) is shared as the answer; busy and idle follow the events. A `can_use_tool` request goes to the console approval path (`ahub permit`, the dashboard), and the hub's own tools are approved only by their exact `mcp__agent-hub__<tool>` name. If you answer a prompt in the Qwen terminal first, the hub's pending approval is withdrawn.
-- **Limit 1, a deny ends the turn without an answer.** Qwen emits nothing when the hub denies: it cancels the whole turn. The hub ends the turn itself, shares no answer, settles the delivery as `completed` (a deny is a known outcome, and a `needs_review` would hold every later message to Qwen until a person resolved it) and says so in a notice. A turn whose outcome is not known (Qwen exited, an Esc followed by a new prompt, an event file that became unreadable) is the one that settles `needs_review`.
+- **Limit 1, a deny ends the turn without an answer.** Qwen emits nothing when the hub denies: it cancels the whole turn. The hub ends the turn itself, shares no answer, settles the delivery as `completed` (a deny is a known outcome, and a `needs_review` would hold every later message to Qwen until a person resolved it) and says so in a notice. A turn whose outcome is not known (Qwen exited, an Esc followed by a new prompt, an event file that became unreadable) is the one that settles `needs_review`. Qwen's own notice that a background shell finished (a `user` event that is wholly one or more `<task-notification>` envelopes) is not a new prompt: it ends no hub turn and leaves an idle peer idle (#517).
 - **Limit 2, the hub cannot stop a Qwen turn.** The input protocol has only `submit` and `confirmation_response`, and a signal does not stop a running turn. The inactivity watchdog therefore never cancels: after `watchdog_ms` of silence it marks the turn stalled (`ahub status`, the console and the dashboard say "press Esc in the Qwen terminal") and keeps the peer busy. The hub never types into your terminal and never signals Qwen to stop a turn.
 - A Qwen write or shell command that names the hub state directory is refused (see [security](security.md): the input file is a prompt channel).
 - If the hub cannot read the event file the peer is `detached`, shown as offline with a notice, never idle: Qwen itself keeps working, and the hub reattaches when the file is readable again.
 - Restart: if the hub restarts while your Qwen keeps running, it reads on from its saved offset (no event twice, no launch). If Qwen is gone, `ahub qwen --mode tui` starts `qwen -r <session id>` on the same two files; the earlier submits are not replayed and the recorded answers are not shared again. Recovery never restores this terminal as a headless worker, and `ahub stop qwen` refuses: end Qwen in its own terminal.
 
-Receipt-verified native ACP identities are qwen-code 0.25.0 and 0.26.0 ([dated receipt](verification/2026-10-22-kimi-qwen-compat.md)). A CLI version label alone
+Receipt-verified native ACP identities are qwen-code 0.25.0 and 0.26.0 ([dated receipt](verification/2026-10-22-kimi-qwen-compat.md)) and 0.26.1 ([0.26.1 receipt](verification/2026-10-26-qwen-0261-acp.md)). A CLI version label alone
 is insufficient: startup verifies its native identity/version and advertised mode
 ids before any prompt. The earlier local installation reported CLI 0.25.0 while
 its package/ACP source said 0.24.1; that was not a ready identity. The 0.26.0 receipt
@@ -3766,7 +3784,7 @@ TUI input may interleave with an ACP turn; there is no single-writer guard. Clos
 After upgrading to the recipient-retry release, a Jcode project MCP entry written before `AGENTHUB_DELIVERY_ONLY` was added is intentionally stale. Once per project, the person runs `ahub jcode --mode headless` before using conductor/dashboard starts. The launcher rewrites only the owned entry with the delivery-only marker, preserving foreign entries and refusing collisions; recovery relaunches already use this CLI path. Readiness checks never rewrite the file, and an explicit false marker or any other drift remains refused. Until that rewrite, daemon starts keep their actionable stale-entry refusal rather than advertising a retry tool Jcode cannot use.
 
 
-Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or runtime mode mapping is invented. Quota and consumption remain unknown. Supported versions run from 0.98.0 up to, not including, 1.0.0 (#529); another version is refused before the owned daemon starts, with the version named and the trust command (#691). Every owned jcode process (version probe, daemon, ACP and TUI) runs with `JCODE_NO_TELEMETRY=1`. Native session/load (verified on 0.94.0 and 0.98.1) cannot prove identity, so attached Jcode blocks controlled recovery before effects and crash recovery asks for deliberate native reopening. A requested load without an echoed identity refuses; no fresh session is presented as restored. Provider/tool/native teardown receipts remain unverified in the pinned contract report.
+Native policy is unmanaged and has NO hub sandbox; no permission_modes.jcode or runtime mode mapping is invented. Quota and consumption remain unknown. Supported versions run from 0.98.0 up to, not including, 1.0.0 (#529); another version is refused before the owned daemon starts, with the version named and the trust command (#691). Every owned jcode process (version probe, daemon, ACP and TUI) runs with `JCODE_NO_TELEMETRY=1`. Native session/load (verified on 0.94.0, 0.98.1 and 0.99.1) cannot prove identity, so attached Jcode blocks controlled recovery before effects and crash recovery asks for deliberate native reopening. A requested load without an echoed identity refuses; no fresh session is presented as restored. Provider/tool/native teardown receipts remain unverified in the pinned contract report.
 
 ## Optional Antigravity (agy) peer
 
@@ -4359,7 +4377,6 @@ The task's `refs.branch` is authoritative. Otherwise the first eligible task-com
 
 Check/test/build cannot write the project Git common/current directory at all, including objects, HEAD/index, refs/logs, other worktrees and either submodule tree. Closed host add/commit reuse core Git hardening, ask with configured filters/external drivers/textconv, and force signing/automatic maintenance off. A global Git LFS installation does not disable push/gh grants; only add/commit keep person approval so LFS conversions are not silently bypassed. Automatic push still does not run pre-push hooks. Config includes and partial clones refuse privileged Git/gh. Their command/paths/current task/branch are re-proved before execution. The host pins the default branch from the remote at startup, using a bounded isolated-config Git symref probe against the captured GitHub repository. Local origin/HEAD changes cannot redefine it. No credentials are supplied to that probe; unavailable/private-remote evidence or an unsupported Git layout asks. local.bash_network "direct" gives code direct network access. A setsid-detached code child can outlive owned-group cleanup while retaining its sandbox and permitted worktree writes.
 
-
 Project Git retains the core policy that clears credential.helper and core.askpass; an HTTPS push needing those helpers may fail, rather than importing credentials or relaxing that policy. Task branch/config proof reads are bounded synchronous reads (1.5 seconds per reader); slow or unknown evidence asks. The existing sandbox profile discovery is also synchronous; moving it to an asynchronous inventory proof with a shared deadline remains a follow-up. The nonce is visible in a permission response, so it proves a bounded grant rather than native-dispatch provenance.
 
 The [native permission receipt](verification/2026-10-23-headless-claude-permissions.md) covers Claude Code 2.1.309, and the [2.1.310 receipt](verification/2026-10-26-claude-implementer-2.1.310.md) repeats it on 2.1.310 (with 2.1.309 as a control), each with a deterministic loopback fixture and no real account/model call. It is not sandbox proof or a runtime receipt gate. The real account/model/person interaction remains a separate live leg.
@@ -4402,7 +4419,7 @@ Start them with `ahub claude --as claude-review`, `ahub codex --as codex-review`
 
 Codex requires a verified `codex-cli` (0.146.0, 0.163.0 or 0.164.0) or one the person trusts on this machine, and a passing bounded runtime receipt before its model child starts. 0.146.0 and 0.163.0 passed the [2026-10-22 model-free production admission](verification/2026-10-22-codex-reviewer-isolation.md) and 0.164.0 the [2026-10-24 one](verification/2026-10-24-codex-0164-reviewer-isolation.md). A refusal names the installed and verified versions. Either set `codex_bin` to a verified executable, or run `ahub agents trust codex-review <version>`: trust lifts only the version pin, and every proof below still runs before each child (#691). Each launch approves exactly `hub_review` and `hub_task_show` per tool (`approval_mode = "approve"`), never through a server-wide default: without it Codex 0.164.0 listed the tools but refused the call, so reviews ended with no verdict (#783). A model-free receipt proves the inventory, not that a verdict reaches the hub; a [model-backed 0.164.0 run](verification/2026-10-25-codex-0164-reviewer-tool-call.md) recorded one verdict through that path. The producer checks native binary/config stability, configured MCP inventory with only the two hub tools, effective Apps/plugins/hooks disablement, an explicit empty legacy `notify` command and a named filesystem profile. Apps needs separate feature readback because configured inventory omits runtime connectors. Web search is requested disabled; its effective turn mode is not read back and managed requirements can select Cached (see the verification ceiling). Each launch proves public-read, exact/glob/symlink private-denial, standard host credential denial and write-denial in temporary fixtures. Standard credential and configured tool-home/XDG subtrees are denied independently of project `local.deny`. Its sandboxed shell is filesystem read-only with private paths denied and network configured disabled; it is not Claude's Read/Grep/Glob-only tool whitelist. No credential home is copied.
 
-Kimi requires a compat-admitted Kimi Code on the hub's PATH (receipt-verified 2.2.0, 2.3.0, 2.3.1 and 2.3.2), signed in through its managed OAuth provider, and a passing runtime preparation before each child; an unverified/untrusted version or a failed preparation is unavailable with its reason. The [2.3.0](verification/2026-10-22-kimi-qwen-compat.md) and [2.3.1](verification/2026-10-25-kimi-231-reviewer-compat.md) receipts are model-free and do not verify real login/provider readiness. Each review runs a new `kimi -p` child without Seatbelt, in a private `KIMI_CODE_HOME` with managed-provider-only config, a clean temporary working directory and an empty skills directory. Its agent may call only `hub_review` and `hub_task_show`, through a task-bound loopback MCP session that never carries the hub's control token, and has no native read, file or shell tool: it reviews the screened brief and host facts only. Its `credentials/`, `oauth/` and `device_id` link to the person's native Kimi files, so it shares the native login, refresh lock and the Kimi account's budget; no token is copied. A stop revokes its verdict authority first, then waits briefly while an OAuth refresh holds the lock; a forced stop mid-refresh may require a native re-login. The Kimi backend records no measured token counts here, so its usage stays unknown; the 2.3.0 receipt makes no usage claim. This is a native tool-authority boundary, not filesystem or network isolation.
+Kimi requires a compat-admitted Kimi Code on the hub's PATH (receipt-verified 2.2.0, 2.3.0, 2.3.1 and 2.3.2), signed in through its managed OAuth provider, and a passing runtime preparation before each child; an unverified/untrusted version or a failed preparation is unavailable with its reason. The [2.3.0](verification/2026-10-22-kimi-qwen-compat.md), [2.3.1](verification/2026-10-25-kimi-231-reviewer-compat.md) and [2.3.2](verification/2026-10-26-kimi-232-reviewer-compat.md) receipts are model-free and do not verify real login/provider readiness. Each review runs a new `kimi -p` child without Seatbelt, in a private `KIMI_CODE_HOME` with managed-provider-only config, a clean temporary working directory and an empty skills directory. Its agent may call only `hub_review` and `hub_task_show`, through a task-bound loopback MCP session that never carries the hub's control token, and has no native read, file or shell tool: it reviews the screened brief and host facts only. Its `credentials/`, `oauth/` and `device_id` link to the person's native Kimi files, so it shares the native login, refresh lock and the Kimi account's budget; no token is copied. A stop revokes its verdict authority first, then waits briefly while an OAuth refresh holds the lock; a forced stop mid-refresh may require a native re-login. The Kimi backend records no measured token counts here, so its usage stays unknown; the 2.3.0 receipt makes no usage claim. This is a native tool-authority boundary, not filesystem or network isolation.
 
 A dangling or unreadable standard/configured credential root makes the Codex reviewer unavailable with only its path class in the reason (for example `~/.docker` or `$DOCKER_CONFIG`, never an expanded path or contents); repair the root and start the reviewer again.
 

@@ -17,7 +17,7 @@ ahub setup                                # installs the Claude Code channel plu
 Or use the matching GitHub release:
 
 ```bash
-bun add -g github:STAIxBWLB/agent-hub#v0.18.0
+bun add -g github:STAIxBWLB/agent-hub#v0.19.0
 ahub setup
 ```
 
@@ -29,6 +29,10 @@ For managed launchers, two-agent task/review work, approvals, graceful shutdown,
 and upgrade or crash recovery, see the [operations guide](operations.md). To
 move running projects to a newer release later, run `ahub upgrade` in a
 terminal: it reviews the plan with you, applies it and follows it.
+
+## Upgrading to 0.19.0
+
+Pi is now a gated CLI (#843): `ahub agents` lists it, 1.4.0 is the verified version, and any other version is refused at every launch path with the exact `ahub agents trust pi <version>` command. If your Pi is not 1.4.0, trust that version (person only) or install 1.4.0 before Pi work resumes. At hub start and once a day the hub reads each gated CLI's installed version without network, tells the planner once per id and version that is not verified, and `ahub status` shows an `agent CLI drift` line until it is (#843). Newly verified: agy 1.4.7, Jcode 0.99.1, headless Qwen 0.26.1, the Kimi fresh reviewer 2.3.2 and the headless Claude implementer 2.1.310. In `ask-when-needed`, a headless Claude implementer now runs proven read-only shell commands and a closed set of task commands (`scripts/check.sh --changed`, `bun run build`, `bun test <test files>`, `git add|commit`, `git push` and `gh pr view|checks|create` on the task's bound branch) through a host-owned wrapper with single-use tickets; check, test and build run in the local worker's sandbox, any other command and any call in an enabled always-ask class still ask, and an older plugin keeps asking (#845; see [additional headless peer instances](operations.md#additional-headless-peer-instances)). It may also name its model with `"model"` on its declaration in untracked `config.local.json`, applied at the next hub daemon restart (#844). The fresh Codex and Kimi reviewers now declare review scope `code`: they review code only, a `changes_requested` with no open structured finding is recorded as evidence-only and does not count toward escalation, `ahub status` shows `review scope` on each reviewer row, and `"review_scope"` on the instance in `config.local.json` overrides it (#852). Planners get one `Planner work ready:` notice when a write frees WIP capacity or makes backlog work ready; nothing is pulled for them (#785). The remote check runner installs dependencies once per lockfile key into a read-only volume and refuses a commit whose `package.json` declares an install lifecycle script (#793). A conductor operation whose hub connection or authorization handshake is unavailable now says so instead of reporting a role refusal (#812). The hub sandbox also protects a linked worktree's submodule git dirs and `config.worktree`, and refuses writes under a modules root outside a discovered git dir (#518, #865). A Qwen TUI background-task notice no longer ends a hub turn as uncertain (#517). `@staix/agent-mem` is pinned at 0.10.0. Upgrade running hubs with `ahub upgrade` and restart Claude sessions so they load the 0.19.0 plugin. Coming from 0.17.0 or older, the notes below apply too.
 
 ## Upgrading to 0.18.0
 
