@@ -7,7 +7,8 @@ import { Bus } from "../src/hub/bus.ts";
 import { HUB, type Envelope, type PeerState } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { loadRouting } from "../src/hub/routing.ts";
-import { MIN_EVERY_MS, parseEvery, scheduledDetail, ScheduleStore, scheduleKeyOf, schedulesConfig, scheduleViews, type ScheduleEntry } from "../src/hub/schedules.ts";
+import { validSourceId } from "../src/hub/sources.ts";
+import { MIN_EVERY_MS, SOURCE_ID, parseEvery, scheduledDetail, ScheduleStore, scheduleKeyOf, schedulesConfig, scheduleViews, type ScheduleEntry } from "../src/hub/schedules.ts";
 import { ALL_MACHINE_LOCAL, MACHINE_LOCAL } from "../src/hub/config-trust.ts";
 import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
 
@@ -241,4 +242,10 @@ test("status rows: next run, last run, state and the open task, with no task tex
   expect(scheduleViews([e], [row], T0 + HOUR, new Map([["nightly", 9]]), false)[0]).toMatchObject({ state: "waiting", task: 9 });
   expect(scheduleViews([e], [], T0, open, false)[0]).toMatchObject({ state: "scheduled", next: T0 + HOUR });
   expect(JSON.stringify(scheduleViews([e], [row], T0, open, false))).not.toContain("SECRET");
+});
+
+test("the schedule source id form is the registry's: both accept and refuse the same ids", () => {
+  for (const id of ["src:e5d53b3ad5222924", "src:0000000000000000", "src:E5D53B3AD5222924", "src:e5d53b3ad522292", "src:e5d53b3ad52229244", "e5d53b3ad5222924", "src:../../etc/pass", "", "src:e5d53b3ad5222924\n"]) {
+    expect(SOURCE_ID.test(id), id).toBe(validSourceId(id));
+  }
 });

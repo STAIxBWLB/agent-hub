@@ -1,6 +1,5 @@
 import { Database } from "bun:sqlite";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
-import { validSourceId } from "./sources.ts";
 
 // agent-hub #512 (hub task #330): machine-local schedules. Spec: "Schedules and folder triggers (#512)".
 
@@ -24,6 +23,8 @@ export interface ScheduleEntry {
   queue: "backlog" | "ready";
 }
 
+/** The source id form of `src/hub/sources.ts` (`validSourceId`), repeated here because that module reaches the file system and the converters and this one is bundled into the Claude channel server through the config schema; `test/schedules.test.ts` pins that the two agree. */
+export const SOURCE_ID = /^src:[0-9a-f]{16}$/;
 const ID = /^[a-z0-9][a-z0-9_-]{0,47}$/, PEER = /^[a-z][a-z0-9-]{0,31}$/, CLASS = /^[a-z][a-z0-9_]{0,47}$/, KEYS = new Set(["id", "every", "cron", "class", "title", "detail", "sources", "owner", "queue"]);
 const control = /[\x00-\x1f\x7f]/;
 
@@ -60,7 +61,7 @@ export function schedulesConfig(input: unknown): ScheduleEntry[] {
     if (row.owner !== undefined && (typeof row.owner !== "string" || !PEER.test(row.owner))) bad("owner is a peer id");
     if (row.queue !== undefined && row.queue !== "backlog" && row.queue !== "ready") bad('queue is "backlog" or "ready"');
     if (row.sources !== undefined) {
-      if (!Array.isArray(row.sources) || row.sources.length > MAX_SCHEDULE_SOURCES || !row.sources.every(validSourceId)) bad(`sources is a list of at most ${MAX_SCHEDULE_SOURCES} source ids (src:<16 hex>)`);
+      if (!Array.isArray(row.sources) || row.sources.length > MAX_SCHEDULE_SOURCES || !row.sources.every(id => typeof id === "string" && SOURCE_ID.test(id))) bad(`sources is a list of at most ${MAX_SCHEDULE_SOURCES} source ids (src:<16 hex>)`);
     }
     out.push({
       id: row.id as string, every: row.every as string, class: row.class as string, title: (row.title as string).replace(/\s+/g, " ").trim(),
