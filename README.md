@@ -76,8 +76,8 @@ the [Quickstart](docs/quickstart.md) ("Upgrading to ...") and the
 refreshing an agent's MCP entry.
 
 Agent CLIs update themselves. `ahub agents` shows which installed versions the hub
-accepts, and `ahub agents trust <id> <version>` accepts an untested one on this
-machine.
+accepts, `ahub agents trust <id> <version>` accepts an untested one on this
+machine, and the hub tells the planner when an installed version is not verified.
 
 Before you migrate a memory home with `amem`, read
 [memory profiles and rollout](docs/memory.md#selected-memory-profile). Every hub that
@@ -94,7 +94,7 @@ uses the home must run a version that understands the new layout.
   [#258](https://github.com/STAIxBWLB/agent-hub/issues/258)).
 
 Live checks that still need a real account or a person are listed in the
-[release verification report](docs/verification/2026-10-25-0.18.0.md) and the
+[release verification report](docs/verification/2026-10-27-0.19.0.md) and the
 [smoke checklist](docs/smoke.md).
 
 ## Documentation

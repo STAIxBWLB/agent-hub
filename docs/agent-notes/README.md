@@ -48,3 +48,9 @@ Background behind the 0.18.0 rules:
 
 - CLI print guards (#814, tests.md): a command that printed JSON by default made scripts the only reader; each converted command keeps `--json` byte-identical to the old output, and the guard scans for both a bare `JSON.stringify` print and a bare print of a hub tool's text so a new unlisted command cannot slip back.
 - Agent shell authority (#812, adapters.md): reading public state is allowed for every agent, the conductor gets a closed operational family, and every other form stays the person's. An allowed read form is added only when the daemon admits it for an ordinary tools connection too.
+
+Background behind the 0.19.0 rules:
+
+- Code-scope verdicts (#852, tasks.md): two review rounds showed that any classifier reading a `code` reviewer's unmet text files real defects, such as "the CI workflow is missing the trigger", as verification-only, so the evidence-only rule reads only the structured findings.
+- Policy-table fixtures (#843, tests.md): a fixture with a fixed list of keys or versions, which a planned `COMPAT` entry was not in, was reported twice in #843.
+- Suite watchdog (#516, tests.md): a total-time kill cut suites that were still passing tests line by line (hosted ubuntu runs at 1080 s, the macOS leg of PR #857 at 1440 s), so a lost-progress bound became the hang detector and the total bound only its backstop.
