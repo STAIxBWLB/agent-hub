@@ -156,6 +156,7 @@ const reviewTask = (env: Envelope): number | undefined => {
 
 export class ReviewerPrintPeer extends BasePeer {
   readonly hubNative = true;
+  readonly hubOwned: boolean = true;
   private generation = 0;
   private child: OwnedPrintChild | undefined;
   private childCleanup: (() => Promise<void>) | undefined;

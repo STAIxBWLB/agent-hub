@@ -77,6 +77,8 @@ const system = (cwd: string, preamble = "") =>
 /** Hub-native agent loop: the hub owns every model call, so it can choose the model per call (L2) and the gateway (L3). */
 export class LocalPeer extends BasePeer {
   readonly hubNative = true;
+  readonly deliveryOnly: boolean = true;
+  readonly hubOwned: boolean = true;
   private readonly history: ChatMessage[] = [];
   private readonly sessionId = `agent-hub-local-${randomUUID()}`;
   private readonly routes: HubRouteRuntime;

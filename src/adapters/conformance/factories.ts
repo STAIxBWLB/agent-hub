@@ -1,7 +1,7 @@
 import type { AdapterDefinition, CreateContext, DaemonPorts } from "../registry-types.ts";
 import type { PeerAdapter } from "../../hub/peers.ts";
 import { join } from "node:path";
-import { assertNativeProofPorts } from "./kit.ts";
+import { assertAcpProductPorts, assertNativeProofPorts } from "./kit.ts";
 
 /** The supplied definition creates its actual adapter, with only this fixture's transport options. */
 export function createFromDefinition<T extends PeerAdapter>(definition: AdapterDefinition, daemon: DaemonPorts): T {
@@ -10,6 +10,7 @@ export function createFromDefinition<T extends PeerAdapter>(definition: AdapterD
   const product = definition.start.create({ instance: definition.kind, projectRoot: options.cwd, stateDir: options.stateDir ?? join(options.cwd, "state"),
     kindConfig: {}, permission: "ask", mcpServers: options.mcpServers ?? [], daemon }) as T;
   assertNativeProofPorts(definition, product);
+  assertAcpProductPorts(definition, product);
   return product;
 }
 /** Explicit watchdog seam on the factory-created implementation, replacing direct test subclasses. */

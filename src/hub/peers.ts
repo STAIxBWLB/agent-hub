@@ -1,5 +1,6 @@
 import type { Envelope, EnvelopeOpts, PeerId, PeerState } from "./envelope.ts";
 import type { PermissionMode } from "./permission-mode.ts";
+import type { StartForm } from "../adapters/registry-types.ts";
 
 export interface DeliveryReceipt {
   id: string;
@@ -27,6 +28,20 @@ export interface PeerAdapter {
   readonly permissionModeState?: PermissionMode | "unknown" | "unmanaged";
   /** Resolve only after native acknowledgement. This changes approval frequency, never the sandbox. */
   setPermissionMode?(mode: PermissionMode): Promise<void>;
+  /** Never offered delivery retry; absent/false permits retry, present undefined refuses it. */
+  readonly deliveryOnly?: boolean;
+  /** The hub owns this runtime and may stop it; absent or undefined refuses. */
+  readonly hubOwned?: boolean;
+  /** An owned process remains whose exit is unconfirmed. */
+  readonly pendingOwnedProcess?: boolean;
+  /** Native running form; absent keeps the site's default, present undefined is unknown. */
+  readonly form?: StartForm;
+  /** Capture live resume evidence before a requested stop; throws when unavailable. */
+  captureResume?(): Promise<Record<string, unknown>>;
+  /** Leave the roster without stopping a person's terminal. */
+  detachForRoster?(resetMode: PermissionMode): void | Promise<void>;
+  /** Return to the roster after detachForRoster. */
+  resumeFromRoster?(): Promise<void>;
   /** A peer the hub drives itself (Pi, the local worker). It cannot be trusted to rate its own urgency: the bus caps it. */
   readonly hubNative?: boolean;
   /** Never handed a delivery: its queue waits for `Bus.pull` (a Claude session that cannot show channel pushes, issue #205). */

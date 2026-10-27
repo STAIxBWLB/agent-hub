@@ -205,14 +205,15 @@ test("#525 headless implementer cannot disappear from conformance enrollment", a
   expect(() => assertEnrollment(ADAPTERS, primary(), reasons)).toThrow(/claude:implementer/);
 });
 
-test("#625 slice 2a reserves ACP restrictive ports until 2b instead of claiming executable coverage", async () => {
+test("#625 slice 2b makes ACP restrictive ports mandatory rather than an unsupported protocol leg", async () => {
   const { assertEnrollment, UNSUPPORTED, UNSUPPORTED_LEGS } = await enrollment();
   for (const definition of ADAPTERS.filter(definition => definition.transport === "acp")) {
     const key = `${definition.kind}:restrictive-ports`;
-    expect(UNSUPPORTED_LEGS[key]).toBe("ports added in 2b");
-    const missing = { ...UNSUPPORTED_LEGS }; delete missing[key];
-    expect(() => assertEnrollment(ADAPTERS, primary(), UNSUPPORTED, missing)).toThrow(/restrictive ports/);
-    expect(() => assertEnrollment(ADAPTERS, primary(), UNSUPPORTED, { ...UNSUPPORTED_LEGS, [key]: "not implemented" })).toThrow("ports added in 2b");
+    expect(UNSUPPORTED_LEGS[key]).toBeUndefined();
+    expect(() => assertEnrollment(ADAPTERS, primary(), UNSUPPORTED)).not.toThrow();
+    for (const reason of ["ports added in 2b", "not implemented"]) {
+      expect(() => assertEnrollment(ADAPTERS, primary(), UNSUPPORTED, { ...UNSUPPORTED_LEGS, [key]: reason })).toThrow("mandatory ACP restrictive ports leg");
+    }
   }
 });
 

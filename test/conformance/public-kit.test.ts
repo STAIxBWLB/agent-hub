@@ -3,6 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { dirname, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterDefinition } from "../../src/adapters/registry-types.ts";
+import type { PeerAdapter } from "../../src/hub/peers.ts";
 
 const publicKit = () => import("../../src/adapters/conformance/index.ts");
 
@@ -32,7 +33,7 @@ test("A4 public fake paths are immutable packaged source assets with no test-tre
 
 test("A4 public factory calls the supplied definition rather than a builtin or a concrete class", async () => {
   const kit = await publicKit(), calls: unknown[] = [];
-  const peer = { id: "external-fixture", state: "offline" as const, start: async () => {}, stop: async () => {}, deliver: async () => {} };
+  const peer = { id: "external-fixture", state: "offline" as const, deliveryOnly: true, hubOwned: true, form: "headless" as const, start: async () => {}, stop: async () => {}, deliver: async () => {} };
   const definition: AdapterDefinition = {
     api: 1, kind: peer.id, family: peer.id, displayName: "External fixture", transport: "acp", roles: ["implementer"],
     trust: { onPrem: false, hubSandboxed: false }, identity: { mcp: "acp-session" }, permission: {},
@@ -53,6 +54,22 @@ test("A4 public factory calls the supplied definition rather than a builtin or a
   expect(calls[0]).toMatchObject({ instance: peer.id, projectRoot: "/public-kit-fixture", stateDir: "/public-kit-fixture/state", permission: "ask", mcpServers: daemon.acp.mcpServers });
   expect((calls[0] as { daemon: unknown }).daemon).toBe(daemon);
   expect(() => kit.createFromDefinition({ ...definition, start: { ...definition.start, create: undefined } }, daemon)).toThrow(/factory|external/);
+});
+
+test("#625 slice 2b public factory refuses absent, unknown or widened ACP restrictive ports", async () => {
+  const kit = await publicKit(), original = (await import("../../src/adapters/registry.ts")).definitionOf("kimi")!;
+  const valid: PeerAdapter = { id: "foreign-acp", state: "offline", deliveryOnly: true, hubOwned: true, form: "headless", start: async () => {}, stop: async () => {}, deliver: async () => {} };
+  const daemon = { acp: { cwd: "/unopened/fixture", cmd: ["fixture-not-executed"] } };
+  for (const port of ["deliveryOnly", "hubOwned", "form"] as const) {
+    for (const value of ["absent", undefined, port === "form" ? "tui" : false]) {
+      const product: Record<string, unknown> = { ...valid, [port]: value };
+      if (value === "absent") delete product[port];
+      const definition: AdapterDefinition = { ...original, kind: valid.id, reviewerVariant: undefined, start: { ...original.start, create: () => product as unknown as PeerAdapter } };
+      expect(() => kit.createFromDefinition(definition, daemon)).toThrow(`ACP restrictive port ${port}`);
+    }
+  }
+  const definition: AdapterDefinition = { ...original, kind: valid.id, reviewerVariant: undefined, start: { ...original.start, create: () => valid } };
+  expect(kit.createFromDefinition(definition, daemon)).toBe(valid);
 });
 
 for (const port of ["frontendProxy", "statusNotice", "revertTurn"] as const) test(`A4 conformance rejects foreign product native proof port ${port} by presence`, async () => {

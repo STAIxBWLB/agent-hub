@@ -24,6 +24,15 @@ export interface AdapterConformance {
   create(): Promise<ConformanceFixture>;
 }
 
+/** Every ACP factory product keeps the transport's restrictive delivery and ownership contract. */
+export function assertAcpProductPorts(definition: AdapterDefinition | undefined, product: PeerAdapter): void {
+  if (definition?.transport !== "acp") return;
+  for (const port of ["deliveryOnly", "hubOwned"] as const) {
+    if (product[port] !== true) throw new Error(`${definition.kind}: ACP restrictive port ${port} must be true`);
+  }
+  if (product.form !== "headless") throw new Error(`${definition.kind}: ACP restrictive port form must be headless`);
+}
+
 /** Presence itself is forbidden on a foreign product: even an undefined native proof port must fail the kit. */
 export function assertNativeProofPorts(definition: AdapterDefinition | undefined, product: PeerAdapter): void {
   if (isFixedBuiltinDefinition(definition)) return;
@@ -38,6 +47,7 @@ export function registerConformance(adapter: AdapterConformance): void {
     const f = await adapter.create();
     try {
       assertNativeProofPorts(adapter.definition, f.peer);
+      assertAcpProductPorts(adapter.definition, f.peer);
       expect(f.peer.id).toBe(adapter.kind);
       expect(f.peer.state).toBe("idle");
       const envelope: Envelope = newEnvelope("user", "conformance ping", { to: [adapter.kind] });
