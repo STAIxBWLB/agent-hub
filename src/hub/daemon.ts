@@ -1878,6 +1878,9 @@ export async function startDaemon(opts: DaemonOptions) {
       }
     },
     triage: { classify: (title, detail) => inference?.triage(title, detail) ?? Promise.resolve(undefined), onCampus: () => onCampus() },
+    // #334: the hub model's split, validated against the same `hub_backlog_split` parts schema a planner's call is, and the source registry for `--source`.
+    intake: { split: (system, user) => inference?.split(system, user) ?? Promise.resolve(undefined), sourceKnown: id => sourceRegistry.get(id) !== undefined,
+      partsSchema: () => profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off").find(tool => tool.name === "hub_backlog_split")?.inputSchema.properties.parts },
     // The PII screen (issue #198): the model on this machine when MLX/Ollama is enabled, else the gateway on campus only.
     piiScreen: opts.piiScreen ?? ((text) => screenPii(text, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })),
     recordScreen: (record) => event({ type: "pii_screen", ...record }),
@@ -3254,6 +3257,15 @@ export async function startDaemon(opts: DaemonOptions) {
       case "schedule_resume":
         tasks.setSchedulePaused(by, schedulesStore, config.schedules, a.id, op === "schedule_pause", scheduleNow());
         return JSON.stringify(scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true).filter(view => view.id === a.id));
+      // #334: natural-language intake. Person only: Tasks refuses any other actor, and an agent shell never reaches a console op.
+      case "intake": {
+        const result = await tasks.intake(by, { text: a.text, sources: a.sources });
+        return JSON.stringify({ draft: tasks.publicView(result.draft), children: result.children.map(child => tasks.publicView(child)), split: result.split, ...(result.reason ? { reason: result.reason } : {}) });
+      }
+      case "intake_approve":
+        return JSON.stringify((await tasks.approveIntake(by, a.id)).map(task => tasks.publicView(task)));
+      case "intake_discard":
+        return JSON.stringify((await tasks.discardIntake(by, a.id)).map(task => tasks.publicView(task)));
       case "review_brief": {
         const task = board.get(Number(a.id));
         return task ? tasks.briefText(task) || `task #${task.id} names no commit, or is private: no brief` : `no task #${a.id}`;

@@ -9,7 +9,8 @@ import { completePlanInventory, planConformance, planConformanceBlockers, planFi
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, type CostPlan, type ReviewCost } from "./cost-governance.ts";
 import { qualifiedTitleRepos, siblingTitleRefs, specRefs } from "./spec-read.ts";
-import { parseEvery, scheduledDetail, scheduleKeyOf, type ScheduleEntry, type ScheduleRunResult, type ScheduleStore } from "./schedules.ts";
+import { parseEvery, SOURCE_ID, scheduledDetail, scheduleKeyOf, type ScheduleEntry, type ScheduleRunResult, type ScheduleStore } from "./schedules.ts";
+import { INTAKE_MAX_SOURCES, INTAKE_MAX_TEXT, intakeDetail, intakeSystemPrompt, intakeUserMessage, parseIntakeDetail, parseIntakeSplit, plannerRequestBody } from "./intake.ts";
 import { DEFAULT_BAND, EPISODE_LOOKBACK, sdlcMetrics, type BandMetric, type BandResult, type MetricTask, type MetricsReport, type SeriesPoint } from "./sdlc-metrics.ts";
 import { readSecurityScan } from "./security-baseline.ts";
 import { cleanMergeCost } from "./cost-governance.ts";
@@ -163,6 +164,8 @@ export interface TasksDeps {
   roles?: Record<string, string[]>;
   /** Optional: name a class for a task proposed without one. `onCampus` says whether the model call stays on campus. */
   triage?: { classify: (title: string, detail: string) => Promise<TaskClass | undefined>; onCampus: () => Promise<boolean> };
+  /** #334: natural-language intake. `split` is the hub model's one call, `partsSchema` the profile's `hub_backlog_split` parts schema, `sourceKnown` the source registry. */
+  intake?: { split: (system: string, user: string) => Promise<string | undefined>; partsSchema: () => unknown; sourceKnown: (id: string) => boolean };
   /** The PII screen (issue #198): a closed verdict from a model on this machine or on campus, `unknown` on any failure. */
   piiScreen?: (text: string) => Promise<PiiVerdict>;
   /** Each screen verdict, for the record: item, label, source and category, never the text. */
@@ -1154,7 +1157,7 @@ export class Tasks {
   /** The top card explicitly reserved for `peer` that this planner may pull now; the notice and the opt-in pull read the same rule. `pullable` keeps the staged backlog cards only. */
   private topReservedReady(peer: PeerId, planner?: PeerId, pullable = false): Task | undefined {
     return this.d.board.list().filter(card => (pullable ? card.state === "backlog" : ["backlog", "proposed"].includes(card.state)) && !card.owner && card.reserved === peer
-      && (planner === undefined || this.taskPlanner(card).includes(planner)) && !(pullable && this.isPii(card)) && !card.pinned && taskCanPlan(card) && !this.waitsFor(card).length && !this.excluded(card).includes(peer)
+      && (planner === undefined || this.taskPlanner(card).includes(planner)) && !(pullable && this.isPii(card)) && !card.pinned && !card.draft && taskCanPlan(card) && !this.waitsFor(card).length && !this.excluded(card).includes(peer)
       && (card.release == null || ["planning", "active"].includes(this.d.board.release(card.release)?.state ?? ""))).sort(this.readyOrder)[0];
   }
 
@@ -1247,6 +1250,7 @@ export class Tasks {
     if (!Number.isSafeInteger(input.id) || input.id <= 0 || !Number.isSafeInteger(input.revision) || input.revision < 0 || typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("planner pull needs an id, revision and bounded reason");
     const validate = () => {
       const task = this.d.board.get(input.id);
+      if (task?.draft) throw new PreEffectToolRefusal(`task #${task.id} is an intake draft; the person approves it first`);
       if (!task || (task.planningRevision ?? 0) !== input.revision || task.state !== "backlog" || task.owner || !taskCanPlan(task) || task.pinned) throw new PreEffectToolRefusal("planner pull changed, pinned or already started");
       this.planningAuthority(planner, task);
       const release = task.release == null ? undefined : this.d.board.release(task.release);
@@ -1297,7 +1301,7 @@ export class Tasks {
     const pending = this.plannerBacklog.get(peer) ?? new Set<number>();
     for (const id of ids) {
       const task = this.d.board.get(id);
-      if (task?.state === "backlog" && this.taskPlanner(task).includes(peer)) pending.add(id);
+      if (task?.state === "backlog" && !task.draft && this.taskPlanner(task).includes(peer)) pending.add(id);
     }
     if (pending.size) this.plannerBacklog.set(peer, pending);
   }
@@ -1581,8 +1585,10 @@ export class Tasks {
     return { imported, existing, partial: page.partial, complete: !page.partial };
   }
 
-  async splitBacklog(by: PeerId, input: { id: number; revision: number; parts: unknown; reason: string }): Promise<{ parent: Task; children: Task[] }> {
-    this.planningAuthority(by);
+  async splitBacklog(by: PeerId, input: { id: number; revision: number; parts: unknown; reason: string }, opts: { intake?: true } = {}): Promise<{ parent: Task; children: Task[] }> {
+    // #334: the hub writes an intake draft's own model split; no other write by the hub passes as a planner.
+    const authority = (task?: Pick<Task, "planner">) => { if (!(opts.intake && by === HUB)) this.planningAuthority(by, task); };
+    authority();
     const { id, revision } = input;
     if (!Number.isSafeInteger(id) || id <= 0 || !Number.isSafeInteger(revision) || revision < 0 || typeof input.reason !== "string" || !input.reason.trim() || input.reason.length > 1000) throw new PreEffectToolRefusal("split needs an id, revision and bounded reason");
     const reason = input.reason.trim();
@@ -1595,7 +1601,7 @@ export class Tasks {
       if (!parent || parent.state !== "backlog" || parent.owner || taskHasStarted(parent) || (parent.planningRevision ?? 0) !== revision || by !== USER && parent.pinned) throw new PreEffectToolRefusal("split changed, pinned or already started");
       const release = parent.release == null ? undefined : this.d.board.release(parent.release);
       if (parent.release != null && (!release || ["shipped", "dropped"].includes(release.state) || by !== USER && release.state === "frozen")) throw new PreEffectToolRefusal("split release scope is frozen or final");
-      this.planningAuthority(by, parent);
+      authority(parent);
       const profile = parent.profile ?? "dev";
       const drafts = rows.map((part, index) => {
         if (!part || typeof part !== "object" || Array.isArray(part) || Object.keys(part).some(key => !["title", "detail", "class", "refs", "plan", "after", "afterParts"].includes(key)) || typeof part.title !== "string" || !part.title.trim() || part.title.length > 300 || part.detail !== undefined && (typeof part.detail !== "string" || part.detail.length > 8000) || part.class !== undefined && typeof part.class !== "string") throw new PreEffectToolRefusal("invalid split part");
@@ -1630,7 +1636,7 @@ export class Tasks {
     let screened: Awaited<typeof attempt>;
     try { screened = await Promise.race([attempt, new Promise<never>((_, reject) => { deadline = setTimeout(() => reject(new PreEffectToolRefusal("split screening request deadline exceeded")), BACKLOG_SPLIT_SCREEN_TIMEOUT_MS); })]); }
     finally { if (deadline !== undefined) clearTimeout(deadline); }
-    this.planningAuthority(by); // #455: a person may have moved the planner while the screen ran
+    authority(); // #455: a person may have moved the planner while the screen ran
     const [screenedVerdicts, withheld] = screened, current = validate();
     const finalSignals = current.drafts.map(part => this.signalsFor({ ...part, detail: [part.detail, planText(part.plan)].join("\n") }));
     const deterministicPrivate = finalSignals.map((signals, index) => initialPrivate[index] || this.isPii({ signals }));
@@ -1649,6 +1655,81 @@ export class Tasks {
     }
     this.planningRecorded({ by, task: id, fields: ["split", "deps"], revision: result.parent.planningRevision! });
     return result;
+  }
+
+  /** The draft and the draft cards it was split into, still open, parent first. */
+  private intakeFamily(id: number): Task[] {
+    const root = this.d.board.get(id);
+    if (!root || !root.draft || root.state !== "backlog") throw new PreEffectToolRefusal(`task #${id} is not an open intake draft`);
+    const children = (root.deps ?? []).map(dep => this.d.board.get(dep)).filter((child): child is Task => !!child && !!child.draft && child.state === "backlog");
+    return [root, ...children];
+  }
+
+  /**
+   * #334 (#511a): the person's request becomes one parent draft, a backlog card that nothing offers or pulls. A planner is asked to split it with
+   * `hub_backlog_split`; with none, or for a request that is PII, the hub's model proposes the split and the hub writes it. A split that does not
+   * validate leaves the draft whole, with the reason on its history.
+   */
+  async intake(by: PeerId, input: { text: unknown; sources?: unknown }): Promise<{ draft: Task; children: Task[]; split: "planner" | "hub" | "unsplit"; reason?: string }> {
+    if (by !== USER) throw new PreEffectToolRefusal("intake is a console command");
+    const text = typeof input.text === "string" ? input.text.trim() : "";
+    if (!text || text.length > INTAKE_MAX_TEXT) throw new PreEffectToolRefusal(`intake needs a request of 1 to ${INTAKE_MAX_TEXT} characters`);
+    const given = input.sources ?? [];
+    if (!Array.isArray(given) || given.length > INTAKE_MAX_SOURCES || given.some(id => typeof id !== "string" || !SOURCE_ID.test(id)) || new Set(given).size !== given.length) throw new PreEffectToolRefusal(`sources: at most ${INTAKE_MAX_SOURCES} distinct src:<16 hex> ids`);
+    const sources = given as string[];
+    for (const id of sources) if (!this.d.intake?.sourceKnown(id)) throw new PreEffectToolRefusal(`unknown source ${id}; register it with ahub source add`);
+    const title = `Intake: ${text.split("\n")[0]!.replace(/\s+/g, " ").trim().slice(0, 80)}`;
+    let draft = await this.propose(USER, { title, detail: intakeDetail(text, sources), class: "plan", backlog: true, draft: true });
+    this.incomingBacklog.delete(draft.id);
+    const priv = this.isPii(draft);
+    const planner = priv ? undefined : this.taskPlanner(draft).find(peer => this.d.bus.isRostered(peer) && this.d.bus.peers.has(peer) && this.d.bus.stateOf(peer) !== "offline");
+    if (planner) {
+      const body = plannerRequestBody({ id: draft.id, revision: draft.planningRevision ?? 0, text: parseIntakeDetail(String(this.publicView(draft).detail)).text, sources });
+      try {
+        if (this.d.bus.publish(newEnvelope(HUB, sanitize(body), { to: [planner], kind: "task", refs: { task: String(draft.id), taskRecipient: "planner" } })).includes(planner)) return { draft, children: [], split: "planner" };
+      } catch { /* the planner is not reachable: the hub model takes it */ }
+    }
+    return { ...(await this.intakeByHub(draft, text, sources, priv)), draft: this.d.board.get(draft.id) ?? draft };
+  }
+
+  /** The hub model's split of a draft, validated against the profile's `hub_backlog_split` parts schema and written through `splitBacklog`. */
+  private async intakeByHub(draft: Task, text: string, sources: string[], priv: boolean): Promise<{ children: Task[]; split: "hub" | "unsplit"; reason?: string }> {
+    const unsplit = (reason: string) => { this.d.board.update(draft.id, HUB, "intake unsplit", {}, reason); return { children: [], split: "unsplit" as const, reason }; };
+    if (!this.d.intake) return unsplit("no planner is attached and the hub has no model for a split");
+    // A request that is PII goes only to a model reached on campus; without one it stays whole for the person.
+    if (priv && !(await this.d.triage?.onCampus().catch(() => false))) return unsplit("the request is PII and no on-prem model was reached");
+    let raw: string | undefined;
+    try { raw = await this.d.intake.split(intakeSystemPrompt(Object.keys(profileData(this.d.profileData ?? this.d.profile ?? "dev").classes), this.d.intake.partsSchema()), intakeUserMessage(text, sources)); } catch { raw = undefined; }
+    const parsed = parseIntakeSplit(raw, this.d.intake.partsSchema(), sources);
+    if ("error" in parsed) return unsplit(parsed.error);
+    const current = this.d.board.get(draft.id);
+    if (!current || !current.draft || current.state !== "backlog") return unsplit("the draft changed while the model answered");
+    try {
+      const result = await this.splitBacklog(HUB, { id: draft.id, revision: current.planningRevision ?? 0, parts: parsed.parts, reason: "intake: split by the hub model" }, { intake: true });
+      return { children: result.children, split: "hub" };
+    } catch (error) { return unsplit(`the split was refused: ${sanitize(error instanceof Error ? error.message : String(error)).slice(0, 200)}`); }
+  }
+
+  /** #334: the person approves a draft; it and its children leave draft and follow the normal backlog pull. */
+  async approveIntake(by: PeerId, id: unknown): Promise<Task[]> {
+    if (by !== USER) throw new PreEffectToolRefusal("intake approval is a console command");
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) throw new PreEffectToolRefusal("id must be a positive task number");
+    const family = this.intakeFamily(id);
+    let approved: Task[];
+    try { approved = this.d.board.approveDrafts(family.map(task => task.id), USER, "intake approved by the person"); }
+    catch (error) { throw new PreEffectToolRefusal((error as Error).message); }
+    for (const task of approved) this.incomingBacklog.add(task.id);
+    this.releaseNotice(`intake draft #${id} approved: ${approved.length} backlog card${approved.length === 1 ? "" : "s"}`);
+    return approved;
+  }
+
+  /** #334: the person discards a draft; it and its children are cancelled through `cancel`. */
+  async discardIntake(by: PeerId, id: unknown): Promise<Task[]> {
+    if (by !== USER) throw new PreEffectToolRefusal("intake discard is a console command");
+    if (typeof id !== "number" || !Number.isSafeInteger(id) || id <= 0) throw new PreEffectToolRefusal("id must be a positive task number");
+    const cancelled: Task[] = [];
+    for (const task of this.intakeFamily(id)) cancelled.push(await this.cancel(task.id, USER, { reason: "intake draft discarded by the person" }));
+    return cancelled;
   }
 
   /** Release assignment changes no execution role, dependency, reservation or state. */
@@ -1800,12 +1881,13 @@ export class Tasks {
     return updated; // a failed readback may follow a durable release write
   }
 
-  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; backlog?: unknown; goal?: unknown }, external?: GitHubSource, created?: () => void, fence?: () => string | undefined): Promise<Task> {
+  async propose(by: PeerId, input: { title?: string; detail?: string; class?: string; role?: unknown; refs?: TaskRefs; plan?: TaskPlan; owner?: PeerId; after?: unknown; urgent?: unknown; backlog?: unknown; draft?: unknown; goal?: unknown }, external?: GitHubSource, created?: () => void, fence?: () => string | undefined): Promise<Task> {
     const requestCheck = this.requestCheck(by, fence);
     external = external ? { ...external } : undefined;
     if (external && (by !== USER || input.backlog !== true)) throw new PreEffectToolRefusal("external intake requires person-owned backlog staging");
     if (input.backlog !== undefined && typeof input.backlog !== "boolean") throw new PreEffectToolRefusal("backlog must be a boolean");
     const backlog = input.backlog === true;
+    if (input.draft !== undefined && (input.draft !== true || !backlog || by !== USER)) throw new PreEffectToolRefusal("only the person's intake stages a backlog draft");
     const claiming = !backlog && input.owner === by;
     if (claiming) {
       this.acceptanceCapacity({ id: -1, owner: by, state: "proposed" });
@@ -1875,7 +1957,7 @@ export class Tasks {
     this.warmRepository({ refs: draft.refs, plan });
     const repositoryMismatch = !this.isPii({ signals }) && this.repositories.mismatch(draft.refs, plan);
     requestCheck();
-    let task = this.d.board.propose(by, { ...draft, plan, ...(external ? { external } : {}), ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals, ...(backlog ? { backlog: true } : {}) });
+    let task = this.d.board.propose(by, { ...draft, plan, ...(external ? { external } : {}), ...(deps.length ? { deps } : {}), ...(reserved ? { reserved } : {}), signals, ...(backlog ? { backlog: true } : {}), ...(input.draft === true ? { draft: true } : {}) });
     if (repositoryMismatch) this.releaseNotice(`task #${task.id}: refs and plan name different repositories; check refs.repo before editing`);
     if (this.d.coordination) this.coordinationModes.set(task.id, this.d.coordination());
     created?.();
@@ -1945,6 +2027,7 @@ export class Tasks {
     if (!Number.isSafeInteger(n) || n <= 0) throw new PreEffectToolRefusal("id must be a positive task number");
     const task = this.d.board.get(n);
     if (!task) throw new PreEffectToolRefusal(`no task #${n}`);
+    if (pull && task.draft) throw new PreEffectToolRefusal(`task #${n} is an intake draft; approve it with ahub intake approve ${n} first`);
     if (task.state !== (pull ? "backlog" : "proposed") || task.owner) throw new PreEffectToolRefusal(`task #${n}: ${pull ? "only backlog may be pulled" : "only ownerless proposed work may return to backlog"}`);
     if (!pull && taskHasStarted(task)) throw new PreEffectToolRefusal(`task #${n}: started work cannot return to backlog`);
     const pulled = task.history.findLast(entry => entry.event === "backlog pulled" || entry.event === "backlog returned");

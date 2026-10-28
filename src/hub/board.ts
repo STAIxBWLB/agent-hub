@@ -125,6 +125,8 @@ export interface Task extends PlanningFields {
   cancelled?: TaskCancellation;
   external?: GitHubSource;
   planningRevision?: number;
+  /** #334: an intake draft. Backlog work that is never offered or pulled until the person approves it; split children inherit it. */
+  draft?: true;
   id: number;
   title: string;
   detail: string;
@@ -285,6 +287,7 @@ export class Board {
       if (!have.has(col)) this.db.run(`ALTER TABLE tasks ADD COLUMN "${col}" INTEGER`);
     }
     if (!have.has("pinned")) this.db.run("ALTER TABLE tasks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0");
+    if (!have.has("draft")) this.db.run("ALTER TABLE tasks ADD COLUMN draft INTEGER NOT NULL DEFAULT 0");
     if (!have.has("planning_revision")) this.db.run("ALTER TABLE tasks ADD COLUMN planning_revision INTEGER NOT NULL DEFAULT 0");
     this.db.run(`CREATE TABLE IF NOT EXISTS releases (
       id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, goal TEXT NOT NULL,
@@ -297,14 +300,14 @@ export class Board {
 
   }
 
-  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; planner?: PeerId | null; plannerReason?: PlannerReason; profile?: import("./profiles.ts").ProfileName; profileClass?: string; customProfile?: true; role?: string; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[]; backlog?: boolean; external?: GitHubSource }): Task {
+  propose(by: PeerId, t: { title: string; detail?: string; class: TaskClass; planner?: PeerId | null; plannerReason?: PlannerReason; profile?: import("./profiles.ts").ProfileName; profileClass?: string; customProfile?: true; role?: string; refs?: TaskRefs; plan?: TaskPlan; deps?: number[]; reserved?: PeerId; signals?: string[]; backlog?: boolean; draft?: boolean; external?: GitHubSource }): Task {
     const now = Date.now(), planner = plannerValue(t.planner);
     const chosen = Object.hasOwn(t, "planner") || t.plannerReason !== undefined ? plannerMetadata(planner, t.plannerReason) : {};
     const history: HistoryEntry[] = [{ at: now, by, ...chosen, event: t.backlog ? "backlogged" : "proposed", ...(this.trackPlanRevisions?.() && t.plan && Object.keys(t.plan).length ? { planRevision: { revision: 1, fingerprint: planFingerprint(t.plan) } } : {}) }];
     const { lastInsertRowid } = this.taskWrite(() => {
       const inserted = this.db
-      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated, project_profile, task_role, external_repo, external_issue, planner) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(t.title, t.detail ?? "", t.class, t.backlog ? "backlog" : "proposed", JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now, t.profile && (t.profile !== "dev" || t.customProfile || t.profileClass !== undefined && t.profileClass !== t.class) ? JSON.stringify({ profile: t.profile, profileClass: t.profileClass ?? t.class }) : null, t.role ?? null, t.external?.repo.toLowerCase() ?? null, t.external?.issue ?? null, planner);
+      .query("INSERT INTO tasks (title, detail, class, state, refs, plan, deps, reserved, signals, history, created, updated, project_profile, task_role, external_repo, external_issue, planner, draft) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(t.title, t.detail ?? "", t.class, t.backlog ? "backlog" : "proposed", JSON.stringify(t.refs ?? {}), JSON.stringify(t.plan ?? {}), JSON.stringify(t.deps ?? []), t.reserved ?? null, JSON.stringify(t.signals ?? []), JSON.stringify(history), now, now, t.profile && (t.profile !== "dev" || t.customProfile || t.profileClass !== undefined && t.profileClass !== t.class) ? JSON.stringify({ profile: t.profile, profileClass: t.profileClass ?? t.class }) : null, t.role ?? null, t.external?.repo.toLowerCase() ?? null, t.external?.issue ?? null, planner, t.draft && t.backlog ? 1 : 0);
       if (this.proposalPlanner && !Object.hasOwn(t, "planner") && t.plannerReason === undefined) {
         const selected = this.proposalPlanner(this.get(Number(inserted.lastInsertRowid))!);
         const binding = plannerMetadata(selected.planner, selected.plannerReason);
@@ -428,6 +431,7 @@ export class Board {
     if (expectedFlowRevision !== undefined && (!Number.isSafeInteger(expectedFlowRevision) || expectedFlowRevision < 0 || task.history.length !== expectedFlowRevision)) throw new Error("task flow revision changed");
     const untouchedReturn = event === "backlog returned untouched" && patch.state === "backlog" && patch.owner === null && patch.reviewer === null
       && ["proposed", "in_progress"].includes(task.state) && expectedFlowRevision !== undefined && !!note?.trim() && !taskHasWorkEvidence(task);
+    if (task.draft && patch.state && patch.state !== "backlog" && patch.state !== "cancelled") throw new Error(`task #${id} is an intake draft; the person approves it first`);
     if (patch.state && patch.state !== task.state && !MOVES[task.state].includes(patch.state) && !untouchedReturn) {
       throw new Error(`task #${id} is ${task.state}: cannot move to ${patch.state}`);
     }
@@ -514,6 +518,7 @@ export class Board {
   pullPlanned(id: number, by: PeerId, reserved: PeerId, revision: number, note: string, withheld = false, binding?: PlannerBinding): Task {
     const task = this.get(id);
     if (!task || (task.planningRevision ?? 0) !== revision || task.state !== "backlog" || task.owner || !taskCanPlan(task)) throw new Error("planner pull changed or already started");
+    if (task.draft) throw new Error(`task #${id} is an intake draft; the person approves it first`);
     const selected = binding ? plannerMetadata(binding.planner, binding.plannerReason) : {};
     const now = Date.now(), entry: HistoryEntry = { at: now, by, ...selected, event: "backlog pulled", planning: { revision: revision + 1, fields: ["reserved"], previous: { reserved: task.reserved ?? null }, pull: true }, note, ...(withheld ? { withheld: true as const } : {}) };
     const result = this.taskWrite(() => this.db.query("UPDATE tasks SET state='proposed',owner=NULL,reviewer=NULL,offer=NULL,reserved=?,planning_revision=planning_revision+1,history=?,updated=?,planner=? WHERE id=? AND planning_revision=? AND state='backlog' AND owner IS NULL")
@@ -555,7 +560,7 @@ export class Board {
       for (const part of parts) {
         const inherited = part.afterParts?.length ? (part.deps ?? []).filter(dep => !parent.deps?.includes(dep)) : part.deps ?? [];
         const deps = [...new Set([...inherited, ...(part.afterParts ?? []).map(index => { const child = children[index]; if (!child) throw new Error("split dependencies must name an earlier part"); return child.id; })])];
-        let child = this.propose(by, { ...part, deps, backlog: true });
+        let child = this.propose(by, { ...part, deps, backlog: true, ...(parent.draft ? { draft: true } : {}) });
         if (part.screeningNote !== undefined) child = this.update(child.id, HUB, "screened", {}, part.screeningNote);
         if (part.fields && Object.keys(part.fields).length) child = this.plan(child.id, by, part.fields, 0, note, withheld);
         children.push(child);
@@ -568,6 +573,23 @@ export class Board {
       const notification = this.pendingChanges?.findLast(change => change.task.id === id && change.entry.planning?.revision === revision + 1);
       if (notification) { notification.task = updated; notification.entry = entry; }
       return { parent: this.get(id)!, children };
+    });
+  }
+
+  /**
+   * #334: approve an intake draft and its children in one transaction. Only the person's approval reaches here (Tasks.approveIntake);
+   * each card must still be an unstarted, ownerless backlog draft, or nothing changes.
+   */
+  approveDrafts(ids: readonly number[], by: PeerId, note: string): Task[] {
+    return this.atomic(() => {
+      const rows = ids.map(id => this.get(id));
+      for (const row of rows) if (!row || row.state !== "backlog" || !row.draft || row.owner || taskHasStarted(row)) throw new Error("draft changed, approved or started");
+      return rows.map(row => {
+        const now = Date.now(), entry: HistoryEntry = { at: now, by, event: "draft approved", note };
+        const result = this.taskWrite(() => this.db.query("UPDATE tasks SET draft=0, history=?, updated=? WHERE id=? AND draft=1").run(JSON.stringify([...row!.history, entry]), now, row!.id));
+        if (result.changes !== 1) throw new Error("draft changed, approved or started");
+        const updated = this.get(row!.id)!; this.changed(updated, entry); return updated;
+      });
     });
   }
 
@@ -703,6 +725,7 @@ function parse(row: Record<string, unknown>): Task {
   if (out.planning_revision) out.planningRevision = out.planning_revision;
   delete out.planning_revision;
   if (out.pinned) out.pinned = true; else delete out.pinned;
+  if (out.draft) out.draft = true; else delete out.draft;
   for (const key of ["rank", "priority", "release", "due"]) if (out[key] == null) delete out[key];
   out.planner = row.planner ?? null;
   return out as unknown as Task;

@@ -18,7 +18,7 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
   if (command === "sdlc" && (args[0] === "authorize-release" || args[0] === "plan-review" || args[0] === "release-assign" || args[0] === "merge" || args[0] === "train" && args[1] !== "report")) return true;
   if (args.some(arg => arg === "--as-user" || arg.startsWith("--as-user="))) return true;
   const sub = command === "recovery" ? recoveryAction(args) : args.find(arg => arg !== "--json");
-  return ["task", "role", "goal", "deliverables", "source", "broker", "schedule"].includes(command)
+  return ["task", "role", "goal", "deliverables", "source", "broker", "schedule", "intake"].includes(command)
     || (command === "backlog" && sub !== "list") || (command === "release" && !["list", "show"].includes(sub ?? ""))
     || (command === "memory" && sub !== "graph")
     || (command === "recovery" && (sub === "reattach" || sub === "dispose" && context.repairedFresh === true))
@@ -179,9 +179,11 @@ export function cliCommandLabel(command: string, args: readonly string[], catalo
   if (command === "broker") return args[0] === "serve" ? "broker serve" : args[0] === "room" && args[1] === "drop" ? "broker room drop" : "broker";
   // #335: a schedule id is config text, so the audit names the subcommand only.
   if (command === "schedule") return ["list", "run", "pause", "resume"].includes(args.find(arg => arg !== "--json") ?? "") ? `schedule ${args.find(arg => arg !== "--json")}` : "schedule";
+  // #334: intake names its two subcommands in the audit and a refusal, never the request text (it can carry a secret).
+  if (command === "intake") return ["approve", "discard"].includes(args.find(arg => arg !== "--json") ?? "") ? `intake ${args.find(arg => arg !== "--json")}` : "intake";
   if (command === "source") return ["add", "list"].includes(args.find(arg => arg !== "--json") ?? "") ? `source ${args.find(arg => arg !== "--json")}` : "source";
   if (command === "release") return ["new", "list", "show", "plan", "activate", "freeze", "ship", "drop"].includes(args[0] ?? "") ? `release ${args[0]}` : "release";
-  if (!(catalog?.definitionOf(command) ?? definitionOf(command)) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "reset", "doctor", "agents", "source", "broker", "schedule"].includes(command)) return "unknown";
+  if (!(catalog?.definitionOf(command) ?? definitionOf(command)) && !["upgrade", "restart", "recovery", "recovery-run", "help", "--help", "--version", "version", "completion", "projects", "ui", "manager", "setup", "init", "daemon", "up", "console", "stop", "models", "say", "queue", "tail", "watch", "budget", "board", "task", "review", "remember", "ask", "route", "pause", "resume", "permit", "permission", "settings", "roster", "status", "pet", "logs", "export", "report", "research", "memory", "goal", "bench", "sdlc", "role", "facts", "check-path", "turns", "undo", "kill", "reset", "doctor", "agents", "source", "broker", "schedule", "intake"].includes(command)) return "unknown";
   if (["task", "queue", "budget", "route", "recovery", "models", "projects", "research", "memory", "goal", "bench", "agents", "roster", "settings"].includes(command)) {
     const sub = command === "bench" || command === "memory" || command === "goal" ? args.find((arg) => arg !== "--json") : args[0];
     if (sub && ["propose", "show", "assign", "unassign", "escalate", "cancel", "label", "list", "add", "resolve", "resume", "set", "execution", "explain", "status", "abort", "dispose", "reattach", "setup", "start", "stop", "remove", "discard", "export", "backfill", "addons", "run", "report", "compare", "search", "graph", "promote", "demote", "forget", "supersede", "dedupe", "decay", "rebuild", "sync", "machine", "import", "suggestions", "confirm", "reject", "new", "link", "state", "done", "take", "trust"].includes(sub)) return `${command} ${sub}`;

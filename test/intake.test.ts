@@ -1,0 +1,395 @@
+import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Board } from "../src/hub/board.ts";
+import { Bus } from "../src/hub/bus.ts";
+import { BasePeer } from "../src/hub/peers.ts";
+import { USER, type Envelope } from "../src/hub/envelope.ts";
+import { Tasks, type TasksDeps } from "../src/hub/tasks.ts";
+import { loadRouting } from "../src/hub/routing.ts";
+import { TASK_TOOLS, profileTaskTools } from "../src/hub/hub-tools.ts";
+import { criterionIds, intakeDetail, intakeSystemPrompt, parseIntakeDetail, parseIntakeSplit, schemaError } from "../src/hub/intake.ts";
+import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
+import { classifyPeerCommand, cliCommandLabel, liveTestRefusal } from "../src/cli/identity.ts";
+import { renderIntake, renderIntakeChange } from "../src/cli/intake-output.ts";
+import { readFileSync } from "node:fs";
+import { HELP, helpCommands, renderHelp } from "../src/cli/help.ts";
+
+// #334 (#511a): intake drafts. A draft is a backlog card nothing offers or pulls; approval and discard are the person's.
+const PARTS_SCHEMA = TASK_TOOLS.find(tool => tool.name === "hub_backlog_split")!.inputSchema.properties.parts;
+const RESEARCH_SCHEMA = profileTaskTools("research").find(tool => tool.name === "hub_backlog_split")!.inputSchema.properties.parts;
+const SRC = "src:0123456789abcdef", OTHER = "src:fedcba9876543210";
+const GOOD = { parts: [
+  { title: "Collect the Q3 figures", detail: "Read the sources.\nAC1: every figure has a source", class: "plan", plan: { paths: ["notes/q3.md"] } },
+  { title: "Write the report", detail: "Draft the report.\nAC1: it covers each figure\nAC2: it is under two pages", class: "implement", afterParts: [0] },
+] };
+
+class Planner extends BasePeer {
+  readonly got: Envelope[] = [];
+  async deliver(envs: Envelope[]) { this.got.push(...envs); }
+  async start() { this.setState("idle"); }
+  async stop() { this.setState("offline"); }
+}
+const close: (() => void)[] = [];
+afterEach(() => { for (const fn of close.splice(0).reverse()) fn(); });
+
+interface Options { planner?: boolean; answer?: string | (() => string | undefined | Promise<string | undefined>); pii?: boolean; onCampus?: boolean; noModel?: boolean; sources?: string[] }
+async function rig(options: Options = {}) {
+  const cwd = mkdtempSync(join(tmpdir(), "ahub-intake-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
+  const calls: { system: string; user: string }[] = [];
+  const roles: Record<string, string[]> = options.planner ? { claude: ["planner"], codex: ["implementer"] } : { codex: ["implementer"] };
+  const deps: TasksDeps = { cwd, board, bus, roles, project: "fixture", routing: () => {
+    const routing = loadRouting(cwd);
+    return options.pii ? { ...routing, signals: { ...routing.signals, pii_patterns: ["SECRET-STUDENT"] } } : routing;
+  }, notify: () => {},
+  triage: { classify: async () => undefined, onCampus: async () => options.onCampus ?? false },
+  ...(options.noModel ? {} : { intake: { split: async (system, user) => { calls.push({ system, user }); const a = options.answer; return typeof a === "function" ? a() : a; }, partsSchema: () => PARTS_SCHEMA, sourceKnown: id => (options.sources ?? [SRC]).includes(id) } }) };
+  const tasks = new Tasks(deps);
+  board.proposalPlanner = () => ({ planner: null, plannerReason: "none" });
+  const planner = new Planner("claude");
+  if (options.planner) { bus.add(planner); await planner.start(); }
+  close.push(() => { bus.closeJournal(); board.close(); rmSync(cwd, { recursive: true, force: true }); });
+  return { board, bus, tasks, planner, calls };
+}
+const refusal = async (call: () => unknown) => { let e: unknown; try { await call(); } catch (caught) { e = caught; } expect(e).toBeInstanceOf(PreEffectToolRefusal); return (e as Error).message; };
+
+// ---- the pure parts
+
+test("schemaError checks the keywords the hub_backlog_split schema uses, and never echoes a value", () => {
+  expect(schemaError(PARTS_SCHEMA, GOOD.parts)).toBeUndefined();
+  expect(schemaError(PARTS_SCHEMA, [GOOD.parts[0]])).toContain("at least 2");
+  expect(schemaError(PARTS_SCHEMA, Array.from({ length: 9 }, () => GOOD.parts[0]))).toContain("at most 8");
+  expect(schemaError(PARTS_SCHEMA, [{ title: "" }, GOOD.parts[0]])).toContain("too short");
+  expect(schemaError(PARTS_SCHEMA, [{ title: "x", extra: "SECRET-STUDENT" }, GOOD.parts[0]])).toBe("parts[0].extra: not allowed");
+  expect(schemaError(PARTS_SCHEMA, [{ title: "x", afterParts: [-1] }, GOOD.parts[0]])).toContain("too small");
+  expect(schemaError(PARTS_SCHEMA, [{ title: "x", afterParts: [0, 0] }, GOOD.parts[0]])).toContain("unique");
+  expect(schemaError(PARTS_SCHEMA, [{ detail: "no title" }, GOOD.parts[0]])).toBe("parts[0].title: required");
+  expect(schemaError(PARTS_SCHEMA, [{ title: 5 }, GOOD.parts[0]])).toContain("expected a string");
+});
+
+test("parseIntakeSplit takes bare JSON, a fenced block or prose around it, and refuses everything else with a reason", () => {
+  const text = JSON.stringify(GOOD);
+  expect(parseIntakeSplit(text, PARTS_SCHEMA, [SRC])).toEqual({ parts: GOOD.parts });
+  expect(parseIntakeSplit("```json\n" + text + "\n```", PARTS_SCHEMA, [SRC])).toEqual({ parts: GOOD.parts });
+  expect(parseIntakeSplit(`Here is the split: ${text} Done.`, PARTS_SCHEMA, [SRC])).toEqual({ parts: GOOD.parts });
+  expect(parseIntakeSplit(JSON.stringify(GOOD.parts), PARTS_SCHEMA, [SRC])).toEqual({ parts: GOOD.parts });
+  expect(parseIntakeSplit(undefined, PARTS_SCHEMA)).toEqual({ error: "the model gave no answer" });
+  expect(parseIntakeSplit("  ", PARTS_SCHEMA)).toEqual({ error: "the model gave no answer" });
+  expect(parseIntakeSplit("no json here", PARTS_SCHEMA)).toEqual({ error: "the model's answer was not a JSON split" });
+  expect(parseIntakeSplit("{\"parts\": 4}", PARTS_SCHEMA)).toMatchObject({ error: expect.stringContaining("expected an array") });
+  expect(parseIntakeSplit("x".repeat(70_000), PARTS_SCHEMA)).toEqual({ error: "the model's answer was too long" });
+  const bad = { parts: [{ title: "a", detail: "AC1: x", class: "plan" }, { title: "b", detail: "AC1: y", extra: 1 }] };
+  expect(parseIntakeSplit(JSON.stringify(bad), PARTS_SCHEMA)).toEqual({ error: "invalid split: parts[1].extra: not allowed" });
+});
+
+test("a split part needs acceptance criteria in the #507 id format and may use only the request's sources", () => {
+  const noCriteria = { parts: [{ title: "a", detail: "just do it" }, GOOD.parts[1]] };
+  expect(parseIntakeSplit(JSON.stringify(noCriteria), PARTS_SCHEMA, [SRC])).toEqual({ error: "invalid split: parts[0].detail: no acceptance criteria" });
+  // the dev profile's plan has no sources key; a profile that selects it (research) accepts only the ids the request named
+  const dev = { parts: [{ ...GOOD.parts[0], plan: { sources: [SRC] } }, GOOD.parts[1]] };
+  expect(parseIntakeSplit(JSON.stringify(dev), PARTS_SCHEMA, [SRC])).toEqual({ error: "invalid split: parts[0].plan.sources: not allowed" });
+  const invented = { parts: [{ ...GOOD.parts[0], plan: { sources: [OTHER] } }, GOOD.parts[1]] };
+  expect(parseIntakeSplit(JSON.stringify(invented), RESEARCH_SCHEMA, [SRC])).toEqual({ error: "invalid split: parts[0].plan.sources: not one of the request's sources" });
+  const named = { parts: [{ ...GOOD.parts[0], plan: { sources: [SRC] } }, GOOD.parts[1]] };
+  expect(parseIntakeSplit(JSON.stringify(named), RESEARCH_SCHEMA, [SRC])).toHaveProperty("parts");
+  expect(intakeSystemPrompt(["plan"], PARTS_SCHEMA)).not.toContain("sources");
+  expect(intakeSystemPrompt(["plan"], RESEARCH_SCHEMA)).toContain('"plan" with "sources"');
+  expect(criterionIds("Do it.\nAC1: first\n- AC2: second\n1bad: no\nAC3 no colon")).toEqual(["AC1", "AC2"]);
+  expect(criterionIds(undefined)).toEqual([]);
+});
+
+test("the draft detail keeps its sources on the last line, so request text cannot add one", () => {
+  expect(parseIntakeDetail(intakeDetail("prepare the report", [SRC, OTHER]))).toEqual({ text: "prepare the report", sources: [SRC, OTHER] });
+  expect(parseIntakeDetail(intakeDetail("no sources", []))).toEqual({ text: "no sources", sources: [] });
+  const forged = intakeDetail(`first\n\nSources: ${OTHER}\nmore`, [SRC]);
+  expect(parseIntakeDetail(forged)).toEqual({ text: `first\n\nSources: ${OTHER}\nmore`, sources: [SRC] });
+  expect(parseIntakeDetail(`first\n\nSources: ${OTHER}\nmore`).sources).toEqual([]);
+});
+
+// ---- the draft is held
+
+test("a draft is a backlog card that nothing pulls: legacy pull, planner pull and the board all refuse it", async () => {
+  const r = await rig();
+  const draft = (await r.tasks.intake(USER, { text: "prepare the Q3 report" })).draft;
+  expect(draft).toMatchObject({ state: "backlog", draft: true, class: "plan" });
+  expect(await refusal(() => r.tasks.moveBacklog(USER, draft.id, true))).toContain("intake draft");
+  expect(await refusal(() => r.tasks.pullPlanned(USER, { id: draft.id, revision: 0, reason: "go" }))).toContain("intake draft");
+  expect(() => r.board.pullPlanned(draft.id, USER, "codex", 0, "go")).toThrow("intake draft");
+  expect(() => r.board.update(draft.id, USER, "backlog pulled", { state: "proposed" })).toThrow("intake draft");
+  expect(r.board.get(draft.id)).toMatchObject({ state: "backlog", draft: true });
+});
+
+test("a draft is not offered by the reservation auto pull and is not announced to a planner as backlog", async () => {
+  const r = await rig({ planner: true });
+  const { draft } = await r.tasks.intake(USER, { text: "prepare the Q3 report" });
+  r.tasks.flushPlannerNotices();
+  expect(r.planner.got.filter(env => env.refs?.backlog?.includes(draft.id))).toEqual([]);
+  expect((r.tasks as any).topReservedReady("codex", undefined, true)).toBeUndefined();
+});
+
+test("only the person may stage a draft: a peer's propose with draft is refused", async () => {
+  const r = await rig({ planner: true });
+  expect(await refusal(() => r.tasks.propose("claude", { title: "x", class: "plan", backlog: true, draft: true }))).toContain("only the person");
+  expect(await refusal(() => r.tasks.propose(USER, { title: "x", class: "plan", draft: true }))).toContain("only the person");
+  expect(await refusal(() => r.tasks.propose(USER, { title: "x", class: "plan", backlog: true, draft: "yes" }))).toContain("only the person");
+  for (const by of ["claude", "codex"]) expect(await refusal(() => r.tasks.intake(by, { text: "x" }))).toContain("console command");
+});
+
+// ---- with a planner
+
+test("with a planner, intake sends it a plan task naming the draft id, with the text through publicView", async () => {
+  const r = await rig({ planner: true });
+  const result = await r.tasks.intake(USER, { text: "prepare the Q3 report from these files", sources: [SRC] });
+  expect(result.split).toBe("planner");
+  expect(r.calls).toEqual([]);
+  const asks = r.planner.got.filter(env => env.refs?.task === String(result.draft.id));
+  expect(asks).toHaveLength(1);
+  expect(asks[0]).toMatchObject({ from: "hub", kind: "task", refs: { task: String(result.draft.id), taskRecipient: "planner" } });
+  expect(asks[0]!.body).toContain(`hub_backlog_split on #${result.draft.id} at revision ${result.draft.planningRevision ?? 0}`);
+  expect(asks[0]!.body).toContain("prepare the Q3 report from these files");
+  expect(asks[0]!.body).toContain(SRC);
+  expect(asks[0]!.body).toContain("acceptance criteria");
+});
+
+test("the planner's own hub_backlog_split on the draft makes children that inherit the draft mark", async () => {
+  const r = await rig({ planner: true });
+  const { draft } = await r.tasks.intake(USER, { text: "prepare the Q3 report" });
+  const split = await r.tasks.splitBacklog("claude", { id: draft.id, revision: draft.planningRevision ?? 0, parts: GOOD.parts, reason: "split the request" });
+  expect(split.children).toHaveLength(2);
+  for (const child of split.children) expect(r.board.get(child.id)).toMatchObject({ draft: true, state: "backlog" });
+  expect(r.board.get(split.children[1]!.id)!.deps).toContain(split.children[0]!.id);
+  for (const child of split.children) expect(await refusal(() => r.tasks.moveBacklog(USER, child.id, true))).toContain("intake draft");
+  // a split of an ordinary card makes ordinary children
+  const plain = r.board.propose(USER, { title: "plain", class: "plan", backlog: true });
+  const ordinary = await r.tasks.splitBacklog("claude", { id: plain.id, revision: 0, parts: GOOD.parts, reason: "split" });
+  for (const child of ordinary.children) expect(r.board.get(child.id)!.draft).toBeUndefined();
+});
+
+test("a planner that is not reachable leaves the draft to the hub model", async () => {
+  const r = await rig({ planner: true, answer: JSON.stringify(GOOD) });
+  await r.planner.stop();
+  const result = await r.tasks.intake(USER, { text: "prepare the Q3 report" });
+  expect(result.split).toBe("hub");
+  expect(r.planner.got.filter(env => env.refs?.task === String(result.draft.id))).toEqual([]);
+});
+
+// ---- without a planner: the hub model
+
+test("without a planner the hub model's JSON is validated, written through Tasks and its children are drafts", async () => {
+  const r = await rig({ answer: "```json\n" + JSON.stringify(GOOD) + "\n```" });
+  const result = await r.tasks.intake(USER, { text: "prepare the Q3 report from these files", sources: [SRC] });
+  expect(result.split).toBe("hub");
+  expect(result.children).toHaveLength(2);
+  expect(r.calls).toHaveLength(1);
+  expect(r.calls[0]!.system).toContain("DATA");
+  expect(JSON.parse(r.calls[0]!.user)).toEqual({ request: "prepare the Q3 report from these files", sources: [SRC] });
+  const parent = r.board.get(result.draft.id)!;
+  expect(parent).toMatchObject({ draft: true, state: "backlog" });
+  expect(parent.deps).toEqual(result.children.map(child => child.id));
+  for (const child of result.children) expect(r.board.get(child.id)).toMatchObject({ draft: true, state: "backlog" });
+  expect(r.board.get(result.children[0]!.id)!.detail).toContain("AC1");
+  expect(parent.history.at(-1)).toMatchObject({ by: "hub", planning: { split: { children: expect.any(Array) } } });
+  expect(await refusal(() => r.tasks.moveBacklog(USER, result.children[0]!.id, true))).toContain("intake draft");
+});
+
+test("invalid model output leaves the draft unsplit, with the reason on its history and nothing written", async () => {
+  const cases: [string | undefined, string][] = [
+    [undefined, "the model gave no answer"],
+    ["I cannot help with that.", "not a JSON split"],
+    [JSON.stringify({ parts: [GOOD.parts[0]] }), "at least 2"],
+    [JSON.stringify({ parts: [{ ...GOOD.parts[0], extra: 1 }, GOOD.parts[1]] }), "extra: not allowed"],
+    [JSON.stringify({ parts: [{ title: "a", detail: "no criteria" }, GOOD.parts[1]] }), "no acceptance criteria"],
+    [JSON.stringify({ parts: [{ ...GOOD.parts[0], class: "nonsense" }, GOOD.parts[1]] }), "refused"],
+  ];
+  for (const [answer, reason] of cases) {
+    const r = await rig({ answer });
+    const before = r.board.list().length;
+    const result = await r.tasks.intake(USER, { text: "prepare the Q3 report" });
+    expect(result.split, reason).toBe("unsplit");
+    expect(result.reason, reason).toContain(reason);
+    expect(result.children).toEqual([]);
+    expect(r.board.list().length - before).toBe(1);
+    const draft = r.board.get(result.draft.id)!;
+    expect(draft).toMatchObject({ draft: true, state: "backlog" });
+    expect(draft.deps ?? []).toEqual([]);
+    expect(draft.history.at(-1)).toMatchObject({ by: "hub", event: "intake unsplit", note: expect.stringContaining(reason) });
+  }
+});
+
+test("a throwing model or a missing model leaves the draft unsplit", async () => {
+  const thrown = await rig({ answer: () => { throw new Error("gateway down"); } });
+  expect((await thrown.tasks.intake(USER, { text: "x request" })).split).toBe("unsplit");
+  const none = await rig({ noModel: true });
+  const result = await none.tasks.intake(USER, { text: "x request" });
+  expect(result).toMatchObject({ split: "unsplit", reason: expect.stringContaining("no model") });
+  expect(none.board.get(result.draft.id)!.draft).toBe(true);
+});
+
+test("the hub's own split write is not a planner write: a HUB split outside intake is still refused", async () => {
+  const r = await rig({ answer: JSON.stringify(GOOD) });
+  const draft = (await r.tasks.intake(USER, { text: "x request" })).draft;
+  const plain = r.board.propose(USER, { title: "plain", class: "plan", backlog: true });
+  expect(await refusal(() => r.tasks.splitBacklog("hub", { id: plain.id, revision: 0, parts: GOOD.parts, reason: "x" }))).toContain("planner");
+  expect(await refusal(() => r.tasks.splitBacklog("codex", { id: draft.id, revision: 1, parts: GOOD.parts, reason: "x" }, { intake: true }))).toContain("planner");
+});
+
+// ---- sources
+
+test("--source ids are validated: unknown, malformed, duplicate and too many are refused before a draft is made", async () => {
+  const r = await rig();
+  const count = () => r.board.list().length;
+  expect(await refusal(() => r.tasks.intake(USER, { text: "x request", sources: [OTHER] }))).toContain("unknown source");
+  expect(await refusal(() => r.tasks.intake(USER, { text: "x request", sources: ["src:xyz"] }))).toContain("sources:");
+  expect(await refusal(() => r.tasks.intake(USER, { text: "x request", sources: [SRC, SRC] }))).toContain("sources:");
+  expect(await refusal(() => r.tasks.intake(USER, { text: "x request", sources: "src:0123456789abcdef" }))).toContain("sources:");
+  expect(await refusal(() => r.tasks.intake(USER, { text: "x request", sources: Array.from({ length: 17 }, (_, i) => `src:${i.toString(16).padStart(16, "0")}`) }))).toContain("sources:");
+  expect(count()).toBe(0);
+  const ok = await r.tasks.intake(USER, { text: "x request", sources: [SRC] });
+  expect(parseIntakeDetail(r.board.get(ok.draft.id)!.detail).sources).toEqual([SRC]);
+});
+
+test("the request must be 1 to 7000 characters", async () => {
+  const r = await rig();
+  for (const text of ["", "   ", undefined, 5, "x".repeat(7001)]) await refusal(() => r.tasks.intake(USER, { text }));
+  expect(r.board.list()).toHaveLength(0);
+  expect((await r.tasks.intake(USER, { text: "x".repeat(7000) })).draft.draft).toBe(true);
+});
+
+// ---- PII
+
+test("a PII request never goes to a planner peer and, off campus, stays whole for the person", async () => {
+  const r = await rig({ planner: true, pii: true, answer: JSON.stringify(GOOD), onCampus: false });
+  const result = await r.tasks.intake(USER, { text: "prepare the file for SECRET-STUDENT" });
+  expect(r.tasks.isPii(r.board.get(result.draft.id)!)).toBe(true);
+  expect(result.split).toBe("unsplit");
+  expect(result.reason).toContain("PII");
+  expect(r.calls).toEqual([]);
+  expect(r.planner.got.filter(env => env.refs?.task === String(result.draft.id) || env.body.includes("SECRET-STUDENT"))).toEqual([]);
+  expect(r.tasks.publicView(r.board.get(result.draft.id)!)).toMatchObject({ title: "[pii]", detail: "[pii]" });
+});
+
+test("a PII request on campus is split by the on-prem model and the hub writes private drafts", async () => {
+  const r = await rig({ planner: true, pii: true, answer: JSON.stringify({ parts: [
+    { title: "Pull SECRET-STUDENT records", detail: "AC1: records pulled", class: "plan" },
+    { title: "Write the summary", detail: "AC1: summary written", class: "implement", afterParts: [0] },
+  ] }), onCampus: true });
+  const result = await r.tasks.intake(USER, { text: "prepare the file for SECRET-STUDENT" });
+  expect(result.split).toBe("hub");
+  expect(r.calls).toHaveLength(1);
+  expect(r.planner.got.filter(env => env.body.includes("SECRET-STUDENT") || env.refs?.task === String(result.draft.id))).toEqual([]);
+  for (const child of result.children) {
+    const stored = r.board.get(child.id)!;
+    expect(stored.draft).toBe(true);
+    expect(r.tasks.isPii(stored)).toBe(true);
+    expect(r.tasks.publicView(stored)).toMatchObject({ title: "[pii]", detail: "[pii]" });
+  }
+});
+
+test("an ordinary request with a PII source word in the hub note never reaches the history unredacted", async () => {
+  const r = await rig({ pii: true, answer: JSON.stringify({ parts: [GOOD.parts[0]] }) });
+  const result = await r.tasks.intake(USER, { text: "ordinary request" });
+  expect(result.reason).toContain("at least 2");
+  expect(JSON.stringify(r.board.get(result.draft.id)!.history)).not.toContain("SECRET-STUDENT");
+});
+
+// ---- approve and discard
+
+test("approve is the person's, clears draft on the parent and every child, and then the normal pull works", async () => {
+  const r = await rig({ answer: JSON.stringify(GOOD) });
+  const result = await r.tasks.intake(USER, { text: "prepare the Q3 report" });
+  const ids = [result.draft.id, ...result.children.map(child => child.id)];
+  for (const by of ["claude", "codex", "hub"]) expect(await refusal(() => r.tasks.approveIntake(by, result.draft.id))).toContain("console command");
+  for (const id of ids) expect(r.board.get(id)!.draft).toBe(true);
+  const approved = await r.tasks.approveIntake(USER, result.draft.id);
+  expect(approved.map(task => task.id)).toEqual(ids);
+  for (const id of ids) {
+    const task = r.board.get(id)!;
+    expect(task.draft).toBeUndefined(); expect(task.state).toBe("backlog");
+    expect(task.history.at(-1)).toMatchObject({ by: USER, event: "draft approved" });
+  }
+  expect((await r.tasks.moveBacklog(USER, result.children[0]!.id, true)).state).toBe("proposed");
+  expect(await refusal(() => r.tasks.approveIntake(USER, result.draft.id))).toContain("not an open intake draft");
+});
+
+test("approve is all or nothing: a child that already moved fails the whole approval", async () => {
+  const r = await rig({ answer: JSON.stringify(GOOD) });
+  const result = await r.tasks.intake(USER, { text: "prepare the Q3 report" });
+  expect(() => r.board.approveDrafts([result.draft.id, 99999], USER, "x")).toThrow("draft changed");
+  expect(r.board.get(result.draft.id)!.draft).toBe(true);
+  for (const child of result.children) expect(r.board.get(child.id)!.draft).toBe(true);
+});
+
+test("approve and discard refuse an ordinary backlog card and unknown ids", async () => {
+  const r = await rig();
+  const plain = r.board.propose(USER, { title: "plain", class: "plan", backlog: true });
+  for (const call of [() => r.tasks.approveIntake(USER, plain.id), () => r.tasks.discardIntake(USER, plain.id), () => r.tasks.approveIntake(USER, 999), () => r.tasks.discardIntake(USER, 999)]) expect(await refusal(call)).toContain("not an open intake draft");
+  for (const id of [0, -1, 1.5, "3", undefined]) expect(await refusal(() => r.tasks.approveIntake(USER, id))).toContain("positive task number");
+  expect(r.board.get(plain.id)).toMatchObject({ state: "backlog" });
+});
+
+test("discard cancels the parent and every child through Tasks.cancel, and only the person may", async () => {
+  const r = await rig({ answer: JSON.stringify(GOOD) });
+  const result = await r.tasks.intake(USER, { text: "prepare the Q3 report" });
+  for (const by of ["claude", "codex", "hub"]) expect(await refusal(() => r.tasks.discardIntake(by, result.draft.id))).toContain("console command");
+  const cancelled = await r.tasks.discardIntake(USER, result.draft.id);
+  expect(cancelled).toHaveLength(3);
+  for (const task of cancelled) {
+    expect(r.board.get(task.id)).toMatchObject({ state: "cancelled" });
+    expect(r.board.get(task.id)!.history.at(-1)).toMatchObject({ event: "cancelled", by: USER, note: expect.stringContaining("discarded") });
+  }
+  expect(await refusal(() => r.tasks.discardIntake(USER, result.draft.id))).toContain("not an open intake draft");
+});
+
+test("an unsplit draft can be approved or discarded alone", async () => {
+  const a = await rig();
+  const one = await a.tasks.intake(USER, { text: "x request" });
+  expect((await a.tasks.approveIntake(USER, one.draft.id)).map(task => task.id)).toEqual([one.draft.id]);
+  const b = await rig();
+  const two = await b.tasks.intake(USER, { text: "x request" });
+  expect((await b.tasks.discardIntake(USER, two.draft.id)).map(task => task.id)).toEqual([two.draft.id]);
+});
+
+test("the draft column survives a reopen and an old database without it gets it", async () => {
+  const r = await rig({ answer: JSON.stringify(GOOD) });
+  const result = await r.tasks.intake(USER, { text: "prepare the Q3 report" });
+  const path = (r.board as any).db.filename as string;
+  const again = new Board(path);
+  try {
+    expect(again.get(result.draft.id)).toMatchObject({ draft: true });
+    for (const child of result.children) expect(again.get(child.id)).toMatchObject({ draft: true });
+  } finally { again.close(); }
+});
+
+// ---- the command
+
+test("intake is person-only: an agent shell is refused, live-test cannot write it, and the audit never names the request", () => {
+  for (const args of [["a request"], ["approve", "3"], ["discard", "3"], ["a request", "--source", SRC]]) expect(classifyPeerCommand("intake", args)).toBe("console");
+  expect(liveTestRefusal("intake", ["a request"])).toBe(true);
+  expect(cliCommandLabel("intake", ["approve", "3"])).toBe("intake approve");
+  expect(cliCommandLabel("intake", ["discard", "3"])).toBe("intake discard");
+  expect(cliCommandLabel("intake", ["my SECRET-STUDENT request"])).toBe("intake");
+});
+
+test("ahub help documents intake with its flags and subcommands, and the command is in the dispatch table", () => {
+  const entry = HELP.find(item => helpCommands(item).includes("intake"));
+  expect(entry).toBeDefined();
+  expect(entry!.usage).toBe("ahub intake \"<text>\" [--source <id>...] | approve <id> | discard <id> [--json] [--color=auto|always|never]");
+  for (const word of ["person only", "draft backlog card", "hub_backlog_split", "never to a planner", "registered src:", "task cancel"]) expect(entry!.description, word).toContain(word);
+  expect(renderHelp(100, false, "intake").replace(/\s+/g, " ")).toContain("ahub intake");
+  const src = readFileSync(join(import.meta.dir, "../src/cli/main.ts"), "utf8"), at = src.indexOf("const commands: Record<");
+  expect(src.slice(at, src.indexOf("\n};\n", at))).toMatch(/^  intake: /m);
+});
+
+test("the human output names the draft, who splits it, the reason and the next commands", () => {
+  const text = (lines: { text: string }[][]) => lines.map(line => line.map(span => span.text).join("")).join("\n");
+  const draft = { id: 7, title: "Intake: prepare", state: "backlog" };
+  const planner = text(renderIntake({ draft, children: [], split: "planner" }, 100));
+  expect(planner).toContain("Intake draft #7"); expect(planner).toContain("asked the planner"); expect(planner).toContain("ahub intake approve 7"); expect(planner).toContain("ahub intake discard 7");
+  const hub = text(renderIntake({ draft, children: [{ id: 8, class: "plan", title: "Part one" }, { id: 9, class: "implement", deps: [8], title: "Part two" }], split: "hub" }, 100));
+  expect(hub).toContain("2 draft parts"); expect(hub).toContain("#9"); expect(hub).toContain("#8");
+  const unsplit = text(renderIntake({ draft, children: [], split: "unsplit", reason: "the model gave no answer" }, 100));
+  expect(unsplit).toContain("left whole"); expect(unsplit).toContain("the model gave no answer");
+  expect(text(renderIntakeChange("approve", [{ id: 7, state: "backlog", title: "t" }], 100))).toContain("Intake approved: 1 card released");
+  expect(text(renderIntakeChange("discard", [{ id: 7, state: "cancelled", title: "t" }, { id: 8, state: "cancelled", title: "u" }], 100))).toContain("Intake discarded: 2 cards cancelled");
+});

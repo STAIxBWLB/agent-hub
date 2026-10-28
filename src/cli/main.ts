@@ -23,6 +23,7 @@ import { TextProjections } from "../hub/text-projection.ts";
 import { fetchSourceUrl, MAX_SOURCE_BYTES, publicSourceView, screenRegistration, SourceRegistry, validSourceId, type SourceMeta } from "../hub/sources.ts";
 import { renderSourceAdd, renderSourceList } from "./source-output.ts";
 import { renderScheduleChange, renderScheduleList, renderScheduleRun } from "./schedule-output.ts";
+import { renderIntake, renderIntakeChange } from "./intake-output.ts";
 import { terminalText } from "./console-state.ts";
 import { parseSettingsEditArgs, runSettingsEdit, SETTINGS_EDIT_USAGE } from "./settings-edit.ts";
 import { petView, readPet, renderPet } from "./pet.ts";
@@ -1358,6 +1359,26 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (!["run", "pause", "resume"].includes(sub ?? "") || !id || extra.length) return fail(usage);
     if (sub === "run") return showToolText(data => renderScheduleRun(data, present.columns), await taskOp("schedule_run", { id }, false, undefined, 90_000), present);
     return showToolText(data => renderScheduleChange(sub as "pause" | "resume", data, present.columns, Date.now()), await taskOp(sub === "pause" ? "schedule_pause" : "schedule_resume", { id }), present);
+  },
+
+  intake: async () => {
+    // #334 (#511a): natural-language intake. Person only (classifyPeerCommand sends an unlisted command to console, so an agent shell is refused before this runs).
+    // The request is a draft backlog card that nothing offers until `approve`; the hub, not this process, splits it.
+    const split = splitPresentation(args, { valueFlags: ["--source"] });
+    const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
+    const usage = "usage: ahub intake \"<text>\" [--source <id>...] | approve <id> | discard <id> [--json] [--color=auto|always|never]";
+    const sources: string[] = [], words: string[] = [];
+    for (let i = 0; i < split.operands.length; i++) {
+      const arg = split.operands[i]!;
+      if (arg === "--source") { const id = split.operands[++i]; if (!id) return fail("--source needs a source id"); sources.push(id); } else words.push(arg);
+    }
+    const [sub, id] = words;
+    if ((sub === "approve" || sub === "discard") && words.length === 2 && !sources.length) {
+      if (!/^[1-9]\d*$/.test(id!)) return fail(usage);
+      return showToolText(data => renderIntakeChange(sub, data, present.columns), await taskOp(sub === "approve" ? "intake_approve" : "intake_discard", { id: Number(id) }), present);
+    }
+    if (words.length !== 1 || !words[0]!.trim()) return fail(usage);
+    return showToolText(data => renderIntake(data, present.columns), await taskOp("intake", { text: words[0], ...(sources.length ? { sources } : {}) }, false, undefined, 90_000), present);
   },
 
   deliverables: async () => {
