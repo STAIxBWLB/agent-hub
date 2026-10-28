@@ -1627,6 +1627,13 @@ const commands: Record<string, () => Promise<void> | void> = {
       if (rest.length !== 1) fail("usage: ahub task show <id> [--json] [--full] [--color=auto|always|never]");
       return shownTask(renderTaskShow)(taskOp("task_show", { id: rest[0] }));
     }
+    if (sub === "claim") {
+      // #901: a person's verdict on one declared plan claim. The claim is named by its 1-based slot and its text is never typed, stored or printed here.
+      const { one, rest: positional } = takeFlags(rest, ["--model", "--model-said"], []);
+      if (positional.length !== 3 || !/^[1-9]\d*$/.test(positional[0]!) || !/^[1-9]\d*$/.test(positional[1]!) || !["supported", "unsupported", "unclear"].includes(positional[2]!)) fail("usage: ahub task claim <id> <slot> <supported|unsupported|unclear> [--model <label>] [--model-said <supported|unsupported|unclear>]");
+      const reply = JSON.parse(await taskOp("claim_verdict", { id: Number(positional[0]), slot: Number(positional[1]), verdict: positional[2], ...(one["--model"] === undefined ? {} : { model: one["--model"] }), ...(one["--model-said"] === undefined ? {} : { modelVerdict: one["--model-said"] }) })) as { task: number; recorded?: { slot: number; verdict: string; model?: string; modelVerdict?: string } };
+      return console.log(`task #${reply.task}: claim ${reply.recorded?.slot} recorded as ${reply.recorded?.verdict}${reply.recorded?.model ? ` (model ${reply.recorded.model}` : ""}${reply.recorded?.modelVerdict ? `${reply.recorded?.model ? ", " : " ("}model said ${reply.recorded.modelVerdict}` : ""}${reply.recorded?.model || reply.recorded?.modelVerdict ? ")" : ""}`);
+    }
     if (sub === "escalate") return console.log(await taskOp("task_escalate", { id: rest[0] }));
     if (sub === "assign") {
       const { one, rest: positional } = takeFlags(rest, ["--role", "--revision"], []);

@@ -40,7 +40,7 @@ import { isAbsolute, relative } from "node:path";
 import type { Briefs, NativeItem } from "../memory/brief.ts";
 import type { MemoryClient } from "../memory/client.ts";
 import { candidateTargetRevision, type CandidateInput, type CandidateStore, extractNodes, looksSecret, PROMOTED_KINDS, taskKey, type GoalView, type Kind, type MemoryStore, type Scope, type Tier } from "@staix/agent-mem";
-import { CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type PlannerBinding } from "./board.ts";
+import { parseClaimVerdict, CLASSES, OUTCOMES_KEPT_MS, ALL_PLAN_KEYS, TASK_MOVE_REASONS, taskCanPlan, taskHasWorkEvidence, taskHasStarted, planningUndoEntry, isClosedTaskState, type TaskStall, type HistoryEntry, type ReviewerHistory, type Board, type Task, type TaskClass, type TaskMoveReason, type TaskPlan, type TaskRefs, type PlannerBinding } from "./board.ts";
 import type { Bus } from "./bus.ts";
 import { HUB, newEnvelope, NOTE_KINDS, noteLine, sanitize, USER, type Envelope, type PeerId, type PeerState } from "./envelope.ts";
 import type { PiiVerdict, ScreenItem, ScreenRecord } from "./inference.ts";
@@ -137,6 +137,8 @@ export interface TasksDeps {
   notify: (line: string) => void;
   /** The completion check configured for a class, if any (local config only; issue #7). */
   check?: (cls: TaskClass, task?: Task) => string | undefined;
+  /** #901: the key of the `checks` entry `check` chose for this task (the profile class alias, else the class): the same lookup, so the two cannot disagree. Absent: the key is unknown. */
+  checkKey?: (cls: TaskClass, task?: Task) => string | undefined;
   /** Runs one check; the hub runs them one at a time. */
   runCheck?: (command: string) => Promise<{ code: number | null; timedOut: boolean; interrupted?: boolean; tail: string }>;
   /** Hands a saved note to every other peer; it rides on their next delivery. */
@@ -3064,6 +3066,21 @@ export class Tasks {
     // Advice joins the planner's next delivery; it must not manufacture a turn beside a withheld backlog batch.
     for (const peer of this.taskPlanner(task).filter(peer => this.d.bus.isRostered(peer))) this.releaseNotice(`task #${task.id}: stall notice unavailable`, () => this.d.tell?.(peer, noteLine(HUB, "finding", text)));
   }
+  /**
+   * #901: the person's verdict on one declared claim of a document plan, with the model label they say produced it. Person only (an agent's word on its own claim is no verdict, and task
+   * approval never supplies one). The claim is named by its 1-based slot in the task's current plan; its text is not stored, sent or echoed, so a PII task records the same counters and
+   * its history entry stays a stub. The entry is not a transition and moves nothing; a later verdict for the same slot supersedes the earlier one (the scorecard reads the last).
+   */
+  recordClaimVerdict(by: PeerId, id: unknown, input: unknown): Task {
+    if (by !== USER) throw new Error("only the console user may record a claim verdict");
+    if (this.d.cancellationHeld?.() || this.d.bus.isRecoveryHeld || this.d.bus.storageError) throw new Error("recovery or shutdown is holding task writes");
+    const task = this.need(id);
+    const claims = task.plan?.claims?.length ?? 0;
+    if (!claims) throw new Error(`task #${task.id} declares no plan claims: add them to its plan first`);
+    const claim = parseClaimVerdict(input, claims);
+    return this.d.board.update(task.id, USER, "claim verdict", {}, undefined, { claim });  // no note: nothing a person typed beyond the closed fields is kept
+  }
+
   async cancel(id: unknown, by: PeerId, input: { reason: string; supersededBy?: string; expectedFlowRevision?: number }): Promise<Task> {
     if (typeof input.reason !== "string" || !input.reason.trim() || Buffer.byteLength(input.reason) > 4000 || input.supersededBy !== undefined && (typeof input.supersededBy !== "string" || !input.supersededBy.trim() || Buffer.byteLength(input.supersededBy) > 1000)) throw new PreEffectToolRefusal("cancellation needs a bounded reason and supersession reference");
     const validate = () => {
@@ -4712,6 +4729,19 @@ export class Tasks {
     return [head, "The done counts once the files did not change between two calls and the others have stopped.", ...lines, facts?.text ?? ""].filter(Boolean).join("\n");
   }
 
+  /**
+   * #901: which check key produced this result, and how many citation keys the example citation check said were unresolved. The key is the hub's own selection (`Deps.checkKey`, the lookup
+   * `Deps.check` makes), never read from output; without that dependency it is not recorded. The count is read only from the example check's own last line (`citations: N declared keys, M missing`, scripts/check-citations.ts);
+   * a tail without that exact line, or with a number past the bound, records no count: unknown, never zero.
+   */
+  private checkProvenance(task: Task, tail: string): Pick<HistoryEntry, "checkKey" | "missingKeys"> {
+    let key: string | undefined;
+    try { key = this.d.checkKey?.(task.class, task); } catch { key = undefined; }
+    const lines = tail.split("\n").map(line => line.trim()).filter(Boolean);
+    const match = /^citations: (\d{1,6}) declared keys, (\d{1,6}) missing$/.exec(lines.at(-1) ?? "");
+    return { ...(key ? { checkKey: key } : {}), ...(match ? { missingKeys: Number(match[2]) } : {}) };
+  }
+
   private async finishChecked(id: number, by: PeerId, summary: string | undefined, command: string, seen: { events: number; owner: PeerId | null }, withheld: boolean): Promise<void> {
     const result = await this.d.runCheck!(command).catch((e: Error) => ({ code: null, timedOut: false, interrupted: false, tail: e.message }));
     this.checking.delete(id);
@@ -4735,12 +4765,12 @@ export class Tasks {
         this.tell(task, `Task #${id}: its check passed, but the overlapping work or the files changed while it ran (turn-free integration). Call hub_task_done again.`, pii);
         return;
       }
-      this.d.board.update(id, HUB, "check passed", {}, `${outcome}\n${result.tail}`.trim());
+      this.d.board.update(id, HUB, "check passed", {}, `${outcome}\n${result.tail}`.trim(), this.checkProvenance(task, result.tail));
       // The output goes to the reviewer with the done note, not into shared memory: nobody screened it.
       await this.complete(this.d.board.get(id)!, by, `${summary ?? ""}\nCheck: ${outcome}`.trim(), undefined, result.tail, withheld);
       return;
     }
-    this.d.board.update(id, HUB, "check failed", {}, `${outcome}\n${result.tail}`.trim());
+    this.d.board.update(id, HUB, "check failed", {}, `${outcome}\n${result.tail}`.trim(), this.checkProvenance(task, result.tail));
     this.cohorts.withdraw(id); // open again: its done intent no longer counts (issue #107)
     if (task.owner) this.d.board.recordOutcome(task.owner, task.class, false);
     this.contradict(task);

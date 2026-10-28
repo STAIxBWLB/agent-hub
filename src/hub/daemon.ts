@@ -1882,7 +1882,8 @@ export async function startDaemon(opts: DaemonOptions) {
     ...(memoryStore ? { store: { store: memoryStore, project: memoryProject, repo: memoryRepo, deny: config.local.deny, onNote: (id: string) => void suggestEdges(id) } } : {}),
     notify,
     recordOverlap: (task, owner, others) => event({ type: "overlap", task, owner, others }),
-    ...(checksAllowed ? { check: (cls: string, task?: import("./board.ts").Task) => checkCommands[task?.profileClass ?? cls] ?? checkCommands[cls], runCheck: async (command: string) => (checksClosed ? interrupted : runCheck(command, opts.cwd, checkTimeoutS * 1000, runningChecks)) } : {}),
+    ...(checksAllowed ? { check: (cls: string, task?: import("./board.ts").Task) => checkCommands[task?.profileClass ?? cls] ?? checkCommands[cls],
+      checkKey: (cls: string, task?: import("./board.ts").Task) => { const own = task?.profileClass ?? cls; return checkCommands[own] !== undefined ? own : checkCommands[cls] !== undefined ? cls : undefined; }, runCheck: async (command: string) => (checksClosed ? interrupted : runCheck(command, opts.cwd, checkTimeoutS * 1000, runningChecks)) } : {}),
     // What a peer learned reaches the peers working now, on their next delivery, instead of at their next session (#68).
     // Fail-open: the note is already saved, so a bus that cannot persist costs the sharing, not the tool call.
     share: (by, line) => {
@@ -3262,6 +3263,8 @@ export async function startDaemon(opts: DaemonOptions) {
     switch (op) {
       case "release_new":
         return JSON.stringify(await tasks.newRelease(by, { name: a.name, goal: a.goal, order: a.order }));
+      case "claim_verdict": // #901: a person's verdict on one declared claim; the reply names the slot and the verdict only, never a claim
+        return JSON.stringify((({ id, history }) => ({ task: id, recorded: history.at(-1)?.claim }))(tasks.recordClaimVerdict(by, a.id, { slot: a.slot, verdict: a.verdict, ...(a.model === undefined ? {} : { model: a.model }), ...(a.modelVerdict === undefined ? {} : { modelVerdict: a.modelVerdict }) })));
       case "github_import":
         return JSON.stringify(await tasks.importGitHub(USER, { repo: a.repo, label: a.label, milestone: a.milestone }));
       case "release_show": {
