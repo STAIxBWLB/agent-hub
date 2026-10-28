@@ -4024,6 +4024,14 @@
       "replacement": "return session.phase === \"ready\" && this.isCurrent(session, digest);",
       "testFile": "test/rooms-link.test.ts",
       "testName": "a new local epoch cannot publish ciphertext before that socket verifies the same roster"
+    },
+    {
+      "id": "room-x4-owner-upgrade-no-premature-replay",
+      "file": "src/rooms/link.ts",
+      "search": "session.deferredFrame = Uint8Array.from(bytes);",
+      "replacement": "await this.receiveFrame(session, bytes, local);",
+      "testFile": "test/rooms-link.test.ts",
+      "testName": "a verified owner upgrade holds one old ciphertext without replay, plaintext or ACK until the new ready"
     }
   ]
 }
