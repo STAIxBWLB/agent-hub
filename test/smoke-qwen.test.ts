@@ -60,3 +60,12 @@ test("an early native exit cancels file polling before returning a stable failed
   expect(JSON.parse(readFileSync(join(f.cwd, "receipt.json"), "utf8"))).toEqual(receipt);
   expect(readdirSync(f.cwd).some(name => name.startsWith(".smoke-run-"))).toBe(false);
 });
+
+
+test("completed first turns cannot prove queued input", async () => {
+  const f = fixture(); f.ports.command.push("--scenario", "finished");
+  const receipt = await runSmoke(f.target, { leg: "qwen-dual-output", receipt: "receipt.json", timeoutMs: 5000 }, f.ports);
+  expect(receipt.outcome).toBe("failed");
+  expect(receipt.checks.queued).toBe(false);
+  expect(receipt.checks.cleaned).toBe(true);
+});

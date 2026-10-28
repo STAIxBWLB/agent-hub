@@ -13,14 +13,27 @@ setInterval(() => {
   const records = readFileSync(input, "utf8").split("\n").filter(Boolean).map(line => JSON.parse(line));
   if (records.length >= 1 && first === undefined) {
     first = records[0].text;
-    emit({ type: "user", message: { content: first } });
-    emit({ type: "stream_event", event: { type: "message_start" } });
+    if (scenario === "finished") {
+      // One write ensures the reader can already see completion before it submits again.
+      const batch = [
+        { type: "user", message: { content: first } },
+        { type: "stream_event", event: { type: "message_start" } },
+        { type: "assistant", message: { content: [{ type: "text", text: "AHUB_SMOKE_FIRST" }], stop_reason: "end_turn" } },
+        { type: "stream_event", event: { type: "message_stop" } },
+      ];
+      appendFileSync(output, batch.map(event => JSON.stringify(event)).join("\n") + "\n");
+    } else {
+      emit({ type: "user", message: { content: first } });
+      emit({ type: "stream_event", event: { type: "message_start" } });
+    }
     if (scenario === "approval") emit({ type: "control_request", private: "prompt-private-body" });
   }
   if (records.length === 2) {
     done = true;
-    emit({ type: "assistant", message: { content: [{ type: "text", text: "AHUB_SMOKE_FIRST" }], stop_reason: "end_turn" } });
-    emit({ type: "stream_event", event: { type: "message_stop" } });
+    if (scenario !== "finished") {
+      emit({ type: "assistant", message: { content: [{ type: "text", text: "AHUB_SMOKE_FIRST" }], stop_reason: "end_turn" } });
+      emit({ type: "stream_event", event: { type: "message_stop" } });
+    }
     emit({ type: "user", message: { content: records[1].text } });
     emit({ type: "stream_event", event: { type: "message_start" } });
     emit({ type: "assistant", message: { content: [{ type: "text", text: "AHUB_SMOKE_SECOND" }], stop_reason: "end_turn" } });
