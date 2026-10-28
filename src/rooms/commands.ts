@@ -148,7 +148,10 @@ export class RoomCommands {
     const name = roomName(row.name);
     const pending = action === "leave" && !store.get(name) ? store.pendingJoin(name) : undefined;
     if (pending) return { owner: decodeInvite(pending.invite).owner, member: own, commit: async () => {
-      this.current(check); store.cancelPendingJoin(name); return { name, owner: decodeInvite(pending.invite).owner, member: own };
+      this.current(check);
+      const latest = store.pendingJoin(name);
+      if (!latest || encodeBase64url(latest.invite) !== encodeBase64url(pending.invite) || encodeBase64url(latest.request) !== encodeBase64url(pending.request)) refuse("state_changed");
+      store.cancelPendingJoin(name); return { name, owner: decodeInvite(pending.invite).owner, member: own };
     } };
     const state = this.active(store, name), owner = this.owner(state), digest = state.current.digest;
     if (action === "leave") return { owner, member: own, commit: async () => {

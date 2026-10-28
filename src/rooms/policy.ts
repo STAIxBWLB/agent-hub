@@ -43,7 +43,9 @@ export class RoomPolicy {
   }
   private prepare(name: string, peers: string[]): { config: Record<string, any>; bytes: string } {
     roomName(name); const expose = exposedPeers(peers), config = this.read();
-    const bytes = JSON.stringify({ ...config, rooms: { ...config.rooms, [name]: { expose } } }, null, 2) + "\n";
+    const rooms = { ...config.rooms, [name]: { expose } };
+    if (Object.keys(rooms).length > 64) throw new Error("room: config_full");
+    const bytes = JSON.stringify({ ...config, rooms }, null, 2) + "\n";
     if (Buffer.byteLength(bytes) > 1_048_576) throw new Error("room: config_full");
     return { config, bytes };
   }

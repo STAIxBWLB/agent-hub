@@ -42,3 +42,27 @@ test("an owner exposure refuses untrusted local policy before rotating its signe
   await expect(preview.commit()).rejects.toThrow("untrusted_config");
   expect((await commands.rows("test"))[0]!.epoch).toBe(before);
 });
+
+
+test("a pending leave preview cannot cancel a replacement enrollment under a different owner", async () => {
+  const a = service().commands, b = service().commands, guest = service().commands;
+  for (const owner of [a, b]) await run(owner, "create", { name: "test", broker: "ws://127.0.0.1:1/" });
+  const tokenA = await run(a, "invite", { name: "test" }), tokenB = await run(b, "invite", { name: "test" });
+  await run(guest, "join", { name: "test", token: tokenA.artifact });
+  const old = await guest.preview("leave", { name: "test" }, () => true);
+  await run(guest, "leave", { name: "test" });
+  const next = await run(guest, "join", { name: "test", token: tokenB.artifact });
+  await expect(old.commit()).rejects.toThrow("state_changed");
+  expect((await run(guest, "join", { name: "test", token: tokenB.artifact })).artifact).toBe(next.artifact);
+});
+
+test("a full exposure policy refuses a new key before rotating or corrupting the config", async () => {
+  const { commands, cwd } = service();
+  await run(commands, "create", { name: "test", broker: "ws://127.0.0.1:1/" });
+  const before = (await commands.rows("test"))[0]!.epoch;
+  const rooms = Object.fromEntries(Array.from({ length: 64 }, (_, n) => [`room-${n}`, { expose: [] }]));
+  const bytes = JSON.stringify({ rooms });
+  writeFileSync(join(cwd, ".agenthub/config.local.json"), bytes);
+  await expect(run(commands, "expose", { name: "test", peers: ["codex"] })).rejects.toThrow("config_full");
+  expect((await commands.rows("test"))[0]!.epoch).toBe(before);
+});
