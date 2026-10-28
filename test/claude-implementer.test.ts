@@ -205,17 +205,19 @@ test("watchdog ends the turn with cleanup, keeps the task session and returns id
 });
 
 test("cleanup failure retains busy handle and refuses restart until a verified retry succeeds", async () => {
-  let first = true, peer!: ClaudeImplementerPeer;
-  const r = rig("success", {
-    stopChild: async child => { if (first) { first = false; throw new Error("fixture cleanup incomplete"); } await stopOwnedProcess(child, { group: true }); },
-    failureTrace: launch => createClaudeFailureTrace({ current: () => peer.ownedTools(launch.launchId) !== undefined }), failurePrivate: () => false,
-  });
-  peer = r.peer;
-  await r.peer.start(); await r.peer.deliver([message(1)], "cleanup"); await until(() => r.receipts.at(-1)?.state === "needs_review");
-  expect(r.peer.state).toBe("busy"); expect(r.peer.sessionGeneration).toBeUndefined();
-  expect(r.receipts.at(-1)?.reason).toBe("Claude implementer cleanup incomplete; Claude implementer turn failed (stage=pre_permission)");
-  await expect(r.peer.start()).rejects.toThrow("cleanup");
-  await r.peer.stop(); expect(r.peer.state).toBe("offline");
+  for (const privateTurn of [false, true]) {
+    let first = true, peer!: ClaudeImplementerPeer;
+    const r = rig("success", {
+      stopChild: async child => { if (first) { first = false; throw new Error("fixture cleanup incomplete"); } await stopOwnedProcess(child, { group: true }); },
+      failureTrace: launch => createClaudeFailureTrace({ current: () => peer.ownedTools(launch.launchId) !== undefined }), failurePrivate: () => privateTurn,
+    });
+    peer = r.peer;
+    await r.peer.start(); await r.peer.deliver([message(1)], "cleanup"); await until(() => r.receipts.at(-1)?.state === "needs_review");
+    expect(r.peer.state).toBe("busy"); expect(r.peer.sessionGeneration).toBeUndefined();
+    expect(r.receipts.at(-1)?.reason).toBe(privateTurn ? "Claude implementer cleanup incomplete; details withheld" : "Claude implementer cleanup incomplete; Claude implementer turn failed (stage=pre_permission)");
+    await expect(r.peer.start()).rejects.toThrow("cleanup");
+    await r.peer.stop(); expect(r.peer.state).toBe("offline");
+  }
 });
 
 test("host permission mode supports ask variants and refuses never-ask", async () => {

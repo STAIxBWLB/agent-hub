@@ -313,7 +313,7 @@ export class HostShellWrapper {
     } catch {
       execution.cancelled = true;
       try { await this.stop(execution); } catch { execution.failedCleanup = true; }
-      this.refuse(response, ticket);
+      this.refuse(response, execution.proc === undefined ? ticket : undefined);
     } finally {
       clearTimeout(timer); clearInterval(heartbeat); grant.signal.removeEventListener("abort", abort); response.off("close", disconnected); response.off("error", abort);
       if (!execution.failedCleanup && temporary) { try { removeOwned(temporary); execution.temporary = undefined; } catch { execution.failedCleanup = true; } }

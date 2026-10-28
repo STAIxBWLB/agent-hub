@@ -273,7 +273,7 @@ export class ClaudeImplementerPeer extends BasePeer {
       this.active = undefined; this.childAbort?.abort(); this.childAbort = undefined;
       if (current()) {
         const reason = error instanceof PrintChildCleanupError
-          ? failureReason === "Claude implementer turn failed (details withheld)" ? failureReason
+          ? failureReason === "Claude implementer turn failed (details withheld)" ? "Claude implementer cleanup incomplete; details withheld"
             : failureReason ? `Claude implementer cleanup incomplete; ${failureReason}` : "Claude implementer cleanup incomplete"
           : failureReason ?? "Claude implementer turn failed";
         this.settle(this.inputReleased ? "needs_review" : "failed_safe", reason);

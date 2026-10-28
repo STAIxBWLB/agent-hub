@@ -182,11 +182,12 @@ test("abort and wrapper shutdown stop owned commands while silent output still h
 }, 20_000);
 
 test("leader exit with a background pipe holder settles and reaps the original owned group", async () => {
-  const f = await fixture(), marker = join(f.root, "background");
+  const f = await fixture(), marker = join(f.root, "background"); let refusals = 0;
   const script = `/bin/sleep 30 & child=$!; printf '%s\\n' "$child" > ${shellQuote(marker)}; /bin/ps -p "$child" -o lstart= >> ${shellQuote(marker)}; exit 0`;
-  const issued = f.wrapper.issue(f.grant("", { executable: "/bin/sh", argv: ["-c", script], timeoutMs: 3000 }))!;
+  const issued = f.wrapper.issue(f.grant("", { executable: "/bin/sh", argv: ["-c", script], timeoutMs: 3000, onRefused: () => { refusals++; } }))!;
   const result = await collect(invoke(issued.command));
   expect(result.code).not.toBe(0); expect(result.stderr.toString()).toContain("host shell execution refused");
+  expect(refusals).toBe(0);
   const [pidText, started] = readFileSync(marker, "utf8").trim().split("\n"), pid = Number(pidText);
   const rows = await readProcessTable(); expect(rows).toBeDefined(); expect(rows!.some(row => row.pid === pid && row.started === started!.trim())).toBe(false);
 }, 10_000);
@@ -208,10 +209,11 @@ test("caller disconnection stops the owned target without requiring service shut
 }, 10_000);
 
 test("target deadline remains active through settlement", async () => {
-  const f = await fixture(), marker = join(f.root, "timeout-started");
-  const issued = f.wrapper.issue(f.grant(`await Bun.write(${JSON.stringify(marker)},"ready");setInterval(()=>{},1000)`, { timeoutMs: 1000 }))!;
+  const f = await fixture(), marker = join(f.root, "timeout-started"); let refusals = 0;
+  const issued = f.wrapper.issue(f.grant(`await Bun.write(${JSON.stringify(marker)},"ready");setInterval(()=>{},1000)`, { timeoutMs: 1000, onRefused: () => { refusals++; } }))!;
   const result = await collect(invoke(issued.command));
   expect(existsSync(marker)).toBe(true); expect(result.code).not.toBe(0); expect(result.stderr.toString()).toContain("host shell execution refused");
+  expect(refusals).toBe(0);
 }, 10_000);
 
 test("CLI rejects malformed response frames and missing connections with a fixed error", async () => {

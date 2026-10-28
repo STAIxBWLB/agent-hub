@@ -43,15 +43,18 @@ A failed owned Claude print result can carry the last observed failure stage:
 `pre_permission`, `invalid_permission_request`, `wrapper_refused`,
 `manual_queue_expired` or `native_error`. `pre_permission` means only that no
 host permission observation was recorded; it does not diagnose an unseen native
-MCP or provider failure. Wrapper refusal requires a matched host ticket and does
-not prove that no effects occurred. Ordinary proof fallback to person approval
-and a target's nonzero exit are not wrapper refusal.
+MCP or provider failure. Wrapper refusal requires a matched host ticket refused
+before spawn. Target timeouts, disconnects, surviving descendants, output failures
+and a target's nonzero exit are not wrapper refusal. Ordinary proof fallback to
+person approval is not a failed execution.
 
 Evidence contains only the daemon's actual permission id when known, the daemon
 instance UUID and the parsed native version from its binary-fenced proof. It
 contains no command, input, prompt, native `tool_use_id`, wrapper ticket,
 launch/session id or native diagnostic prose. PII or unreadable privacy emits
-only `Claude implementer turn failed (details withheld)`. Native stderr remains
+only `Claude implementer turn failed (details withheld)`, or the fixed host fact
+`Claude implementer cleanup incomplete; details withheld` when cleanup is
+incomplete. Native stderr remains
 ignored. The original task 544 incident and real-account approval behavior are
 not established by these diagnostic fixtures.
 
@@ -59,6 +62,13 @@ The host trace belongs to an exact owner, launch, generation and signal. It is
 sealed before child authority is revoked and consumed once after exit; success
 and cancellation discard it. Later permission attempts, expiry and stale or
 foreign launch traffic cannot rewrite the sealed result.
+The MCP wire cannot authenticate whether the native dispatcher or the model sent
+a permission call: the stage describes the last request observed on that wire.
+A probe starts a new diagnostic observation, so a pending older manual request's
+later expiry cannot overwrite it in the failure trace.
+
+Approval keeps the existing required-value checks and accepts extra argument
+fields. Diagnostic shape validation is separate.
 
 `permission_failure_probe` is a separate validation-only control operation. Its
 temporary finite JSON input is capped before send at 4,096 UTF-8 bytes, depth
