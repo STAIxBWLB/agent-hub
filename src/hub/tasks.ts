@@ -3376,17 +3376,21 @@ export class Tasks {
     const scan = scanOf(entry);
     // A refused folder never starts the trigger: when it becomes readable, what is in it then is the baseline, not news.
     if (scan.refused) { store.polled(entry.id, now, scan.refused); return { id: entry.id, outcome: "refused", tasks: [], files: 0, reason: scan.refused }; }
-    if (store.started(entry.id) === undefined) {
+    // The baseline is every file already in the folder when the trigger starts. A folder too big to hash in one poll (the scan's budget, `truncated`) is baselined over
+    // several polls: each records what it read and proposes nothing, and the poll that reaches the end of the folder completes it. Only then is a file news.
+    if (!store.baselined(entry.id)) {
       store.begin(entry.id, now);
-      for (const file of scan.files) store.record(entry.id, file, null, now);
-      store.polled(entry.id, now);
+      for (const file of scan.files) if (!file.seen) store.record(entry.id, file, null, now);
+      if (!scan.truncated) store.markBaselined(entry.id, now); else store.polled(entry.id, now);
       return { id: entry.id, outcome: "baseline", tasks: [], files: scan.files.length };
     }
-    const fresh = scan.files.filter(file => store.isNew(entry.id, file.sha256));
+    // `isNew` is asked again for each file below, not only here: two files with the same new bytes can arrive before one poll, and the first one's record must suppress the second.
+    const fresh = scan.files.filter(file => !file.seen && store.isNew(entry.id, file.sha256));
     const tasks: number[] = [];
     let error: string | undefined;
-    for (const file of fresh.slice(0, MAX_NEW_PER_POLL)) {
-      if (hold()) break;
+    for (const file of fresh) {
+      if (tasks.length >= MAX_NEW_PER_POLL || hold()) break;
+      if (!store.isNew(entry.id, file.sha256)) continue;
       let overtaken = false;
       const fence = () => { const reason = hold(); if (reason) overtaken = true; return reason; };
       try {
@@ -3401,7 +3405,7 @@ export class Tasks {
       }
     }
     store.polled(entry.id, now, error);
-    return { id: entry.id, outcome: error ? "failed" : tasks.length ? "ran" : "none", tasks, files: fresh.length, ...(error ? { reason: error } : {}) };
+    return { id: entry.id, outcome: error ? "failed" : tasks.length ? "ran" : "none", tasks, files: fresh.length, ...(scan.truncated ? { more: true as const } : {}), ...(error ? { reason: error } : {}) };
   }
 
   /** S10 read-only planner report; S7 owns rolling bands and automatic board proposals. */

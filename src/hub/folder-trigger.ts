@@ -13,8 +13,12 @@ import { MAX_SOURCE_BYTES } from "./sources.ts";
 // watches it. A file it has not recorded is a new file; the caller registers it as a source and proposes one task. Nothing in this file writes the board or the
 // registry: it reads the disk and keeps its own table in hub.db.
 
-/** Files one poll looks at. A folder with more is read in name order, so a later poll continues where this one stopped. */
-export const MAX_FOLDER_FILES = 2000;
+/** Entries a folder may hold before it is refused: a listing is names only, but a folder this size is not an inbox. */
+export const MAX_FOLDER_ENTRIES = 100_000;
+/** Files one poll reads and hashes, and the bytes it reads doing so. Files already recorded at their path, size and mtime cost an `lstat` only. */
+export const MAX_HASH_FILES = 200;
+export const MAX_HASH_BYTES = 256 * 1024 * 1024;
+const CHUNK = 64 * 1024;
 export { MAX_NEW_PER_POLL };
 export type { FolderRunResult, FolderScan, ScannedFile };
 
@@ -52,18 +56,23 @@ export function checkTriggerFolder(entry: FolderEntry, policy: FolderPolicy): { 
 }
 
 /**
- * Read one folder, once. Regular files directly inside it only (no recursion: a subfolder is not a drop). A name that matches the glob and is not a dot file is
- * opened with O_NOFOLLOW after an `lstat`, so a symlink is never read: one that stays inside the folder is skipped as a link (the file it names is read under its own
- * name if it is there), one that leaves is skipped as leaving. The bytes are read from the descriptor that was checked, capped at the source size cap, and hashed.
+ * Read one folder, once, and keep no file's bytes. Regular files directly inside it only (no recursion: a subfolder is not a drop). A name that matches the glob and is
+ * not a dot file is `lstat`ed: a symlink is never read (one that stays inside the folder is skipped as a link, one that leaves as leaving). A file `known` already, by
+ * its real path, size and mtime, returns its recorded hash without being opened. Any other file is opened with O_NOFOLLOW, checked against its `lstat` (size and
+ * inode) and hashed in 64 KiB chunks from that descriptor, so memory stays one chunk wide. At most MAX_HASH_FILES files and MAX_HASH_BYTES bytes are hashed per scan;
+ * the rest are left for the next poll (`truncated`), and the listing is never cut, so a file late in name order is still reached once earlier ones are recorded.
+ * ponytail: a file whose bytes change without its size or mtime changing is not noticed; the upgrade is to hash every poll, which the budget would then have to bound.
  */
-export function scanFolder(entry: FolderEntry, policy: FolderPolicy): FolderScan {
+export function scanFolder(entry: FolderEntry, policy: FolderPolicy, known: (real: string, size: number, mtime: number) => string | undefined = () => undefined, limits: { entries?: number } = {}): FolderScan {
   const checked = checkTriggerFolder(entry, policy);
   if (!checked.ok) return { files: [], skipped: [], refused: checked.reason, truncated: false };
   const folder = checked.real, files: ScannedFile[] = [], skipped: { name: string; reason: string }[] = [];
   let names: string[];
-  try { names = readdirSync(folder).sort(); } catch (error) { return { files: [], skipped: [], refused: `${entry.folder} cannot be listed (${errno(error) ?? "unreadable"})`, truncated: false }; }
-  let truncated = false;
-  if (names.length > MAX_FOLDER_FILES) { names = names.slice(0, MAX_FOLDER_FILES); truncated = true; }
+  try { names = readdirSync(folder); } catch (error) { return { files: [], skipped: [], refused: `${entry.folder} cannot be listed (${errno(error) ?? "unreadable"})`, truncated: false }; }
+  const maxEntries = limits.entries ?? MAX_FOLDER_ENTRIES; // a parameter so a test can reach the refusal without a hundred thousand files
+  if (names.length > maxEntries) return { files: [], skipped: [], refused: `${entry.folder} holds more than ${maxEntries} entries, which is not an inbox`, truncated: false };
+  names.sort();
+  let truncated = false, hashedFiles = 0, hashedBytes = 0;
   for (const name of names) {
     if (!folderGlobMatches(entry.glob, name)) continue;
     const path = join(folder, name);
@@ -78,19 +87,47 @@ export function scanFolder(entry: FolderEntry, policy: FolderPolicy): FolderScan
     if (!stat.isFile()) { skipped.push({ name: printable(name), reason: "not a regular file" }); continue; }
     if (isDenied(path, [...policy.deny])) { skipped.push({ name: printable(name), reason: "on the denylist" }); continue; }
     if (stat.size > MAX_SOURCE_BYTES) { skipped.push({ name: printable(name), reason: `over the ${MAX_SOURCE_BYTES} byte source cap` }); continue; }
-    let fd: number;
-    try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { skipped.push({ name: printable(name), reason: "unreadable" }); continue; }
-    try {
-      const open = fstatSync(fd);
-      if (!open.isFile() || open.size !== stat.size || open.ino !== stat.ino) { skipped.push({ name: printable(name), reason: "changed while it was read" }); continue; }
-      const bytes = Buffer.alloc(open.size);
-      let got = 0;
-      while (got < bytes.length) { const n = readSync(fd, bytes, got, bytes.length - got, got); if (!n) break; got += n; }
-      if (got !== open.size) { skipped.push({ name: printable(name), reason: "changed while it was read" }); continue; }
-      files.push({ real: join(folder, name), name, size: open.size, mtime: Math.floor(open.mtimeMs), sha256: createHash("sha256").update(bytes).digest("hex"), bytes });
-    } finally { closeSync(fd); }
+    const mtime = Math.floor(stat.mtimeMs);
+    const recorded = known(path, stat.size, mtime);
+    if (recorded !== undefined) { files.push({ real: path, name, size: stat.size, mtime, sha256: recorded, seen: true }); continue; }
+    if (hashedFiles >= MAX_HASH_FILES || hashedFiles > 0 && hashedBytes + stat.size > MAX_HASH_BYTES) { truncated = true; continue; }
+    const sha256 = hashFile(path, stat.size, stat.ino);
+    if (sha256 === undefined) { skipped.push({ name: printable(name), reason: "changed while it was read" }); continue; }
+    hashedFiles++; hashedBytes += stat.size;
+    files.push({ real: path, name, size: stat.size, mtime, sha256 });
   }
   return { folder, files, skipped, truncated };
+}
+
+/** The SHA-256 of a regular file, read in chunks from a descriptor opened without following a link; undefined when it changed under the read or cannot be read. */
+function hashFile(path: string, size: number, ino: number): string | undefined {
+  let fd: number;
+  try { fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return undefined; }
+  try {
+    const open = fstatSync(fd);
+    if (!open.isFile() || open.size !== size || open.ino !== ino) return undefined;
+    const hash = createHash("sha256"), chunk = Buffer.alloc(Math.min(CHUNK, Math.max(size, 1)));
+    let total = 0;
+    for (;;) { const n = readSync(fd, chunk, 0, chunk.length, total); if (!n) break; hash.update(chunk.subarray(0, n)); total += n; }
+    return total === size ? hash.digest("hex") : undefined;
+  } catch { return undefined; } finally { closeSync(fd); }
+}
+
+/**
+ * The bytes of a scanned file, for the one file being registered now: read again from a descriptor opened without following a link, and returned only when they still
+ * hash to what the scan recorded. A file that changed since is undefined, so it is tried again on the next poll under its new content. At most one file is in memory.
+ */
+export function readScanned(file: Pick<ScannedFile, "real" | "size" | "sha256">): Buffer | undefined {
+  let fd: number;
+  try { fd = openSync(file.real, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); } catch { return undefined; }
+  try {
+    const open = fstatSync(fd);
+    if (!open.isFile() || open.size !== file.size || open.size > MAX_SOURCE_BYTES) return undefined;
+    const bytes = Buffer.alloc(open.size);
+    let got = 0;
+    while (got < bytes.length) { const n = readSync(fd, bytes, got, bytes.length - got, got); if (!n) break; got += n; }
+    return got === open.size && createHash("sha256").update(bytes).digest("hex") === file.sha256 ? bytes : undefined;
+  } catch { return undefined; } finally { closeSync(fd); }
 }
 
 export interface FolderSeenRow { trigger: string; real_path: string; size: number; mtime: number; sha256: string; task: number | null; at: number }
@@ -107,15 +144,25 @@ export class FolderStore {
     this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     this.db.run("CREATE TABLE IF NOT EXISTS folder_seen (trigger TEXT NOT NULL, real_path TEXT NOT NULL, size INTEGER NOT NULL, mtime INTEGER NOT NULL, sha256 TEXT NOT NULL, task INTEGER, at INTEGER NOT NULL, PRIMARY KEY (trigger, real_path, sha256))");
     this.db.run("CREATE INDEX IF NOT EXISTS folder_seen_hash ON folder_seen (trigger, sha256)");
-    this.db.run("CREATE TABLE IF NOT EXISTS folder_poll (trigger TEXT PRIMARY KEY, started INTEGER NOT NULL, last_poll INTEGER, last_error TEXT)");
+    this.db.run("CREATE TABLE IF NOT EXISTS folder_poll (trigger TEXT PRIMARY KEY, started INTEGER NOT NULL, baselined INTEGER NOT NULL DEFAULT 0, last_poll INTEGER, last_error TEXT)");
   }
-  /** A trigger's first poll records what is already there and proposes nothing: only a file that arrives later is new. */
-  started(trigger: string): number | undefined {
-    const row = this.db.query("SELECT started FROM folder_poll WHERE trigger = ?").get(trigger) as { started: number } | null;
-    return row?.started;
+  /**
+   * A trigger's baseline is the files already in its folder when it starts: they are recorded and propose nothing, so adding a trigger to a full inbox does not flood the
+   * board. A big folder takes several polls to hash, so the baseline is complete only when a poll finished the whole folder (`markBaselined`); until then every file a poll
+   * reads is recorded and none proposes.
+   */
+  baselined(trigger: string): boolean {
+    const row = this.db.query("SELECT baselined FROM folder_poll WHERE trigger = ?").get(trigger) as { baselined: number } | null;
+    return row?.baselined === 1;
   }
   begin(trigger: string, now: number): void { this.db.query("INSERT OR IGNORE INTO folder_poll(trigger, started) VALUES(?, ?)").run(trigger, now); }
-  /** The last poll's time and error. A trigger that has not started (its folder was refused every time so far) has no row, and none is made: refusing is not starting. */
+  markBaselined(trigger: string, now: number): void { this.db.query("UPDATE folder_poll SET baselined = 1, last_poll = ? WHERE trigger = ?").run(now, trigger); }
+  /** The recorded hash of a file at this exact path, size and mtime, or undefined. Such a file need not be read again. */
+  known(trigger: string, real: string, size: number, mtime: number): string | undefined {
+    const row = this.db.query("SELECT sha256 FROM folder_seen WHERE trigger = ? AND real_path = ? AND size = ? AND mtime = ? ORDER BY at DESC LIMIT 1").get(trigger, real, size, mtime) as { sha256: string } | null;
+    return row?.sha256;
+  }
+  /** The last poll's time and error. A trigger that has not begun (its folder was refused every time so far) has no row, and none is made: refusing is not beginning. */
   polled(trigger: string, now: number, error?: string): void { this.db.query("UPDATE folder_poll SET last_poll = ?, last_error = ? WHERE trigger = ?").run(now, error?.slice(0, 200) ?? null, trigger); }
   isNew(trigger: string, sha256: string): boolean {
     return !this.db.query("SELECT 1 FROM folder_seen WHERE trigger = ? AND sha256 = ? LIMIT 1").get(trigger, sha256);

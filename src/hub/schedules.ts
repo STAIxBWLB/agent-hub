@@ -136,15 +136,19 @@ export function foldersConfig(input: unknown): FolderEntry[] {
 }
 
 /** What one poll of a trigger did: `baseline` (first poll, recorded only), `ran`, `none`, `held`, `refused` (the folder may not be read, with the reason) or `failed`. */
-export interface FolderRunResult { id: string; outcome: "baseline" | "ran" | "none" | "held" | "refused" | "failed"; tasks: number[]; files: number; reason?: string }
-/** One file a poll read: its real path, name, size, mtime, SHA-256 and bytes. */
-export interface ScannedFile { real: string; name: string; size: number; mtime: number; sha256: string; bytes: Buffer }
-/** What a read of a trigger's folder gave. `refused` is the reason the folder may not be read. */
+export interface FolderRunResult { id: string; outcome: "baseline" | "ran" | "none" | "held" | "refused" | "failed"; tasks: number[]; files: number; reason?: string; more?: true }
+/**
+ * One file a poll found: its real path, name, size, mtime and SHA-256, and never its bytes (a scan of a big inbox would hold them all). `seen` marks a file the trigger
+ * already recorded at this path, size and mtime: its hash is the recorded one and the file was not read again.
+ */
+export interface ScannedFile { real: string; name: string; size: number; mtime: number; sha256: string; seen?: true }
+/** What a read of a trigger's folder gave. `refused` is the reason the folder may not be read; `truncated` says the hash budget ran out and some files wait for the next poll. */
 export interface FolderScan { folder?: string; files: ScannedFile[]; skipped: { name: string; reason: string }[]; refused?: string; truncated: boolean }
 /** The part of the folder state `Tasks` needs. The scan, the disk and the table are in `folder-trigger.ts`, which the Claude channel bundle must not reach. */
 export interface FolderStorePort {
-  started(trigger: string): number | undefined;
+  baselined(trigger: string): boolean;
   begin(trigger: string, now: number): void;
+  markBaselined(trigger: string, now: number): void;
   polled(trigger: string, now: number, error?: string): void;
   isNew(trigger: string, sha256: string): boolean;
   record(trigger: string, file: Pick<ScannedFile, "real" | "size" | "mtime" | "sha256">, task: number | null, now: number): void;

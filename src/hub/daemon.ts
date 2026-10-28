@@ -75,7 +75,7 @@ import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
 import { foldersConfig, scheduleViews, schedulesConfig, ScheduleStore, type FolderEntry, type ScheduleEntry } from "./schedules.ts";
-import { FolderStore, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
+import { FolderStore, readScanned, scanFolder, type FolderPolicy } from "./folder-trigger.ts";
 import type { ScannedFile } from "./schedules.ts";
 import { corpusConfig } from "./corpus-config.ts";
 import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
@@ -2853,15 +2853,18 @@ export async function startDaemon(opts: DaemonOptions) {
         // Registration is the same two steps `ahub source add` takes: one decision about privacy, then the registry. A file under pii.paths or whose text matches a
         // PII pattern is a private source, which the task then names by id only.
         const register = (file: ScannedFile) => {
+          // The scan kept no bytes: read this one file again now, and refuse it if it no longer hashes to what the scan saw (it is then tried again, as what it has become).
+          const bytes = readScanned(file);
+          if (!bytes) throw new Error("the file changed or became unreadable before it was registered");
           const extension = /\.[A-Za-z0-9]{1,16}$/.exec(file.name)?.[0]?.toLowerCase() ?? "";
-          const verdict = screenRegistration({ bytes: file.bytes, kind: "file", path: file.real }, {
+          const verdict = screenRegistration({ bytes, kind: "file", path: file.real }, {
             piiPaths: config.pii?.paths ?? [], piiPatterns: activeRouting().signals.pii_patterns, cwd: opts.cwd, matchesPolicy,
             project: data => extension ? projections.projectBytes(join(opts.cwd, `source${extension}`), data)?.text : undefined,
           });
-          const added = sourceRegistry.add({ bytes: file.bytes, kind: "file", origin: file.real, private: verdict.private, ...(verdict.text !== undefined ? { text: verdict.text } : {}) });
+          const added = sourceRegistry.add({ bytes, kind: "file", origin: file.real, private: verdict.private, ...(verdict.text !== undefined ? { text: verdict.text } : {}) });
           return { id: added.id, private: added.private };
         };
-        for (const run of await tasks.runFolderTriggers(folderStore, config.folder_triggers, entry => scanFolder(entry, policy), register, scheduleNow(), () => opts.schedulesHeld?.() === true)) {
+        for (const run of await tasks.runFolderTriggers(folderStore, config.folder_triggers, entry => scanFolder(entry, policy, (real, size, mtime) => folderStore.known(entry.id, real, size, mtime)), register, scheduleNow(), () => opts.schedulesHeld?.() === true)) {
           if (run.outcome === "ran") log(`folder trigger ${run.id}: proposed ${run.tasks.map(id => `task #${id}`).join(", ")}`);
           else if (run.outcome === "failed" || run.outcome === "refused") log(`folder trigger ${run.id}: ${run.outcome}: ${sanitize(run.reason ?? "").slice(0, 160)}`);
         }

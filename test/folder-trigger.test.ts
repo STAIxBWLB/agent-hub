@@ -11,7 +11,7 @@ import { ControlClient } from "../src/hub/control-client.ts";
 import { loadConfig, startDaemon } from "../src/hub/daemon.ts";
 import { hubGitSync } from "../src/hub/git.ts";
 import { realPath } from "../src/hub/project.ts";
-import { checkTriggerFolder, FolderStore, scanFolder, type FolderPolicy } from "../src/hub/folder-trigger.ts";
+import { checkTriggerFolder, FolderStore, MAX_FOLDER_ENTRIES, MAX_HASH_FILES, readScanned, scanFolder, type FolderPolicy } from "../src/hub/folder-trigger.ts";
 import { folderDetail, folderGlobMatches, foldersConfig, FOLDER_MARKER, type FolderEntry, type ScannedFile } from "../src/hub/schedules.ts";
 import { screenRegistration, SourceRegistry } from "../src/hub/sources.ts";
 import { matchesPolicy } from "../src/hub/path-policy.ts";
@@ -118,8 +118,63 @@ test("the scan reads regular files directly in the folder with size, mtime and S
   expect(a).toMatchObject({ real: join(t.dir, "inbox", "a.txt"), size: 2 });
   expect(a.sha256).toBe(new Bun.CryptoHasher("sha256").update("ay").digest("hex"));
   expect(a.mtime).toBeGreaterThan(0);
-  expect(a.bytes.toString()).toBe("ay");
+  expect("bytes" in a).toBe(false); // a scan keeps no file's bytes
+  expect(readScanned(a)!.toString()).toBe("ay");
   expect(scan.skipped.map(row => row.reason)).toEqual(["not a regular file"]); // the subfolder; the dot file is not even a candidate
+});
+
+test("a scan holds no file's bytes and hashes at most MAX_HASH_FILES files, leaving the rest for the next poll", () => {
+  const t = tree();
+  for (let i = 0; i < MAX_HASH_FILES + 30; i++) t.put(`f${String(i).padStart(4, "0")}.txt`, `file ${i}`);
+  const first = scanFolder(ENTRY, t.policy);
+  expect(first.files).toHaveLength(MAX_HASH_FILES); expect(first.truncated).toBe(true);
+  expect(first.files.every(file => !("bytes" in file))).toBe(true);
+  expect(first.files[0]!.name).toBe("f0000.txt");
+  // the files already recorded at their path, size and mtime cost an lstat and are not hashed again, so the next poll reaches the rest
+  const known = new Map(first.files.map(file => [`${file.real}|${file.size}|${file.mtime}`, file.sha256]));
+  const second = scanFolder(ENTRY, t.policy, (real, size, mtime) => known.get(`${real}|${size}|${mtime}`));
+  expect(second.files).toHaveLength(MAX_HASH_FILES + 30); expect(second.truncated).toBe(false);
+  expect(second.files.filter(file => file.seen)).toHaveLength(MAX_HASH_FILES);
+  expect(second.files.filter(file => !file.seen).map(file => file.name)).toEqual(Array.from({ length: 30 }, (_, i) => `f${String(MAX_HASH_FILES + i).padStart(4, "0")}.txt`));
+});
+
+test("a file late in name order is reached once the earlier ones are recorded, however many hidden or unmatched names sort before it", () => {
+  const t = tree();
+  for (let i = 0; i < 2500; i++) writeFileSync(join(t.dir, "inbox", `.h${String(i).padStart(4, "0")}`), "x"); // hidden: never candidates, but they sort first
+  for (let i = 0; i < 300; i++) t.put(`a${String(i).padStart(4, "0")}.txt`, `a${i}`);
+  t.put("zz-last.txt", "the late one");
+  let known = new Map<string, string>();
+  const names = new Set<string>();
+  for (let poll = 0; poll < 5 && !names.has("zz-last.txt"); poll++) {
+    const scan = scanFolder(ENTRY, t.policy, (real, size, mtime) => known.get(`${real}|${size}|${mtime}`));
+    for (const file of scan.files) { known.set(`${file.real}|${file.size}|${file.mtime}`, file.sha256); names.add(file.name); }
+  }
+  expect(names.has("zz-last.txt")).toBe(true);
+  expect(names.size).toBe(301);
+});
+
+test("a folder with more entries than the limit is refused as not an inbox with a reason, not silently truncated", () => {
+  const t = tree(); for (let i = 0; i < 6; i++) t.put(`f${i}.txt`, `x${i}`);
+  const refused = scanFolder(ENTRY, t.policy, undefined, { entries: 5 });
+  expect(refused.refused).toContain("holds more than 5 entries"); expect(refused.files).toEqual([]);
+  expect(scanFolder(ENTRY, t.policy, undefined, { entries: 6 }).files).toHaveLength(6);
+  expect(MAX_FOLDER_ENTRIES).toBe(100_000);
+});
+
+test("readScanned returns the bytes only while they still hash to what the scan saw", () => {
+  const t = tree(); t.put("a.txt", "original");
+  const file = scanFolder(ENTRY, t.policy).files[0]!;
+  expect(readScanned(file)!.toString()).toBe("original");
+  writeFileSync(join(t.dir, "inbox", "a.txt"), "tampered"); // same size, new content
+  expect(readScanned(file)).toBeUndefined();
+  writeFileSync(join(t.dir, "inbox", "a.txt"), "longer than before");
+  expect(readScanned(file)).toBeUndefined();
+  rmSync(join(t.dir, "inbox", "a.txt"));
+  expect(readScanned(file)).toBeUndefined();
+  const outside = realPath(mkdtempSync(join(tmpdir(), "ahub-folder-out-"))); cleanup.push(() => rmSync(outside, { recursive: true, force: true }));
+  writeFileSync(join(outside, "x.txt"), "original");
+  symlinkSync(join(outside, "x.txt"), join(t.dir, "inbox", "a.txt"));
+  expect(readScanned(file), "a link put in the file's place is never followed").toBeUndefined();
 });
 
 test("a glob filters the scan", () => {
@@ -138,7 +193,7 @@ test("a symlink is never read: one that leaves the folder and one that stays are
   const scan = scanFolder(ENTRY, t.policy);
   expect(scan.files.map(file => file.name)).toEqual(["real.txt"]);
   expect(Object.fromEntries(scan.skipped.map(row => [row.name, row.reason]))).toEqual({ "leaves.txt": "symlink leaving the folder", "stays.txt": "symlink", "dangling.txt": "symlink leaving the folder" });
-  expect(JSON.stringify(scan.files.map(file => file.bytes.toString()))).not.toContain("TOP SECRET");
+  expect(JSON.stringify(scan.files)).not.toContain("TOP SECRET");
 });
 
 test("a file on the denylist and a file over the source cap are skipped, not read", () => {
@@ -160,9 +215,11 @@ test("the store records files by trigger, path, size, mtime and hash, and a trig
   const dir = mkdtempSync(join(tmpdir(), "ahub-folder-store-")); cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
   const store = new FolderStore(join(dir, "hub.db")); cleanup.push(() => store.close());
   const file = { real: "/p/a.txt", size: 3, mtime: 1000, sha256: "a".repeat(64) };
-  expect(store.started("t")).toBeUndefined();
+  expect(store.baselined("t")).toBe(false);
   store.begin("t", 5); store.begin("t", 99);
-  expect(store.started("t")).toBe(5);
+  expect(store.baselined("t")).toBe(false);
+  store.markBaselined("t", 6);
+  expect(store.baselined("t")).toBe(true);
   expect(store.isNew("t", file.sha256)).toBe(true);
   store.record("t", file, 7, 10);
   expect(store.isNew("t", file.sha256)).toBe(false);
@@ -170,7 +227,7 @@ test("the store records files by trigger, path, size, mtime and hash, and a trig
   expect(store.rows("t")).toEqual([{ trigger: "t", real_path: "/p/a.txt", size: 3, mtime: 1000, sha256: file.sha256, task: 7, at: 10 }]);
   store.record("other", file, null, 11);
   store.prune(["other"]);
-  expect(store.rows("t")).toEqual([]); expect(store.started("t")).toBeUndefined(); expect(store.rows("other")).toHaveLength(1);
+  expect(store.rows("t")).toEqual([]); expect(store.baselined("t")).toBe(false); expect(store.rows("other")).toHaveLength(1);
   new FolderStore(join(dir, "hub.db")).close(); // reopening changes nothing
 });
 
@@ -188,11 +245,13 @@ function rig(options: { piiPatterns?: string[]; held?: () => boolean } = {}) {
   const registered: ScannedFile[] = [];
   const register = (file: ScannedFile) => {
     registered.push(file);
-    const verdict = screenRegistration({ bytes: file.bytes, kind: "file", path: file.real }, { piiPaths: t.policy.piiPaths, piiPatterns: options.piiPatterns ?? [], cwd: t.dir, matchesPolicy });
-    const added = registry.add({ bytes: file.bytes, kind: "file", origin: file.real, private: verdict.private, ...(verdict.text !== undefined ? { text: verdict.text } : {}) });
+    const bytes = readScanned(file);
+    if (!bytes) throw new Error("the file changed or became unreadable before it was registered");
+    const verdict = screenRegistration({ bytes, kind: "file", path: file.real }, { piiPaths: t.policy.piiPaths, piiPatterns: options.piiPatterns ?? [], cwd: t.dir, matchesPolicy });
+    const added = registry.add({ bytes, kind: "file", origin: file.real, private: verdict.private, ...(verdict.text !== undefined ? { text: verdict.text } : {}) });
     return { id: added.id, private: added.private };
   };
-  const poll = (entries: readonly FolderEntry[] = [ENTRY], now = T0) => tasks.runFolderTriggers(store, entries, entry => scanFolder(entry, t.policy), register, now, options.held ?? (() => false));
+  const poll = (entries: readonly FolderEntry[] = [ENTRY], now = T0) => tasks.runFolderTriggers(store, entries, entry => scanFolder(entry, t.policy, (real, size, mtime) => store.known(entry.id, real, size, mtime)), register, now, options.held ?? (() => false));
   const made = () => board.list().filter(task => task.detail.startsWith(FOLDER_MARKER));
   return { ...t, board, tasks, store, registry, registered, poll, made };
 }
@@ -288,9 +347,9 @@ test("a hold that begins between two files stops the rest: nothing more is regis
   let held = false;
   const r = rig({ held: () => held }); await r.poll();
   r.put("a.txt", "one"); r.put("b.txt", "two"); r.put("c.txt", "three");
-  const tasks = r.tasks, store = r.store, scan = (entry: FolderEntry) => scanFolder(entry, r.policy);
+  const tasks = r.tasks, store = r.store, scan = (entry: FolderEntry) => scanFolder(entry, r.policy, (real, size, mtime) => store.known(entry.id, real, size, mtime));
   const seen: string[] = [];
-  const holdingAfterFirst = (file: ScannedFile) => { seen.push(file.name); const added = r.registry.add({ bytes: file.bytes, kind: "file", origin: file.real, private: false }); held = true; return { id: added.id, private: false }; };
+  const holdingAfterFirst = (file: ScannedFile) => { seen.push(file.name); const added = r.registry.add({ bytes: readScanned(file)!, kind: "file", origin: file.real, private: false }); held = true; return { id: added.id, private: false }; };
   const first = (await tasks.runFolderTriggers(store, [ENTRY], scan, holdingAfterFirst, T0, () => held))[0]!;
   // the hold began while the first file was being registered: its propose fence refused the write, so nothing was proposed or recorded and the others never started
   expect(seen).toEqual(["a.txt"]);
@@ -306,8 +365,8 @@ test("a hold that begins after one file's task was written stops the next file",
   const r = rig({ held: () => held }); await r.poll();
   r.put("a.txt", "one"); r.put("b.txt", "two");
   const names: string[] = [];
-  const register = (file: ScannedFile) => { names.push(file.name); const added = r.registry.add({ bytes: file.bytes, kind: "file", origin: file.real, private: false }); return { id: added.id, private: false }; };
-  const tasks = r.tasks, store = r.store, scan = (entry: FolderEntry) => scanFolder(entry, r.policy);
+  const register = (file: ScannedFile) => { names.push(file.name); const added = r.registry.add({ bytes: readScanned(file)!, kind: "file", origin: file.real, private: false }); return { id: added.id, private: false }; };
+  const tasks = r.tasks, store = r.store, scan = (entry: FolderEntry) => scanFolder(entry, r.policy, (real, size, mtime) => store.known(entry.id, real, size, mtime));
   let wrote = 0;
   r.board.onChange = (_task, entry) => { if (entry.event === "backlogged" && ++wrote === 1) held = true; }; // the hold begins right after the first task is written
   const run = (await tasks.runFolderTriggers(store, [ENTRY], scan, register, T0, () => held))[0]!;
@@ -322,9 +381,9 @@ test("a folder pass never overlaps a schedules pass, and the guard is released a
   const r = rig(); await r.poll();
   r.put("a.txt", "x");
   let entered = 0;
-  const tasks = r.tasks, store = r.store, scan = (entry: FolderEntry) => scanFolder(entry, r.policy);
+  const tasks = r.tasks, store = r.store, scan = (entry: FolderEntry) => scanFolder(entry, r.policy, (real, size, mtime) => store.known(entry.id, real, size, mtime));
   // the pass is synchronous up to its first await, so the guard is already taken when the call returns its promise
-  const first = tasks.runFolderTriggers(store, [ENTRY], scan, file => { entered++; return { id: r.registry.add({ bytes: file.bytes, kind: "file", origin: file.real, private: false }).id, private: false }; }, T0);
+  const first = tasks.runFolderTriggers(store, [ENTRY], scan, file => { entered++; return { id: r.registry.add({ bytes: readScanned(file)!, kind: "file", origin: file.real, private: false }).id, private: false }; }, T0);
   expect(tasks.schedulesPending()).toBe(1);
   expect(await tasks.runFolderTriggers(store, [ENTRY], scan, () => { throw new Error("must not run"); }, T0)).toEqual([]);
   await first;
@@ -333,11 +392,36 @@ test("a folder pass never overlaps a schedules pass, and the guard is released a
   expect((await tasks.runFolderTriggers(store, [ENTRY], scan, () => ({ id: "src:0123456789abcdef", private: false }), T0))[0]).toMatchObject({ outcome: "none" });
 });
 
+test("two files with the same new bytes arriving before one poll propose ONE task: the first one's record suppresses the second", async () => {
+  const r = rig(); await r.poll();
+  r.put("first.txt", "identical bytes"); r.put("second.txt", "identical bytes"); r.put("third.txt", "different bytes");
+  const [run] = await r.poll();
+  expect(run!.tasks).toHaveLength(2); expect(r.made()).toHaveLength(2);
+  expect(r.registered.map(file => file.name)).toEqual(["first.txt", "third.txt"]); // the duplicate was never registered
+  expect(r.registry.list()).toHaveLength(2);
+});
+
+test("a folder too big to hash in one poll is baselined over several polls and proposes nothing until the baseline is complete", async () => {
+  const r = rig();
+  const total = MAX_HASH_FILES + 40;
+  for (let i = 0; i < total; i++) r.put(`f${String(i).padStart(4, "0")}.txt`, `old ${i}`);
+  const first = (await r.poll())[0]!;
+  expect(first).toMatchObject({ outcome: "baseline", files: MAX_HASH_FILES }); expect(r.store.baselined("inbox")).toBe(false);
+  r.put("new-during-baseline.txt", "arrived while the baseline was still running");
+  const second = (await r.poll())[0]!;
+  expect(second.outcome).toBe("baseline"); expect(r.store.baselined("inbox")).toBe(true);
+  expect(r.made()).toHaveLength(0); expect(r.registered).toHaveLength(0); // nothing proposed, and the file that arrived mid-baseline is part of it
+  expect(r.store.rows("inbox")).toHaveLength(total + 1);
+  r.put("really-new.txt", "after the baseline");
+  const third = (await r.poll())[0]!;
+  expect(third.tasks).toHaveLength(1); expect(r.made()).toHaveLength(1);
+});
+
 test("a failure while registering leaves the file to be tried again, records no task and keeps the order", async () => {
   const r = rig(); await r.poll();
   r.put("a.txt", "x"); r.put("b.txt", "y");
   let failing = true;
-  const tasks = r.tasks, store = r.store, scan = (entry: FolderEntry) => scanFolder(entry, r.policy);
+  const tasks = r.tasks, store = r.store, scan = (entry: FolderEntry) => scanFolder(entry, r.policy, (real, size, mtime) => store.known(entry.id, real, size, mtime));
   const flaky = (file: ScannedFile) => { if (failing && file.name === "a.txt") throw new Error("registry unavailable"); return { id: "src:0123456789abcdef", private: false }; };
   const failed = (await tasks.runFolderTriggers(store, [ENTRY], scan, flaky, T0))[0]!;
   expect(failed).toMatchObject({ outcome: "failed", tasks: [], reason: "registry unavailable" });
