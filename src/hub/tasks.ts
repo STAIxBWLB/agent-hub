@@ -34,7 +34,7 @@ import type { MemoryScreen } from "./read-tools.ts";
 import { withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
 import { profileClass, profileData, profileTaskLabel, projectProfile, type ProfileName, type ProfileSelection, type ProjectProfile } from "./profiles.ts";
 import { criteriaView, unmetCriteriaIds, workflowHash } from "./workflow.ts";
-import { candidateCard, criterionKey, groupUnmetCriteria, LEARNING_DEFAULTS } from "./learning.ts";
+import { candidateCard, criterionKey, groupUnmetCriteria, LEARNING_DEFAULTS, selectGroups, type CriterionGroup } from "./learning.ts";
 import { approvedDeliverables, latestDeliverables, parseDeliverableClaims, publicDeliverables, type DeliverableRecord, type DeliverableStatus } from "./deliverables.ts";
 import { checkDeliverables, DeliverableRefusal, hashDeliverables, vetDeliverables, type DeliverablePorts } from "./deliverable-files.ts";
 import { isAbsolute, relative } from "node:path";
@@ -704,11 +704,10 @@ export class Tasks {
     const named = new Set(task.history.at(-1)!.unmetCriteria);
     const created: number[] = [];
     // No await separates the durable dedupe read from creation; concurrent verdicts see the first card.
-    for (const group of groupUnmetCriteria(eligible, { windowMs: LEARNING_DEFAULTS.windowMs, now: Date.now() }).slice(0, LEARNING_DEFAULTS.maxGroups)) {
-      if (!named.has(group.criterion) || group.tasks.length < LEARNING_DEFAULTS.threshold || keys.has(criterionKey(group))) continue;
-      const units = this.workUnits(eligible.filter(row => group.tasks.includes(row.id)));
-      if (units < 2) continue;
-      const card = candidateCard(group, Math.round(LEARNING_DEFAULTS.windowMs / 86_400_000), units);
+    const groups = groupUnmetCriteria(eligible, { windowMs: LEARNING_DEFAULTS.windowMs, now: Date.now() });
+    const unitsOf = (group: CriterionGroup) => this.workUnits(eligible.filter(row => group.tasks.includes(row.id)));
+    for (const group of selectGroups(groups, { named, threshold: LEARNING_DEFAULTS.threshold, max: LEARNING_DEFAULTS.maxGroups, has: g => keys.has(criterionKey(g)), units: unitsOf })) {
+      const card = candidateCard(group, Math.round(LEARNING_DEFAULTS.windowMs / 86_400_000), unitsOf(group));
       const draft = { title: card.title, detail: card.detail, refs: { paths: ["docs/profiles.md"] } };
       const signals = this.signalsFor(draft);
       if (this.isPii({ signals }) || !this.candidateTextAllowed(`${card.title}\n${card.detail}`)) continue;

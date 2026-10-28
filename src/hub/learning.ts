@@ -40,6 +40,20 @@ export function groupUnmetCriteria(rows: readonly LearningRow[], opts: { windowM
     .sort((a, b) => b.tasks.length - a.tasks.length || b.count - a.count || a.profile.localeCompare(b.profile) || a.class.localeCompare(b.class) || a.criterion.localeCompare(b.criterion));
 }
 
+/**
+ * The groups to file now, in order, at most `max`. The cap counts cards to file, never groups examined: a group that this verdict did not name, that is below the
+ * threshold, that already has a card or that is one piece of work is skipped BEFORE the cap, so a long run of settled groups can never fill the cap and starve a new one.
+ */
+export function selectGroups(groups: readonly CriterionGroup[], opts: { named: ReadonlySet<string>; threshold: number; max: number; has: (group: CriterionGroup) => boolean; units: (group: CriterionGroup) => number }): CriterionGroup[] {
+  const picked: CriterionGroup[] = [];
+  for (const group of groups) {
+    if (picked.length >= opts.max) break;
+    if (!opts.named.has(group.criterion) || group.tasks.length < opts.threshold || opts.has(group) || opts.units(group) < 2) continue;
+    picked.push(group);
+  }
+  return picked;
+}
+
 /** Plain ASCII, one line, no quoting surprises: the card text and the diff are read by a person and by a screen. */
 const line = (text: string) => text.replace(/[^\x20-\x7e]/g, " ").replace(/\s+/g, " ").trim();
 
@@ -62,7 +76,7 @@ export function candidateCard(group: CriterionGroup, windowDays: number, workUni
     title: `Review checklist candidate for ${group.profile}/${group.class} criterion ${group.criterion}`,
     detail: [
       criterionKey(group),
-      `Criterion ${group.criterion} was named unmet ${group.count} time(s) on ${group.tasks.length} ${group.profile}/${group.class} task(s) in the last ${windowDays} days (${workUnits} separate pieces of work): ${group.tasks.slice(0, 8).map(id => `#${id}`).join(", ")}.`,
+      `Criterion ${group.criterion} was named unmet ${group.count} time(s) on ${group.tasks.length} ${group.profile}/${group.class} task(s) in the last ${windowDays} days (${workUnits} separate piece(s) of work): ${group.tasks.slice(0, 8).map(id => `#${id}`).join(", ")}.`,
       "This is a candidate for a person to review. Nothing was applied, and nothing in the hub writes it. profile_overrides is not machine-local: it is read from the shared .agenthub/config.json (tracked, so a change there reaches every checkout) and from .agenthub/config.local.json (this machine only), and the layers merge. Put it where you want it to apply. If you agree, add the line below to profile_overrides.review_checklist; that list replaces as a unit, so add it to your current checklist, do not paste it over it:",
       JSON.stringify(diff, null, 2),
     ].join("\n"),

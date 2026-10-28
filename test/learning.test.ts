@@ -9,7 +9,7 @@ import { USER, type Envelope } from "../src/hub/envelope.ts";
 import { Tasks } from "../src/hub/tasks.ts";
 import { loadRouting } from "../src/hub/routing.ts";
 import { sdlcConfig } from "../src/hub/sdlc.ts";
-import { candidateCard, criterionKey, groupUnmetCriteria, overridesDiff, type LearningRow } from "../src/hub/learning.ts";
+import { candidateCard, criterionKey, groupUnmetCriteria, LEARNING_DEFAULTS, overridesDiff, selectGroups, type CriterionGroup, type LearningRow } from "../src/hub/learning.ts";
 
 // #514a: criteria that reviews keep naming unmet are grouped by profile, class and criterion and filed as ONE backlog candidate for a person, with the
 // profile_overrides fragment as text. The hub never applies it.
@@ -51,7 +51,7 @@ test("the override fragment and card are text: ascii, ids and counts only, nothi
   const card = candidateCard(group, 30, 3);
   expect(card.title).toBe("Review checklist candidate for dev/implement criterion AC1");
   expect(card.detail.split("\n")[0]).toBe(criterionKey(group));
-  expect(card.detail).toContain("named unmet 4 time(s) on 3 dev/implement task(s) in the last 30 days (3 separate pieces of work): #3, #4, #9.");
+  expect(card.detail).toContain("named unmet 4 time(s) on 3 dev/implement task(s) in the last 30 days (3 separate piece(s) of work): #3, #4, #9.");
   expect(card.detail).toContain("Nothing was applied, and nothing in the hub writes it.");
   expect(card.detail).toContain("not machine-local");
   expect(card.detail).toContain('"review_checklist": [');
@@ -216,4 +216,51 @@ test("a PII task's own verdict never files a card, even if criteria were somehow
   expect(r.tasks.isPii(r.board.get(task.id)!)).toBe(true);
   (r.tasks as unknown as { proposeCriterionCandidates(task: unknown, by: string, withheld: boolean): void }).proposeCriterionCandidates(r.board.get(task.id)!, "claude", false);
   expect(r.candidates()).toHaveLength(0);
+});
+
+const group = (criterion: string, tasks: number[]): CriterionGroup => ({ profile: "dev", class: "implement", criterion, tasks, count: tasks.length });
+
+test("selectGroups: the cap counts cards to file, so settled groups ahead of a new one never starve it", () => {
+  const settled = Array.from({ length: 70 }, (_, i) => group(`A${String(i).padStart(2, "0")}`, [1, 2, 3]));
+  const fresh = group("AC1", [1, 2, 3]);
+  const all = [...settled, fresh];
+  const base = { named: new Set([...settled.map(g => g.criterion), "AC1"]), threshold: 3, max: LEARNING_DEFAULTS.maxGroups, has: (g: CriterionGroup) => g.criterion !== "AC1", units: () => 3 };
+  expect(selectGroups(all, base)).toEqual([fresh]); // 70 groups already carded, and the 71st still files
+  expect(selectGroups(all, { ...base, has: () => false }).length).toBe(LEARNING_DEFAULTS.maxGroups); // the cap still bounds one pass
+  expect(selectGroups(all, { ...base, has: () => false, max: 2 }).map(g => g.criterion)).toEqual(["A00", "A01"]); // in order
+});
+
+test("selectGroups skips unnamed, under-threshold, already-carded and single-piece groups before the cap", () => {
+  const a = group("A1", [1, 2, 3]), b = group("B1", [1, 2]), c = group("C1", [1, 2, 3]), d = group("D1", [1, 2, 3]), e = group("E1", [1, 2, 3]);
+  const pick = (over: object) => selectGroups([a, b, c, d, e], { named: new Set(["A1", "B1", "C1", "D1", "E1"]), threshold: 3, max: 1, has: () => false, units: () => 3, ...over }).map(g => g.criterion);
+  expect(pick({})).toEqual(["A1"]);
+  expect(pick({ named: new Set(["E1"]) })).toEqual(["E1"]); // A1..D1 not named by this verdict
+  expect(pick({ threshold: 3, named: new Set(["B1", "C1"]) })).toEqual(["C1"]); // B1 has 2 tasks
+  expect(pick({ has: (g: CriterionGroup) => g.criterion === "A1" })).toEqual(["C1"]);
+  expect(pick({ units: (g: CriterionGroup) => g.criterion === "A1" ? 1 : 2 })).toEqual(["C1"]); // A1 is one piece of work
+  expect(pick({ max: 0 })).toEqual([]);
+});
+
+test("end to end: 70 criteria that already have cards, sorted ahead, do not keep a new recurring criterion from filing", async () => {
+  const r = await rig();
+  const names = Array.from({ length: 70 }, (_, i) => `A${String(i).padStart(2, "0")}`);
+  // Retained history, built on the board: three tasks that each named all 70 criteria (32 at most per verdict, so three verdicts), two of them also AC1.
+  const retained: number[] = [];
+  for (const title of ["old one", "old two", "old three"]) {
+    const task = r.board.propose("claude", { title, class: "implement" });
+    r.board.update(task.id, USER, "accepted", { state: "in_progress", owner: "codex", reviewer: "claude" });
+    r.board.update(task.id, "codex", "done", { state: "in_review" }, "finished");
+    const withNew = retained.length < 2 ? ["AC1"] : [];
+    for (const chunk of [names.slice(0, 32), names.slice(32, 64), [...names.slice(64), ...withNew]]) r.board.update(task.id, "claude", "changes_requested", { state: "changes_requested" }, "gap", { unmetCriteria: chunk } as never);
+    r.board.update(task.id, USER, "cancelled", { state: "cancelled" });
+    retained.push(task.id);
+  }
+  // Each of the 70 already has its card, filed by the hub.
+  for (const name of names) r.board.propose("hub", { title: `card ${name}`, detail: `Criterion candidate key: dev:implement:${name}\nfiled earlier`, class: "plan", backlog: true });
+  expect(r.candidates()).toHaveLength(70);
+  await r.reject("names the new one", ["AC1"]);
+  const keys = r.candidates().map(t => t.detail.split("\n")[0]);
+  expect(keys).toHaveLength(71);
+  expect(keys).toContain("Criterion candidate key: dev:implement:AC1"); // the 71st group filed: the cap did not count the 70 settled ones
+  expect(new Set(keys).size).toBe(71); // and none of the 70 was filed twice
 });
