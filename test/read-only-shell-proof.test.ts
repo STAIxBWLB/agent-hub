@@ -155,5 +155,5 @@ test("Seatbelt file and existing guardPath body remain byte-identical to the acc
   const tools=readFileSync(new URL("../src/local/tools.ts",import.meta.url),"utf8"),spans=findSymbol(parseSource("tools.ts",tools),"guardPath");
   expect(spans).toHaveLength(1);
   const span=spans[0]!;expect(tools[span.end]).toBe("\n");
-  expect(hash(tools.slice(span.start,span.end)+"\n")).toBe("c344f86f20f9d62baa47a621ed418d87d64b9f9060e2eb303f08aa67001cc1af");
+  expect(hash(tools.slice(span.start,span.end)+"\n")).toBe("a4e8dce2a952924a2527cf37a5c3a202760abdeb8c41d2843fdeb97872cb9a91"); // #541 moved this pin on purpose: guardPath also judges the denylist and the hub-owned names on the typed name (it only adds refusals); containment, the data.readonly hardlink refusal and matchesPolicy are unchanged.
 });
