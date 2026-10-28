@@ -103,7 +103,7 @@ export async function gather(question: string, d: AskDeps): Promise<{ evidence: 
   // only on campus, like a PII task (#69).
   const lastActivity = (t: Task) => t.history.findLast(entry => entry.event !== "memory reference started");
   const notePii = (t: Task) => { const last = lastActivity(t); return !d.isPii(t) && !!last?.note && (!!last.withheld || (d.isPiiText?.(last.note) ?? false)); };
-  const mentionedTasks = new Set([...question.matchAll(/\btask\s*#(\d+)\b/gi)].map(match => Number(match[1])));
+  const mentionedTasks = new Set([...question.matchAll(/(?:\btask\s*)?#(\d+)\b/gi)].map(match => Number(match[1])));
   piiQuestion ||= allTasks.some(task => (d.isPii(task) || notePii(task)) && (mentionedTasks.has(task.id) || hit(task.title) > 0));
   const anyPii = tasks.some((t) => d.isPii(t) || notePii(t));
   const showPii = anyPii ? await onCampus() : false;

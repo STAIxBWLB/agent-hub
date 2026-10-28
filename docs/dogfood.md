@@ -128,6 +128,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 | Qwen's own TUI over dual output (#286 Part 3) | off here: this repository's hub runs no Qwen peer (roster.qwen is off), and the limits (a hub deny ends the turn without an answer; a stalled turn is stopped only with Esc in the Qwen terminal) are for the person at that terminal to accept. Verified on Qwen 0.26.1 under an isolated HOME by the [2026-10-25 receipt](verification/2026-10-25-qwen-dual-output-t0.md); the live account leg is the person's | `test/qwen-dual.test.ts` against a fake dual-output Qwen; in real use `ahub status` stalled/detached notices per peer and the `needs_review` count of Qwen deliveries (an Esc or an exited terminal ends a turn that way; a deny completes) |
 | Benchmarks (#251, #637) | off: `bench.enabled = false`; routing gate pending | bench receipts |
 | Disposable smoke runner (#787 Q2) | off on this repository: it refuses this checkout; use a new temporary fixture; real-account Q2 remains unverified | sanitized receipt checks/counts/timings, zero owned survivors on timeout; fake transport tests are separate |
+| Plain corpus evidence in ask and task briefs (#510b) | off here until a person configures plain `corpus.paths`; vaults remain refused; no corpus body is written to amem | `note:<path>#heading` ids in ask evidence or public task briefs; PII/deny and stale-context refusal regressions |
 
 ## Decisions
 

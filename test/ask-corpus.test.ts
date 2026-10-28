@@ -76,7 +76,7 @@ test("ask drops a syntactically valid but invented corpus citation", async () =>
 });
 
 test("PII questions, PII tasks, and private context skip corpus, memory, and native retrieval", async () => {
-  for (const mode of ["pii-question", "pii-task", "private-context"] as const) {
+  for (const mode of ["pii-question", "pii-task", "pii-task-id", "private-context"] as const) {
     const { deps, calls } = fixture();
     let corpusReads = 0, nativeReads = 0, memoryReads = 0;
     const memory = {
@@ -90,10 +90,10 @@ test("PII questions, PII tasks, and private context skip corpus, memory, and nat
       deps.isPiiText = text => text.includes("2026-1234567");
       deps.onCampus = async () => false;
       await ask("student 2026-1234567", deps);
-    } else if (mode === "pii-task") {
+    } else if (mode === "pii-task" || mode === "pii-task-id") {
       deps.board.propose("user", { title: "student score record", class: "implement", signals: ["pii"] });
       deps.onCampus = async () => false;
-      await ask("student score record", deps);
+      await ask(mode === "pii-task-id" ? "what happened to #1?" : "student score record", deps);
     } else {
       deps.privateContext = () => true;
       deps.onCampus = async () => false;
