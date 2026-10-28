@@ -80,7 +80,7 @@ export const SETTINGS: readonly SettingDef[] = [
  * Never editable from settings, whatever the session: these choose what the hub executes or where secrets and task
  * text go. A key equal to an entry, or below it, is refused by name.
  */
-export const NEVER_EDITABLE = ["kimi_cmd", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "codex_bin", "pi.cmd", "checks", "mlx", "omniroute", "memory.worker_url", "local.read_allow", "local.bash_network", "local.network_allow", "bench.enabled", "terminal", "schedules", "corpus", "instances", "adapters", "adapter_modules"] as const;
+export const NEVER_EDITABLE = ["kimi_cmd", "qwen_cmd", "jcode_cmd", "jcode_home", "jcode_provider_profile", "codex_bin", "pi.cmd", "checks", "mlx", "omniroute", "memory.worker_url", "local.read_allow", "local.bash_network", "local.network_allow", "bench.enabled", "terminal", "schedules", "corpus", "instances", "adapters", "adapter_modules", "local.doc_read"] as const;
 
 /** Derive project-bound rows from the same builtin templates used by lookup, without registering aliases globally. */
 export function projectSettings(instances?: KindMap, adapterCatalog?: ProjectAdapterCatalog): readonly SettingDef[] {

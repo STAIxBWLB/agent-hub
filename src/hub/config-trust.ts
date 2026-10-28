@@ -26,6 +26,7 @@ export const MACHINE_LOCAL = [
   "local.read_allow",
   "local.bash_network",
   "local.network_allow", // the hosts the egress proxy opens (#65)
+  "local.doc_read", // #515: gives the local worker a document reader; a committed config may not hand a model more tools on someone else's machine
   "terminal.open", // the command a hub-made TUI start runs to open a terminal (#269)
   "tasks.auto_pull", // #785 P1c: lets the hub start work on its own; a committed config may not turn it on for someone else's machine
   "schedules", // #512: entries make the hub propose tasks on a timer; a committed config may not create work on someone else's machine

@@ -6280,8 +6280,83 @@ var init_sandbox = __esm(() => {
   PROXY_MACH_SERVICES = ["com.apple.trustd", "com.apple.trustd.agent"];
 });
 
+// src/hub/text-projection.ts
+var MAX_PROJECTION_INPUT, MAX_TEXT;
+var init_text_projection = __esm(() => {
+  init_deny();
+  init_project();
+  init_sandbox();
+  MAX_PROJECTION_INPUT = 16 * 1024 * 1024;
+  MAX_TEXT = 256 * 1024;
+});
+
+// src/local/doc-read.ts
+import { lstatSync as lstatSync9 } from "fs";
+import { extname } from "path";
+function docRead(file, shown, args, port, cwd) {
+  const projections = port.projections();
+  if (!projections.handles(file)) {
+    const ext = extname(file).toLowerCase() || "(no extension)";
+    return `error: no converter is configured for ${ext} files (text_projection in .agenthub/config.local.json names one per extension); use read for plain text`;
+  }
+  let st;
+  try {
+    st = lstatSync9(file);
+  } catch {
+    return `error: ${shown} cannot be read`;
+  }
+  if (!st.isFile())
+    return `error: ${shown} is not a regular file`;
+  if (st.nlink !== 1)
+    return `error: ${shown} has several names (a hard link), so its path policy cannot be checked; copy it first`;
+  if (st.size > MAX_PROJECTION_INPUT)
+    return `error: ${shown} is larger than ${MAX_PROJECTION_INPUT / 1024 / 1024} MiB`;
+  if (!port.pii && matchesPolicy(cwd, file, [...port.piiPaths()]))
+    return `error: ${shown} ${PII_PATH}`;
+  const projected = projections.project(file);
+  if (!projected)
+    return `error: ${shown} could not be converted (the converter failed or timed out, it is not available here, or the sandbox is unavailable)`;
+  const text = projected.text.replace(/\0/g, "");
+  if (!port.pii) {
+    try {
+      if (port.piiPatterns().some((pattern) => new RegExp(pattern).test(text)))
+        return `error: ${shown} ${PII_TEXT}`;
+    } catch {
+      return `error: ${shown} could not be screened against signals.pii_patterns, so it is not shown`;
+    }
+  }
+  const lines = sanitize(text).split(/\r?\n/);
+  const from = Math.max(1, Math.floor(Number(args.offset)) || 1), limit = Math.max(1, Math.floor(Number(args.limit)) || DEFAULT_DOC_LINES);
+  if (from > lines.length)
+    return `error: offset ${from} is past the end (${lines.length} lines)`;
+  let out = "", shownTo = from - 1;
+  for (let i = from - 1;i < Math.min(lines.length, from - 1 + limit); i++) {
+    const row = `${i + 1}	${lines[i]}
+`;
+    if (out.length + row.length > OUTPUT_CAP) {
+      if (!out)
+        out = row.slice(0, OUTPUT_CAP);
+      break;
+    }
+    out += row;
+    shownTo = i + 1;
+  }
+  if (!shownTo || shownTo < from)
+    shownTo = from;
+  out = out.replace(/\n$/, "");
+  return shownTo < lines.length ? `${out}
+(lines ${from}-${shownTo} of ${lines.length}; read again with offset=${shownTo + 1})` : out;
+}
+var DEFAULT_DOC_LINES = 2000, PII_PATH = "is under pii.paths: only a PII task turn on the on-prem worker may read it; ask for it in a PII task", PII_TEXT = "has text that matches signals.pii_patterns, so it is PII: only a PII task turn on the on-prem worker may read it; ask for it in a PII task";
+var init_doc_read = __esm(() => {
+  init_envelope();
+  init_path_policy();
+  init_text_projection();
+  init_sandbox();
+});
+
 // src/local/tools.ts
-import { lstatSync as lstatSync9, mkdirSync as mkdirSync8, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync7 } from "fs";
+import { lstatSync as lstatSync10, mkdirSync as mkdirSync8, readFileSync as readFileSync7, statSync as statSync3, writeFileSync as writeFileSync7 } from "fs";
 import { dirname as dirname10, join as join13, relative as relative4, resolve as resolve10 } from "path";
 function guardPath(ctx, path, mode) {
   const root = realPath(ctx.cwd);
@@ -6303,7 +6378,7 @@ function guardPath(ctx, path, mode) {
     throw new Error(`${path} is on the secrets denylist`);
   if (mode === "write" && isHubWritePath(rel))
     throw new Error(`${path} is not writable by the local worker`);
-  if (mode === "write" && ctx.readOnly?.length && (lstatSync9(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
+  if (mode === "write" && ctx.readOnly?.length && (lstatSync10(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
     throw new Error("hardlinked write target cannot be verified with data.readonly");
   if (mode === "write" && matchesPolicy(root, path, ctx.readOnly ?? []))
     throw new Error("target is protected by data.readonly");
@@ -6455,6 +6530,12 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
         return `${res.output}
 (exit ${res.code})`;
       }
+      case "doc_read": {
+        if (!ctx.docRead)
+          return "error: doc_read is not enabled for this project (local.doc_read in .agenthub/config.local.json)";
+        const file = guardPath(ctx, String(a.path), "read");
+        return docRead(file, String(a.path), a, ctx.docRead, ctx.cwd);
+      }
       case "hub_send":
         return a.text ? ctx.send(String(a.text), Array.isArray(a.to) ? a.to.map(String) : undefined) : "error: text is required";
       default:
@@ -6466,7 +6547,7 @@ ${preview(content)}`, "write", ctx.signal, file, undefined, String(a.path), a), 
 }
 var APPROVAL_EXPIRED_TEXT = "error: approval expired: no person answered; do not retry this call; hand the task off or stop", ApprovalWaitStop, approvalError = (picked, denied) => picked === true ? undefined : picked === "expired" ? APPROVAL_EXPIRED_TEXT : picked === "aborted" ? "error: approval withdrawn because the turn ended; no operation was executed" : denied, lexists = (p) => {
   try {
-    lstatSync9(p);
+    lstatSync10(p);
     return true;
   } catch {
     return false;
@@ -6475,12 +6556,13 @@ var APPROVAL_EXPIRED_TEXT = "error: approval expired: no person answered; do not
 ... (${text.length - n} more chars)` : text, GIT_READ, GIT_WRITE, str, fn = (name, description, properties, required) => ({
   type: "function",
   function: { name, description, parameters: { type: "object", properties, required, additionalProperties: false } }
-}), TOOL_SCHEMAS;
+}), TOOL_SCHEMAS, DOC_READ_SCHEMA;
 var init_tools = __esm(() => {
   init_project();
   init_permission_mode();
   init_path_policy();
   init_deny();
+  init_doc_read();
   init_sandbox();
   ApprovalWaitStop = class ApprovalWaitStop extends Error {
   };
@@ -6495,6 +6577,7 @@ var init_tools = __esm(() => {
     fn("git", "Run git in the project. status, diff, log, show, ls-files, blame, rev-parse run freely; add, commit, restore, checkout, switch, stash, mv, rm, branch, merge, rebase, cherry-pick, revert, tag need approval; everything else (push, fetch, config, remote ...) is refused.", { args: { type: "array", items: str, minItems: 1 } }, ["args"]),
     fn("hub_send", "Send a message to the other agents now, before your turn ends. Conclusions only. Your final answer is shared anyway; use this for something that cannot wait.", { text: str, to: { type: "array", items: str } }, ["text"])
   ];
+  DOC_READ_SCHEMA = fn("doc_read", "Read a PDF, DOCX or HWPX document inside the project as plain text, through the converters the project configured. Returns numbered lines, bounded; read again with offset for more. Read-only.", { path: str, offset: { type: "integer", minimum: 1 }, limit: { type: "integer", minimum: 1 } }, ["path"]);
 });
 
 // src/pi/ceiling.ts
@@ -9953,7 +10036,7 @@ var init_shipped_roles = __esm(() => {
 
 // src/hub/roles.ts
 import { createHash as createHash5 } from "crypto";
-import { constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync10, openSync as openSync6, readSync as readSync4, readdirSync as readdirSync2 } from "fs";
+import { constants as constants5, closeSync as closeSync6, fstatSync as fstatSync5, lstatSync as lstatSync11, openSync as openSync6, readSync as readSync4, readdirSync as readdirSync2 } from "fs";
 import { join as join15 } from "path";
 function parseRole(text, stem, layer) {
   if (Buffer.byteLength(text) > 8192 || text.includes("\r") || !ID.test(stem))
@@ -10035,7 +10118,7 @@ function loadRoleCatalog(cwd) {
   try {
     const config = join15(cwd, ".agenthub"), dir = join15(config, "roles");
     for (const path of [config, dir]) {
-      const stat = lstatSync10(path);
+      const stat = lstatSync11(path);
       if (!stat.isDirectory() || stat.isSymbolicLink())
         throw new Error("unsafe role directory");
     }
@@ -10520,7 +10603,7 @@ var init_local_worker = __esm(() => {
             throw new Error("route belongs to an ended turn");
           if (signal.aborted)
             throw new Error("turn cancelled before model request");
-          const tools = judge ? undefined : [...TOOL_SCHEMAS, ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : []];
+          const tools = judge ? undefined : [...this.toolSchemas(), ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : []];
           const result = await this.opts.omni.chat({ model, messages, ...tools ? { tools } : {}, ...judge ? { max_tokens: maxTokens ?? 2048 } : {} }, { signal, ...pii ? { onCampusOnly: true } : {} });
           this.recordUsage(result, model, task);
           if (generation !== this.turn)
@@ -10706,7 +10789,7 @@ var init_local_worker = __esm(() => {
               throw new ApprovalWaitStop(this.approvalStopReason);
             }
             this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
-            if (name !== "hub_send" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name))
+            if (name !== "hub_send" && name !== "doc_read" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name))
               capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
           }
         } finally {
@@ -10718,9 +10801,13 @@ var init_local_worker = __esm(() => {
         capture?.summarize(progress.last);
       return `(stopped after ${maxSteps} steps) ${progress.last}`.trim();
     }
+    toolSchemas() {
+      return this.opts.tools.docRead ? [...TOOL_SCHEMAS, DOC_READ_SCHEMA] : TOOL_SCHEMAS;
+    }
     toolContext(envs, turnSignal, pii, reply) {
       const executionGeneration = this.turn;
       return {
+        ...this.opts.tools.docRead ? { docRead: { ...this.opts.tools.docRead, pii } } : {},
         cwd: this.opts.cwd,
         deny: this.opts.tools.deny,
         readOnly: this.opts.tools.readOnly,
@@ -10832,7 +10919,7 @@ var init_local_worker = __esm(() => {
       }
       const fixedModel = policy?.fixedModel ?? this.opts.fixedModel;
       const task = policy?.task === undefined ? undefined : Number(policy.task);
-      const tools = [...TOOL_SCHEMAS, ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : []];
+      const tools = [...this.toolSchemas(), ...this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter((tool) => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : []];
       const signal = this.abort.signal;
       const messages = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
       const routed = await this.hubCall(route, messages, policy, signal);
@@ -10898,7 +10985,7 @@ var init_local_worker = __esm(() => {
       return step + 1 < maxSteps ? undefined : `(review requested changes; step limit reached) ${answer}`;
     }
     observeTool(call, output, policy, nativeTurn) {
-      if (policy?.pii)
+      if (policy?.pii || call.function.name === "doc_read")
         return;
       try {
         const command = safeParse(call.function.arguments).command;
@@ -11088,7 +11175,7 @@ var init_claude_task_sessions = __esm(() => {
 
 // src/adapters/claude-implementer.ts
 import { randomUUID as randomUUID9 } from "crypto";
-import { lstatSync as lstatSync11, mkdtempSync as mkdtempSync5, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "fs";
+import { lstatSync as lstatSync12, mkdtempSync as mkdtempSync5, rmSync as rmSync6, writeFileSync as writeFileSync8 } from "fs";
 import { tmpdir as tmpdir5 } from "os";
 import { join as join17 } from "path";
 function claudeImplementerArgs(turn, mcp, settings, prompt, model) {
@@ -11123,7 +11210,7 @@ function claudeImplementerArgs(turn, mcp, settings, prompt, model) {
 async function proveClaudeImplementer(peer, command) {
   const binary = Bun.which(command[0], { PATH: process.env.PATH }) ?? command[0];
   const fingerprint = () => {
-    const file = realPath(binary), stat = lstatSync11(file);
+    const file = realPath(binary), stat = lstatSync12(file);
     return [file, stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
   };
   const binding = fingerprint(), home = mkdtempSync5(join17(tmpdir5(), "ahub-claude-proof-"));
@@ -11627,7 +11714,7 @@ var init_reviewer_variants = __esm(() => {
 });
 
 // src/adapters/agy/hooks.ts
-import { closeSync as closeSync7, constants as constants6, fstatSync as fstatSync6, lstatSync as lstatSync12, openSync as openSync7, readSync as readSync5 } from "fs";
+import { closeSync as closeSync7, constants as constants6, fstatSync as fstatSync6, lstatSync as lstatSync13, openSync as openSync7, readSync as readSync5 } from "fs";
 import { homedir as homedir5 } from "os";
 import { isAbsolute as isAbsolute6, join as join18, relative as relative5 } from "path";
 import { createHash as createHash6 } from "crypto";
@@ -11675,7 +11762,7 @@ function readAgyTranscript(session, transcript) {
     let cursor = home;
     for (const name of relative5(home, transcript).split("/")) {
       cursor = join18(cursor, name);
-      if (lstatSync12(cursor).isSymbolicLink())
+      if (lstatSync13(cursor).isSymbolicLink())
         return empty;
     }
     fd = openSync7(transcript, constants6.O_RDONLY | constants6.O_NOFOLLOW);
@@ -12518,7 +12605,7 @@ function localConfigSchema(v) {
   return { local: v.block({ deny: v.strings, bash_network: (value, key) => {
     if (value !== "direct")
       v.bool(value, key);
-  }, network_allow: v.strings, max_steps: v.number(1, 1e6, true), read_allow: v.strings }) };
+  }, network_allow: v.strings, max_steps: v.number(1, 1e6, true), read_allow: v.strings, doc_read: v.bool }) };
 }
 function piRoutingSchema(v) {
   return { pi: v.block({ dgx_max_context_tokens: v.number(), mlx_max_context_tokens: v.number(), efficient_wait_ms: v.number(0, 119999) }) };
@@ -12549,7 +12636,8 @@ var init_native_config_policy = __esm(() => {
     "local.deny": "Existing native sessions retain their sandbox deny policy",
     "local.read_allow": "Existing native sessions retain their sandbox read grants",
     "local.bash_network": "Existing sandbox and egress proxy contracts require a new instance",
-    "local.network_allow": "Existing egress proxy ownership requires a new instance"
+    "local.network_allow": "Existing egress proxy ownership requires a new instance",
+    "local.doc_read": "The worker's tool list is bound when its session starts"
   };
 });
 
@@ -21394,7 +21482,7 @@ init_registry();
 // src/hub/config-trust.ts
 init_child_process();
 init_git();
-import { lstatSync as lstatSync13, statSync as statSync5 } from "fs";
+import { lstatSync as lstatSync14, statSync as statSync5 } from "fs";
 import { dirname as dirname12, join as join28 } from "path";
 var MACHINE_LOCAL = [
   "kimi_cmd",
@@ -21414,6 +21502,7 @@ var MACHINE_LOCAL = [
   "local.read_allow",
   "local.bash_network",
   "local.network_allow",
+  "local.doc_read",
   "terminal.open",
   "tasks.auto_pull",
   "schedules",
@@ -22072,7 +22161,7 @@ init_workflow();
 init_deliverables();
 
 // src/hub/deliverable-files.ts
-import { constants as constants8, lstatSync as lstatSync14 } from "fs";
+import { constants as constants8, lstatSync as lstatSync15 } from "fs";
 init_tools();
 init_permission_mode();
 init_project();

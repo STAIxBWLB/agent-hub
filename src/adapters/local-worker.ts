@@ -9,7 +9,8 @@ import { CONDUCTOR_TOOL_NAMES, CONDUCTOR_TOOLS, TASK_TOOL_NAMES, TASK_TOOLS, pro
 import { BasePeer } from "../hub/peers.ts";
 import type { PublishResult } from "../hub/bus.ts";
 import { profile, proxyEnv, type SandboxNetwork } from "../local/sandbox.ts";
-import { runTool, toolResultFailed, TOOL_SCHEMAS, touchedPaths, ApprovalWaitStop, type ToolApproval, type ApprovalProvenance, type ToolContext } from "../local/tools.ts";
+import type { DocReadPort } from "../local/doc-read.ts";
+import { DOC_READ_SCHEMA, runTool, toolResultFailed, TOOL_SCHEMAS, touchedPaths, ApprovalWaitStop, type ToolApproval, type ApprovalProvenance, type ToolContext } from "../local/tools.ts";
 import type { Capture } from "../memory/capture.ts";
 import type { ChatMessage, ChatResult, OmniRoute, ToolCall } from "../omniroute/client.ts";
 import { safeModelLabel } from "../omniroute/usage.ts";
@@ -36,7 +37,7 @@ export interface LocalOptions {
   turnId?: () => string | undefined;
   onApprovalStop?: (reason: string) => void;
   onTool?: (observation: ToolObservation, task?: string) => void;
-  tools: { deny: string[]; permit: ToolContext["permit"]; shellExecutionCheck?: ToolContext["shellExecutionCheck"]; bashNetwork?: SandboxNetwork; readAllow?: string[]; readOnly?: string[] };
+  tools: { docRead?: DocReadPort; deny: string[]; permit: ToolContext["permit"]; shellExecutionCheck?: ToolContext["shellExecutionCheck"]; bashNetwork?: SandboxNetwork; readAllow?: string[]; readOnly?: string[] };
   capture?: Capture;
   /** Runs a hub task tool (hub_task_*, hub_review, hub_remember) as this peer. Absent = the tools are not offered. */
   taskTool?: (name: string, args: Record<string, unknown>, turn: { pii: boolean }) => Promise<string>;
@@ -111,7 +112,7 @@ export class LocalPeer extends BasePeer {
         await this.requireBudget(envs, "model_calls");
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
         if (signal.aborted) throw new Error("turn cancelled before model request");
-        const tools = judge ? undefined : [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : [])];
+        const tools = judge ? undefined : [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : [])];
         const result = await this.opts.omni.chat({ model, messages, ...(tools ? { tools } : {}), ...(judge ? { max_tokens: maxTokens ?? 2048 } : {}) }, { signal, ...(pii ? { onCampusOnly: true } : {}) });
         this.recordUsage(result, model, task);
         if (generation !== this.turn) throw new Error("route belongs to an ended turn");
@@ -283,7 +284,8 @@ export class LocalPeer extends BasePeer {
           if (this.approvalStopReason) { this.abort?.abort(); throw new ApprovalWaitStop(this.approvalStopReason); }
           this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
           // Hub tool arguments/results are not capture evidence; Tasks owns its screened memory writes.
-          if (name !== "hub_send" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name)) capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
+          // doc_read text is converted document content (a converter can surface hidden text), never memory evidence: not captured, whatever the turn.
+          if (name !== "hub_send" && name !== "doc_read" && !TASK_TOOL_NAMES.has(name) && !CONDUCTOR_TOOL_NAMES.has(name)) capture?.observe({ tool: call.function.name, args: call.function.arguments, output, id: call.id, sourceId: `${this.sessionId}.${turn}.${step}.${captureInvocation++}`, paths: touchedPaths(call.function.name, safeParse(call.function.arguments)) });
         }
       } finally { if (results.length) this.routes.observeResults(res.routeDecision, res.message, results); }
     }
@@ -291,9 +293,13 @@ export class LocalPeer extends BasePeer {
     return `(stopped after ${maxSteps} steps) ${progress.last}`.trim();
   }
 
+  /** The base tools, plus `doc_read` only when the project opted in (`local.doc_read`, off by default). */
+  private toolSchemas() { return this.opts.tools.docRead ? [...TOOL_SCHEMAS, DOC_READ_SCHEMA] : TOOL_SCHEMAS; }
+
   private toolContext(envs: Envelope[], turnSignal: AbortSignal, pii: boolean, reply: EnvelopeOpts): ToolContext {
     const executionGeneration=this.turn;
     return {
+      ...(this.opts.tools.docRead ? { docRead: { ...this.opts.tools.docRead, pii } } : {}),
       cwd: this.opts.cwd,
       deny: this.opts.tools.deny,
       readOnly: this.opts.tools.readOnly,
@@ -386,7 +392,7 @@ export class LocalPeer extends BasePeer {
     }
     const fixedModel = policy?.fixedModel ?? this.opts.fixedModel;
     const task = policy?.task === undefined ? undefined : Number(policy.task);
-    const tools = [...TOOL_SCHEMAS, ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : [])];
+    const tools = [...this.toolSchemas(), ...(this.opts.taskTool ? [...profileTaskTools(this.opts.profile, this.opts.sdlcStages, this.opts.sdlcCriteria).filter(tool => tool.name !== "hub_delivery_retry"), ...CONDUCTOR_TOOLS].map(asFunction) : [])];
     const signal = this.abort!.signal;
     const messages: ChatMessage[] = [{ role: "system", content: system(this.opts.cwd, this.opts.preamble) }, ...this.history, ...turnMsgs];
     const routed = await this.hubCall(route, messages, policy, signal);
@@ -446,7 +452,7 @@ export class LocalPeer extends BasePeer {
   }
 
   private observeTool(call: ToolCall, output: string, policy: { pii: boolean; task?: string } | undefined, nativeTurn: string): void {
-    if (policy?.pii) return;
+    if (policy?.pii || call.function.name === "doc_read") return; // doc_read output is document text: no research observation carries it
     try {
       const command = safeParse(call.function.arguments).command;
       this.opts.onTool?.({ name: call.function.name, ...(typeof command === "string" ? { command } : {}), resultText: output, isError: toolResultFailed(call.function.name, output), source: "local", turn: nativeTurn }, policy?.task);

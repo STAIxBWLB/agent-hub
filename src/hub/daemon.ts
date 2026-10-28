@@ -222,7 +222,7 @@ export interface HubConfig {
   pi: { enabled: boolean; auto_start: boolean; cmd: string[]; backend: "auto" | "dgx" | "mlx"; dgx_coding: string; dgx_fast: string; max_steps: number };
   mlx: { enabled: boolean } & Pick<MlxOptions, "provider" | "host" | "runtimeDir" | "modelPath" | "port" | "model" | "sourceModel" | "contextWindow" | "maxInputTokens" | "maxTokens" | "maxConcurrency">;
   /** `bash_network`: true is network through the egress proxy to `network_allow` (#65); "direct" is everything, until 0.13.0 (#83). */
-  local: { deny: string[]; bash_network: boolean | "direct"; network_allow: string[]; max_steps: number; read_allow: string[] };
+  local: { deny: string[]; bash_network: boolean | "direct"; network_allow: string[]; max_steps: number; read_allow: string[]; /** #515: offer the local worker `doc_read` (PDF, DOCX, HWPX through `text_projection`); off by default, machine-local. */ doc_read: boolean };
   /** Pending permission requests: how long they wait, and whether the desktop is told (issue #5). */
   approvals: { timeout_s: number; notify: boolean };
   /** An owner offline this long loses its open tasks back to routing; 0 turns it off (issue #6). */
@@ -5170,7 +5170,9 @@ export async function startDaemon(opts: DaemonOptions) {
         turnId: () => turns.get(peer)?.id,
         onTool: (observation, task) => observeProgress(peer, observation, task),
         fixedModel: args.model ?? routing.local.fixed_model,
-        tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, readOnly: config.data?.readonly, permit, shellExecutionCheck: input => shellProofs.check(input) },
+        tools: { deny: config.local.deny, bashNetwork: sandboxNetwork, readAllow: config.local.read_allow, readOnly: config.data?.readonly, permit, shellExecutionCheck: input => shellProofs.check(input),
+          // #515: `doc_read` exists only when the project opted in. The projections are this worker's execution root's (the hub's own facts and review use the same ones).
+          ...(config.local.doc_read === true ? { docRead: { projections: () => projectionsFor(peer), piiPaths: () => config.pii?.paths ?? [], piiPatterns: () => activeRouting().signals.pii_patterns } } : {}) },
         onApprovalStop: reason => notify(reason),
         ...(capture ? { capture } : {}),
         profile: resolvedProfile,
