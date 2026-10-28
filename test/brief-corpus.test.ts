@@ -83,7 +83,7 @@ test("concurrent legacy briefs share corpus note dedupe for one peer", async () 
 test("intent-library retrieval can append a corpus citation after its memory evidence", async () => {
   const dir = mkdtempSync(join(tmpdir(), "ahub-brief-corpus-")); dirs.push(dir);
   const store = new MemoryStore({ home: join(dir, "memory") });
-  store.note({ op: "note", project: "fixture", scope: "project", tier: "long", peer: "person", source: "person", kind: "decision", text: "public task memory guidance" });
+  store.note({ op: "note", project: "fixture", scope: "project", tier: "long", peer: "person", source: "person", kind: "decision", about: [], text: "public task memory guidance" });
   const policy = createStandalonePolicy({});
   let reads = 0;
   const intent = async () => ({ source: createIntentBriefSource(store, "fixture"), options: {

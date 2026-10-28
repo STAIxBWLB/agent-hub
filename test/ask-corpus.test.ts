@@ -109,16 +109,17 @@ test("PII questions, PII tasks, and private context skip corpus, memory, and nat
 test("a PII task requires an on-campus call and pins the selected host model before gateway probing", async () => {
   const { board, calls, deps, setModel } = fixture();
   board.propose("user", { title: "student score record", class: "implement", signals: ["pii"] });
+  let selected = "host/local-fixed";
   deps.corpus = () => { throw new Error("PII task must not read corpus"); };
   deps.inference = new Inference(DEFAULT_INFERENCE, {
     omni: {
-      base: async () => { setModel("provider/changed-after-campus-check"); return "http://127.0.0.1:43000"; },
+      base: async () => { selected = "provider/changed-after-campus-check"; return "http://127.0.0.1:43000"; },
       chat: async (body: { model: string }, options: { onCampusOnly?: boolean }) => {
         calls.push({ model: body.model, options });
         return { message: { content: "The record is on the board [task #1]." } };
       },
     } as unknown as OmniRoute,
-    fixedModel: () => "host/local-fixed",
+    fixedModel: () => selected,
     log: () => {},
   });
 

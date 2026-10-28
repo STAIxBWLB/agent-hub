@@ -48,7 +48,8 @@ export class Inference {
    * nor trips the backoff that protects the delivery path, so a slow answer cannot switch off triage and digests.
    */
   async complete(system: string, user: string, maxTokens: number, opts: { interactive?: boolean; timeoutMs?: number; onCampusOnly?: boolean; allowed?: () => boolean } = {}): Promise<string | undefined> {
-    if (!this.cfg.enabled || (!opts.interactive && Date.now() < this.offUntil) || opts.allowed?.() === false) return undefined;
+    if (!this.cfg.enabled || (!opts.interactive && Date.now() < this.offUntil)) return undefined;
+    try { if (opts.allowed?.() === false) return undefined; } catch { return undefined; }
     // Pin the host-selected on-prem fixed model before any gateway await.
     let pinnedModel: string | undefined;
     try { pinnedModel = opts.onCampusOnly ? this.d.fixedModel() : undefined; } catch { return undefined; }
