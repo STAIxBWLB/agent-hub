@@ -898,6 +898,9 @@ export class Bus {
       const pending = new Set([...(this.queues.get(peer) ?? []), ...(this.preparing.get(peer) ?? [])].map(env => env.id));
       for (const { peer: target, originals } of this.remoteTransport.values()) if (target === peer) for (const env of originals) pending.add(env.id);
       for (const [id, target] of this.activeDeliveries) if (target === peer) for (const env of this.journal?.get(id)?.originals ?? []) pending.add(env.id);
+      // Uncertainty is still pending work. Keep its known TTL through checkpoints,
+      // using unresolved rows only, never completed delivery history.
+      for (const row of this.journal?.unresolved(peer) ?? []) for (const env of row.originals) pending.add(env.id);
       for (const id of expiries.keys()) if (!pending.has(id)) expiries.delete(id);
       if (expiries.size) snapshot[peer] = Object.fromEntries(expiries);
       else this.remoteQueueExpires.delete(peer);

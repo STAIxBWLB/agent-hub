@@ -406,6 +406,10 @@ for (const mode of ["valid", "expired", "missing"] as const) test(`a remote unce
   await until(() => journal.unresolved(remote).some(row => row.state === "needs_review") && !bus.hasInFlight(remote));
   const held = journal.unresolved(remote)[0]!, before = held.revision;
   if (mode === "valid") {
+    const deadline = target.deadlines.get(env.id);
+    expect(bus.snapshot(false).remoteQueueExpires?.[remote]?.[env.id]).toBe(deadline);
+    bus.add(new Peer("local")); bus.publish(newEnvelope("user", "unrelated checkpoint", { to: ["local"] }));
+    expect(journal.snapshot().bus.remoteQueueExpires?.[remote]?.[env.id]).toBe(deadline);
     bus.resolveDelivery(held.id, held.revision, "retry", "person retries before the original deadline");
     await until(() => target.batches.length === 2 && !bus.hasInFlight(remote));
     expect(target.batches[1]!.map(item => item.id)).toEqual([env.id]);
@@ -415,7 +419,10 @@ for (const mode of ["valid", "expired", "missing"] as const) test(`a remote unce
   const clock = Date.now;
   try {
     if (mode === "expired") Date.now = () => target.deadlines.get(env.id)! + 1;
-    else bus.snapshot(false); // Once no queued/active work keeps it, a missing legacy deadline cannot be invented.
+    else {
+      const legacy = bus.snapshot(false); delete legacy.remoteQueueExpires;
+      bus.restore(legacy); // A genuinely missing legacy proof cannot borrow a fresh TTL.
+    }
     expect(() => bus.resolveDelivery(held.id, held.revision, "retry", "person asks to retry")).toThrow("remote original deadline unavailable or expired");
   } finally { Date.now = clock; }
   expect(journal.resolution(held.id)).toBeUndefined();
@@ -433,4 +440,23 @@ test("an expired offline remote queue refuses retry without a successful person 
   expect(() => bus.resolveDelivery(held.id, held.revision, "retry", "retry expired queue")).toThrow("remote original deadline unavailable or expired");
   expect(journal.resolution(held.id)).toBeUndefined(); expect(bus.queueIds(remote)).toEqual([]);
   expect(target.batches).toEqual([]);
+});
+
+
+test("an unexpired remote uncertain deadline survives restart and can authorize the person's retry", async () => {
+  const first = fixture(), target = new Peer(remote, room); first.bus.add(target);
+  target.accepted = async (_envs, id) => { target.onDelivery?.({ id: id!, state: "needs_review" }); };
+  await target.start(); const env = newEnvelope("user", "uncertain before restart", { to: [remote] }); first.bus.publish(env);
+  await until(() => first.journal.unresolved(remote).some(row => row.state === "needs_review") && !first.bus.hasInFlight(remote));
+  const deadline = target.deadlines.get(env.id)!;
+  expect(first.bus.snapshot(false).remoteQueueExpires?.[remote]?.[env.id]).toBe(deadline);
+  first.bus.closeJournal(); buses.splice(buses.indexOf(first.bus), 1);
+  const journal = new DeliveryJournal({ file: join(first.root, "hub.db"), projectRoot: first.root, projectId: "rooms", instanceId: crypto.randomUUID() });
+  const bus = new Bus({ journal, batchMs: 0 }); buses.push(bus); const replacement = new Peer(remote, room); bus.add(replacement);
+  await replacement.start(); const held = journal.unresolved(remote)[0]!;
+  expect(bus.snapshot(false).remoteQueueExpires?.[remote]?.[env.id]).toBe(deadline);
+  bus.resolveDelivery(held.id, held.revision, "retry", "same recipient before the original expiry");
+  await until(() => replacement.batches.length === 1 && !bus.hasInFlight(remote));
+  expect(replacement.batches[0]!.map(item => item.id)).toEqual([env.id]); expect(replacement.deadlines.get(env.id)).toBe(deadline);
+  expect(journal.resolution(held.id)?.action).toBe("retry");
 });
