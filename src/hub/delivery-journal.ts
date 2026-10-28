@@ -7,6 +7,7 @@ import { HUB, USER, type Envelope, type Kind } from "./envelope.ts";
 import { heldDeliveryHints } from "./delivery-hints.ts";
 import { processLiveness } from "../pi/process-signature.ts";
 import { HUB_DB_BUSY_TIMEOUT_MS } from "./db-timeout.ts";
+import { parseRemotePeerId } from "../rooms/application.ts";
 import { validateDeferredHub } from "./deferred-hub.ts";
 
 export type JournalDeliveryState =
@@ -169,6 +170,32 @@ function validateBus(value: unknown, name = "bus"): BusSnapshot {
     list(b.manualPaused, `${name}.manualPaused`, 4096).forEach((id) =>
       text(id, `${name}.manualPaused[]`, 256),
     );
+  if (b.remoteQueueMembers !== undefined) {
+    const members = obj(b.remoteQueueMembers, `${name}.remoteQueueMembers`);
+    if (Object.keys(members).length > 12800) fail(`${name}.remoteQueueMembers is too large`);
+    for (const [peer, member] of Object.entries(members)) {
+      if (!parseRemotePeerId(peer) || !Array.isArray(queues[peer]) || !(queues[peer] as unknown[]).length || typeof member !== "string" || !/^[0-9a-f]{64}$/.test(member)) fail(`${name}.remoteQueueMembers is invalid`);
+    }
+  }
+  if (b.remoteQueueRooms !== undefined) {
+    const rooms = obj(b.remoteQueueRooms, `${name}.remoteQueueRooms`);
+    if (Object.keys(rooms).length > 12800) fail(`${name}.remoteQueueRooms is too large`);
+    for (const [peer, room] of Object.entries(rooms)) {
+      if (!parseRemotePeerId(peer) || !Array.isArray(queues[peer]) || !(queues[peer] as unknown[]).length) fail(`${name}.remoteQueueRooms key is invalid`);
+      text(room, `${name}.remoteQueueRooms room`, 256);
+    }
+  }
+  if (b.remoteQueueExpires !== undefined) {
+    const expiries = obj(b.remoteQueueExpires, `${name}.remoteQueueExpires`);
+    if (Object.keys(expiries).length > 4096) fail(`${name}.remoteQueueExpires is too large`);
+    let count = 0;
+    for (const [peer, values] of Object.entries(expiries)) {
+      if (!parseRemotePeerId(peer)) fail(`${name}.remoteQueueExpires key is invalid`);
+      const entries = Object.entries(obj(values, `${name}.remoteQueueExpires.${peer}`));
+      if (entries.length > 200 || (count += entries.length) > 12800) fail(`${name}.remoteQueueExpires is too large`);
+      for (const [id, expiry] of entries) { text(id, `${name}.remoteQueueExpires id`, 256); integer(expiry, `${name}.remoteQueueExpires expiry`); }
+    }
+  }
   const occupied = new Set<string>([
     ...(b.seen as Envelope[]).map(env => env.id),
     ...Object.values(queues).flatMap(items => (items as Envelope[]).map(env => env.id)),

@@ -252,7 +252,7 @@
     {
       "id": "roster-empty-status",
       "file": "src/hub/daemon.ts",
-      "search": "    return [...ids].filter(peer => isExternalInstance(peer) || externalRefusedRows.has(peer) || membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));",
+      "search": "    return [...ids].filter(peer => !peer.includes(\"@\") && (isExternalInstance(peer) || externalRefusedRows.has(peer) || membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer)));",
       "replacement": "    return [...ids];",
       "testFile": "test/roster.test.ts",
       "testName": "existing tools socket, conductor start, dashboard send and empty status all obey removal (#315)"
@@ -324,8 +324,8 @@
     {
       "id": "roster-detached-pi-recovery",
       "file": "src/hub/daemon.ts",
-      "search": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\" || (\"recoveryReady\" in peer && peer.recoveryReady !== true))) return false;",
-      "replacement": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === \"busy\")) return false;",
+      "search": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].filter(peer => !peer.id.includes(\"@\")).some((peer) => peer.state === \"busy\" || (\"recoveryReady\" in peer && peer.recoveryReady !== true))) return false;",
+      "replacement": "    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].filter(peer => !peer.id.includes(\"@\")).some((peer) => peer.state === \"busy\")) return false;",
       "testFile": "test/roster-pi.test.ts",
       "testName": "controlled recovery refuses a removed personal Pi owner until the person ends it (#315)"
     },
@@ -2668,8 +2668,8 @@
     {
       "id": "planner-reserved-status-row",
       "file": "src/hub/daemon.ts",
-      "search": "new Set([...bus.knownPeers(), ...extraIds, ...allExternalInstanceIds(), ...reservations])",
-      "replacement": "new Set([...bus.knownPeers(), ...extraIds, ...allExternalInstanceIds()])",
+      "search": "new Set([...bus.knownPeers(), ...extraIds, ...allExternalInstanceIds(), ...reservations].filter(id => !id.includes(\"@\")))",
+      "replacement": "new Set([...bus.knownPeers(), ...extraIds, ...allExternalInstanceIds()].filter(id => !id.includes(\"@\")))",
       "testFile": "test/planner-pull-surfaces.test.ts",
       "testName": "restarted ownerless pull reservations retain an unattached peer WIP status row"
     },

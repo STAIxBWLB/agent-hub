@@ -1,5 +1,7 @@
 import { RoomCommands, type RoomPreview } from "../rooms/commands.ts";
 import { queueBackpressurePolicy, type QueueBackpressurePolicy } from "./queue-backpressure.ts";
+import { RoomChat } from "../rooms/service.ts";
+import { parseRemotePeerId } from "../rooms/application.ts";
 import { assertNativeProofPorts } from "../adapters/native-proof-ports.ts";
 import { externalInstanceCatalog } from "../adapters/external-metadata.ts";
 import { externalInstanceBinding, sameExternalInstanceBinding, externalInstanceStateDir, readExternalInstanceRecord, writeExternalInstanceRecord, type ExternalInstanceBinding } from "./external-instance.ts";
@@ -865,7 +867,8 @@ export async function startDaemon(opts: DaemonOptions) {
   const projectRosterAllows = (roster: PeerRoster, peer: string, piEnabled: boolean) => rosterAllows(roster, peer, piEnabled, declarations, adapterCatalog, moduleDeclarations.length > 0);
   const onRoster = (peer: string) => projectRosterAllows(config.roster, peer, config.pi.enabled);
   // pi.enabled historically gates starts, not retained queues or tools sockets. Only an explicit roster.pi changes those.
-  const membershipAllowed = (peer: string) => definitionOf(peer)?.enabledSwitchStartOnly && config.roster[peer] === undefined ? true : onRoster(peer);
+  const remoteRoster = new Set<string>();
+  const membershipAllowed = (peer: string) => peer.includes("@") ? remoteRoster.has(peer) : definitionOf(peer)?.enabledSwitchStartOnly && config.roster[peer] === undefined ? true : onRoster(peer);
   conductorPeer(config.roles); // reject ambiguous leadership before opening a control listener
   const mlxConfigProblem = mlxLaunchProblem(config, config.pi) ?? disabledMlxPolicyProblem(config, opts.cwd);
   if (mlxConfigProblem) throw new Error(mlxConfigProblem);
@@ -1231,7 +1234,18 @@ export async function startDaemon(opts: DaemonOptions) {
   if (staleOff()) log("experiment: stale notices are delivered as before 0.12.4 (the issue #106 ablation)");
   const requestedPeerStops = new Set<string>();
   const queuePolicy = () => queueBackpressurePolicy(config.tasks.queue_backpressure);
+  let remotePending = (_room: string): readonly string[] => [];
+  let remoteQueueChanged = () => {};
   const bus = new Bus({ rostered: membershipAllowed, trackQueuePressure: () => { const policy = queuePolicy(); return policy.max_queued > 0 || policy.max_oldest_s > 0; }, deliveryHeld: peer => requestedPeerStops.has(peer) || rosterChanging === peer, journal, batchMax: config.batch_max, batchMs: config.batch_ms, queueCap: config.queue_cap, condense: (envs) => inference?.condense(envs) ?? Promise.resolve(envs), admit, relevant: (peer, env) => reviewOnlyPeer(peer) && !reviewOnlyItem(peer, env) ? `not for ${peer}: a review-only instance receives review requests only` : env.refs?.boundedCheck || env.refs?.supervision || env.refs?.backlog ? relevantNotice(peer, env) : staleOff() || relevantNotice(peer, env), silence,
+    remotePending: room => remotePending(room),
+    remotePrivate: env => {
+      const task = env.refs?.task;
+      if (task !== undefined) {
+        if (typeof task !== "string" || !/^[1-9][0-9]*$/.test(task) || !Number.isSafeInteger(Number(task))) return true;
+        const row = board.get(Number(task)); if (!row || tasks.isPii(row)) return true;
+      }
+      return env.from === USER ? false : !bus.peers.has(env.from) || !!turns.get(env.from)?.private || contextPii(env.from);
+    },
     doing: (peer, kind, text) => observeDoing(peer, kind, text),
     onImportantQueued: (peer, counts) => { const p = bus.peers.get(peer); if (isWsPeer(p)) p.notifyQueued(counts); } });
   startupCleanup.push(() => bus.closeJournal());
@@ -2384,11 +2398,13 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const supervisionTurns = new Map<PeerId, { id: string; at: number; tokens?: number; session?: string }>();
   bus.onDeliver = (peer, originals) => {
+    if (peer.includes("@")) return;
     pendingDeliveryTask.delete(peer);
     const task = deliveryTask(originals);
     if (task !== undefined) pendingDeliveryTask.set(peer, task);
   };
   bus.onDelivered = (peer, originals) => {
+    if (peer.includes("@")) return;
     pendingDeliveryTask.delete(peer);
     if (!originals.some(env => env.from === HUB && env.refs?.supervision) || supervisionTurns.has(peer)) return;
     const turn = turns.get(peer);
@@ -2419,8 +2435,9 @@ export async function startDaemon(opts: DaemonOptions) {
     if (row && tasks.isPii(row)) return;
     return { ...(row ? { task: taskKey(memoryProject, row) } : {}), turn: turns.get(peer)?.id ?? null, session: contextSession(peer) ?? null };
   }) : undefined;
-  bus.onMemoryDelivery = (peer, id, out, field) => { if (!out.some(env => env.refs?.boundedCheck)) memoryObservations?.delivery(peer, id, out, field); };
+  bus.onMemoryDelivery = (peer, id, out, field) => { if (!peer.includes("@") && !out.some(env => env.from.includes("@") || env.to?.some(id => id.includes("@")) || env.refs?.boundedCheck)) memoryObservations?.delivery(peer, id, out, field); };
   const citeMemory = (peer: PeerId, text: string, id: string, envs: readonly Envelope[] = []) => {
+    if (peer.includes("@") || envs.some(env => env.from.includes("@") || env.to?.some(id => id.includes("@")))) return;
     if (!tasks.nameable(text) || looksSecret(text) || !screenMemory([{ title: null, text }]).length) return;
     memoryObservations?.cite(peer, text, id, envs);
   };
@@ -3462,8 +3479,20 @@ export async function startDaemon(opts: DaemonOptions) {
   const nativeUnattended = (peer: string): boolean => startingUnattended.get(peer) ?? unattendedPeers.has(peer);
   const permissions = new Map<string, { push: string; peer: string; tool?: string; createdAt: number; expiresAt: number; done: (optionId: string | undefined, surface?: "console" | "dashboard" | "terminal", reason?: "expired" | "cancelled") => boolean }>();
   let stopping = false;
+  const roomChat = new RoomChat({ bus, cwd: opts.cwd, routing: activeRouting, piiPaths: () => config.pii?.paths ?? [],
+    senderPrivate: peer => peer === USER ? false : bus.peers.has(peer) && !peer.includes("@") ? !!turns.get(peer)?.private || contextPii(peer) : undefined,
+    taskPrivate: id => { const task = board.get(id); return task ? tasks.isPii(task) : undefined; },
+    modelScreenOn: () => tasks.screenOn(),
+    screen: opts.piiScreen ?? (text => screenPii(text, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })),
+    policyVersion: () => configRevision,
+    limits: () => config.limits,
+    roster: ids => { remoteRoster.clear(); for (const id of ids) remoteRoster.add(id); },
+    changed: () => { if (ready && !stopping) writeStatus(); },
+  });
+  remotePending = room => roomChat.pendingIds(room);
+  remoteQueueChanged = () => roomChat.queueChanged();
   const roomCommands = new RoomCommands({ stateDir: opts.stateDir, cwd: opts.cwd,
-    presence: () => [...bus.peers].map(([id, peer]) => ({ id, state: peer.state })),
+    presence: () => [...bus.peers].filter(([id]) => !id.includes("@")).map(([id, peer]) => ({ id, state: peer.state })), chat: roomChat,
   });
   // Room crypto/state failure disables only this optional outbound service, never local work.
   void roomCommands.start().catch(() => log("rooms unavailable"));
@@ -3519,7 +3548,7 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   let releasing = false; // gone-owner release (#6) and the ready sweep (#34): one run at a time, and a recovery commit waits for it
   const recoveryReady = () => {
-    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].some((peer) => peer.state === "busy" || ("recoveryReady" in peer && peer.recoveryReady !== true))) return false;
+    if (!recoveryActive() || releasing || taskOpsInFlight !== 0 || tasks.checksPending() !== 0 || piCallsInFlight() !== 0 || permissions.size !== 0 || starting.size !== 0 || requestedPeerStops.size !== 0 || rosterChanging !== undefined || !budget.recoverySettled || [...bus.peers.values()].filter(peer => !peer.id.includes("@")).some((peer) => peer.state === "busy" || ("recoveryReady" in peer && peer.recoveryReady !== true))) return false;
     if (checkPending.size !== 0) return false;
     if (tasks.autoPullsPending() !== 0) return false; // #785 P1c: an automatic backlog pull mid-admission would write after the commit's digest; its own line keeps the line above exact for scripts/seeds.json
     if (tasks.queuePressureRechecksPending() !== 0) return false;
@@ -3644,7 +3673,7 @@ export async function startDaemon(opts: DaemonOptions) {
   } };
   const claudeUsageTimer = setInterval(collectClaudeUsage, 2000);
   claudeUsageTimer.unref(); intervals.push(claudeUsageTimer);
-  const recoveryPeers = (): Record<string, RestartPeerSnapshot> => Object.fromEntries([...new Set([...bus.peers.keys(), ...allExternalInstanceIds()])].map(id => {
+  const recoveryPeers = (): Record<string, RestartPeerSnapshot> => Object.fromEntries([...new Set([...bus.peers.keys(), ...allExternalInstanceIds()])].filter(id => !id.includes("@")).map(id => {
     const peer = bus.peers.get(id);
     if (isExternalInstance(id) || externalRefusedRows.has(id)) {
       const binding = externalRefusedRows.has(id) ? externalBindings.get(id) : retainedExternalBinding(id), receipt = peer && externalLaunches.get(id) ? managedAcpLaunch(peer, externalLaunches.get(id)!.options) : undefined;
@@ -3721,11 +3750,11 @@ export async function startDaemon(opts: DaemonOptions) {
   };
   const statusPeerIds = (open: ReturnType<Board["statusTasks"]>) => {
     const reservations = board.statusReservations();
-    const ids = new Set([...bus.knownPeers(), ...extraIds, ...allExternalInstanceIds(), ...reservations]);
+    const ids = new Set([...bus.knownPeers(), ...extraIds, ...allExternalInstanceIds(), ...reservations].filter(id => !id.includes("@")));
     for (const peer of configuredIds) if (onRoster(peer)) ids.add(peer);
     if (!Object.keys(config.roster).some(peer => !membershipAllowed(peer))) return [...ids];
     for (const task of open) for (const peer of [task.owner, task.reviewer]) if (peer && !membershipAllowed(peer)) ids.add(peer);
-    return [...ids].filter(peer => isExternalInstance(peer) || externalRefusedRows.has(peer) || membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer));
+    return [...ids].filter(peer => !peer.includes("@") && (isExternalInstance(peer) || externalRefusedRows.has(peer) || membershipAllowed(peer) || reservations.includes(peer) || bus.queued(peer) > 0 || (() => { const summary = bus.queueSummary(peer); return summary.needsReview > 0 || !!summary.liveAccepted?.length; })() || open.some(task => task.owner === peer || task.reviewer === peer)));
   };
   let checkoutInTick: { branch: ReturnType<typeof mainCheckoutBranch> } | undefined;
   const checkoutBranch = () => {
@@ -3877,6 +3906,7 @@ export async function startDaemon(opts: DaemonOptions) {
   let queuePressureStatusQueued = false;
   bus.onQueues = () => {
     if (stopping || settlingSuperseded || reportingQueues) return;
+    remoteQueueChanged();
     reportingQueues = true;
     try {
       settleSupersededDeliveries();
@@ -4083,7 +4113,7 @@ export async function startDaemon(opts: DaemonOptions) {
     if (piContinuity.state === "ready" && (!isPiPeer(pi) || pi.state === "offline" || !pi.sessionGeneration || !pi.recoveryReady)) {
       piContinuity = readRecoveryContinuity(opts.stateDir, { projectId, projectRoot: opts.cwd });
     }
-    const peers = [...bus.peers.values()].filter((p) => p.state !== "offline").map((p) => {
+    const peers = [...bus.peers.values()].filter((p) => p.state !== "offline" && !p.id.includes("@")).map((p) => {
       let meta: Record<string, unknown> = {};
       try { meta = (p as { recoveryMetadata?: () => Record<string, unknown> }).recoveryMetadata?.() ?? {}; } catch { /* not ready yet: the id alone */ }
       return { peer: p.id, meta };
@@ -4144,6 +4174,7 @@ export async function startDaemon(opts: DaemonOptions) {
       log(`state ${e.peer} -> ${e.state}`);
       event({ type: "state", peer: e.peer, state: e.state });
       if (ready) tasks.scheduleQueuePressureRecheck();
+      if (e.peer.includes("@")) { if (!stopping) writeStatus(); return; }
       // #248: the add-ons it works with, once per attach (names and versions only).
       // A result is written unless a later attachment began meanwhile: a peer that detached before its probe settled
       // still did its work under that attachment.
@@ -4534,6 +4565,7 @@ export async function startDaemon(opts: DaemonOptions) {
   // Printed for a person's explicit reconciliation only; never executed by auto-start.
   const continuityCleanup = () => `After inspection, archive the active bookmark with ${["mv", "-n", "--", join(opts.stateDir, "recovery-continuity.json"), join(opts.stateDir, `recovery-continuity.retired.manual.${randomUUID()}.json`)].map(shellQuote).join(" ")} before choosing another session`;
   async function hubStart(peer: unknown, by: string, person = false): Promise<Record<string, unknown>> {
+    if (typeof peer === "string" && peer.includes("@")) return { ok: false, error: "remote peers have no local runtime or control authority" };
     if (typeof peer === "string" && isExternalInstance(peer) && !person) return { ok: false, error: "external module instances require an explicit person start" };
     if (stopping) return { ok: false, error: "hub is stopping" };
     if (rosterChanging !== undefined && rosterChanging === peer) return { ok: false, error: `${String(peer)} roster change is in progress` };
@@ -5572,6 +5604,7 @@ export async function startDaemon(opts: DaemonOptions) {
     const privateDelivery = originals.some((env) => env.private || publicOnly && env.refs?.task && (()=>{const task=board.get(Number(env.refs!.task));return !task || tasks.isPii(task);})());
     return {
       id: row.id, peer: row.peer, state: row.state, revision: row.revision,
+      ...roomChat.evidence(row.peer, row.id),
       ...(!membershipAllowed(row.peer) ? { rostered: false, holdReason: "off roster" } : {}),
       createdAt: row.createdAt, updatedAt: row.updatedAt,
       envelopeIds: originals.map((env) => env.id),
@@ -6848,6 +6881,7 @@ export async function startDaemon(opts: DaemonOptions) {
     };
     if (!c.authed) {
       if (msg.t !== "hello" || msg.token !== token) return sock.close(4401, "bad token");
+      if (typeof msg.peer === "string" && msg.peer.includes("@")) return sock.close(4403, "remote identities have no control connection");
       if (msg.v !== PROTOCOL) {
         // An outdated plugin would drop every digest without a trace. Refuse it loudly instead.
         log(`refused ${msg.role} ${msg.peer ?? ""}: wire version ${msg.v ?? 1}, hub speaks ${PROTOCOL} (claude plugin update agent-hub@agent-hub)`);
@@ -7020,14 +7054,15 @@ export async function startDaemon(opts: DaemonOptions) {
         }
         if(c.role!=="console" && msg.reason!==undefined && (typeof msg.reason!=="string" || !tasks.publicMetadataText(msg.reason)))return void reply({ok:false,error:"queue reason withheld by privacy policy"});
         if (msg.op === "list") {
-          if (msg.peer !== undefined && (typeof msg.peer !== "string" || !PEER_ID.test(msg.peer))) return void reply({ ok: false, error: "invalid peer" });
+          if (msg.peer !== undefined && (typeof msg.peer !== "string" || !PEER_ID.test(msg.peer) && !parseRemotePeerId(msg.peer))) return void reply({ ok: false, error: "invalid peer" });
           return void reply({ ok: true, deliveries: bus.queueList(msg.peer).map((row) => queueView(row,false,c.role!=="console")) });
         }
         if (msg.op === "discard") {
           // #713: the person's bulk clear of one peer's backlog. Without `confirmed` it only counts; with it, every queued (or needs_review) delivery of that peer is discarded
           // through the same `resolveDelivery` as one by one, each with the reason, so the journal records each as a `resolve ... discard`. Push peers' queues are never touched
           // because only the named peer is read. Refused while recovery or shutdown holds queue mutations, like every queue resolution.
-          if (typeof msg.peer !== "string" || !PEER_ID.test(msg.peer)) return void reply({ ok: false, error: "peer must be a peer id" });
+          if (typeof msg.peer !== "string" || !PEER_ID.test(msg.peer) && !parseRemotePeerId(msg.peer)) return void reply({ ok: false, error: "peer must be a peer id" });
+          if (msg.peer.includes("@") && c.role !== "console") return void reply({ ok: false, error: "remote delivery disposition is person-only" });
           const state = msg.state === undefined ? "queued" : msg.state;
           if (state !== "queued" && state !== "needs_review") return void reply({ ok: false, error: "state is queued or needs_review" });
           const rows = bus.queueList(msg.peer).filter((row) => row.state === state);
@@ -7041,7 +7076,9 @@ export async function startDaemon(opts: DaemonOptions) {
             const current = bus.queueShow(row.id) ?? bus.queueList(msg.peer).find((r) => r.id === row.id);
             try {
               if (!current || current.state !== state) throw new Error("unknown delivery");
-              bus.resolveDelivery(row.id, current.revision, "discard", msg.reason.trim()); discarded++;
+              bus.resolveDelivery(row.id, current.revision, "discard", msg.reason.trim());
+              if (row.peer.includes("@")) roomChat.disposition(row.peer, row.id, "discard");
+              discarded++;
             }
             catch (error) { const why = resolutionRefusal(error).split(":")[0]!; refused[why] = (refused[why] ?? 0) + 1; }
           }
@@ -7056,7 +7093,10 @@ export async function startDaemon(opts: DaemonOptions) {
         if (msg.op !== "resolve" || !["completed", "retry", "discard"].includes(msg.action) || !Number.isSafeInteger(msg.revision) || msg.revision < 0 || typeof msg.reason !== "string" || !msg.reason.trim() || msg.reason.length > 2000) return void reply({ ok: false, error: "resolution needs an action, observed revision and reason" });
         if (recoveryActive() || stopping) return void reply({ ok: false, error: "recovery or shutdown is holding queue mutations" });
         try {
+          const before = bus.queueShow(msg.id);
+          if (before?.peer.includes("@") && c.role !== "console") return void reply({ ok: false, error: "remote delivery disposition is person-only" });
           bus.resolveDelivery(msg.id, msg.revision, msg.action, msg.reason.trim());
+          if (before?.peer.includes("@")) roomChat.disposition(before.peer, msg.id, msg.action);
           writeStatus();
           return void reply({ ok: true, delivery: queueView(bus.queueShow(msg.id),false,c.role!=="console") });
         } catch (error) { return void reply({ ok: false, error: resolutionRefusal(error) }); }
@@ -7159,7 +7199,10 @@ export async function startDaemon(opts: DaemonOptions) {
         const heldBack = hushed.length > 0 && hushed.length === bus.audience(env).length;
         const refused = c.peer && !heldBack ? admit(admittedEnv, inReplyTo?.id) : undefined;
         if (refused) return void reply({ t: "sent", ok: false, error: refused });
-        const { targets, dropped } = bus.publishResult(env);
+        let published: ReturnType<Bus["publishResult"]>;
+        try { published = bus.publishResult(env); }
+        catch (error) { return void reply({ t: "sent", ok: false, error: error instanceof Error && error.message.startsWith("room") ? sanitize(error.message).slice(0, 300) : "message admission unavailable" }); }
+        const { targets, dropped } = published;
         if (c.peer && inReplyTo) bus.completeReply(c.peer, inReplyTo.id); // the delivery it answers was handled all the same
         if (dropped === "hop") return void reply({ t: "sent", ok: true, targets, dropped, recorded: priority === "fyi",
           notice: `not delivered: reply chain reached the hop cap (${MAX_HOP}); send a new message without reply_to` });

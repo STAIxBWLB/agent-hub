@@ -25,8 +25,12 @@ export class RoomPolicy {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("room: invalid_config");
     const config = raw as Record<string, any>;
     if (config.rooms !== undefined) {
-      if (!config.rooms || typeof config.rooms !== "object" || Array.isArray(config.rooms) || Object.keys(config.rooms).length > 64) throw new Error("room: invalid_config");
+      if (!config.rooms || typeof config.rooms !== "object" || Array.isArray(config.rooms) || Object.keys(config.rooms).filter(key => key !== "ack_timeout_s" && key !== "queue_ttl_h").length > 64) throw new Error("room: invalid_config");
       for (const [name, row] of Object.entries(config.rooms)) {
+        if (name === "ack_timeout_s" || name === "queue_ttl_h") {
+          if (!Number.isSafeInteger(row) || (row as number) < 1 || (row as number) > (name === "ack_timeout_s" ? 86400 : 168)) throw new Error("room: invalid_config");
+          continue;
+        }
         roomName(name);
         if (!row || typeof row !== "object" || Array.isArray(row) || Object.keys(row).some(key => key !== "expose")) throw new Error("room: invalid_config");
         exposedPeers((row as {expose?: unknown}).expose ?? []);
@@ -41,10 +45,14 @@ export class RoomPolicy {
     try { return exposedPeers(this.read().rooms?.[name]?.expose ?? []); }
     catch { return []; } // Loss of trust revokes exposure, never widens it.
   }
+  timing(): { ackTimeoutMs: number; ttlMs: number } {
+    const rooms = this.read().rooms ?? {};
+    return { ackTimeoutMs: (rooms.ack_timeout_s ?? 600) * 1000, ttlMs: (rooms.queue_ttl_h ?? 24) * 3_600_000 };
+  }
   private prepare(name: string, peers: string[]): { config: Record<string, any>; bytes: string } {
     roomName(name); const expose = exposedPeers(peers), config = this.read();
     const rooms = { ...config.rooms, [name]: { expose } };
-    if (Object.keys(rooms).length > 64) throw new Error("room: config_full");
+    if (Object.keys(rooms).filter(key => key !== "ack_timeout_s" && key !== "queue_ttl_h").length > 64) throw new Error("room: config_full");
     const bytes = JSON.stringify({ ...config, rooms }, null, 2) + "\n";
     if (Buffer.byteLength(bytes) > 1_048_576) throw new Error("room: config_full");
     return { config, bytes };

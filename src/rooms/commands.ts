@@ -6,6 +6,7 @@ import { acceptRoomEpoch, brokerUrl, canonicalBytes, createInvite, createJoin, c
 import { RoomStore, type RoomState } from "./store.ts";
 import { RoomLink } from "./link.ts";
 import { exposedPeers, roomName, RoomPolicy } from "./policy.ts";
+import type { RoomChat } from "./service.ts";
 
 export interface RoomCommandResult { kind?: string; artifact?: string; name?: string; room?: string; owner?: string; member?: string }
 export interface RoomPreview { owner: string; member: string; commit: () => Promise<RoomCommandResult> }
@@ -47,7 +48,7 @@ export class RoomCommands {
   private stopped = false;
   private readonly links = new Map<string, RoomLink>();
   private readonly policy: RoomPolicy;
-  constructor(private readonly options: { stateDir: string; cwd: string; presence?: () => readonly {id: string; state: string}[] }) { this.policy = new RoomPolicy(options.cwd); }
+  constructor(private readonly options: { stateDir: string; cwd: string; presence?: () => readonly {id: string; state: string}[]; chat?: RoomChat }) { this.policy = new RoomPolicy(options.cwd); }
   private async open(): Promise<RoomStore> {
     if (this.stopped) refuse("stopped");
     this.pending ??= RoomStore.open({ stateDir: join(this.options.stateDir, "rooms") }).then(store => {
@@ -61,18 +62,22 @@ export class RoomCommands {
     const store = await this.open();
     if (!this.stopped) for (const state of store.list()) if (!state.left) this.link(state.name);
   }
-  stop(): void { this.stopped = true; clearTimeout(this.presenceTimer); for (const link of this.links.values()) link.stop(); this.links.clear(); this.store?.close(); }
+  stop(): void { this.stopped = true; clearTimeout(this.presenceTimer); this.options.chat?.stop(); for (const link of this.links.values()) link.stop(); this.links.clear(); this.store?.close(); }
   private link(name: string): void {
     if (this.stopped || !this.store || this.store.get(name)?.left) return;
     let link = this.links.get(name);
     if (!link) {
-      const created = new RoomLink({ store: this.store, name, presence: () => {
+      const store = this.store;
+      const created: RoomLink = new RoomLink({ store, name, application: this.options.chat?.application,
+        onPresence: value => this.options.chat?.presence(store, name, created, value),
+        onState: state => this.options.chat?.linkState(store, name, created, state), presence: () => {
         const allowed = new Set(this.policy.get(name));
         return (this.options.presence?.() ?? []).filter(row => allowed.has(row.id));
       } });
       this.links.set(name, created); link = created;
+      this.options.chat?.bind(store, name, created);
       void created.start().catch(() => undefined);
-    } else link.refresh();
+    } else { this.options.chat?.bind(this.store, name, link); link.refresh(); }
   }
   private presenceTimer?: ReturnType<typeof setTimeout>;
   changed(): void {
@@ -91,7 +96,7 @@ export class RoomCommands {
   async rows(name?: string): Promise<Record<string, unknown>[]> {
     if (!this.store && !existsSync(join(this.options.stateDir, "rooms"))) return [];
     const store = await this.open(); if (name !== undefined) roomName(name);
-    return store.list().filter(row => name === undefined || row.name === name).map(row => ({ name: row.name, room: row.current.room, owner: this.owner(row), member: store.identity.public.fingerprint, epoch: row.current.epoch, state: row.left ? "left" : this.links.get(row.name)?.status().state ?? "offline" }));
+    return store.list().filter(row => name === undefined || row.name === name).map(row => ({ name: row.name, room: row.current.room, owner: this.owner(row), member: store.identity.public.fingerprint, epoch: row.current.epoch, state: row.left ? "left" : this.links.get(row.name)?.status().state ?? "offline", ...(this.options.chat ? { deliveries: this.options.chat.rows(row.name) } : {}) }));
   }
   async preview(action: unknown, raw: unknown, check: () => boolean): Promise<RoomPreview> {
     if (typeof action !== "string") refuse("invalid_operation");

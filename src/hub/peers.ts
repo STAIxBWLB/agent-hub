@@ -27,6 +27,14 @@ export interface FrontendProxyPort {
 
 export interface PeerAdapter {
   readonly id: PeerId;
+  /** Host-owned room transport binding; remote ids never gain local role/console authority. */
+  readonly remoteRoom?: string;
+  /** Verified roster fingerprint, pinned separately from the reusable display label. */
+  readonly remoteMember?: string;
+  /** Host arrival TTL for queued room traffic, default 24 hours. */
+  readonly remoteQueueTtlMs?: number;
+  /** Host-only original enqueue deadline, handed over before one remote transport call. */
+  setRemoteDeadline?(envelopeId: string, expiresAt: number): void;
   ownedTools?(launchId: unknown): OwnedToolsLaunch | undefined;
   keepApprovalAlive?(): void;
   readonly state: PeerState;

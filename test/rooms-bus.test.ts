@@ -1,0 +1,257 @@
+import { afterEach, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Bus, type BusEvent, type BusSnapshot } from "../src/hub/bus.ts";
+import { DeliveryJournal } from "../src/hub/delivery-journal.ts";
+import { BasePeer } from "../src/hub/peers.ts";
+import { newEnvelope, type Envelope, type PeerState } from "../src/hub/envelope.ts";
+
+const roots: string[] = [], buses: Bus[] = [];
+afterEach(() => { for (const bus of buses.splice(0)) bus.closeJournal(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+class Peer extends BasePeer {
+  readonly remoteRoom?: string;
+  readonly remoteMember?: string;
+  readonly remoteQueueTtlMs?: number;
+  batches: Envelope[][] = [];
+  deadlines = new Map<string, number>();
+  accepted?: (envs: Envelope[], id?: string) => Promise<void>;
+  constructor(id: string, room?: string, ttlMs?: number, member = "a".repeat(64)) { super(id); this.remoteRoom = room; this.remoteMember = room ? member : undefined; this.remoteQueueTtlMs = ttlMs; }
+  setRemoteDeadline(id: string, expiry: number): void { this.deadlines.set(id, expiry); }
+  async deliver(envs: Envelope[], id?: string) {
+    this.batches.push(envs);
+    if (this.accepted) await this.accepted(envs, id);
+    else if (id) this.onDelivery?.({ id, state: "completed" });
+  }
+  async start() { this.setState("idle"); }
+  async stop() { this.setState("offline"); }
+  set(state: PeerState) { this.setState(state); }
+}
+function fixture(options: ConstructorParameters<typeof Bus>[0] = {}) {
+  const root = mkdtempSync(join(tmpdir(), "ahub-room-bus-")); roots.push(root);
+  const journal = new DeliveryJournal({ file: join(root, "hub.db"), projectRoot: root, projectId: "rooms", instanceId: crypto.randomUUID() });
+  const bus = new Bus({ batchMs: 0, ...options, journal }); buses.push(bus);
+  return { root, bus, journal };
+}
+async function until(check: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 200 && !check(); attempt++) await new Promise<void>(resolve => setImmediate(resolve));
+  expect(check()).toBe(true);
+}
+function deferred() { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { promise, resolve }; }
+const remote = "codex@hub-a", room = "room-a";
+
+test("room peers never join a broadcast and malformed or unknown explicit remote targets refuse before effects", () => {
+  const { bus } = fixture(), local = new Peer("local"), target = new Peer(remote, room), events: BusEvent[] = [];
+  bus.add(local); bus.add(target); bus.tap(event => events.push(event));
+  const ordinary = newEnvelope("user", "ordinary broadcast");
+  expect(bus.publish(ordinary)).toEqual([local.id]); expect(bus.queueIds(remote)).toEqual([]);
+  for (const id of ["ghost@hub-a", "codex@hub-a@evil", "codex@hub-a\n"]) {
+    const env = newEnvelope("user", "must not publish", { to: [local.id, id] }), before = events.length;
+    expect(() => bus.publish(env)).toThrow();
+    expect(bus.get(env.id)).toBeUndefined(); expect(bus.queueIds(local.id)).toEqual([ordinary.id]); expect(events.length).toBe(before);
+  }
+  const snapshot = bus.snapshot(false);
+  snapshot.queues["retired@hub-z"] = [];
+  bus.restore(snapshot);
+  expect(bus.audience(newEnvelope("user", "still local"))).toEqual([local.id]);
+});
+
+test("a remote transport gets one untouched original per signed admission, without prefaces or condensation", async () => {
+  let condensed = 0;
+  const { bus, journal } = fixture({ batchMs: 60_000, condense: async envs => { condensed++; return [newEnvelope("digest", "rewritten")]; } });
+  const target = new Peer(remote, room); bus.add(target);
+  bus.preface(remote, "MEMORY-CANARY"); bus.note(remote, "RECALL-CANARY");
+  const envs = [newEnvelope("user", "one", { to: [remote] }), newEnvelope("user", "two", { to: [remote] })];
+  for (const env of envs) bus.publish(env);
+  const deadlines = bus.snapshot(false).remoteQueueExpires![remote]!;
+  await target.start(); await until(() => target.batches.length === 2);
+  expect(condensed).toBe(0); expect(target.batches.map(batch => batch.map(env => env.id))).toEqual(envs.map(env => [env.id]));
+  expect(target.batches.flat().map(env => env.body)).toEqual(["one", "two"]);
+  expect([...target.deadlines]).toEqual(envs.map(env => [env.id, deadlines[env.id]!]));
+  const completed = journal.list(remote).filter(row => row.state === "completed");
+  expect(completed).toHaveLength(2); expect(completed.every(row => row.originals.length === 1 && row.out.length === 1)).toBe(true);
+});
+
+test("remote-origin mixed local batches bypass condensation and memory while telemetry gets only stubs", async () => {
+  let condensed = 0, memory = 0;
+  const { bus } = fixture({ condense: async envs => { condensed++; return envs; } });
+  const local = new Peer("local"), target = new Peer(remote, room), events: BusEvent[] = [];
+  bus.add(local); bus.add(target); bus.onMemoryDelivery = () => { memory++; }; bus.tap(event => events.push(event));
+  const incoming = newEnvelope(remote, "REMOTE-CANARY", { to: [local.id], refs: { paths: ["REF-CANARY"] } });
+  const publicLocal = newEnvelope("user", "ordinary", { to: [local.id] });
+  bus.publish(incoming); bus.publish(publicLocal); await local.start(); await until(() => local.batches.length === 1);
+  expect(condensed).toBe(0); expect(memory).toBe(0);
+  expect(local.batches[0]!.map(env => env.body)).toEqual(["REMOTE-CANARY", "ordinary"]);
+  expect(JSON.stringify(events)).not.toContain("REMOTE-CANARY"); expect(JSON.stringify(events)).not.toContain("REF-CANARY");
+  const outgoing = newEnvelope("user", "OUTGOING-CANARY", { to: [remote], refs: { paths: ["OUTGOING-REF"] } });
+  bus.publish(outgoing); await target.start(); await until(() => target.batches.length === 1);
+  expect(target.batches[0]![0]!.body).toBe("OUTGOING-CANARY"); expect(memory).toBe(0);
+  expect(JSON.stringify(events)).not.toContain("OUTGOING-CANARY"); expect(JSON.stringify(events)).not.toContain("OUTGOING-REF");
+});
+
+test("the per-room cap deduplicates shared recipients and host outbox ids and refuses mixed publication atomically", () => {
+  const external: string[] = [];
+  const { bus } = fixture({ queueCap: 1, remotePending: () => external });
+  const a = new Peer(remote, room), b = new Peer("kimi@hub-a", room), local = new Peer("local");
+  bus.add(a); bus.add(b); bus.add(local);
+  const shared = newEnvelope("user", "shared", { to: [a.id, b.id] }); bus.publish(shared); external.push(shared.id);
+  for (let n = 0; n < 198; n++) bus.publish(newEnvelope("user", `queued ${n}`, { to: [a.id] }));
+  expect(bus.remotePendingIds(room)).toHaveLength(199); expect(bus.queued(a.id)).toBe(199);
+  external.push("external-outbox-id");
+  const refused = newEnvelope("user", "full", { to: [local.id, a.id] });
+  expect(() => bus.publish(refused)).toThrow("remote room queue is full");
+  expect(bus.get(refused.id)).toBeUndefined(); expect(bus.queueIds(local.id)).toEqual([]); expect(bus.queued(a.id)).toBe(199);
+  external.pop(); bus.publish(refused);
+  expect(bus.remotePendingIds(room)).toHaveLength(200); expect(bus.queued(a.id)).toBe(200); expect(bus.queueIds(local.id)).toEqual([refused.id]);
+});
+
+test("active remote work still occupies the same cap and is deduplicated with its durable outbox", async () => {
+  const external: string[] = [], held = deferred();
+  const { bus } = fixture({ remotePending: () => external }), target = new Peer(remote, room); bus.add(target);
+  target.accepted = async (_envs, id) => { target.set("busy"); target.onDelivery?.({ id: id!, state: "accepted" }); await held.promise; target.onDelivery?.({ id: id!, state: "completed" }); };
+  await target.start(); const active = newEnvelope("user", "active", { to: [remote] }); bus.publish(active);
+  await until(() => target.batches.length === 1); external.push(active.id);
+  try {
+    for (let n = 0; n < 199; n++) bus.publish(newEnvelope("user", `offline ${n}`, { to: [remote] }));
+    expect(bus.remotePendingIds(room)).toHaveLength(200); expect(bus.queued(remote)).toBe(199);
+    const env = newEnvelope("user", "over cap", { to: [remote] });
+    expect(() => bus.publish(env)).toThrow("remote room queue is full"); expect(bus.get(env.id)).toBeUndefined();
+  } finally { held.resolve(); await until(() => !bus.hasInFlight(remote)); }
+});
+
+test("remote queue expiry uses host arrival and survives restart without granting a new TTL", () => {
+  const { bus } = fixture(), target = new Peer(remote, room, 60_000); bus.add(target); bus.pause(remote); bus.setManualPaused([remote]);
+  const env = { ...newEnvelope("user", "queued", { to: [remote] }), ts: 1 }; bus.publish(env);
+  const snapshot = bus.snapshot(false), expiry = snapshot.remoteQueueExpires![remote]![env.id]!;
+  expect(expiry).toBeGreaterThan(Date.now()); expect(bus.expireRemoteQueues(expiry - 1)).toBe(0);
+  const restored = fixture(); restored.bus.restore(snapshot); restored.bus.add(new Peer(remote, room, 86_400_000));
+  expect(restored.bus.snapshot(false).remoteQueueExpires![remote]![env.id]).toBe(expiry);
+  expect(restored.bus.expireRemoteQueues(expiry)).toBe(1); expect(restored.bus.queueIds(remote)).toEqual([]);
+  expect(restored.bus.isPaused(remote)).toBe(true); expect(restored.bus.manualPausedPeers()).toEqual([remote]);
+  expect(restored.journal.unresolved(remote)).toEqual([expect.objectContaining({ state: "needs_review", reason: "remote queue expired before recipient admission", originals: [env] })]);
+  expect(restored.bus.expireRemoteQueues(expiry + 1)).toBe(0);
+});
+
+test("missing old remote deadlines fail closed and late signed evidence never auto-completes needs_review", async () => {
+  const env = newEnvelope("user", "old snapshot", { to: [remote] });
+  const old: BusSnapshot = { schemaVersion: 1, queues: { [remote]: [env] }, prefaces: {}, seen: [env], attempts: {}, withdrawn: [] };
+  const { bus, journal } = fixture(); bus.restore(old); const target = new Peer(remote, room); bus.add(target); await target.start();
+  await until(() => journal.unresolved(remote).some(row => row.state === "needs_review"));
+  expect(target.batches).toEqual([]); const row = journal.unresolved(remote)[0]!;
+  expect(row.reason).toBe("remote queue expiry unavailable after restore");
+  expect(bus.noteLateRemoteReceipt(remote, row.id, "completed")).toBe(true);
+  expect(journal.get(row.id)).toMatchObject({ state: "needs_review", reason: "late signed completed receipt: remote queue admitted; remains needs_review" });
+  expect(bus.noteLateRemoteReceipt("kimi@hub-a", row.id, "completed")).toBe(false);
+  expect(bus.noteLateRemoteReceipt(remote, row.id, "failed_safe")).toBe(true); expect(journal.get(row.id)?.state).toBe("needs_review");
+  expect(bus.queueIds(remote)).toEqual([]); expect(target.batches).toEqual([]);
+});
+
+test("remote deadline snapshot metadata rejects malformed keys, invalid deadlines and excess side entries", () => {
+  const { bus, journal } = fixture(), baseline = bus.snapshot(false);
+  for (const remoteQueueExpires of [{ bad: { env: 1 } }, { [remote]: { env: -1 } }, { [remote]: Object.fromEntries(Array.from({ length: 201 }, (_, n) => [`id-${n}`, 1])) }]) {
+    expect(() => journal.persistBus({ ...baseline, remoteQueueExpires }, [])).toThrow("invalid delivery journal");
+  }
+  for (const remoteQueueRooms of [{ bad: room }, { [remote]: "" }, { [remote]: room }]) {
+    expect(() => journal.persistBus({ ...baseline, remoteQueueRooms }, [])).toThrow("invalid delivery journal");
+  }
+  const env = newEnvelope("user", "bound target", { to: [remote] });
+  expect(() => journal.persistBus({ ...baseline, queues: { [remote]: [env] }, remoteQueueMembers: { [remote]: "g".repeat(64) } }, [])).toThrow("invalid delivery journal");
+});
+
+
+test("host private-turn provenance is captured before publication and cannot be laundered by offline waiting or restart", () => {
+  let privateTurn: boolean | undefined = true;
+  const { bus } = fixture({ remotePrivate: () => privateTurn }), target = new Peer(remote, room); bus.add(target);
+  const env = newEnvelope("codex", "private turn output", { to: [remote] }); bus.publish(env);
+  privateTurn = false;
+  const snapshot = bus.snapshot(false);
+  expect(env.private).toBe(true); expect(snapshot.queues[remote]![0]!.private).toBe(true);
+  const restored = fixture({ remotePrivate: () => false }); restored.bus.restore(snapshot); restored.bus.add(new Peer(remote, room));
+  expect(restored.bus.snapshot(false).queues[remote]![0]!.private).toBe(true);
+  privateTurn = undefined;
+  const unknown = newEnvelope("codex", "unknown turn", { to: [remote] }); bus.publish(unknown); expect(unknown.private).toBe(true);
+});
+
+
+test("restored remote queues retain their host room cap without an attached adapter and cannot be retargeted", () => {
+  const first = fixture(), target = new Peer(remote, room); first.bus.add(target);
+  for (let n = 0; n < 199; n++) first.bus.publish(newEnvelope("user", `retained ${n}`, { to: [remote] }));
+  const snapshot = first.bus.snapshot(false);
+  expect(snapshot.remoteQueueRooms).toEqual({ [remote]: room });
+  const next = fixture(); next.bus.restore(snapshot);
+  expect(next.bus.remotePendingIds(room)).toHaveLength(199);
+  expect(() => next.bus.add(new Peer(remote, "another-room"))).toThrow("remote queued room binding changed");
+  const other = new Peer("kimi@hub-b", room), local = new Peer("local"); next.bus.add(other); next.bus.add(local);
+  next.bus.publish(newEnvelope("user", "last room slot", { to: [other.id] }));
+  const blocked = newEnvelope("user", "not a fresh capacity", { to: [local.id, other.id] });
+  expect(() => next.bus.publish(blocked)).toThrow("remote room queue is full");
+  expect(next.bus.queueIds(local.id)).toEqual([]); expect(next.bus.queueIds(remote)).toHaveLength(199); expect(next.bus.get(blocked.id)).toBeUndefined();
+});
+
+test("a legacy queued remote with an unknown room never borrows a newly attached adapter binding", async () => {
+  const env = newEnvelope("user", "unknown room", { to: [remote] });
+  const snapshot: BusSnapshot = { schemaVersion: 1, queues: { [remote]: [env] }, prefaces: {}, seen: [env], attempts: {}, withdrawn: [], remoteQueueExpires: { [remote]: { [env.id]: Date.now() + 86_400_000 } } };
+  const { bus, journal } = fixture(); bus.restore(snapshot); const target = new Peer(remote, room); bus.add(target); await target.start();
+  expect(target.batches).toEqual([]); expect(bus.queueIds(remote)).toEqual([]);
+  expect(journal.unresolved(remote)).toEqual([expect.objectContaining({ state: "needs_review", reason: "remote queue room binding unavailable after restore" })]);
+});
+
+test("a failed remote deadline handoff retains needs_review without calling the transport", async () => {
+  const { bus, journal } = fixture(), target = new Peer(remote, room); bus.add(target);
+  target.setRemoteDeadline = () => { throw new Error("fixture deadline unavailable"); };
+  bus.publish(newEnvelope("user", "queued before the fixed deadline", { to: [remote] }));
+  await target.start(); await until(() => journal.unresolved(remote).some(row => row.state === "needs_review"));
+  expect(target.batches).toEqual([]);
+  expect(journal.unresolved(remote)[0]?.state).toBe("needs_review");
+});
+
+
+test("the next remote expiry reads queued metadata only and makes unknown legacy work immediately due", () => {
+  const { bus, journal } = fixture(), a = new Peer(remote, room, 60_000), b = new Peer("kimi@hub-b", "room-b", 120_000);
+  bus.add(a); bus.add(b); bus.add(new Peer("local"));
+  expect(bus.nextRemoteExpiry()).toBeUndefined();
+  bus.publish(newEnvelope("user", "native queue", { to: ["local"] }));
+  expect(bus.nextRemoteExpiry()).toBeUndefined();
+  const later = newEnvelope("user", "later remote", { to: [b.id] }), earlier = newEnvelope("user", "earlier remote", { to: [a.id] });
+  bus.publish(later); bus.publish(earlier);
+  const deadline = bus.snapshot(false).remoteQueueExpires![a.id]![earlier.id];
+  const snapshot = journal.snapshot.bind(journal), list = journal.list.bind(journal);
+  journal.snapshot = () => { throw new Error("no snapshot on timer path"); };
+  journal.list = () => { throw new Error("no history on timer path"); };
+  try { expect(bus.nextRemoteExpiry()).toBe(deadline); }
+  finally { journal.snapshot = snapshot; journal.list = list; }
+  bus.withdraw(earlier.id); expect(bus.nextRemoteExpiry()).toBeGreaterThan(deadline!);
+  bus.withdraw(later.id); expect(bus.nextRemoteExpiry()).toBeUndefined();
+  const env = newEnvelope("user", "legacy remote", { to: [remote] }), old = fixture();
+  old.bus.restore({ schemaVersion: 1, queues: { [remote]: [env] }, prefaces: {}, seen: [env], attempts: {}, withdrawn: [] });
+  const before = Date.now(), due = old.bus.nextRemoteExpiry();
+  expect(due).toBeGreaterThanOrEqual(before); expect(due).toBeLessThanOrEqual(Date.now());
+});
+
+
+test("a reused room label cannot inherit queued text after its original member was revoked", async () => {
+  const first = fixture(), original = "a".repeat(64), replacement = "b".repeat(64);
+  first.bus.add(new Peer(remote, room, undefined, original));
+  const env = newEnvelope("user", "original member only", { to: [remote] }); first.bus.publish(env);
+  const snapshot = first.bus.snapshot(false);
+  expect(snapshot.remoteQueueMembers).toEqual({ [remote]: original });
+  const next = fixture(); next.bus.restore(snapshot);
+  const foreign = new Peer(remote, room, undefined, replacement);
+  expect(() => next.bus.add(foreign)).toThrow("remote queued member binding changed");
+  await foreign.start(); expect(foreign.batches).toEqual([]);
+  expect(next.bus.queueIds(remote)).toEqual([env.id]);
+  const legacy = { ...snapshot }; delete legacy.remoteQueueMembers;
+  const unknown = fixture(); unknown.bus.restore(legacy); const current = new Peer(remote, room, undefined, replacement);
+  unknown.bus.add(current); await current.start();
+  expect(current.batches).toEqual([]); expect(unknown.bus.queueIds(remote)).toEqual([]);
+  expect(unknown.journal.unresolved(remote)).toEqual([expect.objectContaining({ state: "needs_review", reason: "remote queue member binding unavailable after restore" })]);
+});
+
+
+test("room admission journal availability distinguishes a bare bus, known storage failure and closed journal", () => {
+  const bare = new Bus(); buses.push(bare); expect(bare.deliveryJournalAvailable()).toBe(false);
+  const { bus } = fixture(); expect(bus.deliveryJournalAvailable()).toBe(true);
+  bus.storageError = "fixture storage unavailable"; expect(bus.deliveryJournalAvailable()).toBe(false);
+  bus.storageError = undefined; expect(bus.deliveryJournalAvailable()).toBe(true);
+  bus.closeJournal(); buses.splice(buses.indexOf(bus), 1); expect(bus.deliveryJournalAvailable()).toBe(false);
+});
