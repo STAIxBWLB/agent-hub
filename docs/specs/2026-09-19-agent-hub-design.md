@@ -1169,7 +1169,7 @@ local hub work available. Fake-hub/broker tests are not a live TLS/proxy or X7 r
 ## Encrypted rooms: X4 screened chat and application receipts (#446)
 
 This implements frozen D3/D5 from issue #446, comment 6242775004, with the
-approved X4 refinements of 2026-10-28. X5 dashboard membership/metrics, X6
+approved X4 refinements and R1 clarifications. X5 dashboard membership/metrics, X6
 invocations and X7 live two-machine receipts remain separate.
 
 ### Egress and authority
@@ -1221,6 +1221,21 @@ receipt of their own. Incoming ids are fully validated before framing, bodies
 use `sanitize`, priority is at most status, and sender/hub rate admission shares
 one atomic limiter decision.
 
+The first presence on a new link session may carry the optional encrypted,
+signed boolean `requestReply: true`; absence means false. An accepted request
+elicits one ordinary presence without that request, never a reply loop. This
+refreshes discovery after a restart while the other hub's peers remain idle,
+without a periodic heartbeat. A transient disconnect retains the last signed
+peer states, but delivery remains gated on the current authenticated link and
+roster. A roster change invalidates the cached states.
+
+Ciphertext publication requires the ready socket's verified roster to match the
+local installed roster. While a verified owner upgrades an older broker roster,
+one canonical same-room, own-recipient ciphertext may wait inside the existing
+packet/byte bounds while roster controls continue. It is not decrypted, replayed
+or ACKed before ready for the current roster. Generic premature or second
+deferred frames refuse.
+
 ### D5 settlement and bounded retention
 
 `completed` means the remote hub durably admitted **one screened chat to its
@@ -1228,7 +1243,7 @@ exposed local peer's queue**. It does not mean native or model execution. Person
 views say **completed (admitted)**. Broker `stored` means accepted ciphertext
 only; a transport retirement ACK is not application completion.
 
-Schema2 of the private `rooms.db` migrates schema1 without replacing identity,
+Schema3 of the private `rooms.db` migrates schema1/2 without replacing identity,
 pins, counters, floors or retained traffic. A receiver commits its crypto inbox,
 then application `pending -> dispatching` before publishing into the separate
 Bus journal. A crash or failure in that cross-DB publication window becomes
@@ -1263,6 +1278,42 @@ Unknown legacy deadlines fail closed to `needs_review`. Machine-local
 24 (1..168). A single deadline-driven host timer handles ack/queue expiry. No
 uncertain work is silently retried. Explicit terminal-history retries without
 recipient proof refuse; the person can author a fresh message deliberately.
+
+The ACK deadline starts at durable application handoff, before a broker `stored`
+reply, and is never extended by that reply. An unstored frame therefore becomes
+`needs_review` within the same ACK timeout instead of holding the peer for the
+queue TTL. Known pre-admission capacity or journal-unavailable refusals retain
+their pending plaintext for the next online/disposition retry without preventing
+later room packets and receipts from being processed. Status reads apply no
+disposition. Settled chat plaintext rows are pruned independently of presence
+traffic; permanent floors and retained application outcomes survive that pruning.
+
+The crypto inbox has a separate durable reserve of at most eight receipt rows
+per room, each canonical receipt payload at most 1,024 bytes, with at most
+64 * 8 * 1,024 additional bytes globally. Before taking a reserved slot, the
+authenticated sender and receipt frame/application/peer must match this hub's
+outstanding `dispatching`, `accepted` or `needs_review` outgoing row. Junk or
+non-matching receipts cannot use the reserve. Normal chat remains bounded to
+200 pending rows and 16 MiB; presence caps, signatures and floors do not change.
+A matched receipt settles and frees its slot immediately. The durable
+`receipt_reserve` marker preserves its admission across a crash after settlement;
+open validates the canonical payload, size and reserve bounds and refuses an
+over-cap store as corrupt. Migration marks every legacy row ordinary and never
+infers reserved authority from its JSON.
+At the physical cap only, an authenticated current-member receipt with no
+matching outstanding row is durably recorded as the existing metadata-only
+`invalid_frame` refusal and transport-ACKed, without advancing the floor or
+sending a signed receipt. Below the cap its normal handling is unchanged.
+A matching receipt with all eight reserved slots occupied remains unACKed until
+a slot frees; it is never retired as junk.
+
+At the ordinary physical cap, a fully validated signed current-member presence
+is recorded as metadata-only `invalid_presence` and transport-ACKed. It consumes
+no reserve slot, advances no floor and produces no `onPresence` observation.
+Runtime and other store errors remain unACKed. After room/global capacity has
+space for the retired presence again, one coalesced `requestReply` presence
+refetches the current remote state per drop-below-cap transition. There is no
+periodic capacity poll or permanent reliance on a dropped state observation.
 
 ### Person disposition
 

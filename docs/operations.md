@@ -4781,6 +4781,18 @@ inspection; the person's disposition is still required. Old text cannot be
 retried to a replacement fingerprint reusing a label. An unproved terminal retry
 refuses and requires a deliberately authored new message.
 
+The ACK timeout starts when the application is handed to the room link, even if
+the broker never confirms storage. A reconnect or restart requests fresh signed
+presence from the other hub without waiting for its peer state to change.
+Capacity refusal of one incoming chat retains that pending chat while allowing
+later packets and receipts through; a later online or person-disposition event
+rechecks admission. Merely reading room status applies no disposition.
+Up to eight matching receipt payloads per room have a separate 1,024-byte-per-row
+durable reserve so a full chat inbox can still settle outstanding deliveries.
+The normal chat cap is unchanged; unrelated receipts cannot use that reserve.
+Presence retired at the ordinary cap is re-fetched once after capacity frees,
+so that a dropped state update does not leave the remote view stale indefinitely.
+
 For an incoming uncertain admission, copy its frame id from room status:
 
 ```sh
