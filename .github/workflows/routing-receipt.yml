@@ -3,12 +3,18 @@ name: routing-receipt
 # #637 part 1: a PR that changes templates/routing.toml needs a promotion receipt under docs/verification/ that names that exact file, the current default and the
 # frozen corpus, and whose numbers the check recomputes. No model runs: the check reads git and files. The rule is the "Routing promotion rule" in
 # docs/agent-notes/benchmarks.md; the logic and its tests are scripts/check-routing-receipt.ts and test/routing-receipt-check.test.ts.
+#
+# It is also the repository's eval check (#481 S5). An Actions job's own check run has no title or summary the hub can read, so the script publishes a SECOND check
+# run named `routing-eval` at the PR head (Checks API, hence `checks: write`) whose title carries `eval_pass_rate=<0..1> eval_suite=<corpus hash prefix>`, the markers
+# `readEvalResult` (src/hub/eval-gate.ts) parses. The person sets `eval_check = "routing-eval"` in .agenthub/sdlc.toml. A failed publish is a warning, never a pass:
+# the hub then shows the eval gate as not reported.
 on:
   pull_request:
     types: [opened, reopened, synchronize]
 
 permissions:
   contents: read
+  checks: write
 
 jobs:
   routing-receipt:
@@ -26,4 +32,7 @@ jobs:
       - name: A routing.toml change carries a matching receipt
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: bun scripts/check-routing-receipt.ts "$BASE_SHA"
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: bun scripts/check-routing-receipt.ts "$BASE_SHA" --publish

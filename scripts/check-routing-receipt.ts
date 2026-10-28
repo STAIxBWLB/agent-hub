@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { buildReceipt, canonicalJson, changedKeys, compare, parseConfigs, parseReceipt, policySummary, renderReceipt, sha256, validateCorpus, type Comparison, type Corpus, type Receipt } from "./benchmarks/routing-corpus.ts";
+import { buildReceipt, canonicalJson, changedKeys, compare, evaluate, parseConfigs, parseReceipt, policySummary, renderReceipt, sha256, validateCorpus, type Comparison, type Corpus, type Receipt } from "./benchmarks/routing-corpus.ts";
 
 /** Line endings and trailing blank lines are not content: a checkout that rewrites them must not fail a receipt. */
 const normalize = (text: string): string => text.replace(/\r\n/g, "\n").replace(/\s+$/, "");
@@ -14,6 +14,8 @@ const normalize = (text: string): string => text.replace(/\r\n/g, "\n").replace(
 export const TEMPLATE = "templates/routing.toml";
 export const CORPUS_PATH = "scripts/benchmarks/routing-corpus.json";
 export const RECEIPT_DIR = "docs/verification";
+/** The check run that carries the eval markers (#481 S5): the person sets `eval_check = "routing-eval"` in .agenthub/sdlc.toml. It is a SEPARATE run, created through the Checks API, because a Actions job's own check run has no title or summary the hub could read. */
+export const EVAL_CHECK_NAME = "routing-eval";
 const RECEIPT_NAME = /^\d{4}-\d{2}-\d{2}-routing-[0-9a-f]{8}\.md$/;
 
 export interface CheckInput {
@@ -79,6 +81,63 @@ export function checkReceipt(input: CheckInput): CheckResult {
   return { ok: false, reason: problems.join("\n") };
 }
 
+// ---- the eval marker contract (#481 S5, src/hub/eval-gate.ts readEvalResult): `eval_pass_rate=<0..1>` and `eval_suite=<version>` in a completed check run's title or summary ----
+export interface EvalReport { conclusion: "success" | "failure"; title: string; summary: string; passRate?: string; suite?: string }
+
+/** A rate the hub's marker accepts: 0, 1, or 0.<1 to 6 digits>, never a percent sign or a fraction. */
+export function formatRate(correct: number, n: number): string {
+  if (!n) return "0";
+  const text = (correct / n).toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+  return text === "" ? "0" : text;
+}
+
+/**
+ * What the `routing-eval` check run reports for this head: the owner top-1 accuracy of the HEAD's templates/routing.toml on the test split (a score of the shipped
+ * default, not of the change), the corpus hash prefix as the suite version, and a conclusion that is the receipt check's own. With no readable corpus or template
+ * there are no markers, so the hub shows the gap instead of a number nobody measured.
+ */
+export function evalReport(input: CheckInput, result: CheckResult): EvalReport {
+  const conclusion = result.ok ? "success" : "failure";
+  const verdict = result.ok ? result.note : result.reason;
+  try {
+    const corpus = validateCorpus(JSON.parse(input.corpusText));
+    const text = input.headTemplate ?? input.baseTemplate;
+    if (text === undefined) throw new Error(`${TEMPLATE} is missing`);
+    const rows = evaluate(corpus, parseConfigs(text, text).base, "test");
+    const correct = rows.filter(row => row.score.owner).length, passRate = formatRate(correct, rows.length), suite = corpus.hash.slice(0, 12);
+    return { conclusion, passRate, suite, title: `${EVAL_CHECK_NAME} ${result.ok ? "passed" : "failed"} eval_pass_rate=${passRate} eval_suite=${suite}`,
+      summary: `Owner top-1 accuracy of this head's ${TEMPLATE} on the test split: ${correct}/${rows.length}, corpus ${corpus.hash}. ${verdict}`.slice(0, 600) };
+  } catch (error) {
+    return { conclusion: "failure", title: `${EVAL_CHECK_NAME} could not run`, summary: `No pass rate was measured: ${(error as Error).message}`.slice(0, 600) };
+  }
+}
+
+/** A `gh` call: arguments and optional stdin in, status and stdout out. Injected so the publisher is tested without a network. */
+export type Gh = (args: string[], stdin?: string) => { code: number; stdout: string; stderr?: string };
+export const realGh: Gh = (args, stdin) => {
+  const run = spawnSync("gh", args, { encoding: "utf8", input: stdin, timeout: 30_000, maxBuffer: 1024 * 1024 });
+  return { code: run.status ?? 1, stdout: run.stdout ?? "", stderr: run.stderr ?? "" };
+};
+
+/**
+ * Creates the `routing-eval` check run at `head`, or updates the one that is already there: the hub reads exactly one completed run of that name at a head, so a rerun
+ * must replace its result and never add a second. Needs `checks: write`.
+ */
+export function publishEval(gh: Gh, repository: string, head: string, report: EvalReport): { id: number; action: "created" | "updated" } {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) || repository.startsWith("-")) throw new Error("GITHUB_REPOSITORY is owner/name");
+  if (!/^[a-f0-9]{40}$/.test(head)) throw new Error("the head is a full 40-digit commit sha");
+  const found = gh(["api", `repos/${repository}/commits/${head}/check-runs?check_name=${EVAL_CHECK_NAME}&per_page=10`, "--jq", `[.check_runs[]|select(.name=="${EVAL_CHECK_NAME}")|.id]`]);
+  if (found.code !== 0) throw new Error(`could not list check runs: ${(found.stderr ?? "").trim().slice(0, 200) || `gh exit ${found.code}`}`);
+  const ids = JSON.parse(found.stdout.trim() || "[]") as number[];
+  const body = JSON.stringify({ name: EVAL_CHECK_NAME, head_sha: head, status: "completed", conclusion: report.conclusion, output: { title: report.title, summary: report.summary } });
+  const existing = ids[0];
+  const write = existing === undefined
+    ? gh(["api", "-X", "POST", `repos/${repository}/check-runs`, "--input", "-", "--jq", ".id"], body)
+    : gh(["api", "-X", "PATCH", `repos/${repository}/check-runs/${existing}`, "--input", "-", "--jq", ".id"], body);
+  if (write.code !== 0) throw new Error(`could not ${existing === undefined ? "create" : "update"} the ${EVAL_CHECK_NAME} check run: ${(write.stderr ?? "").trim().slice(0, 200) || `gh exit ${write.code}`}`);
+  return { id: Number(write.stdout.trim()) || existing || 0, action: existing === undefined ? "created" : "updated" };
+}
+
 const git = (root: string, ...args: string[]) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
 const show = (root: string, ref: string, path: string): string | undefined => { try { return git(root, "show", `${ref}:${path}`); } catch { return undefined; } };
 
@@ -93,9 +152,20 @@ export function readInput(root: string, base: string): CheckInput {
 
 if (import.meta.main) {
   const root = resolve(import.meta.dir, "..");
-  const base = process.argv[2] ?? process.env.BASE_SHA ?? "origin/main";
+  const args = process.argv.slice(2), publish = args.includes("--publish");
+  const base = args.find(arg => !arg.startsWith("--")) ?? process.env.BASE_SHA ?? "origin/main";
   try {
-    const result = checkReceipt(readInput(root, base));
+    const input = readInput(root, base);
+    const result = checkReceipt(input), report = evalReport(input, result);
+    if (report.passRate !== undefined) console.log(`${EVAL_CHECK_NAME}: eval_pass_rate=${report.passRate} eval_suite=${report.suite}`);
+    if (publish) {
+      // A failed publish never hides the receipt verdict. It is a warning, and the hub then shows the eval gate as not reported (a gap, and a blocker in enforce).
+      try {
+        const head = process.env.HEAD_SHA || git(root, "rev-parse", "HEAD").trim();
+        const done = publishEval(realGh, process.env.GITHUB_REPOSITORY ?? "", head, report);
+        console.log(`${EVAL_CHECK_NAME}: ${done.action} check run ${done.id} at ${head.slice(0, 12)} (${report.conclusion})`);
+      } catch (error) { console.log(`::warning title=${EVAL_CHECK_NAME} not published::${(error as Error).message}`); }
+    }
     if (result.ok) { console.log(`routing receipt: OK (${result.note})`); process.exit(0); }
     console.error(`routing receipt: ${result.reason}`);
     process.exit(1);

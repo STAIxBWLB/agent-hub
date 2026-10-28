@@ -3,7 +3,8 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildReceipt, compare, loadCorpus, parseConfigs, policySummary, renderReceipt, sha256, changedKeys } from "../scripts/benchmarks/routing-corpus.ts";
-import { checkReceipt, CORPUS_PATH, readInput, RECEIPT_DIR, TEMPLATE, type CheckInput } from "../scripts/check-routing-receipt.ts";
+import { checkReceipt, CORPUS_PATH, EVAL_CHECK_NAME, evalReport, formatRate, publishEval, readInput, RECEIPT_DIR, TEMPLATE, type CheckInput, type Gh } from "../scripts/check-routing-receipt.ts";
+import { evalGateView, parseEvalMarkers, readEvalResult } from "../src/hub/eval-gate.ts";
 
 // agent-hub #637 part 1 (hub task #321): a PR that changes templates/routing.toml needs a matching receipt. The check is pure over a CheckInput; the git reader and the
 // script are exercised on real repositories below, which is how a fake PR is shown to fail.
@@ -255,4 +256,150 @@ test("the CI workflow runs this check on pull requests, with full history and th
   expect(workflow).toContain('bun scripts/check-routing-receipt.ts "$BASE_SHA"');
   expect(workflow).not.toMatch(/OMNIROUTE|api[_-]?key|secrets\./i);
   expect(workflow).toContain("permissions:\n  contents: read");
+});
+
+// ---- #481 S5: the check is the repository's eval check, so it emits the markers readEvalResult parses ----
+const HEAD = "a".repeat(40), REPO = "STAIxBWLB/agent-hub";
+/** A fake `gh` that behaves like the Checks API for one repository: it stores check runs and answers the `--jq` shapes the publisher and readEvalResult use. */
+function fakeChecks(initial: { id: number; name: string; head_sha: string; status: string; conclusion: string | null; output: { title: string | null; summary: string | null } }[] = []) {
+  const runs = [...initial];
+  const calls: string[][] = [];
+  let nextId = 1000;
+  const gh: Gh = (args, stdin) => {
+    calls.push(args);
+    const url = args.find(arg => arg.startsWith("repos/")) ?? "";
+    const wants = (jq: string | undefined) => jq ?? "";
+    if (args.includes("-X") && args[args.indexOf("-X") + 1] === "POST") {
+      const body = JSON.parse(stdin!);
+      const run = { id: nextId++, name: body.name, head_sha: body.head_sha, status: body.status, conclusion: body.conclusion, output: { title: body.output.title, summary: body.output.summary } };
+      runs.push(run); return { code: 0, stdout: `${run.id}\n` };
+    }
+    if (args.includes("-X") && args[args.indexOf("-X") + 1] === "PATCH") {
+      const id = Number(url.split("/").at(-1)), body = JSON.parse(stdin!), run = runs.find(row => row.id === id)!;
+      Object.assign(run, { status: body.status, conclusion: body.conclusion, output: { title: body.output.title, summary: body.output.summary } }); return { code: 0, stdout: `${id}\n` };
+    }
+    const name = decodeURIComponent(/check_name=([^&]+)/.exec(url)?.[1] ?? ""), head = /commits\/([a-f0-9]{40})\//.exec(url)?.[1];
+    const mine = runs.filter(row => row.head_sha === head && (!name || row.name === name));
+    if (wants(args[args.indexOf("--jq") + 1]).startsWith("[.check_runs[]|select")) return { code: 0, stdout: JSON.stringify(mine.map(row => row.id)) };
+    // readEvalResult's shape: {total_count, check_runs:[{name,status,conclusion,head_sha,text}]}
+    return { code: 0, stdout: JSON.stringify({ total_count: mine.length, check_runs: mine.map(row => ({ name: row.name, status: row.status, conclusion: row.conclusion, head_sha: row.head_sha, text: `${row.output.title ?? ""} ${row.output.summary ?? ""}`.slice(0, 1000) })) }) };
+  };
+  return { gh, runs, calls };
+}
+const ghForHub = (checks: ReturnType<typeof fakeChecks>) => async (args: string[]) => checks.gh(args);
+/** A complete, passed configuration PR at HEAD: the shape `PrEvidence` really has (paths, pathsComplete, typesComplete). */
+const EVIDENCE = { head: HEAD, state: "OPEN", checks: [{ name: EVAL_CHECK_NAME, state: "passed" }], review: "unknown", unresolved: 0, pendingReviews: 0, paths: ["templates/routing.toml"], fileChanges: [{ path: "templates/routing.toml", change: "modified" }], pathsComplete: true, typesComplete: true } as never;
+
+test("formatRate gives only values the hub's marker accepts: 0, 1 or a decimal in [0,1], never a percent sign or a fraction", () => {
+  expect(formatRate(24, 24)).toBe("1");
+  expect(formatRate(0, 24)).toBe("0");
+  expect(formatRate(0, 0)).toBe("0");
+  expect(formatRate(23, 24)).toBe("0.9583");
+  expect(formatRate(1, 2)).toBe("0.5");
+  expect(formatRate(1, 3)).toBe("0.3333");
+  for (const [c, n] of [[24, 24], [0, 5], [1, 3], [2, 3], [7, 8], [19, 24], [1, 1000]] as const) {
+    const markers = parseEvalMarkers(`eval_pass_rate=${formatRate(c, n)} eval_suite=abc`);
+    expect(markers.passRate, `${c}/${n}`).toBeDefined();
+    expect(Math.abs(markers.passRate! - c / n)).toBeLessThan(0.0001);
+  }
+});
+
+test("the eval report carries owner top-1 accuracy on the test split and the corpus hash prefix, in markers the hub's parser reads back exactly", () => {
+  const ok = evalReport(input(NEUTRAL, [receiptFor(BASE, NEUTRAL)]), { ok: true, note: "fine" });
+  expect(ok.conclusion).toBe("success");
+  expect(ok.passRate).toBe("1");
+  expect(ok.suite).toBe(corpus.hash.slice(0, 12));
+  expect(ok.title).toContain(`${EVAL_CHECK_NAME} passed`);
+  expect(parseEvalMarkers(ok.title)).toEqual({ passRate: 1, suite: corpus.hash.slice(0, 12) });
+  expect(parseEvalMarkers(`${ok.title} ${ok.summary}`)).toEqual({ passRate: 1, suite: corpus.hash.slice(0, 12) }); // the summary adds no marker of its own
+  expect(ok.summary).toContain("24/24");
+  expect(ok.summary).toContain(corpus.hash);
+  // a change that breaks the candidate's own routing lowers the reported rate: the number is the head's, not a constant
+  const bad = evalReport(input(BAD, []), { ok: false, reason: "no receipt" });
+  expect(bad.conclusion).toBe("failure");
+  expect(bad.title).toContain("failed");
+  expect(Number(bad.passRate)).toBeLessThan(1);
+  expect(parseEvalMarkers(bad.title).passRate).toBe(Number(bad.passRate));
+});
+
+test("with no readable corpus or template there are no markers: a gap the hub shows, never a made-up number", () => {
+  const broken = evalReport(input(NEUTRAL, [], { corpusText: "{ not json" }), { ok: false, reason: "x" });
+  expect(broken.conclusion).toBe("failure");
+  expect(broken.passRate).toBeUndefined();
+  expect(parseEvalMarkers(`${broken.title} ${broken.summary}`)).toEqual({});
+  const stale = JSON.parse(CORPUS_TEXT); stale.cases[0].note = "edited without a refreeze, so the stored hash is stale";
+  expect(evalReport(input(NEUTRAL, [], { corpusText: JSON.stringify(stale) }), { ok: false, reason: "x" }).passRate).toBeUndefined();
+  expect(evalReport(input(NEUTRAL, [], { headTemplate: undefined, baseTemplate: undefined }), { ok: false, reason: "x" }).passRate).toBeUndefined();
+});
+
+test("publishing creates one routing-eval check run at the head, and a rerun UPDATES it: the hub reads exactly one run of that name", async () => {
+  const checks = fakeChecks();
+  const first = publishEval(checks.gh, REPO, HEAD, evalReport(input(NEUTRAL, [receiptFor(BASE, NEUTRAL)]), { ok: true, note: "fine" }));
+  expect(first.action).toBe("created");
+  expect(checks.runs).toHaveLength(1);
+  expect(checks.runs[0]).toMatchObject({ name: "routing-eval", head_sha: HEAD, status: "completed", conclusion: "success" });
+  const second = publishEval(checks.gh, REPO, HEAD, evalReport(input(BAD, []), { ok: false, reason: "no receipt" }));
+  expect(second).toEqual({ id: first.id, action: "updated" });
+  expect(checks.runs).toHaveLength(1);
+  expect(checks.runs[0]).toMatchObject({ conclusion: "failure" });
+  expect(checks.runs[0]!.output.title).toContain("failed");
+  // another head gets its own run
+  publishEval(checks.gh, REPO, "b".repeat(40), evalReport(input(NEUTRAL, [receiptFor(BASE, NEUTRAL)]), { ok: true, note: "fine" }));
+  expect(checks.runs).toHaveLength(2);
+});
+
+test("DRY RUN: what the publisher writes is exactly what the hub's readEvalResult parses, and the eval gate view shows the rate and suite", async () => {
+  const checks = fakeChecks();
+  publishEval(checks.gh, REPO, HEAD, evalReport(input(NEUTRAL, [receiptFor(BASE, NEUTRAL)]), { ok: true, note: "fine" }));
+  const read = await readEvalResult(REPO, HEAD, EVAL_CHECK_NAME, ghForHub(checks));
+  expect(read).toEqual({ check: "routing-eval", head: HEAD, read: true, passRate: 1, suite: corpus.hash.slice(0, 12) });
+  const view = evalGateView({ configPaths: ["templates/**"], evalCheck: EVAL_CHECK_NAME, mode: "advise" } as never,
+    EVIDENCE, read);
+  expect(view).toMatchObject({ applies: "config", state: "passed", check: "routing-eval", passRate: 1, suite: corpus.hash.slice(0, 12), gaps: [] });
+  // without the markers the same passed check is the gap the spec names, so the markers are what closes it
+  const bare = fakeChecks([{ id: 1, name: "routing-eval", head_sha: HEAD, status: "completed", conclusion: "success", output: { title: null, summary: null } }]);
+  const none = await readEvalResult(REPO, HEAD, EVAL_CHECK_NAME, ghForHub(bare));
+  expect(none).toEqual({ check: "routing-eval", head: HEAD, read: true });
+  expect(evalGateView({ configPaths: ["templates/**"], evalCheck: EVAL_CHECK_NAME, mode: "advise" } as never,
+    EVIDENCE, none)!.gaps).toHaveLength(1);
+});
+
+test("the Actions job's own check run (named routing-receipt) has no title or summary, which is why the markers ride a separate run", async () => {
+  const checks = fakeChecks([{ id: 5, name: "routing-receipt", head_sha: HEAD, status: "completed", conclusion: "success", output: { title: null, summary: null } }]);
+  expect(await readEvalResult(REPO, HEAD, "routing-receipt", ghForHub(checks))).toEqual({ check: "routing-receipt", head: HEAD, read: true });
+  publishEval(checks.gh, REPO, HEAD, evalReport(input(NEUTRAL, [receiptFor(BASE, NEUTRAL)]), { ok: true, note: "fine" }));
+  expect((await readEvalResult(REPO, HEAD, EVAL_CHECK_NAME, ghForHub(checks))).passRate).toBe(1);
+});
+
+test("a publish that fails throws a reason and never reports success: bad repository or head, a refused list, a refused write", () => {
+  const report = evalReport(input(NEUTRAL, [receiptFor(BASE, NEUTRAL)]), { ok: true, note: "fine" });
+  const never: Gh = () => { throw new Error("must not be called"); };
+  expect(() => publishEval(never, "not a repo", HEAD, report)).toThrow("owner/name");
+  expect(() => publishEval(never, "-x/y", HEAD, report)).toThrow("owner/name");
+  expect(() => publishEval(never, REPO, "abc", report)).toThrow("40-digit");
+  expect(() => publishEval(() => ({ code: 1, stdout: "", stderr: "HTTP 403" }), REPO, HEAD, report)).toThrow("could not list check runs: HTTP 403");
+  const listsThenFails: Gh = args => (args.includes("POST") ? { code: 1, stdout: "", stderr: "Resource not accessible by integration" } : { code: 0, stdout: "[]" });
+  expect(() => publishEval(listsThenFails, REPO, HEAD, report)).toThrow("could not create the routing-eval check run: Resource not accessible");
+});
+
+test("the workflow publishes the eval check run with the right permission, head and token, and the receipt verdict still decides the job", () => {
+  const workflow = readFileSync(join(ROOT, ".github/workflows/routing-receipt.yml"), "utf8");
+  expect(workflow).toContain("permissions:\n  contents: read\n  checks: write");
+  expect(workflow).toContain('bun scripts/check-routing-receipt.ts "$BASE_SHA" --publish');
+  expect(workflow).toContain("HEAD_SHA: ${{ github.event.pull_request.head.sha }}");
+  expect(workflow).toContain("GH_TOKEN: ${{ github.token }}");
+  expect(workflow).toContain("GITHUB_REPOSITORY: ${{ github.repository }}");
+  expect(workflow).toContain("`routing-eval`");
+  expect(workflow).not.toMatch(/OMNIROUTE|secrets\./i);
+});
+
+test("the script prints the markers, exits with the receipt verdict, and a publish it cannot make is a warning that never changes the exit status", () => {
+  const run = (...args: string[]) => Bun.spawnSync([process.execPath, join(ROOT, "scripts/check-routing-receipt.ts"), ...args], { cwd: ROOT, stdout: "pipe", stderr: "pipe", env: { ...process.env, GITHUB_REPOSITORY: "", HEAD_SHA: "" } });
+  const plain = run("HEAD");
+  expect(plain.exitCode).toBe(0);
+  expect(plain.stdout.toString()).toContain(`routing-eval: eval_pass_rate=1 eval_suite=${corpus.hash.slice(0, 12)}`);
+  const publishing = run("HEAD", "--publish");
+  expect(publishing.exitCode).toBe(0);
+  expect(publishing.stdout.toString()).toContain("::warning title=routing-eval not published::");
+  expect(publishing.stdout.toString()).toContain("routing receipt: OK");
 });
