@@ -61,7 +61,7 @@ export class RoomCommands {
     const store = await this.open();
     if (!this.stopped) for (const state of store.list()) if (!state.left) this.link(state.name);
   }
-  stop(): void { this.stopped = true; for (const link of this.links.values()) link.stop(); this.links.clear(); this.store?.close(); }
+  stop(): void { this.stopped = true; clearTimeout(this.presenceTimer); for (const link of this.links.values()) link.stop(); this.links.clear(); this.store?.close(); }
   private link(name: string): void {
     if (this.stopped || !this.store || this.store.get(name)?.left) return;
     let link = this.links.get(name);
@@ -73,6 +73,16 @@ export class RoomCommands {
       this.links.set(name, created); link = created;
       void created.start().catch(() => undefined);
     } else link.refresh();
+  }
+  private presenceTimer?: ReturnType<typeof setTimeout>;
+  changed(): void {
+    if (this.stopped || this.presenceTimer) return;
+    // Coalesce peer state bursts; payloads remain the signed ids/state-only presence shape.
+    this.presenceTimer = setTimeout(() => {
+      this.presenceTimer = undefined;
+      if (!this.stopped) for (const link of this.links.values()) void link.publishPresence().catch(() => undefined);
+    }, 100);
+    this.presenceTimer.unref?.();
   }
   private current(check: () => boolean): void { if (this.stopped || !check()) refuse("state_changed"); }
   private active(store: RoomStore, name: string): RoomState {
@@ -165,7 +175,7 @@ export class RoomCommands {
       return { owner, member, commit: async () => {
         this.current(check);
         const next = exposure ? await store.rotate(name, roomMembers(state.current).map(m => m.fingerprint === member ? { ...m, exposedPeers: exposedPeers(exposure.peers) } : m), digest, check) : await store.enroll(name, request, check);
-        completed(next);
+        this.current(check); completed(next);
         return { name, owner, member, kind: "roster", artifact: encodeBase64url(next.wire) };
       } };
     }

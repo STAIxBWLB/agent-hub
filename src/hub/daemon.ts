@@ -4076,6 +4076,7 @@ export async function startDaemon(opts: DaemonOptions) {
     uiEvents.push({ seq: ++uiSequence, event: e });
     if (uiEvents.length > 200) uiEvents.shift();
     if (e.t === "state") {
+      roomCommands.changed();
       log(`state ${e.peer} -> ${e.state}`);
       event({ type: "state", peer: e.peer, state: e.state });
       // #248: the add-ons it works with, once per attach (names and versions only).

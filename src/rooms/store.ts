@@ -254,6 +254,7 @@ export class RoomStore {
     await acceptJoin({ issuedInvite: copy(invite.wire), wire: copy(request), owner: this.identity, nowMs: this.now(), enrollment: { consume: async claim => {
       const members = roomMembers(previous.current);
       if (members.some(x => x.fingerprint === claim.member.fingerprint)) {
+        assertCurrent(current);
         const stored = this.db.query<{ request_digest: string | null }, [string]>("SELECT request_digest FROM invites WHERE id=?").get(claim.inviteId);
         return stored?.request_digest === claim.requestDigest ? "duplicate" : "refused";
       }
