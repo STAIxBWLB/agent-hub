@@ -19,7 +19,8 @@ export type CiPoll = "pending" | "passed" | "failed" | "incomplete" | "supersede
 export type CiOutcome = "passed" | "failed" | "incomplete" | "deadline";
 
 export interface CiWatch { id: number; head: string; repo: string; pr: number; deadlineAt: number }
-type Entry = { watch: CiWatch; timer?: ReturnType<typeof setTimeout>; reported?: boolean };
+/** `reported`: a result was told, so a deadline ends silently. `renew`: the next pending read may renew the deadline once (set by each new told result). */
+type Entry = { watch: CiWatch; timer?: ReturnType<typeof setTimeout>; reported?: boolean; renew?: boolean };
 
 /** One read of the PR: the head, its state and the required checks of that head. A failed or unreadable read is `pending`; the deadline bounds the retries. */
 export async function pollCi(target: { repo: string; pr: number }, head: string, required: readonly string[], run: SdlcGh): Promise<CiPoll> {
@@ -52,7 +53,7 @@ export interface CiWatchersOptions {
 /**
  * At most one watcher per task, and one per exact head. Only `passed` settles a head for good (#540): after `failed` or
  * `incomplete` the watcher keeps reading until its deadline, so a rerun of the same head (a new run attempt reads as pending,
- * which renews the deadline) is reported too, and a later `start` at that head watches again. Each (head, outcome) is told once. Timers are chained `setTimeout`s (never an interval), unref'd, and cleared
+ * which renews the deadline once per newly told result) is reported too, and a later `start` at that head watches again. Each (head, outcome) is told once. Timers are chained `setTimeout`s (never an interval), unref'd, and cleared
  * on every end, so nothing outlives its deadline, a newer head or `stopAll`. Watchers are not restored after a hub restart:
  * the next `hub_task_done` starts one (ponytail: persist them only if restarts during CI turn out to be common).
  */
@@ -124,6 +125,7 @@ export class CiWatchers {
       const outcomes = this.reported(entry.watch.id, entry.watch.head) ?? new Set<CiOutcome>();
       outcomes.add(outcome);
       entry.reported = true;
+      entry.renew = true;
       this.settled.delete(entry.watch.id);
       this.settled.set(entry.watch.id, { head: entry.watch.head, outcomes, last: outcome });
       while (this.settled.size > SETTLED_CAP) this.settled.delete(this.settled.keys().next().value as number);
@@ -147,8 +149,9 @@ export class CiWatchers {
     if (this.active.get(entry.watch.id) !== entry) return; // cancelled or replaced during the read
     if (!this.o.current(entry.watch) || result === "superseded" || result === "closed") { this.end(entry); return; }
     if (result === "pending") {
-      // Pending after a reported result is a new run attempt of this head: it gets a full deadline of its own.
-      if (entry.reported) entry.watch.deadlineAt = this.now() + this.deadlineMs;
+      // The first pending read after a newly told result is a new run attempt of this head: it gets one full deadline of its own.
+      // Later pending reads (an unreadable gh is pending too) and an unchanged failed result keep that deadline, so the watcher always ends.
+      if (entry.renew) { entry.renew = false; entry.watch.deadlineAt = this.now() + this.deadlineMs; }
       this.schedule(entry); return;
     }
     if (result === "passed") { if (this.end(entry)) this.report(entry, result); return; }
