@@ -5,6 +5,7 @@ const input = arg("--input-file"), output = arg("--json-file"), scenario = proce
 const emit = (event: unknown) => appendFileSync(output, JSON.stringify(event) + "\n");
 writeFileSync(join(process.env.HOME!, "private-native-output"), `${process.env.OPENAI_API_KEY} session-private-id prompt-private-body`);
 console.log("private terminal output session-private-id prompt-private-body");
+if (scenario === "early") process.exit(0);
 if (scenario !== "timeout") emit({ type: "system", subtype: "session_start", session_id: "session-private-id", data: { version: "0.26.1", protocol_version: 2, supported_events: ["user", "assistant", "stream_event"] } });
 let first: string | undefined, done = false;
 setInterval(() => {
