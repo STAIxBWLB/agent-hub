@@ -2989,11 +2989,7 @@ export class Tasks {
             if (!(error instanceof AssignmentUndeliveredError) && this.queuePressureAdmitted()) pass.retained = true;
           }
           if (!this.queuePressureAdmitted()) return;
-        } else {
-          // Admission belongs to its current gate; do not poll it through queue wakes.
-          const cause = this.ownerStallCause(task, choice);
-          this.reportStall(task, cause.kind === "no-eligible-peer" && isQueuePressureCode(cause.code) && namedOwner ? { ...cause, peer: namedOwner } : cause);
-        }
+        } // Pure transient eligibility reads keep the origin; only a gate that owns retries replaces it.
         const latest = this.d.board.get(task.id);
         if (this.ordinaryQueueProposal(stall, latest)) {
           const origin = this.d.board.queuePressureStallPage(task.id - 1, 1).rows.find(row => row.task === task.id);

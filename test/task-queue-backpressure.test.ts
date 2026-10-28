@@ -553,3 +553,17 @@ test("a queue-held person reservation rechecks the WIP cap before taking a newly
   await f.tasks.cancel(b.id, USER, { reason: "free the occupied slot" });
   expect(f.board.get(a.id)?.owner).toBe("codex"); expect(f.tasks.wip("codex")).toBe(1);
 });
+
+
+test("a queue origin survives an offline peer during drain and resumes on reattach", async () => {
+  const f = await fixture({ onlyOwner: true }); f.wire();
+  f.control.policy = { max_queued: 1, max_oldest_s: 0 }; const ids = f.enqueue("codex", 2);
+  const row = await f.tasks.propose(HUB, { title: "offline while queue drains", class: "implement" });
+  await settled(f.tasks); await f.peers.codex!.stop();
+  for (const id of ids) f.bus.withdraw(id);
+  await settled(f.tasks);
+  expect(f.board.get(row.id)?.owner).toBeNull();
+  expect(f.board.queuePressureStallPage().rows.map(stall => stall.task)).toContain(row.id);
+  await f.peers.codex!.start(); f.tasks.scheduleQueuePressureRecheck();
+  await owned(f, row.id, "codex");
+});
