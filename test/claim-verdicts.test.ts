@@ -304,3 +304,23 @@ test("a verdict outside the report window, and an entry with an unbounded or mal
   expect(after.claims.perTask[0]!.claims![2]).toMatchObject({ personVerdict: null });  // the malformed slot-3 entry is not a verdict
   expect(after.factCheck.selection).toBeNull();                                       // a keyless check entry makes the group unknown
 });
+
+test("factCheck.agreement counts only slots where the model's verdict was entered and equals the person's; person verdicts alone are unknown, never a frequency (review of #937)", async () => {
+  const r = await rig();
+  const task = await factCheckTask(r, ["a", "b", "c", "d"]);
+  const agreement = () => scorecard(r.file).row.research!.factCheck.agreement;
+  const unknown = [{ label: "supported" as const, count: null }, { label: "unsupported" as const, count: null }, { label: "unclear" as const, count: null }];
+  // Person verdicts without the model's own verdict: nothing is comparable, so every label is unknown, not 1 / 1 / 0.
+  r.tasks.recordClaimVerdict("user", task.id, { slot: 1, verdict: "supported", model: "m" });
+  r.tasks.recordClaimVerdict("user", task.id, { slot: 2, verdict: "unsupported", model: "m" });
+  expect(scorecard(r.file).row.research!.claims.reachedPersonVerdict).toBe(2);
+  expect(agreement()).toEqual(unknown);
+  // A comparable slot where they differ: a known zero for every label (a disagreement is not agreement), not unknown.
+  r.tasks.recordClaimVerdict("user", task.id, { slot: 3, verdict: "unsupported", model: "m", modelVerdict: "supported" });
+  expect(agreement()).toEqual([{ label: "supported", count: 0 }, { label: "unsupported", count: 0 }, { label: "unclear", count: 0 }]);
+  // An agreeing slot counts under its own label only; the slots with no model verdict and the disagreement still count for nothing.
+  r.tasks.recordClaimVerdict("user", task.id, { slot: 4, verdict: "unclear", model: "m", modelVerdict: "unclear" });
+  expect(agreement()).toEqual([{ label: "supported", count: 0 }, { label: "unsupported", count: 0 }, { label: "unclear", count: 1 }]);
+  r.tasks.recordClaimVerdict("user", task.id, { slot: 1, verdict: "supported", model: "m", modelVerdict: "supported" });
+  expect(agreement()).toEqual([{ label: "supported", count: 1 }, { label: "unsupported", count: 0 }, { label: "unclear", count: 1 }]);
+});

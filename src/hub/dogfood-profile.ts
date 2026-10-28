@@ -247,7 +247,7 @@ export function profileScorecard(input: DogfoodInput) {
       const decided = slotted.filter(c => c.personVerdict !== null);
       const checkEntries = history.filter(h => (h.event === "check passed" || h.event === "check failed") && h.checkKey === "fact_check");
       const everyCheckKeyed = full && history.filter(h => h.event === "check passed" || h.event === "check failed").every(h => typeof h.checkKey === "string");
-      const verdictCount = (label: Verdict) => decided.filter(c => c.personVerdict === label).length;
+      const compared = decided.filter(c => c.agreement !== null);
       const research = profile === "research" ? {research:{
         declarations:{scope:"current_plan",perTask:group.tasks.map(t=>({task:t.id,sources:planCount(t,"sources"),claims:planCount(t,"claims")}))},
         // A verdict is the person's, entered with `ahub task claim`; task approval never supplies one. Null until at least the declarations are known; then the number of slots with a recorded verdict.
@@ -258,7 +258,9 @@ export function profileScorecard(input: DogfoodInput) {
           passed:everyCheckKeyed && checkEntries.length > 0 ? checkEntries.filter(h => h.event === "check passed").length : null,
           failed:everyCheckKeyed && checkEntries.length > 0 ? checkEntries.filter(h => h.event === "check failed").length : null,
           missingKeysPerRun:everyCheckKeyed && checkEntries.length > 0 && checkEntries.every(h => h.missingKeys !== undefined) ? checkEntries.map(h => h.missingKeys!) : null,
-          agreement:(["supported","unsupported","unclear"] as Verdict[]).map(label=>({label,count:decided.length > 0 ? verdictCount(label) : null}))}
+          // Agreement is a count of slots where the model's own verdict was entered and equals the person's, per label. A slot without the model's verdict (agreement null) is unknown and counts for nothing; one where they differ
+          // (agreement false) is a disagreement and counts for no label. With no comparable slot every label is null, never zero.
+          agreement:(["supported","unsupported","unclear"] as Verdict[]).map(label=>({label,count:compared.length > 0 ? compared.filter(c => c.agreement === true && c.personVerdict === label).length : null}))}
       }} : {};
       return {...research,profile, alias:group.alias, baseClass:group.base, tasks:[...ids].sort((a,b)=>a-b),
         flow:{scope,autoApprovalTransitions:{scope:"recorded_events",value:eventsFull?new Set(autoApprovals.map(e=>e.id)).size:null},proposed:count("proposed"),accepted:count("accepted"),approved:milestoneKnown&&!approvalUnknown?approvalIds.size:null,cancelled:count("cancelled"),proposeToApproveMs:full&&!approvalUnknown?quantiles(leads):{samples:null,p50:null,p90:null},reviewRounds:milestoneKnown?rounds:null,firstPassApproval:full&&!approvalUnknown&&first.length?first.reduce((a,b)=>a+b,0)/first.length:null,escalations:count("escalated")},
