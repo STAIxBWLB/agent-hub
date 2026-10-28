@@ -7,7 +7,7 @@ export const MAX_PTY_OUTPUT_BYTES = 1024 * 1024;
 const MIN_TIMEOUT_MS = 100;
 const MAX_TIMEOUT_MS = 120_000;
 const SCRIPT = "/usr/bin/script";
-const PTY_COMMAND = 'stty rows 40 cols 120 || exit 125; exec "$@"';
+const PTY_COMMAND = '/bin/stty rows 40 cols 120 || exit 125; exec "$@"';
 
 export interface PtyOptions {
   cwd: string;

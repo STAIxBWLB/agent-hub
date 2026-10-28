@@ -64,53 +64,53 @@ export async function runSmoke(target: SmokeTarget, options: SmokeOptions, ports
       target.check(); cleaned = false; receipt.checks.cleaned = false;
       const result = await runPty([...command, "--input-file", input, "--json-file", events, "--mcp-config", mcp, "--approval-mode", "default", "--auth-type", "openai", "--model", source.OPENAI_MODEL], { cwd, env, timeoutMs: options.timeoutMs, signal: options.signal, ready: async () => {
         try {
-        while (performance.now() < deadline && !options.signal?.aborted && !protocolStop.signal.aborted) {
-          const info = fstatSync(fd);
-          if (!info.isFile() || info.nlink !== 1 || info.size < position || info.size > 8 * 1024 * 1024) throw protocolError();
-          if (position < info.size) {
-            const chunk = Buffer.alloc(Math.min(64 * 1024, info.size - position));
-            const got = readSync(fd, chunk, 0, chunk.length, position); position += got;
-            partial += decoder.decode(chunk.subarray(0, got), { stream: true });
-            if (Buffer.byteLength(partial) > 128 * 1024) throw protocolError();
-            let newline: number;
-            while ((newline = partial.indexOf("\n")) >= 0) {
-              const line = partial.slice(0, newline); partial = partial.slice(newline + 1);
-              if (!line.trim()) continue;
-              if (Buffer.byteLength(line) > 64 * 1024) throw protocolError();
-              let event: any; try { event = JSON.parse(line); } catch { throw protocolError(); }
-              receipt.counts.events++;
-              if (!event || typeof event !== "object" || Array.isArray(event)) throw protocolError();
-              if (event.type === "control_request") throw protocolError(); // this read-only leg never answers approvals
-              if (event.type === "system" && event.subtype === "session_start") {
-                if (announced || event.data?.protocol_version !== 2 || !assessVersion("qwen-dual", event.data?.version).ok || !Array.isArray(event.data?.supported_events) || !["user", "assistant", "stream_event"].every(name => event.data.supported_events.includes(name))) throw protocolError();
-                announced = true; submit(FIRST_PROMPT);
-              } else if (event.type === "user") {
-                if (!announced || receipt.counts.users >= receipt.counts.submits || receipt.counts.users === 1 && receipt.counts.stops !== 1) throw protocolError();
-                const content = event.message?.content;
-                const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((b: any) => b?.type === "text" && typeof b.text === "string").map((b: any) => b.text).join("") : "";
-                if (text.trim() !== (receipt.counts.users === 0 ? FIRST_PROMPT : SECOND_PROMPT)) throw protocolError();
-                receipt.counts.users++;
-              } else if (event.type === "assistant") {
-                const blocks = event.message?.content;
-                const text = Array.isArray(blocks) ? blocks.filter((b: any) => b?.type === "text" && typeof b.text === "string").map((b: any) => b.text).join("") : "";
-                if (event.message?.stop_reason === "tool_use" || !text.includes(receipt.counts.stops === 0 ? FIRST : SECOND) || receipt.counts.users !== receipt.counts.stops + 1 || assistant) throw protocolError();
-                assistant = true; receipt.counts.assistants++;
-              } else if (event.type === "stream_event") {
-                if (!event.event || typeof event.event.type !== "string") throw protocolError();
-                if (event.event?.type === "message_stop") {
-                  if (!assistant || receipt.counts.stops === 0 && !queued) throw protocolError();
-                  assistant = false; receipt.counts.stops++;
-                  if (receipt.counts.stops === 2) { receipt.checks.protocol = true; receipt.checks.queued = queued; return; }
-                } else if (receipt.counts.users === 1 && !queued && ["message_start", "content_block_start", "content_block_delta"].includes(event.event.type)) {
-                  // Submit while the first streamed turn is observed running; the second user event must follow its stop.
-                  submit(SECOND_PROMPT); queued = true;
+          while (performance.now() < deadline && !options.signal?.aborted && !protocolStop.signal.aborted) {
+            const info = fstatSync(fd);
+            if (!info.isFile() || info.nlink !== 1 || info.size < position || info.size > 8 * 1024 * 1024) throw protocolError();
+            if (position < info.size) {
+              const chunk = Buffer.alloc(Math.min(64 * 1024, info.size - position));
+              const got = readSync(fd, chunk, 0, chunk.length, position); position += got;
+              partial += decoder.decode(chunk.subarray(0, got), { stream: true });
+              if (Buffer.byteLength(partial) > 128 * 1024) throw protocolError();
+              let newline: number;
+              while ((newline = partial.indexOf("\n")) >= 0) {
+                const line = partial.slice(0, newline); partial = partial.slice(newline + 1);
+                if (!line.trim()) continue;
+                if (Buffer.byteLength(line) > 64 * 1024) throw protocolError();
+                let event: any; try { event = JSON.parse(line); } catch { throw protocolError(); }
+                receipt.counts.events++;
+                if (!event || typeof event !== "object" || Array.isArray(event)) throw protocolError();
+                if (event.type === "control_request") throw protocolError(); // this read-only leg never answers approvals
+                if (event.type === "system" && event.subtype === "session_start") {
+                  if (announced || event.data?.protocol_version !== 2 || !assessVersion("qwen-dual", event.data?.version).ok || !Array.isArray(event.data?.supported_events) || !["user", "assistant", "stream_event"].every(name => event.data.supported_events.includes(name))) throw protocolError();
+                  announced = true; submit(FIRST_PROMPT);
+                } else if (event.type === "user") {
+                  if (!announced || receipt.counts.users >= receipt.counts.submits || receipt.counts.users === 1 && receipt.counts.stops !== 1) throw protocolError();
+                  const content = event.message?.content;
+                  const text = typeof content === "string" ? content : Array.isArray(content) ? content.filter((b: any) => b?.type === "text" && typeof b.text === "string").map((b: any) => b.text).join("") : "";
+                  if (text.trim() !== (receipt.counts.users === 0 ? FIRST_PROMPT : SECOND_PROMPT)) throw protocolError();
+                  receipt.counts.users++;
+                } else if (event.type === "assistant") {
+                  const blocks = event.message?.content;
+                  const text = Array.isArray(blocks) ? blocks.filter((b: any) => b?.type === "text" && typeof b.text === "string").map((b: any) => b.text).join("") : "";
+                  if (event.message?.stop_reason === "tool_use" || !text.includes(receipt.counts.stops === 0 ? FIRST : SECOND) || receipt.counts.users !== receipt.counts.stops + 1 || assistant) throw protocolError();
+                  assistant = true; receipt.counts.assistants++;
+                } else if (event.type === "stream_event") {
+                  if (!event.event || typeof event.event.type !== "string") throw protocolError();
+                  if (event.event?.type === "message_stop") {
+                    if (!assistant || receipt.counts.stops === 0 && !queued) throw protocolError();
+                    assistant = false; receipt.counts.stops++;
+                    if (receipt.counts.stops === 2) { receipt.checks.protocol = true; receipt.checks.queued = queued; return; }
+                  } else if (receipt.counts.users === 1 && !queued && ["message_start", "content_block_start", "content_block_delta"].includes(event.event.type)) {
+                    // Submit while the first streamed turn is observed running; the second user event must follow its stop.
+                    submit(SECOND_PROMPT); queued = true;
+                  }
                 }
               }
             }
+            await Bun.sleep(20);
           }
-          await Bun.sleep(20);
-        }
-        throw protocolError();
+          throw protocolError();
         } finally { protocolMs = Math.round(performance.now() - protocolStarted); }
       } });
       receipt.counts.terminalBytes = result.outputBytes;
