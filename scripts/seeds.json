@@ -3632,6 +3632,22 @@
       "replacement": "if (false) throw new BrokerServerError(\"owner_allowlist_required\");",
       "testFile": "test/broker-server.test.ts",
       "testName": "public audience requires an owner allowlist before state or listener effects"
+    },
+    {
+      "id": "source-private-authority",
+      "file": "src/hub/source-read.ts",
+      "search": "  if (!authorized) {",
+      "replacement": "  if (false) {",
+      "testFile": "test/source-read.test.ts",
+      "testName": "private sources return exactly a stub unless the policy authorizes private text"
+    },
+    {
+      "id": "source-read-byte-cap",
+      "file": "src/hub/source-read.ts",
+      "search": "export const MAX_SOURCE_READ_BYTES = 32 * 1024;",
+      "replacement": "export const MAX_SOURCE_READ_BYTES = 64 * 1024;",
+      "testFile": "test/source-read.test.ts",
+      "testName": "the UTF-8 cap includes the explicit cut marker and cuts only at source character boundaries"
     }
   ]
 }

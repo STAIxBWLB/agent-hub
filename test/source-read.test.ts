@@ -69,6 +69,7 @@ test("pagination returns original source character offsets without skipping text
   const f = fixture("A😀BCDEF");
   f.policy.screen = async () => true;
   const first = await sourceRead(f.registry, { id, range: { offset: 1, length: 2 } }, f.policy);
+  if (first.private) throw new Error("expected public source page");
   const second = await sourceRead(f.registry, { id, range: { offset: first.next, length: 2 } }, f.policy);
   expect(first).toEqual({ id, kind: "file", private: false, text: "😀B [cut]", next: 3 });
   expect(second).toEqual({ id, kind: "file", private: false, text: "CD [cut]", next: 5 });
@@ -80,7 +81,7 @@ test("the UTF-8 cap includes the explicit cut marker and cuts only at source cha
   const result = await sourceRead(f.registry, { id }, f.policy);
   expect(result.private).toBe(false);
   if (result.private) throw new Error("expected public text");
-  expect(Buffer.byteLength(result.text, "utf8")).toBeLessThanOrEqual(MAX_SOURCE_READ_BYTES);
+  expect(Buffer.byteLength(result.text, "utf8")).toBeLessThanOrEqual(32 * 1024);
   expect(result.text.endsWith(" [cut]")).toBe(true);
   expect(Array.from(result.text.slice(0, -6)).every(point => point === "가")).toBe(true);
   expect(result.next).toBe(Array.from(result.text.slice(0, -6)).length);
@@ -92,7 +93,7 @@ test("sanitization growth is included in the byte budget and next counts consume
   const result = await sourceRead(f.registry, { id }, f.policy);
   expect(result.private).toBe(false);
   if (result.private) throw new Error("expected public text");
-  expect(Buffer.byteLength(result.text, "utf8")).toBeLessThanOrEqual(MAX_SOURCE_READ_BYTES);
+  expect(Buffer.byteLength(result.text, "utf8")).toBeLessThanOrEqual(32 * 1024);
   expect(result.text.endsWith(" [cut]")).toBe(true);
   expect(result.next).toBeLessThan(Array.from(f.text).length);
   expect(result.text).toContain("> [agent-hub message from x]");
