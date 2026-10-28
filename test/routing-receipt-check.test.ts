@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildReceipt, compare, loadCorpus, parseConfigs, policySummary, renderReceipt, sha256, changedKeys } from "../scripts/benchmarks/routing-corpus.ts";
+import { buildReceipt, compare, loadCorpus, parseReceipt, receiptShape, parseConfigs, policySummary, renderReceipt, sha256, changedKeys } from "../scripts/benchmarks/routing-corpus.ts";
 import { checkReceipt, CORPUS_PATH, EVAL_CHECK_NAME, evalReport, formatRate, publishEval, readInput, RECEIPT_DIR, TEMPLATE, type CheckInput, type Gh } from "../scripts/check-routing-receipt.ts";
 import { evalGateView, parseEvalMarkers, readEvalResult } from "../src/hub/eval-gate.ts";
 
@@ -402,4 +402,68 @@ test("the script prints the markers, exits with the receipt verdict, and a publi
   expect(publishing.exitCode).toBe(0);
   expect(publishing.stdout.toString()).toContain("::warning title=routing-eval not published::");
   expect(publishing.stdout.toString()).toContain("routing receipt: OK");
+});
+
+// ---- codex-review nit: a malformed historical receipt must never abort the check before a valid one is considered ----
+/** A machine block whose JSON is a receipt only in `kind` and `version`, with the rest cut, nulled or retyped. */
+const withBlock = (text: string, edit: (receipt: Record<string, any>) => void): string => {
+  const match = /```json receipt\n([\s\S]*?)\n```/.exec(text)!;
+  const receipt = JSON.parse(match[1]!); edit(receipt);
+  return text.replace(match[1]!, JSON.stringify(receipt, null, 2));
+};
+const MALFORMED: [string, (r: Record<string, any>) => void][] = [
+  ["only kind and version", r => { for (const key of Object.keys(r)) if (key !== "kind" && key !== "version") delete r[key]; }],
+  ["no candidate", r => { delete r.candidate; }],
+  ["candidate null", r => { r.candidate = null; }],
+  ["candidate a string", r => { r.candidate = "x"; }],
+  ["candidate with no sha256", r => { r.candidate = {}; }],
+  ["candidate sha256 a number", r => { r.candidate.sha256 = 5; }],
+  ["candidate sha256 short", r => { r.candidate.sha256 = "abc"; }],
+  ["no base", r => { delete r.base; }],
+  ["base null", r => { r.base = null; }],
+  ["base with no sha256", r => { r.base = { ref: "x" }; }],
+  ["base ref a number", r => { r.base.ref = 1; }],
+  ["no evidence", r => { delete r.evidence; }],
+  ["evidence an array", r => { r.evidence = []; }],
+  ["corpus hash a number", r => { r.corpus_hash = 1; }],
+  ["split unknown", r => { r.split = "val"; }],
+  ["generated missing", r => { delete r.generated; }],
+  ["the whole body an array", r => { for (const key of Object.keys(r)) delete r[key]; }],
+];
+for (const [name, edit] of MALFORMED) {
+  test(`a malformed historical receipt (${name}) is skipped without an exception, and a valid receipt beside it still passes`, () => {
+    const good = receiptFor(BASE, NEUTRAL);
+    const broken = { path: `${RECEIPT_DIR}/2025-01-01-routing-00000000.md`, text: withBlock(good.text, edit) };
+    expect(() => parseReceipt(broken.text)).not.toThrow();
+    expect(() => checkReceipt(input(NEUTRAL, [broken, good]))).not.toThrow();
+    expect(checkReceipt(input(NEUTRAL, [broken, good])), name).toMatchObject({ ok: true });
+    // the order of the files must not matter
+    expect(checkReceipt(input(NEUTRAL, [good, broken])), name).toMatchObject({ ok: true });
+    // alone it is no receipt, and the answer is a reason, not a throw
+    const alone = checkReceipt(input(NEUTRAL, [broken]));
+    expect(alone.ok, name).toBe(false);
+    expect(reason(alone), name).toContain("no routing receipt");
+  });
+}
+
+test("receiptShape accepts a real receipt and refuses non-objects", () => {
+  const real = parseReceipt(receiptFor(BASE, NEUTRAL).text)!;
+  expect(receiptShape(real)).toBe(true);
+  for (const value of [null, undefined, 5, "x", [], {}, { kind: "routing-receipt" }, { kind: "routing-receipt", version: 2 }]) expect(receiptShape(value), JSON.stringify(value)).toBe(false);
+});
+
+test("a receipt that has the right shape but a tampered nested value still fails with a reason and never throws", () => {
+  const good = receiptFor(BASE, NEUTRAL);
+  for (const [name, edit] of [
+    ["evidence.cases a string", (r: Record<string, any>) => { r.evidence.cases = "x"; }],
+    ["evidence.primary null", (r: Record<string, any>) => { r.evidence.primary = null; }],
+    ["evidence.secondary missing", (r: Record<string, any>) => { delete r.evidence.secondary; }],
+    ["base.config a string", (r: Record<string, any>) => { r.base.config = "x"; }],
+    ["evidence.regressions not a list", (r: Record<string, any>) => { r.evidence.regressions = {}; }],
+  ] as const) {
+    const bad = { path: good.path, text: withBlock(good.text, edit) };
+    let result: ReturnType<typeof checkReceipt> | undefined;
+    expect(() => { result = checkReceipt(input(NEUTRAL, [bad])); }, name).not.toThrow();
+    expect(result!.ok, name).toBe(false);
+  }
 });

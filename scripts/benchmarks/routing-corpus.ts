@@ -235,7 +235,20 @@ export function renderReceipt(receipt: Receipt): string {
 export function parseReceipt(text: string): Receipt | undefined {
   const match = /```json receipt\n([\s\S]*?)\n```/.exec(text);
   if (!match) return undefined;
-  try { const value = JSON.parse(match[1]!) as Receipt; return value?.kind === "routing-receipt" && value.version === 1 ? value : undefined; } catch { return undefined; }
+  try { const value = JSON.parse(match[1]!) as unknown; return receiptShape(value) ? value : undefined; } catch { return undefined; }
+}
+const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === "object" && !Array.isArray(value);
+const isSha = (value: unknown): boolean => typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+/**
+ * The fields a reader dereferences before it can compare anything: the two sides with their digests, the split, the corpus hash, the date and the evidence block.
+ * A block without them is not a receipt (it is skipped, never an exception), so one malformed old file cannot hide a valid receipt beside it. Whether the
+ * VALUES are right is the check's rebuild, not this shape test.
+ */
+export function receiptShape(value: unknown): value is Receipt {
+  if (!isObject(value) || value.kind !== "routing-receipt" || value.version !== 1) return false;
+  const { base, candidate, evidence } = value;
+  return isObject(base) && isSha(base.sha256) && typeof base.ref === "string" && isObject(candidate) && isSha(candidate.sha256) && typeof value.corpus_hash === "string"
+    && (value.split === "test" || value.split === "train") && typeof value.generated === "string" && isObject(evidence);
 }
 /** The configurations of a base and a candidate routing.toml text, parsed with the shipped loader. */
 export function parseConfigs(baseText: string, candidateText: string): { base: Routing; candidate: Routing } {
