@@ -107,9 +107,10 @@ export async function runPty(argv: readonly string[], options: PtyOptions): Prom
     if (beforeStart.outcome !== "started") winner = beforeStart;
     else if (proc.exitCode !== null || proc.signalCode !== null) winner = { outcome: "exited" };
     else {
-      const ready = options.ready ? Promise.resolve().then(() => {
+      const ready = options.ready ? Promise.resolve().then(async (): Promise<Winner> => {
         if (proc.exitCode !== null || proc.signalCode !== null) return { outcome: "exited" as const };
-        return options.ready!().then(() => ({ outcome: "completed" as const }));
+        await options.ready!();
+        return { outcome: "completed" };
       }).catch(() => ({ outcome: "failed" as const })) : undefined;
       const failures = new Promise<Winner>(resolve => {
         const check = () => { if (outputFailure) resolve({ outcome: "failed" }); };

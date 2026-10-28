@@ -1252,6 +1252,11 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   smoke: async () => {
+    // Log every live-test invocation, including syntax/target refusals; native output never joins the audit.
+    if (liveTest && caller.role === "console") {
+      try { recordCliAudit(stateDir, "user", commandLabel, "run"); }
+      catch { return fail("smoke audit unavailable; nothing was executed"); }
+    }
     const output = outputOptions();
     const operands = args.filter(arg => arg !== "--json");
     const usage = "usage: ahub --live-test smoke run qwen-dual-output --project-id <id> --receipt <file.json> [--timeout-ms <100..120000>] [--json]";
@@ -1271,11 +1276,6 @@ const commands: Record<string, () => Promise<void> | void> = {
     if (!project) return fail("smoke target refused");
     const checked = validateSmokeTarget({ cwd, hubHome: home, project, expectedProjectId: values.get("--project-id")!, liveTest });
     const target = { ...checked, check: () => { checked.check(); assertDelegatedAuditConsumer(); } };
-    // Console invocations need the same ids-only audit as the delegated path above, before any native process.
-    if (caller.role === "console") {
-      try { recordCliAudit(stateDir, "user", "smoke run", "run"); }
-      catch { return fail("smoke audit unavailable; nothing was executed"); }
-    }
     const abort = new AbortController();
     const interrupted = () => abort.abort();
     process.once("SIGINT", interrupted); process.once("SIGTERM", interrupted);
