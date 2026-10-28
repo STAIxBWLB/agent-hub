@@ -434,9 +434,9 @@ test("a declined automatic offer retains its queue origin across replanning and 
   const back = await f.tasks.decline("codex", row.id, "cannot implement");
   expect(back.owner).toBeNull(); await settled(f.tasks);
   expect(f.board.queuePressureStallPage().rows.map(row => row.task)).toContain(back.id);
-  f.board.update(back.id, HUB, "planned", { planningRevision: 2 });
+  f.board.plan(back.id, USER, { priority: 2 }, back.planningRevision ?? 0);
   await f.tasks.releaseReady(); await settled(f.tasks);
-  expect(f.board.queuePressureStallPage().rows.find(row => row.task === back.id)?.replanRevision).toBe(2);
+  expect(f.board.queuePressureStallPage().rows.find(row => row.task === back.id)?.replanRevision).toBe(1);
   f.bus.pull("kimi"); await owned(f, back.id, "kimi");
   expect(f.board.get(back.id)?.history.filter(row => row.event === "assigned" || row.event === "reassigned")).toHaveLength(2);
 });
@@ -480,7 +480,7 @@ test("enabled pressure preserves a continuing reviewer below thresholds despite 
 test("a person's ready reservation stays held rather than rerouting under queue pressure", async () => {
   const f = await fixture({ pullOnly: true, hold: false }); f.wire();
   const dep = f.board.propose(USER, { title: "dependency", class: "implement" });
-  const row = await f.tasks.propose(USER, { title: "waiting reservation", class: "implement", deps: [dep.id] });
+  const row = await f.tasks.propose(USER, { title: "waiting reservation", class: "implement", after: [dep.id] });
   await f.tasks.assignTo(row.id, "codex", USER);
   f.control.policy = { max_queued: 1, max_oldest_s: 0 }; f.enqueue("codex", 2);
   f.board.update(dep.id, USER, "approved", { state: "approved" });
