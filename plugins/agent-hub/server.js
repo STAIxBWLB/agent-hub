@@ -6642,9 +6642,10 @@ function guardPath(ctx, path, mode) {
   const rel = relative4(root, real);
   if (rel.startsWith("..") || resolve10(root, rel) !== real)
     throw new Error(`${path} is outside the project directory`);
-  if (isDenied(rel, ctx.deny))
+  const typed = relative4(root, abs);
+  if (isDenied(rel, ctx.deny) || isDenied(typed, ctx.deny))
     throw new Error(`${path} is on the secrets denylist`);
-  if (mode === "write" && isHubWritePath(rel))
+  if (mode === "write" && (isHubWritePath(rel) || isHubWritePath(typed)))
     throw new Error(`${path} is not writable by the local worker`);
   if (mode === "write" && ctx.readOnly?.length && (lstatSync10(real, { throwIfNoEntry: false })?.nlink ?? 1) > 1)
     throw new Error("hardlinked write target cannot be verified with data.readonly");
