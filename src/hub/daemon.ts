@@ -74,6 +74,7 @@ import { childEnv } from "./child-process.ts";
 import { runCheck } from "./checks.ts";
 import { DEFAULT_TASK_SWEEP, taskSweepConfig, type TaskSweepConfig } from "./task-sweep.ts";
 import { scheduleViews, schedulesConfig, ScheduleStore, type ScheduleEntry } from "./schedules.ts";
+import { corpusConfig } from "./corpus-config.ts";
 import { ALL_MACHINE_LOCAL, configRepositoryPresent, configTracked, stripUntrusted } from "./config-trust.ts";
 import { authorizeConfigLeaf, configApply, configIdentityScope, configChanges, validateEffectiveConfig, validatePetConfig } from "./config-apply.ts";
 import { resolveSettledRoles } from "./settled-roles.ts";
@@ -210,6 +211,8 @@ export interface HubConfig {
   pii?: { paths: string[] };
   data?: { readonly: string[] };
   text_projection?: ProjectionConfig;
+  /** #510: machine-local folders of plain notes the hub may index, read-only; vault folders are refused when the index reads them. */
+  corpus: { paths: string[] };
   catalog_roles?: Record<string, string[]>;
   conductor: { feed: "own" | "all" | "off"; approval_wait_s: number };
   budget: BudgetConfig;
@@ -289,6 +292,7 @@ export const DEFAULT_CONFIG: HubConfig = {
   tasks: { release_after_min: 30, escalate_after: ESCALATE_AFTER, auto_pull: false },
   task_sweep: DEFAULT_TASK_SWEEP,
   schedules: [],
+  corpus: { paths: [] },
   checks: { timeout_s: 600 },
   // Off here like approvals.notify, so tests (whose cwd is this repository) write no objects; a project's config turns it on.
   snapshots: { enabled: false, keep: 20 },
@@ -313,7 +317,7 @@ const PEER_ID = /^[a-z][a-z0-9-]{0,31}$/;
 /** The shared project config, then the machine's own file, which overrides it block by block (issue #17). */
 const CONFIG_FILES = INSTANCE_CONFIG_FILES;
 export interface ConfigLayer { name: typeof CONFIG_FILES[number]; raw: Record<string, any> }
-const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "pet"];
+const CONFIG_BLOCKS = ["action_policy", "memory", "roster", "roles", "catalog_roles", "pii", "data", "conductor", "budget", "context", "inference", "omniroute", ...NATIVE_CONFIG_BLOCKS, "approvals", "tasks", "task_sweep", "corpus", "checks", "snapshots", "research", "bench", "limits", "review", "recovery", "capabilities", "mlx", "permission_modes", "peers", "terminal", "pet"];
 
 /** Connection-time policy refresh reads role/feed fields only, never launches or machine-local configuration. */
 export function loadConductorPolicy(cwd: string, layers?: readonly ConfigLayer[], scope: Pick<ReturnType<typeof readInstanceConfig>, "instances" | "catalog"> = readInstanceConfig(cwd, layers)): { roles: Record<string, string[]>; conductor: HubConfig["conductor"]; planner?: string | string[]; notices?: string[] } {
@@ -403,6 +407,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     profileName(file.profile);
     resolveProfile(file.profile, file.profile_overrides);
     projectionConfig(file.text_projection);
+    corpusConfig(file.corpus);
     for (const [block, key] of [["pii", "paths"], ["data", "readonly"]] as const) {
       const raw = file[block];
       if (raw !== undefined && (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).some(k => k !== key))) throw new Error(block + " must be a bounded path policy block");
@@ -503,6 +508,7 @@ export function loadConfig(cwd: string, layers?: readonly ConfigLayer[], routing
     tasks: { ...DEFAULT_CONFIG.tasks, ...file.tasks, ...(file.tasks?.wip_limits !== undefined ? { wip_limits: planningWipLimits(file.tasks.wip_limits) } : {}) },
     task_sweep: taskSweepConfig(file.task_sweep),
     schedules: schedulesConfig(file.schedules),
+    corpus: corpusConfig(file.corpus),
     checks: { ...DEFAULT_CONFIG.checks, ...file.checks, runner: file.checks?.runner === "remote" ? "remote" : file.checks?.runner === "container" ? "container" : undefined,
       ...(file.checks?.remote !== undefined || file.checks?.runner === "remote" ? { remote: remoteRunnerConfig(file.checks?.remote) } : {}) },
     snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: true, ...file.snapshots },

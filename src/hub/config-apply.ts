@@ -15,6 +15,7 @@ import { peerStartConfig, terminalTemplate } from "./start-mode.ts";
 import { catalogAssignments } from "./roles.ts";
 import { resolveProfile } from "./profiles.ts";
 import { schedulesConfig } from "./schedules.ts";
+import { corpusConfig } from "./corpus-config.ts";
 import { taskSweepConfig } from "./task-sweep.ts";
 import { projectionConfig } from "./text-projection.ts";
 import { validateInstances, type InstancesConfig } from "./instances.ts";
@@ -169,6 +170,7 @@ const schema: Record<string, Check> = {
   catalog_roles: (v, k) => { map(() => {})(v, k); catalogAssignments(v); },
   pii: block({ paths: strings }), data: block({ readonly: strings }),
   text_projection: v => { projectionConfig(v); },
+  corpus: v => { corpusConfig(v); },
   conductor: block({ feed: words(["own", "all", "off"]), approval_wait_s: number(0, 2_147_483_647 / 1000) }),
   budget: block({ gate: number(0, 1), stale_min: timerMinutes, poll_min: timerMinutes, checkpoint_timeout_s: timerSeconds, kimi_tokens_5h: number(0), wait_max_min: number(0) }),
   context: block({ gate: number(0, 1), stale_min: timerMinutes }),
@@ -230,7 +232,7 @@ const restart: Record<string, string> = {
   checks: "Bounded runner and completion-check contracts are constructed together",
   pii: "Existing native sessions retain their startup privacy boundary", data: "Existing native sessions retain their startup read-only policy",
   profile: "Session tool schemas and profile contracts are bound at startup", profile_overrides: "Session tool schemas and profile contracts are bound at startup",
-  text_projection: "Converter and cache ownership are bound at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", bench: "Benchmark execution environment is selected before work starts",
+  text_projection: "Converter and cache ownership are bound at startup", corpus: "The corpus index is bound to its roots at startup", terminal: "Terminal provider is supplied by the daemon lifecycle", bench: "Benchmark execution environment is selected before work starts",
 };
 const live = new Set(["action_policy", "permission", "roster", "roles", "planner", "conductor", "protect_instruction_files", "task_sweep", "capabilities", "research", "snapshots", "tasks.wip_limits", "tasks.escalate_after", "tasks.auto_pull", "schedules", "approvals.notify", "pet"]);
 const nextMemory = new Set(["memory.inject_tokens", "memory.brief_items", "memory.suggest_edges"]);
