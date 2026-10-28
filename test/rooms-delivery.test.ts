@@ -108,6 +108,8 @@ async function hub(root: string, label: string, event: Signal, control: Control,
     members(context);
   };
   chat.application.transportAck = () => event.notify();
+  const stored = chat.application.stored;
+  chat.application.stored = (context, input) => { try { stored(context, input); } finally { event.notify(); } };
   const receive = chat.application.receive;
   chat.application.receive = async (context, input) => { try { await receive(context, input); } finally { control.afterReceive?.(label, input); event.notify(); } };
   const peer = new LocalPeer(); bus.add(peer); await peer.start();
