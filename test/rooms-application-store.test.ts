@@ -296,7 +296,7 @@ test("incoming person accept/discard are local settled metadata, never admission
     expect(() => f.guest.disposeIncoming("work", item.digest, action, () => false)).toThrow("state_changed");
     expect(f.guest.incomingApplication("work", item.digest)?.state).toBe("needs_review");
     f.guest.disposeIncoming("work", item.digest, action);
-    const metadata = { sender: f.owner.identity.public.fingerprint, application: item.envelope.id, peer: "claude", state: "disposed", digest: item.digest, disposition: action, disposedAt: f.now(), disposedBy: "user" };
+    const metadata = { sender: f.owner.identity.public.fingerprint, application: item.envelope.id, peer: "claude", state: "disposed" as const, digest: item.digest, disposition: action, disposedAt: f.now(), disposedBy: "user" as const };
     expect(f.guest.incomingApplication("work", item.digest)).toEqual(metadata);
     expect(f.guest.claimApplication("work", item.digest)).toBe(false);
     expect(f.guest.applicationReceipt("work", item.digest)).toBeUndefined();

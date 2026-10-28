@@ -94,7 +94,7 @@ test("actual RoomCommands disposition works for a left room without dialing, pub
       const preview = await commands.preview("resolve", { name: "work", frame: f.frame, action }, () => true);
       expect(preview).toMatchObject({ owner: f.owner, member: f.member });
       const result = await preview.commit();
-      expect(result).toEqual({ name: "work", room: (await commands.rows("work"))[0]!.room, owner: f.owner, member: f.member, kind: "disposed" });
+      expect(result).toEqual({ name: "work", room: String((await commands.rows("work"))[0]!.room), owner: f.owner, member: f.member, kind: "disposed" });
       expect(result.artifact).toBeUndefined();
       await new Promise<void>(resolve => setImmediate(resolve)); expect(dials).toBe(0);
       await expect(commands.preview("resolve", { name: "work", frame: f.frame, action }, () => true)).rejects.toThrow("resolution_unavailable");
