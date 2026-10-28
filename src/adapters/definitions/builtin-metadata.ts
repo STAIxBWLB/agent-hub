@@ -22,7 +22,7 @@ import { createCodex, createKimi, createJcode, createPi, createLocal, createClau
 import { CLAUDE_DISPLAY, CODEX_DISPLAY, KIMI_DISPLAY, PI_DISPLAY, LOCAL_DISPLAY, JCODE_DISPLAY } from "./native-display.ts";
 import { CLAUDE_RECOVERY_SESSION, CODEX_RECOVERY_SESSION, KIMI_RECOVERY_SESSION, PI_RECOVERY_SESSION, LOCAL_RECOVERY_SESSION, JCODE_RECOVERY_SESSION } from "./native-recovery.ts";
 import { claudeWindows, codexWindows } from "./native-quota.ts";
-import { claudeContext, codexContext, acpContextValue } from "./native-context.ts";
+import { claudeContext, codexContext, acpContextValue, jcodeContextValue } from "./native-context.ts";
 import type { AdapterDefinition } from "../registry-types.ts";
 import type { PeerAdapter } from "../../hub/peers.ts";
 
@@ -152,7 +152,7 @@ export const NATIVE_BUILTIN_DEFINITIONS_WITHOUT_QWEN: readonly AdapterDefinition
     identity: { mcp: "project-file" }, instances: { mode: "headless", nativeHome: true },
     permission: { unmanaged: "Jcode native policy is unmanaged; no hub mode mapping", grants: {
       ask: "no verified hub mode mapping; native policy only", "ask-when-needed": "no verified hub mode mapping; native policy only", "never-ask": "no verified hub mode mapping; native policy only" } },
-    session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "jcode", ...JCODE_RECOVERY_SESSION, crashPlan: jcodeCrashPlan }, turnEnd: "adapter", budget: { account: "jcode" },
+    session: { idField: "sessionId", currentId: sessionId("sessionId"), launchKind: "jcode", ...JCODE_RECOVERY_SESSION, crashPlan: jcodeCrashPlan }, turnEnd: "adapter", budget: { account: "jcode", context: { source: "jcode_usage_update", read: jcodeContextValue } },
     // Jcode has no dedicated CSS swatch today: retain peer-palette.ts's existing 'other' fallback.
     cli: { command: "jcode", entry: { lifecycleAdmission: true, execute: runJcodeEntry }, preview: previewJcode, usage: [["ahub jcode [--mode tui|headless] [--model <alias>] [--provider-profile <name>] [--session-id <id>] [--print-command]", "optional Jcode (roster.jcode, default off): its TUI on the hub-owned ACP session, opened once that session is saved; --mode headless for ACP only; native policy unmanaged, no hub sandbox"]], authority: "person", launchConfigKeys: ["jcode_cmd", "jcode_home", "jcode_provider_profile"], startWords: mode => ["jcode", "--mode", mode] }, display: JCODE_DISPLAY, hooks: { recallPlatform: "jcode" },
   },

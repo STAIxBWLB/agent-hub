@@ -50,6 +50,23 @@ export interface ACPUsageDiagnostic {
   total?: number;
 }
 
+/**
+ * One prompt's own token counters from its result's `usage` (Jcode 0.99.1: `inputTokens`, `outputTokens`, optional `cachedReadTokens` and `cachedWriteTokens`; a result with several provider
+ * calls carries their sum). Per turn, not a session total, and the provider's `totalTokens` is deliberately not read: Jcode adds the cached read on top of an input that already contains it for
+ * OpenAI-style providers, so that total double counts. Input and output must both be non-negative safe integers, else the whole record is unknown; an optional bucket that is present but
+ * malformed is dropped alone (unknown, never zero). Counters only: nothing else of the payload escapes.
+ */
+export interface ACPTurnUsage { inputTokens: number; outputTokens: number; cacheReadTokens?: number; cacheWriteTokens?: number }
+export function acpTurnUsage(result: unknown): ACPTurnUsage | undefined {
+  if (!result || typeof result !== "object" || Array.isArray(result)) return undefined;
+  const usage = (result as Record<string, unknown>).usage;
+  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return undefined;
+  const u = usage as Record<string, unknown>;
+  const count = (v: unknown): v is number => typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
+  if (!count(u.inputTokens) || !count(u.outputTokens)) return undefined;
+  return { inputTokens: u.inputTokens, outputTokens: u.outputTokens, ...(count(u.cachedReadTokens) ? { cacheReadTokens: u.cachedReadTokens } : {}), ...(count(u.cachedWriteTokens) ? { cacheWriteTokens: u.cachedWriteTokens } : {}) };
+}
+
 /** Counter-only projection: no source payload, text, tools or metadata escapes. */
 export function normalizeACPUsage(value: unknown, source: ACPUsageDiagnostic["source"] = "usage_update"): ACPUsageDiagnostic {
   const unknown: ACPUsageDiagnostic = { source, availability: "unsupported", shape: "none" };
@@ -111,6 +128,8 @@ export interface AcpOptions {
   preamble?: string;
   /** The session's running token total from `usage_update` (checked totalTokens or input/output pair; `used` context occupancy is diagnostic only). Cumulative, not a delta. */
   onTokens?: (sessionTotal: number, sessionId: string) => void;
+  /** One finished prompt's own counters (see `acpTurnUsage`), once per prompt that reported them; never a session total, so it never feeds `onTokens`. The sessionId is the adapter's own. */
+  onTurnUsage?: (usage: ACPTurnUsage, sessionId: string) => void;
   /** The prompt rejected or ended without normal completion, even when it streamed partial text.
    *  Same shape as Pi's onTurnFailure; a stale cancelled turn never reports. */
   onTurnFailure?: (envs: Envelope[], reason: string) => Promise<void> | void;
@@ -504,6 +523,8 @@ export class AcpPeer extends BasePeer {
         if (this.activeLegacy?.turn === turn) this.activeLegacy = undefined;
         this.endActivity(typeof result?.stopReason === "string" ? result.stopReason : "unknown", result?.stopReason === "cancelled");
         this.observeUsage(result, "prompt_result");
+        const turnUsage = acpTurnUsage(result);
+        if (turnUsage) try { this.opts.onTurnUsage?.(turnUsage, this.sessionId); } catch { /* a counter sink never costs a turn */ }
         this.primed = true;
         const body = this.chunks.join("").trim();
         // What was steered into the turn is answered by it too: its senders hear back, and the hop cap still holds.

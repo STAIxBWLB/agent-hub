@@ -4827,7 +4827,21 @@ export async function startDaemon(opts: DaemonOptions) {
         providerProfile: (args.providerProfile ?? instance?.provider_profile ?? config.jcode_provider_profile) || undefined,
         ...(instance?.provider ? { provider: instance.provider } : {}),
         ...(args.model ?? instance?.model ? { launchModel: (args.model ?? instance?.model)! } : {}), ...(args.sessionId ? { resumeSessionId: args.sessionId } : {}), cwd: executionCwd, watchdogMs: config.watchdog_ms,
-        preamble: sessionRoleContract(peer), log: () => log("Jcode native diagnostic: details withheld") }) }) as JcodePeer;
+        preamble: sessionRoleContract(peer), log: () => log("Jcode native diagnostic: details withheld"),
+        // #801: Jcode 0.99.1's usage_update is `{ used, size }`, the live session's context occupancy: a context reading bound to the adapter's own session id, never a tokens event
+        // or a quota window. An invalid shape reports a null reading (unknown, not the previous value).
+        onUsageDiagnostic: (observation, sessionId) => {
+          if (observation.source !== "usage_update" || observation.shape !== "context-used") return;
+          const current = contextSession(peer); if (!current) return;
+          const reading = readNativeContext(adapter, { used: observation.contextUsed, size: observation.contextCapacity }, sessionId, Date.now());
+          if (reading) contexts.report(peer, reading, current);
+        },
+        // One prompt's own counters (a sum over its provider calls), recorded as a usage event and never as a running total: `tokens` events and the hub token window stay as they were.
+        onTurnUsage: (usage) => {
+          if (bus.peers.get(peer) !== jcode) return;   // a replaced adapter's late result is not this peer's
+          event({ type: "usage", peer, source: "jcode_acp", id: `jcode:${runId}:${peer}:${++codexUsageSeq}`, inputTokens: usage.inputTokens, outputTokens: usage.outputTokens,
+            ...(usage.cacheReadTokens !== undefined ? { cacheReadTokens: usage.cacheReadTokens } : {}), ...(usage.cacheWriteTokens !== undefined ? { cacheWriteTokens: usage.cacheWriteTokens } : {}), ...taskAttribution(peer) });
+        } }) }) as JcodePeer;
       jcodeLaunches.set(peer, jcode);
       recoveryTaskPreface(peer); await ensurePreface(peer);
       try { await jcode.start(); await reconcileNativeStart(peer, jcode); }

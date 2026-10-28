@@ -33,3 +33,15 @@ export function acpContextValue(value: unknown, sessionId: string, measuredAt: n
   const raw = object(value);
   return acpContext({ used: raw.used as number, size: raw.size as number }, sessionId, measuredAt);
 }
+
+/**
+ * Jcode 0.99.1's ACP `usage_update` is `{ used, size }` (docs/verification/2026-10-28-jcode-0.99.1-usage.md): `used` is the context the last provider call held (its input, and the
+ * cached part where the provider reports it apart), `size` the model's context limit. It is occupancy of the live session, so it is a reading, never consumption; it says nothing
+ * of quota. Anything but two finite integers with a positive size is unknown, and a `used` above `size` clamps the fraction only (tokens keeps what was reported).
+ */
+export function jcodeContextValue(value: unknown, sessionId: string, measuredAt: number): ContextReading {
+  const raw = object(value);
+  const okay = Number.isSafeInteger(raw.used) && (raw.used as number) >= 0 && Number.isSafeInteger(raw.size) && (raw.size as number) > 0;
+  const tokens = okay ? raw.used as number : null, window = okay ? raw.size as number : null;
+  return { source: "jcode_usage_update", sessionId, measuredAt, tokens, window, used: tokens !== null && window !== null ? Math.min(1, tokens / window) : null };
+}

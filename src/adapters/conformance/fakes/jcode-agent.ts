@@ -1,6 +1,6 @@
 import { createServer } from "node:net";
 import { basename, dirname, join } from "node:path";
-import { writeSync, appendFileSync, mkdirSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { writeSync, appendFileSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { createInterface } from "node:readline";
 const args = process.argv.slice(2), value = (key: string) => args[args.indexOf(key) + 1];
 const record = args.includes("--record") ? value("--record") : undefined;
@@ -76,7 +76,11 @@ if (args.includes("version")) {
       }
       const finish = () => {
         send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: session, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "JCODE_REPLY" } } } });
-        send({ jsonrpc: "2.0", id: msg.id, result: { stopReason: args.includes("--max-tokens-stop") ? "max_tokens" : "end_turn" } });
+        // `--usage-script F`: the 0.99.1 shapes, as probed (docs/verification/2026-10-28-jcode-0.99.1-usage.md). F is a JSON object `{ updates: [...], usage: {...} | null, sessionId?: string }`:
+        // each `updates` entry becomes a `usage_update` notification (for `sessionId` when given, else this session), and `usage` is the prompt result's `usage` member (absent when null).
+        const script = args.includes("--usage-script") && existsSync(value("--usage-script")!) ? JSON.parse(readFileSync(value("--usage-script")!, "utf8")) : undefined;
+        for (const update of script?.updates ?? []) send({ jsonrpc: "2.0", method: "session/update", params: { sessionId: script.sessionId ?? session, update: { sessionUpdate: "usage_update", ...update } } });
+        send({ jsonrpc: "2.0", id: msg.id, result: { stopReason: args.includes("--max-tokens-stop") ? "max_tokens" : "end_turn", ...(script?.usage ? { usage: script.usage } : {}) } });
         if (args.includes("--exit-after-prompt")) setTimeout(() => process.exit(0), 30);
       };
       const steerFile = args.includes("--steer-file") ? value("--steer-file")! : undefined;
