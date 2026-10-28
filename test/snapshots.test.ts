@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { changedPaths, dirtySubmodules, parseDirtySubmodules, planUndo, repoOf, restore, snapshot, Turns, type Repo } from "../src/hub/snapshots.ts";
+import { changedPaths, dirtySubmodules, knownChangedPaths, parseDirtySubmodules, planUndo, repoOf, restore, snapshot, SnapshotBudgetExceeded, Turns, type Repo } from "../src/hub/snapshots.ts";
 
 // issue #33: per-turn snapshots as git trees, and undo that refuses to destroy work it should keep.
 const cleanup: (() => void)[] = [];
@@ -382,4 +382,45 @@ test("dirtySubmodules refreshes nothing it does not own: the superproject index 
   expect(dirtySubmodules(r)).toEqual(["sub"]); // the submodule edit is detected while the index stays put
   expect(Buffer.from(readFileSync(index))).toEqual(bytesBefore);
   expect(statSync(index).mtimeMs).toBe(mtimeBefore);
+});
+
+// #554: a test that holds the budget clock (snapshotClock, #661) must not let the git child's own wall-clock timeout stand in for the budget. The old child timeout was the remaining budget (250 ms with a held clock), so a loaded runner
+// timed a slow git out and the evidence was unknown. A git that is slow on purpose reproduces that load without any host load.
+function slowGit(ms: number) {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "agenthub-slowgit-"))), real = Bun.which("git")!, prior = process.env.PATH, ran = join(dir, "ran");
+  // Every git call appends a line to `ran` before it sleeps, so a test can tell that no git child was started at all.
+  writeFileSync(join(dir, "git"), `#!/bin/sh\necho x >> ${JSON.stringify(ran)}\nsleep ${ms / 1000}\nexec ${JSON.stringify(real)} "$@"\n`, { mode: 0o755 });
+  process.env.PATH = `${dir}:${prior}`;
+  cleanup.push(() => { process.env.PATH = prior; rmSync(dir, { recursive: true, force: true }); });
+  return { calls: () => existsSync(ran) ? readFileSync(ran, "utf8").split("\n").filter(Boolean).length : 0, reset: () => rmSync(ran, { force: true }) };
+}
+
+test("a held budget clock does not turn a slow git into unknown evidence (#554)", () => {
+  const { r, root } = repo();
+  slowGit(600); // well past the 250 ms the budget names
+  const held = { deadline: 250, now: () => 0 };
+  const from = snapshot(r, held);
+  writeFileSync(join(root, "a.txt"), "two\n");
+  const to = snapshot(r, held);
+  expect(from).toMatch(/^[0-9a-f]{40}$/); expect(to).toMatch(/^[0-9a-f]{40}$/); expect(from).not.toBe(to);
+  expect(knownChangedPaths(r, from!, to!, held)).toEqual(["a.txt"]);
+});
+
+test("with the real clock a slow git past the budget is still unknown evidence, and its child is killed at the budget, not left to the 10 s ceiling (production unchanged)", () => {
+  const { r } = repo();
+  slowGit(5000);
+  const started = performance.now();
+  expect(() => snapshot(r, { deadline: performance.now() + 250 })).toThrow(SnapshotBudgetExceeded);
+  expect(performance.now() - started).toBeLessThan(3000); // the child was killed near 250 ms; a 10 s ceiling would wait the whole 5 s
+});
+
+test("a held clock that jumps past the deadline exhausts the budget before any git child starts", () => {
+  const { r } = repo();
+  const slow = slowGit(50);
+  let now = 0; const jumping = { deadline: 250, now: () => now };
+  expect(typeof snapshot(r, jumping)).toBe("string");
+  expect(slow.calls()).toBeGreaterThan(0); // the wrapper is really in the path
+  slow.reset(); now = 1000;
+  expect(() => snapshot(r, jumping)).toThrow(SnapshotBudgetExceeded);
+  expect(slow.calls()).toBe(0);
 });

@@ -33,7 +33,7 @@ const git = (top: string | Repo, args: string[], env: Record<string, string> = {
   const result = hubGitSync(argv, {
     encoding: "utf8", env: { ...repoGitEnv(top), ...env }, ...(maxBuffer === undefined ? {} : { maxBuffer }),
     ...(input === undefined ? {} : { input }),
-    timeout: Math.max(1, Math.min(SNAPSHOT_TIMEOUT_MS, Math.floor(remaining))),
+    timeout: budget?.now ? SNAPSHOT_TIMEOUT_MS : Math.max(1, Math.min(SNAPSHOT_TIMEOUT_MS, Math.floor(remaining))),
   });
   if (budget && (budgetNow(budget) >= budget.deadline || (result.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT")) throw new SnapshotBudgetExceeded();
   return result;
