@@ -26,11 +26,11 @@ function artifact(value: string | undefined): string {
   if (!value || value.length > 699_051 || !B64.test(value) || value.length % 4 === 1) fail();
   return value;
 }
-function flags(args: readonly string[], allowed: readonly string[]): Map<string, string> {
+function flags(args: readonly string[], allowed: readonly string[], dashValues: readonly string[] = []): Map<string, string> {
   const result = new Map<string, string>();
   for (let i = 0; i < args.length; i += 2) {
     const key = args[i], value = args[i + 1];
-    if (!key || !allowed.includes(key) || !value || value.startsWith("--") || result.has(key)) fail();
+    if (!key || !allowed.includes(key) || !value || value.startsWith("--") && !dashValues.includes(key) || result.has(key)) fail();
     result.set(key, value);
   }
   return result;
@@ -46,7 +46,7 @@ function parseRoomInput(args: readonly string[]): RoomCliCommand {
   }
   if (args.includes("--json")) fail(); // Invitation secrets are never a JSON data format.
   if (action === "resolve") {
-    const name = id(operand), options = flags(rest, ["--frame", "--action"]), frame = options.get("--frame"), choice = options.get("--action");
+    const name = id(operand), options = flags(rest, ["--frame", "--action"], ["--frame"]), frame = options.get("--frame"), choice = options.get("--action");
     if (!frame || frame.length !== 43 || (choice !== "accept" && choice !== "discard")) fail();
     try { decodeBase64url(frame, 32); } catch { fail(); }
     return { op: "mutation", action, input: { name, frame, action: choice } };

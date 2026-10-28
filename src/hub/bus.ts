@@ -226,12 +226,12 @@ export class Bus {
 
   add(peer: PeerAdapter): void {
     if (peer.remoteRoom !== undefined && (!parseRemotePeerId(peer.id) || typeof peer.remoteRoom !== "string" || !peer.remoteRoom || peer.remoteRoom.length > 256 || !remoteFingerprint(peer.remoteMember))) throw new Error("invalid remote peer binding");
-    const pendingRemote = (this.queues.get(peer.id)?.length ?? 0) > 0 || this.preparing.has(peer.id) || [...this.activeDeliveries.values()].includes(peer.id) || [...this.remoteTransport.values()].some(value => value.peer === peer.id);
+    const pendingRemote = peer.remoteRoom !== undefined && this.hasRemoteWork(peer.id);
     if (peer.remoteRoom !== undefined && pendingRemote) {
       const room = this.remoteQueueRooms.get(peer.id), member = this.remoteQueueMembers.get(peer.id);
       if (room === undefined || member === undefined) {
         this.expireRemoteQueues();
-        if ((this.queues.get(peer.id)?.length ?? 0) > 0 || this.preparing.has(peer.id) || [...this.activeDeliveries.values()].includes(peer.id) || [...this.remoteTransport.values()].some(value => value.peer === peer.id)) throw new Error("remote queued identity binding unavailable");
+        if (this.hasRemoteWork(peer.id)) throw new Error("remote queued identity binding unavailable");
       } else if (room !== peer.remoteRoom) throw new Error("remote queued room binding changed");
       else if (member !== peer.remoteMember) throw new Error("remote queued member binding changed");
     }
@@ -424,9 +424,12 @@ export class Bus {
 
   /** A bounded, JSON-safe representation of queued work and retry/dedupe state. */
   snapshot(includeJournal = true): BusSnapshot {
+    const rooms = this.remoteRoomSnapshot(), members = this.remoteMemberSnapshot();
+    const queues = Object.fromEntries([...this.queues].map(([id, queue]) => [id, queue.map((e) => ({ ...e, ...(e.to ? { to: [...e.to] } : {}) }))]));
+    for (const peer of new Set([...Object.keys(rooms), ...Object.keys(members)])) queues[peer] ??= [];
     const out: BusSnapshot = {
       schemaVersion: 1,
-      queues: Object.fromEntries([...this.queues].map(([id, queue]) => [id, queue.map((e) => ({ ...e, ...(e.to ? { to: [...e.to] } : {}) }))])),
+      queues,
       prefaces: Object.fromEntries([...this.prefaces].map(([id, e]) => [id, { ...e, ...(e.to ? { to: [...e.to] } : {}) }])),
       seen: [...this.seen.values()].map((e) => ({ ...e, ...(e.to ? { to: [...e.to] } : {}) })),
       attempts: Object.fromEntries(this.attempts),
@@ -434,8 +437,8 @@ export class Bus {
       manualPaused: [...this.manualPaused],
       ...(this.deferredHub.size ? { deferredHub: structuredClone([...this.deferredHub.values()]) } : {}),
       ...(this.remoteQueueExpires.size ? { remoteQueueExpires: this.remoteExpirySnapshot() } : {}),
-      ...(this.remoteQueueRooms.size ? { remoteQueueRooms: this.remoteRoomSnapshot() } : {}),
-      ...(this.remoteQueueMembers.size ? { remoteQueueMembers: this.remoteMemberSnapshot() } : {}),
+      ...(Object.keys(rooms).length ? { remoteQueueRooms: rooms } : {}),
+      ...(Object.keys(members).length ? { remoteQueueMembers: members } : {}),
     };
     if (this.trackingQueuePressure()) {
       // Metadata is advisory: omit capped or unknown entries rather than enlarge a delivery without bound.
@@ -570,6 +573,11 @@ export class Bus {
       this.journal.resolve(id, revision, action, reason, revision, actor); // verifies identical request; no second enqueue
       return;
     }
+    if (action === "retry" && remoteId(record.peer)) {
+      const peer = this.peers.get(record.peer), room = this.remoteQueueRooms.get(record.peer), member = this.remoteQueueMembers.get(record.peer);
+      if (record.state !== "needs_review" || record.originals.length !== 1 || !room || !remoteFingerprint(member) || peer?.remoteRoom !== room || peer.remoteMember !== member) throw new Error("remote original identity unavailable or changed; discard it or send a new message explicitly");
+      this.checkRemotePublication(record.originals[0]!);
+    }
     const recipientConsent = actor === `peer:${record.peer}` && action === "retry" && record.state === "needs_review";
     // #713: a `queued` delivery was never handed to the peer, so nothing is in flight and a busy peer (a pull-only TUI is busy most of the time) does not block
     // discarding it. `dispatching` and `accepted` stay refused, and every other resolution keeps the busy fence.
@@ -578,7 +586,7 @@ export class Bus {
     if (this.peers.get(record.peer)?.state === "busy" && !recipientConsent && !queuedDiscard) throw new Error("peer busy: its delivery cannot be resolved while it works");
     if (record.revision !== revision) throw new Error("stale delivery revision");
     if (record.state === "queued" && action === "retry") throw new Error("queued delivery is already scheduled");
-    if (action === "retry" && (this.queues.get(record.peer)?.length ?? 0) + record.originals.length > this.opts.queueCap) throw new Error("recipient queue is full");
+    if (action === "retry" && !remoteId(record.peer) && (this.queues.get(record.peer)?.length ?? 0) + record.originals.length > this.opts.queueCap) throw new Error("recipient queue is full");
     const queue = this.queues.get(record.peer) ?? [];
     const hadQueue = this.queues.has(record.peer);
     const before = [...queue];
@@ -822,17 +830,20 @@ export class Bus {
       try { if (this.opts.remotePrivate(env) !== false) env.private = true; }
       catch { env.private = true; }
     }
-    const rooms = new Set<string>();
+    const rooms = new Set<string>(), targets = [...new Set((env.to ?? []).filter(remoteId))];
     if (remoteId(env.from) && !parseRemotePeerId(env.from)) throw new PreEffectToolRefusal("invalid remote sender");
-    for (const target of env.to ?? []) if (remoteId(target)) {
+    for (const target of targets) {
       const peer = this.peers.get(target);
       if (!parseRemotePeerId(target) || !peer?.remoteRoom || !remoteFingerprint(peer.remoteMember)) throw new PreEffectToolRefusal("remote recipient unavailable");
       const bound = this.remoteQueueRooms.get(target), member = this.remoteQueueMembers.get(target);
-      if (bound !== undefined && this.remotePendingIds(bound).length && (bound !== peer.remoteRoom || member !== peer.remoteMember)) throw new PreEffectToolRefusal("remote queued identity binding changed");
+      if (this.hasRemoteWork(target) && (!bound || !member || bound !== peer.remoteRoom || member !== peer.remoteMember)) throw new PreEffectToolRefusal("remote queued identity binding changed");
       const ttl = peer.remoteQueueTtlMs ?? REMOTE_QUEUE_TTL_MS;
       if (!Number.isSafeInteger(ttl) || ttl <= 0 || !Number.isSafeInteger(Date.now() + ttl)) throw new PreEffectToolRefusal("remote queue TTL unavailable");
       rooms.add(peer.remoteRoom);
     }
+    // ponytail: one original has one stable wire identity. A follow-up may derive
+    // stable per-target wire ids and account each delivery separately before fan-out.
+    if (targets.length > 1) throw new PreEffectToolRefusal(`remote targets ${targets.slice(0, 64).join(", ")}${targets.length > 64 ? ` and ${targets.length - 64} more` : ""}: send to each remote peer separately`);
     for (const room of rooms) {
       const pending = new Set([...this.remotePendingIds(room), ...(this.remoteReservations.get(room) ?? [])]);
       let external: readonly string[];
@@ -844,12 +855,16 @@ export class Bus {
     }
     return [...rooms];
   }
-  private remoteMemberSnapshot(): Record<string, string> {
-    return Object.fromEntries([...this.remoteQueueMembers].filter(([peer]) => (this.queues.get(peer)?.length ?? 0) > 0));
+  private hasRemoteWork(peer: string, pending?: ReadonlySet<string>): boolean {
+    return (this.queues.get(peer)?.length ?? 0) > 0 || this.preparing.has(peer) || [...this.activeDeliveries.values()].includes(peer) || [...this.remoteTransport.values()].some(value => value.peer === peer) || (pending ?? new Set(this.journal?.pendingPeers() ?? [])).has(peer);
   }
-  private remoteRoomSnapshot(): Record<string, string> {
-    return Object.fromEntries([...this.remoteQueueRooms].filter(([peer]) => (this.queues.get(peer)?.length ?? 0) > 0));
+  private remoteBindingSnapshot(values: ReadonlyMap<string, string>): Record<string, string> {
+    if (!values.size) return {};
+    const pending = new Set(this.journal?.pendingPeers() ?? []);
+    return Object.fromEntries([...values].filter(([peer]) => this.hasRemoteWork(peer, pending)));
   }
+  private remoteMemberSnapshot(): Record<string, string> { return this.remoteBindingSnapshot(this.remoteQueueMembers); }
+  private remoteRoomSnapshot(): Record<string, string> { return this.remoteBindingSnapshot(this.remoteQueueRooms); }
   private remoteExpirySnapshot(): Record<string, Record<string, number>> {
     const snapshot: Record<string, Record<string, number>> = {};
     for (const [peer, expiries] of this.remoteQueueExpires) {
@@ -920,8 +935,8 @@ export class Bus {
   /** A late signed queue receipt is evidence for the person; it never auto-settles uncertainty. */
   noteLateRemoteReceipt(peer: string, deliveryId: string, outcome: "completed" | "failed_safe"): boolean {
     if ((outcome !== "completed" && outcome !== "failed_safe") || !parseRemotePeerId(peer) || !this.peers.get(peer)?.remoteRoom || !this.journal || this.storageError || this.closed) return false;
-    const row = this.journal.get(deliveryId);
-    if (!row || row.peer !== peer || row.state !== "needs_review") return false;
+    const row = this.journal.get(deliveryId), adapter = this.peers.get(peer)!;
+    if (!row || row.peer !== peer || row.state !== "needs_review" || this.remoteQueueRooms.get(peer) !== adapter.remoteRoom || this.remoteQueueMembers.get(peer) !== adapter.remoteMember) return false;
     const reason = outcome === "completed" ? "late signed completed receipt: remote queue admitted; remains needs_review" : "late signed failed_safe receipt; remains needs_review";
     if (row.reason !== reason) this.journal.transition(row.id, "needs_review", reason, row.revision);
     this.onQueues?.();

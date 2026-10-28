@@ -89,12 +89,12 @@ test("remote-origin mixed local batches bypass condensation and memory while tel
   expect(JSON.stringify(events)).not.toContain("OUTGOING-CANARY"); expect(JSON.stringify(events)).not.toContain("OUTGOING-REF");
 });
 
-test("the per-room cap deduplicates shared recipients and host outbox ids and refuses mixed publication atomically", () => {
+test("the per-room cap deduplicates host outbox ids and refuses mixed publication atomically", () => {
   const external: string[] = [];
   const { bus } = fixture({ queueCap: 1, remotePending: () => external });
   const a = new Peer(remote, room), b = new Peer("kimi@hub-a", room), local = new Peer("local");
   bus.add(a); bus.add(b); bus.add(local);
-  const shared = newEnvelope("user", "shared", { to: [a.id, b.id] }); bus.publish(shared); external.push(shared.id);
+  const shared = newEnvelope("user", "shared outbox identity", { to: [a.id] }); bus.publish(shared); external.push(shared.id);
   for (let n = 0; n < 198; n++) bus.publish(newEnvelope("user", `queued ${n}`, { to: [a.id] }));
   expect(bus.remotePendingIds(room)).toHaveLength(199); expect(bus.queued(a.id)).toBe(199);
   external.push("external-outbox-id");
@@ -132,19 +132,29 @@ test("remote queue expiry uses host arrival and survives restart without grantin
   expect(restored.bus.expireRemoteQueues(expiry + 1)).toBe(0);
 });
 
-test("missing old remote deadlines fail closed and late signed evidence never auto-completes needs_review", async () => {
+test("missing old remote deadlines fail closed without guessing a newly attached recipient identity", async () => {
   const env = newEnvelope("user", "old snapshot", { to: [remote] });
   const old: BusSnapshot = { schemaVersion: 1, queues: { [remote]: [env] }, prefaces: {}, seen: [env], attempts: {}, withdrawn: [] };
-  const { bus, journal } = fixture(); bus.restore(old); const target = new Peer(remote, room); bus.add(target); await target.start();
-  await until(() => journal.unresolved(remote).some(row => row.state === "needs_review"));
+  const { bus, journal } = fixture(); bus.restore(old); const target = new Peer(remote, room);
+  expect(() => bus.add(target)).toThrow("remote queued identity binding unavailable"); await target.start();
   expect(target.batches).toEqual([]); const row = journal.unresolved(remote)[0]!;
-  expect(row.reason).toBe("remote queue expiry unavailable after restore");
+  expect(row).toMatchObject({ state: "needs_review", reason: "remote queue expiry unavailable after restore" });
+  expect(bus.noteLateRemoteReceipt(remote, row.id, "completed")).toBe(false);
+  expect(bus.queueIds(remote)).toEqual([]);
+});
+
+test("late signed evidence for a known recipient never auto-completes needs_review", () => {
+  const { bus, journal } = fixture(), target = new Peer(remote, room); bus.add(target);
+  const env = newEnvelope("user", "known recipient", { to: [remote] }); bus.publish(env);
+  const deadline = bus.snapshot(false).remoteQueueExpires![remote]![env.id]!; bus.expireRemoteQueues(deadline);
+  const row = journal.unresolved(remote)[0]!;
   expect(bus.noteLateRemoteReceipt(remote, row.id, "completed")).toBe(true);
   expect(journal.get(row.id)).toMatchObject({ state: "needs_review", reason: "late signed completed receipt: remote queue admitted; remains needs_review" });
   expect(bus.noteLateRemoteReceipt("kimi@hub-a", row.id, "completed")).toBe(false);
   expect(bus.noteLateRemoteReceipt(remote, row.id, "failed_safe")).toBe(true); expect(journal.get(row.id)?.state).toBe("needs_review");
   expect(bus.queueIds(remote)).toEqual([]); expect(target.batches).toEqual([]);
 });
+
 
 test("remote deadline snapshot metadata rejects malformed keys, invalid deadlines and excess side entries", () => {
   const { bus, journal } = fixture(), baseline = bus.snapshot(false);
@@ -191,7 +201,7 @@ test("restored remote queues retain their host room cap without an attached adap
 test("a legacy queued remote with an unknown room never borrows a newly attached adapter binding", async () => {
   const env = newEnvelope("user", "unknown room", { to: [remote] });
   const snapshot: BusSnapshot = { schemaVersion: 1, queues: { [remote]: [env] }, prefaces: {}, seen: [env], attempts: {}, withdrawn: [], remoteQueueExpires: { [remote]: { [env.id]: Date.now() + 86_400_000 } } };
-  const { bus, journal } = fixture(); bus.restore(snapshot); const target = new Peer(remote, room); bus.add(target); await target.start();
+  const { bus, journal } = fixture(); bus.restore(snapshot); const target = new Peer(remote, room); expect(() => bus.add(target)).toThrow("remote queued identity binding unavailable"); await target.start();
   expect(target.batches).toEqual([]); expect(bus.queueIds(remote)).toEqual([]);
   expect(journal.unresolved(remote)).toEqual([expect.objectContaining({ state: "needs_review", reason: "remote queue room binding unavailable after restore" })]);
 });
@@ -242,7 +252,7 @@ test("a reused room label cannot inherit queued text after its original member w
   expect(next.bus.queueIds(remote)).toEqual([env.id]);
   const legacy = { ...snapshot }; delete legacy.remoteQueueMembers;
   const unknown = fixture(); unknown.bus.restore(legacy); const current = new Peer(remote, room, undefined, replacement);
-  unknown.bus.add(current); await current.start();
+  expect(() => unknown.bus.add(current)).toThrow("remote queued identity binding unavailable"); await current.start();
   expect(current.batches).toEqual([]); expect(unknown.bus.queueIds(remote)).toEqual([]);
   expect(unknown.journal.unresolved(remote)).toEqual([expect.objectContaining({ state: "needs_review", reason: "remote queue member binding unavailable after restore" })]);
 });
@@ -254,4 +264,70 @@ test("room admission journal availability distinguishes a bare bus, known storag
   bus.storageError = "fixture storage unavailable"; expect(bus.deliveryJournalAvailable()).toBe(false);
   bus.storageError = undefined; expect(bus.deliveryJournalAvailable()).toBe(true);
   bus.closeJournal(); buses.splice(buses.indexOf(bus), 1); expect(bus.deliveryJournalAvailable()).toBe(false);
+});
+
+
+test("remote identity survives dispatch restart and refuses foreign re-enrollment, a new send and person retry", async () => {
+  const first = fixture(), original = "a".repeat(64), replacement = "b".repeat(64), target = new Peer(remote, room, undefined, original);
+  target.accepted = async (_envs, id) => { target.onDelivery?.({ id: id!, state: "accepted" }); };
+  first.bus.add(target); await target.start();
+  const old = newEnvelope("user", "ORIGINAL-PRIVATE-TO-RECIPIENT", { to: [remote] }); first.bus.publish(old);
+  await until(() => first.journal.unresolved(remote).some(row => row.state === "accepted"));
+  const persisted = first.journal.snapshot().bus;
+  expect(persisted.queues[remote]).toEqual([]);
+  expect(persisted.remoteQueueRooms).toEqual({ [remote]: room }); expect(persisted.remoteQueueMembers).toEqual({ [remote]: original });
+  first.bus.closeJournal(); buses.splice(buses.indexOf(first.bus), 1);
+  const journal = new DeliveryJournal({ file: join(first.root, "hub.db"), projectRoot: first.root, projectId: "rooms", instanceId: crypto.randomUUID() });
+  const bus = new Bus({ journal, batchMs: 0 }); buses.push(bus);
+  const uncertain = journal.unresolved(remote)[0]!; expect(uncertain.state).toBe("needs_review");
+  const foreign = new Peer(remote, room, undefined, replacement);
+  expect(() => bus.add(foreign)).toThrow("remote queued member binding changed");
+  // Exercise publication and retry fences independently even if a host bypasses add's check.
+  bus.peers.set(remote, foreign);
+  const fresh = newEnvelope("user", "fresh replacement message", { to: [remote] });
+  expect(() => bus.publish(fresh)).toThrow("remote queued identity binding changed"); expect(bus.get(fresh.id)).toBeUndefined();
+  expect(() => bus.resolveDelivery(uncertain.id, uncertain.revision, "retry", "person asks to retry")).toThrow("remote original identity unavailable");
+  expect(journal.get(uncertain.id)?.state).toBe("needs_review"); expect(foreign.batches).toEqual([]);
+  expect(bus.snapshot(false).remoteQueueMembers).toEqual({ [remote]: original });
+  bus.peers.delete(remote);
+  bus.resolveDelivery(uncertain.id, uncertain.revision, "discard", "person explicitly discards old uncertainty");
+  bus.add(foreign); bus.publish(fresh); await foreign.start(); await until(() => foreign.batches.length === 1);
+  expect(foreign.batches.flat().map(env => env.body)).toEqual(["fresh replacement message"]);
+  expect(() => bus.resolveDelivery(uncertain.id, journal.get(uncertain.id)!.revision, "retry", "revive old text")).toThrow();
+  expect(foreign.batches.flat().some(env => env.id === old.id)).toBe(false);
+});
+
+test("terminal remote failure history cannot mint a fresh retry binding from a replacement recipient", () => {
+  const { bus, journal } = fixture(), old = newEnvelope("user", "old failed recipient", { to: [remote] });
+  const failed = journal.createDelivery({ id: "old-failed", peer: remote, state: "failed", createdAt: old.ts, originals: [old], out: [old] });
+  const foreign = new Peer(remote, room, undefined, "b".repeat(64)); bus.add(foreign);
+  bus.publish(newEnvelope("user", "fresh recipient only", { to: [remote] }));
+  expect(() => bus.resolveDelivery(failed.id, failed.revision, "retry", "retry failed history")).toThrow("remote original identity unavailable");
+  expect(journal.get(failed.id)?.state).toBe("failed"); expect(bus.queueIds(remote)).not.toContain(old.id);
+});
+
+test("two remote targets refuse before limiter, telemetry or local fanout, while one remote plus locals works", () => {
+  let admitted = 0;
+  const { bus } = fixture({ admit: () => { admitted++; return undefined; } });
+  const sender = new Peer("sender"), local = new Peer("local"), a = new Peer(remote, room), b = new Peer("kimi@hub-b", "room-b");
+  for (const peer of [sender, local, a, b]) bus.add(peer);
+  const events: BusEvent[] = []; bus.tap(event => events.push(event));
+  let error: unknown; try { sender.onMessage?.("mixed fanout", { to: [local.id, a.id, b.id] }); } catch (cause) { error = cause; }
+  expect(String(error)).toContain(a.id); expect(String(error)).toContain(b.id); expect(String(error)).toContain("send to each remote peer separately");
+  expect(admitted).toBe(0); expect(events).toEqual([]); expect(bus.snapshot(false).seen).toEqual([]);
+  for (const peer of [local, a, b]) expect(bus.queueIds(peer.id)).toEqual([]);
+  sender.onMessage?.("one explicit remote", { to: [local.id, a.id] });
+  expect(admitted).toBe(1); expect(bus.queueIds(local.id)).toHaveLength(1); expect(bus.queueIds(a.id)).toHaveLength(1); expect(bus.queueIds(b.id)).toEqual([]);
+});
+
+
+test("a legacy uncertain journal original without recipient provenance cannot borrow the current roster identity", () => {
+  const { bus, journal } = fixture(), env = newEnvelope("user", "legacy uncertain original", { to: [remote] });
+  const row = journal.createDelivery({ id: "legacy-uncertain", peer: remote, state: "needs_review", createdAt: env.ts, originals: [env], out: [env] });
+  const target = new Peer(remote, room);
+  expect(() => bus.add(target)).toThrow("remote queued identity binding unavailable");
+  expect(() => bus.resolveDelivery(row.id, row.revision, "retry", "guess current roster")).toThrow("remote original identity unavailable");
+  expect(journal.get(row.id)?.state).toBe("needs_review"); expect(target.batches).toEqual([]);
+  bus.resolveDelivery(row.id, row.revision, "discard", "person explicitly disposes unknown provenance");
+  expect(() => bus.add(target)).not.toThrow();
 });

@@ -143,6 +143,10 @@ export class RoomLink {
     for (const entry of this.options.store.pendingInbox(this.options.name)) {
       this.current(session, row.current.digest);
       const member = members.find(value => value.fingerprint === entry.sender);
+      if (!member) {
+        const application = this.options.store.incomingApplication(this.options.name, entry.digest);
+        if (application?.state === "pending" || application?.state === "dispatching") this.options.store.quarantineApplication(this.options.name, entry.digest);
+      }
       if (member) {
         let application: RoomMessage | undefined;
         try { application = decodeRoomMessage(entry.plaintext); } catch { /* X3 presence has its own strict codec. */ }
@@ -400,6 +404,7 @@ export class RoomLink {
     return next;
   }
   async publishApplication(message: RoomMessage, recipient: string, outgoing?: RoomOutgoingInput, current: () => boolean = () => true): Promise<string> {
+    const plaintext = encodeRoomMessage(message), metadata = outgoing ? { ...outgoing } : undefined;
     const session = this.session;
     if (!session || session.phase !== "ready") fail("unavailable");
     const digest = this.current(session).current.digest;
@@ -408,9 +413,9 @@ export class RoomLink {
       if (!allowed()) fail("state_changed");
       const row = this.current(session, digest);
       if (!roomMembers(row.current).some(member => member.fingerprint === recipient) || recipient === this.options.store.identity.public.fingerprint) fail("untrusted");
-      const wire = await sealFrame({ epoch: row.current, identity: this.options.store.identity, recipients: [recipient], plaintext: encodeRoomMessage(message), sequence: this.options.store.sequence });
+      const wire = await sealFrame({ epoch: row.current, identity: this.options.store.identity, recipients: [recipient], plaintext, sequence: this.options.store.sequence });
       if (!allowed()) fail("state_changed");
-      const record = outgoing ? await this.options.store.queueApplication(this.options.name, wire, outgoing, allowed) : undefined;
+      const record = metadata ? await this.options.store.queueApplication(this.options.name, wire, metadata, allowed) : undefined;
       const frameDigest = record?.digest ?? await this.frameDigest(wire);
       if (!allowed()) fail("state_changed");
       this.send(session, wire);

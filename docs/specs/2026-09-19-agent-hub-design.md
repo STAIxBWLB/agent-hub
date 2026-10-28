@@ -1165,6 +1165,120 @@ refuse without a transport ACK. Later valid packets are not blocked behind a
 retired refused packet. A failed room state or crypto initialization disables rooms and leaves
 local hub work available. Fake-hub/broker tests are not a live TLS/proxy or X7 receipt.
 
+
+## Encrypted rooms: X4 screened chat and application receipts (#446)
+
+This implements frozen D3/D5 from issue #446, comment 6242775004, with the
+approved X4 refinements of 2026-10-28. X5 dashboard membership/metrics, X6
+invocations and X7 live two-machine receipts remain separate.
+
+### Egress and authority
+
+Each signed-roster remote id is a host-owned `RemotePeer`, outside the native
+adapter catalog. Its `deliver` calls `roomBoundary` once to build the outbound
+view. Only explicitly addressed `chat` and `status` from an exposed local peer
+or the local console may cross. The boundary refuses hub/digest/remote senders,
+workflow kinds, private envelopes, a private sender turn, and PII or unknown task
+references. Private-turn/task provenance is captured at enqueue and retained
+while offline. An unknown authority check refuses; it never becomes a grant.
+
+The screen reuses memory promotion's secrets, PII patterns and private-path
+rules. When the model screen is enabled, the existing device/campus-only screen
+owns model admission. Failure or an unknown verdict sends a fixed ids-only
+withheld stub. Refs are removed. Immutable host proofs recheck current roster,
+exposure, privacy and policy after awaits and before publication. No config
+selects callbacks, a model or a provider implementation.
+
+X4 accepts at most **one remote target per send**. More than one is refused before
+any local or remote effect, naming the targets and directing separate sends.
+One remote target plus local targets retains local fan-out. Multi-remote support
+needs target-derived stable wire ids and per-delivery cap accounting. Implicit
+broadcasts never include remote peers. Remote delivery has one original, no
+preface, no condensation and no memory observation. Incoming remote bodies are
+also excluded from condensation/memory; emitted events and logs contain ids and
+fixed stubs. Native/role/board/control/recovery actor paths refuse ids containing
+`@`; a remote console sender is `user@label`, never the local `user` authority.
+
+The private roster binds labels to fingerprints. Ambiguous global `peer@label`
+addresses across rooms are inert. Queue recipient bindings survive active and
+uncertain journal rows; neither a restart nor a person retry may substitute a
+new fingerprint reusing the label. Unknown legacy bindings become uncertainty,
+not newly inferred identity. A current exposed local native peer must be the
+incoming destination. The native console is a sender identity, not such a queue.
+
+### Encrypted application wire
+
+X1 frames carry canonical version-1 `chat` or `receipt` payloads. Chat carries
+id, trace, hop, local from/to ids, chat/status kind, capped priority, body and the
+sender-claimed timestamp. Receipt carries the exact original frame digest,
+application id, destination peer, closed outcome and fixed reason. Unknown
+fields or kinds refuse. Only the expected recipient hub's authenticated receipt
+can settle an outgoing application. Receipt frames produce no application
+receipt of their own. Incoming ids are fully validated before framing, bodies
+use `sanitize`, priority is at most status, and sender/hub rate admission shares
+one atomic limiter decision.
+
+### D5 settlement and bounded retention
+
+`completed` means the remote hub durably admitted **one screened chat to its
+exposed local peer's queue**. It does not mean native or model execution. Person
+views say **completed (admitted)**. Broker `stored` means accepted ciphertext
+only; a transport retirement ACK is not application completion.
+
+Schema2 of the private `rooms.db` migrates schema1 without replacing identity,
+pins, counters, floors or retained traffic. A receiver commits its crypto inbox,
+then application `pending -> dispatching` before publishing into the separate
+Bus journal. A crash or failure in that cross-DB publication window becomes
+`needs_review`, with no automatic republish or fabricated receipt. Sender
+`dispatching`/`accepted` rows become `needs_review` at restart. A same-process
+reconnect drains never-handed offline queues once. A late signed receipt is kept
+as evidence on `needs_review` and shown with the person's disposition view; it
+never auto-settles. Known safe refusals retain the Bus's existing poison policy.
+
+Signed seq/floors are the permanent primary replay protection. Duplicate seqs
+are retired without a second admission; a known identical completed application
+can resend its saved outcome. The extra `(sender, env.id) -> content hash` guard
+refuses changed content while retained. Identical uncertain duplicates never
+republish. Tombstones retain 30 days, at most 10,000 per room; at capacity the
+oldest settled rows are evicted first. Pending, dispatching and unresolved
+`needs_review` are never evicted. An all-unsettled cap refuses with the room and
+count. Outside retention or after settled eviction, there is no historical
+app-id dedupe claim; an old signed frame is still refused by its seq floor.
+
+The trace high-water mark is kept for the tombstone retention (30 days / 10,000
+per room, settled rows evicted first); outside it there is no historical trace
+claim, and MAX_HOP 3 still bounds every trace. Before local admission a hop below
+the retained maximum for that trace refuses; equal or higher hops remain allowed.
+There is no second trace ledger. Sender timestamps do not order messages or
+supply host expiry provenance; gaps are accepted and reported, never waited on.
+
+Offline Bus queues count toward the 200-per-room ceiling before transport starts;
+`hub_send` refuses beyond it. Original host deadlines survive handoff and restart.
+Unknown legacy deadlines fail closed to `needs_review`. Machine-local
+`rooms.ack_timeout_s` defaults to 600 (1..86,400); `rooms.queue_ttl_h` defaults to
+24 (1..168). A single deadline-driven host timer handles ack/queue expiry. No
+uncertain work is silently retried. Explicit terminal-history retries without
+recipient proof refuse; the person can author a fresh message deliberately.
+
+### Person disposition
+
+`ahub room resolve <name> --frame <digest> --action accept|discard` uses the
+existing console-only preview ticket and fingerprint confirmation. Agent markers
+and `--live-test` refuse it. It records only local `disposed` metadata: the
+person's action, time and actor. Accept means the person vouches that the local
+peer got the chat; discard means drop it. Neither re-admits or republishes.
+Views say **disposed (accept|discard, by person)**, never completed. A disposed
+row is settled for retention/cap eviction, but never creates or resends a signed
+completed/failed_safe receipt. A retained duplicate remains non-publishable.
+Outgoing person queue dispositions likewise do not manufacture remote proof;
+late signed proof remains evidence-only.
+
+Explicit room status is metadata-only and bounded: up to 200 outgoing rows
+prioritizing unresolved traffic, up to 200 incoming rows with uncertainty first,
+counts/truncation and remote addresses/states. Native turns, task roles and
+recovery sessions are never invented for remote transports. Real TLS/proxy,
+account and two-machine X7 proof remain unverified until their own live legs.
+
 ## Risks
 
 | Risk | Mitigation |

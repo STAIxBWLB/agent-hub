@@ -15,6 +15,11 @@ const cleanups: (() => void)[] = [];
 afterEach(() => { for (const cleanup of cleanups.splice(0).reverse()) cleanup(); });
 const fixedFrame = encodeBase64url(new Uint8Array(32)), ownerFp = "1".repeat(64), senderFp = "2".repeat(64), ticket = "a".repeat(43);
 const nonTTY: RoomConfirmationIO = { isTTY: () => false, answer: async () => { throw new Error("must not prompt"); } };
+test("resolve accepts a canonical frame digest that starts with dashes", () => {
+  const bytes = new Uint8Array(32); bytes[0] = 251; bytes[1] = 224;
+  const frame = encodeBase64url(bytes); expect(frame.startsWith("--")).toBe(true);
+  expect(parseRoomCommand(["resolve", "work", "--frame", frame, "--action", "discard"])).toMatchObject({ op: "mutation", action: "resolve", input: { frame, action: "discard" } });
+});
 async function printed(work: (lines: string[]) => Promise<void>) {
   const lines: string[] = [], original = console.log;
   console.log = (...values: unknown[]) => { lines.push(values.map(String).join(" ")); };

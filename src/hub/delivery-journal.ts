@@ -174,14 +174,14 @@ function validateBus(value: unknown, name = "bus"): BusSnapshot {
     const members = obj(b.remoteQueueMembers, `${name}.remoteQueueMembers`);
     if (Object.keys(members).length > 12800) fail(`${name}.remoteQueueMembers is too large`);
     for (const [peer, member] of Object.entries(members)) {
-      if (!parseRemotePeerId(peer) || !Array.isArray(queues[peer]) || !(queues[peer] as unknown[]).length || typeof member !== "string" || !/^[0-9a-f]{64}$/.test(member)) fail(`${name}.remoteQueueMembers is invalid`);
+      if (!parseRemotePeerId(peer) || !Array.isArray(queues[peer]) || typeof member !== "string" || !/^[0-9a-f]{64}$/.test(member)) fail(`${name}.remoteQueueMembers is invalid`);
     }
   }
   if (b.remoteQueueRooms !== undefined) {
     const rooms = obj(b.remoteQueueRooms, `${name}.remoteQueueRooms`);
     if (Object.keys(rooms).length > 12800) fail(`${name}.remoteQueueRooms is too large`);
     for (const [peer, room] of Object.entries(rooms)) {
-      if (!parseRemotePeerId(peer) || !Array.isArray(queues[peer]) || !(queues[peer] as unknown[]).length) fail(`${name}.remoteQueueRooms key is invalid`);
+      if (!parseRemotePeerId(peer) || !Array.isArray(queues[peer])) fail(`${name}.remoteQueueRooms key is invalid`);
       text(room, `${name}.remoteQueueRooms room`, 256);
     }
   }

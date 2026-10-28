@@ -7202,7 +7202,7 @@ export async function startDaemon(opts: DaemonOptions) {
         if (refused) return void reply({ t: "sent", ok: false, error: refused });
         let published: ReturnType<Bus["publishResult"]>;
         try { published = bus.publishResult(env); }
-        catch (error) { return void reply({ t: "sent", ok: false, error: error instanceof Error && error.message.startsWith("room") ? sanitize(error.message).slice(0, 300) : "message admission unavailable" }); }
+        catch (error) { return void reply({ t: "sent", ok: false, error: error instanceof Error && /^(?:room|remote) /.test(error.message) ? sanitize(error.message).slice(0, 8192) : "message admission unavailable" }); }
         const { targets, dropped } = published;
         if (c.peer && inReplyTo) bus.completeReply(c.peer, inReplyTo.id); // the delivery it answers was handled all the same
         if (dropped === "hop") return void reply({ t: "sent", ok: true, targets, dropped, recorded: priority === "fyi",

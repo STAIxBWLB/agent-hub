@@ -116,6 +116,7 @@ agent-hub is developed with agent-hub. This page lists every feature, whether it
 
 | Feature | State here | Measured by |
 | --- | --- | --- |
+| Screened room chat (#446 X4) | default off here; requires person enrollment/exposure; source/fake-wire proof, real two-machine/account leg remains unverified | explicit one-remote delivery and signed completed (admitted) receipt; no broadcast/roles/board/body telemetry; restart uncertainty, retained bindings, disposition and cap regressions |
 | Dogfood scorecard (#687) | on after release; read-only weekly receipt | `ahub report --dogfood --since 7d --json`; bounded evidence and explicit unknowns |
 | Claim verdicts and fact_check provenance (#901) | source/fixture coverage; the live research pilot (a person entering verdicts with `ahub task claim`) remains unverified | `ahub report --dogfood` research rows: `claims.reachedPersonVerdict`, per-slot `personVerdict`/`modelLabel`/`agreement`, `factCheck.selection`/`passed`/`failed`/`missingKeysPerRun`; null until a verdict or a keyed check is recorded |
 | Dirty-submodule notices (#798) | source/fixture coverage; the live writing/general pilot (a workspace with 26 submodules) remains unverified | `ahub turns` shows `<path> (changed, contents unobserved)` for a turn that only edited a submodule; the D1 notice at `hub_task_propose` and `hub_task_accept`; `ahub undo` names what it cannot restore; a project without `.gitmodules` makes the same git calls per turn (counting-shim test) |

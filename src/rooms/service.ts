@@ -97,7 +97,9 @@ export class RoomChat {
         remote = new RemotePeer(id, room, timing.ttlMs, {
           member: target.member,
           context: env => {
-            const binding = target.binding, state = binding.store.get(binding.name), version = this.options.policyVersion();
+            const selected = this.targets.get(id);
+            if (!selected || selected.member !== target.member || selected.peer !== target.peer || selected.binding.store.get(selected.binding.name)?.current.room !== room) throw new Error("room: state_changed");
+            const binding = selected.binding, state = binding.store.get(binding.name), version = this.options.policyVersion();
             const digest = state?.current.digest;
             const current = () => this.valid(binding) && this.targets.get(id)?.binding === binding && this.targets.get(id)?.member === target.member && this.options.policyVersion() === version
               && binding.store.get(binding.name)?.current.digest === digest;
@@ -107,7 +109,9 @@ export class RoomChat {
               modelScreenOn: this.options.modelScreenOn, screen: this.options.screen };
           },
           send: async (env, deliveryId, expiresAt, current) => {
-            const binding = target.binding;
+            const selected = this.targets.get(id);
+            if (!selected || selected.member !== target.member || selected.peer !== target.peer || selected.binding.store.get(selected.binding.name)?.current.room !== room) throw new Error("room: state_changed");
+            const binding = selected.binding;
             if (!current()) throw new Error("room: state_changed");
             const timing = this.policy.timing(), remaining = expiresAt - this.now();
             if (remaining <= 0) throw new Error("room: expired");
@@ -161,7 +165,7 @@ export class RoomChat {
   }
   private refreshOutgoing(binding: Binding): void {
     this.evidenceCache = undefined;
-    for (const [key, value] of this.outgoing) if (value.binding === binding) this.outgoing.delete(key);
+    for (const [key, value] of this.outgoing) if (value.binding.name === binding.name) this.outgoing.delete(key);
     for (const row of binding.store.applicationOutbox(binding.name, true)) this.outgoing.set(`${binding.name}:${row.digest}`, { binding, row });
   }
   pendingIds(room: string): string[] {
@@ -214,6 +218,7 @@ export class RoomChat {
     const from = member ? `${chat.from}@${member.label}` : "";
     let refusal: RoomReceiptReason | undefined;
     if (!member || !parseRemotePeerId(from) || !this.sourceUnambiguous(binding, incoming.sender, member.label)) refusal = "not_exposed";
+    else if (chat.from !== USER && !member.exposedPeers.includes(chat.from)) refusal = "not_exposed";
     else if (!this.exposed(binding, chat.to) || chat.to === USER) refusal = "not_exposed";
     else if (chat.priority === "fyi") refusal = "boundary_refused";
     else if (chat.hop > MAX_HOP || chat.hop < (context.store.applicationTraceHop(chat.trace) ?? 0)) refusal = "hop";
@@ -262,8 +267,9 @@ export class RoomChat {
       const row = binding.store.applicationOutbox(binding.name, true).find(row => row.deliveryId === deliveryId && row.remotePeer === peer);
       if (!row) continue;
       binding.store.disposeApplication(binding.name, deliveryId, action, () => !this.stopped);
-      this.refreshOutgoing(binding); this.queueChanged(); return;
+      this.refreshOutgoing(binding); break;
     }
+    this.refreshTargets(); this.queueChanged();
   }
   evidence(peer: string, deliveryId: string): { roomState: string; disposition?: string; lateReceipt?: string } | undefined {
     if (!peer.includes("@")) return undefined;

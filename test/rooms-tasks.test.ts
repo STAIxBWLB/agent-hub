@@ -20,7 +20,7 @@ class LocalPeer extends BasePeer {
   async stop() { this.setState("offline"); }
   async deliver(_envs: Envelope[]) {}
 }
-class FakeRemotePeer extends LocalPeer { readonly remoteRoom = "fixture-room"; }
+class FakeRemotePeer extends LocalPeer { readonly remoteRoom = "fixture-room"; readonly remoteMember = "a".repeat(64); }
 async function fixture() {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-rooms-tasks-")); roots.push(cwd);
   const board = new Board(join(cwd, "board.db")), bus = new Bus({ batchMs: 0, deliveryHeld: () => true });

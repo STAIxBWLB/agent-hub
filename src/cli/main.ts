@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { conductorOperation, OPERATIONAL_PERSON_GUIDANCE } from "../hub/operational-authority.ts";
+import { sayRecipients } from "./say-input.ts";
 import type { DeliverableRow } from "../hub/tasks.ts";
 import { kimiSourceRow } from "../hub/budget-notes.ts";
 import { hubGitSync, hubGitEnv } from "../hub/git.ts";
@@ -1052,9 +1053,10 @@ const commands: Record<string, () => Promise<void> | void> = {
   },
 
   say: async () => {
-    const lead = args.findIndex((a) => !/^@[a-z][a-z0-9-]*$/.test(a)); // only leading @tokens are recipients
-    const to = args.slice(0, lead === -1 ? args.length : lead).map((a) => a.slice(1));
-    const body = lead === -1 ? "" : freeText(args.slice(lead), "ahub say [@peer ...] <text>");
+    let addressed: ReturnType<typeof sayRecipients>;
+    try { addressed = sayRecipients(args); } catch (error) { return fail((error as Error).message); }
+    const { to, text } = addressed;
+    const body = text.length ? freeText(text, "ahub say [@peer ...] <text>") : "";
     const hub = await connect();
     const res = await hub.request({ t: "send", body, to });
     hub.close();
