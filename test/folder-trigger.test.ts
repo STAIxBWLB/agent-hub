@@ -169,6 +169,10 @@ test("readScanned returns the bytes only while they still hash to what the scan 
   expect(readScanned(file)).toBeUndefined();
   writeFileSync(join(t.dir, "inbox", "a.txt"), "longer than before");
   expect(readScanned(file)).toBeUndefined();
+  // a scan record that claims a smaller size than the file now has is refused by the size check, with no read of the larger content
+  writeFileSync(join(t.dir, "inbox", "a.txt"), "original");
+  expect(readScanned({ ...file, size: 3 }), "a size that differs from the file's is refused").toBeUndefined();
+  expect(readScanned(file)!.toString()).toBe("original");
   rmSync(join(t.dir, "inbox", "a.txt"));
   expect(readScanned(file)).toBeUndefined();
   const outside = realPath(mkdtempSync(join(tmpdir(), "ahub-folder-out-"))); cleanup.push(() => rmSync(outside, { recursive: true, force: true }));
@@ -530,6 +534,29 @@ test("in a real daemon: a new file whose text matches a PII pattern is registere
   expect(sources).toHaveLength(1);
   expect(sources[0]!.private).toBe(true);
   expect(made()[0]!.detail).not.toContain("900101");
+});
+
+test("a file whose bytes change between the scan and the registration is not registered, and is tried again as what it became", async () => {
+  const r = rig(); await r.poll();
+  r.put("a.txt", "before");
+  const tasks = r.tasks, store = r.store;
+  let swapped = false;
+  const scan = (entry: FolderEntry) => {
+    const result = scanFolder(entry, r.policy, (real, size, mtime) => store.known(entry.id, real, size, mtime));
+    if (!swapped && result.files.length) { swapped = true; writeFileSync(join(r.dir, "inbox", "a.txt"), "AFTER!"); } // same size, new content, after the hash was taken
+    return result;
+  };
+  const register = (file: ScannedFile) => {
+    const bytes = readScanned(file);
+    if (!bytes) throw new Error("the file changed or became unreadable before it was registered");
+    return { id: r.registry.add({ bytes, kind: "file", origin: file.real, private: false }).id, private: false };
+  };
+  const first = (await tasks.runFolderTriggers(store, [ENTRY], scan, register, T0))[0]!;
+  expect(first).toMatchObject({ outcome: "failed" }); expect(first.reason).toContain("changed");
+  expect(r.made()).toHaveLength(0); expect(r.registry.list()).toHaveLength(0);
+  const second = (await tasks.runFolderTriggers(store, [ENTRY], scan, register, T0))[0]!;
+  expect(second.tasks).toHaveLength(1);
+  expect(r.registry.readRaw(r.registry.list()[0]!.id)!.toString()).toBe("AFTER!"); // registered as what it now is, under its own hash
 });
 
 test("folder_triggers is machine-local: a committed config is ignored, a tracked config.local.json is not trusted, and an invalid entry is refused by the loader", () => {
