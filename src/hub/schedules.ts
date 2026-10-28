@@ -81,6 +81,8 @@ export interface ScheduleRow {
   /** Ticks that were due and skipped (held, or the previous task still open) since the last run: coalesced into the one run that follows. */
   coalesced: number;
   last_error: string | null;
+  /** #335: 1 while a person has paused it. */
+  paused?: number;
 }
 
 /** `schedule_runs` in hub.db: when each schedule last ran and what it made. The board stays the record of the tasks themselves. */
@@ -90,6 +92,8 @@ export class ScheduleStore {
     this.db = new Database(dbPath, { create: true });
     this.db.run(`PRAGMA busy_timeout = ${HUB_DB_BUSY_TIMEOUT_MS}`);
     this.db.run("CREATE TABLE IF NOT EXISTS schedule_runs (id TEXT PRIMARY KEY, anchor INTEGER NOT NULL, last_run INTEGER, last_task INTEGER, coalesced INTEGER NOT NULL DEFAULT 0, last_error TEXT)");
+    // #335: a person's pause. A column on the existing table, so an older database gains it and every older row reads as not paused.
+    if (!(this.db.query("PRAGMA table_info(schedule_runs)").all() as { name: string }[]).some(column => column.name === "paused")) this.db.run("ALTER TABLE schedule_runs ADD COLUMN paused INTEGER NOT NULL DEFAULT 0");
   }
   get(id: string): ScheduleRow | undefined { return (this.db.query("SELECT * FROM schedule_runs WHERE id = ?").get(id) as ScheduleRow | null) ?? undefined; }
   rows(): ScheduleRow[] { return this.db.query("SELECT * FROM schedule_runs ORDER BY id").all() as ScheduleRow[]; }
@@ -97,6 +101,15 @@ export class ScheduleStore {
   ensure(id: string, now: number): ScheduleRow {
     this.db.query("INSERT OR IGNORE INTO schedule_runs(id, anchor) VALUES(?, ?)").run(id, now);
     return this.get(id)!;
+  }
+  /**
+   * #335: pause or resume one schedule. A pause stops the timer from proposing it and counts no skipped tick. Resuming starts a fresh period at `now`, so a long
+   * pause is never replayed as a run the moment it ends, as a restart is never replayed either.
+   */
+  setPaused(id: string, paused: boolean, now: number): void {
+    this.db.query("INSERT OR IGNORE INTO schedule_runs(id, anchor) VALUES(?, ?)").run(id, now);
+    if (paused) this.db.query("UPDATE schedule_runs SET paused = 1 WHERE id = ?").run(id);
+    else this.db.query("UPDATE schedule_runs SET paused = 0, anchor = ?, coalesced = 0 WHERE id = ?").run(now, id);
   }
   skipped(id: string): void { this.db.query("UPDATE schedule_runs SET coalesced = coalesced + 1 WHERE id = ?").run(id); }
   ran(id: string, now: number, task: number): void {
@@ -110,7 +123,7 @@ export class ScheduleStore {
   close(): void { try { this.db.close(); } catch { /* already closed */ } }
 }
 
-export type ScheduleState = "scheduled" | "due" | "waiting" | "held";
+export type ScheduleState = "scheduled" | "due" | "waiting" | "held" | "paused";
 export interface ScheduleView {
   id: string;
   every: string;
@@ -132,7 +145,7 @@ export function scheduleViews(entries: readonly ScheduleEntry[], rows: readonly 
   const byId = new Map(rows.map(row => [row.id, row]));
   return entries.map(entry => {
     const row = byId.get(entry.id), anchor = row?.anchor ?? now, next = anchor + parseEvery(entry.every), openTask = open.get(entry.id);
-    const state: ScheduleState = now < next ? "scheduled" : held ? "held" : openTask !== undefined ? "waiting" : "due";
+    const state: ScheduleState = row?.paused ? "paused" : now < next ? "scheduled" : held ? "held" : openTask !== undefined ? "waiting" : "due";
     return {
       id: entry.id, every: entry.every, class: entry.class, queue: entry.queue, next, state,
       ...(row?.last_run != null ? { last: row.last_run } : {}), ...(openTask !== undefined ? { task: openTask } : row?.last_task != null ? { task: row.last_task } : {}),

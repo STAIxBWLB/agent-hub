@@ -3211,6 +3211,16 @@ export async function startDaemon(opts: DaemonOptions) {
       case "backlog_pull":
       case "backlog_return":
         return line(await tasks.moveBacklog(by, a.id, op === "backlog_pull"));
+      // #335: the person's schedule commands. Tasks refuses any other actor; an agent shell never reaches a console op.
+      case "schedule_list":
+        if (by !== USER) throw new PreEffectToolRefusal("schedule list is a console command");
+        return JSON.stringify(scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true));
+      case "schedule_run":
+        return JSON.stringify(await tasks.runScheduleNow(by, schedulesStore, config.schedules, a.id, scheduleNow(), () => opts.schedulesHeld?.() === true));
+      case "schedule_pause":
+      case "schedule_resume":
+        tasks.setSchedulePaused(by, schedulesStore, config.schedules, a.id, op === "schedule_pause", scheduleNow());
+        return JSON.stringify(scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true).filter(view => view.id === a.id));
       case "review_brief": {
         const task = board.get(Number(a.id));
         return task ? tasks.briefText(task) || `task #${task.id} names no commit, or is private: no brief` : `no task #${a.id}`;
@@ -5665,6 +5675,8 @@ export async function startDaemon(opts: DaemonOptions) {
       boardCapabilities: { backlog: true },
       planningCapabilities: { enabled: true, wipPull: true, split: true },
       releases: tasks.releaseList(USER),
+      // #335: each schedule's next run, ids and times only (a title or detail is task text). Absent when none is configured, so an older page and an unconfigured project see no change.
+      ...(config.schedules.length ? { schedules: scheduleViews(config.schedules, schedulesStore.rows(), scheduleNow(), tasks.openScheduled(), tasks.schedulesHeld() || opts.schedulesHeld?.() === true) } : {}),
       boardLegend: Object.entries(peerView).map(([id, peer]) => ({
         peer: id, state: peer.state,
         permissionMode: "permissionNote" in peer && peer.permissionNote ? "unmanaged" : permissionDisplay(id, bus.peers.get(id)),

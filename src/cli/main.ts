@@ -22,6 +22,7 @@ import { projectedDiff } from "../hub/projected-diff.ts";
 import { TextProjections } from "../hub/text-projection.ts";
 import { fetchSourceUrl, MAX_SOURCE_BYTES, publicSourceView, screenRegistration, SourceRegistry, validSourceId, type SourceMeta } from "../hub/sources.ts";
 import { renderSourceAdd, renderSourceList } from "./source-output.ts";
+import { renderScheduleChange, renderScheduleList, renderScheduleRun } from "./schedule-output.ts";
 import { terminalText } from "./console-state.ts";
 import { parseSettingsEditArgs, runSettingsEdit, SETTINGS_EDIT_USAGE } from "./settings-edit.ts";
 import { petView, readPet, renderPet } from "./pet.ts";
@@ -1344,6 +1345,19 @@ const commands: Record<string, () => Promise<void> | void> = {
     const result = { id: added.id, created: added.created, upgraded: added.upgraded, kind: meta.kind, origin: meta.origin, sha256: meta.sha256, bytes: meta.bytes, private: meta.private, text: added.text, reasons: verdict.reasons };
     if (options.json) return console.log(JSON.stringify(result, null, 2));
     printOutput(renderSourceAdd(result, options.columns), options.color);
+  },
+
+  schedule: async () => {
+    // #335 (#512 AC3 and AC4): the person's schedule commands. Person only (classifyPeerCommand sends an unlisted command to console, so an agent shell is refused before this runs).
+    // The hub keeps the schedules, their periods and the pause; this process only asks.
+    const split = splitPresentation(args);
+    const present = outputOptions(split.flags); // before any request: an invalid --color must refuse before a mutation is sent
+    const [sub, id, ...extra] = split.operands;
+    const usage = "usage: ahub schedule list | run <id> | pause <id> | resume <id> [--json] [--color=auto|always|never]";
+    if (sub === "list" && id === undefined) return showToolText(data => renderScheduleList(data, present.columns, Date.now()), await taskOp("schedule_list", {}), present);
+    if (!["run", "pause", "resume"].includes(sub ?? "") || !id || extra.length) return fail(usage);
+    if (sub === "run") return showToolText(data => renderScheduleRun(data, present.columns), await taskOp("schedule_run", { id }, false, undefined, 90_000), present);
+    return showToolText(data => renderScheduleChange(sub as "pause" | "resume", data, present.columns, Date.now()), await taskOp(sub === "pause" ? "schedule_pause" : "schedule_resume", { id }), present);
   },
 
   deliverables: async () => {

@@ -3170,6 +3170,33 @@ export class Tasks {
   /** 1 while a schedules pass is running (its PII screen and triage are awaited), so a recovery commit waits for it like it waits for `checksPending` and `autoPullsPending`: a run mid-admission would write after the commit's digest. */
   schedulesPending = (): number => (this.schedulesRunning ? 1 : 0);
   /**
+   * One due schedule's run: the hold, the open-task rule and the proposal, shared by the timer and `ahub schedule run`, so a manual run can never do what a due
+   * one may not. `propose` asks the fence again right before its board write, so a run admitted and then overtaken by a hold writes nothing and counts as a skip.
+   */
+  private async runSchedule(store: ScheduleStore, entry: ScheduleEntry, now: number, extraHold: () => boolean, manual = false): Promise<{ id: string; outcome: "ran" | "held" | "waiting" | "failed"; task?: number }> {
+    const hold = () => this.schedulesHeld() || extraHold() ? "the hub is held" : undefined;
+    // A skipped tick is counted for the timer only: a person's refused run is not a missed period, so it never feeds the coalescing count.
+    const skip = () => { if (!manual) store.skipped(entry.id); };
+    if (hold()) { skip(); return { id: entry.id, outcome: "held" }; }
+    const open = this.openScheduled().get(entry.id);
+    if (open !== undefined) { skip(); return { id: entry.id, outcome: "waiting", task: open }; }
+    // The PII screen and triage are awaited inside `propose`, and a hold can begin during them (shutdown, recovery, a storage error). `propose` asks this fence
+    // again right before its board write, so a run that was admitted and then overtaken by a hold writes nothing and counts as a skip, like one held at the start.
+    let overtaken = false;
+    const fence = () => { const reason = hold(); if (reason) overtaken = true; return reason; };
+    try {
+      const task = await this.propose(HUB, { title: entry.title, detail: scheduledDetail(entry), class: entry.class, backlog: entry.queue === "backlog",
+        ...(entry.owner ? { owner: entry.owner } : {}) }, undefined, undefined, fence);
+      store.ran(entry.id, now, task.id);
+      return { id: entry.id, outcome: "ran", task: task.id };
+    } catch (error) {
+      if (overtaken) { try { skip(); } catch { /* the store closed with the hub */ } return { id: entry.id, outcome: "held" }; }
+      store.failed(entry.id, sanitize((error as Error).message));
+      return { id: entry.id, outcome: "failed" };
+    }
+  }
+
+  /**
    * #512a: one pass over the machine-local schedules. A schedule is due once `every` has passed since its period began (first sight, then its last run).
    * A due schedule proposes at most one task per pass, through `propose` like any proposal (the PII screen, triage, routing and notices all apply), and none
    * while the task its previous run made is still open. While the hub is held the whole pass skips and every due schedule counts the skip, so a long hold
@@ -3183,28 +3210,39 @@ export class Tasks {
       store.prune(entries.map(entry => entry.id));
       for (const entry of entries) {
         const row = store.ensure(entry.id, now);
+        if (row.paused) continue; // #335: a person's pause is neither a run nor a skipped tick
         if (now < row.anchor + parseEvery(entry.every)) continue;
-        const hold = () => this.schedulesHeld() || extraHold() ? "the hub is held" : undefined;
-        if (hold()) { store.skipped(entry.id); out.push({ id: entry.id, outcome: "held" }); continue; }
-        const open = this.openScheduled().get(entry.id);
-        if (open !== undefined) { store.skipped(entry.id); out.push({ id: entry.id, outcome: "waiting", task: open }); continue; }
-        // The PII screen and triage are awaited inside `propose`, and a hold can begin during them (shutdown, recovery, a storage error). `propose` asks this fence
-        // again right before its board write, so a run that was admitted and then overtaken by a hold writes nothing and counts as a skip, like one held at the start.
-        let overtaken = false;
-        const fence = () => { const reason = hold(); if (reason) overtaken = true; return reason; };
-        try {
-          const task = await this.propose(HUB, { title: entry.title, detail: scheduledDetail(entry), class: entry.class, backlog: entry.queue === "backlog",
-            ...(entry.owner ? { owner: entry.owner } : {}) }, undefined, undefined, fence);
-          store.ran(entry.id, now, task.id);
-          out.push({ id: entry.id, outcome: "ran", task: task.id });
-        } catch (error) {
-          if (overtaken) { try { store.skipped(entry.id); } catch { /* the store closed with the hub */ } out.push({ id: entry.id, outcome: "held" }); continue; }
-          store.failed(entry.id, sanitize((error as Error).message));
-          out.push({ id: entry.id, outcome: "failed" });
-        }
+        out.push(await this.runSchedule(store, entry, now, extraHold));
       }
     } finally { this.schedulesRunning = false; }
     return out;
+  }
+
+  /**
+   * #335: `ahub schedule run <id>`. The person runs one configured schedule now, whatever its period says. It takes the same pass guard as the timer (so it never
+   * overlaps one), the same hold, open-task and `propose` path (`runSchedule`), and restarts that schedule's period on success like a due run. A paused schedule
+   * runs too: a pause stops the timer, not the person. Only the person may.
+   */
+  async runScheduleNow(by: PeerId, store: ScheduleStore, entries: readonly ScheduleEntry[], id: unknown, now: number, extraHold: () => boolean = () => false): Promise<{ id: string; outcome: "ran" | "held" | "waiting" | "failed"; task?: number; reason?: string }> {
+    if (by !== USER) throw new PreEffectToolRefusal("schedule run is a console command");
+    const entry = typeof id === "string" ? entries.find(candidate => candidate.id === id) : undefined;
+    if (!entry) throw new PreEffectToolRefusal(`no schedule ${typeof id === "string" ? JSON.stringify(id.slice(0, 64)) : "named"}; ahub schedule list shows the configured ones`);
+    if (this.schedulesRunning) throw new PreEffectToolRefusal("a schedules pass is running; try again in a moment");
+    this.schedulesRunning = true;
+    try {
+      store.ensure(entry.id, now);
+      const result = await this.runSchedule(store, entry, now, extraHold, true);
+      const reason = result.outcome === "failed" ? store.get(entry.id)?.last_error ?? undefined : undefined;
+      return reason ? { ...result, reason } : result;
+    } finally { this.schedulesRunning = false; }
+  }
+
+  /** #335: pause or resume one configured schedule. Only the person may; resuming starts a fresh period, so a pause is never replayed as a run. */
+  setSchedulePaused(by: PeerId, store: ScheduleStore, entries: readonly ScheduleEntry[], id: unknown, paused: boolean, now: number): void {
+    if (by !== USER) throw new PreEffectToolRefusal(`schedule ${paused ? "pause" : "resume"} is a console command`);
+    const entry = typeof id === "string" ? entries.find(candidate => candidate.id === id) : undefined;
+    if (!entry) throw new PreEffectToolRefusal(`no schedule ${typeof id === "string" ? JSON.stringify(id.slice(0, 64)) : "named"}; ahub schedule list shows the configured ones`);
+    store.setPaused(entry.id, paused, now);
   }
 
   /** S10 read-only planner report; S7 owns rolling bands and automatic board proposals. */
