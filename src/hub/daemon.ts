@@ -1879,7 +1879,7 @@ export async function startDaemon(opts: DaemonOptions) {
     },
     triage: { classify: (title, detail) => inference?.triage(title, detail) ?? Promise.resolve(undefined), onCampus: () => onCampus() },
     // #334: the hub model's split, validated against the same `hub_backlog_split` parts schema a planner's call is, and the source registry for `--source`.
-    intake: { split: (system, user) => inference?.split(system, user) ?? Promise.resolve(undefined), sourceKnown: id => sourceRegistry.get(id) !== undefined,
+    intake: { split: (system, user, opts) => inference?.split(system, user, opts) ?? Promise.resolve(undefined), sourceKnown: id => sourceRegistry.get(id) !== undefined,
       partsSchema: () => profileTaskTools(resolvedProfile, lifecycleConfig.stages, lifecycleConfig.mode !== "off").find(tool => tool.name === "hub_backlog_split")?.inputSchema.properties.parts },
     // The PII screen (issue #198): the model on this machine when MLX/Ollama is enabled, else the gateway on campus only.
     piiScreen: opts.piiScreen ?? ((text) => screenPii(text, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })),

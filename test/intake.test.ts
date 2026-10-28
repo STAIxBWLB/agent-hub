@@ -13,6 +13,8 @@ import { criterionIds, intakeDetail, intakeSystemPrompt, parseIntakeDetail, pars
 import { PreEffectToolRefusal } from "../src/hub/tool-refusal.ts";
 import { classifyPeerCommand, cliCommandLabel, liveTestRefusal } from "../src/cli/identity.ts";
 import { renderIntake, renderIntakeChange } from "../src/cli/intake-output.ts";
+import { DEFAULT_INFERENCE, Inference } from "../src/hub/inference.ts";
+import type { OmniRoute } from "../src/omniroute/client.ts";
 import { readFileSync } from "node:fs";
 import { HELP, helpCommands, renderHelp } from "../src/cli/help.ts";
 
@@ -37,14 +39,14 @@ afterEach(() => { for (const fn of close.splice(0).reverse()) fn(); });
 interface Options { planner?: boolean; answer?: string | (() => string | undefined | Promise<string | undefined>); pii?: boolean; onCampus?: boolean; noModel?: boolean; sources?: string[] }
 async function rig(options: Options = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-intake-")), board = new Board(join(cwd, "hub.db")), bus = new Bus({ batchMs: 0 });
-  const calls: { system: string; user: string }[] = [];
+  const calls: { system: string; user: string; campusOnly: boolean }[] = [];
   const roles: Record<string, string[]> = options.planner ? { claude: ["planner"], codex: ["implementer"] } : { codex: ["implementer"] };
   const deps: TasksDeps = { cwd, board, bus, roles, project: "fixture", routing: () => {
     const routing = loadRouting(cwd);
     return options.pii ? { ...routing, signals: { ...routing.signals, pii_patterns: ["SECRET-STUDENT"] } } : routing;
   }, notify: () => {},
   triage: { classify: async () => undefined, onCampus: async () => options.onCampus ?? false },
-  ...(options.noModel ? {} : { intake: { split: async (system, user) => { calls.push({ system, user }); const a = options.answer; return typeof a === "function" ? a() : a; }, partsSchema: () => PARTS_SCHEMA, sourceKnown: id => (options.sources ?? [SRC]).includes(id) } }) };
+  ...(options.noModel ? {} : { intake: { split: async (system, user, opts) => { calls.push({ system, user, campusOnly: opts.campusOnly }); const a = options.answer; return typeof a === "function" ? a() : a; }, partsSchema: () => PARTS_SCHEMA, sourceKnown: id => (options.sources ?? [SRC]).includes(id) } }) };
   const tasks = new Tasks(deps);
   board.proposalPlanner = () => ({ planner: null, plannerReason: "none" });
   const planner = new Planner("claude");
@@ -193,6 +195,7 @@ test("without a planner the hub model's JSON is validated, written through Tasks
   expect(result.split).toBe("hub");
   expect(result.children).toHaveLength(2);
   expect(r.calls).toHaveLength(1);
+  expect(r.calls[0]!.campusOnly).toBe(false);
   expect(r.calls[0]!.system).toContain("DATA");
   expect(JSON.parse(r.calls[0]!.user)).toEqual({ request: "prepare the Q3 report from these files", sources: [SRC] });
   const parent = r.board.get(result.draft.id)!;
@@ -288,6 +291,7 @@ test("a PII request on campus is split by the on-prem model and the hub writes p
   const result = await r.tasks.intake(USER, { text: "prepare the file for SECRET-STUDENT" });
   expect(result.split).toBe("hub");
   expect(r.calls).toHaveLength(1);
+  expect(r.calls[0]!.campusOnly).toBe(true); // transport itself refuses the Access endpoint for a private request
   expect(r.planner.got.filter(env => env.body.includes("SECRET-STUDENT") || env.refs?.task === String(result.draft.id))).toEqual([]);
   for (const child of result.children) {
     const stored = r.board.get(child.id)!;
@@ -304,7 +308,36 @@ test("an ordinary request with a PII source word in the hub note never reaches t
   expect(JSON.stringify(r.board.get(result.draft.id)!.history)).not.toContain("SECRET-STUDENT");
 });
 
+test("Inference.split asks transport to refuse the Access endpoint only for a private request", async () => {
+  const seen: unknown[] = [];
+  const omni = { base: async () => "http://gateway/v1", chat: async (_body: unknown, opts: unknown) => { seen.push(opts); return { message: { role: "assistant", content: "{}" } }; } } as unknown as OmniRoute;
+  const inference = new Inference(DEFAULT_INFERENCE, { omni, fixedModel: () => "m", log: () => {} });
+  await inference.split("s", "u");
+  await inference.split("s", "u", { campusOnly: false });
+  await inference.split("s", "u", { campusOnly: true });
+  expect(seen.map(opts => (opts as { onCampusOnly?: boolean }).onCampusOnly)).toEqual([undefined, undefined, true]);
+});
+
 // ---- approve and discard
+
+test("a planner that splits an intake child again leaves no grandchild behind: approve and discard take the whole tree", async () => {
+  for (const op of ["approve", "discard"] as const) {
+    const r = await rig({ planner: true });
+    const { draft } = await r.tasks.intake(USER, { text: "prepare the Q3 report" });
+    const first = await r.tasks.splitBacklog("claude", { id: draft.id, revision: draft.planningRevision ?? 0, parts: GOOD.parts, reason: "split the request" });
+    const child = r.board.get(first.children[1]!.id)!;
+    const second = await r.tasks.splitBacklog("claude", { id: child.id, revision: child.planningRevision ?? 0, parts: GOOD.parts, reason: "split the child again" });
+    const tree = [draft.id, ...first.children.map(task => task.id), ...second.children.map(task => task.id)];
+    for (const task of second.children) expect(r.board.get(task.id)!.draft).toBe(true);
+    // an ordinary card the draft depends on is not part of the family
+    const outside = r.board.propose(USER, { title: "ordinary prerequisite", class: "plan", backlog: true });
+    r.board.plan(draft.id, USER, { deps: [...(r.board.get(draft.id)!.deps ?? []), outside.id] }, r.board.get(draft.id)!.planningRevision ?? 0, "depend on outside");
+    const changed = await (op === "approve" ? r.tasks.approveIntake(USER, draft.id) : r.tasks.discardIntake(USER, draft.id));
+    expect(changed.map(task => task.id).sort((a, b) => a - b)).toEqual([...tree].sort((a, b) => a - b));
+    for (const id of tree) expect(op === "approve" ? r.board.get(id)!.draft : r.board.get(id)!.state).toBe(op === "approve" ? undefined : "cancelled");
+    expect(r.board.get(outside.id)).toMatchObject({ state: "backlog" });
+  }
+});
 
 test("approve is the person's, clears draft on the parent and every child, and then the normal pull works", async () => {
   const r = await rig({ answer: JSON.stringify(GOOD) });

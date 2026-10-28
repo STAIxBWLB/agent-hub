@@ -165,7 +165,7 @@ export interface TasksDeps {
   /** Optional: name a class for a task proposed without one. `onCampus` says whether the model call stays on campus. */
   triage?: { classify: (title: string, detail: string) => Promise<TaskClass | undefined>; onCampus: () => Promise<boolean> };
   /** #334: natural-language intake. `split` is the hub model's one call, `partsSchema` the profile's `hub_backlog_split` parts schema, `sourceKnown` the source registry. */
-  intake?: { split: (system: string, user: string) => Promise<string | undefined>; partsSchema: () => unknown; sourceKnown: (id: string) => boolean };
+  intake?: { split: (system: string, user: string, opts: { campusOnly: boolean }) => Promise<string | undefined>; partsSchema: () => unknown; sourceKnown: (id: string) => boolean };
   /** The PII screen (issue #198): a closed verdict from a model on this machine or on campus, `unknown` on any failure. */
   piiScreen?: (text: string) => Promise<PiiVerdict>;
   /** Each screen verdict, for the record: item, label, source and category, never the text. */
@@ -1657,12 +1657,23 @@ export class Tasks {
     return result;
   }
 
-  /** The draft and the draft cards it was split into, still open, parent first. */
+  /**
+   * The draft and every open draft card split from it, at any depth, parent first. A planner may split an intake child again before approval, and
+   * the grandchildren inherit the mark, so the walk follows `deps` through draft cards only: a dependency on ordinary work is never followed.
+   */
   private intakeFamily(id: number): Task[] {
     const root = this.d.board.get(id);
     if (!root || !root.draft || root.state !== "backlog") throw new PreEffectToolRefusal(`task #${id} is not an open intake draft`);
-    const children = (root.deps ?? []).map(dep => this.d.board.get(dep)).filter((child): child is Task => !!child && !!child.draft && child.state === "backlog");
-    return [root, ...children];
+    const family: Task[] = [root], seen = new Set([root.id]);
+    for (let next = 0; next < family.length; next++) {
+      for (const dep of family[next]!.deps ?? []) {
+        if (seen.has(dep)) continue;
+        const child = this.d.board.get(dep);
+        if (!child || !child.draft || child.state !== "backlog") continue;
+        seen.add(dep); family.push(child);
+      }
+    }
+    return family;
   }
 
   /**
@@ -1699,7 +1710,7 @@ export class Tasks {
     // A request that is PII goes only to a model reached on campus; without one it stays whole for the person.
     if (priv && !(await this.d.triage?.onCampus().catch(() => false))) return unsplit("the request is PII and no on-prem model was reached");
     let raw: string | undefined;
-    try { raw = await this.d.intake.split(intakeSystemPrompt(Object.keys(profileData(this.d.profileData ?? this.d.profile ?? "dev").classes), this.d.intake.partsSchema()), intakeUserMessage(text, sources)); } catch { raw = undefined; }
+    try { raw = await this.d.intake.split(intakeSystemPrompt(Object.keys(profileData(this.d.profileData ?? this.d.profile ?? "dev").classes), this.d.intake.partsSchema()), intakeUserMessage(text, sources), { campusOnly: priv }); } catch { raw = undefined; }
     const parsed = parseIntakeSplit(raw, this.d.intake.partsSchema(), sources);
     if ("error" in parsed) return unsplit(parsed.error);
     const current = this.d.board.get(draft.id);
