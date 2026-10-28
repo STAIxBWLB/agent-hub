@@ -393,8 +393,7 @@ export class RoomStore {
         || !Number.isSafeInteger(row.created_at) || row.created_at <= 0 || row.created_at > now || !Number.isSafeInteger(row.expires_at)
         || row.expires_at <= row.created_at || row.expires_at - row.created_at > 604_800_000
         || !Number.isSafeInteger(row.ack_timeout) || row.ack_timeout < 1 || row.ack_timeout > 86_400_000) fail("corrupt");
-      if (row.ack_deadline !== null && (!Number.isSafeInteger(row.ack_deadline) || row.ack_deadline < row.created_at + row.ack_timeout || row.ack_deadline > now + row.ack_timeout)) fail("corrupt");
-      if (row.state === "dispatching" && row.ack_deadline !== null || row.state === "accepted" && row.ack_deadline === null) fail("corrupt");
+      if (!Number.isSafeInteger(row.ack_deadline) || row.ack_deadline !== row.created_at + row.ack_timeout) fail("corrupt");
       if (isTerminal(row.state) ? !validOutcome(row.state, row.reason) : row.reason !== null) fail("corrupt");
       if (row.disposition !== null && (row.state !== "needs_review" || !["completed", "retry", "discard"].includes(row.disposition))) fail("corrupt");
       if (row.late_outcome !== null ? row.state !== "needs_review" || !validOutcome(row.late_outcome, row.late_reason) : row.late_reason !== null) fail("corrupt");
@@ -584,6 +583,11 @@ export class RoomStore {
       positiveU64(input.seq);
       const known = this.db.query<{ digest: string }, [string, string, string]>("SELECT digest FROM inbox WHERE room=? AND sender=? AND seq=?").get(input.room, input.sender, input.seq);
       if (known) return { status: known.digest === input.frameDigest ? "duplicate" : "conflict" };
+      // An application alias was committed only after crypto replay accepted these exact bytes.
+      // Keep its duplicate proof after bounded inbox pruning, without advancing the sender floor.
+      const alias = this.db.query("SELECT 1 FROM application_frames f JOIN applications a ON a.room=f.room AND a.sender=f.sender AND a.application=f.application WHERE f.room=? AND f.sender=? AND f.digest=? AND (a.state NOT IN ('completed','failed_safe','disposed') OR a.settled_at>?)")
+        .get(input.room, input.sender, input.frameDigest, now - ROOM_APPLICATION_RETENTION.settledMs);
+      if (alias) return { status: "duplicate" };
       const floor = this.db.query<{ seq: string; digest: string }, [string, string]>("SELECT seq,digest FROM floors WHERE room=? AND sender=?").get(input.room, input.sender);
       if (floor && BigInt(input.seq) <= BigInt(floor.seq)) return { status: input.seq === floor.seq ? floor.digest === input.frameDigest ? "duplicate" : "conflict" : "stale" };
       if (!floor && (this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM floors WHERE room=?").get(input.room)?.n ?? 0) >= ROOM_STORE_LIMITS.floorsPerRoom) fail("limit");
@@ -641,10 +645,10 @@ export class RoomStore {
       if (count >= ROOM_STORE_LIMITS.outboxPerRoom || bytes + wire.length + state.wire.length > ROOM_STORE_LIMITS.outboxBytes) fail("limit");
       this.db.query("INSERT INTO outbox(room,digest,wire,roster,state) VALUES(?,?,?,?,'dispatching')").run(frame.room, frame.digest, wire, state.wire);
       if (!application) return undefined;
-      const expires = now + application.ttlMs;
-      if (!Number.isSafeInteger(expires)) fail("invalid");
-      this.db.query("INSERT INTO application_outbox(room,digest,delivery_id,application,remote_peer,recipient,peer,created_at,expires_at,ack_timeout,state) VALUES(?,?,?,?,?,?,?,?,?,?,'dispatching')")
-        .run(frame.room, frame.digest, application.deliveryId, application.application, application.remotePeer, application.recipient, application.peer, now, expires, application.ackTimeoutMs);
+      const expires = now + application.ttlMs, deadline = now + application.ackTimeoutMs;
+      if (!Number.isSafeInteger(expires) || !Number.isSafeInteger(deadline)) fail("invalid");
+      this.db.query("INSERT INTO application_outbox(room,digest,delivery_id,application,remote_peer,recipient,peer,created_at,expires_at,ack_timeout,ack_deadline,state) VALUES(?,?,?,?,?,?,?,?,?,?,?,'dispatching')")
+        .run(frame.room, frame.digest, application.deliveryId, application.application, application.remotePeer, application.recipient, application.peer, now, expires, application.ackTimeoutMs, deadline);
       return outgoing(this.db.query<OutgoingRow, [string]>("SELECT * FROM application_outbox WHERE digest=?").get(frame.digest)!);
     });
   }
@@ -680,12 +684,16 @@ export class RoomStore {
       const row = this.db.query<OutgoingRow, [string, string]>("SELECT * FROM application_outbox WHERE room=? AND digest=?").get(state.current.room, digestValue);
       const sealed = this.db.query<{ wire: Uint8Array }, [string]>("SELECT wire FROM outbox WHERE digest=?").get(digestValue);
       if (!row || !sealed || decodeFrame(sealed.wire).seq !== seq) return undefined;
-      if (row.state !== "dispatching") return outgoing(row);
-      const deadline = now + row.ack_timeout;
-      if (!Number.isSafeInteger(deadline)) fail("invalid");
-      this.db.query("UPDATE application_outbox SET state='accepted',ack_deadline=? WHERE digest=?").run(deadline, digestValue);
+      if (row.state !== "dispatching" && row.state !== "accepted") return outgoing(row);
+      if (!Number.isSafeInteger(row.ack_deadline)) fail("corrupt");
+      if (now >= row.ack_deadline! || now >= row.expires_at) {
+        this.db.query("UPDATE application_outbox SET state='needs_review' WHERE digest=?").run(digestValue);
+        return outgoing({ ...row, state: "needs_review" });
+      }
+      if (row.state === "accepted") return outgoing(row);
+      this.db.query("UPDATE application_outbox SET state='accepted' WHERE digest=?").run(digestValue);
       this.db.query("UPDATE outbox SET state='accepted' WHERE digest=?").run(digestValue);
-      return outgoing({ ...row, state: "accepted", ack_deadline: deadline });
+      return outgoing({ ...row, state: "accepted" });
     });
   }
   private applicationRoom(name: string, current?: () => boolean): RoomState {
@@ -757,14 +765,14 @@ export class RoomStore {
     this.db.query("DELETE FROM application_frames WHERE room=? AND sender=? AND application=?").run(row.room, row.sender, row.application);
     this.db.query("DELETE FROM applications WHERE room=? AND sender=? AND application=?").run(row.room, row.sender, row.application);
   }
-  private applicationCapacity(room: string, now: number, freshIdentity: boolean): void {
-    const expired = this.db.query<ApplicationRow, [string, number]>("SELECT * FROM applications WHERE room=? AND state IN ('completed','failed_safe','disposed') AND settled_at<=?").all(room, now - ROOM_APPLICATION_RETENTION.settledMs);
+  private applicationCapacity(room: string, now: number, freshIdentity: boolean, retained?: Pick<ApplicationRow, "sender" | "application">): void {
+    const expired = this.db.query<ApplicationRow, [string, number, string, string]>("SELECT * FROM applications WHERE room=? AND state IN ('completed','failed_safe','disposed') AND settled_at<=? AND NOT (sender=? AND application=?)").all(room, now - ROOM_APPLICATION_RETENTION.settledMs, retained?.sender ?? "", retained?.application ?? "");
     for (const row of expired) this.deleteSettledApplication(row);
     for (;;) {
       const identities = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM applications WHERE room=?").get(room)?.n ?? 0;
       const aliases = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM application_frames WHERE room=?").get(room)?.n ?? 0;
       if ((!freshIdentity || identities < ROOM_APPLICATION_RETENTION.identitiesPerRoom) && aliases < ROOM_APPLICATION_RETENTION.aliasesPerRoom) return;
-      const settled = this.db.query<ApplicationRow, [string]>("SELECT * FROM applications WHERE room=? AND state IN ('completed','failed_safe','disposed') ORDER BY settled_at,created_at,sender,application LIMIT 1").get(room);
+      const settled = this.db.query<ApplicationRow, [string, string, string]>("SELECT * FROM applications WHERE room=? AND state IN ('completed','failed_safe','disposed') AND NOT (sender=? AND application=?) ORDER BY settled_at,created_at,sender,application LIMIT 1").get(room, retained?.sender ?? "", retained?.application ?? "");
       if (!settled) throw new RoomApplicationLimitError(room, Math.max(identities, aliases));
       this.deleteSettledApplication(settled);
     }
@@ -792,8 +800,8 @@ export class RoomStore {
       const alias = this.applicationFor(state.current.room, digestValue);
       if (alias && (alias.sender !== original.sender || alias.application !== chat.id)) fail("invalid");
       if (!alias) {
-        this.applicationCapacity(state.current.room, now, !saved);
-        // Capacity eviction may have removed this settled identity while making alias room.
+        this.applicationCapacity(state.current.room, now, !saved, saved ?? undefined);
+        // The matching retained identity is protected while capacity evicts other settled work.
         saved = this.db.query<ApplicationRow, [string, string, string]>("SELECT * FROM applications WHERE room=? AND sender=? AND application=?").get(...key);
         if (!saved) {
           const pending = this.db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM applications WHERE room=? AND state='pending'").get(state.current.room)?.n ?? 0;
@@ -806,7 +814,10 @@ export class RoomStore {
       }
       if (!saved) fail("corrupt");
       const primary = saved.primary_digest === digestValue;
-      if (!primary || isSettledApplication(saved.state) || saved.state === "needs_review") this.db.query("UPDATE inbox SET plaintext=NULL WHERE room=? AND digest=?").run(state.current.room, digestValue);
+      if (!primary || isSettledApplication(saved.state) || saved.state === "needs_review") {
+        this.db.query("UPDATE inbox SET plaintext=NULL WHERE room=? AND digest=?").run(state.current.room, digestValue);
+        this.pruneInbox(state.current.room);
+      }
       return { sender: original.sender, chat, contentHash, primary, state: saved.state };
     });
   }
@@ -833,6 +844,7 @@ export class RoomStore {
       this.db.query("UPDATE applications SET state=?,reason=?,settled_at=? WHERE room=? AND sender=? AND application=?").run(outcome, reason, now, row.room, row.sender, row.application);
       this.db.query("UPDATE inbox SET plaintext=NULL WHERE room=? AND digest IN (SELECT digest FROM application_frames WHERE room=? AND sender=? AND application=?)")
         .run(row.room, row.room, row.sender, row.application);
+      this.pruneInbox(row.room);
     });
   }
   applicationReceipt(name: string, digestValue: string): RoomMessage | undefined {
@@ -853,6 +865,7 @@ export class RoomStore {
       this.db.query("UPDATE applications SET state='needs_review' WHERE room=? AND sender=? AND application=?").run(row.room, row.sender, row.application);
       this.db.query("UPDATE inbox SET plaintext=NULL WHERE room=? AND digest IN (SELECT digest FROM application_frames WHERE room=? AND sender=? AND application=?)")
         .run(row.room, row.room, row.sender, row.application);
+      this.pruneInbox(row.room);
     });
   }
   incomingApplication(name: string, digestValue: string): RoomIncomingApplication | undefined {
@@ -875,6 +888,7 @@ export class RoomStore {
         .run(action, now, now, row.room, row.sender, row.application);
       this.db.query("UPDATE inbox SET plaintext=NULL WHERE room=? AND digest IN (SELECT digest FROM application_frames WHERE room=? AND sender=? AND application=?)")
         .run(row.room, row.room, row.sender, row.application);
+      this.pruneInbox(row.room);
     });
   }
   applicationStatus(name: string): { pending: number; needsReview: number; rows: RoomIncomingApplication[]; truncated: boolean } {
@@ -904,6 +918,7 @@ export class RoomStore {
       this.db.query("UPDATE application_outbox SET state='needs_review' WHERE state IN ('dispatching','accepted')").run();
       this.db.query("UPDATE applications SET state='needs_review' WHERE state='dispatching'").run();
       this.db.query("UPDATE inbox SET plaintext=NULL WHERE EXISTS (SELECT 1 FROM application_frames f JOIN applications a ON a.room=f.room AND a.sender=f.sender AND a.application=f.application WHERE f.room=inbox.room AND f.digest=inbox.digest AND a.state='needs_review')").run();
+      for (const state of this.rooms.values()) this.pruneInbox(state.current.room);
     });
   }
   /** Diagnostic transport-drop receipt only. It never advances crypto replay or application-delivery state. */
@@ -930,11 +945,15 @@ export class RoomStore {
     const room = this.get(name); if (!room) return [];
     return this.db.query<{ sender: string; seq: string; digest: string; plaintext: Uint8Array; gap: string }, [string]>("SELECT sender,seq,digest,plaintext,gap FROM inbox WHERE room=? AND plaintext IS NOT NULL ORDER BY rowid").all(room.current.room).map(x => ({ ...x, plaintext: copy(x.plaintext) }));
   }
+  private pruneInbox(room: string): void {
+    this.db.query("DELETE FROM inbox WHERE room=? AND plaintext IS NULL AND rowid NOT IN (SELECT rowid FROM inbox WHERE room=? ORDER BY rowid DESC LIMIT ?)")
+      .run(room, room, ROOM_STORE_LIMITS.receiptsPerRoom);
+  }
   settleInbox(name: string, digestValue: string): void {
     const room = this.get(name); if (!room) fail("untrusted");
     this.transaction(() => {
       this.db.query("UPDATE inbox SET plaintext=NULL WHERE room=? AND digest=?").run(room.current.room, digestValue);
-      this.db.query("DELETE FROM inbox WHERE room=? AND plaintext IS NULL AND rowid NOT IN (SELECT rowid FROM inbox WHERE room=? ORDER BY rowid DESC LIMIT ?)").run(room.current.room, room.current.room, ROOM_STORE_LIMITS.receiptsPerRoom);
+      this.pruneInbox(room.current.room);
     });
   }
   close(): void { if (!this.closed) { this.closed = true; this.db.close(); this.rooms.clear(); } }

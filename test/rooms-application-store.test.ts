@@ -3,9 +3,9 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { RoomApplicationLimitError, RoomStore, ROOM_APPLICATION_RETENTION, type RoomOutgoingInput } from "../src/rooms/store.ts";
+import { RoomApplicationLimitError, RoomStore, ROOM_APPLICATION_RETENTION, ROOM_STORE_LIMITS, type RoomOutgoingInput } from "../src/rooms/store.ts";
 import { encodeRoomMessage, type RoomChatEnvelope, type RoomMessage } from "../src/rooms/application.ts";
-import { createInvite, createJoin, createRoomEpoch, openFrame, sealFrame } from "../src/rooms/wire.ts";
+import { createInvite, createJoin, createRoomEpoch, decodeFrame, openFrame, sealFrame } from "../src/rooms/wire.ts";
 import { encodeBase64url, sha256 } from "../src/rooms/crypto.ts";
 
 const roots: string[] = [], stores: RoomStore[] = [];
@@ -74,13 +74,14 @@ test("room application schema2 migrates a v1 identity, pins, counters and legacy
   expect(await restored.sequence.reserve({ room: state.current.room, sender: fingerprint, epoch: state.current.epoch, rosterDigest: state.current.digest })).toBe("2");
 });
 
-test("application outbox and sealed frame commit together; broker seq binds a once-only deadline", async () => {
+test("application outbox and sealed frame commit together; broker storage preserves the handoff deadline", async () => {
   const f = await pair(), q = await queued(f, chat(), { ackTimeoutMs: 1000 });
-  expect(q.outgoing.state).toBe("dispatching"); expect(f.owner.outbox("work")).toHaveLength(1);
+  expect(q.outgoing).toMatchObject({ state: "dispatching", ackDeadline: f.now() + 1000 }); expect(f.owner.outbox("work")).toHaveLength(1);
+  const deadline = q.outgoing.ackDeadline!; f.advance(10);
   const frame = JSON.parse(new TextDecoder().decode(q.wire));
   expect(f.owner.markApplicationStored("work", q.outgoing.digest, "999")).toBeUndefined();
   const accepted = f.owner.markApplicationStored("work", q.outgoing.digest, frame.seq)!;
-  expect(accepted).toMatchObject({ state: "accepted", ackDeadline: f.now() + 1000 });
+  expect(accepted).toMatchObject({ state: "accepted", ackDeadline: deadline });
   f.advance(10);
   expect(f.owner.markApplicationStored("work", q.outgoing.digest, frame.seq)!.ackDeadline).toBe(accepted.ackDeadline);
   await expect(f.owner.queueApplication("work", q.wire, { ...q.input, application: crypto.randomUUID() })).rejects.toMatchObject({ code: "state_changed" });
@@ -329,4 +330,70 @@ test("incoming person accept/discard are local settled metadata, never admission
     expect(restored.incomingApplication("work", item.digest)).toBeUndefined();
     expect(restored.applicationStatus("work").rows).toEqual([]);
   }
+});
+
+
+test("a dispatching application without any broker stored ACK expires at its durable handoff deadline", async () => {
+  const f = await pair(), q = await queued(f, chat(), { ackTimeoutMs: 100, ttlMs: 1000 }), deadline = f.now() + 100;
+  expect(q.outgoing).toMatchObject({ state: "dispatching", ackDeadline: deadline });
+  f.advance(99); expect(f.owner.expireApplications("work")).toEqual([]);
+  f.advance(1);
+  expect(f.owner.expireApplications("work")).toEqual([expect.objectContaining({ digest: q.outgoing.digest, state: "needs_review", ackDeadline: deadline })]);
+  const frame = decodeFrame(q.wire);
+  expect(f.owner.markApplicationStored("work", q.outgoing.digest, frame.seq)).toMatchObject({ state: "needs_review", ackDeadline: deadline });
+  expect(f.owner.outbox("work")).toEqual([]);
+});
+
+test("a late first broker stored ACK cannot revive a timed-out handoff or extend its deadline", async () => {
+  const f = await pair(), q = await queued(f, chat(), { ackTimeoutMs: 100, ttlMs: 1000 }), deadline = q.outgoing.ackDeadline!;
+  f.advance(100); // The expiry timer may not have run yet when the broker's delayed ACK arrives.
+  expect(f.owner.markApplicationStored("work", q.outgoing.digest, decodeFrame(q.wire).seq)).toMatchObject({ state: "needs_review", ackDeadline: deadline });
+  const late = await receipt(f.guest, f.owner, { v: 1, type: "receipt", frame: q.outgoing.digest, application: q.envelope.id, peer: "claude", outcome: "completed", reason: "admitted" });
+  expect(f.owner.applyApplicationReceipt("work", late)).toMatchObject({ state: "needs_review", ackDeadline: deadline, lateReceipt: { outcome: "completed", reason: "admitted" } });
+});
+
+test("alias capacity cannot evict the retained settled identity that matched this exact application content", async () => {
+  const f = await pair(), first = await incoming(f); expect(f.guest.claimApplication("work", first.digest)).toBe(true);
+  f.guest.finishApplication("work", first.digest, "completed", "admitted"); f.advance(1);
+  const dir = fillIdentities(f.guest, ROOM_APPLICATION_RETENTION.aliasesPerRoom - 1, "completed", f.now());
+  f.guest = await opened(f.clock, dir);
+  const duplicate = await incoming(f, first.envelope);
+  expect(duplicate.application).toMatchObject({ primary: false, state: "completed" });
+  expect(f.guest.claimApplication("work", duplicate.digest)).toBe(false);
+  expect(f.guest.applicationReceipt("work", first.digest)).toMatchObject({ outcome: "completed", reason: "admitted" });
+  expect(f.guest.applicationReceipt("work", duplicate.digest)).toMatchObject({ outcome: "completed", reason: "admitted" });
+  expect(f.guest.pendingApplications("work")).toEqual([]);
+});
+
+test("settled chat prunes null inbox receipts without presence traffic and retained aliases still prove exact duplicates after reopen", async () => {
+  const f = await pair(), first = await incoming(f); expect(f.guest.claimApplication("work", first.digest)).toBe(true);
+  f.guest.finishApplication("work", first.digest, "completed", "admitted");
+  for (let n = 0; n <= ROOM_STORE_LIMITS.receiptsPerRoom; n++) {
+    const duplicate = await incoming(f, first.envelope);
+    expect(duplicate.application).toMatchObject({ state: "completed", primary: false });
+  }
+  const directory = locations.get(f.guest)!; f.guest.close();
+  const db = new Database(join(directory, "rooms.db"));
+  let floor: string;
+  try {
+    expect(db.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM inbox WHERE plaintext IS NULL").get()?.n).toBe(ROOM_STORE_LIMITS.receiptsPerRoom);
+    expect(db.query("SELECT 1 FROM inbox WHERE digest=?").get(first.digest)).toBeNull();
+    floor = db.query<{ seq: string }, []>("SELECT seq FROM floors").get()!.seq;
+  } finally { db.close(); }
+  f.guest = await opened(f.clock, directory);
+  expect((await receive(f.guest, first.wire)).status).toBe("duplicate");
+  expect(f.guest.applicationReceipt("work", first.digest)).toMatchObject({ outcome: "completed", reason: "admitted" });
+  expect(f.guest.pendingInbox("work")).toEqual([]);
+  f.guest.close();
+  const check = new Database(join(directory, "rooms.db"));
+  try { expect(check.query<{ seq: string }, []>("SELECT seq FROM floors").get()?.seq).toBe(floor!); } finally { check.close(); }
+  f.guest = await opened(f.clock, directory);
+  for (let n = 0; n < 2; n++) {
+    const item = await incoming(f); expect(f.guest.claimApplication("work", item.digest)).toBe(true);
+    f.guest.finishApplication("work", item.digest, "completed", "admitted");
+  }
+  f.guest.close();
+  const final = new Database(join(directory, "rooms.db"));
+  try { expect(final.query<{ n: number }, []>("SELECT COUNT(*) AS n FROM inbox WHERE plaintext IS NULL").get()?.n).toBe(ROOM_STORE_LIMITS.receiptsPerRoom); } finally { final.close(); }
+  f.guest = await opened(f.clock, directory); expect(f.guest.pendingApplications("work")).toEqual([]);
 });

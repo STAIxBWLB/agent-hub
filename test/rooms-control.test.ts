@@ -115,7 +115,7 @@ test("a control remote-cap refusal spends neither repeat identity nor limiter to
   const refused = await tools.request(message, 5000);
   expect(refused).toMatchObject({ ok: false }); expect(refused.error).toBe("remote room queue is full");
   expect(f.daemon.bus.queued(target)).toBe(200);
-  f.daemon.bus.withdraw(env => env.id === queued[0]!.id);
+  expect(f.daemon.bus.withdraw(queued[0]!.id)).toBe(true);
   expect(f.daemon.bus.queued(target)).toBe(199);
   const accepted = await tools.request(message, 5000);
   expect(accepted).toMatchObject({ ok: true, targets: [target] });
