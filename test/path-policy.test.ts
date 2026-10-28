@@ -239,10 +239,12 @@ test("guardPath: a typed name outside the project that resolves to an ordinary f
   expect(() => guardPath(ctx, "../o-not-a-link/x", "read")).toThrow("outside the project directory"); // containment stays on the resolved path
 });
 
-test("guardPath: an inside typed name that is denied or hub-owned is refused even when the file is an innocent one", () => {
+test("guardPath: an inside typed name that is denied or hub-owned is refused even when it resolves to an innocent file", () => {
   const dir = root(); mkdirSync(join(dir, "docs"), { recursive: true }); mkdirSync(join(dir, ".agenthub"), { recursive: true });
   writeFileSync(join(dir, "docs/ok.txt"), "ok");
-  linkSync(join(dir, "docs/ok.txt"), join(dir, ".env")); linkSync(join(dir, "docs/ok.txt"), join(dir, ".agenthub/state.json"));
+  // Symlinks, not hardlinks (#555 review): a symlink resolves to the innocent file whatever Bun's realpath does with hardlink aliases, so the resolved name is never denied or hub-owned and
+  // only the typed-name check can refuse. The hardlink flip is covered by the loop tests (5000 per layout).
+  symlinkSync(join(dir, "docs/ok.txt"), join(dir, ".env")); symlinkSync(join(dir, "docs/ok.txt"), join(dir, ".agenthub/state.json"));
   const ctx = { cwd: dir, deny: [".env", "**/.env"] };
   expect(() => guardPath(ctx, ".env", "read")).toThrow("secrets denylist");
   expect(() => guardPath(ctx, ".env", "write")).toThrow("secrets denylist");
