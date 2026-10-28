@@ -374,7 +374,7 @@ export class RoomLink {
     } else if (result?.status === "duplicate") {
       await this.options.application?.receive(this.context(session, digest), { digest: acceptedDigest, sender: frame.sender });
       this.current(session, digest);
-    } else if (result?.status !== "duplicate") fail("unavailable");
+    } else fail("unavailable");
     this.frameCurrent(session, frame);
     // This ACK only retires ciphertext from the broker queue. A durable refusal
     // or stale drop is never a signed recipient application-completion receipt.

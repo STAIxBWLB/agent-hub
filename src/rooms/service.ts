@@ -1,11 +1,11 @@
 /** Host integration for X4. Remote identities carry chat, never local control authority. */
-import { Bus } from "../hub/bus.ts";
+import type { Bus } from "../hub/bus.ts";
 import { USER, MAX_HOP, type Envelope, type PeerState } from "../hub/envelope.ts";
 import { Limiter, PROJECT_LIMITS, type LimitsConfig } from "../hub/limits.ts";
 import type { PiiVerdict } from "../hub/inference.ts";
 import type { Routing } from "../hub/routing.ts";
 import { roomMembers } from "./wire.ts";
-import { RoomStore, RoomStoreError, type RoomOutgoing } from "./store.ts";
+import { RoomStore, RoomStoreError, RoomApplicationLimitError, type RoomOutgoing } from "./store.ts";
 import { RoomPolicy } from "./policy.ts";
 import { RemotePeer } from "./remote-peer.ts";
 import { parseRemotePeerId, type RoomMessage, type RoomReceiptReason } from "./application.ts";
@@ -21,6 +21,7 @@ export interface RoomChatOptions {
   roster?: (ids: readonly string[]) => void;
   changed?: () => void;
   limits?: () => LimitsConfig;
+  notice?: (value: { code: "application_capacity"; room: string; count: number }) => void;
 }
 interface Binding { store: RoomStore; name: string; link: RoomLink; digest: string; online: boolean; states: Map<string, PeerState> }
 interface Target { binding: Binding; member: string; peer: string }
@@ -37,7 +38,6 @@ export class RoomChat {
   private stopped = false;
   private limitKey = "";
   private peerLimiter = new Limiter(PROJECT_LIMITS);
-  private hubLimiter = new Limiter(PROJECT_LIMITS);
   readonly application: RoomLinkApplication;
   constructor(private readonly options: RoomChatOptions) {
     this.policy = new RoomPolicy(options.cwd);
@@ -151,7 +151,13 @@ export class RoomChat {
     if (!binding || binding.store !== store || binding.link !== link) return;
     binding.online = state === "online";
     if (!binding.online) binding.states.clear();
+    if (!this.valid(binding)) {
+      try { for (const row of binding.store.applicationOutbox(name, true)) if (row.state === "dispatching" || row.state === "accepted") {
+        const unknown = binding.store.quarantineOutgoing(name, row.deliveryId); if (unknown) this.outcome(binding, unknown);
+      } } catch { for (const [key, row] of this.outgoing) if (row.binding === binding) this.outgoing.delete(key); }
+    }
     this.refreshTargets();
+    this.queueChanged();
   }
   private refreshOutgoing(binding: Binding): void {
     this.evidenceCache = undefined;
@@ -164,13 +170,13 @@ export class RoomChat {
   private outcome(binding: Binding, row: RoomOutgoing): void {
     const remote = this.remotes.get(row.remotePeer);
     if (row.lateReceipt) this.options.bus.noteLateRemoteReceipt(row.remotePeer, row.deliveryId, row.lateReceipt.outcome);
-    else if (!row.disposition) remote?.receipt({ id: row.deliveryId, state: row.state === "dispatching" ? "needs_review" : row.state, reason: row.state === "completed" ? "room completed (admitted)" : row.state === "failed_safe" ? `room: ${row.reason}` : "room acknowledgement expired or outcome uncertain" });
+    else if (!row.disposition) remote?.receipt({ id: row.deliveryId, state: row.state === "dispatching" ? "needs_review" : row.state, reason: row.state === "completed" ? "room completed (admitted)" : row.state === "failed_safe" ? `room: ${row.reason}` : row.state === "accepted" ? "room broker accepted ciphertext" : "room acknowledgement expired or outcome uncertain" });
     this.refreshOutgoing(binding); this.queueChanged(); this.options.changed?.();
   }
   private rate(from: string, member: string, target: string, body: string): boolean {
     const config = this.options.limits?.() ?? PROJECT_LIMITS, key = JSON.stringify(config);
-    if (key !== this.limitKey) { this.limitKey = key; this.peerLimiter = new Limiter(config, () => this.now()); this.hubLimiter = new Limiter(config, () => this.now()); }
-    return !this.peerLimiter.admit(from, [target], "status", body) && !this.hubLimiter.admit(`room-member:${member}`, [target], "status", body);
+    if (key !== this.limitKey) { this.limitKey = key; this.peerLimiter = new Limiter(config, () => this.now()); }
+    return !this.peerLimiter.admit(from, [target], "status", body, "", member);
   }
   private sourceUnambiguous(binding: Binding, member: string, label: string): boolean {
     const owners = new Set<string>();
@@ -195,6 +201,7 @@ export class RoomChat {
     let incoming: Awaited<ReturnType<RoomStore["applicationIncoming"]>>;
     try { incoming = await context.store.applicationIncoming(context.name, input.digest, context.current); }
     catch (error) {
+      if (error instanceof RoomApplicationLimitError) try { this.options.notice?.({ code: "application_capacity", room: error.room, count: error.count }); } catch { /* fixed metadata observation only */ }
       if (error instanceof RoomStoreError && error.code === "invalid") { context.store.settleInbox(context.name, input.digest); return; }
       throw error;
     }
@@ -237,7 +244,7 @@ export class RoomChat {
       const due = Math.min(row.expiresAt, row.ackDeadline ?? Infinity); next = next === undefined ? due : Math.min(next, due);
     }
     if (next === undefined) return;
-    this.timer = setTimeout(() => { this.timer = undefined; this.tick(); }, Math.max(1, Math.min(2_147_483_647, next - this.now())));
+    this.timer = setTimeout(() => { this.timer = undefined; try { this.tick(); } catch { this.stop(); } }, Math.max(1, Math.min(2_147_483_647, next - this.now())));
     this.timer.unref?.();
   }
   tick(): void {
@@ -281,14 +288,17 @@ export class RoomChat {
       if (action) this.disposition(row.remotePeer, row.deliveryId, action);
     }
     const incoming = binding.store.applicationStatus(name);
-    return [...binding.store.applicationOutbox(name).slice(-200).map(row => ({ direction: "outbound", id: row.deliveryId, application: row.application, peer: row.remotePeer, state: row.state === "completed" ? "completed (admitted)" : row.state, ...(row.disposition ? { disposition: row.disposition } : {}), ...(row.lateReceipt ? { lateReceipt: row.lateReceipt.outcome === "completed" ? "completed (admitted)" : "failed_safe" } : {}) })),
-      ...incoming.rows.map(row => ({ direction: "inbound", id: row.digest, application: row.application, state: row.state, peer: row.peer })),
+    return [...binding.store.applicationOutbox(name).sort((a, b) => Number(!ACTIVE.has(a.state) || !!a.disposition) - Number(!ACTIVE.has(b.state) || !!b.disposition) || b.createdAt - a.createdAt).slice(0, 200).map(row => ({ direction: "outbound", id: row.deliveryId, application: row.application, peer: row.remotePeer, state: row.state === "completed" ? "completed (admitted)" : row.state, ...(row.disposition ? { disposition: row.disposition } : {}), ...(row.lateReceipt ? { lateReceipt: row.lateReceipt.outcome === "completed" ? "completed (admitted)" : "failed_safe" } : {}) })),
+      ...incoming.rows.map(row => ({ direction: "inbound", id: row.digest, application: row.application, state: row.state === "disposed" ? `disposed (${row.disposition}, by person)` : row.state, peer: row.peer, ...(row.disposedAt ? { disposedAt: row.disposedAt } : {}) })),
       { direction: "inbound", pending: incoming.pending, needsReview: incoming.needsReview, truncated: incoming.truncated }];
+  }
+  peers(name: string): { id: string; state: PeerState }[] {
+    return [...this.targets].filter(([, target]) => target.binding.name === name).map(([id]) => ({ id, state: this.remotes.get(id)?.state ?? "offline" })).sort((a, b) => a.id.localeCompare(b.id));
   }
   stop(): void {
     if (this.stopped) return; this.stopped = true;
     if (this.timer) clearTimeout(this.timer); this.timer = undefined;
-    for (const remote of this.remotes.values()) void remote.stop();
+    for (const remote of this.remotes.values()) void remote.stop().catch(() => undefined);
     this.options.roster?.([]);
   }
 }

@@ -342,7 +342,7 @@ export function ownerRoleOfClass(cls: TaskClass): "planner" | "implementer" | "r
 export type PlannerReason = "rotation" | "named" | "kept" | "none";
 
 /** The remote namespace has no local task, reviewer or planner authority, even for malformed remote ids. */
-export function isRemotePeerId(peer: unknown): peer is string { return typeof peer === "string" && peer.includes("@"); }
+export function isRemotePeerId(peer: unknown): boolean { return typeof peer === "string" && peer.includes("@"); }
 
 /**
  * I-2 (#525-3): the peers that implemented a task, read from its own history: any peer with an `accepted` or `done` entry. A reviewer is

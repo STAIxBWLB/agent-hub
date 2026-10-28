@@ -3486,6 +3486,7 @@ export async function startDaemon(opts: DaemonOptions) {
     screen: opts.piiScreen ?? (text => screenPii(text, { ...(config.mlx.enabled === false ? {} : { device: () => ensureMlx(config.mlx) }), onCampus, omni, fixedModel: () => activeRouting().local.fixed_model })),
     policyVersion: () => configRevision,
     limits: () => config.limits,
+    notice: value => notify(`room ${value.room}: application capacity reached (${value.count}); resolve incoming uncertainty with ahub room resolve`),
     roster: ids => { remoteRoster.clear(); for (const id of ids) remoteRoster.add(id); },
     changed: () => { if (ready && !stopping) writeStatus(); },
   });
@@ -6578,7 +6579,7 @@ export async function startDaemon(opts: DaemonOptions) {
     blockers: [
       ...(starting.size ? ["peer startup in progress"] : []),
       ...(!budget.recoverySettled ? ["budget transition in progress"] : []),
-      ...([...bus.peers].filter(([, peer]) => peer.state === "busy").map(([id]) => `${id} is busy`)),
+      ...([...bus.peers].filter(([id, peer]) => !id.includes("@") && peer.state === "busy").map(([id]) => `${id} is busy`)),
       ...(permissions.size ? ["pending approvals"] : []),
       // #272: the rest of what recoveryReady() waits for, so the upgrade screen can name the wait. Display only.
       ...(taskOpsInFlight !== 0 ? ["a task command in flight"] : []),
@@ -6589,7 +6590,7 @@ export async function startDaemon(opts: DaemonOptions) {
       ...(checkPending.size !== 0 ? ["isolated checks queued or running"] : []),
       ...(piCallsInFlight() !== 0 ? ["Pi tool calls in flight"] : []),
       ...(releasing ? ["ready tasks being released"] : []),
-      ...([...bus.peers].filter(([, peer]) => peer.state !== "busy" && "recoveryReady" in peer && peer.recoveryReady !== true).map(([id, peer]) => !membershipAllowed(id) && peer.form === "tui" ? `${id} is not settled; end the retained ${definitionOf(id)?.displayName ?? id} TUI, then prepare again` : `${id} is not settled`)),
+      ...([...bus.peers].filter(([id, peer]) => !id.includes("@") && peer.state !== "busy" && "recoveryReady" in peer && peer.recoveryReady !== true).map(([id, peer]) => !membershipAllowed(id) && peer.form === "tui" ? `${id} is not settled; end the retained ${definitionOf(id)?.displayName ?? id} TUI, then prepare again` : `${id} is not settled`)),
     ],
     integrity: { current: integrityAs(restored?.integrity), ...(restored?.integrity ? { expected: restored.integrity } : {}) },
     peers: Object.fromEntries([...(recoveryPeerSnapshot ?? []), ...Object.values(recoveryPeers()).filter((peer) => !(recoveryPeerSnapshot ?? []).some((saved) => saved.id === peer.id))].map((peer) => {
@@ -6656,7 +6657,7 @@ export async function startDaemon(opts: DaemonOptions) {
       bus.setRecoveryHold(true, Array.isArray(msg.targetFeatures) && msg.targetFeatures.includes("recovery_deferred_hub"));
       await bus.fenceRecovery();
       { const error = incompatibleRecoveryTarget(); if (error) return recoveryError(error); }
-      const blocked = [...bus.peers].filter(([, peer]) => peer.state === "busy").map(([id]) => id);
+      const blocked = [...bus.peers].filter(([id, peer]) => !id.includes("@") && peer.state === "busy").map(([id]) => id);
       if (!blocked.length && permissions.size === 0 && recoveryReady()) {
         recoveryPeerSnapshot ??= Object.values(recoveryPeers());
         recoveryPhase = "prepared";

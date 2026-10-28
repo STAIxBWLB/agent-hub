@@ -38,8 +38,9 @@ export class RoomPolicy {
     }
     return config;
   }
-  // ponytail: at most two fresh hardened Git/file probes per room publication, with
-  // at most 64 rooms. Profile before replacing this with shared per-turn/stat-keyed snapshots.
+  // ponytail: each policy read repeats hardened Git/file probes (up to 64 rooms);
+  // proof/effect fences can read more than once per publication. Profile before
+  // replacing these reads with per-turn/stat-keyed snapshots that keep effect fences fresh.
   get(name: string): string[] {
     roomName(name);
     try { return exposedPeers(this.read().rooms?.[name]?.expose ?? []); }

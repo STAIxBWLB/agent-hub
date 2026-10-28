@@ -230,6 +230,11 @@ test("all-unsettled identity capacity refuses with room/count and never evicts u
   expect(status.rows).toHaveLength(200);
   expect(Object.keys(status.rows[0]!).sort()).toEqual(["application", "digest", "peer", "sender", "state"]);
   expect(JSON.stringify(status)).not.toContain("CAP_BODY_CANARY");
+  f.guest.disposeIncoming("work", first.digest, "discard");
+  expect(f.guest.incomingApplication("work", first.digest)).toMatchObject({ state: "disposed", disposition: "discard" });
+  expect((await f.guest.applicationIncoming("work", await hash(wire))).primary).toBe(true);
+  expect(f.guest.incomingApplication("work", first.digest)).toBeUndefined(); // The only settled identity was evicted to admit new work.
+  expect((await receive(f.guest, first.wire)).status).toBe("stale");
 });
 
 test("publication failure can quarantine a claimed app without a restart or false completion receipt", async () => {
@@ -255,7 +260,7 @@ test("retained trace metadata is global, distinguishes lower/equal/higher and ne
   const lower = await incoming(f, { ...chat(), trace, hop: 1 });
   expect(lower.envelope.hop).toBeLessThan(f.guest.applicationTraceHop(trace)!);
   const equal = await incoming(f, { ...chat(), trace, hop: 2 });
-  expect(equal.envelope.hop).toBe(f.guest.applicationTraceHop(trace));
+  expect(equal.envelope.hop).toBe(f.guest.applicationTraceHop(trace)!);
   const other = await createRoomEpoch({ owner: f.owner.identity, members: [{ ...f.owner.identity.public, label: "owner", exposedPeers: ["codex"] }] });
   await f.owner.install({ name: "other", broker: "ws://127.0.0.1:8788/", wire: other.wire, expectedDigest: null });
   await enroll(f.owner, f.guest, "guest", f.now(), "other");
@@ -281,4 +286,41 @@ test("person disposition frees uncertain outbox capacity without claiming signed
   const restored = await opened(f.clock, directory);
   expect(restored.applicationOutbox("work")[0]).toMatchObject({ state: "needs_review", disposition: "completed", lateReceipt: { outcome: "completed", reason: "admitted" } });
   expect(restored.applicationOutbox("work", true)).toEqual([]);
+});
+
+test("incoming person accept/discard are local settled metadata, never admission or a signed receipt", async () => {
+  for (const action of ["accept", "discard"] as const) {
+    const f = await pair(), item = await incoming(f, { ...chat("DISPOSED_BODY_CANARY"), hop: 2 });
+    expect(f.guest.claimApplication("work", item.digest)).toBe(true);
+    f.guest.quarantineApplication("work", item.digest);
+    expect(() => f.guest.disposeIncoming("work", item.digest, action, () => false)).toThrow("state_changed");
+    expect(f.guest.incomingApplication("work", item.digest)?.state).toBe("needs_review");
+    f.guest.disposeIncoming("work", item.digest, action);
+    const metadata = { sender: f.owner.identity.public.fingerprint, application: item.envelope.id, peer: "claude", state: "disposed", digest: item.digest, disposition: action, disposedAt: f.now(), disposedBy: "user" };
+    expect(f.guest.incomingApplication("work", item.digest)).toEqual(metadata);
+    expect(f.guest.claimApplication("work", item.digest)).toBe(false);
+    expect(f.guest.applicationReceipt("work", item.digest)).toBeUndefined();
+    expect(() => f.guest.finishApplication("work", item.digest, "failed_safe", "boundary_refused")).toThrow("state_changed");
+    expect(() => f.guest.quarantineApplication("work", item.digest)).toThrow("state_changed");
+    const duplicate = await incoming(f, item.envelope);
+    expect(duplicate.application).toMatchObject({ primary: false, state: "disposed" });
+    expect(f.guest.claimApplication("work", duplicate.digest)).toBe(false);
+    expect(f.guest.applicationReceipt("work", duplicate.digest)).toBeUndefined();
+    expect(f.guest.pendingInbox("work")).toEqual([]);
+    expect(f.guest.applicationStatus("work")).toEqual({ pending: 0, needsReview: 0, rows: [metadata], truncated: false });
+    expect(JSON.stringify(f.guest.applicationStatus("work"))).not.toContain("DISPOSED_BODY_CANARY");
+    expect(f.guest.applicationTraceHop(item.envelope.trace)).toBe(2);
+    const other = await incoming(f); f.guest.quarantineApplication("work", other.digest);
+    f.guest.leave("work"); // Disposition is local bookkeeping even when the room is left.
+    f.guest.disposeIncoming("work", other.digest, "discard");
+    expect(f.guest.incomingApplication("work", other.digest)).toMatchObject({ state: "disposed", disposedBy: "user" });
+    const directory = locations.get(f.guest)!; f.guest.close();
+    const restored = await opened(f.clock, directory);
+    expect(restored.incomingApplication("work", item.digest)).toEqual(metadata);
+    expect(restored.applicationReceipt.bind(restored, "work", item.digest)).toThrow("untrusted");
+    f.advance(ROOM_APPLICATION_RETENTION.settledMs + 1);
+    expect(restored.applicationTraceHop(item.envelope.trace)).toBeUndefined();
+    expect(restored.incomingApplication("work", item.digest)).toBeUndefined();
+    expect(restored.applicationStatus("work").rows).toEqual([]);
+  }
 });

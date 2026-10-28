@@ -96,7 +96,7 @@ export class RoomCommands {
   async rows(name?: string): Promise<Record<string, unknown>[]> {
     if (!this.store && !existsSync(join(this.options.stateDir, "rooms"))) return [];
     const store = await this.open(); if (name !== undefined) roomName(name);
-    return store.list().filter(row => name === undefined || row.name === name).map(row => ({ name: row.name, room: row.current.room, owner: this.owner(row), member: store.identity.public.fingerprint, epoch: row.current.epoch, state: row.left ? "left" : this.links.get(row.name)?.status().state ?? "offline", ...(this.options.chat ? { deliveries: this.options.chat.rows(row.name) } : {}) }));
+    return store.list().filter(row => name === undefined || row.name === name).map(row => ({ name: row.name, room: row.current.room, owner: this.owner(row), member: store.identity.public.fingerprint, epoch: row.current.epoch, state: row.left ? "left" : this.links.get(row.name)?.status().state ?? "offline", ...(this.options.chat ? { deliveries: this.options.chat.rows(row.name), remotePeers: this.options.chat.peers(row.name) } : {}) }));
   }
   async preview(action: unknown, raw: unknown, check: () => boolean): Promise<RoomPreview> {
     if (typeof action !== "string") refuse("invalid_operation");
@@ -147,6 +147,26 @@ export class RoomCommands {
         this.current(check);
         const state = await store.install({ name, broker, wire, expectedDigest: existing?.current.digest ?? null, current: check, reactivate: true });
         return completed(state);
+      } };
+    }
+    if (action === "resolve") {
+      const row = fields(raw, ["name", "frame", "action"]), name = roomName(row.name);
+      if (typeof row.frame !== "string" || row.frame.length !== 43 || (row.action !== "accept" && row.action !== "discard")) refuse("invalid_resolution");
+      try { decodeBase64url(row.frame, 32); } catch { refuse("invalid_resolution"); }
+      // Disposition is metadata-only and remains available after leave or sender revocation.
+      const state = store.get(name), incoming = store.incomingApplication(name, row.frame);
+      if (!state || !incoming || incoming.state !== "needs_review" || !FP.test(incoming.sender)) refuse("resolution_unavailable");
+      const frame = row.frame as string, choice = row.action as "accept" | "discard", owner = this.owner(state), member = incoming.sender;
+      const binding = JSON.stringify([incoming.digest, incoming.sender, incoming.application, incoming.peer, incoming.state]);
+      const current = () => {
+        this.current(check);
+        const latest = store.incomingApplication(name, frame);
+        return !!latest && JSON.stringify([latest.digest, latest.sender, latest.application, latest.peer, latest.state]) === binding;
+      };
+      return { owner, member, commit: async () => {
+        if (!current()) refuse("state_changed");
+        store.disposeIncoming(name, frame, choice, current);
+        return { name, room: state.current.room, owner, member, kind: "disposed" };
       } };
     }
     const row = fields(raw, ["name"], action === "invite" ? ["request"] : action === "revoke" ? ["member"] : action === "expose" ? ["peers"] : []);
