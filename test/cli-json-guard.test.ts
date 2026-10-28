@@ -20,12 +20,8 @@ const DATA_FORMAT: Record<Key, string> = {
   "main.ts :: commands.bench :: console.log(JSON.stringify(record)) #1": "bench export: JSON lines, a data format by purpose (#814)",
   "main.ts :: commands.check-path :: console.log(JSON.stringify({ systemMessage: text.split(\"\\n\")[0], hookSpecificOutput: { hoo #1": "check-path --hook: the PreToolUse reply Claude Code parses; a hook payload, like the facts hook (#814)",
 };
-/** Today's not-yet-converted sites from #814 Context. Remove an entry in the PR that converts it. */
-const NOT_YET_CONVERTED: Record<Key, string> = {
-  // Not in #814 Context: both predate it or were added after it was verified. Listed so the guard passes now; #814 should name them.
-  "main.ts :: commands.sdlc :: console.log(JSON.stringify({ task: reply.task, mode: reply.mode, ran: reply.ran, decision: #1": "sdlc merge (#786, after #814's Context was verified): a result to convert in a later #814 task",
-  "main.ts :: commands.doctor :: console.log(JSON.stringify(result,null,2)) #1": "doctor --orphans --kill for a conductor shell: not listed in #814 Context",
-};
+/** Not-yet-converted sites from #814 Context. Remove an entry in the PR that converts it; empty since #899 converted the last two (sdlc merge, doctor --orphans --kill). */
+const NOT_YET_CONVERTED: Record<Key, string> = {};
 
 /** Names that hold the parsed `--json` flag: the option objects of `outputOptions()`, the recovery display options and the sdlc `present`. */
 const OPTION_HOLDERS = new Set(["options", "display", "present"]);
@@ -133,8 +129,8 @@ test("AC2 the scanner sees the real CLI: it finds the converted sdlc sites guard
   expect(sites.filter(site => site.guarded).length).toBeGreaterThan(5);
   const sdlc = sites.filter(site => site.key.includes("commands.sdlc"));
   expect(sdlc.length).toBeGreaterThan(0);
-  // the converted read commands (status, explain, queue, release, authorize-release) print JSON only through --json: what stays unguarded in sdlc is
-  // `export` (a data format) and `merge` (a result a later task converts), both named
+  // the converted commands (status, explain, queue, release, authorize-release, and merge since #899) print JSON only through --json: what stays
+  // unguarded in sdlc is `export` (a data format), named
   const named = [...Object.keys(DATA_FORMAT), ...Object.keys(NOT_YET_CONVERTED)].filter(key => key.includes("commands.sdlc")).sort();
   expect(sdlc.filter(site => !site.guarded).map(site => site.key).sort()).toEqual(named);
   expect(sdlc.filter(site => site.guarded).length).toBeGreaterThanOrEqual(3);

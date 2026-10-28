@@ -474,6 +474,17 @@ export function renderOrphans(orphans: { project: any; pids: number[] }[], colum
     ...(killing ? [] : [[], ...lines("kill live orphans with ahub doctor --orphans --kill", columns)]),
     ...orphans.flatMap(({ project }) => detail("forget", `ahub projects remove ${project.id}`, columns))];
 }
+/** `ahub doctor --orphans --kill` from the conductor's shell (#812, #899): the hub inspects and stops only its own positively identified process; the shell prints what it answered. */
+export function renderOrphanCleanup(result: unknown, columns?: number, _now = Date.now()): Span[][] {
+  const r = result as any;
+  const stopped: number[] | undefined = Array.isArray(r?.stopped) ? r.stopped.filter((pid: unknown) => typeof pid === "number") : undefined;
+  const out = stopped === undefined ? lines("stopped processes unknown", columns, "attention")
+    : stopped.length ? lines(`stopped ${stopped.length} orphaned hub process${stopped.length === 1 ? "" : "es"}: ${stopped.join(", ")}`, columns, "success")
+    : lines("no orphaned hub process to stop", columns, "muted");
+  if (r?.self === true) out.push(...lines("this hub was itself an orphan and is stopping", columns, "attention"));
+  if (r?.unknown === true) out.push(...lines("a candidate could not be confirmed stopped; a person can inspect it with ahub doctor --orphans", columns, "attention"));
+  return out;
+}
 const TIME_FIELD = /^(?:at|ts|started|ended|created|updated|expires)$|(?:At|Until)$/;
 const ID_FIELD = /^(?:id|trace|previousId|sessionId|threadId|operationId|turnId|envelopeIds)$/;
 /** Labelled scalar leaves preserve the daemon's public view without a raw document or inferred privacy changes. */

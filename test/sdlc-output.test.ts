@@ -152,6 +152,57 @@ test("sdlc export is a data format: it stays JSON by default and is never render
   expect(parses(result.stdout)).toBe(true);
 });
 
+// #899: `sdlc merge` prints the hub's decision for a person; `--json` is the view today's code printed, byte for byte (the picked fields, never the raw frame).
+const MERGE_ARGV = ["pr", "merge", "830", "--repo", "owner/repo", "--squash", "--match-head-commit", A];
+const mergeViews = {
+  refused: { view: { task: 7, mode: "on", ran: false, decision: "refused", refused: ["auto_merge is off for this repository", "required check check (ubuntu-latest): not successful on current head"] },
+    code: 1, must: ["Guarded merge of task #7", "refused by 2 gates", "auto_merge is off for this repository", "not successful on current head"] },
+  "dry-run": { view: { task: 7, mode: "dry-run", ran: false, decision: "merge", argv: MERGE_ARGV },
+    code: 0, must: ["mode", "dry-run", "every gate passed", `gh pr merge 830 --repo owner/repo --squash --match-head-commit ${A}`, "the command above was not run"] },
+  merged: { view: { task: 7, mode: "on", ran: true, decision: "merge", argv: MERGE_ARGV, result: { exit: 0, state: "merged", mergeCommit: B, cleanup: "deleted" } },
+    code: 0, must: ["merged, gh exit 0", `merge commit ${B.slice(0, 8)}`, "branch cleanup deleted"] },
+  "not merged": { view: { task: 7, mode: "on", ran: true, decision: "merge", argv: MERGE_ARGV, result: { exit: 1, state: "not_merged", cleanup: "skipped", reason: "not_merged" } },
+    code: 1, must: ["not merged, gh exit 1", "branch cleanup skipped (not merged)"] },
+} as const;
+for (const [name, { view, code, must }] of Object.entries(mergeViews)) {
+  test(`sdlc merge ${name}: the default is for a person, --json is today's output byte for byte, the exit code is unchanged`, async () => {
+    const f = fixture(); (f as any).serve({ reply: view });
+    const argv = ["sdlc", "merge", "7", ...(view.mode === "dry-run" ? ["--dry-run"] : [])];
+    const human = await f.run(argv);
+    expect(human.code, human.stderr).toBe(code);
+    expect(parses(human.stdout), "default output must not parse as JSON").toBe(false);
+    expect(human.stdout).not.toMatch(/^\s*[{[]/);
+    expect(human.stdout).not.toMatch(/"[A-Za-z_]+":/);
+    for (const needle of must) expect(human.stdout.toLowerCase(), needle).toContain(needle.toLowerCase());
+    const json = await f.run([...argv, "--json", "--color=always"]);
+    expect(json.code, json.stderr).toBe(code);
+    expect(json.stdout).toBe(JSON.stringify(view, null, 2) + "\n");
+    expect(json.stdout).not.toContain("\x1b");
+    // presentation flags never reach the hub: both runs sent the same merge request
+    const sent = f.requests.filter(r => r.t === "sdlc");
+    expect(sent).toHaveLength(2);
+    expect(sent.map(r => JSON.stringify({ ...r, rid: 0 }))).toEqual([JSON.stringify({ t: "sdlc", op: "merge", id: 7, ...(view.mode === "dry-run" ? { dryRun: true } : {}), rid: 0 }), JSON.stringify({ t: "sdlc", op: "merge", id: 7, ...(view.mode === "dry-run" ? { dryRun: true } : {}), rid: 0 })]);
+    // 80 columns: no line over the width, nothing painted, no word lost
+    const narrow = await f.run([...argv, "--color=never"], { COLUMNS: "80" });
+    const wide = await f.run([...argv, "--color=never"], { COLUMNS: "200" });
+    for (const line of narrow.stdout.split("\n")) expect(Bun.stringWidth(line), line).toBeLessThanOrEqual(80);
+    expect(narrow.stdout).not.toContain("\x1b");
+    const words = (text: string) => text.split(/\s+/).filter(Boolean).sort().join(" ");
+    expect(words(narrow.stdout)).toBe(words(wide.stdout));
+  });
+}
+
+test("sdlc merge refuses an invalid --color before any request, and --json is read wherever it stands", async () => {
+  const f = fixture(); (f as any).serve({ reply: mergeViews["dry-run"].view });
+  const bad = await f.run(["sdlc", "merge", "7", "--dry-run", "--color=bad"]);
+  expect(bad.code).toBe(1); expect(bad.stderr).toContain("usage: ahub sdlc");
+  expect(f.requests.some(r => r.t === "sdlc")).toBe(false);
+  const leading = await f.run(["sdlc", "merge", "--json", "7", "--dry-run"]);
+  expect(leading.code, leading.stderr).toBe(0);
+  expect(leading.stdout).toBe(JSON.stringify(mergeViews["dry-run"].view, null, 2) + "\n");
+  expect(f.requests.filter(r => r.t === "sdlc")).toHaveLength(1);
+});
+
 test("the other sdlc subcommands keep their argv: --json is not stripped from them", async () => {
   const f = fixture(); f.serve(commands[0]);
   const refused = await f.run(["sdlc", "record", "7", "{}", "--json"]);

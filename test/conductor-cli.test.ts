@@ -21,7 +21,7 @@ async function run(root: string, args: string[]) {
     return { code, stdout, stderr };
   } finally { clearTimeout(timeout); }
 }
-function fixture(options: { helloMs?: number; authorizeMs?: number; incomplete?: boolean; error?: string; deny?: boolean; live?: boolean } = {}) {
+function fixture(options: { helloMs?: number; authorizeMs?: number; incomplete?: boolean; error?: string; deny?: boolean; live?: boolean; orphans?: Record<string, unknown> } = {}) {
   const root = realPath(mkdtempSync(join(tmpdir(), "ahub-conductor-cli-"))), stateDir = join(root, ".agenthub/state");
   mkdirSync(stateDir, { recursive: true }); mkdirSync(join(root, "home"));
   writeFileSync(join(root, ".agenthub/config.json"), "{}");
@@ -38,6 +38,7 @@ function fixture(options: { helloMs?: number; authorizeMs?: number; incomplete?:
       if (message.t === "conductor_operational" && options.error) return send({ ok: false, authorityRefused: false, error: options.error });
       if (message.t === "conductor_operational" && message.op === "logs") return send({ ok: true, lines: ["safe operational line"], complete: !options.incomplete, truncated: options.incomplete === true, ...(options.incomplete ? { incompleteReason: "privacy inventory unavailable" } : {}) });
       if (message.t === "conductor_operational" && message.op === "export") return send({ ok: true, events: [{ type: "state", peer: "codex", state: "idle" }], complete: !options.incomplete, truncated: options.incomplete === true, ...(options.incomplete ? { incompleteReason: "privacy inventory unavailable" } : {}) });
+      if (message.t === "conductor_operational" && message.op === "orphans") return send({ ok: true, stopped: [4242, 4243], unknown: false, self: false, ...options.orphans });
       send({ ok: false, error: "unexpected fixture request" });
     },
   } });
@@ -79,6 +80,28 @@ test("a genuine authority refusal prints the person guidance only once", async (
   expect(result.code).toBe(1);
   expect(result.stderr.match(/the person runs it in ahub console or a terminal/g)).toHaveLength(1);
   expect(f.messages.some(message => message.t === "conductor_operational" && message.op === "logs")).toBe(false);
+});
+
+// #899: the conductor's `doctor --orphans --kill` prints what the hub stopped for a person; `--json` keeps the hub's reply byte for byte.
+test("doctor --orphans --kill prints the stopped pids for a person by default and the hub's reply with --json", async () => {
+  const f = fixture();
+  const human = await run(f.root, ["doctor", "--orphans", "--kill"]);
+  expect(human.code, human.stderr).toBe(0);
+  expect(human.stdout.toLowerCase()).toContain("stopped 2 orphaned hub processes: 4242, 4243");
+  expect(human.stdout).not.toMatch(/"[A-Za-z_]+":/); expect(() => JSON.parse(human.stdout)).toThrow();
+  const json = await run(f.root, ["doctor", "--orphans", "--kill", "--json", "--color=always"]);
+  expect(json.code, json.stderr).toBe(0);
+  const rid = f.messages.filter(message => message.t === "conductor_operational" && message.op === "orphans").at(-1)!.rid;
+  expect(json.stdout).toBe(JSON.stringify({ rid, ok: true, stopped: [4242, 4243], unknown: false, self: false }, null, 2) + "\n");
+  expect(json.stdout).not.toContain("\x1b");
+  expect(f.messages.filter(message => message.t === "conductor_operational" && message.op === "orphans")).toHaveLength(2);
+  const unsure = fixture({ orphans: { stopped: [], unknown: true, self: true } });
+  const result = await run(unsure.root, ["doctor", "--orphans", "--kill", "--color=never"]);
+  expect(result.code, result.stderr).toBe(0);
+  expect(result.stdout).toContain("no orphaned hub process to stop");
+  expect(result.stdout).toContain("could not be confirmed stopped");
+  expect(result.stdout).toContain("itself an orphan");
+  expect(result.stdout).not.toContain("\x1b");
 });
 
 test("a dead descriptor refuses promptly before opening a control connection", async () => {
