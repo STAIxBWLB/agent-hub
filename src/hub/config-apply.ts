@@ -14,7 +14,7 @@ import { permissionDefaults } from "./permission-mode.ts";
 import { peerStartConfig, terminalTemplate } from "./start-mode.ts";
 import { catalogAssignments } from "./roles.ts";
 import { resolveProfile } from "./profiles.ts";
-import { schedulesConfig } from "./schedules.ts";
+import { foldersConfig, schedulesConfig } from "./schedules.ts";
 import { corpusConfig } from "./corpus-config.ts";
 import { taskSweepConfig } from "./task-sweep.ts";
 import { projectionConfig } from "./text-projection.ts";
@@ -180,6 +180,7 @@ const schema: Record<string, Check> = {
     contextWindow: number(1), maxInputTokens: number(1), maxTokens: number(1), maxConcurrency: number(1, 1024, true) }),
   approvals: block({ timeout_s: timerSeconds, notify: bool }), tasks: block({ release_after_min: number(0), wip_limits: map(number(0, 32, true)), escalate_after: number(1, 10, true), auto_pull: bool }),
   schedules: v => { schedulesConfig(v); },
+  folder_triggers: v => { foldersConfig(v); },
   task_sweep: (v, k) => { block({ enabled: bool, auto_reassign: bool, no_writes_turns: number(0, Number.MAX_SAFE_INTEGER, true), interval_s: timerSeconds, unaccepted_min: timerMinutes, idle_min: timerMinutes, review_min: timerMinutes, ready_min: timerMinutes, ladder_min: timerMinutes })(v, k); taskSweepConfig(v); },
   checks: (v, k) => { for (const [key, value] of Object.entries(object(v, k))) {
     if (value === undefined) continue;
@@ -251,7 +252,7 @@ export function configApply(key: string, scopes: readonly ConfigIdentityScope[] 
       if (shape?.fields) { if (!Object.hasOwn(shape.fields, part)) return fail(key, "unknown configuration key"); check = shape.fields[part]; }
       else if (shape?.item) { if (shape.keys && !shape.keys.includes(part) && !(top === "roster" && scopes.some(scope => scope.catalog.definitionOf(part, scope.instances)))) return fail(key, "unknown configuration key"); check = shape.item; }
       else if (index === 0 && (special[top]?.includes(part) || top === "checks" && /^[a-z][a-z0-9_]{0,47}$/.test(part))) break;
-      else if (["permission_modes", "catalog_roles", "profile_overrides", "text_projection", "schedules", "peers", "instances", "adapters", "adapter_modules"].includes(top)) break;
+      else if (["permission_modes", "catalog_roles", "profile_overrides", "text_projection", "schedules", "folder_triggers", "peers", "instances", "adapters", "adapter_modules"].includes(top)) break;
       else return fail(key, "unknown configuration key");
     }
   }

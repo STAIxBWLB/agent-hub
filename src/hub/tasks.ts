@@ -9,7 +9,7 @@ import { completePlanInventory, planConformance, planConformanceBlockers, planFi
 import { RELEASE_TRAIN_HISTORY_LIMIT, releaseTrainData, releaseTrainReadiness, releaseMetrics } from "./sdlc-release.ts";
 import { cleanCostPlan, costMetrics, type CostPlan, type ReviewCost } from "./cost-governance.ts";
 import { qualifiedTitleRepos, siblingTitleRefs, specRefs } from "./spec-read.ts";
-import { parseEvery, SOURCE_ID, scheduledDetail, scheduleKeyOf, type ScheduleEntry, type ScheduleRunResult, type ScheduleStore } from "./schedules.ts";
+import { folderDetail, MAX_NEW_PER_POLL, parseEvery, SOURCE_ID, scheduledDetail, scheduleKeyOf, type FolderEntry, type FolderRunResult, type FolderScan, type FolderStorePort, type ScannedFile, type ScheduleEntry, type ScheduleRunResult, type ScheduleStore } from "./schedules.ts";
 import { INTAKE_MAX_SOURCES, INTAKE_MAX_TEXT, intakeDetail, intakeSystemPrompt, intakeUserMessage, parseIntakeDetail, parseIntakeSplit, plannerRequestBody } from "./intake.ts";
 import { DEFAULT_BAND, EPISODE_LOOKBACK, sdlcMetrics, type BandMetric, type BandResult, type MetricTask, type MetricsReport, type SeriesPoint } from "./sdlc-metrics.ts";
 import { readSecurityScan } from "./security-baseline.ts";
@@ -3349,6 +3349,59 @@ export class Tasks {
     const entry = typeof id === "string" ? entries.find(candidate => candidate.id === id) : undefined;
     if (!entry) throw new PreEffectToolRefusal(`no schedule ${typeof id === "string" ? JSON.stringify(id.slice(0, 64)) : "named"}; ahub schedule list shows the configured ones`);
     store.setPaused(entry.id, paused, now);
+  }
+
+  /**
+   * #336 (#512c): one pass over the machine-local folder triggers, on the schedules timer. Each trigger's folder is read once (never watched). The first poll of a trigger
+   * records what is already there and proposes nothing, so adding a trigger to a full inbox does not flood the board; after that a file the trigger has not recorded (by
+   * real path and content hash) is registered as a source through `register` and proposes ONE task through `propose` as the hub, which names the source id and never the
+   * file's name or path. A rename or a touch keeps the hash and proposes nothing. While the hub is held nothing is read or recorded, so the files wait for the next poll.
+   * A file is recorded only after its task exists, so a failure or a hold between the two leaves it to be tried again (a crash in that window can repeat one task; it
+   * never loses a file). At most MAX_NEW_PER_POLL files per trigger per pass.
+   */
+  async runFolderTriggers(store: FolderStorePort, entries: readonly FolderEntry[], scan: (entry: FolderEntry) => FolderScan, register: (file: ScannedFile) => { id: string; private: boolean }, now: number, extraHold: () => boolean = () => false): Promise<FolderRunResult[]> {
+    if (this.schedulesRunning) return [];
+    this.schedulesRunning = true;
+    const out: FolderRunResult[] = [];
+    try {
+      store.prune(entries.map(entry => entry.id));
+      for (const entry of entries) out.push(await this.runFolderTrigger(store, entry, scan, register, now, extraHold));
+    } finally { this.schedulesRunning = false; }
+    return out;
+  }
+
+  private async runFolderTrigger(store: FolderStorePort, entry: FolderEntry, scanOf: (entry: FolderEntry) => FolderScan, register: (file: ScannedFile) => { id: string; private: boolean }, now: number, extraHold: () => boolean): Promise<FolderRunResult> {
+    const hold = () => this.schedulesHeld() || extraHold() ? "the hub is held" : undefined;
+    if (hold()) return { id: entry.id, outcome: "held", tasks: [], files: 0 };
+    const scan = scanOf(entry);
+    // A refused folder never starts the trigger: when it becomes readable, what is in it then is the baseline, not news.
+    if (scan.refused) { store.polled(entry.id, now, scan.refused); return { id: entry.id, outcome: "refused", tasks: [], files: 0, reason: scan.refused }; }
+    if (store.started(entry.id) === undefined) {
+      store.begin(entry.id, now);
+      for (const file of scan.files) store.record(entry.id, file, null, now);
+      store.polled(entry.id, now);
+      return { id: entry.id, outcome: "baseline", tasks: [], files: scan.files.length };
+    }
+    const fresh = scan.files.filter(file => store.isNew(entry.id, file.sha256));
+    const tasks: number[] = [];
+    let error: string | undefined;
+    for (const file of fresh.slice(0, MAX_NEW_PER_POLL)) {
+      if (hold()) break;
+      let overtaken = false;
+      const fence = () => { const reason = hold(); if (reason) overtaken = true; return reason; };
+      try {
+        const source = register(file);
+        const task = await this.propose(HUB, { title: entry.title, detail: folderDetail(entry, source.id), class: entry.class, backlog: entry.queue === "backlog", ...(entry.owner ? { owner: entry.owner } : {}) }, undefined, undefined, fence);
+        store.record(entry.id, file, task.id, now);
+        tasks.push(task.id);
+      } catch (caught) {
+        if (overtaken) break;
+        error = sanitize((caught as Error).message);
+        break; // the next poll tries this file again; later files wait behind it so order is kept
+      }
+    }
+    store.polled(entry.id, now, error);
+    return { id: entry.id, outcome: error ? "failed" : tasks.length ? "ran" : "none", tasks, files: fresh.length, ...(error ? { reason: error } : {}) };
   }
 
   /** S10 read-only planner report; S7 owns rolling bands and automatic board proposals. */
