@@ -3840,6 +3840,22 @@
       "replacement": "return selection.reviewSelection || weights.queueBackpressure || heldSelection ? selection : undefined;",
       "testFile": "test/task-queue-backpressure.test.ts",
       "testName": "enabled pressure preserves a continuing reviewer below thresholds despite a busier state"
+    },
+    {
+      "id": "queue-pressure-plan-gate-handoff",
+      "file": "src/hub/tasks.ts",
+      "search": "const origin = this.d.board.queuePressureStallPage(task.id - 1, 1).rows.find(row => row.task === task.id);",
+      "replacement": "const origin = stall;",
+      "testFile": "test/task-queue-backpressure.test.ts",
+      "testName": "a queue origin hands off to a plan gate after one GitHub read despite unrelated queue wakes"
+    },
+    {
+      "id": "queue-pressure-ready-wip-admission",
+      "file": "src/hub/tasks.ts",
+      "search": "if (task.reserved) await this.offerReady(task, \"queue pressure cleared\", current);",
+      "replacement": "if (task.reserved) await this.assignOwner(task, HUB, { current, ...retry });",
+      "testFile": "test/task-queue-backpressure.test.ts",
+      "testName": "a queue-held person reservation rechecks the WIP cap before taking a newly occupied slot"
     }
   ]
 }

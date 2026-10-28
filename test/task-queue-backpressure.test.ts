@@ -517,7 +517,7 @@ test("a queue origin hands off to a plan gate after one GitHub read despite unre
     f.control.policy = { max_queued: 1, max_oldest_s: 0 }; const ids = f.enqueue("codex", 2);
     const row = await f.tasks.propose(HUB, { title: "plan gate after queue hold", class: "implement" });
     await settled(f.tasks); expect(row.owner).toBeNull();
-    f.board.update(row.id, HUB, "lifecycle", { sdlc: { stage: "build", repo: "fixture/project", issue: 1, planReview: { planner: "claude", planningRevision: 0, recordedAt: Date.now(), issue: { repo: "fixture/project", issue: 1, editedAt: "2026-10-01T00:00:00Z" } } } });
+    f.board.update(row.id, HUB, "lifecycle", { sdlc: { stage: "build", repo: "fixture/project", issue: 1, planReview: { planner: "claude", planningRevision: 0, recordedAt: Date.now(), issue: { repo: "fixture/project", issue: 1, state: "OPEN", editedAt: "2026-10-01T00:00:00Z" } } } });
     f.control.lifecycle = "enforce";
     for (const id of ids) f.bus.withdraw(id);
     await settled(f.tasks);
