@@ -169,6 +169,8 @@ export class LocalPeer extends BasePeer {
     const progress = { sideEffects: 0, last: "" };
     const requestedPolicy = this.opts.turnPolicy?.(envs);
     const policy = envs.some(env => env.private) ? { ...requestedPolicy, pii: true } : requestedPolicy;
+    const remoteTurn = envs.some(env => env.from.includes("@"));
+    const preserveHistory = !policy?.pii && !remoteTurn;
     const labelTurn = this.beginRouteTurn(turn, !!policy?.pii || envs.some(env => env.private), policy?.task);
     let completed = false;
     // A PII turn speaks to the console user only, and privately: its answer must not be broadcast to cloud-hosted peers.
@@ -177,7 +179,7 @@ export class LocalPeer extends BasePeer {
     this.run(envs, turn, msgs, progress, policy, reply)
       .then((answer) => {
         if (turn !== this.turn) return;
-        if (!policy?.pii) this.commit(msgs); // a PII turn leaves nothing in the history later turns send along
+        if (preserveHistory) this.commit(msgs); // Private and remote turns never enter later local capture through model history.
         if (answer) this.onMessage?.(answer, reply);
         if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "completed" });
         completed = true;
@@ -185,31 +187,33 @@ export class LocalPeer extends BasePeer {
       .catch((e: Error) => {
         if (turn !== this.turn) return; // aborted by the watchdog or stop(): nothing to report, nothing was committed
         if (e instanceof ApprovalWaitStop) {
+          const message = remoteTurn ? "remote turn failed" : e.message;
           this.completeMissingToolResults(msgs, "not run: turn ended after unanswered approvals");
-          msgs.push({ role: "assistant", content: e.message });
-          if (!policy?.pii) this.commit(msgs);
-          this.onMessage?.(e.message, reply);
-          if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "completed", reason: e.message });
+          msgs.push({ role: "assistant", content: message });
+          if (preserveHistory) this.commit(msgs);
+          this.onMessage?.(message, reply);
+          if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "completed", reason: message });
           return; // even without effects, an unanswered approval must not trigger safe replay
         }
         if (this.budgetStopReason && !(e instanceof ExecutionBudgetStop)) e = new ExecutionBudgetStop(this.budgetStopReason);
-        this.opts.log?.(`[${this.id}] turn failed: ${e.message}`);
+        const message = remoteTurn ? "remote turn failed" : e.message;
+        this.opts.log?.(`[${this.id}] turn failed: ${message}`);
         if (e instanceof ExecutionBudgetStop) {
-          this.reportBudgetStop(e, msgs, progress, reply, !!policy?.pii, deliveryId);
+          this.reportBudgetStop(e, msgs, progress, reply, !preserveHistory, deliveryId, remoteTurn);
           return;
         }
         if (!progress.sideEffects) {
-          if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: e.message });
+          if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "failed_safe", reason: message });
           else this.onFailed?.(envs); // legacy delivery: safe to redeliver
           return;
         }
         // Tools already changed things. Redelivering would redo approved writes and commits, so report instead.
         // A model call is the only thing that throws here, and every tool call before it has its result: msgs is consistent.
-        const note = `(turn failed after ${progress.sideEffects} tool call(s) with side effects: ${e.message.slice(0, 200)}. The work may be partial; check before repeating it.) ${progress.last}`.trim();
+        const note = remoteTurn ? message : `(turn failed after ${progress.sideEffects} tool call(s) with side effects: ${message.slice(0, 200)}. The work may be partial; check before repeating it.) ${progress.last}`.trim();
         msgs.push({ role: "assistant", content: note });
-        if (!policy?.pii) this.commit(msgs);
+        if (preserveHistory) this.commit(msgs);
         this.onMessage?.(note, reply);
-        if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: e.message });
+        if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: message });
       })
       .finally(() => {
         this.endRouteTurn(labelTurn, completed ? "completed" : "failed");
@@ -239,8 +243,9 @@ export class LocalPeer extends BasePeer {
   ): Promise<string> {
     const { maxSteps = 30 } = this.opts;
     const turnSignal = this.abort!.signal;
-    // Local capture preserves the host privacy fence: nothing of a PII turn is recorded.
-    const capture = policy?.pii ? undefined : this.opts.capture;
+    // Remote text/tool output is never memory evidence, even beside ordinary local work in the same turn.
+    const remoteTurn = envs.some(env => env.from.includes("@"));
+    const capture = policy?.pii || remoteTurn ? undefined : this.opts.capture;
     // Unknown gateway state is never permission to send PII.
     if (policy?.pii && !(await this.opts.omni.onCampus())) {
       return "Refused: this is a PII task and the only reachable gateway is off campus (Cloudflare Access). Connect the VPN and assign it again.";
@@ -283,7 +288,7 @@ export class LocalPeer extends BasePeer {
           const result: ChatMessage = { role: "tool", tool_call_id: call.id, content: output, is_error: toolResultFailed(name, output) };
           msgs.push(result); results.push(result);
           if (this.approvalStopReason) { this.abort?.abort(); throw new ApprovalWaitStop(this.approvalStopReason); }
-          this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
+          if (!remoteTurn) this.observeTool(call, output, policy, `${this.sessionId}.${turn}.${step}`);
           // Hub tool arguments/results are not capture evidence; Tasks owns its screened memory writes.
           // doc_read text is converted document content (a converter can surface hidden text), never memory evidence: not captured, whatever the turn.
           // web_fetch text is a third party's page and its URL is the model's own request: neither is memory evidence either (#515b).
@@ -348,15 +353,16 @@ export class LocalPeer extends BasePeer {
     };
   }
 
-  private reportBudgetStop(e: Error, msgs: ChatMessage[], progress: { sideEffects: number; last: string }, reply: EnvelopeOpts, pii: boolean, deliveryId?: string): void {
-    this.completeMissingToolResults(msgs, `not run: ${e.message}`);
-    const detail = progress.sideEffects
+  private reportBudgetStop(e: Error, msgs: ChatMessage[], progress: { sideEffects: number; last: string }, reply: EnvelopeOpts, privateHistory: boolean, deliveryId?: string, remoteTurn = false): void {
+    const message = remoteTurn ? "remote turn failed" : e.message;
+    this.completeMissingToolResults(msgs, `not run: ${message}`);
+    const detail = remoteTurn ? message : progress.sideEffects
       ? `(execution budget stopped after ${progress.sideEffects} tool call(s) with side effects; partial work may exist and needs review) ${progress.last}`.trim()
       : `(execution budget stopped before any tool side effects; no work was repeated) ${progress.last}`.trim();
     msgs.push({ role: "assistant", content: detail });
-    if (!pii) this.commit(msgs);
+    if (!privateHistory) this.commit(msgs);
     this.onMessage?.(detail, reply);
-    if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: e.message });
+    if (deliveryId && this.activeDeliveryId === deliveryId) this.delivery({ id: deliveryId, state: "needs_review", reason: message });
   }
 
   private async requireBudget(envs: Envelope[], unit: "model_calls" | "tool_calls"): Promise<void> {
