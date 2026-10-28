@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { initShadow, repoOf } from "../hub/snapshots.ts";
 import { PROFILE_NAMES, profileName, projectProfile, resolveProfile, mergeProfileOverrides, type ProfileName } from "../hub/profiles.ts";
-import { loadPacks, packOverrides, type DomainPack } from "../hub/packs.ts";
+import { canonicalJson, loadPacks, packOverrides, type DomainPack } from "../hub/packs.ts";
 import { JCODE_MCP_FILE } from "./jcode-mcp.ts";
 import { existsSync, lstatSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync, renameSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -138,11 +138,13 @@ function changes(cwd: string, requestedName?: string, shadow = false, releaseGua
     }
   }
   if (requested !== undefined && activeProfile !== undefined && requested !== activeProfile) throw new Error("init profile differs from existing config; edit the project profile explicitly before refreshing instructions");
-  // A pack's overrides are applied once: the same pack again writes identical bytes (`write` skips it), and anything else already in profile_overrides is the project's to edit explicitly.
+  // A pack's overrides are applied once. Existing `profile_overrides` that hold the same data (compared with sorted keys, so the order the file was written in does not matter) mean the pack is already applied and the
+  // file is left as it is; anything else already there is the project's to edit explicitly.
+  let packApplied = false;
   if (pack) {
     const wanted = packOverrides(pack);
-    if (overrides !== undefined && JSON.stringify(overrides) !== JSON.stringify(wanted)) throw new Error(`project already has profile_overrides that differ from pack ${pack.name}; edit them explicitly before applying a pack`);
-    overrides = wanted;
+    if (overrides !== undefined && canonicalJson(overrides) !== canonicalJson(wanted)) throw new Error(`project already has profile_overrides that differ from pack ${pack.name}; edit them explicitly before applying a pack`);
+    if (overrides !== undefined) packApplied = true; else overrides = wanted;
   }
   const profile = resolveProfile(requested ?? activeProfile, overrides);
   const changed: PlannedWrite[] = [];
@@ -162,7 +164,7 @@ function changes(cwd: string, requestedName?: string, shadow = false, releaseGua
       write(path, next, pack && name === "config.json" ? packReason(pack, "create project defaults with") : "create missing project defaults");
     }
   }
-  if (pack && existsSync(configPath)) {
+  if (pack && !packApplied && existsSync(configPath)) {
     const current = JSON.parse(readFileSync(configPath, "utf8"));
     write(configPath, JSON.stringify({ ...current, profile_overrides: overrides }, null, 2) + "\n", packReason(pack, "add to the project's profile_overrides"));
   }

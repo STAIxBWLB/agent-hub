@@ -3,7 +3,8 @@ import { existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, sym
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { init, planInit } from "../src/cli/init.ts";
-import { loadPacks, packOverrides, parsePack } from "../src/hub/packs.ts";
+import { canonicalJson, loadPacks, packOverrides, parsePack } from "../src/hub/packs.ts";
+import { SHIPPED_PACKS } from "../src/hub/shipped-packs.ts";
 import { loadRoleCatalog } from "../src/hub/roles.ts";
 import { resolveProfile } from "../src/hub/profiles.ts";
 import { criterionId } from "../src/hub/workflow.ts";
@@ -22,6 +23,8 @@ const pack = (over: Record<string, unknown> = {}) => ({
 });
 const write = (dir: string, name: string, value: unknown) => writeFileSync(join(dir, ".agenthub/roles", `${name}.pack.json`), typeof value === "string" ? value : JSON.stringify(value, null, 2));
 const text = (value: unknown) => JSON.stringify(value);
+/** The project layer of a load: the shipped `example` pack is always there and is not what these tests count. */
+const projectPacks = (dir: string) => { const loaded = loadPacks(dir); return { names: [...loaded.packs.values()].filter(pack => pack.layer === "project").map(pack => pack.name), errors: loaded.errors }; };
 
 test("a pack parses into its profile, roles, rubric and checks, and the rubric ids are #507 criterion ids", () => {
   const parsed = parsePack(text(pack()), "editorial", "project");
@@ -68,12 +71,13 @@ test("project packs load from .agenthub/roles, the role catalog ignores them, an
   write(dir, "ghost-pack", pack({ name: "ghost-pack", roles: ["no-such-role"] }));
   write(dir, "broken", "{nope");
   const loaded = loadPacks(dir);
-  expect([...loaded.packs.keys()]).toEqual(["editorial"]);
+  expect(projectPacks(dir).names).toEqual(["editorial"]);
+  expect(loaded.packs.has("example")).toBe(true);
   expect(loaded.errors.map(error => error.id).sort()).toEqual(["broken", "ghost-pack"]);
   expect(loaded.errors.find(error => error.id === "ghost-pack")!.reason).toContain("no-such-role");
   expect(JSON.stringify(loaded.errors)).not.toContain("rm -rf");
   expect(loadRoleCatalog(dir).errors).toEqual([]);
-  expect(loadPacks(undefined).packs.size).toBe(0);
+  expect([...loadPacks(undefined).packs.keys()]).toEqual(["example"]);
 });
 
 test("a project role file can satisfy a pack's role, and a pack file that is a link or a hardlink is refused", () => {
@@ -98,7 +102,7 @@ test("a pack directory that is a symlink is refused and no pack is read from it"
   writeFileSync(join(dir, "elsewhere/editorial.pack.json"), text(pack()));
   symlinkSync(join(dir, "elsewhere"), join(dir, ".agenthub/roles"));
   const loaded = loadPacks(dir);
-  expect(loaded.packs.size).toBe(0);
+  expect(projectPacks(dir).names).toEqual([]);
   expect(loaded.errors).toEqual([{ id: "project", reason: "project pack directory unavailable or unsafe" }]);
 });
 
@@ -106,7 +110,7 @@ test("more than 16 project packs are refused whole, not truncated", () => {
   const dir = project();
   for (let i = 0; i < 17; i++) write(dir, `p${i}`, pack({ name: `p${i}` }));
   const loaded = loadPacks(dir);
-  expect(loaded.packs.size).toBe(0);
+  expect(projectPacks(dir).names).toEqual([]);
   expect(loaded.errors).toEqual([{ id: "project", reason: "project pack directory unavailable or unsafe" }]);
 });
 
@@ -210,7 +214,7 @@ test("only <name>.pack.json files are packs: other json files in the roles direc
   writeFileSync(join(dir, ".agenthub/roles/stray.pack"), text(pack({ name: "stray" })));
   writeFileSync(join(dir, ".agenthub/roles/crlf.pack.json"), text(pack({ name: "crlf" })).replace("{", "{\r\n"));
   const loaded = loadPacks(dir);
-  expect([...loaded.packs.keys()]).toEqual(["editorial"]);
+  expect(projectPacks(dir).names).toEqual(["editorial"]);
   expect(loaded.errors).toEqual([{ id: "crlf", reason: "invalid pack size, encoding or file name" }]);
   expect(() => parsePack(text(pack()).replace("{", "{\r\n"), "editorial", "project")).toThrow("invalid pack size, encoding or file name");
 });
@@ -225,4 +229,85 @@ test("a config that already carries this pack's overrides is not rewritten: the 
   writeFileSync(join(dir, ".agenthub/config.json"), JSON.stringify({ ...JSON.parse(bytes), batch_ms: 1 }, null, 2) + "\n");
   expect(JSON.parse(readFileSync(join(dir, ".agenthub/config.json"), "utf8")).batch_ms).toBe(1);
   expect(planInit(dir, "editorial").some(row => row.path === join(dir, ".agenthub/config.json"))).toBe(false);
+});
+
+test("the same overrides written in another key order are already applied: init leaves the file and its bytes alone, and different data is still refused", () => {
+  const dir = project(); write(dir, "editorial", pack());
+  init(dir, "writing");
+  const wanted = packOverrides(parsePack(text(pack()), "editorial", "project"));
+  // The same data, keys reversed at every depth, and written by hand with its own formatting.
+  const reversed = { example_checks: wanted.example_checks, review_checklist: wanted.review_checklist };
+  const config = JSON.parse(readFileSync(join(dir, ".agenthub/config.json"), "utf8"));
+  const bytes = JSON.stringify({ profile_overrides: reversed, ...config }) + "\n";
+  writeFileSync(join(dir, ".agenthub/config.json"), bytes);
+  expect(Object.keys(reversed)).not.toEqual(Object.keys(wanted));
+  expect(planInit(dir, "editorial").some(row => row.path === join(dir, ".agenthub/config.json"))).toBe(false);
+  expect(init(dir, "editorial")).toEqual([]);
+  expect(readFileSync(join(dir, ".agenthub/config.json"), "utf8")).toBe(bytes);
+  // One changed word is a difference, whatever the order.
+  const changed = { example_checks: wanted.example_checks, review_checklist: [...(wanted.review_checklist as string[]).slice(0, -1), "{check} "] };
+  writeFileSync(join(dir, ".agenthub/config.json"), JSON.stringify({ profile_overrides: changed, ...config }) + "\n");
+  expect(() => planInit(dir, "editorial")).toThrow("differ from pack editorial");
+});
+
+test("canonicalJson sorts keys at every depth, keeps array order, and tells different data apart", () => {
+  expect(canonicalJson({ b: 1, a: { d: [3, 2], c: null } })).toBe(canonicalJson({ a: { c: null, d: [3, 2] }, b: 1 }));
+  expect(canonicalJson({ a: [1, 2] })).not.toBe(canonicalJson({ a: [2, 1] }));
+  expect(canonicalJson({ a: 1 })).not.toBe(canonicalJson({ a: "1" }));
+  expect(canonicalJson({ a: undefined, b: 1 })).toBe(canonicalJson({ b: 1, a: undefined }));
+  expect(canonicalJson("x")).toBe('"x"');
+  expect(canonicalJson(undefined)).toBe("null");
+});
+
+test("the shipped layer carries the format example, it parses and loads without a project, and its roles are in the shipped catalog", () => {
+  expect(Object.keys(SHIPPED_PACKS)).toEqual(["example"]);
+  const parsed = parsePack(SHIPPED_PACKS.example!, "example", "shipped");
+  expect(parsed).toMatchObject({ name: "example", profile: "writing", layer: "shipped" });
+  const shipped = loadPacks();
+  expect([...shipped.packs.keys()]).toEqual(["example"]);
+  expect(shipped.errors).toEqual([]);
+  expect(shipped.packs.get("example")!.roles.every(role => loadRoleCatalog().roles.has(role))).toBe(true);
+  expect(readFileSync(join(import.meta.dir, "../templates/packs/example.pack.json"), "utf8")).toBe(SHIPPED_PACKS.example!);
+  // A project with no packs still sees the shipped layer, and a project pack of the same name replaces it.
+  const dir = project();
+  expect(loadPacks(dir).packs.get("example")!.layer).toBe("shipped");
+  write(dir, "example", pack({ name: "example", summary: "Project copy of the example." }));
+  const merged = loadPacks(dir);
+  expect(merged.packs.get("example")).toMatchObject({ layer: "project", summary: "Project copy of the example." });
+  expect(merged.errors).toEqual([]);
+});
+
+test("init --profile example applies the shipped pack in a project that has none of its own", () => {
+  const dir = project();
+  const preview = planInit(dir, "example");
+  expect(preview.find(row => row.path === join(dir, ".agenthub/config.json"))!.reason).toContain("pack example (profile writing)");
+  init(dir, "example");
+  const saved = JSON.parse(readFileSync(join(dir, ".agenthub/config.json"), "utf8"));
+  expect(saved.profile).toBe("writing");
+  expect(saved.profile_overrides.review_checklist[0]).toStartWith("AC1: ");
+  expect(init(dir, "example")).toEqual([]);
+});
+
+test("a project pack may name a project role, but the shipped layer never depends on a project file: the example loads in a project whose role directory is empty", () => {
+  const dir = project();
+  const loaded = loadPacks(dir);
+  expect(loaded.packs.get("example")!.layer).toBe("shipped");
+  expect(loaded.errors).toEqual([]);
+  // A project pack named like the shipped one, with a role only the project has, replaces it; the shipped copy is not consulted again.
+  const role = readFileSync(join(import.meta.dir, "../templates/roles/research/fact-checker.md"), "utf8").replace(/^id: fact-checker$/m, "id: house-editor").replace(/^name: .*$/m, "name: House editor");
+  writeFileSync(join(dir, ".agenthub/roles/house-editor.md"), role);
+  write(dir, "example", pack({ name: "example", roles: ["house-editor"] }));
+  expect(loadPacks(dir).packs.get("example")).toMatchObject({ layer: "project", roles: ["house-editor"] });
+});
+
+test("a shipped pack is loaded only if its roles are in the shipped catalog (a project role never satisfies it), is reported by id when invalid, and never blocks the others", () => {
+  const dir = project();
+  const role = readFileSync(join(import.meta.dir, "../templates/roles/research/fact-checker.md"), "utf8").replace(/^id: fact-checker$/m, "id: house-editor").replace(/^name: .*$/m, "name: House editor");
+  writeFileSync(join(dir, ".agenthub/roles/house-editor.md"), role);
+  const shipped = { good: text(pack({ name: "good" })), needsproject: text(pack({ name: "needsproject", roles: ["house-editor"] })), broken: "{nope", ghost: text(pack({ name: "ghost", roles: ["no-such-role"] })) };
+  const loaded = loadPacks(dir, shipped);
+  expect([...loaded.packs.keys()].sort()).toEqual(["good"]);
+  expect(loaded.errors.map(error => error.id).sort()).toEqual(["broken", "ghost", "needsproject"]);
+  expect(loaded.errors.every(error => error.reason === "invalid shipped pack")).toBe(true);
+  expect(loaded.packs.get("good")!.layer).toBe("shipped");
 });

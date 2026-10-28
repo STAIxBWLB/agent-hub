@@ -1,0 +1,13 @@
+{
+  "name": "example",
+  "profile": "writing",
+  "summary": "Format example: an editing pass with a source check, to copy into .agenthub/roles/.",
+  "roles": ["fact-checker"],
+  "rubric": [
+    { "id": "AC1", "text": "Every claim in the deliverable names the source that supports it.", "required": true },
+    { "id": "style-1", "text": "Terms match the project glossary.", "required": false }
+  ],
+  "checks": [
+    { "id": "sources", "note": "Read the draft against its source list and list each claim whose source is missing." }
+  ]
+}

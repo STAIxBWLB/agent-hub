@@ -2,6 +2,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readdir
 import { join } from "node:path";
 import { PROFILE_NAMES, resolveProfile, type ProfileName } from "./profiles.ts";
 import { loadRoleCatalog } from "./roles.ts";
+import { SHIPPED_PACKS } from "./shipped-packs.ts";
 import { criterionId } from "./workflow.ts";
 
 /**
@@ -79,8 +80,18 @@ function readPack(file: string): string {
  * Project-layer packs, `.agenthub/roles/<name>.pack.json` (#513a AC4): the same directory the role catalog reads, which ignores these files (it takes `.md` only).
  * A pack whose roles are not all in the catalog (shipped or project) is refused with the reason, never loaded half-usable. Reasons carry ids, never file contents.
  */
-export function loadPacks(cwd?: string): PackCatalog {
+export function loadPacks(cwd?: string, shippedPacks: Readonly<Record<string, string>> = SHIPPED_PACKS): PackCatalog {
   const packs = new Map<string, DomainPack>(), errors: PackCatalog["errors"] = [];
+  // The shipped layer comes first and a project pack of the same name replaces it, as a project role replaces a shipped one. Its roles are checked against the shipped catalog only: it must not depend on a project file.
+  const shipped = loadRoleCatalog();
+  for (const [id, text] of Object.entries(shippedPacks)) {
+    try {
+      const pack = parsePack(text, id, "shipped");
+      const missing = pack.roles.filter(role => !shipped.roles.has(role));
+      if (missing.length) throw new Error(`unknown roles: ${missing.join(", ")}`);
+      packs.set(id, pack);
+    } catch { errors.push({ id, reason: "invalid shipped pack" }); }
+  }
   if (!cwd) return { packs, errors };
   const catalog = loadRoleCatalog(cwd);
   try {
@@ -101,6 +112,13 @@ export function loadPacks(cwd?: string): PackCatalog {
     }
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") errors.push({ id: "project", reason: "project pack directory unavailable or unsafe" }); }
   return { packs, errors };
+}
+
+/** A stable text of plain JSON data: object keys sorted at every depth, array order kept (a checklist's order is its meaning). Two values with the same data compare equal whatever order their keys were written in. */
+export function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") return `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  return JSON.stringify(value) ?? "null";
 }
 
 /** What a pack contributes to the project's `profile_overrides`: the rubric as the profile's review checklist, the checks as advisory examples. Validated by `resolveProfile`. */
