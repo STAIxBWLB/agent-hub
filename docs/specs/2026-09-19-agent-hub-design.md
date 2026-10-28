@@ -1186,8 +1186,8 @@ The screen reuses memory promotion's secrets, PII patterns and private-path
 rules. When the model screen is enabled, the existing device/campus-only screen
 owns model admission. Failure or an unknown verdict sends a fixed ids-only
 withheld stub. Refs are removed. Immutable host proofs recheck current roster,
-exposure, privacy and policy after awaits and before publication. No config
-selects callbacks, a model or a provider implementation.
+exposure, privacy and policy after awaits and before publication. No room payload selects callbacks, native effects or provider credentials. The
+host's existing fixed-model configuration owns model choice.
 
 X4 accepts at most **one remote target per send**. More than one is refused before
 any local or remote effect, naming the targets and directing separate sends.

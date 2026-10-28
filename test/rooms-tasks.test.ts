@@ -76,7 +76,8 @@ test("even legacy remote owner and reviewer rows grant no Tasks mutation authori
   const review = f.board.propose(USER, { title: "legacy review", class: "implement" });
   f.board.update(review.id, USER, "accepted", { owner: "codex", state: "in_progress" });
   f.board.update(review.id, USER, "done", { owner: "codex", reviewer: remote, state: "in_review" });
-  const backlog = f.board.propose(USER, { title: "legacy planner", class: "implement", backlog: true, planner: remote });
+  expect(() => f.board.propose(USER, { title: "invalid planner fixture", class: "implement", backlog: true, planner: remote })).toThrow("invalid planner id");
+  const backlog = f.board.propose(USER, { title: "local planning target", class: "implement", backlog: true, planner: "claude" });
   const before = f.board.list(), revision = f.board.statusRevision(), authorityCalls = f.authorities;
   const operations: (() => unknown | Promise<unknown>)[] = [
     () => f.tasks.accept(remote, owner.id),
