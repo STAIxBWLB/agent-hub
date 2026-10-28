@@ -34,6 +34,7 @@ import type { MemoryScreen } from "./read-tools.ts";
 import { withoutPii, mentionsPrivatePath } from "./memory-policy.ts";
 import { profileClass, profileData, profileTaskLabel, projectProfile, type ProfileName, type ProfileSelection, type ProjectProfile } from "./profiles.ts";
 import { criteriaView, unmetCriteriaIds, workflowHash } from "./workflow.ts";
+import { candidateCard, criterionKey, groupUnmetCriteria, LEARNING_DEFAULTS } from "./learning.ts";
 import { approvedDeliverables, latestDeliverables, parseDeliverableClaims, publicDeliverables, type DeliverableRecord, type DeliverableStatus } from "./deliverables.ts";
 import { checkDeliverables, DeliverableRefusal, hashDeliverables, vetDeliverables, type DeliverablePorts } from "./deliverable-files.ts";
 import { isAbsolute, relative } from "node:path";
@@ -687,6 +688,34 @@ export class Tasks {
       if (ids.has(next)) join(row.id, next);
     }
     return new Set(rows.map(row => find(row.id))).size;
+  }
+  /**
+   * #514a: the same recurrence path for recurring UNMET CRITERIA. A criterion id that reviews keep naming unmet on the same profile and class, on at least
+   * `threshold` tasks that are at least two separate pieces of work (`workUnits`), files one backlog card for a person to review, with the `profile_overrides`
+   * fragment as text. Nothing is applied. A PII task and a withheld or private-turn review are never evidence and never named; the card carries ids and counts only.
+   */
+  private proposeCriterionCandidates(task: Task, by: PeerId, withheld: boolean): void {
+    if (withheld || this.isPii(task) || this.d.privateTurn?.(by) || !task.history.at(-1)?.unmetCriteria?.length) return;
+    const rows = this.d.board.list();
+    const keys = new Set(rows.filter(row => row.class === "plan" && row.history[0]?.by === HUB)
+      .flatMap(row => row.detail?.split("\n").filter(line => line.startsWith("Criterion candidate key: ")) ?? []));
+    // Only the rows that may count: candidateTextAllowed refuses a PII row and one whose text the screen refuses, so those are evidence of nothing.
+    const eligible = rows.filter(row => this.candidateTextAllowed(`${row.profile ?? ""} ${row.profileClass ?? ""} ${row.class}`, row));
+    const named = new Set(task.history.at(-1)!.unmetCriteria);
+    const created: number[] = [];
+    // No await separates the durable dedupe read from creation; concurrent verdicts see the first card.
+    for (const group of groupUnmetCriteria(eligible, { windowMs: LEARNING_DEFAULTS.windowMs, now: Date.now() }).slice(0, LEARNING_DEFAULTS.maxGroups)) {
+      if (!named.has(group.criterion) || group.tasks.length < LEARNING_DEFAULTS.threshold || keys.has(criterionKey(group))) continue;
+      const units = this.workUnits(eligible.filter(row => group.tasks.includes(row.id)));
+      if (units < 2) continue;
+      const card = candidateCard(group, Math.round(LEARNING_DEFAULTS.windowMs / 86_400_000), units);
+      const draft = { title: card.title, detail: card.detail, refs: { paths: ["docs/profiles.md"] } };
+      const signals = this.signalsFor(draft);
+      if (this.isPii({ signals }) || !this.candidateTextAllowed(`${card.title}\n${card.detail}`)) continue;
+      const proposal = this.d.board.propose(HUB, { ...draft, class: "plan", backlog: true, signals });
+      this.incomingBacklog.add(proposal.id); keys.add(criterionKey(group)); created.push(proposal.id);
+    }
+    for (const id of created) this.releaseNotice(`task #${id}: recurring unmet criterion candidate proposed in the backlog`);
   }
   private proposeRecurringFindings(task: Task, by: PeerId, items: readonly ReviewFinding[], withheld: boolean): void {
     if (withheld || this.isPii(task) || this.d.privateTurn?.(by) || !items.length || !this.findingTextAllowed(task, items)) return;
@@ -5473,12 +5502,14 @@ export class Tasks {
       this.autoMerge(next, this.mirrorVerdict(next, by, "approved", reviewedHead ?? next.sdlc?.reviewedHead, note, withheld));
       // A proposal storage failure cannot roll back the saved verdict; another matching verdict retries it.
       this.releaseNotice(`task #${next.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(next, by, parsed, withheld));
+      this.releaseNotice(`task #${next.id}: review saved but recurring-criterion proposal unavailable`, () => this.proposeCriterionCandidates(next, by, withheld));
       return next;
     }
     this.ciWatchers.cancel(task.id); this.heldReviews.delete(task.id);
     const rejected = this.d.board.update(task.id, by, "changes_requested", { state: "changes_requested", rejections: evidenceOnly ? task.rejections : task.rejections + 1 }, note, flag);
     void this.mirrorVerdict(rejected, by, "changes_requested", reviewedHead ?? rejected.sdlc?.reviewedHead, note, withheld);
     if (!evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-finding proposal unavailable`, () => this.proposeRecurringFindings(rejected, by, parsed, withheld));
+    if (!evidenceOnly) this.releaseNotice(`task #${rejected.id}: review saved but recurring-criterion proposal unavailable`, () => this.proposeCriterionCandidates(rejected, by, withheld));
     if (candidate && !pii && !this.d.privateTurn?.(by) && this.candidateTextAllowed(JSON.stringify({ candidate, refs: rejected.refs, plan: rejected.plan }), rejected)) {
       try { this.d.memoryCheck?.(); this.d.candidates?.put({ ...candidate, evidenceRefs: [...candidate.evidenceRefs, `review:${rejected.id}:${rejected.history.length}`] }, "public"); } catch { /* a saved review remains authoritative if the optional sidecar fails */ }
     }
