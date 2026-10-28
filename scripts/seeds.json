@@ -3736,6 +3736,22 @@
       "replacement": "if (false) fail(\"untrusted\");",
       "testFile": "test/rooms-store.test.ts",
       "testName": "room first install requires explicit pending invitation owner pin, never broker supplied TOFU"
+    },
+    {
+      "id": "room-presence-exposure-await-fence",
+      "file": "src/rooms/link.ts",
+      "search": "if (peers.some(peer => !allowed.has(peer.id))) return;",
+      "replacement": "if (false) return;",
+      "testFile": "test/rooms-link.test.ts",
+      "testName": "a presence exposure removed while encryption waits is withheld before the socket send"
+    },
+    {
+      "id": "room-durable-counter-restore",
+      "file": "src/rooms/store.ts",
+      "search": "try { await store.validateRows(); }",
+      "replacement": "try { await Promise.resolve(); }",
+      "testFile": "test/rooms-store.test.ts",
+      "testName": "room restore rejects a zero or noncanonical durable sender counter before publishing sequence ports"
     }
   ]
 }
