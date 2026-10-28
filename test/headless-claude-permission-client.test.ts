@@ -140,7 +140,9 @@ test("#551 native permission request extensions preserve the existing approval p
   const f = await client(true);
   try {
     const extended = { ...request, extra: { native_extension: true } };
-    expect(decision(await f.call("hub_permission_request", extended))).toEqual({ behavior: "allow", updatedInput: request.input });
+    const result = decision(await f.call("hub_permission_request", extended));
+    expect(result.behavior).toBe("allow");
+    expect(result).toEqual({ behavior: "allow", updatedInput: request.input });
     expect(f.requests.filter(row => row.t === "permission_request").map(({ rid: _rid, ...body }) => body))
       .toEqual([{ t: "permission_request", tool: request.tool_name, input: request.input, wrapperProtocol: 1 }]);
     expect(f.requests.filter(row => row.t === "permission_failure_probe")).toEqual([]);
