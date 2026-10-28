@@ -77,7 +77,7 @@ test("room execute requires a matching member fingerprint and burns unconfirmed 
     const wrong = (preview.member.startsWith("f") ? "e" : "f").repeat(16);
     const confirm = mode === "boolean" ? true : mode === "short" ? preview.member.slice(0, 15) : mode === "wrong" ? wrong : mode === "uppercase" ? "A".repeat(16) : undefined;
     const response = await f.person.request({ t: "room", op: "execute", ticket: preview.ticket, ...(confirm !== undefined ? { confirm } : {}) });
-    expect(response.ok, mode).toBe(false);
+    expect({ mode, ok: response.ok }).toEqual({ mode, ok: false });
     expect((await f.person.request({ t: "room", op: "list" })).rooms).toEqual([]);
     expect((await f.person.request({ t: "room", op: "execute", ticket: preview.ticket, confirm: preview.member })).ok).toBe(false);
   }
