@@ -1,4 +1,4 @@
-/** #544 opt-in diagnostic producer. It intentionally characterizes a current console bug; never enroll in the regression suite. No installed Claude binary, account or model provider is used. */
+/** #544 opt-in diagnostic producer. It characterizes deliberate permission-push omission outside the regression suite. No installed Claude binary, account or model provider is used. */
 import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -106,12 +106,14 @@ test("#544 real daemon pending approvals are pushed, replayed to a fresh console
     const answer = f.tools.request({ t: "permission_request", tool: "Bash", input: { command: "pwd && pwd" }, wrapperProtocol: 1 }); void answer.catch(() => {});
     const request = await live.pending();
     expect(request).toMatchObject({ peer: f.peer, options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" }, { optionId: "deny", name: "Deny", kind: "reject_once" }] });
-    expect((await f.person.request({ t: "status" })).status.approvals).toContainEqual(expect.objectContaining({ id: request.id, peer: f.peer }));
+    expect((await f.person.request({ t: "ui_snapshot" })).permissions).toContainEqual(expect.objectContaining({ id: request.id, peer: f.peer }));
+    expect((await f.person.request({ t: "status" })).status.attentionItems).toContainEqual(expect.objectContaining({ kind: "approval", id: request.id, peer: f.peer, level: "act" }));
     const late = await f.connectPerson(), replay = permissionPush(late);
     expect((await replay.pending()).id).toBe(request.id);
     expect(await answer).toMatchObject({ ok: true, behavior: "deny", message: "no person answered" });
     expect(await live.closed()).toMatchObject({ id: request.id, outcome: "cancelled", reason: "expired" });
-    expect((await f.person.request({ t: "status" })).status.approvals).toEqual([]);
+    expect((await f.person.request({ t: "ui_snapshot" })).permissions).toEqual([]);
+    expect((await f.person.request({ t: "status" })).status.attentionItems.filter((item: { kind: string }) => item.kind === "approval")).toEqual([]);
   } finally { await f.close(); }
 }, 20_000);
 
@@ -132,7 +134,8 @@ test("#544 missing native tool_use_id denies in the production MCP channel befor
     const content = result.content as { type: string; text?: string }[];
     expect(JSON.parse(content.filter(row => row.type === "text").map(row => row.text).join("\n"))).toEqual({ behavior: "deny", message: "invalid native permission request" });
     expect(observed.pushes.filter(message => message.t === "permission")).toEqual([]);
-    expect((await f.person.request({ t: "status" })).status.approvals).toEqual([]);
+    expect((await f.person.request({ t: "ui_snapshot" })).permissions).toEqual([]);
+    expect((await f.person.request({ t: "status" })).status.attentionItems.filter((item: { kind: string }) => item.kind === "approval")).toEqual([]);
   } finally { await client?.close(); await f.close(); }
 }, 20_000);
 
@@ -145,7 +148,7 @@ test("#544 console status refresh alone cannot reconstruct a missed permission p
   const terminal: ConsoleTerminal = { columns: 120, rows: 30, isTTY: true, write: text => { output.push(text); }, raw: () => {}, onData: listener => { input = listener; return () => {}; }, onResize: () => () => {}, onSignal: listener => { signal = listener; return () => {}; } };
   const client = { onPush: (_message: any) => {}, onClose: (_code: number, _reason: string) => {}, send: (_message: any) => {}, close: () => {}, request: async (message: any) => {
     if (message.t === "status") statusReads++;
-    return { ok: true, status: { peers: {}, approvals: [{ id, peer: "claude-triage", expiresAt }], attentionItems: [] }, budget: {}, text: "[]", deliveries: [] };
+    return { ok: true, status: { peers: {}, attentionItems: [{ kind: "approval", level: "act", id, peer: "claude-triage", until: expiresAt }] }, budget: {}, text: "[]", deliveries: [] };
   } };
   const running = runConsole({ client, cwd: root, stateDir: root, terminal, panels: true, noPet: true, color: false });
   try {

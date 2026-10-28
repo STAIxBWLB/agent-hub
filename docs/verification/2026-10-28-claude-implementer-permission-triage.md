@@ -9,8 +9,9 @@ The reported symptoms are a permission-tool harness error before `bun test test/
 | Evidence | Status and limit |
 | --- | --- |
 | Version admission, wrapper and approval source paths | Read at the triage base `f7450129` |
-| Opt-in deterministic fake diagnostic cases | Prepared in `docs/verification/claude-implementer-permission-triage.ts`; execution result not yet recorded |
-| Native 2.1.312 permission dispatch and `updatedInput` rewrite | Unverified; no native run performed by this triage |
+| Opt-in deterministic fake diagnostic cases | Initial combined focused run: 13 pass, 2 fail. Both failures were nonexistent `status.approvals` fixture assertions, now corrected; rerun pending |
+| Installed native generic permission transport | 2.1.311 and2.1.312 each9/9 pass using the existing Python fixture MCP and loopback provider; no production-daemon or host-wrapper rewrite claim |
+| Native production-daemon task/host-wrapper rewrite at2.1.312 | Unverified |
 | Person's reported incident and console connection identity | Not independently reproduced |
 | Real provider, model, credentials or account interaction | Not run |
 | Exact-head gate and hosted CI | Recorded separately by the implementer after verification |
@@ -23,9 +24,9 @@ There is no verified-only host-wrapper gate. `assessVersion` in `src/adapters/co
 
 A failure can occur before any console approval exists. The production MCP handler in `src/adapters/claude-channel.ts` requires `tool_name`, an object `input` and a nonempty `tool_use_id`; invalid arguments return a fixed denial before requesting the daemon. The daemon also refuses an unavailable or stale owned-child/root binding before entering `requestPermission`. The 2.1.309/2.1.310 receipts prove their observed native schema and rewrite behavior, not 2.1.312's behavior. A 2.1.312 native schema, MCP startup or rewritten-result incompatibility remains a hypothesis until the isolated native probe captures the actual request and response.
 
-Approval transport uses one shared daemon map. `requestPermission` registers the row before `writeStatus` and the `permission` push, and a fresh console's `tail` request replays all still-pending pushes. Status exposes pending ids/times; the dashboard's `permissions` collection projects the same map. Expiry removes the row before emitting closure and resolving the native request as a denial.
+Approval transport uses one shared daemon map. `requestPermission` registers the row before `writeStatus` and the `permission` push, and a fresh console's `tail` request replays all still-pending pushes. The console-role `status` RPC exposes body-free approval ids/times through `status.attentionItems`; the console-role `ui_snapshot` RPC exposes the full pending rows as `permissions`, projected from the same map. The internal attention input has an `approvals` array, but that is not a field of the ordinary status RPC. Expiry removes the row before emitting closure and resolving the native request as a denial.
 
-The console has a narrower information source: `runConsole` updates `state.approvals` on `permission` and `permission_closed` pushes. Its status refresh reads peer/task/attention facts but does not reconstruct the approval rows from `status.approvals`. Therefore a deliberately omitted push leaves its local approval panel empty even when the fake status says a request exists. This is a source-backed observability gap, not proof that the real WebSocket lost the reported push. An expired/cancelled request, another project/instance connection, pre-queue native failure or a missing push must be distinguished using the same request id and daemon instance.
+The console keeps actionable approval rows from `permission` and `permission_closed` pushes. Status attention metadata does not contain the full title/options needed to reconstruct those rows. A deliberately omitted push therefore leaves the controlled fixture's approval panel empty until a valid push is supplied. This is a push-omission characteristic, not a reproduced product defect or the established cause of the reported incident. Source ordering shows `runConsole` installs `client.onPush` before sending `tail`, and the daemon replays still-pending rows on that subscription; no normal console-startup race was found. An expired/cancelled request, another project/instance connection, pre-queue native failure or an actual missing push must be distinguished using the same request id and daemon instance.
 
 `OwnedPrintChild` ignores native stderr, and `ClaudeImplementerPeer` reduces an unsuccessful native result to the fixed `Claude implementer turn failed` outcome. Consequently the generic delivery failure alone does not establish which native permission-harness stage failed. Do not infer a host wrapper refusal, a missing person answer or a native compatibility defect from that generic outcome.
 
@@ -39,15 +40,37 @@ The fake reports 2.1.312 while that version is unverified. If a later dated rece
 | --- | --- |
 | Trusted, unverified fake version | Startup admitted with native `default` and the fixed prompt-tool argv; no bypass mode |
 | Closed test command | On a sandbox-capable host, host protocol 1 rewrites the command; without the host sandbox, ordinary approval expires as deny, with no rewrite |
-| Real daemon manual approval | Same request id appears in the live console push, status inventory and a fresh console's tail replay, then is withdrawn on its fixture deadline |
+| Real daemon manual approval | Same request id appears in the live console push, `ui_snapshot.permissions`, status attention metadata and a fresh console's tail replay, then is withdrawn on its fixture deadline |
 | Missing `tool_use_id` | Actual production source MCP handler returns `invalid native permission request`, with no approval row or permission push |
-| Deliberately withheld console push | Positive fake status alone leaves the console panel empty; a later valid push makes the request visible |
+| Deliberately withheld console push | Real-shaped fake `status.attentionItems` alone supplies no actionable approval row; a later valid push makes the request visible |
 
-The console case deliberately characterizes the current missed-push bug. It lives outside the automatic regression suite, so it does not require that bug to persist. It adds no production repair or broader authorization. The host command case tests policy using a fake native. Neither certifies the installed 2.1.312 permission dispatcher, real model tool selection or a person's live approval interaction.
+The console case deliberately omits a permission push. It lives outside the automatic regression suite and is not evidence of a normal transport or startup failure. It adds no production repair or broader authorization. The host command case tests policy using a fake native. Neither certifies the installed 2.1.312 permission dispatcher, real model tool selection or a person's live approval interaction.
+
+## Installed native transport comparison
+
+The unchanged `claude-permission-transport-native.py` ran sequentially on the
+installed2.1.311 control and2.1.312 target with fresh private homes and a synthetic
+loopback provider. Each passed all9 allow/deny/hook/MCP-error/disconnect/pending/
+deadline cases. All18 owned native groups were established empty and all binary
+hashes were unchanged. No account or inference call occurred. The sanitized
+[transport receipt](2026-10-28-claude-2.1.311-2.1.312-permission-transport.json)
+contains counts, fixed outcomes and binary hashes only.
+
+| Version | SHA-256 | Cases |
+| --- | --- | --- |
+| 2.1.311 | `85d8c08707fcfd1e78ffa0204eefbc6ec9e4fe22f375fb2767ef85d957ed3161` |9/9 |
+| 2.1.312 | `6b5ec691195e551b02c41df9f7d723f4ea61eaa03c2df90acefe3736f1aeb620` |9/9 |
+
+Host admission observed memory-pressure level1, zero swap, thermal state0 and
+76.4% CPU idle on18 logical CPUs; no other local build/test job was running.
+Each native case retained the producer's25-second bound and owned-group cleanup.
+This reproduced normal permission behavior, not the reported harness error. The
+fixture MCP is deliberately separate from the production SDK channel and daemon
+policy. No COMPAT value is changed and no new host-wrapper receipt is claimed.
 
 ## Commands for the implementer
 
-Explicit fake diagnostic command, after committing the intended files and taking the permitted remote slot. Whether this Bun version accepts the explicit regular `.ts` path remains to be checked by the implementer:
+Explicit fake diagnostic command, after committing the intended files and taking the permitted remote slot. The first remote run accepted this explicit regular `.ts` path; the corrected diagnostic assertions still need a rerun:
 
 ```sh
 env -u AGENTHUB_HOME bun test ./docs/verification/claude-implementer-permission-triage.ts
@@ -69,4 +92,4 @@ Repeat `docs/verification/claude-permission-transport-native.py` as well as the 
 - Whether the failing command reached `permission_request` and the wrapper proof, reached the manual queue, or failed before either.
 - Whether the reportedly empty console was attached to the same daemon instance and request id while the row was still pending.
 - Whether a controlled missed-push case occurs in normal use, beyond the deterministic console fixture.
-- Native 2.1.312 compatibility and a real person's account-backed approval leg.
+- Production-daemon/native host-wrapper behavior on2.1.312 and a real person's account-backed approval leg. Generic transport passed the isolated comparison above.
