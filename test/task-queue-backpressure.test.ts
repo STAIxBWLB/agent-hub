@@ -225,7 +225,8 @@ test("a pull-only peer draining its queue without a state change reoffers only t
   const before = f.bus.stateOf("codex");
   expect(f.bus.pull("codex")?.length).toBeGreaterThan(0);
   expect(f.bus.stateOf("codex")).toBe(before);
-  await owned(f, held.id, "codex");
+  await settled(f.tasks);
+  expect(f.board.get(held.id)?.owner).toBe("codex");
   expect(f.board.get(legacy.id)?.owner).toBeNull(); expect(f.board.get(manual.id)?.owner).toBeNull();
   expect(f.board.get(held.id)?.history.filter(entry => entry.event === "assigned")).toHaveLength(1);
 });
