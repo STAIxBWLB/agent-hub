@@ -57,6 +57,8 @@ interface Session {
   roster?: VerifiedPublicRoster;
   handshake: ReturnType<typeof setTimeout>;
   requestPresenceReply: boolean;
+  ownerUpgrading?: boolean;
+  deferredFrame?: Uint8Array;
 }
 function fail(code: ConstructorParameters<typeof RoomLinkError>[0] = "invalid_wire"): never { throw new RoomLinkError(code); }
 function exact(value: unknown, fields: readonly string[]): Record<string, unknown> {
@@ -102,6 +104,7 @@ export class RoomLink {
   private inboxRetry?: Promise<void>;
   private inboxRetryDirty = false;
   private retiredPresenceBytes = 0;
+  private forcePresenceRequest = false;
   private republish?: ReturnType<typeof setTimeout>;
   private sendTail: Promise<void> = Promise.resolve();
   constructor(private readonly options: RoomLinkOptions) {}
@@ -156,9 +159,11 @@ export class RoomLink {
     if (!bytes || !session || !this.running) return;
     const row = this.current(session);
     if (!this.publicationCurrent(session, row.current.digest) || !this.options.store.ordinaryInboxAvailable(this.options.name, bytes)) return;
-    this.retiredPresenceBytes = 0; // Clear before any await/coalescing: no self-refresh loop.
-    session.requestPresenceReply = true; this.replyPresence = false;
-    await this.publishPresence();
+    // Intent survives coalescing, ordinary responses and publication failure.
+    // Only an actually sent request with current capacity may clear the numeric flag.
+    session.requestPresenceReply = true; this.forcePresenceRequest = true;
+    try { await this.publishPresence(); }
+    catch (error) { this.retry(session); throw error; }
   }
   private capacityChanged(session: Session, digest: string): void {
     try { this.options.application?.capacityChanged?.(this.context(session, digest)); } catch { /* advisory metadata refresh grants nothing */ }
@@ -218,13 +223,13 @@ export class RoomLink {
     if (session && session !== this.session) return;
     this.generation++;
     this.session = undefined;
-    this.publishDirty = false; this.replyPresence = false; this.inboxRetryDirty = false;
+    this.publishDirty = false; this.replyPresence = false; this.forcePresenceRequest = false; this.inboxRetryDirty = false;
     this.inboxRetry = undefined; // A new ready session must never await an old generation's restore pass.
     if (this.republish) clearTimeout(this.republish);
     this.republish = undefined;
     if (session) {
       clearTimeout(session.handshake);
-      session.queue.length = 0; session.queuedBytes = 0;
+      session.queue.length = 0; session.queuedBytes = 0; session.deferredFrame = undefined;
       try { session.ws.close(1000, "disconnected"); } catch { /* already closed */ }
     }
     this.setState("offline");
@@ -269,7 +274,7 @@ export class RoomLink {
   }
   private receive(session: Session, data: unknown): void {
     if (this.session !== session || !this.running) return;
-    if (!(data instanceof ArrayBuffer) || data.byteLength === 0 || data.byteLength > LIMITS.packetBytes || session.queue.length >= LIMITS.packets || session.queuedBytes + data.byteLength > LIMITS.queuedBytes) { this.retry(session); return; }
+    if (!(data instanceof ArrayBuffer) || data.byteLength === 0 || data.byteLength > LIMITS.packetBytes || session.queue.length + (session.deferredFrame ? 1 : 0) >= LIMITS.packets || session.queuedBytes + (session.deferredFrame?.byteLength ?? 0) + data.byteLength > LIMITS.queuedBytes) { this.retry(session); return; }
     const bytes = new Uint8Array(data).slice();
     session.queue.push(bytes); session.queuedBytes += bytes.length;
     this.drain(session);
@@ -322,9 +327,13 @@ export class RoomLink {
       if (!roster || ready.room !== local.current.room || ready.member !== this.options.store.identity.public.fingerprint || ready.epoch !== roster.epoch || ready.digest !== roster.digest) fail("untrusted");
       if (roster.digest !== local.current.digest) {
         if (roster.owner !== this.options.store.identity.public.fingerprint || BigInt(roster.epoch) >= BigInt(local.current.epoch)) fail("untrusted");
+        session.ownerUpgrading = true;
         this.send(session, local.wire); return;
       }
-      session.phase = "ready"; clearTimeout(session.handshake); this.attempts = 0;
+      session.phase = "ready"; session.ownerUpgrading = false; clearTimeout(session.handshake); this.attempts = 0;
+      if (session.deferredFrame) {
+        session.queue.unshift(session.deferredFrame); session.queuedBytes += session.deferredFrame.byteLength; session.deferredFrame = undefined;
+      }
       this.setState("online");
       const context = this.context(session, local.current.digest);
       this.options.application?.members(context);
@@ -336,7 +345,16 @@ export class RoomLink {
       return;
     }
     if (message.type === "frame") {
-      if (session.phase !== "ready") fail("untrusted");
+      if (session.phase !== "ready") {
+        // X2 may already have one ciphertext in flight while this verified owner
+        // installs its newer local roster. Let roster/ready controls pass it;
+        // never decrypt, advance replay or ACK until the new roster is ready.
+        if (!session.ownerUpgrading || !session.roster || session.roster.owner !== this.options.store.identity.public.fingerprint || BigInt(session.roster.epoch) >= BigInt(local.current.epoch) || session.deferredFrame) fail("untrusted");
+        const deferred = decodeFrame(bytes); // Still require a canonical bounded room/recipient frame.
+        if (deferred.room !== session.room || !deferred.recipients.includes(this.options.store.identity.public.fingerprint)) fail("untrusted");
+        session.deferredFrame = Uint8Array.from(bytes);
+        return;
+      }
       await this.receiveFrame(session, bytes, local);
       return;
     }
@@ -358,9 +376,9 @@ export class RoomLink {
     }
     if (message.type === "error") {
       const error = exact(message, ["v", "type", "code"]);
-      // X2 declares these admission refusals nonterminal. Their unsigned control
+      // X2 declares these refusal controls nonterminal. Their unsigned control
       // cannot settle any application; its local ACK deadline records uncertainty.
-      if (error.code === "queue_full" || error.code === "replay_refused") return;
+      if (error.code === "queue_full" || error.code === "replay_refused" || error.code === "unexpected_ack") return;
       fail("unavailable");
     }
     fail();
@@ -508,7 +526,10 @@ export class RoomLink {
     if (this.publishing) { this.publishDirty = true; return; }
     if (this.republish) clearTimeout(this.republish);
     this.republish = undefined; this.publishDirty = false;
-    const response = this.replyPresence; this.replyPresence = false;
+    const response = this.replyPresence && !this.forcePresenceRequest;
+    if (response) this.replyPresence = false;
+    this.forcePresenceRequest = false;
+    let sent = false;
     this.publishing = true;
     try {
       const row = this.current(session), identity = this.options.store.identity;
@@ -527,12 +548,20 @@ export class RoomLink {
         // when the signed roster is unchanged. Never emit an id it now withholds.
         const allowed = new Set(this.currentPresence(own.exposedPeers).map(peer => peer.id));
         if (peers.some(peer => !allowed.has(peer.id))) return;
-        this.send(session, wire);
-        if (requestReply) session.requestPresenceReply = false;
+        this.send(session, wire); sent = true;
+        if (requestReply) {
+          session.requestPresenceReply = false;
+          if (this.retiredPresenceBytes && this.options.store.ordinaryInboxAvailable(this.options.name, this.retiredPresenceBytes)) this.retiredPresenceBytes = 0;
+        }
       });
+    } catch (error) {
+      this.retry(session); // Existing bounded reconnect, never a self-polling refresh retry.
+      throw error;
     } finally {
       this.publishing = false;
-      const dirty = this.publishDirty, next = this.session;
+      const next = this.session;
+      if (sent && response && this.retiredPresenceBytes && session.requestPresenceReply) this.forcePresenceRequest = true;
+      const dirty = this.publishDirty || sent && (this.replyPresence || this.forcePresenceRequest);
       this.publishDirty = false;
       if (dirty && this.running && next?.phase === "ready") {
         // Coalesce all changes during one seal into one later fresh snapshot.

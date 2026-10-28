@@ -156,19 +156,21 @@ async function fullPhysicalInbox(reserved: number, withPresence = false) {
   let resolveClosed!: () => void, resolveDone!: () => void;
   const closed = new Promise<void>(resolve => { resolveClosed = resolve; }), done = new Promise<void>(resolve => { resolveDone = resolve; });
   let targetWire: Uint8Array, junkWire: Uint8Array | undefined, targetDigest = "", junkDigest = "", retiredPresence: Uint8Array | undefined, retiredPresenceDigest = "", freshPresenceDigest = "";
-  let requests = 0, allowFreshPresence = false, firstRequest!: () => void, freshObserved!: () => void;
+  let requests = 0, connections = 0, allowFreshPresence = false, firstRequest!: () => void, freshObserved!: () => void;
+  let liveSocket: { send(value: Uint8Array): unknown } | undefined;
+  const ackWaiters = new Map<string, () => void>();
   const requested = new Promise<void>(resolve => { firstRequest = resolve; }), refreshed = new Promise<void>(resolve => { freshObserved = resolve; });
   const acknowledgements: string[] = [], gaps: string[] = [], observed: { member: string; peers: readonly { id: string; state: string }[] }[] = [];
   const server = Bun.serve({ hostname: "127.0.0.1", port: 0,
     fetch(request, host) { return host.upgrade(request) ? undefined : new Response("no", { status: 400 }); },
     websocket: {
-      open(ws) { const row = receiver.get("work")!; ws.send(canonicalBytes({ v: 1, type: "challenge", room: row.current.room, broker: row.broker, nonce: encodeBase64url(randomBytes(32)), expiresAt: Date.now() + 10_000, rosterDigest: row.current.digest })); },
+      open(ws) { connections++; liveSocket = ws; const row = receiver.get("work")!; ws.send(canonicalBytes({ v: 1, type: "challenge", room: row.current.room, broker: row.broker, nonce: encodeBase64url(randomBytes(32)), expiresAt: Date.now() + 10_000, rosterDigest: row.current.digest })); },
       message(ws, data) {
         const message = JSON.parse(String(data)) as { type: string; digest?: string }, row = receiver.get("work")!;
         if (message.type === "auth") { ws.send(row.wire); ws.send(canonicalBytes({ v: 1, type: "ready", room: row.current.room, member: receiver.identity.public.fingerprint, epoch: row.current.epoch, digest: row.current.digest })); }
         else if (message.type === "roster_ready") ws.send(retiredPresence ?? junkWire ?? targetWire);
         else if (message.type === "received") {
-          acknowledgements.push(message.digest!); ws.send(canonicalBytes({ v: 1, type: "queue_ack", digest: message.digest }));
+          acknowledgements.push(message.digest!); ackWaiters.get(message.digest!)?.(); ackWaiters.delete(message.digest!); ws.send(canonicalBytes({ v: 1, type: "queue_ack", digest: message.digest }));
           if (message.digest === retiredPresenceDigest && retiredPresence) ws.send(junkWire ?? targetWire);
           if (message.digest === junkDigest && junkWire) ws.send(targetWire);
           if (message.digest === targetDigest) resolveDone();
@@ -231,7 +233,11 @@ async function fullPhysicalInbox(reserved: number, withPresence = false) {
     context.store.applyApplicationReceipt("work", input.digest, context.current); context.store.settleInbox("work", input.digest);
   } } }); cleanups.push(() => link.stop());
   const bounded = (promise: Promise<void>, label: string) => new Promise<void>((resolve, reject) => { const timer = setTimeout(() => reject(new Error(`receipt lane barrier timed out: ${label}`)), 5000); promise.then(() => { clearTimeout(timer); resolve(); }, error => { clearTimeout(timer); reject(error); }); });
-  return { receiver, sender, pairs, target, targetDigest, junkDigest, retiredPresenceDigest, link, acknowledgements, gaps, observed, get requests() { return requests; }, allowFresh: () => { allowFreshPresence = true; }, requested: () => bounded(requested, "initial signed presence request"), refreshed: () => bounded(refreshed, "fresh signed state after capacity returns"), closed: () => bounded(closed, "full reserve closes without ACK"), done: () => bounded(done, "matching signed receipt retires") };
+  const sendRequest = async () => {
+    const wire = await sealFrame({ epoch: sender.get("work")!.current, identity: sender.identity, recipients: [receiver.identity.public.fingerprint], sequence: sender.sequence, plaintext: canonicalBytes({ v: 1, type: "presence", peers: [{ id: "codex", state: "idle" }], requestReply: true }) });
+    const digest = encodeBase64url(await sha256(wire)); liveSocket!.send(wire); return digest;
+  };
+  return { receiver, sender, pairs, target, targetDigest, junkDigest, retiredPresenceDigest, link, acknowledgements, gaps, observed, sendRequest, acknowledged: (digest: string) => bounded(acknowledgements.includes(digest) ? Promise.resolve() : new Promise<void>(resolve => { ackWaiters.set(digest, resolve); }), "incoming request transport ACK"), get connections() { return connections; }, get requests() { return requests; }, allowFresh: () => { allowFreshPresence = true; }, requested: () => bounded(requested, "initial signed presence request"), refreshed: () => bounded(refreshed, "fresh signed state after capacity returns"), closed: () => bounded(closed, "full reserve closes without ACK"), done: () => bounded(done, "matching signed receipt retires") };
 }
 
 test("200 retained chats do not let an unmatched receipt poison a matching receipt behind it", async () => {
@@ -292,3 +298,45 @@ test("a real settlement asks every live room binding to refresh global capacity,
   expect(new Set(refreshed)).toEqual(new Set(["work", "other"]));
   expect(f.guest.pendingInbox("work")).toEqual([]);
 });
+
+
+test("capacity refresh intent survives a held ordinary response and another incoming request", async () => {
+  const f = await fullPhysicalInbox(0, true); await f.link.start(); await f.done(); await f.requested();
+  const first = f.receiver.pendingInbox("work")[0]!, before = f.requests;
+  let enter!: () => void, release!: () => void;
+  const entered = new Promise<void>(resolve => { enter = resolve; }), held = new Promise<void>(resolve => { release = resolve; });
+  const reserve = f.receiver.sequence.reserve; let blocked = false;
+  f.receiver.sequence.reserve = async input => { const seq = await reserve(input); if (!blocked) { blocked = true; enter(); await held; } return seq; };
+  try {
+    f.allowFresh(); f.receiver.settleInbox("work", first.digest);
+    await f.sendRequest();
+    await new Promise<void>((resolve, reject) => { const timer = setTimeout(() => reject(new Error("ordinary response seal barrier timed out")), 5000); entered.then(() => { clearTimeout(timer); resolve(); }, reject); });
+    await f.link.refreshPresenceIfCapacityFree();
+    const second = await f.sendRequest(); await f.acknowledged(second);
+    release(); await f.refreshed();
+    expect(f.requests).toBe(before + 1);
+    expect(f.observed.at(-1)?.peers).toEqual([{ id: "codex", state: "idle" }]);
+  } finally { release(); f.receiver.sequence.reserve = reserve; }
+}, 20_000);
+
+test("a refresh send failure preserves intent and uses bounded reconnect instead of losing the request", async () => {
+  const f = await fullPhysicalInbox(0, true); await f.link.start(); await f.done(); await f.requested();
+  const before = f.connections, requests = f.requests, first = f.receiver.pendingInbox("work")[0]!;
+  const send = WebSocket.prototype.send; let failed = false;
+  WebSocket.prototype.send = function(this: WebSocket, data: Parameters<WebSocket["send"]>[0]) {
+    let type: unknown;
+    try {
+      const bytes = typeof data === "string" ? data : data instanceof ArrayBuffer ? new Uint8Array(data) : ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : undefined;
+      if (bytes !== undefined) type = JSON.parse(typeof bytes === "string" ? bytes : new TextDecoder().decode(bytes)).type;
+    } catch { /* Not a fixture frame. */ }
+    if (!failed && type === "frame") { failed = true; throw new Error("fixture backpressure send failure"); }
+    return send.call(this, data);
+  };
+  try {
+    f.allowFresh(); f.receiver.settleInbox("work", first.digest);
+    await f.link.refreshPresenceIfCapacityFree().catch(() => undefined); // Model the host's handled advisory failure.
+    await f.refreshed();
+    expect(failed).toBe(true); expect(f.connections).toBe(before + 1); expect(f.requests).toBe(requests + 1);
+    expect(f.observed.at(-1)?.peers).toEqual([{ id: "codex", state: "idle" }]);
+  } finally { WebSocket.prototype.send = send; }
+}, 20_000);
