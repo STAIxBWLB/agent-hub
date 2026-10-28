@@ -19,6 +19,7 @@ async function rig(options: { modelUrl?: string; accessHosts?: string[]; piiScre
   cleanup.push(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, ".agenthub"));
   const routing = readFileSync(join(import.meta.dir, "../templates/routing.toml"), "utf8")
+    .replaceAll('pi_backend = "mlx"', 'pi_backend = "dgx"')
     .replace(/^pii_patterns = .*$/m, 'pii_patterns = ["\\\\b\\\\d{6}-\\\\d{7}\\\\b", "SOURCE-PRIVATE"]')
     .replace('pii_screen = "off"', `pii_screen = "${options.piiScreen ? "local" : "off"}"`);
   writeFileSync(join(root, ".agenthub/routing.toml"), routing);

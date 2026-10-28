@@ -22,7 +22,7 @@ function fixture(text: string, initiallyPrivate = false) {
     markPrivate: () => { current = { ...current, private: true }; return current; },
   };
   const policy: SourceReadPolicy = { screen: async () => true, valid: () => true, canReadPrivate: async () => false };
-  return { registry, policy, get meta() { return current; }, get reads() { return reads; }, set text(value: string) { stored = value; } };
+  return { registry, policy, get meta() { return current; }, get reads() { return reads; }, get text() { return stored; }, set text(value: string) { stored = value; } };
 }
 
 test("source read validates exact ids and bounded range integers", () => {

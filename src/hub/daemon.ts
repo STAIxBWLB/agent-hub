@@ -2798,6 +2798,7 @@ export async function startDaemon(opts: DaemonOptions) {
   const taskOp = async (...args: Parameters<typeof taskOpBody>): Promise<string> => {
     const [by, op, input] = args;
     if (readOnlyPeer(by) && !READ_ONLY_HUB_TOOLS.has(op)) throw new PreEffectToolRefusal("read-only instance cannot mutate hub state");
+    const sourceCurrent = op === "hub_source_read" ? sourceReadCurrent(by, args[3] ?? false, args[4] ?? false) : undefined;
     const nativeTurn = turns.get(by);
     const effectful = ownerToolEffect(op, input);
     if (nativeTurn && effectful) nativeTurn.effectsPending = (nativeTurn.effectsPending ?? 0) + 1;
@@ -2811,6 +2812,7 @@ export async function startDaemon(opts: DaemonOptions) {
       const readAuthority=op==="hub_task_show"?runningReviewAuthority(by,Number(input?.id)):undefined;
       const before=readAuthority?.();if(before)throw new PreEffectToolRefusal(before);
       const text = await taskOpBody(...args);
+      if (sourceCurrent && !sourceCurrent()) throw new PreEffectToolRefusal("source read unavailable");
       if (nativeTurn && effectful && turns.get(by) === nativeTurn) nativeTurn.taskEffect = true;
       const after=readAuthority?.();if(after)throw new PreEffectToolRefusal(after);
       if (conducted) {
@@ -2844,6 +2846,15 @@ export async function startDaemon(opts: DaemonOptions) {
     if (!id || !PEER_ID.test(id)) throw new PreEffectToolRefusal(`${name} must be a peer id, not ${JSON.stringify(v).slice(0, 60)}`);
     return id;
   };
+  function sourceReadCurrent(by: PeerId, inProcess: boolean, piiTurn: boolean): () => boolean {
+    const owner = bus.peers.get(by), generation = connectionGeneration(by);
+    const authority = childToolAuthority.getStore();
+    const routing = activeRouting(), policyKey = JSON.stringify({ signals: routing.signals, constraints: routing.constraints, paths: config.pii?.paths ?? [], mlx: config.mlx, model: routing.local.fixed_model });
+    return () => !stopping && bus.peers.get(by) === owner && connectionGeneration(by) === generation
+      && (!authority || authority.by === by && authority.current())
+      && (!inProcess || !piiTurn || holdsPii(by))
+      && policyKey === JSON.stringify({ signals: activeRouting().signals, constraints: activeRouting().constraints, paths: config.pii?.paths ?? [], mlx: config.mlx, model: activeRouting().local.fixed_model });
+  }
   const sourceRegistry = new SourceRegistry(opts.stateDir);
   async function taskOpBody(by: PeerId, op: string, a: Record<string, any>, inProcess = false, piiTurn = false): Promise<string> {
     if (BOUNDED_TASK_TOOLS.has(op)) {
@@ -2887,13 +2898,7 @@ export async function startDaemon(opts: DaemonOptions) {
     }
     if (op === "hub_source_read") {
       validateSourceRead(a);
-      const owner = bus.peers.get(by), generation = connectionGeneration(by);
-      const authority = childToolAuthority.getStore();
-      const routing = activeRouting(), policyKey = JSON.stringify({ signals: routing.signals, constraints: routing.constraints, paths: config.pii?.paths ?? [], mlx: config.mlx, model: routing.local.fixed_model });
-      const valid = () => !stopping && bus.peers.get(by) === owner && connectionGeneration(by) === generation
-        && (!authority || authority.by === by && authority.current())
-        && (!inProcess || !piiTurn || holdsPii(by))
-        && policyKey === JSON.stringify({ signals: activeRouting().signals, constraints: activeRouting().constraints, paths: config.pii?.paths ?? [], mlx: config.mlx, model: activeRouting().local.fixed_model });
+      const valid = sourceReadCurrent(by, inProcess, piiTurn);
       return JSON.stringify(await sourceRead(sourceRegistry, a, {
         valid,
         canReadPrivate: async () => {
