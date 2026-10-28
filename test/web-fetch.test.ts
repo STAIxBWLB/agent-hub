@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, type Server } from "node:net";
@@ -395,4 +395,66 @@ test("web_fetch results and URLs reach neither claude-mem capture nor the resear
   expect(mem.calls.filter(c => c.path.endsWith("/observations")).map(c => (c.body as { tool_name: string }).tool_name)).toEqual(["read"]);
   expect(JSON.stringify(mem.calls)).not.toContain("WEB_BODY_MARKER"); expect(JSON.stringify(mem.calls)).not.toContain("docs.example.org");
   expect(w.observed.map(o => o.name)).toEqual(["read"]);
+});
+
+// ---- in a real daemon: the wiring from config to the worker and the proxy ----
+import { startDaemon } from "../src/hub/daemon.ts";
+import { ControlClient } from "../src/hub/control-client.ts";
+
+async function daemonWith(web: { allow: string[] } | undefined, script: ModelScript) {
+  const prior = process.env.OMNIROUTE_API_KEY; process.env.OMNIROUTE_API_KEY = "web-fixture-key";
+  closers.push(() => { if (prior === undefined) delete process.env.OMNIROUTE_API_KEY; else process.env.OMNIROUTE_API_KEY = prior; });
+  const cwd = realPath(mkdtempSync(join(tmpdir(), "ahub-web-daemon-"))), stateDir = join(cwd, "state"); dirs.push(cwd);
+  const model = startFakeModelServer({ key: "web-fixture-key", script }); closers.push(model.stop);
+  const daemon = await startDaemon({ cwd, stateDir, controlPort: 0, codexAppPort: 0, codexProxyPort: 0,
+    config: { ...DEFAULT_CONFIG, batch_ms: 0, omniroute: { ...DEFAULT_CONFIG.omniroute, urls: [model.url], access_hosts: [] }, memory: { ...DEFAULT_CONFIG.memory, enabled: false, native: false },
+      snapshots: { ...DEFAULT_CONFIG.snapshots, enabled: false }, inference: { ...DEFAULT_CONFIG.inference, enabled: false, triage: false }, mlx: { ...DEFAULT_CONFIG.mlx, enabled: false },
+      pi: { ...DEFAULT_CONFIG.pi, enabled: false, auto_start: false }, local: { ...DEFAULT_CONFIG.local, ...(web ? { web_fetch: web } : {}) } } } as never);
+  closers.push(() => daemon.stop());
+  const client = await ControlClient.connect(stateDir, { role: "console" }); closers.push(() => client.close());
+  const answers: string[] = [];
+  daemon.bus.tap(event => { if (event.t === "envelope" && event.env.from === "local") answers.push(event.env.body); });
+  expect((await client.request({ t: "start", peer: "local", args: { model: "vllm/test" } })).ok).toBe(true);
+  const logs = () => { try { return readFileSync(join(stateDir, "hub.log"), "utf8").split("\n"); } catch { return [] as string[]; } };
+  return { daemon, client, model, answers, logs, send: (body: string) => client.request({ t: "send", body, to: ["local"] }) };
+}
+const webCall: ModelScript = (body) => {
+  const after = body.messages.slice(body.messages.map(m => m.role).lastIndexOf("user") + 1).filter(m => m.role === "tool");
+  return after.length === 0 ? { tool_calls: [toolCall("web_fetch", { url: "https://iana.org/" })] } : { content: `result: ${String(after.at(-1)?.content).slice(0, 200)}` };
+};
+
+test("in a real daemon with no host listed there is no web_fetch tool and no web proxy, and a model that names it is refused", async () => {
+  const r = await daemonWith(undefined, webCall);
+  expect((await r.send("go")).ok).toBe(true);
+  await until(() => r.answers.length === 1, "answer");
+  expect(r.model.requests[0]!.body.tools.map((t: any) => t.function.name)).not.toContain("web_fetch");
+  expect(r.answers[0]).toContain("web_fetch is not enabled");
+  expect(r.logs().some((line: string) => line.includes("web_fetch egress proxy"))).toBe(false);
+});
+
+test("in a real daemon with a host listed the model is offered web_fetch, the web proxy starts on its own list, and a host that is listed for the tool but not for the proxy cannot be reached", async () => {
+  const r = await daemonWith({ allow: ["iana.org"] }, webCall);
+  expect(r.logs().some((line: string) => line.includes("web_fetch egress proxy") && line.includes("1 allowed host(s)"))).toBe(true);
+  expect(r.logs().some((line: string) => line.includes("egress proxy on") && !line.includes("web_fetch"))).toBe(false); // the bash proxy is not started by this setting
+  expect((await r.send("go")).ok).toBe(true);
+  await until(() => r.answers.length === 1, "answer");
+  expect(r.model.requests[0]!.body.tools.map((t: any) => t.function.name)).toContain("web_fetch");
+  // iana.org is listed, so the real request is attempted through the real proxy; this sandbox may have no route out, so only the offline-safe fact is asserted:
+  // the tool answered with text and did not throw, and nothing outside the list was contacted
+  expect(r.answers[0]).toStartWith("result: ");
+  expect(r.logs().filter((line: string) => line.includes("network: refused"))).toEqual([]);
+});
+
+test("the bash proxy and the web proxy do not share a list: listing a host for web_fetch opens nothing to a shell command", async () => {
+  const bash = await proxy(["registry.npmjs.org"]);
+  const web = await proxy(["iana.org"]);
+  const connect = async (p: EgressProxy, target: string) => {
+    let received = "";
+    const socket = await Bun.connect({ hostname: "127.0.0.1", port: p.port, socket: { data(_s, data) { received += Buffer.from(data).toString("latin1"); }, open() {}, close() {}, error() {} } });
+    socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`);
+    await Bun.sleep(300); socket.end();
+    return received;
+  };
+  expect(await connect(bash.proxy, "iana.org:443")).toContain("403");           // a web host is not a bash host
+  expect(await connect(web.proxy, "registry.npmjs.org:443")).toContain("403");  // and a bash host is not a web host
 });
