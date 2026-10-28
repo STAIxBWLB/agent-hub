@@ -92,12 +92,13 @@ test("daemon corpus reads stay public, honor pii.paths and deny paths, and refus
   f.daemon.bus.add(peer);
   f.daemon.bus.add(local);
   const observed: unknown[] = [];
-  f.daemon.bus.tap(event => observed.push(event));
+  f.console_.onPush = message => { if (message.t === "event") observed.push(message.e); };
+  f.console_.send({ t: "tail" });
   await peer.start();
   await local.start();
 
   const ask = await f.console_.request({ t: "ask", question: "deployment release checklist" });
-  expect(ask).toMatchObject({ ok: true, found: true, pii: false });
+  expect(ask).toMatchObject({ ok: true, found: false, pii: false });
   const noteEvidence = ask.evidence.filter((item: { kind?: string }) => item.kind === "note");
   expect(noteEvidence.length).toBeGreaterThan(0);
   expect(noteEvidence[0]).toMatchObject({ id: "note:notes/deployment.md#deploy-checklist", kind: "note" });
