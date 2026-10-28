@@ -3680,6 +3680,24 @@
       "replacement": "                    submit(SECOND_PROMPT); queued = true;",
       "testFile": "test/smoke-qwen.test.ts",
       "testName": "completed first turns cannot prove queued input"
+      "id": "corpus-whole-note-screen",
+      "file": "src/hub/corpus-evidence.ts",
+      "search": "policy.safe(`${read.text}\\n${currentMetadata}`, [read.path, record.path, record.id])",
+      "replacement": "policy.safe(`${read.text.slice(0, 20)}\\n${currentMetadata}`, [read.path, record.path, record.id])",
+      "testFile": "test/corpus-evidence.test.ts",
+      "testName": "the complete current note and raw metadata are screened before excerpts are returned"
+      "id": "ask-pii-campus-transport",
+      "file": "src/hub/inference.ts",
+      "search": "const res = await this.d.omni.chat(body, { signal, ...(onCampusOnly ? { onCampusOnly: true } : {}) });",
+      "replacement": "const res = await this.d.omni.chat(body, { signal });",
+      "testFile": "test/ask-corpus.test.ts",
+      "testName": "a PII task requires an on-campus call and pins the selected host model before gateway probing"
+      "id": "brief-corpus-private-fence",
+      "file": "src/memory/brief.ts",
+      "search": "try { return allowed() && this.corpus.policyVersion() === corpusRevision; }",
+      "replacement": "try { return this.corpus.policyVersion() === corpusRevision; }",
+      "testFile": "test/brief-corpus.test.ts",
+      "testName": "privacy or policy changes during a corpus await drop the brief without poisoning seen state"
     }
   ]
 }
