@@ -26,7 +26,7 @@ afterEach(() => { for (const close of cleanup.splice(0).reverse()) close(); });
 async function fixture(options: { roles?: Record<string, string[]>; onlyOwner?: boolean; wip?: number; tracking?: boolean; pullOnly?: boolean; hold?: boolean; journal?: boolean; gh?: SdlcGh; requiredChecks?: readonly string[]; ciWatch?: { deadlineMs: number; pollMs: number } } = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "ahub-task-pressure-"));
   let board = new Board(join(cwd, "hub.db"));
-  const control: { policy: QueueBackpressurePolicy; now?: number; tracking: boolean; hold: boolean; lifecycle: "off" | "advise" } = { policy: { max_queued: 0, max_oldest_s: 0 }, tracking: options.tracking ?? true, hold: options.hold ?? true, lifecycle: "off" };
+  const control: { policy: QueueBackpressurePolicy; now?: number; tracking: boolean; hold: boolean; lifecycle: "off" | "advise" | "enforce" } = { policy: { max_queued: 0, max_oldest_s: 0 }, tracking: options.tracking ?? true, hold: options.hold ?? true, lifecycle: "off" };
   // A lifecycle hold retains queued traffic without changing the peers' otherwise eligible idle states.
   const journal = options.journal ? new DeliveryJournal({ file: join(cwd, "delivery.db"), projectRoot: cwd, projectId: "pressure", instanceId: "pressure-run" }) : undefined;
   const bus = new Bus({ batchMs: 0, queueCap: 1000, deliveryHeld: () => control.hold, trackQueuePressure: () => control.tracking, ...(journal ? { journal } : {}) });
@@ -503,4 +503,22 @@ test("a newly queue-blocked reviewer cannot directly approve work proposed witho
   const done = await f.tasks.done("codex", row.id, "needs independent review");
   expect(done).toMatchObject({ state: "in_review", reviewer: USER });
   expect(done.history.findLast(row => row.event === "done")?.reviewBlocked).toBe(true);
+});
+
+
+test("a separate plan gate retains a queue origin without self-scheduling until another admission wake", async () => {
+  const f = await fixture({ onlyOwner: true }); f.wire();
+  f.control.policy = { max_queued: 1, max_oldest_s: 0 }; const ids = f.enqueue("codex", 2);
+  const row = await f.tasks.propose(HUB, { title: "plan gate after queue hold", class: "implement" });
+  await settled(f.tasks); expect(row.owner).toBeNull();
+  f.control.lifecycle = "enforce";
+  for (const id of ids) f.bus.withdraw(id);
+  await settled(f.tasks);
+  expect(f.board.get(row.id)?.owner).toBeNull();
+  expect(f.board.queuePressureStallPage().rows.map(stall => stall.task)).toContain(row.id);
+  const notices = f.notices.length;
+  await new Promise<void>(resolve => setImmediate(resolve));
+  expect(f.tasks.queuePressureRechecksPending()).toBe(0); expect(f.notices.length).toBe(notices);
+  f.control.lifecycle = "off"; f.tasks.scheduleQueuePressureRecheck();
+  await owned(f, row.id, "codex");
 });
