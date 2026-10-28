@@ -3384,13 +3384,16 @@ export class Tasks {
       if (!scan.truncated) store.markBaselined(entry.id, now); else store.polled(entry.id, now);
       return { id: entry.id, outcome: "baseline", tasks: [], files: scan.files.length };
     }
+    // A file the trigger already knows by content (a rename, a touch, a copy) proposes nothing, but its new path, size and mtime are recorded, so the next scan finds it with
+    // `known` instead of hashing it again: otherwise such files would spend the hash budget on every poll and starve a genuinely new one behind them.
+    for (const file of scan.files) if (!file.seen && !store.isNew(entry.id, file.sha256)) store.observe(entry.id, file, now);
     // `isNew` is asked again for each file below, not only here: two files with the same new bytes can arrive before one poll, and the first one's record must suppress the second.
     const fresh = scan.files.filter(file => !file.seen && store.isNew(entry.id, file.sha256));
     const tasks: number[] = [];
     let error: string | undefined;
     for (const file of fresh) {
       if (tasks.length >= MAX_NEW_PER_POLL || hold()) break;
-      if (!store.isNew(entry.id, file.sha256)) continue;
+      if (!store.isNew(entry.id, file.sha256)) { store.observe(entry.id, file, now); continue; } // a duplicate found inside the loop: recorded, never a second task
       let overtaken = false;
       const fence = () => { const reason = hold(); if (reason) overtaken = true; return reason; };
       try {

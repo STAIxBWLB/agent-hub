@@ -199,6 +199,15 @@ export class FolderStore {
   record(trigger: string, file: Pick<ScannedFile, "real" | "size" | "mtime" | "sha256">, task: number | null, now: number): void {
     this.db.query("INSERT OR REPLACE INTO folder_seen(trigger, real_path, size, mtime, sha256, task, at) VALUES(?, ?, ?, ?, ?, ?, ?)").run(trigger, file.real, file.size, file.mtime, file.sha256, task, now);
   }
+  /**
+   * Record where a file whose content the trigger already knows (a rename, a touch, a copy of earlier bytes) is NOW, by path, size and mtime, so the next scan finds it with
+   * `known` and does not hash it again. It keeps the task the content already has and proposes nothing. Without this a pile of such files would be hashed on every poll and
+   * spend the whole hash budget ahead of a genuinely new file, which would then wait forever.
+   */
+  observe(trigger: string, file: Pick<ScannedFile, "real" | "size" | "mtime" | "sha256">, now: number): void {
+    const prior = this.db.query("SELECT task FROM folder_seen WHERE trigger = ? AND sha256 = ? AND task IS NOT NULL ORDER BY at LIMIT 1").get(trigger, file.sha256) as { task: number } | null;
+    this.record(trigger, file, prior?.task ?? null, now);
+  }
   rows(trigger?: string): FolderSeenRow[] {
     return (trigger === undefined ? this.db.query("SELECT * FROM folder_seen ORDER BY trigger, at, real_path").all() : this.db.query("SELECT * FROM folder_seen WHERE trigger = ? ORDER BY at, real_path").all(trigger)) as FolderSeenRow[];
   }

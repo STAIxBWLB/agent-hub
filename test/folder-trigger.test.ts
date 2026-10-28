@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -412,6 +412,56 @@ test("a folder too big to hash in one poll is baselined over several polls and p
   r.put("really-new.txt", "after the baseline");
   const third = (await r.poll())[0]!;
   expect(third.tasks).toHaveLength(1); expect(r.made()).toHaveLength(1);
+});
+
+test("renamed, touched and duplicate files never starve a genuinely new file: they are recorded where they now are and are not hashed again", async () => {
+  const r = rig();
+  const N = MAX_HASH_FILES; // as many as one scan may hash
+  for (let i = 0; i < N; i++) r.put(`a${String(i).padStart(4, "0")}.txt`, `content ${i}`);
+  await r.poll();
+  expect(r.store.baselined("inbox")).toBe(true);
+  // rename every one (the name sorts before the new file), then add a genuinely new file that sorts after all of them
+  for (let i = 0; i < N; i++) renameSync(join(r.dir, "inbox", `a${String(i).padStart(4, "0")}.txt`), join(r.dir, "inbox", `b${String(i).padStart(4, "0")}.txt`));
+  r.put("zz-new.txt", "genuinely new bytes");
+  const before = r.registered.length;
+  let proposed = 0;
+  for (let poll = 0; poll < 4 && proposed === 0; poll++) proposed += (await r.poll())[0]!.tasks.length;
+  expect(proposed, "the new file was reached and proposed").toBe(1);
+  expect(r.registered.length - before).toBe(1); expect(r.registered.at(-1)!.name).toBe("zz-new.txt");
+  expect(r.made()).toHaveLength(1);
+  // the renamed files are known at their new paths, so the next scan does not hash them
+  const scan = scanFolder(ENTRY, r.policy, (real, size, mtime) => r.store.known("inbox", real, size, mtime));
+  expect(scan.files.filter(file => !file.seen)).toEqual([]);
+  expect(scan.truncated).toBe(false);
+});
+
+test("touched files and copies of earlier bytes are recorded where they are, keep the task their content has, and never propose", async () => {
+  const r = rig(); r.put("a.txt", "alpha"); await r.poll();
+  r.put("b.txt", "beta"); const [first] = await r.poll(); const taskOfBeta = first!.tasks[0]!;
+  utimesSync(join(r.dir, "inbox", "b.txt"), new Date(T0 + 7000), new Date(T0 + 7000)); // touched: a new mtime, the same hash
+  r.put("copy-of-beta.txt", "beta");                                                   // a copy of bytes the trigger has a task for
+  r.put("copy-of-alpha.txt", "alpha");                                                 // a copy of baseline bytes: no task
+  expect((await r.poll())[0]).toMatchObject({ outcome: "none", tasks: [] });
+  const rows = r.store.rows("inbox");
+  const at = (name: string) => rows.find(row => row.real_path.endsWith(`/${name}`))!;
+  expect(at("copy-of-beta.txt")).toMatchObject({ task: taskOfBeta });
+  expect(at("copy-of-alpha.txt").task).toBeNull();
+  expect(at("b.txt")).toMatchObject({ mtime: Math.floor(statSync(join(r.dir, "inbox", "b.txt")).mtimeMs) });
+  expect(r.made()).toHaveLength(1);
+  const scan = scanFolder(ENTRY, r.policy, (real, size, mtime) => r.store.known("inbox", real, size, mtime));
+  expect(scan.files.every(file => file.seen)).toBe(true); // nothing is hashed on the next poll
+});
+
+test("a duplicate found inside the pass is recorded too, and proposes no second task", async () => {
+  const r = rig(); await r.poll();
+  r.put("first.txt", "same new bytes"); r.put("second.txt", "same new bytes");
+  const [run] = await r.poll();
+  expect(run!.tasks).toHaveLength(1);
+  const rows = r.store.rows("inbox");
+  expect(rows.map(row => row.real_path.split("/").pop()).sort()).toEqual(["first.txt", "second.txt"]);
+  expect(rows.find(row => row.real_path.endsWith("second.txt"))).toMatchObject({ task: run!.tasks[0] });
+  const scan = scanFolder(ENTRY, r.policy, (real, size, mtime) => r.store.known("inbox", real, size, mtime));
+  expect(scan.files.every(file => file.seen)).toBe(true);
 });
 
 test("a failure while registering leaves the file to be tried again, records no task and keeps the order", async () => {

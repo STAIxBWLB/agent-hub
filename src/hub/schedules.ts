@@ -152,6 +152,7 @@ export interface FolderStorePort {
   polled(trigger: string, now: number, error?: string): void;
   isNew(trigger: string, sha256: string): boolean;
   record(trigger: string, file: Pick<ScannedFile, "real" | "size" | "mtime" | "sha256">, task: number | null, now: number): void;
+  observe(trigger: string, file: Pick<ScannedFile, "real" | "size" | "mtime" | "sha256">, now: number): void;
   prune(keep: readonly string[]): void;
 }
 /** New files one poll registers per trigger: a drop of a whole archive becomes a handful of tasks per tick, never a burst. */
