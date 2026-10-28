@@ -82,8 +82,8 @@ test("#551 only host-validated malformed probes record a stage and never create 
     await expect(ControlClient.connect(f.stateDir, { role: "tools", peer: f.peer, launchId: "00000000-0000-4000-8000-000000000000", projectRoot: f.root })).rejects.toThrow();
     const reply = await f.tools.request({ t: "permission_failure_probe", request: { tool_name: "Bash", input: { command: inputCanary }, tool_use_id: "", stage: inputCanary } });
     expect(reply.ok).toBe(true); expect(JSON.stringify(reply)).not.toContain(inputCanary);
-    const status = (await f.console_.request({ t: "status" })).status;
-    expect(status.permissions).toEqual([]);
+    const snapshot = await f.console_.request({ t: "ui_snapshot", after: 0 });
+    expect(snapshot.permissions).toEqual([]);
     const line = await f.finish(); expect(line).toContain("stage=invalid_permission_request");
     expect(line).not.toContain("request="); expect(f.readLog()).not.toContain(inputCanary); expect(f.readLog()).not.toContain(nativeCanary);
     expect(await f.tools.request({ t: "permission_failure_probe", request: null })).toMatchObject({ ok: false });
