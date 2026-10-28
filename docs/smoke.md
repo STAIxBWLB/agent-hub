@@ -2068,3 +2068,33 @@ git worktree add -b smoke-codex-impl .worktrees/codex-impl
 - Compare `ahub status`, `ahub task show <id>` (and `--json`), `ahub route explain <id>`, console Tasks/peer detail and dashboard task detail. Check distinct six ids, the correct form and capable/effective roles, planner/owner/reviewer plus their recorded reasons, and `ownerIsolation` for each writing extra. The planner-only canonical-checkout instances should report not isolated with a fixed reason, rather than be mistaken for isolated code writers. Missing evidence is unknown or not isolated, never success.
 - Exercise a second turn of a Claude implementer's task and a separate new task, recording that the former resumes its own per-task session and the latter does not inherit it. Keep queues, MCP actors and native sessions distinct while the other role instances remain attached. Stop the disposable trial's runtimes and verify owned-group cleanup without stopping unrelated project peers.
 - Record a dated receipt here or in `docs/verification/` with the candidate/native versions, six actual instance ids and forms, task ids/holder histories, isolation evidence, read-only confirmations/refusals, planner hook evidence, session/queue separation, cleanup result and any failures or unknowns. Do not copy credentials or private task bodies. Until that receipt exists, this leg remains **unverified** and supplies no native-account or sandbox attestation.
+
+## Disposable Qwen Q2 runner (#787, task #462)
+
+`ahub --live-test smoke run qwen-dual-output` runs only the Q2 dual-file protocol leg: submit a fixed synthetic first prompt, submit a second while the first streamed turn is observed running, and require the second user event after the first assistant/message_stop pair. Two assistant/message_stop pairs must complete in order. It never answers a tool approval or sends TUI keys.
+
+The first slice requires a freshly initialized, uncommitted Git project with no tracked index entries, refs or remotes. Its canonical root must be an immediate `ahub-smoke-*` child of the system temporary directory. It needs its own registered project id, an explicitly set `AGENTHUB_HOME` inside that root, and an existing state directory inside the same root. Linked worktrees, symlinked paths, the default real hub home and ordinary projects are refused. These are disposable-target safety checks, not a sandbox for a malicious executable.
+
+From a person terminal, prepare the fixture without borrowing an existing project's HOME or state:
+
+```sh
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/ahub-smoke-XXXXXX")
+scratch=$(cd "$scratch" && pwd -P)
+git -c init.templateDir= init -q "$scratch"
+export AGENTHUB_HOME="$scratch/hub-home"
+mkdir -p "$AGENTHUB_HOME" "$scratch/.agenthub/state"
+ahub --project "$scratch" init
+ahub --project "$scratch" projects --json
+```
+
+Take the fixture's `p_...` id from that last result. Configure `OPENAI_API_KEY`, `OPENAI_BASE_URL` and `OPENAI_MODEL` through the normal account setup; do not paste credentials into the command or a receipt. The runner uses the configured HTTP or HTTPS OpenAI-compatible endpoint. Then run:
+
+```sh
+ahub --project "$scratch" --live-test smoke run qwen-dual-output --project-id <fixture-id> --receipt receipt.json --timeout-ms 60000 --json
+```
+
+The runner creates a private native HOME and a separate empty Git project beneath the fixture. Qwen gets only the required environment, no caller agent markers, hooks or MCP servers. Its native version must pass the existing `qwen-dual` policy. Linux uses util-linux `script`; macOS uses a Bun PTY bridge because BSD `script` requires a terminal on its parent's stdin. The bridge remains an owned child and its native descendants use the same process-group cleanup. PTY output is drained with a 1 MiB cap and is never logged or saved in the receipt. Events have an 8 MiB cap and individual JSON lines a 64 KiB cap. Deadline, abort, early exit, an approval request, malformed data or failed cleanup cannot produce a passing receipt. Only processes owned by this invocation are stopped. Native files are removed after confirmed cleanup; unconfirmed cleanup leaves its private `.smoke-run-*` directory for inspection.
+
+The new receipt must be a previously absent file directly under the fixture root. It contains fixed schema/leg/outcome/reason names, boolean checks, counts and timings only. It contains no prompt, native session id, credential, endpoint, model name, native output or filesystem path. `--json` prints that same document; the default output is a short outcome/count summary. Each invocation uses the existing ids-only CLI audit, including delegated `--live-test` invocations. Never delete a fixture whose cleanup is unconfirmed.
+
+Real-account Q2 receipt: **UNVERIFIED**. The conductor runs this leg with the person after merge. Fake PTY/protocol tests are implementation evidence only. Q3 approvals, Q5 FIFO and Q6 resume are later executable legs. Q4 remains the known native Qwen turn-stop limitation documented in the 2026-10-25 T0 receipt; the runner's owned-group timeout cleanup does not claim a supported in-session turn interruption.

@@ -1251,6 +1251,44 @@ const commands: Record<string, () => Promise<void> | void> = {
     return shown(renderReleaseChange)(taskOp("release_change", { name, revision: Number(revision), fields }));
   },
 
+  smoke: async () => {
+    // Log every live-test invocation, including syntax/target refusals; native output never joins the audit.
+    if (liveTest && caller.role === "console") {
+      try { recordCliAudit(stateDir, "user", commandLabel, "run"); }
+      catch { return fail("smoke audit unavailable; nothing was executed"); }
+    }
+    const options = outputOptions();
+    const operands = args.filter(arg => arg !== "--json");
+    const usage = "usage: ahub --live-test smoke run qwen-dual-output --project-id <id> --receipt <file.json> [--timeout-ms <100..120000>] [--json]";
+    const values = new Map<string, string>();
+    if (operands[0] !== "run" || operands[1] !== "qwen-dual-output") return fail(usage);
+    for (let n = 2; n < operands.length; n += 2) {
+      const key = operands[n], value = operands[n + 1];
+      if (!key || !["--project-id", "--receipt", "--timeout-ms"].includes(key) || !value || value.startsWith("--") || values.has(key)) return fail(usage);
+      values.set(key, value);
+    }
+    if (!values.has("--project-id") || !values.has("--receipt")) return fail(usage);
+    const home = process.env.AGENTHUB_HOME;
+    if (!liveTest || !home) return fail("smoke target refused");
+    const { validateSmokeTarget } = await import("./smoke-target.ts");
+    const { runSmoke } = await import("./smoke-run.ts");
+    const project = registeredProjects(home).find(project => project.root === cwd && project.stateDir === stateDir);
+    if (!project) return fail("smoke target refused");
+    // Keep path spelling for the guard: project selection above canonicalizes symlinks for ordinary CLI commands.
+    const smokeCwd = selector && selector !== project.id ? resolve(invokedFrom, selector) : cwd;
+    const checked = validateSmokeTarget({ cwd: smokeCwd, hubHome: home, project, expectedProjectId: values.get("--project-id")!, liveTest });
+    const target = { ...checked, check: () => { checked.check(); assertDelegatedAuditConsumer(); } };
+    const abort = new AbortController();
+    const interrupted = () => abort.abort();
+    process.on("SIGINT", interrupted); process.on("SIGTERM", interrupted);
+    try {
+      const result = await runSmoke(target, { leg: "qwen-dual-output", receipt: values.get("--receipt")!, timeoutMs: Number(values.get("--timeout-ms") ?? "60000"), signal: abort.signal });
+      process.exitCode = result.outcome === "passed" ? 0 : 1;
+      if (options.json) return console.log(JSON.stringify(result));
+      console.log(`smoke ${result.outcome} (${result.reason}): ${result.counts.submits} submits, ${result.counts.stops} stops; cleanup ${result.checks.cleaned ? "confirmed" : "unconfirmed"}`);
+    } finally { process.removeListener("SIGINT", interrupted); process.removeListener("SIGTERM", interrupted); }
+  },
+
   broker: async () => {
     const { runBrokerCommand, brokerCommandError } = await import("./broker.ts");
     try { await runBrokerCommand(args, stateDir); }
