@@ -11953,7 +11953,7 @@ var init_claude_implementer = __esm(() => {
         this.childAbort?.abort();
         this.childAbort = undefined;
         if (current()) {
-          const reason = error instanceof PrintChildCleanupError ? failureReason === "Claude implementer turn failed (details withheld)" ? failureReason : failureReason ? `Claude implementer cleanup incomplete; ${failureReason}` : "Claude implementer cleanup incomplete" : failureReason ?? "Claude implementer turn failed";
+          const reason = error instanceof PrintChildCleanupError ? failureReason === "Claude implementer turn failed (details withheld)" ? "Claude implementer cleanup incomplete; details withheld" : failureReason ? `Claude implementer cleanup incomplete; ${failureReason}` : "Claude implementer cleanup incomplete" : failureReason ?? "Claude implementer turn failed";
           this.settle(this.inputReleased ? "needs_review" : "failed_safe", reason);
           if (this.owned)
             this.setState("busy");
@@ -31334,25 +31334,11 @@ var NATIVE_PERMISSION_PROBE_MAX_BYTES = 4096;
 var NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH = 4;
 var MAX_DEPTH = 8;
 var MAX_NODES = 256;
-function validateNativePermissionRequest(value) {
-  try {
-    if (!value || typeof value !== "object" || types5.isProxy(value) || Array.isArray(value))
-      return false;
-    const prototype = Object.getPrototypeOf(value);
-    if (prototype !== Object.prototype && prototype !== null)
-      return false;
-    const keys = Reflect.ownKeys(value);
-    if (keys.length !== 3 || !keys.every((key) => key === "tool_name" || key === "input" || key === "tool_use_id"))
-      return false;
-    const data = (key) => {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key);
-      return descriptor && Object.hasOwn(descriptor, "value") ? descriptor.value : undefined;
-    };
-    const tool = data("tool_name"), input = data("input"), id = data("tool_use_id");
-    return typeof tool === "string" && tool.length <= 128 && tool === tool.trim() && /^[A-Za-z][A-Za-z0-9_.:/-]{0,127}$/.test(tool) && input !== null && typeof input === "object" && !Array.isArray(input) && typeof id === "string" && id.length > 0 && id.length <= 256;
-  } catch {
+function acceptsNativePermissionRequest(value) {
+  const args = value;
+  if (typeof args?.tool_name !== "string" || !/^[A-Za-z][A-Za-z0-9_.:/-]{0,127}$/.test(args.tool_name) || !args.input || typeof args.input !== "object" || Array.isArray(args.input) || typeof args.tool_use_id !== "string" || !args.tool_use_id.length || args.tool_use_id.length > 256)
     return false;
-  }
+  return true;
 }
 function buildNativePermissionProbe(request) {
   try {
@@ -31782,7 +31768,7 @@ async function callTool(req) {
     const deny = (message) => text5(JSON.stringify({ behavior: "deny", message }));
     if (!permissionTool || !hub)
       return deny("hub permission unavailable");
-    if (!validateNativePermissionRequest(args)) {
+    if (!acceptsNativePermissionRequest(args)) {
       if (++invalidPermissionAttempts <= NATIVE_PERMISSION_PROBE_MAX_PER_LAUNCH) {
         const probe = buildNativePermissionProbe(args);
         if (probe)
