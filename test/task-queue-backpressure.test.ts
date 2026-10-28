@@ -398,3 +398,29 @@ test("a queue-held review moving to its new reviewer keeps the pending CI notifi
     expect(reviews).toHaveLength(1); // Advise-mode CI completion does not duplicate its already offered review.
   } finally { releaseRead.resolve(); }
 });
+
+
+test("legacy ready diagnostics still record and clear stalls while pressure is disabled", async () => {
+  const f = await fixture({ onlyOwner: true });
+  f.bus.pause("codex");
+  const legacy = f.board.propose(USER, { title: "diagnostic legacy work", class: "implement" });
+  const before = f.notices.length;
+  await f.tasks.releaseReady(); await f.tasks.releaseReady();
+  expect(f.tasks.stalled().find(stall => stall.task === legacy.id)?.cause.refusals).toContainEqual({ peer: "codex", code: "paused" });
+  expect(f.notices.slice(before).filter(line => line.startsWith(`Task #${legacy.id} stalled:`))).toHaveLength(1);
+  expect(f.board.get(legacy.id)?.owner).toBeNull();
+  f.bus.resume("codex"); await f.tasks.releaseReady();
+  expect(f.tasks.stalled()).toEqual([]);
+  expect(f.board.get(legacy.id)?.owner).toBeNull();
+});
+
+test("diagnostic-only legacy queue stalls do not become automatic proposal retry origins", async () => {
+  const f = await fixture({ onlyOwner: true, pullOnly: true, hold: false }); f.wire();
+  f.control.policy = { max_queued: 1, max_oldest_s: 0 }; f.enqueue("codex", 2);
+  const legacy = f.board.propose(USER, { title: "never offered legacy row", class: "implement" });
+  await f.tasks.releaseReady();
+  expect(f.tasks.stalled().find(stall => stall.task === legacy.id)?.cause.refusals).toContainEqual({ peer: "codex", code: "queue-count" });
+  expect(f.board.queuePressureStallPage().rows).toEqual([]);
+  f.bus.pull("codex"); await settled(f.tasks); await f.tasks.releaseReady();
+  expect(f.board.get(legacy.id)?.owner).toBeNull();
+});

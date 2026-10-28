@@ -3092,19 +3092,25 @@ export class Tasks {
   }
 
   async releaseReady(): Promise<void> {
+    const haveQueueOrigins = this.queuePressureKnown !== false && this.d.board.queuePressureStallPage(0, 1).afterTask > 0;
     for (const t of [...this.d.board.list("proposed")].sort(this.readyOrder)) {
       if (t.owner) { this.d.board.clearStall(t.id); continue; }
       const cancelledDependency = t.deps?.find(id => this.d.board.get(id)?.state === "cancelled");
       if (cancelledDependency) { this.reportStall(t, { kind: "cancelled-dependency", dependency: cancelledDependency, code: "cancelled" }); continue; }
       const last = t.history.findLast(entry => !QUIET_EVENTS.has(entry.event))?.event, planned = this.plannerPullRecord(t)?.pull === true;
       if (this.personUnassigned(t) || this.offered.has(t.id) || this.waitsFor(t).length) continue;
-      if ((!t.deps?.length && !t.history.some(h => h.event === "backlog pulled")) || (!planned && last !== "blocked" && last !== "ready" && last !== "reserved" && !this.isHeld(t))) continue;
+      if (haveQueueOrigins) {
+        const origin = this.d.board.queuePressureStallPage(t.id - 1, 1).rows.find(row => row.task === t.id);
+        if (origin && this.ordinaryQueueProposal(origin, t)) { this.scheduleQueuePressureRecheck(); continue; }
+      }
       const admission = planned ? this.plannerAssignment(t, true) : assign(t, this.states(), this.d.routing(), { exclude: this.excluded(t), ...this.health() });
       if (!admission.owner) {
-        this.reportStall(t, this.ownerStallCause(t, admission));
+        // A diagnostic legacy pass is not evidence that an automatic proposal was attempted.
+        this.reportStall(t, this.ownerStallCause(t, admission, false));
         continue;
       }
       this.d.board.clearStall(t.id);
+      if ((!t.deps?.length && !t.history.some(h => h.event === "backlog pulled")) || (!planned && last !== "blocked" && last !== "ready" && last !== "reserved" && !this.isHeld(t))) continue;
       // ponytail: a reserved owner (#207) that attaches after another peer that can take the task is passed over here like
       // an offline one; hold reserved tasks for a grace period if restarts show that up.
       await this.offerReady(t, "nothing left to wait for");
