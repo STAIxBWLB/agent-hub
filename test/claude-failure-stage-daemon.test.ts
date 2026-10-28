@@ -61,7 +61,14 @@ async function fixture(piiTransition = false) {
         await until(() => daemon!.bus.peers.get(peer)?.state === "idle", "owned fake cleanup completed");
         return readLog().split("\n").filter(line => line.includes("Claude implementer turn failed")).at(-1)!;
       },
-      async tightenPrivacy() { writeFileSync(routingFile, routing("local_only")); expect(await console_.request({ t: "settings_reload" })).toMatchObject({ ok: true }); },
+      async tightenPrivacy() {
+        writeFileSync(routingFile, routing("local_only"));
+        const result = await console_.request({ t: "settings_reload" });
+        expect(result).toMatchObject({ ok: true });
+        expect(result.applied).toContain("routing.constraints.pii");
+        expect(Array.isArray(result.rejected)).toBe(true);
+        expect(result.rejected).not.toContainEqual(expect.objectContaining({ key: "routing.constraints.pii" }));
+      },
       close: cleanup };
   } catch (error) { await cleanup(); throw error; }
 }
