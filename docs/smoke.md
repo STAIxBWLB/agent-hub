@@ -2078,7 +2078,7 @@ The first slice requires a freshly initialized, uncommitted Git project with no 
 From a person terminal, prepare the fixture without borrowing an existing project's HOME or state:
 
 ```sh
-scratch=$(mktemp -d "${TMPDIR%/}/ahub-smoke-XXXXXX")
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/ahub-smoke-XXXXXX")
 scratch=$(cd "$scratch" && pwd -P)
 git -c init.templateDir= init -q "$scratch"
 export AGENTHUB_HOME="$scratch/hub-home"

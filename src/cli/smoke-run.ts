@@ -13,7 +13,7 @@ export interface SmokeReceipt {
   reason: "complete" | "protocol" | "timeout" | "cleanup" | "aborted";
   checks: { disposable: boolean; protocol: boolean; queued: boolean; cleaned: boolean };
   counts: { submits: number; users: number; assistants: number; stops: number; events: number; terminalBytes: number };
-  timings: { totalMs: number; protocolMs: number };
+  timings: { totalMs: number; protocolMs: number | null };
 }
 export interface SmokeOptions { leg: "qwen-dual-output"; receipt: string; timeoutMs: number; signal?: AbortSignal }
 /** Host-only test ports, never loaded from project configuration or accepted as CLI arguments. */
@@ -38,12 +38,12 @@ export async function runSmoke(target: SmokeTarget, options: SmokeOptions, ports
   const command = ports.command ?? [Bun.which("qwen", { PATH: source.PATH }) ?? ""];
   if (!command.length || !command[0]) throw new Error("smoke prerequisites unavailable");
   const started = performance.now();
-  const receipt: SmokeReceipt = { schemaVersion: 1, leg: "qwen-dual-output", outcome: "failed", reason: "protocol", checks: { disposable: true, protocol: false, queued: false, cleaned: true }, counts: { submits: 0, users: 0, assistants: 0, stops: 0, events: 0, terminalBytes: 0 }, timings: { totalMs: 0, protocolMs: 0 } };
+  const receipt: SmokeReceipt = { schemaVersion: 1, leg: "qwen-dual-output", outcome: "failed", reason: "protocol", checks: { disposable: true, protocol: false, queued: false, cleaned: true }, counts: { submits: 0, users: 0, assistants: 0, stops: 0, events: 0, terminalBytes: 0 }, timings: { totalMs: 0, protocolMs: null } };
   target.check();
   const run = mkdtempSync(join(target.cwd, ".smoke-run-"));
   const home = join(run, "home"), cwd = join(run, "project"), temporary = join(run, "tmp");
   for (const dir of [home, cwd, temporary, join(home, ".qwen")]) mkdirSync(dir, { mode: 0o700 });
-  let cleaned = true;
+  let cleaned = true, protocolMs: number | null = null;
   try {
     const git = hubGitSync(["-c", "init.templateDir=", "init", "-q", cwd], { encoding: "utf8" });
     if (git.status !== 0) throw protocolError();
@@ -56,12 +56,15 @@ export async function runSmoke(target: SmokeTarget, options: SmokeOptions, ports
     const inputFd = openSync(input, constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW);
     const decoder = new TextDecoder();
     let position = 0, partial = "", announced = false, assistant = false, queued = false;
-    const deadline = performance.now() + options.timeoutMs;
+    const protocolStop = new AbortController();
+    const protocolStarted = performance.now();
+    const deadline = protocolStarted + options.timeoutMs;
     const submit = (text: string) => { target.check(); if (!fstatSync(inputFd).isFile() || fstatSync(inputFd).nlink !== 1) throw protocolError(); writeSync(inputFd, JSON.stringify({ type: "submit", text }) + "\n"); receipt.counts.submits++; };
     try {
       target.check(); cleaned = false; receipt.checks.cleaned = false;
       const result = await runPty([...command, "--input-file", input, "--json-file", events, "--mcp-config", mcp, "--approval-mode", "default", "--auth-type", "openai", "--model", source.OPENAI_MODEL], { cwd, env, timeoutMs: options.timeoutMs, signal: options.signal, ready: async () => {
-        while (performance.now() < deadline && !options.signal?.aborted) {
+        try {
+        while (performance.now() < deadline && !options.signal?.aborted && !protocolStop.signal.aborted) {
           const info = fstatSync(fd);
           if (!info.isFile() || info.nlink !== 1 || info.size < position || info.size > 8 * 1024 * 1024) throw protocolError();
           if (position < info.size) {
@@ -108,21 +111,22 @@ export async function runSmoke(target: SmokeTarget, options: SmokeOptions, ports
           await Bun.sleep(20);
         }
         throw protocolError();
+        } finally { protocolMs = Math.round(performance.now() - protocolStarted); }
       } });
       receipt.counts.terminalBytes = result.outputBytes;
       receipt.checks.cleaned = result.cleaned;
       cleaned = result.cleaned;
       if (result.outcome === "completed" && receipt.checks.protocol && receipt.checks.queued && result.cleaned) { receipt.outcome = "passed"; receipt.reason = "complete"; }
-      else if (result.outcome === "timeout") { receipt.outcome = "timeout"; receipt.reason = "timeout"; }
+      else if (result.outcome === "timeout" || !receipt.checks.protocol && performance.now() >= deadline) { receipt.outcome = "timeout"; receipt.reason = "timeout"; }
       else if (result.outcome === "aborted") receipt.reason = "aborted";
-    } finally { closeSync(fd); closeSync(inputFd); }
+    } finally { protocolStop.abort(); closeSync(fd); closeSync(inputFd); }
   } catch { receipt.reason = "protocol"; }
   finally {
     // Remove only the directory this invocation made, after all owned processes were confirmed stopped.
     if (cleaned) rmSync(run, { recursive: true, force: true });
   }
   receipt.timings.totalMs = Math.round(performance.now() - started);
-  receipt.timings.protocolMs = receipt.timings.totalMs;
+  receipt.timings.protocolMs = protocolMs;
   if (!receipt.checks.cleaned) { receipt.outcome = "failed"; receipt.reason = "cleanup"; }
   target.check();
   try { writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + "\n", { mode: 0o600, flag: "wx" }); }

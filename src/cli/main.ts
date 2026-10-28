@@ -1280,7 +1280,7 @@ const commands: Record<string, () => Promise<void> | void> = {
     const target = { ...checked, check: () => { checked.check(); assertDelegatedAuditConsumer(); } };
     const abort = new AbortController();
     const interrupted = () => abort.abort();
-    process.once("SIGINT", interrupted); process.once("SIGTERM", interrupted);
+    process.on("SIGINT", interrupted); process.on("SIGTERM", interrupted);
     try {
       const result = await runSmoke(target, { leg: "qwen-dual-output", receipt: values.get("--receipt")!, timeoutMs: Number(values.get("--timeout-ms") ?? "60000"), signal: abort.signal });
       process.exitCode = result.outcome === "passed" ? 0 : 1;
