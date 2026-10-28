@@ -160,6 +160,19 @@ export class SourceRegistry {
     finally { if (held) { try { unlinkSync(lock); } catch { /* already gone */ } } }
   }
 
+  /** Host classification is monotonic and does not register a new origin or consume its cap. */
+  markPrivate(id: string): SourceMeta {
+    if (!validSourceId(id)) throw new Error("source classification unavailable");
+    return this.locked(() => {
+      const meta = this.get(id);
+      if (!meta) throw new Error("source classification unavailable");
+      if (meta.private) return meta;
+      const next = { ...meta, private: true };
+      atomic(join(this.dir(id), "meta.json"), JSON.stringify(next, null, 2) + "\n");
+      return next;
+    });
+  }
+
   /**
    * Register bytes. Equal bytes share one id, so a second registration returns the existing id. `private` is the OR over every registration of
    * those bytes: re-adding from a private path, or with text the PII screen flags, upgrades the record; re-adding from a public path never

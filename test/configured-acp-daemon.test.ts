@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { CallToolResultSchema } from "@modelcontextprotocol/sdk/types.js";
+import { SourceRegistry } from "../src/hub/sources.ts";
 import { CONDUCTOR_TOOLS } from "../src/hub/hub-tools.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -195,10 +196,20 @@ test("the bundled MCP server publishes configured targets and enforces read-only
 
     const readOnly = await session("fixture-check");
     const names = (await readOnly.listTools()).tools.map(tool => tool.name);
-    const allowed = ["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_status"];
+    const allowed = ["hub_send", "hub_inbox", "hub_delivery_done", "hub_review", "hub_task_show", "hub_task_list", "hub_memory_search", "hub_memory_show", "hub_memory_graph", "hub_source_read", "hub_status"];
     expect(names.length).toBeGreaterThan(0);
     expect(names.every(name => allowed.includes(name))).toBe(true);
     expect(names).toContain("hub_review"); expect(names).toContain("hub_task_list");
+    expect(names).toContain("hub_source_read");
+    const sources = new SourceRegistry(f.stateDir);
+    const body = "public source through a read-only MCP client";
+    const source = sources.add({ bytes: Buffer.from(body), text: body, kind: "file", origin: "public.txt", private: false });
+    const sourceRead = await readOnly.request({ method: "tools/call", params: { name: "hub_source_read", arguments: { id: source.id } } }, CallToolResultSchema);
+    expect(sourceRead.isError).not.toBe(true);
+    const sourceText = sourceRead.content[0];
+    if (sourceText?.type !== "text") throw new Error("source tool returned no text block");
+    expect(JSON.parse(sourceText.text)).toMatchObject({ id: source.id, kind: "file", private: false, text: body, next: body.length });
+
     expect(names).not.toContain("hub_task_propose"); expect(names).not.toContain("hub_peer_start");
     // Existing tools-only publication excludes inbox/delivery_done regardless of read-only status.
     expect(names).not.toContain("hub_inbox"); expect(names).not.toContain("hub_delivery_done");
