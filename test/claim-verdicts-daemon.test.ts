@@ -47,6 +47,18 @@ test("the daemon's own check lookup supplies the key: a fact_check task's check 
   expect(f.board.get(id)!.history.findLast(h => h.event === "check failed")).toMatchObject({ by: "hub", checkKey: "fact_check", missingKeys: 1 });
 });
 
+test("a check on a class with no fact_check command records the key it actually ran, and a class with none records no key", async () => {
+  const f = await fixture(`echo "citations: 1 declared keys, 0 missing"`);
+  const survey = await f.op("hub_task_propose", { title: "Plain survey", class: "survey", owner: "claude", plan: { paths: ["s.md"] } });
+  const id = Number(/task #(\d+)/.exec(survey.text!)![1]);
+  expect((await f.op("hub_task_accept", { id })).ok).toBe(true);
+  expect((await f.op("hub_task_done", { id, summary: "done" })).ok).toBe(true);
+  await Bun.sleep(300);
+  // No `survey` or `summarize` command is configured: no check ran, so no check entry, and certainly no fact_check key.
+  expect(f.board.get(id)!.history.some(h => h.event === "check passed" || h.event === "check failed")).toBe(false);
+  expect(f.board.get(id)!.history.some(h => h.checkKey !== undefined)).toBe(false);
+});
+
 test("ahub task claim records a verdict through the daemon, prints the slot and the verdict and never a claim, and the scorecard reads it", async () => {
   const f = await fixture("true");
   const proposed = await f.op("hub_task_propose", { title: "Check claims", class: "fact_check", owner: "claude", plan: { paths: ["r.md"], claims: ["PRIVATE_CLAIM_TEXT", "second"] } });

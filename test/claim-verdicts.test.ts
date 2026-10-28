@@ -54,6 +54,30 @@ test("the hub stamps the check key on its own check entries, from the same looku
   for (const h of r.board.get(task.id)!.history.filter(h => h.event === "check failed")) expect(h).toMatchObject({ checkKey: "fact_check", missingKeys: 2 });
 });
 
+test("the missing count is read from the output's LAST line: an earlier citations line, even a different count, is not the result", async () => {
+  const r = await rig({ output: "citations: 9 declared keys, 7 missing\nrechecked after the fix\ncitations: 9 declared keys, 1 missing" });
+  const task = await factCheckTask(r);
+  await runCheck(r, task.id);
+  expect(r.board.get(task.id)!.history.findLast(h => h.event === "check passed")).toMatchObject({ checkKey: "fact_check", missingKeys: 1 });
+});
+
+test("the board itself refuses to keep a check key or a missing count on anything but the hub's check entries, and a malformed count or key anywhere", () => {
+  const dir = realPath(mkdtempSync(join(tmpdir(), "ahub-claims-board-"))); const board = new Board(join(dir, "hub.db"));
+  cleanups.push(() => { board.close(); rmSync(dir, { recursive: true, force: true }); });
+  const task = board.propose("user", { title: "t", class: "implement", plan: { claims: ["a"] } });
+  board.update(task.id, "hub", "state note", {}, undefined, { checkKey: "fact_check", missingKeys: 3, claim: { slot: 1, verdict: "supported" } } as never);   // not a check entry, not a claim verdict
+  board.update(task.id, "hub", "check passed", {}, undefined, { checkKey: "Bad Key!", missingKeys: -4 });
+  board.update(task.id, "hub", "check passed", {}, undefined, { checkKey: "fact_check", missingKeys: 100_001 });
+  board.update(task.id, "hub", "check passed", {}, undefined, { checkKey: "fact_check", missingKeys: 2.5 });
+  board.update(task.id, "hub", "check passed", {}, undefined, { checkKey: "fact_check", missingKeys: 0 });
+  const [other, badKey, hugeCount, fractional, zero] = board.get(task.id)!.history.slice(-5);
+  expect(other).not.toHaveProperty("checkKey"); expect(other).not.toHaveProperty("missingKeys"); expect(other).not.toHaveProperty("claim");
+  expect(badKey).not.toHaveProperty("checkKey"); expect(badKey).not.toHaveProperty("missingKeys");
+  expect(hugeCount).toMatchObject({ checkKey: "fact_check" }); expect(hugeCount).not.toHaveProperty("missingKeys");
+  expect(fractional).not.toHaveProperty("missingKeys");
+  expect(zero).toMatchObject({ checkKey: "fact_check", missingKeys: 0 });      // a printed zero is a zero; only an absent count is unknown
+});
+
 test("a check output without the example line records the key and no missing count: unknown, never zero; a malformed or oversized line records none", async () => {
   for (const output of ["all good", "citations: 3 declared keys, many missing", "citations: 3 declared keys, 1234567 missing", "note\ncitations: 3 declared keys, 1 missing\nand then prose", ""]) {
     const r = await rig({ output });
@@ -159,6 +183,37 @@ test("missing-key counts are a list only when every proven run printed one", asy
   r.state.output = "no citation line today"; r.state.code = 0;
   await runCheck(r, task.id);
   expect(scorecard(r.file).row.research!.factCheck).toMatchObject({ selection: "checks.fact_check", passed: 1, failed: 1, missingKeysPerRun: null });
+});
+
+test("the reader keeps only bounded keys and only the check key fact_check counts as the fact check", async () => {
+  const r = await rig();
+  const task = await factCheckTask(r);
+  const { Database } = await import("bun:sqlite");
+  const stamp = (entries: object[]) => { const db = new Database(r.file); const row = db.query("SELECT history FROM tasks WHERE id = ?").get(task.id) as { history: string };
+    db.query("UPDATE tasks SET history = ? WHERE id = ?").run(JSON.stringify([...JSON.parse(row.history), ...entries]), task.id); db.close(); };
+  // Another check key (a draft check) is a keyed entry, but it is not the fact check: it must not be counted as one.
+  stamp([{ at: Date.now(), by: "hub", event: "check passed", checkKey: "draft", missingKeys: 0 }, { at: Date.now(), by: "hub", event: "check failed", checkKey: "fact_check", missingKeys: 4 }]);
+  const row = scorecard(r.file).row.research!;
+  expect(row.factCheck).toMatchObject({ selection: "checks.fact_check", passed: 0, failed: 1, missingKeysPerRun: [4] });
+  expect(row.observedCheckOutcomes).toEqual({ scope: "task_check_history", passed: 1, failed: 1 });   // the unkeyed-to-fact_check outcome still counts there
+  // A key that is not a bounded identifier is dropped by the reader, which makes the group's keys incomplete: unknown, not a fact check.
+  stamp([{ at: Date.now(), by: "hub", event: "check passed", checkKey: "Fact Check; drop", missingKeys: 0 }]);
+  expect(scorecard(r.file).row.research!.factCheck).toMatchObject({ scope: null, selection: null, passed: null, failed: null });
+});
+
+test("a verdict dated outside the report window never counts, even when the slot has an in-window verdict of another kind", async () => {
+  const r = await rig();
+  const task = await factCheckTask(r);
+  const { Database } = await import("bun:sqlite");
+  const db = new Database(r.file); const row = db.query("SELECT history FROM tasks WHERE id = ?").get(task.id) as { history: string };
+  const old = Date.now() - 10 * 86_400_000;
+  db.query("UPDATE tasks SET history = ? WHERE id = ?").run(JSON.stringify([...JSON.parse(row.history), { at: old, by: "user", event: "claim verdict", claim: { slot: 1, verdict: "unsupported", model: "old-model", modelVerdict: "unsupported" } }]), task.id); db.close();
+  r.tasks.recordClaimVerdict("user", task.id, { slot: 1, verdict: "supported", model: "new-model", modelVerdict: "supported" });
+  const week = (since: number, until: number) => { const s = scorecard(r.file); return dogfoodScorecard({ ...s.input, since, until }).profile!.rows.find(x => x.profile === "research" && x.alias === null)!; };
+  const recent = week(Date.now() - 86_400_000, Date.now() + 60_000);
+  expect(recent.research!.claims.perTask[0]!.claims![0]).toMatchObject({ modelLabel: "new-model", personVerdict: "supported" });
+  const older = week(old - 1000, old + 1000);
+  expect(older.research!.claims.perTask[0]!.claims![0]).toMatchObject({ modelLabel: "old-model", personVerdict: "unsupported" });   // the window picks the verdict in force within it, not the newest ever
 });
 
 test("a PII task: its verdicts count but name no model, its history entry is a stub, and no claim, key or label text reaches the scorecard", async () => {
