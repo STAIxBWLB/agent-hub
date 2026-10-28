@@ -1291,6 +1291,14 @@ const commands: Record<string, () => Promise<void> | void> = {
     } finally { process.removeListener("SIGINT", interrupted); process.removeListener("SIGTERM", interrupted); }
   },
 
+  room: async () => {
+    const { runRoomCommand, roomCommandError } = await import("./room.ts");
+    const hub = await connect();
+    try { await runRoomCommand(args, message => hub.request(message)); }
+    catch (error) { fail(roomCommandError(error)); }
+    finally { hub.close(); }
+  },
+
   broker: async () => {
     const { runBrokerCommand, brokerCommandError } = await import("./broker.ts");
     try { await runBrokerCommand(args, stateDir); }

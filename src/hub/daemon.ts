@@ -1,3 +1,4 @@
+import { RoomCommands, type RoomPreview } from "../rooms/commands.ts";
 import { assertNativeProofPorts } from "../adapters/native-proof-ports.ts";
 import { externalInstanceCatalog } from "../adapters/external-metadata.ts";
 import { externalInstanceBinding, sameExternalInstanceBinding, externalInstanceStateDir, readExternalInstanceRecord, writeExternalInstanceRecord, type ExternalInstanceBinding } from "./external-instance.ts";
@@ -3413,6 +3414,13 @@ export async function startDaemon(opts: DaemonOptions) {
   const nativeUnattended = (peer: string): boolean => startingUnattended.get(peer) ?? unattendedPeers.has(peer);
   const permissions = new Map<string, { push: string; peer: string; tool?: string; createdAt: number; expiresAt: number; done: (optionId: string | undefined, surface?: "console" | "dashboard" | "terminal", reason?: "expired" | "cancelled") => boolean }>();
   let stopping = false;
+  const roomCommands = new RoomCommands({ stateDir: opts.stateDir, cwd: opts.cwd,
+    presence: () => [...bus.peers].map(([id, peer]) => ({ id, state: peer.state })),
+  });
+  // Room crypto/state failure disables only this optional outbound service, never local work.
+  void roomCommands.start().catch(() => log("rooms unavailable"));
+  const roomTickets = new WeakMap<Sock, { id: string; expires: number; preview: RoomPreview }>();
+
   const releaseAuthorizations = new ReleaseAuthorizations(opts.cwd, {
     docs: opts.releaseDocEvidence,
     gh: (args, timeout) => sdlcGh(args, timeout, opts.cwd),
@@ -7479,6 +7487,38 @@ export async function startDaemon(opts: DaemonOptions) {
         })().catch(() => reply({ ok: false, error: "lifecycle readback unavailable" }));
         return;
       }
+      case "room": {
+        const client = sock.data;
+        const roomCurrent = () => !stopping && !recoveryActive() && !bus.isRecoveryHeld
+          && sock.data === client && sock.readyState === WebSocket.OPEN && client.role === "console";
+        const roomFailure = () => reply({ ok: false, error: "room operation refused; check room state, authority and arguments" });
+        if (msg.op === "list" || msg.op === "status") {
+          if (msg.input !== undefined && (!msg.input || typeof msg.input !== "object" || Array.isArray(msg.input)
+            || Object.keys(msg.input).some(key => key !== "name") || (msg.input.name !== undefined && typeof msg.input.name !== "string"))) return roomFailure();
+          void roomCommands.rows(msg.input?.name).then(rooms => reply({ ok: true, rooms }), roomFailure);
+          return;
+        }
+        if (c.role !== "console") return void reply({ ok: false, error: "room mutations are person-only" });
+        if (!roomCurrent()) return roomFailure();
+        if (msg.op === "preview") {
+          roomTickets.delete(sock);
+          void roomCommands.preview(msg.action, msg.input, roomCurrent).then(preview => {
+            if (!roomCurrent()) return roomFailure();
+            const ticket = crypto.randomUUID();
+            roomTickets.set(sock, { id: ticket, expires: Date.now() + 30_000, preview });
+            reply({ ok: true, owner: preview.owner, member: preview.member, ticket });
+          }, roomFailure);
+          return;
+        }
+        if (msg.op === "execute") {
+          const ticket = roomTickets.get(sock); roomTickets.delete(sock);
+          if (!ticket || msg.ticket !== ticket.id || Date.now() >= ticket.expires
+            || Object.keys(msg).some(key => !["t", "op", "ticket", "rid"].includes(key))) return roomFailure();
+          void ticket.preview.commit().then(result => reply({ ok: true, ...result }), roomFailure);
+          return;
+        }
+        return void reply({ ok: false, error: "unknown room operation" });
+      }
       case "status":
         return void reply({ t: "status", status: status(c.role === "console", false, true) });
       case "cli_audit_ack": {
@@ -7751,6 +7791,7 @@ export async function startDaemon(opts: DaemonOptions) {
   }
   async function stopOnce(): Promise<void> {
     stopping = true;
+    roomCommands.stop();
     let implementerShellCleanupFailed = false;
     const implementerShellStopped = implementerShellStart?.then(wrapper => wrapper.close()).catch(() => { implementerShellCleanupFailed = true; log("host shell cleanup failed during shutdown"); });
     terminalLaunches.clear();

@@ -19,6 +19,7 @@ export function liveTestRefusal(command: string, args: readonly string[], contex
   if (args.some(arg => arg === "--as-user" || arg.startsWith("--as-user="))) return true;
   const sub = command === "recovery" ? recoveryAction(args) : args.find(arg => arg !== "--json");
   return ["task", "role", "goal", "deliverables", "source", "broker", "schedule", "intake"].includes(command)
+    || (command === "room" && !["list", "status"].includes(sub ?? ""))
     || (command === "backlog" && sub !== "list") || (command === "release" && !["list", "show"].includes(sub ?? ""))
     || (command === "memory" && sub !== "graph")
     || (command === "recovery" && (sub === "reattach" || sub === "dispose" && context.repairedFresh === true))
@@ -73,6 +74,7 @@ interface PeerReadForm {
 const publicReadDisplayFlags = ["--json", "--full", "--color=auto", "--color=always", "--color=never"] as const;
 const sdlcReadDisplayFlags = ["--json", "--color=auto", "--color=always", "--color=never"] as const;
 const peerReadForms: Readonly<Record<string, Readonly<Record<string, PeerReadForm>>>> = {
+  room: { list: { displayFlags: ["--json"] }, status: { positional: 1, displayFlags: ["--json"] } },
   queue: { list: { valueFlags: ["--peer"], displayFlags: publicReadDisplayFlags } },
   roster: { "": { displayFlags: publicReadDisplayFlags } },
   settings: { "": { displayFlags: ["--json"] }, list: { displayFlags: ["--json"] }, get: { positional: 1, minimum: 1, displayFlags: ["--json"] } },
