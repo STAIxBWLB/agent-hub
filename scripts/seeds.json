@@ -3648,6 +3648,14 @@
       "replacement": "export const MAX_SOURCE_READ_BYTES = 64 * 1024;",
       "testFile": "test/source-read.test.ts",
       "testName": "the UTF-8 cap includes the explicit cut marker and cuts only at source character boundaries"
+    },
+    {
+      "id": "source-readonly-publication",
+      "file": "src/hub/hub-tools.ts",
+      "search": "\"hub_memory_graph\", \"hub_source_read\", \"hub_status\"]);",
+      "replacement": "\"hub_memory_graph\", \"hub_status\"]);",
+      "testFile": "test/source-read.test.ts",
+      "testName": "source reads are published to read-only project MCP clients without publishing mutations"
     }
   ]
 }
