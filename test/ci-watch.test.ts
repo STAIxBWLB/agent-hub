@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Board } from "../src/hub/board.ts";
 import { Bus } from "../src/hub/bus.ts";
-import { CiWatchers, pollCi } from "../src/hub/ci-watch.ts";
+import { CiWatchers, pollCi, type CiOutcome, type CiPoll } from "../src/hub/ci-watch.ts";
 import type { Envelope } from "../src/hub/envelope.ts";
 import { BasePeer } from "../src/hub/peers.ts";
 import { loadRouting } from "../src/hub/routing.ts";
@@ -79,7 +79,30 @@ test("a failed CI is told once and does not re-offer a review (#785 AC3)", async
   expect(await until(() => r.ciNotices(r.owner).length === 1 && r.ciNotices(r.reviewer).length === 1)).toBe(true);
   expect(r.ciNotices(r.owner)[0]!.body).toContain("failed");
   expect(r.ciNotices(r.owner)[0]!.priority).toBe("status");
+  await sleep(60);
+  expect(r.ciNotices(r.owner)).toHaveLength(1); // still failed on later reads: not told again
+  expect(r.watchers().size).toBe(1); // a failed head stays watched for a rerun (#540)
+});
+
+test("a failed CI, then a rerun of the same head going green: one failed notice, one passed notice and the held review re-offered (#540)", async () => {
+  const r = rig("enforce"); await r.start();
+  r.board.update(r.task.id, "codex", "done", { state: "in_review" });
+  const task = r.board.get(r.task.id)!;
+  expect((r.tasks as unknown as { sendReview(t: typeof task, reviewer: string, why: string): boolean }).sendReview(task, "claude", "")).toBe(false);
+  r.state.conclusion = "FAILURE";
+  expect(await until(() => r.ciNotices(r.owner).length === 1)).toBe(true);
+  expect(r.ciNotices(r.owner)[0]!.body).toContain(`${head.slice(0, 12)} failed`);
+  await sleep(60);
+  expect(r.reviews()).toHaveLength(0); // a failed result re-offers nothing
+  r.state.conclusion = "IN_PROGRESS"; // attempt 2 of the same head starts
+  await sleep(40);
+  r.state.conclusion = "SUCCESS";
+  expect(await until(() => r.ciNotices(r.owner).length === 2 && r.reviews().length === 1)).toBe(true);
+  expect(r.ciNotices(r.owner)[1]!.body).toContain(`${head.slice(0, 12)} passed`);
+  expect(r.reviews()[0]!.body).toContain("it is green now");
   expect(r.watchers().size).toBe(0);
+  await sleep(120);
+  expect([r.ciNotices(r.owner).length, r.ciNotices(r.reviewer).length, r.reviews().length]).toEqual([2, 2, 1]);
 });
 
 test("a review the hub held as premature is re-offered once CI is green, once (#785 AC3)", async () => {
@@ -193,4 +216,47 @@ test("CiWatchers: one watcher per head, a settled head never starts again, a dif
   expect(await until(() => finished.length === 2)).toBe(true);
   expect(finished).toEqual([`${head}:passed`, `${newer}:passed`]);
   expect(w.size).toBe(0);
+});
+
+test("CiWatchers: only passed settles a head; a failed head is watched again and each outcome is told once (#540)", async () => {
+  const finished: string[] = [];
+  let result: "failed" | "pending" | "passed" = "failed";
+  const w = new CiWatchers({ deadlineMs: 150, pollMs: 5, poll: async () => result, current: () => true, finish: (watch, outcome) => { finished.push(`${watch.head}:${outcome}`); } });
+  expect(w.start({ id: 1, head, repo: "o/r", pr: 1 })).toBe(true);
+  expect(await until(() => finished.length === 1)).toBe(true);
+  expect(await until(() => w.size === 0)).toBe(true); // the deadline after a told result ends silently
+  expect(finished).toEqual([`${head}:failed`]);
+  expect(w.outcomeOf(1, head)).toBe("failed");
+  expect(w.start({ id: 1, head, repo: "o/r", pr: 1 })).toBe(true); // a later done at the same head watches again
+  await sleep(20);
+  expect(finished).toHaveLength(1); // the same failed result is not told twice
+  result = "pending"; await sleep(20); result = "passed";
+  expect(await until(() => finished.length === 2)).toBe(true);
+  expect(finished).toEqual([`${head}:failed`, `${head}:passed`]);
+  expect(w.size).toBe(0);
+  expect(w.start({ id: 1, head, repo: "o/r", pr: 1 })).toBe(false); // passed settles it for good
+});
+
+test("CiWatchers: after a told failed or incomplete result, sustained pending, unreadable or flapping reads still end at a bounded deadline (#540)", async () => {
+  const deadlineMs = 60;
+  const cases: [string, CiOutcome, (n: number) => Promise<CiPoll>][] = [
+    ["failed then pending forever", "failed", async n => n === 1 ? "failed" : "pending"],
+    ["incomplete then pending forever", "incomplete", async n => n === 1 ? "incomplete" : "pending"],
+    ["failed then unreadable gh", "failed", async n => { if (n === 1) return "failed"; throw new Error("gh down"); }],
+    ["failed and pending alternating", "failed", async n => n % 2 ? "failed" : "pending"],
+  ];
+  for (const [name, first, poll] of cases) {
+    const finished: string[] = [];
+    let n = 0, polls = 0;
+    const w = new CiWatchers({ deadlineMs, pollMs: 5, poll: () => { polls++; return poll(++n); }, current: () => true, finish: (_watch, outcome) => { finished.push(outcome); } });
+    const started = Date.now();
+    w.start({ id: 1, head, repo: "o/r", pr: 1 });
+    expect([name, await until(() => w.size === 0, 2000)]).toEqual([name, true]);
+    // one renewal for the one new attempt after the told result: at most about two deadlines in all
+    expect([name, Date.now() - started < deadlineMs * 2 + 200]).toEqual([name, true]);
+    expect([name, finished]).toEqual([name, [first]]); // told once; the deadline after it is silent
+    const after = polls;
+    await sleep(40);
+    expect([name, polls]).toEqual([name, after]);
+  }
 });
